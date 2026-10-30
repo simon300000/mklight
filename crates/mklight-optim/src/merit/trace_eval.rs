@@ -52,8 +52,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use mklight_core::materials::MaterialLibrary;
+use mklight_core::job::{Precision, RunTimer};
 use mklight_core::{
-    JobContext, MkResult, OpticalSystem, ResolvedSystem, SemiDiameter, Snapshot, SurfaceId, Vec3,
+    JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo, SemiDiameter, Snapshot,
+    SurfaceId, Vec3,
 };
 use mklight_trace::{
     ObjectSource, OpdReference, ParaxialModel, PreparedField, SemiDiameterSettings,
@@ -122,6 +124,36 @@ impl TraceEvaluator {
     }
     pub fn settings(&self) -> &TraceEvalSettings {
         &self.settings
+    }
+
+    /// Backend name reported in [`RunInfo`]s of runs using this evaluator.
+    pub const BACKEND: &'static str = "cpu-f64-reference";
+
+    /// `RunInfo` of an optimisation or tolerancing run on `start` (the
+    /// system the run started from) that used this evaluator: snapshot hash,
+    /// the run's settings, seed, timing and the tracer's warnings.
+    pub fn run_info(
+        &self,
+        timer: RunTimer,
+        start: &OpticalSystem,
+        analysis: &str,
+        settings: &impl Serialize,
+        seed: Option<u64>,
+    ) -> MkResult<RunInfo> {
+        let snap = Snapshot::new(start.clone())?;
+        let warnings = match self.tracer(start) {
+            Ok(t) => t.warnings().to_vec(),
+            Err(e) => vec![format!("{e:?}")],
+        };
+        Ok(timer.finish(
+            &snap,
+            analysis,
+            settings,
+            Self::BACKEND,
+            Precision::F64Reference,
+            seed,
+            warnings,
+        ))
     }
 
     /// Snapshot → `ResolvedSystem` → `SequentialTracer` for one system.
