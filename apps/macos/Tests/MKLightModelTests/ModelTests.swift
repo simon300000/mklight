@@ -142,15 +142,31 @@ import Testing
             var error: String?
         }
         let cases = try MKLightJSON.decode([Case].self, from: Fixtures.data("validation_cases"))
-        #expect(cases.count >= 20 && cases.contains { $0.error == nil } && cases.contains { $0.error != nil })
+        #expect(cases.count >= 70 && cases.contains { $0.error == nil } && cases.contains { $0.error != nil })
         for c in cases {
             let errors = c.system.structuralIssues().filter { $0.severity == .error }
+            let override = c.system.configurations[0].overrides[0]
+            let path = override.first
             if let engine = c.error {
                 #expect(errors.count == 1, "\(c.name): engine rejects (\(engine)), Swift found \(errors)")
-                let why = try #require(c.system.configurations[0].overrides[0].first.unresolvedReason(in: c.system))
+                let why = try #require(
+                    path.unresolvedReason(in: c.system) ?? path.valueRejection(override.second), "\(c.name)")
                 #expect(engine.trimmingCharacters(in: CharacterSet(charactersIn: "'")).hasSuffix(why), "\(c.name): \(engine) vs \(why)")
+                // Reading and writing agree with the engine's get/set (whose
+                // semi-diameter setter fixes an automatic one).
+                if case .semiDiameter = path {} else {
+                    var edited = c.system
+                    let set = edited.setValue(override.second, at: path)
+                    #expect(!set, "\(c.name): Swift set what the engine refuses")
+                    #expect(edited == c.system)
+                }
             } else {
                 #expect(errors.isEmpty, "\(c.name): engine accepts, Swift found \(errors)")
+                #expect(c.system.value(at: path) != nil, "\(c.name)")
+                var edited = c.system
+                let set = edited.setValue(override.second, at: path)
+                #expect(set, "\(c.name): Swift refuses what the engine sets")
+                #expect(edited.value(at: path) == override.second, "\(c.name)")
             }
         }
     }
@@ -365,7 +381,7 @@ import Testing
     /// accepted would vanish silently. Every object of the engine-written
     /// fixtures (every model variant) gets an extra key in turn.
     @Test(arguments: [
-        ("kitchen_sink", "system"), ("variants", "systems"), ("solved_triplet", "system"),
+        ("kitchen_sink", "system"), ("extended_shapes", "system"), ("variants", "systems"), ("solved_triplet", "system"),
         ("param_paths", "paths"), ("solve_kinds", "solves"),
     ])
     func rejectsUnknownKeysEverywhere(fixture: String, kind: String) throws {

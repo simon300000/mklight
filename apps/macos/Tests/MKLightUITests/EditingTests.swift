@@ -126,7 +126,11 @@ import Testing
         #expect(longer.asphereCoefficients == [1e-5, 2e-7])
         #expect(SurfaceTypes.shape(shape, setting: "no_such_key", to: .number(1)) == nil, "the model rejects unknown keys")
         #expect(SurfaceTypes.descriptor(for: SurfaceShape.Kind.coordinateBreak).placementFirst)
-        #expect(SurfaceTypes.all.count == SurfaceShape.Kind.allCases.count, "every model type has a descriptor")
+        // The extended shapes get their descriptors with the inspector redesign.
+        #expect(
+            Set(SurfaceTypes.all.map(\.kind)) == Set(SurfaceShape.Kind.allCases.filter(\.isLegacy)),
+            "every legacy model type has a descriptor")
+        #expect(SurfaceTypes.all.map(\.id) == SurfaceTypes.all.map(\.kind.typeName), "descriptor ids are the JSON tags")
         // Sag preview of a paraboloid.
         let pts = try #require(SurfaceTypes.profile(.conic(curvature: 0.01, conic: -1), semiDiameter: 10))
         #expect(abs(pts.last!.1 - 0.5) < 1e-12)
