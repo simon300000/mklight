@@ -27,7 +27,12 @@ const CATEGORIES: &[&str] = &[
 
 fn generated() -> String {
     let mut infos = Engine::default().analyses();
-    let rank = |c: &str| CATEGORIES.iter().position(|x| *x == c).unwrap_or(usize::MAX);
+    let rank = |c: &str| {
+        CATEGORIES
+            .iter()
+            .position(|x| *x == c)
+            .unwrap_or(usize::MAX)
+    };
     infos.sort_by(|a, b| {
         rank(&a.category)
             .cmp(&rank(&b.category))

@@ -354,7 +354,10 @@ pub fn check_buffers(schema: &Value, buffers: &[(String, String, usize)]) -> Res
 /// Short type label of a schema: `integer`, `number|null`, `nf` (see
 /// [`nf`]), `array<…>`, `[T; n]`, `object`, `T?` for `T` or null.
 pub fn type_label(s: &Value) -> String {
-    if s == &nf() || s.get("anyOf").is_some_and(|a| a.get(0) == Some(&nf()["anyOf"][0])) {
+    if s == &nf()
+        || s.get("anyOf")
+            .is_some_and(|a| a.get(0) == Some(&nf()["anyOf"][0]))
+    {
         return "nf".into();
     }
     if let Some(alts) = s.get("anyOf").and_then(Value::as_array) {
@@ -496,7 +499,9 @@ pub fn render_markdown(info: &super::AnalysisInfo) -> String {
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
-            o.push_str("Settings:\n\n| key | type | default | unit | notes |\n|---|---|---|---|---|\n");
+            o.push_str(
+                "Settings:\n\n| key | type | default | unit | notes |\n|---|---|---|---|---|\n",
+            );
             for (k, s) in p {
                 let default = match s.get("default") {
                     Some(d) => format!("`{d}`"),
@@ -536,7 +541,12 @@ pub fn render_markdown(info: &super::AnalysisInfo) -> String {
         for b in bufs {
             let shape: Vec<String> = b["shape"]
                 .as_array()
-                .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
                 .unwrap_or_default();
             o.push_str(&format!(
                 "| `{}` | {} | [{}] | {} | {} |\n",
