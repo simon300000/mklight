@@ -36,6 +36,19 @@
 //! crossing the exact inverse of the forward one; the ghost OPL does not
 //! include the ideal lens's phase term (irrelevant for irradiance).
 //!
+//! # Virtual segments
+//!
+//! A sequential design may contain virtual segments (a dummy surface or a
+//! stop plane placed "behind" the ray), but physical light cannot travel
+//! backwards between two interactions. With
+//! [`GhostSettings::reject_virtual`](crate::GhostSettings) the signed
+//! distance travelled since the last *physical* interaction (any surface
+//! that is not [`InterfaceKind::Passive`], the image included) is summed
+//! over the intermediate passive surfaces, and a ray whose sum is negative at
+//! a physical surface is lost (`Virtual`). Passive surfaces can therefore
+//! sit on either side of the ray. The first segment of an object at infinity
+//! starts on an arbitrary reference plane and is not counted.
+//!
 //! # Radiometry
 //!
 //! At each interaction the coating code ([`ResolvedCoating::rt`], bare
@@ -62,9 +75,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::GhostModel;
 use crate::path::{Action, Direction, Step};
+use crate::signature::InterfaceKind;
 
-/// A segment shorter than this (mm, negative) counts as virtual when
-/// virtual segments are rejected.
+/// A signed distance between physical interactions below `−VIRTUAL_TOL`
+/// (mm) is virtual.
 const VIRTUAL_TOL: f64 = 1e-9;
 
 /// Why a sequence trace failed numerically or was given an impossible step.
@@ -216,6 +230,8 @@ impl GhostModel {
         let (mut ws, mut wp) = (1.0f64, 1.0f64);
         let mut absorb = 0.0f64;
         let mut opl = Compensated::ZERO;
+        // Signed distance travelled since the last physical interaction.
+        let mut since_physical = 0.0f64;
         if let Some(r) = record.as_deref_mut() {
             r.clear();
         }
@@ -296,12 +312,20 @@ impl GhostModel {
                 }
             };
             let t = hit.t_transfer + hit.t_surface;
-            if self.settings().reject_virtual && t < -VIRTUAL_TOL {
-                let status = SequenceStatus::Virtual {
-                    step: kk,
-                    surface: ss,
-                };
-                return done(status, ray, s, k, ws, wp, absorb, opl);
+            // Virtual-segment rule (module docs): the start plane of an
+            // object at infinity is a reference plane, not a position.
+            if !(k == 0 && from == 0 && sys.object_at_infinity) {
+                since_physical += t;
+            }
+            if self.interface_kinds()[s] != InterfaceKind::Passive {
+                if self.settings().reject_virtual && since_physical < -VIRTUAL_TOL {
+                    let status = SequenceStatus::Virtual {
+                        step: kk,
+                        surface: ss,
+                    };
+                    return done(status, ray, s, k, ws, wp, absorb, opl);
+                }
+                since_physical = 0.0;
             }
             opl.add_product(n_in, hit.t_transfer);
             opl.add_product(n_in, hit.t_surface);

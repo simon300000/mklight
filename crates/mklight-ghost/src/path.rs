@@ -33,7 +33,7 @@
 //! ranked by reflectance product and cut to a budget. The output order is
 //! canonical (by order, then lexicographic) and deterministic.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, BinaryHeap};
 
 use mklight_core::{MkError, MkResult};
 use serde::{Deserialize, Serialize};
@@ -246,6 +246,107 @@ pub struct PathEnumeration {
     pub coverage: GhostCoverage,
 }
 
+/// Higher-order candidate ordered so that the *weakest* path is the
+/// maximum of the budget heap: lower product first, then the
+/// lexicographically larger path. This is a total order, so the kept set is
+/// independent of discovery order.
+struct Ranked(EnumeratedPath);
+
+impl Ranked {
+    fn key_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .0
+            .reflectance_product
+            .total_cmp(&self.0.reflectance_product)
+            .then_with(|| self.0.path.cmp(&other.0.path))
+    }
+}
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.key_cmp(other).is_eq()
+    }
+}
+impl Eq for Ranked {}
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key_cmp(other)
+    }
+}
+
+/// Depth-first search over alternating reflection sequences. Higher orders
+/// are kept in a bounded heap; once it is full, a branch whose product is
+/// below the weakest kept path is pruned (products never increase).
+struct Search<'a> {
+    k_max: usize,
+    reflectors: &'a [usize],
+    r_fwd: &'a [f64],
+    r_bwd: &'a [f64],
+    min: f64,
+    budget: usize,
+    seq: Vec<u32>,
+    two: Vec<EnumeratedPath>,
+    higher: BinaryHeap<Ranked>,
+    truncated: bool,
+}
+
+impl Search<'_> {
+    /// Product below which a higher-order branch cannot enter the budget.
+    fn floor(&self) -> f64 {
+        if self.budget == 0 {
+            f64::INFINITY
+        } else if self.higher.len() < self.budget {
+            f64::NEG_INFINITY
+        } else {
+            self.higher.peek().map_or(f64::NEG_INFINITY, |r| r.0.reflectance_product)
+        }
+    }
+
+    fn run(&mut self, pos: usize, fwd: bool, prod: f64) {
+        let len = self.seq.len();
+        if len > 0 && len % 2 == 0 {
+            let e = EnumeratedPath {
+                path: GhostPath::new(self.seq.clone()),
+                reflectance_product: prod,
+            };
+            if len == 2 {
+                self.two.push(e);
+            } else {
+                self.higher.push(Ranked(e));
+                if self.higher.len() > self.budget {
+                    self.higher.pop();
+                    self.truncated = true;
+                }
+            }
+        }
+        if len == self.k_max {
+            return;
+        }
+        for &s in self.reflectors {
+            let reachable = if fwd { s > pos } else { s < pos };
+            if !reachable {
+                continue;
+            }
+            let p = prod * if fwd { self.r_fwd[s] } else { self.r_bwd[s] };
+            if p < self.min {
+                continue;
+            }
+            // Branches that can only produce orders > 2 (lengths ≥ 2 now).
+            if len >= 2 && p < self.floor() {
+                self.truncated = true;
+                continue;
+            }
+            self.seq.push(s as u32);
+            self.run(s, !fwd, p);
+            self.seq.pop();
+        }
+    }
+}
+
 /// Enumerate ghost paths (module docs).
 pub fn enumerate(model: &GhostModel, settings: &EnumerationSettings) -> MkResult<PathEnumeration> {
     let k_max = settings.max_reflections as usize;
@@ -273,67 +374,22 @@ pub fn enumerate(model: &GhostModel, settings: &EnumerationSettings) -> MkResult
         .map(|s| model.normal_reflectance(s, Direction::Backward, wl))
         .collect();
 
-    let mut found: Vec<Vec<EnumeratedPath>> = vec![Vec::new(); k_max / 2];
-    let mut seq = Vec::with_capacity(k_max);
-    #[allow(clippy::too_many_arguments)]
-    fn rec(
-        seq: &mut Vec<u32>,
-        pos: usize,
-        fwd: bool,
-        prod: f64,
-        k_max: usize,
-        reflectors: &[usize],
-        r: (&[f64], &[f64]),
-        min: f64,
-        found: &mut [Vec<EnumeratedPath>],
-    ) {
-        if !seq.is_empty() && seq.len() % 2 == 0 {
-            found[seq.len() / 2 - 1].push(EnumeratedPath {
-                path: GhostPath::new(seq.clone()),
-                reflectance_product: prod,
-            });
-        }
-        if seq.len() == k_max {
-            return;
-        }
-        for &s in reflectors {
-            let reachable = if fwd { s > pos } else { s < pos };
-            if !reachable {
-                continue;
-            }
-            let p = prod * if fwd { r.0[s] } else { r.1[s] };
-            if p < min || p == 0.0 {
-                continue;
-            }
-            seq.push(s as u32);
-            rec(seq, s, !fwd, p, k_max, reflectors, r, min, found);
-            seq.pop();
-        }
-    }
-    rec(
-        &mut seq,
-        0,
-        true,
-        1.0,
+    let mut search = Search {
         k_max,
-        &reflectors,
-        (&r_fwd, &r_bwd),
-        settings.min_reflectance_product,
-        &mut found,
-    );
-
-    let mut truncated = false;
-    let mut paths: Vec<EnumeratedPath> = std::mem::take(&mut found[0]);
-    let mut higher: Vec<EnumeratedPath> = found.into_iter().skip(1).flatten().collect();
-    if higher.len() > settings.max_higher_order_paths {
-        truncated = true;
-        higher.sort_by(|a, b| {
-            b.reflectance_product
-                .total_cmp(&a.reflectance_product)
-                .then_with(|| a.path.cmp(&b.path))
-        });
-        higher.truncate(settings.max_higher_order_paths);
-    }
+        reflectors: &reflectors,
+        r_fwd: &r_fwd,
+        r_bwd: &r_bwd,
+        min: settings.min_reflectance_product,
+        budget: settings.max_higher_order_paths,
+        seq: Vec::with_capacity(k_max),
+        two: Vec::new(),
+        higher: BinaryHeap::new(),
+        truncated: false,
+    };
+    search.run(0, true, 1.0);
+    let truncated = search.truncated;
+    let mut paths = search.two;
+    let higher: Vec<EnumeratedPath> = search.higher.into_iter().map(|r| r.0).collect();
     paths.extend(higher);
     paths.sort_by(|a, b| {
         a.path
