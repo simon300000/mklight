@@ -441,6 +441,13 @@ pub fn phase(phase: &DiffractivePhase, x: f64, y: f64) -> Option<SagDerivatives>
     Some((polynomial(&phase.coefficients, s) * s).result())
 }
 
+/// Paraxial power of order `m` (1/mm, λ in µm): the reduced slope is the
+/// transverse n·k, so φ = −mλA₁/(π r_norm²) on any path (SURFACES §3).
+pub fn phase_power(phase: &DiffractivePhase, order: i32, lambda_um: f64) -> f64 {
+    -(order as f64) * lambda_um * 1e-3 * phase.coefficients.first().copied().unwrap_or(0.0)
+        / (std::f64::consts::PI * phase.norm_radius * phase.norm_radius)
+}
+
 /// Unit normal `normalize(−z_x, −z_y, 1)`; `None` where the gradient is
 /// not finite (outside the domain or on a vertical rim).
 pub fn normal(shape: &SurfaceShape, x: f64, y: f64) -> Option<crate::Vec3> {

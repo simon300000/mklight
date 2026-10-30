@@ -113,6 +113,7 @@ pub mod flags {
     pub const IRREGULAR_SPECULAR: u8 = 32;
     /// Walking backward through that sequence (designed mirrors do not flip it).
     pub const BACKWARD: u8 = 64;
+    pub const DIFFRACTED: u8 = 128;
 }
 
 /// No surface recorded.
@@ -180,6 +181,20 @@ pub struct Signature {
     overflow: bool,
     /// `kind << 28 | id`.
     events: [u32; MAX_SIGNATURE_EVENTS],
+    orders: [DiffractionEvent; MAX_SIGNATURE_EVENTS],
+    order_len: u8,
+}
+
+/// Physical DOE events, including selected orders, in encounter order.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct DiffractionEvent {
+    pub surface: u32,
+    pub visit: u32,
+    pub order: i32,
+    pub reflected: bool,
+    pub selected: bool,
 }
 
 /// Largest id a signature event can hold.
@@ -194,6 +209,28 @@ pub enum SurfaceOp {
 }
 
 impl Signature {
+    pub fn diffraction(&self) -> &[DiffractionEvent] {
+        &self.orders[..self.order_len as usize]
+    }
+    pub fn diffract(&mut self, surface: usize, order: i32, selected: i32, reflected: bool) {
+        let visit = self
+            .diffraction()
+            .iter()
+            .filter(|e| e.surface == surface as u32)
+            .count() as u32;
+        if (self.order_len as usize) < MAX_SIGNATURE_EVENTS {
+            self.orders[self.order_len as usize] = DiffractionEvent {
+                surface: surface as u32,
+                visit,
+                order,
+                reflected,
+                selected: order == selected,
+            };
+            self.order_len += 1;
+        } else {
+            self.overflow = true;
+        }
+    }
     /// Appends an event; `id` is the sequential surface index for optical
     /// events and the primitive index for mechanical ones.
     #[inline]
@@ -239,6 +276,15 @@ impl Signature {
                 EventKind::MechanicalScatter => format!("Ms[{}]", label(id)),
             })
             .collect();
+        parts.extend(self.diffraction().iter().map(|e| {
+            format!(
+                "D{}:{}:{}{}",
+                e.surface,
+                e.visit,
+                if e.reflected { "R" } else { "T" },
+                e.order
+            )
+        }));
         if self.overflow {
             parts.push("…".into());
         }
@@ -410,12 +456,13 @@ impl History {
             PathClass::Mechanical
         } else if self.has(flags::OUTSIDE_CLIP) {
             PathClass::Sneak
-        } else if self.stray_reflections >= 2
+        } else if (self.stray_reflections >= 2 || self.has(flags::DIFFRACTED))
             && !self.has(flags::IRREGULAR_SPECULAR | flags::BACKWARD)
             && self.next_specular == sequence.len() as i32 - 1
         {
             PathClass::Ghost
         } else if self.stray_reflections == 0
+            && !self.has(flags::DIFFRACTED)
             && !self.has(flags::OUT_OF_SEQUENCE)
             && (sequence.is_empty() || self.next_seq as usize + 1 == sequence.len())
         {

@@ -589,3 +589,18 @@ fn reference_spot_matches_the_sequential_tracer() {
         }
     }
 }
+
+#[test]
+fn extended_surface_primary_matches_sequential() {
+    let samples = mklight_core::samples::all().into_iter();
+    let extended = samples.filter(|(_, s)| mklight_core::samples::has_extended_surfaces(s));
+    for (seed, (name, mut s)) in (191..).zip(extended) {
+        if name == "hybrid_doe" {
+            s.surfaces[2].diffraction_efficiency =
+                mklight_core::materials::diffraction::DiffractionEfficiency::Kinoform;
+        }
+        let sys = stray_system(s, &no_scatter_options());
+        let beam = sys.system_field_source(1, 0.1, 1.0).unwrap();
+        check_primary(name, &sys, &beam, 30_000, seed);
+    }
+}

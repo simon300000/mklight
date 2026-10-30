@@ -426,6 +426,9 @@ pub struct Surface {
     /// Surface roughness or contamination scatter, used by the stray solver.
     #[serde(default)]
     pub scatter: Option<ScatterModel>,
+    /// Scalar order efficiency of a diffractive surface (SURFACES §3).
+    #[serde(default)]
+    pub diffraction_efficiency: crate::materials::diffraction::DiffractionEfficiency,
     #[serde(default)]
     pub edge: EdgeSpec,
 }
@@ -444,6 +447,7 @@ impl Surface {
             placement: None,
             coating: None,
             scatter: None,
+            diffraction_efficiency: Default::default(),
             edge: EdgeSpec::default(),
         }
     }

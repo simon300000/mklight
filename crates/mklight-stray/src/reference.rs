@@ -277,7 +277,7 @@ pub fn path_transmittance(
             rt.t_unpolarized()
         };
     }
-    t
+    t * mklight_trace::radiometry::diffraction_product(rs, wl)
 }
 
 #[derive(Clone, Copy, Default)]

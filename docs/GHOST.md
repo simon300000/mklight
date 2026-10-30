@@ -107,6 +107,40 @@ The radii are compared exactly, so both must come from one sizing:
 (`StraySystem::semi_diameters`). Ghost paths outside the coverage stay
 with the stray solver (`StraySettings::covered_ghosts`).
 
+### 2.1 Diffraction ghosts
+
+A purely specular DOE path in a non-selected order is `Ghost(k)`, with k
+extra reflections (possibly zero), when it follows the same unfolded
+sequential walk. `trace_order` defines Primary, not `design_order`.
+Reflection paths and diffraction ghosts share one `GhostPath`: existing
+reflection-array JSON remains valid; an extended path is
+`{"reflections":[],"diffraction":[{"surface":2,"visit":0,"order":0}]}`.
+Visits count encounters with that surface; overrides name non-selected orders
+and must be unique and sorted by (surface,visit). `check_path` validates them
+at the solver boundary. The resulting ordered surface/interaction/order
+signature distinguishes multiple encounters with the same DOE.
+
+Optional `EnumerationSettings::diffraction_orders` expands the primary and
+every enumerated reflection path into the Cartesian product of selected and
+requested orders at all DOE visits. `max_diffraction_paths` (default 10000)
+bounds this expansion; exceeding it is an error, so no incomplete coverage
+is claimed. Explicit `paths` can instead select exact combinations. Empty
+`diffraction_orders` preserves the reflection-only run. Orders outside the
+requested window stay with stray; coverage is never inferred from an order
+range or just from a reflection sequence.
+
+Real rays use the reference `diffract` grating equation and phase OPL jump,
+and multiply each outgoing coating channel by its scalar η from SURFACES
+§3.1. Reflected and transmitted visits use the same manufactured relief
+with the appropriate index contrast. Paraxial ghost ranking includes DOE
+power for each chosen order and its efficiency. Implicit sag geometry uses
+the reference intersection for every extended surface type.
+
+The hybrid achromat partition regression uses a four-level DOE and requested
+orders −1, 0, 2, 3, alongside the selected order 1. It checks covered and
+uncovered diffraction flux, primary, and combined totals against MC standard
+errors, with absorption/escape accounted for by the MC energy ledger.
+
 ## 3. The sequence tracer
 
 `GhostModel::trace_steps(start, wl, steps, record)` traces one ray along an

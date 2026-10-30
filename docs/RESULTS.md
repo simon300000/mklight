@@ -1206,7 +1206,7 @@ Buffers:
 
 Category `radiometry`, result version 1.
 
-Pupil-averaged primary-path transmission (coatings, Fresnel losses, bulk absorption, vignetting) per field and wavelength, and the spectrally weighted polychromatic transmission per field; unpolarised or by polarisation ray tracing.
+Pupil-averaged primary-path transmission (selected DOE efficiency, coatings, Fresnel losses, bulk absorption, vignetting) per field and wavelength, and the spectrally weighted polychromatic transmission per field; unpolarised or by polarisation ray tracing.
 
 Settings:
 
@@ -1295,13 +1295,13 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `clip` | object | `{"margin_mm":0.0,"mode":"clear_apertures"}` |  | Clipping apertures: {"mode": "clear_apertures", "margin_mm": m} (clear semi-diameters + margin; the stop at its size), {"mode": "fixed_apertures"} or {"mode": "none"}. |
-| `enumeration` | object | `{"exclude_surfaces":[],"max_higher_order_paths":2000,"max_reflections":2,"min_reflectance_product":0.0,"surface_range":null}` |  | Path enumeration: {"max_reflections": 2\|4\|6\|8, "max_higher_order_paths": n, "min_reflectance_product": r, "surface_range": [first, last] \| null, "exclude_surfaces": [i, …]}. |
+| `enumeration` | object | `{"diffraction_orders":[],"exclude_surfaces":[],"max_diffraction_paths":10000,"max_higher_order_paths":2000,"max_reflections":2,"min_reflectance_product":0.0,"surface_range":null}` |  | Path enumeration: {"max_reflections": 2\|4\|6\|8, "max_higher_order_paths": n, "min_reflectance_product": r, "surface_range": [first, last] \| null, "exclude_surfaces": [i, …], "diffraction_orders": [m, …], "max_diffraction_paths": n}. |
 | `fields` | array<integer> | `[]` |  | System field indices; empty = all fields (unless points are given). |
 | `keep_path_maps` | boolean | `false` |  | Also return every path's map (buffer path_maps). |
 | `map_bins` | array<integer> | `[64,64]` |  | Map bins [nx, ny]. |
 | `map_half_size` | array\|null | `null` | mm | Map half-size [x, y]; null = the sensor rectangle, else the image clear aperture. |
 | `overfill` | number | `1.5` |  | ≥ 1.0; Sampled pupil radius in entrance-pupil radii. |
-| `paths` | array\|null | `null` |  | Explicit ghost paths (each an ordered list of reflecting surface indices) instead of the enumeration. |
+| `paths` | array\|null | `null` |  | Explicit paths: reflection arrays, or {reflections, diffraction: [{surface, visit, order}]} with non-selected DOE orders, sorted by (surface, visit). |
 | `points` | array | `[]` |  | Extra normalised field points [{"hx", "hy"}], weight 1 each, analysed after the system fields. |
 | `pupil_samples` | integer | `48` |  | 2 … 4096; Grid cells across the overfilled pupil square. |
 | `reject_virtual` | boolean | `true` |  | Treat an intersection behind the ray as a lost ray. |
@@ -1315,7 +1315,7 @@ Result (`result` in the envelope):
 | `coverage` | object |  |  |
 | `coverage.apertures` | array<object> |  | Clipping of every surface in this run. |
 | `coverage.interfaces` | array<string> |  | Interface kind per surface: object, passive, refractive, ideal_lens, mirror, image. |
-| `coverage.paths` | array<array<integer>> |  | The exact set of ghost paths this run counted. |
+| `coverage.paths` | array<any> |  | The exact set of ghost paths this run counted. |
 | `ghosts` | array<object> |  | Ranked by peak_ratio, strongest first. |
 | `ghosts[].fields` | array<object> |  |  |
 | `ghosts[].fields[].centroid` | [nf; 2] |  | mm |
@@ -1330,7 +1330,7 @@ Result (`result` in the envelope):
 | `ghosts[].flux_ratio` | number |  | Flux on the map / primary flux on the map. |
 | `ghosts[].label` | string |  |  |
 | `ghosts[].map_index` | integer? |  |  |
-| `ghosts[].path` | array<integer> |  | Reflecting surfaces (empty: the primary). |
+| `ghosts[].path` | any |  |  |
 | `ghosts[].peak_ratio` | number |  | Max over fields of peak / primary peak. |
 | `map` | object |  |  |
 | `map.bins` | [integer; 2] |  | [nx, ny] |
@@ -1349,7 +1349,7 @@ Result (`result` in the envelope):
 | `primary.flux_ratio` | number |  | Flux on the map / primary flux on the map. |
 | `primary.label` | string |  |  |
 | `primary.map_index` | integer? |  |  |
-| `primary.path` | array<integer> |  | Reflecting surfaces (empty: the primary). |
+| `primary.path` | any |  |  |
 | `primary.peak_ratio` | number |  | Max over fields of peak / primary peak. |
 | `total_flux_ratio` | number |  | Total ghost flux / primary flux. |
 | `total_peak_ratio` | number |  | Total ghost peak / primary peak. |
@@ -1374,9 +1374,9 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `clip` | object | `{"margin_mm":0.0,"mode":"clear_apertures"}` |  | Clipping apertures: {"mode": "clear_apertures", "margin_mm": m} (clear semi-diameters + margin; the stop at its size), {"mode": "fixed_apertures"} or {"mode": "none"}. |
-| `enumeration` | object | `{"exclude_surfaces":[],"max_higher_order_paths":2000,"max_reflections":2,"min_reflectance_product":0.0,"surface_range":null}` |  | Path enumeration: {"max_reflections": 2\|4\|6\|8, "max_higher_order_paths": n, "min_reflectance_product": r, "surface_range": [first, last] \| null, "exclude_surfaces": [i, …]}. |
+| `enumeration` | object | `{"diffraction_orders":[],"exclude_surfaces":[],"max_diffraction_paths":10000,"max_higher_order_paths":2000,"max_reflections":2,"min_reflectance_product":0.0,"surface_range":null}` |  | Path enumeration: {"max_reflections": 2\|4\|6\|8, "max_higher_order_paths": n, "min_reflectance_product": r, "surface_range": [first, last] \| null, "exclude_surfaces": [i, …], "diffraction_orders": [m, …], "max_diffraction_paths": n}. |
 | `near_focus_factor` | number | `10.0` |  | ≥ 0.0; Ghosts whose spot is at most this many signal diameters are flagged near_focus. |
-| `paths` | array\|null | `null` |  | Explicit ghost paths (each an ordered list of reflecting surface indices) instead of the enumeration. |
+| `paths` | array\|null | `null` |  | Explicit paths: reflection arrays, or {reflections, diffraction: [{surface, visit, order}]} with non-selected DOE orders, sorted by (surface, visit). |
 | `reject_virtual` | boolean | `true` |  | Treat an intersection behind the ray as a lost ray. |
 | `sensor_reflectance` | number\|null | `null` |  | 0.0 … 1.0; Unpolarised, angle-independent reflectance of the sensor; null: the sensor does not reflect. |
 | `signal_diameter_mm` | number\|null | `null` | mm | ≥ 0.0; Signal spot diameter; null = automatic. |
@@ -1389,13 +1389,13 @@ Result (`result` in the envelope):
 | `coverage` | object |  |  |
 | `coverage.apertures` | array<object> |  | Clipping of every surface in this run. |
 | `coverage.interfaces` | array<string> |  | Interface kind per surface: object, passive, refractive, ideal_lens, mirror, image. |
-| `coverage.paths` | array<array<integer>> |  | The exact set of ghost paths this run counted. |
+| `coverage.paths` | array<any> |  | The exact set of ghost paths this run counted. |
 | `ghosts` | array<object> |  | Ranked by relative_irradiance, strongest first. |
 | `ghosts[].focus_from_sensor` | nf | mm | Signed distance of the ghost focus from the sensor (image local z). |
 | `ghosts[].image_height` | nf | mm | Ghost centre height on the sensor at the maximum field. |
 | `ghosts[].label` | string |  | e.g. `R11·R9`. |
 | `ghosts[].near_focus` | boolean |  |  |
-| `ghosts[].path` | array<integer> |  | Reflecting surfaces, in order. |
+| `ghosts[].path` | any |  |  |
 | `ghosts[].reflectance_product` | number |  | Π R, normal incidence, unpolarised. |
 | `ghosts[].relative_irradiance` | nf |  | Estimated ghost irradiance relative to the signal. |
 | `ghosts[].spot_diameter` | nf | mm | Ghost blur diameter on the sensor (full aperture, on axis). |
@@ -1458,7 +1458,7 @@ Result (`result` in the envelope):
 | `stray_flux` | number | W | Stray-owned flux, including uncovered ghost paths. |
 | `stray_fraction` | number? |  |  |
 | `stray_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts. |
-| `top_signatures` | array<object> |  | Strongest (class, signature) pairs among the included classes. |
+| `top_signatures` | array<object> |  | Strongest (class, signature) pairs, including ordered DOE (surface, visit, interaction, order) events. |
 | `totals` | array<object> |  | Every class, included or not. |
 | `totals[].class` | string |  | one of `"primary"`, `"ghost"`, `"scatter"`, `"mechanical"`, `"sneak"` |
 | `totals[].flux` | number | W |  |

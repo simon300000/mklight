@@ -5,6 +5,7 @@
 pub mod agf;
 pub mod builtin;
 pub mod coating;
+pub mod diffraction;
 pub mod dispersion;
 
 use serde::{Deserialize, Serialize};

@@ -112,7 +112,10 @@ pub fn interface_kinds(sys: &ResolvedSystem) -> Vec<InterfaceKind> {
             }
             let same_media =
                 (0..sys.wavelengths_um.len()).all(|w| sys.n_before(i, w) == s.n_after[w]);
-            if same_media && matches!(s.coating, ResolvedCoating::Bare) {
+            if same_media
+                && !matches!(s.shape, SurfaceShape::Diffractive { .. })
+                && matches!(s.coating, ResolvedCoating::Bare)
+            {
                 InterfaceKind::Passive
             } else {
                 InterfaceKind::Refractive
@@ -134,6 +137,8 @@ pub enum Event {
 pub struct PathEvent {
     pub surface: u32,
     pub event: Event,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
 }
 
 /// Ordered physical events at the non-passive surfaces (module docs).
@@ -169,6 +174,7 @@ impl PathSignature {
             events.push(PathEvent {
                 surface: st.surface,
                 event,
+                order: st.order,
             });
         }
         Some(PathSignature { events })
@@ -186,6 +192,24 @@ impl PathSignature {
             })
             .map(|e| e.surface)
             .collect()
+    }
+
+    fn ghost_path(&self, kinds: &[InterfaceKind]) -> GhostPath {
+        let mut path = GhostPath::new(self.ghost_reflections(kinds));
+        let mut visits = std::collections::BTreeMap::new();
+        for e in &self.events {
+            let visit = visits.entry(e.surface).or_insert(0u32);
+            if let Some(order) = e.order {
+                path.diffraction.push(crate::path::DiffractionOrder {
+                    surface: e.surface,
+                    visit: *visit,
+                    order,
+                });
+            }
+            *visit += 1;
+        }
+        path.diffraction.sort();
+        path
     }
 
     /// Ends with detection at the image surface.
@@ -236,7 +260,7 @@ pub fn classify(
     if !sig.detected(kinds) {
         return PathClass::Undetected;
     }
-    let g = GhostPath::new(sig.ghost_reflections(kinds));
+    let g = sig.ghost_path(kinds);
     match PathSignature::for_path(&g, kinds) {
         Some(c) if c == *sig => {
             if g.is_primary() {
@@ -288,7 +312,7 @@ impl GhostCoverage {
         match classify(sig, &self.interfaces, scattered, mechanical) {
             PathClass::Primary => Owner::Sequential,
             PathClass::Ghost { .. } => {
-                let g = GhostPath::new(sig.ghost_reflections(&self.interfaces));
+                let g = sig.ghost_path(&self.interfaces);
                 if self.covers(&g) {
                     Owner::Ghost
                 } else {
@@ -313,6 +337,7 @@ mod tests {
         PathEvent {
             surface: s,
             event: e,
+            order: None,
         }
     }
 

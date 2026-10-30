@@ -158,9 +158,20 @@ pub struct Pass {
     pub clip: Option<ApertureShape>,
 }
 
+/// Scalar relief spectrum precomputed from the resolved media.
+#[derive(Clone, Debug)]
+pub struct DiffractiveInterface {
+    pub phase: mklight_core::model::surface::DiffractivePhase,
+    pub efficiency: mklight_core::materials::diffraction::DiffractionEfficiency,
+    pub transmitted_blaze: Vec<f64>,
+    pub reflected_blaze_minus: Vec<f64>,
+    pub reflected_blaze_plus: Vec<f64>,
+}
+
 /// An optical surface.
 #[derive(Clone, Debug)]
 pub struct Interface {
+    pub diffraction: Option<Arc<DiffractiveInterface>>,
     /// The sequential passes through this surface, in sequence order (one for
     /// an ordinary surface; two or more for a surface the sequential model
     /// repeats, such as the front face of a Mangin mirror).
@@ -185,6 +196,7 @@ impl Interface {
         coating: Arc<ResolvedCoating>,
     ) -> Interface {
         Interface {
+            diffraction: None,
             passes: vec![Pass {
                 surface,
                 incident_side,
@@ -600,7 +612,58 @@ fn shape_radius_limit(shape: &SurfaceShape) -> f64 {
         SurfaceShape::Conic { curvature, conic } => conic_domain_radius(*curvature, *conic),
         SurfaceShape::EvenAsphere {
             curvature, conic, ..
+        }
+        | SurfaceShape::OddAsphere {
+            curvature, conic, ..
         } => conic_domain_radius(*curvature, *conic) * (1.0 - 1e-6),
+        SurfaceShape::QCon {
+            curvature,
+            conic,
+            norm_radius,
+            ..
+        }
+        | SurfaceShape::XYPolynomial {
+            curvature,
+            conic,
+            norm_radius,
+            ..
+        }
+        | SurfaceShape::ZernikeSag {
+            curvature,
+            conic,
+            norm_radius,
+            ..
+        } => norm_radius.min(conic_domain_radius(*curvature, *conic) * (1.0 - 1e-6)),
+        SurfaceShape::QBfs {
+            curvature,
+            norm_radius,
+            ..
+        } => norm_radius.min(conic_domain_radius(*curvature, 0.0) * (1.0 - 1e-6)),
+        SurfaceShape::Diffractive { base, phase } => {
+            phase.norm_radius.min(shape_radius_limit(base))
+        }
+        // At y = 0 the x section is a circle of curvature c_x; this bound is
+        // exact while the y profile sags no further than that circle.
+        SurfaceShape::Toroid {
+            curvature_x,
+            curvature_y,
+            conic_y,
+            ..
+        } => {
+            conic_domain_radius(*curvature_y, *conic_y).min(curvature_x.abs().recip())
+                * (1.0 - 1e-6)
+        }
+        SurfaceShape::Biconic {
+            curvature_x,
+            curvature_y,
+            conic_x,
+            conic_y,
+            ..
+        } => {
+            conic_domain_radius(*curvature_x, *conic_x)
+                .min(conic_domain_radius(*curvature_y, *conic_y))
+                * (1.0 - 1e-6)
+        }
         _ => f64::INFINITY,
     }
 }
@@ -778,6 +841,7 @@ impl Scene {
             let passive = rsurf.is_passive()
                 || (rsurf.interaction == Interaction::Refract
                     && !is_paraxial
+                    && !matches!(rsurf.shape, SurfaceShape::Diffractive { .. })
                     && same_medium(i - 1, i)
                     && matches!(rsurf.coating, ResolvedCoating::Bare));
             if passive {
@@ -918,6 +982,27 @@ impl Scene {
                     patch_mask,
                 )?),
                 Behavior::Interface(Interface {
+                    diffraction: if let SurfaceShape::Diffractive { phase, .. } = &rsurf.shape {
+                        let blaze = |reflected, backward| {
+                            rs.wavelengths_um
+                                .iter()
+                                .map(|&l| {
+                                    mklight_core::materials::diffraction::blaze(
+                                        rs, i, l, reflected, backward,
+                                    )
+                                })
+                                .collect()
+                        };
+                        Some(Arc::new(DiffractiveInterface {
+                            phase: phase.clone(),
+                            efficiency: sys.surfaces[i].diffraction_efficiency,
+                            transmitted_blaze: blaze(false, false),
+                            reflected_blaze_minus: blaze(true, incident != Side::Minus),
+                            reflected_blaze_plus: blaze(true, incident != Side::Plus),
+                        }))
+                    } else {
+                        None
+                    },
                     passes: vec![pass],
                     kind,
                     medium_minus: media.0 as MediumId,
@@ -1220,5 +1305,34 @@ impl Scene {
         let mut scene = b.build()?;
         scene.options = Some(opts.clone());
         Ok(scene)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_patch_radii_stay_in_the_sag_domain() {
+        // A toroid whose x circle (radius 4) is tighter than its y conic.
+        let toroid = SurfaceShape::Toroid {
+            curvature_x: 0.25,
+            curvature_y: 0.1,
+            conic_y: 0.0,
+            y_asphere: vec![],
+        };
+        assert!(shape_radius_limit(&toroid) <= 4.0);
+        let samples = mklight_core::samples::all().into_iter();
+        let shapes = samples.flat_map(|(_, s)| s.surfaces.into_iter().map(|s| s.shape));
+        for shape in shapes.filter(|s| !s.is_legacy()).chain([toroid]) {
+            let r = shape_radius_limit(&shape).min(1e3);
+            for k in 0..3600 {
+                let a = k as f64 * std::f64::consts::TAU / 3600.0;
+                assert!(
+                    mklight_core::surface_math::in_domain(&shape, r * a.cos(), r * a.sin()),
+                    "{shape:?} at r = {r}"
+                );
+            }
+        }
     }
 }
