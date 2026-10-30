@@ -90,7 +90,8 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
                 CurvatureX | CurvatureY => (0.1 * a).max(1e-4),
                 ConicX | ConicY | NormRadius => (0.1 * a).max(0.1),
                 DesignWavelengthUm => (0.01 * a).max(1e-3),
-                DesignOrder | TraceOrder => 1.0, // discrete: rejected as continuous variables below
+                // Discrete: ParamPath rejects non-integral orders.
+                DesignOrder | TraceOrder => 1.0,
             }
         }
         Curvature { .. } => (0.1 * a).max(1e-4),
@@ -141,11 +142,6 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
         evaluator: E,
         registry: &OperandRegistry,
     ) -> MkResult<Self> {
-        if base.surfaces.iter().any(|s| !s.shape.is_legacy()) {
-            return Err(MkError::Unsupported(
-                "extended surface shapes in optical optimisation".into(),
-            ));
-        }
         spec.validate(registry)?;
         spec.validate_for(&base)?;
         for (i, op) in spec.enabled() {

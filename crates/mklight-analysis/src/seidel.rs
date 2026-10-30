@@ -258,11 +258,7 @@ fn select_short_long(
 pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<SeidelResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
-    if sys.surfaces.iter().any(|s| !s.shape.is_legacy()) {
-        return Err(mklight_core::MkError::Unsupported(
-            "extended surface shape in seidel".into(),
-        ));
-    }
+    sys.system().require_legacy_shapes("Seidel")?;
     let w = wavelength_or_primary(tracer, settings.wavelength)?;
     let (ws, wlong) = select_short_long(sys, settings.short_wavelength, settings.long_wavelength)?;
     let fo = tracer.paraxial().at(w);

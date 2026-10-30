@@ -126,6 +126,18 @@ impl OpticalSystem {
         )
     }
 
+    /// The one "unsupported" error of solvers that implement only the
+    /// [legacy](SurfaceShape::is_legacy) shapes (`docs/SURFACES.md` §8).
+    pub fn require_legacy_shapes(&self, solver: &str) -> MkResult<()> {
+        if self.surfaces.iter().all(|s| s.shape.is_legacy()) {
+            Ok(())
+        } else {
+            Err(MkError::Unsupported(format!(
+                "extended surface shapes in {solver}"
+            )))
+        }
+    }
+
     /// Apply configuration `k`'s overrides. Configuration `0` and an empty
     /// configuration list both mean "base system".
     ///

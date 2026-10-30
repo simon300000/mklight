@@ -207,11 +207,7 @@ impl GhostModel {
     ) -> MkResult<Self> {
         check_settings(&settings)?;
         let sys = tracer.system();
-        if sys.surfaces.iter().any(|s| !s.shape.is_legacy()) {
-            return Err(MkError::Unsupported(
-                "extended surface shapes in ghost paths".into(),
-            ));
-        }
+        sys.system().require_legacy_shapes("ghost paths")?;
         let n = sys.num_surfaces();
         if semi.values.len() != n || semi.traced.len() != n || semi.sources.len() != n {
             return Err(MkError::InvalidParam(format!(

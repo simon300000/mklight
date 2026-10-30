@@ -325,40 +325,27 @@ pub fn trace_ray(
                 (_, Interaction::Dummy) => {}
                 (SurfaceShape::Diffractive { phase, .. }, inter) if phase.trace_order != 0 => {
                     let v = mklight_core::surface_math::phase(phase, hit.point.x, hit.point.y)
-                        .expect("intersection checked phase domain");
-                    let lambda = sys.wavelengths_um[wl] * 1e-3;
+                        .expect("intersection checked the phase domain");
+                    // mλ/(2π), λ in mm: scales ∇Φ to momentum and Φ to OPL.
+                    let scale = phase.trace_order as f64 * sys.wavelengths_um[wl] * 1e-3
+                        / std::f64::consts::TAU;
                     let reflected = inter == Interaction::Reflect;
                     let n2 = if reflected { n1 } else { s.n_after[wl] };
-                    match diffract(
-                        ray.dir,
-                        hit.normal,
-                        n1,
-                        n2,
-                        v.gradient,
-                        lambda,
-                        phase.trace_order,
-                        reflected,
-                    ) {
-                        Some(d) => {
-                            ray.dir = d;
-                            opl.add_product(
-                                phase.trace_order as f64 * lambda / std::f64::consts::TAU,
-                                v.sag,
-                            );
-                        }
-                        None => {
-                            return done(
-                                TraceStatus::Failed {
-                                    surface: i,
-                                    reason: FailReason::EvanescentOrder,
-                                },
-                                ray,
-                                i,
-                                opl,
-                                absorb,
-                            );
-                        }
-                    }
+                    let g = v.gradient.map(|d| d * scale);
+                    let Some(d) = diffract(ray.dir, hit.normal, n1, n2, g, reflected) else {
+                        return done(
+                            TraceStatus::Failed {
+                                surface: i,
+                                reason: FailReason::EvanescentOrder,
+                            },
+                            ray,
+                            i,
+                            opl,
+                            absorb,
+                        );
+                    };
+                    ray.dir = d;
+                    opl.add_product(scale, v.sag);
                 }
                 (SurfaceShape::Paraxial { focal_length }, inter) => {
                     let mut k = ray.dir;

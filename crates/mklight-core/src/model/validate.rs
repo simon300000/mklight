@@ -81,25 +81,34 @@ impl Issues {
     }
 }
 
-/// A total integrated scatter: a fraction of the incident power, in `[0, 1]`.
+/// Structural rules of a surface shape (CONVENTIONS §13, SURFACES §7).
 fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
+    use crate::surface_math::*;
+    use SurfaceShape::*;
+    let scalars = |out: &mut Issues, fields: &[(&str, f64)]| {
+        for (name, v) in fields {
+            out.finite(format!("{path}.{name}"), *v);
+        }
+    };
+    let series = |out: &mut Issues, name: &str, c: &[f64], max: usize| {
+        let p = format!("{path}.{name}");
+        if c.len() > max {
+            out.push(
+                "coefficient_count",
+                p.clone(),
+                format!("at most {max} coefficients"),
+            );
+        }
+        for (i, a) in c.iter().enumerate() {
+            out.finite(format!("{p}[{i}]"), *a);
+        }
+    };
+    let radius = |out: &mut Issues, name: &str, r: f64| {
+        out.positive("invalid_norm_radius", format!("{path}.{name}"), r);
+    };
     match shape {
-        SurfaceShape::Conic { curvature, conic } => {
-            out.finite(format!("{path}.curvature"), *curvature);
-            out.finite(format!("{path}.conic"), *conic);
-        }
-        SurfaceShape::EvenAsphere {
-            curvature,
-            conic,
-            coefficients,
-        } => {
-            out.finite(format!("{path}.curvature"), *curvature);
-            out.finite(format!("{path}.conic"), *conic);
-            for (k, a) in coefficients.iter().enumerate() {
-                out.finite(format!("{path}.coefficients[{k}]"), *a);
-            }
-        }
-        SurfaceShape::Paraxial { focal_length } => {
+        Plane | CoordinateBreak => {}
+        Paraxial { focal_length } => {
             if out.finite(format!("{path}.focal_length"), *focal_length) && *focal_length == 0.0 {
                 out.push(
                     "invalid_focal_length",
@@ -108,127 +117,91 @@ fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
                 );
             }
         }
-        SurfaceShape::Plane | SurfaceShape::CoordinateBreak => {}
-        _ => check_extended_shape(out, path, shape),
-    }
-}
-
-fn check_coefficients(out: &mut Issues, path: &str, c: &[f64], max: usize) {
-    if c.len() > max {
-        out.push(
-            "coefficient_count",
-            path,
-            format!("at most {max} coefficients"),
-        );
-    }
-    for (i, a) in c.iter().enumerate() {
-        out.finite(format!("{path}[{i}]"), *a);
-    }
-}
-fn check_extended_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
-    use crate::surface_math::*;
-    use SurfaceShape::*;
-    match shape {
+        Conic { curvature, conic } => {
+            scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
+        }
+        EvenAsphere {
+            curvature,
+            conic,
+            coefficients,
+        } => {
+            scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
+            series(out, "coefficients", coefficients, usize::MAX);
+        }
         OddAsphere {
             curvature,
             conic,
             coefficients,
         } => {
-            out.finite(format!("{path}.curvature"), *curvature);
-            out.finite(format!("{path}.conic"), *conic);
-            check_coefficients(
-                out,
-                &format!("{path}.coefficients"),
-                coefficients,
-                MAX_ODD_TERMS,
-            );
+            scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
+            series(out, "coefficients", coefficients, MAX_ODD_TERMS);
         }
         QCon {
             curvature,
             conic,
             norm_radius,
             coefficients,
-        }
-        | XYPolynomial {
-            curvature,
-            conic,
-            norm_radius,
-            coefficients,
-        }
-        | ZernikeSag {
-            curvature,
-            conic,
-            norm_radius,
-            coefficients,
-            ..
         } => {
-            out.finite(format!("{path}.curvature"), *curvature);
-            out.finite(format!("{path}.conic"), *conic);
-            out.positive(
-                "invalid_norm_radius",
-                format!("{path}.norm_radius"),
-                *norm_radius,
-            );
-            let max = match shape {
-                QCon { .. } => MAX_Q_TERMS,
-                XYPolynomial { .. } => MAX_XY_TERMS,
-                ZernikeSag {
-                    ordering: super::surface::ZernikeOrdering::Fringe,
-                    ..
-                } => 37,
-                _ => 45,
-            };
-            check_coefficients(out, &format!("{path}.coefficients"), coefficients, max);
+            scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
+            radius(out, "norm_radius", *norm_radius);
+            series(out, "coefficients", coefficients, MAX_Q_TERMS);
         }
         QBfs {
             curvature,
             norm_radius,
             coefficients,
         } => {
-            out.finite(format!("{path}.curvature"), *curvature);
-            out.positive(
-                "invalid_norm_radius",
-                format!("{path}.norm_radius"),
-                *norm_radius,
-            );
-            check_coefficients(
-                out,
-                &format!("{path}.coefficients"),
-                coefficients,
-                MAX_Q_TERMS,
-            );
+            scalars(out, &[("curvature", *curvature)]);
+            radius(out, "norm_radius", *norm_radius);
+            series(out, "coefficients", coefficients, MAX_Q_TERMS);
+        }
+        XYPolynomial {
+            curvature,
+            conic,
+            norm_radius,
+            coefficients,
+        } => {
+            scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
+            radius(out, "norm_radius", *norm_radius);
+            series(out, "coefficients", coefficients, MAX_XY_TERMS);
+        }
+        ZernikeSag {
+            curvature,
+            conic,
+            norm_radius,
+            ordering,
+            coefficients,
+        } => {
+            scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
+            radius(out, "norm_radius", *norm_radius);
+            series(out, "coefficients", coefficients, ordering.max_terms());
         }
         Diffractive { base, phase } => {
-            if !matches!(**base, Plane | Conic { .. } | EvenAsphere { .. }) {
+            if matches!(**base, Plane | Conic { .. } | EvenAsphere { .. }) {
+                check_shape(out, &format!("{path}.base"), base);
+            } else {
                 out.push(
                     "invalid_diffractive_base",
                     format!("{path}.base"),
                     "expected plane, conic or even_asphere",
                 );
-            } else {
-                check_shape(out, &format!("{path}.base"), base);
             }
-            let pp = format!("{path}.phase");
-            out.positive(
-                "invalid_norm_radius",
-                format!("{pp}.norm_radius"),
-                phase.norm_radius,
-            );
+            radius(out, "phase.norm_radius", phase.norm_radius);
             out.positive(
                 "invalid_design_wavelength",
-                format!("{pp}.design_wavelength_um"),
+                format!("{path}.phase.design_wavelength_um"),
                 phase.design_wavelength_um,
             );
             if phase.design_order == 0 {
                 out.push(
                     "invalid_diffraction_order",
-                    format!("{pp}.design_order"),
+                    format!("{path}.phase.design_order"),
                     "design order must be nonzero",
                 );
             }
-            check_coefficients(
+            series(
                 out,
-                &format!("{pp}.coefficients"),
+                "phase.coefficients",
                 &phase.coefficients,
                 MAX_PHASE_TERMS,
             );
@@ -238,34 +211,41 @@ fn check_extended_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
             curvature_y,
             conic_y,
             y_asphere,
+        } => {
+            scalars(
+                out,
+                &[
+                    ("curvature_x", *curvature_x),
+                    ("curvature_y", *curvature_y),
+                    ("conic_y", *conic_y),
+                ],
+            );
+            series(out, "y_asphere", y_asphere, MAX_AXIS_TERMS);
         }
-        | Biconic {
+        Biconic {
             curvature_x,
             curvature_y,
+            conic_x,
             conic_y,
+            x_asphere,
             y_asphere,
-            ..
         } => {
-            for (key, v) in [
-                ("curvature_x", curvature_x),
-                ("curvature_y", curvature_y),
-                ("conic_y", conic_y),
-            ] {
-                out.finite(format!("{path}.{key}"), *v);
-            }
-            check_coefficients(out, &format!("{path}.y_asphere"), y_asphere, MAX_AXIS_TERMS);
-            if let Biconic {
-                conic_x, x_asphere, ..
-            } = shape
-            {
-                out.finite(format!("{path}.conic_x"), *conic_x);
-                check_coefficients(out, &format!("{path}.x_asphere"), x_asphere, MAX_AXIS_TERMS);
-            }
+            scalars(
+                out,
+                &[
+                    ("curvature_x", *curvature_x),
+                    ("curvature_y", *curvature_y),
+                    ("conic_x", *conic_x),
+                    ("conic_y", *conic_y),
+                ],
+            );
+            series(out, "x_asphere", x_asphere, MAX_AXIS_TERMS);
+            series(out, "y_asphere", y_asphere, MAX_AXIS_TERMS);
         }
-        _ => unreachable!(),
     }
 }
 
+/// A total integrated scatter: a fraction of the incident power, in `[0, 1]`.
 fn check_tis(out: &mut Issues, path: String, tis: f64) {
     if out.finite(path.clone(), tis) && !(0.0..=1.0).contains(&tis) {
         out.push(
@@ -1502,29 +1482,18 @@ mod tests {
                 "{code}: {issues:?}"
             );
         }
-        for (name, mut sys) in crate::samples::all()
-            .into_iter()
-            .filter(|(_, s)| crate::samples::has_extended_surfaces(s))
+        let mut q = crate::samples::q_asphere_lens();
+        if let SurfaceShape::QCon {
+            norm_radius,
+            coefficients,
+            ..
+        } = &mut q.surfaces[1].shape
         {
-            let id = sys.surfaces[1].id;
-            if let Ok(v) = (crate::param::ParamPath::ShapeParam {
-                surface: id,
-                parameter: crate::param::ShapeParameter::NormRadius,
-            })
-            .get(&sys)
-            {
-                assert!(v > 0.0, "{name}");
-                let path = crate::param::ParamPath::ShapeParam {
-                    surface: id,
-                    parameter: crate::param::ShapeParameter::NormRadius,
-                };
-                assert!(
-                    path.set(&mut sys, -1.0)
-                        .unwrap_err()
-                        .to_string()
-                        .contains("invalid_norm_radius")
-                );
-            }
+            *norm_radius = -1.0;
+            coefficients.resize(21, 0.0);
         }
+        let codes: Vec<_> = q.validation_issues().into_iter().map(|i| i.code).collect();
+        assert!(codes.contains(&"invalid_norm_radius".into()), "{codes:?}");
+        assert!(codes.contains(&"coefficient_count".into()), "{codes:?}");
     }
 }

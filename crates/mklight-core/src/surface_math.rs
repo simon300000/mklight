@@ -65,9 +65,6 @@ impl Jet {
         let r = self.v.recip();
         self.chain(r, -r * r, 2.0 * r * r * r)
     }
-    fn pow(self, n: usize) -> Self {
-        (0..n).fold(Self::constant(1.0), |p, _| p * self)
-    }
     fn result(self) -> SagDerivatives {
         SagDerivatives {
             sag: self.v,
@@ -153,9 +150,6 @@ fn conic(c: f64, k: f64, t: Jet) -> Option<Jet> {
     if arg < 0.0 {
         return None;
     }
-    if c == 0.0 {
-        return Some(Jet::ZERO);
-    }
     let w = arg.sqrt();
     Some(t.chain(
         c * t.v / (1.0 + w),
@@ -192,11 +186,8 @@ fn jacobi(n: usize, b: f64, t: Jet) -> Jet {
 /// Qcon coefficients multiply Q_m(s)=P_m^(0,4)(2s−1), starting at m=0.
 /// Clenshaw with differentiated recurrence, including the leading s².
 fn qcon(c: &[f64], s: Jet) -> Jet {
-    // Q_(k+1) = A_k Q_k - B_k Q_(k-1).
+    // Q_(k+1) = A_k Q_k - B_k Q_(k-1); k = 0 gives A_0 = 6s−5, B_0 = 0.
     let ab = |k: usize| {
-        if k == 0 {
-            return (s * 6.0 - 5.0, 0.0);
-        }
         let k = k as f64;
         let t = 2.0 * k + 4.0;
         let den = 2.0 * (k + 1.0) * (k + 5.0) * t;
@@ -258,7 +249,7 @@ pub fn xy_powers(index: usize) -> (usize, usize) {
 
 /// One-based Fringe/Noll term (n,m); positive m is cosine, negative sine.
 pub fn zernike_term(ordering: ZernikeOrdering, j: usize) -> Option<(usize, i32)> {
-    if j == 0 {
+    if j == 0 || j > ordering.max_terms() {
         return None;
     }
     match ordering {
@@ -266,18 +257,12 @@ pub fn zernike_term(ordering: ZernikeOrdering, j: usize) -> Option<(usize, i32)>
             if j == 37 {
                 return Some((12, 0));
             }
-            if j > 37 {
-                return None;
-            }
             let k = ((j - 1) as f64).sqrt() as usize;
             let off = j - 1 - k * k;
             let m = (k - off / 2) as i32;
             Some((2 * k - m as usize, if off % 2 == 1 { -m } else { m }))
         }
         ZernikeOrdering::Standard => {
-            if j > 45 {
-                return None;
-            }
             let mut n = 0;
             while (n + 1) * (n + 2) / 2 < j {
                 n += 1;
@@ -382,17 +367,14 @@ fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
             conic_y: ky,
             y_asphere,
         } => {
+            // Rationalised: exact at c_x = 0 without dividing by c_x.
             let zy = conic(*cy, *ky, y * y)? + even(y_asphere, y * y);
-            if *cx == 0.0 {
-                zy
-            } else {
-                let a = -zy * *cx + 1.0;
-                let q = a * a - x * x * (*cx * *cx);
-                if a.v <= 0.0 || q.v < 0.0 {
-                    return None;
-                }
-                zy + x * x * *cx / (a + q.sqrt())
+            let a = -zy * *cx + 1.0;
+            let q = a * a - x * x * (*cx * *cx);
+            if a.v <= 0.0 || q.v < 0.0 {
+                return None;
             }
+            zy + x * x * *cx / (a + q.sqrt())
         }
         Biconic {
             curvature_x: cx,
@@ -418,24 +400,17 @@ fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
         } => {
             let (u, v, _) = normalized(x, y, *norm_radius)?;
             let mut z = conic(*curvature, *k, r2)?;
-            // Nested Horner within each total degree, preserving all cross terms.
-            let mut start = 0;
-            let mut degree = 1;
+            // Horner in u within each total degree d: Σ_n C u^(d−n) v^n.
+            let (mut start, mut d) = (0, 1);
             while start < coefficients.len() {
-                let end = (start + degree + 1).min(coefficients.len());
-                let mut row = Jet::ZERO;
-                for n in 0..=degree {
-                    row = row * u
-                        + v.pow(n)
-                            * coefficients
-                                .get(start + n)
-                                .filter(|_| start + n < end)
-                                .copied()
-                                .unwrap_or(0.0);
+                let (mut row, mut vn) = (Jet::ZERO, Jet::constant(1.0));
+                for n in 0..=d {
+                    row = row * u + vn * coefficients.get(start + n).copied().unwrap_or(0.0);
+                    vn = vn * v;
                 }
                 z = z + row;
-                start += degree + 1;
-                degree += 1;
+                start += d + 1;
+                d += 1;
             }
             z
         }
@@ -466,69 +441,67 @@ pub fn phase(phase: &DiffractivePhase, x: f64, y: f64) -> Option<SagDerivatives>
     Some((polynomial(&phase.coefficients, s) * s).result())
 }
 
-/// Axial unit normal, including the finite limits at vertical domain rims.
-/// The Hessian may be undefined there even when this normal exists.
+/// Unit normal `normalize(−z_x, −z_y, 1)`; `None` where the gradient is
+/// not finite (outside the domain or on a vertical rim).
 pub fn normal(shape: &SurfaceShape, x: f64, y: f64) -> Option<crate::Vec3> {
-    use crate::Vec3;
+    let [zx, zy] = evaluate(shape, x, y)?.gradient;
+    (zx.is_finite() && zy.is_finite()).then(|| crate::Vec3::new(-zx, -zy, 1.0).normalized())
+}
+
+/// `(c, k)` when an extended shape coincides exactly with a conic: zero
+/// departures, and equal axes for toroids and biconics.
+pub fn exact_conic(shape: &SurfaceShape) -> Option<(f64, f64)> {
     use SurfaceShape::*;
-    let v = evaluate(shape, x, y)?;
-    if v.gradient.iter().all(|v| v.is_finite()) {
-        return Some(Vec3::new(-v.gradient[0], -v.gradient[1], 1.0).normalized());
-    }
-    // Multiply the normal by the vanishing square root before taking its
-    // limit. Finite polynomial slopes disappear under this rescaling.
-    let vector = match shape {
-        Conic { curvature: c, .. }
-        | EvenAsphere { curvature: c, .. }
-        | OddAsphere { curvature: c, .. }
-        | QCon { curvature: c, .. }
-        | QBfs { curvature: c, .. }
-        | XYPolynomial { curvature: c, .. }
-        | ZernikeSag { curvature: c, .. } => {
-            if 1.0 - (1.0 + shape.conic()) * c * c * (x * x + y * y) != 0.0 {
-                return None;
-            }
-            Vec3::new(-c * x, -c * y, 0.0)
+    let zero = |c: &[f64]| c.iter().all(|a| *a == 0.0);
+    match shape {
+        OddAsphere {
+            curvature,
+            conic,
+            coefficients,
         }
+        | QCon {
+            curvature,
+            conic,
+            coefficients,
+            ..
+        }
+        | XYPolynomial {
+            curvature,
+            conic,
+            coefficients,
+            ..
+        }
+        | ZernikeSag {
+            curvature,
+            conic,
+            coefficients,
+            ..
+        } => zero(coefficients).then_some((*curvature, *conic)),
+        QBfs {
+            curvature,
+            coefficients,
+            ..
+        } => zero(coefficients).then_some((*curvature, 0.0)),
         Toroid {
-            curvature_x: cx,
-            curvature_y: cy,
-            conic_y: ky,
+            curvature_x,
+            curvature_y,
+            conic_y,
+            y_asphere,
+        } => (curvature_x == curvature_y && *conic_y == 0.0 && zero(y_asphere))
+            .then_some((*curvature_y, 0.0)),
+        Biconic {
+            curvature_x,
+            curvature_y,
+            conic_x,
+            conic_y,
+            x_asphere,
             y_asphere,
         } => {
-            let yy = Jet::variable(y, 1);
-            let zy = conic(*cy, *ky, yy * yy)? + even(y_asphere, yy * yy);
-            if zy.d[1].is_infinite() {
-                Vec3::new(0.0, -zy.d[1].signum(), 0.0)
-            } else {
-                let a = 1.0 - cx * zy.v;
-                if a * a - cx * cx * x * x != 0.0 {
-                    return None;
-                }
-                Vec3::new(-cx * x, -a * zy.d[1], 0.0)
-            }
+            (curvature_x == curvature_y && conic_x == conic_y && zero(x_asphere) && zero(y_asphere))
+                .then_some((*curvature_y, *conic_y))
         }
-        Biconic {
-            curvature_x: cx,
-            curvature_y: cy,
-            conic_x: kx,
-            conic_y: ky,
-            ..
-        } => {
-            if 1.0 - (1.0 + kx) * cx * cx * x * x - (1.0 + ky) * cy * cy * y * y != 0.0 {
-                return None;
-            }
-            let numerator = cx * x * x + cy * y * y;
-            Vec3::new(
-                -numerator * (1.0 + kx) * cx * cx * x,
-                -numerator * (1.0 + ky) * cy * cy * y,
-                0.0,
-            )
-        }
-        Diffractive { base, .. } => return normal(base, x, y),
-        _ => return None,
-    };
-    (vector.norm2() > 0.0).then(|| vector.normalized())
+        _ => None,
+    }
 }
 
 /// Vertex quadratic coefficients for first order. The cone term is omitted
@@ -582,36 +555,7 @@ fn xy_is_rotational(c: &[f64]) -> bool {
 pub fn shape_symmetry(shape: &SurfaceShape) -> Symmetry {
     use SurfaceShape::*;
     match shape {
-        Toroid {
-            curvature_x,
-            curvature_y,
-            conic_y,
-            y_asphere,
-        } => {
-            if curvature_x == curvature_y && *conic_y == 0.0 && y_asphere.iter().all(|a| *a == 0.0)
-            {
-                Symmetry::Rotational
-            } else {
-                Symmetry::Meridional
-            }
-        }
-        Biconic {
-            curvature_x,
-            curvature_y,
-            conic_x,
-            conic_y,
-            x_asphere,
-            y_asphere,
-        } => {
-            if curvature_x == curvature_y
-                && conic_x == conic_y
-                && x_asphere.iter().chain(y_asphere).all(|a| *a == 0.0)
-            {
-                Symmetry::Rotational
-            } else {
-                Symmetry::Meridional
-            }
-        }
+        Toroid { .. } | Biconic { .. } if exact_conic(shape).is_none() => Symmetry::Meridional,
         XYPolynomial { coefficients, .. } => {
             if xy_is_rotational(coefficients) {
                 Symmetry::Rotational
@@ -789,13 +733,24 @@ mod tests {
         for i in 0..=100 {
             let x = i as f64 / 100.0;
             let s = Jet::variable(x, 0);
-            let q = [1.0, 6.0 * x - 5.0, 28.0 * x * x - 42.0 * x + 15.0];
+            // Forbes (2007) explicit forms.
+            let q = [
+                1.0,
+                6.0 * x - 5.0,
+                28.0 * x * x - 42.0 * x + 15.0,
+                -(35.0 - 12.0 * x * (14.0 - x * (21.0 - 10.0 * x))),
+            ];
             let bfs = [
                 1.0,
                 (13.0 - 16.0 * x) / 19.0_f64.sqrt(),
                 (29.0 - 100.0 * x + 76.0 * x * x) / (190.0_f64.sqrt() / 2.0),
+                (207.0 - 4.0 * x * (315.0 - x * (577.0 - 320.0 * x))) * (2.0 / 2545.0_f64).sqrt(),
             ];
-            for j in 0..3 {
+            let bfs4 = (7737.0
+                - 16.0 * x * (4653.0 - 2.0 * x * (7381.0 - 8.0 * x * (1168.0 - 509.0 * x))))
+                / (3.0 * 131831.0_f64.sqrt());
+            close(qbfs_sum(&[0.0, 0.0, 0.0, 0.0, 1.0], s).v, bfs4, 3e-14);
+            for j in 0..4 {
                 let mut c = vec![0.0; j + 1];
                 c[j] = 1.0;
                 close(qcon(&c, s).v, x * x * q[j], 3e-14);
@@ -805,9 +760,41 @@ mod tests {
                     let v = eval(&c, s);
                     let a = eval(&c, Jet::variable(x + h, 0));
                     let b = eval(&c, Jet::variable(x - h, 0));
-                    close(v.d[0], (a.v - b.v) / (2.0 * h), 5e-8);
-                    close(v.h[0], (a.d[0] - b.d[0]) / (2.0 * h), 5e-8);
+                    let (d, dd) = ((a.v - b.v) / (2.0 * h), (a.d[0] - b.d[0]) / (2.0 * h));
+                    close(v.d[0], d, 5e-8 * (1.0 + d.abs()));
+                    close(v.h[0], dd, 5e-8 * (1.0 + dd.abs()));
                 }
+            }
+        }
+    }
+    /// Every Q^bfs term to 20 is orthonormal in Forbes' slope norm:
+    /// (2/π)∫₀¹ S_m′S_n′ du/√(1−u²) = δ_mn, S_m = u²(1−u²)Q_m(u²).
+    /// Gauss–Chebyshev with 64 nodes is exact for these degrees.
+    #[test]
+    fn qbfs_terms_are_slope_orthonormal() {
+        let nodes = 64;
+        let mut gram = [[0.0; MAX_Q_TERMS]; MAX_Q_TERMS];
+        for i in 0..nodes {
+            let u = ((2 * i + 1) as f64 * std::f64::consts::PI / (2 * nodes) as f64).cos();
+            let slopes: Vec<f64> = (0..MAX_Q_TERMS)
+                .map(|m| {
+                    let mut c = vec![0.0; m + 1];
+                    c[m] = 1.0;
+                    let q = qbfs_sum(&c, Jet::variable(u * u, 0));
+                    let t = u * u;
+                    (2.0 * u - 4.0 * u * t) * q.v + t * (1.0 - t) * q.d[0] * 2.0 * u
+                })
+                .collect();
+            for m in 0..MAX_Q_TERMS {
+                for n in 0..MAX_Q_TERMS {
+                    // The integrand is even in u: (2/π)·½·(π/nodes) per node.
+                    gram[m][n] += slopes[m] * slopes[n] / nodes as f64;
+                }
+            }
+        }
+        for (m, row) in gram.iter().enumerate() {
+            for (n, g) in row.iter().enumerate() {
+                close(*g, if m == n { 1.0 } else { 0.0 }, 1e-12);
             }
         }
     }
@@ -867,15 +854,39 @@ mod tests {
             2.0 * s.v - 1.0,
             1e-15,
         );
-        for j in 0..65 {
-            let (m, n) = xy_powers(j);
-            assert_eq!(xy_index(m, n), j);
+        // SURFACES §5 table: X, Y, X², XY, Y², X³, X²Y, XY², Y³, X⁴.
+        let table = [
+            (1, 0),
+            (0, 1),
+            (2, 0),
+            (1, 1),
+            (0, 2),
+            (3, 0),
+            (2, 1),
+            (1, 2),
+            (0, 3),
+            (4, 0),
+        ];
+        for (j, (m, n)) in table.into_iter().enumerate() {
+            let mut coefficients = vec![0.0; j + 1];
+            coefficients[j] = 1.0;
+            let shape = SurfaceShape::XYPolynomial {
+                curvature: 0.0,
+                conic: 0.0,
+                norm_radius: 2.0,
+                coefficients,
+            };
+            let expected = 0.35_f64.powi(m) * (-0.65_f64).powi(n);
+            close(evaluate(&shape, 0.7, -1.3).unwrap().sag, expected, 1e-15);
+            assert_eq!(xy_powers(j), (m as usize, n as usize));
+            assert_eq!(xy_index(m as usize, n as usize), j);
         }
     }
     #[test]
     fn domains_and_model_roundtrip() {
         for shape in shapes() {
             let encoded = serde_json::to_string(&shape).unwrap();
+            assert!(encoded.contains(&format!("\"type\":\"{}\"", shape.type_name())));
             assert_eq!(
                 serde_json::from_str::<SurfaceShape>(&encoded).unwrap(),
                 shape

@@ -635,6 +635,37 @@ mod tests {
         s
     }
 
+    /// Core's Zernike sag shares this module's ordering, normalisation and
+    /// angle convention without depending on it.
+    #[test]
+    fn core_zernike_sag_matches_wave_basis() {
+        use mklight_core::model::surface::ZernikeOrdering as SagOrdering;
+        for (ordering, sag_ordering, count) in [
+            (ZernikeOrdering::Fringe, SagOrdering::Fringe, 37),
+            (ZernikeOrdering::Standard, SagOrdering::Standard, 45),
+        ] {
+            let basis = ZernikeBasis::new(ordering, count).unwrap();
+            for j in 0..count {
+                let mut coefficients = vec![0.0; count];
+                coefficients[j] = 1.0;
+                let shape = mklight_core::SurfaceShape::ZernikeSag {
+                    curvature: 0.0,
+                    conic: 0.0,
+                    norm_radius: 2.0,
+                    ordering: sag_ordering,
+                    coefficients: coefficients.clone(),
+                };
+                for (x, y) in [(0.0, 0.0), (0.3, -0.5), (-0.7, 0.2), (0.6, 0.8)] {
+                    let sag = mklight_core::surface_math::evaluate(&shape, 2.0 * x, 2.0 * y)
+                        .unwrap()
+                        .sag;
+                    let wave = basis.eval(x, y, &coefficients);
+                    assert!((sag - wave).abs() < 1e-12, "{ordering:?} j={}", j + 1);
+                }
+            }
+        }
+    }
+
     #[test]
     fn fringe_table() {
         let expect = [

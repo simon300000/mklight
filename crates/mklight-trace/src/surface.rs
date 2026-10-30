@@ -445,43 +445,18 @@ pub fn intersect_even_asphere(
 
 /// General sag intersection: conic seed, safeguarded Newton in the closest
 /// approach frame. A bracket restricts Newton to its interval; backtracking
-/// keeps unbracketed steps in-domain and decreases the sag residual.
+/// keeps unbracketed steps in-domain and decreases the sag residual. Failure
+/// classes follow the even asphere's (module docs).
 fn intersect_sag(
     shape: &SurfaceShape,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
 ) -> Result<Hit, IntersectError> {
-    use mklight_core::surface_math::evaluate;
-    // Preserve the closed-form solution exactly for coincident conics.
-    let coincident = match shape {
-        SurfaceShape::OddAsphere { coefficients, .. }
-        | SurfaceShape::QCon { coefficients, .. }
-        | SurfaceShape::QBfs { coefficients, .. }
-        | SurfaceShape::XYPolynomial { coefficients, .. }
-        | SurfaceShape::ZernikeSag { coefficients, .. } => coefficients.iter().all(|a| *a == 0.0),
-        SurfaceShape::Biconic {
-            curvature_x,
-            curvature_y,
-            conic_x,
-            conic_y,
-            x_asphere,
-            y_asphere,
-        } => {
-            curvature_x == curvature_y
-                && conic_x == conic_y
-                && x_asphere.iter().chain(y_asphere).all(|a| *a == 0.0)
-        }
-        SurfaceShape::Toroid {
-            curvature_x,
-            curvature_y,
-            conic_y,
-            y_asphere,
-        } => curvature_x == curvature_y && *conic_y == 0.0 && y_asphere.iter().all(|a| *a == 0.0),
-        _ => false,
-    };
-    if coincident {
-        let hit = intersect_conic(shape.curvature(), shape.conic(), p, d)?;
+    use mklight_core::surface_math::{evaluate, exact_conic};
+    // Coincident conics keep the closed-form solution exactly.
+    if let Some((c, k)) = exact_conic(shape) {
+        let hit = intersect_conic(c, k, p, d)?;
         return evaluate(shape, hit.point.x, hit.point.y)
             .map(|_| hit)
             .ok_or(IntersectError::OutsideDomain);
@@ -497,29 +472,31 @@ fn intersect_sag(
             t.mul_add(d.z, q.z),
         )
     };
-    let mut positive: Option<f64> = None;
-    let mut negative: Option<f64> = None;
+    let (mut positive, mut negative) = (None, None);
     let mut previous = f64::INFINITY;
     for it in 0..=settings.max_iterations {
-        let pt = at(t);
         let bracketed = positive.is_some() && negative.is_some();
+        // Leaving the domain with no evidence of a crossing after a missed
+        // seed is a miss.
+        let left_domain = if !seed_hit && !bracketed {
+            IntersectError::Miss
+        } else {
+            IntersectError::OutsideDomain
+        };
+        let pt = at(t);
         let Some(v) = evaluate(shape, pt.x, pt.y) else {
-            return Err(if !seed_hit && !bracketed {
-                IntersectError::Miss
-            } else {
-                IntersectError::OutsideDomain
-            });
+            return Err(left_domain);
         };
         let g = pt.z - v.sag;
-        let gp = d.z
-            - if d.x == 0.0 { 0.0 } else { v.gradient[0] * d.x }
-            - if d.y == 0.0 { 0.0 } else { v.gradient[1] * d.y };
+        let gp = d.z - v.gradient[0] * d.x - v.gradient[1] * d.y;
         if g > 0.0 {
             positive = Some(t);
         } else if g < 0.0 {
             negative = Some(t);
         }
-        let bracket = positive.zip(negative).map(|(a, b)| (a.min(b), a.max(b)));
+        let bracket = positive
+            .zip(negative)
+            .map(|(a, b): (f64, f64)| (a.min(b), a.max(b)));
         let failure = if bracket.is_some() {
             IntersectError::NoConvergence
         } else {
@@ -527,12 +504,9 @@ fn intersect_sag(
         };
         if g.abs() <= settings.tolerance {
             // One final Newton step, provided it stays on this real sheet.
-            let corrected = t - g / gp;
-            if corrected.is_finite() {
-                let p = at(corrected);
-                if evaluate(shape, p.x, p.y).is_some() {
-                    t = corrected;
-                }
+            let corrected = at(t - g / gp);
+            if evaluate(shape, corrected.x, corrected.y).is_some() {
+                t -= g / gp;
             }
             let point = at(t);
             return Ok(Hit {
@@ -554,7 +528,7 @@ fn intersect_sag(
         }
         let mut next = t - g / gp;
         if let Some((lo, hi)) = bracket
-            && (!next.is_finite() || next <= lo || next >= hi)
+            && !(next > lo && next < hi)
         {
             next = lo + 0.5 * (hi - lo);
         }
@@ -562,19 +536,19 @@ fn intersect_sag(
         let mut accepted = false;
         for _ in 0..20 {
             let p = at(next);
-            if let Some(v) = evaluate(shape, p.x, p.y) {
-                if (p.z - v.sag).abs() < g.abs() || bracket.is_some() {
+            match evaluate(shape, p.x, p.y) {
+                Some(v) if bracket.is_some() || (p.z - v.sag).abs() < g.abs() => {
                     accepted = true;
                     break;
                 }
-            } else {
-                outside = true;
+                Some(_) => {}
+                None => outside = true,
             }
             next = t + 0.5 * (next - t);
         }
         if !accepted {
-            return Err(if outside && !bracketed {
-                IntersectError::OutsideDomain
+            return Err(if outside && bracket.is_none() {
+                left_domain
             } else {
                 failure
             });
@@ -582,7 +556,7 @@ fn intersect_sag(
         previous = g.abs();
         t = next;
     }
-    unreachable!()
+    unreachable!("the loop returns at it == max_iterations")
 }
 
 #[cfg(test)]

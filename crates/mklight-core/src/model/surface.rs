@@ -151,6 +151,25 @@ impl SurfaceShape {
         }
     }
 
+    /// The serde `type` tag.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Plane => "plane",
+            Self::Conic { .. } => "conic",
+            Self::EvenAsphere { .. } => "even_asphere",
+            Self::OddAsphere { .. } => "odd_asphere",
+            Self::QCon { .. } => "q_con",
+            Self::QBfs { .. } => "q_bfs",
+            Self::Diffractive { .. } => "diffractive",
+            Self::Toroid { .. } => "toroid",
+            Self::Biconic { .. } => "biconic",
+            Self::XYPolynomial { .. } => "xy_polynomial",
+            Self::ZernikeSag { .. } => "zernike_sag",
+            Self::Paraxial { .. } => "paraxial",
+            Self::CoordinateBreak => "coordinate_break",
+        }
+    }
+
     /// Whether the shape belongs to the original solver subset. Later solvers
     /// must reject other shapes until their mathematics is implemented.
     pub fn is_legacy(&self) -> bool {
@@ -227,6 +246,16 @@ pub enum ZernikeOrdering {
     Fringe,
     #[serde(alias = "noll")]
     Standard,
+}
+
+impl ZernikeOrdering {
+    /// Supported terms: Fringe Z1–Z37, Standard (Noll) Z1–Z45 (n ≤ 8).
+    pub const fn max_terms(self) -> usize {
+        match self {
+            Self::Fringe => 37,
+            Self::Standard => 45,
+        }
+    }
 }
 
 /// What the surface does to light that hits it.

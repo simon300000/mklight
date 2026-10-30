@@ -163,12 +163,7 @@ fn geometric_analyses_on_every_sample() {
         let extended = samples::has_extended_surfaces(&sys);
         let s = session(&e, sys);
         for n in names {
-            if extended
-                && matches!(
-                    n,
-                    "system_summary" | "layout" | "seidel" | "field_curvature_distortion"
-                )
-            {
+            if extended && matches!(n, "layout" | "seidel" | "field_curvature_distortion") {
                 let error = s
                     .run_analysis(&AnalysisRequest::new(n, Value::Null), &JobContext::new())
                     .unwrap_err();

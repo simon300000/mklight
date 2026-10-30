@@ -3,7 +3,7 @@ use common::*;
 use mklight_core::model::surface::{DiffractivePhase, ZernikeOrdering};
 use mklight_core::surface_math::{Symmetry, evaluate, system_symmetry};
 use mklight_core::{JobContext, MaterialRef, MkError, SurfaceShape, Vec3, samples};
-use mklight_trace::surface::{IntersectSettings, intersect};
+use mklight_trace::surface::{IntersectError, IntersectSettings, intersect};
 use mklight_trace::{
     FailReason, Paraxial, ParaxialXY, Ray, TraceOptions, TraceStatus, trace_ray_recorded,
 };
@@ -268,17 +268,9 @@ fn doe_obeys_grating_equation_and_surface_metric() {
     let order = 2;
     let sin_i = 0.1;
     let k = Vec3::new(sin_i, 0.0, (1.0_f64 - sin_i * sin_i).sqrt());
-    let d = mklight_trace::interact::diffract(
-        k,
-        Vec3::Z,
-        1.0,
-        1.0,
-        [std::f64::consts::TAU / period, 0.0],
-        lambda,
-        order,
-        false,
-    )
-    .unwrap();
+    // g = mλ∇Φ/(2π) with ∇Φ = 2π/Λ.
+    let g = [order as f64 * lambda / period, 0.0];
+    let d = mklight_trace::interact::diffract(k, Vec3::Z, 1.0, 1.0, g, false).unwrap();
     close(d.x, sin_i + order as f64 * lambda / period, 1e-15);
     // Radial phase has exactly the same local grating gradient at x=1 mm.
     let mut sys = infinite_system(
@@ -304,8 +296,11 @@ fn doe_obeys_grating_equation_and_surface_metric() {
     let n = Vec3::new(-0.3, 0.2, 1.0).normalized();
     let ex = Vec3::new(1.0, 0.0, 0.3);
     let ey = Vec3::new(0.0, 1.0, -0.2);
-    let out =
-        mklight_trace::interact::diffract(k, n, 1.2, 1.6, [12.0, -8.0], lambda, -1, false).unwrap();
+    let g = [
+        -lambda * 12.0 / std::f64::consts::TAU,
+        lambda * 8.0 / std::f64::consts::TAU,
+    ];
+    let out = mklight_trace::interact::diffract(k, n, 1.2, 1.6, g, false).unwrap();
     let delta = out * 1.6 - k * 1.2;
     close(delta.dot(ex), -lambda * 12.0 / std::f64::consts::TAU, 1e-15);
     close(delta.dot(ey), lambda * 8.0 / std::f64::consts::TAU, 1e-15);
@@ -511,50 +506,6 @@ fn first_order_job_cancellation_and_symmetry() {
 }
 
 #[test]
-fn vertical_domain_rims_keep_finite_normals() {
-    for shape in [
-        SurfaceShape::QCon {
-            curvature: 0.25,
-            conic: 0.0,
-            norm_radius: 6.0,
-            coefficients: vec![0.01],
-        },
-        SurfaceShape::XYPolynomial {
-            curvature: 0.25,
-            conic: 0.0,
-            norm_radius: 6.0,
-            coefficients: vec![0.01],
-        },
-        SurfaceShape::Biconic {
-            curvature_x: 0.25,
-            curvature_y: 0.125,
-            conic_x: 0.0,
-            conic_y: 0.0,
-            x_asphere: vec![],
-            y_asphere: vec![],
-        },
-        SurfaceShape::Toroid {
-            curvature_x: 0.25,
-            curvature_y: 0.125,
-            conic_y: 0.0,
-            y_asphere: vec![],
-        },
-    ] {
-        let hit = intersect(
-            &shape,
-            Vec3::new(4.0, 0.0, -2.0),
-            Vec3::Z,
-            &Default::default(),
-        )
-        .unwrap();
-        assert!(hit.normal.is_finite(), "{shape:?}: {hit:?}");
-        close(hit.normal.x, -1.0, 1e-14);
-        close(hit.normal.z, 0.0, 1e-14);
-        close(hit.point.z, evaluate(&shape, 4.0, 0.0).unwrap().sag, 1e-13);
-    }
-}
-
-#[test]
 fn reflective_doe_has_signed_focus_and_the_same_phase_lag() {
     let radius = 2.0;
     let f = 40.0;
@@ -574,4 +525,23 @@ fn reflective_doe_has_signed_focus_and_the_same_phase_lag() {
     assert!(ray.ray.dir.z < 0.0);
     close(rec[1].opl, -1e-6 / (2.0 * f), 1e-22);
     close(ray.ray.pos.x, 0.0, 1e-12);
+}
+
+/// Regression: a ray that misses the base conic and then runs out of the
+/// sag domain without any sign change was reported as `OutsideDomain` when
+/// backtracking hit the domain edge. Like the even asphere, it is a miss.
+#[test]
+fn missed_seed_leaving_the_domain_is_a_miss() {
+    let shape = SurfaceShape::QCon {
+        curvature: 0.18,
+        conic: 0.0,
+        norm_radius: 5.2,
+        coefficients: vec![0.05, -0.01, 0.003],
+    };
+    let p = Vec3::new(1.416408, -1.029432, -10.0);
+    let d = Vec3::new(0.256578, -0.291829, 0.921414).normalized();
+    assert_eq!(
+        intersect(&shape, p, d, &Default::default()),
+        Err(IntersectError::Miss)
+    );
 }

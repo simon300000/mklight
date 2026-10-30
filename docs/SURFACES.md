@@ -23,7 +23,9 @@ This rationalised sag avoids subtracting nearly equal quantities. `c=0`
 is exactly a plane. Plane, ideal lens and coordinate break have zero sag;
 a coordinate break has no intersection geometry. The real conic domain is
 `1−κc²s≥0`. At the rim the sag exists but its derivatives can be infinite
-or undefined; the existing implicit conic normal remains usable there.
+or undefined. The legacy implicit conic normal remains finite there; an
+extended shape needs a finite gradient, so a hit exactly on a vertical rim
+is `OutsideDomain`.
 
 `even_asphere` is `B+Σ a_i r^(2i+4)` (zero-based i). Existing coefficients
 and parameter paths keep their meanings and units `mm^(−2i−3)`.
@@ -56,7 +58,7 @@ QCon uses Clenshaw with `Q_(k+1)=A_k Q_k−B_k Q_(k−1)`:
 A_0=6t−5, B_0=0
 v=2k+4, d=2(k+1)(k+5)v
 A_k=(v+1)[(v+2)v(2t−1)−16]/d
-B_k=2k(k+4)(v+2)/d                          (k≥1)
+B_k=2k(k+4)(v+2)/d                          (k≥0; gives A_0, B_0 above)
 b_k=a_k+A_k b_(k+1)−B_(k+1)b_(k+2); ΣaQ=b_0.
 ```
 
@@ -232,7 +234,8 @@ orders, supported base, and the limits above. Codes are `non_finite`,
 `ParamPath::ShapeCoefficient {surface,set,index}` uses sets `odd`, `q`,
 `phase`, `x_asphere`, `y_asphere`, `xy`, `zernike`. A missing in-range
 coefficient reads zero; writing extends with zeros. Out-of-range indices
-are rejected before allocation. `ShapeParam {surface,parameter}` supports
+are rejected before allocation. Values are range-checked only by structural
+validation, never by the path itself. `ShapeParam {surface,parameter}` supports
 `curvature_x`, `conic_x`, `curvature_y`, `conic_y`, `norm_radius`,
 `design_order`, `design_wavelength_um`, `trace_order`. JSON keeps the legacy
 `param` tag, so the scalar selector is named **parameter**. Order edits
@@ -273,8 +276,9 @@ and can be used to disable symmetry shortcuts. It makes no claim about
 arbitrary coating, mechanics or scatter symmetry.
 
 GPU packing, stray geometry, ghost paths, Seidel, Coddington, rotational
-layout and optical optimisation explicitly reject extended shapes until
-those solvers are implemented. CPU tracing and these mathematical APIs
+layout and merit evaluation reject extended shapes until those solvers are
+implemented, with the single error of `OpticalSystem::require_legacy_shapes`
+(the GPU packer and stray patches reject them in their shape matches). CPU tracing and these mathematical APIs
 are the reference for that work. The app is unchanged.
 
 ## 9. Reference samples and verification
@@ -297,7 +301,9 @@ known conic reductions, exact cylindrical line focus, narrow-fan first-order
 focal lengths, grating momentum (including a tilted tangent plane), reflective
 DOE signs, F/C correction, evanescence, constant design-wave OPL, and steep
 Q/freeform intersections. Core tests compare analytic gradients/Hessians to
-finite differences, Q functions to explicit polynomials, and every supported
-Zernike term to its independent factorial definition. Legacy-only solver
+finite differences, Q functions to explicit polynomials (Q^bfs to m=4,
+Q^con to m=3) and all twenty Q^bfs terms to their slope orthonormality,
+and every supported Zernike term to its independent factorial definition;
+the wave crate checks that Zernike sag equals its own basis term by term. Legacy-only solver
 cross-validation sets explicitly exclude extended shapes; engine tests check
 their unsupported-analysis errors and CPU fallback from GPU packing.

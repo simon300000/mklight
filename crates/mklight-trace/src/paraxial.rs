@@ -132,7 +132,7 @@ impl ParaxialModel {
         nn[0] = sys.n_object[wl];
         t[0] = sys.surfaces[0].thickness;
         for j in 1..n {
-            (nn[j], phi[j]) = surface_step_axis(sys, j, wl, nn[j - 1], axis);
+            (nn[j], phi[j]) = surface_step(sys, j, wl, nn[j - 1], axis);
             t[j] = if j < n - 1 {
                 sys.surfaces[j].thickness
             } else {
@@ -176,12 +176,7 @@ impl ParaxialModel {
 /// Signed reduced index `N_j` after surface `j` and its power `φ_j`, given
 /// `N_{j−1}` (module docs). Dummy interactions, coordinate breaks and the
 /// image surface have no power.
-#[inline]
-fn surface_step(sys: &ResolvedSystem, j: usize, wl: usize, n_prev: f64) -> (f64, f64) {
-    surface_step_axis(sys, j, wl, n_prev, ParaxialAxis::Y)
-}
-
-fn surface_step_axis(
+fn surface_step(
     sys: &ResolvedSystem,
     j: usize,
     wl: usize,
@@ -199,19 +194,22 @@ fn surface_step_axis(
     } else {
         match &s.shape {
             SurfaceShape::Paraxial { focal_length } => nj.abs() / focal_length,
-            _ => {
-                let h = mklight_core::surface_math::vertex_curvatures(&s.shape);
-                let mut power = h[if axis == ParaxialAxis::X { 0 } else { 2 }] * (nj - n_prev);
-                if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
-                    // Reduced slope is n*k_transverse to first order, also
-                    // on reflected paths. Positive A₁ therefore diverges.
-                    power -= phase.trace_order as f64
-                        * sys.wavelengths_um[wl]
-                        * 1e-3
-                        * phase.coefficients.first().copied().unwrap_or(0.0)
-                        / (std::f64::consts::PI * phase.norm_radius * phase.norm_radius);
-                }
-                power
+            shape => {
+                let h = mklight_core::surface_math::vertex_curvatures(shape);
+                let c = if axis == ParaxialAxis::X { h[0] } else { h[2] };
+                // DOE: the reduced slope is the transverse n·k, also on
+                // reflected paths, so φ = −mλA₁/(π r_norm²) (SURFACES §3).
+                let doe = match shape {
+                    SurfaceShape::Diffractive { phase, .. } => {
+                        -(phase.trace_order as f64)
+                            * sys.wavelengths_um[wl]
+                            * 1e-3
+                            * phase.coefficients.first().copied().unwrap_or(0.0)
+                            / (std::f64::consts::PI * phase.norm_radius * phase.norm_radius)
+                    }
+                    _ => 0.0,
+                };
+                c * (nj - n_prev) + doe
             }
         }
     };
@@ -238,7 +236,7 @@ pub fn ideal_lens_object_vergence(sys: &ResolvedSystem, i: usize, wl: usize) -> 
         (sys.surfaces[0].thickness, n_prev)
     };
     for j in 1..i {
-        let (nj, phi) = surface_step(sys, j, wl, n_prev);
+        let (nj, phi) = surface_step(sys, j, wl, n_prev, ParaxialAxis::Y);
         w = (-y).mul_add(phi, w);
         y = (sys.surfaces[j].thickness / nj).mul_add(w, y);
         n_prev = nj;
@@ -311,19 +309,7 @@ pub struct Paraxial {
 
 impl Paraxial {
     pub fn new(sys: &ResolvedSystem) -> MkResult<Self> {
-        let mut warnings = extended_paraxial_warnings(sys);
-        if sys
-            .system()
-            .surfaces
-            .iter()
-            .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
-        {
-            warnings.push(
-                "system has tilts or decenters: paraxial values are for the unfolded, \
-                 rotationally symmetric equivalent"
-                    .to_string(),
-            );
-        }
+        let warnings = first_order_warnings(sys);
         let wavelengths = (0..sys.wavelengths_um.len())
             .map(|w| first_order(sys, w))
             .collect::<MkResult<Vec<_>>>()?;
@@ -341,8 +327,20 @@ impl Paraxial {
     }
 }
 
-fn extended_paraxial_warnings(sys: &ResolvedSystem) -> Vec<String> {
+fn first_order_warnings(sys: &ResolvedSystem) -> Vec<String> {
     let mut warnings = Vec::new();
+    if sys
+        .system()
+        .surfaces
+        .iter()
+        .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
+    {
+        warnings.push(
+            "system has tilts or decenters: paraxial values are for the unfolded, \
+             rotationally symmetric equivalent"
+                .to_string(),
+        );
+    }
     for (i, s) in sys
         .surfaces
         .iter()
@@ -387,15 +385,6 @@ impl ParaxialXY {
     pub fn new_job(sys: &ResolvedSystem, ctx: &mklight_core::JobContext) -> MkResult<Self> {
         use mklight_core::job::{Precision, RunTimer};
         let timer = RunTimer::start();
-        let mut warnings = extended_paraxial_warnings(sys);
-        if sys
-            .system()
-            .surfaces
-            .iter()
-            .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
-        {
-            warnings.push("placements are ignored by unfolded x/y first order".into());
-        }
         let mut x = Vec::new();
         let mut y = Vec::new();
         let mut squeeze = Vec::new();
@@ -424,7 +413,7 @@ impl ParaxialXY {
                 "cpu-f64",
                 Precision::F64Reference,
                 None,
-                warnings,
+                first_order_warnings(sys),
             ),
         })
     }

@@ -461,7 +461,7 @@ fn extended_singlet(name: &str, shape: SurfaceShape) -> OpticalSystem {
     // The y-axis d-line back focus from the two finite-thickness powers.
     let n = bk7_index(0.5875618);
     let p1 = (n - 1.0) * crate::surface_math::vertex_curvatures(&sys.surfaces[1].shape)[2];
-    let y = 1.0 - 5.0 * p1 / n;
+    let y = 1.0 - sys.surfaces[1].thickness * p1 / n;
     let p2 = (1.0 - n) * sys.surfaces[2].shape.curvature();
     sys.surfaces[2].thickness = y / (p1 + p2 * y);
     sys

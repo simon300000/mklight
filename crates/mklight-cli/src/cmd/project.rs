@@ -222,20 +222,11 @@ pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
 // ---------------------------------------------------------------------------
 // show
 
-pub(crate) fn shape_type(s: &SurfaceShape) -> mklight_core::MkResult<&'static str> {
-    Ok(match s {
-        SurfaceShape::Plane => "plane",
+pub(crate) fn shape_type(s: &SurfaceShape) -> &'static str {
+    match s {
         SurfaceShape::Conic { conic, .. } if *conic == 0.0 => "sphere",
-        SurfaceShape::Conic { .. } => "conic",
-        SurfaceShape::EvenAsphere { .. } => "even_asphere",
-        SurfaceShape::Paraxial { .. } => "paraxial",
-        SurfaceShape::CoordinateBreak => "coordinate_break",
-        _ => {
-            return Err(MkError::Unsupported(
-                "extended surface shape in CLI surface table".into(),
-            ));
-        }
-    })
+        s => s.type_name(),
+    }
 }
 
 fn aperture_text(a: &ApertureSpec) -> String {
@@ -356,7 +347,7 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
         t.row(vec![
             i.to_string(),
             label,
-            shape_type(&s.shape)?.into(),
+            shape_type(&s.shape).into(),
             fmt_f(radius, 4),
             fmt_f(s.thickness, 4),
             s.material.display_name(),
@@ -374,7 +365,7 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
             "index": i,
             "id": s.id,
             "label": s.label,
-            "type": shape_type(&s.shape)?,
+            "type": shape_type(&s.shape),
             "is_stop": i == sys.stop,
             "curvature": c,
             "radius": num(radius),

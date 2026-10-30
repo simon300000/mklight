@@ -182,8 +182,12 @@ impl ParamPath {
                 c.get(*index).copied().unwrap_or(0.0)
             }
             ShapeParam { surface, parameter } => {
-                shape_parameter(&surf(s, *surface)?.shape, *parameter)
+                match shape_parameter(&surf(s, *surface)?.shape, *parameter)
                     .ok_or_else(|| bad(self, "scalar does not belong to shape"))?
+                {
+                    Slot::Real(x) => *x,
+                    Slot::Order(o) => *o as f64,
+                }
             }
             Curvature { surface } => match geometry(&surf(s, *surface)?.shape) {
                 SurfaceShape::Conic { curvature, .. }
@@ -315,40 +319,19 @@ impl ParamPath {
                 c[*index] = v;
             }
             ShapeParam { surface, parameter } => {
-                use ShapeParameter::*;
-                let sh = &mut surf_mut(s, *surface)?.shape;
-                match parameter {
-                    NormRadius if v <= 0.0 => {
-                        return Err(bad(self, "[invalid_norm_radius] must be > 0"));
-                    }
-                    DesignWavelengthUm if v <= 0.0 => {
-                        return Err(bad(self, "[invalid_design_wavelength] must be > 0"));
-                    }
-                    DesignOrder | TraceOrder => {
-                        if v.fract() != 0.0
-                            || v < i32::MIN as f64
-                            || v > i32::MAX as f64
-                            || (*parameter == DesignOrder && v == 0.0)
-                        {
-                            return Err(bad(
-                                self,
-                                "[invalid_diffraction_order] expected i32, nonzero for design order",
-                            ));
+                // Range rules are structural validation; only the integer
+                // representation of orders is checked here.
+                let slot = shape_parameter_mut(&mut surf_mut(s, *surface)?.shape, *parameter)
+                    .ok_or_else(|| bad(self, "scalar does not belong to shape"))?;
+                match slot {
+                    Slot::Real(x) => *x = v,
+                    Slot::Order(o) => {
+                        if v.fract() != 0.0 || v.abs() > i32::MAX as f64 {
+                            return Err(bad(self, "[invalid_diffraction_order] expected an i32"));
                         }
-                        let SurfaceShape::Diffractive { phase, .. } = sh else {
-                            return Err(bad(self, "scalar does not belong to shape"));
-                        };
-                        if *parameter == DesignOrder {
-                            phase.design_order = v as i32;
-                        } else {
-                            phase.trace_order = v as i32;
-                        }
-                        return Ok(());
+                        *o = v as i32;
                     }
-                    _ => {}
                 }
-                *shape_parameter_mut(sh, *parameter)
-                    .ok_or_else(|| bad(self, "scalar does not belong to shape"))? = v;
             }
             Curvature { surface } => {
                 let sf = surf_mut(s, *surface)?;
@@ -489,119 +472,121 @@ fn geometry_mut(shape: &mut SurfaceShape) -> &mut SurfaceShape {
         shape
     }
 }
+// One body serves shared and mutable access: match ergonomics bind the
+// fields as `&` or `&mut` according to the scrutinee.
+macro_rules! coefficient_slot {
+    ($shape:expr, $set:expr) => {{
+        use crate::model::surface::DiffractivePhase;
+        use crate::surface_math::*;
+        use CoefficientSet::*;
+        use SurfaceShape::*;
+        Some(match ($shape, $set) {
+            (OddAsphere { coefficients, .. }, Odd) => (coefficients, MAX_ODD_TERMS),
+            (QCon { coefficients, .. } | QBfs { coefficients, .. }, Q) => {
+                (coefficients, MAX_Q_TERMS)
+            }
+            (
+                Diffractive {
+                    phase: DiffractivePhase { coefficients, .. },
+                    ..
+                },
+                Phase,
+            ) => (coefficients, MAX_PHASE_TERMS),
+            (Biconic { x_asphere, .. }, XAsphere) => (x_asphere, MAX_AXIS_TERMS),
+            (Biconic { y_asphere, .. } | Toroid { y_asphere, .. }, YAsphere) => {
+                (y_asphere, MAX_AXIS_TERMS)
+            }
+            (XYPolynomial { coefficients, .. }, Xy) => (coefficients, MAX_XY_TERMS),
+            (
+                ZernikeSag {
+                    coefficients,
+                    ordering,
+                    ..
+                },
+                Zernike,
+            ) => (coefficients, ordering.max_terms()),
+            _ => return None,
+        })
+    }};
+}
 fn shape_coefficients(shape: &SurfaceShape, set: CoefficientSet) -> Option<(&Vec<f64>, usize)> {
-    use crate::surface_math::*;
-    use CoefficientSet::*;
-    use SurfaceShape::*;
-    Some(match (shape, set) {
-        (OddAsphere { coefficients, .. }, Odd) => (coefficients, MAX_ODD_TERMS),
-        (QCon { coefficients, .. } | QBfs { coefficients, .. }, Q) => (coefficients, MAX_Q_TERMS),
-        (Diffractive { phase, .. }, Phase) => (&phase.coefficients, MAX_PHASE_TERMS),
-        (Biconic { x_asphere, .. }, XAsphere) => (x_asphere, MAX_AXIS_TERMS),
-        (Biconic { y_asphere, .. } | Toroid { y_asphere, .. }, YAsphere) => {
-            (y_asphere, MAX_AXIS_TERMS)
-        }
-        (XYPolynomial { coefficients, .. }, Xy) => (coefficients, MAX_XY_TERMS),
-        (
-            ZernikeSag {
-                coefficients,
-                ordering,
-                ..
-            },
-            Zernike,
-        ) => (
-            coefficients,
-            match ordering {
-                crate::model::surface::ZernikeOrdering::Fringe => 37,
-                crate::model::surface::ZernikeOrdering::Standard => 45,
-            },
-        ),
-        _ => return None,
-    })
+    coefficient_slot!(shape, set)
 }
 fn shape_coefficients_mut(
     shape: &mut SurfaceShape,
     set: CoefficientSet,
 ) -> Option<(&mut Vec<f64>, usize)> {
-    use crate::surface_math::*;
-    use CoefficientSet::*;
-    use SurfaceShape::*;
-    Some(match (shape, set) {
-        (OddAsphere { coefficients, .. }, Odd) => (coefficients, MAX_ODD_TERMS),
-        (QCon { coefficients, .. } | QBfs { coefficients, .. }, Q) => (coefficients, MAX_Q_TERMS),
-        (Diffractive { phase, .. }, Phase) => (&mut phase.coefficients, MAX_PHASE_TERMS),
-        (Biconic { x_asphere, .. }, XAsphere) => (x_asphere, MAX_AXIS_TERMS),
-        (Biconic { y_asphere, .. } | Toroid { y_asphere, .. }, YAsphere) => {
-            (y_asphere, MAX_AXIS_TERMS)
-        }
-        (XYPolynomial { coefficients, .. }, Xy) => (coefficients, MAX_XY_TERMS),
-        (
-            ZernikeSag {
-                coefficients,
-                ordering,
-                ..
-            },
-            Zernike,
-        ) => (
-            coefficients,
-            match ordering {
-                crate::model::surface::ZernikeOrdering::Fringe => 37,
-                crate::model::surface::ZernikeOrdering::Standard => 45,
-            },
-        ),
-        _ => return None,
-    })
+    coefficient_slot!(shape, set)
 }
-fn shape_parameter_ref(shape: &SurfaceShape, param: ShapeParameter) -> Option<&f64> {
-    use ShapeParameter::*;
-    use SurfaceShape::*;
-    Some(match (shape, param) {
-        (Toroid { curvature_x, .. } | Biconic { curvature_x, .. }, CurvatureX) => curvature_x,
-        (Toroid { curvature_y, .. } | Biconic { curvature_y, .. }, CurvatureY) => curvature_y,
-        (Biconic { conic_x, .. }, ConicX) => conic_x,
-        (Toroid { conic_y, .. } | Biconic { conic_y, .. }, ConicY) => conic_y,
-        (
-            QCon { norm_radius, .. }
-            | QBfs { norm_radius, .. }
-            | XYPolynomial { norm_radius, .. }
-            | ZernikeSag { norm_radius, .. },
-            NormRadius,
-        ) => norm_radius,
-        (Diffractive { phase, .. }, NormRadius) => &phase.norm_radius,
-        (Diffractive { phase, .. }, DesignWavelengthUm) => &phase.design_wavelength_um,
-        _ => return None,
-    })
+
+/// A scalar shape parameter: a real value or a diffraction order.
+enum Slot<F, I> {
+    Real(F),
+    Order(I),
 }
-fn shape_parameter_mut(shape: &mut SurfaceShape, param: ShapeParameter) -> Option<&mut f64> {
-    use ShapeParameter::*;
-    use SurfaceShape::*;
-    Some(match (shape, param) {
-        (Toroid { curvature_x, .. } | Biconic { curvature_x, .. }, CurvatureX) => curvature_x,
-        (Toroid { curvature_y, .. } | Biconic { curvature_y, .. }, CurvatureY) => curvature_y,
-        (Biconic { conic_x, .. }, ConicX) => conic_x,
-        (Toroid { conic_y, .. } | Biconic { conic_y, .. }, ConicY) => conic_y,
-        (
-            QCon { norm_radius, .. }
-            | QBfs { norm_radius, .. }
-            | XYPolynomial { norm_radius, .. }
-            | ZernikeSag { norm_radius, .. },
-            NormRadius,
-        ) => norm_radius,
-        (Diffractive { phase, .. }, NormRadius) => &mut phase.norm_radius,
-        (Diffractive { phase, .. }, DesignWavelengthUm) => &mut phase.design_wavelength_um,
-        _ => return None,
-    })
+macro_rules! parameter_slot {
+    ($shape:expr, $param:expr) => {{
+        use crate::model::surface::DiffractivePhase as P;
+        use ShapeParameter::*;
+        use Slot::*;
+        use SurfaceShape::*;
+        Some(match ($shape, $param) {
+            (Toroid { curvature_x, .. } | Biconic { curvature_x, .. }, CurvatureX) => {
+                Real(curvature_x)
+            }
+            (Toroid { curvature_y, .. } | Biconic { curvature_y, .. }, CurvatureY) => {
+                Real(curvature_y)
+            }
+            (Biconic { conic_x, .. }, ConicX) => Real(conic_x),
+            (Toroid { conic_y, .. } | Biconic { conic_y, .. }, ConicY) => Real(conic_y),
+            (
+                QCon { norm_radius, .. }
+                | QBfs { norm_radius, .. }
+                | XYPolynomial { norm_radius, .. }
+                | ZernikeSag { norm_radius, .. }
+                | Diffractive {
+                    phase: P { norm_radius, .. },
+                    ..
+                },
+                NormRadius,
+            ) => Real(norm_radius),
+            (
+                Diffractive {
+                    phase:
+                        P {
+                            design_wavelength_um,
+                            ..
+                        },
+                    ..
+                },
+                DesignWavelengthUm,
+            ) => Real(design_wavelength_um),
+            (
+                Diffractive {
+                    phase: P { design_order, .. },
+                    ..
+                },
+                DesignOrder,
+            ) => Order(design_order),
+            (
+                Diffractive {
+                    phase: P { trace_order, .. },
+                    ..
+                },
+                TraceOrder,
+            ) => Order(trace_order),
+            _ => return None,
+        })
+    }};
 }
-fn shape_parameter(shape: &SurfaceShape, param: ShapeParameter) -> Option<f64> {
-    match (shape, param) {
-        (SurfaceShape::Diffractive { phase, .. }, ShapeParameter::DesignOrder) => {
-            Some(phase.design_order as f64)
-        }
-        (SurfaceShape::Diffractive { phase, .. }, ShapeParameter::TraceOrder) => {
-            Some(phase.trace_order as f64)
-        }
-        _ => shape_parameter_ref(shape, param).copied(),
-    }
+fn shape_parameter(shape: &SurfaceShape, param: ShapeParameter) -> Option<Slot<&f64, &i32>> {
+    parameter_slot!(shape, param)
+}
+fn shape_parameter_mut(
+    shape: &mut SurfaceShape,
+    param: ShapeParameter,
+) -> Option<Slot<&mut f64, &mut i32>> {
+    parameter_slot!(shape, param)
 }
 
 #[cfg(test)]
@@ -654,7 +639,11 @@ mod tests {
             parameter: ShapeParameter::DesignOrder,
         };
         assert_eq!(design.get(&s).unwrap(), 1.0);
-        assert!(design.set(&mut s, 0.0).is_err());
+        // Order zero is representable; structural validation rejects it.
+        design.set(&mut s, 0.0).unwrap();
+        let e = s.validate().unwrap_err().to_string();
+        assert!(e.contains("invalid_diffraction_order"), "{e}");
+        design.set(&mut s, 1.0).unwrap();
         for path in [p, order, design] {
             let json = serde_json::to_string(&path).unwrap();
             assert_eq!(serde_json::from_str::<ParamPath>(&json).unwrap(), path);
