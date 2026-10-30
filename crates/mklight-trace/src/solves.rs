@@ -346,7 +346,10 @@ fn solve_system(
             ctx.check()?;
             let solve = &sys.solves[k];
             let before = solve.target.get(&cur).ok();
-            let (method, evals) = run_solve(k, &sys.solves, &deps[k], &mut cur, &env, settings)?;
+            let run = run_solve(k, &sys.solves, &deps[k], &mut cur, &env, settings);
+            // A cancelled sizing trace surfaces as a failed evaluation.
+            ctx.check()?;
+            let (method, evals) = run?;
             let after = solve.target.get(&cur)?;
             stats[k].0 = stats[k].0.max(method);
             stats[k].1 += evals;
@@ -375,7 +378,9 @@ fn solve_system(
     let eval = Eval::new(&cur, &env);
     let mut outcomes = Vec::with_capacity(sys.solves.len());
     for (k, s) in sys.solves.iter().enumerate() {
-        let m = measure(s, &eval).map_err(|e| solve_error(k, s, &e))?;
+        let m = measure(s, &eval);
+        ctx.check()?;
+        let m = m.map_err(|e| solve_error(k, s, &e))?;
         if !m.converged(FINAL_SLACK * settings.tolerance) {
             return Err(solve_error(
                 k,
@@ -524,9 +529,12 @@ impl<'a> Eval<'a> {
                 let p = self.para()?;
                 let tracer =
                     SequentialTracer::new(p.resolved.clone()).map_err(|e| e.to_string())?;
-                Ok(tracer
-                    .semi_diameters(&SemiDiameterSettings::default())
-                    .values)
+                // Cancellation only: the solve owns the progress bar.
+                let cancel_only = JobContext::with(self.env.job.cancel.clone(), Default::default());
+                tracer
+                    .semi_diameters_with(&SemiDiameterSettings::default(), &cancel_only)
+                    .map(|sd| sd.values)
+                    .map_err(|e| e.to_string())
             })
             .as_ref()
             .map(|v| v.as_slice())

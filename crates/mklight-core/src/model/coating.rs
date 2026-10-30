@@ -4,6 +4,7 @@ use crate::model::material::MaterialRef;
 
 /// One thin-film layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Layer {
     pub material: MaterialRef,
     /// Physical thickness in µm. When `quarter_waves` is set, the thickness is
@@ -21,7 +22,7 @@ pub struct Layer {
 
 /// A named coating, used by surfaces through `Surface::coating`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CoatingDef {
     /// Multilayer stack. Layers are listed **outward from the substrate**
     /// (`layers[0]` touches the substrate). The substrate is the side with the

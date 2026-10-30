@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Reference to an optical medium. Resolution into numbers happens in
 /// `materials::MaterialLibrary`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MaterialRef {
     /// Air at the system temperature and pressure (index 1 by convention, CONVENTIONS §2).
     Air,

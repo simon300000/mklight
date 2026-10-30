@@ -26,6 +26,7 @@ use crate::param::ParamPath;
 
 /// One solve: `target` is set by the rule `kind`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Solve {
     /// The parameter this solve controls. It must not be an optimisation
     /// variable (see `OpticalSystem::solved_params`).
@@ -40,7 +41,7 @@ fn one() -> f64 {
 /// The rule that sets a solve's target (`docs/SOLVES.md` gives the exact
 /// definitions and sign conventions).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SolveKind {
     /// On `Thickness { surface: j }`: the paraxial marginal ray's height on
     /// the vertex of surface `j+1` is `height` (mm). `height = 0` on the last

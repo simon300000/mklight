@@ -220,7 +220,7 @@ impl StraySystem {
         opts.validate()?;
         ctx.check()?;
         ctx.report(0.0, "stray light: sizing apertures");
-        let sd = tracer.semi_diameters(&opts.semi_diameters);
+        let sd = tracer.semi_diameters_with(&opts.semi_diameters, &ctx.subrange(0.0, 0.4))?;
         ctx.check()?;
         ctx.report(0.4, "stray light: building the scene");
         let rs = tracer.system();

@@ -13,7 +13,7 @@ pub struct SurfaceId(pub u64);
 
 /// Surface shape in its local frame (CONVENTIONS §2). Curvature `c = 1/R`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceShape {
     /// Flat surface `z = 0`.
     Plane,
@@ -119,26 +119,21 @@ pub enum Interaction {
 }
 
 /// Clear-aperture size.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SemiDiameter {
     /// Computed by the tracer: the largest ray height over all fields and
     /// wavelengths at the current aperture. It does not clip rays.
+    #[default]
     Auto,
     /// A user-fixed value that clips rays at this radius (mm).
     Fixed { value: f64 },
 }
 
-impl Default for SemiDiameter {
-    fn default() -> Self {
-        SemiDiameter::Auto
-    }
-}
-
 /// Optional explicit aperture that clips rays. It overrides the circular
 /// `SemiDiameter` when present.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApertureShape {
     Circular {
         radius: f64,
@@ -196,6 +191,7 @@ pub enum TransformOrder {
 
 /// Rigid placement change applied *before* the surface (CONVENTIONS §2).
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Placement {
     #[serde(default)]
     pub decenter_x: f64,
@@ -230,6 +226,7 @@ impl Placement {
 /// Mechanical description of a lens surface's edge. The stray-light solver
 /// uses it as non-optical geometry. Sizes are in mm.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EdgeSpec {
     /// Mechanical semi-diameter (≥ the clear aperture). `None` means the clear
     /// aperture plus `default_edge_margin`.
@@ -241,6 +238,7 @@ pub struct EdgeSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Surface {
     pub id: SurfaceId,
     #[serde(default)]

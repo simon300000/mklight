@@ -94,6 +94,80 @@ fn samples_are_well_focused() {
     }
 }
 
+/// Smallest axial separation `t_i + sag_{i+1}(r) − sag_i(r)` between
+/// surfaces `i` and `i + 1` for `r` in `[0, r_max]`, each surface continued
+/// by a flat beyond its clear radius `ca` (how lens elements are closed).
+fn min_separation(sys: &OpticalSystem, i: usize, ca: [f64; 2], r_max: f64) -> f64 {
+    let (a, b) = (&sys.surfaces[i], &sys.surfaces[i + 1]);
+    (0..=1000)
+        .map(|k| {
+            let r = r_max * k as f64 / 1000.0;
+            let (ra, rb) = (r.min(ca[0]), r.min(ca[1]));
+            let sag = |s: &mklight_core::Surface, r: f64| s.shape.sag(r * r).unwrap_or(f64::NAN);
+            a.thickness + sag(b, rb) - sag(a, ra)
+        })
+        .fold(f64::INFINITY, |m, g| if g >= m { m } else { g })
+}
+
+#[test]
+fn sample_elements_are_physical_over_their_clear_apertures() {
+    // At the automatic clear semi-diameters (the full field, with the
+    // fields' vignetting factors): every glass element has an edge
+    // thickness ≥ 0.5 mm out to the larger of its two clear apertures, and
+    // no two surfaces cross inside the smaller clear aperture of an air
+    // space. Mirrors, coordinate breaks and tilted surfaces are skipped.
+    use mklight_core::{Interaction, MaterialRef};
+    use mklight_trace::SemiDiameterSettings;
+    for (name, sys) in samples::all() {
+        let t = tracer(sys.clone());
+        let sd = t.semi_diameters(&SemiDiameterSettings::default());
+        let ca = |j: usize| sd.values[j].max(sd.traced[j]);
+        let n = sys.surfaces.len();
+        let plain = |j: usize| {
+            let s = &sys.surfaces[j];
+            s.interaction == Interaction::Refract
+                && !s.is_coordinate_break()
+                && s.placement.is_none_or(|p| p.is_identity())
+        };
+        let mut checked = 0;
+        for i in 1..n - 2 {
+            if !(plain(i) && plain(i + 1)) {
+                continue;
+            }
+            let glass = sys.surfaces[i].material != MaterialRef::Air;
+            let (c0, c1) = (ca(i), ca(i + 1));
+            let (r_max, min) = if glass {
+                (c0.max(c1), 0.5)
+            } else {
+                (c0.min(c1), 0.0)
+            };
+            let gap = min_separation(&sys, i, [c0, c1], r_max);
+            assert!(
+                gap > min,
+                "{name}: surfaces {i}–{} ({}) separate by {gap:.4} mm within r = {r_max:.3} mm",
+                i + 1,
+                if glass { "glass" } else { "air" }
+            );
+            checked += 1;
+        }
+        assert!(checked > 0 || name == "newtonian", "{name}");
+    }
+    // The check can fail: the Double Gauss without its vignetting factors
+    // needs clear apertures where L1 and L6 have negative edge thickness.
+    let mut dg = samples::double_gauss();
+    for f in &mut dg.fields.fields {
+        f.vignetting = Default::default();
+    }
+    let sd = tracer(dg.clone()).semi_diameters(&SemiDiameterSettings::default());
+    for i in [1, 10] {
+        let ca = [sd.values[i], sd.values[i + 1]];
+        assert!(
+            min_separation(&dg, i, ca, ca[0].max(ca[1])) < -0.3,
+            "L at {i}"
+        );
+    }
+}
+
 #[test]
 fn sample_first_order_values() {
     let fo = |s: OpticalSystem| tracer(s).paraxial().primary().clone();

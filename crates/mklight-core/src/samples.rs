@@ -161,8 +161,17 @@ const COOKE_BFL: f64 = 42.252_162;
 /// literature: its crown and flint were replaced by N-SK16 and F2 from the
 /// built-in catalog, the lens was opened to F/2, the eight curved surfaces
 /// were re-optimised here (coordinate descent on the polychromatic RMS spot
-/// over all fields) and the result was scaled to f ≈ 50 mm. The image is at
-/// the RMS best focus (≈ 22 µm polychromatic RMS spot).
+/// over all fields) and the result was scaled to f ≈ 50 mm.
+///
+/// Like real fast Double-Gauss lenses it vignettes off axis: the 10° and 14°
+/// fields carry the meridional pupil compression `vcy` = 0.15 and 0.30
+/// (CONVENTIONS §3), so the automatic clear apertures of the outer elements
+/// (L1 ≈ 15.6 mm, L6 ≈ 11.5 mm) leave every element a positive edge
+/// thickness (≥ 0.8 mm at the clear aperture, ≥ 0.3 mm at the default 1 mm
+/// mechanical margin) and no surfaces cross inside a clear aperture. Without
+/// vignetting the 14° beam needs clear apertures where L1 and L6 have
+/// negative edge thickness. The image is at the RMS best focus of the
+/// vignetted fields (≈ 20 µm polychromatic RMS spot).
 pub fn double_gauss() -> OpticalSystem {
     let mut sys = system(
         "Double Gauss f50 F/2",
@@ -170,6 +179,8 @@ pub fn double_gauss() -> OpticalSystem {
     );
     sys.aperture = ApertureSpec::ImageSpaceFNumber { value: 2.0 };
     sys.fields = fields(FieldKind::ObjectAngle, &[0.0, 10.0, 14.0]);
+    sys.fields.fields[1].vignetting.vcy = DOUBLE_GAUSS_VCY[0];
+    sys.fields.fields[2].vignetting.vcy = DOUBLE_GAUSS_VCY[1];
     let sk = || glass("N-SK16");
     let fl = || glass("F2");
     sys.surfaces = vec![
@@ -190,7 +201,9 @@ pub fn double_gauss() -> OpticalSystem {
     sys.stop = 6;
     sys
 }
-const DOUBLE_GAUSS_BFL: f64 = 28.968_768;
+const DOUBLE_GAUSS_BFL: f64 = 28.955_554;
+/// Meridional pupil compression `vcy` of the 10° and 14° fields.
+const DOUBLE_GAUSS_VCY: [f64; 2] = [0.15, 0.30];
 
 /// Newtonian-style reflecting telescope: F/5 paraboloidal primary
 /// (f = 500 mm, D = 100 mm) and a 45° flat fold mirror placed with

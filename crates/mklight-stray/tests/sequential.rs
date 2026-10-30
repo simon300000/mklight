@@ -153,14 +153,43 @@ fn cooke_triplet_primary_matches_sequential() {
     check_unobstructed("Cooke triplet field −0.55", &sys, &beam, 60_000, 33);
 }
 
+/// The Double Gauss sample without its vignetting factors: the unvignetted
+/// 14° beam sizes clear apertures at which L1 and L6 have negative edge
+/// thickness (the sample's vignetting avoids this, `samples::double_gauss`).
+fn unvignetted_double_gauss() -> OpticalSystem {
+    let mut s = mklight_core::samples::double_gauss();
+    for f in &mut s.fields.fields {
+        f.vignetting = Default::default();
+    }
+    s
+}
+
+/// The Double Gauss sample is physical over its clear apertures: no
+/// crossing surfaces and no obstruction of the designed beam at any field.
+#[test]
+fn double_gauss_sample_is_physical() {
+    let sys = stray_system(mklight_core::samples::double_gauss(), &no_scatter_options());
+    assert!(
+        !sys.scene
+            .warnings
+            .iter()
+            .any(|w| w.contains("intersect inside their clear apertures")),
+        "{:?}",
+        sys.scene.warnings
+    );
+    for (k, o) in sys.obstruction.iter().enumerate() {
+        assert!(o.unwrap() < 1e-9, "field {k}: {o:?}");
+    }
+}
+
 /// Surfaces that intersect inside their clear apertures are reported. The
 /// Monte Carlo then (correctly) departs from the purely sequential model,
 /// which ignores the crossing; the reference's path check against the scene
 /// sees the crossing as an obstruction of the designed path and reproduces
 /// the Monte Carlo.
 #[test]
-fn full_field_double_gauss_is_not_physical() {
-    let sys = stray_system(mklight_core::samples::double_gauss(), &no_scatter_options());
+fn crossing_surfaces_are_reported_and_obstruct() {
+    let sys = stray_system(unvignetted_double_gauss(), &no_scatter_options());
     for pair in ["surfaces 1 and 2", "surfaces 10 and 11"] {
         assert!(
             sys.scene
@@ -431,7 +460,10 @@ fn collimated_cases(real_aiming: bool) -> Vec<(&'static str, StraySystem, Vec<us
         ("singlet", sys(singlet()), vec![0, 2]),
         ("achromat", sys(achromatic_doublet()), vec![0, 2]),
         ("Cooke triplet", sys(cooke_triplet()), vec![0, 2]),
-        ("double Gauss", sys(double_gauss()), vec![0, 1]),
+        // Vignetting factors compress the sequential pupil, while the scene
+        // clips the full beam at the apertures; the two agree only
+        // approximately, so the spot comparison uses the unvignetted lens.
+        ("double Gauss", sys(unvignetted_double_gauss()), vec![0, 1]),
         ("Petzval", sys(petzval_asphere()), vec![0, 2]),
     ]
 }

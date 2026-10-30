@@ -352,30 +352,34 @@ fn set_edits_validates_and_saves_atomically() {
             .contains("invalid value"),
         "{e}"
     );
-    // Edits the engine's structural checks accept but that break the
-    // system for every ray-based command (the tracer cannot set up an
-    // F/# of 0 or -3), or are out of range, are rejected and not saved.
-    for (path, value) in [
-        (r#"{"param":"aperture_value"}"#, "0"),
-        (r#"{"param":"aperture_value"}"#, "-3"),
-        (r#"{"param":"field_weight","index":0}"#, "-1"),
+    // Values out of range (an F/# of 0 or -3, a negative weight) are
+    // rejected by the engine's structural validation, with its issue code,
+    // and not saved.
+    for (path, value, code) in [
+        (
+            r#"{"param":"aperture_value"}"#,
+            "0",
+            "invalid_aperture_value",
+        ),
+        (
+            r#"{"param":"aperture_value"}"#,
+            "-3",
+            "invalid_aperture_value",
+        ),
+        (
+            r#"{"param":"field_weight","index":0}"#,
+            "-1",
+            "negative_weight",
+        ),
     ] {
         let e = json_run(&["set", s(&p), path, value], 2);
         assert_eq!(e["error"]["kind"], "invalid_model", "{path} = {value}");
+        let msg = e["error"]["message"].as_str().unwrap();
         assert!(
-            e["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("makes the system invalid"),
+            msg.contains("edit rejected") && msg.contains(&format!("[{code}]")),
             "{e}"
         );
     }
-    let e = json_run(&["set", s(&p), r#"{"param":"aperture_value"}"#, "0"], 2);
-    let msg = e["error"]["message"].as_str().unwrap();
-    assert!(
-        msg.contains("aperture_value") && msg.contains("paraxial"),
-        "{msg}"
-    );
     assert_eq!(std::fs::read(&p).unwrap(), before);
     // An edit that keeps the model valid but stops real rays is saved, with
     // the new warning reported.
@@ -798,50 +802,31 @@ fn validate_agrees_with_the_ray_commands() {
     let d = TempDir::new("validate-rays");
     let p = sample(&d, "achromat");
     let doc: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-    // A file edited by hand to F/# 0: the engine's structural checks pass,
-    // but the tracer cannot set up the system, so validate fails like
-    // paraxial and trace do.
-    let mut bad = doc.clone();
-    bad["system"]["aperture"]["value"] = json!(0.0);
-    let b = d.join("f0.mklight");
-    std::fs::write(&b, bad.to_string()).unwrap();
-    let v = json_run(&["validate", s(&b)], 2);
-    assert_eq!(v["ok"], false);
-    let codes: Vec<&str> = v["issues"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|i| i["code"].as_str().unwrap())
-        .collect();
-    assert!(
-        codes.contains(&"paraxial") && codes.contains(&"aperture_value"),
-        "{codes:?}"
-    );
-    assert_eq!(f(&v["errors"]), 2.0);
-    assert_eq!(code(&mklight(["paraxial", s(&b)])), 2);
-    assert_eq!(code(&mklight(["trace", s(&b), "--pupil", "0,1"])), 2);
-    // On a broken system, an edit that does not repair it is still allowed
-    // (no new error), and the repairing edit is too.
-    json_run(
-        &["set", s(&b), r#"{"param":"thickness","surface":3}"#, "90"],
-        0,
-    );
-    json_run(&["set", s(&b), r#"{"param":"aperture_value"}"#, "5"], 0);
-    assert_eq!(json_run(&["validate", s(&b)], 0)["ok"], true);
-    assert_eq!(code(&mklight(["paraxial", s(&b)])), 0);
-    // A negative field weight.
-    let mut bad = doc;
-    bad["system"]["fields"]["fields"][1]["weight"] = json!(-1.0);
-    let b = d.join("weight.mklight");
-    std::fs::write(&b, bad.to_string()).unwrap();
-    let v = json_run(&["validate", s(&b)], 2);
-    assert!(
-        v["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|i| i["code"] == "field_weight")
-    );
+    // A file edited by hand to F/# 0, or to a negative field weight: the
+    // engine's structural validation rejects the model, so validate fails
+    // (with the issue code and the JSON path) like paraxial and trace do.
+    for (key, edit) in [
+        (
+            "[invalid_aperture_value] aperture.value",
+            &(|v: &mut Value| v["system"]["aperture"]["value"] = json!(0.0)) as &dyn Fn(&mut Value),
+        ),
+        (
+            "[negative_weight] fields.fields[1].weight",
+            &|v: &mut Value| v["system"]["fields"]["fields"][1]["weight"] = json!(-1.0),
+        ),
+    ] {
+        let mut bad = doc.clone();
+        edit(&mut bad);
+        let b = d.join("bad.mklight");
+        std::fs::write(&b, bad.to_string()).unwrap();
+        let v = json_run(&["validate", s(&b)], 2);
+        assert_eq!(v["error"]["kind"], "invalid_model", "{v}");
+        assert!(v["error"]["message"].as_str().unwrap().contains(key), "{v}");
+        assert_eq!(code(&mklight(["paraxial", s(&b)])), 2);
+        assert_eq!(code(&mklight(["trace", s(&b), "--pupil", "0,1"])), 2);
+    }
+    assert_eq!(json_run(&["validate", s(&p)], 0)["ok"], true);
+    assert_eq!(code(&mklight(["paraxial", s(&p)])), 0);
 }
 
 #[test]

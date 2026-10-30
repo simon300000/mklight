@@ -129,6 +129,7 @@ impl ResolvedSystem {
         // --- Frames. Surface 1's pre-placement frame is the global origin.
         let mut frames = vec![Frame::IDENTITY; n];
         let mut running = Frame::IDENTITY;
+        #[allow(clippy::needless_range_loop)] // `i` also indexes `frames`
         for i in 1..n {
             let s = &sys.surfaces[i];
             let surf_frame = match &s.placement {

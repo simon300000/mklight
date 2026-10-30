@@ -5,7 +5,7 @@ use crate::model::surface::SurfaceId;
 /// Surface scatter models (BSDF). Values are per unit projected solid angle,
 /// in sr⁻¹, unless stated otherwise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScatterModel {
     /// Lambertian scatter with total integrated scatter `tis` (fraction of the
     /// incident flux). BRDF = `tis/π`.
@@ -21,7 +21,7 @@ pub enum ScatterModel {
 /// Barrels, spacers and baffles are rotationally symmetric about a surface's
 /// local z axis.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalPart {
     /// Cylindrical tube between two surfaces' vertex planes. Its axis is the
     /// `from` surface's z.
@@ -44,6 +44,7 @@ pub enum MechanicalPart {
 
 /// Image sensor at the image surface.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sensor {
     pub pixels_x: u32,
     pub pixels_y: u32,

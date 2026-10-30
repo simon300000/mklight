@@ -40,8 +40,9 @@ pub enum Dispersion {
     ///
     /// NOT VERIFIED AGAINST A PRIMARY SPECIFICATION: this form agrees with the
     /// majority of independent open-source AGF readers; at least one reader
-    /// puts `λ²` in the second numerator as well. No catalog glass with
-    /// published formula-4 data was available to settle it with a known answer.
+    /// puts `λ²` in the second numerator as well. No manufacturer catalog
+    /// checked uses formula 4 (`docs/MATERIALS.md`), so there is no published
+    /// glass to settle it with a known answer.
     Sellmeier2 {
         a: f64,
         b: [f64; 2],
@@ -63,15 +64,17 @@ pub enum Dispersion {
     /// \[12\] Extended2:
     /// `n² = a0 + a1 λ² + a2 λ⁻² + a3 λ⁻⁴ + a4 λ⁻⁶ + a5 λ⁻⁸ + a6 λ⁴ + a7 λ⁶`.
     ///
-    /// NOT VERIFIED AGAINST A PRIMARY SPECIFICATION: the set of terms is
-    /// standard, but the placement of the two positive-power terms *after* the
-    /// Schott terms (coefficients 7 and 8) comes from secondary documentation.
+    /// Verified against a manufacturer catalog (`docs/MATERIALS.md`): every
+    /// formula-12 glass reproduces its catalog `n_d`, `V_d` to 5·10⁻⁷ with
+    /// `a6` on `λ⁴`. All of them have `a7 = 0`, so the `λ⁶` position of `a7`
+    /// rests on secondary documentation.
     Extended2 { a: [f64; 8] },
     /// \[13\] Extended3:
     /// `n² = a0 + a1 λ² + a2 λ⁴ + a3 λ⁻² + a4 λ⁻⁴ + a5 λ⁻⁶ + a6 λ⁻⁸ + a7 λ⁻¹⁰ + a8 λ⁻¹²`.
     ///
-    /// NOT VERIFIED AGAINST A PRIMARY SPECIFICATION: as for `Extended2`, the
-    /// coefficient order (`λ⁴` third) comes from secondary documentation.
+    /// Verified against a manufacturer catalog (`docs/MATERIALS.md`): every
+    /// formula-13 glass, including those with `a7, a8 ≠ 0`, reproduces its
+    /// catalog `n_d`, `V_d` to 5·10⁻⁷.
     Extended3 { a: [f64; 9] },
 }
 

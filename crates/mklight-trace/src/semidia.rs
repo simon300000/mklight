@@ -16,8 +16,15 @@
 //! rays reach the stop slightly above or below its paraxial radius, so
 //! [`fix_semi_diameters`] freezes the stop at the larger of the two values:
 //! freezing never vignettes the current design.
+//!
+//! [`SequentialTracer::semi_diameters_with`] is the cancellable variant for
+//! jobs and solvers: it checks the [`JobContext`] before every (field,
+//! wavelength) task and reports monotone progress over them. The result does
+//! not depend on the thread count (maxima and counts are exact reductions).
 
-use mklight_core::{OpticalSystem, SemiDiameter, SurfaceShape};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use mklight_core::{JobContext, MkResult, OpticalSystem, SemiDiameter, SurfaceShape};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -25,9 +32,13 @@ use crate::pupil::ring;
 use crate::trace::{SurfaceRecord, TraceOptions};
 use crate::tracer::SequentialTracer;
 
+/// Settings of [`SequentialTracer::semi_diameters`]. In JSON every field is
+/// optional (defaults below) and unknown keys are rejected, so a misspelt
+/// key is reported instead of silently ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SemiDiameterSettings {
-    /// Pupil-edge samples around the azimuth.
+    /// Pupil-edge samples around the azimuth (at least 4 are used).
     pub azimuths: usize,
     /// Let fixed apertures clip rays while sizing.
     pub clip: bool,
@@ -70,6 +81,20 @@ pub struct SemiDiameters {
 impl SequentialTracer {
     /// Compute clear semi-diameters (module docs).
     pub fn semi_diameters(&self, settings: &SemiDiameterSettings) -> SemiDiameters {
+        self.semi_diameters_with(settings, &JobContext::new())
+            .expect("a fresh JobContext is never cancelled")
+    }
+
+    /// As [`SequentialTracer::semi_diameters`], with cancellation (checked
+    /// before every (field, wavelength) task) and monotone progress.
+    pub fn semi_diameters_with(
+        &self,
+        settings: &SemiDiameterSettings,
+        ctx: &JobContext,
+    ) -> MkResult<SemiDiameters> {
+        const STAGE: &str = "semi-diameters";
+        ctx.check()?;
+        ctx.report(0.0, STAGE);
         let sys = self.system();
         let n = sys.surfaces.len();
         let mut pupil = vec![[0.0, 0.0]];
@@ -82,9 +107,12 @@ impl SequentialTracer {
         let tasks: Vec<(usize, usize)> = (0..self.fields().len())
             .flat_map(|f| (0..nw).map(move |w| (f, w)))
             .collect();
+        let done = AtomicUsize::new(0);
+        let total = tasks.len().max(1);
         let (maxes, failed) = tasks
             .par_iter()
-            .map(|&(f, w)| {
+            .map(|&(f, w)| -> MkResult<(Vec<f64>, usize)> {
+                ctx.check()?;
                 let field = self.field(f);
                 let mut m = vec![0.0f64; n];
                 let mut failed = 0usize;
@@ -98,12 +126,17 @@ impl SequentialTracer {
                         m[j] = m[j].max(s.point.x.hypot(s.point.y));
                     }
                 }
-                (m, failed)
+                let k = done.fetch_add(1, Ordering::Relaxed) + 1;
+                ctx.report(k as f64 / total as f64, STAGE);
+                Ok((m, failed))
             })
-            .reduce(
+            .try_reduce(
                 || (vec![0.0; n], 0),
-                |(a, fa), (b, fb)| (a.iter().zip(&b).map(|(x, y)| x.max(*y)).collect(), fa + fb),
-            );
+                |(a, fa), (b, fb)| {
+                    Ok((a.iter().zip(&b).map(|(x, y)| x.max(*y)).collect(), fa + fb))
+                },
+            )?;
+        ctx.check()?;
         let mut values = Vec::with_capacity(n);
         let mut sources = Vec::with_capacity(n);
         for (j, s) in sys.surfaces.iter().enumerate() {
@@ -126,12 +159,13 @@ impl SequentialTracer {
             values.push(v);
             sources.push(src);
         }
-        SemiDiameters {
+        ctx.report(1.0, STAGE);
+        Ok(SemiDiameters {
             values,
             traced: maxes,
             sources,
             failed_rays: failed,
-        }
+        })
     }
 }
 

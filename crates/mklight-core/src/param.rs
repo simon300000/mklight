@@ -10,7 +10,7 @@ use crate::error::{MkError, MkResult};
 use crate::model::{ApertureSpec, MaterialRef, OpticalSystem, Placement, SurfaceId, SurfaceShape};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "param", rename_all = "snake_case")]
+#[serde(tag = "param", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ParamPath {
     Curvature {
         surface: SurfaceId,
@@ -77,7 +77,7 @@ pub enum ParamPath {
     PressureAtm,
 }
 
-fn surf<'a>(s: &'a OpticalSystem, id: SurfaceId) -> MkResult<&'a crate::model::Surface> {
+fn surf(s: &OpticalSystem, id: SurfaceId) -> MkResult<&crate::model::Surface> {
     s.surfaces
         .iter()
         .find(|x| x.id == id)
@@ -288,8 +288,8 @@ impl ParamPath {
                 }
             }
             SemiDiameter { surface } => {
-                if !(v > 0.0) {
-                    return Err(bad(self, "semi-diameter must be > 0"));
+                if !(v.is_finite() && v > 0.0) {
+                    return Err(bad(self, "semi-diameter must be finite and > 0"));
                 }
                 surf_mut(s, *surface)?.semi_diameter =
                     crate::model::SemiDiameter::Fixed { value: v }

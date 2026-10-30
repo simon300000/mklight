@@ -251,8 +251,12 @@ fn fixed_apertures_clip_and_can_be_disabled() {
 #[test]
 fn real_aiming_converges_with_strongly_tilted_stop() {
     // Double Gauss with its stop tilted 20° and decentered: real aiming must
-    // put every ray on its target in the stop's own frame.
+    // put every ray on its target in the stop's own frame (without the
+    // sample's vignetting factors, so the target is the pupil point itself).
     let mut s = samples::double_gauss();
+    for f in &mut s.fields.fields {
+        f.vignetting = Default::default();
+    }
     s.surfaces[6].placement = Some(Placement {
         tilt_x: 20.0,
         tilt_y: 8.0,
@@ -410,6 +414,30 @@ fn automatic_semi_diameters() {
             );
         }
     }
+}
+
+#[test]
+fn semi_diameters_with_job_context() {
+    use mklight_core::{CancelToken, JobContext, MkError, Progress};
+    let t = tracer(samples::cooke_triplet());
+    let settings = SemiDiameterSettings::default();
+    // Same numbers as the plain call, progress ends at 1.
+    let ctx = JobContext::new();
+    let with = t.semi_diameters_with(&settings, &ctx).unwrap();
+    assert_eq!(with, t.semi_diameters(&settings));
+    assert_eq!(ctx.progress.fraction(), 1.0);
+    // A cancelled job returns Cancelled, not partial values.
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let ctx = JobContext::with(cancel, Progress::default());
+    assert_eq!(
+        t.semi_diameters_with(&settings, &ctx),
+        Err(MkError::Cancelled)
+    );
+    // The settings reject misspelt keys and fill in missing ones.
+    let s: SemiDiameterSettings = serde_json::from_str(r#"{"azimuths": 8}"#).unwrap();
+    assert_eq!((s.azimuths, s.clip), (8, true));
+    assert!(serde_json::from_str::<SemiDiameterSettings>(r#"{"azimuth": 8}"#).is_err());
 }
 
 #[test]

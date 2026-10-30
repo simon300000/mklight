@@ -700,6 +700,38 @@ impl Reader<'_> {
     }
 }
 
+/// Records whose numbers may continue on the following lines.
+const WRAPPING_TAGS: [&str; 4] = ["ED", "CD", "TD", "OD"];
+
+/// The non-empty, trimmed lines of `text` with their 1-based line numbers,
+/// where a line that starts with a number (or `-`) and follows a numeric
+/// record (`ED`, `CD`, `TD`, `OD`) is appended to that record. Manufacturer
+/// catalogs wrap long `CD` and `TD` records over several lines this way (for
+/// example the 10 `CD` coefficients of formula 13 over three lines).
+fn logical_lines(text: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    for (i, raw) in text.split(['\n', '\r']).enumerate() {
+        let line = raw.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+        let Some(first) = line.split_whitespace().next() else {
+            continue;
+        };
+        let numeric = first == "-" || first.parse::<f64>().is_ok();
+        if numeric
+            && let Some((_, prev)) = out.last_mut()
+            && prev
+                .split_whitespace()
+                .next()
+                .is_some_and(|t| WRAPPING_TAGS.contains(&t.to_ascii_uppercase().as_str()))
+        {
+            prev.push(' ');
+            prev.push_str(line);
+            continue;
+        }
+        out.push((i + 1, line.to_string()));
+    }
+    out
+}
+
 /// Parses AGF text into a catalog named `name`, returning the glasses, their
 /// AGF metadata, the catalog comments and all warnings.
 pub fn parse_agf_with(name: &str, text: &str, opts: &AgfOptions) -> MkResult<AgfCatalog> {
@@ -722,12 +754,8 @@ pub fn parse_agf_with(name: &str, text: &str, opts: &AgfOptions) -> MkResult<Agf
     let mut skipping = false;
     let mut nm_seen = 0usize;
 
-    for (i, raw) in normalized.split(['\n', '\r']).enumerate() {
-        let ln = i + 1;
-        let line = raw.trim_matches(|c: char| c.is_whitespace() || c == '\0');
-        if line.is_empty() {
-            continue;
-        }
+    for (ln, line) in logical_lines(&normalized) {
+        let line = line.as_str();
         let toks: Vec<&str> = line.split_whitespace().collect();
         let tag = toks[0].to_ascii_uppercase();
         let f = &toks[1..];
@@ -1303,6 +1331,93 @@ LD 0.31 2.325
 
     fn kinds(c: &AgfCatalog) -> Vec<AgfWarningKind> {
         c.warnings.iter().map(|w| w.kind).collect()
+    }
+
+    /// Four glasses of the manufacturer catalog `NIKON-HIKARI_201911.AGF`
+    /// (Nikon, "Zemax Data: AGF format", nikon.com, November 2019), copied
+    /// record for record: formula 13 (J-FK5; J-SFH1 with a7, a8 ≠ 0) and
+    /// formula 12 (E-LAKH1, E-KZFH1), with `CD` and `TD` wrapped over
+    /// several lines as in the file. `docs/MATERIALS.md` lists the source.
+    const NIKON_HIKARI: &str = "CC  Updated 11/2019\r
+NM J-FK5 13 1 1.487490 70.318793 0 0 1\r
+GC \t\t\t\t\t\t\t\t\t\r
+ED 8.900000000E+000 0.000000000E+000 2.450000000E+000 2.700000000E-003 0 0\r
+CD 2.188268550E+000 -9.190447240E-003 -1.116210710E-004 9.263728150E-003 \r
+7.349007330E-005 4.197242420E-006 -1.154122030E-007 0.000000000E+000 \r
+0.000000000E+000 0.000000000E+000\r
+TD -8.080000000E-006 1.810000000E-008 -1.840000000E-012 3.750000000E-007 \r
+3.020000000E-010 1.690000000E-001 2.300000000E+001\r
+OD -1.00000 -1.00000 -1.00000 -1.00000 -1.00000 3.00000\r
+LD 3.65015000E-001 2.05809000E+000\r
+NM J-SFH1 13 1 1.808090 22.738831 0 0 3\r
+ED 9.100000000E+000 0.000000000E+000 3.310000000E+000 2.260000000E-002 0 0\r
+CD 3.116370390E+000 -1.401032520E-002 0.000000000E+000 4.552954590E-002 \r
+3.791295070E-003 -5.762037930E-004 1.537939770E-004 -1.657800290E-005 \r
+8.814805000E-007 0.000000000E+000\r
+LD 3.88865000E-001 2.05809000E+000\r
+NM E-LAKH1 12 1 1.748099 52.304982 0 2 3\r
+CD 2.982439420E+000 -2.024229460E-003 2.679066790E-002 -6.323014370E-004 \r
+1.108986210E-004 -4.158410800E-006 -4.957928360E-003 0.000000000E+000 \r
+0.000000000E+000 0.000000000E+000\r
+LD 4.00000000E-001 7.00000000E-001\r
+NM E-KZFH1 12 1 1.612660 44.461379 0 2 3\r
+CD 2.546629040E+000 -1.229723320E-002 1.874646230E-002 4.602965830E-004 \r
+7.853510660E-007 1.727209720E-006 -1.334768060E-004 0.000000000E+000 \r
+0.000000000E+000 0.000000000E+000\r
+LD 4.00000000E-001 7.00000000E-001\r
+";
+
+    #[test]
+    fn manufacturer_catalog_verifies_formulas_12_and_13() {
+        const D: f64 = 0.5875618;
+        const F: f64 = 0.4861327;
+        const C: f64 = 0.6562725;
+        let c = parse(NIKON_HIKARI);
+        // Every glass reproduces the manufacturer's n_d and V_d (no
+        // IndexMismatch), which needs the wrapped CD lines joined.
+        assert_eq!(kinds(&c), vec![]);
+        let check = |d: &Dispersion, nd: f64, vd: f64| {
+            let (n_d, n_f, n_c) = (d.index(D), d.index(F), d.index(C));
+            ((n_d - nd).abs(), ((n_d - 1.0) / (n_f - n_c) - vd).abs())
+        };
+        for (name, formula) in [
+            ("J-FK5", "Extended3"),
+            ("J-SFH1", "Extended3"),
+            ("E-LAKH1", "Extended2"),
+            ("E-KZFH1", "Extended2"),
+        ] {
+            let g = &c.catalog.glasses[name];
+            assert_eq!(g.dispersion.formula_name(), formula);
+            let (e_nd, e_vd) = check(&g.dispersion, g.nd, g.vd);
+            assert!(e_nd < 1e-6 && e_vd < 2e-6, "{name}: {e_nd:e} {e_vd:e}");
+        }
+        // J-FK5's thermal record, also wrapped: T_ref = 23 °C.
+        let th = c.catalog.glasses["J-FK5"].thermal.unwrap();
+        assert_eq!((th.d0, th.e1, th.t_ref_c), (-8.08e-6, 3.02e-10, 23.0));
+        // Permuted coefficient orders miss the catalog values by far more:
+        // formula 12 with λ⁴ and λ⁶ swapped, formula 13 read as formula 12.
+        let Dispersion::Extended2 { a } = c.catalog.glasses["E-LAKH1"].dispersion else {
+            unreachable!()
+        };
+        let swapped = Dispersion::Extended2 {
+            a: [a[0], a[1], a[2], a[3], a[4], a[5], a[7], a[6]],
+        };
+        assert!(check(&swapped, 1.748099, 52.304982).0 > 1e-4);
+        let Dispersion::Extended3 { a } = c.catalog.glasses["J-SFH1"].dispersion else {
+            unreachable!()
+        };
+        let as12 = Dispersion::Extended2 {
+            a: a[..8].try_into().unwrap(),
+        };
+        assert!(check(&as12, 1.808090, 22.738831).0 > 1e-2);
+        // Without joining the continuation lines the coefficients are
+        // truncated (the bug this reader had): n_d off by 2.4e-4.
+        let first_line_only = dispersion_from_agf(
+            13,
+            &[2.18826855, -9.19044724e-3, -1.11621071e-4, 9.26372815e-3],
+        )
+        .unwrap();
+        assert!(check(&first_line_only, 1.48749, 70.318793).0 > 2e-4);
     }
 
     #[test]

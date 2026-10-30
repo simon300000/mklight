@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// How the system aperture is specified.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApertureSpec {
     /// Entrance pupil diameter (mm).
     EntrancePupilDiameter { value: f64 },
@@ -38,6 +38,7 @@ pub enum FieldKind {
 
 /// Vignetting factors (CONVENTIONS §3).
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Vignetting {
     #[serde(default)]
     pub vdx: f64,
@@ -63,6 +64,7 @@ impl Vignetting {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Field {
     pub x: f64,
     pub y: f64,
@@ -88,6 +90,7 @@ impl Field {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FieldSet {
     pub kind: FieldKind,
     pub fields: Vec<Field>,
@@ -116,6 +119,7 @@ impl FieldSet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Wavelength {
     /// Micrometres.
     pub um: f64,
@@ -124,6 +128,7 @@ pub struct Wavelength {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WavelengthSet {
     pub wavelengths: Vec<Wavelength>,
     /// Index into `wavelengths`.
@@ -160,7 +165,7 @@ impl WavelengthSet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RayAiming {
     /// Pupil coordinates map onto the paraxial entrance pupil.
     #[default]
@@ -178,6 +183,7 @@ fn aim_tol() -> f64 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Environment {
     pub temperature_c: f64,
     pub pressure_atm: f64,
