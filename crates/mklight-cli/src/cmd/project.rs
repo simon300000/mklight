@@ -479,7 +479,9 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
         .map_err(|e| CliError::usage(format!("invalid parameter path '{}': {e}", a.path)))?;
     let value = parse_value(&a.value)?;
     let mut session = ctx.open(&a.project)?;
-    let old = param.get(session.system()).map_err(CliError::from)?;
+    // No current value for some paths (an automatic semi-diameter); an
+    // invalid path is reported by `apply_edits` below.
+    let old = param.get(session.system()).ok();
     let before_hash = session.snapshot_hash();
     let before = error_issues(&session)?;
     session
@@ -506,7 +508,7 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
     let json = json!({
         "path": path_str(&a.project),
         "param": param,
-        "old": num(old),
+        "old": old.map_or(Value::Null, num),
         "new": num(value),
         "changed": changed,
         "saved": saved,
@@ -514,7 +516,12 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
         "snapshot_hash_before": before_hash,
         "snapshot_hash": session.snapshot_hash(),
     });
-    let mut text = format!("{}: {} -> {}\n", a.path, fmt_g(old, 10), fmt_g(value, 10));
+    let mut text = format!(
+        "{}: {} -> {}\n",
+        a.path,
+        old.map_or("(automatic)".into(), |v| fmt_g(v, 10)),
+        fmt_g(value, 10)
+    );
     text.push_str(&if saved {
         format!("saved {}\n", target.display())
     } else {
