@@ -38,4 +38,13 @@ struct MKLightApp: App {
     }
 }
 
+#if DEBUG
+// Screenshots: `-MKLightAppearance light|dark` overrides the system appearance.
+switch UserDefaults.standard.string(forKey: "MKLightAppearance") {
+case "light": NSApplication.shared.appearance = NSAppearance(named: .aqua)
+case "dark": NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+default: break
+}
+#endif
+
 MKLightApp.main()

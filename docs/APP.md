@@ -1,122 +1,305 @@
 # MKLight for macOS on the Rust engine
 
 The native app (`apps/macos`, SwiftPM) runs on the Rust engine through its C
-ABI (`crates/mklight-ffi`, docs/FFI.md). This page covers the design of the
-user interface, the window structure, building, the Swift binding
-(`FFIEngine`), the state model, the tests and what remains for iPadOS.
-Package layout and the Metal viewport are described in
+ABI (`crates/mklight-ffi`, docs/FFI.md). This page covers the design brief and
+the design of the user interface, the window structure, building, the Swift
+binding (`FFIEngine`), the state model, the tests and what remains for
+iPadOS. Package layout and the Metal viewport are described in
 `apps/macos/README.md`; screenshots are in `apps/macos/docs/screenshots/`.
+
+## Platform
+
+The package targets **macOS 27** (`swift-tools-version: 6.4`,
+`platforms: [.macOS(.v27)]`); the later iPad target will be **iPadOS 27**. On
+27 every Liquid Glass and SwiftUI API the app uses (glass effects and
+containers, glass button styles, `ToolbarSpacer`, `safeAreaBar`, scroll edge
+effects, `ConcentricRectangle`, `Observations`) is available without
+`#available` checks, and building with the 27 SDK always gives the new
+design: the `UIDesignRequiresCompatibility` opt-out is ignored from 27 on.
+Build with Xcode 27.2 / Swift 6.4.2 (Swift 6 language mode, strict
+concurrency).
+
+## Design brief: Liquid Glass
+
+What we took from Apple's current guidance, and how MKLight applies it.
+
+**Sources read** (the developer.apple.com pages through their JSON form):
+
+* HIG: [Materials](https://developer.apple.com/design/human-interface-guidelines/materials),
+  [Layout](https://developer.apple.com/design/human-interface-guidelines/layout),
+  [Toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars),
+  [Sidebars](https://developer.apple.com/design/human-interface-guidelines/sidebars),
+  [Split views](https://developer.apple.com/design/human-interface-guidelines/split-views),
+  [Panels](https://developer.apple.com/design/human-interface-guidelines/panels) (inspectors),
+  [Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views),
+  [Tab views](https://developer.apple.com/design/human-interface-guidelines/tab-views),
+  [Color](https://developer.apple.com/design/human-interface-guidelines/color),
+  [Typography](https://developer.apple.com/design/human-interface-guidelines/typography),
+  [SF Symbols](https://developer.apple.com/design/human-interface-guidelines/sf-symbols),
+  [Icons](https://developer.apple.com/design/human-interface-guidelines/icons),
+  [Charts](https://developer.apple.com/design/human-interface-guidelines/charts),
+  [Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons),
+  [Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility),
+  [Designing for macOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos),
+  [Designing for iPadOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-ipados).
+* Developer documentation: [Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass),
+  [Applying Liquid Glass to custom views](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views),
+  SwiftUI [`glassEffect(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffect(_:in:)),
+  [`GlassEffectContainer`](https://developer.apple.com/documentation/swiftui/glasseffectcontainer),
+  [`glassEffectID(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffectid(_:in:)),
+  [`GlassButtonStyle`](https://developer.apple.com/documentation/swiftui/glassbuttonstyle),
+  [`backgroundExtensionEffect()`](https://developer.apple.com/documentation/swiftui/view/backgroundextensioneffect()),
+  [`scrollEdgeEffectStyle(_:for:)`](https://developer.apple.com/documentation/swiftui/view/scrolledgeeffectstyle(_:for:)),
+  [`ToolbarSpacer`](https://developer.apple.com/documentation/swiftui/toolbarspacer),
+  [`inspector(isPresented:content:)`](https://developer.apple.com/documentation/swiftui/view/inspector(ispresented:content:)),
+  [`tabViewBottomAccessory`](https://developer.apple.com/documentation/swiftui/view/tabviewbottomaccessory(content:)),
+  [Swift Charts `Chart3D`](https://developer.apple.com/documentation/charts/chart3d),
+  [Observation](https://developer.apple.com/documentation/observation),
+  [What's new in SwiftUI](https://developer.apple.com/documentation/updates/swiftui).
+* WWDC: [Meet Liquid Glass (WWDC25 219)](https://developer.apple.com/videos/play/wwdc2025/219/),
+  [Get to know the new design system (WWDC25 356)](https://developer.apple.com/videos/play/wwdc2025/356/),
+  [Build a SwiftUI app with the new design (WWDC25 323)](https://developer.apple.com/videos/play/wwdc2025/323/),
+  [What's new in SwiftUI (WWDC25 256)](https://developer.apple.com/videos/play/wwdc2025/256/),
+  [Bring Swift Charts to the third dimension (WWDC25 313)](https://developer.apple.com/videos/play/wwdc2025/313/),
+  [What's new in SwiftUI (WWDC26 269)](https://developer.apple.com/videos/play/wwdc2026/269/),
+  [Modernize your AppKit app (WWDC26 289)](https://developer.apple.com/videos/play/wwdc2026/289/),
+  [Principles of great design (WWDC26 250)](https://developer.apple.com/videos/play/wwdc2026/250/).
+
+**Principles, and what MKLight does with them**
+
+1. *Glass is the navigation and control layer that floats above content;
+   never put it on content* (Materials, Meet Liquid Glass: a table "keeps it
+   in the content layer"). The lens table, plots, PSF and wavefront images
+   and the Metal viewport are plain content: system backgrounds, crisp lines,
+   no glass. Glass is on the toolbar, the sidebar and inspector (system), the
+   controls floating over the viewport, the pane header clusters, the stale
+   card, the job action bar and transient messages.
+2. *Use custom glass sparingly; avoid glass on glass; group nearby glass in a
+   `GlassEffectContainer`* (Applying Liquid Glass to custom views, WWDC25 323).
+   Each cluster (viewport controls, a pane's buttons, the lens table's insert
+   and delete, the job actions) is one container; popovers and menus that
+   open from glass use the system's own material.
+3. *One prominent action per view, tinted; hierarchy by style, not size*
+   (Toolbars, Buttons, Color). `.glassProminent` or an accent-tinted glass
+   capsule only for the single primary action of a flow: Optimize → Apply to
+   Design, Run (Tolerance), Apply to Design (Solves), New Design (welcome),
+   Update on a stale pane. Everything else is regular glass or plain.
+4. *Morph glass when controls change state* (`glassEffectID`). The job
+   action bar morphs Optimize → [progress, Cancel, Stop] → [Discard, Apply to
+   Design] → [Run Again, Done]; the viewport's Section / 3D selection slides
+   between its options.
+5. *Group toolbar items by function, at most three groups, spacers between
+   them; the primary action and inspector toggle trailing; every item also a
+   menu command* (Toolbars, WWDC25 323). Design jobs | Add Analysis, Layout |
+   Inspector, separated by `ToolbarSpacer(.fixed)`; the design's status in
+   the centre (`.principal`). All have menu commands and shortcuts.
+6. *Avoid critical information at the bottom of a Mac window* (Layout). The
+   old status bar is gone: activity, EFL, F/#, total track and the issue
+   count live in the toolbar's status capsule; engine, backend and snapshot
+   are in its popover; transient messages float as a glass toast.
+7. *Scroll edge effects instead of bar backgrounds; hard for pinned table
+   headers, soft elsewhere; one per view* (Scroll views, WWDC25 356). The lens
+   table uses `.hard` at the top; the inspector's Surface / System switch is
+   a `safeAreaBar` over the form with a `.soft` edge; job panels have soft
+   edges under their header and their action bar.
+8. *Content extends under floating chrome* (Sidebars, Layout,
+   `backgroundExtensionEffect`). The viewport draws edge to edge under its
+   glass controls. We do not apply `backgroundExtensionEffect` to the Metal
+   view: the effect mirrors its view's content, and copies of a live
+   `MTKView` are neither cheap nor reliable; the sidebar's glass already
+   floats over the window's background.
+9. *Inspectors show the selection and update with it; less modality*
+   (Panels, Designing for macOS). Design jobs moved from modal sheets into
+   the inspector: the design, layout and analyses stay usable while a job
+   runs, and a job keeps running when its panel closes (the status capsule
+   shows it and reopens it).
+10. *Concentric, capsule and fixed shapes; dense inspectors use small
+    controls* (WWDC25 356). Capsules for floating controls, circles for icon
+    buttons, a rounded card for the stale message; system form controls in
+    the inspector.
+11. *Color sparingly and with meaning; supply light, dark and increased
+    contrast; don't rely on color alone* (Color, Charts). The accent marks
+    selection, the focused pane, variables, the GPU badge and the primary
+    action. Plots keep the validated `Palette`; wavelengths keep their
+    physical colours; series also differ by dash.
+12. *Typography: system font, 13 pt body on macOS, tabular figures for
+    numbers* (Typography; macOS has no Dynamic Type). Every number uses
+    `monospacedDigit()`; text styles, not point sizes, so the iPad build gets
+    Dynamic Type.
+13. *Charts: the data is the most prominent thing; light grids and labels;
+    don't hide critical information behind interaction; label for VoiceOver*
+    (Charts). Plots are content in the panes with few, light ticks; key
+    numbers sit in the pane footer; every plot and custom drawing has an
+    accessibility label and value. `Chart3D` is used nowhere yet: the guidance
+    keeps 3D for shapes whose form matters more than values (a candidate for
+    a future freeform sag view).
+14. *Accessibility adapts glass automatically; check custom views* (Meet
+    Liquid Glass, Accessibility). Reduce Transparency and Increase Contrast
+    are handled by the system glass; custom views use system materials and
+    semantic colours. Reduce Motion turns off the morphing animations, the
+    stale blur and the updating pulse, and replaces slides by fades.
 
 ## Design principles
 
 * **The lens data is the heart.** The table is always visible at the top of
   the window and shows only what every surface has: surface (with the stop
   marked), type, comment, radius, thickness, material, semi-diameter and
-  conic. Everything type-specific lives in the inspector.
+  conic. Everything type-specific lives in the inspector. A toroid's or
+  biconic's radius and conic are its y section's, marked `y`.
 * **Progressive disclosure.** Surface types are described as data
-  (`SurfaceTypes`): sections of parameters addressed by their key in the
-  model's JSON, coefficient lists with add and remove, a variable toggle per
-  parameter and a sag preview. The inspector shows only the selected type's
+  (`SurfaceTypes`): sections of parameters addressed by their key path in the
+  model's JSON (`curvature`, `phase.norm_radius`), coefficient lists with add
+  and remove, each term labelled with its meaning (`A₄ r⁴`, `β₃ r³`,
+  `a₂ u⁴Q₂ᶜᵒⁿ`, `C(x²y)`, `Z₇ coma x`), a variable toggle per continuous
+  value, and a preview kind. The inspector shows only the selected type's
   parameters. A new type needs its model case and one descriptor, no view.
   Placement (decenters, tilts) appears when it is used, first for coordinate
-  breaks. Analysis settings show the simple ones in a compact bar and the
-  rest behind "More".
+  breaks. Analysis settings live in a popover, with a summary of what
+  differs from the defaults under the pane title.
 * **The engine is the authority.** The app never computes optics. Analyses
   are run by name and drawn from the engine's result JSON and buffers
   (docs/RESULTS.md). The list of analyses, their settings and their
   availability are read at run time, so a new engine analysis appears in the
   sidebar and runs with a generic, schema-driven view and no code change.
-  Unknown results are shown as data, never as an error.
+  Unknown results are shown as data, never as an error. The inspector's
+  shape previews evaluate the documented sag formulas (display geometry,
+  `ShapeSag`); a DOE's paraxial power comes from A₁ by docs/SURFACES.md §3.
 * **Reproducible and honest.** Every result carries the settings and seed
   the engine recorded, the backend that actually computed it (CPU f64
-  reference or Metal f32, with the fallback reason) and its warnings, one
-  click away in the pane footer. A result that no longer matches the design,
-  the glass library or its settings is dimmed and says "Design changed",
-  with an Update button.
-* **Calm and native.** System materials, semantic colours, SF Symbols, the
-  system font with monospaced digits for numbers, a 2–24 pt spacing scale
-  (`Space`), no custom chrome. The accent colour marks only selection, the
-  focused pane and variables. Plot colours come from one validated
-  categorical palette (`Palette`); wavelengths keep their physical meaning
-  (F blue, d yellow, C red) everywhere, fields take the categorical slots in
-  order; maps use one hue for magnitude and blue ↔ red for signed values.
-  Light and dark appearance are both designed.
+  reference or GPU f32, with the fallback reason) and its warnings, one
+  click away from the pane's backend badge. A result that no longer matches
+  the design, the glass library or its settings is dimmed and blurred under
+  a glass "Design changed" card with Update. A schematic drawn from the
+  model, where the engine's layout cannot draw a design yet, says so.
+* **Calm and native.** Liquid Glass for controls (above), system materials
+  and semantic colours elsewhere, SF Symbols, the system font with tabular
+  digits, a 2–24 pt spacing scale (`Space`). Light and dark appearance are
+  both designed.
 * **No modal alerts for routine errors.** Rejected input is reverted and
-  explained in the status bar; failing analyses explain themselves in their
-  pane; validation issues are listed in a popover and badged in the table.
+  explained in a glass toast; failing analyses explain themselves in their
+  pane; validation issues are listed in a popover from the status capsule and
+  badged in the table.
 
 ## Window structure
 
 ```
-┌ toolbar: Optimize · Tolerance · Solves | Issues | Add Analysis · Layout · Inspector ┐
-├ sidebar ──────┬ Lens Data ─────────────────────────────────────┬ inspector ────────┤
-│ Analyses      │ Surf Type Comment Radius Thickness Material …  │ Surface | System  │
-│  (searchable, ├────────────────────────┬───────────────────────┤ type-driven form  │
-│  by category) │ Layout (Metal 2D / 3D) │ analysis panes …      │ or aperture,      │
-│  Issues       │                        │ header · settings ·   │ fields, λ, …      │
-│               │                        │ plot · footer         │                   │
-├───────────────┴ status: compute backend · snapshot · message · EFL F/# TT image ───┤
+┌ toolbar: ◧ title │   ⟳ EFL · F/# · TT · ⓘ issues   │ Optimize Tolerance Solves │ + Layout │ ◨ ┐
+├ sidebar (glass) ─┬ Lens Data (hard scroll edge) ──────────────────────┬ inspector ─────────┤
+│ Analyses         │ Surf Type Comment Radius Thickness Material …      │ [Surface|System]  │
+│  (searchable,    ├─────────────────────────┬──────────────────────────┤ type menu, preview│
+│  by category)    │ Layout (Metal, edge to  │ analysis panes …         │ data-driven form  │
+│  Issues          │ edge) [Layout] [2D|3D]◉⤢│ title ⌄   ⟳ ⚡ ⚙ …        │ — or a job panel: │
+│                  │                         │ plot (content)           │ Optimize, Tol.,   │
+│                  │ 20 mm                   │ key numbers  [CPU · f64] │ Solves + actions  │
+└──────────────────┴─────────────────────────┴──────────────────────────┴───────────────────┘
 ```
 
 * **`NavigationSplitView`**: the sidebar lists every engine analysis by
-  category (`.searchable`); a click shows it in the focused pane, ⌥-click
-  or the context menu opens a new pane. Open analyses carry a dot,
-  unavailable ones are dimmed with the engine's reason as help.
+  category (`.searchable` in the sidebar); a click shows it in the focused
+  pane, ⌥-click or the context menu opens a new pane. Open analyses carry a
+  dot, unavailable ones are dimmed with the engine's reason as help.
+* **Toolbar**: three groups separated by `ToolbarSpacer`: the design jobs
+  (Optimize, Tolerance, Apply Solves, each opening its inspector panel);
+  Add Analysis and the layout toggle; the inspector toggle. In the centre,
+  the **status capsule** (`DesignStatus`): a running job ("Optimizing ·
+  479", click to show it) or analysis activity, EFL (EFL y for a design that
+  is not rotationally symmetric), F/# and total track, and the issues button.
+  Its popover has the first-order table, the anamorphic data, the engine,
+  the snapshot and the compute backend picker.
 * **Lens data** (`LensTableView`, SwiftUI `Table`): text cells edit in place
   with full keyboard navigation (Return / double click edits the row; Tab
   and ⇧Tab move across, ↑/↓ and Return move between rows committing, Esc
   reverts). Numbers accept `∞`/`inf`, and the material column completes glass
-  names from the session's catalogs. Small inline markers show variables
-  (`V`) and solves (`M`, `C`, `F`, `P`, …); validation issues badge their
-  surface. Insert, delete, make stop and toggle variable are in the header,
+  names from the session's catalogs. The type column is a compact menu with
+  SF Symbols, grouped Spherical, Aspheric, Freeform, Anamorphic, Diffractive,
+  Special (cylinder presets under Anamorphic). Small inline markers show
+  variables (`V`) and solves (`M`, `C`, `F`, `P`, …); validation issues badge
+  their surface. Insert and delete are glass buttons in the header, and in
   the context menu and the Lens menu.
-* **Layout pane**: the engine's `layout` scene in the Metal viewport, section
-  or 3-D orbit, rays by field or wavelength, the selected surface in the
-  accent colour, scale bar, fit.
+* **Layout pane**: the engine's `layout` scene in the Metal viewport, edge to
+  edge, with glass controls floating over it (title chip, Section / 3D
+  selector, display options, fit), a scale bar, and a glass "Design changed"
+  button when stale. A design with surface types the engine's layout does
+  not draw yet shows a labelled schematic from the model.
 * **Analysis panes** (`AnalysisPaneView`): side by side with resizable
-  widths. Each has a header (analysis menu, progress and Cancel, automatic
-  update toggle, Run, settings toggle, more), a schema-driven settings bar
-  (fields, wavelengths and surfaces as menus with their values), the plot
-  and a footer with key numbers and the backend actually used. Dedicated
-  views: first-order data, spot diagram (all fields, common scale, Airy
-  disk, RMS/GEO), ray and OPD fans, field curvature and distortion, grid
-  distortion, Seidel bars per surface with the sum and wavefront terms,
-  longitudinal aberration, chromatic focal shift, lateral colour, relative
-  illumination, footprint, encircled energy (geometric and diffraction),
-  geometric and diffraction MTF (diffraction limit, Nyquist), MTF vs field,
-  through-focus MTF, wavefront map with the Zernike table, PSF with Strehl
-  (log scale), line spread, ghost paths, ghost irradiance and stray-light
-  maps per class, polarisation pupil maps, system transmission, best focus,
-  validation. Everything else: the generic view (scalars, record tables,
-  curves, buffer maps, a JSON outline).
-* **Inspector** (`.inspector`): Surface (type picker, data-driven parameter
-  form, spacing and medium, aperture and clipping shape, placement, coating,
-  solves) or System (aperture, fields, wavelengths with presets,
-  environment, ray aiming, configurations, glass catalogs).
-* **Design jobs** are sheets. *Optimize*: merit (RMS spot or wavefront,
-  pupil sampling, hold EFL), variables (the design's `V` marks or the
-  engine's automatic set), algorithm, iterations and seed; live iteration,
-  merit and a log-scale merit history; **Stop** keeps the best design so far
-  (ABI 1.2 `mk_job_stop`), Cancel discards; the result is a before/after
-  comparison of merit and every variable, applied as one undoable step.
-  *Tolerance*: ranked sensitivities with bars, Monte-Carlo statistics and a
-  histogram. *Apply Solves*: a dry run report (now, solved, residual), then
-  one undoable commit through `mk_session_apply_solves`.
-* **Issues**: the toolbar shows the validation state; the popover lists
-  severity, code and message; a click selects the surface (or highlights
-  the field in the system inspector).
-* **Welcome window**: new design, open, and the engine's sample designs
-  (also File ▸ New from Sample, ⇧⌘1 to show it again).
+  widths. The header has the analysis menu and a one-line state or settings
+  summary, and a glass cluster: Run (Cancel while running), automatic update
+  (bolt), Settings (a popover with the schema-driven form; "Pin in pane"
+  keeps it as a compact strip) and More. The plot is content. The footer has
+  the key numbers and a backend badge (CPU · f64 neutral, GPU · f32 in the
+  accent, an orange mark for warnings or a fallback) that opens the run
+  details. Stale: dimmed, desaturated, slightly blurred, with a glass card
+  and a prominent Update; updating: a progress line and a gentle pulse. The
+  dedicated views are as before (first order with the anamorphic note, spot,
+  fans, field curvature, Seidel, MTF, PSF, wavefront, ghosts, stray light,
+  polarisation, …); everything else uses the generic view.
+* **Inspector** (`.inspector`): Surface or System, switched by a segmented
+  control in a `safeAreaBar`. Surface: title with a stop badge, the type
+  menu, the type's summary and preview, then the data-driven sections,
+  spacing and medium, aperture, placement, coating, solves. Previews:
+  rotational shapes a sag profile; toroid and biconic x and y profiles; XY
+  and Zernike x and y profiles plus a false-colour departure map (diverging
+  blue–red, PV); DOE the phase profile in waves, its paraxial power at the
+  primary wavelength and trace order (and at the design wavelength and
+  order), focal length, smallest zone period and zone count.
+* **Design jobs** are inspector panels (`JobPanel`) with a header, a
+  scrolling body and a glass action bar whose buttons morph between states.
+  *Optimize*: merit (RMS spot or wavefront, pupil sampling, hold EFL),
+  variables (the design's `V` marks, as chips, or the engine's automatic
+  set), algorithm, iterations and seed; live iteration, merit, improvement
+  and a log-scale merit sparkline; **Stop** keeps the best design so far,
+  Cancel discards; the result lists every variable before → after, applied
+  as one undoable step. *Tolerance*: ranked sensitivities with bars,
+  Monte-Carlo statistics and a histogram. *Apply Solves*: a dry run (now →
+  solved, residual), then one undoable commit.
+* **Welcome window**: New Design (prominent glass) and Open (glass), and the
+  engine's sample designs as cards with thumbnails of their layouts,
+  computed by the engine on a session of their own (`SampleThumbnails`);
+  samples with extended surface types are listed under "Surface Types" with
+  a schematic.
 * **Layout persistence**: the panes (analysis, settings, automatic update,
-  widths), split positions, viewport mode and ray colouring are saved in the
-  project's `views` section (`[{key, analysis, settings, ui}]`), written with
-  the next save, not as an undoable design change.
+  pinned settings, widths), split positions, viewport mode and ray colouring
+  are saved in the project's `views` section (`[{key, analysis, settings,
+  ui}]`), written with the next save, not as an undoable design change.
 
 Keyboard: ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete, ⇧⌘T make stop,
 ⌃⌘V toggle variable, ⌃⌘O optimize, ⌃⌘T tolerance, ⌃⌘L apply solves, ⌃⌘E issues,
 ⌘R run analyses, ⌘. cancel, ⌘2 / ⌘3 section / 3-D, ⌘0 fit, ⌥⌘L layout,
-⌃⌘I inspector, ⌃⌘S sidebar.
+⌃⌘I inspector, ⌃⌘S sidebar. In a job panel Return is the primary action and
+Esc closes the panel.
 
+## Surface types
+
+Every engine shape (docs/SURFACES.md) is mirrored in `MKLightModel`
+(`SurfaceShape`, strict and round-tripping, tested against the engine's
+`extended_shapes.json`, `samples.json`, `param_paths.json` and
+`validation_cases.json`) and has a `SurfaceTypes` descriptor:
+
+| group | type | parameters (inspector) | variable paths |
+|---|---|---|---|
+| Spherical | Plane, Sphere / Conic | radius, conic | `curvature`, `conic` |
+| Aspheric | Even asphere | base conic; A₄ r⁴ … A₂₂ (10) | `asphere` |
+| | Odd asphere | base conic; β₁ r … β₂₀ r²⁰ | `shape_coefficient odd` |
+| | Q-type (conic) | base conic, norm radius; a₀ … a₁₉ u⁴Qₘᶜᵒⁿ | `shape_coefficient q`, `shape_param norm_radius` |
+| | Q-type (best-fit sphere) | BFS radius, norm radius; a₀ … a₁₉ Qₘᵇᶠˢ | idem |
+| Freeform | XY polynomial | base conic, norm radius; C(xᵐyⁿ), degree 1–10 (65), any term from a menu, zero terms hidden | `shape_coefficient xy` |
+| | Zernike sag | base conic, norm radius, ordering (Fringe 37 / Standard 45); Zⱼ with names | `shape_coefficient zernike` |
+| Anamorphic | Toroid | y profile (R_y, k_y, B₄ y⁴ …), rotation R_x | `shape_param curvature_x/y, conic_y`, `shape_coefficient y_asphere` |
+| | Biconic | x and y sections (R, k, A x⁴ … / B y⁴ …) | `shape_param …`, `shape_coefficient x_asphere/y_asphere` |
+| | Cylinder (x or y) | a biconic preset ("Make Cylinder") | as biconic |
+| Diffractive | Diffractive | base (plane, conic, even asphere) and its parameters; phase norm radius, A₁ ρ² … A₁₀ ρ²⁰ (rad); design order, design λ, trace order | `curvature`/`conic`/`asphere` address the base; `shape_coefficient phase`, `shape_param norm_radius`; orders are never variables |
+| Special | Ideal lens, Coordinate break | focal length; placement | `paraxial_focal_length`, decenters and tilts |
+
+Changing the type keeps what carries over (curvature, conic, norm radius;
+a DOE wraps the old shape as its base) and drops configuration overrides
+that no longer resolve, as one undoable step.
+
+**First order of anamorphic designs.** The status capsule, its popover and
+the First-Order pane label EFL as the y section's when the design has a
+toroid, biconic or freeform. The engine's `ParaxialXY` (EFL x / y, squeeze)
+is not exposed by `first_order` or `system_summary` yet; the app reads it
+when it appears (`AnamorphicFirstOrder`: `efl_x`, `efl_y`, `squeeze`
+entries or a `paraxial_xy` object) and says it is not reported otherwise.
 ## Building
 
 ```sh
@@ -129,7 +312,8 @@ scripts/build-macos.sh --universal     # engine for arm64 + x86_64 (rustup targe
 scripts/build-macos.sh --no-engine --engine-only   # remove the library again
 ```
 
-* The script builds `mklight-ffi` as a **release static library** for
+* The script builds `mklight-ffi` as a **release static library** (deployment
+  target macOS 27, like the app bundle's `LSMinimumSystemVersion`) for
   `aarch64-apple-darwin` (plus `x86_64-apple-darwin` and `lipo` with
   `--universal`) and copies it to `apps/macos/Frameworks/` (git-ignored).
 * `Package.swift` checks for that file. When it exists, the system-library
@@ -146,13 +330,15 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   you add or delete the file by hand, run that command yourself.
 * Engine choice (`Sources/MKLight/main.swift`): `FFIEngine` always. A debug
   build without the library falls back to `MockEngine` (an orange "Mock
-  engine" label in the status bar and the welcome window). A release build
+  engine" mark in the status capsule and the welcome window). A release build
   without it shows an alert and quits.
 * Debug builds accept launch options for screenshots and UI checks:
   `-MKLightNoWelcome YES`, `-MKLightSidebar hidden`, `-MKLightSelectSurface
   <i>`, `-MKLightInspector system`, `-MKLightViewport 3D`, `-MKLightSheet
-  optimize|tolerance|solves`, `-MKLightAutoRun lm|de|tolerance`,
-  `-MKLightShowIssues YES`. Pane layouts come from the document's `views`.
+  optimize|tolerance|solves` (opens the job panel), `-MKLightAutoRun
+  lm|de|tolerance`, `-MKLightShowIssues YES`, `-MKLightToast <text>`,
+  `-MKLightAppearance light|dark` (overrides the system appearance). Pane
+  layouts come from the document's `views`.
 
 ## `FFIEngine`
 
@@ -216,19 +402,25 @@ callback never runs on the main thread and holds no engine lock.
   undoing Load Glass Catalog rebuilds the session without it.
 * **Window state** (`WindowState`): selection (by `SurfaceID`), inspector
   tab, split fractions, viewport mode and camera, ray colouring, transient
-  messages, open sheet. It never enters the design; its layout part is
-  saved in `views` (`WorkspaceLayout`).
+  messages, the open job panel. It never enters the design; its layout part
+  is saved in `views` (`WorkspaceLayout`).
 * **Design jobs** (`OptimizeSession`, `ToleranceSession`, `SolvesSession`):
   view models that submit the engine's `optimize`, `tolerance` and `solves`
-  analyses, follow their progress, and apply results to the document.
+  analyses, follow their progress, and apply results to the document. The
+  window state owns one of each, so a job outlives its panel; closing the
+  window cancels them.
 
 ## Tests
 
-`swift test` in `apps/macos` (145 tests in 27 suites):
+`swift test` in `apps/macos` (173 tests in 29 suites: model 69, engine 33,
+FFI 20, UI 51):
 
 * `MKLightModelTests`: round trips against JSON written by the Rust side
-  (every model variant, solve kind, samples, the project format), strict
-  decoding.
+  (every model variant including the extended shapes in
+  `extended_shapes.json`, every `ParamPath` form, solve kinds, the 16
+  samples, the project format), strict decoding, `ParamPath` resolution and
+  values checked case by case against the engine's verdicts, shape-kind
+  conversions, XY and Zernike term numbering.
 * `MKLightEngineTests`: schemas, request translation, tolerant decoding,
   buffers, error mapping, staleness; the mock's analyses by name.
 * `MKLightFFITests` (need the library): BLAKE3 hashes, samples, EFL from
@@ -236,7 +428,9 @@ callback never runs on the main thread and holds no engine lock.
   cancellation, error codes, projects, parameter edits, catalogs,
   concurrent submissions, handles; and `FFIDesignTests`: **every dedicated
   result view reads the real engine's result** for 25 analyses (geometric,
-  wave optics, ghosts, radiometry, polarisation), the layout buffers become
+  wave optics, ghosts, radiometry, polarisation), the engine validates the
+  extended shapes and its layout and Seidel refuse them with a clear
+  error, the layout buffers become
   a scene with rays per field, **Stop** ends a DE optimisation with
   `stopped: true` and its design applies and undoes, and **Apply Solves**
   commits the engine's solved back focus.
@@ -248,7 +442,12 @@ callback never runs on the main thread and holds no engine lock.
   window); editing (table rows, typed values incl. `∞` and materials,
   rejected input, insert / delete / stop with undo and redo, variables with
   undo, solve markers, the data-driven surface parameters and coefficient
-  lists, parameter paths); design jobs (merit progress parsing, Optimize
+  lists, parameter paths); surface types (every descriptor's keys and
+  variable paths against the model for all 13 types, term labels, the type
+  menu, the display sags against the closed forms of SURFACES.md — Q
+  polynomials, reductions to the base conic, XY and Zernike terms — DOE
+  power and zone period, the departure map, anamorphic table rows, the
+  anamorphic first-order reader); design jobs (merit progress parsing, Optimize
   applied as one undoable step, Stop keeps and Cancel discards, tolerance
   ranking and Monte Carlo, Apply Solves dry run then undoable commit);
   parsers, viewport math and shaders.
@@ -262,7 +461,12 @@ Ready:
   `LensEditor`, `SurfaceTypes`, the design-job sessions, result readers)
   use Foundation and Observation only.
 * The window is `NavigationSplitView` + `.inspector` + toolbar items with
-  placements + sheets and popovers, which collapse on compact width.
+  placements and `ToolbarSpacer` + popovers; design jobs are inspector
+  panels, which become a sheet on compact width. The Liquid Glass APIs used
+  (`glassEffect`, `GlassEffectContainer`, `glassEffectID`, `.glass` /
+  `.glassProminent`, `safeAreaBar`, `scrollEdgeEffectStyle`) are the same on
+  iPadOS 27; `tabViewBottomAccessory` (iOS only) is not needed while the app
+  has no tab view.
 * The split layout (`SplitLayout`, `PaneRow`) is pure SwiftUI with drag
   gestures; only the resize pointer is macOS-specific (`resizePointer`).
 * The Metal viewport has one bridge (`ViewportBridge`, `ViewportInput`) and
@@ -271,13 +475,18 @@ Ready:
   double tap.
 * Platform specifics are isolated: dynamic colours (`PlatformColor`), the
   pasteboard (`Clipboard`), the option-click in the sidebar, glass-name
-  completion (`materialSuggestions`), file import uses `.fileImporter`.
+  completion (`materialSuggestions`), the resize pointer, file import uses
+  `.fileImporter`. The welcome thumbnails, shape previews and sag maps are
+  SwiftUI `Canvas` and Swift Charts.
 
 Remaining for an iPadOS target:
 
-* Add the target (an Xcode project or an iOS platform in `Package.swift`)
+* Add the target (an Xcode project or `.iOS(.v27)` in `Package.swift`)
   and build the engine as an iOS static library (`aarch64-apple-ios`, plus
   the simulator triple) with the same C module.
+* The toolbar's centre status capsule needs a compact form (or a move to
+  the inspector) on narrow iPad windows; the job panels should present as a
+  sheet when the inspector cannot show.
 * SwiftUI `Table` shows only its first column in compact width: give the
   lens table a compact row layout (surface, type, radius, thickness,
   material, with the rest in the inspector).
@@ -310,3 +519,20 @@ Remaining for an iPadOS target:
 * The model mirror is strict: when the engine's model gains a field or a
   surface type, the mirror must learn it (then add a `SurfaceTypes`
   descriptor for a new type).
+* Reduce Transparency and Increase Contrast were not checked in screenshots:
+  switching them changes a system accessibility setting, which this
+  verification did not do. The app relies on the system glass adapting to
+  them and uses no custom translucency of its own; Reduce Motion is honoured
+  in code (`accessibilityReduceMotion`).
+* Engine gaps the UI works around:
+  * `layout`, `seidel`, field curvature, ghost paths, GPU packing, stray
+    geometry and merit evaluation reject the extended shapes
+    (`require_legacy_shapes`). The viewport and the welcome window show a
+    labelled schematic from the model instead of the layout; Optimize and
+    Tolerance fail on such designs with the engine's message.
+  * `first_order` and `system_summary` do not expose `ParaxialXY` (EFL x and
+    y, squeeze); the app labels EFL as the y section's and reads the x data
+    as soon as the engine reports it.
+  * The engine's automatic semi-diameters come from the layout, so designs
+    with extended shapes show `auto` without a value; previews then use the
+    normalisation radius.

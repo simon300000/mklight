@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mklight_core::job::Precision;
-use mklight_core::param::ParamPath;
+use mklight_core::model::surface::{DiffractivePhase, ZernikeOrdering};
+use mklight_core::param::{CoefficientSet, ParamPath, ShapeParameter};
 use mklight_core::*;
 use serde::Serialize;
 
@@ -368,6 +369,205 @@ fn all_param_paths() -> Vec<ParamPath> {
         ParamPath::TemperatureC,
         ParamPath::PressureAtm,
     ]
+    .into_iter()
+    .chain(
+        [
+            CoefficientSet::Odd,
+            CoefficientSet::Q,
+            CoefficientSet::Phase,
+            CoefficientSet::XAsphere,
+            CoefficientSet::YAsphere,
+            CoefficientSet::Xy,
+            CoefficientSet::Zernike,
+        ]
+        .map(|set| ParamPath::ShapeCoefficient {
+            surface,
+            set,
+            index: 2,
+        }),
+    )
+    .chain(
+        [
+            ShapeParameter::CurvatureX,
+            ShapeParameter::ConicX,
+            ShapeParameter::CurvatureY,
+            ShapeParameter::ConicY,
+            ShapeParameter::NormRadius,
+            ShapeParameter::DesignOrder,
+            ShapeParameter::DesignWavelengthUm,
+            ShapeParameter::TraceOrder,
+        ]
+        .map(|parameter| ParamPath::ShapeParam { surface, parameter }),
+    )
+    .collect()
+}
+
+/// Every extended surface shape (SURFACES.md) in one valid system: odd
+/// asphere, both Q types, diffractive phases on plane, conic and
+/// even-asphere bases with signed orders, toroid, biconic, a cylinder
+/// preset, an XY polynomial and Zernike sags in both orderings. Surface ids
+/// equal their indices. Not a sensible lens.
+fn extended_shapes() -> OpticalSystem {
+    let mut s = OpticalSystem::new_empty();
+    s.name = "Extended shapes".into();
+    s.notes = "Covers every extended surface shape; not a sensible lens.".into();
+    s.aperture = ApertureSpec::EntrancePupilDiameter { value: 8.0 };
+    s.fields = FieldSet {
+        kind: FieldKind::ObjectAngle,
+        fields: vec![Field::new(0.0, 0.0), Field::new(1.0, 2.0)],
+    };
+    let glass = || MaterialRef::glass("N-BK7");
+    let phase = |norm_radius: f64,
+                 coefficients: Vec<f64>,
+                 design_order: i32,
+                 design_wavelength_um: f64,
+                 trace_order: i32| DiffractivePhase {
+        norm_radius,
+        coefficients,
+        design_order,
+        design_wavelength_um,
+        trace_order,
+    };
+    let shapes: Vec<(SurfaceShape, MaterialRef)> = vec![
+        (SurfaceShape::Plane, MaterialRef::Air),
+        (
+            SurfaceShape::OddAsphere {
+                curvature: 0.01,
+                conic: -0.5,
+                coefficients: vec![0.0, 1e-5, -1e-7],
+            },
+            glass(),
+        ),
+        (
+            SurfaceShape::QCon {
+                curvature: -0.01,
+                conic: 0.2,
+                norm_radius: 8.0,
+                coefficients: vec![0.001, -0.0002],
+            },
+            MaterialRef::Air,
+        ),
+        (
+            SurfaceShape::QBfs {
+                curvature: 0.02,
+                norm_radius: 8.0,
+                coefficients: vec![0.0005],
+            },
+            glass(),
+        ),
+        (
+            SurfaceShape::Diffractive {
+                base: Box::new(SurfaceShape::Plane),
+                phase: phase(6.0, vec![-20.0, 0.5], 1, 0.5875618, 1),
+            },
+            MaterialRef::Air,
+        ),
+        (
+            SurfaceShape::Diffractive {
+                base: Box::new(SurfaceShape::Conic {
+                    curvature: 0.005,
+                    conic: -1.0,
+                }),
+                phase: phase(7.0, vec![-10.0], 2, 0.55, -1),
+            },
+            glass(),
+        ),
+        (
+            SurfaceShape::Diffractive {
+                base: Box::new(SurfaceShape::EvenAsphere {
+                    curvature: -0.004,
+                    conic: 0.0,
+                    coefficients: vec![1e-6, -2e-9],
+                }),
+                phase: phase(9.0, vec![5.0, -0.1, 0.01], -1, 1.064, 0),
+            },
+            MaterialRef::Air,
+        ),
+        (
+            SurfaceShape::Toroid {
+                curvature_x: 0.02,
+                curvature_y: 0.01,
+                conic_y: -0.3,
+                y_asphere: vec![1e-6],
+            },
+            glass(),
+        ),
+        (
+            SurfaceShape::Biconic {
+                curvature_x: 0.015,
+                curvature_y: -0.01,
+                conic_x: -0.5,
+                conic_y: 0.1,
+                x_asphere: vec![1e-6],
+                y_asphere: vec![-2e-7, 1e-9],
+            },
+            MaterialRef::Air,
+        ),
+        // Cylinder preset: power in x only.
+        (
+            SurfaceShape::Biconic {
+                curvature_x: 0.025,
+                curvature_y: 0.0,
+                conic_x: 0.0,
+                conic_y: 0.0,
+                x_asphere: vec![],
+                y_asphere: vec![],
+            },
+            MaterialRef::Constant { n: 1.5 },
+        ),
+        (SurfaceShape::Plane, MaterialRef::Air),
+        (
+            SurfaceShape::XYPolynomial {
+                curvature: 0.005,
+                conic: 0.0,
+                norm_radius: 10.0,
+                coefficients: vec![0.0, 0.0, 0.001, 0.0002, -0.001, 0.0, -0.0001, 0.0, 0.0001],
+            },
+            glass(),
+        ),
+        (
+            SurfaceShape::ZernikeSag {
+                curvature: -0.005,
+                conic: 0.0,
+                norm_radius: 10.0,
+                ordering: ZernikeOrdering::Fringe,
+                coefficients: vec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0002],
+            },
+            MaterialRef::Air,
+        ),
+        (
+            SurfaceShape::ZernikeSag {
+                curvature: 0.0,
+                conic: 0.0,
+                norm_radius: 10.0,
+                ordering: ZernikeOrdering::Standard,
+                coefficients: vec![0.0, 0.0, 0.0, 0.0005, -0.0003, 0.0002],
+            },
+            glass(),
+        ),
+        (SurfaceShape::Plane, MaterialRef::Air),
+        (SurfaceShape::Plane, MaterialRef::Air),
+    ];
+    let last = shapes.len() - 1;
+    s.surfaces = shapes
+        .into_iter()
+        .enumerate()
+        .map(|(i, (shape, m))| {
+            let t = if i == 0 {
+                f64::INFINITY
+            } else if i == last {
+                0.0
+            } else {
+                4.0
+            };
+            Surface::new(i as u64, shape, t, m)
+        })
+        .collect();
+    s.stop = 4;
+    s.surfaces[4].label = "STOP".into();
+    s.surfaces[9].label = "cylinder".into();
+    s.surfaces[12].semi_diameter = SemiDiameter::Fixed { value: 9.0 };
+    s
 }
 
 /// One model and the engine's verdict on it, for front-end validators that
@@ -528,6 +728,153 @@ fn validation_cases() -> Vec<ValidationCase> {
         ),
         with("temperature", ParamPath::TemperatureC, &none),
     ]
+    .into_iter()
+    .chain(extended_validation_cases())
+    .collect()
+}
+
+/// `extended_shapes()` (surface id = index) with one override each, for the
+/// extended parameter paths: coefficient sets and scalars that do or do not
+/// belong to the shape, indices at the shape's limits, a missing in-range
+/// coefficient, diffraction orders (integral or not), legacy curvature,
+/// conic and asphere paths on a diffractive base, toroid and QBfs.
+fn extended_validation_cases() -> Vec<ValidationCase> {
+    use CoefficientSet::*;
+    use ShapeParameter::*;
+    let id = SurfaceId;
+    let base = extended_shapes();
+    let with = |name: &str, p: ParamPath, v: f64| {
+        let mut s = base.clone();
+        s.name = name.into();
+        s.configurations = vec![Configuration {
+            name: name.into(),
+            overrides: vec![(p, v)],
+        }];
+        let error = s.validate().err().map(|e| e.to_string());
+        ValidationCase {
+            name: name.into(),
+            system: s,
+            error,
+        }
+    };
+    let coef = |surface: u64, set, index| ParamPath::ShapeCoefficient {
+        surface: id(surface),
+        set,
+        index,
+    };
+    let param = |surface: u64, parameter| ParamPath::ShapeParam {
+        surface: id(surface),
+        parameter,
+    };
+    vec![
+        with("odd coefficient", coef(1, Odd, 2), 1e-6),
+        with("odd coefficient missing in range", coef(1, Odd, 15), 1e-9),
+        with("odd coefficient at limit", coef(1, Odd, 20), 1.0),
+        with("q coefficient on q_con", coef(2, Q, 0), 0.001),
+        with("q coefficient on q_bfs at last term", coef(3, Q, 19), 0.001),
+        with("q coefficient on odd asphere", coef(1, Q, 0), 0.001),
+        with("phase coefficient at last term", coef(4, Phase, 9), 0.1),
+        with("phase coefficient at limit", coef(4, Phase, 10), 0.1),
+        with("phase coefficient on q_con", coef(2, Phase, 0), 0.1),
+        with("x asphere on toroid", coef(7, XAsphere, 0), 1e-6),
+        with("y asphere on toroid", coef(7, YAsphere, 3), 1e-6),
+        with(
+            "x asphere on biconic at last term",
+            coef(8, XAsphere, 9),
+            1e-9,
+        ),
+        with("y asphere on cylinder", coef(9, YAsphere, 0), 1e-9),
+        with("xy at last term", coef(11, Xy, 64), 1e-5),
+        with("xy at limit", coef(11, Xy, 65), 1e-5),
+        with("zernike on xy polynomial", coef(11, Zernike, 0), 1e-5),
+        with("fringe zernike at last term", coef(12, Zernike, 36), 1e-5),
+        with("fringe zernike at limit", coef(12, Zernike, 37), 1e-5),
+        with("standard zernike at last term", coef(13, Zernike, 44), 1e-5),
+        with("standard zernike at limit", coef(13, Zernike, 45), 1e-5),
+        with("zernike on diffractive", coef(5, Zernike, 0), 1e-5),
+        with("curvature_x on toroid", param(7, CurvatureX), 0.03),
+        with("conic_x on toroid", param(7, ConicX), -1.0),
+        with("conic_x on biconic", param(8, ConicX), -1.0),
+        with("conic_y on toroid", param(7, ConicY), -1.0),
+        with("curvature_y on q_con", param(2, CurvatureY), 0.01),
+        with("norm radius on q_bfs", param(3, NormRadius), 9.0),
+        with("norm radius on diffractive", param(4, NormRadius), 5.0),
+        with("norm radius on odd asphere", param(1, NormRadius), 5.0),
+        with("norm radius on zernike", param(13, NormRadius), 11.0),
+        with("design wavelength", param(5, DesignWavelengthUm), 0.65),
+        with(
+            "design wavelength on xy",
+            param(11, DesignWavelengthUm),
+            0.65,
+        ),
+        with("design order", param(6, DesignOrder), 2.0),
+        with("trace order zero", param(4, TraceOrder), 0.0),
+        with("trace order negative", param(5, TraceOrder), -3.0),
+        with("trace order not integral", param(5, TraceOrder), 0.5),
+        with("design order beyond i32", param(6, DesignOrder), 3e9),
+        with("trace order on q_con", param(2, TraceOrder), 1.0),
+        with(
+            "curvature on diffractive plane base",
+            ParamPath::Curvature { surface: id(4) },
+            0.01,
+        ),
+        with(
+            "conic on diffractive plane base",
+            ParamPath::Conic { surface: id(4) },
+            -1.0,
+        ),
+        with(
+            "conic on diffractive conic base",
+            ParamPath::Conic { surface: id(5) },
+            -0.5,
+        ),
+        with(
+            "asphere on diffractive even-asphere base",
+            ParamPath::Asphere {
+                surface: id(6),
+                index: 3,
+            },
+            1e-12,
+        ),
+        with(
+            "asphere on diffractive conic base",
+            ParamPath::Asphere {
+                surface: id(5),
+                index: 0,
+            },
+            1e-6,
+        ),
+        with(
+            "curvature on toroid",
+            ParamPath::Curvature { surface: id(7) },
+            0.01,
+        ),
+        with(
+            "curvature on biconic",
+            ParamPath::Curvature { surface: id(8) },
+            0.01,
+        ),
+        with("conic on toroid", ParamPath::Conic { surface: id(7) }, -1.0),
+        with(
+            "curvature on q_bfs",
+            ParamPath::Curvature { surface: id(3) },
+            0.01,
+        ),
+        with("conic on q_bfs", ParamPath::Conic { surface: id(3) }, -1.0),
+        with(
+            "conic on zernike",
+            ParamPath::Conic { surface: id(12) },
+            -1.0,
+        ),
+        with(
+            "asphere on odd asphere",
+            ParamPath::Asphere {
+                surface: id(1),
+                index: 0,
+            },
+            1e-6,
+        ),
+    ]
 }
 
 fn run_info(snapshot: &Snapshot) -> RunInfo {
@@ -682,10 +1029,12 @@ fn main() {
     let cooke = Snapshot::new(cooke_triplet()).expect("cooke triplet is valid");
     Snapshot::new(kitchen_sink()).expect("kitchen sink is valid");
     Snapshot::new(OpticalSystem::new_empty()).expect("empty system is valid");
+    let extended = Snapshot::new(extended_shapes()).expect("extended shapes are valid");
 
     write(&dir, "empty.json", &OpticalSystem::new_empty());
     write(&dir, "cooke_triplet.json", cooke.system());
     write(&dir, "kitchen_sink.json", &kitchen_sink());
+    write(&dir, "extended_shapes.json", extended.system());
     write(&dir, "variants.json", &variants());
     write(&dir, "param_paths.json", &all_param_paths());
     write(&dir, "run_info.json", &run_info(&cooke));
@@ -729,5 +1078,6 @@ fn main() {
         Snapshot::new(kitchen_sink()).unwrap().hash().to_hex(),
     );
     hashes.insert("solved_triplet.json", solved.hash().to_hex());
+    hashes.insert("extended_shapes.json", extended.hash().to_hex());
     write(&dir, "snapshot_hashes.json", &hashes);
 }

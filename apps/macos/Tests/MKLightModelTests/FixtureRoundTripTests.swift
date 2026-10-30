@@ -27,7 +27,7 @@ enum Fixtures {
 }
 
 @Suite struct FixtureRoundTripTests {
-    @Test(arguments: ["empty", "cooke_triplet", "kitchen_sink"])
+    @Test(arguments: ["empty", "cooke_triplet", "kitchen_sink", "extended_shapes"])
     func systemRoundTrip(name: String) throws {
         let s = try Fixtures.roundTrip(OpticalSystem.self, name)
         #expect(s.structuralIssues().isEmpty, "engine-valid fixture must be structurally valid: \(s.structuralIssues())")
@@ -44,10 +44,16 @@ enum Fixtures {
 
     @Test func paramPathsRoundTrip() throws {
         let paths = try Fixtures.roundTrip([ParamPath].self, "param_paths")
-        #expect(paths.count == 22)
-        #expect(Set(paths).count == 22, "every variant decodes to a distinct case")
+        #expect(paths.count == 22 + CoefficientSet.allCases.count + ShapeParameter.allCases.count)
+        #expect(Set(paths).count == paths.count, "every variant decodes to a distinct case")
         #expect(paths[3] == .asphere(surface: SurfaceID(7), index: 2))
         #expect(paths.contains(.apertureValue) && paths.contains(.pressureAtm))
+        for set in CoefficientSet.allCases {
+            #expect(paths.contains(.shapeCoefficient(surface: SurfaceID(7), set: set, index: 2)), "\(set)")
+        }
+        for p in ShapeParameter.allCases {
+            #expect(paths.contains(.shapeParam(surface: SurfaceID(7), parameter: p)), "\(p)")
+        }
     }
 
     @Test func emptyMatchesSwiftNewEmpty() throws {
@@ -62,7 +68,8 @@ enum Fixtures {
 
     @Test func kitchenSinkCoversEveryVariant() throws {
         let s = try MKLightJSON.decode(OpticalSystem.self, from: Fixtures.data("kitchen_sink"))
-        #expect(Set(s.surfaces.map(\.shape.kind)) == Set(SurfaceShape.Kind.allCases))
+        // The extended shapes are in extended_shapes.json.
+        #expect(Set(s.surfaces.map(\.shape.kind)) == Set(SurfaceShape.Kind.allCases.filter(\.isLegacy)))
         #expect(Set(s.surfaces.map(\.interaction)) == Set(Interaction.allCases))
         let materials = s.surfaces.map(\.material)
         #expect(materials.contains(.air) && materials.contains(.vacuum))
@@ -116,7 +123,10 @@ enum Fixtures {
     /// check that it covers exactly the valid system fixtures.
     @Test func snapshotHashFixtureCoversSystemFixtures() throws {
         let hashes = try MKLightJSON.decode([String: String].self, from: Fixtures.data("snapshot_hashes"))
-        #expect(Set(hashes.keys) == ["empty.json", "cooke_triplet.json", "kitchen_sink.json", "solved_triplet.json"])
+        #expect(
+            Set(hashes.keys) == [
+                "empty.json", "cooke_triplet.json", "kitchen_sink.json", "solved_triplet.json", "extended_shapes.json",
+            ])
         for (file, hex) in hashes {
             #expect(hex.count == 64 && hex.allSatisfy { $0.isHexDigit && !$0.isUppercase })
             _ = try MKLightJSON.decode(OpticalSystem.self, from: Fixtures.data(String(file.dropLast(5))))

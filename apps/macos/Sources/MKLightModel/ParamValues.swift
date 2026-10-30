@@ -18,6 +18,10 @@ extension OpticalSystem {
             case .asphere(_, let k):
                 let a = s.shape.asphereCoefficients
                 return a.indices.contains(k) ? a[k] : 0
+            case .shapeCoefficient(_, let set, let k):
+                let a = s.shape.coefficients(in: set) ?? []
+                return a.indices.contains(k) ? a[k] : 0
+            case .shapeParam(_, let p): return s.shape.shapeParameter(p)
             case .paraxialFocalLength:
                 if case .paraxial(let f) = s.shape { return f }
                 return nil
@@ -49,9 +53,11 @@ extension OpticalSystem {
     }
 
     /// Sets the value `path` names. Returns false when the system has no
-    /// such parameter. Like the engine, setting a curvature or conic on a
-    /// plane makes it a conic, and an asphere coefficient past the end
-    /// extends the list with zeros.
+    /// such parameter. Like the engine, setting a curvature on a plane makes
+    /// it a conic (a conic on a plane is refused), curvature, conic and
+    /// asphere paths address a diffractive surface's base, a coefficient past
+    /// the end extends the list with zeros, an index at or beyond the shape's
+    /// limit is refused, and a diffraction order must be an integral `i32`.
     @discardableResult
     public mutating func setValue(_ v: Double, at path: ParamPath) -> Bool {
         if let id = path.surface {
@@ -64,13 +70,16 @@ extension OpticalSystem {
             }
             switch path {
             case .curvature: guard s.shape.setCurvature(v) else { return false }
-            case .conic: guard s.shape.setConic(v) else { return false }
+            case .conic: guard s.shape.hasConic, s.shape.setConic(v) else { return false }
             case .thickness: s.thickness = v
-            case .asphere(_, let k):
-                guard case .evenAsphere(let c, let kk, var a) = s.shape, k >= 0 else { return false }
+            case .asphere(_, let k): guard s.shape.setAsphereCoefficient(v, at: k) else { return false }
+            case .shapeCoefficient(_, let set, let k):
+                guard let max = set.maxCount(for: s.shape), k >= 0, k < max, var a = s.shape.coefficients(in: set)
+                else { return false }
                 if k >= a.count { a += Array(repeating: 0, count: k - a.count + 1) }
                 a[k] = v
-                s.shape = .evenAsphere(curvature: c, conic: kk, coefficients: a)
+                s.shape.setCoefficients(a, in: set)
+            case .shapeParam(_, let p): guard s.shape.setShapeParameter(p, v) else { return false }
             case .paraxialFocalLength:
                 guard case .paraxial = s.shape else { return false }
                 s.shape = .paraxial(focalLength: v)
@@ -120,6 +129,15 @@ extension ParamPath {
         case .thickness: return "Thickness \(n)"
         case .conic: return "Conic \(n)"
         case .asphere(_, let k): return "A\(2 * k + 4) on \(n)"
+        case .shapeCoefficient(_, let set, let k):
+            let family =
+                switch set {
+                case .odd: "Odd "
+                case .phase: "Phase "
+                default: ""
+                }
+            return "\(family)\(set.termLabel(k)) on \(n)"
+        case .shapeParam(_, let p): return "\(p.title) on \(n)"
         case .paraxialFocalLength: return "Focal length \(n)"
         case .modelNd: return "n_d \(n)"
         case .modelVd: return "V_d \(n)"

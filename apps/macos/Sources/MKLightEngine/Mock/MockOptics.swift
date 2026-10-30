@@ -146,7 +146,18 @@ struct MockOptics {
                 switch s.shape {
                 case .conic(let c, _), .evenAsphere(let c, _, _): phi = c * (nPrime - bigN)
                 case .paraxial(let f): phi = f != 0 ? 1 / f : 0
-                default: phi = 0
+                case .plane, .coordinateBreak: phi = 0
+                case .diffractive(let base, let ph):
+                    // Base power plus the order's phase power −mλA₁/(π r_n²).
+                    let a1 = ph.coefficients.first ?? 0
+                    let lambdaMM = wavelengthsUm[w] * 1e-3
+                    phi = base.curvature * (nPrime - bigN)
+                        - Double(ph.traceOrder) * lambdaMM * a1 / (Double.pi * ph.normRadius * ph.normRadius)
+                default:
+                    // Extended shapes: the mock uses the y vertex curvature
+                    // of the base conic (toroid/biconic: c_y), ignoring
+                    // the departure's quadratic terms.
+                    phi = s.shape.curvature * (nPrime - bigN)
                 }
             }
             nu -= y * phi
@@ -366,6 +377,26 @@ struct MockOptics {
                 dpoly = dpoly * rho + Double(i + 2) * ai
             }
             return (z0 + poly * rho * rho, d0 + dpoly * rho)
+        case .oddAsphere(let c, let k, let a):
+            guard let (z0, d0) = conic(c, k) else { return nil }
+            let r = rho.squareRoot()
+            var z = z0, dz = d0
+            for (i, b) in a.enumerated() {
+                let p = Double(i + 1)
+                z += b * pow(r, p)
+                // d(r^p)/dρ = (p/2) r^(p−2); the cone term's normal is +z at the vertex.
+                if r > 0 { dz += b * p / 2 * pow(r, p - 2) }
+            }
+            return (z, dz)
+        case .diffractive(let base, _): return sag(base, rho)
+        case .toroid(_, let cy, let ky, let ya), .biconic(_, let cy, _, let ky, _, let ya):
+            // The y meridian is exactly the y profile; the mock is rotational.
+            return sag(.evenAsphere(curvature: cy, conic: ky, coefficients: ya), rho)
+        case .qCon(let c, let k, _, _), .xyPolynomial(let c, let k, _, _), .zernikeSag(let c, let k, _, _, _):
+            // Mock approximation: the base conic without the departure.
+            return conic(c, k).map { (z: $0.0, dz: $0.1) }
+        case .qBfs(let c, _, _):
+            return conic(c, 0).map { (z: $0.0, dz: $0.1) }
         }
     }
 
@@ -391,8 +422,10 @@ struct MockOptics {
         switch shape {
         case .plane, .paraxial, .coordinateBreak: return planeT()
         case .conic(let c, let k): return conicT(c, k)
-        case .evenAsphere(let c, let k, _):
-            guard var t = conicT(c, k) ?? planeT() else { return nil }
+        case .diffractive(let base, _): return intersect(base, q, d)
+        default:
+            // Newton on the mock's rotational sag from the base conic's root.
+            guard var t = conicT(shape.curvature, shape.conicConstant) ?? planeT() else { return nil }
             for _ in 0..<30 {
                 let p = q + t * d
                 let rho = p.x * p.x + p.y * p.y

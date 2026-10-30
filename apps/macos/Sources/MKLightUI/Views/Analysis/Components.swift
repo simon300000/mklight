@@ -232,6 +232,8 @@ struct LineChart: View {
                     AxisMarks()
                 }
             }
+            // Few y labels: fan and profile plots are often short.
+            .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
             .environment(\.locale, Locale(identifier: "en_US_POSIX"))
     }
 
