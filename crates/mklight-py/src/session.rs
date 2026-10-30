@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use pyo3::prelude::*;
+use pyo3::sync::MutexExt;
 use pyo3::types::PyDict;
 use serde_json::{Value, json};
 
@@ -226,8 +227,17 @@ impl PySession {
         }
     }
 
+    /// Lock without the GIL (inside `py.detach`, or from Rust).
     pub fn lock(&self) -> MutexGuard<'_, Session> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock while attached: the GIL is released while waiting, so a thread
+    /// holding the session lock can never be blocked by this one.
+    pub fn lock_py(&self, py: Python<'_>) -> MutexGuard<'_, Session> {
+        self.inner
+            .lock_py_attached(py)
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// The reference tracer of the current state (built once per snapshot
@@ -300,7 +310,8 @@ impl PySession {
     /// `set_system`).
     #[getter]
     fn system<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let v = serde_json::to_value(self.lock().system()).map_err(|e| engine_err(e.into()))?;
+        let v =
+            serde_json::to_value(self.lock_py(py).system()).map_err(|e| engine_err(e.into()))?;
         to_py(py, &v)
     }
 
@@ -340,39 +351,39 @@ impl PySession {
 
     /// Content hash (64 hex digits) of the current snapshot.
     #[getter]
-    fn snapshot_hash(&self) -> String {
-        self.lock().snapshot_hash().to_hex()
+    fn snapshot_hash(&self, py: Python<'_>) -> String {
+        self.lock_py(py).snapshot_hash().to_hex()
     }
 
     /// Content hash of the session's glass library.
     #[getter]
-    fn library_hash(&self) -> String {
-        self.lock().library_hash().to_string()
+    fn library_hash(&self, py: Python<'_>) -> String {
+        self.lock_py(py).library_hash().to_string()
     }
 
     /// Session id (unique per engine).
     #[getter]
-    fn id(&self) -> u64 {
-        self.lock().id()
+    fn id(&self, py: Python<'_>) -> u64 {
+        self.lock_py(py).id()
     }
 
     /// Project file path, or None for an unsaved session.
     #[getter]
-    fn path(&self) -> Option<PathBuf> {
-        self.lock().path().map(PathBuf::from)
+    fn path(&self, py: Python<'_>) -> Option<PathBuf> {
+        self.lock_py(py).path().map(PathBuf::from)
     }
 
     /// True when there are unsaved changes.
     #[getter]
-    fn dirty(&self) -> bool {
-        self.lock().is_dirty()
+    fn dirty(&self, py: Python<'_>) -> bool {
+        self.lock_py(py).is_dirty()
     }
 
     /// Session state: path, dirty flag, hashes, name, open warnings,
     /// migration report, catalogs.
     #[getter]
     fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let v = self.lock().info();
+        let v = self.lock_py(py).info();
         to_py(py, &v)
     }
 
@@ -395,22 +406,27 @@ impl PySession {
 
     /// Catalogs in the library (built-in first).
     fn catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let c = self.lock().catalogs();
+        let c = self.lock_py(py).catalogs();
         ser_to_py(py, &c)
     }
 
     /// Glasses of one catalog (case-insensitive), or of all catalogs.
     #[pyo3(signature = (catalog=None))]
     fn glasses<'py>(&self, py: Python<'py>, catalog: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
-        let g = self.lock().glasses(catalog).map_err(engine_err)?;
+        let g = self.lock_py(py).glasses(catalog).map_err(engine_err)?;
         ser_to_py(py, &g)
     }
 
     /// Replace a non-system project section (`views`, `merit`,
     /// `variables`, `tolerances`, `metadata`).
-    fn set_project_section(&self, section: &str, value: Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_project_section(
+        &self,
+        py: Python<'_>,
+        section: &str,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
         let v = from_py(&value)?;
-        self.lock()
+        self.lock_py(py)
             .set_project_section(section, v)
             .map_err(engine_err)
     }
@@ -484,8 +500,8 @@ impl PySession {
         }
     }
 
-    fn __repr__(&self) -> String {
-        let s = self.lock();
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let s = self.lock_py(py);
         format!(
             "<mklight.Session {} '{}' {}>",
             s.id(),

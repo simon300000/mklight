@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.9.4,<2"]
+build-backend = "maturin"
+
+[project]
+name = "mklight"
+description = "MKLight: GPU-accelerated sequential optical design and analysis (Python bindings)"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.26"]
+test = ["pytest>=8", "numpy>=1.26"]
+
+[tool.maturin]
+# Rust extension `mklight._mklight` inside the pure-Python package in python/.
+python-source = "python"
+module-name = "mklight._mklight"
+manifest-path = "Cargo.toml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
