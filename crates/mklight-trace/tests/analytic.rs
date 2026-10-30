@@ -224,7 +224,13 @@ fn snell_invariant_conserved_at_every_surface() {
                     lhs.max_abs_diff(rhs) < 2e-15,
                     "surface {i}: {lhs:?} {rhs:?}"
                 );
-                assert!((kp.norm() - 1.0).abs() < 1e-15);
+                // Directions are not renormalised, so |k| drifts by about
+                // one ulp per surface (10 ulp after nine surfaces is normal).
+                assert!(
+                    (kp.norm() - 1.0).abs() < 1e-14,
+                    "surface {i} w {w} p {p:?}: |k|-1 = {:e}",
+                    kp.norm() - 1.0
+                );
             }
         }
     }
