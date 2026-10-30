@@ -6,7 +6,10 @@
 //! `OTF(ν) = Σ_u p(u + s)·p*(u) / Σ|p|²` with the pupil shift
 //! `s = 2ν·λF#` (normalised units; `s = 2` at the cutoff `ν_c = 1/(λF#)`).
 //! MTF = |OTF|, 1 at zero frequency. Frequencies are in cycles/mm on the
-//! image surface.
+//! image surface: for an off-axis chief ray the pupil's OTF (normal-plane
+//! frequencies) is evaluated at `B^{−T}·ν` (see the chief-ray frame in
+//! [`crate::pupil`]), so the tangential cutoff on the surface is
+//! `cosθ_c/(λF#)`.
 //!
 //! **Orientation** (CONVENTIONS §4): *tangential* frequencies run along the
 //! meridional direction of the field point (image +y on axis or for a field
@@ -17,10 +20,11 @@
 //! * [`otf_fft`] / [`mtf_fft`]: the pupil is zero-padded to `≥ 2n`, Fourier
 //!   transformed to the PSF, squared, and transformed back. This yields the
 //!   exact discrete autocorrelation on the frequency lattice
-//!   `Δν = 1/(n·λF#)`; other frequencies are bilinearly interpolated.
+//!   `Δν = 1/(n·λF#)`; other frequencies are interpolated (see [`Otf::at`]).
 //! * [`mtf_direct`]: the autocorrelation evaluated directly for each
 //!   requested frequency, shifting the pupil by `s` with bilinear
-//!   interpolation of amplitude and OPD (no frequency lattice).
+//!   interpolation of amplitude and OPD (no frequency lattice). An
+//!   independent check of the FFT route between lattice points.
 //! * [`mtf_from_psf`]: a direct DFT of a sampled PSF (any PSF: Huygens,
 //!   polychromatic, tilted planes).
 
@@ -80,8 +84,10 @@ pub struct MtfCurve {
     /// diffraction limit), along the tangential direction. Empty when not
     /// known ([`mtf_from_psf`]).
     pub diffraction_limit: Vec<f64>,
-    /// Incoherent cutoff `1/(λF#)` (largest over wavelengths), cycles/mm;
-    /// NaN when not known ([`mtf_from_psf`]).
+    /// Incoherent cutoff `1/(λF#)` (largest over wavelengths) in the plane
+    /// normal to the chief ray, cycles/mm (the tangential cutoff on the
+    /// image surface is `cosθ_c` times this); NaN when not known
+    /// ([`mtf_from_psf`]).
     pub cutoff: f64,
     pub warnings: Vec<WaveWarning>,
 }
@@ -119,51 +125,180 @@ pub fn circle_overlap(r1: f64, r2: f64, d: f64) -> f64 {
     r1 * r1 * c1.acos() + r2 * r2 * c2.acos() - 0.5 * k.sqrt()
 }
 
-/// Full 2-D OTF on the frequency lattice of the pupil sampling.
+/// Full 2-D OTF on the frequency lattice of the pupil sampling, with
+/// interpolation to arbitrary image-surface frequencies.
+///
+/// # Interpolation between lattice points
+///
+/// The lattice spacing `Δν = 1/L` is set by the alias-free field `L`, so a
+/// PSF of extent `w` makes the OTF vary on the scale `1/w` and plain
+/// interpolation fails once `w` is a sizeable part of `L`. Two parts of
+/// that variation are removed before interpolating:
+///
+/// 1. A displaced PSF (tilt, coma flare) gives the OTF a linear phase
+///    `e^{−2πiν·x̄}`. The centroid `x̄` is estimated from the first lattice
+///    harmonic, `x̄ = −arg OTF(Δν, 0)/(2πΔν)` (exact for a pure tilt), and
+///    the ramp is divided out and restored after interpolation.
+/// 2. The OTF has a cone-shaped kink at `ν = 0` and a `(Δ)^{3/2}` edge at
+///    the support boundary that come from the aperture edge, not from the
+///    aberrations. The lattice OTF `D` of the same pupil without
+///    aberrations has the same kink (the `|ν|` term depends only on `|p|`
+///    along the rim), so the difference `OTF·ramp − D` is smooth there and is
+///    interpolated with Keys bicubic weights, while `D` itself is
+///    interpolated bilinearly (exact at the kink, `O(Δν²)` elsewhere).
+///
+/// For a pupil without aberrations this is bilinear interpolation; on
+/// lattice points it returns the lattice values exactly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Otf {
-    /// Grid side `M ≥ 2n`; bin `(i, j)` is frequency
+    /// Grid side `M ≥ 2n`; bin `(i, j)` is the normal-plane frequency
     /// `((i − M/2)·Δν, (j − M/2)·Δν)`.
     pub size: usize,
     /// `Δν = 1/(n·λF#)` cycles/mm.
     pub spacing: f64,
-    /// Normalised OTF (`1` at zero frequency), row-major, centred.
+    /// Normalised OTF (`1` at zero frequency), row-major, centred, without
+    /// the image-offset phase.
     pub data: Vec<C64>,
+    /// Lattice OTF of the same pupil without aberrations; `None` when the
+    /// pupil has none (it then equals `data`).
+    pub reference: Option<Vec<C64>>,
+    /// PSF centroid estimate (normal plane, mm, relative to the reference
+    /// point) whose linear phase is removed before interpolation.
+    pub centroid_mm: [f64; 2],
     /// Image offset of the PSF reference point (mm); applied as the phase
     /// `e^{−2πiν·offset}` by [`Otf::at`].
     pub offset_mm: [f64; 2],
-    /// Cutoff `1/(λF#)`.
+    /// `B^{−T}`: image-surface frequency → normal-plane frequency.
+    pub surface_to_normal: [[f64; 2]; 2],
+    /// Cutoff `1/(λF#)` (normal plane).
     pub cutoff: f64,
 }
 
+/// Keys cubic convolution weights (a = −½) for the four samples around a
+/// point at fraction `t` past the second one.
+fn keys_weights(t: f64) -> [f64; 4] {
+    let a = -0.5;
+    let k = |x: f64| {
+        let x = x.abs();
+        if x <= 1.0 {
+            ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
+        } else if x < 2.0 {
+            ((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a
+        } else {
+            0.0
+        }
+    };
+    [k(1.0 + t), k(t), k(1.0 - t), k(2.0 - t)]
+}
+
 impl Otf {
-    /// Bilinear interpolation of the OTF at `(νx, νy)`; zero beyond the grid.
-    pub fn at(&self, nx: f64, ny: f64) -> C64 {
-        let c = (self.size / 2) as f64;
-        let fx = nx / self.spacing + c;
-        let fy = ny / self.spacing + c;
+    fn lattice(grid: &[C64], m: usize, i: i64, j: i64) -> C64 {
+        let mi = m as i64;
+        if i < 0 || j < 0 || i >= mi || j >= mi {
+            C64::default()
+        } else {
+            grid[(j * mi + i) as usize]
+        }
+    }
+
+    fn bilinear(grid: &[C64], m: usize, fx: f64, fy: f64) -> C64 {
         let (ix, iy) = (fx.floor(), fy.floor());
         let (tx, ty) = (fx - ix, fy - iy);
-        let m = self.size as i64;
-        let get = |i: i64, j: i64| -> C64 {
-            if i < 0 || j < 0 || i >= m || j >= m {
-                C64::default()
-            } else {
-                self.data[(j * m + i) as usize]
-            }
-        };
         let (i, j) = (ix as i64, iy as i64);
-        let v = get(i, j) * ((1.0 - tx) * (1.0 - ty))
-            + get(i + 1, j) * (tx * (1.0 - ty))
-            + get(i, j + 1) * ((1.0 - tx) * ty)
-            + get(i + 1, j + 1) * (tx * ty);
+        Self::lattice(grid, m, i, j) * ((1.0 - tx) * (1.0 - ty))
+            + Self::lattice(grid, m, i + 1, j) * (tx * (1.0 - ty))
+            + Self::lattice(grid, m, i, j + 1) * ((1.0 - tx) * ty)
+            + Self::lattice(grid, m, i + 1, j + 1) * (tx * ty)
+    }
+
+    /// Lattice coordinates of a normal-plane frequency.
+    fn index_of(&self, nx: f64, ny: f64) -> (f64, f64) {
+        let c = (self.size / 2) as f64;
+        (nx / self.spacing + c, ny / self.spacing + c)
+    }
+
+    /// `e^{+2πiν·x̄}` at lattice bin `(i, j)`.
+    fn ramp(&self, i: i64, j: i64) -> C64 {
+        let c = (self.size / 2) as i64;
+        let ph = 2.0
+            * std::f64::consts::PI
+            * self.spacing
+            * ((i - c) as f64 * self.centroid_mm[0] + (j - c) as f64 * self.centroid_mm[1]);
+        C64::from_polar(1.0, ph)
+    }
+
+    /// OTF at a normal-plane frequency, without the image-offset phase (see
+    /// the type docs for the interpolation); zero beyond the grid.
+    pub fn at_normal(&self, nx: f64, ny: f64) -> C64 {
+        let (fx, fy) = self.index_of(nx, ny);
+        let back = C64::from_polar(
+            1.0,
+            -2.0 * std::f64::consts::PI * (nx * self.centroid_mm[0] + ny * self.centroid_mm[1]),
+        );
+        let m = self.size;
+        let (ix, iy) = (fx.floor(), fy.floor());
+        match &self.reference {
+            None => {
+                let (tx, ty) = (fx - ix, fy - iy);
+                let (i, j) = (ix as i64, iy as i64);
+                let v = Self::lattice(&self.data, m, i, j)
+                    * self.ramp(i, j)
+                    * ((1.0 - tx) * (1.0 - ty))
+                    + Self::lattice(&self.data, m, i + 1, j)
+                        * self.ramp(i + 1, j)
+                        * (tx * (1.0 - ty))
+                    + Self::lattice(&self.data, m, i, j + 1)
+                        * self.ramp(i, j + 1)
+                        * ((1.0 - tx) * ty)
+                    + Self::lattice(&self.data, m, i + 1, j + 1)
+                        * self.ramp(i + 1, j + 1)
+                        * (tx * ty);
+                v * back
+            }
+            Some(dl) => {
+                let wx = keys_weights(fx - ix);
+                let wy = keys_weights(fy - iy);
+                let mut d = C64::default();
+                for (b, wyb) in wy.iter().enumerate() {
+                    let j = iy as i64 + b as i64 - 1;
+                    for (a, wxa) in wx.iter().enumerate() {
+                        let i = ix as i64 + a as i64 - 1;
+                        let v = Self::lattice(&self.data, m, i, j) * self.ramp(i, j)
+                            - Self::lattice(dl, m, i, j);
+                        d += v * (wxa * wyb);
+                    }
+                }
+                (d + Self::bilinear(dl, m, fx, fy)) * back
+            }
+        }
+    }
+
+    /// OTF at an image-surface frequency `(νx, νy)` (cycles/mm), including
+    /// the image-offset phase.
+    pub fn at(&self, nx: f64, ny: f64) -> C64 {
+        let t = self.surface_to_normal;
+        let v = self.at_normal(t[0][0] * nx + t[0][1] * ny, t[1][0] * nx + t[1][1] * ny);
         let ph = -2.0 * std::f64::consts::PI * (nx * self.offset_mm[0] + ny * self.offset_mm[1]);
         v * C64::from_polar(1.0, ph)
     }
+
+    /// OTF of the same pupil without aberrations or image offset (the
+    /// diffraction limit) at an image-surface frequency, interpolated
+    /// bilinearly.
+    pub fn reference_at(&self, nx: f64, ny: f64) -> C64 {
+        let t = self.surface_to_normal;
+        let (fx, fy) = self.index_of(t[0][0] * nx + t[0][1] * ny, t[1][0] * nx + t[1][1] * ny);
+        Self::bilinear(
+            self.reference.as_ref().unwrap_or(&self.data),
+            self.size,
+            fx,
+            fy,
+        )
+    }
 }
 
-/// 2-D OTF by FFT (pupil → PSF → OTF), exact on its frequency lattice.
-pub fn otf_fft(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
+/// Normalised lattice OTF of `pupil` (`M = next_fast_len(2n)`, centred).
+fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<C64>)> {
     let n = pupil.n();
     let m = next_fast_len(2 * n);
     let field = pupil.debye_field();
@@ -191,11 +326,40 @@ pub fn otf_fft(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
         })
         .collect();
     data[(m / 2) * m + m / 2] = C64::new(1.0, 0.0);
+    Ok((m, data))
+}
+
+/// 2-D OTF by FFT (pupil → PSF → OTF), exact on its frequency lattice. For
+/// an aberrated pupil the lattice OTF without aberrations is computed too
+/// (for the interpolation, see [`Otf`]).
+pub fn otf_fft(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
+    let aberrated = pupil.opd_waves().iter().any(|&w| w != 0.0);
+    let (m, data) = lattice_otf(pupil, &ctx.subrange(0.0, if aberrated { 0.5 } else { 1.0 }))?;
+    let reference = if aberrated {
+        Some(lattice_otf(&pupil.without_aberrations(), &ctx.subrange(0.5, 1.0))?.1)
+    } else {
+        None
+    };
+    let spacing = 1.0 / pupil.alias_free_field_mm();
+    let c = m / 2;
+    let centroid = |z: C64| {
+        if z.norm() > 1e-9 {
+            -z.arg() / (2.0 * std::f64::consts::PI * spacing)
+        } else {
+            0.0
+        }
+    };
     Ok(Otf {
         size: m,
-        spacing: 1.0 / pupil.alias_free_field_mm(),
+        spacing,
+        centroid_mm: [
+            centroid(data[c * m + c + 1]),
+            centroid(data[(c + 1) * m + c]),
+        ],
         data,
+        reference,
         offset_mm: pupil.image_offset_mm(),
+        surface_to_normal: pupil.geometry().surface_to_normal_frequency(),
         cutoff: pupil.geometry().cutoff_frequency(pupil.wavelength_um()),
     })
 }
@@ -219,25 +383,72 @@ fn freq_vectors(freqs: &[f64], o: &MtfOrientation) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// Complex OTF of `pupil` at frequency vectors `nus` (cycles/mm), including
-/// the image-offset phase.
+/// Complex OTF of `pupil` at image-surface frequency vectors `nus`
+/// (cycles/mm), including the image-offset phase.
 pub fn otf_at(
     pupil: &PupilFunction,
     nus: &[[f64; 2]],
     method: MtfMethod,
     ctx: &JobContext,
 ) -> MkResult<Vec<C64>> {
+    Ok(otf_and_reference(pupil, nus, method, false, ctx)?.0)
+}
+
+/// The OTF at surface frequencies `nus` and, with `with_reference`, the
+/// OTF of the same pupil without aberrations or image offset.
+fn otf_and_reference(
+    pupil: &PupilFunction,
+    nus: &[[f64; 2]],
+    method: MtfMethod,
+    with_reference: bool,
+    ctx: &JobContext,
+) -> MkResult<(Vec<C64>, Vec<C64>)> {
     match method {
         MtfMethod::Fft => {
             let otf = otf_fft(pupil, ctx)?;
-            Ok(nus.iter().map(|v| otf.at(v[0], v[1])).collect())
+            let o = nus.iter().map(|v| otf.at(v[0], v[1])).collect();
+            let r = if with_reference {
+                nus.iter().map(|v| otf.reference_at(v[0], v[1])).collect()
+            } else {
+                Vec::new()
+            };
+            Ok((o, r))
         }
-        MtfMethod::Direct => otf_direct(pupil, nus, ctx),
+        MtfMethod::Direct => {
+            let t = pupil.geometry().surface_to_normal_frequency();
+            let normal: Vec<[f64; 2]> = nus
+                .iter()
+                .map(|v| {
+                    [
+                        t[0][0] * v[0] + t[0][1] * v[1],
+                        t[1][0] * v[0] + t[1][1] * v[1],
+                    ]
+                })
+                .collect();
+            let sub = if with_reference { 0.5 } else { 1.0 };
+            let off = pupil.image_offset_mm();
+            let tau = 2.0 * std::f64::consts::PI;
+            let o = otf_direct(pupil, &normal, &ctx.subrange(0.0, sub))?
+                .into_iter()
+                .zip(nus)
+                .map(|(z, v)| z * C64::from_polar(1.0, -tau * (v[0] * off[0] + v[1] * off[1])))
+                .collect();
+            let r = if with_reference {
+                otf_direct(
+                    &pupil.without_aberrations(),
+                    &normal,
+                    &ctx.subrange(0.5, 1.0),
+                )?
+            } else {
+                Vec::new()
+            };
+            Ok((o, r))
+        }
     }
 }
 
 /// Direct pupil autocorrelation `Σ_u p(u + s)·p*(u) / E` for each
-/// frequency, `s = ν/(ν-per-unit-u)`. The shifted pupil is interpolated
+/// normal-plane frequency, `s = ν/(ν-per-unit-u)` (no image-offset phase). The shifted pupil is interpolated
 /// bilinearly: `|p|` directly, and the OPD as a coverage-weighted bilinear
 /// mean of the covered neighbours (so the phase is never mixed with empty
 /// samples). Parallel over frequencies; each sum is sequential and
@@ -258,7 +469,6 @@ fn otf_direct(pupil: &PupilFunction, nus: &[[f64; 2]], ctx: &JobContext) -> MkRe
     let active: Vec<usize> = (0..n * n).filter(|&k| w[k] > 0.0).collect();
     // Samples per cycle/mm: shift in sample units = ν·n·λF#.
     let per_nu = pupil.alias_free_field_mm();
-    let off = pupil.image_offset_mm();
     let done = std::sync::atomic::AtomicUsize::new(0);
     nus.par_iter()
         .map(|nu| -> MkResult<C64> {
@@ -312,8 +522,7 @@ fn otf_direct(pupil: &PupilFunction, nus: &[[f64; 2]], ctx: &JobContext) -> MkRe
             }
             let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             ctx.report(d as f64 / nus.len() as f64, "");
-            let ph = -tau * (nu[0] * off[0] + nu[1] * off[1]);
-            Ok(C64::new(re.value(), im.value()) / norm * C64::from_polar(1.0, ph))
+            Ok(C64::new(re.value(), im.value()) / norm)
         })
         .collect()
 }
@@ -405,10 +614,7 @@ pub fn polychromatic_mtf(
     for (q, (p, w)) in pupils.iter().enumerate() {
         let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
         let wn = w / wsum;
-        let o = otf_at(p, &nus, method, &sub.subrange(0.0, 0.5))?;
-        let mut clean = p.without_aberrations();
-        clean.set_image_offset_mm([0.0; 2]);
-        let d = otf_at(&clean, &nus, method, &sub.subrange(0.5, 1.0))?;
+        let (o, d) = otf_and_reference(p, &nus, method, true, &sub)?;
         for k in 0..nus.len() {
             acc[k] += o[k] * wn;
             dl[k] += d[k] * wn;

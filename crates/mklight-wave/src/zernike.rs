@@ -304,12 +304,30 @@ impl ZernikeBasis {
     }
 }
 
-/// A wavefront as Zernike coefficients (waves). `coefficients[j − 1]` is
-/// the coefficient of term `j` in `ordering`.
+/// A wavefront as Zernike coefficients (waves). `coefficients()[j − 1]` is
+/// the coefficient of term `j` in `ordering()`.
+///
+/// The fields are private so every set is valid (at most 37 Fringe terms,
+/// finite coefficients); deserialisation runs the same checks as
+/// [`ZernikeSet::new`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ZernikeSetData")]
 pub struct ZernikeSet {
-    pub ordering: ZernikeOrdering,
-    pub coefficients: Vec<f64>,
+    ordering: ZernikeOrdering,
+    coefficients: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+struct ZernikeSetData {
+    ordering: ZernikeOrdering,
+    coefficients: Vec<f64>,
+}
+
+impl TryFrom<ZernikeSetData> for ZernikeSet {
+    type Error = MkError;
+    fn try_from(d: ZernikeSetData) -> MkResult<Self> {
+        ZernikeSet::new(d.ordering, d.coefficients)
+    }
 }
 
 /// Seidel-equivalent third-order aberrations (waves at the pupil edge)
@@ -369,13 +387,28 @@ impl ZernikeSet {
                 coefficients.len()
             )));
         }
+        if let Some(c) = coefficients.iter().find(|c| !c.is_finite()) {
+            return Err(MkError::InvalidParam(format!(
+                "non-finite Zernike coefficient {c}"
+            )));
+        }
         Ok(ZernikeSet {
             ordering,
             coefficients,
         })
     }
 
+    pub fn ordering(&self) -> ZernikeOrdering {
+        self.ordering
+    }
+
+    /// Coefficients (waves); index `j − 1` holds term `j`.
+    pub fn coefficients(&self) -> &[f64] {
+        &self.coefficients
+    }
+
     pub fn basis(&self) -> ZernikeBasis {
+        // Infallible: `new` (the only constructor) bounds Fringe sets to 37.
         ZernikeBasis::new(self.ordering, self.coefficients.len()).expect("valid set")
     }
 
@@ -470,9 +503,17 @@ impl ZernikeSet {
     }
 
     /// Seidel-equivalent terms from the Fringe Z1–Z9 content of this set.
+    /// Only the terms with radial order `n ≤ 4` that are Fringe Z1–Z9 are
+    /// read, so any Standard set (of any order) works; higher-order terms
+    /// are ignored.
     pub fn seidel(&self) -> MkResult<SeidelTerms> {
-        let f = self.to_ordering(ZernikeOrdering::Fringe)?;
-        let z = |j: usize| f.coefficients.get(j - 1).copied().unwrap_or(0.0);
+        let mut f = [0.0; 9];
+        for (t, a) in self.normalized() {
+            if let Some(j @ 1..=9) = t.fringe_index() {
+                f[j - 1] = a * t.noll_norm();
+            }
+        }
+        let z = |j: usize| f[j - 1];
         let tx = z(2) - 2.0 * z(7);
         let ty = z(3) - 2.0 * z(8);
         let a = z(5).hypot(z(6));

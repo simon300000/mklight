@@ -4,11 +4,17 @@
 //! # Image-plane coordinates
 //!
 //! A [`Psf`] is an `M × M` row-major grid (`data[j·M + i]`, `i` → image x,
-//! sagittal; `j` → image y, tangential) with spacing `Δx` mm. Sample
-//! `(c, c)`, `c = M/2` (integer division), sits at `center_mm`, the PSF's
-//! reference point (the chief-ray intersection; for monochromatic results
-//! the pupil's `image_offset_mm`). Sample `(i, j)` is at
-//! `center + ((i − c)·Δx, (j − c)·Δx)`.
+//! sagittal; `j` → image y, tangential) with spacing `Δx` mm on the
+//! **image surface**. Sample `(c, c)`, `c = M/2` (integer division), sits
+//! at `center_mm`, the PSF's reference point (the chief-ray intersection;
+//! for monochromatic results the pupil's `image_offset_mm`). Sample `(i, j)`
+//! is at `center + ((i − c)·Δx, (j − c)·Δx)`.
+//!
+//! For an off-axis chief ray the transform is evaluated at the projected
+//! points `B·x_s` (see the chief-ray frame in [`crate::pupil`]), always by
+//! the matrix transform: separable when `B` is diagonal (chief ray in the
+//! x–z or y–z plane), otherwise summed directly at `O(n²M²)` cost.
+//! [`huygens_psf`] is the exact alternative for tilted planes.
 //!
 //! # FFT relations
 //!
@@ -16,7 +22,9 @@
 //! spacing is `Δx = λ·F#·n/M = λ·F#/Q` (`Q = M/n` is the padding factor) and
 //! the PSF is periodic with the alias-free field `L = n·λ·F#`. The intensity
 //! PSF is band-limited to `1/(λF#)`, so Nyquist sampling needs
-//! `Δx ≤ λF#/2` (`Q ≥ 2`); coarser sampling is computed but flagged.
+//! `Δx ≤ λF#/2` (`Q ≥ 2`); coarser sampling is computed but flagged. `M` is
+//! rounded *up* to a 7-smooth length, so the spacing is never coarser than
+//! requested (any change is reported as `SpacingAdjusted`).
 //! The field at image point `x` is
 //! `U(x) = Σ_j p_j · exp(+i2π·(NA/λ)·u_j·x)` with the Debye-weighted pupil
 //! field `p` (see [`crate::pupil`]); a positive OPD tilt `W = t·v` then moves
@@ -31,7 +39,12 @@
 //!   values are fractions of energy per mm².
 //!
 //! Either way `total_energy` (`∫ PSF dA` over the whole plane, from
-//! Parseval) and `diffraction_peak` record the conversion.
+//! Parseval) and `diffraction_peak` record the conversion. The PSF is the
+//! field intensity `|U|²`; on a plane inclined to the beam (an off-axis
+//! image surface, a tilted Huygens plane) its integral exceeds the flux by
+//! the obliquity factor (`1/cosθ` for a beam at `θ` to the normal), and
+//! `total_energy` includes that factor, so energy fractions and MTFs
+//! normalised by it remain correct.
 
 use mklight_core::{JobContext, MkError, MkResult, Vec3, math::Mat3};
 use num_complex::Complex64 as C64;
@@ -39,7 +52,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::fft::{Dir, fft2, mft, nearest_fast_len, next_fast_len};
+use crate::fft::{Dir, fft2, mft, next_fast_len};
 use crate::pupil::PupilFunction;
 use crate::warnings::{WaveWarning, push_unique};
 
@@ -98,8 +111,9 @@ impl Default for PsfSettings {
 }
 
 /// A sampled intensity PSF (see the module docs for coordinates and
-/// normalisation).
+/// normalisation). Deserialisation checks that the grid is consistent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PsfData")]
 pub struct Psf {
     pub size: usize,
     pub spacing_mm: f64,
@@ -113,6 +127,46 @@ pub struct Psf {
     /// Wavelength (µm); `None` for polychromatic results.
     pub wavelength_um: Option<f64>,
     pub warnings: Vec<WaveWarning>,
+}
+
+#[derive(Deserialize)]
+struct PsfData {
+    size: usize,
+    spacing_mm: f64,
+    center_mm: [f64; 2],
+    data: Vec<f64>,
+    normalization: PsfNormalization,
+    total_energy: f64,
+    diffraction_peak: f64,
+    wavelength_um: Option<f64>,
+    #[serde(default)]
+    warnings: Vec<WaveWarning>,
+}
+
+impl TryFrom<PsfData> for Psf {
+    type Error = MkError;
+    fn try_from(d: PsfData) -> MkResult<Self> {
+        let ok = d.size > 0
+            && d.data.len() == d.size * d.size
+            && d.spacing_mm > 0.0
+            && d.spacing_mm.is_finite()
+            && d.center_mm.iter().all(|c| c.is_finite())
+            && d.data.iter().all(|v| v.is_finite());
+        if !ok {
+            return Err(MkError::InvalidParam("inconsistent PSF grid".into()));
+        }
+        Ok(Psf {
+            size: d.size,
+            spacing_mm: d.spacing_mm,
+            center_mm: d.center_mm,
+            data: d.data,
+            normalization: d.normalization,
+            total_energy: d.total_energy,
+            diffraction_peak: d.diffraction_peak,
+            wavelength_um: d.wavelength_um,
+            warnings: d.warnings,
+        })
+    }
 }
 
 impl Psf {
@@ -163,7 +217,8 @@ impl Psf {
     }
 
     /// Bicubic (Keys, a = −½) interpolation at image point `(x, y)` mm;
-    /// zero outside the grid. Accurate for PSFs sampled at `Δx ≲ λF#/4`.
+    /// zero outside the grid. The error is `O(Δx³)`: about 0.3 % of the
+    /// peak at `Δx = λF#/4` and below 0.1 % at `λF#/8`.
     pub fn interpolate(&self, x: f64, y: f64) -> f64 {
         let fx = (x - self.center_mm[0]) / self.spacing_mm + self.center_index() as f64;
         let fy = (y - self.center_mm[1]) / self.spacing_mm + self.center_index() as f64;
@@ -253,9 +308,15 @@ fn fft_intensity(
         .collect())
 }
 
-/// Raw `|U|²` by the matrix Fourier transform at
-/// `x_k = origin + (k − c)·dx` (relative to the pupil's reference point).
-fn mft_intensity(
+/// Raw `|U|²` at image-surface points
+/// `x_s = origin + ((k − c)·dx, (l − c)·dx)` relative to the pupil's
+/// reference point, evaluated at their normal-plane feet `B·x_s` (module
+/// docs). A diagonal `B` (on axis, or a chief ray in the x–z or y–z plane)
+/// uses the separable matrix transform; otherwise the sum
+/// `Σ_j r_y^j Σ_i r_x^i p_ij` (`r = e^{i2πΔν·ξ}`, a unit-modulus phase
+/// factor dropped) is evaluated by Horner's rule along both pupil axes,
+/// `O(n²M²)`.
+fn surface_intensity(
     pupil: &PupilFunction,
     dx: f64,
     size: usize,
@@ -268,16 +329,64 @@ fn mft_intensity(
     let c = (size / 2) as f64;
     let xs: Vec<f64> = (0..size).map(|k| origin[0] + (k as f64 - c) * dx).collect();
     let ys: Vec<f64> = (0..size).map(|k| origin[1] + (k as f64 - c) * dx).collect();
-    let u = mft(&pupil.debye_field(), n, &nu, &nu, &xs, &ys, ctx)?;
-    Ok(u.iter().map(|z| z.norm_sqr()).collect())
+    let b = pupil.geometry().surface_to_normal();
+    let field = pupil.debye_field();
+    if b[0][1].abs() < 1e-15 && b[1][0].abs() < 1e-15 {
+        let xn: Vec<f64> = xs.iter().map(|x| b[0][0] * x).collect();
+        let yn: Vec<f64> = ys.iter().map(|y| b[1][1] * y).collect();
+        let u = mft(&field, n, &nu, &nu, &xn, &yn, ctx)?;
+        return Ok(u.iter().map(|z| z.norm_sqr()).collect());
+    }
+    // Bounding box of the non-zero samples keeps the Horner loops short.
+    let (mut lo, mut hi) = ((n, n), (0, 0));
+    for (k, z) in field.iter().enumerate() {
+        if z.re != 0.0 || z.im != 0.0 {
+            lo = (lo.0.min(k % n), lo.1.min(k / n));
+            hi = (hi.0.max(k % n), hi.1.max(k / n));
+        }
+    }
+    let tau = 2.0 * std::f64::consts::PI;
+    let dnu = 2.0 * s / n as f64;
+    let done = AtomicUsize::new(0);
+    let rows: Vec<Vec<f64>> = (0..size)
+        .into_par_iter()
+        .map(|l| -> MkResult<Vec<f64>> {
+            ctx.check()?;
+            let row = xs
+                .iter()
+                .map(|&x| {
+                    let xi = b[0][0] * x + b[0][1] * ys[l];
+                    let eta = b[1][0] * x + b[1][1] * ys[l];
+                    let rx = C64::from_polar(1.0, tau * dnu * xi);
+                    let ry = C64::from_polar(1.0, tau * dnu * eta);
+                    let mut acc = C64::default();
+                    for j in (lo.1..=hi.1).rev() {
+                        let frow = &field[j * n..(j + 1) * n];
+                        let mut inner = C64::default();
+                        for i in (lo.0..=hi.0).rev() {
+                            inner = inner * rx + frow[i];
+                        }
+                        acc = acc * ry + inner;
+                    }
+                    acc.norm_sqr()
+                })
+                .collect();
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            ctx.report(d as f64 / size as f64, "");
+            Ok(row)
+        })
+        .collect::<MkResult<_>>()?;
+    Ok(rows.into_iter().flatten().collect())
 }
 
-/// `(Σ|p|)²` and `L²·E`: the raw diffraction-limited peak and raw total
-/// energy of a pupil's PSF (`E` = [`PupilFunction::energy`]).
+/// `(Σ|p|)²` and `L²·E/cosθ_c`: the raw diffraction-limited peak and the
+/// raw whole-plane integral of the PSF on the image surface
+/// (`E` = [`PupilFunction::energy`]; `cosθ_c` the projection Jacobian).
 fn raw_constants(pupil: &PupilFunction) -> (f64, f64) {
     let s1: f64 = pupil.field_weights().iter().sum();
     let l = pupil.alias_free_field_mm();
-    (s1 * s1, l * l * pupil.energy())
+    let g = pupil.geometry();
+    (s1 * s1, l * l * pupil.energy() / g.projection_jacobian())
 }
 
 fn normalized(
@@ -330,14 +439,17 @@ fn check_grid(size: usize) -> MkResult<()> {
 /// transform.
 pub const MAX_FFT_LEN: usize = 8192;
 
-/// Monochromatic PSF by Fourier transform of the pupil (Debye integral).
+/// Monochromatic PSF on the image surface by Fourier transform of the
+/// pupil (Debye integral).
 ///
-/// With [`PsfTransform::Fft`] the pupil is zero-padded to the 7-smooth
-/// length `M ≈ n·λF#/Δx` (at least `n`); the transform is cropped (or, if
-/// the grid exceeds the alias-free field, periodically extended, with a
-/// warning) to `grid_size²` samples centred on the reference point. When
-/// `M < n` (spacing coarser than `λF#`) or `M > MAX_FFT_LEN`, the exact
-/// matrix transform is used instead.
+/// With [`PsfTransform::Fft`] the pupil is zero-padded to the smallest
+/// 7-smooth length `M ≥ n·λF#/Δx` (at least `n`); the transform is cropped
+/// (or, if the grid exceeds the alias-free field, periodically extended,
+/// with a warning) to `grid_size²` samples centred on the reference point.
+/// The exact matrix transform is used instead when `M` would be below `n`
+/// (spacing coarser than `λF#`) or above `MAX_FFT_LEN`, and for an
+/// off-axis chief ray (the projection makes the x and y spacings differ on
+/// the normal plane).
 pub fn fft_psf(pupil: &PupilFunction, settings: &PsfSettings, ctx: &JobContext) -> MkResult<Psf> {
     check_grid(settings.grid_size)?;
     ctx.report(0.0, "PSF");
@@ -355,27 +467,29 @@ pub fn fft_psf(pupil: &PupilFunction, settings: &PsfSettings, ctx: &JobContext) 
     let size = settings.grid_size;
     // The FFT needs M ≥ n; very fine spacings would need huge transforms,
     // for which the matrix transform (cost set by the output grid) is used.
+    // M is rounded up, never down, so the spacing never becomes coarser
+    // than requested (in particular never coarser than a Nyquist request).
     let ratio = l / requested;
+    let m = (ratio >= n as f64 * (1.0 - 1e-12) && ratio <= MAX_FFT_LEN as f64)
+        .then(|| next_fast_len(((ratio * (1.0 - 1e-12)).ceil() as usize).max(n)));
     let use_fft = settings.transform == PsfTransform::Fft
-        && ratio >= n as f64 * (1.0 - 1e-12)
-        && ratio <= MAX_FFT_LEN as f64;
-    let (spacing, raw) = if use_fft {
-        let m = nearest_fast_len(l / requested, n);
-        let spacing = l / m as f64;
-        if matches!(settings.sampling, ImageSampling::Spacing { .. })
-            && (spacing / requested - 1.0).abs() > 1e-6
-        {
-            warnings.push(WaveWarning::SpacingAdjusted {
-                requested_mm: requested,
-                actual_mm: spacing,
-            });
+        && pupil.geometry().is_on_axis()
+        && m.is_some_and(|m| m <= MAX_FFT_LEN);
+    let (spacing, raw) = match m {
+        Some(m) if use_fft => {
+            let spacing = l / m as f64;
+            if (spacing / requested - 1.0).abs() > 1e-6 {
+                warnings.push(WaveWarning::SpacingAdjusted {
+                    requested_mm: requested,
+                    actual_mm: spacing,
+                });
+            }
+            (spacing, fft_intensity(pupil, m, size, ctx)?)
         }
-        (spacing, fft_intensity(pupil, m, size, ctx)?)
-    } else {
-        (
+        _ => (
             requested,
-            mft_intensity(pupil, requested, size, [0.0; 2], ctx)?,
-        )
+            surface_intensity(pupil, requested, size, [0.0; 2], ctx)?,
+        ),
     };
     image_checks(pupil, spacing, size, &mut warnings);
     let (rp, re) = raw_constants(pupil);
@@ -395,8 +509,10 @@ pub fn fft_psf(pupil: &PupilFunction, settings: &PsfSettings, ctx: &JobContext) 
 }
 
 /// An observation plane in image space, relative to the pupil's reference
-/// point (the centre of the reference sphere), in the image-space frame
-/// (+z away from the exit pupil).
+/// point (the centre of the reference sphere), in the chief-ray frame
+/// `(ê_u, ê_v, ê_w)` of [`crate::pupil`] (+z along the chief ray, away from
+/// the exit pupil; on axis this is the image frame). The axes must be
+/// orthonormal.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImagePlane {
     pub origin_mm: Vec3,
@@ -434,6 +550,39 @@ impl ImagePlane {
             y_axis: r.mul_vec(Vec3::Y),
         }
     }
+
+    /// The image surface (tangent plane at the chief-ray point) of a pupil
+    /// with this geometry: its x and y axes expressed in the chief-ray
+    /// frame. Huygens on this plane is the exact counterpart of the
+    /// projected [`fft_psf`] grid.
+    pub fn image_surface(geometry: &crate::pupil::PupilGeometry) -> Self {
+        let [eu, ev, ew] = geometry.chief_frame();
+        ImagePlane {
+            origin_mm: Vec3::ZERO,
+            x_axis: Vec3::new(eu.x, ev.x, ew.x),
+            y_axis: Vec3::new(eu.y, ev.y, ew.y),
+        }
+    }
+
+    /// Unit normal `x_axis × y_axis`.
+    pub fn normal(&self) -> Vec3 {
+        self.x_axis.cross(self.y_axis)
+    }
+
+    pub fn validate(&self) -> MkResult<()> {
+        let unit = |v: Vec3| v.is_finite() && (v.norm() - 1.0).abs() < 1e-9;
+        if unit(self.x_axis)
+            && unit(self.y_axis)
+            && self.x_axis.dot(self.y_axis).abs() < 1e-9
+            && self.origin_mm.is_finite()
+        {
+            Ok(())
+        } else {
+            Err(MkError::InvalidParam(format!(
+                "image plane axes must be orthonormal: {self:?}"
+            )))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -455,12 +604,26 @@ pub struct HuygensSettings {
 /// cancellation. No paraxial or Debye approximation, so it validates the
 /// FFT PSF and handles tilted and defocused planes. Cost `O(n²·M²)`,
 /// parallel over image rows.
+///
+/// On a plane with normal `N̂` the plane integral of `|U|²` is
+/// `Σ_j E_j·γ_j/|k̂_j·N̂| / Σ_j E_j` times the flux (`k̂_j = (−α, −β, γ)` the
+/// direction of pupil sample `j`, `E_j` its energy): a plane wave crossing
+/// a plane at angle `θ` covers `1/cosθ` more area. `total_energy` (and
+/// the unit-energy scaling) include this factor.
 pub fn huygens_psf(
     pupil: &PupilFunction,
     settings: &HuygensSettings,
     ctx: &JobContext,
 ) -> MkResult<Psf> {
     check_grid(settings.grid_size)?;
+    if !(settings.spacing_mm > 0.0 && settings.spacing_mm.is_finite()) {
+        return Err(MkError::InvalidParam(format!(
+            "PSF spacing {} mm",
+            settings.spacing_mm
+        )));
+    }
+    settings.plane.validate()?;
+    let normal = settings.plane.normal();
     let n = pupil.n();
     let g = pupil.geometry();
     let r = g.reference_radius_mm;
@@ -471,6 +634,8 @@ pub fn huygens_psf(
     // (point on the sphere, P·dS) for covered samples.
     let mut pts: Vec<(Vec3, C64)> = Vec::new();
     let mut u_dl0 = 0.0;
+    // Σ E_j·γ_j/|k̂_j·N̂| and Σ E_j for the plane's obliquity factor.
+    let (mut e_plane, mut e_sum) = (0.0, 0.0);
     for j in 0..n {
         for i in 0..n {
             let q = j * n + i;
@@ -484,6 +649,15 @@ pub fn huygens_psf(
             let ds = r * r * d_alpha * d_alpha / gamma;
             let amp = c * pupil.amplitude()[q] * ds;
             u_dl0 += amp / r;
+            let cos_in = Vec3::new(-a, -b, gamma).dot(normal).abs();
+            if !(cos_in > 1e-9) {
+                return Err(MkError::InvalidParam(
+                    "image plane is parallel to rays of the beam".into(),
+                ));
+            }
+            let e = c * (pupil.amplitude()[q] / gamma).powi(2);
+            e_plane += e * gamma / cos_in;
+            e_sum += e;
             pts.push((
                 Vec3::new(r * a, r * b, -r * gamma),
                 C64::from_polar(amp, tau * pupil.opd_waves()[q]),
@@ -526,7 +700,9 @@ pub fn huygens_psf(
         })
         .collect::<MkResult<_>>()?;
     let strehl_data: Vec<f64> = rows.into_iter().flatten().collect();
-    let dl_unit = pupil.diffraction_peak_unit_energy();
+    // Unit-energy peak on this plane: the normal-plane value over the
+    // obliquity factor.
+    let dl_unit = pupil.diffraction_peak_unit_energy() * e_sum / e_plane;
     let (data, total_energy, diffraction_peak) = match settings.normalization {
         PsfNormalization::Strehl => (strehl_data, 1.0 / dl_unit, 1.0),
         PsfNormalization::UnitEnergy => (
@@ -559,10 +735,25 @@ pub struct PolyPsfSettings {
     pub grid_size: usize,
     pub spacing_mm: f64,
     pub normalization: PsfNormalization,
-    /// `Matrix` evaluates every wavelength exactly on the common grid
-    /// (band-limited resampling). `Fft` computes each wavelength at a
-    /// native spacing `≤ min(Δx, λF#/4)` and interpolates bicubically.
+    /// `Matrix` (the default from [`PolyPsfSettings::new`]) evaluates every
+    /// wavelength exactly on the common grid (band-limited resampling).
+    /// `Fft` computes each on-axis wavelength at a native spacing
+    /// `≤ min(Δx, λF#/8)` and interpolates bicubically, with errors below
+    /// about 10⁻³ of the peak; it is faster for large pupils and grids.
+    /// Off-axis pupils always use the matrix transform.
     pub transform: PsfTransform,
+}
+
+impl PolyPsfSettings {
+    /// Exact (matrix-transform) settings, Strehl-normalised.
+    pub fn new(grid_size: usize, spacing_mm: f64) -> Self {
+        PolyPsfSettings {
+            grid_size,
+            spacing_mm,
+            normalization: PsfNormalization::Strehl,
+            transform: PsfTransform::Matrix,
+        }
+    }
 }
 
 /// Polychromatic PSF `Σ ŵ_λ · PSF_λ` with each `PSF_λ` normalised to unit
@@ -583,7 +774,7 @@ pub fn polychromatic_psf(
     }
     let size = settings.grid_size;
     let dx = settings.spacing_mm;
-    if !(dx > 0.0) {
+    if !(dx > 0.0 && dx.is_finite()) {
         return Err(MkError::InvalidParam(format!("PSF spacing {dx} mm")));
     }
     let mut acc = vec![0.0; size * size];
@@ -597,32 +788,37 @@ pub fn polychromatic_psf(
         let wn = w / wsum;
         let off = pupil.image_offset_mm();
         let (_, raw_energy) = raw_constants(pupil);
-        let unit: Vec<f64> = match settings.transform {
-            PsfTransform::Matrix => mft_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
+        let lf = pupil.lambda_f_mm();
+        let native = dx.min(0.125 * lf);
+        let m_native =
+            next_fast_len((pupil.alias_free_field_mm() / native).ceil() as usize).max(pupil.n());
+        let matrix = settings.transform == PsfTransform::Matrix
+            || !pupil.geometry().is_on_axis()
+            || m_native > MAX_FFT_LEN;
+        let unit: Vec<f64> = if matrix {
+            surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
                 .into_iter()
                 .map(|v| v / raw_energy)
-                .collect(),
-            PsfTransform::Fft => {
-                let lf = pupil.lambda_f_mm();
-                let native = dx.min(0.25 * lf);
-                let m = next_fast_len((pupil.alias_free_field_mm() / native).ceil() as usize)
-                    .max(pupil.n());
-                let s = PsfSettings {
-                    grid_size: m,
-                    sampling: ImageSampling::Spacing {
-                        mm: pupil.alias_free_field_mm() / m as f64,
-                    },
-                    normalization: PsfNormalization::UnitEnergy,
-                    transform: PsfTransform::Fft,
-                };
-                let p = fft_psf(pupil, &s, &sub)?;
-                p.resampled(dx, size, [0.0, 0.0]).data
-            }
+                .collect()
+        } else {
+            let s = PsfSettings {
+                grid_size: m_native,
+                sampling: ImageSampling::Spacing {
+                    mm: pupil.alias_free_field_mm() / m_native as f64,
+                },
+                normalization: PsfNormalization::UnitEnergy,
+                transform: PsfTransform::Fft,
+            };
+            let p = fft_psf(pupil, &s, &sub)?;
+            p.resampled(dx, size, [0.0, 0.0]).data
         };
         for (a, v) in acc.iter_mut().zip(&unit) {
             *a += wn * v;
         }
-        dl_peak += wn * pupil.diffraction_peak_unit_energy();
+        // Unit-energy peak on the image surface (the projection spreads the
+        // energy over 1/cosθ_c more area).
+        dl_peak +=
+            wn * pupil.diffraction_peak_unit_energy() * pupil.geometry().projection_jacobian();
         for wv in pupil.sampling_warnings() {
             push_unique(&mut warnings, wv);
         }

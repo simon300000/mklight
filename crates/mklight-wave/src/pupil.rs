@@ -18,6 +18,28 @@
 //! transform of the pupil field (Debye integral) and lets the FFT be exact
 //! for it.
 //!
+//! # Chief-ray frame (off-axis fields)
+//!
+//! The direction cosines are taken in the **chief-ray frame**
+//! `(ê_u, ê_v, ê_w)`: `ê_w` is the chief ray's image-space direction
+//! (exit-pupil centre → image point), and `(ê_u, ê_v)` are the image
+//! surface's `(x, y)` axes carried over by the smallest rotation that takes
+//! the surface normal onto `ê_w` (see [`PupilGeometry::chief_frame`]). A ray
+//! with unit direction `k̂` has `(u, v) = (k̂·ê_u, k̂·ê_v)/sinθ'max`
+//! ([`PupilGeometry::pupil_coords`]); the chief ray is `(0, 0)` and the
+//! Debye factor `γ = k̂·ê_w`. On axis the frame is the image frame.
+//!
+//! The Fourier transform of the pupil gives the PSF in the plane normal to
+//! the chief ray. Results are reported on the **image surface** (CONVENTIONS
+//! §4) by the projection `x_n = B·x_s` ([`PupilGeometry::surface_to_normal`]):
+//! a surface point maps to its foot on the normal plane. `B` is symmetric
+//! with eigenvalues `1` (sagittal) and `cosθ_c` (tangential), so a chief
+//! ray at angle `θ_c` stretches the PSF by `1/cosθ_c` along the tangential
+//! direction and `MTF_surface(ν) = MTF_normal(B^{−T}·ν)`. The projection
+//! neglects the defocus `x_s·ê_w` across the PSF (a phase of about
+//! `|x_s|·sinθ_c·NA²/(2λ)` waves at distance `|x_s|`); [`crate::huygens_psf`]
+//! on [`crate::ImagePlane::image_surface`] includes it exactly.
+//!
 //! # Field
 //!
 //! Each sample stores the amplitude `A ≥ 0`, the coverage `c ∈ [0, 1]` (the
@@ -40,7 +62,7 @@
 //! `exp(+i2π·ν·x)` (see [`crate::psf`]); this is the complex conjugate of
 //! the physical `e^{−iωt}` field, which leaves every intensity unchanged.
 
-use mklight_core::{MkError, MkResult};
+use mklight_core::{MkError, MkResult, Vec3};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -58,7 +80,21 @@ pub struct PupilGeometry {
     pub reference_radius_mm: f64,
     /// Image-space refractive index `n'` (relative to air).
     pub image_index: f64,
+    /// Unit direction of the chief ray in image space (exit-pupil centre →
+    /// image point) in the image-surface frame: `x`, `y` along the surface's
+    /// local axes, `z` along its normal, positive in the direction of
+    /// propagation. `[0, 0, 1]` on axis. See the module docs.
+    #[serde(default = "on_axis")]
+    pub chief_ray: [f64; 3],
 }
+
+fn on_axis() -> [f64; 3] {
+    [0.0, 0.0, 1.0]
+}
+
+/// Smallest `cosθ_c` accepted for the chief ray against the surface normal
+/// (about 89.4°).
+const MIN_CHIEF_COS: f64 = 1e-2;
 
 impl PupilGeometry {
     pub fn new(
@@ -70,9 +106,35 @@ impl PupilGeometry {
             exit_pupil_radius_mm,
             reference_radius_mm,
             image_index,
+            chief_ray: on_axis(),
         };
         g.validate()?;
         Ok(g)
+    }
+
+    /// A copy with the chief ray along `direction` (image-surface frame,
+    /// normalised here).
+    pub fn with_chief_ray(mut self, direction: [f64; 3]) -> MkResult<Self> {
+        let d = Vec3::new(direction[0], direction[1], direction[2]);
+        let len = d.norm();
+        if !(len > 0.0 && len.is_finite()) {
+            return Err(MkError::InvalidModel(format!(
+                "chief-ray direction {direction:?}"
+            )));
+        }
+        let d = d / len;
+        self.chief_ray = [d.x, d.y, d.z];
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// A copy with the chief ray at `theta_deg` from the surface normal, in
+    /// the azimuth `azimuth_deg` measured from +x toward +y (90° = a field on
+    /// +y).
+    pub fn with_chief_angle(self, theta_deg: f64, azimuth_deg: f64) -> MkResult<Self> {
+        let (st, ct) = theta_deg.to_radians().sin_cos();
+        let (sa, ca) = azimuth_deg.to_radians().sin_cos();
+        self.with_chief_ray([st * ca, st * sa, ct])
     }
 
     /// Geometry with working F/# `1/(2 n' sinθ')` and reference radius `R`.
@@ -90,10 +152,16 @@ impl PupilGeometry {
     }
 
     pub fn validate(&self) -> MkResult<()> {
+        let d = self.chief_ray;
+        let unit = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - 1.0).abs() < 1e-9;
         let ok = self.exit_pupil_radius_mm > 0.0
             && self.reference_radius_mm > self.exit_pupil_radius_mm
             && self.image_index > 0.0
-            && self.reference_radius_mm.is_finite();
+            && self.image_index.is_finite()
+            && self.reference_radius_mm.is_finite()
+            && d.iter().all(|c| c.is_finite())
+            && unit
+            && d[2] >= MIN_CHIEF_COS;
         if ok {
             Ok(())
         } else {
@@ -120,9 +188,180 @@ impl PupilGeometry {
     pub fn lambda_f_mm(&self, wavelength_um: f64) -> f64 {
         wavelength_um * 1e-3 * self.working_f_number()
     }
-    /// Incoherent cutoff frequency `1/(λ·F#) = 2NA/λ` (cycles/mm).
+    /// Incoherent cutoff frequency `1/(λ·F#) = 2NA/λ` (cycles/mm) in the
+    /// plane normal to the chief ray.
     pub fn cutoff_frequency(&self, wavelength_um: f64) -> f64 {
         1.0 / self.lambda_f_mm(wavelength_um)
+    }
+
+    /// `true` when the chief ray is along the surface normal (no
+    /// projection).
+    pub fn is_on_axis(&self) -> bool {
+        // sinθ_c < 10⁻¹²: the projection differs from 1 by < 10⁻²⁴.
+        self.chief_ray[0].hypot(self.chief_ray[1]) < 1e-12
+    }
+
+    /// Chief-ray frame `[ê_u, ê_v, ê_w]` in image-surface coordinates: the
+    /// rotation about `ẑ × ê_w` by `θ_c` applied to `(x̂, ŷ, ẑ)` (Rodrigues
+    /// form, regular at θ_c = 0). The sagittal direction is unchanged and
+    /// the tangential one tips toward the chief ray, so tangential and
+    /// sagittal keep their meaning.
+    pub fn chief_frame(&self) -> [Vec3; 3] {
+        let [dx, dy, dz] = self.chief_ray;
+        let q = 1.0 / (1.0 + dz);
+        [
+            Vec3::new(1.0 - dx * dx * q, -dx * dy * q, -dx),
+            Vec3::new(-dx * dy * q, 1.0 - dy * dy * q, -dy),
+            Vec3::new(dx, dy, dz),
+        ]
+    }
+
+    /// Normalised pupil coordinates `(u, v)` of a ray with unit image-space
+    /// direction `k` (image-surface frame). This is how a tracer places its
+    /// rays on the pupil grid.
+    pub fn pupil_coords(&self, k: Vec3) -> (f64, f64) {
+        let [eu, ev, _] = self.chief_frame();
+        let s = self.sin_max();
+        (k.dot(eu) / s, k.dot(ev) / s)
+    }
+
+    /// The projection `B` with `x_n = B·x_s`: image-surface coordinates
+    /// (relative to the chief-ray point) → coordinates in the plane normal
+    /// to the chief ray, `B_ij = (ê_i)_j` for `i ∈ {u, v}`, `j ∈ {x, y}`.
+    /// Symmetric, `det B = cosθ_c`.
+    pub fn surface_to_normal(&self) -> [[f64; 2]; 2] {
+        let [eu, ev, _] = self.chief_frame();
+        [[eu.x, eu.y], [ev.x, ev.y]]
+    }
+
+    /// `B^{−T}`: maps an image-surface frequency to the normal-plane
+    /// frequency with the same OTF value.
+    pub fn surface_to_normal_frequency(&self) -> [[f64; 2]; 2] {
+        let b = self.surface_to_normal();
+        let det = b[0][0] * b[1][1] - b[0][1] * b[1][0];
+        [
+            [b[1][1] / det, -b[1][0] / det],
+            [-b[0][1] / det, b[0][0] / det],
+        ]
+    }
+
+    /// `|det B| = cosθ_c`: the PSF on the image surface covers `1/cosθ_c`
+    /// times the area it covers on the normal plane.
+    pub fn projection_jacobian(&self) -> f64 {
+        self.chief_ray[2]
+    }
+}
+
+/// A clear aperture of arbitrary shape in normalised pupil coordinates, for
+/// pupils built from traced rays (vignetted, cat's-eye shaped pupils).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PupilMask {
+    /// An analytic shape.
+    Analytic { aperture: Aperture },
+    /// Closed polygons (vertices in order, either orientation, last joined
+    /// to first) under the even–odd rule, so a loop inside another is a
+    /// hole. A tracer supplies the traced vignetting boundary this way.
+    Polygons { loops: Vec<Vec<[f64; 2]>> },
+}
+
+impl From<Aperture> for PupilMask {
+    fn from(aperture: Aperture) -> Self {
+        PupilMask::Analytic { aperture }
+    }
+}
+
+impl PupilMask {
+    /// One polygon.
+    pub fn polygon(vertices: Vec<[f64; 2]>) -> Self {
+        PupilMask::Polygons {
+            loops: vec![vertices],
+        }
+    }
+
+    /// Convex hull of `points` (Andrew's monotone chain). A rough stand-in
+    /// when no traced boundary is available: it overestimates concave
+    /// apertures and underestimates the true rim by up to the ray spacing.
+    pub fn convex_hull(points: &[(f64, f64)]) -> MkResult<Self> {
+        let mut p: Vec<[f64; 2]> = points
+            .iter()
+            .filter(|(u, v)| u.is_finite() && v.is_finite())
+            .map(|&(u, v)| [u, v])
+            .collect();
+        p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+        p.dedup();
+        if p.len() < 3 {
+            return Err(MkError::InvalidParam(
+                "convex hull needs three distinct points".into(),
+            ));
+        }
+        let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+            (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        };
+        let mut hull: Vec<[f64; 2]> = Vec::with_capacity(2 * p.len());
+        for pass in 0..2 {
+            let start = hull.len();
+            let it: Box<dyn Iterator<Item = &[f64; 2]>> = if pass == 0 {
+                Box::new(p.iter())
+            } else {
+                Box::new(p.iter().rev())
+            };
+            for &q in it {
+                while hull.len() >= start + 2
+                    && cross(hull[hull.len() - 2], hull[hull.len() - 1], q) <= 0.0
+                {
+                    hull.pop();
+                }
+                hull.push(q);
+            }
+            hull.pop();
+        }
+        if hull.len() < 3 {
+            return Err(MkError::InvalidParam("convex hull is degenerate".into()));
+        }
+        Ok(Self::polygon(hull))
+    }
+
+    pub fn validate(&self) -> MkResult<()> {
+        match self {
+            PupilMask::Analytic { .. } => Ok(()),
+            PupilMask::Polygons { loops } => {
+                let ok = !loops.is_empty()
+                    && loops.iter().all(|l| {
+                        l.len() >= 3 && l.iter().all(|p| p[0].is_finite() && p[1].is_finite())
+                    });
+                if ok {
+                    Ok(())
+                } else {
+                    Err(MkError::InvalidParam(
+                        "pupil mask polygons need ≥ 3 finite vertices each".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Point-in-mask test (crossing number for polygons).
+    pub fn contains(&self, u: f64, v: f64) -> bool {
+        match self {
+            PupilMask::Analytic { aperture } => aperture.contains(u, v),
+            PupilMask::Polygons { loops } => {
+                let mut inside = false;
+                for l in loops {
+                    let mut j = l.len() - 1;
+                    for i in 0..l.len() {
+                        let (a, b) = (l[i], l[j]);
+                        if (a[1] > v) != (b[1] > v)
+                            && u < a[0] + (v - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+                        {
+                            inside = !inside;
+                        }
+                        j = i;
+                    }
+                }
+                inside
+            }
+        }
     }
 }
 
@@ -173,7 +412,10 @@ impl Apodization {
 
 /// Sampled complex exit-pupil function at one wavelength (see the module
 /// docs for the sampling convention).
+///
+/// Deserialisation runs the same validation as [`Self::from_samples`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PupilFunctionData")]
 pub struct PupilFunction {
     n: usize,
     wavelength_um: f64,
@@ -187,13 +429,48 @@ pub struct PupilFunction {
     opd_waves: Vec<f64>,
 }
 
+/// Serialised form of [`PupilFunction`], validated on conversion.
+#[derive(Deserialize)]
+struct PupilFunctionData {
+    n: usize,
+    wavelength_um: f64,
+    geometry: PupilGeometry,
+    #[serde(default)]
+    image_offset_mm: [f64; 2],
+    amplitude: Vec<f64>,
+    coverage: Vec<f64>,
+    opd_waves: Vec<f64>,
+}
+
+impl TryFrom<PupilFunctionData> for PupilFunction {
+    type Error = MkError;
+    fn try_from(d: PupilFunctionData) -> MkResult<Self> {
+        if !d.image_offset_mm.iter().all(|x| x.is_finite()) {
+            return Err(MkError::InvalidParam("pupil image offset".into()));
+        }
+        let mut p = PupilFunction::from_samples(
+            d.n,
+            d.wavelength_um,
+            d.geometry,
+            d.amplitude,
+            d.coverage,
+            d.opd_waves,
+        )?;
+        p.image_offset_mm = d.image_offset_mm;
+        Ok(p)
+    }
+}
+
 /// Fewest samples across the pupil for which results are trusted without a
 /// warning.
 pub const MIN_PUPIL_SAMPLES: usize = 32;
 
 impl PupilFunction {
     /// Builds from raw sample arrays (each `n²`, row-major). Amplitude and
-    /// OPD are ignored (set to 0) where the coverage is 0.
+    /// OPD are ignored (set to 0) where the coverage is 0. A pupil that
+    /// transmits no light (zero [`Self::energy`]) is rejected with
+    /// [`MkError::Numerical`], so every PSF, MTF and statistic downstream is
+    /// well defined.
     pub fn from_samples(
         n: usize,
         wavelength_um: f64,
@@ -238,7 +515,7 @@ impl PupilFunction {
                 ));
             }
         }
-        Ok(PupilFunction {
+        let p = PupilFunction {
             n,
             wavelength_um,
             geometry,
@@ -246,7 +523,11 @@ impl PupilFunction {
             amplitude,
             coverage,
             opd_waves,
-        })
+        };
+        if !(p.energy() > 0.0) {
+            return Err(MkError::Numerical("pupil transmits no light".into()));
+        }
+        Ok(p)
     }
 
     fn rho2_at(n: usize, k: usize) -> f64 {
@@ -367,7 +648,7 @@ impl PupilFunction {
         zernike: &ZernikeSet,
     ) -> MkResult<Self> {
         let basis = zernike.basis();
-        let c = &zernike.coefficients;
+        let c = zernike.coefficients();
         Self::from_aperture(
             n,
             wavelength_um,
@@ -391,8 +672,11 @@ impl PupilFunction {
     pub fn image_offset_mm(&self) -> [f64; 2] {
         self.image_offset_mm
     }
+    /// Sets the image offset (non-finite components are ignored).
     pub fn set_image_offset_mm(&mut self, offset: [f64; 2]) {
-        self.image_offset_mm = offset;
+        if offset.iter().all(|x| x.is_finite()) {
+            self.image_offset_mm = offset;
+        }
     }
     /// Normalised coordinate of sample index `i` (either axis).
     pub fn coord(&self, i: usize) -> f64 {
@@ -483,8 +767,9 @@ impl PupilFunction {
         p
     }
 
-    /// OPD (waves) that moves the reference point by `dz` mm along the axis
-    /// (`dz > 0` away from the pupil). Exact on the reference sphere:
+    /// OPD (waves) that moves the reference point by `dz` mm along the
+    /// reference-sphere axis, i.e. the chief ray (`dz > 0` away from the
+    /// pupil; on axis this is the optical axis). Exact on the reference sphere:
     /// `W = (n'/λ)·[r(1) − r(γ)]` with `r(γ) = √(R² + 2Rγ·dz + dz²)`, so a
     /// positive shift adds positive OPD at the pupil edge (CONVENTIONS §4:
     /// the wave then converges more than the shifted reference sphere).

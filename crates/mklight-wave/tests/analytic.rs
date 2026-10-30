@@ -922,7 +922,8 @@ fn structured_ray_samples_resample_linear_fields_exactly() {
         ny: k,
         samples,
     };
-    let p = grid_from_structured(&rays, 64, LAM, slow(), 4, &ctx()).unwrap();
+    let (p, w) = grid_from_structured(&rays, 64, LAM, slow(), None, 4, &ctx()).unwrap();
+    assert!(w.is_empty());
     let n = p.n();
     let mut full = 0;
     for j in 0..n {
@@ -973,13 +974,13 @@ fn scattered_ray_samples_via_zernike_fit() {
         48,
         LAM,
         slow(),
-        Aperture::Circular,
+        &Aperture::Circular.into(),
         1,
         &ctx(),
     )
     .unwrap();
     assert!(fit.residual_rms < 1e-12);
-    for (a, b) in fit.set.coefficients.iter().zip(&truth.coefficients) {
+    for (a, b) in fit.set.coefficients().iter().zip(truth.coefficients()) {
         assert!((a - b).abs() < 1e-11);
     }
     let n = p.n();

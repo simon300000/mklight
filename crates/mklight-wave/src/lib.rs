@@ -49,7 +49,7 @@ pub use psf::{
     HuygensSettings, ImagePlane, ImageSampling, PolyPsfSettings, Psf, PsfNormalization,
     PsfSettings, PsfTransform, fft_psf, huygens_psf, polychromatic_psf,
 };
-pub use pupil::{Aperture, Apodization, OpdStats, PupilFunction, PupilGeometry};
+pub use pupil::{Aperture, Apodization, OpdStats, PupilFunction, PupilGeometry, PupilMask};
 pub use warnings::WaveWarning;
 pub use zernike::{
     SeidelTerms, ZernikeBasis, ZernikeFit, ZernikeFitSettings, ZernikeOrdering, ZernikeSet,

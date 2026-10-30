@@ -33,6 +33,10 @@ pub enum WaveWarning {
     /// The requested frequency exceeds what the sampling can represent; the
     /// value returned there is zero or extrapolated.
     FrequencyBeyondSampling { frequency: f64, limit: f64 },
+    /// Part of the clear aperture lies far from every traced ray (distance
+    /// `max_gap` against a typical ray spacing `typical_spacing`, both in
+    /// normalised pupil units), so the wavefront there is extrapolated.
+    SparseRays { max_gap: f64, typical_spacing: f64 },
 }
 
 impl fmt::Display for WaveWarning {
@@ -81,6 +85,14 @@ impl fmt::Display for WaveWarning {
             WaveWarning::FrequencyBeyondSampling { frequency, limit } => write!(
                 f,
                 "frequency {frequency:.4} cycles/mm is beyond the sampled range {limit:.4} cycles/mm"
+            ),
+            WaveWarning::SparseRays {
+                max_gap,
+                typical_spacing,
+            } => write!(
+                f,
+                "parts of the aperture are {max_gap:.3} (pupil units) from the nearest ray, \
+                 against a ray spacing of {typical_spacing:.3}; the wavefront there is extrapolated"
             ),
         }
     }

@@ -50,21 +50,6 @@ pub(crate) fn next_fast_len(n: usize) -> usize {
     k
 }
 
-/// The fast length ≥ `min` closest to the real-valued `target`.
-pub(crate) fn nearest_fast_len(target: f64, min: usize) -> usize {
-    let t = target.max(min as f64);
-    let up = next_fast_len(t.ceil() as usize);
-    let mut down = t.floor() as usize;
-    while down >= min.max(1) && !is_fast_len(down) {
-        down -= 1;
-    }
-    if down >= min.max(1) && (t - down as f64) <= (up as f64 - t) {
-        down
-    } else {
-        up
-    }
-}
-
 fn rows_fft(
     data: &mut [C64],
     m: usize,
@@ -261,7 +246,7 @@ mod tests {
         assert!(is_fast_len(2 * 3 * 5 * 7 * 64));
         assert!(!is_fast_len(11));
         assert_eq!(next_fast_len(11), 12);
-        assert_eq!(nearest_fast_len(130.2, 64), 128);
-        assert_eq!(nearest_fast_len(10.0, 64), 64);
+        assert_eq!(next_fast_len(97), 98);
+        assert_eq!(next_fast_len(128), 128);
     }
 }
