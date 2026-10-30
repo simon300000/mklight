@@ -113,8 +113,10 @@ impl ToleranceOperand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Compensator {
     pub param: ParamPath,
-    /// Allowed adjustment relative to nominal `[−range, +range]`; `None` =
-    /// unbounded.
+    /// Allowed adjustment `[−range, +range]` around the parameter's
+    /// **nominal** value (also when the parameter is itself toleranced, so the
+    /// window does not move with the perturbation); `None` = unbounded.
+    /// `Some(0.0)` pins the compensator.
     #[serde(default)]
     pub range: Option<f64>,
     #[serde(default)]
@@ -491,11 +493,21 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         (**self).evaluate_batch(systems, operands, ctx)
     }
+    fn evaluate_parametric(
+        &self,
+        batch: &crate::merit::ParametricBatch<'_>,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Result<Vec<OperandValue>, crate::merit::BuildError>>> {
+        (**self).evaluate_parametric(batch, operands, ctx)
+    }
 }
 
 /// Model-level tolerance evaluator: perturb `nominal` by the spec, then
 /// (with compensators) minimise the criterion merit over them by least
-/// squares; the criterion is the resulting merit `Σ w r²`.
+/// squares; the criterion is the resulting merit `Σ w r²`. A trial is `ok`
+/// when its merit is finite and its constraint violation is within the
+/// default monitor feasibility tolerance, with or without compensators.
 pub struct OpticalToleranceEvaluator<'a, E: OperandEvaluator> {
     pub nominal: &'a OpticalSystem,
     pub spec: &'a ToleranceSpec,
@@ -510,12 +522,13 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
         let Ok(sys) = self.spec.apply(self.nominal, deltas) else {
             return Ok(TrialOutcome::failed());
         };
+        let mon = Monitor::new(ctx.clone());
         let vars: Vec<VariableSpec> = self
             .spec
             .compensators
             .iter()
             .map(|c| {
-                let v = c.param.get(&sys)?;
+                let v = c.param.get(self.nominal)?;
                 Ok(VariableSpec {
                     param: c.param.clone(),
                     lower: c.range.map(|r| v - r),
@@ -538,7 +551,7 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             let e = p.to_evaluation(vals);
             let sc = merit(p.weights(), e.residuals(0), e.status[0]);
             let viol = total_violation(p.constraints(), e.constraints(0), e.status[0]);
-            return Ok(if sc.is_finite() && viol <= 1e-8 {
+            return Ok(if sc.is_finite() && viol <= mon.feasibility_tol {
                 TrialOutcome {
                     criterion: sc,
                     compensators: Vec::new(),
@@ -549,12 +562,12 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             });
         }
         let x0 = p.start_point()?;
-        let r = least_squares(&p, &x0, &self.lsq, &Monitor::new(ctx.clone()))?;
+        let r = least_squares(&p, &x0, &self.lsq, &mon)?;
         if r.termination == Termination::Cancelled {
             return Err(MkError::Cancelled);
         }
         Ok(TrialOutcome {
-            ok: r.merit.is_finite() && r.violation <= 1e-6,
+            ok: r.merit.is_finite() && r.violation <= mon.feasibility_tol,
             criterion: r.merit,
             compensators: r.x,
         })

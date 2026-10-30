@@ -9,8 +9,8 @@ use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 
 use super::operand::{CombineOp, OperandKind};
 use super::{
-    FailurePolicy, MeritFunctionSpec, OperandError, OperandEvaluator, OperandRegistry, OperandRole,
-    OperandValue,
+    BuildError, FailurePolicy, MeritFunctionSpec, OperandError, OperandEvaluator, OperandRegistry,
+    OperandRole, OperandValue, ParametricBatch,
 };
 use crate::problem::{BatchEvaluation, CandidateBatch, Constraint, EvalStatus, Problem, Variable};
 
@@ -92,9 +92,11 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
 
 /// A merit function + variables + evaluator, as a batched [`Problem`].
 ///
-/// Each candidate `x` is applied to a copy of the base system through the
-/// variables' `ParamPath`s (an invalid value marks the candidate `Failed`),
-/// then operands are evaluated per configuration in one evaluator batch.
+/// Candidates go to the evaluator as parameter vectors on the shared base
+/// system ([`ParametricBatch`], one call per configuration), so a GPU backend
+/// can keep the base packed and patch only the variables. An invalid
+/// parameter value marks the candidate `Failed`; a configuration that cannot
+/// be applied makes that configuration's operands `Invalid`.
 /// `Combine` operands are resolved afterwards in spec order. Failed
 /// residual operands follow the spec's [`FailurePolicy`]; a failed
 /// *constraint* operand always fails the candidate, since feasibility cannot
@@ -102,6 +104,7 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
 pub struct OpticalProblem<E: OperandEvaluator> {
     base: OpticalSystem,
     var_specs: Vec<VariableSpec>,
+    params: Vec<ParamPath>,
     vars: Vec<Variable>,
     spec: MeritFunctionSpec,
     evaluator: E,
@@ -120,6 +123,7 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
         registry: &OperandRegistry,
     ) -> MkResult<Self> {
         spec.validate(registry)?;
+        spec.validate_for(&base)?;
         for (i, op) in spec.enabled() {
             if !matches!(op.kind, OperandKind::Combine { .. }) && !evaluator.supports(&op.kind) {
                 return Err(MkError::Unsupported(format!(
@@ -170,6 +174,7 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
             .collect();
         Ok(OpticalProblem {
             base,
+            params: variables.iter().map(|v| v.param.clone()).collect(),
             var_specs: variables,
             vars,
             spec,
@@ -222,9 +227,93 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
         x: &CandidateBatch,
         ctx: &JobContext,
     ) -> MkResult<Vec<Option<Vec<OperandValue>>>> {
-        let systems: Vec<Option<OpticalSystem>> =
-            (0..x.len()).map(|k| self.apply(x.point(k)).ok()).collect();
-        self.system_values(&systems, ctx)
+        let n_ops = self.spec.operands.len();
+        let mut out: Vec<Option<Vec<OperandValue>>> =
+            vec![Some(vec![Err(OperandError::Invalid("disabled".into())); n_ops]); x.len()];
+        let configs = self.configs();
+        if configs.is_empty() {
+            // Nothing to evaluate; still reject invalid parameter values.
+            let b = self.parametric(x, 0);
+            for (k, o) in out.iter_mut().enumerate() {
+                if b.apply(k).is_err() {
+                    *o = None;
+                }
+            }
+        }
+        for c in configs {
+            ctx.check()?;
+            let ops = self.config_operands(c);
+            let refs: Vec<&super::Operand> = ops.iter().map(|&i| &self.spec.operands[i]).collect();
+            let rows = self
+                .evaluator
+                .evaluate_parametric(&self.parametric(x, c), &refs, ctx)?;
+            if rows.len() != x.len() {
+                return Err(MkError::Numerical(
+                    "operand evaluator returned the wrong shape".into(),
+                ));
+            }
+            for (o, row) in out.iter_mut().zip(rows) {
+                let Some(v) = o.as_mut() else { continue };
+                match row {
+                    Ok(row) if row.len() == ops.len() => {
+                        for (val, &i) in row.into_iter().zip(&ops) {
+                            v[i] = val;
+                        }
+                    }
+                    Ok(_) => {
+                        return Err(MkError::Numerical(
+                            "operand evaluator returned the wrong shape".into(),
+                        ));
+                    }
+                    Err(BuildError::Parameters(_)) => *o = None,
+                    Err(BuildError::Configuration(e)) => {
+                        for &i in &ops {
+                            v[i] = Err(OperandError::Invalid(e.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        self.resolve_combines(&mut out);
+        Ok(out)
+    }
+
+    fn parametric<'a>(&'a self, x: &'a CandidateBatch, config: usize) -> ParametricBatch<'a> {
+        ParametricBatch {
+            base: &self.base,
+            params: &self.params,
+            candidates: x,
+            config,
+        }
+    }
+
+    /// Configurations used by enabled, directly evaluated operands.
+    fn configs(&self) -> BTreeSet<usize> {
+        self.spec
+            .enabled()
+            .filter(|(_, o)| !matches!(o.kind, OperandKind::Combine { .. }))
+            .map(|(_, o)| o.config)
+            .collect()
+    }
+
+    /// Enabled, directly evaluated operands of configuration `c`.
+    fn config_operands(&self, c: usize) -> Vec<usize> {
+        self.spec
+            .enabled()
+            .filter(|(_, o)| o.config == c && !matches!(o.kind, OperandKind::Combine { .. }))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Resolve `Combine` operands, in spec order.
+    fn resolve_combines(&self, out: &mut [Option<Vec<OperandValue>>]) {
+        for v in out.iter_mut().flatten() {
+            for (i, op) in self.spec.enabled() {
+                if let OperandKind::Combine { op: c, args } = &op.kind {
+                    v[i] = combine(*c, args.iter().map(|&a| v[a].clone()).collect());
+                }
+            }
+        }
     }
 
     /// Operand values for already-built systems (`None` = could not be
@@ -243,20 +332,9 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
                     .map(|_| vec![Err(OperandError::Invalid("disabled".into())); n_ops])
             })
             .collect();
-        let configs: BTreeSet<usize> = self
-            .spec
-            .enabled()
-            .filter(|(_, o)| !matches!(o.kind, OperandKind::Combine { .. }))
-            .map(|(_, o)| o.config)
-            .collect();
-        for c in configs {
+        for c in self.configs() {
             ctx.check()?;
-            let ops: Vec<usize> = self
-                .spec
-                .enabled()
-                .filter(|(_, o)| o.config == c && !matches!(o.kind, OperandKind::Combine { .. }))
-                .map(|(i, _)| i)
-                .collect();
+            let ops = self.config_operands(c);
             let mut cand = Vec::new();
             let mut sys_c = Vec::new();
             for (k, s) in systems.iter().enumerate() {
@@ -294,14 +372,7 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
                 }
             }
         }
-        // Combine operands, in order.
-        for v in out.iter_mut().flatten() {
-            for (i, op) in self.spec.enabled() {
-                if let OperandKind::Combine { op: c, args } = &op.kind {
-                    v[i] = combine(*c, args.iter().map(|&a| v[a].clone()).collect());
-                }
-            }
-        }
+        self.resolve_combines(&mut out);
         Ok(out)
     }
 }

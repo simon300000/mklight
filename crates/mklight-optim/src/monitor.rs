@@ -41,6 +41,10 @@ pub struct IterationRecord {
     /// Population / simplex spread in scaled variable units.
     #[serde(default)]
     pub spread: Option<f64>,
+    /// Variables whose finite-difference column failed on both sides at
+    /// this iteration (their stationarity is not certified).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_variables: Vec<usize>,
 }
 
 impl IterationRecord {
@@ -59,6 +63,7 @@ impl IterationRecord {
             step_norm: None,
             gradient_norm: None,
             spread: None,
+            failed_variables: Vec::new(),
         }
     }
 }
@@ -115,14 +120,76 @@ impl BestSoFar {
     }
 }
 
+/// The best discrete assignment found so far (see [`crate::discrete`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BestAssignment {
+    pub assignment: Vec<usize>,
+    pub merit: f64,
+    pub violation: f64,
+}
+
+/// Thread-safe best-so-far holder for discrete searches, kept apart from the
+/// continuous [`BestSoFar`] so the two kinds of point never mix.
+#[derive(Clone, Debug, Default)]
+pub struct BestAssignmentSoFar(Arc<Mutex<Option<BestAssignment>>>);
+
+impl BestAssignmentSoFar {
+    pub fn get(&self) -> Option<BestAssignment> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+    /// Offer an assignment under the feasibility rule; returns whether it
+    /// was taken.
+    pub fn offer(&self, a: &[usize], e: ScalarEval, feas_tol: f64) -> bool {
+        if !e.merit.is_finite() {
+            return false;
+        }
+        let Ok(mut g) = self.0.lock() else {
+            return false;
+        };
+        let take = g.as_ref().is_none_or(|b| {
+            e.better_than(
+                &ScalarEval {
+                    merit: b.merit,
+                    violation: b.violation,
+                    status: EvalStatus::Ok,
+                },
+                feas_tol,
+            )
+        });
+        if take {
+            *g = Some(BestAssignment {
+                assignment: a.to_vec(),
+                merit: e.merit,
+                violation: e.violation,
+            });
+        }
+        take
+    }
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.0.lock() {
+            *g = None;
+        }
+    }
+}
+
 type Callback = dyn Fn(&IterationRecord) + Send + Sync;
 
 /// Everything an optimiser needs besides the problem and its settings.
+///
+/// The best-so-far slots describe the **current top-level run**: every
+/// optimiser clears them when it starts ([`Monitor::begin_run`]), so a monitor
+/// reused for a chain of runs (possibly on problems of different dimension)
+/// never returns another run's point. Nested runs use [`Monitor::child`],
+/// which shares the slots and does not clear them.
 #[derive(Clone)]
 pub struct Monitor {
     pub job: JobContext,
     callback: Option<Arc<Callback>>,
+    /// Best continuous point of the current run.
     pub best: BestSoFar,
+    /// Best discrete assignment of the current run.
+    pub best_assignment: BestAssignmentSoFar,
+    nested: bool,
     /// Constraint violation regarded as feasible when ranking points.
     pub feasibility_tol: f64,
     /// Stage label copied into each record.
@@ -140,6 +207,9 @@ impl std::fmt::Debug for Monitor {
     }
 }
 
+/// Default constraint violation regarded as feasible.
+pub const DEFAULT_FEASIBILITY_TOL: f64 = 1e-8;
+
 impl Default for Monitor {
     fn default() -> Self {
         Monitor::new(JobContext::new())
@@ -152,7 +222,9 @@ impl Monitor {
             job,
             callback: None,
             best: BestSoFar::default(),
-            feasibility_tol: 1e-8,
+            best_assignment: BestAssignmentSoFar::default(),
+            nested: false,
+            feasibility_tol: DEFAULT_FEASIBILITY_TOL,
             stage: String::new(),
             keep_history: true,
         }
@@ -170,9 +242,19 @@ impl Monitor {
             job: self.job.subrange(from, to),
             callback: None,
             best: self.best.clone(),
+            best_assignment: self.best_assignment.clone(),
+            nested: true,
             feasibility_tol: self.feasibility_tol,
             stage: stage.to_string(),
             keep_history: false,
+        }
+    }
+    /// Called by every optimiser when it starts: clears the best-so-far
+    /// slots of a top-level monitor (a no-op for [`Monitor::child`] monitors).
+    pub fn begin_run(&self) {
+        if !self.nested {
+            self.best.clear();
+            self.best_assignment.clear();
         }
     }
     #[inline]
@@ -223,6 +305,10 @@ pub enum Termination {
     Infeasible,
     /// No improvement for the configured number of iterations.
     Stalled,
+    /// Finite differences failed on both sides for some variables (e.g. the
+    /// point sits on a ray-failure boundary), so stationarity cannot be
+    /// certified; the variables are listed in `OptimResult::failed_variables`.
+    DerivativeFailure,
 }
 
 impl Termination {
@@ -255,6 +341,10 @@ pub struct OptimResult {
     pub multipliers: Option<Vec<f64>>,
     #[serde(default)]
     pub history: Vec<IterationRecord>,
+    /// Variables whose derivative could not be computed at the final point
+    /// (see [`Termination::DerivativeFailure`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_variables: Vec<usize>,
 }
 
 #[cfg(test)]
@@ -277,5 +367,22 @@ mod tests {
         let shared = b.clone();
         assert!(shared.offer(&[5.0], ok(1.0, 0.0), 1e-9));
         assert_eq!(b.get().unwrap().x, vec![5.0]);
+    }
+
+    #[test]
+    fn begin_run_clears_only_top_level_slots() {
+        let ok = ScalarEval {
+            merit: 1.0,
+            violation: 0.0,
+            status: EvalStatus::Ok,
+        };
+        let m = Monitor::default();
+        m.offer(&[1.0, 2.0], ok);
+        m.best_assignment.offer(&[3], ok, 1e-9);
+        let c = m.child(0.0, 1.0, "nested");
+        c.begin_run();
+        assert!(m.best.get().is_some() && m.best_assignment.get().is_some());
+        m.begin_run();
+        assert!(m.best.get().is_none() && m.best_assignment.get().is_none());
     }
 }

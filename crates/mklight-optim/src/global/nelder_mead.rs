@@ -102,6 +102,24 @@ pub fn nelder_mead<P: Problem + ?Sized>(
     };
 
     let mut sim = build_simplex(&start);
+    if !ev.budget_left(sim.len()) {
+        // Not even the initial simplex fits: evaluate what does and stop.
+        sim.truncate(ev.remaining());
+        if sim.is_empty() {
+            return Ok(ev.finish((&start, ScalarEval::FAILED), Termination::MaxEvaluations, 0));
+        }
+        return match ev.eval(&sim) {
+            Ok(f) => {
+                let bi = (0..sim.len())
+                    .min_by(|&a, &b| ev.cmp(&f[a], &f[b]))
+                    .unwrap_or(0);
+                let (bx, bf) = (sim[bi].clone(), f[bi]);
+                Ok(ev.finish((&bx, bf), Termination::MaxEvaluations, 0))
+            }
+            Err(MkError::Cancelled) => cancelled(ev, &start, ScalarEval::FAILED, 0),
+            Err(e) => Err(e),
+        };
+    }
     let mut f = match ev.eval(&sim) {
         Ok(f) => f,
         Err(MkError::Cancelled) => return cancelled(ev, &start, ScalarEval::FAILED, 0),
@@ -183,7 +201,8 @@ pub fn nelder_mead<P: Problem + ?Sized>(
         let xoc = pt(alpha * gamma);
         let xic = pt(-gamma);
 
-        let res: MkResult<()> = (|| {
+        // `Ok(false)`: the shrink step did not fit the evaluation budget.
+        let res: MkResult<bool> = (|| {
             let spec = if s.speculative {
                 Some(ev.eval(&[xr.clone(), xe.clone(), xoc.clone(), xic.clone()])?)
             } else {
@@ -224,6 +243,9 @@ pub fn nelder_mead<P: Problem + ?Sized>(
                     f[n] = fc;
                 } else {
                     // Shrink towards the best vertex.
+                    if !ev.budget_left(n) {
+                        return Ok(false);
+                    }
                     let b = sim[0].clone();
                     let pts: Vec<Vec<f64>> = sim[1..]
                         .iter()
@@ -241,10 +263,14 @@ pub fn nelder_mead<P: Problem + ?Sized>(
                     }
                 }
             }
-            Ok(())
+            Ok(true)
         })();
         match res {
-            Ok(()) => {}
+            Ok(true) => {}
+            Ok(false) => {
+                termination = Termination::MaxEvaluations;
+                break;
+            }
             Err(MkError::Cancelled) => {
                 termination = Termination::Cancelled;
                 break;

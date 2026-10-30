@@ -13,6 +13,10 @@
 //! `f'(x) ≈ (−3f(x) + 4f(x+h) − f(x+2h)) / 2h`.
 //!
 //! All perturbed points of one Jacobian go to the backend as **one batch**.
+//! Variables pinned by equal bounds are not probed (zero column). A column
+//! whose probe fails (ray failure, non-finite value) is differenced again
+//! towards the other side in a second batch; only columns failing on both
+//! sides are reported as failed.
 
 use serde::{Deserialize, Serialize};
 
@@ -109,24 +113,27 @@ fn representable(x: f64, h: f64) -> f64 {
     if h2 != 0.0 { h2 } else { h }
 }
 
-/// Choose stencil and (representable) step for one variable.
-fn plan_column(v: &Variable, x: f64, scheme: FdScheme, eta: f64) -> (Stencil, f64) {
-    let h = fd_step(v, x, eta);
+/// Choose stencil and (representable) step for one variable; `None` for a
+/// variable pinned by equal bounds (its column is left at zero).
+fn plan_column(v: &Variable, x: f64, scheme: FdScheme, eta: f64) -> Option<(Stencil, f64)> {
     let (lo, hi) = (v.lo(), v.hi());
-    match scheme {
+    if !(lo < hi) {
+        return None;
+    }
+    let h = fd_step(v, x, eta);
+    let plan = match scheme {
         FdScheme::Forward => {
             if x + h <= hi {
-                (Stencil::Forward, representable(x, h))
+                one_sided(x, 1.0, h)
             } else if x - h >= lo {
-                (Stencil::Backward, -representable(x, -h))
+                one_sided(x, -1.0, h)
             } else {
                 // Bounds narrower than the step: use the wider side.
-                let room_up = hi - x;
-                let room_dn = x - lo;
+                let (room_up, room_dn) = (hi - x, x - lo);
                 if room_up >= room_dn {
-                    (Stencil::Forward, representable(x, room_up))
+                    one_sided(x, 1.0, room_up)
                 } else {
-                    (Stencil::Backward, room_dn)
+                    one_sided(x, -1.0, room_dn)
                 }
             }
         }
@@ -138,15 +145,71 @@ fn plan_column(v: &Variable, x: f64, scheme: FdScheme, eta: f64) -> (Stencil, f6
             } else if x - 2.0 * h >= lo {
                 (Stencil::OneSided2(-1.0), h)
             } else {
-                let room = (hi - x).max(x - lo);
                 let s = if hi - x >= x - lo { 1.0 } else { -1.0 };
-                (Stencil::OneSided2(s), 0.5 * room)
+                (Stencil::OneSided2(s), 0.5 * (hi - x).max(x - lo))
             }
+        }
+    };
+    (plan.1 > 0.0 && plan.1.is_finite()).then_some(plan)
+}
+
+/// First-order one-sided stencil in direction `dir` with a representable step.
+fn one_sided(x: f64, dir: f64, h: f64) -> (Stencil, f64) {
+    if dir > 0.0 {
+        (Stencil::Forward, representable(x, h))
+    } else {
+        (Stencil::Backward, -representable(x, -h))
+    }
+}
+
+/// Retry plan for a column whose probes failed on the side(s) flagged in
+/// `failed = (positive side, negative side)`: difference towards the other
+/// side (second order when the scheme is central and there is room for
+/// `2h`). `None` when both sides failed or there is no room.
+fn retry_plan(
+    v: &Variable,
+    x: f64,
+    h: f64,
+    scheme: FdScheme,
+    failed: (bool, bool),
+) -> Option<(Stencil, f64)> {
+    let dir = match failed {
+        (true, false) => -1.0,
+        (false, true) => 1.0,
+        _ => return None,
+    };
+    let room = if dir > 0.0 { v.hi() - x } else { x - v.lo() };
+    let plan = if scheme == FdScheme::Central && room >= 2.0 * h {
+        (Stencil::OneSided2(dir), h)
+    } else if room >= h {
+        one_sided(x, dir, h)
+    } else if room > 0.0 {
+        one_sided(x, dir, room)
+    } else {
+        return None;
+    };
+    (plan.1 > 0.0 && plan.1.is_finite()).then_some(plan)
+}
+
+impl Stencil {
+    /// Derivative from `f(x)` and the probe values in `offsets()` order.
+    fn combine(self, h: f64, f0: f64, vals: &[f64]) -> f64 {
+        match self {
+            Stencil::Forward => (vals[0] - f0) / h,
+            Stencil::Backward => (f0 - vals[0]) / h,
+            Stencil::Central => (vals[0] - vals[1]) / (2.0 * h),
+            Stencil::OneSided2(s) => s * (-3.0 * f0 + 4.0 * vals[0] - vals[1]) / (2.0 * h),
         }
     }
 }
 
 /// Finite-difference Jacobian at `x`, given the evaluation `f0` at `x`.
+///
+/// Variables pinned by equal bounds get a zero column and cost no
+/// evaluations. When a probe fails (failed status or non-finite values, e.g.
+/// a ray crossing an aperture or TIR edge), the column is differenced again
+/// towards the other side in a second batch; only columns that fail on both
+/// sides end up in [`Jacobian::failed_columns`] (left at zero).
 pub fn fd_jacobian<P: Problem + ?Sized>(
     p: &P,
     x: &[f64],
@@ -154,6 +217,19 @@ pub fn fd_jacobian<P: Problem + ?Sized>(
     settings: &JacobianSettings,
     ctx: &JobContext,
 ) -> MkResult<Jacobian> {
+    Ok(fd_jacobian_budget(p, x, f0, settings, ctx, usize::MAX)?.expect("unlimited budget"))
+}
+
+/// [`fd_jacobian`] spending at most `budget` evaluations: `Ok(None)` when the
+/// next batch would exceed it (nothing beyond the budget is evaluated).
+pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
+    f0: &Evaluation,
+    settings: &JacobianSettings,
+    ctx: &JobContext,
+    budget: usize,
+) -> MkResult<Option<Jacobian>> {
     let vars = p.variables();
     let n = vars.len();
     let (m, k) = (p.num_residuals(), p.num_constraints());
@@ -161,61 +237,75 @@ pub fn fd_jacobian<P: Problem + ?Sized>(
         FdScheme::Forward => f64::EPSILON.sqrt(),
         FdScheme::Central => f64::EPSILON.cbrt(),
     });
-    let plans: Vec<(Stencil, f64)> = (0..n)
-        .map(|j| plan_column(&vars[j], x[j], settings.scheme, eta))
-        .collect();
-    let mut batch = CandidateBatch::with_capacity(n, 2 * n);
-    let mut index = Vec::with_capacity(2 * n); // (column, offset)
-    let mut xp = x.to_vec();
-    for (j, (st, h)) in plans.iter().enumerate() {
-        for &o in st.offsets() {
-            xp[j] = vars[j].clamp(x[j] + o * h);
-            batch.push(&xp);
-            index.push((j, o));
-        }
-        xp[j] = x[j];
-    }
-    let e = p.evaluate_batch(&batch, ctx)?;
-    e.validate(batch.len(), m, k)?;
-
     let mut jr = Matrix::zeros(m, n);
     let mut jc = Matrix::zeros(k, n);
+    let mut evaluations = 0;
+    let mut pending: Vec<(usize, Stencil, f64)> = (0..n)
+        .filter_map(|j| plan_column(&vars[j], x[j], settings.scheme, eta).map(|(s, h)| (j, s, h)))
+        .collect();
     let mut failed = Vec::new();
-    let mut row = 0;
-    for (j, (st, h)) in plans.iter().enumerate() {
-        let cnt = st.offsets().len();
-        let ok = (row..row + cnt).all(|q| e.status[q].is_usable());
-        if !ok {
-            failed.push(j);
-            row += cnt;
-            continue;
+    // Pass 0: the planned stencils; pass 1: retries towards the other side.
+    for pass in 0..2 {
+        if pending.is_empty() {
+            break;
         }
-        let combine = |f0v: f64, vals: &[f64]| -> f64 {
-            match st {
-                Stencil::Forward => (vals[0] - f0v) / h,
-                Stencil::Backward => (f0v - vals[0]) / h,
-                Stencil::Central => (vals[0] - vals[1]) / (2.0 * h),
-                Stencil::OneSided2(s) => s * (-3.0 * f0v + 4.0 * vals[0] - vals[1]) / (2.0 * h),
+        let mut batch = CandidateBatch::with_capacity(n, 2 * pending.len());
+        let mut xp = x.to_vec();
+        for &(j, st, h) in &pending {
+            for &o in st.offsets() {
+                xp[j] = vars[j].clamp(x[j] + o * h);
+                batch.push(&xp);
             }
+            xp[j] = x[j];
+        }
+        if evaluations + batch.len() > budget {
+            return Ok(None);
+        }
+        let e = p.evaluate_batch(&batch, ctx)?;
+        e.validate(batch.len(), m, k)?;
+        evaluations += batch.len();
+        let probe_ok = |q: usize| {
+            e.status[q].is_usable()
+                && e.residuals(q).iter().all(|v| v.is_finite())
+                && e.constraints(q).iter().all(|v| v.is_finite())
         };
-        for i in 0..m {
-            let vals: Vec<f64> = (0..cnt).map(|q| e.residuals(row + q)[i]).collect();
-            jr[(i, j)] = combine(f0.residuals[i], &vals);
+        let mut retry = Vec::new();
+        let mut row = 0;
+        for &(j, st, h) in &pending {
+            let offs = st.offsets();
+            let cnt = offs.len();
+            let bad: Vec<f64> = (0..cnt)
+                .filter(|&q| !probe_ok(row + q))
+                .map(|q| offs[q])
+                .collect();
+            if bad.is_empty() {
+                for i in 0..m {
+                    let vals: Vec<f64> = (0..cnt).map(|q| e.residuals(row + q)[i]).collect();
+                    jr[(i, j)] = st.combine(h, f0.residuals[i], &vals);
+                }
+                for i in 0..k {
+                    let vals: Vec<f64> = (0..cnt).map(|q| e.constraints(row + q)[i]).collect();
+                    jc[(i, j)] = st.combine(h, f0.constraints[i], &vals);
+                }
+            } else {
+                let side = (bad.iter().any(|&o| o > 0.0), bad.iter().any(|&o| o < 0.0));
+                match retry_plan(&vars[j], x[j], h, settings.scheme, side) {
+                    Some((st2, h2)) if pass == 0 => retry.push((j, st2, h2)),
+                    _ => failed.push(j),
+                }
+            }
+            row += cnt;
         }
-        for i in 0..k {
-            let vals: Vec<f64> = (0..cnt).map(|q| e.constraints(row + q)[i]).collect();
-            jc[(i, j)] = combine(f0.constraints[i], &vals);
-        }
-        row += cnt;
+        pending = retry;
     }
-    debug_assert_eq!(row, index.len());
-    Ok(Jacobian {
+    failed.sort_unstable();
+    Ok(Some(Jacobian {
         residuals: jr,
         constraints: jc,
-        evaluations: batch.len(),
+        evaluations,
         failed_columns: failed,
         analytic: false,
-    })
+    }))
 }
 
 /// Jacobian at `x`: analytic when available and allowed, otherwise FD.
@@ -226,6 +316,19 @@ pub fn jacobian<P: Problem + ?Sized>(
     settings: &JacobianSettings,
     ctx: &JobContext,
 ) -> MkResult<Jacobian> {
+    Ok(jacobian_budget(p, x, f0, settings, ctx, usize::MAX)?.expect("unlimited budget"))
+}
+
+/// [`jacobian`] with an evaluation budget for the finite-difference path.
+/// Non-finite analytic columns are reported as failed.
+pub(crate) fn jacobian_budget<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
+    f0: &Evaluation,
+    settings: &JacobianSettings,
+    ctx: &JobContext,
+    budget: usize,
+) -> MkResult<Option<Jacobian>> {
     if settings.use_analytic
         && let Some(res) = p.jacobian(x, ctx)
     {
@@ -245,15 +348,21 @@ pub fn jacobian<P: Problem + ?Sized>(
         } else {
             jc
         };
-        return Ok(Jacobian {
+        let failed_columns = (0..n)
+            .filter(|&j| {
+                (0..jr.rows).any(|i| !jr[(i, j)].is_finite())
+                    || (0..jc.rows).any(|i| !jc[(i, j)].is_finite())
+            })
+            .collect();
+        return Ok(Some(Jacobian {
             residuals: jr,
             constraints: jc,
             evaluations: 0,
-            failed_columns: Vec::new(),
+            failed_columns,
             analytic: true,
-        });
+        }));
     }
-    fd_jacobian(p, x, f0, settings, ctx)
+    fd_jacobian_budget(p, x, f0, settings, ctx, budget)
 }
 
 /// One compared Jacobian entry.
@@ -303,6 +412,28 @@ impl Default for CheckSettings {
     }
 }
 
+/// Stencil of the derivative check: `(0, h)` central; `(±1, h)` one-sided
+/// towards `±`, with every probe (up to `2h`) inside the bounds — when the box
+/// is narrower than that, the wider side is used with `h = room/2`. `(0, 0)`
+/// for a variable pinned by equal bounds.
+fn check_plan(v: &Variable, x: f64, h: f64) -> (f64, f64) {
+    let (lo, hi) = (v.lo(), v.hi());
+    if !(lo < hi) {
+        return (0.0, 0.0);
+    }
+    if x + h <= hi && x - h >= lo {
+        (0.0, h)
+    } else if x + 2.0 * h <= hi {
+        (1.0, h)
+    } else if x - 2.0 * h >= lo {
+        (-1.0, h)
+    } else if hi - x >= x - lo {
+        (1.0, 0.5 * (hi - x))
+    } else {
+        (-1.0, 0.5 * (x - lo))
+    }
+}
+
 /// Compare the analytic Jacobian with a high-accuracy finite-difference one.
 ///
 /// The reference uses central differences at steps `h` and `h/2` combined by
@@ -332,15 +463,7 @@ pub fn check_jacobian<P: Problem + ?Sized>(
     let mut steps = Vec::with_capacity(n);
     let mut xp = x.to_vec();
     for (j, v) in vars.iter().enumerate() {
-        let h = fd_step(v, x[j], settings.relative_step);
-        let fits = x[j] + h <= v.hi() && x[j] - h >= v.lo();
-        let sign = if fits {
-            0.0
-        } else if x[j] + 2.0 * h <= v.hi() {
-            1.0
-        } else {
-            -1.0
-        };
+        let (sign, h) = check_plan(v, x[j], fd_step(v, x[j], settings.relative_step));
         let offs: [f64; 4] = if sign == 0.0 {
             [1.0, -1.0, 0.5, -0.5]
         } else {
@@ -383,6 +506,9 @@ pub fn check_jacobian<P: Problem + ?Sized>(
     };
     for (j, &(h, sign)) in steps.iter().enumerate() {
         let base = 1 + 4 * j;
+        if !(h > 0.0) {
+            continue; // pinned variable: nothing to compare
+        }
         if !(base..base + 4).all(|q| e.status[q].is_usable()) {
             return Err(MkError::Numerical(format!(
                 "evaluation failed while differencing variable {j}"

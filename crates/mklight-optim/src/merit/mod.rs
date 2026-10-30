@@ -20,12 +20,17 @@ pub mod geometric;
 pub mod operand;
 pub mod problem;
 pub mod quadrature;
+pub mod reference;
 
 use serde::{Deserialize, Serialize};
 
+use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 
+use crate::problem::CandidateBatch;
+
 pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
+pub use operand::{CentroidScope, RayGroup};
 pub use problem::{OpticalProblem, VariableSpec};
 pub use quadrature::{PupilNode, PupilSampling, PupilSymmetry};
 
@@ -118,14 +123,22 @@ pub struct Operand {
 }
 
 impl Operand {
+    /// A residual operand with target 0 and weight 1, at the primary
+    /// wavelength and — for kinds defined at one field point — at field 0
+    /// (otherwise the field-averaged `All`).
     pub fn new(kind: OperandKind) -> Self {
+        let field = if kind.needs_single_field() {
+            FieldSelector::Index { index: 0 }
+        } else {
+            FieldSelector::All
+        };
         Operand {
             kind,
             target: 0.0,
             weight: 1.0,
             comparison: Comparison::Equal,
             role: OperandRole::Residual,
-            field: FieldSelector::All,
+            field,
             wavelength: WavelengthSelector::Primary,
             config: 0,
             enabled: true,
@@ -270,9 +283,13 @@ impl MeritFunctionSpec {
         }
     }
 
-    /// Structural checks: known kinds, valid `Combine` references (to
-    /// earlier operands only, so evaluation order is well defined), finite
-    /// targets and non-negative weights.
+    /// Structural checks: known kinds (a `Custom` kind must name a
+    /// registered plug-in), valid `Combine` references (to earlier operands
+    /// only, so evaluation order is well defined), finite targets,
+    /// non-negative weights, selectors compatible with the kind (one field /
+    /// wavelength for per-ray kinds; no field or wavelength choice for kinds
+    /// that ignore it) and a [`RayGroup`] for every
+    /// `Centroid`-referenced per-ray operand.
     pub fn validate(&self, registry: &OperandRegistry) -> MkResult<()> {
         for (i, op) in self.operands.iter().enumerate() {
             if !registry.knows(&op.kind) {
@@ -280,6 +297,28 @@ impl MeritFunctionSpec {
                     "operand {i}: unknown kind '{}'",
                     op.kind.name()
                 )));
+            }
+            let bad = |why: &str| {
+                Err(MkError::InvalidParam(format!(
+                    "operand {i} ('{}'): {why}",
+                    op.kind.name()
+                )))
+            };
+            let k = &op.kind;
+            if k.needs_single_field() && op.field == FieldSelector::All {
+                return bad("needs a single field, not `all`");
+            }
+            if !k.uses_field() && op.field != FieldSelector::All {
+                return bad("does not depend on the field; leave the field selector at `all`");
+            }
+            if k.needs_single_wavelength() && op.wavelength == WavelengthSelector::All {
+                return bad("needs a single wavelength, not `all`");
+            }
+            if !k.uses_wavelength() && op.wavelength != WavelengthSelector::Primary {
+                return bad("does not depend on the wavelength; leave it at `primary`");
+            }
+            if k.missing_ray_group() {
+                return bad("a centroid reference needs its ray group (pupil sampling)");
             }
             if !(op.weight >= 0.0 && op.weight.is_finite()) || !op.target.is_finite() {
                 return Err(MkError::InvalidParam(format!(
@@ -298,6 +337,39 @@ impl MeritFunctionSpec {
                         "operand {i}: combine needs valid arguments referring to earlier operands"
                     )));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks against a concrete system: field, wavelength and configuration
+    /// indices exist.
+    pub fn validate_for(&self, s: &OpticalSystem) -> MkResult<()> {
+        let nf = s.fields.fields.len();
+        let nw = s.wavelengths.wavelengths.len();
+        let nc = s.configurations.len().max(1);
+        for (i, op) in self.enabled() {
+            let bad = |why: String| Err(MkError::InvalidParam(format!("operand {i}: {why}")));
+            if let FieldSelector::Index { index } = op.field
+                && index >= nf
+            {
+                return bad(format!("field {index} does not exist ({nf} fields)"));
+            }
+            if let WavelengthSelector::Index { index } = op.wavelength
+                && index >= nw
+            {
+                return bad(format!(
+                    "wavelength {index} does not exist ({nw} wavelengths)"
+                ));
+            }
+            if op.config >= nc {
+                return bad(format!("configuration {} does not exist", op.config));
+            }
+            if let OperandKind::LateralColour { short, long }
+            | OperandKind::AxialColour { short, long } = op.kind
+                && (short >= nw || long >= nw)
+            {
+                return bad("colour operand wavelength index out of range".into());
             }
         }
         Ok(())
@@ -322,11 +394,59 @@ pub enum OperandError {
 
 pub type OperandValue = Result<f64, OperandError>;
 
+/// Candidates given as parameter vectors on one shared base system — the
+/// form a GPU backend wants: pack `base` once, then patch only the `params`
+/// slots per candidate instead of re-resolving a full system each time.
+#[derive(Clone, Copy, Debug)]
+pub struct ParametricBatch<'a> {
+    pub base: &'a OpticalSystem,
+    /// Parameter of each candidate coordinate.
+    pub params: &'a [ParamPath],
+    pub candidates: &'a CandidateBatch,
+    /// Configuration applied *after* the parameters (its overrides win).
+    pub config: usize,
+}
+
+/// Why a candidate of a [`ParametricBatch`] could not be built.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BuildError {
+    /// A parameter value was rejected (the candidate is invalid).
+    Parameters(String),
+    /// The configuration could not be applied (its operands are invalid).
+    Configuration(String),
+}
+
+impl ParametricBatch<'_> {
+    pub fn len(&self) -> usize {
+        self.candidates.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.candidates.is_empty()
+    }
+    /// The base with candidate `k`'s parameters applied (no configuration).
+    pub fn apply(&self, k: usize) -> Result<OpticalSystem, BuildError> {
+        let mut s = self.base.clone();
+        for (p, &v) in self.params.iter().zip(self.candidates.point(k)) {
+            p.set(&mut s, v)
+                .map_err(|e| BuildError::Parameters(e.to_string()))?;
+        }
+        Ok(s)
+    }
+    /// The full system of candidate `k` (parameters, then configuration).
+    pub fn build(&self, k: usize) -> Result<OpticalSystem, BuildError> {
+        self.apply(k)?
+            .with_configuration(self.config)
+            .map_err(|e| BuildError::Configuration(e.to_string()))
+    }
+}
+
 /// Computes operand values. Implementations are batched over candidate
 /// systems so a GPU backend can trace all candidates in one dispatch.
 ///
 /// `systems[k]` already has the configuration `config` applied; the
-/// evaluator handles the field and wavelength selectors.
+/// evaluator handles the field and wavelength selectors. Per-ray operands
+/// with a `Centroid` reference carry their [`RayGroup`],
+/// which says which rays define the reference.
 pub trait OperandEvaluator: Sync {
     /// Can this evaluator compute operands of `kind`?
     fn supports(&self, kind: &OperandKind) -> bool;
@@ -340,6 +460,38 @@ pub trait OperandEvaluator: Sync {
         operands: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>>;
+
+    /// Values for parameter-vector candidates (one row per candidate, or the
+    /// reason it could not be built). [`OpticalProblem`] always calls this.
+    /// The default builds every system and calls
+    /// [`evaluate_batch`](Self::evaluate_batch); a backend that keeps a
+    /// packed copy of `batch.base` overrides it to upload only the parameter
+    /// vectors.
+    fn evaluate_parametric(
+        &self,
+        batch: &ParametricBatch<'_>,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Result<Vec<OperandValue>, BuildError>>> {
+        let built: Vec<Result<OpticalSystem, BuildError>> =
+            (0..batch.len()).map(|k| batch.build(k)).collect();
+        let systems: Vec<OpticalSystem> = built.iter().filter_map(|b| b.clone().ok()).collect();
+        let mut vals = if systems.is_empty() {
+            Vec::new()
+        } else {
+            self.evaluate_batch(&systems, operands, ctx)?
+        }
+        .into_iter();
+        if vals.len() != systems.len() {
+            return Err(MkError::Numerical(
+                "operand evaluator returned the wrong shape".into(),
+            ));
+        }
+        Ok(built
+            .into_iter()
+            .map(|b| b.map(|_| vals.next().expect("one row per built system")))
+            .collect())
+    }
 }
 
 /// Routes each operand to the first evaluator that supports it.
@@ -359,6 +511,16 @@ impl CompositeEvaluator {
     fn route(&self, kind: &OperandKind) -> Option<usize> {
         self.evaluators.iter().position(|e| e.supports(kind))
     }
+    /// Operand indices handled by each evaluator.
+    fn routes(&self, operands: &[&Operand]) -> Vec<Vec<usize>> {
+        let mut out = vec![Vec::new(); self.evaluators.len()];
+        for (k, op) in operands.iter().enumerate() {
+            if let Some(e) = self.route(&op.kind) {
+                out[e].push(k);
+            }
+        }
+        out
+    }
 }
 
 impl OperandEvaluator for CompositeEvaluator {
@@ -372,10 +534,7 @@ impl OperandEvaluator for CompositeEvaluator {
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         let mut out = vec![vec![Err(OperandError::Unsupported); operands.len()]; systems.len()];
-        for (ei, e) in self.evaluators.iter().enumerate() {
-            let idx: Vec<usize> = (0..operands.len())
-                .filter(|&k| self.route(&operands[k].kind) == Some(ei))
-                .collect();
+        for (e, idx) in self.evaluators.iter().zip(self.routes(operands)) {
             if idx.is_empty() {
                 continue;
             }
@@ -384,6 +543,41 @@ impl OperandEvaluator for CompositeEvaluator {
             for (s, row) in vals.into_iter().enumerate() {
                 for (j, v) in row.into_iter().enumerate() {
                     out[s][idx[j]] = v;
+                }
+            }
+        }
+        Ok(out)
+    }
+    /// Routes the parametric batch to each sub-evaluator's own
+    /// `evaluate_parametric`, so a packed-system backend keeps its fast path.
+    fn evaluate_parametric(
+        &self,
+        batch: &ParametricBatch<'_>,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Result<Vec<OperandValue>, BuildError>>> {
+        let mut out: Vec<Result<Vec<OperandValue>, BuildError>> =
+            vec![Ok(vec![Err(OperandError::Unsupported); operands.len()]); batch.len()];
+        for (e, idx) in self.evaluators.iter().zip(self.routes(operands)) {
+            if idx.is_empty() {
+                continue;
+            }
+            let ops: Vec<&Operand> = idx.iter().map(|&k| operands[k]).collect();
+            let vals = e.evaluate_parametric(batch, &ops, ctx)?;
+            if vals.len() != batch.len() {
+                return Err(MkError::Numerical(
+                    "operand evaluator returned the wrong shape".into(),
+                ));
+            }
+            for (row, v) in out.iter_mut().zip(vals) {
+                match (row.as_mut(), v) {
+                    (Ok(r), Ok(v)) => {
+                        for (j, val) in v.into_iter().enumerate() {
+                            r[idx[j]] = val;
+                        }
+                    }
+                    (Ok(_), Err(err)) => *row = Err(err),
+                    (Err(_), _) => {}
                 }
             }
         }
@@ -411,6 +605,7 @@ mod tests {
             .at_wavelength(1),
             Operand::new(OperandKind::CentreThickness {
                 surface: SurfaceId(3),
+                to: None,
             })
             .greater_than(1.0)
             .as_constraint(),

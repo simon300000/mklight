@@ -7,10 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::*;
 use mklight_core::JobContext;
-use mklight_optim::lsq::{LsqMethod, LsqSettings, least_squares};
-use mklight_optim::{
-    FdScheme, FnProblem, JacobianSettings, Monitor, Problem, Termination, Variable,
-};
+use mklight_optim::lsq::{LsqSettings, least_squares};
+use mklight_optim::{FdScheme, FnProblem, JacobianSettings, Monitor, Termination, Variable};
 
 fn methods() -> Vec<(&'static str, LsqSettings)> {
     let geo = LsqSettings {
@@ -233,15 +231,48 @@ fn cancellation_mid_run() {
 
 #[test]
 fn methods_agree_on_lm_variants() {
-    let p = rosenbrock();
-    let s = LsqSettings {
-        method: LsqMethod::LevenbergMarquardt,
-        ..Default::default()
-    };
-    let a = least_squares(&p, &[-1.2, 1.0], &s, &Monitor::default()).unwrap();
-    let b = least_squares(&p, &[-1.2, 1.0], &s, &Monitor::default()).unwrap();
-    assert_eq!(a, b, "deterministic");
-    assert_eq!(p.num_variables(), 2);
+    // A non-zero-residual problem with a unique minimiser: every variant
+    // (LM, LM + geodesic, central FD, dogleg) must reach the same point and
+    // merit, and each run must be bit-for-bit repeatable.
+    // r = (x₀ − 1, x₁ − 2, x₀x₁ − 1, 0.5(x₀ + x₁) − 3).
+    let p = FnProblem::residuals(vars(2), 4, |x, r| {
+        r[0] = x[0] - 1.0;
+        r[1] = x[1] - 2.0;
+        r[2] = x[0] * x[1] - 1.0;
+        r[3] = 0.5 * (x[0] + x[1]) - 3.0;
+    });
+    let mut sols = Vec::new();
+    for (name, s) in methods() {
+        let a = least_squares(&p, &[3.0, -1.0], &s, &Monitor::default()).unwrap();
+        let b = least_squares(&p, &[3.0, -1.0], &s, &Monitor::default()).unwrap();
+        assert_eq!(a, b, "{name}: deterministic");
+        assert!(a.termination.is_converged(), "{name}: {:?}", a.termination);
+        assert!(a.merit > 0.1, "{name}: non-zero residual problem");
+        sols.push((name, a));
+    }
+    let (_, r0) = &sols[0];
+    for (name, r) in &sols[1..] {
+        assert!(
+            (r.merit - r0.merit).abs() <= 1e-12 * r0.merit,
+            "{name}: {} vs {}",
+            r.merit,
+            r0.merit
+        );
+        for k in 0..2 {
+            assert!(
+                (r.x[k] - r0.x[k]).abs() < 1e-6,
+                "{name}: {:?} vs {:?}",
+                r.x,
+                r0.x
+            );
+        }
+    }
+    // Stationarity: Jᵀr = 0 at the common solution.
+    let (a, b) = (r0.x[0], r0.x[1]);
+    let r = [a - 1.0, b - 2.0, a * b - 1.0, 0.5 * (a + b) - 3.0];
+    let g0 = r[0] + b * r[2] + 0.5 * r[3];
+    let g1 = r[1] + a * r[2] + 0.5 * r[3];
+    assert!(g0.abs() < 1e-7 && g1.abs() < 1e-7, "{g0} {g1}");
 }
 
 #[test]

@@ -14,6 +14,11 @@
 //!    relative temperature, so `T` does not depend on merit units);
 //! 4. adapt `step` towards a 50 % acceptance rate.
 //!
+//! `max_evaluations` is a hard cap covering the screening batches *and* the
+//! local solves: each local solve gets an equal share of the remaining
+//! budget as its own `max_evaluations`, and fewer local solves are started
+//! when the shares would be too small for one Jacobian and one step.
+//!
 //! The run stops after `rounds`, after `stall_rounds` rounds without a new
 //! global best, on reaching `target_merit`, or on cancellation; the best
 //! point found is always returned.
@@ -99,8 +104,22 @@ pub fn hammer<P: Problem + ?Sized>(
     let rounds = s.rounds.max(1);
     let frac = |r: usize| r as f64 / (rounds + 1) as f64;
 
+    // Smallest useful local budget: one start point, one FD Jacobian, one step.
+    let min_local = n + 2;
+    let local_with = |budget: usize| LsqSettings {
+        max_evaluations: s.local.max_evaluations.min(budget),
+        ..s.local
+    };
+    if ev.remaining() < min_local {
+        return Ok(ev.finish((x0, ScalarEval::FAILED), Termination::MaxEvaluations, 0));
+    }
     // Initial local solve.
-    let first = least_squares(p, x0, &s.local, &mon.child(0.0, frac(1), "hammer start"))?;
+    let first = least_squares(
+        p,
+        x0,
+        &local_with(ev.remaining()),
+        &mon.child(0.0, frac(1), "hammer start"),
+    )?;
     ev.evaluations += first.evaluations;
     let mut cur = (first.x.clone(), as_scalar(&first));
     let mut best = cur.clone();
@@ -120,7 +139,7 @@ pub fn hammer<P: Problem + ?Sized>(
             termination = Termination::TargetReached;
             break;
         }
-        if !ev.budget_left(s.candidates_per_round) {
+        if !ev.budget_left(s.candidates_per_round.max(1)) {
             termination = Termination::MaxEvaluations;
             break;
         }
@@ -155,7 +174,18 @@ pub fn hammer<P: Problem + ?Sized>(
             .filter(|&k| fit[k].status.is_usable())
             .collect();
         order.sort_by(|&a, &b| ev.cmp(&fit[a], &fit[b]).then(a.cmp(&b)));
-        order.truncate(s.local_per_round.max(1));
+        // Split the remaining budget over the local solves.
+        let n_local = s
+            .local_per_round
+            .max(1)
+            .min(ev.remaining() / min_local)
+            .min(order.len());
+        if n_local == 0 && !order.is_empty() {
+            termination = Termination::MaxEvaluations;
+            break;
+        }
+        order.truncate(n_local);
+        let local = local_with(ev.remaining() / n_local.max(1));
 
         // 2. Local refinement, in parallel.
         let (f0, f1) = (frac(round + 1), frac(round + 2));
@@ -165,7 +195,7 @@ pub fn hammer<P: Problem + ?Sized>(
                 least_squares(
                     p,
                     &cands[k],
-                    &s.local,
+                    &local,
                     &mon.child(f0, f1, &format!("hammer round {round}")),
                 )
             })

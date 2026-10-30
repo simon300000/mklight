@@ -163,9 +163,11 @@ fn model_evaluator_values() {
         }),
         Operand::new(OperandKind::CentreThickness {
             surface: SurfaceId(10),
+            to: None,
         }),
         Operand::new(OperandKind::EdgeThickness {
             surface: SurfaceId(10),
+            to: None,
             height: None,
         }),
         Operand::new(OperandKind::MinThickness {
@@ -237,6 +239,7 @@ fn optical_problem_solves_geometric_targets() {
         .weight(1.0),
         Operand::new(OperandKind::EdgeThickness {
             surface: SurfaceId(10),
+            to: None,
             height: None,
         })
         .target(2.5)
@@ -252,6 +255,7 @@ fn optical_problem_solves_geometric_targets() {
         // Keep the flint as thin as allowed (pull it down; the constraint holds it).
         Operand::new(OperandKind::CentreThickness {
             surface: SurfaceId(11),
+            to: None,
         })
         .target(0.0)
         .weight(1e-4),
@@ -315,6 +319,7 @@ fn failure_policies_and_composition() {
         Operand::new(OperandKind::Efl).target(50.0),
         Operand::new(OperandKind::CentreThickness {
             surface: SurfaceId(11),
+            to: None,
         }),
         Operand::new(OperandKind::Combine {
             op: mklight_optim::merit::operand::CombineOp::Quotient,
@@ -404,15 +409,15 @@ fn default_merit_generator() {
         .map(|o| o.weight)
         .sum();
     assert!((wy - 1.0).abs() < 1e-12);
-    // Thickness boundaries: gaps after 10 (glass), 11 (glass), 12 (air);
-    // the stop→image gap is excluded. Fixed SDs → edge boundaries too.
+    // Thickness boundaries: glass gaps after 10 and 11. The air from 12 runs
+    // through the stop to the image (back focus), so it gets none. Fixed SDs
+    // → edge boundaries too.
     let bounds: Vec<&Operand> = spec
         .operands
         .iter()
         .filter(|o| o.role == mklight_optim::merit::OperandRole::Constraint)
         .collect();
-    // glass: min+max centre + min edge (×2), air: min centre + min edge.
-    assert_eq!(bounds.len(), 3 + 3 + 2);
+    assert_eq!(bounds.len(), 3 + 3);
     // Wavefront criterion and an off-axis x field → full pupil.
     let mut s2 = s.clone();
     s2.fields.fields.push(Field::new(3.0, 0.0));

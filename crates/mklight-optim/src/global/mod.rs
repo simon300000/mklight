@@ -35,7 +35,9 @@ pub(crate) struct Evaluator<'a, P: Problem + ?Sized> {
 }
 
 impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
+    /// Starts a run: clears the best-so-far slot of a top-level monitor.
     pub fn new(p: &'a P, mon: &'a Monitor, max_evaluations: usize) -> Self {
+        mon.begin_run();
         Evaluator {
             p,
             mon,
@@ -57,6 +59,10 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
     pub fn budget_left(&self, next: usize) -> bool {
         self.evaluations + next <= self.max_evaluations
     }
+    /// Evaluations still allowed.
+    pub fn remaining(&self) -> usize {
+        self.max_evaluations.saturating_sub(self.evaluations)
+    }
     pub fn tol(&self) -> f64 {
         self.mon.feasibility_tol
     }
@@ -74,7 +80,9 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
     pub fn record(&mut self, rec: IterationRecord) {
         self.mon.record(&mut self.history, rec);
     }
-    /// Final result from the monitor's best point (or `fallback`).
+    /// Final result from the monitor's best point (or `fallback`). A best
+    /// point of the wrong dimension (only possible if the slot was shared
+    /// with an unrelated run) is ignored.
     pub fn finish(
         self,
         fallback: (&[f64], ScalarEval),
@@ -83,14 +91,15 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
     ) -> OptimResult {
         let (x, merit, violation) = match self.mon.best.get() {
             Some(b)
-                if !fallback.1.better_than(
-                    &ScalarEval {
-                        merit: b.merit,
-                        violation: b.violation,
-                        status: crate::problem::EvalStatus::Ok,
-                    },
-                    self.mon.feasibility_tol,
-                ) =>
+                if b.x.len() == fallback.0.len()
+                    && !fallback.1.better_than(
+                        &ScalarEval {
+                            merit: b.merit,
+                            violation: b.violation,
+                            status: crate::problem::EvalStatus::Ok,
+                        },
+                        self.mon.feasibility_tol,
+                    ) =>
             {
                 (b.x, b.merit, b.violation)
             }
@@ -105,6 +114,7 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
             evaluations: self.evaluations,
             multipliers: None,
             history: self.history,
+            failed_variables: Vec::new(),
         }
     }
 }

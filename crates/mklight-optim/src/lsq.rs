@@ -32,6 +32,19 @@
 //! the variables in their natural units (no `sin`/`tanh` transforms that
 //! flatten gradients at the bounds), and reduces to plain LM in the interior.
 //!
+//! **Fixed and failing variables.** A variable with equal bounds is pinned:
+//! it gets a zero Jacobian column and never enters the subproblem. A variable
+//! whose finite-difference probes fail on *both* sides (after the one-sided
+//! retry of [`crate::deriv::fd_jacobian`]) is frozen for that iteration; the
+//! predicted reduction is formed over the free columns only, so a bad column
+//! can never poison the step. A run that would stop on a convergence test
+//! while such columns exist reports [`Termination::DerivativeFailure`]
+//! instead (stationarity is not certified for those variables), listing them
+//! in `OptimResult::failed_variables`.
+//!
+//! **Budget.** `max_evaluations` is a hard cap: a Jacobian batch is only
+//! evaluated when it and one trial point still fit.
+//!
 //! **Constraints: augmented Lagrangian (PHR).** For each normalised constraint
 //! row (`h = (c − t)/s = 0`, or `g ≤ 0` built from either side of a range)
 //! the residual vector is extended with
@@ -48,7 +61,7 @@ use serde::{Deserialize, Serialize};
 
 use mklight_core::{MkError, MkResult};
 
-use crate::deriv::{JacobianSettings, jacobian};
+use crate::deriv::{JacobianSettings, jacobian_budget};
 use crate::linalg::{Matrix, Qr, dot, norm_inf, norm2, solve_upper, solve_upper_transpose};
 use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
 use crate::problem::{
@@ -337,6 +350,8 @@ struct Ctx<'a, P: Problem + ?Sized> {
     d: Vec<f64>,
     /// Warm-start LM parameter.
     lambda: f64,
+    /// Failed Jacobian columns at the current iterate.
+    failed: Vec<usize>,
 }
 
 impl<P: Problem + ?Sized> Ctx<'_, P> {
@@ -352,6 +367,27 @@ impl<P: Problem + ?Sized> Ctx<'_, P> {
     fn budget_left(&self) -> bool {
         self.ctr.evaluations < self.s.max_evaluations
     }
+    /// A convergence verdict is downgraded while derivative columns fail.
+    fn certify(&self, t: Termination) -> Termination {
+        if t.is_converged() && !self.failed.is_empty() {
+            Termination::DerivativeFailure
+        } else {
+            t
+        }
+    }
+}
+
+/// `J p` over the free columns only (`p_free[k]` belongs to `free[k]`).
+fn mul_free(j: &Matrix, free: &[usize], p_free: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; j.rows];
+    for (&c, &pc) in free.iter().zip(p_free) {
+        if pc != 0.0 {
+            for (i, o) in out.iter_mut().enumerate() {
+                *o += j[(i, c)] * pc;
+            }
+        }
+    }
+    out
 }
 
 /// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
@@ -589,15 +625,31 @@ fn inner<P: Problem + ?Sized>(
         if sc.merit <= s.target_merit && sc.violation <= c.mon.feasibility_tol {
             return out(x, e, Termination::TargetReached);
         }
-        // Jacobian.
-        let jac = match jacobian(c.p, &x, &e, &s.jacobian, &c.mon.job) {
-            Ok(j) => j,
+        // Jacobian (keeping one evaluation for the trial point).
+        let budget = s.max_evaluations.saturating_sub(c.ctr.evaluations + 1);
+        let jac = match jacobian_budget(c.p, &x, &e, &s.jacobian, &c.mon.job, budget) {
+            Ok(Some(j)) => j,
+            Ok(None) => return out(x, e, Termination::MaxEvaluations),
             Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
             Err(err) => return Err(err),
         };
         c.ctr.evaluations += jac.evaluations;
         c.ctr.iterations += 1;
-        let jm = aug.jacobian(&e, &jac.residuals, &jac.constraints);
+        let mut jm = aug.jacobian(&e, &jac.residuals, &jac.constraints);
+        // Failed (or non-finite) columns are zeroed and frozen.
+        let mut failed = jac.failed_columns.clone();
+        for j in 0..n {
+            if !failed.contains(&j) && (0..jm.rows).any(|i| !jm[(i, j)].is_finite()) {
+                failed.push(j);
+            }
+        }
+        failed.sort_unstable();
+        for &j in &failed {
+            for i in 0..jm.rows {
+                jm[(i, j)] = 0.0;
+            }
+        }
+        c.failed = failed;
         let g = jm.tr_mul_vec(&r);
         let cn = jm.column_norms();
         for j in 0..n {
@@ -612,7 +664,7 @@ fn inner<P: Problem + ?Sized>(
         let free: Vec<usize> = (0..n)
             .filter(|&j| {
                 let v = &vars[j];
-                !jac.failed_columns.contains(&j)
+                !c.failed.contains(&j)
                     && !(x[j] <= v.lo() && g[j] > 0.0)
                     && !(x[j] >= v.hi() && g[j] < 0.0)
                     && !(v.lo() == v.hi())
@@ -634,8 +686,11 @@ fn inner<P: Problem + ?Sized>(
         if first {
             delta = s.initial_trust_factor * if xnorm > 0.0 { xnorm } else { 1.0 };
         }
-        if free.is_empty() || gcos <= s.gtol || phi == 0.0 {
+        if phi == 0.0 {
             return out(x, e, Termination::SmallGradient);
+        }
+        if free.is_empty() || gcos <= s.gtol {
+            return out(x, e, c.certify(Termination::SmallGradient));
         }
         let df: Vec<f64> = free.iter().map(|&j| c.d[j]).collect();
         let sub = Sub::new(jm.select_columns(&free), &r, df);
@@ -670,11 +725,7 @@ fn inner<P: Problem + ?Sized>(
                         Err(err) => return Err(err),
                     };
                     if let Some(rv) = aug.residual(&ev) {
-                        let mut pfull = vec![0.0; n];
-                        for (k, &j) in free.iter().enumerate() {
-                            pfull[j] = pf[k];
-                        }
-                        let jv = jm.mul_vec(&pfull);
+                        let jv = mul_free(&jm, &free, &pf);
                         let rvv: Vec<f64> = (0..rv.len())
                             .map(|i| (2.0 / h) * ((rv[i] - r[i]) / h - jv[i]))
                             .collect();
@@ -707,7 +758,9 @@ fn inner<P: Problem + ?Sized>(
             if first {
                 delta = delta.min(pnorm.max(f64::MIN_POSITIVE));
             }
-            let jp = jm.mul_vec(&p);
+            // Only free columns move (p_j = 0 elsewhere); never touch the others.
+            let p_free: Vec<f64> = free.iter().map(|&j| p[j]).collect();
+            let jp = mul_free(&jm, &free, &p_free);
             // pred = ‖r‖² − ‖r + Jp‖² = −(2 rᵀJp + ‖Jp‖²)
             let pred = -(2.0 * dot(&r, &jp) + dot(&jp, &jp));
             let (et, rt) = if pnorm > 0.0 {
@@ -757,6 +810,7 @@ fn inner<P: Problem + ?Sized>(
                 rec.gain_ratio = Some(rho);
                 rec.step_norm = Some(pnorm);
                 rec.gradient_norm = Some(gcos);
+                rec.failed_variables = c.failed.clone();
                 c.mon.record(&mut c.history, rec);
                 c.mon.progress(
                     c.ctr.iterations as f64 / s.max_iterations.max(1) as f64,
@@ -765,18 +819,18 @@ fn inner<P: Problem + ?Sized>(
                 let rel_act = act.abs() / phi_old.max(f64::MIN_POSITIVE);
                 let rel_pred = pred / phi_old.max(f64::MIN_POSITIVE);
                 if rel_act <= s.ftol && rel_pred <= s.ftol && rho <= 2.0 {
-                    return out(x, e, Termination::SmallMeritChange);
+                    return out(x, e, c.certify(Termination::SmallMeritChange));
                 }
                 let dx: Vec<f64> = (0..n).map(|j| c.d[j] * x[j]).collect();
                 let xn = norm2(&dx);
                 if delta <= s.xtol * xn || pnorm <= s.xtol * xn {
-                    return out(x, e, Termination::SmallStep);
+                    return out(x, e, c.certify(Termination::SmallStep));
                 }
                 break;
             }
             let xn = norm2(&dx);
             if delta <= s.xtol * xn || !(delta > 0.0) || (pnorm == 0.0 && delta < 1e-300) {
-                return out(x, e, Termination::SmallStep);
+                return out(x, e, c.certify(Termination::SmallStep));
             }
         }
     }
@@ -792,6 +846,7 @@ pub fn least_squares<P: Problem + ?Sized>(
     monitor: &Monitor,
 ) -> MkResult<OptimResult> {
     check_problem(p, x0)?;
+    monitor.begin_run();
     let vars = p.variables();
     let n = vars.len();
     let mut c = Ctx {
@@ -802,6 +857,7 @@ pub fn least_squares<P: Problem + ?Sized>(
         history: Vec::new(),
         d: vec![0.0; n],
         lambda: 0.0,
+        failed: Vec::new(),
     };
     let mut x = x0.to_vec();
     project(vars, &mut x);
@@ -834,6 +890,7 @@ pub fn least_squares<P: Problem + ?Sized>(
                 | Termination::MaxEvaluations
                 | Termination::MaxIterations
                 | Termination::EvaluationFailure
+                | Termination::DerivativeFailure
         ) {
             termination = o.termination;
             break;
@@ -886,6 +943,7 @@ fn finish<P: Problem + ?Sized>(
         evaluations: c.ctr.evaluations,
         multipliers,
         history: c.history.clone(),
+        failed_variables: c.failed.clone(),
     }
 }
 

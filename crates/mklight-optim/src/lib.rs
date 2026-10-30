@@ -13,7 +13,7 @@
 //! | [`lsq`] | Levenberg–Marquardt and dogleg trust-region least squares, bounds, augmented Lagrangian |
 //! | [`global`] | differential evolution, Nelder–Mead, CMA-ES, basin-hopping "hammer" |
 //! | [`discrete`] | finite-choice variables (glass substitution) with pluggable neighbourhoods |
-//! | [`merit`] | serialisable merit-function spec, operand registry, pupil quadrature, default merit |
+//! | [`merit`] | serialisable merit-function spec, operand registry, pupil quadrature, ray-group references, default merit, parametric evaluator entry point |
 //! | [`tolerance`] | tolerance operands, Monte-Carlo sampling, sensitivity analysis |
 //! | [`monitor`] | cancellation/progress, iteration history callback, best-so-far |
 //!

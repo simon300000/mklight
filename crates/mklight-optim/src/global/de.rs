@@ -75,6 +75,13 @@ impl Default for DeSettings {
     }
 }
 
+/// Index of the best individual (ties → lowest index).
+fn best_index<P: Problem + ?Sized>(fit: &[crate::problem::ScalarEval], ev: &Evaluator<P>) -> usize {
+    (0..fit.len())
+        .min_by(|&a, &b| ev.cmp(&fit[a], &fit[b]).then(a.cmp(&b)))
+        .unwrap_or(0)
+}
+
 /// Minimise with differential evolution. `x0` (if given) is inserted into
 /// the initial population; it is required when a variable is unbounded.
 pub fn differential_evolution<P: Problem + ?Sized>(
@@ -126,6 +133,30 @@ pub fn differential_evolution<P: Problem + ?Sized>(
         let f = crate::problem::ScalarEval::FAILED;
         return Ok(ev.finish((&pop[0], f), Termination::Cancelled, 0));
     }
+    // The initial population must fit the budget as a whole; otherwise only
+    // its first members are evaluated and the run ends there.
+    if !ev.budget_left(np) {
+        pop.truncate(ev.remaining());
+        if pop.is_empty() {
+            let f = crate::problem::ScalarEval::FAILED;
+            let x = x0.map_or_else(
+                || vars.iter().map(|v| v.clamp(0.0)).collect(),
+                |x| x.to_vec(),
+            );
+            return Ok(ev.finish((&x, f), Termination::MaxEvaluations, 0));
+        }
+        return match ev.eval(&pop) {
+            Ok(fit) => {
+                let b = best_index(&fit, &ev);
+                Ok(ev.finish((&pop[b].clone(), fit[b]), Termination::MaxEvaluations, 0))
+            }
+            Err(MkError::Cancelled) => {
+                let f = crate::problem::ScalarEval::FAILED;
+                Ok(ev.finish((&pop[0].clone(), f), Termination::Cancelled, 0))
+            }
+            Err(e) => Err(e),
+        };
+    }
     let mut fit = match ev.eval(&pop) {
         Ok(f) => f,
         Err(MkError::Cancelled) => {
@@ -134,12 +165,7 @@ pub fn differential_evolution<P: Problem + ?Sized>(
         }
         Err(e) => return Err(e),
     };
-    let best_of = |fit: &[crate::problem::ScalarEval], ev: &Evaluator<P>| -> usize {
-        (0..fit.len())
-            .min_by(|&a, &b| ev.cmp(&fit[a], &fit[b]).then(a.cmp(&b)))
-            .unwrap_or(0)
-    };
-    let mut best = best_of(&fit, &ev);
+    let mut best = best_index(&fit, &ev);
     let mut termination = Termination::MaxIterations;
     let mut gen_done = 0;
     for g in 0..s.max_generations {
@@ -215,7 +241,7 @@ pub fn differential_evolution<P: Problem + ?Sized>(
                 fit[i] = tf[i];
             }
         }
-        best = best_of(&fit, &ev);
+        best = best_index(&fit, &ev);
         gen_done = g + 1;
         let sp = spread(&pop, vars);
         let finite: Vec<f64> = fit

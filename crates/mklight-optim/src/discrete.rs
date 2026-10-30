@@ -215,8 +215,9 @@ impl<D: DiscreteProblem + ?Sized> Cache<'_, D> {
                 ));
             }
             for (x, e) in todo.into_iter().zip(r) {
-                let xf: Vec<f64> = x.iter().map(|&v| v as f64).collect();
-                self.mon.offer(&xf, e);
+                self.mon
+                    .best_assignment
+                    .offer(&x, e, self.mon.feasibility_tol);
                 self.map.insert(x, e);
             }
         }
@@ -246,6 +247,7 @@ pub fn tabu_search<D: DiscreteProblem + ?Sized, N: Neighbourhood + ?Sized>(
             "initial assignment out of range".into(),
         ));
     }
+    mon.begin_run();
     let tol = mon.feasibility_tol;
     let mut cache = Cache {
         p,
@@ -289,7 +291,23 @@ pub fn tabu_search<D: DiscreteProblem + ?Sized, N: Neighbourhood + ?Sized>(
                     && m.0.iter().any(|&(v, c)| cur[v] != c)
             })
             .collect();
-        let cands: Vec<Vec<usize>> = moves.iter().map(|m| apply(&cur, m)).collect();
+        let mut moves = moves;
+        let mut cands: Vec<Vec<usize>> = moves.iter().map(|m| apply(&cur, m)).collect();
+        // Keep the batch within the evaluation budget (cached ones are free).
+        let room = s.max_evaluations.saturating_sub(cache.map.len());
+        let mut fresh: Vec<&Vec<usize>> = Vec::new();
+        let mut keep = cands.len();
+        for (q, c) in cands.iter().enumerate() {
+            if !cache.map.contains_key(c) && !fresh.contains(&c) {
+                if fresh.len() == room {
+                    keep = q;
+                    break;
+                }
+                fresh.push(c);
+            }
+        }
+        cands.truncate(keep);
+        moves.truncate(keep);
         let fits = match cache.eval(&cands) {
             Ok(f) => f,
             Err(MkError::Cancelled) => {
@@ -333,6 +351,10 @@ pub fn tabu_search<D: DiscreteProblem + ?Sized, N: Neighbourhood + ?Sized>(
         if pick.is_none() || stall >= s.stall_iterations {
             if restarts_left == 0 {
                 termination = Termination::Stalled;
+                break;
+            }
+            if cache.map.len() >= s.max_evaluations {
+                termination = Termination::MaxEvaluations;
                 break;
             }
             restarts_left -= 1;

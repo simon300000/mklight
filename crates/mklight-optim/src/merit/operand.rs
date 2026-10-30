@@ -46,6 +46,50 @@ pub enum WavefrontReference {
     Chief,
 }
 
+/// Which wavelengths the reference of a [`RayGroup`] is computed over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CentroidScope {
+    /// The operand's own wavelength only.
+    #[default]
+    Monochromatic,
+    /// Every system wavelength with positive weight, each node weighted by
+    /// `w_node · w_λ` (the centroid of the white-light spot; penalises
+    /// lateral colour).
+    Polychromatic,
+}
+
+/// The ray set that defines the reference of a per-ray operand
+/// ([`OperandKind::RayAberration`] / [`OperandKind::WavefrontAberration`])
+/// with a `Centroid` reference: the spot centroid, or the piston and tilt
+/// removed from the OPD.
+///
+/// Contract for evaluators: trace **every** node of `sampling` at the
+/// operand's field and configuration — at the operand's wavelength, or at
+/// every positive-weight system wavelength for `Polychromatic` — and form the
+/// reference with [`spot_centroid`](super::reference::spot_centroid) /
+/// [`piston_tilt`](super::reference::piston_tilt). The reference therefore
+/// does not depend on which operands happen to be in the spec, and with
+/// [`PupilSymmetry::Bilateral`](super::quadrature::PupilSymmetry) the half
+/// pupil stands for the mirrored full pupil (x centroid and x tilt are zero by
+/// symmetry, not the mean over `px ≥ 0`). Rays that fail are left out of the
+/// reference.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RayGroup {
+    pub sampling: PupilSampling,
+    #[serde(default)]
+    pub scope: CentroidScope,
+}
+
+impl RayGroup {
+    pub fn new(sampling: PupilSampling) -> Self {
+        RayGroup {
+            sampling,
+            scope: CentroidScope::Monochromatic,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FNumberKind {
@@ -209,17 +253,30 @@ pub enum OperandKind {
         #[serde(default)]
         to: Option<SurfaceId>,
     },
-    /// Thickness after `surface` on axis (mm).
-    CentreThickness { surface: SurfaceId },
-    /// Thickness after `surface` at `height` (default: max fixed
-    /// semi-diameter of the two bounding surfaces), mm.
+    /// Physical on-axis thickness of the gap from `surface` to `to`
+    /// (default: the next surface), summing the thicknesses in between (mm;
+    /// positive along the propagation direction, see
+    /// [`geometric`](super::geometric)).
+    CentreThickness {
+        surface: SurfaceId,
+        #[serde(default)]
+        to: Option<SurfaceId>,
+    },
+    /// Physical thickness of the gap from `surface` to `to` (default: the
+    /// next surface) at `height` (default: the larger fixed semi-diameter of
+    /// the two bounding surfaces), mm.
     EdgeThickness {
         surface: SurfaceId,
         #[serde(default)]
+        to: Option<SurfaceId>,
+        #[serde(default)]
         height: Option<f64>,
     },
-    /// Minimum (centre or edge) thickness over a run of gaps filled with the
-    /// given medium; a single aggregated boundary operand.
+    /// Minimum (centre or edge) thickness over the optical gaps
+    /// ([`geometric::optical_gaps`](super::geometric::optical_gaps)) filled
+    /// with the given medium and starting at a surface in `[from, to]`;
+    /// without `to`, every gap except the back-focus gap to the image. A
+    /// single aggregated boundary operand.
     MinThickness {
         #[serde(default)]
         measure: ThicknessMeasure,
@@ -230,7 +287,7 @@ pub enum OperandKind {
         #[serde(default)]
         to: Option<SurfaceId>,
     },
-    /// Maximum thickness over a run of gaps (same selection as `MinThickness`).
+    /// Maximum thickness over the same gap selection as `MinThickness`.
     MaxThickness {
         #[serde(default)]
         measure: ThicknessMeasure,
@@ -259,21 +316,28 @@ pub enum OperandKind {
         global: bool,
     },
     /// Transverse ray aberration `ε` on the image for pupil point `(px, py)`
-    /// (mm). The default spot merit is built from these.
+    /// (mm), relative to the chief ray or to the centroid of `group` (which
+    /// a `Centroid` reference requires). The default spot merit is built from
+    /// these.
     RayAberration {
         axis: Axis,
         px: f64,
         py: f64,
         #[serde(default)]
         reference: SpotReference,
+        #[serde(default)]
+        group: Option<RayGroup>,
     },
-    /// OPD at pupil point `(px, py)` (waves). The default wavefront merit
-    /// is built from these.
+    /// OPD at pupil point `(px, py)` (waves), with piston and tilt of
+    /// `group` removed for a `Centroid` reference (which requires `group`).
+    /// The default wavefront merit is built from these.
     WavefrontAberration {
         px: f64,
         py: f64,
         #[serde(default)]
         reference: WavefrontReference,
+        #[serde(default)]
+        group: Option<RayGroup>,
     },
     /// Chief-ray angle of incidence on `surface` (default: image), degrees.
     ChiefRayAngle {
@@ -469,6 +533,9 @@ impl OperandKind {
     /// Does the value depend on the field / wavelength selectors?
     pub fn uses_field(&self) -> bool {
         use OperandKind::*;
+        if let ToleranceSensitivity { criterion, .. } = self {
+            return criterion.uses_field();
+        }
         matches!(
             self,
             RealRay { .. }
@@ -486,6 +553,60 @@ impl OperandKind {
                 | StrayLightPower { .. }
                 | Custom { .. }
         )
+    }
+    /// Kinds defined at one field point: `FieldSelector::All` is invalid.
+    pub fn needs_single_field(&self) -> bool {
+        use OperandKind::*;
+        match self {
+            ToleranceSensitivity { criterion, .. } => criterion.needs_single_field(),
+            RealRay { .. }
+            | RayAberration { .. }
+            | WavefrontAberration { .. }
+            | ChiefRayAngle { .. }
+            | SpotCentroid { .. }
+            | Distortion { .. }
+            | LateralColour { .. }
+            | RelativeIllumination => true,
+            _ => false,
+        }
+    }
+    /// Kinds defined at one wavelength: `WavelengthSelector::All` is invalid.
+    pub fn needs_single_wavelength(&self) -> bool {
+        use OperandKind::*;
+        match self {
+            ToleranceSensitivity { criterion, .. } => criterion.needs_single_wavelength(),
+            RealRay { .. }
+            | RayAberration { .. }
+            | WavefrontAberration { .. }
+            | ChiefRayAngle { .. }
+            | Distortion { .. } => true,
+            _ => false,
+        }
+    }
+    /// The [`RayGroup`] of a per-ray operand, if any.
+    pub fn ray_group(&self) -> Option<&RayGroup> {
+        match self {
+            OperandKind::RayAberration { group, .. }
+            | OperandKind::WavefrontAberration { group, .. } => group.as_ref(),
+            _ => None,
+        }
+    }
+    /// Does a `Centroid` reference lack its [`RayGroup`]?
+    pub fn missing_ray_group(&self) -> bool {
+        match self {
+            OperandKind::RayAberration {
+                reference: SpotReference::Centroid,
+                group: None,
+                ..
+            }
+            | OperandKind::WavefrontAberration {
+                reference: WavefrontReference::Centroid,
+                group: None,
+                ..
+            } => true,
+            OperandKind::ToleranceSensitivity { criterion, .. } => criterion.missing_ray_group(),
+            _ => false,
+        }
     }
     pub fn uses_wavelength(&self) -> bool {
         use OperandKind::*;
@@ -549,10 +670,18 @@ impl OperandRegistry {
                 "Total track",
                 "mm",
             ),
-            (CentreThickness { surface: s(1) }, "Centre thickness", "mm"),
+            (
+                CentreThickness {
+                    surface: s(1),
+                    to: None,
+                },
+                "Centre thickness",
+                "mm",
+            ),
             (
                 EdgeThickness {
                     surface: s(1),
+                    to: None,
                     height: None,
                 },
                 "Edge thickness",
@@ -602,6 +731,7 @@ impl OperandRegistry {
                     px: 0.0,
                     py: 1.0,
                     reference: SpotReference::Centroid,
+                    group: Some(RayGroup::new(PupilSampling::default())),
                 },
                 "Transverse ray aberration",
                 "mm",
@@ -611,6 +741,7 @@ impl OperandRegistry {
                     px: 0.0,
                     py: 1.0,
                     reference: WavefrontReference::Centroid,
+                    group: Some(RayGroup::new(PupilSampling::default())),
                 },
                 "Optical path difference",
                 "waves",
@@ -754,8 +885,14 @@ impl OperandRegistry {
         self.kinds.iter().find(|d| d.name == name)
     }
 
-    /// Is this kind known (built-in, or a registered plug-in)?
+    /// Is this kind known? Built-ins by name; `Custom` kinds only when the
+    /// name was registered as a plug-in (a `Custom` named like a built-in,
+    /// e.g. `"efl"`, is rejected).
     pub fn knows(&self, kind: &OperandKind) -> bool {
-        self.get(kind.name()).is_some()
+        match (kind, self.get(kind.name())) {
+            (OperandKind::Custom { .. }, Some(d)) => d.capability == Capability::Plugin,
+            (OperandKind::Custom { .. }, None) => false,
+            (_, d) => d.is_some_and(|d| d.capability != Capability::Plugin),
+        }
     }
 }
