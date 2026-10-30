@@ -124,7 +124,8 @@ shown generically (`GenericResult`: JSON plus `ResultBuffer`s).
   re-runs only the visible analyses. A newer request cancels the older job
   for the same view. Old results stay on screen, dimmed with a STALE badge,
   until the new ones arrive. While the model fails validation, no analyses
-  run and the errors are listed in the status bar.
+  run and the errors are listed in the status bar. Closing the window
+  cancels its jobs.
 
 ## Files
 
@@ -132,7 +133,8 @@ shown generically (`GenericResult`: JSON plus `ResultBuffer`s).
 `{"format": "mklight-project", "schema_version": 1, "metadata", "system",
 "catalogs", "views", "merit", "variables", "tolerances"}`. The app edits the
 system and the catalog list and keeps every other section, including
-unknown keys, verbatim. Bare `OpticalSystem` JSON and the app's early
+unknown keys, verbatim. The system is decoded strictly, like the engine's
+model: an unknown field in it is an error rather than silently dropped. Bare `OpticalSystem` JSON and the app's early
 `{"format", "version": 1, "system"}` files open too (as the engine's
 version-0 migration does); newer schema versions are refused. The exported
 UTI is `com.mklight.project`, which conforms to `public.json` and is declared

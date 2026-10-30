@@ -15,8 +15,10 @@ import Synchronization
 /// alive.
 ///
 /// Threading: `FFIEngine` is `Sendable` and may be used from any task. The C
-/// engine and sessions are thread-safe; blocking C calls run on a global
-/// dispatch queue (never on the main thread). Job events arrive on the
+/// engine and sessions are thread-safe. The `EngineClient` methods never
+/// block their caller: their C calls (including waits for the session lock)
+/// run on a global dispatch queue, never on the main thread. The synchronous
+/// project helpers (`openProject`, `save`, `setSystem`, …) do block. Job events arrive on the
 /// engine's `mklight-events` thread and are forwarded to each job's
 /// `AsyncStream`s; consumers hop to the main actor themselves. A job runs
 /// against the snapshot it was submitted with: the session's system is set
