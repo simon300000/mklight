@@ -281,8 +281,10 @@ numerical failure `ComputeError`.
 * Rust (`cargo test -p mklight-py`): error classification against the C ABI
   table, JSON conversion of infinities, buffer strides, argument parsing,
   `trace_grid` layout cross-checked ray by ray against
-  `SequentialTracer::trace`, cancellation, seed merging, and job vs.
-  synchronous analysis runs giving identical results.
+  `SequentialTracer::trace`, cancellation, seed merging, engine
+  configuration validation, timeout → deadline mapping, Fortran
+  contiguity, and job vs. synchronous analysis runs giving identical
+  results.
 * Python (`python -m pytest` in `crates/mklight-py` after `maturin
   develop`): every sample opens, validates and survives save/open with the
   same snapshot hash; edits, invalid models, catalogs; paraxial EFL of the
@@ -293,4 +295,10 @@ numerical failure `ComputeError`.
   `UnsupportedError`); monotone progress; cancellation, timeouts,
   supersession; seeded determinism; Ctrl-C cancellation of a running job and
   of a trace; zero-copy read-only arrays and the list fallback; GIL release
-  during `trace_grid` and `run`.
+  during `trace_grid` and `run`; 300 uncollected jobs all keep their
+  results (and an explicit retention bound reports `evicted`); NaN /
+  negative / huge timeouts; progress monotone after a cancelled result;
+  `trace` and `trace_grid` reading `(0, 1)` alike; Fortran-contiguous
+  buffer requests refused; unknown engine keys and out-of-range seeds and
+  indices raising `MKLightError` subclasses; afocal paraxial infinities as
+  floats.
