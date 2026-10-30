@@ -68,6 +68,13 @@ primary specification, and flagged in the source:
   catalog below has `a7 = 0`, so its position rests on secondary
   documentation. `a0 … a6` are verified.
 
+**Open requirement**: one real glass per formula with a known answer.
+Formula 4 and formula 12's `a7` still lack one. Searches of manufacturer
+downloads (visible-glass AGF catalogs and infrared chalcogenide data
+sheets) found no published glass that uses formula 4 or a non-zero
+formula-12 `a7` together with its catalog indices. Until one is found,
+both stay flagged here and in `dispersion.rs`.
+
 **Verification of formulas 12 and 13** against the manufacturer's own data.
 Source: Nikon Corporation, glass data in AGF format
 (`NIKON-HIKARI_201911.AGF`, updated November 2019), the AGF download on the
