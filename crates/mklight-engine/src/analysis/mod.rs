@@ -420,9 +420,8 @@ pub fn run_analysis(
     })
 }
 
-/// Register every analysis of this build. Wave-optics analyses are added
-/// here, one line each, when `mklight-wave` is wired in: each replaces the
-/// placeholder of the same name (e.g. `r.register(Arc::new(wave::Psf))`).
+/// Register every analysis of this build. The wave-optics analyses replace
+/// the builtin placeholders of the same name.
 pub fn register_all(r: &mut AnalysisRegistry) {
     builtin::register_all(r);
     geometric::register_all(r);

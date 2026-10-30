@@ -314,7 +314,6 @@ pub fn configured_tracer_job(
     k: usize,
     ctx: &JobContext,
 ) -> MkResult<ConfiguredTracer> {
-    ctx.check()?;
     let base_snapshot_hash = mklight_core::snapshot::hash_system(system)?.to_hex();
     let (solved, report) =
         apply_solves_configuration(system, &library, k, &SolveSettings::default(), ctx)?;

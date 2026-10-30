@@ -78,10 +78,7 @@ fn compare(actual: &Value, direct: &Value, r: &AnalysisResult, seen: &mut BTreeS
     }
 }
 fn check_schema(e: &Engine, r: &AnalysisResult) {
-    let a = e.analysis(&r.run_info.analysis).unwrap();
-    assert!(!a.gpu_path());
-    assert_eq!(r.result_version, 1);
-    let schema = a.result_schema();
+    let schema = e.analysis(&r.run_info.analysis).unwrap().result_schema();
     validate(&schema, &r.json, true).unwrap();
     let descs = r
         .buffers

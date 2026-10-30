@@ -10,7 +10,7 @@ use mklight_wave::traced::{PupilSettings, configured_tracer_job};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::geometric::output;
+use super::geometric::{num_of, output, take_run_info, xy};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -43,29 +43,18 @@ impl Analysis for Wave {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let mut settings = settings.clone();
-        let configuration = settings
-            .as_object_mut()
-            .unwrap()
-            .remove("configuration")
-            .unwrap();
+        // The solver's serde settings ignore the engine's `configuration` key.
         let cfg = configured_tracer_job(
             input.snapshot.system(),
             input.library.clone(),
-            configuration.as_u64().unwrap() as usize,
+            settings["configuration"].as_u64().unwrap() as usize,
             &ctx.subrange(0.0, 0.05),
         )?;
         let mut json = self
             .0
-            .run_configured(&cfg, &settings, &ctx.subrange(0.05, 0.95))?;
-        let run_info = json.as_object_mut().unwrap().remove("run_info").unwrap();
-        let warnings = run_info["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|w| w.as_str().unwrap().to_string())
-            .collect();
-        let buffers = extract_buffers(self.0.name, &mut json, ctx)?;
+            .run_configured(&cfg, settings, &ctx.subrange(0.05, 1.0))?;
+        let warnings = take_run_info(&mut json);
+        let buffers = extract_buffers(self.0.name, &mut json);
         Ok(output(json, buffers, warnings))
     }
 }
@@ -179,9 +168,6 @@ fn detector_schema() -> Value {
 }
 
 // Result schemas: arrays moved to buffers are replaced by their buffer names.
-fn xy(description: &str) -> Value {
-    tuple(nf(), 2, description)
-}
 fn vector(unit: &str, description: &str) -> Value {
     let mut s = string(description);
     s["unit"] = json!(unit);
@@ -745,24 +731,16 @@ fn mtf_schema() -> Value {
 
 // The JSON entry points serialise the solver's known result types. Buffer
 // names replace arrays in place, preserving field/wavelength/curve identity.
-fn number(v: &Value) -> f64 {
-    match v {
-        Value::Number(n) => n.as_f64().unwrap(),
-        Value::String(s) if s == "inf" => f64::INFINITY,
-        Value::String(s) if s == "-inf" => f64::NEG_INFINITY,
-        _ => f64::NAN,
-    }
-}
-
+// Arrays are flat, or of [x, y] pairs (field values, rim loops).
 fn extract(v: &mut Value, name: String, shape: Vec<usize>, buffers: &mut Vec<Buffer>) {
     let values = v.take();
     let a = values.as_array().unwrap();
-    let data = if shape.len() == 2 && a.first().is_some_and(Value::is_array) {
+    let data = if a.first().is_some_and(Value::is_array) {
         a.iter()
-            .flat_map(|row| row.as_array().unwrap().iter().map(number))
+            .flat_map(|row| row.as_array().unwrap().iter().map(num_of))
             .collect()
     } else {
-        a.iter().map(number).collect()
+        a.iter().map(num_of).collect()
     };
     buffers.push(Buffer::new(name.clone(), shape, BufferData::F64(data)));
     *v = json!(name);
@@ -783,7 +761,7 @@ fn extract_curves(curves: &mut Value, prefix: &str, buffers: &mut Vec<Buffer>) {
     }
 }
 
-fn extract_buffers(name: &str, json: &mut Value, ctx: &JobContext) -> EngineResult<Vec<Buffer>> {
+fn extract_buffers(name: &str, json: &mut Value) -> Vec<Buffer> {
     let mut buffers = Vec::new();
     for key in ["frequencies", "focus_mm", "radius_mm", "normalized_field"] {
         if let Some(v) = json.get_mut(key) {
@@ -805,10 +783,7 @@ fn extract_buffers(name: &str, json: &mut Value, ctx: &JobContext) -> EngineResu
             "psf" => "psfs",
             _ => "fields",
         };
-        let items = json[group].as_array_mut().unwrap();
-        let count = items.len();
-        for (i, f) in items.iter_mut().enumerate() {
-            ctx.check()?;
+        for (i, f) in json[group].as_array_mut().unwrap().iter_mut().enumerate() {
             match name {
                 "wavefront_map" => {
                     let n = f["grid"].as_u64().unwrap() as usize;
@@ -874,12 +849,7 @@ fn extract_buffers(name: &str, json: &mut Value, ctx: &JobContext) -> EngineResu
                 }
                 _ => unreachable!(),
             }
-            ctx.report(
-                0.95 + 0.05 * (i + 1) as f64 / count as f64,
-                "Wave result buffers",
-            );
         }
     }
-    ctx.check()?;
-    Ok(buffers)
+    buffers
 }
