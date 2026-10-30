@@ -4,6 +4,10 @@
 //!
 //! # Per batch
 //!
+//! A batch is split into sub-batches of [`GpuEvalSettings::batch`]
+//! candidates, pipelined so that the host prepares the next sub-batch and
+//! reads back the previous one while the GPU traces. Per sub-batch:
+//!
 //! 1. **Host preparation** (parallel over candidates, f64): each candidate is
 //!    frozen, resolved and wrapped in a `SequentialTracer` exactly as in
 //!    [`TraceEvaluator`], its operands are planned (chief rays, pupil
@@ -12,13 +16,13 @@
 //!    field/pupil mapping and ray aiming. The candidate is packed into the
 //!    shared f32 layout (`PackedSystem`, all wavelengths, asphere
 //!    normalisation radii from the qualified base system).
-//! 2. **Trace**: all packed candidates are uploaded as one system set and
+//! 2. **Trace**: the packed candidates are uploaded as one system set and
 //!    their rays (selected per ray by system index) are traced in one
 //!    request per (clipping, last surface): the unclipped chief rays, the
 //!    clipped pupil rays to the image, and real rays to other surfaces.
 //!    Rays enter in double-float (`RayBatch::push_f64`), radiometry off.
 //! 3. **Read**: the operand values come from the same code as the CPU
-//!    evaluator (`Candidate::value`), reading the GPU rays. OPD is formed
+//!    evaluator (`Candidate::value_with`), reading the GPU rays. OPD is formed
 //!    on the host from the GPU's double-float optical paths against the
 //!    reference sphere of the GPU's own chief ray (CONVENTIONS §12).
 //!

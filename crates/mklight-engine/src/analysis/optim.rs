@@ -228,6 +228,17 @@ enum BackendChoice {
     GpuEmulation,
 }
 
+impl BackendChoice {
+    fn name(self) -> &'static str {
+        match self {
+            BackendChoice::Auto => "auto",
+            BackendChoice::Cpu => "cpu",
+            BackendChoice::Gpu => "gpu",
+            BackendChoice::GpuEmulation => "gpu_emulation",
+        }
+    }
+}
+
 /// The compute interface behind an engine device handle.
 fn device_backend(dev: &DeviceHandle) -> Option<Arc<dyn ComputeBackend>> {
     if let Some(b) = dev.downcast_ref::<Arc<dyn ComputeBackend>>() {
@@ -344,9 +355,9 @@ impl Evaluation {
     /// The `"backend"` block: who evaluated the search, its qualification
     /// (at the start and, after a GPU run, at the final design) and the GPU
     /// work counters.
-    fn finish(&mut self, requested: BackendChoice, final_system: &OpticalSystem) {
+    fn finish(&mut self, requested: BackendChoice, final_system: Option<&OpticalSystem>) {
         let mut b = json!({
-            "requested": format!("{requested:?}").to_lowercase(),
+            "requested": requested.name(),
             "evaluated_on": TraceEvaluator::BACKEND,
             "precision": Precision::F64Reference,
             "reported_on": TraceEvaluator::BACKEND,
@@ -358,7 +369,7 @@ impl Evaluation {
                 b["precision"] = json!(Precision::F32Gpu);
                 // A qualification of the final design (the search moved
                 // away from the qualified start).
-                if let Ok(q) = g.requalify(final_system, &JobContext::new()) {
+                if let Some(Ok(q)) = final_system.map(|s| g.requalify(s, &JobContext::new())) {
                     if !q.passed {
                         self.warnings.push(format!(
                             "the final design fails the GPU precision qualification ({}); its \
@@ -859,7 +870,7 @@ impl Analysis for Optimize {
         ctx.report(1.0, "reference evaluation");
         let refs = reference_values(&reference, &[&x0, &x])?;
         let final_system = reference.apply(&x)?;
-        ev.finish(s.backend, &final_system);
+        ev.finish(s.backend, Some(&final_system));
         let hash = Snapshot::new(final_system.clone())?.hash().to_hex();
         let history = history.lock().map(|h| h.clone()).unwrap_or_default();
         let variables: Vec<Value> = s
@@ -1114,7 +1125,7 @@ impl Analysis for Tolerance {
             Some(Err(MkError::Cancelled)) | None => None,
             Some(Err(e)) => return Err(e.into()),
         };
-        ev.finish(s.backend, &system);
+        ev.finish(s.backend, None);
         let status = match why {
             Interrupt::None => "complete",
             Interrupt::Stopped => "stopped",
@@ -1619,6 +1630,7 @@ mod tests {
             assert_eq!(b["final_qualification"]["passed"], json!(true));
             assert!(b["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
             assert_eq!(b["reported_on"], json!(TraceEvaluator::BACKEND));
+            assert_eq!(b["requested"], json!(backend));
             if backend == "gpu" {
                 assert!(b["evaluated_on"].as_str().unwrap().starts_with("metal:"));
             }
