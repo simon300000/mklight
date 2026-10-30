@@ -1,1 +1,57 @@
-//! MKLight wave optics: OPD, Zernike, PSF, MTF (to be implemented)
+//! MKLight wave optics: sampled exit-pupil functions, Zernike analysis,
+//! PSF (FFT, exact matrix transform, Huygens), MTF (FFT, direct pupil
+//! autocorrelation, from PSF), encircled/ensquared energy, line-spread
+//! functions and Strehl ratios.
+//!
+//! Everything here starts from a [`PupilFunction`]: the complex amplitude
+//! `A·exp(i2π·W)` on an `n × n` grid over the normalised exit pupil, plus
+//! the image-space geometry (exit-pupil radius, reference-sphere radius,
+//! image index) that scales image-plane coordinates. The tracer fills it
+//! either directly (rays traced at the grid points) or through
+//! [`interp`] from scattered ray samples.
+//!
+//! Conventions (see `docs/CONVENTIONS.md`): lengths in mm, wavelengths in
+//! µm, OPD in waves with `OPD = OPL_chief − OPL_ray`, Fringe Zernikes by
+//! default, frequencies in cycles/mm, tangential = image y on axis.
+//! The sampling relations are documented in [`pupil`] and [`psf`]:
+//! `Δx = λF#/Q`, alias-free field `n·λF#`, cutoff `1/(λF#)`.
+//!
+//! Every heavy routine takes a [`mklight_core::JobContext`] (cancellation
+//! and progress), runs row- or frequency-parallel with rayon, and reduces
+//! in a fixed order, so results are bit-reproducible regardless of thread
+//! count.
+
+// `!(x > 0.0)` is used on purpose throughout: unlike `x <= 0.0` it also
+// rejects NaN.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
+pub mod energy;
+mod fft;
+pub mod interp;
+mod linalg;
+pub mod mtf;
+pub mod psf;
+pub mod pupil;
+pub mod special;
+pub mod warnings;
+pub mod zernike;
+
+pub use energy::{
+    EnergyCenter, LineSpread, LsfAxis, StrehlReport, encircled_energy, ensquared_energy,
+    line_spread_function, strehl_marechal, strehl_marechal_classic, strehl_report,
+};
+pub use interp::{RaySample, StructuredSamples, grid_from_scattered_zernike, grid_from_structured};
+pub use mtf::{
+    Defocus, MtfCurve, MtfMethod, MtfOrientation, Otf, diffraction_limited_mtf, mtf, mtf_direct,
+    mtf_fft, mtf_from_psf, otf_fft, polychromatic_mtf, through_focus_mtf,
+};
+pub use psf::{
+    HuygensSettings, ImagePlane, ImageSampling, PolyPsfSettings, Psf, PsfNormalization,
+    PsfSettings, PsfTransform, fft_psf, huygens_psf, polychromatic_psf,
+};
+pub use pupil::{Aperture, Apodization, OpdStats, PupilFunction, PupilGeometry};
+pub use warnings::WaveWarning;
+pub use zernike::{
+    SeidelTerms, ZernikeBasis, ZernikeFit, ZernikeFitSettings, ZernikeOrdering, ZernikeSet,
+    ZernikeTerm, fit_zernike,
+};

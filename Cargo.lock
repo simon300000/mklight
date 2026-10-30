@@ -273,7 +273,6 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "mklight-core",
- "mklight-trace",
  "num-complex",
  "rayon",
  "rustfft",
