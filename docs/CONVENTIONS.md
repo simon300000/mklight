@@ -234,3 +234,11 @@ Coatings return complex amplitude coefficients next to the power ones
   (`GhostCoverage::apertures`, checked with `same_apertures`), otherwise a
   ray clipped by one solver and not the other is counted twice or not at
   all.
+
+## 11. Non-finite numbers in results
+
+Result JSON follows §2 for infinities (`"inf"` / `"-inf"`) and writes NaN,
+which means *undefined* (a vignetted field, a failed ray, a quantity without
+a value), as `null`. Readers accept numbers, `null`, `"inf"`, `"-inf"` and
+`"nan"`. `mklight_analysis::util::nf` implements this for `f64`, vectors and
+fixed arrays.
