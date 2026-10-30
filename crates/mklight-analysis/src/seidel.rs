@@ -63,30 +63,36 @@
 //!
 //! # Longitudinal aberration, focal shift and lateral colour
 //!
-//! * **Longitudinal aberration**: on-axis rays at pupil zones `P_y = ρ` are
+//! * **Longitudinal aberration**: on-axis rays at pupil zones `ρ` along `P_y`
+//!   (and `P_x` outside rotational symmetry, signed) are
 //!   traced (unclipped) and their crossing with the chief ray is found in
 //!   the plane normal to the chief ray (as for close rays in
 //!   [`crate::curvature`]); the reported focus is its axial (`z`) distance
 //!   from the image surface, and the aberration is that focus minus the
-//!   primary wavelength's paraxial focus `−y_m/u'_m` (from the image surface).
-//! * **Chromatic focal shift**: the paraxial focus of a wavelength sweep,
-//!   relative to the primary wavelength's, from a copy of the system with the
-//!   sweep as its wavelength set (same material library).
+//!   primary wavelength's paraxial focus `−y_m/u'_m` of the same axis.
+//! * **Chromatic focal shift**: the x and y paraxial foci of a wavelength
+//!   sweep, relative to the primary wavelength's, from a copy of the system
+//!   with the sweep as its wavelength set (same material library).
 //! * **Lateral colour**: the real chief-ray height of every wavelength minus
-//!   the primary's, and `y(λ_short) − y(λ_long)`, vs field along `+y`.
+//!   the primary's, and `y(λ_short) − y(λ_long)`, vs field along the sampled
+//!   axes (`x` heights on the x axis).
 
 use mklight_core::job::RunTimer;
+use mklight_core::surface_math::{Symmetry, system_symmetry};
 use mklight_core::{
     FieldKind, Interaction, JobContext, MkError, MkResult, ResolvedSystem, RunInfo, Snapshot,
     SurfaceShape, Vec3, Wavelength, WavelengthSet,
 };
-use mklight_trace::{FieldPoint, Paraxial, ParaxialModel, SequentialTracer, TraceOptions};
+use mklight_trace::paraxial::first_order_axis;
+use mklight_trace::{
+    FieldPoint, FirstOrder, ParaxialAxis, ParaxialModel, ParaxialXY, SequentialTracer, TraceOptions,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    WavelengthSelection, check_count, field_scale, field_unit, linspace, nf, run_info,
-    wavelength_or_primary,
+    FieldAxes, WavelengthSelection, check_count, doe_power, field_scale, field_sweep, field_unit,
+    linspace, nf, run_info, wavelength_or_primary,
 };
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -392,10 +398,10 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
     let sys = tracer.system();
     let w = wavelength_or_primary(tracer, settings.wavelength)?;
     let (ws, wlong) = select_short_long(sys, settings.short_wavelength, settings.long_wavelength)?;
-    if mklight_core::surface_math::system_symmetry(sys.system())
-        != mklight_core::surface_math::Symmetry::Rotational
-    {
-        let reason = "Seidel coefficients are not applicable to non-rotational systems; use full real-ray spots, fans, grid distortion and field curvature".to_string();
+    if system_symmetry(sys.system()) != Symmetry::Rotational {
+        let reason = "Seidel coefficients are not applicable to non-rotational systems; \
+                      use full real-ray spots, fans, grid distortion and field curvature"
+            .to_string();
         let sums = SeidelTerms::from_array([f64::NAN; 7]);
         return Ok(SeidelResult {
             status: SeidelStatus::NotApplicable,
@@ -448,56 +454,45 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
                     .iter()
                     .any(|&i| coefficients.get(i).is_some_and(|v| *v != 0.0))
             {
-                warnings.push(format!("surface {j}: non-analytic r¹/r³ terms omitted; Seidel describes only the regular fourth-order equivalent, use real rays for their aberrations"));
+                warnings.push(format!(
+                    "surface {j}: non-analytic r¹/r³ terms omitted; Seidel describes only \
+                     the regular fourth-order equivalent, use real rays for their aberrations"
+                ));
             }
+            // A DOE is the N → ∞ limit of two coincident interfaces with
+            // middle index N (module docs): reduced power p and quartic
+            // phase q4. With p = q4 = 0 these are the usual surface terms.
+            let (p, q4) = match &s.shape {
+                SurfaceShape::Diffractive { phase, .. } => {
+                    let wl_um = sys.wavelengths_um[w];
+                    let q = phase.trace_order as f64 * wl_um * 1e-3 / std::f64::consts::TAU;
+                    let a2 = phase.coefficients.get(1).copied().unwrap_or(0.0);
+                    (doe_power(phase, wl_um), q * a2 / phase.norm_radius.powi(4))
+                }
+                _ => (0.0, 0.0),
+            };
             let (y, yb) = (m.y[j], c.y[j]);
             let a = n.mul_add(y * cv, m.nu[j - 1]);
             let ab = n.mul_add(yb * cv, c.nu[j - 1]);
-            let du_n = m.nu[j] / (n2 * n2) - m.nu[j - 1] / (n * n);
-            let d1n = 1.0 / n2 - 1.0 / n;
-            let d1n2 = 1.0 / (n2 * n2) - 1.0 / (n * n);
-            t[0] = -a * a * y * du_n;
-            t[1] = -a * ab * y * du_n;
-            t[2] = -ab * ab * y * du_n;
-            t[3] = -h * h * cv * d1n;
-            t[4] = -ab * ab * ab * y * d1n2 + ab * yb * cv * ab.mul_add(y, h) * d1n;
-            let dn = n2 - n;
-            let g = fourth - cv.powi(3) / 8.0;
-            if g != 0.0 {
-                let e = 8.0 * g * dn * y;
-                t[0] += e * y * y * y;
-                t[1] += e * y * y * yb;
-                t[2] += e * y * yb * yb;
-                t[4] += e * yb * yb * yb;
-            }
+            let (a2, ab2) = (a - p * y, ab - p * yb);
+            let (vi, vo) = (m.nu[j - 1] / (n * n), m.nu[j] / (n2 * n2));
+            let g = (n2 - n) * (fourth - cv.powi(3) / 8.0) - q4 - 3.0 * cv * cv * p / 8.0;
+            let e = 8.0 * g * y;
+            t[0] = y * (a * a * vi - a2 * a2 * vo) + e * y * y * y;
+            t[1] = y * (a * ab * vi - a2 * ab2 * vo) + e * y * y * yb;
+            t[2] = y * (ab * ab * vi - ab2 * ab2 * vo) + e * y * yb * yb;
+            t[3] = -h * h * cv * (1.0 / n2 - 1.0 / n);
+            t[4] = y * (ab.powi(3) / (n * n) - ab2.powi(3) / (n2 * n2))
+                + yb * cv * (ab2 * ab2.mul_add(y, h) / n2 - ab * ab.mul_add(y, h) / n)
+                + e * yb * yb * yb;
+            // Relative dispersions; a DOE's phase power is ∝ λ.
             let dr = |k: usize| (ns[k] - nl[k]) / nn[k];
-            let dd = dr(j) - dr(j - 1);
-            t[5] = a * y * dd;
-            t[6] = ab * y * dd;
+            let d_doe =
+                (sys.wavelengths_um[ws] - sys.wavelengths_um[wlong]) / sys.wavelengths_um[w];
+            t[5] = y * (a2 * dr(j) - a * dr(j - 1) + p * y * d_doe);
+            t[6] = y * (ab2 * dr(j) - ab * dr(j - 1) + p * yb * d_doe);
+            // The phase plate adds no Petzval curvature.
             petzval += cv * (n2 - n) / (n * n2);
-            if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
-                let scale =
-                    phase.trace_order as f64 * sys.wavelengths_um[w] * 1e-3 / std::f64::consts::TAU;
-                let p = -2.0 * scale * phase.coefficients.first().copied().unwrap_or(0.0)
-                    / phase.norm_radius.powi(2);
-                let q4 = scale * phase.coefficients.get(1).copied().unwrap_or(0.0)
-                    / phase.norm_radius.powi(4);
-                let (a2, ab2) = (a - p * y, ab - p * yb);
-                let (vi, vo) = (m.nu[j - 1] / n.powi(2), m.nu[j] / n2.powi(2));
-                // Exact N -> infinity limit of two coincident interfaces:
-                // c1=c, c2=c-p/N, z2_4=z1_4+q4/N. No large index subtraction.
-                let gg = dn * g - q4 - 3.0 * cv * cv * p / 8.0;
-                t[0] = y * (a * a * vi - a2 * a2 * vo) + 8.0 * gg * y.powi(4);
-                t[1] = y * (a * ab * vi - a2 * ab2 * vo) + 8.0 * gg * y.powi(3) * yb;
-                t[2] = y * (ab * ab * vi - ab2 * ab2 * vo) + 8.0 * gg * y.powi(2) * yb.powi(2);
-                t[4] = y * (ab.powi(3) / n.powi(2) - ab2.powi(3) / n2.powi(2))
-                    + yb * cv * (ab2 * (ab2 * y + h) / n2 - ab * (ab * y + h) / n)
-                    + 8.0 * gg * y * yb.powi(3);
-                let dispersion =
-                    (sys.wavelengths_um[ws] - sys.wavelengths_um[wlong]) / sys.wavelengths_um[w];
-                t[5] = y * (a2 * dr(j) - a * dr(j - 1) + p * y * dispersion);
-                t[6] = y * (ab2 * dr(j) - ab * dr(j - 1) + p * yb * dispersion);
-            }
         }
         surfaces.push(SurfaceSeidel {
             surface: j,
@@ -545,7 +540,8 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LongitudinalSettings {
-    pub axes: crate::util::FieldAxes,
+    /// Pupil axes of the zonal fans (`auto`: y when rotational, else both).
+    pub axes: FieldAxes,
     /// Zones 0..1 for rotational systems; signed -1..1 otherwise.
     pub pupil_samples: usize,
     pub wavelengths: WavelengthSelection,
@@ -563,7 +559,7 @@ impl Default for LongitudinalSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LongitudinalCurve {
-    pub axis: mklight_trace::ParaxialAxis,
+    pub axis: ParaxialAxis,
     pub wavelength: usize,
     pub wavelength_um: f64,
     /// This wavelength's paraxial focus from the image surface (mm, local z).
@@ -572,7 +568,7 @@ pub struct LongitudinalCurve {
     /// Real focus of each zone from the image surface (mm).
     #[serde(with = "nf::vec")]
     pub focus: Vec<f64>,
-    /// `focus − paraxial focus of the primary wavelength` (mm).
+    /// `focus −` the primary wavelength's paraxial focus on `axis` (mm).
     #[serde(with = "nf::vec")]
     pub aberration: Vec<f64>,
 }
@@ -587,9 +583,9 @@ pub struct LongitudinalResult {
     pub run_info: RunInfo,
 }
 
-/// Paraxial focus of wavelength `w`, from the image surface along local z.
-fn paraxial_focus(p: &Paraxial, w: usize) -> f64 {
-    let m = &p.at(w).marginal;
+/// Paraxial focus of a first-order sweep, from the image surface along local z.
+fn paraxial_focus(fo: &FirstOrder) -> f64 {
+    let m = &fo.marginal;
     let img = m.y.len() - 1;
     -m.y[img] / m.u[img - 1]
 }
@@ -613,14 +609,6 @@ pub fn longitudinal_aberration(
     tracer: &SequentialTracer,
     settings: &LongitudinalSettings,
 ) -> MkResult<LongitudinalResult> {
-    longitudinal_aberration_job(tracer, settings, &JobContext::new())
-}
-
-pub fn longitudinal_aberration_job(
-    tracer: &SequentialTracer,
-    settings: &LongitudinalSettings,
-    ctx: &JobContext,
-) -> MkResult<LongitudinalResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("pupil samples", settings.pupil_samples, 2, 100_001)?;
@@ -628,58 +616,42 @@ pub fn longitudinal_aberration_job(
         .wavelengths
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
     let field = tracer.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
-    let lo = if mklight_core::surface_math::system_symmetry(sys.system())
-        == mklight_core::surface_math::Symmetry::Rotational
-    {
+    let symmetry = system_symmetry(sys.system());
+    let lo = if symmetry == Symmetry::Rotational {
         0.0
     } else {
         -1.0
     };
     let pupil = linspace(lo, 1.0, settings.pupil_samples);
-    let p0 = paraxial_focus(tracer.paraxial(), sys.primary_wavelength);
     let opts = TraceOptions::unclipped();
     let mut curves = Vec::new();
-    let axes = settings.axes.components(tracer);
-    let focus = |fo: &mklight_trace::FirstOrder| {
-        let m = &fo.marginal;
-        -m.y[sys.image_index()] / m.u[sys.image_index() - 1]
-    };
-    for (axis_index, &component) in axes.iter().enumerate() {
-        let axis = if component == 0 {
-            mklight_trace::ParaxialAxis::X
-        } else {
-            mklight_trace::ParaxialAxis::Y
-        };
-        let primary = mklight_trace::paraxial::first_order_axis(sys, sys.primary_wavelength, axis)?;
-        let primary_focus = focus(&primary);
-        for (wi, &w) in wls.iter().enumerate() {
-            ctx.check()?;
-            let pf = focus(&mklight_trace::paraxial::first_order_axis(sys, w, axis)?);
+    for &component in settings.axes.components(symmetry) {
+        let axis = [ParaxialAxis::X, ParaxialAxis::Y][component];
+        let axis_focus = |w| first_order_axis(sys, w, axis).map(|fo| paraxial_focus(&fo));
+        let primary_focus = axis_focus(sys.primary_wavelength)?;
+        for &w in &wls {
+            let pf = axis_focus(w)?;
             let chief = tracer.trace(&field, w, 0.0, 0.0, &opts);
             let focus: Vec<f64> = pupil
                 .par_iter()
                 .map(|&rho| {
-                    ctx.check()?;
                     if rho == 0.0 {
-                        return Ok(pf);
+                        return pf;
                     }
                     if !chief.status.is_ok() {
-                        return Ok(f64::NAN);
+                        return f64::NAN;
                     }
-                    let (px, py) = if component == 0 {
-                        (rho, 0.0)
-                    } else {
-                        (0.0, rho)
-                    };
-                    let r = tracer.trace(&field, w, px, py, &opts);
+                    let mut p = [0.0; 2];
+                    p[component] = rho;
+                    let r = tracer.trace(&field, w, p[0], p[1], &opts);
                     if !r.status.is_ok() {
-                        return Ok(f64::NAN);
+                        return f64::NAN;
                     }
                     let (pc, c) = (chief.ray.pos, chief.ray.dir);
                     let s = crossing_along_chief(pc, c, r.ray.pos, r.ray.dir);
-                    Ok(pc.z + s * c.z)
+                    pc.z + s * c.z
                 })
-                .collect::<MkResult<_>>()?;
+                .collect();
             curves.push(LongitudinalCurve {
                 axis,
                 wavelength: w,
@@ -688,15 +660,11 @@ pub fn longitudinal_aberration_job(
                 aberration: focus.iter().map(|f| f - primary_focus).collect(),
                 focus,
             });
-            ctx.report(
-                (axis_index * wls.len() + wi + 1) as f64 / (axes.len() * wls.len()) as f64,
-                "longitudinal aberration",
-            );
         }
     }
     Ok(LongitudinalResult {
         pupil,
-        primary_paraxial_focus: p0,
+        primary_paraxial_focus: paraxial_focus(tracer.paraxial().primary()),
         curves,
         run_info: run_info(
             timer,
@@ -755,14 +723,6 @@ pub fn chromatic_focal_shift(
     tracer: &SequentialTracer,
     settings: &ChromaticFocalShiftSettings,
 ) -> MkResult<ChromaticFocalShiftResult> {
-    chromatic_focal_shift_job(tracer, settings, &JobContext::new())
-}
-
-pub fn chromatic_focal_shift_job(
-    tracer: &SequentialTracer,
-    settings: &ChromaticFocalShiftSettings,
-    ctx: &JobContext,
-) -> MkResult<ChromaticFocalShiftResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("wavelength samples", settings.samples, 2, 10_001)?;
@@ -797,28 +757,19 @@ pub fn chromatic_focal_shift_job(
     };
     let snap = Snapshot::new(osys)?;
     let rs = ResolvedSystem::new(&snap, sys.library.clone())?;
-    ctx.check()?;
-    let xy = mklight_trace::ParaxialXY::new_job(&rs, ctx)?;
-    let par = Paraxial {
-        wavelengths: xy.y,
-        primary: rs.primary_wavelength,
-        warnings: xy.run_info.warnings,
+    // The swept wavelengths, then the primary (last) for both axes.
+    let xy = ParaxialXY::new(&rs)?;
+    let foci = |sweeps: &[FirstOrder]| -> (Vec<f64>, Vec<f64>) {
+        let (focus, primary) = sweeps.split_at(sweep.len());
+        let focus: Vec<f64> = focus.iter().map(paraxial_focus).collect();
+        let p0 = paraxial_focus(&primary[0]);
+        let shift = focus.iter().map(|f| f - p0).collect();
+        (focus, shift)
     };
-    let foci: Vec<f64> = (0..rs.wavelengths_um.len())
-        .map(|w| paraxial_focus(&par, w))
-        .collect();
-    let p0 = foci[foci.len() - 1];
-    let focus: Vec<f64> = foci[..sweep.len()].to_vec();
-    let shift: Vec<f64> = focus.iter().map(|f| f - p0).collect();
+    let (focus, shift) = foci(&xy.y);
+    let (paraxial_focus_x, focal_shift_x) = foci(&xy.x);
     let range = shift.iter().copied().fold(f64::NEG_INFINITY, f64::max)
         - shift.iter().copied().fold(f64::INFINITY, f64::min);
-    let x_focus = |fo: &mklight_trace::FirstOrder| {
-        let m = &fo.marginal;
-        -m.y[rs.image_index()] / m.u[rs.image_index() - 1]
-    };
-    let x0 = x_focus(xy.x.last().unwrap());
-    let paraxial_focus_x: Vec<f64> = xy.x[..sweep.len()].iter().map(x_focus).collect();
-    let focal_shift_x = paraxial_focus_x.iter().map(|v| v - x0).collect();
     Ok(ChromaticFocalShiftResult {
         paraxial_focus_x,
         focal_shift_x,
@@ -843,7 +794,8 @@ pub fn chromatic_focal_shift_job(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LateralColourSettings {
-    pub field_axes: crate::util::FieldAxes,
+    /// Field axes of the sweep (ANALYSIS §2.2).
+    pub field_axes: FieldAxes,
     pub field_samples: usize,
     pub short_wavelength: Option<usize>,
     pub long_wavelength: Option<usize>,
@@ -871,6 +823,7 @@ pub struct LateralColourCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LateralColourResult {
+    /// Normalised `[Hx, Hy]` of each field sample.
     pub field_coordinates: Vec<[f64; 2]>,
     pub field_values: Vec<f64>,
     pub normalized_field: Vec<f64>,
@@ -901,13 +854,11 @@ pub fn lateral_colour_job(
     settings: &LateralColourSettings,
     ctx: &JobContext,
 ) -> MkResult<LateralColourResult> {
-    ctx.check()?;
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("field samples", settings.field_samples, 2, 100_001)?;
     let (ws, wl) = select_short_long(sys, settings.short_wavelength, settings.long_wavelength)?;
-    let sweep = crate::util::field_sweep(tracer, settings.field_samples, settings.field_axes);
-    let hs = &sweep.heights;
+    let sweep = field_sweep(tracer, settings.field_samples, settings.field_axes);
     let nw = sys.wavelengths_um.len();
     let primary = sys.primary_wavelength;
     ctx.report(0.0, "lateral colour");
@@ -921,7 +872,7 @@ pub fn lateral_colour_job(
                     .map(|w| {
                         let c = tracer.chief(&f, w);
                         if c.status.is_ok() {
-                            if axis == 0 { c.ray.pos.x } else { c.ray.pos.y }
+                            [c.ray.pos.x, c.ray.pos.y][axis]
                         } else {
                             f64::NAN
                         }
@@ -944,8 +895,8 @@ pub fn lateral_colour_job(
     let scale = field_scale(tracer);
     let kind: FieldKind = sys.system().fields.kind;
     Ok(LateralColourResult {
-        field_values: hs.iter().map(|h| h * scale).collect(),
-        normalized_field: hs.clone(),
+        field_values: sweep.heights.iter().map(|h| h * scale).collect(),
+        normalized_field: sweep.heights,
         field_coordinates: sweep.coordinates,
         field_unit: field_unit(kind).to_string(),
         short_wavelength: ws,

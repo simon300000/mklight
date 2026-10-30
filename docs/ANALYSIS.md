@@ -103,7 +103,7 @@ collimated pencils and at a focus. The steps are:
   curvature-matching right hand side (`q=mλ/(2π)`, λ in mm). The covariant
   phase Hessian is `E_xyᵀ H_Φ E_xy + (∇Φ·N)K`; its connection term matters
   on a curved base. In ray form the matching numerator is
-  `n Pᵀ T + (-gK + q H_phase,surface) δs`;
+  `n Pᵀ T + (q H_phase,surface − gK) δs`;
 * ideal lenses: the matrix form of `τ' = (n/n')τ − s/f`.
 
 This makes no principal-plane assumption, so it holds for skew chief rays,
@@ -188,7 +188,6 @@ Longitudinal aberration traces signed pupil zones on both axes by default
 outside rotational symmetry (`axes` can select x/y/both); each curve names
 its axis and subtracts that axis's primary focus. Chromatic focal shift
 adds `paraxial_focus_x` and `focal_shift_x`; legacy arrays remain y.
-These analyses also provide cancellable job variants.
 
 ### 2.4 Relative illumination: method
 
@@ -243,7 +242,8 @@ with edge flats at the sag of each clear edge. Planes between equal media
 use the true signed Cartesian sag in the corresponding local plane.
 `in_section` means every point has global `x=0` or `y=0`, respectively.
 Rings and mechanical edge flats evaluate sag at each azimuth, rather than
-rotating a meridian. DOE surfaces carry `is_diffractive`, also bit 2 of
+rotating a meridian. Clear radii stay inside the sag domain of both axes
+(toroids, biconics) and inside the normalisation radius. DOE surfaces carry `is_diffractive`, also bit 2 of
 polyline flags. `mesh_rings>0` with `include_3d=true` requests a coarse
 polar triangle mesh (`ring_samples` angular subdivisions); invalid-domain
 triangles are omitted. Engine buffers `surface_mesh` (f32 [T,3,3], relative
@@ -267,8 +267,9 @@ warnings. The plate's power is excluded from the report's Petzval sum.
 The symmetry audit covers spots, fans, footprints, energy/MTF/best focus,
 layout rays, grid distortion and all scalar field sweeps: pupils are
 sampled over the full disk/fan. Only the rotational longitudinal fan uses
-a half pupil. Tangential/sagittal fan and MTF labels denote image y/x;
-they do not assume the field lies on y. Scalar Airy/F-number reference
+a half pupil. Tangential/sagittal fan labels denote image y/x; the
+geometric MTF's tangential direction is the field's radial direction (y on
+axis). Neither assumes the field lies on y. Scalar Airy/F-number reference
 scales retain the legacy y first-order convention.
 
 ### 2.6 Reductions from ray batches (backend seam)
@@ -304,7 +305,7 @@ and conventions:
 | `tests/spot_energy.rs` | defocused ideal lens: RMS/GEO exactly the scaled pupil statistics, EE vs exact grid counts and `(r/R)²`, geometric MTF vs `2J₁(x)/x`; best focus recovers a known defocus and equals the retraced spot; paraboloid on-axis spot ≈ 0; polychromatic weighting; vignetted fraction; fans vs direct traces and symmetry; seeds; cancellation and progress; JSON round trips with NaN; curved-image defocus warnings; batch reductions of an externally traced batch equal the traced analyses (and record the backend); best focus skips chief-less fields for the chief reference and warns at range edges and on non-convergence |
 | `tests/layout.rs` | global profile end points, elements of cemented lenses, folded Newtonian in global coordinates, vignetted ray end points, buffer round trip |
 | `tests/system_data.rs` | report vs paraxial data, afocal `"inf"` serialisation |
-| `tests/extended.rs` | all extended Hessians vs close rays at skew signed fields; curved DOE phase tensor; QCon/QBfs vs independent even-asphere equivalents; hybrid DOE Seidel vs real rays and colour; Cartesian layout sections/rims/meshes; freeform/anamorphic spots, fans, distortion and first order |
+| `tests/extended.rs` | all extended Hessians vs close rays at skew signed fields; curved DOE phase tensor; QCon/QBfs vs independent even-asphere equivalents; hybrid DOE Seidel vs real rays and colour; Cartesian layout sections/rims/meshes and the x domain of steep toroids/biconics; freeform/anamorphic spots, fans, distortion, signed longitudinal fans and first order |
 | `tests/golden.rs` | frozen first-order data, RMS spots per field and wavelength, Seidel sums and field curvature / distortion of every sample (relative 10⁻⁹) |
 
 **Golden files** live in `crates/mklight-analysis/tests/golden/<sample>.json`.

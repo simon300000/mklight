@@ -467,12 +467,9 @@ impl Analysis for SystemSummary {
                 "frame": frame,
                 "to_next_is_axial": rs.to_next_is_axial,
             }));
-            ctx.report(
-                0.8 * (i + 1) as f64 / r.surfaces.len() as f64,
-                "surface table",
-            );
+            ctx.report((i + 1) as f64 / r.surfaces.len() as f64, "surface table");
         }
-        let xy = mklight_analysis::system_data::paraxial_xy_report(&r, &ctx.subrange(0.8, 1.0))?;
+        let xy = mklight_analysis::system_data::paraxial_xy_report(&r)?;
         let warnings = xy.warnings.clone();
         let first = &r.surfaces[1].frame.origin;
         let img = &r.surfaces[r.image_index()].frame.origin;

@@ -6,13 +6,12 @@
 //! telecentric pupils) serialise as `"inf"`/`"-inf"`, undefined ones as `null`.
 
 use mklight_core::job::RunTimer;
-use mklight_core::{
-    FieldKind, JobContext, MkResult, RayAiming, ResolvedSystem, RunInfo, SurfaceShape,
-};
-use mklight_trace::{FirstOrder, ParaxialModel, SequentialTracer};
+use mklight_core::surface_math::Symmetry;
+use mklight_core::{FieldKind, MkResult, RayAiming, ResolvedSystem, RunInfo, SurfaceShape};
+use mklight_trace::{FirstOrder, ParaxialModel, ParaxialXY, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
-use crate::util::{WavelengthSelection, field_unit, nf, run_info};
+use crate::util::{WavelengthSelection, doe_power, field_unit, nf, run_info};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -78,11 +77,12 @@ pub struct SystemDataResult {
     pub run_info: RunInfo,
 }
 
-/// Compact presentation of the tracer's two first-order sweeps. Mixed xy
-/// power remains a diagonal projection, as recorded in warnings.
+/// The x and y first-order sweeps (`ParaxialXY`) at every system
+/// wavelength. Mixed xy power remains a diagonal projection, as recorded in
+/// the warnings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParaxialXYReport {
-    pub symmetry: mklight_core::surface_math::Symmetry,
+    pub symmetry: Symmetry,
     pub primary_wavelength: usize,
     pub squeeze_definition: String,
     pub wavelengths: Vec<FirstOrderXYTable>,
@@ -111,8 +111,8 @@ pub struct DoePower {
     pub power: f64,
 }
 
-pub fn paraxial_xy_report(sys: &ResolvedSystem, ctx: &JobContext) -> MkResult<ParaxialXYReport> {
-    let xy = mklight_trace::ParaxialXY::new_job(sys, ctx)?;
+pub fn paraxial_xy_report(sys: &ResolvedSystem) -> MkResult<ParaxialXYReport> {
+    let xy = ParaxialXY::new(sys)?;
     let wavelengths =
         xy.x.iter()
             .zip(&xy.y)
@@ -126,14 +126,13 @@ pub fn paraxial_xy_report(sys: &ResolvedSystem, ctx: &JobContext) -> MkResult<Pa
                         let SurfaceShape::Diffractive { phase, .. } = &s.shape else {
                             return None;
                         };
-                        let a1 = phase.coefficients.first().copied().unwrap_or(0.0);
+                        let passive = s.is_passive() || surface == sys.image_index();
                         Some(DoePower {
                             surface,
-                            power: if s.is_passive() || surface == sys.image_index() {
+                            power: if passive {
                                 0.0
                             } else {
-                                -(phase.trace_order as f64) * sys.wavelengths_um[w] * 1e-3 * a1
-                                    / (std::f64::consts::PI * phase.norm_radius.powi(2))
+                                doe_power(phase, sys.wavelengths_um[w])
                             },
                         })
                     })
@@ -302,14 +301,6 @@ pub fn system_data(
     tracer: &SequentialTracer,
     settings: &SystemDataSettings,
 ) -> MkResult<SystemDataResult> {
-    system_data_job(tracer, settings, &JobContext::new())
-}
-
-pub fn system_data_job(
-    tracer: &SequentialTracer,
-    settings: &SystemDataSettings,
-    ctx: &JobContext,
-) -> MkResult<SystemDataResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     let wls = settings
@@ -317,7 +308,7 @@ pub fn system_data_job(
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
     let tables: Vec<FirstOrderTable> = wls.iter().map(|&w| table(tracer, w)).collect();
     let osys = sys.system();
-    let xy = paraxial_xy_report(sys, ctx)?;
+    let xy = paraxial_xy_report(sys)?;
     let warnings = xy.warnings.clone();
     Ok(SystemDataResult {
         paraxial_xy: xy,

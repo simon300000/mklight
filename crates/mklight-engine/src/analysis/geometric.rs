@@ -96,18 +96,15 @@ impl Analysis for Geo {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let tracer = SequentialTracer::new(input.resolved()?)?;
-        let selection = settings
-            .get("fields")
-            .map(|v| serde_json::from_value(v.clone()))
-            .transpose()
-            .map_err(|e| EngineError::InvalidSettings(e.to_string()))?
-            .unwrap_or_default();
-        let tracer = if settings.get("fields").is_some() {
-            util::default_fields(&tracer, &selection)?
-        } else {
-            std::borrow::Cow::Borrowed(&tracer)
-        };
-        (self.run)(input, &tracer, settings, ctx)
+        // Analyses with a field selection get the default axis fields here,
+        // so the GPU and ray-grid paths see the same fields as the crate.
+        match settings.get("fields") {
+            Some(fields) => {
+                let tracer = util::default_fields(&tracer, &parse(fields)?)?;
+                (self.run)(input, &tracer, settings, ctx)
+            }
+            None => (self.run)(input, &tracer, settings, ctx),
+        }
     }
 }
 
@@ -270,8 +267,8 @@ fn all() -> Vec<Geo> {
                 )
             },
             result: first_order_schema,
-            run: |_, t, s, ctx| {
-                let r = system_data::system_data_job(t, &parse(s)?, ctx)?;
+            run: |_, t, s, _| {
+                let r = system_data::system_data(t, &parse(s)?)?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
@@ -429,8 +426,8 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: longitudinal_schema,
-            run: |_, t, s, c| {
-                let r = seidel::longitudinal_aberration_job(t, &parse(s)?, c)?;
+            run: |_, t, s, _| {
+                let r = seidel::longitudinal_aberration(t, &parse(s)?)?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
@@ -450,8 +447,8 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: chromatic_focal_shift_schema,
-            run: |_, t, s, c| {
-                let r = seidel::chromatic_focal_shift_job(t, &parse(s)?, c)?;
+            run: |_, t, s, _| {
+                let r = seidel::chromatic_focal_shift(t, &parse(s)?)?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
@@ -1966,7 +1963,7 @@ fn run_ray_grid(
     let arrived = points.chunks(2).filter(|p| !p[0].is_nan()).count();
     let sys = t.system();
     let json = json!({
-        "field_values": fields.iter().map(|&f| { let p=t.field(f).point; let scale=sys.system().fields.max_radial(); [p.hx*scale,p.hy*scale] }).collect::<Vec<_>>(),
+        "field_values": fields.iter().map(|&f| util::field_value(t, f)).collect::<Vec<_>>(),
         "fields": fields,
         "wavelengths": wls,
         "wavelengths_um": wls.iter().map(|&w| sys.wavelengths_um[w]).collect::<Vec<_>>(),

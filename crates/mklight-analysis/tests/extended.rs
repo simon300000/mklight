@@ -35,7 +35,7 @@ fn curved_doe_phase_tensor_matches_close_rays() {
     let SurfaceShape::Diffractive { base, phase } = &mut sys.surfaces[2].shape else {
         unreachable!()
     };
-    *base = Box::new(SurfaceShape::sphere(-120.0));
+    **base = SurfaceShape::sphere(-120.0);
     phase.coefficients.push(0.03);
     let t = tracer(sys);
     for xy in [[0.4, 0.6], [-0.7, 0.3]] {
@@ -357,53 +357,58 @@ fn odd_nonanalytic_terms_warn_and_keep_the_regular_fourth_order_part() {
 }
 
 #[test]
-fn extended_jobs_cancel_and_complete_with_run_info() {
-    use mklight_core::{JobContext, MkError};
+fn asymmetric_longitudinal_and_colour_cover_both_signed_axes() {
     let t = tracer(samples::xy_freeform());
-    let c = JobContext::new();
-    c.cancel.cancel();
-    assert!(matches!(
-        layout_job(
-            &t,
-            &LayoutSettings {
-                mesh_rings: 3,
-                ..Default::default()
-            },
-            &c
-        ),
-        Err(MkError::Cancelled)
-    ));
-    assert!(matches!(
-        field_curvature_job(&t, &Default::default(), &c),
-        Err(MkError::Cancelled)
-    ));
-    assert!(matches!(
-        longitudinal_aberration_job(&t, &Default::default(), &c),
-        Err(MkError::Cancelled)
-    ));
-    assert!(matches!(
-        chromatic_focal_shift_job(&t, &Default::default(), &c),
-        Err(MkError::Cancelled)
-    ));
-    assert!(matches!(
-        system_data_job(&t, &Default::default(), &c),
-        Err(MkError::Cancelled)
-    ));
-    let c = JobContext::new();
-    let r = longitudinal_aberration_job(&t, &Default::default(), &c).unwrap();
-    assert_eq!(c.progress.fraction(), 1.0);
-    assert_eq!(
-        r.run_info.snapshot_hash,
-        t.system().snapshot.hash().to_hex()
-    );
+    let r = longitudinal_aberration(&t, &Default::default()).unwrap();
     assert!(r.pupil[0] < 0.0);
     assert!(
         r.curves
             .iter()
             .any(|c| c.axis == mklight_trace::ParaxialAxis::X)
     );
-    let c = JobContext::new();
-    let r = chromatic_focal_shift_job(&t, &Default::default(), &c).unwrap();
-    assert_eq!(c.progress.fraction(), 1.0);
+    let r = chromatic_focal_shift(&t, &Default::default()).unwrap();
     assert_eq!(r.paraxial_focus_x.len(), r.paraxial_focus.len());
+}
+
+#[test]
+fn layout_stays_inside_the_x_domain_of_steep_toroids_and_biconics() {
+    // Regression: the clear radius used only the y conic, so a fixed
+    // semi-diameter beyond 1/c_x put NaN sags into profiles and outlines.
+    for shape in [
+        SurfaceShape::Biconic {
+            curvature_x: 0.25,
+            curvature_y: 1.0 / 60.0,
+            conic_x: 0.0,
+            conic_y: 0.0,
+            x_asphere: vec![],
+            y_asphere: vec![],
+        },
+        SurfaceShape::Toroid {
+            curvature_x: 0.25,
+            curvature_y: 1.0 / 60.0,
+            conic_y: 0.0,
+            y_asphere: vec![],
+        },
+    ] {
+        let mut sys = samples::biconic_element();
+        sys.surfaces[1].shape = shape;
+        sys.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 4.5 };
+        let t = tracer(sys);
+        for section in [LayoutSection::Yz, LayoutSection::Xz] {
+            let s = layout(
+                &t,
+                &LayoutSettings {
+                    section,
+                    mesh_rings: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let finite = |p: &[[f64; 3]]| p.iter().flatten().all(|v| v.is_finite());
+            assert!(s.polylines.iter().all(|p| finite(&p.points)));
+            assert!(s.elements.iter().all(|e| finite(&e.outline)));
+            let sd = s.surfaces.iter().find(|x| x.index == 1).unwrap();
+            assert!(sd.semi_diameter <= 4.0);
+        }
+    }
 }

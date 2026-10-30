@@ -75,8 +75,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    FieldSelection, PupilPattern, WavelengthSelection, check_count, field_scale, field_unit,
-    gauss_legendre_01, m2, nf, pupil_points, run_info, wavelength_or_primary,
+    FieldAxes, FieldSelection, PupilPattern, WavelengthSelection, check_count, field_scale,
+    field_sweep, field_unit, gauss_legendre_01, m2, nf, pupil_points, run_info,
+    wavelength_or_primary,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,7 +85,8 @@ use crate::util::{
 pub struct RelativeIlluminationSettings {
     /// Samples per selected field axis (signed where symmetry requires it).
     pub field_samples: usize,
-    pub field_axes: crate::util::FieldAxes,
+    /// Field axes of the sweep (ANALYSIS §2.2).
+    pub field_axes: FieldAxes,
     /// System wavelength index; the primary when `None`.
     pub wavelength: Option<usize>,
     /// Gauss–Legendre nodes in the pupil radius.
@@ -107,6 +109,7 @@ impl Default for RelativeIlluminationSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RelativeIlluminationResult {
+    /// Normalised `[Hx, Hy]` of each field sample.
     pub field_coordinates: Vec<[f64; 2]>,
     pub field_values: Vec<f64>,
     pub normalized_field: Vec<f64>,
@@ -299,8 +302,7 @@ fn integrate_field(
     wl: usize,
     nodes: &[(f64, f64, f64)],
     q_scale: f64,
-    ctx: &JobContext,
-) -> MkResult<Option<([f64; 4], usize)>> {
+) -> Option<([f64; 4], usize)> {
     let sys = rt.system();
     let img = sys.image_index();
     let mut rec = Vec::with_capacity(sys.num_surfaces());
@@ -313,7 +315,7 @@ fn integrate_field(
         Some(&mut rec),
     );
     if !chief.status.is_ok() || rec.len() != img + 1 {
-        return Ok(None);
+        return None;
     }
     let nrm = rec[img].normal;
     let mut t1 = Vec3::X - nrm * nrm.x;
@@ -331,20 +333,15 @@ fn integrate_field(
         hq: 1e-5 * q_scale,
     };
     let q0 = source_params(&field.source);
-    let Some(j0inv) = probe.x_q_inverse(q0, [0.0, 0.0]) else {
-        return Ok(None);
-    };
+    let j0inv = probe.x_q_inverse(q0, [0.0, 0.0])?;
     let parts: Vec<(f64, f64, bool)> = nodes
         .par_iter()
-        .map(|&(px, py, w)| {
-            ctx.check()?;
-            Ok(match probe.node(q0, &j0inv, [px, py]) {
-                Node::Ok(j) => (w * j, w, false),
-                Node::Vignetted => (0.0, 0.0, false),
-                Node::Failed => (0.0, 0.0, true),
-            })
+        .map(|&(px, py, w)| match probe.node(q0, &j0inv, [px, py]) {
+            Node::Ok(j) => (w * j, w, false),
+            Node::Vignetted => (0.0, 0.0, false),
+            Node::Failed => (0.0, 0.0, true),
         })
-        .collect::<MkResult<_>>()?;
+        .collect();
     let omega: KahanSum = parts.iter().map(|p| p.0).collect();
     let area: KahanSum = parts.iter().map(|p| p.1).collect();
     let total: KahanSum = nodes.iter().map(|n| n.2).collect();
@@ -360,10 +357,10 @@ fn integrate_field(
         }
         Err(_) => f64::NAN,
     };
-    Ok(Some((
+    Some((
         [omega.value(), area.value() / total.value(), cra, cos4],
         failed,
-    )))
+    ))
 }
 
 /// Relative illumination and vignetting vs field (module docs).
@@ -380,7 +377,6 @@ pub fn relative_illumination_job(
     settings: &RelativeIlluminationSettings,
     ctx: &JobContext,
 ) -> MkResult<RelativeIlluminationResult> {
-    ctx.check()?;
     let timer = RunTimer::start();
     check_count("field samples", settings.field_samples, 2, 10_001)?;
     check_count("radial samples", settings.radial_samples, 1, 512)?;
@@ -409,9 +405,8 @@ pub fn relative_illumination_job(
             nodes.push((r * c, r * s, w * r * dphi));
         }
     }
-    let sweep = crate::util::field_sweep(tracer, settings.field_samples, settings.field_axes);
-    let hs = &sweep.heights;
-    let mut rows = Vec::with_capacity(hs.len());
+    let sweep = field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let mut rows = Vec::with_capacity(sweep.heights.len());
     let mut warnings = Vec::new();
     ctx.report(0.0, "relative illumination");
     // Scale of the object parameters `q` for the difference steps.
@@ -423,43 +418,45 @@ pub fn relative_illumination_job(
         })
         .unwrap_or(0.0)
         .max(1e-3);
-    for k in 0..hs.len() {
+    for (k, &[hx, hy]) in sweep.coordinates.iter().enumerate() {
         ctx.check()?;
-        let [hx, hy] = sweep.coordinates[k];
         let row = match rt.prepare_field(FieldPoint::normalized(hx, hy)) {
-            Ok(f) if f.aims[wl].converged => {
-                match integrate_field(rt, &f, wl, &nodes, q_scale, ctx)? {
-                    Some((row, failed)) => {
-                        if failed > 0 {
-                            warnings.push(format!(
-                                "field ({hx}, {hy}): {failed} of {} pupil nodes have no ray \
-                                 through the image point",
-                                nodes.len()
-                            ));
-                        }
-                        row
-                    }
-                    None => {
+            Ok(f) if f.aims[wl].converged => match integrate_field(rt, &f, wl, &nodes, q_scale) {
+                Some((row, failed)) => {
+                    if failed > 0 {
                         warnings.push(format!(
-                            "field ({hx}, {hy}): chief ray or its object Jacobian failed"
+                            "field ({hx}, {hy}): {failed} of {} pupil nodes have no ray \
+                             through the image point",
+                            nodes.len()
                         ));
-                        [f64::NAN; 4]
                     }
+                    row
                 }
-            }
+                None => {
+                    warnings.push(format!(
+                        "field ({hx}, {hy}): chief ray or its object Jacobian failed"
+                    ));
+                    [f64::NAN; 4]
+                }
+            },
             _ => {
                 warnings.push(format!("field ({hx}, {hy}): chief ray could not be aimed"));
                 [f64::NAN; 4]
             }
         };
         rows.push(row);
-        ctx.report((k + 1) as f64 / hs.len() as f64, "relative illumination");
+        ctx.report(
+            (k + 1) as f64 / sweep.coordinates.len() as f64,
+            "relative illumination",
+        );
     }
-    let omega0 = if let Some(k) = sweep.coordinates.iter().position(|p| *p == [0.0; 2]) {
-        rows[k][0]
-    } else {
-        let on_axis = rt.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
-        integrate_field(rt, &on_axis, wl, &nodes, q_scale, ctx)?.map_or(f64::NAN, |(row, _)| row[0])
+    // A signed sweep with an even sample count has no on-axis sample.
+    let omega0 = match sweep.coordinates.iter().position(|p| *p == [0.0; 2]) {
+        Some(k) => rows[k][0],
+        None => {
+            let on_axis = rt.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
+            integrate_field(rt, &on_axis, wl, &nodes, q_scale).map_or(f64::NAN, |(row, _)| row[0])
+        }
     };
     if !(omega0 > 0.0) {
         return Err(MkError::Numerical(
@@ -468,9 +465,9 @@ pub fn relative_illumination_job(
     }
     let scale = field_scale(tracer);
     Ok(RelativeIlluminationResult {
-        field_values: hs.iter().map(|h| h * scale).collect(),
+        field_values: sweep.heights.iter().map(|h| h * scale).collect(),
         field_unit: field_unit(tracer.system().system().fields.kind).to_string(),
-        normalized_field: hs.clone(),
+        normalized_field: sweep.heights,
         field_coordinates: sweep.coordinates,
         wavelength: wl,
         relative_illumination: rows.iter().map(|r| r[0] / omega0).collect(),

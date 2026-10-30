@@ -270,23 +270,41 @@ fn arr(v: Vec3) -> [f64; 3] {
     [v.x, v.y, v.z]
 }
 
-/// Largest radius inside a shape's sag domain (∞ when unbounded).
+/// Largest radius inside a shape's sag domain (∞ when unbounded): the
+/// conic domain `(1 + k)c²r² ≤ 1` of each axis, and the normalisation
+/// radius of normalised polynomials.
 fn domain_radius(shape: &SurfaceShape) -> f64 {
-    let a = (1.0 + shape.conic()) * shape.curvature().powi(2);
-    let conic_radius = if a > 0.0 {
-        a.sqrt().recip() * (1.0 - 1e-12)
-    } else {
-        f64::INFINITY
+    let conic = |c: f64, k: f64| {
+        let a = (1.0 + k) * c * c;
+        // Stay a hair inside the domain (the sag is singular-sloped there).
+        if a > 0.0 {
+            a.sqrt().recip() * (1.0 - 1e-12)
+        } else {
+            f64::INFINITY
+        }
     };
-    match shape {
-        SurfaceShape::Diffractive { base, .. } => domain_radius(base),
+    match *shape {
+        SurfaceShape::Diffractive { ref base, .. } => domain_radius(base),
         SurfaceShape::QCon { norm_radius, .. }
         | SurfaceShape::QBfs { norm_radius, .. }
         | SurfaceShape::XYPolynomial { norm_radius, .. }
-        | SurfaceShape::ZernikeSag { norm_radius, .. } => norm_radius.min(conic_radius),
-        SurfaceShape::OddAsphere { .. } => conic_radius,
-        _ if shape.is_legacy() => conic_radius,
-        _ => f64::INFINITY,
+        | SurfaceShape::ZernikeSag { norm_radius, .. } => {
+            norm_radius.min(conic(shape.curvature(), shape.conic()))
+        }
+        SurfaceShape::Toroid {
+            curvature_x,
+            curvature_y,
+            conic_y,
+            ..
+        } => conic(curvature_x, 0.0).min(conic(curvature_y, conic_y)),
+        SurfaceShape::Biconic {
+            curvature_x,
+            curvature_y,
+            conic_x,
+            conic_y,
+            ..
+        } => conic(curvature_x, conic_x).min(conic(curvature_y, conic_y)),
+        _ => conic(shape.curvature(), shape.conic()),
     }
 }
 
@@ -294,11 +312,32 @@ fn sag(shape: &SurfaceShape, x: f64, y: f64) -> f64 {
     mklight_core::surface_math::evaluate(shape, x, y).map_or(f64::NAN, |v| v.sag)
 }
 
-/// Preserve the signed section coordinate and flatten only beyond the clear edge.
+/// Local point at signed coordinate `h` in the section, flat beyond `clear`.
 fn section_point(shape: &SurfaceShape, h: f64, clear: f64, section: LayoutSection) -> Vec3 {
     let (x, y) = section.point(h);
     let (sx, sy) = section.point(h.clamp(-clear, clear));
     Vec3::new(x, y, sag(shape, sx, sy))
+}
+
+/// Global point at local polar `(r, 2πk/m)`, flat beyond `clear`.
+fn polar_point(
+    f: &Frame,
+    shape: &SurfaceShape,
+    r: f64,
+    clear: f64,
+    k: usize,
+    m: usize,
+) -> [f64; 3] {
+    let (s, c) = (std::f64::consts::TAU * (k % m) as f64 / m as f64).sin_cos();
+    let rc = r.min(clear);
+    arr(f.to_global_point(Vec3::new(r * c, r * s, sag(shape, rc * c, rc * s))))
+}
+
+/// Closed circle of `m` segments at radius `r`, flat beyond `clear`.
+fn circle(f: &Frame, shape: &SurfaceShape, r: f64, clear: f64, m: usize) -> Vec<[f64; 3]> {
+    (0..=m)
+        .map(|k| polar_point(f, shape, r, clear, k, m))
+        .collect()
 }
 
 fn polyline(kind: PolylineKind, pts: Vec<[f64; 3]>, surface: Option<usize>) -> Polyline {
@@ -332,7 +371,6 @@ pub fn layout_job(
     let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     let sys = tracer.system();
-    ctx.check()?;
     check_count("mesh rings", settings.mesh_rings, 0, 100)?;
     check_count("rays per field", settings.rays_per_field, 1, 10_001)?;
     check_count("profile samples", settings.profile_samples, 3, 100_001)?;
@@ -380,19 +418,8 @@ pub fn layout_job(
     let mut meshes = Vec::new();
     let section = settings.section;
     let np = settings.profile_samples;
-    let ring = |j: usize, r: f64| -> Vec<[f64; 3]> {
-        let m = settings.ring_samples;
-        (0..=m)
-            .map(|k| {
-                let (s, c) = (2.0 * std::f64::consts::PI * (k % m) as f64 / m as f64).sin_cos();
-                arr(frame(j).to_global_point(Vec3::new(
-                    r * c,
-                    r * s,
-                    sag(&sys.surfaces[j].shape, r * c, r * s),
-                )))
-            })
-            .collect()
-    };
+    let m = settings.ring_samples;
+    let ring = |j: usize, r: f64| circle(&frame(j), &sys.surfaces[j].shape, r, r, m);
 
     for j in first..=img {
         ctx.check()?;
@@ -455,31 +482,21 @@ pub fn layout_job(
         }
         if settings.include_3d && settings.mesh_rings > 0 && !no_effect {
             let mut triangles = Vec::new();
-            let m = settings.ring_samples;
             let point = |r: usize, k: usize| {
-                let radius = c * r as f64 / settings.mesh_rings as f64;
-                let (sn, cs) = (std::f64::consts::TAU * (k % m) as f64 / m as f64).sin_cos();
-                arr(f.to_global_point(Vec3::new(
-                    radius * cs,
-                    radius * sn,
-                    sag(&s.shape, radius * cs, radius * sn),
-                )))
+                let r = c * r as f64 / settings.mesh_rings as f64;
+                polar_point(&f, &s.shape, r, r, k, m)
             };
             for r in 0..settings.mesh_rings {
-                ctx.check()?;
                 for k in 0..m {
-                    let a = point(r, k);
-                    let b = point(r + 1, k);
-                    let c = point(r + 1, k + 1);
-                    let d = point(r, k + 1);
-                    for triangle in [Some([a, b, c]), (r > 0).then_some([a, c, d])]
-                        .into_iter()
-                        .flatten()
-                    {
-                        if triangle.iter().flatten().all(|v| v.is_finite()) {
-                            triangles.push(triangle);
-                        }
-                    }
+                    let [a, b, c, d] =
+                        [(r, k), (r + 1, k), (r + 1, k + 1), (r, k + 1)].map(|(r, k)| point(r, k));
+                    // At the centre (r = 0) a = d: one triangle per sector.
+                    let quad = [[a, b, c], [a, c, d]];
+                    triangles.extend(
+                        quad[..if r == 0 { 1 } else { 2 }]
+                            .iter()
+                            .filter(|t| t.iter().flatten().all(|v| v.is_finite())),
+                    );
                 }
             }
             meshes.push(SurfaceMesh {
@@ -539,18 +556,7 @@ pub fn layout_job(
             }
             if settings.include_3d {
                 for (fr, sh, cl) in [(&f, &s.shape, clear[j]), (&f2, &s2.shape, clear[next])] {
-                    let m = settings.ring_samples;
-                    let pts = (0..=m)
-                        .map(|k| {
-                            let (sn, cs) =
-                                (2.0 * std::f64::consts::PI * (k % m) as f64 / m as f64).sin_cos();
-                            arr(fr.to_global_point(Vec3::new(
-                                h * cs,
-                                h * sn,
-                                sag(sh, cl * cs, cl * sn),
-                            )))
-                        })
-                        .collect();
+                    let pts = circle(fr, sh, h, cl, m);
                     polys.push(polyline(PolylineKind::ElementEdge, pts, Some(j)));
                 }
             }
@@ -611,7 +617,6 @@ pub fn layout_job(
     let rays: Vec<Polyline> = jobs
         .par_iter()
         .map(|&(f, w, px, py)| {
-            ctx.check()?;
             let mut rec = Vec::with_capacity(n);
             let r = tracer.trace_with(tracer.field(f), w, px, py, &opts, Some(&mut rec));
             let mut pts = Vec::with_capacity(n + 1);
@@ -645,7 +650,7 @@ pub fn layout_job(
                     pts.push(arr(start + d * (2.0 * lead)));
                 }
             }
-            Ok(Polyline {
+            Polyline {
                 kind: PolylineKind::Ray,
                 points: pts,
                 in_section: false,
@@ -653,9 +658,9 @@ pub fn layout_job(
                 field: Some(f),
                 wavelength: Some(w),
                 vignetted: !r.status.is_ok(),
-            })
+            }
         })
-        .collect::<MkResult<_>>()?;
+        .collect();
     ctx.check()?;
     polys.extend(rays);
     polys.retain(|p| p.points.len() >= 2 || p.kind != PolylineKind::Ray);
@@ -757,13 +762,15 @@ impl LayoutScene {
             b.wavelengths.push(w);
             b.flags.push(flags);
         };
+        let doe = |j: usize| {
+            self.surfaces
+                .iter()
+                .any(|s| s.index == j && s.is_diffractive)
+        };
         for p in &self.polylines {
-            let doe = p.surface.is_some_and(|j| {
-                self.surfaces
-                    .iter()
-                    .any(|s| s.index == j && s.is_diffractive)
-            });
-            let flags = p.in_section as u8 | (p.vignetted as u8) << 1 | (doe as u8) << 2;
+            let flags = p.in_section as u8
+                | (p.vignetted as u8) << 1
+                | (p.surface.is_some_and(doe) as u8) << 2;
             push(
                 &p.points,
                 p.kind.code(),
@@ -775,15 +782,11 @@ impl LayoutScene {
         }
         let tol = 1e-9 * (1.0 + self.bounds.size());
         for e in &self.elements {
-            let doe = self
-                .surfaces
-                .iter()
-                .any(|s| s.index == e.first_surface && s.is_diffractive);
-            let flags = e
+            let in_section = e
                 .outline
                 .iter()
-                .all(|q| q[self.section.normal_axis()].abs() <= tol) as u8
-                | (doe as u8) << 2;
+                .all(|q| q[self.section.normal_axis()].abs() <= tol);
+            let flags = in_section as u8 | (doe(e.first_surface) as u8) << 2;
             push(
                 &e.outline,
                 ELEMENT_OUTLINE_KIND,
