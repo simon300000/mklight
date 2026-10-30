@@ -8,6 +8,7 @@ use mklight_trace::SequentialTracer;
 
 pub mod curvature;
 pub mod fans;
+pub mod seidel;
 pub mod spot;
 pub mod util;
 
