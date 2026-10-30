@@ -11,6 +11,11 @@ rust-version.workspace = true
 # backends are registered (see `analysis::builtin::PLANNED` and `backend`).
 [dependencies]
 mklight-core.workspace = true
+# Optimisation and tolerancing jobs (`analysis::optim`), with GPU-batched
+# merit evaluation on a `mklight-gpu` backend (Metal on macOS).
+mklight-optim.workspace = true
+mklight-gpu.workspace = true
+mklight-metal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -339,7 +339,7 @@ impl GpuTraceEvaluator {
         for (s, p) in prepared.iter_mut().flatten().enumerate() {
             p.system = s as u32;
         }
-        let mut keys: BTreeMap<(bool, u32), Vec<(usize, usize, u32)>> = BTreeMap::new();
+        let mut keys: BTreeMap<RequestKey, Vec<(usize, usize, u32)>> = BTreeMap::new();
         for (k, p) in prepared.iter().enumerate() {
             let Some(p) = p else { continue };
             for (i, fr) in p.frags.iter().enumerate() {
@@ -663,6 +663,9 @@ enum Dest {
     Single(u32),
     Real(u32),
 }
+
+/// A trace request: (clipped by fixed apertures, last surface).
+type RequestKey = (bool, u32);
 
 /// A candidate's rays for one trace request: (clipped, last surface), the
 /// rays in surface 0's frame (double-float) and their destinations.

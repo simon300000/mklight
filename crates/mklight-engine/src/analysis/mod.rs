@@ -12,6 +12,7 @@
 //! `RunInfo`.
 
 pub mod builtin;
+pub mod optim;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -293,6 +294,7 @@ impl AnalysisRegistry {
     pub fn with_builtin() -> Self {
         let mut r = Self::new();
         builtin::register_all(&mut r);
+        optim::register(&mut r);
         r
     }
 

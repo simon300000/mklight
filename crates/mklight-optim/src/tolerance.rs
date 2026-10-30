@@ -583,6 +583,9 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
         perturbations: &[Vec<f64>],
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
+        if self.spec.compensators.is_empty() {
+            return self.uncompensated(perturbations, ctx);
+        }
         perturbations
             .par_iter()
             .map(|d| {
@@ -590,5 +593,45 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
                 self.one(d, ctx)
             })
             .collect()
+    }
+}
+
+impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
+    /// Without compensators every trial is one evaluation: all perturbed
+    /// systems go to the operand evaluator as one batch (one GPU dispatch
+    /// for a batched backend). Same outcomes as trial by trial.
+    fn uncompensated(
+        &self,
+        perturbations: &[Vec<f64>],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<TrialOutcome>> {
+        let systems: Vec<Option<OpticalSystem>> = perturbations
+            .iter()
+            .map(|d| self.spec.apply(self.nominal, d).ok())
+            .collect();
+        let p = OpticalProblem::new(
+            self.nominal.clone(),
+            Vec::new(),
+            self.criterion.clone(),
+            self.evaluator,
+            self.registry,
+        )?;
+        let e = p.to_evaluation(p.system_values(&systems, ctx)?);
+        let tol = Monitor::new(ctx.clone()).feasibility_tol;
+        Ok((0..systems.len())
+            .map(|k| {
+                let m = merit(p.weights(), e.residuals(k), e.status[k]);
+                let v = total_violation(p.constraints(), e.constraints(k), e.status[k]);
+                if systems[k].is_some() && m.is_finite() && v <= tol {
+                    TrialOutcome {
+                        criterion: m,
+                        compensators: Vec::new(),
+                        ok: true,
+                    }
+                } else {
+                    TrialOutcome::failed()
+                }
+            })
+            .collect())
     }
 }
