@@ -41,6 +41,7 @@ rayon = "1"
 rustfft = "6"
 num-complex = "0.4"
 approx = "0.5"
+bytemuck = { version = "1.25", features = ["derive"] }
 
 [profile.release]
 debug = 1

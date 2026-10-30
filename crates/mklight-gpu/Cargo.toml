@@ -5,11 +5,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 
 [dependencies]
 mklight-core.workspace = true
-mklight-trace.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
+
 [dev-dependencies]
 approx.workspace = true
