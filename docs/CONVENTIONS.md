@@ -145,3 +145,18 @@ designs they cover):
 
 If a backend can't meet the budget for a design, it must say so and fall back
 to the CPU reference. It must never return silently degraded numbers.
+
+## 8. GPU traces and path programs
+
+* A GPU trace reports f32 points and directions with a double-float optical
+  path that refers to the **reported** point: the rounding of the point
+  along the ray is moved into the OPL. Compare OPLs of two traces at the
+  same point (`OPL_ref + n·(p_gpu − p_ref)·d`), and form OPD from the
+  reported values as `mklight_trace::opd` does.
+* In a path program (ghost paths) the medium of the gap between surfaces
+  `j` and `j + 1` is the medium after surface `j`, in both travel
+  directions; a backward step uses the inverse of surface `j`'s
+  `to_next` transform. Sequential steps reproduce `mklight_trace`.
+* A backend that fails precision qualification for a system is not used
+  for it: the result is computed by the CPU f64 reference and its `RunInfo`
+  names the rejected backend and the reason (`docs/GPU.md` §5.2).

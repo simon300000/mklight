@@ -315,9 +315,7 @@ fn run_trace(
 ) -> MkResult<TraceResult> {
     match backend.run(Job::Trace(Box::new(req)), ctx)?.output {
         JobOutput::Trace(t) => Ok(*t),
-        other => Err(MkError::Backend(format!(
-            "trace job returned {other:?}"
-        ))),
+        other => Err(MkError::Backend(format!("trace job returned {other:?}"))),
     }
 }
 
@@ -346,7 +344,9 @@ pub fn cross_validate(
         .unwrap_or_else(|| (0..tracer.fields().len()).collect());
     let pupil = settings.pupil.points();
     ctx.report(0.0, "cross-validation: packing");
-    let hints = tracer.semi_diameters(&SemiDiameterSettings::default()).values;
+    let hints = tracer
+        .semi_diameters(&SemiDiameterSettings::default())
+        .values;
     let packed = PackedSystem::pack(
         sys,
         &PackOptions {
@@ -405,7 +405,11 @@ pub fn cross_validate(
             request(batch(&samples), settings.clip),
             &ctx.subrange(0.05, 0.5),
         )?;
-        let c = run_trace(backend, request(batch(&chiefs), false), &ctx.subrange(0.5, 0.55))?;
+        let c = run_trace(
+            backend,
+            request(batch(&chiefs), false),
+            &ctx.subrange(0.5, 0.55),
+        )?;
         Ok::<_, MkError>((g, c))
     })();
     let _ = backend.release_systems(handle);

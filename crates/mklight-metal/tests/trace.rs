@@ -41,7 +41,11 @@ macro_rules! gpu_or_skip {
 }
 
 fn trace(b: &dyn ComputeBackend, req: TraceRequest) -> TraceResult {
-    match b.run(Job::Trace(Box::new(req)), &JobContext::new()).unwrap().output {
+    match b
+        .run(Job::Trace(Box::new(req)), &JobContext::new())
+        .unwrap()
+        .output
+    {
         JobOutput::Trace(t) => *t,
         o => panic!("{o:?}"),
     }
@@ -132,7 +136,12 @@ fn cross_validation_suite_gpu() {
         let r = cross_validate(g, &t, &s, &JobContext::new()).unwrap();
         eprintln!(
             "| {name} | {} | {} | {:.1e} | {:.1e} | {:.1e} | {} |",
-            r.rays, r.compared, r.max_position_mm, r.max_direction, r.max_opd_waves, r.band_mismatches
+            r.rays,
+            r.compared,
+            r.max_position_mm,
+            r.max_direction,
+            r.max_opd_waves,
+            r.band_mismatches
         );
         r.check(&s.budget)
             .unwrap_or_else(|e| panic!("{name}: {e} {:?}", r.notes));
@@ -157,7 +166,9 @@ fn plate_two_reflection_path_gpu() {
     for tilted in [false, true] {
         let t = testutil::tracer(testutil::plate(tilted));
         let sys = t.system();
-        let h = g.upload_system(&PackedSystem::pack_all(sys).unwrap()).unwrap();
+        let h = g
+            .upload_system(&PackedSystem::pack_all(sys).unwrap())
+            .unwrap();
         let mut rays = RayBatch::with_capacity(0);
         let mut input = Vec::new();
         for k in 0..64 {
@@ -177,7 +188,10 @@ fn plate_two_reflection_path_gpu() {
             assert!((p - want.pos).norm() < 1e-6, "tilted {tilted} ray {i}");
             assert!((d - want.dir).norm() < 1e-7, "tilted {tilted} ray {i}");
             let want_opl = want.opl + (p - want.pos).dot(want.dir);
-            assert!((r.opl_f64(i) - want_opl).abs() < 1e-9, "tilted {tilted} ray {i}");
+            assert!(
+                (r.opl_f64(i) - want_opl).abs() < 1e-9,
+                "tilted {tilted} ray {i}"
+            );
             assert!((r.weight[i] as f64 / want.weight - 1.0).abs() < 1e-5);
         }
         g.release_systems(h).unwrap();
@@ -218,7 +232,11 @@ fn qualification_on_gpu() {
     let mut info = info.clone();
     q.record(&mut info);
     assert_eq!(info.backend, "cpu-f64");
-    assert!(info.warnings.iter().any(|w| w.contains("metal:") && w.contains("OPD")));
+    assert!(
+        info.warnings
+            .iter()
+            .any(|w| w.contains("metal:") && w.contains("OPD"))
+    );
 }
 
 /// Command-buffer chunking does not change a bit; progress reaches 1;
@@ -283,7 +301,9 @@ fn benchmark_double_gauss_1e6() {
     for r in &rays {
         batch.push_f64([r.pos.x, r.pos.y, r.pos.z], [r.dir.x, r.dir.y, r.dir.z], 1);
     }
-    let h = g.upload_system(&PackedSystem::pack_all(sys).unwrap()).unwrap();
+    let h = g
+        .upload_system(&PackedSystem::pack_all(sys).unwrap())
+        .unwrap();
     let opts = t.options();
     let mut cpu_best = f64::INFINITY;
     let mut gpu_best = f64::INFINITY;
@@ -298,7 +318,9 @@ fn benchmark_double_gauss_1e6() {
         assert_eq!(out.len(), n);
         let req = TraceRequest::new(h, batch.clone(), 0, steps as u32);
         let t0 = Instant::now();
-        let r = g.run(Job::Trace(Box::new(req)), &JobContext::new()).unwrap();
+        let r = g
+            .run(Job::Trace(Box::new(req)), &JobContext::new())
+            .unwrap();
         gpu_best = gpu_best.min(t0.elapsed().as_secs_f64());
         dev_best = dev_best.min(r.stats.device_seconds);
     }

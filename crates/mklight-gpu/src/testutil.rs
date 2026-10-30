@@ -167,7 +167,10 @@ pub fn ideal_lenses() -> OpticalSystem {
     s.aperture = ApertureSpec::ObjectSpaceNa { value: 0.05 };
     s.fields = FieldSet {
         kind: FieldKind::ObjectHeight,
-        fields: [0.0, 2.5, 4.0].iter().map(|&y| Field::new(0.0, y)).collect(),
+        fields: [0.0, 2.5, 4.0]
+            .iter()
+            .map(|&y| Field::new(0.0, y))
+            .collect(),
     };
     // Lens 1 images the object at 300 mm; lens 2 (40 mm on) sees a virtual
     // object 260 mm behind it: 1/b = 1/60 + 1/260.
@@ -404,9 +407,7 @@ pub fn f64_path(
         };
         weight *= (-alpha * t).exp();
         p = hit.point;
-        if !surf.passes_aperture(p.x, p.y)
-            && !matches!(surf.shape, SurfaceShape::CoordinateBreak)
-        {
+        if !surf.passes_aperture(p.x, p.y) && !matches!(surf.shape, SurfaceShape::CoordinateBreak) {
             return None;
         }
         let image = s == sys.image_index();
@@ -421,11 +422,19 @@ pub fn f64_path(
         } else if reflect_here {
             let (k, c) = reflect(d, hit.normal);
             d = k;
-            weight *= if mirror { 1.0 } else { fresnel(n1, n2, c).r_unpolarized() };
+            weight *= if mirror {
+                1.0
+            } else {
+                fresnel(n1, n2, c).r_unpolarized()
+            };
         } else {
             let (k, c) = refract(d, hit.normal, n1, n2)?;
             d = k;
-            weight *= if mirror { 0.0 } else { fresnel(n1, n2, c).t_unpolarized() };
+            weight *= if mirror {
+                0.0
+            } else {
+                fresnel(n1, n2, c).t_unpolarized()
+            };
         }
         cur = s;
     }

@@ -343,7 +343,10 @@ fn trace_job<E: FpEnv>(
         let surf = &set.surfaces[h.surface_offset as usize..][..h.num_surfaces as usize];
         let mut rec = vec![KState::default(); slots];
         let r = (slots > 0).then_some(rec.as_mut_slice());
-        (trace_ray::<E>(h, surf, &prep.steps, &prep.params, &ray, r), rec)
+        (
+            trace_ray::<E>(h, surf, &prep.steps, &prep.params, &ray, r),
+            rec,
+        )
     })?;
     let mut res = TraceResult::default();
     for (o, _) in &outs {

@@ -8,15 +8,21 @@ use mklight_core::job::{Precision, RunInfo};
 use mklight_core::materials::coating::fresnel;
 use mklight_core::model::{CoatingDef, Interaction};
 use mklight_core::{JobContext, MkError, OpticalSystem, SurfaceShape, Vec3, samples};
+use mklight_gpu::batch::RECORD_FLOATS;
 use mklight_gpu::consts::*;
 use mklight_gpu::testutil::{self, f64_path};
 use mklight_gpu::xval::{XvalSettings, cross_validate, qualify, reference_status_word};
-use mklight_gpu::batch::RECORD_FLOATS;
 use mklight_gpu::*;
-use mklight_trace::{IntersectSettings, PupilSampling, Ray, TraceOptions, trace_ray, trace_ray_recorded};
+use mklight_trace::{
+    IntersectSettings, PupilSampling, Ray, TraceOptions, trace_ray, trace_ray_recorded,
+};
 
 fn trace(b: &dyn ComputeBackend, req: TraceRequest) -> TraceResult {
-    match b.run(Job::Trace(Box::new(req)), &JobContext::new()).unwrap().output {
+    match b
+        .run(Job::Trace(Box::new(req)), &JobContext::new())
+        .unwrap()
+        .output
+    {
         JobOutput::Trace(t) => *t,
         o => panic!("{o:?}"),
     }
@@ -60,7 +66,8 @@ fn cross_validation_suite_cpu_f32() {
             r.max_transmittance_abs,
             r.band_mismatches
         );
-        r.check(&s.budget).unwrap_or_else(|e| panic!("{name}: {e} {:?}", r.notes));
+        r.check(&s.budget)
+            .unwrap_or_else(|e| panic!("{name}: {e} {:?}", r.notes));
         assert!(r.compared > 1000, "{name}: {r:?}");
         assert_eq!(r.opd_compared, r.compared, "{name}");
         assert!(r.max_transmittance_abs < 1e-6, "{name}: {r:?}");
@@ -110,18 +117,29 @@ fn plate_two_reflection_path() {
             assert_eq!(r.steps[i], 5);
             assert_eq!(r.last_surface[i], 3);
             let (p, d) = v3(&r, i);
-            assert!((p - want.pos).norm() < 1e-6, "tilted {tilted} ray {i}: {p:?} {:?}", want.pos);
+            assert!(
+                (p - want.pos).norm() < 1e-6,
+                "tilted {tilted} ray {i}: {p:?} {:?}",
+                want.pos
+            );
             assert!((d - want.dir).norm() < 1e-7, "tilted {tilted} ray {i}");
             // The reported OPL is the path to the reported (f32) point.
             let want_opl = want.opl + (p - want.pos).dot(want.dir);
-            assert!((r.opl_f64(i) - want_opl).abs() < 1e-9, "tilted {tilted} ray {i}: {} vs {want_opl}", r.opl_f64(i));
+            assert!(
+                (r.opl_f64(i) - want_opl).abs() < 1e-9,
+                "tilted {tilted} ray {i}: {} vs {want_opl}",
+                r.opl_f64(i)
+            );
             // Two internal reflections of a bare plate: ≈ 0.04² of the flux.
             assert!(want.weight > 1e-3 && want.weight < 4e-3, "{}", want.weight);
             assert!((r.weight[i] as f64 / want.weight - 1.0).abs() < 1e-5);
             assert_eq!(r.transmittance[i], 1.0);
             // Record slot 3 is the state after the backward reflection at 1.
             let k = (3 * rays.len() + i) * RECORD_FLOATS;
-            assert!(r.recorded[k + 5] > 0.0, "travelling +z again after two reflections");
+            assert!(
+                r.recorded[k + 5] > 0.0,
+                "travelling +z again after two reflections"
+            );
         }
         // Without radiometry the weight passes unchanged.
         let mut req = TraceRequest::path(h, batch(&rays), 0, prog.clone());
@@ -142,15 +160,41 @@ fn transmit_plus_reflect_conserves_flux() {
     let rays: Vec<_> = (0..50)
         .map(|k| {
             let a = k as f64 * 0.02;
-            (Ray::new(Vec3::new(0.1 * k as f64, 0.0, -1.0), Vec3::new(a.sin(), 0.0, a.cos())), 1)
+            (
+                Ray::new(
+                    Vec3::new(0.1 * k as f64, 0.0, -1.0),
+                    Vec3::new(a.sin(), 0.0, a.cos()),
+                ),
+                1,
+            )
         })
         .collect();
-    let tr = trace(&b, TraceRequest::path(h, batch(&rays), 0, vec![PathStep::forward(1, StepMode::Transmit)]));
-    let rf = trace(&b, TraceRequest::path(h, batch(&rays), 0, vec![PathStep::forward(1, StepMode::Reflect)]));
+    let tr = trace(
+        &b,
+        TraceRequest::path(
+            h,
+            batch(&rays),
+            0,
+            vec![PathStep::forward(1, StepMode::Transmit)],
+        ),
+    );
+    let rf = trace(
+        &b,
+        TraceRequest::path(
+            h,
+            batch(&rays),
+            0,
+            vec![PathStep::forward(1, StepMode::Reflect)],
+        ),
+    );
     for i in 0..rays.len() {
         let s = tr.weight[i] as f64 + rf.weight[i] as f64;
         assert!((s - 1.0).abs() < 3e-7, "ray {i}: T + R = {s}");
-        assert!(rf.weight[i] > 0.04 && rf.weight[i] < 0.25, "{}", rf.weight[i]);
+        assert!(
+            rf.weight[i] > 0.04 && rf.weight[i] < 0.25,
+            "{}",
+            rf.weight[i]
+        );
     }
 }
 
@@ -175,7 +219,9 @@ fn sequential_radiometry_matches_reference() {
         }
         let t = testutil::tracer(sys);
         let s = t.system();
-        let h = b.upload_system(&PackedSystem::pack_all(s).unwrap()).unwrap();
+        let h = b
+            .upload_system(&PackedSystem::pack_all(s).unwrap())
+            .unwrap();
         let mut rays = Vec::new();
         for f in 0..3 {
             for p in (PupilSampling::Hexapolar { rings: 3 }).points() {
@@ -183,25 +229,35 @@ fn sequential_radiometry_matches_reference() {
                 rays.push((g.ray, 0u32));
             }
         }
-        let r = trace(&b, TraceRequest::new(h, batch(&rays), 0, s.image_index() as u32));
+        let r = trace(
+            &b,
+            TraceRequest::new(h, batch(&rays), 0, s.image_index() as u32),
+        );
         for (i, (ray, _)) in rays.iter().enumerate() {
             let (res, rec) = trace_ray_recorded(s, ray, 0, &t.options());
             assert!(res.status.is_ok());
             let mut want = res.transmittance;
             assert!(want < 0.99, "the test glass absorbs");
-            for j in 1..s.image_index() {
-                let surf = &s.surfaces[j];
+            for (j, surf) in s.surfaces.iter().enumerate().take(s.image_index()).skip(1) {
                 if surf.is_passive() {
                     continue;
                 }
                 let tj = match surf.coating {
-                    mklight_core::materials::coating::ResolvedCoating::Ideal { transmittance, .. } => transmittance,
-                    _ => fresnel(s.n_before(j, 0), surf.n_after[0], rec[j].cos_incidence).t_unpolarized(),
+                    mklight_core::materials::coating::ResolvedCoating::Ideal {
+                        transmittance,
+                        ..
+                    } => transmittance,
+                    _ => fresnel(s.n_before(j, 0), surf.n_after[0], rec[j].cos_incidence)
+                        .t_unpolarized(),
                 };
                 want *= tj;
             }
             assert!((r.transmittance[i] as f64 - res.transmittance).abs() < 1e-6);
-            assert!((r.weight[i] as f64 / want - 1.0).abs() < 2e-6, "ray {i}: {} vs {want}", r.weight[i]);
+            assert!(
+                (r.weight[i] as f64 / want - 1.0).abs() < 2e-6,
+                "ray {i}: {} vs {want}",
+                r.weight[i]
+            );
         }
     }
 }
@@ -299,7 +355,9 @@ fn status_classification_matches_reference() {
         if c.want != u32::MAX {
             assert_eq!(reference, c.want, "case {k}: the reference itself");
         }
-        let h = b.upload_system(&PackedSystem::pack_all(&rs).unwrap()).unwrap();
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
         let mut req = TraceRequest::new(h, batch(&[(c.ray, 1)]), 0, rs.image_index() as u32);
         req.newton.max_iterations = c.cap;
         let r = trace(&b, req);
@@ -315,7 +373,9 @@ fn records_follow_the_reference() {
     let b = CpuF32Backend::new();
     let t = testutil::tracer(testutil::vignetted(&samples::double_gauss(), 0.9));
     let s = t.system();
-    let h = b.upload_system(&PackedSystem::pack_all(s).unwrap()).unwrap();
+    let h = b
+        .upload_system(&PackedSystem::pack_all(s).unwrap())
+        .unwrap();
     let mut rays = Vec::new();
     for p in (PupilSampling::Grid { n: 9 }).points() {
         rays.push((t.generate(t.field(2), 1, p[0], p[1]).unwrap().ray, 1u32));
@@ -332,7 +392,11 @@ fn records_follow_the_reference() {
         assert_eq!(r.status[i], reference_status_word(&res.status));
         for (j, want) in rec.iter().enumerate().skip(1) {
             let k = (j * n + i) * RECORD_FLOATS;
-            let p = Vec3::new(r.recorded[k] as f64, r.recorded[k + 1] as f64, r.recorded[k + 2] as f64);
+            let p = Vec3::new(
+                r.recorded[k] as f64,
+                r.recorded[k + 1] as f64,
+                r.recorded[k + 2] as f64,
+            );
             assert!((p - want.point).norm() < 2e-6, "ray {i} surface {j}");
             let opl = r.recorded[k + 6] as f64 + r.recorded[k + 7] as f64;
             assert!((opl - want.opl).abs() < 1e-6, "ray {i} surface {j}");
@@ -347,7 +411,10 @@ fn records_follow_the_reference() {
             }
         }
     }
-    assert!(failed > 0, "the 0.9 semi-diameters vignette part of the field-edge pupil");
+    assert!(
+        failed > 0,
+        "the 0.9 semi-diameters vignette part of the field-edge pupil"
+    );
 }
 
 /// Requests are checked against the stored systems before anything runs.
@@ -365,12 +432,20 @@ fn trace_requests_are_validated() {
     );
     sys.surfaces[1].coating = Some("HR".into());
     let rs = testutil::resolve(sys);
-    let h = b.upload_system(&PackedSystem::pack_all(&rs).unwrap()).unwrap();
+    let h = b
+        .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+        .unwrap();
     let ray = [(Ray::new(Vec3::new(0.0, 10.0, -1.0), Vec3::Z), 0u32)];
-    let submit = |req: TraceRequest| b.submit(Job::Trace(Box::new(req)), &JobContext::new()).map(|_| ());
+    let submit = |req: TraceRequest| {
+        b.submit(Job::Trace(Box::new(req)), &JobContext::new())
+            .map(|_| ())
+    };
     let seq = |rays: RayBatch| TraceRequest::new(h, rays, 0, 5);
     // A thin-film coating is not available in GPU radiometry.
-    assert!(matches!(submit(seq(batch(&ray))), Err(MkError::Unsupported(_))));
+    assert!(matches!(
+        submit(seq(batch(&ray))),
+        Err(MkError::Unsupported(_))
+    ));
     let mut ok = seq(batch(&ray));
     ok.radiometry = Radiometry::Off;
     assert!(submit(ok.clone()).is_ok());
@@ -378,10 +453,26 @@ fn trace_requests_are_validated() {
     let bad_programs: Vec<Vec<PathStep>> = vec![
         vec![],
         vec![PathStep::forward(2, Transmit)],
-        vec![PathStep::forward(1, Sequential), PathStep::backward(0, Sequential)],
-        vec![PathStep::forward(1, Reflect), PathStep::forward(2, Transmit)],
-        vec![PathStep::forward(1, Transmit), PathStep::forward(2, Reflect)],
-        vec![PathStep::forward(1, Transmit), PathStep::forward(2, Transmit), PathStep::forward(3, Transmit), PathStep::forward(4, Transmit), PathStep::forward(5, Transmit), PathStep::forward(6, Transmit)],
+        vec![
+            PathStep::forward(1, Sequential),
+            PathStep::backward(0, Sequential),
+        ],
+        vec![
+            PathStep::forward(1, Reflect),
+            PathStep::forward(2, Transmit),
+        ],
+        vec![
+            PathStep::forward(1, Transmit),
+            PathStep::forward(2, Reflect),
+        ],
+        vec![
+            PathStep::forward(1, Transmit),
+            PathStep::forward(2, Transmit),
+            PathStep::forward(3, Transmit),
+            PathStep::forward(4, Transmit),
+            PathStep::forward(5, Transmit),
+            PathStep::forward(6, Transmit),
+        ],
     ];
     for (k, p) in bad_programs.into_iter().enumerate() {
         let mut r = TraceRequest::path(h, batch(&ray), 0, p);
@@ -401,7 +492,10 @@ fn trace_requests_are_validated() {
     r.rays.l_lo.clear();
     assert!(submit(r).is_err(), "partial residual planes");
     // Encoding round trip and unknown bits.
-    for st in [PathStep::forward(7, Reflect), PathStep::backward(65535, Transmit)] {
+    for st in [
+        PathStep::forward(7, Reflect),
+        PathStep::backward(65535, Transmit),
+    ] {
         assert_eq!(PathStep::decode(st.encode()), Some(st));
     }
     assert_eq!(PathStep::decode(1 << 25), None);
@@ -413,7 +507,9 @@ fn trace_job_mechanics() {
     let b = CpuF32Backend::new();
     let t = testutil::tracer(samples::cooke_triplet());
     let s = t.system();
-    let h = b.upload_system(&PackedSystem::pack_all(s).unwrap()).unwrap();
+    let h = b
+        .upload_system(&PackedSystem::pack_all(s).unwrap())
+        .unwrap();
     let g = t.generate(t.field(1), 1, 0.3, 0.2).unwrap().ray;
     let rays = vec![(g, 1u32); 150_000];
     let req = || TraceRequest::new(h, batch(&rays), 0, s.image_index() as u32);
@@ -421,14 +517,24 @@ fn trace_job_mechanics() {
     let r = b.run(Job::Trace(Box::new(req())), &ctx).unwrap();
     assert!(r.stats.command_buffers >= 3);
     assert_eq!(ctx.progress.fraction(), 1.0);
-    let JobOutput::Trace(out) = r.output else { panic!() };
-    assert!(out.x.iter().all(|x| x.to_bits() == out.x[0].to_bits()), "deterministic");
+    let JobOutput::Trace(out) = r.output else {
+        panic!()
+    };
+    assert!(
+        out.x.iter().all(|x| x.to_bits() == out.x[0].to_bits()),
+        "deterministic"
+    );
     let ctx = JobContext::new();
     ctx.cancel.cancel();
-    assert_eq!(b.run(Job::Trace(Box::new(req())), &ctx), Err(MkError::Cancelled));
+    assert_eq!(
+        b.run(Job::Trace(Box::new(req())), &ctx),
+        Err(MkError::Cancelled)
+    );
     let empty = TraceRequest::new(h, RayBatch::default(), 0, s.image_index() as u32);
     let ctx = JobContext::new();
-    let JobOutput::Trace(e) = b.run(Job::Trace(Box::new(empty)), &ctx).unwrap().output else { panic!() };
+    let JobOutput::Trace(e) = b.run(Job::Trace(Box::new(empty)), &ctx).unwrap().output else {
+        panic!()
+    };
     assert!(e.is_empty());
     assert_eq!(ctx.progress.fraction(), 1.0);
 }
@@ -446,9 +552,15 @@ fn ieee_and_ftz_agree_on_normal_data() {
     }
     let run = |b: CpuF32Backend| {
         let h = b.upload_system(&p).unwrap();
-        trace(&b, TraceRequest::new(h, batch(&rays), 0, s.image_index() as u32))
+        trace(
+            &b,
+            TraceRequest::new(h, batch(&rays), 0, s.image_index() as u32),
+        )
     };
-    assert_eq!(run(CpuF32Backend::new()), run(CpuF32Backend::with_subnormals(false)));
+    assert_eq!(
+        run(CpuF32Backend::new()),
+        run(CpuF32Backend::with_subnormals(false))
+    );
 }
 
 /// The packed double-float parameters reproduce the model, and ideal-lens
@@ -470,7 +582,12 @@ fn packed_double_float_parameters() {
     }
     let rs = testutil::resolve(testutil::asphere_heavy());
     let p = PackedSystem::pack_all(&rs).unwrap();
-    let SurfaceShape::EvenAsphere { curvature, conic, .. } = rs.surfaces[1].shape else { panic!() };
+    let SurfaceShape::EvenAsphere {
+        curvature, conic, ..
+    } = rs.surfaces[1].shape
+    else {
+        panic!()
+    };
     let s1 = &p.surfaces[1];
     assert!((s1.curvature as f64 + s1.curvature_lo as f64 - curvature).abs() < 1e-15);
     assert!((s1.conic as f64 + s1.conic_lo as f64 - conic).abs() < 1e-15);
@@ -511,12 +628,20 @@ fn qualification_and_fallback_recording() {
     strict.budget.position_mm = 1e-12;
     let q = qualify(&b, &t, Some(&strict), &ctx);
     assert!(!q.passed);
-    assert!(q.reason.as_ref().unwrap().contains("position error"), "{q:?}");
+    assert!(
+        q.reason.as_ref().unwrap().contains("position error"),
+        "{q:?}"
+    );
     let mut info2 = info.clone();
     q.record(&mut info2);
     assert_eq!(info2.backend, "cpu-f64");
     assert_eq!(info2.precision, Precision::F64Reference);
-    assert!(info2.warnings.iter().any(|w| w.contains("not used") && w.contains("position error")));
+    assert!(
+        info2
+            .warnings
+            .iter()
+            .any(|w| w.contains("not used") && w.contains("position error"))
+    );
     assert_eq!(info2.settings["backend_qualification"]["passed"], false);
 
     // A system the backend cannot run (thin-film radiometry): fails, says why.

@@ -244,7 +244,8 @@ pub fn xf_backward<E: FpEnv>(s: &PackedSurface, p: &mut DV<E>, d: &mut DV<E>) {
     }
     let (p0, d0) = (*p, *d);
     for row in 0..3 {
-        p[row] = rot_row(s, row, true, p0) + D::new(s.to_next_origin[row], s.to_next_origin_lo[row]);
+        p[row] =
+            rot_row(s, row, true, p0) + D::new(s.to_next_origin[row], s.to_next_origin_lo[row]);
         d[row] = rot_row(s, row, true, d0);
     }
 }
@@ -525,7 +526,11 @@ fn intersect<E: FpEnv>(
         let fp = 2.0 * (c * (xh[0].fma(df[0], xh[1] * df[1]) + kap * xh[2] * df[2]) - df[2]);
         let tb = refine_t(t1, fv.hi(), fp);
         let x = point_on(q, tb, d);
-        (tb, x, [-(x[0] * cd), -(x[1] * cd), D::from_f(F::ONE) - x[2] * kcd])
+        (
+            tb,
+            x,
+            [-(x[0] * cd), -(x[1] * cd), D::from_f(F::ONE) - x[2] * kcd],
+        )
     };
     Ok(Hit {
         ta: t0,
@@ -540,12 +545,7 @@ fn intersect<E: FpEnv>(
 /// in f32. Returns `(k', cos i, γ)` with `k' = μk + γ·normal` (`γ` signed
 /// for the given normal's orientation), or `None` on TIR.
 #[inline(always)]
-pub fn refract<E: FpEnv>(
-    k: V<E>,
-    normal: V<E>,
-    n1: F<E>,
-    n2: F<E>,
-) -> Option<(V<E>, F<E>, F<E>)> {
+pub fn refract<E: FpEnv>(k: V<E>, normal: V<E>, n1: F<E>, n2: F<E>) -> Option<(V<E>, F<E>, F<E>)> {
     let mut cos_i = dot(k, normal);
     let flip = cos_i < 0.0;
     let n = if flip {
@@ -691,20 +691,15 @@ enum Act {
     Refract,
     Reflect,
     /// Ideal lens (reflect first for a mirror-type ideal lens).
-    Lens { reflect: bool },
+    Lens {
+        reflect: bool,
+    },
 }
 
 /// The reported state: the f32 point and direction, with the rounding
 /// residual of the point along the direction moved into the optical path.
 #[inline(always)]
-fn report<E: FpEnv>(
-    p: DV<E>,
-    d: DV<E>,
-    opl: D<E>,
-    n: D<E>,
-    weight: F<E>,
-    status: u32,
-) -> KState {
+fn report<E: FpEnv>(p: DV<E>, d: DV<E>, opl: D<E>, n: D<E>, weight: F<E>, status: u32) -> KState {
     let corr = n.hi() * dot(lo3(p), hi3(d));
     KState {
         pos: raw(hi3(p)),
@@ -791,7 +786,11 @@ pub fn trace_ray<E: FpEnv>(
             f::<E>(s[gap].alpha_after[w])
         };
         let n_other = if back {
-            if si >= 1 { index::<E>(&s[si - 1], w) } else { n1 }
+            if si >= 1 {
+                index::<E>(&s[si - 1], w)
+            } else {
+                n1
+            }
         } else {
             index::<E>(&s[si], w)
         };
@@ -921,14 +920,9 @@ pub fn trace_ray<E: FpEnv>(
                 let n2 = if refl { n1 } else { n_other };
                 let verg = if back { F::ZERO } else { f(surf.vergence[w]) };
                 let point = [pos[0].hi(), pos[1].hi(), F::ZERO];
-                let Some((d2, delta)) = ideal_lens(
-                    point,
-                    kk,
-                    f(surf.paraxial_power),
-                    n1.hi(),
-                    n2.hi(),
-                    verg,
-                ) else {
+                let Some((d2, delta)) =
+                    ideal_lens(point, kk, f(surf.paraxial_power), n1.hi(), n2.hi(), verg)
+                else {
                     status = fail(MKL_RAY_DEGENERATE);
                     break;
                 };
@@ -954,7 +948,7 @@ pub fn trace_ray<E: FpEnv>(
         w_in
     };
     let state = report(pos, dir, opl, n_cur, weight, status);
-    if let Some(r) = records.as_deref_mut() {
+    if let Some(r) = records {
         for slot in r.iter_mut().take(num_steps + 1).skip(done + 1) {
             *slot = state;
         }
@@ -966,4 +960,3 @@ pub fn trace_ray<E: FpEnv>(
         steps: done as u32,
     }
 }
-

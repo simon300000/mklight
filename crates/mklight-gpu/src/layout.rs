@@ -611,16 +611,16 @@ impl PackedSystem {
                 s.conic_lo,
                 s.paraxial_power,
             ]
-                .into_iter()
-                .chain(s.asphere)
-                .chain(s.aperture_params)
-                .chain(s.to_next_rot)
-                .chain(s.to_next_origin)
-                .chain(s.to_next_origin_lo)
-                .chain(s.to_next_rot_lo)
-                .chain(s.to_next_shift)
-                .chain(s.to_next_shift_lo)
-                .chain(s.n_after_lo);
+            .into_iter()
+            .chain(s.asphere)
+            .chain(s.aperture_params)
+            .chain(s.to_next_rot)
+            .chain(s.to_next_origin)
+            .chain(s.to_next_origin_lo)
+            .chain(s.to_next_rot_lo)
+            .chain(s.to_next_shift)
+            .chain(s.to_next_shift_lo)
+            .chain(s.n_after_lo);
             if floats.into_iter().any(|v| !v.is_finite()) {
                 return bad("non-finite parameter");
             }

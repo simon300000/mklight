@@ -7,7 +7,7 @@ validated against the CPU f64 reference. Read `docs/CONVENTIONS.md` first.
 
 | crate | role |
 |---|---|
-| `mklight-gpu` | `ComputeBackend` trait and job types, the packed layout (`include/mklight_gpu_types.h` + Rust mirror + packer), the double-float / utility-math / reduction **specifications** in Rust, and the CPU-f32 emulation backend |
+| `mklight-gpu` | `ComputeBackend` trait and job types, the packed layout (`include/mklight_gpu_types.h` + Rust mirror + packer), the double-float / utility-math / reduction / **trace-kernel specifications** in Rust, the CPU-f32 emulation backend, cross-validation against the f64 reference and precision qualification (`xval`) |
 | `mklight-metal` | Metal implementation: MSL kernels (`shaders/`), offline `.metallib` build with runtime-source fallback, device/queue/pipeline/buffer wrappers |
 
 Vulkan (AMD/Intel) and CUDA/OptiX (NVIDIA) backends will be further crates
@@ -40,8 +40,8 @@ trait ComputeBackend: Send + Sync {
   `num_asphere`, finiteness, `n > 0`, `α ≥ 0`), so kernels can trust it.
 * **Jobs** (`Job`) are batched, backend-neutral descriptions of work over host
   structure-of-arrays data: `PhiloxStream`, `PhiloxBlocks`, `DfOps`,
-  `Reduce`, `SagProbe`, and `Trace` (the sequential ray-trace kernel, added
-  when it is ported from `mklight-trace`). Each has a typed `JobOutput`.
+  `Reduce`, `SagProbe`, and `Trace` (the sequential / path ray-trace
+  kernel, §4). Each has a typed `JobOutput`.
   `Job::validate` performs the backend-independent input checks.
 * **Asynchrony.** `submit` returns a `Pending<JobResult>` immediately. It can
   be awaited (`Future`), waited on (`wait`, `wait_timeout`) or polled. A
@@ -90,17 +90,23 @@ into `mklight_gpu::consts`, so no constant is written twice.
 **Layout rules:** only 4-byte scalars and fixed arrays (no `float3`: it is 16
 bytes in MSL and 16-byte aligned in GLSL), every struct a multiple of 16
 bytes with explicit `reserved` padding, no implicit padding (the Rust mirror
-derives `bytemuck::Pod`). Any change bumps `MKL_LAYOUT_VERSION` (now 2: the
-reduction parameter block gained `first_group`); the header carries a magic
-word and the version, and backends validate both on upload.
+derives `bytemuck::Pod`). Any change bumps `MKL_LAYOUT_VERSION` (now 3: the
+surface record gained ideal-lens vergences, double-float residuals of the
+curvature, conic, indices and transforms, and coating codes; the trace
+kernel's parameter block, path-step words, ray planes and status codes were
+added); the header carries a magic word and the version, and backends
+validate both on upload.
 
 **Representability.** The packer rounds each model value once to f32 and
 rejects any whose f32 is infinite, **subnormal**, or zero while the model
 value is not (for example a curvature of 1e-46). Kernels may compare packed
 parameters with exactly `0.0f`, and GPUs flush subnormals (§3.3), so either
 case would silently change the system. The only exceptions are rotation
-entries and origin residuals below `f32::MIN_POSITIVE`, which are written as
+entries and `*_lo` residuals below `f32::MIN_POSITIVE`, which are written as
 zeros because their effect is far below one ulp of what they modify.
+Everything the trace kernel uses in double-float carries an f32 residual
+(`hi + lo` equals the f64 value to ~2⁻⁴⁸): curvature, conic, indices and the
+transforms.
 
 ### 2.1 `MklPackedHeader` (176 bytes, one per system)
 
@@ -119,7 +125,7 @@ zeros because their effect is far below one ulp of what they modify.
 Systems with more than 16 wavelengths are packed in chunks
 (`PackedSystem::pack_chunks`); the packer refuses rather than truncates.
 
-### 2.2 `MklPackedSurface` (304 bytes)
+### 2.2 `MklPackedSurface` (496 bytes)
 
 | field | meaning / units |
 |---|---|
@@ -127,12 +133,14 @@ Systems with more than 16 wavelengths are packed in chunks
 | `interaction` | `MKL_INTERACT_{REFRACT, REFLECT, DUMMY}` |
 | `aperture`, `aperture_params[4]` | `MKL_APERTURE_*`; mm. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
 | `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE` |
-| `curvature`, `conic` | 1/mm, dimensionless |
+| `curvature` (+`_lo`), `conic` (+`_lo`) | 1/mm, dimensionless |
 | `paraxial_power` | 1/f (1/mm) for ideal thin lenses |
+| `vergence[16]` | ideal lens: paraxial object vergence 1/a (1/mm) per packed wavelength (`mklight_trace::paraxial::ideal_lens_object_vergence`), the conjugate at which it is perfect in phase |
 | `asphere_inv_norm2`, `num_asphere`, `asphere[10]` | normalised even-asphere terms A4 … A22 (below) |
 | `source_index` | surface index in the model |
-| `to_next_rot[9]`, `to_next_origin[3]`, `to_next_origin_lo[3]` | transform into the next local frame (below) |
-| `n_after[16]`, `alpha_after[16]` | index after the surface, internal absorption (1/mm), per packed wavelength |
+| `coating`, `coating_r`, `coating_t` | `MKL_COATING_{BARE, IDEAL, TABLE}`; an ideal coating's R and T |
+| `to_next_rot[9]` (+`_lo`), `to_next_origin[3]` (+`_lo`), `to_next_shift[3]` (+`_lo`) | transform into the next local frame (below) |
+| `n_after[16]` (+`_lo`), `alpha_after[16]` | index after the surface, internal absorption (1/mm), per packed wavelength |
 
 **Aspheres.** The sag is `conic(r²) + ρ⁴ Σⱼ asphere[j] ρ²ʲ` with
 `ρ² = r²·asphere_inv_norm2`. The packer stores `asphere[j] = A₂ⱼ₊₄ R²ʲ⁺⁴`
@@ -150,6 +158,12 @@ cancels). `to_next_origin_lo` holds the f32 rounding residual of the origin,
 so a 1000 mm air gap, whose f32 rounding alone is ~6e-5 mm (above the 2e-5 mm
 position budget), can be applied in double-float. Relation to the core:
 `origin = ResolvedSurface::to_next.origin`, `rot = to_next.rot` transposed.
+The trace kernel applies forward transforms as `rot·p − shift`, with
+`shift = rot·origin` precomputed in f64 (both terms exact to ~2⁻⁴⁸ for a
+point near this surface's vertex), and backward ones as `rotᵀ·p + origin`.
+For an object at infinity surface 0 stores the map from the entrance
+(global) frame into surface 1, so a trace's starting frame is always
+"surface 0's frame".
 
 **Exact-comparison sentinels.** Kernels may test packed parameters for exactly
 `0.0f` (the packer writes an exact zero whenever the model value is zero). No
@@ -157,24 +171,18 @@ other float is compared for equality (CONVENTIONS §7.6).
 
 ### 2.3 Ray batches
 
-`RayBatch` / `TraceResult` are SoA arrays. They hold position and direction
-cosines in the local frame of the start surface, optical path as double-float
-(`opl_hi`, `opl_lo`), the packed wavelength index, an optional system index,
-and a per-ray flux **weight** (empty means 1). The output adds a status word
-`code | surface << 8` (`MKL_RAY_OK, MISS, TIR, VIGNETTED, NONFINITE,
-NOT_CONVERGED`) and the output weight: input weight × path transmittance.
+`RayBatch` / `TraceResult` are SoA arrays (§4.2): position and direction in
+the local frame of the start surface (f32, with optional double-float
+residual planes), optical path as double-float (`opl_hi`, `opl_lo`), the
+packed wavelength index, an optional system index, and a per-ray flux
+**weight** (empty means 1). The kernel reads `MKL_TRACE_IN_FLOATS` float and
+`MKL_TRACE_IN_UINTS` uint planes and writes `MKL_TRACE_OUT_*` planes
+(`PreparedTrace::input_planes`, `TraceResult::from_planes`).
 `TraceRequest::radiometry` (`Off`, or `Unpolarized` by default) sets how
-`alpha_after` and the interface `T`/`R` act on the weight, with the same
-model as the CPU reference, so throughput, ghost and stray-light merits and
-the `T + R + A = 1` bookkeeping have a place in the interface. The enum is
+absorption and the interface `T`/`R` act on the weight. The enum is
 `non_exhaustive`: a polarised mode (Jones/Stokes state per ray, as extra SoA
-fields) will be an additive variant. `RecordMode::AllSurfaces` records
-`MKL_TRACE_RECORD_FLOATS` = 9 values per ray per surface (x, y, z, l, m, n,
-opl_hi, opl_lo, weight) plus a per-surface status word. `RayBatch`,
-`TraceRequest` (built with `TraceRequest::new`) and `TraceResult` are
-`non_exhaustive`, so the trace port can add fields without breaking callers.
-Ray generation (field/pupil mapping, ray aiming) stays in the f64 reference
-code; rays are rounded to f32 once, on the start surface's local frame.
+fields) will be an additive variant. `RayBatch`, `TraceRequest` and
+`TraceResult` are `non_exhaustive` too.
 
 ## 3. Numerics strategy
 
@@ -295,7 +303,141 @@ GPU. Consumers that need the f64 uniform apply `u32_to_unit_f64` to the raw
 words on the host. `Philox::seek(i)` positions the core generator at any
 draw (tested against sequential draws).
 
-## 4. Validation
+## 4. The trace kernel
+
+`Job::Trace` runs the sequential ray trace of `mklight-trace` on the
+backend. The kernel is specified in Rust (`mklight_gpu::trace_kernel`,
+generic over the f32 environment) and implemented in MSL
+(`shaders/trace.metal`) operation for operation alike, so the CPU-f32
+emulation reproduces the GPU bit for bit (§5).
+
+### 4.1 Algorithm: f32 decisions, double-float geometry
+
+Per surface, the kernel performs the reference's steps (transfer,
+intersection, clipping, interaction) with one split:
+
+* **Decisions in f32**, mirroring the reference operation for operation:
+  the closest-approach conic intersection with Kahan's discriminant, stable
+  roots and vertex-sheet selection; the even-asphere Newton iteration from
+  the conic seed with the reference's Miss / NoConvergence / OutsideDomain
+  classification; clipping against every aperture shape; the TIR test of the
+  stable vector Snell law (CONVENTIONS §7.3). These decide the status and
+  give a first `t`.
+* **Geometry in double-float** (CONVENTIONS §7.4): the ray point and
+  direction between surfaces, the transfers (axial fast path `p − (0, 0, t)`
+  or `rot·p − shift`, both hi + lo), the closest approach `t₀ = −P·D`,
+  `Q = P + t₀D`, one Newton refinement of every hit on the exact line
+  (`c(x² + y² + κz²) − 2z`, or `z − sag(r²)` with the conic part in
+  double-float), the unnormalised normal `G = (−cx, −cy, 1 − κcz)` or
+  `(−x·g, −y·g, w)`, and the interactions: refraction `D' = μD + bG` with
+  `μ = n₁/n₂` from double-float indices and reflection `D' = D + bG`, where
+  `b` comes from the f32 law and is then corrected along `G` until
+  `|D'| = 1` (twice for refraction). The tangential component — Snell's law
+  — is exact by construction. Optical path `Σ n·t` accumulates in
+  double-float; bulk absorption `Σ α·t` in f32, `exp` from
+  `fmath::exp` (a specified f32 exponential; platform `exp` differs between
+  devices).
+
+Why not plain f32: one f32 ulp of a direction (6e-8) moves an image point by
+3e-5 mm over a 500 mm throw (the Newtonian sample), a refracted direction
+whose norm is two ulps off lengthens a 100 mm segment by 1.6e-5 mm (0.03
+waves), refining a hit from the *rounded* closest-approach point shifts the
+ray sideways by half an ulp of |Q| and tilts the normal by `c` times that,
+and near the critical angle refraction amplifies any normal error by
+`1/cos θ'`. Each of these was measured during development and is removed by
+the corresponding double-float step above; all f32 parameters the geometry
+depends on carry their residual in the layout (§2).
+
+f32 tolerances, the only intended differences from the reference: the
+vertex-sheet test uses `1 − κcz ≥ −2⁻²⁰`; asphere Newton converges when
+`|g| ≤ tol_abs + tol_rel·(|t| + |z| + |conic sag| + |poly|)` (default
+`1e-9 mm + 2⁻²⁰·…`, the f32 resolution of the residual) within
+`NewtonSettings::max_iterations` (default 8; the reference uses 40 with a
+1e-12 mm tolerance), followed by the double-float refinement. A ray whose
+f32 iteration is still converging at the cap is reported `NOT_CONVERGED`,
+by the same rule as the reference. The ideal lens is evaluated in f32
+(direction renormalised in double-float): its phase is good to ~1e-7 mm.
+
+**Reported state.** The output point and direction are the double-float
+ones rounded to f32. The rounding residual of the point along the
+direction is moved into the reported optical path (`OPL − n·(δ·D)`), so
+`(point, direction, OPL)` describe one ray consistently and an OPD formed
+on the host from them does not see the rounding (compare OPLs at the same
+point: `OPL_ref + n·(p_gpu − p_ref)·d`).
+
+### 4.2 Inputs, outputs and statuses
+
+Rays are given in the start surface's local frame (`TraceRequest::new`:
+sequential from `start_surface` to `end_surface`). The host generates and
+aims them with `mklight-trace` and passes them in double-float
+(`RayBatch::push_f64`: hi + lo planes, so the f64 ray is not rounded) or in
+plain f32 (residual planes empty; the direction is renormalised in
+double-float on entry). Outputs (SoA, `TraceResult`): the final point and
+direction in the last surface's frame, OPL (hi, lo), weight, bulk
+transmittance `exp(−Σαt)`, status word, last surface, steps completed, and
+with `RecordMode::AllSurfaces` one record (x, y, z, l, m, n, opl_hi,
+opl_lo, weight) and status per step slot (slot 0 the input; a failed ray
+repeats its final state).
+
+| `MKL_RAY_*` | `mklight_trace::TraceStatus` |
+|---|---|
+| `OK` | `Ok` |
+| `MISS` | `Miss` |
+| `VIGNETTED` | `Clipped` |
+| `TIR` | `TotalInternalReflection` |
+| `NOT_CONVERGED` | `Failed { NoConvergence }` |
+| `OUTSIDE_DOMAIN` | `Failed { OutsideDomain }` |
+| `DEGENERATE` | `Failed { Degenerate }` |
+| `NONFINITE` | `Failed { NonFinite }` (at the start surface for non-finite input) |
+
+The surface in the status word is the reference's `surface`.
+(`AimNotConverged` and `FieldUnreachable` arise in ray generation, on the
+host.)
+
+**Radiometry** (`TraceRequest::radiometry`, unpolarised by default): the
+weight is multiplied by bulk transmittance and by the unpolarised core
+Fresnel `T` (refraction) or `R` (reflection) at bare refracting surfaces,
+`R = 1`, `T = 0` at bare mirrors, the constant `R`/`T` of ideal coatings;
+ideal lenses are lossless unless coated. A request whose program touches a
+thin-film or tabulated coating with radiometry on is refused with
+`MkError::Unsupported` (geometry-only traces run).
+
+### 4.3 Path programs (ghost paths)
+
+A trace runs a **path program**: a list of `PathStep { surface, mode,
+backward }` (`MKL_STEP_*` words, at most `MKL_MAX_STEPS`). Each step moves
+the ray from the current surface `c` to `c + 1` (forward, through `c`'s
+`to_next`) or `c − 1` (backward, through the inverse of `(c − 1)`'s
+`to_next`) and interacts there:
+
+| mode | interaction |
+|---|---|
+| `Sequential` | the surface's own interaction, exactly as `mklight_trace::trace_ray` (forward only; the image never interacts) |
+| `Transmit` | refraction into the medium on the far side; dummy surfaces and the image pass; an ideal lens transmits as a lens (packed vergence forward, zero vergence backward) |
+| `Reflect` | specular reflection (any surface but a coordinate break; an ideal lens reflects as a plane) |
+
+The medium of the gap between surfaces `j` and `j + 1` is `n_after[j]`,
+`alpha_after[j]` whatever the travel direction (gap 0 has no absorption for
+an object at infinity). The host validates a program against every system
+the rays use (`PathStep::validate_program`): every step moves by one
+surface in range, sequential steps go forward, the direction is kept after
+a transmission and reversed after a reflection. A sequential trace is
+`PathStep::sequential(s, e)`; a ghost reflecting at `j` then at `i < j` is
+
+```text
+(1..j−1, Transmit) (j, Reflect) (j−1 … i+1, Transmit, backward)
+(i, Reflect, backward) (i+1 … image, Transmit)
+```
+
+`TraceRequest::path(handle, rays, start, steps)` builds such a request;
+records then hold one slot per step. Tested with a plate's two-reflection
+ghost (straight and tilted/decentred, forward and backward steps) against an
+independent f64 path computation (`testutil::f64_path`): points ≤ 1e-6 mm,
+directions ≤ 1e-7, OPL ≤ 1e-9 mm, Fresnel weight `T·R·R·T` ≤ 1e-5
+relative; and `T + R = 1` at a bare interface from one transmit and one
+reflect step.
+
+## 5. Validation
 
 Three implementations are compared, each answering a different question:
 
@@ -309,8 +451,9 @@ Three implementations are compared, each answering a different question:
   precision error and must fit the CONVENTIONS §7 budget
   (`ErrorBudget::CONVENTIONS`); differences against a GPU must be zero (or,
   for `/` and `sqrt` on a device without correctly rounded ones, within the
-  stated bound).
-* Tests now in place, on this machine's GPU (skipped without a Metal device):
+  stated bound). The trace kernel needs neither: on the M2 Pro (correctly
+  rounded `/` and `sqrt`) it is bit-identical.
+* Tests on this machine's GPU (skipped without a Metal device):
   Philox known answers and 65 536 random counter/key blocks, a 2¹⁸-block
   stream against the stateful core generator, 64-bit counter carry; two_sum
   and two_prod exact in f64 on the GPU for 65 536 random pairs (fast-math
@@ -325,15 +468,122 @@ Three implementations are compared, each answering a different question:
   bit-identical to the specification; chunking, progress (including empty
   jobs), per-submission cancellation, forged handles, tampered records and
   unsupported jobs.
-* When the trace kernel lands, the cross-validation suite traces a fixed set
-  of designs (singlets, a double Gauss, a Cooke triplet, a tilted/decentred
-  system, a long-track telephoto, an asphere-heavy phone lens) through all
-  three implementations and enforces the budget per quantity: positions,
-  direction cosines, OPD, RMS spot, MTF and identical vignetting except
-  within 1e-5 mm of an aperture edge. A design that fails the budget makes
-  the backend return `Unsupported` for it.
+* **Trace kernel.** The GPU's outputs and per-surface records are
+  bit-identical to the emulation (in the device's flush-to-zero
+  environment) for every sample and fixture below, all fields and
+  wavelengths, with radiometry, and under command-buffer chunking. Against
+  the reference: the cross-validation suite (§5.1), ghost path programs
+  (§4.3), status classification of every failure class at the same Newton
+  cap (miss, asphere non-crossing, non-convergence, outside the sag domain,
+  TIR, vignetting, non-finite input), per-surface records, sequential
+  radiometry against core Fresnel along the reference's records (bare and
+  ideal coatings, absorbing glass), request validation, cancellation,
+  progress and determinism.
 
-## 5. Metal backend notes
+### 5.1 Cross-validation suite
+
+`xval::cross_validate` generates rays with the reference tracer (field and
+pupil mapping, aiming), passes them in double-float, traces them on the
+backend and with `mklight_trace::trace_ray`, and compares every ray that
+both complete: image position and direction (Euclidean distances), OPD in
+waves — for the backend formed on the CPU from its returned OPLs with the
+reference sphere of `mklight_trace::opd` (centre and OPL from the backend's
+own chief ray, exit pupil from the paraxial data) — and bulk transmittance.
+Both traces must end with the same status word; a difference is excused
+only for rays whose f64 trace passes within `budget.aperture_edge_mm`
+(1e-5 mm) of an aperture edge or within `tir_band` (1e-5) of the TIR
+condition `1 − μ² sin² i = 0` at a refracting surface; such rays are counted
+("band"), and none occurred.
+
+The suite (`cross_validation_suite_gpu` in `mklight-metal`,
+`cross_validation_suite_cpu_f32` in `mklight-gpu`) covers every sample of
+`mklight_core::samples`, each also with its automatic semi-diameters frozen
+at 0.93× (vignetting every off-axis pupil edge), and fixtures for what the
+samples do not reach (`mklight_gpu::testutil`): a tilted/decentred triplet
+with a tilted image plane behind coordinate breaks, two ideal lenses at
+finite conjugates, every aperture shape (annular obstruction, rectangle,
+ellipse, fixed semi-diameter), a block that totally reflects most of its
+beam, a fast molded-asphere singlet (conic + A4…A12, ±25°), a 1000 mm-track
+f/10 achromat, and a triplet in an absorbing glass. Every field and
+wavelength, a 64 × 64 pupil grid, unpolarised radiometry. Measured on an
+Apple M2 Pro (the emulation gives the same numbers, bit for bit):
+
+| system | rays | compared | position (mm) | direction | OPD (waves) | band |
+|---|---:|---:|---:|---:|---:|---:|
+| singlet | 27864 | 27864 | 4.8e-7 | 3.0e-8 | 7.3e-5 | 0 |
+| singlet (vignetted) | 27864 | 25846 | 4.8e-7 | 3.0e-8 | 7.1e-5 | 0 |
+| achromat | 27864 | 27864 | 1.2e-7 | 3.0e-8 | 1.5e-5 | 0 |
+| achromat (vignetted) | 27864 | 24870 | 1.2e-7 | 3.0e-8 | 1.4e-5 | 0 |
+| cooke_triplet | 27864 | 27864 | 9.5e-7 | 3.3e-8 | 7.7e-5 | 0 |
+| cooke_triplet (vignetted) | 27864 | 25776 | 9.5e-7 | 3.3e-8 | 7.7e-5 | 0 |
+| double_gauss | 27864 | 27864 | 4.8e-7 | 3.3e-8 | 1.8e-4 | 0 |
+| double_gauss (vignetted) | 27864 | 26650 | 4.8e-7 | 3.3e-8 | 1.8e-4 | 0 |
+| newtonian | 27864 | 27864 | 1.2e-7 | 3.0e-8 | 4.8e-6 | 0 |
+| newtonian (vignetted) | 27864 | 27726 | 1.2e-7 | 3.0e-8 | 4.8e-6 | 0 |
+| petzval_asphere | 27864 | 27864 | 2.4e-7 | 3.0e-8 | 2.9e-5 | 0 |
+| petzval_asphere (vignetted) | 27864 | 25644 | 2.4e-7 | 3.0e-8 | 2.8e-5 | 0 |
+| relay | 27864 | 27864 | 2.4e-7 | 3.0e-8 | 3.4e-5 | 0 |
+| relay (vignetted) | 27864 | 26322 | 2.4e-7 | 3.0e-8 | 3.1e-5 | 0 |
+| tilted triplet | 27864 | 27864 | 9.8e-7 | 3.3e-8 | 7.8e-5 | 0 |
+| ideal lenses | 27864 | 27864 | 1.0e-6 | 3.4e-8 | 3.5e-4 | 0 |
+| apertures | 27864 | 20184 | 4.8e-7 | 3.0e-8 | 7.1e-5 | 0 |
+| TIR block | 18576 | 10034 | 5.8e-7 | 4.1e-8 | 6.5e-4 | 0 |
+| asphere singlet | 27864 | 27864 | 1.3e-7 | 4.2e-8 | 7.5e-5 | 0 |
+| f1000 achromat | 27864 | 27864 | 4.8e-7 | 3.0e-8 | 2.6e-5 | 0 |
+| absorbing triplet | 27864 | 27864 | 9.5e-7 | 3.3e-8 | 3.4e-4 | 0 |
+
+Budget (CONVENTIONS §7): position 2e-5 mm, direction 2e-6, OPD 5e-3 waves.
+Positions and directions are at the f32 rounding of the *reported* values
+(half an ulp of the coordinate, e.g. 4.8e-7 mm at 8 mm; half an ulp of a
+direction cosine near 1 is 3e-8); OPD is 15× or more inside the budget,
+largest where the ideal-lens phase (f32) or near-critical refraction
+contributes. Survival agreed for every ray, vignetted ones included.
+Bulk transmittance agrees to ≤ 4e-8.
+
+### 5.2 Precision qualification and CPU fallback
+
+`xval::qualify(backend, tracer, settings, ctx)` runs a small
+cross-validation for one system (`XvalSettings::qualification()`: 61
+hexapolar pupil points per field and wavelength: 549 rays and ~3 ms for the
+Double Gauss on an M2 Pro) and returns a
+`Qualification { backend, kernel_build, passed, budget, report, reason }`.
+It never errors: a backend without the trace kernel, a system the packer
+cannot represent in f32 (for example asphere terms beyond A22), a thin-film
+coating with radiometry, a backend error or a measurement outside the budget
+all give `passed = false` with the reason. Callers then run the CPU
+reference and **say so**: `Qualification::record(&mut RunInfo)` writes
+
+* on success: `backend = "metal:Apple M2 Pro"`, `precision = F32Gpu`;
+* on failure: `backend = "cpu-f64"`, `precision = F64Reference`, and a
+  warning "GPU backend metal:… not used (reason); computed with the CPU f64
+  reference";
+
+and in both cases the whole qualification (measured errors included) under
+`settings["backend_qualification"]`. A qualification holds for one system
+(snapshot) on one backend; callers cache it with the packed system.
+
+### 5.3 Throughput
+
+`benchmark_double_gauss_1e6` (ignored by default; `cargo test --release
+-p mklight-metal --test trace -- --ignored --nocapture`): 992 244 rays of
+the Double Gauss (3 fields, 12 surfaces each), GPU wall time including
+writing the input planes into the shared buffer, the kernel and unpacking
+the outputs, against `mklight_trace::trace_ray` over the same rays on all
+CPU cores (rayon, 12 threads). Apple M2 Pro, best of three, varying ±15 %
+with machine load:
+
+| | time | ray·surfaces/s |
+|---|---:|---:|
+| GPU kernel (device time) | 12.5 ms | 9.5e8 |
+| GPU incl. upload/download (wall) | 28 ms | 4.3e8 |
+| CPU f64 reference, rayon | 73 ms | 1.6e8 |
+
+The kernel runs ~6× faster than the reference on 12 CPU cores; end to end,
+with host-side packing and unpacking of ~110 MB of planes, ~2.6×. Chained
+device-resident jobs (trace → reduce without readback) are the next
+optimisation (§8).
+
+## 6. Metal backend notes
 
 * **Build.** `build.rs` compiles `shaders/*.metal` to `.air` and links one
   `mklight.metallib`, embedded with `include_bytes!`. It finds the compiler
@@ -361,6 +611,15 @@ Three implementations are compared, each answering a different question:
   command buffer has completed, so no host slice of it can exist meanwhile
   on any thread. The public safe surface is `ComputeBackend` plus device,
   library, buffer and pipeline accessors.
+* **Trace kernel.** `mkl_trace` runs one thread per ray. Systems, the path
+  program and the parameter block are in the `constant` address space (all
+  threads of a launch usually read the same surface record); ray planes are
+  bound at each launch's first ray, so chunking changes no bit (tested).
+  Input planes are written straight into a shared buffer and the output
+  buffers skip the zeroing pass (the kernel writes every element).
+  `PreparedTrace::new` validates the program, every ray's system and
+  wavelength and the Newton settings against the stored set before
+  submission, which is what the kernel's unchecked indexing relies on.
 * **Execution.** Each submission runs on a worker thread: per chunk it checks
   cancellation, encodes, commits, waits, checks `MTLCommandBufferStatus.error`
   (reported as `MkError::Backend` with the Metal error text), and adds
@@ -371,7 +630,7 @@ Three implementations are compared, each answering a different question:
   GPUs (M3 and later). These are reserved for the non-sequential solver's
   spatial searches; sequential tracing uses analytic per-surface kernels.
 
-## 6. Adding a backend (Vulkan, CUDA/OptiX)
+## 7. Adding a backend (Vulkan, CUDA/OptiX)
 
 1. Create `crates/mklight-<api>`, implement `ComputeBackend`, and return
    `Unsupported` for any job kind not yet ported.
@@ -390,11 +649,20 @@ Three implementations are compared, each answering a different question:
    become staging copies, which the interface already hides) and a
    `PrecisionDescriptor`.
 
-## 7. Current limitations
+## 8. Current limitations
 
-* The sequential trace kernel and the GPU coating (thin-film) tables are not
-  ported yet: `Job::Trace` is `Unsupported` on every backend, and
-  `MKL_SURF_COATED` only marks coated surfaces.
+* Thin-film and tabulated coatings are not on the GPU: a trace with
+  radiometry through such a surface is `Unsupported` (geometry-only traces
+  run). Coating tables (R/T against wavelength and angle) are the planned
+  extension, a new `MKL_COATING_*` code with a table offset.
+* Ray generation (field/pupil mapping, real ray aiming) runs on the CPU in
+  f64; the GPU traces the generated rays. Polarised (Jones/Stokes)
+  radiometry is not ported.
+* Asphere Newton on the GPU stops after `max_iterations` (default 8)
+  instead of the reference's 40; a ray that needs more is reported
+  `NOT_CONVERGED` (none in the suite). Ideal-lens phase is f32 (~1e-7 mm).
+* Systems are limited by the packer: 16 wavelengths per packed chunk,
+  asphere terms up to A22, model values representable as normal f32.
 * Job inputs and outputs are host arrays; device-resident buffers chained
   between jobs (e.g. trace → reduce without a readback) are a later
   optimisation that does not change the interface's semantics.

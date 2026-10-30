@@ -2,9 +2,12 @@
 //!
 //! Rays enter on a chosen surface, expressed in that surface's local frame
 //! (CONVENTIONS §7.1): the host (the f64 reference code: field/pupil mapping,
-//! ray aiming) produces them, rounds once to f32, and the kernel carries them
-//! from surface to surface with relative transforms only. Optical path is
-//! carried in double-float (hi/lo pairs).
+//! ray aiming) produces them, as f32 or as double-float hi + lo pairs
+//! ([`RayBatch::push_f64`]), and the kernel carries them from surface to
+//! surface with relative transforms only. Optical path is carried in
+//! double-float (hi/lo pairs). A trace runs a path program
+//! ([`PathStep`]): the sequential train, or an explicit list of transmit /
+//! reflect steps forward or backward (ghost paths).
 
 use mklight_core::{MkError, MkResult};
 use serde::{Deserialize, Serialize};
@@ -177,9 +180,13 @@ pub enum Radiometry {
     Off,
     /// Unpolarised flux: the weight is multiplied by the internal
     /// transmittance `exp(−α·L)` of every medium crossed (`alpha_after`) and
-    /// by the transmittance (or reflectance, at a mirror) of every
-    /// interface, with the same polarisation model as the CPU reference
-    /// tracer, so `T + R + A = 1` bookkeeping matches it.
+    /// by the unpolarised transmittance (or reflectance) of every interface:
+    /// bare Fresnel (`mklight_core::materials::coating::fresnel`, the model
+    /// every solver uses) on refracting surfaces, `R = 1`, `T = 0` on bare
+    /// mirrors, the constant `R`/`T` of ideal coatings; ideal lenses are
+    /// lossless unless coated. Thin-film and tabulated coatings are not
+    /// available on the GPU (`MkError::Unsupported`), so `T + R + A = 1`
+    /// bookkeeping never silently changes.
     #[default]
     Unpolarized,
 }
@@ -253,9 +260,8 @@ impl PathStep {
             MKL_STEP_REFLECT => StepMode::Reflect,
             _ => return None,
         };
-        let known = MKL_STEP_SURFACE_MASK
-            | (MKL_STEP_MODE_MASK << MKL_STEP_MODE_SHIFT)
-            | MKL_STEP_BACKWARD;
+        let known =
+            MKL_STEP_SURFACE_MASK | (MKL_STEP_MODE_MASK << MKL_STEP_MODE_SHIFT) | MKL_STEP_BACKWARD;
         if word & !known != 0 {
             return None;
         }
