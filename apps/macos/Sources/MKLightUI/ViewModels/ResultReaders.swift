@@ -83,3 +83,32 @@ extension AnalysisOutput {
         ref?.string.flatMap { buffer(named: $0) }
     }
 }
+
+/// Anamorphic first-order data: EFL in x and y and the signed squeeze
+/// `EFL_y / EFL_x` (SURFACES §8, the engine's `ParaxialXY`). Read from the
+/// first-order result when the engine reports it (`efl_x`, `efl_y`,
+/// `squeeze` entries, or a `paraxial_xy` object); `nil` otherwise.
+public struct AnamorphicFirstOrder: Sendable, Equatable {
+    public var eflX: Double?
+    public var eflY: Double?
+    public var squeeze: Double?
+
+    public init?(_ json: JSONValue?) {
+        guard let json else { return nil }
+        let entries = FirstOrderData(json)
+        let xy = json["paraxial_xy"]
+        eflX = entries?.entry(["efl_x"])?.value ?? xy?["efl_x"]?.nf
+        eflY = entries?.entry(["efl_y"])?.value ?? xy?["efl_y"]?.nf
+        squeeze = entries?.entry(["squeeze"])?.value ?? xy?["squeeze"]?.nf
+        if squeeze == nil, let x = eflX, let y = eflY, x != 0 { squeeze = y / x }
+        if eflX == nil && eflY == nil && squeeze == nil { return nil }
+    }
+}
+
+extension OpticalSystem {
+    /// Whether any surface lacks rotational symmetry (toroid, biconic, XY
+    /// or Zernike freeform): first-order data then differs between x and y.
+    public var hasNonRotationalSurfaces: Bool {
+        surfaces.contains { [.toroid, .biconic, .xyPolynomial, .zernikeSag].contains($0.shape.kind) }
+    }
+}

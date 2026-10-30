@@ -37,10 +37,24 @@ public struct ViewportCamera: Equatable, Sendable {
     public init() {}
 }
 
-/// Which design job sheet is open.
-public enum DesignJobKind: String, Identifiable, Sendable {
+/// Which design job panel is open in the inspector.
+public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
     case optimize, tolerance, solves
     public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .optimize: "Optimize"
+        case .tolerance: "Tolerance"
+        case .solves: "Apply Solves"
+        }
+    }
+    public var symbol: String {
+        switch self {
+        case .optimize: "wand.and.sparkles"
+        case .tolerance: "plusminus.circle"
+        case .solves: "function"
+        }
+    }
 }
 
 /// Per-window UI state, kept apart from the design (`DesignDocument`) and
@@ -70,11 +84,28 @@ public final class WindowState {
     public var paneWidths: [String: Double] = [:]
     /// A transient message (an edit the editor rejected).
     public var message: String?
+    /// The design job shown in the inspector (`nil`: surface or system).
     public var activeJob: DesignJobKind?
+    /// The window's design jobs. They live as long as the window, so a job
+    /// keeps running while its panel is closed.
+    public let optimize = OptimizeSession()
+    public let tolerance = ToleranceSession()
+    public let solves = SolvesSession()
     /// The lens table's focused cell, for menu commands.
     public var focusedColumn: LensColumn?
 
     public init() {}
+
+    /// Opens a design job in the inspector.
+    public func open(_ job: DesignJobKind) {
+        activeJob = job
+        showInspector = true
+    }
+
+    /// The running design job, if any.
+    public var runningJob: DesignJobKind? {
+        optimize.isRunning ? .optimize : tolerance.isRunning ? .tolerance : nil
+    }
 
     /// Shows a transient message; it clears itself after a few seconds.
     public func flash(_ text: String?) {

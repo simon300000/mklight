@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.4
 //
 // MKLight macOS application.
 //
@@ -46,7 +46,7 @@ if engineLinked {
 
 let package = Package(
     name: "MKLight",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v27)],
     products: [
         .executable(name: "MKLight", targets: ["MKLight"]),
         .library(name: "MKLightModel", targets: ["MKLightModel"]),

@@ -104,13 +104,15 @@ struct IssuesButton: View {
             window.showIssues.toggle()
         } label: {
             if issues.isEmpty {
-                Label("No Issues", systemImage: "checkmark.circle")
+                Label("No Issues", systemImage: "checkmark.circle").labelStyle(.iconOnly).foregroundStyle(.secondary)
             } else {
-                Label("\(issues.count) Issue\(issues.count == 1 ? "" : "s")", systemImage: errors > 0 ? "xmark.octagon" : "exclamationmark.triangle")
+                Label("\(issues.count)", systemImage: errors > 0 ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .labelStyle(.titleAndIcon)
                     .foregroundStyle(errors > 0 ? .red : .orange)
+                    .monospacedDigit()
             }
         }
-        .labelStyle(.titleAndIcon)
+        .accessibilityLabel(issues.isEmpty ? "No issues" : "\(issues.count) issue\(issues.count == 1 ? "" : "s")")
         .help(issues.isEmpty ? "The engine found no problems in the design" : "Show the design's validation issues (⌃⌘E)")
         .popover(isPresented: $window.showIssues, arrowEdge: .bottom) {
             IssuesList(workspace: workspace, window: window).frame(width: 420)

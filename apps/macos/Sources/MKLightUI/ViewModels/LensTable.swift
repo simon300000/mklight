@@ -37,6 +37,18 @@ public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
         default: nil
         }
     }
+
+    /// The parameter behind the column for this surface's shape: radius and
+    /// conic of a toroid or biconic are its y section's.
+    public func param(for surface: Surface) -> ParamPath? {
+        guard surface.shape.isAnamorphic else { return param(surface.id) }
+        switch self {
+        case .radius: return .shapeParam(surface: surface.id, parameter: .curvatureY)
+        case .conic: return surface.shape.kind == .biconic || surface.shape.kind == .toroid
+            ? .shapeParam(surface: surface.id, parameter: .conicY) : nil
+        default: return param(surface.id)
+        }
+    }
 }
 
 /// A small inline marker next to a value: variable, or controlled by a solve.
@@ -69,6 +81,9 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     public var editable: Set<LensColumn>
     public var markers: [LensColumn: CellMarker]
     public var semiDiameterIsAuto: Bool
+    /// A short axis hint before a value (`y` for an anamorphic surface's
+    /// radius and conic, which are its y section's).
+    public var hints: [LensColumn: String] = [:]
 
     public var surfaceText: String {
         switch role {
@@ -92,13 +107,20 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             var editable: Set<LensColumn> = [.comment]
             // An object at infinity has no meaningful curvature.
             let hasCurvature = sf.shape.hasCurvature && !(role == .object && sf.thickness.isInfinite)
-            if hasCurvature {
+            var hints: [LensColumn: String] = [:]
+            if hasCurvature || sf.shape.isAnamorphic {
                 cells[.radius] = RowFormat.length(sf.shape.radius)
                 exact[.radius] = NumberDisplay.exact(sf.shape.radius)
                 editable.insert(.radius)
-                cells[.conic] = RowFormat.plain(sf.shape.conicConstant)
-                exact[.conic] = NumberDisplay.exact(sf.shape.conicConstant)
-                editable.insert(.conic)
+                if sf.shape.hasConic || sf.shape.isAnamorphic {
+                    cells[.conic] = RowFormat.plain(sf.shape.conicConstant)
+                    exact[.conic] = NumberDisplay.exact(sf.shape.conicConstant)
+                    editable.insert(.conic)
+                }
+                if sf.shape.isAnamorphic {
+                    hints[.radius] = "y"
+                    hints[.conic] = "y"
+                }
             } else if case .paraxial(let f) = sf.shape {
                 cells[.radius] = "f " + RowFormat.length(f)
             }
@@ -127,7 +149,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             if !sf.isCoordinateBreak { editable.insert(.semiDiameter) }
             var markers: [LensColumn: CellMarker] = [:]
             for c in LensColumn.allCases {
-                guard let p = c.param(sf.id) else { continue }
+                guard let p = c.param(for: sf) else { continue }
                 var m = CellMarker(isVariable: variables.contains(p))
                 if let k = solves[p] { m.solve = (k.letter, k.title) }
                 if c == .radius, let k = solves[.paraxialFocalLength(surface: sf.id)] { m.solve = (k.letter, k.title) }
@@ -136,20 +158,29 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             return LensRow(
                 id: sf.id, index: i, role: role, kind: sf.shape.kind, typeTitle: Self.typeTitle(sf.shape),
                 isMirror: sf.interaction == .reflect, cells: cells, exact: exact, editable: editable, markers: markers,
-                semiDiameterIsAuto: sf.semiDiameter == .auto)
+                semiDiameterIsAuto: sf.semiDiameter == .auto, hints: hints)
         }
     }
 
     /// Short type name for the table: a conic of k = 0 is a sphere.
     static func typeTitle(_ shape: SurfaceShape) -> String {
-        if case .conic(_, let k) = shape { return k == 0 ? "Sphere" : "Conic" }
-        return SurfaceTypes.descriptor(for: shape).title
+        switch shape {
+        case .conic(_, let k): return k == 0 ? "Sphere" : "Conic"
+        case .qCon: return "Q-Con"
+        case .qBfs: return "Q-BFS"
+        case .biconic where shape.isCylinder: return "Cylinder"
+        default: return SurfaceTypes.descriptor(for: shape).title
+        }
     }
 
     /// Parses `text` typed into `column` into an edit of this row.
     public func edit(_ column: LensColumn, text: String) -> Result<LensEdit, LensValueParser.Failure>? {
         switch column {
         case .comment: return .success(.setLabel(id, text))
+        case .radius where kind == .toroid || kind == .biconic:
+            return LensValueParser.curvature(fromRadiusText: text).map { .setShapeParameter(id, .curvatureY, $0) }
+        case .conic where kind == .toroid || kind == .biconic:
+            return LensValueParser.finite(text).map { .setShapeParameter(id, .conicY, $0) }
         case .radius: return LensValueParser.curvature(fromRadiusText: text).map { .setCurvature(id, $0) }
         case .thickness: return LensValueParser.thickness(text, allowInfinite: role == .object).map { .setThickness(id, $0) }
         case .conic: return LensValueParser.finite(text).map { .setConic(id, $0) }
@@ -246,6 +277,14 @@ public struct LensEditor {
 
     public func setKind(_ kind: SurfaceShape.Kind, _ id: SurfaceID) {
         apply(.setShapeKind(id, kind))
+    }
+
+    /// Applies a type-menu choice (a type, or a preset such as a cylinder).
+    public func setType(_ choice: SurfaceTypeChoice, _ id: SurfaceID) {
+        switch choice {
+        case .kind(let k): apply(.setShapeKind(id, k))
+        case .cylinder(let axis): apply(.setCylinder(id, axis))
+        }
     }
 
     public func toggleVariable(_ path: ParamPath) {

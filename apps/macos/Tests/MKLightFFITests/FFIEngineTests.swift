@@ -205,6 +205,38 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(ok.result.analysisName == "validate")
     }
 
+    /// Extended surface shapes open and validate (every sample above), but
+    /// the engine's legacy-only solvers (layout, Seidel, field curvature,
+    /// ghosts, merit evaluation) refuse them with a clear error.
+    @Test(arguments: ["q_con", "hybrid_doe", "anamorphic", "zernike_sag"])
+    func legacyOnlyAnalysesRefuseExtendedShapes(id: String) async throws {
+        let e = try engine()
+        let system = try sample(id)
+        let extended = system.surfaces.contains { !$0.shape.isLegacy }
+        #expect(extended)
+        let snap = try await e.openSnapshot(system)
+        for analysis in ["seidel", "layout"] {
+            do {
+                _ = try await e.submit(EngineAnalysisRequest(analysis: analysis), on: snap).result()
+                Issue.record("\(id): \(analysis) accepted extended shapes")
+            } catch let error as EngineError {
+                let text = error.errorDescription ?? "\(error)"
+                #expect(text.contains("extended surface shapes"), "\(id) \(analysis): \(text)")
+            }
+        }
+    }
+
+    /// The fixture with every extended shape: the engine accepts the mirror's
+    /// encoding and reports no validation issues.
+    @Test func extendedShapesFixtureValidatesInTheEngine() async throws {
+        let e = try engine()
+        let system = try MKLightJSON.decode(
+            OpticalSystem.self, from: Data(contentsOf: fixtureDir.appendingPathComponent("extended_shapes.json")))
+        let issues = await e.validate(system)
+        #expect(issues.isEmpty, "\(issues)")
+        #expect(system.structuralIssues().isEmpty)
+    }
+
     @Test func errorsMapToCodes() async throws {
         let e = try engine()
         var broken = SampleSystems.singlet()

@@ -140,7 +140,8 @@ extension OpticalSystem {
     /// the thicknesses that allow it) are errors, and mechanical parts attached
     /// to missing surfaces are warnings.
     public func structuralIssues() -> [ModelIssue] {
-        var out: [ModelIssue] = nonRepresentableValueIssues()
+        let json = nonRepresentableValueIssues()
+        var out: [ModelIssue] = json
         let n = surfaces.count
         guard n >= 3 else {
             return out + [ModelIssue(.error, "a system needs object, at least one surface, and image")]
@@ -183,6 +184,13 @@ extension OpticalSystem {
             if (i == 0 || i == n - 1) && s.isCoordinateBreak {
                 out.append(ModelIssue(.error, surface: i, "object/image cannot be coordinate breaks"))
             }
+            let shape = Self.shapeIssues(s.shape, path: "surfaces[\(i)].shape", surface: i)
+            // The JSON check stops at the first non-finite value; the shape
+            // rules report each one with its full path, so they replace it.
+            if shape.contains(where: { $0.message.hasSuffix(Self.nonFiniteSuffix) }) {
+                out.removeAll { j in json.contains(j) && j.surface == i && j.message.hasPrefix("surfaces[\(i)].shape") }
+            }
+            out += shape
         }
         if surfaces[n - 1].interaction == .reflect {
             out.append(ModelIssue(.error, surface: n - 1, "the image surface cannot be a mirror"))
@@ -191,6 +199,8 @@ extension OpticalSystem {
             for o in cfg.overrides {
                 if let why = o.first.unresolvedReason(in: self) {
                     out.append(ModelIssue(.error, "configuration \(k): invalid parameter path \(o.first): \(why)"))
+                } else if o.second.isFinite, let why = o.first.valueRejection(o.second) {
+                    out.append(ModelIssue(.error, "configuration \(k): invalid value \(o.second) for \(o.first): \(why)"))
                 }
             }
         }
@@ -200,6 +210,96 @@ extension OpticalSystem {
             for id in m.surfaces where !surfaceIDs.contains(id) {
                 out.append(ModelIssue(.warning, "mechanical part \(k) refers to missing surface id \(id.rawValue)"))
             }
+        }
+        return out
+    }
+
+    static let nonFiniteSuffix = " is not a finite number"
+
+    /// The engine's structural rules of a surface shape (CONVENTIONS §13,
+    /// SURFACES §7): finite values, positive normalisation radius and design
+    /// wavelength, nonzero design order, a plane/conic/even-asphere
+    /// diffractive base, and the coefficient limits. Messages follow the
+    /// engine's `[code] path: message` (non-finite values use the JSON
+    /// check's wording).
+    static func shapeIssues(_ shape: SurfaceShape, path: String, surface i: Int) -> [ModelIssue] {
+        var out: [ModelIssue] = []
+        func issue(_ code: String, _ p: String, _ message: String) {
+            out.append(ModelIssue(.error, surface: i, "[\(code)] \(p): \(message)"))
+        }
+        @discardableResult
+        func finite(_ name: String, _ v: Double) -> Bool {
+            if v.isFinite { return true }
+            out.append(ModelIssue(.error, surface: i, "\(path).\(name) = \(v) is not a finite number"))
+            return false
+        }
+        func positive(_ code: String, _ name: String, _ v: Double) {
+            if finite(name, v) && v <= 0 { issue(code, "\(path).\(name)", "must be > 0 (got \(v))") }
+        }
+        func series(_ name: String, _ a: [Double], _ max: Int?) {
+            if let max, a.count > max { issue("coefficient_count", "\(path).\(name)", "at most \(max) coefficients") }
+            for (k, v) in a.enumerated() { finite("\(name)[\(k)]", v) }
+        }
+        func normRadius(_ name: String, _ r: Double) { positive("invalid_norm_radius", name, r) }
+        switch shape {
+        case .plane, .coordinateBreak: break
+        case .paraxial(let f):
+            if finite("focal_length", f) && f == 0 {
+                issue("invalid_focal_length", "\(path).focal_length", "an ideal lens needs a non-zero focal length")
+            }
+        case .conic(let c, let k):
+            finite("curvature", c)
+            finite("conic", k)
+        case .evenAsphere(let c, let k, let a):
+            finite("curvature", c)
+            finite("conic", k)
+            series("coefficients", a, nil)
+        case .oddAsphere(let c, let k, let a):
+            finite("curvature", c)
+            finite("conic", k)
+            series("coefficients", a, CoefficientSet.maxOddTerms)
+        case .qCon(let c, let k, let r, let a):
+            finite("curvature", c)
+            finite("conic", k)
+            normRadius("norm_radius", r)
+            series("coefficients", a, CoefficientSet.maxQTerms)
+        case .qBfs(let c, let r, let a):
+            finite("curvature", c)
+            normRadius("norm_radius", r)
+            series("coefficients", a, CoefficientSet.maxQTerms)
+        case .xyPolynomial(let c, let k, let r, let a):
+            finite("curvature", c)
+            finite("conic", k)
+            normRadius("norm_radius", r)
+            series("coefficients", a, CoefficientSet.maxXYTerms)
+        case .zernikeSag(let c, let k, let r, let o, let a):
+            finite("curvature", c)
+            finite("conic", k)
+            normRadius("norm_radius", r)
+            series("coefficients", a, o.maxTerms)
+        case .diffractive(let base, let phase):
+            switch base {
+            case .plane, .conic, .evenAsphere: out += shapeIssues(base, path: "\(path).base", surface: i)
+            default: issue("invalid_diffractive_base", "\(path).base", "expected plane, conic or even_asphere")
+            }
+            normRadius("phase.norm_radius", phase.normRadius)
+            positive("invalid_design_wavelength", "phase.design_wavelength_um", phase.designWavelengthUm)
+            if phase.designOrder == 0 {
+                issue("invalid_diffraction_order", "\(path).phase.design_order", "design order must be nonzero")
+            }
+            series("phase.coefficients", phase.coefficients, CoefficientSet.maxPhaseTerms)
+        case .toroid(let cx, let cy, let ky, let ya):
+            finite("curvature_x", cx)
+            finite("curvature_y", cy)
+            finite("conic_y", ky)
+            series("y_asphere", ya, CoefficientSet.maxAxisTerms)
+        case .biconic(let cx, let cy, let kx, let ky, let xa, let ya):
+            finite("curvature_x", cx)
+            finite("curvature_y", cy)
+            finite("conic_x", kx)
+            finite("conic_y", ky)
+            series("x_asphere", xa, CoefficientSet.maxAxisTerms)
+            series("y_asphere", ya, CoefficientSet.maxAxisTerms)
         }
         return out
     }

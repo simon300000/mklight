@@ -10,9 +10,48 @@ struct SettingsBar: View {
     let pane: AnalysisPane
     let descriptor: AnalysisDescriptor
     let system: OpticalSystem?
+    /// Laid out as a list (the settings popover) rather than a wrapping bar.
+    var vertical = false
     @State private var showAdvanced = false
 
     var body: some View {
+        if vertical { list } else { bar }
+    }
+
+    /// Every setting on its own row, the advanced ones as JSON below.
+    private var list: some View {
+        let fields = descriptor.settingsFields.filter { kind(of: $0) != .hidden }
+        let simple = fields.filter { kind(of: $0) != .advanced }
+        let advanced = fields.filter { kind(of: $0) == .advanced }
+        return VStack(alignment: .leading, spacing: Space.m) {
+            ForEach(simple) { f in control(f).frame(maxWidth: .infinity, alignment: .leading) }
+            if !advanced.isEmpty {
+                Divider()
+                ForEach(advanced) { f in JSONSettingEditor(pane: pane, field: f) }
+            }
+        }
+        .controlSize(.small)
+    }
+
+    /// The values that differ from the engine's defaults, for a one-line
+    /// summary under the pane's title.
+    static func summary(_ pane: AnalysisPane, _ descriptor: AnalysisDescriptor?) -> String {
+        guard let descriptor else { return "" }
+        return descriptor.settingsFields.compactMap { f -> String? in
+            guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
+            let value: String =
+                switch v["type"]?.string {
+                case "all": "all"
+                case "primary": "primary"
+                case "index": "\((v["index"]?.int ?? 0) + 1)"
+                case "list": "\(v["indices"]?.array?.count ?? 0)"
+                default: v.string.map { title(.string($0)) } ?? v.doubleValue.map(Fmt.short) ?? v.displayText
+                }
+            return "\(label(f)) \(value)"
+        }.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var bar: some View {
         let fields = descriptor.settingsFields.filter { kind(of: $0) != .hidden }
         let simple = fields.filter { kind(of: $0) != .advanced }
         let advanced = fields.filter { kind(of: $0) == .advanced }
