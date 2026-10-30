@@ -518,6 +518,11 @@ on metal:Apple M2 Pro (f32, precision-qualified); reported values from the
 CPU f64 reference", or the reason a GPU was not used). `RunInfo.backend` is
 the engine's backend selection.
 
+Both jobs also run with no settings at all: `optimize` then varies every
+curvature and the back focus against the default merit (thickness boundaries
+included) and holds the focal length; `tolerance` analyses a basic tolerance
+set without compensators.
+
 **Applying the result.** `result.system` is the optimised `OpticalSystem` in
 model JSON. The app applies it with `Session::set_system`, which creates a new
 undoable snapshot whose hash equals `result.system_hash` (tested).
@@ -526,7 +531,8 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
 
 | key | type, default | meaning |
 |---|---|---|
-| `variables` | array, **required** | `VariableSpec`s (`param`, optional `lower`, `upper`, `scale`, `fd_step`, `label`); at least one |
+| `variables` | array, `[]` | `VariableSpec`s (`param`, optional `lower`, `upper`, `scale`, `fd_step`, `label`); empty: the curvature of every curved, optically active surface and the back focus (the thickness before the image) |
+| `hold_efl` | boolean, `true` | add the constraint EFL = its start value (label `hold EFL`), unless the merit already has an enabled `efl` operand |
 | `merit` | object or null, `null` | a `MeritFunctionSpec`; `null` generates the default merit from `default_merit` for the variables |
 | `default_merit` | object, the full `DefaultMeritSpec` default | generator settings, laid key by key over the defaults (`{"thickness": null}` drops the thickness boundaries; `{"thickness": {"glass_min_centre": 0.9}}` changes one) |
 | `operands` | array, `[]` | operands appended to the merit (e.g. an EFL target residual) |
@@ -598,7 +604,7 @@ best point seen.
 
 | key | type, default | meaning |
 |---|---|---|
-| `tolerances` | array, **required** | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`) |
+| `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface |
 | `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial |
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
@@ -649,7 +655,8 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 
 | test | result |
 |---|---|
-| schemas | both registered and available; missing or empty variables, unknown algorithm, malformed options or `ParamPath` → `InvalidSettings` |
+| schemas | both registered, available and runnable with their defaults; unknown algorithm, malformed options or `ParamPath` → `InvalidSettings` |
+| defaults | singlet: variables c₁, c₂ and the back focus, EFL held at its start value (replaced by an explicit `efl` operand); tolerances: the lens thickness and both curvatures |
 | singlet through the scheduler | equi-convex start, EFL = 100 constraint: converged, merit ÷5 or more, EFL within 1e-6, the result applies as a session snapshot with the reported hash |
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
 | cancel and stop | cancelled after two LM iterations: `cancelled`, best-so-far below the start; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |

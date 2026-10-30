@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use mklight_core::job::{CancelToken, Precision, Progress};
+use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem, Snapshot};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_optim::deriv::{FdScheme, JacobianSettings};
@@ -38,6 +39,8 @@ use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
 use mklight_optim::lsq::{LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
+use mklight_optim::merit::geometric::optical_gaps;
+use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
     GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand, OperandEvaluator,
     OperandRegistry, OperandRole, OperandValue, OpticalProblem, TraceEvaluator, VariableSpec,
@@ -411,6 +414,64 @@ fn build_merit(
     Ok(spec)
 }
 
+/// The default variables: the curvature of every curved, optically active
+/// surface and the back focus (the thickness before the image).
+fn auto_variables(sys: &OpticalSystem) -> Vec<VariableSpec> {
+    let n = sys.surfaces.len();
+    let gaps = optical_gaps(sys);
+    let mut v: Vec<VariableSpec> = gaps
+        .iter()
+        .map(|g| ParamPath::Curvature {
+            surface: sys.surfaces[g.from].id,
+        })
+        .filter(|p| p.get(sys).is_ok_and(|c| c != 0.0))
+        .map(VariableSpec::new)
+        .collect();
+    if n >= 3 {
+        v.push(VariableSpec::new(ParamPath::Thickness {
+            surface: sys.surfaces[n - 2].id,
+        }));
+    }
+    v
+}
+
+/// The default tolerances: ±0.05 mm on every glass and air thickness but
+/// the back focus, and ±0.5 % on every curvature of a curved optically
+/// active surface.
+fn auto_tolerances(sys: &OpticalSystem) -> Vec<ToleranceOperand> {
+    let gaps = optical_gaps(sys);
+    let mut t = Vec::new();
+    for g in &gaps[..gaps.len().saturating_sub(1)] {
+        let mut o = ToleranceOperand::symmetric(
+            ParamPath::Thickness {
+                surface: sys.surfaces[g.from].id,
+            },
+            0.05,
+        );
+        o.label = format!("thickness {}", sys.surfaces[g.from].id.0);
+        t.push(o);
+    }
+    for g in &gaps {
+        let p = ParamPath::Curvature {
+            surface: sys.surfaces[g.from].id,
+        };
+        if let Ok(c) = p.get(sys)
+            && c != 0.0
+        {
+            let mut o = ToleranceOperand::symmetric(p, 0.005 * c.abs());
+            o.label = format!("curvature {}", sys.surfaces[g.from].id.0);
+            t.push(o);
+        }
+    }
+    t
+}
+
+/// Does the spec contain an enabled `efl` operand?
+fn has_efl(spec: &MeritFunctionSpec) -> bool {
+    spec.enabled()
+        .any(|(_, o)| matches!(o.kind, OperandKind::Efl))
+}
+
 fn value_json(v: &OperandValue) -> (Value, Value) {
     match v {
         Ok(x) => (num(*x), Value::Null),
@@ -554,6 +615,7 @@ impl Algorithm {
 #[derive(Deserialize)]
 struct OptimizeSettings {
     variables: Vec<VariableSpec>,
+    hold_efl: bool,
     merit: Value,
     default_merit: Value,
     operands: Vec<Operand>,
@@ -719,8 +781,10 @@ impl Analysis for Optimize {
         json!({
             "type": "object",
             "properties": {
-                "variables": {"type": "array", "title": "Variables",
-                    "description": "Variable specs: {\"param\": ParamPath, \"lower\", \"upper\", \"scale\", \"fd_step\", \"label\"}. At least one."},
+                "variables": {"type": "array", "default": [], "title": "Variables",
+                    "description": "Variable specs: {\"param\": ParamPath, \"lower\", \"upper\", \"scale\", \"fd_step\", \"label\"}. Empty: the curvature of every curved optical surface and the back focus."},
+                "hold_efl": {"type": "boolean", "default": true, "title": "Hold focal length",
+                    "description": "Add an EFL equality constraint at the start value, unless the merit already has an efl operand."},
                 "merit": {"type": ["object", "null"], "default": null, "title": "Merit function",
                     "description": "A merit-function spec; null generates the default merit from `default_merit` for the variables."},
                 "default_merit": {"type": "object", "default": default_merit, "title": "Default merit",
@@ -752,8 +816,7 @@ impl Analysis for Optimize {
                     "description": "Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`)."},
                 "stop_key": {"type": ["string", "null"], "default": null, "title": "Stop key",
                     "description": "Key for `request_stop`: stop and keep the best point."}
-            },
-            "required": ["variables"]
+            }
         })
     }
 
@@ -763,17 +826,22 @@ impl Analysis for Optimize {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let s: OptimizeSettings = parse(settings, "settings")?;
-        if s.variables.is_empty() {
-            return Err(invalid("'variables': at least one variable is needed"));
-        }
+        let mut s: OptimizeSettings = parse(settings, "settings")?;
         let system = input.snapshot.system().clone();
+        if s.variables.is_empty() {
+            s.variables = auto_variables(&system);
+            if s.variables.is_empty() {
+                return Err(invalid(
+                    "'variables': none given, and the system has nothing to vary",
+                ));
+            }
+        }
         let default_merit = patched(
             &DefaultMeritSpec::default(),
             &s.default_merit,
             "default_merit",
         )?;
-        let spec = build_merit(
+        let mut spec = build_merit(
             &system,
             &s.merit,
             &default_merit,
@@ -781,6 +849,23 @@ impl Analysis for Optimize {
             &s.operands,
             &s.constraints,
         )?;
+        let mut held = Vec::new();
+        if s.hold_efl && !has_efl(&spec) {
+            let ev = TraceEvaluator::new(input.library.clone());
+            match ev
+                .evaluate_system(&system, &[&Operand::new(OperandKind::Efl)], ctx)?
+                .remove(0)
+            {
+                Ok(f) if f.is_finite() => {
+                    let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
+                    o.label = "hold EFL".into();
+                    spec.operands.push(o);
+                }
+                other => held.push(format!(
+                    "the focal length is not held: the start has no finite EFL ({other:?})"
+                )),
+            }
+        }
         let (algo, max_iter) = Algo::new(&s)?;
         let reg = OperandRegistry::builtin();
         let reference = OpticalProblem::new(
@@ -823,23 +908,40 @@ impl Analysis for Optimize {
             mon.keep_history = false;
             mon.feasibility_tol = s.feasibility_tolerance;
             let r = match ev.active_gpu() {
-                Some(g) => {
-                    let p = OpticalProblem::new(
-                        system.clone(),
-                        s.variables.clone(),
-                        spec.clone(),
-                        g.clone().composite(),
-                        &reg,
-                    )?;
-                    algo.run(&p, &x0, &mon)
-                }
+                Some(g) => OpticalProblem::new(
+                    system.clone(),
+                    s.variables.clone(),
+                    spec.clone(),
+                    g.clone().composite(),
+                    &reg,
+                )
+                .and_then(|p| algo.run(&p, &x0, &mon)),
                 None => algo.run(&reference, &x0, &mon),
             };
-            r.map(|r| (r, mon.best.get()))
+            (r, mon.best.get())
         });
-        let (result, best) = match run {
+        let (run, best) = run;
+        let result = match run {
             Ok(r) => r,
-            Err(MkError::Cancelled) => return Err(MkError::Cancelled.into()),
+            // Cancellation surfaced as an error: the best point seen.
+            Err(MkError::Cancelled) => match &best {
+                Some(b) => OptimResult {
+                    x: b.x.clone(),
+                    merit: b.merit,
+                    violation: b.violation,
+                    termination: Termination::Cancelled,
+                    iterations: history.lock().map(|h| h.len()).unwrap_or(0),
+                    evaluations: history
+                        .lock()
+                        .ok()
+                        .and_then(|h| h.last().map(|r| r.evaluations))
+                        .unwrap_or(0),
+                    multipliers: None,
+                    history: Vec::new(),
+                    failed_variables: Vec::new(),
+                },
+                None => return Err(MkError::Cancelled.into()),
+            },
             Err(e) => return Err(e.into()),
         };
         let feas_tol = s.feasibility_tolerance;
@@ -850,7 +952,7 @@ impl Analysis for Optimize {
             violation: result.violation,
             status: EvalStatus::Ok,
         };
-        let x = match &best {
+        let (x, search) = match &best {
             Some(b)
                 if !result.merit.is_finite()
                     || (why != Interrupt::None
@@ -861,9 +963,9 @@ impl Analysis for Optimize {
                         }
                         .better_than(&answer, feas_tol)) =>
             {
-                b.x.clone()
+                (b.x.clone(), (b.merit, b.violation))
             }
-            _ => result.x.clone(),
+            _ => (result.x.clone(), (result.merit, result.violation)),
         };
 
         // Reported numbers: CPU f64 reference.
@@ -902,7 +1004,7 @@ impl Analysis for Optimize {
                 "status": refs.status[0]},
             "final": {"merit": num(refs.merit[1]), "violation": num(refs.violation[1]),
                 "status": refs.status[1], "feasible": feasible},
-            "search": {"merit": num(result.merit), "violation": num(result.violation)},
+            "search": {"merit": num(search.0), "violation": num(search.1)},
             "improvement": num(if refs.merit[0] > 0.0 { 1.0 - refs.merit[1] / refs.merit[0] } else { f64::NAN }),
             "multipliers": result.multipliers.as_ref().map(|m| m.iter().map(|v| num(*v)).collect::<Vec<_>>()),
             "failed_variables": result.failed_variables,
@@ -924,6 +1026,7 @@ impl Analysis for Optimize {
             ]);
         }
         let mut warnings = ev.warnings;
+        warnings.extend(held);
         if !feasible {
             warnings.push(format!(
                 "the final design violates its constraints (total normalised violation {:.3e})",
@@ -1002,8 +1105,8 @@ impl Analysis for Tolerance {
         json!({
             "type": "object",
             "properties": {
-                "tolerances": {"type": "array", "title": "Tolerances",
-                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. At least one."},
+                "tolerances": {"type": "array", "default": [], "title": "Tolerances",
+                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature."},
                 "compensators": {"type": "array", "default": [], "title": "Compensators",
                     "description": "{\"param\": ParamPath, \"range\", \"scale\"}: re-optimised for every trial."},
                 "criterion": {"type": ["object", "null"], "default": null, "title": "Criterion",
@@ -1022,8 +1125,7 @@ impl Analysis for Tolerance {
                     "default": "auto", "title": "Merit evaluation"},
                 "gpu_batch": {"type": "integer", "minimum": 1, "default": 512, "title": "GPU sub-batch"},
                 "stop_key": {"type": ["string", "null"], "default": null, "title": "Stop key"}
-            },
-            "required": ["tolerances"]
+            }
         })
     }
 
@@ -1033,11 +1135,16 @@ impl Analysis for Tolerance {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let s: ToleranceSettings = parse(settings, "settings")?;
-        if s.tolerances.is_empty() {
-            return Err(invalid("'tolerances': at least one tolerance is needed"));
-        }
+        let mut s: ToleranceSettings = parse(settings, "settings")?;
         let system = input.snapshot.system().clone();
+        if s.tolerances.is_empty() {
+            s.tolerances = auto_tolerances(&system);
+            if s.tolerances.is_empty() {
+                return Err(invalid(
+                    "'tolerances': none given, and the system has nothing to tolerance",
+                ));
+            }
+        }
         let mc = MonteCarloSettings {
             trials: s.trials,
             seed: s.seed,
@@ -1357,6 +1464,7 @@ mod tests {
         json!({
             "variables": [curv(1), curv(2), curv(3), curv(4), curv(5), curv(6), thick(6)],
             "default_merit": {"fields": [0, 2], "wavelengths": [1], "thickness": null},
+            "hold_efl": false,
         })
     }
 
@@ -1367,13 +1475,10 @@ mod tests {
             let info = reg.list().into_iter().find(|i| i.name == name).unwrap();
             assert!(info.available, "{name}");
             assert_eq!(info.category, "optimization");
-            // Variables / tolerances are required: no complete defaults.
-            assert_eq!(info.default_settings, Value::Null);
+            assert!(info.default_settings.is_object());
         }
         let sys = samples::singlet();
         for bad in [
-            json!({}),
-            json!({"variables": []}),
             json!({"variables": [curv(1)], "algorithm": "simplex"}),
             json!({"variables": [curv(1)], "options": {"max_iterations": "many"}}),
             json!({"variables": [{"param": {"param": "nope"}}]}),
@@ -1645,5 +1750,70 @@ mod tests {
             let (m0, m1) = (f(&r.json["start"]["merit"]), f(&r.json["final"]["merit"]));
             assert!(m1 < m0, "{backend}: {m0} -> {m1}");
         }
+    }
+
+    /// With no variables / tolerances the jobs choose them: the curvatures of
+    /// the curved optical surfaces and the back focus with the EFL held, and
+    /// ±0.05 mm / ±0.5 % tolerances.
+    #[test]
+    fn defaults_choose_variables_and_tolerances() {
+        let sys = samples::singlet();
+        let r = run(sys.clone(), "optimize", json!({"max_iterations": 3})).unwrap();
+        let params: Vec<Value> = r.json["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["param"].clone())
+            .collect();
+        assert_eq!(
+            params,
+            vec![
+                json!(ParamPath::Curvature {
+                    surface: SurfaceId(1)
+                }),
+                json!(ParamPath::Curvature {
+                    surface: SurfaceId(2)
+                }),
+                json!(ParamPath::Thickness {
+                    surface: SurfaceId(2)
+                }),
+            ]
+        );
+        let held: Vec<&Value> = r.json["operands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["kind"] == json!("efl"))
+            .collect();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0]["role"], json!("constraint"));
+        assert!((f(&held[0]["target"]) - efl(&sys)).abs() < 1e-12);
+        // An explicit EFL operand replaces the hold.
+        let r = run(
+            sys.clone(),
+            "optimize",
+            json!({"max_iterations": 1, "operands": [efl_constraint(100.0)]}),
+        )
+        .unwrap();
+        let efls = r.json["operands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["kind"] == json!("efl"))
+            .count();
+        assert_eq!(efls, 1);
+
+        let t = run(sys.clone(), "tolerance", json!({"mode": "sensitivity"})).unwrap();
+        let ops = t.json["sensitivity"]["operands"].as_array().unwrap();
+        // The lens thickness (not the back focus) and both curvatures.
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        assert_eq!(f(&ops[0]["plus"]), 0.05);
+        let c1 = ParamPath::Curvature {
+            surface: SurfaceId(1),
+        }
+        .get(&sys)
+        .unwrap();
+        assert!((f(&ops[1]["plus"]) - 0.005 * c1.abs()).abs() < 1e-15);
+        assert!(t.json["monte_carlo"].is_null());
     }
 }
