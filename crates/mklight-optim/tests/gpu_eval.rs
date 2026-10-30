@@ -328,7 +328,7 @@ fn gpu_values_are_deterministic_and_batch_independent() {
         TraceEvaluator::builtin(),
         &sys,
         GpuEvalSettings {
-            max_batch: 2,
+            batch: 2,
             ..Default::default()
         },
         &JobContext::new(),
