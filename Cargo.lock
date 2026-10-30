@@ -269,9 +269,11 @@ dependencies = [
  "dispatch2",
  "mklight-core",
  "mklight-gpu",
+ "mklight-trace",
  "objc2",
  "objc2-foundation",
  "objc2-metal",
+ "rayon",
 ]
 
 [[package]]

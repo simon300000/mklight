@@ -19,6 +19,7 @@ use mklight_core::{JobContext, MkError, MkResult};
 use mklight_gpu::backend::next_backend_instance;
 use mklight_gpu::consts::*;
 use mklight_gpu::layout::{PhiloxParams, ReduceParams, SagParams};
+use mklight_gpu::{PreparedTrace, TraceRequest, TraceResult};
 use mklight_gpu::pending::{JobControl, pending, spawn_job};
 use mklight_gpu::{
     BackendKind, ComputeBackend, DeviceInfo, Df32, ErrorBudget, Job, JobKind, JobOutput, JobResult,
@@ -36,7 +37,6 @@ use crate::context::{
 const DEFAULT_CHUNK: usize = 1 << 20;
 
 struct Uploaded {
-    #[allow(dead_code)] // bound by trace kernels (next phase)
     headers: SharedBuffer<PackedHeader>,
     surfaces: SharedBuffer<PackedSurface>,
     set: PackedSystemSet,
@@ -272,8 +272,9 @@ impl Inner {
     fn supports(&self, kind: JobKind) -> bool {
         match kind {
             JobKind::PhiloxStream | JobKind::PhiloxBlocks | JobKind::SagProbe => true,
-            JobKind::DfOps | JobKind::Reduce => self.precision.probe.error_free_transforms(),
-            JobKind::Trace => false,
+            JobKind::DfOps | JobKind::Reduce | JobKind::Trace => {
+                self.precision.probe.error_free_transforms()
+            }
         }
     }
 
@@ -436,15 +437,87 @@ impl Inner {
                 })?;
                 JobOutput::F32(out.to_vec())
             }
-            Job::Trace(_) => {
-                return Err(MkError::Unsupported(
-                    "metal: sequential trace kernel not implemented yet".into(),
-                ));
+            Job::Trace(req) => {
+                let up = self.lookup(req.systems)?;
+                JobOutput::Trace(Box::new(self.trace(&req, &up, ctl, &mut stats)?))
             }
         };
         ctl.report(1.0, "");
         stats.wall_seconds = t0.elapsed().as_secs_f64();
         Ok(JobResult { output, stats })
+    }
+
+    /// The sequential / path trace kernel (`mkl_trace`) over the request's
+    /// rays, in command buffers of `chunk_items` rays.
+    fn trace(
+        &self,
+        req: &TraceRequest,
+        up: &Uploaded,
+        ctl: &JobControl,
+        stats: &mut JobStats,
+    ) -> MkResult<TraceResult> {
+        let gpu = &self.ctx;
+        let prep = PreparedTrace::new(req, &up.set)?;
+        let n = req.rays.len();
+        let (in_f, in_u) = PreparedTrace::input_planes(&req.rays);
+        let (bf, bu) = (gpu.buffer(&in_f)?, gpu.buffer(&in_u)?);
+        let steps = gpu.buffer(&prep.steps)?;
+        let mut out_f = gpu.buffer_zeroed::<f32>(n * MKL_TRACE_OUT_FLOATS as usize)?;
+        let mut out_u = gpu.buffer_zeroed::<u32>(n * MKL_TRACE_OUT_UINTS as usize)?;
+        let rec_floats = MKL_TRACE_RECORD_FLOATS as usize;
+        let mut rec_f = gpu.buffer_zeroed::<f32>(prep.record_slots * n * rec_floats)?;
+        let mut rec_u = gpu.buffer_zeroed::<u32>(prep.record_slots * n)?;
+        let pso = gpu.pipeline(&PipelineKey::plain("mkl_trace"))?;
+        let recording = prep.record_slots > 0;
+        self.chunked(n, ctl, "trace", stats, |start, len| {
+            let p = mklight_gpu::layout::TraceParams {
+                num_rays: len as u32,
+                stride: n as u32,
+                ..prep.params
+            };
+            // SAFETY: thread i < len reads in planes k·n + start + i (k <
+            // MKL_TRACE_IN_FLOATS / _UINTS: inside buffers of that many
+            // planes of n) and writes the out planes likewise; with records
+            // it writes rec_f[(slot·n + start + i)·9 + j] and
+            // rec_u[slot·n + start + i] for slot <= num_steps < record_slots.
+            // It reads headers[system] (every ray's system index was checked
+            // against the stored set) and, for that system, surfaces
+            // surface_offset + j for the start surface and every program
+            // step (validated < num_surfaces, so inside the set's surface
+            // array), the step words (num_steps of them), and per-wavelength
+            // arrays at the ray's wavelength (validated < num_wavelengths <=
+            // MKL_MAX_WAVELENGTHS). Without records the kernel never touches
+            // rec_f / rec_u (bound as 16-byte placeholders).
+            unsafe {
+                gpu.run("mkl_trace", |e| {
+                    e.set_buffer(0, &up.headers, 0);
+                    e.set_buffer(1, &up.surfaces, 0);
+                    e.set_buffer(2, &steps, 0);
+                    e.set_bytes(3, &p);
+                    e.set_buffer(4, &bf, start);
+                    e.set_buffer(5, &bu, start);
+                    e.set_buffer_mut(6, &mut out_f, start);
+                    e.set_buffer_mut(7, &mut out_u, start);
+                    if recording {
+                        e.set_buffer_mut(8, &mut rec_f, start * rec_floats);
+                        e.set_buffer_mut(9, &mut rec_u, start);
+                    } else {
+                        e.set_buffer_mut(8, &mut rec_f, 0);
+                        e.set_buffer_mut(9, &mut rec_u, 0);
+                    }
+                    e.dispatch_1d(&pso, len);
+                    Ok(())
+                })
+            }
+        })?;
+        Ok(TraceResult::from_planes(
+            out_f.as_slice(),
+            out_u.as_slice(),
+            n,
+            n,
+            rec_f.to_vec(),
+            rec_u.to_vec(),
+        ))
     }
 
     /// Two-pass reduction in command buffers of about `chunk_items` values.
@@ -610,8 +683,14 @@ impl ComputeBackend for MetalBackend {
                 self.inner.precision.probe
             )));
         }
-        if let Job::SagProbe { systems, .. } = &job {
-            self.inner.lookup(*systems)?;
+        match &job {
+            Job::SagProbe { systems, .. } => {
+                self.inner.lookup(*systems)?;
+            }
+            Job::Trace(req) => {
+                PreparedTrace::new(req, &self.inner.lookup(req.systems)?.set)?;
+            }
+            _ => {}
         }
         let (p, c, ctl) = pending(ctx);
         let inner = self.inner.clone();

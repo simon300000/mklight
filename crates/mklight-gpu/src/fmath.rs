@@ -115,17 +115,18 @@ pub fn hypot3_in<E: FpEnv>(x: f32, y: f32, z: f32) -> f32 {
 
 /// `log2(e)`, `ln 2` split for Cody–Waite reduction (`LN2_HI` has 8 trailing
 /// zero bits, so `k·LN2_HI` is exact for |k| < 256).
-const LOG2E: f32 = std::f32::consts::LOG2_E;
+const LOG2E: f32 = f32::from_bits(0x3FB8_AA3B);
 const LN2_HI: f32 = f32::from_bits(0x3F31_7200);
 const LN2_LO: f32 = f32::from_bits(0x35BF_BE8E);
-/// `1/n!`, n = 7 … 2, for the Taylor polynomial of `e^r` on |r| ≤ ln2/2
-/// (truncation error < 6e-9 relative, below the f32 rounding).
+/// `fl32(1/n!)`, n = 7 … 3, then ½, for the Taylor polynomial of `e^r` on
+/// |r| ≤ ln2/2 (truncation error < 6e-9 relative, below the f32 rounding).
+/// Written as bit patterns so the MSL twin uses identical constants.
 const EXP_C: [f32; 6] = [
-    1.0 / 5040.0,
-    1.0 / 720.0,
-    1.0 / 120.0,
-    1.0 / 24.0,
-    1.0 / 6.0,
+    f32::from_bits(0x3950_0D01),
+    f32::from_bits(0x3AB6_0B61),
+    f32::from_bits(0x3C08_8889),
+    f32::from_bits(0x3D2A_AAAB),
+    f32::from_bits(0x3E2A_AAAB),
     0.5,
 ];
 
@@ -275,6 +276,10 @@ mod tests {
         assert!(exp(f32::NAN).is_nan());
         assert_eq!(exp_in::<crate::fenv::Ftz>(-100.0), 0.0);
         assert!(exp(-100.0) > 0.0);
+        assert_eq!(LOG2E, std::f32::consts::LOG2_E);
+        for (c, n) in EXP_C.iter().zip([5040.0f32, 720.0, 120.0, 24.0, 6.0, 2.0]) {
+            assert_eq!(*c, 1.0 / n);
+        }
     }
 
     #[test]
