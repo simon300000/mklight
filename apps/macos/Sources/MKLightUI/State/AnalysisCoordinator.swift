@@ -2,6 +2,7 @@ import Foundation
 import MKLightEngine
 import MKLightModel
 import Observation
+import Synchronization
 
 /// Runs the visible analyses of one window against immutable snapshots.
 ///
@@ -13,7 +14,12 @@ import Observation
 ///
 /// The coordinator talks to a per-document engine
 /// (`EngineClient.makeDocumentEngine()`), so user glass catalogs loaded in
-/// one window do not affect another.
+/// one window do not affect another. Its catalogs follow the project's list
+/// (`open`, `syncCatalogs`).
+///
+/// Jobs do not outlive their window: `cancelAll()` runs when the window
+/// closes, and a coordinator that goes away cancels its jobs (engine jobs
+/// survive their session otherwise and would occupy shared workers).
 @MainActor
 @Observable
 public final class AnalysisCoordinator {
@@ -59,12 +65,19 @@ public final class AnalysisCoordinator {
     private var visible: Set<AnalysisKind> = []
     private var settings = AnalysisSettingsSet()
     private var engineRequest: EngineAnalysisRequest?
+    /// While positive, model changes are recorded but not snapshotted (the
+    /// session's catalogs are being loaded).
+    private var snapshotsHeld = 0
+    /// The current job of every slot, reachable from `deinit`.
+    private let liveJobs = LiveJobs()
 
     public init(engine: any EngineClient) {
         self.engine = engine
         documentEngine = engine.makeDocumentEngine()
         Task { await self.loadEngineMetadata() }
     }
+
+    deinit { liveJobs.cancelAll() }
 
     public func attach(engine: any EngineClient) {
         guard engine.info != self.engine.info else { return }
@@ -108,6 +121,7 @@ public final class AnalysisCoordinator {
     public func update(system: OpticalSystem, immediately: Bool = false) {
         latestSystem = system
         snapshotTask?.cancel()
+        guard snapshotsHeld == 0 else { return }  // taken once the catalogs are loaded
         let delay = immediately ? .zero : debounce
         snapshotTask = Task { [weak self] in
             if delay > .zero {
@@ -173,16 +187,52 @@ public final class AnalysisCoordinator {
         return info
     }
 
-    /// Loads the catalogs a project references, trying each reference's
-    /// relative path (from `projectDirectory`) and then its absolute path,
-    /// as the engine does on open. Missing catalogs become warnings.
-    public func loadProjectCatalogs(_ refs: [CatalogReference], projectDirectory: URL?) async {
+    /// The first snapshot of a document: the project's catalogs are loaded
+    /// into the session **before** `system` is snapshotted, so no analysis
+    /// runs against a library that lacks them.
+    public func open(system: OpticalSystem, catalogs refs: [CatalogReference], projectDirectory: URL?) async {
+        latestSystem = system
+        if await !syncCatalogs(refs, projectDirectory: projectDirectory) {
+            update(system: latestSystem ?? system, immediately: true)
+        }
+    }
+
+    /// Makes the session's user catalogs match the project's list `refs`.
+    /// Referenced catalogs the session lacks are loaded (trying each
+    /// reference's relative path from `projectDirectory`, then its absolute
+    /// path, as the engine does on open; missing ones become
+    /// `catalogWarnings`). When the session holds a catalog the project no
+    /// longer references (undo of "Load Glass Catalog"), the session is
+    /// rebuilt, since the engine cannot unload a catalog, and `refs` loaded
+    /// into it. Model changes wait meanwhile; the system is snapshotted
+    /// again afterwards. Returns whether the library was touched.
+    @discardableResult
+    public func syncCatalogs(_ refs: [CatalogReference], projectDirectory: URL?) async -> Bool {
+        let loaded = Set(await documentEngine.catalogs().filter { $0.source == "user" }.map(\.name))
+        var toLoad = refs.filter { !loaded.contains($0.name) }
+        if !loaded.isSubset(of: Set(refs.map(\.name))) {
+            cancelAll()
+            documentEngine = engine.makeDocumentEngine()
+            toLoad = refs
+        } else if toLoad.isEmpty {
+            catalogWarnings = []
+            return false
+        }
+        snapshotsHeld += 1
+        catalogWarnings = await load(toLoad, projectDirectory: projectDirectory)
+        catalogs = await documentEngine.catalogs()
+        snapshotsHeld -= 1
+        if snapshotsHeld == 0, let s = latestSystem { update(system: s, immediately: true) }
+        return true
+    }
+
+    /// Loads `refs`; returns a warning for each one that could not be loaded.
+    private func load(_ refs: [CatalogReference], projectDirectory: URL?) async -> [String] {
         var warnings: [String] = []
         for ref in refs {
-            let candidates = ref.candidates(projectDirectory: projectDirectory)
             var loaded = false
             var lastError: String?
-            for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            for url in ref.candidates(projectDirectory: projectDirectory) where FileManager.default.fileExists(atPath: url.path) {
                 do {
                     _ = try await documentEngine.loadCatalog(at: url)
                     loaded = true
@@ -195,13 +245,12 @@ public final class AnalysisCoordinator {
                 warnings.append("glass catalog '\(ref.name)' could not be loaded (\(lastError ?? "file not found"))")
             }
         }
-        catalogWarnings = warnings
-        await catalogsChanged()
+        return warnings
     }
 
     private func catalogsChanged() async {
         catalogs = await documentEngine.catalogs()
-        if let s = latestSystem { await openSnapshot(s) }
+        if snapshotsHeld == 0, let s = latestSystem { await openSnapshot(s) }
     }
 
     // MARK: Internals
@@ -252,6 +301,7 @@ public final class AnalysisCoordinator {
     private func start(_ kind: AnalysisKind, request: AnalysisRequest, on snapshot: ModelSnapshot) {
         slots[kind, default: Slot()].job?.cancel()
         let job = documentEngine.submit(request, on: snapshot)
+        liveJobs.set(kind.rawValue, job)
         slots[kind, default: Slot()].job = job
         slots[kind, default: Slot()].request = request
         slots[kind, default: Slot()].phase = .running(JobProgress(fraction: 0, stage: "Queued"))
@@ -261,6 +311,7 @@ public final class AnalysisCoordinator {
     private func startEngine(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) {
         engineSlot.job?.cancel()
         let job = documentEngine.submit(request, on: snapshot)
+        liveJobs.set(" engine", job)
         engineSlot.job = job
         engineSlot.engineRequest = request
         engineSlot.phase = .running(JobProgress(fraction: 0, stage: "Queued"))
@@ -285,6 +336,18 @@ public final class AnalysisCoordinator {
                 apply(.phase(.failed(error.localizedDescription)))
             }
         }
+    }
+}
+
+/// The latest job of each slot, so a coordinator's `deinit` (which cannot
+/// touch main-actor state) can cancel them.
+final class LiveJobs: Sendable {
+    private let jobs = Mutex<[String: AnalysisJob]>([:])
+
+    func set(_ slot: String, _ job: AnalysisJob) { jobs.withLock { $0[slot] = job } }
+
+    func cancelAll() {
+        for job in jobs.withLock({ Array($0.values) }) { job.cancel() }
     }
 }
 

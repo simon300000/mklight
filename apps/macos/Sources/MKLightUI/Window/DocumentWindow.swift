@@ -19,6 +19,7 @@ struct DocumentWindow: View {
     @Environment(\.mklightEngine) private var engine
 
     private var system: OpticalSystem { document.system }
+    private var projectDirectory: URL? { fileURL?.deletingLastPathComponent() }
 
     var body: some View {
         VSplitView {
@@ -54,7 +55,6 @@ struct DocumentWindow: View {
             analyses.attach(engine: engine)
             analyses.update(settings: viewState.analysisSettings)
             analyses.setVisible(viewState.visibleAnalyses)
-            analyses.update(system: system, immediately: true)
             await analyses.loadEngineMetadata()
             // When the engine cannot run the selected analysis, start on the
             // Engine pane, which shows what it can.
@@ -62,12 +62,16 @@ struct DocumentWindow: View {
                 viewState.showsEnginePane = true
             }
             analyses.setEngineRequest(viewState.engineRequest)
-            if !document.catalogs.isEmpty {
-                await analyses.loadProjectCatalogs(
-                    document.catalogs, projectDirectory: fileURL?.deletingLastPathComponent())
-            }
+            // The project's catalogs are loaded before the first snapshot.
+            await analyses.open(system: system, catalogs: document.catalogs, projectDirectory: projectDirectory)
         }
+        // Jobs of a closed window would keep shared engine workers busy.
+        .onDisappear { analyses.cancelAll() }
         .onChange(of: document.system) { _, s in analyses.update(system: s) }
+        // Undo/redo of "Load Glass Catalog" changes the list: the session follows.
+        .onChange(of: document.catalogs) { _, refs in
+            Task { await analyses.syncCatalogs(refs, projectDirectory: projectDirectory) }
+        }
         .onChange(of: viewState.analysisSettings) { _, s in analyses.update(settings: s) }
         .onChange(of: viewState.visibleAnalyses) { _, v in analyses.setVisible(v) }
         .onChange(of: viewState.engineRequest) { _, r in analyses.setEngineRequest(r) }

@@ -102,7 +102,7 @@ final class SessionEngine: EngineClient, @unchecked Sendable {
     @Test func projectCatalogsReportMissingFiles() async throws {
         let c = AnalysisCoordinator(engine: SessionEngine())
         c.update(system: SampleSystems.singlet(), immediately: true)
-        await c.loadProjectCatalogs(
+        await c.syncCatalogs(
             [CatalogReference(name: "GONE", path: "/nonexistent/gone.agf", relativePath: "glass/gone.agf")],
             projectDirectory: URL(fileURLWithPath: "/nonexistent"))
         #expect(c.catalogWarnings.count == 1 && c.catalogWarnings[0].contains("GONE"))
