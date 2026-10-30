@@ -78,7 +78,7 @@ struct MKLightCommands: Commands {
             Button("Tolerance…") { actions?.designJob(.tolerance) }
                 .keyboardShortcut("t", modifiers: [.command, .control])
             Button("Apply Solves…") { actions?.designJob(.solves) }
-                .keyboardShortcut("s", modifiers: [.command, .control])
+                .keyboardShortcut("l", modifiers: [.command, .control])
             Divider()
             Button("Show Issues") { actions?.showIssues() }
                 .keyboardShortcut("e", modifiers: [.command, .control])

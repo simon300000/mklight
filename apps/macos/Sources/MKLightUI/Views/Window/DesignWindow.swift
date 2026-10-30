@@ -122,7 +122,7 @@ private struct DesignWindowContent: View {
                 Button("Tolerance", systemImage: "plusminus") { window.activeJob = .tolerance }
                     .help("Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)")
                 Button("Solves", systemImage: "function") { window.activeJob = .solves }
-                    .help("Preview and apply the design's solves (⌃⌘S)")
+                    .help("Preview and apply the design's solves (⌃⌘L)")
             } label: {
                 Label("Design", systemImage: "wand.and.rays")
             }

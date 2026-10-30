@@ -23,7 +23,7 @@ macOS 15 or later.
 |---|---|
 | `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
 | `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests and settings, result types, `RunInfo`, the `AnalysisJob` handle and `MockEngine`. |
-| `MKLightUI` | The document app: `ProjectDocument`, `WindowViewState`, `AnalysisCoordinator`, the lens data editor (`NSTableView`), the inspector, the analysis plots (Swift Charts), the PSF heat map and the Metal viewport. |
+| `MKLightUI` | The document app. `Document/` (`ProjectDocument` file adapter, `DesignDocument` design state with undo), `ViewModels/` (`Workspace` snapshots and panes, `AnalysisPane`, `WindowState` and the saved `WorkspaceLayout`, `LensTable`, the data-driven `SurfaceTypes`, design-job sessions, result readers; platform-neutral), `Views/` (window, sidebar, lens table, inspectors, analysis panes and dedicated plots in Swift Charts, design-job sheets, welcome window), `Viewport/` (Metal renderer, engine layout reader, NS/UIViewRepresentable wrappers), `Support/` (palette, parsers, platform adapters). See docs/APP.md for the design. |
 | `CMKLight` | System-library module over `crates/mklight-ffi/include/mklight.h`; present only when `Frameworks/libmklight_ffi.a` exists. |
 | `MKLightFFI` | `FFIEngine`: `EngineClient` over the C ABI (sessions, projects, catalogs, jobs, zero-copy buffers). Compiles without the library and then reports it unavailable. |
 | `MKLight` | The executable. It uses `FFIEngine` (debug builds without the library fall back to `MockEngine`) and runs `MKLightScene`. |
@@ -85,6 +85,12 @@ public protocol EngineClient: Sendable {
 
 ### MockEngine (synthetic data)
 
+The mock also runs a few analyses **by name in the engine's result format**
+(`validate`, `first_order`, `layout`, `spot_diagram`, `ray_fan`, `opd_fan`,
+`field_curvature_distortion`, `solves`, and synthetic `optimize` and
+`tolerance` jobs that report progress and support Stop), so the views and
+view-model tests work without the Rust engine.
+
 `MockEngine` implements the full contract: validation, hashing (SHA-256 of
 sorted-key JSON, where the Rust engine uses BLAKE3), simulated stages with
 progress and cancellation, and seeded random sampling. Its numbers come from
@@ -108,24 +114,12 @@ shown generically (`GenericResult`: JSON plus `ResultBuffer`s).
 
 ## State model
 
-* **Simulation state.** `ProjectDocument` (a `ReferenceFileDocument`) holds
-  only the `OpticalSystem` value. Each edit goes through
-  `edit(_:undoManager:_:)`, which replaces the value and registers the
-  previous value for undo, so undo and redo restore whole value snapshots.
-  An edit that invalidates configuration overrides or mechanical parts (a
-  conic override on a surface made plane, a semi-diameter override on a
-  surface switched to automatic) removes them in the same undoable step.
-* **View state.** `WindowViewState` is per window. It holds the selection (by
-  `SurfaceID`, so it survives inserts and deletes), the visible panels, the
-  inspector tab, the viewport mode and camera, ray colouring, and every
-  analysis's settings. None of it is written into the model.
-* **Analysis orchestration.** `AnalysisCoordinator` is per window. It
-  debounces model changes (150 ms), asks the engine for a snapshot, and then
-  re-runs only the visible analyses. A newer request cancels the older job
-  for the same view. Old results stay on screen, dimmed with a STALE badge,
-  until the new ones arrive. While the model fails validation, no analyses
-  run and the errors are listed in the status bar. Closing the window
-  cancels its jobs.
+The design (`DesignDocument`), the engine snapshots and analysis panes
+(`Workspace`) and the window's view state (`WindowState`) are separate; see
+docs/APP.md, "State model". Undo and redo restore whole design values;
+analyses only ever run against immutable engine snapshots; panes go stale
+(dimmed, with an Update button) when the design, the glass library or their
+settings change.
 
 ## Files
 
@@ -142,27 +136,31 @@ in the bundle's Info.plist by the build script.
 
 ## Lens data editor
 
-The editor is an `NSTableView` with these columns: surface, type, comment,
-radius, thickness, material, semi-diameter, conic and coating.
+A SwiftUI `Table` with the columns every surface has: surface (OBJ, 1, …,
+STO with the aperture symbol, IMA), type, comment, radius, thickness,
+material, semi-diameter and conic. Type-specific parameters are in the
+surface inspector, built from `SurfaceTypes` descriptors.
 
-* Use ↑/↓ to select a row and ←/→ or Tab to move the focused cell.
-* Return starts editing the focused cell. Typing a character also starts
-  editing, with that character as the first input. While editing, Return
-  commits and moves down, Tab commits and moves across, and Esc cancels.
-* Backspace/Delete clears the focused cell into an edit (Esc restores it);
-  `+`, `-` and digits start an edit like any other character. Structural
-  edits need explicit commands: ⌘⌫ deletes the selected surface and Insert
-  (or ⌘⇧I / ⌘⌥I) inserts one. The Lens menu and the context menu have the
-  same commands, plus Make Stop.
-* Numeric validation follows `LensValueParser`: `inf` or `∞` means a plane
-  radius and an infinite object distance, and semi-diameter accepts `auto`.
-  The material column accepts glass names, `AIR`, `MIRROR`, `DUMMY`,
-  `nd/vd`, `n=…` and `CATALOG:NAME`. Rejected input beeps and the message
-  appears in the status bar.
+* Return or a double click edits the selected row; in a cell, Tab / ⇧Tab
+  move across, ↑ / ↓ and Return move between rows (committing), Esc
+  reverts. Rejected input reverts and the reason appears in the status bar.
+* Numbers follow `LensValueParser`: `inf` or `∞` for a plane radius and an
+  infinite object distance, `auto` for an automatic semi-diameter (shown
+  dimmed with the engine's computed value). The material column accepts
+  glass names (completed from the session's catalogs), `AIR`, `MIRROR`,
+  `DUMMY`, `nd/vd`, `n=…` and `CATALOG:NAME`.
+* Inline markers: `V` for a variable, a letter for the solve controlling
+  the value; validation issues badge the surface number.
+* ⇧⌘I / ⌥⌘I insert, ⌘⌫ deletes, ⇧⌘T makes the stop, ⌃⌘V toggles the
+  focused value's variable; the same commands are in the header buttons,
+  the context menu and the Lens menu.
 
 ## Metal viewport
 
-`ViewportView` wraps an `MTKView` in an `NSViewRepresentable`. It draws on
+`ViewportView` wraps an `MTKView` in an `NSViewRepresentable` on macOS and
+a `UIViewRepresentable` on iPadOS (`ViewportBridge` is shared; only input
+handling differs). The scene is the engine's `layout` result
+(`EngineLayout` reads its buffers). It draws on
 demand only, with 4× MSAA. Polylines become instanced screen-space quads with
 analytic anti-aliasing and round caps. Lens elements get translucent glass
 fills in the section view. There are two modes:
