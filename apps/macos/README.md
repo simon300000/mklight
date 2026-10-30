@@ -21,7 +21,7 @@ macOS 15 or later.
 
 | target | contents |
 |---|---|
-| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
+| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. Every surface shape of `docs/SURFACES.md` is mirrored (odd asphere, Q-con/Q-bfs, diffractive on a plane/conic/even-asphere base, toroid, biconic with its cylinder preset, XY polynomial, Zernike sag), with the `shape_coefficient`/`shape_param` parameter paths, their limits and term numbering (`CoefficientSet`, `ShapeParameter`, `XYTerm`, `ZernikeTerm`), checked against `extended_shapes.json`. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
 | `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests and settings, result types, `RunInfo`, the `AnalysisJob` handle and `MockEngine`. |
 | `MKLightUI` | The document app. `Document/` (`ProjectDocument` file adapter, `DesignDocument` design state with undo), `ViewModels/` (`Workspace` snapshots and panes, `AnalysisPane`, `WindowState` and the saved `WorkspaceLayout`, `LensTable`, the data-driven `SurfaceTypes`, design-job sessions, result readers; platform-neutral), `Views/` (window, sidebar, lens table, inspectors, analysis panes and dedicated plots in Swift Charts, design-job sheets, welcome window), `Viewport/` (Metal renderer, engine layout reader, NS/UIViewRepresentable wrappers), `Support/` (palette, parsers, platform adapters). See docs/APP.md for the design. |
 | `CMKLight` | System-library module over `crates/mklight-ffi/include/mklight.h`; present only when `Frameworks/libmklight_ffi.a` exists. |
@@ -97,7 +97,10 @@ progress and cancellation, and seeded random sampling. Its numbers come from
 `MockOptics`, a deliberately small stand-in. It uses a Cauchy index fitted
 to n_d/V_d, a rotationally symmetric real-ray trace that ignores tilts,
 decenters, ray aiming and configurations, and diffraction-limit × Gaussian-blur
-approximations for MTF and PSF. The app labels its output everywhere: the
+approximations for MTF and PSF. Extended surface shapes are traced as their
+rotational y-meridian base (toroid and biconic: the y profile; Q, XY and
+Zernike: the base conic without the departure; diffractive: the base, plus the
+first phase term's paraxial power). The app labels its output everywhere: the
 orange "MOCK ENGINE" badge in the viewport, the status bar, and
 `RunInfo.backend == "mock"` with a warning. Its paraxial and ray code is
 checked against known answers (thick-lens equations, a paraboloid's perfect
