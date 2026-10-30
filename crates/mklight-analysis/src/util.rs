@@ -204,6 +204,41 @@ pub(crate) fn linspace(a: f64, b: f64, n: usize) -> Vec<f64> {
     }
 }
 
+/// Gauss–Legendre nodes and weights on `[0, 1]` (`n ≥ 1`), by Newton
+/// iteration on `P_n` from the Chebyshev-like initial guesses; exact for
+/// polynomials of degree `2n − 1`.
+pub fn gauss_legendre_01(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut x = vec![0.0; n];
+    let mut w = vec![0.0; n];
+    let nf = n as f64;
+    for i in 0..n.div_ceil(2) {
+        let mut z = (PI * (i as f64 + 0.75) / (nf + 0.5)).cos();
+        let mut dp = 1.0;
+        for _ in 0..100 {
+            let (mut p0, mut p1) = (1.0f64, z);
+            for k in 2..=n {
+                let kf = k as f64;
+                let p2 = ((2.0 * kf - 1.0) * z * p1 - (kf - 1.0) * p0) / kf;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = nf * (z * p1 - p0) / (z * z - 1.0);
+            let dz = p1 / dp;
+            z -= dz;
+            if dz.abs() < 1e-16 {
+                break;
+            }
+        }
+        let wi = 2.0 / ((1.0 - z * z) * dp * dp);
+        // Map [−1, 1] → [0, 1].
+        x[i] = 0.5 * (1.0 - z);
+        x[n - 1 - i] = 0.5 * (1.0 + z);
+        w[i] = 0.5 * wi;
+        w[n - 1 - i] = 0.5 * wi;
+    }
+    (x, w)
+}
+
 // ----- Pupil patterns -----------------------------------------------------------
 
 /// Pupil sampling of the spot-based analyses. Each pattern's density is set
@@ -600,6 +635,18 @@ mod tests {
         assert!(u.v[1].is_nan() && u.v[2] == f64::INFINITY && u.p[0][0].is_nan());
         let w: T = serde_json::from_str(r#"{"a":"nan","v":[],"p":[]}"#).unwrap();
         assert!(w.a.is_nan());
+    }
+
+    #[test]
+    fn gauss_legendre_integrates_polynomials_exactly() {
+        for n in 1..12 {
+            let (x, w) = gauss_legendre_01(n);
+            assert!(x.windows(2).all(|p| p[0] < p[1]));
+            for deg in 0..2 * n {
+                let q: f64 = x.iter().zip(&w).map(|(x, w)| w * x.powi(deg as i32)).sum();
+                assert!((q - 1.0 / (deg + 1) as f64).abs() < 1e-14, "n {n} deg {deg}");
+            }
+        }
     }
 
     #[test]
