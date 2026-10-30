@@ -10,9 +10,12 @@ extension UTType {
     public static let mklightProject = UTType(exportedAs: "com.mklight.project", conformingTo: .json)
 }
 
-/// The document model: the optical system value plus undo. It holds no view
-/// state (selection, panes, camera and analysis settings live in
-/// `WindowViewState`), and it never computes optics.
+/// The document model: the optical system value plus undo, and the other
+/// sections of the `.mklight` project (catalog references, views, merit,
+/// metadata, unknown keys), which are written back unchanged. It holds no
+/// view state (selection, panes, camera and analysis settings live in
+/// `WindowViewState`), and it never computes optics. Engine snapshots of
+/// the system are taken by the window's `AnalysisCoordinator`.
 ///
 /// Every edit replaces `system` with a new value and registers the previous
 /// value with the undo manager, so undo/redo restores whole value snapshots.
@@ -29,15 +32,22 @@ public final class ProjectDocument: ReferenceFileDocument, @unchecked Sendable {
     public static var writableContentTypes: [UTType] { [.mklightProject] }
 
     @Published public private(set) var system: OpticalSystem
+    /// The project sections other than the system.
+    @Published public private(set) var project: ProjectFile
 
-    /// Copy of `system` readable from any thread, for `snapshot(contentType:)`
-    /// which the document machinery may call off the main actor.
-    private let persisted: Mutex<OpticalSystem>
+    /// Copy of the project readable from any thread, for
+    /// `snapshot(contentType:)` which the document machinery may call off
+    /// the main actor.
+    private let persisted: Mutex<ProjectFile>
 
     public init(system: OpticalSystem = .newEmpty()) {
         self.system = system
-        persisted = Mutex(system)
+        project = ProjectFile(system: system)
+        persisted = Mutex(ProjectFile(system: system))
     }
+
+    /// User glass catalogs the project references.
+    public var catalogs: [CatalogReference] { project.catalogs }
 
     public init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
@@ -45,11 +55,35 @@ public final class ProjectDocument: ReferenceFileDocument, @unchecked Sendable {
         }
         let file = try ProjectFile.decode(data)
         _system = Published(initialValue: file.system)
-        persisted = Mutex(file.system)
+        _project = Published(initialValue: file)
+        persisted = Mutex(file)
     }
 
     public func snapshot(contentType: UTType) throws -> ProjectFile {
-        ProjectFile(system: persisted.withLock { $0 })
+        var file = persisted.withLock { $0 }
+        let app = Bundle.main.infoDictionary
+        file.stampMetadata(
+            appName: "MKLight", appVersion: app?["CFBundleShortVersionString"] as? String ?? "dev", engineVersion: nil)
+        return file
+    }
+
+    /// Records a user glass catalog in the project (undoable).
+    @MainActor
+    public func addCatalog(_ ref: CatalogReference, undoManager: UndoManager?) {
+        var next = project
+        next.addCatalog(ref)
+        guard next != project else { return }
+        let previous = project
+        setProject(next)
+        undoManager?.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated { doc.setProject(previous) }
+        }
+        undoManager?.setActionName("Add Glass Catalog")
+    }
+
+    @MainActor private func setProject(_ p: ProjectFile) {
+        project = p
+        persisted.withLock { $0.sections = p.sections }
     }
 
     public func fileWrapper(snapshot: ProjectFile, configuration: WriteConfiguration) throws -> FileWrapper {
@@ -76,7 +110,8 @@ public final class ProjectDocument: ReferenceFileDocument, @unchecked Sendable {
     @MainActor private func replace(with value: OpticalSystem, actionName: String, undoManager: UndoManager?) {
         let previous = system
         system = value
-        persisted.withLock { $0 = value }
+        project.system = value
+        persisted.withLock { $0.system = value }
         undoManager?.registerUndo(withTarget: self) { doc in
             doc.replace(with: previous, actionName: actionName, undoManager: undoManager)
         }

@@ -12,9 +12,15 @@ public enum ScatterModel: Codable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
-        case "lambertian": self = .lambertian(tis: try c.value("tis"))
-        case "abg": self = .abg(a: try c.value("a"), b: try c.value("b"), g: try c.value("g"))
-        case "gaussian": self = .gaussian(tis: try c.value("tis"), sigmaSlope: try c.value("sigma_slope"))
+        case "lambertian":
+            try c.allowOnly("type", "tis")
+            self = .lambertian(tis: try c.value("tis"))
+        case "abg":
+            try c.allowOnly("type", "a", "b", "g")
+            self = .abg(a: try c.value("a"), b: try c.value("b"), g: try c.value("g"))
+        case "gaussian":
+            try c.allowOnly("type", "tis", "sigma_slope")
+            self = .gaussian(tis: try c.value("tis"), sigmaSlope: try c.value("sigma_slope"))
         case let t:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown scatter model '\(t)'")
         }
@@ -50,10 +56,12 @@ public enum MechanicalPart: Codable, Sendable, Hashable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
         case "barrel":
+            try c.allowOnly("type", "from", "to", "inner_radius", "finish")
             self = .barrel(
                 from: try c.value("from"), to: try c.value("to"), innerRadius: try c.value("inner_radius"),
                 finish: try c.value("finish"))
         case "annular_baffle":
+            try c.allowOnly("type", "surface", "z", "inner_radius", "outer_radius", "finish")
             self = .annularBaffle(
                 surface: try c.value("surface"), z: try c.value("z"), innerRadius: try c.value("inner_radius"),
                 outerRadius: try c.value("outer_radius"), finish: try c.value("finish"))
@@ -111,6 +119,7 @@ public struct Sensor: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("pixels_x", "pixels_y", "pitch_x", "pitch_y", "max_cra_deg", "spectral_response")
         pixelsX = try c.value("pixels_x")
         pixelsY = try c.value("pixels_y")
         pitchX = try c.value("pitch_x")

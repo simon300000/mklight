@@ -10,12 +10,16 @@ import SwiftUI
 /// window's `WindowViewState` and `AnalysisCoordinator`.
 struct DocumentWindow: View {
     @ObservedObject var document: ProjectDocument
+    /// Where the document lives (`nil` while untitled); its directory is
+    /// where relative catalog paths start.
+    var fileURL: URL?
     @State private var viewState = WindowViewState()
     @State private var analyses = AnalysisCoordinator(engine: MockEngine())
     @Environment(\.undoManager) private var undoManager
     @Environment(\.mklightEngine) private var engine
 
     private var system: OpticalSystem { document.system }
+    private var projectDirectory: URL? { fileURL?.deletingLastPathComponent() }
 
     var body: some View {
         VSplitView {
@@ -51,11 +55,26 @@ struct DocumentWindow: View {
             analyses.attach(engine: engine)
             analyses.update(settings: viewState.analysisSettings)
             analyses.setVisible(viewState.visibleAnalyses)
-            analyses.update(system: system, immediately: true)
+            await analyses.loadEngineMetadata()
+            // When the engine cannot run the selected analysis, start on the
+            // Engine pane, which shows what it can.
+            if let d = analyses.descriptor(viewState.selectedAnalysis.engineName(in: analyses.descriptors)), !d.available {
+                viewState.showsEnginePane = true
+            }
+            analyses.setEngineRequest(viewState.engineRequest)
+            // The project's catalogs are loaded before the first snapshot.
+            await analyses.open(system: system, catalogs: document.catalogs, projectDirectory: projectDirectory)
         }
+        // Jobs of a closed window would keep shared engine workers busy.
+        .onDisappear { analyses.cancelAll() }
         .onChange(of: document.system) { _, s in analyses.update(system: s) }
+        // Undo/redo of "Load Glass Catalog" changes the list: the session follows.
+        .onChange(of: document.catalogs) { _, refs in
+            Task { await analyses.syncCatalogs(refs, projectDirectory: projectDirectory) }
+        }
         .onChange(of: viewState.analysisSettings) { _, s in analyses.update(settings: s) }
         .onChange(of: viewState.visibleAnalyses) { _, v in analyses.setVisible(v) }
+        .onChange(of: viewState.engineRequest) { _, r in analyses.setEngineRequest(r) }
         .onChange(of: viewState.selection) { _, s in if s != nil { viewState.inspectorTab = .surface } }
     }
 
@@ -85,12 +104,36 @@ struct DocumentWindow: View {
             cancelAnalyses: { analyses.cancelAll() },
             fitView: { viewState.fitRequest += 1 },
             toggleViewportMode: { viewState.viewportMode = viewState.viewportMode == .section2D ? .orbit3D : .section2D },
+            loadCatalog: { chooseCatalog() },
             loadSample: { sample in
                 document.edit("Load Sample", undoManager: undoManager) { $0 = sample }
                 viewState.selection = nil
                 viewState.fitRequest += 1
             },
             hasSelection: selectedIndex.map { $0 > 0 && $0 < system.imageIndex } ?? false)
+    }
+
+    /// Asks for an AGF (or GlassCatalog JSON) file, loads it into this
+    /// document's engine session and records it in the project.
+    private func chooseCatalog() {
+        let panel = NSOpenPanel()
+        panel.title = "Load Glass Catalog"
+        panel.allowedContentTypes = [.json, .plainText, .data]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                let info = try await analyses.loadCatalog(at: url)
+                document.addCatalog(
+                    CatalogReference(
+                        name: info.name, path: url.path,
+                        format: url.pathExtension.lowercased() == "json" ? "json" : "agf"),
+                    undoManager: undoManager)
+                viewState.editorMessage = nil
+            } catch {
+                viewState.editorMessage = "Glass catalog: \(error.localizedDescription)"
+            }
+        }
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -159,9 +202,19 @@ struct StatusBar: View {
             if engineInfo.isMock {
                 Label("Mock engine", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .help("Results are synthetic placeholders until the Rust engine is linked.")
+                    .help("Results are synthetic placeholders: the Rust engine library is not linked into this build.")
             } else {
                 Text("\(engineInfo.name) \(engineInfo.version)")
+                    .help("Backends: \(engineInfo.backends.joined(separator: ", "))")
+            }
+            let userCatalogs = analyses.catalogs.filter { $0.source != "builtin" }
+            if !userCatalogs.isEmpty {
+                Text("glass: " + userCatalogs.map(\.name).joined(separator: ", ")).foregroundStyle(.secondary)
+            }
+            if !analyses.catalogWarnings.isEmpty {
+                Label("\(analyses.catalogWarnings.count) catalog warning(s)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .help(analyses.catalogWarnings.joined(separator: "\n"))
             }
             if let snap = analyses.snapshot {
                 Text("snapshot \(snap.hash.short)").monospaced().foregroundStyle(.secondary)
@@ -214,6 +267,7 @@ struct DocumentActions {
     var cancelAnalyses: () -> Void
     var fitView: () -> Void
     var toggleViewportMode: () -> Void
+    var loadCatalog: () -> Void
     var loadSample: (OpticalSystem) -> Void
     var hasSelection: Bool
 }

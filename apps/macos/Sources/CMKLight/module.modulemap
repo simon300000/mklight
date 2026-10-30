@@ -1,0 +1,9 @@
+// The engine's C ABI (docs/FFI.md). The header is the one shipped by
+// crates/mklight-ffi; the static library is copied to apps/macos/Frameworks
+// by scripts/build-macos.sh, which Package.swift adds to the linker search
+// path.
+module CMKLight [system] {
+    header "../../../../crates/mklight-ffi/include/mklight.h"
+    link "mklight_ffi"
+    export *
+}

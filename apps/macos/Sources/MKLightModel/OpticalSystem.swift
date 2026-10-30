@@ -3,6 +3,10 @@ import Foundation
 /// The complete physical description of an optical system: a value-type
 /// mirror of the engine's `OpticalSystem`, encoded with exactly the engine's
 /// JSON representation. It holds no UI state.
+///
+/// Decoding is strict, like the engine's `deny_unknown_fields`: an unknown
+/// key anywhere in the model is an error rather than silently dropped
+/// (every snapshot and save re-encodes the mirror).
 public struct OpticalSystem: Codable, Sendable, Hashable {
     public var name: String
     public var notes: String
@@ -20,12 +24,16 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
     public var mechanics: [MechanicalPart]
     public var sensor: Sensor?
     public var configurations: [Configuration]
+    /// Solves and pickups (docs/SOLVES.md). Omitted from the JSON when empty,
+    /// as the engine does, so systems without solves hash as before.
+    public var solves: [Solve]
 
     public init(
         name: String, notes: String = "", aperture: ApertureSpec = .default, fields: FieldSet = FieldSet(),
         wavelengths: WavelengthSet = WavelengthSet(), surfaces: [Surface], stop: Int, rayAiming: RayAiming = .off,
         environment: EnvironmentConditions = EnvironmentConditions(), coatings: [String: CoatingDef] = [:],
-        mechanics: [MechanicalPart] = [], sensor: Sensor? = nil, configurations: [Configuration] = []
+        mechanics: [MechanicalPart] = [], sensor: Sensor? = nil, configurations: [Configuration] = [],
+        solves: [Solve] = []
     ) {
         self.name = name
         self.notes = notes
@@ -40,6 +48,7 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
         self.mechanics = mechanics
         self.sensor = sensor
         self.configurations = configurations
+        self.solves = solves
     }
 
     /// The engine's minimal valid system: object at infinity, a plane stop
@@ -67,6 +76,9 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly(
+            "name", "notes", "aperture", "fields", "wavelengths", "surfaces", "stop", "ray_aiming", "environment",
+            "coatings", "mechanics", "sensor", "configurations", "solves")
         name = try c.value("name", default: "")
         notes = try c.value("notes", default: "")
         aperture = try c.value("aperture")
@@ -80,6 +92,7 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
         mechanics = try c.value("mechanics", default: [])
         sensor = try c.optional("sensor")
         configurations = try c.value("configurations", default: [])
+        solves = try c.value("solves", default: [])
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -97,6 +110,7 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
         try c.put(mechanics, "mechanics")
         try c.putOptional(sensor, "sensor")
         try c.put(configurations, "configurations")
+        if !solves.isEmpty { try c.put(solves, "solves") }
     }
 }
 
@@ -180,6 +194,7 @@ extension OpticalSystem {
                 }
             }
         }
+        out += solveIssues()
         let surfaceIDs = Set(surfaces.map(\.id))
         for (k, m) in mechanics.enumerated() {
             for id in m.surfaces where !surfaceIDs.contains(id) {
@@ -206,49 +221,3 @@ extension OpticalSystem {
     }
 }
 
-// MARK: - Project file
-
-/// On-disk `.mklight` project: a versioned envelope around the model. Bare
-/// `OpticalSystem` JSON (as written by the engine and CLI) is also accepted.
-public struct ProjectFile: Codable, Sendable, Hashable {
-    public static let formatName = "mklight-project"
-    public static let currentVersion = 1
-
-    public var format: String
-    public var version: Int
-    public var system: OpticalSystem
-
-    public init(system: OpticalSystem) {
-        format = Self.formatName
-        version = Self.currentVersion
-        self.system = system
-    }
-
-    public enum Error: Swift.Error, LocalizedError {
-        case unsupportedVersion(Int)
-        public var errorDescription: String? {
-            switch self {
-            case .unsupportedVersion(let v):
-                "This project was written by a newer MKLight (format version \(v))."
-            }
-        }
-    }
-
-    public static func decode(_ data: Data) throws -> ProjectFile {
-        let dec = MKLightJSON.decoder()
-        if let envelope = try? dec.decode(Envelope.self, from: data), envelope.format == formatName {
-            guard envelope.version <= currentVersion else { throw Error.unsupportedVersion(envelope.version) }
-            return try dec.decode(ProjectFile.self, from: data)
-        }
-        return ProjectFile(system: try dec.decode(OpticalSystem.self, from: data))
-    }
-
-    public func encoded() throws -> Data {
-        try MKLightJSON.encode(self, pretty: true)
-    }
-
-    private struct Envelope: Decodable {
-        var format: String
-        var version: Int
-    }
-}

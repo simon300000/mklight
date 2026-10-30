@@ -56,11 +56,15 @@ public struct RunInfo: Codable, Sendable, Hashable {
         analysis = try c.decode(String.self, forKey: .analysis)
         settings = try c.decode(JSONValue.self, forKey: .settings)
         backend = try c.decode(String.self, forKey: .backend)
-        precision = try c.decode(Precision.self, forKey: .precision)
+        // A precision this app does not know (a newer engine) is shown as
+        // not-the-reference, with a warning, rather than failing the result.
+        let precisionName = try c.decode(String.self, forKey: .precision)
+        precision = Precision(rawValue: precisionName) ?? .f32GPU
         seed = try c.decodeIfPresent(UInt64.self, forKey: .seed)
         startedUnixMs = try c.decode(UInt64.self, forKey: .startedUnixMs)
         durationMs = try c.decode(Double.self, forKey: .durationMs)
         warnings = try c.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        if Precision(rawValue: precisionName) == nil { warnings.append("unknown precision '\(precisionName)'") }
     }
 
     public func encode(to encoder: any Encoder) throws {

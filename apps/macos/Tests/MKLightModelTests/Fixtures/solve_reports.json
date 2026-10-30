@@ -1,0 +1,817 @@
+[
+  {
+    "system": {
+      "name": "Singlet f100 F/5",
+      "notes": "N-BK7 near-best-form singlet",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 20.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 3.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.0009511053625187513,
+            "conic": 0.0
+          },
+          "thickness": 106.87675794973956,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": [
+        {
+          "name": "",
+          "overrides": []
+        },
+        {
+          "name": "override",
+          "overrides": [
+            [
+              {
+                "param": "thickness",
+                "surface": 2
+              },
+              50.0
+            ]
+          ]
+        }
+      ],
+      "solves": [
+        {
+          "target": {
+            "param": "thickness",
+            "surface": 2
+          },
+          "kind": {
+            "type": "marginal_ray_height",
+            "height": 0.0
+          }
+        },
+        {
+          "target": {
+            "param": "curvature",
+            "surface": 2
+          },
+          "kind": {
+            "type": "f_number",
+            "value": 5.5
+          }
+        }
+      ]
+    },
+    "report": {
+      "outcomes": [
+        {
+          "index": 0,
+          "kind": "marginal_ray_height",
+          "target": {
+            "param": "thickness",
+            "surface": 2
+          },
+          "previous": 96.6967287,
+          "value": 106.87675794973956,
+          "residual": 1.1784369601658008e-15,
+          "method": "closed_form",
+          "evaluations": 3
+        },
+        {
+          "index": 1,
+          "kind": "f_number",
+          "target": {
+            "param": "curvature",
+            "surface": 2
+          },
+          "previous": -0.002857142857142857,
+          "value": -0.0009511053625187513,
+          "residual": 0.0,
+          "method": "closed_form",
+          "evaluations": 3
+        }
+      ],
+      "order": [
+        1,
+        0
+      ],
+      "sweeps": 2,
+      "max_change": 0.0,
+      "solved_params": [
+        {
+          "param": "curvature",
+          "surface": 2
+        },
+        {
+          "param": "thickness",
+          "surface": 2
+        }
+      ],
+      "warnings": [],
+      "configuration": null,
+      "run_info": {
+        "engine_version": "0.1.0",
+        "snapshot_hash": "1fd33838488687b9e6722f6b5cdc633cd08644af9c0076249810d78ed6b88d9b",
+        "analysis": "solves",
+        "settings": {
+          "closed_form": true,
+          "max_iterations": 200,
+          "max_sweeps": 50,
+          "tolerance": 1e-12
+        },
+        "backend": "cpu-f64",
+        "precision": "f64_reference",
+        "seed": null,
+        "started_unix_ms": 1793370974953,
+        "duration_ms": 3.236666,
+        "warnings": []
+      }
+    }
+  },
+  {
+    "system": {
+      "name": "Singlet f100 F/5",
+      "notes": "N-BK7 near-best-form singlet",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 20.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 3.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.0009511053625187513,
+            "conic": 0.0
+          },
+          "thickness": 106.87675794973956,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": [],
+      "solves": [
+        {
+          "target": {
+            "param": "thickness",
+            "surface": 2
+          },
+          "kind": {
+            "type": "marginal_ray_height",
+            "height": 0.0
+          }
+        },
+        {
+          "target": {
+            "param": "curvature",
+            "surface": 2
+          },
+          "kind": {
+            "type": "f_number",
+            "value": 5.5
+          }
+        }
+      ]
+    },
+    "report": {
+      "outcomes": [
+        {
+          "index": 0,
+          "kind": "marginal_ray_height",
+          "target": {
+            "param": "thickness",
+            "surface": 2
+          },
+          "previous": 96.6967287,
+          "value": 106.87675794973956,
+          "residual": 1.1784369601658008e-15,
+          "method": "closed_form",
+          "evaluations": 3
+        },
+        {
+          "index": 1,
+          "kind": "f_number",
+          "target": {
+            "param": "curvature",
+            "surface": 2
+          },
+          "previous": -0.002857142857142857,
+          "value": -0.0009511053625187513,
+          "residual": 0.0,
+          "method": "closed_form",
+          "evaluations": 3
+        }
+      ],
+      "order": [
+        1,
+        0
+      ],
+      "sweeps": 2,
+      "max_change": 0.0,
+      "solved_params": [
+        {
+          "param": "curvature",
+          "surface": 2
+        },
+        {
+          "param": "thickness",
+          "surface": 2
+        }
+      ],
+      "warnings": [],
+      "configuration": 0,
+      "run_info": {
+        "engine_version": "0.1.0",
+        "snapshot_hash": "1493210b17e7622f3284aa2e0de4052469d7bea93e6a0a167b82db16a82b0263",
+        "analysis": "solves",
+        "settings": {
+          "closed_form": true,
+          "configuration": 0,
+          "max_iterations": 200,
+          "max_sweeps": 50,
+          "tolerance": 1e-12
+        },
+        "backend": "cpu-f64",
+        "precision": "f64_reference",
+        "seed": null,
+        "started_unix_ms": 1793370974956,
+        "duration_ms": 2.2658750000000003,
+        "warnings": []
+      }
+    }
+  },
+  {
+    "system": {
+      "name": "Singlet f100 F/5",
+      "notes": "N-BK7 near-best-form singlet",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 20.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 3.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.0009511053625187513,
+            "conic": 0.0
+          },
+          "thickness": 106.87675794973956,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": [],
+      "solves": [
+        {
+          "target": {
+            "param": "thickness",
+            "surface": 2
+          },
+          "kind": {
+            "type": "marginal_ray_height",
+            "height": 0.0
+          }
+        },
+        {
+          "target": {
+            "param": "curvature",
+            "surface": 2
+          },
+          "kind": {
+            "type": "f_number",
+            "value": 5.5
+          }
+        }
+      ]
+    },
+    "report": {
+      "outcomes": [
+        {
+          "index": 0,
+          "kind": "marginal_ray_height",
+          "target": {
+            "param": "thickness",
+            "surface": 2
+          },
+          "previous": 50.0,
+          "value": 106.87675794973956,
+          "residual": 1.1784369601658008e-15,
+          "method": "closed_form",
+          "evaluations": 3
+        },
+        {
+          "index": 1,
+          "kind": "f_number",
+          "target": {
+            "param": "curvature",
+            "surface": 2
+          },
+          "previous": -0.002857142857142857,
+          "value": -0.0009511053625187513,
+          "residual": 0.0,
+          "method": "closed_form",
+          "evaluations": 3
+        }
+      ],
+      "order": [
+        1,
+        0
+      ],
+      "sweeps": 2,
+      "max_change": 0.0,
+      "solved_params": [
+        {
+          "param": "curvature",
+          "surface": 2
+        },
+        {
+          "param": "thickness",
+          "surface": 2
+        }
+      ],
+      "warnings": [
+        "configuration 1 overrides Thickness { surface: SurfaceId(2) }, which a solve controls: the solve wins"
+      ],
+      "configuration": 1,
+      "run_info": {
+        "engine_version": "0.1.0",
+        "snapshot_hash": "43bb31008e52af4279f0788d4a67fd934f443ce82ca59c20d80bde1f526dd6a0",
+        "analysis": "solves",
+        "settings": {
+          "closed_form": true,
+          "configuration": 1,
+          "max_iterations": 200,
+          "max_sweeps": 50,
+          "tolerance": 1e-12
+        },
+        "backend": "cpu-f64",
+        "precision": "f64_reference",
+        "seed": null,
+        "started_unix_ms": 1793370974959,
+        "duration_ms": 2.3855,
+        "warnings": [
+          "configuration 1 overrides Thickness { surface: SurfaceId(2) }, which a solve controls: the solve wins"
+        ]
+      }
+    }
+  }
+]

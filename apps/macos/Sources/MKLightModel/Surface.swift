@@ -34,15 +34,23 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
-        case "plane": self = .plane
+        case "plane":
+            try c.allowOnly("type")
+            self = .plane
         case "conic":
+            try c.allowOnly("type", "curvature", "conic")
             self = .conic(curvature: try c.value("curvature"), conic: try c.value("conic", default: 0))
         case "even_asphere":
+            try c.allowOnly("type", "curvature", "conic", "coefficients")
             self = .evenAsphere(
                 curvature: try c.value("curvature"), conic: try c.value("conic", default: 0),
                 coefficients: try c.value("coefficients"))
-        case "paraxial": self = .paraxial(focalLength: try c.value("focal_length"))
-        case "coordinate_break": self = .coordinateBreak
+        case "paraxial":
+            try c.allowOnly("type", "focal_length")
+            self = .paraxial(focalLength: try c.value("focal_length"))
+        case "coordinate_break":
+            try c.allowOnly("type")
+            self = .coordinateBreak
         case let t:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown surface shape '\(t)'")
         }
@@ -88,8 +96,12 @@ public enum SemiDiameter: Codable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("mode", as: String.self) {
-        case "auto": self = .auto
-        case "fixed": self = .fixed(try c.value("value"))
+        case "auto":
+            try c.allowOnly("mode")
+            self = .auto
+        case "fixed":
+            try c.allowOnly("mode", "value")
+            self = .fixed(try c.value("value"))
         case let m:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("mode"), in: c, debugDescription: "unknown semi-diameter mode '\(m)'")
         }
@@ -121,10 +133,18 @@ public enum ApertureShape: Codable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
-        case "circular": self = .circular(radius: try c.value("radius"))
-        case "annular": self = .annular(innerRadius: try c.value("inner_radius"), outerRadius: try c.value("outer_radius"))
-        case "rectangular": self = .rectangular(halfX: try c.value("half_x"), halfY: try c.value("half_y"))
-        case "elliptical": self = .elliptical(semiX: try c.value("semi_x"), semiY: try c.value("semi_y"))
+        case "circular":
+            try c.allowOnly("type", "radius")
+            self = .circular(radius: try c.value("radius"))
+        case "annular":
+            try c.allowOnly("type", "inner_radius", "outer_radius")
+            self = .annular(innerRadius: try c.value("inner_radius"), outerRadius: try c.value("outer_radius"))
+        case "rectangular":
+            try c.allowOnly("type", "half_x", "half_y")
+            self = .rectangular(halfX: try c.value("half_x"), halfY: try c.value("half_y"))
+        case "elliptical":
+            try c.allowOnly("type", "semi_x", "semi_y")
+            self = .elliptical(semiX: try c.value("semi_x"), semiY: try c.value("semi_y"))
         case let t:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown aperture '\(t)'")
         }
@@ -198,6 +218,7 @@ public struct Placement: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("decenter_x", "decenter_y", "tilt_x", "tilt_y", "tilt_z", "order", "restore_after")
         decenterX = try c.value("decenter_x", default: 0)
         decenterY = try c.value("decenter_y", default: 0)
         tiltX = try c.value("tilt_x", default: 0)
@@ -232,6 +253,7 @@ public struct EdgeSpec: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("mechanical_semi_diameter", "edge_scatter")
         mechanicalSemiDiameter = try c.optional("mechanical_semi_diameter")
         edgeScatter = try c.optional("edge_scatter")
     }
@@ -285,6 +307,9 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly(
+            "id", "label", "shape", "thickness", "material", "interaction", "semi_diameter", "aperture", "placement",
+            "coating", "scatter", "edge")
         id = try c.value("id")
         label = try c.value("label", default: "")
         shape = try c.value("shape")

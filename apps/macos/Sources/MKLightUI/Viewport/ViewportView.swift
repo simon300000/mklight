@@ -164,7 +164,7 @@ struct LayoutPanel: View {
             if let error {
                 ContentUnavailableView("Viewport Unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if scene == nil {
-                ProgressView().controlSize(.small)
+                PhasePlaceholder(phase: analyses.slot(.layout).phase, validationErrors: analyses.validationErrors)
             }
         }
         .overlay(alignment: .topLeading) {

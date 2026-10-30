@@ -48,6 +48,13 @@ public final class WindowViewState {
     public var showLayout = true
     public var showAnalyses = true
     public var selectedAnalysis = AnalysisKind.spotDiagram
+    /// The analysis area shows the "Engine" pane (any engine analysis by
+    /// name) instead of `selectedAnalysis`.
+    public var showsEnginePane = false
+    /// Engine analysis selected in the Engine pane.
+    public var engineAnalysis = "system_summary"
+    /// Settings per engine analysis (partial; the engine fills defaults).
+    public var engineSettings: [String: [String: JSONValue]] = [:]
     public var viewportMode = ViewportMode.section2D
     public var camera = ViewportCamera()
     public var rayColoring = RayColoring.field
@@ -66,7 +73,35 @@ public final class WindowViewState {
     public var visibleAnalyses: Set<AnalysisKind> {
         var s: Set<AnalysisKind> = [.firstOrder]
         if showLayout { s.insert(.layout) }
-        if showAnalyses { s.insert(selectedAnalysis) }
+        if showAnalyses && !showsEnginePane { s.insert(selectedAnalysis) }
         return s
     }
+
+    /// The analysis area's selection: a typed analysis or the Engine pane.
+    public var analysisPane: AnalysisPane {
+        get { showsEnginePane ? .engine : .typed(selectedAnalysis) }
+        set {
+            switch newValue {
+            case .engine: showsEnginePane = true
+            case .typed(let k):
+                showsEnginePane = false
+                selectedAnalysis = k
+            }
+        }
+    }
+
+    /// The request of the Engine pane while it is shown.
+    public var engineRequest: EngineAnalysisRequest? {
+        guard showAnalyses && showsEnginePane else { return nil }
+        return EngineAnalysisRequest(
+            analysis: engineAnalysis, settings: engineSettings[engineAnalysis] ?? [:],
+            execution: analysisSettings.execution)
+    }
+}
+
+/// What the analysis area shows.
+public enum AnalysisPane: Hashable, Sendable {
+    case typed(AnalysisKind)
+    /// Any engine analysis by name, shown generically.
+    case engine
 }

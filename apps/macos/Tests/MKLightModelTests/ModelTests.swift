@@ -249,12 +249,52 @@ import Testing
     @Test func acceptsBareSystemJSON() throws {
         let p = try ProjectFile.decode(Fixtures.data("kitchen_sink"))
         #expect(p.system.name == "Kitchen sink")
-        #expect(p.version == ProjectFile.currentVersion)
+        #expect(p.schemaVersion == ProjectFile.currentVersion)
+        #expect(p.catalogs.isEmpty)
     }
 
-    @Test func rejectsNewerFormat() {
-        let json = #"{"format":"mklight-project","version":99,"system":{}}"#
-        #expect(throws: ProjectFile.Error.self) { try ProjectFile.decode(Data(json.utf8)) }
+    @Test func rejectsNewerSchemaVersion() {
+        let json = #"{"format":"mklight-project","schema_version":99,"system":{}}"#
+        #expect(throws: ProjectFile.Error.unsupportedVersion(99)) { try ProjectFile.decode(Data(json.utf8)) }
+        let foreign = #"{"format":"something-else","schema_version":1,"system":{}}"#
+        #expect(throws: ProjectFile.Error.self) { try ProjectFile.decode(Data(foreign.utf8)) }
+    }
+
+    /// Files from the app's first envelope (`"version": 1`, no
+    /// `schema_version`) migrate like the engine's version-0 drafts.
+    @Test func readsEarlyAppEnvelope() throws {
+        let early = try JSONValue.object([
+            "format": .string("mklight-project"), "version": .integer(1),
+            "system": JSONValue.from(SampleSystems.singlet()),
+        ])
+        let p = try ProjectFile.decode(MKLightJSON.encode(early))
+        #expect(p.system == SampleSystems.singlet())
+        #expect(p.sections["version"] == nil)
+        let tree = try JSONValue.parse(p.encoded())
+        #expect(tree["schema_version"] == .integer(1))
+        #expect(tree["catalogs"] == .array([]) && tree["merit"] == .null)
+    }
+
+    /// Sections the app does not edit (views, merit, metadata, unknown keys)
+    /// survive a round trip unchanged.
+    @Test func preservesUnknownSections() throws {
+        var tree = try JSONValue.parse(ProjectFile(system: SampleSystems.singlet()).encoded())
+        guard case .object(var o) = tree else { Issue.record("not an object"); return }
+        o["views"] = .array([.object(["key": .string("w1"), "analysis": .string("system_summary"), "settings": .object([:]), "ui": .object(["zoom": .number(1.5)])])])
+        o["future_key"] = .object(["x": .integer(3)])
+        o["catalogs"] = .array([.object(["name": .string("MYCAT"), "path": .string("/tmp/my.agf"), "relative_path": .null, "format": .string("agf")])])
+        tree = .object(o)
+        var p = try ProjectFile.decode(MKLightJSON.encode(tree))
+        #expect(p.catalogs == [CatalogReference(name: "MYCAT", path: "/tmp/my.agf")])
+        let back = try JSONValue.parse(p.encoded())
+        #expect(back.differences(from: tree).isEmpty, "\(back.differences(from: tree))")
+        p.addCatalog(CatalogReference(name: "MYCAT", path: "/other/my.agf"))
+        p.addCatalog(CatalogReference(name: "SECOND", path: "/x/second.json", format: "json"))
+        #expect(p.catalogs.map(\.name) == ["MYCAT", "SECOND"])
+        #expect(p.catalogs[0].path == "/other/my.agf")
+        p.stampMetadata(appName: "MKLight", appVersion: "1.0", engineVersion: "0.1.0")
+        #expect(p.sections["metadata"]?["app_name"] == .string("MKLight"))
+        #expect(p.sections["metadata"]?["created"] != nil)
     }
 
     @Test func encodingIsDeterministic() throws {
@@ -318,5 +358,69 @@ import Testing
         }
         #expect(throws: DecodingError.self) { try MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode(json)) }
         #expect(ExtendedDouble.parse("NaN") == nil && ExtendedDouble.parse("-inf") == -.infinity)
+    }
+
+    /// The engine's model types deny unknown fields. The mirror must refuse
+    /// them too: it re-encodes every snapshot and save, so an unknown key it
+    /// accepted would vanish silently. Every object of the engine-written
+    /// fixtures (every model variant) gets an extra key in turn.
+    @Test(arguments: [
+        ("kitchen_sink", "system"), ("variants", "systems"), ("solved_triplet", "system"),
+        ("param_paths", "paths"), ("solve_kinds", "solves"),
+    ])
+    func rejectsUnknownKeysEverywhere(fixture: String, kind: String) throws {
+        let original = try JSONValue.parse(Fixtures.data(fixture))
+        func decode(_ json: JSONValue) throws {
+            let data = try MKLightJSON.encode(json)
+            switch kind {
+            case "system": _ = try MKLightJSON.decode(OpticalSystem.self, from: data)
+            case "systems": _ = try MKLightJSON.decode([OpticalSystem].self, from: data)
+            case "paths": _ = try MKLightJSON.decode([ParamPath].self, from: data)
+            default: _ = try MKLightJSON.decode([Solve].self, from: data)
+            }
+        }
+        try decode(original)
+        let paths = Self.objectPaths(in: original)
+        #expect(paths.count > 3)
+        for path in paths {
+            let tampered = Self.inserting("future_field", into: original, at: path[...])
+            do {
+                try decode(tampered)
+                Issue.record("\(fixture): an unknown key at $\(path.map { ".\($0)" }.joined()) was accepted")
+            } catch let DecodingError.dataCorrupted(context) {
+                #expect(context.debugDescription.contains("unknown field 'future_field'"), "\(context.debugDescription)")
+            }
+        }
+    }
+
+    /// Paths (object keys and array indices) of every JSON object, except
+    /// name-keyed maps (`coatings`), whose keys are data.
+    private static func objectPaths(in json: JSONValue, at path: [String] = []) -> [[String]] {
+        switch json {
+        case .object(let o):
+            let here = path.last == "coatings" ? [] : [path]
+            return here + o.keys.sorted().flatMap { objectPaths(in: o[$0]!, at: path + [$0]) }
+        case .array(let a):
+            return a.indices.flatMap { objectPaths(in: a[$0], at: path + [String($0)]) }
+        default: return []
+        }
+    }
+
+    private static func inserting(_ key: String, into json: JSONValue, at path: ArraySlice<String>) -> JSONValue {
+        guard let head = path.first else {
+            guard case .object(var o) = json else { return json }
+            o[key] = .integer(1)
+            return .object(o)
+        }
+        switch json {
+        case .object(var o):
+            o[head] = inserting(key, into: o[head]!, at: path.dropFirst())
+            return .object(o)
+        case .array(var a):
+            let i = Int(head)!
+            a[i] = inserting(key, into: a[i], at: path.dropFirst())
+            return .array(a)
+        default: return json
+        }
     }
 }

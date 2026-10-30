@@ -249,6 +249,7 @@ struct SurfaceInspector: View {
                     Button("Make Stop") { edit("Set Stop") { $0.setStop(index) } }
                 }
             }
+            if index > 0 && index < system.imageIndex { SolvesSection(system: system, index: index, edit: edit) }
             shapeSection
             apertureSection
             placementSection

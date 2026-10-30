@@ -86,15 +86,19 @@ public enum ParamPath: Codable, Sendable, Hashable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         let tag = try c.value("param", as: String.self)
         if let make = Self.surfaceTags[tag] {
+            try c.allowOnly("param", "surface")
             self = make(try c.value("surface"))
         } else if let make = Self.indexTags[tag] {
+            try c.allowOnly("param", "index")
             self = make(try c.index("index"))
         } else {
             switch tag {
-            case "asphere": self = .asphere(surface: try c.value("surface"), index: try c.index("index"))
-            case "aperture_value": self = .apertureValue
-            case "temperature_c": self = .temperatureC
-            case "pressure_atm": self = .pressureAtm
+            case "asphere":
+                try c.allowOnly("param", "surface", "index")
+                self = .asphere(surface: try c.value("surface"), index: try c.index("index"))
+            case "aperture_value", "temperature_c", "pressure_atm":
+                try c.allowOnly("param")
+                self = tag == "aperture_value" ? .apertureValue : tag == "temperature_c" ? .temperatureC : .pressureAtm
             default:
                 throw DecodingError.dataCorruptedError(forKey: AnyKey("param"), in: c, debugDescription: "unknown parameter '\(tag)'")
             }
@@ -123,6 +127,7 @@ public struct Configuration: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("name", "overrides")
         name = try c.value("name", default: "")
         overrides = try c.value("overrides", default: [])
     }

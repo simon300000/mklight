@@ -13,7 +13,7 @@ public struct MKLightScene: Scene {
 
     public var body: some Scene {
         DocumentGroup(newDocument: { ProjectDocument() }) { config in
-            DocumentWindow(document: config.document)
+            DocumentWindow(document: config.document, fileURL: config.fileURL)
                 .environment(\.mklightEngine, engine)
                 .frame(minWidth: 900, minHeight: 600)
         }
@@ -44,11 +44,16 @@ struct MKLightCommands: Commands {
                 .disabled(actions?.hasSelection != true)
             Divider()
             Menu("Replace with Sample") {
-                Button("Cooke Triplet") { actions?.loadSample(SampleSystems.cookeTriplet()) }
-                Button("Singlet") { actions?.loadSample(SampleSystems.singlet()) }
+                ForEach(SampleSystems.bundled) { e in
+                    Button(e.system.name) { actions?.loadSample(e.system) }
+                }
+                Divider()
                 Button("Empty System") { actions?.loadSample(.newEmpty()) }
             }
             .disabled(actions == nil)
+            Divider()
+            Button("Load Glass Catalog…") { actions?.loadCatalog() }
+                .disabled(actions == nil)
         }
         CommandMenu("Analysis") {
             Button("Re-run Visible Analyses") { actions?.rerunAnalyses() }
@@ -68,14 +73,16 @@ struct MKLightCommands: Commands {
     }
 }
 
-/// File ▸ New from Sample.
+/// File ▸ New from Sample: the engine's built-in samples
+/// (`SampleSystems.bundled`, written by the Rust side).
 struct SampleMenu: View {
     @Environment(\.newDocument) private var newDocument
 
     var body: some View {
         Menu("New from Sample") {
-            Button("Cooke Triplet") { newDocument { ProjectDocument(system: SampleSystems.cookeTriplet()) } }
-            Button("Singlet") { newDocument { ProjectDocument(system: SampleSystems.singlet()) } }
+            ForEach(SampleSystems.bundled) { e in
+                Button(e.system.name) { newDocument { ProjectDocument(system: e.system) } }
+            }
         }
     }
 }
