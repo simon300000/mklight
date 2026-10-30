@@ -762,15 +762,15 @@ impl LayoutScene {
             b.wavelengths.push(w);
             b.flags.push(flags);
         };
-        let doe = |j: usize| {
+        let doe = |first: usize, last: usize| {
             self.surfaces
                 .iter()
-                .any(|s| s.index == j && s.is_diffractive)
+                .any(|s| (first..=last).contains(&s.index) && s.is_diffractive)
         };
         for p in &self.polylines {
             let flags = p.in_section as u8
                 | (p.vignetted as u8) << 1
-                | (p.surface.is_some_and(doe) as u8) << 2;
+                | (p.surface.is_some_and(|j| doe(j, j)) as u8) << 2;
             push(
                 &p.points,
                 p.kind.code(),
@@ -786,7 +786,7 @@ impl LayoutScene {
                 .outline
                 .iter()
                 .all(|q| q[self.section.normal_axis()].abs() <= tol);
-            let flags = in_section as u8 | (doe(e.first_surface) as u8) << 2;
+            let flags = in_section as u8 | (doe(e.first_surface, e.last_surface) as u8) << 2;
             push(
                 &e.outline,
                 ELEMENT_OUTLINE_KIND,

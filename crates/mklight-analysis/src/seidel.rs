@@ -34,8 +34,10 @@
 //! Extended rotational sag bases use their exact r⁴ expansion (ANALYSIS §2.3).
 //! Odd r¹/r³ terms are omitted with a warning. DOE contributions use the
 //! algebraic infinite-index thin-plate limit, including phase dispersion;
-//! its power adds no Petzval curvature. Non-rotational systems return
-//! `NotApplicable` and undefined coefficients, with real-ray guidance.
+//! its power adds no Petzval curvature. Systems with a non-rotational shape,
+//! or whose on-axis ray is not coaxial with every surface (plane fold mirrors
+//! are fine), return `NotApplicable` and undefined coefficients, with
+//! real-ray guidance.
 //!
 //! The **Petzval sum** is `P = Σ φ/(n n')` with `φ = c (n' − n)`
 //! (`S_IV = H² P` summed), and the Petzval surface has radius
@@ -78,7 +80,7 @@
 //!   axes (`x` heights on the x axis).
 
 use mklight_core::job::RunTimer;
-use mklight_core::surface_math::{Symmetry, system_symmetry};
+use mklight_core::surface_math::{Symmetry, shape_symmetry, system_symmetry};
 use mklight_core::{
     FieldKind, Interaction, JobContext, MkError, MkResult, ResolvedSystem, RunInfo, Snapshot,
     SurfaceShape, Vec3, Wavelength, WavelengthSet,
@@ -356,17 +358,7 @@ fn fourth_order(shape: &SurfaceShape) -> (f64, f64) {
 
 /// Qbfs sum and its t derivative at t=0, from the defining triangular basis.
 fn qbfs_vertex(coefficients: &[f64]) -> (f64, f64) {
-    let mut f = [0.0; mklight_core::surface_math::MAX_Q_TERMS];
-    let mut g = f;
-    let mut h = f;
-    f[0] = 2.0;
-    f[1] = 19.0_f64.sqrt() / 2.0;
-    g[0] = -0.5;
-    for m in 2..f.len() {
-        h[m - 2] = -((m * (m - 1)) as f64) / (2.0 * f[m - 2]);
-        g[m - 1] = -(1.0 + g[m - 2] * h[m - 2]) / f[m - 1];
-        f[m] = ((m * (m + 1) + 3) as f64 - g[m - 1].powi(2) - h[m - 2].powi(2)).sqrt();
-    }
+    let (f, g, h) = mklight_core::surface_math::qbfs_recurrence();
     let (mut p0, mut p1) = ([2.0, 0.0], [6.0, -8.0]);
     let (mut q0, mut q1) = ([0.0; 2], [0.0; 2]);
     let mut sums = [mklight_core::math::KahanSum::default(); 2];
@@ -392,15 +384,54 @@ fn qbfs_vertex(coefficients: &[f64]) -> (f64, f64) {
     (sums[0].value(), sums[1].value())
 }
 
+/// Third-order theory holds when every shape is rotational and the on-axis
+/// ray hits each surface at its vertex along the local z axis; a plane mirror
+/// may fold the axis. Coordinate breaks only reposition the frame.
+fn is_coaxial(tracer: &SequentialTracer) -> bool {
+    let sys = tracer.system();
+    if sys
+        .surfaces
+        .iter()
+        .any(|s| shape_symmetry(&s.shape) != Symmetry::Rotational)
+    {
+        return false;
+    }
+    let Ok(field) = tracer.prepare_field(FieldPoint::normalized(0.0, 0.0)) else {
+        return false;
+    };
+    let mut rec = Vec::with_capacity(sys.surfaces.len());
+    let r = tracer.trace_with(
+        &field,
+        sys.primary_wavelength,
+        0.0,
+        0.0,
+        &TraceOptions::unclipped(),
+        Some(&mut rec),
+    );
+    let scale = sys
+        .surfaces
+        .iter()
+        .map(|s| s.thickness)
+        .filter(|t| t.is_finite())
+        .fold(1.0_f64, |a, t| a.max(t.abs()));
+    r.status.is_ok()
+        && sys.surfaces.iter().zip(&rec).all(|(s, rec)| {
+            let fold = s.interaction == Interaction::Reflect && s.shape == SurfaceShape::Plane;
+            matches!(s.shape, SurfaceShape::CoordinateBreak)
+                || (rec.point.x.abs().max(rec.point.y.abs()) <= 1e-9 * scale
+                    && (fold || rec.dir.x.abs().max(rec.dir.y.abs()) <= 1e-12))
+        })
+}
+
 /// Seidel sums (module docs).
 pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<SeidelResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     let w = wavelength_or_primary(tracer, settings.wavelength)?;
     let (ws, wlong) = select_short_long(sys, settings.short_wavelength, settings.long_wavelength)?;
-    if system_symmetry(sys.system()) != Symmetry::Rotational {
-        let reason = "Seidel coefficients are not applicable to non-rotational systems; \
-                      use full real-ray spots, fans, grid distortion and field curvature"
+    if !is_coaxial(tracer) {
+        let reason = "Seidel coefficients are not applicable to non-rotational or non-coaxial \
+                      systems; use full real-ray spots, fans, grid distortion and field curvature"
             .to_string();
         let sums = SeidelTerms::from_array([f64::NAN; 7]);
         return Ok(SeidelResult {

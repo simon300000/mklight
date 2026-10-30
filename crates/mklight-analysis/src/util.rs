@@ -331,11 +331,10 @@ pub(crate) fn paraxial_image_point(
     }
 }
 
-/// Reduced power of a DOE phase in its selected order, `−mλA₁/(π r_norm²)`
-/// (SURFACES §3); `wl_um` in µm.
+/// Reduced power of a DOE phase in its selected order (SURFACES §3);
+/// `wl_um` in µm.
 pub(crate) fn doe_power(phase: &DiffractivePhase, wl_um: f64) -> f64 {
-    let a1 = phase.coefficients.first().copied().unwrap_or(0.0);
-    -(phase.trace_order as f64) * wl_um * 1e-3 * a1 / (PI * phase.norm_radius.powi(2))
+    mklight_core::surface_math::phase_power(phase, phase.trace_order, wl_um)
 }
 
 /// The x-axis first-order sweep at `wl` (the tracer's own is the y axis).

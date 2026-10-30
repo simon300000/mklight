@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use mklight_analysis::seidel::*;
-use mklight_core::{ApertureSpec, Interaction, MaterialRef, SurfaceShape, samples};
+use mklight_core::{ApertureSpec, Interaction, MaterialRef, Placement, SurfaceShape, samples};
 use mklight_trace::{FieldPoint, ParaxialModel, SequentialTracer, TraceOptions};
 
 fn mirror(r: f64, conic: f64, stop_at_centre: bool, epd: f64, field: f64) -> SequentialTracer {
@@ -414,4 +414,45 @@ fn colour_terms_match_paraxial_and_real_colour() {
     assert!(c.range == 0.0);
     let l = lateral_colour(&i, &LateralColourSettings::default()).unwrap();
     assert!(l.lateral_colour.iter().all(|v| v.abs() < 1e-12));
+}
+
+#[test]
+fn folded_newtonian_matches_the_unfolded_mirror() {
+    let folded = seidel(
+        &tracer(samples::newtonian_telescope()),
+        &SeidelSettings::default(),
+    )
+    .unwrap();
+    assert_eq!(folded.status, SeidelStatus::Applicable);
+    let mut sys = samples::newtonian_telescope();
+    sys.surfaces.drain(2..5);
+    sys.surfaces[1].thickness = -500.0;
+    let flat = seidel(&tracer(sys), &SeidelSettings::default()).unwrap();
+    assert_eq!(flat.status, SeidelStatus::Applicable);
+    let (a, b) = (folded.sums, flat.sums);
+    for (x, y) in [
+        (a.s1, b.s1),
+        (a.s2, b.s2),
+        (a.s3, b.s3),
+        (a.s4, b.s4),
+        (a.s5, b.s5),
+        (a.cl, b.cl),
+        (a.ct, b.ct),
+        (folded.petzval_sum, flat.petzval_sum),
+        (folded.lagrange_invariant, flat.lagrange_invariant),
+    ] {
+        assert!(x.is_finite() && (x - y).abs() < 1e-12, "{a:?} {b:?}");
+    }
+}
+
+#[test]
+fn decentred_lens_is_not_applicable() {
+    let mut sys = samples::singlet();
+    sys.surfaces[1].placement = Some(Placement {
+        decenter_y: 1.0,
+        ..Default::default()
+    });
+    let s = seidel(&tracer(sys), &SeidelSettings::default()).unwrap();
+    assert_eq!(s.status, SeidelStatus::NotApplicable);
+    assert!(s.sums.s1.is_nan());
 }
