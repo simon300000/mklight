@@ -224,7 +224,7 @@ callback never runs on the main thread and holds no engine lock.
 
 ## Tests
 
-`swift test` in `apps/macos` (163 tests in 23 suites):
+`swift test` in `apps/macos` (145 tests in 27 suites):
 
 * `MKLightModelTests`: round trips against JSON written by the Rust side
   (every model variant, solve kind, samples, the project format), strict
