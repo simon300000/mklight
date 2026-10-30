@@ -1,5 +1,6 @@
 //! Dispersion formulas. λ is in µm and indices are relative to air at the
-//! catalog reference conditions (20 °C, 1 atm), unless a formula says otherwise.
+//! catalog reference conditions (the glass's T_ref, normally 20 °C, and 1 atm),
+//! unless a formula says otherwise.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,8 +34,14 @@ pub enum Dispersion {
     Cauchy { a: f64, b: f64, c: f64 },
     /// Tabulated `(λ µm, n)` pairs, interpolated with monotone cubic Hermite.
     Tabulated { points: Vec<(f64, f64)> },
-    /// \[4\] Sellmeier2: `n² − 1 = A + B1 λ²/(λ² − λ1²) + B2 λ²/(λ² − λ2²)`.
-    /// The resonance *wavelengths* `λ1, λ2` (µm) are stored, not their squares.
+    /// \[4\] Sellmeier2: `n² − 1 = A + B1 λ²/(λ² − λ1²) + B2/(λ² − λ2²)`.
+    /// The second term has **no** `λ²` in its numerator (`B2` is in µm²). The
+    /// resonance *wavelengths* `λ1, λ2` (µm) are stored, not their squares.
+    ///
+    /// NOT VERIFIED AGAINST A PRIMARY SPECIFICATION: this form agrees with the
+    /// majority of independent open-source AGF readers; at least one reader
+    /// puts `λ²` in the second numerator as well. No catalog glass with
+    /// published formula-4 data was available to settle it with a known answer.
     Sellmeier2 {
         a: f64,
         b: [f64; 2],
@@ -118,12 +125,16 @@ impl Dispersion {
                 }
                 s.value().sqrt()
             }
-            Dispersion::Sellmeier2 { a, b, lambda_um } => root_of_sum(&[
-                1.0,
-                *a,
-                resonance(b[0], lambda_um[0] * lambda_um[0], l2),
-                resonance(b[1], lambda_um[1] * lambda_um[1], l2),
-            ]),
+            Dispersion::Sellmeier2 { a, b, lambda_um } => {
+                // λ² − λi² as (λ − λi)(λ + λi): no cancellation near a resonance.
+                let gap = |li: f64| (l - li) * (l + li);
+                root_of_sum(&[
+                    1.0,
+                    *a,
+                    b[0] * l2 / gap(lambda_um[0]),
+                    b[1] / gap(lambda_um[1]),
+                ])
+            }
             Dispersion::Sellmeier4 { a, b, c, d, e } => {
                 root_of_sum(&[*a, resonance(*b, *c, l2), resonance(*d, *e, l2)])
             }
@@ -227,8 +238,8 @@ pub fn air_index(lambda_um: f64, t_c: f64, p_atm: f64) -> f64 {
     1.0 + (n_ref - 1.0) * p_atm / (1.0 + (t_c - 15.0) * 3.4785e-3)
 }
 
-/// Schott thermo-optic model for the *absolute* index change from the 20 °C
-/// reference: `Δn_abs = (n²−1)/(2n)·(D0ΔT + D1ΔT² + D2ΔT³ + (E0ΔT + E1ΔT²)/(λ² − λ_tk²))`.
+/// Schott thermo-optic model for the *absolute* index change from the
+/// catalog reference temperature `t_ref_c`: `Δn_abs = (n²−1)/(2n)·(D0ΔT + D1ΔT² + D2ΔT³ + (E0ΔT + E1ΔT²)/(λ² − λ_tk²))`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThermalCoefficients {
     pub d0: f64,
@@ -295,8 +306,9 @@ mod tests {
     }
 
     /// Hand-computed values. At λ = 1 µm every power of λ is 1, so `n²` is the
-    /// plain sum of the polynomial coefficients. At λ = 2 µm the powers are
-    /// exact binary fractions.
+    /// plain sum of the polynomial coefficients (which checks the set of terms,
+    /// not their order). At λ = 2 µm the powers are exact binary fractions and
+    /// the distinct coefficients pin down the order.
     #[test]
     fn polynomial_forms_known_values() {
         let a6 = [2.0, 0.01, 0.02, 0.003, 0.0004, 0.00005];
@@ -355,11 +367,27 @@ mod tests {
             + a8[7] / 4096.0;
         close(Dispersion::Extended { a: a8 }.index(2.0), ext.sqrt(), 1e-15);
 
-        // Herzberger at λ = 1: L = 1/0.972.
+        // Herzberger at λ = 2 (L = 1/3.972) and λ = 0.5 (L = 1/0.222), with
+        // distinct coefficients so any permutation of B…F is detected.
         let h = [1.5, 0.004, 0.0002, -0.001, 0.0001, -0.00001];
-        let lh = 1.0 / 0.972;
-        let nh = h[0] + h[1] * lh + h[2] * lh * lh + h[3] + h[4] + h[5];
-        close(Dispersion::Herzberger { a: h }.index(1.0), nh, 1e-15);
+        let herz = Dispersion::Herzberger { a: h };
+        let lh = 1.0 / 3.972;
+        let nh = h[0] + h[1] * lh + h[2] * lh * lh + 4.0 * h[3] + 16.0 * h[4] + 64.0 * h[5];
+        close(herz.index(2.0), nh, 1e-15);
+        let lh = 1.0 / 0.222;
+        let nh = h[0] + h[1] * lh + h[2] * lh * lh + h[3] / 4.0 + h[4] / 16.0 + h[5] / 64.0;
+        close(herz.index(0.5), nh, 1e-15);
+        // Sellmeier2 at λ = 2: n² = 1 + A + B1·4/(4 − λ1²) + B2/(4 − λ2²).
+        let s2 = Dispersion::Sellmeier2 {
+            a: 0.1,
+            b: [1.0, 0.04],
+            lambda_um: [0.1, 1.0],
+        };
+        close(
+            s2.index(2.0),
+            (1.0 + 0.1 + 4.0 / 3.99 + 0.04 / 3.0_f64).sqrt(),
+            1e-15,
+        );
         // Conrady at λ = 4: 4^3.5 = 128.
         let c = Dispersion::Conrady {
             n0: 1.5,
@@ -398,20 +426,28 @@ mod tests {
         for i in 0..=50 {
             let l = 0.35 + 2.0 * i as f64 / 50.0;
             let l2 = l * l;
-            // Sellmeier2 with A = 0 is a two-term Sellmeier with C_i = λ_i².
+            // Sellmeier2's second term has no λ² in its numerator. Because
+            // b λ²/(λ² − c) = b + b c/(λ² − c), a two-term Sellmeier equals
+            // Sellmeier2(A = b2, B1 = b1, λ1 = √c1, B2 = b2 c2, λ2 = √c2).
             let d4 = Dispersion::Sellmeier2 {
-                a: 0.0,
-                b: [b[0], b[1]],
+                a: b[1],
+                b: [b[0], b[1] * c[1]],
                 lambda_um: [c[0].sqrt(), c[1].sqrt()],
             };
-            close(d4.index(l), s2.index(l), 2e-15);
-            // Sellmeier2's A shifts n² by A.
-            let d4a = Dispersion::Sellmeier2 {
+            close(d4.index(l), s2.index(l), 4e-15);
+            // With B1 = 0 it is Handbook1(1 + A, B2, λ2², 0); A shifts n² by A.
+            let d4h = Dispersion::Sellmeier2 {
                 a: 0.05,
-                b: [b[0], b[1]],
-                lambda_um: [c[0].sqrt(), c[1].sqrt()],
+                b: [0.0, 0.3],
+                lambda_um: [0.0, 0.25],
             };
-            close(d4a.index(l).powi(2), s2.index(l).powi(2) + 0.05, 1e-14);
+            let h1 = Dispersion::Handbook1 {
+                a: 1.05,
+                b: 0.3,
+                c: 0.0625,
+                d: 0.0,
+            };
+            close(d4h.index(l), h1.index(l), 2e-15);
             // Sellmeier4 with A = 1 is a two-term Sellmeier.
             let d9 = Dispersion::Sellmeier4 {
                 a: 1.0,

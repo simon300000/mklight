@@ -77,47 +77,49 @@ pub enum TextEncoding {
 
 /// Decodes catalog bytes, detecting the encoding:
 ///
-/// 1. a byte-order mark (UTF-8, UTF-16 LE or BE) wins;
-/// 2. otherwise, if NUL bytes dominate the odd (or even) byte positions of the
-///    first 1 KiB, the text is UTF-16 LE (or BE). AGF text is almost entirely
-///    ASCII, so the high byte of each UTF-16 unit is zero;
+/// 1. a byte-order mark wins. UTF-16 LE/BE are decoded as such; after a UTF-8
+///    BOM the rest is UTF-8 if valid, else Latin-1 (and reported as Latin-1);
+/// 2. otherwise, if at least 5 % of the 2-byte units over the *whole* buffer
+///    are ASCII characters in one UTF-16 byte order (a NUL high byte) and they
+///    outnumber the other byte order 4 : 1, the text is UTF-16 in that order.
+///    UTF-8 and Latin-1 text contain no NUL bytes, and AGF records are ASCII,
+///    so this holds even when a long header of non-ASCII comments comes first;
 /// 3. otherwise UTF-8 if the bytes are valid UTF-8, else Latin-1.
 pub fn decode_bytes(bytes: &[u8]) -> (String, TextEncoding) {
     match bytes {
-        [0xEF, 0xBB, 0xBF, rest @ ..] => return (latin1_fallback(rest).0, TextEncoding::Utf8Bom),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => {
+            return match std::str::from_utf8(rest) {
+                Ok(s) => (s.to_string(), TextEncoding::Utf8Bom),
+                Err(_) => (latin1(rest), TextEncoding::Latin1),
+            };
+        }
         [0xFF, 0xFE, rest @ ..] => return (decode_utf16(rest, false), TextEncoding::Utf16Le),
         [0xFE, 0xFF, rest @ ..] => return (decode_utf16(rest, true), TextEncoding::Utf16Be),
         _ => {}
     }
-    let sample = &bytes[..bytes.len().min(1024) & !1];
-    let pairs = sample.len() / 2;
-    if pairs > 0 {
-        let zeros_even = sample.iter().step_by(2).filter(|&&b| b == 0).count();
-        let zeros_odd = sample
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .filter(|&&b| b == 0)
-            .count();
-        // More than 30 % NULs in one byte lane, and few in the other.
-        if 10 * zeros_odd > 3 * pairs && 4 * zeros_even < zeros_odd {
-            return (decode_utf16(bytes, false), TextEncoding::Utf16Le);
-        }
-        if 10 * zeros_even > 3 * pairs && 4 * zeros_odd < zeros_even {
-            return (decode_utf16(bytes, true), TextEncoding::Utf16Be);
+    let (mut le, mut be) = (0usize, 0usize);
+    for &[lo, hi] in bytes.as_chunks::<2>().0 {
+        match (lo, hi) {
+            (a, 0) if a != 0 && a.is_ascii() => le += 1,
+            (0, b) if b != 0 && b.is_ascii() => be += 1,
+            _ => {}
         }
     }
-    latin1_fallback(bytes)
-}
-
-fn latin1_fallback(bytes: &[u8]) -> (String, TextEncoding) {
+    let units = bytes.len() / 2;
+    if 20 * le >= units && le > 4 * be && le > 0 {
+        return (decode_utf16(bytes, false), TextEncoding::Utf16Le);
+    }
+    if 20 * be >= units && be > 4 * le && be > 0 {
+        return (decode_utf16(bytes, true), TextEncoding::Utf16Be);
+    }
     match std::str::from_utf8(bytes) {
         Ok(s) => (s.to_string(), TextEncoding::Utf8),
-        Err(_) => (
-            bytes.iter().map(|&b| b as char).collect(),
-            TextEncoding::Latin1,
-        ),
+        Err(_) => (latin1(bytes), TextEncoding::Latin1),
     }
+}
+
+fn latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
 }
 
 fn decode_utf16(bytes: &[u8], big_endian: bool) -> String {
@@ -327,6 +329,20 @@ impl AgfCatalog {
             catalog,
             ..Default::default()
         }
+    }
+
+    /// Glasses a discrete glass-substitution search may use: neither flagged
+    /// "exclude substitution" nor obsolete. This metadata lives only here:
+    /// [`GlassCatalog::from_agf_file`] and `MaterialLibrary` keep the glasses
+    /// alone, so a caller that needs the filter keeps the `AgfCatalog` from
+    /// [`read_agf_file`].
+    pub fn substitution_candidates(&self) -> impl Iterator<Item = &Glass> {
+        self.catalog.glasses.iter().filter_map(|(k, g)| {
+            let m = self.meta.get(k);
+            let excluded =
+                m.is_some_and(|m| m.exclude_substitution || m.status == GlassStatus::Obsolete);
+            (!excluded).then_some(g)
+        })
     }
 
     /// AGF text of this catalog (see [`write_agf`]).
@@ -963,7 +979,51 @@ fn num(v: f64) -> String {
     }
 }
 
-fn opt(v: Option<f64>) -> String {
+/// Record tags the reader interprets. An unknown record written back verbatim
+/// must not start with one of these, or it would change the catalog on re-read.
+const KNOWN_TAGS: [&str; 9] = ["CC", "NM", "GC", "ED", "CD", "TD", "OD", "LD", "IT"];
+
+/// Free text split at every line break the reader recognises (CR, LF, CRLF),
+/// so that text written after a record tag can never start a new record.
+fn text_lines(s: &str) -> Vec<String> {
+    s.replace("\r\n", "\n")
+        .split(['\r', '\n'])
+        .map(str::to_string)
+        .collect()
+}
+
+/// Collects the writer's [`AgfWarningKind::NotExportable`] warnings.
+struct WriteLog(Vec<AgfWarning>);
+
+impl WriteLog {
+    fn warn(&mut self, glass: &str, message: String) {
+        self.0.push(AgfWarning {
+            line: None,
+            glass: Some(glass.to_string()),
+            kind: AgfWarningKind::NotExportable,
+            message,
+        });
+    }
+
+    /// `v` if it is finite. A non-finite value is reported and treated as unknown.
+    fn finite(&mut self, glass: &str, what: &str, v: Option<f64>) -> Option<f64> {
+        match v {
+            Some(x) if !x.is_finite() => {
+                self.warn(glass, format!("{what} is {x}; written as unknown"));
+                None
+            }
+            v => v,
+        }
+    }
+}
+
+/// `-` for an unknown value. The reader maps `-` back to `None`.
+fn dash(v: Option<f64>) -> String {
+    v.map_or_else(|| "-".into(), num)
+}
+
+/// `-1` for an unknown `OD` value (the catalogs' own convention).
+fn minus_one(v: Option<f64>) -> String {
     v.map_or_else(|| "-1".into(), num)
 }
 
@@ -971,146 +1031,221 @@ fn opt(v: Option<f64>) -> String {
 /// customarily uses). Every number is written in its shortest exactly
 /// round-tripping form, so write → read reproduces the glasses bit for bit.
 ///
-/// Glasses whose dispersion has no AGF form (see [`dispersion_to_agf`]) are
-/// left out with a [`AgfWarningKind::NotExportable`] warning. Whitespace in a
-/// glass name is replaced by `_`, also with a warning. `ED` is written only
-/// when the glass has some of its data, with the missing values as 0 (a
-/// density of 0 reads back as "unknown", a TCE of 0 as 0). `TD` is written only
-/// when the glass has thermal coefficients. Missing `OD` values are written as −1.
+/// What the writer cannot express exactly is reported as an
+/// [`AgfWarningKind::NotExportable`] warning, never silently altered:
+///
+/// * glasses whose dispersion has no AGF form (see [`dispersion_to_agf`]) or
+///   has non-finite coefficients are left out;
+/// * whitespace in a glass name becomes `_`; if that collides with another
+///   glass's name, a `_2`, `_3`, … suffix is added;
+/// * unknown values are written as `-` in `ED` (so a missing CTE never reads
+///   back as 0) and as −1 in `OD`. Non-finite values are written as unknown;
+///   non-finite `n_d`/`V_d` as 0 (which disables the consistency check);
+/// * free text (`CC`, `GC`) is split at every line break, a MIL code that is
+///   empty or contains whitespace is replaced by the one computed from
+///   `n_d`/`V_d`, and kept unknown records that span lines or use a known tag
+///   are dropped, so no field can inject records;
+/// * the "ignore thermal expansion" flag of the metadata is written only while
+///   `Glass::cte` is `None`: an edited CTE wins over a stale flag;
+/// * `LD` is omitted for an unrestricted range (`0…f64::MAX`, what the reader
+///   produces without `LD`), and also (with a warning) for any other range
+///   that is not a finite `0 ≤ min < max`.
+///
+/// `TD` is written only when the glass has thermal coefficients.
 pub fn write_agf(cat: &AgfCatalog) -> (String, Vec<AgfWarning>) {
     use std::fmt::Write;
     let mut s = String::new();
-    let mut warnings = Vec::new();
-    let mut warn = |glass: &str, msg: String| {
-        warnings.push(AgfWarning {
-            line: None,
-            glass: Some(glass.to_string()),
-            kind: AgfWarningKind::NotExportable,
-            message: msg,
-        })
-    };
+    let mut log = WriteLog(Vec::new());
     let nl = "\r\n";
     for c in &cat.comments {
-        let _ = write!(s, "CC {c}{nl}");
+        for line in text_lines(c) {
+            let _ = write!(s, "CC {line}{nl}");
+        }
     }
+    let sanitize = |n: &str| -> String {
+        n.chars()
+            .map(|c| if c.is_whitespace() { '_' } else { c })
+            .collect()
+    };
+    let mut emitted: BTreeSet<String> = BTreeSet::new();
     let empty = AgfGlassMeta::default();
     for (key, g) in &cat.catalog.glasses {
         let meta = cat.meta.get(key).unwrap_or(&empty);
         let (formula, mut cd) = match dispersion_to_agf(&g.dispersion) {
             Ok(x) => x,
             Err(e) => {
-                warn(&g.name, format!("not written: {e}"));
+                log.warn(&g.name, format!("not written: {e}"));
                 continue;
             }
         };
-        let mut name: String = g
-            .name
-            .chars()
-            .map(|c| if c.is_whitespace() { '_' } else { c })
-            .collect();
-        if name.is_empty() {
-            name = key
-                .chars()
-                .map(|c| if c.is_whitespace() { '_' } else { c })
-                .collect();
-        }
-        if name.is_empty() {
-            warn(&g.name, "not written: empty glass name".into());
+        if let Some(x) = cd.iter().find(|x| !x.is_finite()) {
+            log.warn(
+                &g.name,
+                format!("not written: dispersion coefficient {x} is not finite"),
+            );
             continue;
         }
+        let mut name = sanitize(&g.name);
+        if name.is_empty() {
+            name = sanitize(key);
+        }
+        if name.is_empty() {
+            log.warn(&g.name, "not written: empty glass name".into());
+            continue;
+        }
+        if emitted.contains(&name) {
+            let base = name.clone();
+            name = (2..)
+                .map(|k| format!("{base}_{k}"))
+                .find(|n| !emitted.contains(n) && !cat.catalog.glasses.contains_key(n))
+                .expect("unbounded suffix search");
+        }
         if name != g.name {
-            warn(
+            log.warn(
                 &g.name,
-                format!("written as '{name}' (AGF names cannot contain whitespace)"),
+                format!(
+                    "written as '{name}' (AGF names cannot contain whitespace and must be unique)"
+                ),
             );
         }
-        let mil = meta.mil_code.clone().unwrap_or_else(|| {
-            format!(
-                "{:03}{:03}",
-                ((g.nd - 1.0) * 1000.0).round().max(0.0) as i64,
-                (g.vd * 10.0).round().max(0.0) as i64
-            )
-        });
+        emitted.insert(name.clone());
+
+        let nd = log.finite(&g.name, "nd", Some(g.nd)).unwrap_or(0.0);
+        let vd = log.finite(&g.name, "vd", Some(g.vd)).unwrap_or(0.0);
+        let mil = match &meta.mil_code {
+            Some(m) if !m.is_empty() && !m.contains(char::is_whitespace) => m.clone(),
+            other => {
+                let computed = format!(
+                    "{:03}{:03}",
+                    ((nd - 1.0) * 1000.0).round().max(0.0) as i64,
+                    (vd * 10.0).round().max(0.0) as i64
+                );
+                if let Some(m) = other {
+                    log.warn(
+                        &g.name,
+                        format!("MIL code {m:?} is not a single token; written as {computed}"),
+                    );
+                }
+                computed
+            }
+        };
         let _ = write!(
             s,
             "NM {name} {formula} {mil} {} {} {} {} {}{nl}",
-            num(g.nd),
-            num(g.vd),
+            num(nd),
+            num(vd),
             u8::from(meta.exclude_substitution),
             meta.status.code(),
             meta.melt_frequency.unwrap_or(0),
         );
-        for c in g.comment.lines() {
-            let _ = write!(s, "GC {c}{nl}");
+        if !g.comment.is_empty() {
+            for line in text_lines(&g.comment) {
+                let _ = write!(s, "GC {line}{nl}");
+            }
         }
+
+        // An edited CTE overrides a stale "ignore thermal expansion" flag.
+        let ignore = meta.ignore_thermal_expansion && g.cte.is_none();
+        let cte = log.finite(&g.name, "CTE", g.cte);
+        let raw_tce = log.finite(&g.name, "TCE -30/+70", meta.tce_m30_70);
         // Prefer the TCE exactly as read, so that it round-trips bit for bit.
-        let tce = match (g.cte, meta.tce_m30_70) {
-            (Some(cte), Some(raw)) if raw / 1e6 == cte => raw,
-            (Some(cte), _) => cte * 1e6,
-            (None, raw) if meta.ignore_thermal_expansion => raw.unwrap_or(0.0),
-            (None, _) => 0.0,
+        let tce = match (cte, raw_tce) {
+            (Some(cte), Some(raw)) if raw / 1e6 == cte => Some(raw),
+            (Some(cte), _) => Some(cte * 1e6),
+            (None, raw) if ignore => raw,
+            (None, _) => None,
         };
-        let has_ed = g.cte.is_some()
-            || g.density.is_some()
-            || meta.tce_m30_70.is_some()
-            || meta.tce_100_300.is_some()
-            || meta.dpgf.is_some()
-            || meta.ignore_thermal_expansion;
-        if has_ed {
+        let tce_hi = log.finite(&g.name, "TCE 100/300", meta.tce_100_300);
+        let density = log.finite(&g.name, "density", g.density);
+        let dpgf = log.finite(&g.name, "dPgF", meta.dpgf);
+        if tce.is_some() || tce_hi.is_some() || density.is_some() || dpgf.is_some() || ignore {
             let _ = write!(
                 s,
                 "ED {} {} {} {} {}{nl}",
-                num(tce),
-                num(meta.tce_100_300.unwrap_or(0.0)),
-                num(g.density.unwrap_or(0.0)),
-                num(meta.dpgf.unwrap_or(0.0)),
-                u8::from(meta.ignore_thermal_expansion),
+                dash(tce),
+                dash(tce_hi),
+                dash(density),
+                dash(dpgf),
+                u8::from(ignore),
             );
         }
         cd.resize(cd.len().max(CD_WIDTH), 0.0);
         let cd: Vec<String> = cd.into_iter().map(num).collect();
         let _ = write!(s, "CD {}{nl}", cd.join(" "));
         if let Some(th) = &g.thermal {
-            let _ = write!(
-                s,
-                "TD {} {} {} {} {} {} {}{nl}",
-                num(th.d0),
-                num(th.d1),
-                num(th.d2),
-                num(th.e0),
-                num(th.e1),
-                num(th.lambda_tk_um),
-                num(th.t_ref_c)
-            );
+            let v = [
+                th.d0,
+                th.d1,
+                th.d2,
+                th.e0,
+                th.e1,
+                th.lambda_tk_um,
+                th.t_ref_c,
+            ];
+            if v.iter().all(|x| x.is_finite()) {
+                let v: Vec<String> = v.into_iter().map(num).collect();
+                let _ = write!(s, "TD {}{nl}", v.join(" "));
+            } else {
+                log.warn(&g.name, "TD not written: non-finite coefficient".into());
+            }
         }
         let o = &meta.ordering;
         // The glass's own (possibly edited) relative cost wins over the stored ordering data.
-        let cost = g.relative_cost.or(o.relative_cost);
-        let _ = write!(
-            s,
-            "OD {} {} {} {} {} {}{nl}",
-            opt(cost),
-            opt(o.climate_resistance),
-            opt(o.stain_resistance),
-            opt(o.acid_resistance),
-            opt(o.alkali_resistance),
-            opt(o.phosphate_resistance),
-        );
-        let _ = write!(s, "LD {} {}{nl}", num(g.min_um), num(g.max_um));
-        for t in &g.transmittance {
-            let _ = write!(
-                s,
-                "IT {} {} {}{nl}",
-                num(t.um),
-                num(t.tau),
-                num(t.thickness_mm)
+        let od = [
+            ("relative cost", g.relative_cost.or(o.relative_cost)),
+            ("climate resistance", o.climate_resistance),
+            ("stain resistance", o.stain_resistance),
+            ("acid resistance", o.acid_resistance),
+            ("alkali resistance", o.alkali_resistance),
+            ("phosphate resistance", o.phosphate_resistance),
+        ]
+        .map(|(what, v)| minus_one(log.finite(&g.name, what, v)));
+        let _ = write!(s, "OD {}{nl}", od.join(" "));
+        let (lo, hi) = (g.min_um, g.max_um);
+        if lo.is_finite() && hi.is_finite() && hi < f64::MAX && lo >= 0.0 && hi > lo {
+            let _ = write!(s, "LD {} {}{nl}", num(lo), num(hi));
+        } else if !(lo == 0.0 && hi == f64::MAX) {
+            log.warn(
+                &g.name,
+                format!("LD not written: range {lo}…{hi} µm is not a finite 0 ≤ min < max"),
             );
         }
+        for t in &g.transmittance {
+            if [t.um, t.tau, t.thickness_mm].iter().all(|x| x.is_finite()) {
+                let _ = write!(
+                    s,
+                    "IT {} {} {}{nl}",
+                    num(t.um),
+                    num(t.tau),
+                    num(t.thickness_mm)
+                );
+            } else {
+                log.warn(
+                    &g.name,
+                    format!(
+                        "IT point ({}, {}, {}) not written: not finite",
+                        t.um, t.tau, t.thickness_mm
+                    ),
+                );
+            }
+        }
         for x in &meta.extra_records {
-            let _ = write!(s, "{x}{nl}");
+            let tag = x
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_uppercase();
+            if x.contains(['\r', '\n']) || tag.is_empty() || KNOWN_TAGS.contains(&tag.as_str()) {
+                log.warn(
+                    &g.name,
+                    format!("kept record {x:?} not written: it spans lines or uses a known tag"),
+                );
+            } else {
+                let _ = write!(s, "{}{nl}", x.trim());
+            }
         }
     }
-    (s, warnings)
+    (s, log.0)
 }
 
 /// Writes a catalog to `path` in `encoding`. Returns the writer's warnings.
@@ -1446,7 +1581,9 @@ CD 1.5 0.01 0.001
     }
 
     /// Spot values of each AGF formula, written out by hand from the formula
-    /// definitions with `cd = [k0, k1, …]`.
+    /// definitions with `cd = [k0, k1, …]`. Evaluated at λ = 2 µm (λ² = 4,
+    /// exact binary powers) and, for the polynomial forms, also at λ = 0.5 µm,
+    /// with distinct coefficients, so a wrong CD → coefficient mapping fails.
     #[test]
     fn formula_known_values() {
         let k = [
@@ -1458,8 +1595,8 @@ CD 1.5 0.01 0.001
         // 2 Sellmeier1: interleaved K1 L1 K2 L2 K3 L3.
         let s1 = 1.0 + k[0] * l2 / (l2 - k[1]) + k[2] * l2 / (l2 - k[3]) + k[4] * l2 / (l2 - k[5]);
         close(n(2, 2.0), s1.sqrt());
-        // 4 Sellmeier2: n² = 1 + A + B1 λ²/(λ² − λ1²) + B2 λ²/(λ² − λ2²).
-        let s2 = 1.0 + k[0] + k[1] * l2 / (l2 - k[2] * k[2]) + k[3] * l2 / (l2 - k[4] * k[4]);
+        // 4 Sellmeier2: n² = 1 + A + B1 λ²/(λ² − λ1²) + B2/(λ² − λ2²), CD = A B1 λ1 B2 λ2.
+        let s2 = 1.0 + k[0] + k[1] * l2 / (l2 - k[2] * k[2]) + k[3] / (l2 - k[4] * k[4]);
         close(n(4, 2.0), s2.sqrt());
         // 6 Sellmeier3: four interleaved terms.
         let s3 = s1 + k[6] * l2 / (l2 - k[7]);
@@ -1481,18 +1618,36 @@ CD 1.5 0.01 0.001
         close(n(11, 2.0), s5.sqrt());
         // 5 Conrady: n = n0 + A/λ + B/λ^3.5, at λ = 4 (4^3.5 = 128).
         close(n(5, 4.0), k[0] + k[1] / 4.0 + k[2] / 128.0);
-        // 1, 10, 12, 13: at λ = 1 the polynomial forms are plain coefficient sums.
-        let sum = |m: usize| k[..m].iter().sum::<f64>().sqrt();
-        close(n(1, 1.0), sum(6));
-        close(n(10, 1.0), sum(8));
-        close(n(12, 1.0), sum(8));
-        close(n(13, 1.0), sum(9));
-        // 3 Herzberger at λ = 1: L = 1/0.972.
-        let lh = 1.0 / 0.972;
-        close(
-            n(3, 1.0),
-            k[0] + k[1] * lh + k[2] * lh * lh + k[3] + k[4] + k[5],
-        );
+
+        // Polynomial forms. `p(x)` is λ^x at the wavelength under test.
+        for l in [2.0_f64, 0.5] {
+            let p = |x: i32| l.powi(x);
+            // 1 Schott: a0 + a1λ² + a2λ⁻² + a3λ⁻⁴ + a4λ⁻⁶ + a5λ⁻⁸.
+            let schott =
+                k[0] + k[1] * p(2) + k[2] * p(-2) + k[3] * p(-4) + k[4] * p(-6) + k[5] * p(-8);
+            close(n(1, l), schott.sqrt());
+            // 10 Extended: Schott + a6λ⁻¹⁰ + a7λ⁻¹².
+            close(n(10, l), (schott + k[6] * p(-10) + k[7] * p(-12)).sqrt());
+            // 12 Extended2: Schott + a6λ⁴ + a7λ⁶.
+            close(n(12, l), (schott + k[6] * p(4) + k[7] * p(6)).sqrt());
+            // 13 Extended3: a0 + a1λ² + a2λ⁴ + a3λ⁻² + … + a8λ⁻¹².
+            let e3 = k[0]
+                + k[1] * p(2)
+                + k[2] * p(4)
+                + k[3] * p(-2)
+                + k[4] * p(-4)
+                + k[5] * p(-6)
+                + k[6] * p(-8)
+                + k[7] * p(-10)
+                + k[8] * p(-12);
+            close(n(13, l), e3.sqrt());
+            // 3 Herzberger: A + B L + C L² + Dλ² + Eλ⁴ + Fλ⁶, L = 1/(λ² − 0.028).
+            let lh = 1.0 / (p(2) - 0.028);
+            close(
+                n(3, l),
+                k[0] + k[1] * lh + k[2] * lh * lh + k[3] * p(2) + k[4] * p(4) + k[5] * p(6),
+            );
+        }
     }
 
     #[test]
@@ -1536,6 +1691,170 @@ CD 1.5 0.01 0.001
         assert!(w.iter().all(|w| w.kind == AgfWarningKind::NotExportable));
         assert!(!text.contains("TABLE"));
         assert!(parse(&text).catalog.glasses.contains_key("MY_F2"));
+    }
+
+    /// N-BK7 alone, without an `ED` record.
+    const NBK7_NO_ED: &str = "\
+NM N-BK7 2 517642.251 1.5168 64.17 0 1 0
+CD 1.03961212E+000 6.00069867E-003 2.31792344E-001 2.00179144E-002 1.01046945E+000 1.03560653E+002
+LD 0.3 2.5
+";
+
+    #[test]
+    fn writer_keeps_unknown_values_unknown() {
+        let mut c = parse(NBK7_NO_ED);
+        assert!(!c.meta["N-BK7"].ignore_thermal_expansion);
+        c.catalog.glasses.get_mut("N-BK7").unwrap().density = Some(2.51);
+        let (text, w) = write_agf(&c);
+        assert!(w.is_empty(), "{w:?}");
+        assert!(text.contains("ED - - 2.51 - 0\r\n"), "{text}");
+        let back = parse(&text);
+        let g = &back.catalog.glasses["N-BK7"];
+        // A missing CTE must not come back as "does not expand".
+        assert_eq!((g.cte, g.density), (None, Some(2.51)));
+        let m = &back.meta["N-BK7"];
+        assert_eq!((m.tce_m30_70, m.tce_100_300, m.dpgf), (None, None, None));
+        assert_eq!(back.catalog, c.catalog);
+    }
+
+    #[test]
+    fn edited_cte_overrides_stale_ignore_flag() {
+        let text = NBK7_NO_ED.replace("CD ", "ED 7.1 8.3 2.51 -0.0009 1\nCD ");
+        let c = parse(&text);
+        assert_eq!(c.catalog.glasses["N-BK7"].cte, None);
+        // Unedited: the flag and the raw TCE survive.
+        let back = parse(&write_agf(&c).0);
+        assert_eq!(back.meta, c.meta);
+        assert_eq!(back.catalog.glasses["N-BK7"].cte, None);
+        // Edited: the user's CTE wins and the flag is cleared.
+        let mut edited = c.clone();
+        edited.catalog.glasses.get_mut("N-BK7").unwrap().cte = Some(9e-6);
+        let back = parse(&write_agf(&edited).0);
+        assert_eq!(back.catalog.glasses["N-BK7"].cte, Some(9e-6));
+        assert!(!back.meta["N-BK7"].ignore_thermal_expansion);
+    }
+
+    #[test]
+    fn writer_cannot_inject_records() {
+        let mut c = parse(NBK7_NO_ED);
+        c.comments
+            .push("hello\nNM EVIL 2 - 1.5 60\nCD 0 0 0 0 0 0".into());
+        let m = c.meta.get_mut("N-BK7").unwrap();
+        m.mil_code = Some("517 642\r\nNM EVIL2 2 - 1.5 60".into());
+        m.extra_records = vec![
+            "XY fine".into(),
+            "XY a\rNM EVIL3 2 - 1.5 60".into(),
+            "nm EVIL4 2 - 1.5 60".into(),
+        ];
+        let g = c.catalog.glasses.get_mut("N-BK7").unwrap();
+        g.comment = "first\rNM EVIL5 2 - 1.5 60\r\nCD 1 0 0 0 0 0".into();
+        let (text, w) = write_agf(&c);
+        // The MIL code and the two bad extra records are reported.
+        assert_eq!(w.len(), 3, "{w:?}");
+        let back = parse(&text);
+        assert_eq!(
+            back.catalog.glasses.keys().collect::<Vec<_>>(),
+            vec!["N-BK7"]
+        );
+        // Free text is preserved, split at its line breaks.
+        assert_eq!(
+            &back.comments[..],
+            &["hello", "NM EVIL 2 - 1.5 60", "CD 0 0 0 0 0 0"]
+        );
+        assert_eq!(
+            back.catalog.glasses["N-BK7"].comment,
+            "first\nNM EVIL5 2 - 1.5 60\nCD 1 0 0 0 0 0"
+        );
+        let m = &back.meta["N-BK7"];
+        assert_eq!(m.mil_code.as_deref(), Some("517642"));
+        assert_eq!(m.extra_records, vec!["XY fine"]);
+    }
+
+    #[test]
+    fn writer_resolves_name_collisions_and_rejects_non_finite_data() {
+        let base = parse(NBK7_NO_ED).catalog.glasses["N-BK7"].clone();
+        let mut cat = GlassCatalog::default();
+        for name in ["MY GLASS", "MY_GLASS", "NANGLASS", "NAN_ND"] {
+            let mut g = base.clone();
+            g.name = name.into();
+            cat.glasses.insert(name.into(), g);
+        }
+        let g = cat.glasses.get_mut("NANGLASS").unwrap();
+        g.dispersion = Dispersion::Schott {
+            a: [f64::NAN, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        let g = cat.glasses.get_mut("NAN_ND").unwrap();
+        g.nd = f64::NAN;
+        g.density = Some(f64::INFINITY);
+        let (text, w) = write_agf(&AgfCatalog::from_catalog(cat.clone()));
+        let who: Vec<_> = w.iter().map(|w| w.glass.as_deref().unwrap()).collect();
+        // "MY GLASS" sorts first and is written as "MY_GLASS", so the real
+        // MY_GLASS is renamed; both renames are reported.
+        assert_eq!(
+            who,
+            vec!["MY GLASS", "MY_GLASS", "NANGLASS", "NAN_ND", "NAN_ND"]
+        );
+        assert!(w[1].message.contains("'MY_GLASS_2'"), "{}", w[1].message);
+        let back = parse(&text);
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(
+            back.catalog.glasses.keys().collect::<Vec<_>>(),
+            vec!["MY_GLASS", "MY_GLASS_2", "NAN_ND"]
+        );
+        let n = &back.catalog.glasses["NAN_ND"];
+        assert_eq!((n.nd, n.density), (0.0, None));
+        assert_eq!(n.dispersion, base.dispersion);
+    }
+
+    #[test]
+    fn unrestricted_range_is_not_written() {
+        let text = NBK7_NO_ED.replace("LD 0.3 2.5\n", "");
+        let c = parse(&text);
+        assert_eq!(c.catalog.glasses["N-BK7"].max_um, f64::MAX);
+        let (out, w) = write_agf(&c);
+        assert!(w.is_empty());
+        assert!(!out.contains("LD"), "{out}");
+        assert_eq!(parse(&out).catalog, c.catalog);
+        // A half-open range cannot be expressed: reported, not written.
+        let mut half = c.clone();
+        half.catalog.glasses.get_mut("N-BK7").unwrap().min_um = 0.3;
+        let (out, w) = write_agf(&half);
+        assert!(!out.contains("LD") && w.len() == 1, "{out} {w:?}");
+    }
+
+    #[test]
+    fn utf16_without_bom_and_non_ascii_header() {
+        let header = "CC 光学玻璃目录，供应商说明。此行全部为非拉丁字符注释内容\r\n".repeat(40);
+        let text = format!("{header}{}", NBK7_NO_ED.replace('\n', "\r\n"));
+        for (enc, bom_free) in [(TextEncoding::Utf16Le, true), (TextEncoding::Utf16Be, true)] {
+            let bytes = encode_text(&text, enc);
+            let bytes = if bom_free { &bytes[2..] } else { &bytes[..] };
+            let c = parse_agf_bytes("T", bytes, &AgfOptions::default()).unwrap();
+            assert_eq!(c.encoding, Some(enc));
+            assert_eq!(c.comments.len(), 40);
+            assert!(c.comments[0].starts_with("光学"));
+            assert!(c.catalog.glasses.contains_key("N-BK7"));
+        }
+        // A UTF-8 BOM followed by bytes that are not UTF-8 is decoded, and
+        // reported, as Latin-1.
+        let mut bytes = encode_text(NBK7_NO_ED, TextEncoding::Utf8Bom);
+        bytes.extend_from_slice(b"CC 20 \xB0C\n");
+        let c = parse_agf_bytes("T", &bytes, &AgfOptions::default()).unwrap();
+        assert_eq!(c.encoding, Some(TextEncoding::Latin1));
+        assert_eq!(c.comments, vec!["20 °C"]);
+    }
+
+    #[test]
+    fn substitution_candidates_skip_obsolete_and_excluded() {
+        let text = SNIPPET.replace("1.62004 36.37 0 0 0", "1.62004 36.37 1 0 0");
+        let c = parse(&text);
+        assert!(c.meta["F2"].exclude_substitution);
+        let names: Vec<_> = c
+            .substitution_candidates()
+            .map(|g| g.name.as_str())
+            .collect();
+        // BK7_SCHOTT is obsolete (status 2) and F2 is excluded.
+        assert_eq!(names, vec!["N-BK7"]);
     }
 
     #[test]

@@ -16,7 +16,8 @@ pub use dispersion::{Dispersion, ThermalCoefficients, air_index};
 use crate::error::{MkError, MkResult};
 use crate::model::{Environment, MaterialRef};
 
-/// Catalog reference conditions.
+/// Default catalog reference conditions. A glass whose thermal data name
+/// another reference temperature (`ThermalCoefficients::t_ref_c`) uses that one.
 pub const CATALOG_T_C: f64 = 20.0;
 pub const CATALOG_P_ATM: f64 = 1.0;
 
@@ -101,8 +102,10 @@ pub struct GlassCatalog {
 impl GlassCatalog {
     /// Loads an AGF catalog file in any common encoding (UTF-8, Latin-1,
     /// UTF-16 LE/BE), named after the file stem, with the default
-    /// skip-or-keep policy. Use `agf::read_agf_file` to also get the warnings
-    /// and AGF-only metadata.
+    /// skip-or-keep policy. The warnings and the AGF-only metadata (status,
+    /// exclude-substitution flag, ΔP_g,F, resistance codes, …) are dropped;
+    /// use `agf::read_agf_file` to keep them, e.g. for glass substitution
+    /// (`AgfCatalog::substitution_candidates`).
     pub fn from_agf_file(path: impl AsRef<std::path::Path>) -> MkResult<Self> {
         Ok(agf::read_agf_file(path, &agf::AgfOptions::default())?.catalog)
     }
@@ -139,11 +142,14 @@ impl ResolvedMaterial {
             }
             ResolvedMaterial::Glass { glass, env } => {
                 let n_cat = glass.catalog_index(lambda_um);
-                let at_ref = env.temperature_c == CATALOG_T_C && env.pressure_atm == CATALOG_P_ATM;
-                if at_ref && glass.thermal.is_none() {
+                // The catalog index is relative to air at the glass's own
+                // reference conditions: T_ref from its thermal data (else
+                // CATALOG_T_C) and CATALOG_P_ATM. There ΔT = 0, so it is returned as is.
+                let t_ref = glass.thermal.map_or(CATALOG_T_C, |th| th.t_ref_c);
+                if env.temperature_c == t_ref && env.pressure_atm == CATALOG_P_ATM {
                     return n_cat;
                 }
-                let n_air_ref = air_index(lambda_um, CATALOG_T_C, CATALOG_P_ATM);
+                let n_air_ref = air_index(lambda_um, t_ref, CATALOG_P_ATM);
                 let n_abs_ref = n_cat * n_air_ref;
                 let dn = glass.thermal.map_or(0.0, |th| {
                     th.delta_n_abs(n_abs_ref, lambda_um, env.temperature_c)
@@ -297,6 +303,39 @@ mod tests {
             .resolve(&MaterialRef::Vacuum, &Environment::default())
             .unwrap();
         assert!(v.index(0.55) < 1.0 && v.index(0.55) > 0.9996);
+    }
+
+    /// Catalog data stated at T_ref = 25 °C with zero dn/dT: the index at
+    /// 25 °C, 1 atm is the catalog index exactly, and at 20 °C it differs only
+    /// by the change of the air index, n_cat·n_air(25 °C)/n_air(20 °C).
+    #[test]
+    fn thermal_reference_temperature_is_honoured() {
+        let mut g = builtin::catalog().glasses["N-BK7"].clone();
+        g.thermal = Some(ThermalCoefficients {
+            d0: 0.0,
+            d1: 0.0,
+            d2: 0.0,
+            e0: 0.0,
+            e1: 0.0,
+            lambda_tk_um: 0.17,
+            t_ref_c: 25.0,
+        });
+        let glass = Arc::new(g);
+        let at = |t: f64| ResolvedMaterial::Glass {
+            glass: glass.clone(),
+            env: Environment {
+                temperature_c: t,
+                ..Environment::default()
+            },
+        };
+        let l = lines::D;
+        let n_cat = glass.catalog_index(l);
+        assert_eq!(at(25.0).index(l), n_cat);
+        let expect = n_cat * air_index(l, 25.0, 1.0) / air_index(l, 20.0, 1.0);
+        let n20 = at(20.0).index(l);
+        assert!((n20 - expect).abs() < 1e-15, "{n20} vs {expect}");
+        // Air at 25 °C is less refractive than at 20 °C, by about 4.6·10⁻⁶.
+        assert!(n_cat - n20 > 5e-6 && n_cat - n20 < 1e-5);
     }
 
     #[test]

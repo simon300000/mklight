@@ -6,22 +6,24 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
 ## Index conventions
 
 * Wavelengths are in **µm**. Glass data are indices **relative to air** at the
-  catalog reference conditions, **20 °C and 1 atm** (`CATALOG_T_C`,
-  `CATALOG_P_ATM`). This is the convention glass catalogs use, and it matches
-  `docs/CONVENTIONS.md` §2.
+  catalog reference conditions: the glass's `T_ref` (from its `TD` record;
+  `CATALOG_T_C` = 20 °C when it has none, which is also what nearly every
+  catalog uses) and **1 atm** (`CATALOG_P_ATM`). This is the convention glass
+  catalogs use, and it matches `docs/CONVENTIONS.md` §2.
 * Air is `n = 1` at the system temperature and pressure by definition.
   Vacuum is `1/n_air(λ, T, P)`. `air_index` is the Kohlrausch/Edlén formula at
   15 °C with ideal-gas T/P scaling.
 * **Thermal model.** For a system at temperature `T` and pressure `P`,
   `ResolvedMaterial::index` does the following:
-  1. `n_rel,ref = n_catalog(λ)` (relative to air at 20 °C, 1 atm);
-  2. `n_abs,ref = n_rel,ref · n_air(λ, 20 °C, 1 atm)`;
+  1. `n_rel,ref = n_catalog(λ)` (relative to air at `T_ref`, 1 atm);
+  2. `n_abs,ref = n_rel,ref · n_air(λ, T_ref, 1 atm)`;
   3. `Δn_abs = (n_abs,ref² − 1)/(2 n_abs,ref) · (D0 ΔT + D1 ΔT² + D2 ΔT³ + (E0 ΔT + E1 ΔT²)/(λ² − λ_tk²))`,
-     with `ΔT = T − T_ref` (catalog `TD` record, usually `T_ref = 20 °C`);
+     with `ΔT = T − T_ref`;
   4. `n = (n_abs,ref + Δn_abs) / n_air(λ, T, P)`.
 
-  At 20 °C and 1 atm this returns the catalog index unchanged. A glass
-  without `TD` data still gets the air-index correction for `T` and `P`.
+  At `T_ref` and 1 atm this returns the catalog index unchanged. A glass
+  without `TD` data (`T_ref` = 20 °C, `Δn_abs` = 0) still gets the air-index
+  correction for `T` and `P`.
 * Internal absorption uses the catalog internal transmittance `τ` of a sample
   of thickness `d`. The absorption coefficient `α = −ln τ / d` is interpolated
   linearly in λ, and a path of length `L` transmits `exp(−α L)` (Beer–Lambert).
@@ -39,7 +41,7 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
 | 1 | Schott | `n² = a0 + a1λ² + a2λ⁻² + a3λ⁻⁴ + a4λ⁻⁶ + a5λ⁻⁸` | `Schott` |
 | 2 | Sellmeier 1 | `n² − 1 = Σ₁³ Kᵢλ²/(λ² − Lᵢ)`, CD order `K1 L1 K2 L2 K3 L3` | `Sellmeier` (3 terms) |
 | 3 | Herzberger | `n = A + B·L + C·L² + Dλ² + Eλ⁴ + Fλ⁶`, `L = 1/(λ² − 0.028)` | `Herzberger` |
-| 4 | Sellmeier 2 | `n² − 1 = A + B1λ²/(λ² − λ1²) + B2λ²/(λ² − λ2²)`, CD order `A B1 λ1 B2 λ2` | `Sellmeier2` |
+| 4 | Sellmeier 2 | `n² − 1 = A + B1λ²/(λ² − λ1²) + B2/(λ² − λ2²)` (no `λ²` in the second numerator), CD order `A B1 λ1 B2 λ2` ⚠ | `Sellmeier2` |
 | 5 | Conrady | `n = n0 + A/λ + B/λ^3.5` | `Conrady` |
 | 6 | Sellmeier 3 | as 2 with 4 terms | `Sellmeier` (4 terms) |
 | 7 | Handbook of Optics 1 | `n² = A + B/(λ² − C) − Dλ²` | `Handbook1` |
@@ -52,13 +54,23 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
 | – | Cauchy | `n = A + B/λ² + C/λ⁴` (model glasses), exported exactly as formula 1 | `Cauchy` |
 | – | Tabulated | monotone cubic interpolation of `(λ, n)` pairs; no AGF form | `Tabulated` |
 
-⚠ For formulas 12 and 13, the set of terms is standard, but the
-*coefficient order* has not been checked against a primary specification. It
-comes from secondary documentation and is flagged in the source. In the
-tests, formulas 1 and 2 reproduce published glass data (N-BK7, F2, BK7) to the
-catalog n_d/V_d. Every formula is checked against hand-evaluated values, and
-the resonance forms (4, 6–9, 11) are also checked against exact algebraic
-identities with the plain Sellmeier sum.
+⚠ Not checked against a primary specification, and flagged in the source:
+
+* **Formula 4**: the second term `B2/(λ² − λ2²)` has no `λ²` in its
+  numerator. This agrees with most independent open-source AGF readers; at
+  least one puts `λ²` there too. For `B2 ≠ 0` the two readings differ by
+  ~0.1 in index, so a formula-4 glass that gets an `IndexMismatch` warning
+  should be inspected. No published formula-4 glass was available as a known
+  answer.
+* **Formulas 12 and 13**: the set of terms is standard, but the *coefficient
+  order* comes from secondary documentation (it agrees with the independent
+  readers).
+
+In the tests, formulas 1 and 2 reproduce published glass data (N-BK7, F2,
+BK7) to the catalog n_d/V_d. Every formula is checked against hand-evaluated
+values at λ ≠ 1 µm with distinct coefficients (so a permuted coefficient
+mapping fails), and the resonance forms (4, 6–9, 11) are also checked against
+exact algebraic identities with the plain Sellmeier sum.
 
 `n²`-type formulas are evaluated as a compensated (Neumaier) sum of their
 terms and then square-rooted. A negative `n²` gives NaN rather than a wrong
@@ -88,6 +100,12 @@ let mut lib = MaterialLibrary::with_builtin();
 lib.add_catalog(Arc::new(cat));
 ```
 
+`GlassCatalog::from_agf_file` and `MaterialLibrary` keep only the glasses.
+The AGF metadata (status, exclude-substitution flag, ΔP_g,F, resistance
+codes) stays in `AgfCatalog::meta`, so a glass-substitution search should
+keep the `AgfCatalog` and draw from `AgfCatalog::substitution_candidates()`
+(not obsolete, not excluded).
+
 The catalog is named after the file stem. Glass lookups are case-insensitive,
 and a `MaterialRef::Catalog` with `catalog: None` searches the catalogs in
 load order.
@@ -112,6 +130,17 @@ the d line lies in the glass's `LD` range and the catalog lists `n_d, V_d > 0`.
 catalog, including edited glasses and model glasses (`agf::model_glass(name,
 nd, vd, dpgf)`, the same Cauchy fit `MaterialRef::Model` uses). Numbers are
 written in their shortest exactly-round-tripping form, so a write → read cycle
-reproduces every glass bit for bit. Tabulated dispersions and Sellmeier sums
-with more than five terms have no AGF form. The writer leaves them out with a
-`NotExportable` warning.
+reproduces every glass bit for bit. Anything the writer cannot express exactly
+is reported with a `NotExportable` warning:
+
+* tabulated dispersions, Sellmeier sums with more than five terms and
+  non-finite coefficients: the glass is left out;
+* whitespace in a name becomes `_`, and a name collision gets a `_2`, `_3`, …
+  suffix;
+* unknown `ED` values are written as `-`, so a missing CTE never reads back
+  as 0; unknown `OD` values as −1; non-finite values as unknown;
+* free text is split at every line break, and malformed MIL codes or kept
+  unknown records are replaced or dropped, so no field can inject records;
+* an edited `Glass::cte` clears a stale "ignore thermal expansion" flag;
+* an unrestricted wavelength range (a glass read without `LD`) is written
+  without `LD`.
