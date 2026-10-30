@@ -301,7 +301,8 @@ pub struct ClassTotal {
     pub std_error: f64,
     /// `flux / reference_flux` (`None` when the reference flux is 0).
     pub fraction: Option<f64>,
-    /// Part of the stray total.
+    /// Whole class selected; an uncovered Ghost subset can be included
+    /// separately even when this is false.
     pub included: bool,
     pub hits: u64,
     pub moments: ImageMoments,
@@ -313,10 +314,13 @@ pub struct StrayAnalysisResult {
     pub source: Beam,
     /// Emitted power (W).
     pub emitted: f64,
-    /// The classes in the stray total and in `maps`.
+    /// Whole classes in the stray total; `maps` may also contain the
+    /// uncovered subset of Ghost.
     pub classes: ClassMask,
     pub detector: DetectorSpec,
-    /// One map per included class, in `PathClass` order.
+    /// One map per included class, in `PathClass` order. With ghost coverage,
+    /// the Ghost row contains only uncovered paths; `totals` still reports
+    /// the full class for comparison.
     pub maps: Vec<ClassMap>,
     /// Sum of the included classes (W/mm²), with its own standard error.
     pub total_irradiance: Vec<f64>,
@@ -374,8 +378,8 @@ pub fn analyze(
 /// signature) pair the run detected, included in the total or not, largest
 /// first (signature tallying is on whatever `top_signatures` says; it does
 /// not change any other number). A front end that partitions against an
-/// explicit ghost run uses it to hand the stray total the `Ghost`-class
-/// paths outside that run's coverage (CONVENTIONS §10).
+/// explicit ghost run can use it to report the number of uncovered
+/// signatures; ownership and errors are already tallied per ray.
 pub fn analyze_with_signatures(
     rs: Arc<ResolvedSystem>,
     settings: &StrayAnalysisSettings,
@@ -434,14 +438,23 @@ fn analyze_system_impl(
     let frac = |f: f64| (reference > 0.0).then(|| f / reference);
     let maps = PathClass::ALL
         .iter()
-        .filter(|c| owned.contains(**c))
-        .map(|c| ClassMap {
-            class: *c,
-            irradiance: det.irradiance[c.index()].clone(),
-            irradiance_std_error: det.flux_std_error[c.index()]
-                .iter()
-                .map(|e| e / area)
-                .collect(),
+        .filter_map(|&c| {
+            let (irradiance, error) = if owned.contains(c) {
+                (&det.irradiance[c.index()], &det.flux_std_error[c.index()])
+            } else if c == PathClass::Ghost && ss.covered_ghosts.is_some() {
+                // Only the uncovered ghosts are owned.
+                (
+                    &det.uncovered_ghost_irradiance,
+                    &det.uncovered_ghost_flux_std_error,
+                )
+            } else {
+                return None;
+            };
+            Some(ClassMap {
+                class: c,
+                irradiance: irradiance.clone(),
+                irradiance_std_error: error.iter().map(|e| e / area).collect(),
+            })
         })
         .collect();
     let e = &r.energy;

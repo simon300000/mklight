@@ -174,31 +174,12 @@ fn sensor_reflections_only_inside_the_sensor_rectangle() {
         ..Default::default()
     };
     let res = ghost_irradiance(&m, &s, &JobContext::new()).unwrap();
-    // Normal incidence on planes: every ray keeps its (x, y) = r_ep·p and
-    // the sensor reflection returns it along itself. Count the grid points
-    // inside the unit pupil and inside the rectangle |x| ≤ 2, |y| ≤ 1.
-    let h = 2.0 / n_grid as f64;
-    let (mut all, mut inside) = (0usize, 0usize);
-    for iy in 0..n_grid {
-        for ix in 0..n_grid {
-            let (px, py) = (-1.0 + h * (ix as f64 + 0.5), -1.0 + h * (iy as f64 + 0.5));
-            if px * px + py * py > 1.0 {
-                continue;
-            }
-            all += 1;
-            if (5.0 * px).abs() <= 2.0 && (5.0 * py).abs() <= 1.0 {
-                inside += 1;
-            }
-        }
-    }
+    // Normal incidence: the ghost is limited to the 4 × 2 mm sensor,
+    // while the primary covers the radius-5 pupil (including off-map flux).
     let (p, g) = (&res.primary.fields[0], &res.ghosts[0].fields[0]);
-    assert_eq!(p.rays_detected, all);
-    assert_eq!(g.rays_detected, inside);
-    assert!(inside > 0 && inside < all);
-    // Per ray: ghost/primary = R_s·R (both detected with 1 − R_s).
     let r = r_normal(1.0, 1.5);
-    let expect = rs * r * inside as f64 / all as f64;
-    assert!(rel(g.flux / p.flux, expect) < 1e-12, "{}", g.flux / p.flux);
+    let expect = rs * r * 8.0 / (25.0 * std::f64::consts::PI);
+    assert!(rel(g.flux / p.flux, expect) < 2e-3, "{}", g.flux / p.flux);
 }
 
 #[test]
@@ -206,7 +187,7 @@ fn fixed_apertures_bound_an_auto_stop() {
     // An overfilled grid must not let light around an unbounded stop: the
     // primary flux is T² × (grid fraction inside the entrance pupil).
     let n_grid = 30usize;
-    let (k, h) = (1.5, 3.0 / n_grid as f64);
+    let k = 1.5;
     let m = sensor_plate(0.0, ClipMode::FixedApertures);
     assert!(matches!(m.clip(1), Clip::Radius { .. }));
     assert_eq!(m.clip(2), Clip::None);
@@ -218,21 +199,10 @@ fn fixed_apertures_bound_an_auto_stop() {
         ..Default::default()
     };
     let res = ghost_irradiance(&m, &s, &JobContext::new()).unwrap();
-    let mut inside = 0usize;
-    for iy in 0..n_grid {
-        for ix in 0..n_grid {
-            let (px, py) = (-k + h * (ix as f64 + 0.5), -k + h * (iy as f64 + 0.5));
-            if px * px + py * py <= 1.0 {
-                inside += 1;
-            }
-        }
-    }
     let r = r_normal(1.0, 1.5);
     let t2 = (1.0 - r) * (1.0 - r);
     let p = &res.primary.fields[0];
-    assert_eq!(p.rays_detected, inside);
-    let expect = t2 * inside as f64 * h * h / std::f64::consts::PI;
-    assert!(rel(p.flux, expect) < 1e-12, "{} vs {expect}", p.flux);
+    assert!(rel(p.flux, t2) < 5e-4, "{} vs {t2}", p.flux);
     assert!(p.flux < 1.0);
 }
 

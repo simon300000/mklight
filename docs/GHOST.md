@@ -247,6 +247,17 @@ including the sensor's spectral response, `h` the cell size in pupil
 radii), so flux is relative to the flux entering the paraxial entrance
 pupil.
 
+The grid is a base quadrature, not a binary area estimate at every cell
+centre. For each path, a cell whose centre and four corners disagree on
+survival or on whether the detector hit is on the map is split into four
+equal-area cells, recursively to four levels (1/16 of the base cell width).
+The circular source boundary is refined too, including cells whose centres
+are outside the source but whose area intersects it. `rays_traced` /
+`rays_detected` count leaf samples (not corner probes), whose weights are
+their own cell areas. The refinement is not a rigorous error bound: raise
+`pupil_samples` to resolve features smaller than a base cell and to check
+convergence. Pixel interiors still use point binning.
+
 Detected rays are binned into `map_bins` in the image's local x, y, as flux
 per mm², over an explicit `map_half_size` if given, else the model `Sensor`
 rectangle, else the square of the image clear semi-diameter. The primary
@@ -265,10 +276,52 @@ The `JobContext` is checked before every block; progress is monotone and
 ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
 and of the analysis, no seed: nothing is random).
 
+### High-reflectance discrepancy: pupil quadrature, not transport
+
+A singlet with ideal 30 % reflectors, a 24 × 24 mm detector, one wavelength
+(0.55 µm), and ghost path `[2, 1]` exposed aliasing of the detector boundary
+by the old cell-centre grid. Relative to entrance-pupil flux, on axis:
+
+| base grid | old centre-only flux | boundary-refined flux |
+|---|---:|---:|
+| 120² | 2.63592417e-3 | 2.57960188e-3 |
+| 240² | 2.63592417e-3 | 2.57579215e-3 |
+| 480² | 2.59473785e-3 | 2.57778067e-3 |
+| 960² | 2.57043793e-3 | 2.57764714e-3 |
+
+The unchanged 120²/240² answer was false convergence. A sensor accepts only
+a small part of this broad ghost, so whole-cell acceptance inflated its
+pupil area. The same effect explains the small negative z scores at 5 %;
+it scales with the ideal coating weight `(1 − R)² R²`.
+
+Targeted isolation: replay exactly the stray solver's Philox launch rays in
+the sequence tracer, with identical apertures, one wavelength, no scatter,
+no sensor reflection, and enough splitting to follow every order-2 branch.
+At 200,000 rays, seeds 7–9 and both singlet fields, the two order-2 fluxes
+agree within 4e-14 relative. The coefficients are angle independent and
+identical for s/p; both sums are incoherent. Thus neither angle/polarisation,
+sensor absorption, roulette, clipping geometry nor source normalisation
+causes this discrepancy. Compare **order 2**, not all ghost orders: at 30 %,
+higher orders contribute measurable flux.
+
+`mklight-stray/tests/partition.rs` retains the paired flux and exact per-ray
+standard-error checks, requires the 120²/480² refined fluxes to agree within
+0.2 %, and requires |z| < 3 for each seed and the combined mean. The normal
+suite uses 60,000 rays × three seeds × two fields; the ignored large test
+uses 2,000,000 rays × four seeds × two fields. The large run gave
+z from −0.73 to +1.54, with combined-mean z = +1.12 (on axis) and
++0.76 (off axis):
+
+```sh
+cargo test --release -p mklight-stray --test partition high_reflectance_ghost_flux_large_run -- --ignored --nocapture
+```
+
 ## 6. GPU port: per-ray kernel interface
 
 The work is independent rays indexed `(path, field, wavelength, pupil)`;
-starting rays depend only on `(field, wavelength, pupil)`. The kernel the
+starting rays depend only on `(field, wavelength, pupil)`. The host
+schedules the boundary-refinement probes and leaf rays per path (§5); only
+base starting rays are shared across paths. The kernel the
 ghost solver needs from `mklight-gpu` (a `Job::GhostTrace`, added additively
 by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
 

@@ -281,7 +281,7 @@ fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
         .unwrap()
     };
     let all = analyze_system(&sys, &set, &JobContext::new()).unwrap();
-    let with = run(Some(cov.clone()));
+    let with = run(Some(cov));
     let without = run(None);
     let reference = all.source.reference_flux;
     let frac = |c: PathClass| all.total_of(c).flux / reference;
@@ -320,7 +320,15 @@ fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
         .flat_map(|m| m.irradiance.iter())
         .sum::<f64>()
         * with.detector.pixel_area();
-    assert!(map_total - owned_classes > 0.5 * with.energy.detected_uncovered_ghost);
+    assert!((map_total - with.stray_flux).abs() < 1e-12 * with.stray_flux);
+    assert!((map_total - owned_classes).abs() < 1e-12 * with.stray_flux);
+    let ghost_map = with
+        .maps
+        .iter()
+        .find(|m| m.class == PathClass::Ghost)
+        .unwrap();
+    let ghost_flux = ghost_map.irradiance.iter().sum::<f64>() * with.detector.pixel_area();
+    assert!((ghost_flux - with.energy.detected_uncovered_ghost).abs() < 1e-12 * ghost_flux);
 }
 
 /// A stray scene sized with non-default semi-diameter settings partitions
@@ -371,4 +379,110 @@ fn ghost_model_shares_the_stray_sizing() {
     let mut other = sys.semi_diameters.clone();
     other.values.pop();
     assert!(GhostModel::with_semi_diameters(tracer, GhostSettings::default(), other).is_err());
+}
+
+/// Compare order 2 only: at 30 % reflectance higher orders are measurable.
+/// Replaying the exact launch rays in the sequence tracer removes all
+/// quadrature/sampling differences, isolating transport and its errors.
+fn high_reflectance(rays: u64, seeds: &[u64]) {
+    let set = settings(0, 7);
+    let sys = stray_system(
+        coated_with(mklight_core::samples::singlet(), 12.0, 0.3),
+        &set.system_options(),
+    );
+    let model = ghost_model(&sys, ClipMode::ClearApertures { margin_mm: 0.0 });
+    let path = mklight_ghost::GhostPath::new(vec![2, 1]);
+    let steps = model.check_path(&path).unwrap();
+    let frame = mklight_trace::trace::start_frame(sys.resolved());
+    for field in [0, 2] {
+        let grid = |n| {
+            ghost_irradiance(
+                &model,
+                &IrradianceSettings {
+                    paths: Some(vec![path.clone()]),
+                    fields: vec![field],
+                    pupil_samples: n,
+                    overfill: 1.3,
+                    map_bins: [8, 8],
+                    ..Default::default()
+                },
+                &JobContext::new(),
+            )
+            .unwrap()
+            .total_ghost_map
+            .flux()
+        };
+        let (coarse, reference) = (grid(120), grid(480));
+        // The old centre-only rule aliases the sensor boundary: 1.6 %
+        // difference here, even though 120 and 240 gave identical answers.
+        assert!(
+            (coarse / reference - 1.0).abs() < 0.002,
+            "field {field}: {coarse} vs {reference}"
+        );
+        let (mut delta, mut variance) = (0.0, 0.0);
+        for &seed in seeds {
+            let r = analyze_system(
+                &sys,
+                &StrayAnalysisSettings {
+                    rays,
+                    seed,
+                    source: settings(field, seed).source,
+                    exclude_ghost_class: true,
+                    ghost_coverage: Some(model.coverage([path.clone()])),
+                    ..set.clone()
+                },
+                &JobContext::new(),
+            )
+            .unwrap();
+            let (mut sum, mut sq) = (
+                mklight_core::math::KahanSum::default(),
+                mklight_core::math::KahanSum::default(),
+            );
+            for i in 0..rays {
+                let mut rng = mklight_core::rng::Philox::new(seed, i);
+                // One wavelength: transport consumes no wavelength draw.
+                let ray = r.source.spec.sample(&mut rng);
+                let start = mklight_trace::Ray::new(
+                    frame.to_local_point(ray.origin),
+                    frame.to_local_dir(ray.dir),
+                );
+                let hit = model.trace_steps(&start, 0, &steps, None);
+                if hit.status.is_ok() && hit.ray.pos.x.abs() < 12.0 && hit.ray.pos.y.abs() < 12.0 {
+                    let w = hit.weight() * r.source.spec.power() / rays as f64;
+                    sum.add(w);
+                    sq.add(w * w);
+                }
+            }
+            let paired = sum.value();
+            let n = rays as f64;
+            let paired_se = (n / (n - 1.0) * (sq.value() - paired * paired / n)).sqrt();
+            let e = &r.energy;
+            assert!((paired / e.detected_covered_ghost - 1.0).abs() < 1e-10);
+            assert!((paired_se / e.detected_covered_ghost_std_error - 1.0).abs() < 1e-10);
+            let (mc, se) = (
+                paired / r.source.reference_flux,
+                paired_se / r.source.reference_flux,
+            );
+            let z = (mc - reference) / se;
+            println!(
+                "30 % singlet field {field}, seed {seed}, {rays} rays: {mc:.8e} ± {se:.2e}, reference {reference:.8e}, z={z:+.3}"
+            );
+            assert!(z.abs() < 3.0, "field {field}, seed {seed}: z={z}");
+            delta += mc - reference;
+            variance += se * se;
+        }
+        let z_mean = delta / variance.sqrt();
+        assert!(z_mean.abs() < 3.0, "field {field}: mean z={z_mean}");
+    }
+}
+
+#[test]
+fn high_reflectance_ghost_flux_has_no_sampling_bias() {
+    high_reflectance(60_000, &[7, 8, 9]);
+}
+
+#[test]
+#[ignore = "large independent-seed ghost flux cross-check"]
+fn high_reflectance_ghost_flux_large_run() {
+    high_reflectance(2_000_000, &[7, 8, 9, 10]);
 }
