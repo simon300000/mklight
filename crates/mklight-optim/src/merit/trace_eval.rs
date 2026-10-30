@@ -188,8 +188,7 @@ impl TraceEvaluator {
         ctx.check()?;
         let auto_sd = has_auto_semi_diameters(s);
         let needs_tracer = operands.iter().any(|o| {
-            (!is_model_kind(&o.kind)
-                && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))
+            (!is_model_kind(&o.kind) && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))
                 || (auto_sd && needs_semi_diameters(&o.kind))
         });
         let tracer = if needs_tracer {

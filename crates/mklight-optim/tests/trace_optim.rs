@@ -141,6 +141,11 @@ fn doublet_is_achromatised_at_fixed_efl() {
     let efl = value(&best, OperandKind::Efl);
     assert!(shift.abs() < 1e-6, "chromatic focal shift {shift}");
     assert!((efl - 100.0).abs() < 1e-6, "EFL {efl}");
+    eprintln!(
+        "doublet: R2 = {}, R3 = {}, shift {shift}",
+        1.0 / r.x[0],
+        1.0 / r.x[1]
+    );
     // The solution is the classic N-BK7/F2 achromat (R₂ ≈ −42.5 mm).
     assert!((1.0 / r.x[0] + 42.5).abs() < 3.0, "R2 = {}", 1.0 / r.x[0]);
     assert!(r.multipliers.as_ref().is_some_and(|m| m.len() == 2));
