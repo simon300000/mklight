@@ -77,10 +77,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::bsdf::Bsdf;
 use crate::geom::{Ray, RayCaster, onb, reflect, refract};
-use crate::path::{ClassMask, History, flags};
+use crate::path::{ClassMask, EventKind, History, flags};
 use crate::scene::{Behavior, InterfaceKind, MediumId, Scene, SceneOptions, Side};
 use crate::source::SourceSpec;
-use crate::tally::{ChunkTally, DetectorResult, EnergyReport, Sink, StrayTally};
+use crate::tally::{ChunkTally, DetectorResult, EnergyReport, SignatureFlux, Sink, StrayTally};
 
 /// Branch selection strategy at interactions.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -133,6 +133,8 @@ pub struct StraySettings {
     pub owned_classes: ClassMask,
     /// Medium the source rays start in (default: the scene's ambient medium).
     pub start_medium: Option<MediumId>,
+    /// Tally detected flux per path signature (`StrayResult::signatures`).
+    pub signatures: bool,
 }
 
 impl Default for StraySettings {
@@ -149,6 +151,7 @@ impl Default for StraySettings {
             chunk_rays: 1024,
             owned_classes: ClassMask::ALL,
             start_medium: None,
+            signatures: true,
         }
     }
 }
@@ -182,6 +185,9 @@ pub struct StrayResult {
     pub energy: EnergyReport,
     pub run_info: Option<RunInfo>,
     pub warnings: Vec<String>,
+    /// Detected flux per (class, path signature), largest first (empty
+    /// unless `StraySettings::signatures`).
+    pub signatures: Vec<SignatureFlux>,
 }
 
 /// Branch indices.
@@ -209,6 +215,8 @@ struct Event<'a> {
     trans: Option<Vec3>,
     m_in: MediumId,
     m_out: MediumId,
+    /// Primitive index (names mechanical signature events).
+    prim: usize,
     /// `(surface, designed if transmitted, designed if reflected, R is a stray reflection)`.
     surface: Option<(usize, bool, bool, bool)>,
     bsdf: Option<&'a Bsdf>,
@@ -257,6 +265,7 @@ impl<C: RayCaster> Tracer<'_, C> {
         let n = self.settings.chunk_rays as u64;
         let (lo, hi) = (chunk * n, ((chunk + 1) * n).min(self.settings.rays));
         let mut tally = ChunkTally::new(self.scene.num_wavelengths(), self.settings.owned_classes);
+        tally.track_signatures = self.settings.signatures;
         let mut stack = Vec::with_capacity(32);
         for (k, i) in (lo..hi).enumerate() {
             if k % 64 == 0 {
@@ -291,6 +300,9 @@ impl<C: RayCaster> Tracer<'_, C> {
             SPEC_R | SPEC_T => {
                 if ev.mechanical {
                     s.hist.mechanical_specular();
+                    s.hist
+                        .signature
+                        .push(EventKind::MechanicalSpecular, ev.prim);
                 } else if let Some((surf, dt, dr, stray)) = ev.surface {
                     let refl = br == SPEC_R;
                     s.hist.specular(
@@ -302,9 +314,31 @@ impl<C: RayCaster> Tracer<'_, C> {
                     if refl && ev.tir {
                         s.hist.flags |= flags::TIR;
                     }
+                    if refl && stray {
+                        let kind = if ev.tir {
+                            EventKind::Tir
+                        } else {
+                            EventKind::Reflect
+                        };
+                        s.hist.signature.push(kind, surf);
+                    }
                 }
             }
-            _ => s.hist.scattered(ev.mechanical),
+            _ => {
+                s.hist.scattered(ev.mechanical);
+                match (ev.mechanical, ev.surface) {
+                    (true, _) => s.hist.signature.push(EventKind::MechanicalScatter, ev.prim),
+                    (false, Some((surf, ..))) => {
+                        let kind = if br == SCAT_R {
+                            EventKind::ScatterReflect
+                        } else {
+                            EventKind::ScatterTransmit
+                        };
+                        s.hist.signature.push(kind, surf);
+                    }
+                    (false, None) => {}
+                }
+            }
         }
         s.medium = if out_sign > 0.0 { ev.m_in } else { ev.m_out };
         s.w = w;
@@ -382,8 +416,9 @@ impl<C: RayCaster> Tracer<'_, C> {
                                 pix,
                                 s.w,
                                 wl,
-                                s.hist.stray_reflections,
-                                s.hist.first_reflections,
+                                &s.hist,
+                                hit.local.p.x,
+                                hit.local.p.y,
                             );
                         } else {
                             tally.absorb(Sink::DetectorBack, s.w);
@@ -407,6 +442,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                                 trans: None,
                                 m_in: s.medium,
                                 m_out: s.medium,
+                                prim: hit.prim as usize,
                                 surface: None,
                                 bsdf: o.finish.as_deref(),
                                 mechanical: true,
@@ -425,6 +461,9 @@ impl<C: RayCaster> Tracer<'_, C> {
                         if let Some(c) = &pass.clip
                             && !c.passes(hit.local.p.x, hit.local.p.y)
                         {
+                            if !s.hist.has(flags::OUTSIDE_CLIP) {
+                                s.hist.signature.push(EventKind::OutsideClip, pass.surface);
+                            }
                             s.hist.flags |= flags::OUTSIDE_CLIP;
                         }
                         let (m_in, m_out) = (i.medium(side), i.medium(side.other()));
@@ -485,6 +524,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                                 trans,
                                 m_in,
                                 m_out,
+                                prim: hit.prim as usize,
                                 surface: Some((
                                     pass.surface,
                                     designed && !mirror,
@@ -620,11 +660,11 @@ impl<C: RayCaster> Tracer<'_, C> {
             return s.w > 0.0;
         }
         if rng.uniform() * w_rr < s.w {
-            tally.roulette_gain += w_rr - s.w;
+            tally.roulette(w_rr - s.w);
             s.w = w_rr;
             true
         } else {
-            tally.roulette_loss += s.w;
+            tally.roulette(-s.w);
             s.w = 0.0;
             false
         }
@@ -718,7 +758,10 @@ pub fn run_with<C: RayCaster>(
         c = hi;
         ctx.report(c as f64 / n_chunks as f64, stage);
     }
-    let (detector, energy) = tally.finish(&scene.detector, settings.owned_classes);
+    let (detector, energy, mut signatures) = tally.finish(&scene.detector, settings.owned_classes);
+    for sf in &mut signatures {
+        sf.label = sf.signature.describe(|p| scene.label(p).to_string());
+    }
     let mut warnings = scene.warnings.clone();
     if energy.sampling_failed > 0.0 {
         warnings.push(format!(
@@ -760,5 +803,6 @@ pub fn run_with<C: RayCaster>(
         energy,
         run_info,
         warnings,
+        signatures,
     })
 }

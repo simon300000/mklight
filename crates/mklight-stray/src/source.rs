@@ -9,6 +9,13 @@
 //!   (times an overfill factor), so the whole front aperture and its edge are
 //!   lit. **Integration point**: with the paraxial tracer, aim at the entrance
 //!   pupil instead.
+//! * [`SourceSpec::CollimatedThrough`] — a uniform collimated beam that
+//!   fills a disk lying in a plane that need not be perpendicular to the
+//!   beam (the entrance-pupil plane `z = z_EP` for an oblique field). Points
+//!   are uniform on that disk, which is uniform in flux because the
+//!   projection onto the beam's cross-section has a constant Jacobian
+//!   `|d·n|`. `crate::system` builds field and out-of-field sources aimed
+//!   at the entrance pupil with it.
 //! * [`SourceSpec::Point`] — isotropic point source of intensity `I` (W/sr)
 //!   that emits only into a cone (half-angle `α`) toward a target. Power is
 //!   `2π I (1 − cos α)`. Directions are uniform in solid angle within the cone.
@@ -37,6 +44,17 @@ pub enum SourceSpec {
         center: Vec3,
         radius: f64,
         /// Rays start this far before `center` along `−direction`.
+        start_distance: f64,
+        power: f64,
+    },
+    CollimatedThrough {
+        direction: Vec3,
+        /// Centre of the filled disk.
+        center: Vec3,
+        /// Normal of the disk's plane.
+        normal: Vec3,
+        radius: f64,
+        /// Rays start this far before the disk along `−direction`.
         start_distance: f64,
         power: f64,
     },
@@ -147,6 +165,27 @@ impl SourceSpec {
                     return bad("collimated source needs a direction, radius > 0 and power ≥ 0");
                 }
             }
+            SourceSpec::CollimatedThrough {
+                direction,
+                normal,
+                radius,
+                start_distance,
+                power,
+                ..
+            } => {
+                let (d, n) = (direction.norm(), normal.norm());
+                if !(d > 0.0
+                    && n > 0.0
+                    && (direction.dot(normal) / (d * n)).abs() > 1e-9
+                    && radius > 0.0
+                    && power >= 0.0
+                    && start_distance.is_finite())
+                {
+                    return bad(
+                        "collimated beam needs a direction not parallel to the disk, radius > 0 and power ≥ 0",
+                    );
+                }
+            }
             SourceSpec::Point {
                 axis,
                 half_angle_deg,
@@ -190,7 +229,9 @@ impl SourceSpec {
     /// Total emitted power (W).
     pub fn power(&self) -> f64 {
         match *self {
-            SourceSpec::Collimated { power, .. } => power,
+            SourceSpec::Collimated { power, .. } | SourceSpec::CollimatedThrough { power, .. } => {
+                power
+            }
             SourceSpec::Point {
                 half_angle_deg,
                 intensity,
@@ -225,6 +266,23 @@ impl SourceSpec {
             } => {
                 let d = direction.normalized();
                 let (t1, t2) = onb(d);
+                let r = radius * rng.uniform().sqrt();
+                let (s, c) = (2.0 * PI * rng.uniform()).sin_cos();
+                Ray {
+                    origin: center + t1 * (r * c) + t2 * (r * s) - d * start_distance,
+                    dir: d,
+                }
+            }
+            SourceSpec::CollimatedThrough {
+                direction,
+                center,
+                normal,
+                radius,
+                start_distance,
+                ..
+            } => {
+                let d = direction.normalized();
+                let (t1, t2) = onb(normal.normalized());
                 let r = radius * rng.uniform().sqrt();
                 let (s, c) = (2.0 * PI * rng.uniform()).sin_cos();
                 Ray {

@@ -38,13 +38,33 @@
 //! ```
 //!
 //! over all `N` source rays (rays that deliver nothing count as `xᵢ = 0`).
+//!
+//! The same per-ray bookkeeping gives
+//!
+//! * the standard error of the **MC adjustment** (`xᵢ` = net roulette and
+//!   reweighting change of ray `i`, zero in expectation), so energy closure
+//!   can be tested against its own Monte-Carlo error;
+//! * **image moments** per class: `F = Σ w`, `Sx = Σ w x`, `Sy = Σ w y`,
+//!   `Sr = Σ w (x² + y²)` over detector hits in the detector's local frame,
+//!   with the 4 × 4 matrix `Q` of per-ray cross products. The centroid
+//!   `(Sx/F, Sy/F)` and the RMS radius about it,
+//!   `√(Sr/F − (Sx/F)² − (Sy/F)²)`, are ratio estimators; their standard
+//!   errors are the delta-method (linearised) errors
+//!   `SE(g)² = N/(N−1) · (∇gᵀ Q ∇g − (∇gᵀ S)²/N)`, `S` being the four sums;
+//! * flux, hits and standard error per class and **path signature**
+//!   ([`crate::path::Signature`]).
+//!
+//! An extra *owned* slot (index `NUM_CLASSES`) accumulates the classes of
+//! the owned mask together, so the owned sum map, total and moments carry
+//! correct standard errors (one ray's contributions to several classes are
+//! correlated).
 
 use std::collections::BTreeMap;
 
 use mklight_core::math::KahanSum;
 use serde::{Deserialize, Serialize};
 
-use crate::path::{ClassMask, NUM_CLASSES, PathClass};
+use crate::path::{ClassMask, EventKind, History, NUM_CLASSES, PathClass, Signature};
 use crate::scene::{DetectorSpec, OpaqueKind};
 
 /// Where absorbed flux went.
@@ -101,6 +121,39 @@ impl Sink {
 /// Highest ghost order tallied separately (higher orders are pooled here).
 pub const MAX_GHOST_ORDER: usize = 8;
 
+/// Class slots plus the owned slot.
+const SLOTS: usize = NUM_CLASSES + 1;
+/// Index of the owned slot.
+const OWNED: usize = NUM_CLASSES;
+/// Unique entries of a symmetric 4 × 4 matrix, row-major upper triangle.
+const QN: usize = 10;
+
+/// Upper-triangle index of `(a, b)` in a symmetric 4 × 4 matrix.
+#[inline]
+fn qi(a: usize, b: usize) -> usize {
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    // Rows start at 0, 4, 7, 9.
+    [0, 4, 7, 9][a] + (b - a)
+}
+
+/// Adds the outer product of `v` to `q`.
+#[inline]
+fn add_outer(q: &mut [f64; QN], v: &[f64; 4]) {
+    for a in 0..4 {
+        for b in a..4 {
+            q[qi(a, b)] += v[a] * v[b];
+        }
+    }
+}
+
+/// Per-signature accumulator of one chunk.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SignatureAcc {
+    pub flux: f64,
+    pub flux_sq: f64,
+    pub hits: u64,
+}
+
 /// Per-chunk sums (uncompensated; chunks are small).
 #[derive(Clone, Debug)]
 pub struct ChunkTally {
@@ -133,11 +186,24 @@ pub struct ChunkTally {
     pub detected_sq: [f64; NUM_CLASSES],
     pub total_sq: f64,
     pub owned_sq: f64,
-    /// `(pixel, class, xᵢ²)` per ray and pixel/class it reached.
+    /// `(pixel, slot, xᵢ²)` per ray and pixel/slot it reached (slot
+    /// `NUM_CLASSES` is the owned sum).
     pub hits_sq: Vec<(u32, u8, f64)>,
+    /// `Σ xᵢ²` of the per-ray MC adjustment.
+    pub adjustment_sq: f64,
+    /// Image moment sums `[F, Sx, Sy, Sr]` per slot.
+    pub moments: [[f64; 4]; SLOTS],
+    /// Per-ray cross products of the moment sums per slot.
+    pub moments_q: [[f64; QN]; SLOTS],
+    /// Tally path signatures.
+    pub track_signatures: bool,
+    pub signatures: BTreeMap<(u8, Signature), SignatureAcc>,
     /// Contributions of the ray in flight.
     ray_class: [f64; NUM_CLASSES],
+    ray_moments: [[f64; 4]; SLOTS],
+    ray_adjustment: f64,
     ray_hits_start: usize,
+    ray_sigs: Vec<(u8, Signature, f64)>,
     scratch: Vec<(u32, u8, f64)>,
 }
 
@@ -168,8 +234,16 @@ impl ChunkTally {
             total_sq: 0.0,
             owned_sq: 0.0,
             hits_sq: Vec::new(),
+            adjustment_sq: 0.0,
+            moments: [[0.0; 4]; SLOTS],
+            moments_q: [[0.0; QN]; SLOTS],
+            track_signatures: false,
+            signatures: BTreeMap::new(),
             ray_class: [0.0; NUM_CLASSES],
+            ray_moments: [[0.0; 4]; SLOTS],
+            ray_adjustment: 0.0,
             ray_hits_start: 0,
+            ray_sigs: Vec::new(),
             scratch: Vec::new(),
         }
     }
@@ -177,7 +251,10 @@ impl ChunkTally {
     /// Starts the per-ray accumulation of a new source ray.
     pub fn begin_ray(&mut self) {
         self.ray_class = [0.0; NUM_CLASSES];
+        self.ray_moments = [[0.0; 4]; SLOTS];
+        self.ray_adjustment = 0.0;
         self.ray_hits_start = self.hits.len();
+        self.ray_sigs.clear();
     }
 
     /// Books the second moments of the finished source ray.
@@ -195,13 +272,51 @@ impl ChunkTally {
         }
         self.total_sq += total * total;
         self.owned_sq += owned * owned;
-        // Per pixel and class: merge this ray's hits by key.
+        self.adjustment_sq += self.ray_adjustment * self.ray_adjustment;
+        for k in 0..SLOTS {
+            let m = self.ray_moments[k];
+            if m != [0.0; 4] {
+                add_outer(&mut self.moments_q[k], &m);
+                for (a, b) in self.moments[k].iter_mut().zip(m) {
+                    *a += b;
+                }
+            }
+        }
+        // Signatures: merge this ray's detections by key.
+        if !self.ray_sigs.is_empty() {
+            self.ray_sigs
+                .sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+            let mut k = 0;
+            while k < self.ray_sigs.len() {
+                let (c, sig, _) = self.ray_sigs[k];
+                let (mut v, mut n) = (0.0, 0u64);
+                while k < self.ray_sigs.len()
+                    && self.ray_sigs[k].0 == c
+                    && self.ray_sigs[k].1 == sig
+                {
+                    v += self.ray_sigs[k].2;
+                    n += 1;
+                    k += 1;
+                }
+                let e = self.signatures.entry((c, sig)).or_default();
+                e.flux += v;
+                e.flux_sq += v * v;
+                e.hits += n;
+            }
+        }
+        // Per pixel and slot: merge this ray's hits by key.
         let hits = &self.hits[self.ray_hits_start..];
         if hits.is_empty() {
             return;
         }
         self.scratch.clear();
         self.scratch.extend_from_slice(hits);
+        let owned_mask = self.owned;
+        self.scratch.extend(
+            hits.iter()
+                .filter(|h| owned_mask.contains(PathClass::ALL[h.1 as usize]))
+                .map(|&(p, _, w)| (p, OWNED as u8, w)),
+        );
         self.scratch
             .sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
         let mut k = 0;
@@ -229,8 +344,22 @@ impl ChunkTally {
         } else {
             self.weighting_loss -= delta;
         }
+        self.ray_adjustment += delta;
     }
 
+    /// Books a Russian-roulette weight change (`delta > 0`: a survivor's
+    /// gain; `delta < 0`: a killed path's loss).
+    #[inline]
+    pub fn roulette(&mut self, delta: f64) {
+        if delta >= 0.0 {
+            self.roulette_gain += delta;
+        } else {
+            self.roulette_loss -= delta;
+        }
+        self.ray_adjustment += delta;
+    }
+
+    /// Books a detection of flux `w` at local detector point `(x, y)`.
     #[allow(clippy::too_many_arguments)]
     pub fn detect(
         &mut self,
@@ -238,8 +367,9 @@ impl ChunkTally {
         pixel: Option<usize>,
         w: f64,
         wavelength: usize,
-        ghost_order: u8,
-        ghost_pair: [u16; 2],
+        hist: &History,
+        x: f64,
+        y: f64,
     ) {
         let c = class.index();
         self.ray_class[c] += w;
@@ -249,14 +379,33 @@ impl ChunkTally {
         if let Some(p) = pixel {
             self.hits.push((p as u32, c as u8, w));
         }
+        let m = [w, w * x, w * y, w * (x * x + y * y)];
+        let slots = [c, OWNED];
+        let n = if self.owned.contains(class) { 2 } else { 1 };
+        for &k in &slots[..n] {
+            for (a, b) in self.ray_moments[k].iter_mut().zip(m) {
+                *a += b;
+            }
+        }
+        if self.track_signatures {
+            self.ray_sigs.push((c as u8, hist.signature, w));
+        }
         if class == PathClass::Ghost {
-            self.ghost_by_order[(ghost_order as usize).min(MAX_GHOST_ORDER)] += w;
+            self.ghost_by_order[(hist.stray_reflections as usize).min(MAX_GHOST_ORDER)] += w;
             *self
                 .ghost_by_pair
-                .entry((ghost_pair[0], ghost_pair[1]))
+                .entry((hist.first_reflections[0], hist.first_reflections[1]))
                 .or_insert(0.0) += w;
         }
     }
+}
+
+/// Run-level signature accumulator.
+#[derive(Clone, Copy, Debug, Default)]
+struct SignatureSum {
+    flux: KahanSum,
+    flux_sq: KahanSum,
+    hits: u64,
 }
 
 /// Run-level accumulator with compensated sums.
@@ -267,6 +416,7 @@ pub struct StrayTally {
     detected: [KahanSum; NUM_CLASSES],
     detected_hits: [u64; NUM_CLASSES],
     detected_by_wavelength: Vec<[KahanSum; NUM_CLASSES]>,
+    /// Per slot (classes, then owned).
     maps: Vec<Vec<KahanSum>>,
     maps_sq: Vec<Vec<KahanSum>>,
     absorbed: [KahanSum; NUM_SINKS],
@@ -277,12 +427,16 @@ pub struct StrayTally {
     detected_sq: [KahanSum; NUM_CLASSES],
     total_sq: KahanSum,
     owned_sq: KahanSum,
+    adjustment_sq: KahanSum,
+    moments: [[KahanSum; 4]; SLOTS],
+    moments_q: [[KahanSum; QN]; SLOTS],
     roulette_gain: KahanSum,
     roulette_loss: KahanSum,
     weighting_gain: KahanSum,
     weighting_loss: KahanSum,
     ghost_by_order: [KahanSum; MAX_GHOST_ORDER + 1],
     ghost_by_pair: BTreeMap<(u16, u16), KahanSum>,
+    signatures: BTreeMap<(u8, Signature), SignatureSum>,
     rays: u64,
     events: u64,
 }
@@ -296,8 +450,8 @@ impl StrayTally {
             detected: [z; NUM_CLASSES],
             detected_hits: [0; NUM_CLASSES],
             detected_by_wavelength: vec![[z; NUM_CLASSES]; num_wavelengths],
-            maps: vec![vec![z; pixels]; NUM_CLASSES],
-            maps_sq: vec![vec![z; pixels]; NUM_CLASSES],
+            maps: vec![vec![z; pixels]; SLOTS],
+            maps_sq: vec![vec![z; pixels]; SLOTS],
             absorbed: [z; NUM_SINKS],
             escaped: z,
             escaped_from_solid: z,
@@ -306,12 +460,16 @@ impl StrayTally {
             detected_sq: [z; NUM_CLASSES],
             total_sq: z,
             owned_sq: z,
+            adjustment_sq: z,
+            moments: [[z; 4]; SLOTS],
+            moments_q: [[z; QN]; SLOTS],
             roulette_gain: z,
             roulette_loss: z,
             weighting_gain: z,
             weighting_loss: z,
             ghost_by_order: [z; MAX_GHOST_ORDER + 1],
             ghost_by_pair: BTreeMap::new(),
+            signatures: BTreeMap::new(),
             rays: 0,
             events: 0,
         }
@@ -333,6 +491,9 @@ impl StrayTally {
         }
         for &(p, k, w) in &c.hits {
             self.maps[k as usize][p as usize].add(w);
+            if c.owned.contains(PathClass::ALL[k as usize]) {
+                self.maps[OWNED][p as usize].add(w);
+            }
         }
         for &(p, k, w2) in &c.hits_sq {
             self.maps_sq[k as usize][p as usize].add(w2);
@@ -342,6 +503,15 @@ impl StrayTally {
         }
         self.total_sq.add(c.total_sq);
         self.owned_sq.add(c.owned_sq);
+        self.adjustment_sq.add(c.adjustment_sq);
+        for k in 0..SLOTS {
+            for (a, b) in self.moments[k].iter_mut().zip(&c.moments[k]) {
+                a.add(*b);
+            }
+            for (a, b) in self.moments_q[k].iter_mut().zip(&c.moments_q[k]) {
+                a.add(*b);
+            }
+        }
         for (a, b) in self
             .detected_by_wavelength
             .iter_mut()
@@ -368,12 +538,84 @@ impl StrayTally {
         for (key, v) in &c.ghost_by_pair {
             self.ghost_by_pair.entry(*key).or_default().add(*v);
         }
+        for (key, v) in &c.signatures {
+            let e = self.signatures.entry(*key).or_default();
+            e.flux.add(v.flux);
+            e.flux_sq.add(v.flux_sq);
+            e.hits += v.hits;
+        }
         self.rays += c.rays;
         self.events += c.events;
     }
 
+    /// Standard error of a sum over the run's `N` independent rays, from the
+    /// sum and the sum of per-ray squares (module docs).
+    fn se(&self, sum: f64, sq: f64) -> f64 {
+        if self.rays < 2 {
+            return f64::INFINITY;
+        }
+        let n = self.rays as f64;
+        (n / (n - 1.0) * (sq - sum * sum / n)).max(0.0).sqrt()
+    }
+
+    /// Linearised standard error of `g(S)` with gradient `grad` (module docs).
+    fn se_linear(&self, slot: usize, grad: [f64; 4]) -> f64 {
+        if self.rays < 2 {
+            return f64::INFINITY;
+        }
+        let n = self.rays as f64;
+        let s: Vec<f64> = self.moments[slot].iter().map(|k| k.value()).collect();
+        let q = &self.moments_q[slot];
+        let mut gqg = 0.0;
+        for a in 0..4 {
+            for b in 0..4 {
+                gqg += grad[a] * grad[b] * q[qi(a, b)].value();
+            }
+        }
+        let gs: f64 = (0..4).map(|a| grad[a] * s[a]).sum();
+        (n / (n - 1.0) * (gqg - gs * gs / n)).max(0.0).sqrt()
+    }
+
+    fn image_moments(&self, slot: usize) -> ImageMoments {
+        let [f, sx, sy, sr] = self.moments[slot].map(|k| k.value());
+        if f <= 0.0 {
+            return ImageMoments::default();
+        }
+        let (cx, cy) = (sx / f, sy / f);
+        let m = sr / f;
+        let var = (m - cx * cx - cy * cy).max(0.0);
+        let rms = var.sqrt();
+        let se_cx = self.se_linear(slot, [-cx / f, 1.0 / f, 0.0, 0.0]);
+        let se_cy = self.se_linear(slot, [-cy / f, 0.0, 1.0 / f, 0.0]);
+        let se_rms = if rms > 0.0 {
+            let h = 0.5 / (rms * f);
+            self.se_linear(
+                slot,
+                [
+                    h * (-m + 2.0 * (cx * cx + cy * cy)),
+                    -2.0 * cx * h,
+                    -2.0 * cy * h,
+                    h,
+                ],
+            )
+        } else {
+            f64::INFINITY
+        };
+        ImageMoments {
+            flux: f,
+            centroid: [cx, cy],
+            centroid_std_error: [se_cx, se_cy],
+            rms_radius: rms,
+            rms_radius_std_error: se_rms,
+        }
+    }
+
     /// Final numbers.
-    pub fn finish(&self, spec: &DetectorSpec, owned: ClassMask) -> (DetectorResult, EnergyReport) {
+    pub fn finish(
+        &self,
+        spec: &DetectorSpec,
+        owned: ClassMask,
+    ) -> (DetectorResult, EnergyReport, Vec<SignatureFlux>) {
         let v = |k: &KahanSum| k.value();
         let detected_by_class: Vec<f64> = self.detected.iter().map(v).collect();
         let absorbed_by_sink: Vec<(Sink, f64)> = Sink::ALL
@@ -410,14 +652,6 @@ impl StrayTally {
             .iter()
             .filter(|c| owned.contains(**c))
             .map(|c| detected_by_class[c.index()]));
-        let n = self.rays as f64;
-        // Standard error of a sum over N independent rays (module docs).
-        let se = |sum: f64, sq: f64| {
-            if self.rays < 2 {
-                return f64::INFINITY;
-            }
-            (n / (n - 1.0) * (sq - sum * sum / n)).max(0.0).sqrt()
-        };
         let report = EnergyReport {
             emitted,
             emitted_by_wavelength: self.emitted_by_wavelength.iter().map(v).collect(),
@@ -426,13 +660,13 @@ impl StrayTally {
                 .iter()
                 .map(|c| (*c, detected_by_class[c.index()]))
                 .collect(),
-            detected_std_error: se(detected, self.total_sq.value()),
+            detected_std_error: self.se(detected, self.total_sq.value()),
             detected_std_error_by_class: PathClass::ALL
                 .iter()
                 .map(|c| {
                     (
                         *c,
-                        se(
+                        self.se(
                             detected_by_class[c.index()],
                             self.detected_sq[c.index()].value(),
                         ),
@@ -450,7 +684,7 @@ impl StrayTally {
                 .collect(),
             owned_classes: owned,
             detected_owned: owned_flux,
-            detected_owned_std_error: se(owned_flux, self.owned_sq.value()),
+            detected_owned_std_error: self.se(owned_flux, self.owned_sq.value()),
             absorbed,
             absorbed_by_sink,
             escaped,
@@ -462,6 +696,7 @@ impl StrayTally {
             weighting_gain: self.weighting_gain.value(),
             weighting_loss: self.weighting_loss.value(),
             mc_adjustment,
+            mc_adjustment_std_error: self.se(mc_adjustment, self.adjustment_sq.value()),
             balance_residual: residual,
             ghost_by_order: self.ghost_by_order.iter().map(v).collect(),
             ghost_by_pair: self
@@ -473,27 +708,97 @@ impl StrayTally {
             events: self.events,
         };
         let area = spec.pixel_area();
-        let flux_maps: Vec<Vec<f64>> = self
+        let maps: Vec<Vec<f64>> = self
             .maps
             .iter()
             .map(|m| m.iter().map(v).collect())
             .collect();
-        let flux_std_error = flux_maps
+        let mut errors: Vec<Vec<f64>> = maps
             .iter()
             .zip(&self.maps_sq)
-            .map(|(m, q)| m.iter().zip(q).map(|(f, s)| se(*f, s.value())).collect())
+            .map(|(m, q)| {
+                m.iter()
+                    .zip(q)
+                    .map(|(f, s)| self.se(*f, s.value()))
+                    .collect()
+            })
             .collect();
+        let mut flux = maps;
+        let owned_map = flux.pop().expect("owned slot");
+        let owned_err = errors.pop().expect("owned slot");
+        let irr = |m: &[f64]| m.iter().map(|f| f / area).collect::<Vec<f64>>();
         let det = DetectorResult {
             spec: spec.clone(),
-            flux_std_error,
-            irradiance: flux_maps
+            irradiance: flux.iter().map(|m| irr(m)).collect(),
+            flux,
+            flux_std_error: errors,
+            owned_classes: owned,
+            owned_irradiance: irr(&owned_map),
+            owned_flux: owned_map,
+            owned_flux_std_error: owned_err,
+            moments: PathClass::ALL
                 .iter()
-                .map(|m| m.iter().map(|f| f / area).collect())
+                .map(|c| self.image_moments(c.index()))
                 .collect(),
-            flux: flux_maps,
+            owned_moments: self.image_moments(OWNED),
         };
-        (det, report)
+        let mut sigs: Vec<SignatureFlux> = self
+            .signatures
+            .iter()
+            .map(|((c, sig), acc)| SignatureFlux {
+                class: PathClass::ALL[*c as usize],
+                events: sig.events().collect(),
+                overflow: sig.overflow(),
+                label: String::new(),
+                flux: acc.flux.value(),
+                std_error: self.se(acc.flux.value(), acc.flux_sq.value()),
+                hits: acc.hits,
+                signature: *sig,
+            })
+            .collect();
+        // Largest flux first; ties by class and signature (deterministic).
+        sigs.sort_by(|a, b| {
+            b.flux
+                .total_cmp(&a.flux)
+                .then(a.class.cmp(&b.class))
+                .then(a.signature.cmp(&b.signature))
+        });
+        (det, report, sigs)
     }
+}
+
+/// Flux-weighted image moments of one class (or the owned sum) on the
+/// detector, in its local frame (mm), with delta-method standard errors
+/// (module docs). All zero when nothing was detected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImageMoments {
+    /// Detected flux (W).
+    pub flux: f64,
+    pub centroid: [f64; 2],
+    pub centroid_std_error: [f64; 2],
+    /// RMS radius about the centroid.
+    pub rms_radius: f64,
+    pub rms_radius_std_error: f64,
+}
+
+/// Detected flux of one (class, path signature) pair.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SignatureFlux {
+    pub class: PathClass,
+    /// Ordered non-designed events (`path::Signature`).
+    pub events: Vec<(EventKind, usize)>,
+    /// More events happened than were kept.
+    pub overflow: bool,
+    /// Human-readable form (`Signature::describe`).
+    pub label: String,
+    /// W.
+    pub flux: f64,
+    /// Monte-Carlo standard error of `flux`.
+    pub std_error: f64,
+    /// Detector hits (split copies count separately).
+    pub hits: u64,
+    #[serde(skip)]
+    pub signature: Signature,
 }
 
 /// Detector maps per class, row-major `ny × nx` in the detector's local
@@ -508,13 +813,30 @@ pub struct DetectorResult {
     /// Monte-Carlo standard error of `flux[class][pixel]` in W (divide by
     /// `spec.pixel_area()` for irradiance).
     pub flux_std_error: Vec<Vec<f64>>,
+    /// The classes summed in the `owned_*` maps.
+    pub owned_classes: ClassMask,
+    /// Sum of the owned classes' flux maps (W), with its own standard error
+    /// (per-ray contributions to several classes are correlated, so it is
+    /// not the root-sum-square of the class errors).
+    pub owned_flux: Vec<f64>,
+    pub owned_flux_std_error: Vec<f64>,
+    /// W/mm².
+    pub owned_irradiance: Vec<f64>,
+    /// Image moments per class (`PathClass::index`).
+    pub moments: Vec<ImageMoments>,
+    /// Image moments of the owned sum.
+    pub owned_moments: ImageMoments,
 }
 
 impl DetectorResult {
     pub fn flux_of(&self, class: PathClass) -> &[f64] {
         &self.flux[class.index()]
     }
-    /// Sum of the irradiance maps of the classes in `mask`.
+    pub fn moments_of(&self, class: PathClass) -> &ImageMoments {
+        &self.moments[class.index()]
+    }
+    /// Sum of the irradiance maps of the classes in `mask` (no standard
+    /// error; use `owned_*` for the owned sum).
     pub fn irradiance_sum(&self, mask: ClassMask) -> Vec<f64> {
         let n = self.irradiance[0].len();
         (0..n)
@@ -563,6 +885,9 @@ pub struct EnergyReport {
     /// Net weight added by Russian roulette and biased branch selection
     /// (zero in expectation).
     pub mc_adjustment: f64,
+    /// Monte-Carlo standard error of `mc_adjustment` (its expectation is
+    /// zero, so `|mc_adjustment|` should be a few of these at most).
+    pub mc_adjustment_std_error: f64,
     /// `emitted + mc_adjustment − (detected + absorbed + escaped +
     /// escaped_from_solid + truncated + sampling_failed)`. Zero to rounding.
     pub balance_residual: f64,
@@ -657,8 +982,9 @@ impl EnergyReport {
             self.truncated, self.sampling_failed
         );
         s += &format!(
-            "  MC adjustment {:+.6e} W ({:+.4} %), balance residual {:.3e} (relative {:.3e})\n",
+            "  MC adjustment {:+.6e} ± {:.2e} W ({:+.4} %), balance residual {:.3e} (relative {:.3e})\n",
             self.mc_adjustment,
+            self.mc_adjustment_std_error,
             pct(self.mc_adjustment),
             self.balance_residual,
             self.relative_residual()
