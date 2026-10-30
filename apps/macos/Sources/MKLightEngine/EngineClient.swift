@@ -205,6 +205,24 @@ public protocol EngineClient: Sendable {
     /// Loads a user glass catalog (AGF text, or JSON when the file ends in
     /// `.json`), replacing one of the same name. Changes the library hash.
     func loadCatalog(at url: URL) async throws -> CatalogInfo
+
+    /// Solves the snapshot's system (docs/SOLVES.md) and returns the solve
+    /// report (the `solves` result) with the snapshot of the solved system.
+    /// The `solves` analysis is the dry run of this.
+    func applySolves(settings: [String: JSONValue], to snapshot: ModelSnapshot) async throws -> SolveApplication
+}
+
+/// The outcome of `EngineClient.applySolves`.
+public struct SolveApplication: Sendable {
+    /// The `solves` report (`outcomes`, `warnings`, …; docs/RESULTS.md).
+    public var report: JSONValue
+    /// The solved system's snapshot.
+    public var snapshot: ModelSnapshot
+
+    public init(report: JSONValue, snapshot: ModelSnapshot) {
+        self.report = report
+        self.snapshot = snapshot
+    }
 }
 
 extension EngineClient {
@@ -230,5 +248,20 @@ extension EngineClient {
 
     public func loadCatalog(at url: URL) async throws -> CatalogInfo {
         throw EngineError.unsupported("\(info.name) cannot load glass catalogs")
+    }
+
+    /// Runs the `solves` analysis and writes every outcome's value into the
+    /// system (engines with a native apply-solves call override this).
+    public func applySolves(settings: [String: JSONValue], to snapshot: ModelSnapshot) async throws -> SolveApplication {
+        let job = submit(EngineAnalysisRequest(analysis: "solves", settings: settings), on: snapshot)
+        let report = try await job.result().json
+        var system = snapshot.system
+        for outcome in report["outcomes"]?.array ?? [] {
+            guard let target = outcome["target"], let value = outcome["value"]?.nf, value.isFinite,
+                let path = try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode(target))
+            else { continue }
+            system.setValue(value, at: path)
+        }
+        return SolveApplication(report: report, snapshot: try await openSnapshot(system))
     }
 }

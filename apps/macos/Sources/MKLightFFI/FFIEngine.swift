@@ -225,6 +225,27 @@ public struct FFIEngine: EngineClient {
             warnings: system.structuralIssues().map(\.description), libraryHash: library)
     }
 
+    /// Solves the snapshot's system in the engine (`mk_session_apply_solves`)
+    /// and reads the solved system back.
+    public func applySolves(settings: [String: JSONValue], to snapshot: ModelSnapshot) async throws -> SolveApplication {
+        let json = try encodeSystem(snapshot.system)
+        let settingsJSON = String(decoding: try MKLightJSON.encode(JSONValue.object(settings)), as: UTF8.self)
+        let session = self.session
+        let (report, hash, systemJSON, library) = try await offMain {
+            try session.locked { s in
+                if try CABI.sessionSnapshotHash(s) != snapshot.hash.hex { _ = try CABI.sessionSetSystem(s, json: json) }
+                let (report, hash) = try CABI.sessionApplySolves(s, settings: settingsJSON)
+                return (report, hash, try CABI.sessionSystem(s), try CABI.sessionLibraryHash(s))
+            }
+        }
+        let system = try decodeJSON(OpticalSystem.self, systemJSON)
+        return SolveApplication(
+            report: try decodeJSON(JSONValue.self, report),
+            snapshot: ModelSnapshot(
+                system: system, hash: SnapshotHash(hex: hash), warnings: system.structuralIssues().map(\.description),
+                libraryHash: library))
+    }
+
     // MARK: EngineClient: catalogs
 
     public func catalogs() async -> [CatalogInfo] {
@@ -376,7 +397,7 @@ public struct FFIEngine: EngineClient {
             reporter.report(1, stage: "Done")
             return AnalysisOutput(
                 runInfo: runInfo, result: decode(envelope["result"] ?? .null, buffers), libraryHash: library,
-                request: request, engineRequest: engineRequest)
+                request: request, engineRequest: engineRequest, backend: BackendReport(json: envelope["backend"]))
         }
         return AnalysisJob(
             request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: progress, task: task,

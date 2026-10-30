@@ -30,11 +30,12 @@ public final class AnalysisJob: Sendable, Identifiable {
     public let progress: AsyncStream<JobProgress>
     private let task: Task<AnalysisOutput, any Error>
     private let onCancel: @Sendable () -> Void
+    private let onStop: (@Sendable () -> Bool)?
 
     public init(
         request: AnalysisRequest?, engineRequest: EngineAnalysisRequest? = nil, snapshotHash: SnapshotHash,
         progress: AsyncStream<JobProgress>, task: Task<AnalysisOutput, any Error>,
-        onCancel: @escaping @Sendable () -> Void = {}
+        onCancel: @escaping @Sendable () -> Void = {}, onStop: (@Sendable () -> Bool)? = nil
     ) {
         self.request = request
         self.engineRequest = engineRequest
@@ -42,7 +43,19 @@ public final class AnalysisJob: Sendable, Identifiable {
         self.progress = progress
         self.task = task
         self.onCancel = onCancel
+        self.onStop = onStop
     }
+
+    /// Whether the job can be **stopped**: ended early while keeping its
+    /// best result so far (optimisation and tolerancing jobs on engines
+    /// that support it). Distinct from `cancel()`, which discards it.
+    public var canStop: Bool { onStop != nil }
+
+    /// Asks the job to stop and return its best result so far. Returns
+    /// whether the request reached a running job; the job then ends
+    /// normally and `result()` returns the stopped result.
+    @discardableResult
+    public func stop() -> Bool { onStop?() ?? false }
 
     /// The analysis name (typed kind or engine name).
     public var analysis: String { request?.kind.rawValue ?? engineRequest?.analysis ?? "" }
@@ -71,21 +84,25 @@ public final class AnalysisJob: Sendable, Identifiable {
         onCancel: @escaping @Sendable () -> Void = {},
         operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
     ) -> AnalysisJob {
-        make(request: request, engineRequest: nil, snapshot: snapshot, priority: priority, onCancel: onCancel, operation)
+        make(
+            request: request, engineRequest: nil, snapshot: snapshot, priority: priority, onCancel: onCancel, onStop: nil,
+            operation)
     }
 
     /// As `run(request:…)`, for a request by name.
     public static func run(
         engineRequest: EngineAnalysisRequest, snapshot: ModelSnapshot, priority: TaskPriority = .userInitiated,
-        onCancel: @escaping @Sendable () -> Void = {},
+        onCancel: @escaping @Sendable () -> Void = {}, onStop: (@Sendable () -> Bool)? = nil,
         operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
     ) -> AnalysisJob {
-        make(request: nil, engineRequest: engineRequest, snapshot: snapshot, priority: priority, onCancel: onCancel, operation)
+        make(
+            request: nil, engineRequest: engineRequest, snapshot: snapshot, priority: priority, onCancel: onCancel,
+            onStop: onStop, operation)
     }
 
     private static func make(
         request: AnalysisRequest?, engineRequest: EngineAnalysisRequest?, snapshot: ModelSnapshot,
-        priority: TaskPriority, onCancel: @escaping @Sendable () -> Void,
+        priority: TaskPriority, onCancel: @escaping @Sendable () -> Void, onStop: (@Sendable () -> Bool)?,
         _ operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
     ) -> AnalysisJob {
         let (stream, continuation) = AsyncStream.makeStream(of: JobProgress.self, bufferingPolicy: .bufferingNewest(8))
@@ -100,7 +117,7 @@ public final class AnalysisJob: Sendable, Identifiable {
         }
         return AnalysisJob(
             request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: stream, task: task,
-            onCancel: onCancel)
+            onCancel: onCancel, onStop: onStop)
     }
 }
 

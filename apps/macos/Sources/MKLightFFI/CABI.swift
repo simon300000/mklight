@@ -165,6 +165,19 @@ enum CABI {
         try string("mk_session_list_glasses") { out in withOptionalCString(catalog) { mk_session_list_glasses(s, $0, out) } }
     }
 
+    /// `mk_session_apply_solves`: the solve report and the new snapshot hash.
+    static func sessionApplySolves(_ s: OpaquePointer, settings: String?) throws -> (report: String, hash: String) {
+        var report: UnsafeMutablePointer<CChar>?
+        var hash: UnsafeMutablePointer<CChar>?
+        let status = withOptionalCString(settings) { mk_session_apply_solves(s, $0, &report, &hash) }
+        defer {
+            mk_string_free(report)
+            mk_string_free(hash)
+        }
+        try check(status, "mk_session_apply_solves")
+        return (report.map { String(cString: $0) } ?? "{}", hash.map { String(cString: $0) } ?? "")
+    }
+
     // MARK: Jobs
 
     static func submit(_ s: OpaquePointer, requestJSON: String) throws -> UInt64 {
@@ -271,6 +284,9 @@ enum CABI {
     static func sessionListCatalogs(_ s: OpaquePointer) throws -> String { throw notLinked }
     static func sessionListGlasses(_ s: OpaquePointer, catalog: String?) throws -> String { throw notLinked }
     static func submit(_ s: OpaquePointer, requestJSON: String) throws -> UInt64 { throw notLinked }
+    static func sessionApplySolves(_ s: OpaquePointer, settings: String?) throws -> (report: String, hash: String) {
+        throw notLinked
+    }
     static func jobStatus(_ e: OpaquePointer, _ job: UInt64) throws -> (state: JobState, progress: Double) {
         throw notLinked
     }

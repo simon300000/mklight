@@ -89,17 +89,36 @@ public struct AnalysisOutput: Codable, Sendable, Hashable {
     public var request: AnalysisRequest?
     /// Same, for a request by name.
     public var engineRequest: EngineAnalysisRequest?
+    /// The envelope's backend report (requested, used, fallback reason), if
+    /// the engine sent one. Not serialised.
+    public var backend: BackendReport?
 
     public init(
         runInfo: RunInfo, result: AnalysisResult, libraryHash: String? = nil, request: AnalysisRequest? = nil,
-        engineRequest: EngineAnalysisRequest? = nil
+        engineRequest: EngineAnalysisRequest? = nil, backend: BackendReport? = nil
     ) {
         self.runInfo = runInfo
         self.result = result
         self.libraryHash = libraryHash
         self.request = request
         self.engineRequest = engineRequest
+        self.backend = backend
     }
+
+    /// The result JSON (`result` of the envelope) of a generic result, or
+    /// the typed result re-encoded.
+    public var json: JSONValue {
+        if case .generic(let g) = result { return g.json }
+        return (try? JSONValue.from(result))?["data"] ?? .null
+    }
+
+    /// The binary buffers of a generic result.
+    public var buffers: [ResultBuffer] {
+        if case .generic(let g) = result { return g.buffers }
+        return []
+    }
+
+    public func buffer(named name: String) -> ResultBuffer? { buffers.first { $0.name == name } }
 
     private enum CodingKeys: String, CodingKey { case runInfo = "run_info", result, libraryHash = "library_hash" }
 
