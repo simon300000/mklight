@@ -100,9 +100,9 @@ impl Default for IrradianceSettings {
             paths: None,
             fields: Vec::new(),
             wavelengths: Vec::new(),
-            pupil_samples: 64,
+            pupil_samples: 128,
             overfill: 1.5,
-            map_bins: [128, 128],
+            map_bins: [64, 64],
             map_half_size: None,
             keep_path_maps: false,
         }

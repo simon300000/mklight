@@ -106,7 +106,7 @@ impl GhostPath {
     }
     /// An even number of reflections ends at the image.
     pub fn ends_at_image(&self) -> bool {
-        self.reflections.len() % 2 == 0
+        self.reflections.len().is_multiple_of(2)
     }
 
     /// A short label, e.g. `"R11·R3"`; the image surface is `IMG`.
@@ -310,7 +310,7 @@ impl Search<'_> {
 
     fn run(&mut self, pos: usize, fwd: bool, prod: f64) {
         let len = self.seq.len();
-        if len > 0 && len % 2 == 0 {
+        if len > 0 && len.is_multiple_of(2) {
             let e = EnumeratedPath {
                 path: GhostPath::new(self.seq.clone()),
                 reflectance_product: prod,
@@ -352,7 +352,7 @@ impl Search<'_> {
 /// Enumerate ghost paths (module docs).
 pub fn enumerate(model: &GhostModel, settings: &EnumerationSettings) -> MkResult<PathEnumeration> {
     let k_max = settings.max_reflections as usize;
-    if k_max < 2 || k_max % 2 != 0 || k_max > 8 {
+    if k_max < 2 || !k_max.is_multiple_of(2) || k_max > 8 {
         return Err(MkError::InvalidModel(
             "max_reflections must be 2, 4, 6 or 8".into(),
         ));
