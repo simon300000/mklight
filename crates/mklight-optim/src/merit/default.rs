@@ -77,6 +77,14 @@ pub struct ThicknessBoundaries {
     pub as_constraints: bool,
     /// Weight when emitted as residuals.
     pub weight: f64,
+    /// Also emit edge boundaries on gaps bounded only by surfaces with
+    /// automatic semi-diameters. Their height is the clear semi-diameter
+    /// computed by the reference tracer for each candidate, so the spec then
+    /// needs a tracer-backed evaluator
+    /// ([`TraceEvaluator`](super::trace_eval::TraceEvaluator)); the
+    /// model-only evaluator reports such operands as invalid.
+    #[serde(default)]
+    pub auto_semi_diameters: bool,
 }
 
 impl Default for ThicknessBoundaries {
@@ -90,6 +98,18 @@ impl Default for ThicknessBoundaries {
             air_min_edge: Some(0.1),
             as_constraints: true,
             weight: 1.0,
+            auto_semi_diameters: false,
+        }
+    }
+}
+
+impl ThicknessBoundaries {
+    /// The default boundaries with edge thicknesses on every gap, sized by
+    /// the tracer's automatic semi-diameters where none are fixed.
+    pub fn with_auto_semi_diameters() -> Self {
+        ThicknessBoundaries {
+            auto_semi_diameters: true,
+            ..Default::default()
         }
     }
 }
@@ -304,9 +324,10 @@ impl DefaultMeritSpec {
 
 /// Boundary operands for every physical gap between optically active
 /// surfaces except the back-focus gap to the image
-/// ([`optical_gaps`]). Edge boundaries are emitted only where a
-/// bounding surface has a fixed semi-diameter (automatic ones need the
-/// tracer — integration point).
+/// ([`optical_gaps`]). Edge boundaries are emitted where a bounding
+/// surface has a fixed semi-diameter, and on every gap with
+/// [`ThicknessBoundaries::auto_semi_diameters`] (the height then comes from
+/// the tracer's clear semi-diameters).
 pub fn thickness_operands(
     s: &OpticalSystem,
     tb: &ThicknessBoundaries,
@@ -354,7 +375,7 @@ pub fn thickness_operands(
                 cmax,
                 c,
             ));
-            if fixed(g.from) || fixed(g.to) {
+            if tb.auto_semi_diameters || fixed(g.from) || fixed(g.to) {
                 ops.extend(mk(
                     OperandKind::EdgeThickness {
                         surface,

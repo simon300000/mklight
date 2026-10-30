@@ -176,7 +176,8 @@ pub fn gap_thickness(
     Ok(dir * (t - sag(&sa.shape)? + sag(&sb.shape)?))
 }
 
-fn eval_one(s: &OpticalSystem, op: &Operand) -> OperandValue {
+/// Value of one model-only operand (`Unsupported` for any other kind).
+pub fn model_value(s: &OpticalSystem, op: &Operand) -> OperandValue {
     use OperandKind::*;
     let n = s.surfaces.len();
     match &op.kind {
@@ -255,18 +256,35 @@ fn eval_one(s: &OpticalSystem, op: &Operand) -> OperandValue {
     }
 }
 
+/// Does [`model_value`] compute this kind?
+pub fn is_model_kind(kind: &OperandKind) -> bool {
+    use OperandKind::*;
+    matches!(
+        kind,
+        TotalTrack { .. }
+            | CentreThickness { .. }
+            | EdgeThickness { .. }
+            | MinThickness { .. }
+            | MaxThickness { .. }
+            | ParamValue { .. }
+    )
+}
+
+/// Does this model operand measure an edge thickness at a height taken from
+/// the semi-diameters (so automatic semi-diameters need the tracer)?
+pub fn needs_semi_diameters(kind: &OperandKind) -> bool {
+    match kind {
+        OperandKind::EdgeThickness { height: None, .. } => true,
+        OperandKind::MinThickness { measure, .. } | OperandKind::MaxThickness { measure, .. } => {
+            *measure == ThicknessMeasure::Edge
+        }
+        _ => false,
+    }
+}
+
 impl OperandEvaluator for ModelEvaluator {
     fn supports(&self, kind: &OperandKind) -> bool {
-        use OperandKind::*;
-        matches!(
-            kind,
-            TotalTrack { .. }
-                | CentreThickness { .. }
-                | EdgeThickness { .. }
-                | MinThickness { .. }
-                | MaxThickness { .. }
-                | ParamValue { .. }
-        )
+        is_model_kind(kind)
     }
     fn evaluate_batch(
         &self,
@@ -278,7 +296,7 @@ impl OperandEvaluator for ModelEvaluator {
             .iter()
             .map(|s| {
                 ctx.check()?;
-                Ok(operands.iter().map(|op| eval_one(s, op)).collect())
+                Ok(operands.iter().map(|op| model_value(s, op)).collect())
             })
             .collect()
     }

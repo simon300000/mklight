@@ -6,10 +6,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# Deliberately independent of the tracer crates for now: optical evaluation is
-# plugged in through `merit::OperandEvaluator` and the `Problem` trait.
+# Optical evaluation is plugged in through `merit::OperandEvaluator`; the
+# reference tracer backs `merit::trace_eval`.
 [dependencies]
 mklight-core.workspace = true
+mklight-trace.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true

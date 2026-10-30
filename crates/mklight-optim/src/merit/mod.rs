@@ -12,8 +12,11 @@
 //!
 //! Values are produced by an [`OperandEvaluator`]; [`OpticalProblem`] turns a
 //! spec + variables + evaluator into a batched [`Problem`](crate::Problem).
-//! The tracer-backed evaluators are wired in a later phase; the
-//! [`geometric::ModelEvaluator`] already covers model-only operands.
+//! [`trace_eval::TraceEvaluator`] computes paraxial, real-ray, wavefront and
+//! model operands with the reference tracer; [`geometric::ModelEvaluator`]
+//! covers model-only operands without tracing. MTF, ghost, stray-light and
+//! plug-in operands come from further evaluators combined with
+//! [`CompositeEvaluator`].
 
 pub mod default;
 pub mod geometric;
@@ -21,6 +24,7 @@ pub mod operand;
 pub mod problem;
 pub mod quadrature;
 pub mod reference;
+pub mod trace_eval;
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +37,7 @@ pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
 pub use operand::{CentroidScope, RayGroup};
 pub use problem::{OpticalProblem, VariableSpec};
 pub use quadrature::{PupilNode, PupilSampling, PupilSymmetry};
+pub use trace_eval::{TraceEvalSettings, TraceEvaluator};
 
 /// Current merit-file schema version. Bump when an existing serialised
 /// layout changes and add a migration step to `MeritFunctionSpec::migrate`.

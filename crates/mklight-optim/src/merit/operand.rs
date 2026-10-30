@@ -132,6 +132,31 @@ pub enum DistortionMapping {
     FTheta,
 }
 
+/// Which paraxial ray of the first-order model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParaxialRayKind {
+    /// Axial object point to the edge of the pupil, scaled by the aperture
+    /// specification.
+    #[default]
+    Marginal,
+    /// Through the stop centre, scaled to the maximum radial field.
+    Chief,
+}
+
+/// Quantity of a paraxial ray at a surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParaxialQuantity {
+    /// Height `y` at the surface (mm).
+    #[default]
+    Height,
+    /// Slope `u = dy/dz` after the surface (dimensionless).
+    Slope,
+    /// `atan u` after the surface (degrees).
+    Angle,
+}
+
 /// Quantity of a single real ray at a surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -243,6 +268,22 @@ pub enum OperandKind {
     EntrancePupilDiameter,
     /// Exit-pupil position relative to the image surface (mm).
     ExitPupilPosition,
+    /// Entrance-pupil position relative to the first surface, in object
+    /// space (mm).
+    EntrancePupilPosition,
+    /// A paraxial marginal or chief ray quantity after `surface` (default:
+    /// the image surface).
+    ParaxialRay {
+        #[serde(default)]
+        ray: ParaxialRayKind,
+        #[serde(default)]
+        quantity: ParaxialQuantity,
+        #[serde(default)]
+        surface: Option<SurfaceId>,
+    },
+    /// Petzval sum `P = Σ c (N' − N)/(N N')` over the surfaces (mm⁻¹); the
+    /// Petzval surface has curvature `−N'_image · P`.
+    PetzvalSum,
 
     // ---- geometry of the model ----
     /// Sum of thicknesses from `from` to the vertex of `to` (default:
@@ -466,6 +507,9 @@ impl OperandKind {
             Magnification => "magnification",
             EntrancePupilDiameter => "entrance_pupil_diameter",
             ExitPupilPosition => "exit_pupil_position",
+            EntrancePupilPosition => "entrance_pupil_position",
+            ParaxialRay { .. } => "paraxial_ray",
+            PetzvalSum => "petzval_sum",
             TotalTrack { .. } => "total_track",
             CentreThickness { .. } => "centre_thickness",
             EdgeThickness { .. } => "edge_thickness",
@@ -504,6 +548,9 @@ impl OperandKind {
             | Magnification
             | EntrancePupilDiameter
             | ExitPupilPosition
+            | EntrancePupilPosition
+            | ParaxialRay { .. }
+            | PetzvalSum
             | AxialColour { .. } => Capability::Paraxial,
             TotalTrack { .. }
             | CentreThickness { .. }
@@ -662,6 +709,21 @@ impl OperandRegistry {
             (Magnification, "Paraxial magnification", ""),
             (EntrancePupilDiameter, "Entrance pupil diameter", "mm"),
             (ExitPupilPosition, "Exit pupil position from image", "mm"),
+            (
+                EntrancePupilPosition,
+                "Entrance pupil position from first surface",
+                "mm",
+            ),
+            (
+                ParaxialRay {
+                    ray: ParaxialRayKind::Marginal,
+                    quantity: ParaxialQuantity::Height,
+                    surface: None,
+                },
+                "Paraxial ray height / slope / angle",
+                "mm / - / deg",
+            ),
+            (PetzvalSum, "Petzval sum", "1/mm"),
             (
                 TotalTrack {
                     from: None,
