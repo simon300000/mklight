@@ -18,6 +18,7 @@
 //! | [`tracer`] | [`SequentialTracer`]: fields → object sources, pupils → starting rays, ray aiming (paraxial or real), per-(field, wavelength) aim cache |
 //! | [`opd`] | OPD against the exit-pupil reference sphere (CONVENTIONS §4) |
 //! | [`semidia`] | automatic clear semi-diameters |
+//! | [`solves`] | solves and pickups: [`apply_solves`] returns a new system with every solve-controlled parameter set (closed-form y–nu updates, fixed-point and bracketed Brent iteration, per configuration) |
 //! | [`batch`] | rayon batches over fields × wavelengths × pupil samples, deterministic ordering, cancellable job variants |
 //! | [`pupil`] | deterministic pupil sampling patterns |
 //! | [`numeric`] | error-free transforms (TwoSum/TwoProd), [`Compensated`] sums, accurate discriminant, 2-D Newton–Broyden |
@@ -84,6 +85,7 @@ pub mod opd;
 pub mod paraxial;
 pub mod pupil;
 pub mod semidia;
+pub mod solves;
 pub mod surface;
 pub mod trace;
 pub mod tracer;
@@ -94,6 +96,10 @@ pub use opd::OpdReference;
 pub use paraxial::{FirstOrder, Paraxial, ParaxialModel, ParaxialRayTable};
 pub use pupil::PupilSampling;
 pub use semidia::{SemiDiameterSettings, SemiDiameterSource, SemiDiameters, fix_semi_diameters};
+pub use solves::{
+    SolveMethod, SolveOutcome, SolveReport, SolveSettings, apply_solves, apply_solves_all,
+    apply_solves_configuration, apply_solves_with, solved_params,
+};
 pub use surface::{IntersectError, IntersectSettings};
 pub use trace::{
     FailReason, Ray, SurfaceRecord, TraceOptions, TraceResult, TraceStatus, trace_ray,
