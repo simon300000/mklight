@@ -27,7 +27,7 @@ let package = Package(
         .library(name: "MKLightUI", targets: ["MKLightUI"]),
     ],
     targets: [
-        .target(name: "MKLightModel", swiftSettings: strict),
+        .target(name: "MKLightModel", resources: [.copy("Resources/samples.json")], swiftSettings: strict),
         .target(name: "MKLightEngine", dependencies: ["MKLightModel"], swiftSettings: strict),
         .target(
             name: "MKLightUI",

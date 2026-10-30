@@ -550,6 +550,116 @@ fn run_info(snapshot: &Snapshot) -> RunInfo {
     }
 }
 
+/// The syntax of every solve kind (`docs/SOLVES.md` §6). Not one valid
+/// system: only for the front ends' serde mirrors.
+fn solve_kinds() -> Vec<Solve> {
+    let id = SurfaceId;
+    let thickness = |s| ParamPath::Thickness { surface: id(s) };
+    let curvature = |s| ParamPath::Curvature { surface: id(s) };
+    vec![
+        Solve::new(thickness(2), SolveKind::MarginalRayHeight { height: 0.0 }),
+        Solve::new(curvature(2), SolveKind::MarginalRayAngle { slope: -0.1 }),
+        Solve::new(thickness(1), SolveKind::ChiefRayHeight { height: 1.0 }),
+        Solve::new(curvature(1), SolveKind::ChiefRayAngle { slope: 0.0 }),
+        Solve::pickup(
+            ParamPath::Conic { surface: id(1) },
+            ParamPath::Conic { surface: id(2) },
+            2.0,
+            -1.0,
+        ),
+        Solve::new(
+            thickness(0),
+            SolveKind::Position {
+                from: id(1),
+                to: id(3),
+                distance: 100.0,
+            },
+        ),
+        Solve::new(
+            ParamPath::DecenterX { surface: id(1) },
+            SolveKind::CenterOfCurvature { surface: id(3) },
+        ),
+        Solve::new(
+            thickness(1),
+            SolveKind::EdgeThickness {
+                value: 2.0,
+                radius: Some(8.0),
+            },
+        ),
+        Solve::new(
+            thickness(2),
+            SolveKind::EdgeThickness {
+                value: 1.5,
+                radius: None,
+            },
+        ),
+        Solve::f_number(id(2), 4.0),
+    ]
+}
+
+/// A valid system with solves and configurations: the Cooke triplet with a
+/// focus solve, an F/# solve on the last curvature, a symmetric pickup, a
+/// total-track position solve and a chief-ray angle (slope) solve, plus a
+/// near-focus configuration.
+fn solved_triplet() -> OpticalSystem {
+    let id = SurfaceId;
+    let mut s = cooke_triplet();
+    s.name = "Cooke triplet with solves".into();
+    s.solves = vec![
+        Solve::marginal_ray_height(id(7), 0.0),
+        Solve::f_number(id(6), 4.5),
+        Solve::pickup(
+            ParamPath::Thickness { surface: id(4) },
+            ParamPath::Thickness { surface: id(2) },
+            0.75,
+            0.25,
+        ),
+        Solve::new(
+            ParamPath::Thickness { surface: id(5) },
+            SolveKind::Position {
+                from: id(1),
+                to: id(7),
+                distance: 21.0,
+            },
+        ),
+        Solve::new(
+            ParamPath::Curvature { surface: id(3) },
+            SolveKind::ChiefRayAngle { slope: 0.25 },
+        ),
+        Solve::new(
+            ParamPath::Thickness { surface: id(1) },
+            SolveKind::EdgeThickness {
+                value: 1.0,
+                radius: None,
+            },
+        ),
+    ];
+    s.configurations = vec![
+        Configuration {
+            name: "infinity".into(),
+            overrides: vec![],
+        },
+        Configuration {
+            name: "2 m".into(),
+            overrides: vec![(
+                ParamPath::Thickness {
+                    surface: SurfaceId(0),
+                },
+                2000.0,
+            )],
+        },
+    ];
+    s
+}
+
+/// Every built-in sample, as `{"id", "system"}` (the app's "New from
+/// Sample" menu ships this file).
+#[derive(Serialize)]
+struct SampleEntry {
+    id: &'static str,
+    system: OpticalSystem,
+}
+
 fn write<T: Serialize>(dir: &std::path::Path, name: &str, value: &T) {
     let mut json = serde_json::to_string_pretty(value).expect("serialise fixture");
     json.push('\n');
@@ -581,6 +691,28 @@ fn main() {
     write(&dir, "run_info.json", &run_info(&cooke));
     write(&dir, "validation_cases.json", &validation_cases());
 
+    // Solves and pickups (docs/SOLVES.md §6).
+    let solved = Snapshot::new(solved_triplet()).expect("solved triplet is valid");
+    write(&dir, "solve_kinds.json", &solve_kinds());
+    write(&dir, "solved_triplet.json", solved.system());
+
+    // Built-in samples, for the app bundle and its tests.
+    let samples: Vec<SampleEntry> = samples::all()
+        .into_iter()
+        .map(|(id, system)| {
+            Snapshot::new(system.clone()).expect("samples are valid");
+            SampleEntry { id, system }
+        })
+        .collect();
+    write(&dir, "samples.json", &samples);
+    if std::env::args().nth(1).is_none() {
+        // The app ships the same file as a resource of its model module.
+        let res = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/macos/Sources/MKLightModel/Resources");
+        std::fs::create_dir_all(&res).expect("create resource dir");
+        write(&res, "samples.json", &samples);
+    }
+
     // Snapshot hashes of the valid fixtures, so a front end can check that its
     // engine binding reproduces the engine's content hashes.
     let mut hashes = BTreeMap::new();
@@ -596,5 +728,6 @@ fn main() {
         "kitchen_sink.json",
         Snapshot::new(kitchen_sink()).unwrap().hash().to_hex(),
     );
+    hashes.insert("solved_triplet.json", solved.hash().to_hex());
     write(&dir, "snapshot_hashes.json", &hashes);
 }

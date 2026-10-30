@@ -249,12 +249,52 @@ import Testing
     @Test func acceptsBareSystemJSON() throws {
         let p = try ProjectFile.decode(Fixtures.data("kitchen_sink"))
         #expect(p.system.name == "Kitchen sink")
-        #expect(p.version == ProjectFile.currentVersion)
+        #expect(p.schemaVersion == ProjectFile.currentVersion)
+        #expect(p.catalogs.isEmpty)
     }
 
-    @Test func rejectsNewerFormat() {
-        let json = #"{"format":"mklight-project","version":99,"system":{}}"#
-        #expect(throws: ProjectFile.Error.self) { try ProjectFile.decode(Data(json.utf8)) }
+    @Test func rejectsNewerSchemaVersion() {
+        let json = #"{"format":"mklight-project","schema_version":99,"system":{}}"#
+        #expect(throws: ProjectFile.Error.unsupportedVersion(99)) { try ProjectFile.decode(Data(json.utf8)) }
+        let foreign = #"{"format":"something-else","schema_version":1,"system":{}}"#
+        #expect(throws: ProjectFile.Error.self) { try ProjectFile.decode(Data(foreign.utf8)) }
+    }
+
+    /// Files from the app's first envelope (`"version": 1`, no
+    /// `schema_version`) migrate like the engine's version-0 drafts.
+    @Test func readsEarlyAppEnvelope() throws {
+        let early = try JSONValue.object([
+            "format": .string("mklight-project"), "version": .integer(1),
+            "system": JSONValue.from(SampleSystems.singlet()),
+        ])
+        let p = try ProjectFile.decode(MKLightJSON.encode(early))
+        #expect(p.system == SampleSystems.singlet())
+        #expect(p.sections["version"] == nil)
+        let tree = try JSONValue.parse(p.encoded())
+        #expect(tree["schema_version"] == .integer(1))
+        #expect(tree["catalogs"] == .array([]) && tree["merit"] == .null)
+    }
+
+    /// Sections the app does not edit (views, merit, metadata, unknown keys)
+    /// survive a round trip unchanged.
+    @Test func preservesUnknownSections() throws {
+        var tree = try JSONValue.parse(ProjectFile(system: SampleSystems.singlet()).encoded())
+        guard case .object(var o) = tree else { Issue.record("not an object"); return }
+        o["views"] = .array([.object(["key": .string("w1"), "analysis": .string("system_summary"), "settings": .object([:]), "ui": .object(["zoom": .number(1.5)])])])
+        o["future_key"] = .object(["x": .integer(3)])
+        o["catalogs"] = .array([.object(["name": .string("MYCAT"), "path": .string("/tmp/my.agf"), "relative_path": .null, "format": .string("agf")])])
+        tree = .object(o)
+        var p = try ProjectFile.decode(MKLightJSON.encode(tree))
+        #expect(p.catalogs == [CatalogReference(name: "MYCAT", path: "/tmp/my.agf")])
+        let back = try JSONValue.parse(p.encoded())
+        #expect(back.differences(from: tree).isEmpty, "\(back.differences(from: tree))")
+        p.addCatalog(CatalogReference(name: "MYCAT", path: "/other/my.agf"))
+        p.addCatalog(CatalogReference(name: "SECOND", path: "/x/second.json", format: "json"))
+        #expect(p.catalogs.map(\.name) == ["MYCAT", "SECOND"])
+        #expect(p.catalogs[0].path == "/other/my.agf")
+        p.stampMetadata(appName: "MKLight", appVersion: "1.0", engineVersion: "0.1.0")
+        #expect(p.sections["metadata"]?["app_name"] == .string("MKLight"))
+        #expect(p.sections["metadata"]?["created"] != nil)
     }
 
     @Test func encodingIsDeterministic() throws {

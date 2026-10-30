@@ -116,7 +116,7 @@ enum Fixtures {
     /// check that it covers exactly the valid system fixtures.
     @Test func snapshotHashFixtureCoversSystemFixtures() throws {
         let hashes = try MKLightJSON.decode([String: String].self, from: Fixtures.data("snapshot_hashes"))
-        #expect(Set(hashes.keys) == ["empty.json", "cooke_triplet.json", "kitchen_sink.json"])
+        #expect(Set(hashes.keys) == ["empty.json", "cooke_triplet.json", "kitchen_sink.json", "solved_triplet.json"])
         for (file, hex) in hashes {
             #expect(hex.count == 64 && hex.allSatisfy { $0.isHexDigit && !$0.isUppercase })
             _ = try MKLightJSON.decode(OpticalSystem.self, from: Fixtures.data(String(file.dropLast(5))))

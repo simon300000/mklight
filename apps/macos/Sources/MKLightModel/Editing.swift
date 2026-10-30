@@ -16,8 +16,9 @@ extension OpticalSystem {
 
     /// Removes the surface at `index`. The object, the image and the last
     /// remaining surface between them cannot be removed. Deleting the stop
-    /// keeps the stop at the same position (clamped). Configuration overrides
-    /// and mechanical parts that refer to the removed surface are removed too.
+    /// keeps the stop at the same position (clamped). Configuration overrides,
+    /// solves and mechanical parts that refer to the removed surface are
+    /// removed too.
     @discardableResult
     public mutating func deleteSurface(at index: Int) -> Bool {
         guard index > 0, index < imageIndex, surfaces.count > 3 else { return false }
@@ -28,6 +29,7 @@ extension OpticalSystem {
             configurations[k].overrides.removeAll { $0.first.surface == removed.id }
         }
         mechanics.removeAll { $0.surfaces.contains(removed.id) }
+        solves.removeAll { $0.surfaces.contains(removed.id) }
         return true
     }
 
@@ -63,9 +65,25 @@ extension OpticalSystem {
                 return i > removed ? Pair(o.first.withIndex(i - 1), o.second) : o
             }
         }
+        // Solves whose target or pickup source names the removed entry go;
+        // later entries are renumbered.
+        func remap(_ p: ParamPath) -> ParamPath? {
+            guard let i = index(p) else { return p }
+            if i == removed { return nil }
+            return i > removed ? p.withIndex(i - 1) : p
+        }
+        solves = solves.compactMap { s in
+            guard let target = remap(s.target) else { return nil }
+            var out = Solve(target: target, kind: s.kind)
+            if case .pickup(let source, let scale, let offset) = s.kind {
+                guard let src = remap(source) else { return nil }
+                out.kind = .pickup(source: src, scale: scale, offset: offset)
+            }
+            return out
+        }
     }
 
-    /// Drops configuration overrides and mechanical parts that resolved in
+    /// Drops configuration overrides, solves and mechanical parts that resolved in
     /// `previous` but no longer resolve here. Call after an edit (shape,
     /// material, semi-diameter or aperture changes can invalidate them); the
     /// edit stays undoable as a whole. References that were already broken in
@@ -77,6 +95,21 @@ extension OpticalSystem {
                 o.first.unresolvedReason(in: current) != nil && o.first.unresolvedReason(in: previous) == nil
             }
         }
+        func broken(_ s: Solve, in sys: OpticalSystem) -> Bool {
+            let fixesSemiDiameter = if case .semiDiameter = s.target { true } else { false }
+            if !(fixesSemiDiameter && s.target.surface.flatMap(sys.surfaceIndex(of:)) != nil),
+                s.target.unresolvedReason(in: sys) != nil
+            {
+                return true
+            }
+            if case .pickup(let source, _, _) = s.kind, sys.solve(for: source) == nil,
+                source.unresolvedReason(in: sys) != nil
+            {
+                return true
+            }
+            return s.surfaces.contains { sys.surfaceIndex(of: $0) == nil }
+        }
+        solves.removeAll { broken($0, in: current) && !broken($0, in: previous) }
         let ids = Set(surfaces.map(\.id)), before = Set(previous.surfaces.map(\.id))
         mechanics.removeAll { m in
             m.surfaces.contains { !ids.contains($0) } && m.surfaces.allSatisfy(before.contains)

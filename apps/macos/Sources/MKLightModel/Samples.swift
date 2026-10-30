@@ -2,6 +2,31 @@ import Foundation
 
 /// Sample systems for new documents and tests.
 public enum SampleSystems {
+    /// One of the engine's built-in samples (`mklight_core::samples`).
+    public struct Entry: Codable, Sendable, Hashable, Identifiable {
+        /// Short identifier, e.g. `achromat`.
+        public var id: String
+        public var system: OpticalSystem
+        public init(id: String, system: OpticalSystem) {
+            self.id = id
+            self.system = system
+        }
+    }
+
+    /// The engine's built-in samples, shipped as `Resources/samples.json`
+    /// (written by `cargo run -p mklight-core --example dump_fixtures`). They
+    /// validate in the engine and use only built-in glasses.
+    public static let bundled: [Entry] = {
+        guard let url = Bundle.module.url(forResource: "samples", withExtension: "json"),
+            let data = try? Data(contentsOf: url),
+            let entries = try? MKLightJSON.decode([Entry].self, from: data)
+        else { return [] }
+        return entries
+    }()
+
+    /// A bundled sample by identifier.
+    public static func bundled(_ id: String) -> OpticalSystem? { bundled.first { $0.id == id }?.system }
+
     /// The classic Cooke triplet (F/4.7, EFL ≈ 47.1 mm, ±20° field). Identical to
     /// the `cooke_triplet.json` engine fixture.
     public static func cookeTriplet() -> OpticalSystem {

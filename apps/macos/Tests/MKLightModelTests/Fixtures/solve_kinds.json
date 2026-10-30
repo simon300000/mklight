@@ -1,0 +1,111 @@
+[
+  {
+    "target": {
+      "param": "thickness",
+      "surface": 2
+    },
+    "kind": {
+      "type": "marginal_ray_height",
+      "height": 0.0
+    }
+  },
+  {
+    "target": {
+      "param": "curvature",
+      "surface": 2
+    },
+    "kind": {
+      "type": "marginal_ray_angle",
+      "slope": -0.1
+    }
+  },
+  {
+    "target": {
+      "param": "thickness",
+      "surface": 1
+    },
+    "kind": {
+      "type": "chief_ray_height",
+      "height": 1.0
+    }
+  },
+  {
+    "target": {
+      "param": "curvature",
+      "surface": 1
+    },
+    "kind": {
+      "type": "chief_ray_angle",
+      "slope": 0.0
+    }
+  },
+  {
+    "target": {
+      "param": "conic",
+      "surface": 1
+    },
+    "kind": {
+      "type": "pickup",
+      "source": {
+        "param": "conic",
+        "surface": 2
+      },
+      "scale": 2.0,
+      "offset": -1.0
+    }
+  },
+  {
+    "target": {
+      "param": "thickness",
+      "surface": 0
+    },
+    "kind": {
+      "type": "position",
+      "from": 1,
+      "to": 3,
+      "distance": 100.0
+    }
+  },
+  {
+    "target": {
+      "param": "decenter_x",
+      "surface": 1
+    },
+    "kind": {
+      "type": "center_of_curvature",
+      "surface": 3
+    }
+  },
+  {
+    "target": {
+      "param": "thickness",
+      "surface": 1
+    },
+    "kind": {
+      "type": "edge_thickness",
+      "value": 2.0,
+      "radius": 8.0
+    }
+  },
+  {
+    "target": {
+      "param": "thickness",
+      "surface": 2
+    },
+    "kind": {
+      "type": "edge_thickness",
+      "value": 1.5,
+      "radius": null
+    }
+  },
+  {
+    "target": {
+      "param": "curvature",
+      "surface": 2
+    },
+    "kind": {
+      "type": "f_number",
+      "value": 4.0
+    }
+  }
+]
