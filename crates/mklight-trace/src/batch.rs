@@ -103,7 +103,7 @@ pub fn trace_grid_job(
 /// Evaluate `f(0..total)` in parallel blocks of `block`, checking for
 /// cancellation before each block and reporting progress after it (ending
 /// at 1, also for an empty range).
-fn run_blocks<T: Send>(
+pub(crate) fn run_blocks<T: Send>(
     total: usize,
     block: usize,
     ctx: &JobContext,

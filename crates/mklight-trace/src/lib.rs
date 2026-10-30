@@ -21,6 +21,8 @@
 //! | [`batch`] | rayon batches over fields × wavelengths × pupil samples, deterministic ordering, cancellable job variants |
 //! | [`pupil`] | deterministic pupil sampling patterns |
 //! | [`numeric`] | error-free transforms (TwoSum/TwoProd), [`Compensated`] sums, accurate discriminant, 2-D Newton–Broyden |
+//! | [`polarization`] | polarisation ray tracing: 3×3 PRT matrices along recorded rays, Jones pupils in double-pole bases, diattenuation / retardance, energy budgets, vector pupils for wave optics |
+//! | [`radiometry`] | per-ray throughput (unpolarised or polarised), pupil-averaged system transmission vs field and wavelength, polarisation pupil maps |
 //!
 //! # Usage
 //!
@@ -82,7 +84,9 @@ pub mod interact;
 pub mod numeric;
 pub mod opd;
 pub mod paraxial;
+pub mod polarization;
 pub mod pupil;
+pub mod radiometry;
 pub mod semidia;
 pub mod surface;
 pub mod trace;
@@ -92,7 +96,15 @@ pub use batch::{BatchRay, Grid, opd_grid, opd_grid_job, trace_grid, trace_grid_j
 pub use numeric::Compensated;
 pub use opd::OpdReference;
 pub use paraxial::{FirstOrder, Paraxial, ParaxialModel, ParaxialRayTable};
+pub use polarization::{
+    JonesMatrix, JonesVector, PolarizationProperties, PolarizationState, PolarizedRay, PrtMatrix,
+    Stokes, VectorPupilSample, trace_ray_polarized, vector_pupil,
+};
 pub use pupil::PupilSampling;
+pub use radiometry::{
+    PolarizationMapSettings, PolarizationPupilMap, PupilSamples, RadiometryModel, RayThroughput,
+    TransmissionResult, TransmissionSettings, polarization_pupil_map, system_transmission,
+};
 pub use semidia::{SemiDiameterSettings, SemiDiameterSource, SemiDiameters, fix_semi_diameters};
 pub use surface::{IntersectError, IntersectSettings};
 pub use trace::{
