@@ -688,7 +688,8 @@ impl PreparedTrace {
     }
 }
 
-/// Decoded per-ray status word.
+/// Decoded per-ray status word (meanings as `mklight_trace::TraceStatus`,
+/// see `docs/GPU.md` §4.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RayStatus {
@@ -698,6 +699,8 @@ pub enum RayStatus {
     Vignetted { surface: u32 },
     NonFinite { surface: u32 },
     NotConverged { surface: u32 },
+    OutsideDomain { surface: u32 },
+    Degenerate { surface: u32 },
     Unknown { code: u32, surface: u32 },
 }
 
@@ -711,6 +714,8 @@ impl RayStatus {
             MKL_RAY_VIGNETTED => RayStatus::Vignetted { surface },
             MKL_RAY_NONFINITE => RayStatus::NonFinite { surface },
             MKL_RAY_NOT_CONVERGED => RayStatus::NotConverged { surface },
+            MKL_RAY_OUTSIDE_DOMAIN => RayStatus::OutsideDomain { surface },
+            MKL_RAY_DEGENERATE => RayStatus::Degenerate { surface },
             code => RayStatus::Unknown { code, surface },
         }
     }
@@ -722,6 +727,8 @@ impl RayStatus {
             RayStatus::Vignetted { surface } => (MKL_RAY_VIGNETTED, surface),
             RayStatus::NonFinite { surface } => (MKL_RAY_NONFINITE, surface),
             RayStatus::NotConverged { surface } => (MKL_RAY_NOT_CONVERGED, surface),
+            RayStatus::OutsideDomain { surface } => (MKL_RAY_OUTSIDE_DOMAIN, surface),
+            RayStatus::Degenerate { surface } => (MKL_RAY_DEGENERATE, surface),
             RayStatus::Unknown { code, surface } => (code & MKL_RAY_CODE_MASK, surface),
         };
         code | (s << MKL_RAY_SURFACE_SHIFT)
@@ -744,6 +751,8 @@ mod tests {
             RayStatus::Vignetted { surface: 1 },
             RayStatus::NonFinite { surface: 0 },
             RayStatus::NotConverged { surface: 999 },
+            RayStatus::OutsideDomain { surface: 4 },
+            RayStatus::Degenerate { surface: 2 },
         ] {
             assert_eq!(RayStatus::decode(s.encode()), s);
         }

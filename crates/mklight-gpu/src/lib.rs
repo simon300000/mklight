@@ -8,10 +8,16 @@
 //! * [`df`], [`fmath`] and [`reduce`] specify the f32 numerics (CONVENTIONS
 //!   §7) operation for operation; the shaders implement exactly these. They
 //!   are generic over the f32 environment ([`fenv`]: IEEE or flush-to-zero).
+//! * [`trace_kernel`] specifies the sequential / path ray-trace kernel (f32
+//!   decisions mirroring `mklight-trace`, double-float geometry), with path
+//!   programs ([`batch::PathStep`]) for ghost paths.
 //! * [`cpu::CpuF32Backend`] runs those algorithms on the CPU, bit-identical
 //!   to a GPU that passes the numerics probe when constructed for that
 //!   GPU's environment (`CpuF32Backend::matching`), to separate algorithm
 //!   error from precision error.
+//! * [`xval`] cross-validates a backend's traces against the f64 reference
+//!   and qualifies a backend for a system (pass/fail with measured errors;
+//!   on failure callers fall back to the CPU and record it in `RunInfo`).
 //!
 //! See `docs/GPU.md`.
 

@@ -8,8 +8,10 @@
 //!   Silicon) with safe slice access while no GPU work references them.
 //! * Command buffers are committed and awaited on a worker thread; completion
 //!   status, errors and GPU timestamps are reported per command buffer.
-//! * [`MetalBackend`] implements `mklight_gpu::ComputeBackend`. At start-up it
-//!   runs a numerics probe and refuses double-float work if the device or
+//! * [`MetalBackend`] implements `mklight_gpu::ComputeBackend`, including the
+//!   sequential / path trace kernel (`shaders/trace.metal`, bit-identical to
+//!   `mklight_gpu::trace_kernel`). At start-up it runs a numerics probe and
+//!   refuses double-float work (reductions, traces) if the device or
 //!   compiler would break error-free transforms.
 //!
 //! On other platforms this crate compiles to an empty shell whose
