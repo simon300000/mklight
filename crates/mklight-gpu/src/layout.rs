@@ -260,21 +260,20 @@ fn normal_or_zero(v: f32) -> f32 {
     }
 }
 
-/// Choose `e` so that every coefficient `A_(2j+4)·2^(e(2j+4))` is a normal,
-/// finite f32 (or exactly zero). Searches outward from the hint's exponent.
-fn asphere_norm_exponent(coeffs: &[f64], hint_radius: f64) -> Option<i32> {
+/// Choose `e` so that every power-series coefficient `c_j·2^(e(first + step·j))`
+/// is a normal, finite f32 (or exactly zero): the normalised coefficients of
+/// the radius `2^e`. Searches outward from the hint's exponent.
+fn norm_exponent(series: &[&[f64]], hint_radius: f64, first: i32, step: i32) -> Option<i32> {
     let e0 = if hint_radius.is_finite() && hint_radius > 0.0 {
         hint_radius.log2().round() as i32
     } else {
         0
     };
     let ok = |e: i32| {
-        coeffs.iter().enumerate().all(|(j, &a)| {
-            if a == 0.0 {
-                return true;
-            }
-            let v = (a * 2f64.powi(e * (2 * j as i32 + 4))) as f32;
-            v.is_normal()
+        series.iter().all(|c| {
+            c.iter().enumerate().all(|(j, &a)| {
+                a == 0.0 || ((a * 2f64.powi(e * (first + step * j as i32))) as f32).is_normal()
+            })
         })
     };
     (0..=40)
@@ -282,6 +281,21 @@ fn asphere_norm_exponent(coeffs: &[f64], hint_radius: f64) -> Option<i32> {
         .find(|&e| (-60..=60).contains(&e) && ok(e))
 }
 
+/// `c_j·2^(e(first + step·j))` (exact: powers of two).
+fn normalise(c: &[f64], e: i32, first: i32, step: i32) -> Vec<f64> {
+    c.iter()
+        .enumerate()
+        .map(|(j, a)| a * 2f64.powi(e * (first + step * j as i32)))
+        .collect()
+}
+
+/// `c` without trailing zeros (they add nothing but per-ray work).
+fn trimmed(c: &[f64]) -> &[f64] {
+    &c[..c.iter().rposition(|&a| a != 0.0).map_or(0, |k| k + 1)]
+}
+
+/// The record fields of a plane, conic, even asphere, ideal lens or
+/// coordinate break (also a DOE's base).
 fn pack_legacy(
     p: &mut PackedSurface,
     shape: &SurfaceShape,
@@ -316,51 +330,46 @@ fn pack_legacy(
             p.conic = f32_checked(*conic, &what("conic"))?;
             p.curvature_lo = normal_or_zero((curvature - p.curvature as f64) as f32);
             p.conic_lo = normal_or_zero((conic - p.conic as f64) as f32);
-            let used = coefficients
-                .iter()
-                .rposition(|&a| a != 0.0)
-                .map_or(0, |k| k + 1);
+            let coeffs = trimmed(coefficients);
+            let used = coeffs.len();
             if used > MAX_ASPHERE {
-                return Err(MkError::Unsupported(format!(
-                    "surface: asphere term r^{} exceeds the GPU layout's A{}",
+                return Err(MkError::Unsupported(what(&format!(
+                    "asphere term r^{} exceeds the GPU layout's A{}",
                     2 * used + 2,
                     2 * MAX_ASPHERE + 2
-                )));
+                ))));
             }
-            let coeffs = &coefficients[..used];
             if coeffs.iter().any(|a| !a.is_finite()) {
                 return Err(MkError::InvalidModel(what("asphere coefficient")));
             }
             if used > 0 {
                 let e =
-                    asphere_norm_exponent(coeffs, bounding.unwrap_or(1.0)).ok_or_else(|| {
-                        MkError::Unsupported(format!(
-                            "surface: asphere coefficients span too many \
-                                     decades for f32"
+                    norm_exponent(&[coeffs], bounding.unwrap_or(1.0), 4, 2).ok_or_else(|| {
+                        MkError::Unsupported(what(
+                            "asphere coefficients span too many decades for f32",
                         ))
                     })?;
                 p.num_asphere = used as u32;
                 p.asphere_inv_norm2 = 2f32.powi(-2 * e);
-                for (j, &a) in coeffs.iter().enumerate() {
-                    let v = a * 2f64.powi(e * (2 * j as i32 + 4));
+                for (j, v) in normalise(coeffs, e, 4, 2).into_iter().enumerate() {
                     p.asphere[j] = v as f32;
                     p.asphere_lo[j] = normal_or_zero((v - p.asphere[j] as f64) as f32);
                 }
             }
         }
-        _ => unreachable!("legacy base"),
+        _ => unreachable!("extended shape"),
     }
-
     Ok(())
 }
 
-// Extended data stays in a separate pool; the surface record does not grow.
+/// Packs `shape`; extended shapes append their `MKL_COEFF_*` prefix and
+/// coefficients to `pool` (the record does not grow).
 fn pack_shape(
     p: &mut PackedSurface,
     shape: &SurfaceShape,
     bounding: Option<f64>,
     what: &dyn Fn(&str) -> String,
-    wavelengths: &[f64],
+    wavelengths_um: &[f64],
     pool: &mut Vec<Df32>,
 ) -> MkResult<()> {
     use SurfaceShape::*;
@@ -369,31 +378,20 @@ fn pack_shape(
         return pack_legacy(p, shape, bounding, what);
     }
     let mut data = vec![0.0; MKL_COEFF_PREFIX as usize];
-    data[MKL_COEFF_RADIUS as usize] = 1.0;
     data[MKL_COEFF_EXACT_CONIC as usize] =
         f64::from(mklight_core::surface_math::exact_conic(shape).is_some());
-    let (mut a, mut b) = (Vec::new(), Vec::new());
     (p.curvature, p.curvature_lo) = split_checked(shape.curvature(), &what("curvature"))?;
     (p.conic, p.conic_lo) = split_checked(shape.conic(), &what("conic"))?;
-    match shape {
+    let too_wide = || MkError::Unsupported(what("coefficients span too many decades for f32"));
+    let (a, b) = match shape {
         OddAsphere { coefficients, .. } => {
             p.shape = MKL_SHAPE_ODD_ASPHERE;
-            let e = series_exponent(coefficients, &[], bounding.unwrap_or(1.0), 1, 1).ok_or_else(
-                || MkError::Unsupported(what("odd coefficients span too many decades for f32")),
-            )?;
-            data[0] = 2f64.powi(e);
-            a = coefficients
-                .iter()
-                .enumerate()
-                .map(|(j, c)| c * 2f64.powi(e * (j as i32 + 1)))
-                .collect();
+            let c = trimmed(coefficients);
+            let e = norm_exponent(&[c], bounding.unwrap_or(1.0), 1, 1).ok_or_else(too_wide)?;
+            data[MKL_COEFF_RADIUS as usize] = 2f64.powi(e);
+            (normalise(c, e, 1, 1), vec![])
         }
         QCon {
-            norm_radius,
-            coefficients,
-            ..
-        }
-        | QBfs {
             norm_radius,
             coefficients,
             ..
@@ -410,95 +408,88 @@ fn pack_shape(
         } => {
             p.shape = match shape {
                 QCon { .. } => MKL_SHAPE_Q_CON,
-                QBfs { .. } => MKL_SHAPE_Q_BFS,
                 XYPolynomial { .. } => MKL_SHAPE_XY,
                 _ => MKL_SHAPE_ZERNIKE,
             };
-            data[0] = *norm_radius;
-            a.clone_from(coefficients);
-            if p.shape == MKL_SHAPE_Q_BFS {
-                // Forbes triangular conversion is independent of the ray.
-                // Store auxiliary-basis coefficients once, in double-float.
-                let mut f = [0.0f64; 20];
-                let mut g = f;
-                let mut h = f;
-                f[0] = 2.0;
-                f[1] = 19.0f64.sqrt() / 2.0;
-                g[0] = -0.5;
-                for m in 2..20 {
-                    h[m - 2] = -((m * (m - 1)) as f64) / (2.0 * f[m - 2]);
-                    g[m - 1] = -(1.0 + g[m - 2] * h[m - 2]) / f[m - 1];
-                    f[m] = ((m * (m + 1) + 3) as f64 - g[m - 1] * g[m - 1] - h[m - 2] * h[m - 2])
-                        .sqrt();
-                }
-                let mut b = [0.0; 22];
-                for m in (0..a.len()).rev() {
-                    b[m] = (a[m] - g[m] * b[m + 1] - h[m] * b[m + 2]) / f[m];
-                }
-                a.copy_from_slice(&b[..coefficients.len()]);
-            }
+            data[MKL_COEFF_RADIUS as usize] = *norm_radius;
             if let ZernikeSag { ordering, .. } = shape {
                 data[MKL_COEFF_KIND as usize] = f64::from(*ordering == ZernikeOrdering::Standard);
             }
+            (trimmed(coefficients).to_vec(), vec![])
+        }
+        QBfs {
+            norm_radius,
+            coefficients,
+            ..
+        } => {
+            p.shape = MKL_SHAPE_Q_BFS;
+            data[MKL_COEFF_RADIUS as usize] = *norm_radius;
+            // Forbes' triangular conversion to the auxiliary basis (SURFACES
+            // §2) is independent of the ray: done once here, in f64.
+            let a = trimmed(coefficients);
+            let (mut f, mut g, mut h) = ([0.0f64; 20], [0.0f64; 20], [0.0f64; 20]);
+            f[0] = 2.0;
+            f[1] = 19.0f64.sqrt() / 2.0;
+            g[0] = -0.5;
+            for m in 2..20 {
+                h[m - 2] = -((m * (m - 1)) as f64) / (2.0 * f[m - 2]);
+                g[m - 1] = -(1.0 + g[m - 2] * h[m - 2]) / f[m - 1];
+                f[m] =
+                    ((m * (m + 1) + 3) as f64 - g[m - 1] * g[m - 1] - h[m - 2] * h[m - 2]).sqrt();
+            }
+            let mut b = [0.0; 22];
+            for m in (0..a.len()).rev() {
+                b[m] = (a[m] - g[m] * b[m + 1] - h[m] * b[m + 2]) / f[m];
+            }
+            (b[..a.len()].to_vec(), vec![])
         }
         Toroid {
             curvature_x,
             y_asphere,
             ..
+        } => {
+            p.shape = MKL_SHAPE_TOROID;
+            data[MKL_COEFF_CX as usize] = *curvature_x;
+            let y = trimmed(y_asphere);
+            let e = norm_exponent(&[y], bounding.unwrap_or(1.0), 4, 2).ok_or_else(too_wide)?;
+            data[MKL_COEFF_RADIUS as usize] = 2f64.powi(e);
+            (vec![], normalise(y, e, 4, 2))
         }
-        | Biconic {
+        Biconic {
             curvature_x,
+            conic_x,
+            x_asphere,
             y_asphere,
             ..
         } => {
-            p.shape = if matches!(shape, Toroid { .. }) {
-                MKL_SHAPE_TOROID
-            } else {
-                MKL_SHAPE_BICONIC
-            };
+            p.shape = MKL_SHAPE_BICONIC;
             data[MKL_COEFF_CX as usize] = *curvature_x;
-            let x_asphere = if let Biconic {
-                conic_x, x_asphere, ..
-            } = shape
-            {
-                data[MKL_COEFF_KX as usize] = *conic_x;
-                x_asphere.as_slice()
-            } else {
-                &[]
-            };
-            let e = series_exponent(x_asphere, y_asphere, bounding.unwrap_or(1.0), 4, 2)
-                .ok_or_else(|| {
-                    MkError::Unsupported(what("axis coefficients span too many decades for f32"))
-                })?;
-            data[0] = 2f64.powi(e);
-            let scale = |c: &[f64]| {
-                c.iter()
-                    .enumerate()
-                    .map(|(j, c)| c * 2f64.powi(e * (2 * j as i32 + 4)))
-                    .collect()
-            };
-            a = scale(x_asphere);
-            b = scale(y_asphere);
+            data[MKL_COEFF_KX as usize] = *conic_x;
+            let (x, y) = (trimmed(x_asphere), trimmed(y_asphere));
+            let e = norm_exponent(&[x, y], bounding.unwrap_or(1.0), 4, 2).ok_or_else(too_wide)?;
+            data[MKL_COEFF_RADIUS as usize] = 2f64.powi(e);
+            (normalise(x, e, 4, 2), normalise(y, e, 4, 2))
         }
         Diffractive { base, phase } => {
             pack_legacy(p, base, bounding, what)?;
             data[MKL_COEFF_KIND as usize] = p.shape as f64;
             p.shape = MKL_SHAPE_DIFFRACTIVE;
-            data[0] = phase.norm_radius;
+            data[MKL_COEFF_RADIUS as usize] = phase.norm_radius;
             data[MKL_COEFF_TRACE_ORDER as usize] = phase.trace_order as f64;
             data[MKL_COEFF_DESIGN_ORDER as usize] = phase.design_order as f64;
             data[MKL_COEFF_DESIGN_WAVELENGTH as usize] = phase.design_wavelength_um;
+            // m·λ/(2π) per packed wavelength, λ in mm (SURFACES §3).
             data.extend((0..MAX_WAVELENGTHS).map(|w| {
-                wavelengths.get(w).map_or(0.0, |lambda| {
+                wavelengths_um.get(w).map_or(0.0, |lambda| {
                     phase.trace_order as f64 * lambda * 1e-3 / std::f64::consts::TAU
                 })
             }));
-            a.clone_from(&phase.coefficients);
+            (trimmed(&phase.coefficients).to_vec(), vec![])
         }
         Plane | Conic { .. } | EvenAsphere { .. } | Paraxial { .. } | CoordinateBreak => {
-            unreachable!()
+            unreachable!("legacy shape")
         }
-    }
+    };
     data[MKL_COEFF_NA as usize] = a.len() as f64;
     data[MKL_COEFF_NB as usize] = b.len() as f64;
     data.extend(a);
@@ -507,101 +498,60 @@ fn pack_shape(
         .map_err(|_| MkError::Unsupported(what("coefficient pool too large")))?;
     p.coefficient_count = data.len() as u32;
     for value in data {
-        let (hi, lo) = split_checked(value, &what("coefficient pool value"))?;
+        let (hi, lo) = split_checked(value, &what("coefficient"))?;
         pool.push(Df32::new(hi, lo));
     }
     Ok(())
 }
 
-fn series_exponent(a: &[f64], b: &[f64], radius: f64, first: i32, step: i32) -> Option<i32> {
-    let e0 = if radius.is_finite() && radius > 0.0 {
-        radius.log2().round() as i32
-    } else {
-        0
-    };
-    (0..=40).flat_map(|d| [e0 + d, e0 - d]).find(|&e| {
-        (-60..=60).contains(&e)
-            && [a, b].iter().all(|c| {
-                c.iter().enumerate().all(|(j, &v)| {
-                    v == 0.0 || ((v * 2f64.powi(e * (first + step * j as i32))) as f32).is_normal()
-                })
-            })
-    })
-}
-
-// Upload is a public boundary: offsets, counts and tagged metadata can be
-// hand-edited and must be checked before kernels use unchecked pool accesses.
+/// The pool entries of an extended surface, checked before any kernel
+/// indexes them without bounds checks: the range, the prefix, every value
+/// finite and not subnormal, a positive radius, and integral counts within
+/// the shape's capacity that add up to `coefficient_count`. (Design order
+/// and wavelength are metadata no kernel reads.)
 fn validate_coefficients(s: &PackedSurface, pool: &[Df32]) -> Result<(), &'static str> {
     if s.shape <= MKL_SHAPE_COORD_BREAK {
-        return if s.coefficient_count == 0 {
-            Ok(())
-        } else {
-            Err("legacy coefficient count")
+        return match s.coefficient_count {
+            0 => Ok(()),
+            _ => Err("coefficients on a legacy shape"),
         };
     }
     let start = s.coefficient_offset as usize;
-    let count = s.coefficient_count as usize;
     let d = pool
-        .get(start..start.checked_add(count).ok_or("coefficient range")?)
+        .get(start..start + s.coefficient_count as usize)
+        .filter(|d| d.len() >= MKL_COEFF_PREFIX as usize)
         .ok_or("coefficient range")?;
-    if d.len() < MKL_COEFF_PREFIX as usize
-        || d.iter().any(|v| {
-            !v.hi.is_finite() || !v.lo.is_finite() || v.hi.is_subnormal() || v.lo.is_subnormal()
-        })
-    {
-        return Err("coefficient data");
+    if d.iter().any(|v| {
+        !(v.hi.is_finite() && v.lo.is_finite()) || v.hi.is_subnormal() || v.lo.is_subnormal()
+    }) {
+        return Err("coefficient value");
+    }
+    if d[MKL_COEFF_RADIUS as usize].hi <= 0.0 {
+        return Err("normalisation radius");
     }
     let integer = |i: u32, max: u32| -> Result<usize, &'static str> {
         let v = d[i as usize];
-        if v.lo != 0.0 || v.hi < 0.0 || v.hi > max as f32 || v.hi.fract() != 0.0 {
-            Err("coefficient metadata")
-        } else {
+        if v.lo == 0.0 && v.hi >= 0.0 && v.hi <= max as f32 && v.hi.fract() == 0.0 {
             Ok(v.hi as usize)
-        }
-    };
-    if !(d[0].hi > 0.0) {
-        return Err("normalization radius");
-    }
-    let max = match s.shape {
-        MKL_SHAPE_ODD_ASPHERE | MKL_SHAPE_Q_CON | MKL_SHAPE_Q_BFS => 20,
-        MKL_SHAPE_XY => 65,
-        MKL_SHAPE_ZERNIKE => {
-            if integer(MKL_COEFF_KIND, 1)? == 0 {
-                37
-            } else {
-                45
-            }
-        }
-        _ => 10,
-    };
-    let na = integer(MKL_COEFF_NA, max)?;
-    let nb = integer(
-        MKL_COEFF_NB,
-        if s.shape == MKL_SHAPE_TOROID || s.shape == MKL_SHAPE_BICONIC {
-            10
         } else {
-            0
-        },
-    )?;
-    integer(MKL_COEFF_EXACT_CONIC, 1)?;
-    let extra = if s.shape == MKL_SHAPE_DIFFRACTIVE {
-        integer(MKL_COEFF_KIND, MKL_SHAPE_EVEN_ASPHERE)?;
-        for i in [MKL_COEFF_TRACE_ORDER, MKL_COEFF_DESIGN_ORDER] {
-            let v = d[i as usize].to_f64();
-            if v.fract() != 0.0 || v < i32::MIN as f64 || v > i32::MAX as f64 {
-                return Err("diffraction order");
-            }
+            Err("coefficient metadata")
         }
-        if d[MKL_COEFF_DESIGN_ORDER as usize].hi == 0.0
-            || d[MKL_COEFF_DESIGN_WAVELENGTH as usize].hi <= 0.0
-        {
-            return Err("diffraction design");
-        }
-        MAX_WAVELENGTHS
-    } else {
-        0
     };
-    if count != MKL_COEFF_PREFIX as usize + extra + na + nb {
+    let (max_a, max_b, extra) = match s.shape {
+        MKL_SHAPE_ODD_ASPHERE | MKL_SHAPE_Q_CON | MKL_SHAPE_Q_BFS => (20, 0, 0),
+        MKL_SHAPE_XY => (65, 0, 0),
+        MKL_SHAPE_ZERNIKE => ([37, 45][integer(MKL_COEFF_KIND, 1)?], 0, 0),
+        MKL_SHAPE_TOROID => (0, 10, 0),
+        MKL_SHAPE_BICONIC => (10, 10, 0),
+        _ => {
+            // DOE: a plane, conic or even-asphere base and the wavelength
+            // factors before the phase coefficients.
+            integer(MKL_COEFF_KIND, MKL_SHAPE_EVEN_ASPHERE)?;
+            (10, 0, MAX_WAVELENGTHS)
+        }
+    };
+    let n = integer(MKL_COEFF_NA, max_a)? + integer(MKL_COEFF_NB, max_b)?;
+    if d.len() != MKL_COEFF_PREFIX as usize + extra + n {
         return Err("coefficient count");
     }
     Ok(())
@@ -676,6 +626,7 @@ impl PackedSystem {
 
         let mut surfaces = Vec::with_capacity(n);
         let mut coefficients = Vec::new();
+        let wavelengths_um: Vec<f64> = wls.iter().map(|&w| rs.wavelengths_um[w]).collect();
         for (i, s) in rs.surfaces.iter().enumerate() {
             let what = |f: &str| format!("surface {i} {f}");
             let mut p = PackedSurface::zeroed();
@@ -729,9 +680,7 @@ impl PackedSystem {
                 &s.shape,
                 bounding,
                 &what,
-                &wls.iter()
-                    .map(|&w| rs.wavelengths_um[w])
-                    .collect::<Vec<_>>(),
+                &wavelengths_um,
                 &mut coefficients,
             )?;
 
@@ -885,9 +834,9 @@ impl PackedSystem {
             if s.shape > MKL_SHAPE_ZERNIKE {
                 return bad(&format!("shape code {}", s.shape));
             }
-            validate_coefficients(s, &self.coefficients).map_err(|m| {
-                MkError::Backend(format!("invalid packed system: surface {i}: {m}"))
-            })?;
+            if let Err(m) = validate_coefficients(s, &self.coefficients) {
+                return bad(m);
+            }
             if s.interaction > MKL_INTERACT_DUMMY {
                 return bad(&format!("interaction code {}", s.interaction));
             }
@@ -1125,9 +1074,11 @@ mod tests {
             coefficients: vec![0.0; 10].into_iter().chain([1e-40]).collect(),
         };
         let rs = resolve(s);
+        // The message names the surface (lost once when packing moved into
+        // a per-shape helper).
         assert!(matches!(
             PackedSystem::pack_all(&rs),
-            Err(MkError::Unsupported(_))
+            Err(MkError::Unsupported(m)) if m.starts_with("surface 2 asphere term r^24")
         ));
 
         let mut s = singlet();
@@ -1263,15 +1214,10 @@ mod tests {
         p.surfaces[1].n_after[15] = 0.0;
         assert!(p.validate().is_ok());
     }
-}
-
-#[cfg(test)]
-mod pool_tests {
-    use super::*;
-    use crate::testutil;
 
     #[test]
     fn coefficient_pool_rebases_systems_and_rejects_bad_ranges() {
+        use crate::{surface_math::data, testutil};
         let systems: Vec<_> = testutil::extended_shapes()
             .into_iter()
             .map(|(_, shape)| {
@@ -1279,32 +1225,30 @@ mod pool_tests {
             })
             .collect();
         let set = PackedSystemSet::new(&systems).unwrap();
-        let mut offset = 0usize;
-        for (i, p) in systems.iter().enumerate() {
-            let s = &set.surfaces[set.headers[i].surface_offset as usize + 1];
+        for (h, p) in set.headers.iter().zip(&systems) {
+            let s = &set.surfaces[h.surface_offset as usize + 1];
             assert_eq!(
-                s.coefficient_offset as usize,
-                p.surfaces[1].coefficient_offset as usize + offset
+                data(s, &set.coefficients),
+                data(&p.surfaces[1], &p.coefficients)
             );
-            assert_eq!(
-                &set.coefficients[offset..offset + p.coefficients.len()],
-                p.coefficients
-            );
-            offset += p.coefficients.len();
         }
-        let valid = &systems[0];
-        let tamper: [fn(&mut PackedSystem); 6] = [
-            |p| p.surfaces[1].coefficient_offset = u32::MAX,
-            |p| p.surfaces[1].coefficient_count = u32::MAX,
-            |p| p.coefficients[0].hi = 0.0,
-            |p| p.coefficients[MKL_COEFF_NA as usize].hi = 21.0,
-            |p| p.coefficients[MKL_COEFF_NA as usize].hi = 1.5,
-            |p| p.coefficients.last_mut().unwrap().lo = f32::NAN,
+        type Tamper = fn(&mut PackedSystem);
+        let cases: [(&str, Tamper); 6] = [
+            ("offset", |p| p.surfaces[1].coefficient_offset = u32::MAX),
+            ("count", |p| p.surfaces[1].coefficient_count = u32::MAX),
+            ("radius", |p| p.coefficients[0].hi = 0.0),
+            ("capacity", |p| {
+                p.coefficients[MKL_COEFF_NA as usize].hi = 21.0
+            }),
+            ("fraction", |p| {
+                p.coefficients[MKL_COEFF_NA as usize].hi = 1.5
+            }),
+            ("NaN", |p| p.coefficients.last_mut().unwrap().lo = f32::NAN),
         ];
-        for f in tamper {
-            let mut p = valid.clone();
+        for (what, f) in cases {
+            let mut p = systems[0].clone();
             f(&mut p);
-            assert!(PackedSystemSet::new(&[p]).is_err());
+            assert!(p.validate().is_err(), "{what}");
         }
     }
 }

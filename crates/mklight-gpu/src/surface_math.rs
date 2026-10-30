@@ -158,32 +158,29 @@ fn poly<R: Scalar>(pool: &[Df32], start: usize, n: usize, t: Jet<R>) -> Jet<R> {
 fn even<R: Scalar>(pool: &[Df32], start: usize, n: usize, t: Jet<R>) -> Jet<R> {
     poly(pool, start, n, t) * t * t
 }
+/// `a ≤ b` as `a − b ≤ 0`: one expression for both precisions, with the f32
+/// comparison in the environment (FTZ). False for NaN.
+fn le<R: Scalar>(a: R, b: R) -> bool {
+    (a - b).le(0.0)
+}
 fn conic<R: Scalar>(curv: R, k: R, t: Jet<R>) -> Option<Jet<R>> {
     let arg = c::<R>(1.0) - (c::<R>(1.0) + k) * curv * curv * t.v;
-    if !c::<R>(0.0).le_value(arg) {
+    if !le(c(0.0), arg) {
         return None;
     }
     let w = arg.sqrt();
     Some(t.chain(curv * t.v / (c::<R>(1.0) + w), curv / (c::<R>(2.0) * w)))
 }
-// Comparison expressed via subtraction works for both scalar precisions and
-// sends f32 comparisons through FpEnv (including FTZ).
-trait Compare: Scalar {
-    fn le_value(self, rhs: Self) -> bool {
-        (self - rhs).le(0.0)
-    }
-}
-impl<R: Scalar> Compare for R {}
-
-fn normalized<R: Scalar>(x: Jet<R>, y: Jet<R>, radius: R) -> Option<(Jet<R>, Jet<R>, Jet<R>)> {
+/// `(x/r, y/r, (x² + y²)/r²)`.
+fn scaled<R: Scalar>(x: Jet<R>, y: Jet<R>, radius: R) -> (Jet<R>, Jet<R>, Jet<R>) {
     let inv = c::<R>(1.0) / radius;
     let (u, v) = (x.scale(inv), y.scale(inv));
-    let s = u * u + v * v;
-    let margin = R::parts(1.0, 2e-12);
-    if !s.v.le_value(margin) {
-        return None;
-    }
-    Some((u, v, s))
+    (u, v, u * u + v * v)
+}
+/// [`scaled`] inside the normalisation domain `ρ ≤ 1 + 10⁻¹²` (SURFACES §7).
+fn normalized<R: Scalar>(x: Jet<R>, y: Jet<R>, radius: R) -> Option<(Jet<R>, Jet<R>, Jet<R>)> {
+    let (u, v, s) = scaled(x, y, radius);
+    le(s.v, R::parts(1.0, 2e-12)).then_some((u, v, s))
 }
 fn jacobi<R: Scalar>(n: usize, b: R, t: Jet<R>) -> Jet<R> {
     let mut p0 = Jet::constant(c(1.0));
@@ -203,23 +200,29 @@ fn jacobi<R: Scalar>(n: usize, b: R, t: Jet<R>) -> Jet<R> {
     }
     p1
 }
-fn qcon_ab<R: Scalar>(k: usize, s: Jet<R>) -> (Jet<R>, R) {
+/// Q-con recurrence `Q_(k+1) = A_k Q_k − B_k Q_(k−1)` (SURFACES §2): `v = 2k + 4`
+/// and the denominator `d = 2(k + 1)(k + 5)v`.
+fn qcon_vd<R: Scalar>(k: usize) -> (R, R) {
     let k = c::<R>(k as f32);
-    let t = c::<R>(2.0) * k + c(4.0);
-    let den = c::<R>(2.0) * (k + c(1.0)) * (k + c(5.0)) * t;
-    (
-        s.scale(c(2.0))
-            .add(c(-1.0))
-            .scale((t + c(2.0)) * t)
-            .add(c(-16.0))
-            .scale((t + c(1.0)) / den),
-        c::<R>(2.0) * k * (k + c(4.0)) * (t + c(2.0)) / den,
-    )
+    let v = c::<R>(2.0) * k + c(4.0);
+    (v, c::<R>(2.0) * (k + c(1.0)) * (k + c(5.0)) * v)
+}
+fn qcon_a<R: Scalar>(k: usize, s: Jet<R>) -> Jet<R> {
+    let (v, d) = qcon_vd::<R>(k);
+    s.scale(c(2.0))
+        .add(c(-1.0))
+        .scale((v + c(2.0)) * v)
+        .add(c(-16.0))
+        .scale((v + c(1.0)) / d)
+}
+fn qcon_b<R: Scalar>(k: usize) -> R {
+    let (v, d) = qcon_vd::<R>(k);
+    c::<R>(2.0) * c(k as f32) * (c::<R>(k as f32) + c(4.0)) * (v + c(2.0)) / d
 }
 fn qcon<R: Scalar>(pool: &[Df32], n: usize, s: Jet<R>) -> Jet<R> {
     let (mut b1, mut b2) = (Jet::constant(c(0.0)), Jet::constant(c(0.0)));
     for k in (0..n).rev() {
-        let b = (qcon_ab(k, s).0 * b1 - b2.scale(qcon_ab(k + 1, s).1)).add(load(pool, k));
+        let b = (qcon_a(k, s) * b1 - b2.scale(qcon_b(k + 1))).add(load(pool, k));
         b2 = b1;
         b1 = b;
     }
@@ -264,7 +267,7 @@ fn zernike<R: Scalar>(
             (12, 0)
         } else {
             let mut k = 0;
-            while (k + 1) * (k + 1) <= j - 1 {
+            while (k + 1) * (k + 1) < j {
                 k += 1;
             }
             let off = j - 1 - k * k;
@@ -297,18 +300,15 @@ fn zernike<R: Scalar>(
 pub(crate) fn data<'a>(s: &PackedSurface, pool: &'a [Df32]) -> &'a [Df32] {
     &pool[s.coefficient_offset as usize..][..s.coefficient_count as usize]
 }
+/// Whether `(x, y)` is inside a DOE's phase normalisation domain.
 pub(crate) fn domain<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> bool {
     let d = data(s, pool);
     normalized(Jet::variable(x, true), Jet::variable(y, false), load(d, 0)).is_some()
 }
+/// DOE phase Φ and its gradient (the domain was checked at the hit).
 pub(crate) fn phase<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Jet<R> {
     let d = data(s, pool);
-    let inv = c::<R>(1.0) / load::<R>(d, 0);
-    let (x, y) = (
-        Jet::variable(x, true).scale(inv),
-        Jet::variable(y, false).scale(inv),
-    );
-    let t = x * x + y * y;
+    let (_, _, t) = scaled(Jet::variable(x, true), Jet::variable(y, false), load(d, 0));
     poly(
         d,
         (MKL_COEFF_PREFIX + MKL_MAX_WAVELENGTHS) as usize,
@@ -337,7 +337,7 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
                 let radial = if r2.v.zero() {
                     let ax = if x.v.le(0.0) { -x.v } else { x.v };
                     let ay = if y.v.le(0.0) { -y.v } else { y.v };
-                    let scale = if ax.le_value(ay) { ay } else { ax };
+                    let scale = if le(ax, ay) { ay } else { ax };
                     let u = x.v / scale;
                     let v = y.v / scale;
                     let w = (u * u + v * v).sqrt();
@@ -362,7 +362,7 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
                 let zy = conic(curv, k, y * y)? + even(coeff, na, nb, yy * yy);
                 let a = (-zy).scale(cx).add(c(1.0));
                 let q = a * a - (x * x).scale(cx * cx);
-                if a.v.le(0.0) || !c::<R>(0.0).le_value(q.v) {
+                if a.v.le(0.0) || !le(c(0.0), q.v) {
                     return None;
                 }
                 zy + (x * x).scale(cx) / (a + q.sqrt())
@@ -371,7 +371,7 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
                 let arg = ((x * x).scale(-(c::<R>(1.0) + kx) * cx * cx)
                     + (y * y).scale(-(c::<R>(1.0) + k) * curv * curv))
                 .add(c(1.0));
-                if !c::<R>(0.0).le_value(arg.v) {
+                if !le(c(0.0), arg.v) {
                     return None;
                 }
                 ((x * x).scale(cx) + (y * y).scale(curv)) / (arg.sqrt().add(c(1.0)))
@@ -385,7 +385,9 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
             match s.shape {
                 MKL_SHAPE_Q_CON => base + qcon(coeff, na, t),
                 MKL_SHAPE_Q_BFS => {
-                    if coeff.iter().all(|a| a.hi == 0.0) {
+                    // The packer drops trailing zeros: no terms is the sphere,
+                    // rim included.
+                    if na == 0 {
                         base
                     } else {
                         let w = r2.scale(-curv * curv).add(c(1.0)).sqrt();

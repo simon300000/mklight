@@ -1204,6 +1204,11 @@ fn extended_qualification_cpu_f32() {
     }
 }
 
+/// Steep random rays (±80°, no clipping) on every full-capacity fixture:
+/// statuses agree with the reference for more than 99 % of the rays, and
+/// every hit both find meets the position, direction and same-point OPL
+/// budget. The residual status differences are rays whose reference
+/// classification is itself ill-conditioned (docs/GPU.md §5.1.1).
 #[test]
 fn extended_steep_rays_classify_and_match_f64() {
     let b = CpuF32Backend::with_subnormals(false);
@@ -1219,10 +1224,8 @@ fn extended_steep_rays_classify_and_match_f64() {
         let mut req = TraceRequest::new(h, batch(&rays), 0, 1);
         req.apply_apertures = false;
         let got = trace(&b, req);
-        let mut reference_hit_steps = Vec::new();
-        let mut f32_only_residual = 0f64;
         let mut pairs = std::collections::BTreeMap::new();
-        let (mut matched, mut common, mut geometry_outliers) = (0, 0, 0);
+        let (mut matched, mut common) = (0, 0);
         let (mut max_p, mut max_d, mut max_opl) = (0f64, 0f64, 0f64);
         for (i, (ray, _)) in rays.iter().enumerate() {
             let r = trace_ray(&rs, ray, 1, &TraceOptions::unclipped().to_surface(1), None);
@@ -1230,68 +1233,33 @@ fn extended_steep_rays_classify_and_match_f64() {
             if got.status[i] == want {
                 matched += 1;
             } else {
-                if want == MKL_RAY_OK {
-                    let needed = (0..=40)
-                        .find(|&cap| {
-                            trace_ray(
-                                &rs,
-                                ray,
-                                1,
-                                &TraceOptions {
-                                    intersect: IntersectSettings {
-                                        tolerance: 1e-12,
-                                        max_iterations: cap,
-                                    },
-                                    ..TraceOptions::unclipped().to_surface(1)
-                                },
-                                None,
-                            )
-                            .status
-                            .is_ok()
-                        })
-                        .unwrap();
-                    reference_hit_steps.push(needed);
-                } else if got.status[i] == MKL_RAY_OK {
-                    let (p, _) = v3(&got, i);
-                    let sag = mklight_core::surface_math::evaluate(&rs.surfaces[1].shape, p.x, p.y)
-                        .unwrap()
-                        .sag;
-                    f32_only_residual = f32_only_residual.max((p.z - sag).abs());
-                }
                 *pairs.entry((want & 255, got.status[i] & 255)).or_insert(0) += 1;
             }
             if want == MKL_RAY_OK && got.status[i] == MKL_RAY_OK {
                 common += 1;
                 let (p, d) = v3(&got, i);
-                let ep = (p - r.ray.pos).norm();
-                let ed = (d - r.ray.dir).norm();
-                // OPLs must be compared at the same reported point.
-                let eo = (got.opl_hi[i] as f64 + got.opl_lo[i] as f64
+                // OPLs are compared at the same reported point.
+                let eo = (got.opl_f64(i)
                     - r.opl.value()
                     - rs.surfaces[1].n_after[1] * (p - r.ray.pos).dot(r.ray.dir))
                 .abs();
-                max_p = max_p.max(ep);
-                max_d = max_d.max(ed);
+                max_p = max_p.max((p - r.ray.pos).norm());
+                max_d = max_d.max((d - r.ray.dir).norm());
                 max_opl = max_opl.max(eo);
-                geometry_outliers +=
-                    usize::from(ep > 2e-5 || ed > 2e-6 || eo > rs.wavelengths_um[1] * 1e-3 * 5e-3);
             }
         }
         eprintln!(
-            "{name}: matched {matched}/{} common {common} geometry_outliers {geometry_outliers} max position {max_p:e} direction {max_d:e} OPL {max_opl:e}; status (f64,f32) {pairs:?}",
+            "{name}: matched {matched}/{} common {common} max position {max_p:.2e} direction \
+             {max_d:.2e} OPL {max_opl:.2e}; status (f64, f32) {pairs:?}",
             rays.len()
-        );
-        eprintln!(
-            "{name}: mismatched reference hits need {:?}..{:?} iterations; f32-only hit max sag residual {f32_only_residual:e} mm",
-            reference_hit_steps.iter().min(),
-            reference_hit_steps.iter().max()
         );
         assert!(common > 1000, "{name}");
         assert!(
             (rays.len() - matched) * 100 < rays.len(),
             "{name}: {pairs:?}"
         );
-        assert_eq!(geometry_outliers, 0, "{name}");
+        assert!(max_p < 2e-5 && max_d < 2e-6, "{name}");
+        assert!(max_opl < rs.wavelengths_um[1] * 1e-3 * 5e-3, "{name}");
         b.release_systems(h).unwrap();
     }
 }

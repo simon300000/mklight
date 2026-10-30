@@ -691,7 +691,7 @@ fn intersect<E: FpEnv>(
         let v = evaluate(s, pool, x[0], x[1]).ok_or(DOMAIN)?;
         let gp = d[2] - v.x * d[0] - v.y * d[1];
         let step = (x[2] - v.v) / gp;
-        if gp.hi() != 0.0 && step.hi().is_finite() {
+        if step.hi().is_finite() {
             tb = tb - step;
         }
     }
@@ -710,36 +710,22 @@ fn intersect<E: FpEnv>(
     })
 }
 
-/// Tangent momentum on the actual base surface, including its metric.
+/// `mkl_diffract`: `mklight_trace::interact::diffract` in double-float. The
+/// order's momentum `grad = m λ ∇Φ/(2π)` projected on the tangent plane of
+/// the unnormalised normal `g`, then the normal component for the
+/// hemisphere; `None` for an evanescent order.
 fn diffract<E: FpEnv>(
-    s: &PackedSurface,
-    pool: &[Df32],
-    w: usize,
-    x: DV<E>,
     k: DV<E>,
     g: DV<E>,
     n1: D<E>,
     n2: D<E>,
+    grad: [D<E>; 2],
     reflected: bool,
-) -> Option<(DV<E>, D<E>)> {
-    use crate::surface_math::{data, phase};
-    let scale = D::<E>::from_df(data(s, pool)[MKL_COEFF_PREFIX as usize + w]);
-    let nf = normalized(hi3(g));
-    let kf = hi3(k);
-    let pf = phase(s, pool, x[0].hi(), x[1].hi());
-    let gf = [pf.x * scale.hi(), pf.y * scale.hi(), F::ZERO];
-    let knf = dot(kf, nf);
-    let gnf = dot(gf, nf);
-    let inv = F::ONE / n2.hi();
-    let tf = std::array::from_fn(|i| ((kf[i] - nf[i] * knf) * n1.hi() + gf[i] - nf[i] * gnf) * inv);
-    if 1.0 - dot(tf, tf) < 0.0 {
-        return None;
-    }
-    let v = phase(s, pool, x[0], x[1]);
+) -> Option<DV<E>> {
     let length = dnorm(g);
     let normal = g.map(|a| a / length);
     let kn = ddot(k, normal);
-    let grad = [v.x * scale, v.y * scale, D::ZERO];
+    let grad = [grad[0], grad[1], D::ZERO];
     let gn = ddot(grad, normal);
     let inv = D::from_f(F::ONE) / n2;
     let tangent =
@@ -748,12 +734,13 @@ fn diffract<E: FpEnv>(
     if disc.hi() < 0.0 {
         return None;
     }
-    let sign = if (knf < 0.0) != reflected { -1.0 } else { 1.0 };
+    let sign = if (kn.hi() < 0.0) != reflected {
+        -1.0
+    } else {
+        1.0
+    };
     let root = disc.sqrt() * sign;
-    Some((
-        std::array::from_fn(|i| tangent[i] + normal[i] * root),
-        scale * v.v,
-    ))
+    Some(std::array::from_fn(|i| tangent[i] + normal[i] * root))
 }
 
 /// `mkl_refract`: stable vector Snell (`mklight_trace::interact::refract`)
@@ -930,6 +917,11 @@ enum Act {
     None,
     Refract,
     Reflect,
+    /// The selected order of a DOE, into the reflected or transmitted
+    /// hemisphere.
+    Diffract {
+        reflect: bool,
+    },
     /// Ideal lens (reflect first for a mirror-type ideal lens).
     Lens {
         reflect: bool,
@@ -1107,111 +1099,113 @@ pub fn trace_ray<E: FpEnv>(
                 }
             }
         };
+        // A DOE's selected nonzero order diffracts instead (dummy and image
+        // surfaces have no phase interaction).
+        let act = match act {
+            Act::Refract | Act::Reflect
+                if surf.shape == MKL_SHAPE_DIFFRACTIVE
+                    && !dummy
+                    && !is_image
+                    && crate::surface_math::data(surf, pool)[MKL_COEFF_TRACE_ORDER as usize].hi
+                        != 0.0 =>
+            {
+                Act::Diffract {
+                    reflect: matches!(act, Act::Reflect),
+                }
+            }
+            a => a,
+        };
         let coating = surf.coating;
         let df = hi3(dir);
-        if surf.shape == MKL_SHAPE_DIFFRACTIVE
-            && !dummy
-            && !is_image
-            && crate::surface_math::data(surf, pool)[MKL_COEFF_TRACE_ORDER as usize].hi != 0.0
-            && matches!(act, Act::Refract | Act::Reflect)
-        {
-            let reflected = matches!(act, Act::Reflect);
-            let n2 = if reflected { n1 } else { n_other };
-            let Some((d2, delta)) = diffract(surf, pool, w, pos, dir, hit.g, n1, n2, reflected)
-            else {
-                status = fail(MKL_RAY_EVANESCENT);
-                break;
-            };
-            dir = d2;
-            n_cur = n2;
-            opl = opl + delta;
-            if radiometry {
-                let cos = dot(df, hit.normal).abs().min(F::ONE);
-                let (r, t) = if coating == MKL_COATING_IDEAL {
-                    (f(surf.coating_r), f(surf.coating_t))
-                } else if mirror {
-                    (F::ONE, F::ZERO)
-                } else {
-                    fresnel(n1.hi(), n_other.hi(), cos)
-                };
-                tw = tw * if reflected { r } else { t };
+        // Unpolarised (R, T) at incidence cosine `cos` (never a transmission
+        // at a mirror: path programs forbid it).
+        let rt = |cos: F<E>| {
+            if coating == MKL_COATING_IDEAL {
+                (f(surf.coating_r), f(surf.coating_t))
+            } else if mirror {
+                (F::ONE, F::ZERO)
+            } else {
+                fresnel(n1.hi(), n_other.hi(), cos)
             }
-        } else {
-            match act {
-                Act::None => {}
-                Act::Refract => {
-                    let Some((_, cos, gamma)) = refract(df, hit.normal, n1.hi(), n_other.hi())
-                    else {
-                        status = fail(MKL_RAY_TIR);
-                        break;
-                    };
-                    let mu = n1 / n_other;
-                    let b = gamma / norm(hi3(hit.g));
-                    let d2 = [
-                        dir[0] * mu + hit.g[0] * b,
-                        dir[1] * mu + hit.g[1] * b,
-                        dir[2] * mu + hit.g[2] * b,
-                    ];
-                    // Two corrections: near grazing exit the f32 γ is only
-                    // good to ~√ε and one Newton step leaves O(e²/cos θ').
-                    dir = renorm_along(renorm_along(d2, hit.g), hit.g);
-                    n_cur = n_other;
-                    if radiometry {
-                        let t = if mirror {
-                            F::ZERO
-                        } else if coating == MKL_COATING_IDEAL {
-                            f(surf.coating_t)
-                        } else {
-                            fresnel(n1.hi(), n_other.hi(), cos).1
-                        };
-                        tw = tw * t;
-                    }
+        };
+        match act {
+            Act::None => {}
+            Act::Refract => {
+                let Some((_, cos, gamma)) = refract(df, hit.normal, n1.hi(), n_other.hi()) else {
+                    status = fail(MKL_RAY_TIR);
+                    break;
+                };
+                let mu = n1 / n_other;
+                let b = gamma / norm(hi3(hit.g));
+                let d2 = [
+                    dir[0] * mu + hit.g[0] * b,
+                    dir[1] * mu + hit.g[1] * b,
+                    dir[2] * mu + hit.g[2] * b,
+                ];
+                // Two corrections: near grazing exit the f32 γ is only
+                // good to ~√ε and one Newton step leaves O(e²/cos θ').
+                dir = renorm_along(renorm_along(d2, hit.g), hit.g);
+                n_cur = n_other;
+                if radiometry {
+                    tw = tw * rt(cos).1;
                 }
-                Act::Reflect => {
-                    let (_, cos) = reflect(df, hit.normal);
-                    let gh = hi3(hit.g);
-                    let b = -2.0 * dot(df, gh) / dot(gh, gh);
-                    let d2 = [
-                        dir[0] + hit.g[0] * b,
-                        dir[1] + hit.g[1] * b,
-                        dir[2] + hit.g[2] * b,
-                    ];
-                    dir = renorm_along(d2, hit.g);
-                    if radiometry {
-                        let r = if coating == MKL_COATING_IDEAL {
-                            f(surf.coating_r)
-                        } else if mirror {
-                            F::ONE
-                        } else {
-                            fresnel(n1.hi(), n_other.hi(), cos).0
-                        };
-                        tw = tw * r;
-                    }
+            }
+            Act::Reflect => {
+                let (_, cos) = reflect(df, hit.normal);
+                let gh = hi3(hit.g);
+                let b = -2.0 * dot(df, gh) / dot(gh, gh);
+                let d2 = [
+                    dir[0] + hit.g[0] * b,
+                    dir[1] + hit.g[1] * b,
+                    dir[2] + hit.g[2] * b,
+                ];
+                dir = renorm_along(d2, hit.g);
+                if radiometry {
+                    tw = tw * rt(cos).0;
                 }
-                Act::Lens { reflect: refl } => {
-                    let mut kk = dir;
-                    if refl {
-                        // Reflection at the lens plane (normal +z): exact.
-                        kk[2] = -kk[2];
-                    }
-                    let n2 = if refl { n1 } else { n_other };
-                    let verg = if back {
-                        D::ZERO
-                    } else {
-                        D::new(surf.vergence[w], surf.vergence_lo[w])
-                    };
-                    let phi = D::new(surf.paraxial_power, surf.paraxial_power_lo);
-                    let Some((d2, delta)) = ideal_lens(pos[0], pos[1], kk, phi, n1, n2, verg)
-                    else {
-                        status = fail(MKL_RAY_DEGENERATE);
-                        break;
-                    };
-                    dir = d2;
-                    n_cur = n2;
-                    opl = opl + delta;
-                    if radiometry && coating == MKL_COATING_IDEAL {
-                        tw = tw * f::<E>(if refl { surf.coating_r } else { surf.coating_t });
-                    }
+            }
+            Act::Diffract { reflect: refl } => {
+                // m λ/(2π) scales ∇Φ to momentum and Φ to optical path.
+                let scale = D::from_df(
+                    crate::surface_math::data(surf, pool)[MKL_COEFF_PREFIX as usize + w],
+                );
+                let v = crate::surface_math::phase(surf, pool, pos[0], pos[1]);
+                let n2 = if refl { n1 } else { n_other };
+                let Some(d2) = diffract(dir, hit.g, n1, n2, [v.x * scale, v.y * scale], refl)
+                else {
+                    status = fail(MKL_RAY_EVANESCENT);
+                    break;
+                };
+                dir = d2;
+                n_cur = n2;
+                opl = opl + scale * v.v;
+                if radiometry {
+                    let (r, t) = rt(reflect(df, hit.normal).1);
+                    tw = tw * if refl { r } else { t };
+                }
+            }
+            Act::Lens { reflect: refl } => {
+                let mut kk = dir;
+                if refl {
+                    // Reflection at the lens plane (normal +z): exact.
+                    kk[2] = -kk[2];
+                }
+                let n2 = if refl { n1 } else { n_other };
+                let verg = if back {
+                    D::ZERO
+                } else {
+                    D::new(surf.vergence[w], surf.vergence_lo[w])
+                };
+                let phi = D::new(surf.paraxial_power, surf.paraxial_power_lo);
+                let Some((d2, delta)) = ideal_lens(pos[0], pos[1], kk, phi, n1, n2, verg) else {
+                    status = fail(MKL_RAY_DEGENERATE);
+                    break;
+                };
+                dir = d2;
+                n_cur = n2;
+                opl = opl + delta;
+                if radiometry && coating == MKL_COATING_IDEAL {
+                    tw = tw * f::<E>(if refl { surf.coating_r } else { surf.coating_t });
                 }
             }
         }

@@ -48,8 +48,11 @@ template<typename R> static inline bool mkl_conic_sag_jet(R c,R k,MklJet<R> t,th
     R w=mkl_sqrt(arg);
     out=mkl_jchain(t,c*t.v/(mkl_c<R>(1)+w),c/(mkl_c<R>(2)*w)); return true;
 }
-template<typename R> static inline bool mkl_normalized_jet(MklJet<R> x,MklJet<R> y,R radius,thread MklJet<R>& u,thread MklJet<R>& v,thread MklJet<R>& s) {
+template<typename R> static inline void mkl_scaled_jet(MklJet<R> x,MklJet<R> y,R radius,thread MklJet<R>& u,thread MklJet<R>& v,thread MklJet<R>& s) {
     R inv=mkl_c<R>(1)/radius; u=mkl_jscale(x,inv); v=mkl_jscale(y,inv); s=u*u+v*v;
+}
+template<typename R> static inline bool mkl_normalized_jet(MklJet<R> x,MklJet<R> y,R radius,thread MklJet<R>& u,thread MklJet<R>& v,thread MklJet<R>& s) {
+    mkl_scaled_jet(x,y,radius,u,v,s);
     return mkl_le_value(s.v,mkl_parts<R>(1.0f,2e-12f));
 }
 template<typename R> static inline MklJet<R> mkl_jacobi(uint n,R b,MklJet<R> t) {
@@ -66,18 +69,20 @@ template<typename R> static inline MklJet<R> mkl_jacobi(uint n,R b,MklJet<R> t) 
     }
     return p1;
 }
-template<typename R> static inline void mkl_qcon_ab(uint ki,MklJet<R> s,thread MklJet<R>& a,thread R& b) {
-    R k=mkl_c<R>(float(ki)),t=mkl_c<R>(2)*k+mkl_c<R>(4);
-    R den=mkl_c<R>(2)*(k+mkl_c<R>(1))*(k+mkl_c<R>(5))*t;
-    a=mkl_jscale(mkl_jadd(mkl_jscale(mkl_jadd(mkl_jscale(s,mkl_c<R>(2)),mkl_c<R>(-1)),(t+mkl_c<R>(2))*t),mkl_c<R>(-16)),(t+mkl_c<R>(1))/den);
-    b=mkl_c<R>(2)*k*(k+mkl_c<R>(4))*(t+mkl_c<R>(2))/den;
+// Q-con recurrence: v = 2k+4, d = 2(k+1)(k+5)v.
+template<typename R> static inline R mkl_qcon_d(uint ki,R v) { R k=mkl_c<R>(float(ki)); return mkl_c<R>(2)*(k+mkl_c<R>(1))*(k+mkl_c<R>(5))*v; }
+template<typename R> static inline MklJet<R> mkl_qcon_a(uint ki,MklJet<R> s) {
+    R v=mkl_c<R>(2)*mkl_c<R>(float(ki))+mkl_c<R>(4),d=mkl_qcon_d(ki,v);
+    return mkl_jscale(mkl_jadd(mkl_jscale(mkl_jadd(mkl_jscale(s,mkl_c<R>(2)),mkl_c<R>(-1)),(v+mkl_c<R>(2))*v),mkl_c<R>(-16)),(v+mkl_c<R>(1))/d);
+}
+template<typename R> static inline R mkl_qcon_b(uint ki) {
+    R k=mkl_c<R>(float(ki)),v=mkl_c<R>(2)*k+mkl_c<R>(4);
+    return mkl_c<R>(2)*k*(k+mkl_c<R>(4))*(v+mkl_c<R>(2))/mkl_qcon_d(ki,v);
 }
 template<typename R> static inline MklJet<R> mkl_qcon(constant float* pool,uint n,MklJet<R> s) {
     auto b1=mkl_jconstant(mkl_c<R>(0)),b2=b1;
     for (int k=int(n)-1;k>=0;--k) {
-        MklJet<R> a,unused_a; R unused_b,bb;
-        mkl_qcon_ab(uint(k),s,a,unused_b); mkl_qcon_ab(uint(k+1),s,unused_a,bb);
-        auto b=mkl_jadd(a*b1-mkl_jscale(b2,bb),mkl_load<R>(pool,uint(k))); b2=b1; b1=b;
+        auto b=mkl_jadd(mkl_qcon_a(uint(k),s)*b1-mkl_jscale(b2,mkl_qcon_b<R>(uint(k+1))),mkl_load<R>(pool,uint(k))); b2=b1; b1=b;
     }
     return b1*s*s;
 }
@@ -99,7 +104,7 @@ template<typename R> static inline MklJet<R> mkl_zernike(constant float* pool,ui
             int am=int(degree%2==0 ? 2*((k+1)/2) : 2*(k/2)+1);
             m=j%2==0?am:-am;
         } else if (j==37) {degree=12;m=0;} else {
-            uint k=0; while ((k+1)*(k+1)<=j-1) ++k;
+            uint k=0; while ((k+1)*(k+1)<j) ++k;
             uint off=j-1-k*k; int am=int(k-off/2); degree=2*k-uint(am); m=off%2==1?-am:am;
         }
         uint am=uint(abs(m));
@@ -117,9 +122,7 @@ template<typename R> static inline bool mkl_surface_domain(constant MklPackedSur
 }
 template<typename R> static inline MklJet<R> mkl_phase(constant MklPackedSurface& s,constant float* pool,R x,R y) {
     constant float* data=mkl_surface_data(s,pool);
-    R inv=mkl_c<R>(1)/mkl_load<R>(data,0);
-    auto xx=mkl_jscale(mkl_jvariable(x,true),inv),yy=mkl_jscale(mkl_jvariable(y,false),inv);
-    auto t=xx*xx+yy*yy;
+    MklJet<R> u,v,t; mkl_scaled_jet(mkl_jvariable(x,true),mkl_jvariable(y,false),mkl_load<R>(data,0),u,v,t);
     return mkl_poly(data,MKL_COEFF_PREFIX+MKL_MAX_WAVELENGTHS,uint(data[2*MKL_COEFF_NA]),t)*t;
 }
 template<typename R> static inline bool mkl_surface_eval(constant MklPackedSurface& s,constant float* pool,R xv,R yv,thread MklJet<R>& out) {
@@ -161,8 +164,7 @@ template<typename R> static inline bool mkl_surface_eval(constant MklPackedSurfa
         if (!mkl_normalized_jet(x,y,radius,u,v,t) || !mkl_conic_sag_jet(c,k,r2,base)) return false;
         if (s.shape==MKL_SHAPE_Q_CON) out=base+mkl_qcon(coeff,na,t);
         else if (s.shape==MKL_SHAPE_Q_BFS) {
-            bool zero=true; for (uint i=0;i<na;++i) if (coeff[2*i]!=0.0f) zero=false;
-            if (zero) out=base; else {
+            if (na==0) out=base; else {
                 auto w=mkl_jsqrt(mkl_jadd(mkl_jscale(r2,-c*c),mkl_c<R>(1)));
                 if (mkl_zero(w.v)) return false;
                 out=base+t*mkl_jadd(-t,mkl_c<R>(1))*mkl_qbfs(coeff,na,t)/w;

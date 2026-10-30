@@ -146,7 +146,6 @@ Systems with more than 16 wavelengths are packed in chunks
 | `coating`, `coating_r`, `coating_t` | `MKL_COATING_{BARE, IDEAL, TABLE}`; an ideal coating's R and T |
 | `to_next_rot[9]` (+`_lo`), `to_next_origin[3]` (+`_lo`), `to_next_shift[3]` (+`_lo`) | transform into the next local frame (below) |
 | `n_after[16]` (+`_lo`), `alpha_after[16]` | index after the surface, internal absorption (1/mm), per packed wavelength |
-
 | `coefficient_offset`, `coefficient_count` | first pair and number of pairs in the shared coefficient pool (0 count for legacy shapes) |
 
 **Aspheres.** The sag is `conic(r²) + ρ⁴ Σⱼ asphere[j] ρ²ʲ` with
@@ -161,9 +160,11 @@ exponent can make representable, are rejected.
 616 and 620 now index a separate coefficient buffer. An entry is two
 4-byte scalars `(hi, lo)`, addressed in pairs, without vector alignment.
 `PackedSystemSet` concatenates pools and rebases each surface offset.
-Upload validates ranges, coefficient capacities, tags and all pool values
-before either kernel reads them. The C and Metal layout probes check the
-new offsets as well as the unchanged record size.
+Upload validates what the kernels index or branch on without checks: the
+range, integral counts within the shape's capacity that add up to
+`coefficient_count`, the DOE base and Zernike ordering codes, a positive
+radius, and every pool value finite and normal. The C and Metal layout
+probes check the new offsets as well as the unchanged record size.
 
 The ten-pair prefix is defined by `MKL_COEFF_*` in the header: radius,
 x curvature/conic, two coefficient counts, base-shape/Zernike-ordering
@@ -173,7 +174,9 @@ inserts sixteen double-float `m λ_mm/(2π)` values before its phase
 coefficients; the base uses the existing conic/even-asphere fields.
 Precomputing these wavelength factors preserves the model wavelength and
 signed i32 order without rounding them to a single f32. Design order and
-wavelength remain metadata and never rescale the traced phase.
+wavelength remain metadata and never rescale the traced phase. Trailing
+zero coefficients are dropped (they would only cost per-ray work), so a
+QBfs without terms is recognised by its zero count.
 
 Capacities are odd 20, Q 20, XY 65 (degree 10), Zernike 37 Fringe or 45
 Standard, phase 10, and 10 per toroid/biconic axis. Odd and axis power
@@ -432,8 +435,9 @@ Transmission preserves the incident normal hemisphere, reflection reverses
 it and uses the incident index. A negative outgoing normal-momentum square
 returns `EVANESCENT`, distinct from TIR. Zero order takes ordinary
 refraction/reflection; dummy and image surfaces have no phase interaction.
-The f32 propagating-order test and double-float direction/phase calculations
-have matching CPU and MSL operations, including FTZ.
+Unlike TIR, whose f32 decision also supplies the refraction coefficient,
+the whole diffraction (normal, phase gradient, tangential momentum, the
+propagating-order test and the phase) is one double-float computation.
 
 **Reported state.** The output point and direction are the double-float
 ones rounded to f32. The rounding residual of the point along the
@@ -737,22 +741,46 @@ Residual classification differences, as `(f64 → f32, count)`:
 * Toroid: OK→Miss 4, Miss→OK 5.
 * Biconic: OK→Miss 9, Miss→OK 8, OutsideDomain→OK 5,
   OutsideDomain→Miss 1.
-* DOE base: Miss→NoConvergence 12, Miss→OutsideDomain 1,
-  NoConvergence→Miss 10, NoConvergence→OutsideDomain 1,
-  OutsideDomain→NoConvergence 2. Both implementations fail all 26.
+* DOE base (the even-asphere path, §5 strong aspheres): Miss→NoConvergence
+  12, Miss→OutsideDomain 1, NoConvergence→Miss 10,
+  NoConvergence→OutsideDomain 1, OutsideDomain→NoConvergence 2. Both
+  implementations fail all 26.
 * x cylinder: OutsideDomain→Miss 1; both fail.
 
-The physical odd/axis series have no normalization-domain cutoff; the
-steep search can reach large departures and domain boundaries from a poor
-conic seed. Rounded residuals change backtracking acceptance and crossing
-brackets. These differences are **not confined to long searches**: the
-f64-only successes took 5–15 steps (odd), 12–14 (toroid), and 11–14
-(biconic). Conversely, f32-only successes land on the real sag; the maximum
-residual evaluated at their rounded output points is 2.7e-5 mm on the
-steep biconic (the sag residual includes gradient-amplified coordinate
-rounding). This stress test does not establish identical survival on
-arbitrary steep systems. Qualification remains mandatory, and the measured
-sample passes above do not claim exhaustive qualification of every ray.
+These are rays whose **reference classification is itself
+ill-conditioned**, not a divergence of the seed or domain logic. The f32
+and f64 conic seeds (from the same start) agree on every differing odd,
+toroid, biconic and cylinder ray. For all but six of them the seed
+misses, so the search starts at the closest approach and Newton walks
+towards an extremum of the residual `g(t)` along a line that does not
+cross the surface nearby; there `g′` falls to ~10⁻⁴ and the step `g/g′`
+amplifies a relative perturbation of the iterate by ~10⁸, so where the
+walk lands (a far root, a backtracking failure, the domain edge) is
+decided by the last bits. Measured:
+
+| fixture | f64 status changes under ±5e-7 mm / ±5e-8 input perturbations | f32 differences | of which such rays | f64 Newton from the f32-rounded start gives the f32 status |
+|---|---:|---:|---:|---:|
+| odd | 276 / 8192 | 79 | 63 | 33 |
+| toroid | 24 / 8192 | 9 | 8 | 5 |
+| biconic | 100 / 8192 | 23 | 15 | 12 |
+| DOE base | 80 / 8192 | 26 | 23 | — |
+| QCon, QBfs, XY, Zernike, cylinders | 0 / 8192 | 0 or 1 | — | — |
+
+The perturbations (each input coordinate and direction cosine moved by
+about the f32 rounding of the ray, twelve variants per ray) flip the f64
+reference's own status for most differing rays; under ±1e-12 mm they
+flip none of them, so the reference is deterministic but ill-conditioned
+there. Running the reference algorithm in f64 from the f32-rounded
+closest-approach point and direction already reproduces the f32 status
+for 50 of the 111 odd, toroid and biconic differences. The rest are the
+same walk decided by the f32 rounding of `g′` itself: the x-cylinder ray
+stalls at an extremum (`g = −2.87 mm`) where the f32 `g′` rounds to
+exactly zero (a `Miss`) while the f64 `g′ = −8e-8` steps out of the
+domain (`OutsideDomain`). The f32-only hits are genuine roots (residual
+≤ 2.7e-5 mm at the rounded output point, mostly gradient-amplified
+coordinate rounding). No f32 search can reproduce these decisions;
+qualification remains mandatory for steep systems, and the sample passes
+above do not claim exhaustive qualification of every ray.
 
 ### 5.2 Precision qualification and CPU fallback
 
@@ -819,29 +847,30 @@ optimisation (§8).
 
 Ignored test: `source ~/.cargo/env && cargo test --release -p mklight-metal
 --test trace benchmark_extended_shapes -- --ignored --nocapture`.
-Apple M2 Pro, strict offline flags, 262,144 identical axial input rays over
-an 8 mm radius disk, one refracting surface, radiometry off, no records,
-all rays successful; one warm-up and best of three timed launches. Wall
-includes ray-plane upload and result unpacking, excludes system upload and
-request cloning. Device columns are millions of **rays/s** (one surface).
-These are timings from one best-of-three run, sensitive to device load.
-Each fixture uses its full coefficient capacity. The DOE base has two
-even-asphere terms, so its relative rate is not a standalone phase cost.
+Apple M2 Pro, strict offline flags, 262,144 axial input rays over an
+8 mm radius disk, one refracting surface, radiometry off, no records, all
+rays successful. One warm-up round, then the best of ten rounds that
+interleave the shapes, so GPU clock ramps and machine load affect them
+alike (device rates run to run within ~3 %). Wall includes ray-plane upload and result
+unpacking, excludes system upload and request cloning. Columns are
+millions of **rays/s** (one surface). Each fixture uses its full
+coefficient capacity. The DOE base has two even-asphere terms, so its
+relative rate is not a standalone phase cost.
 
 | shape | device M rays/s | wall M rays/s | device / even10 |
 |---|---:|---:|---:|
-| even, 10 terms | 169.755 | 39.226 | 1.000 |
-| odd, 20 terms | 60.751 | 23.650 | 0.358 |
-| QCon, 20 terms | 34.782 | 16.799 | 0.205 |
-| QBfs, 20 terms | 67.357 | 28.370 | 0.397 |
-| toroid, 10 y terms | 98.838 | 28.898 | 0.582 |
-| biconic, 10 terms per axis | 93.594 | 25.705 | 0.551 |
-| XY, 65 terms | 32.866 | 19.078 | 0.194 |
-| DOE, 10 phase terms | 146.511 | 30.320 | 0.863 |
-| Fringe, 37 terms | 9.733 | 7.573 | 0.057 |
-| Standard, 45 terms | 6.627 | 5.862 | 0.039 |
-| x cylinder | 121.623 | 30.379 | 0.716 |
-| y cylinder | 119.680 | 32.310 | 0.705 |
+| even, 10 terms | 246 | 57 | 1.000 |
+| odd, 20 terms | 104 | 44 | 0.425 |
+| QCon, 20 terms | 37 | 25 | 0.150 |
+| QBfs, 20 terms | 77 | 38 | 0.313 |
+| toroid, 10 y terms | 99 | 43 | 0.403 |
+| biconic, 10 terms per axis | 94 | 42 | 0.384 |
+| XY, 65 terms | 34 | 23 | 0.138 |
+| DOE, 10 phase terms | 220 | 57 | 0.894 |
+| Fringe, 37 terms | 10.3 | 8.8 | 0.042 |
+| Standard, 45 terms | 7.0 | 6.3 | 0.028 |
+| x cylinder | 122 | 46 | 0.495 |
+| y cylinder | 121 | 46 | 0.492 |
 
 The high-order Zernike path evaluates a differentiated Jacobi recurrence
 and Cartesian angular powers for each populated term at every Newton
@@ -931,9 +960,10 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   (§5.1); a consumer needing more could be given residual output planes.
 * Asphere searches that wander far from the conic seed (> 20 Newton steps)
   can settle on another root than the reference, and the failure class of
-  never-converging searches can differ (§5: strong aspheres). Extended
-  physical series can also disagree in safeguarded decisions during shorter
-  steep searches (§5.1.1); none of the sample grids shows this.
+  never-converging searches can differ (§5: strong aspheres). Steep
+  extended-surface searches that walk across an extremum of the residual
+  have a classification that f32-sized input changes already flip in the
+  f64 reference (§5.1.1); none of the sample grids shows this.
 * Systems are limited by the packer: 16 wavelengths per packed chunk,
   even-asphere terms up to A22, the extended capacities in §2.2, and model
   values representable as normal f32 after coefficient normalization.

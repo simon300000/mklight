@@ -360,8 +360,9 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
     return MKL_RAY_OK;
 }
 
-// Stable vector Snell in f32: false on TIR; cos i and the signed coefficient
-// gamma of `normal` in k' = mu k + gamma normal.
+// Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
+// the reference's bracket, backtracking and Miss / NoConvergence /
+// OutsideDomain decisions in f32.
 static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,constant MklTraceParams& prm,thread float& t) {
     float3 seed_point;
     bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,t,seed_point);
@@ -422,7 +423,7 @@ static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* po
         if (!mkl_surface_eval(s,pool,MklDf{x.v[0]},MklDf{x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
         MklDf gp=MklDf{d.v[2]}-v.x*MklDf{d.v[0]}-v.y*MklDf{d.v[1]};
         MklDf step=(MklDf{x.v[2]}-v.v)/gp;
-        if (gp.v.x!=0.0f&&isfinite(step.v.x)) tb=tb-step;
+        if (isfinite(step.v.x)) tb=tb-step;
     }
     hit.x=mkl_point_on(q,tb.v,d); MklJet<MklDf> v;
     if (!mkl_surface_eval(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
@@ -430,29 +431,26 @@ static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* po
     if (!mkl_finite3(mkl_hi3(hit.g))) return MKL_RAY_OUTSIDE_DOMAIN;
     hit.ta=ta;hit.tb=tb.v;hit.normal=mkl_normalized(mkl_hi3(hit.g)); return MKL_RAY_OK;
 }
-static inline bool mkl_diffract(constant MklPackedSurface& s,constant float* pool,uint w,MklDv x,MklDv k,MklDv g,float2 n1,float2 n2,bool reflected,thread MklDv& out,thread float2& delta) {
-    MklDf scale=mkl_load<MklDf>(mkl_surface_data(s,pool),MKL_COEFF_PREFIX+w);
-    float3 nf=mkl_normalized(mkl_hi3(g)),kf=mkl_hi3(k);
-    auto pf=mkl_phase(s,pool,x.v[0].x,x.v[1].x);
-    float3 gf=float3(pf.x*scale.v.x,pf.y*scale.v.x,0);
-    float knf=mkl_dot3(kf,nf),gnf=mkl_dot3(gf,nf),invf=1.0f/n2.x;
-    float3 tf=((kf-nf*knf)*n1.x+gf-nf*gnf)*invf;
-    if (1.0f-mkl_dot3(tf,tf)<0.0f) return false;
-    auto v=mkl_phase(s,pool,MklDf{x.v[0]},MklDf{x.v[1]});
+// mklight_trace::interact::diffract in double-float (trace_kernel::diffract):
+// the order's momentum grad projected on the tangent plane of g, then the
+// normal component for the hemisphere; false for an evanescent order.
+static inline bool mkl_diffract(MklDv k,MklDv g,float2 n1,float2 n2,MklDf gx,MklDf gy,bool reflected,thread MklDv& out) {
     float2 length=mkl_df_sqrt(mkl_ddot(g,g)); MklDv normal,grad,tangent;
     for (uint i=0;i<3;++i) normal.v[i]=mkl_df_div(g.v[i],length);
     MklDf kn={mkl_ddot(k,normal)};
-    grad.v[0]=(v.x*scale).v;grad.v[1]=(v.y*scale).v;grad.v[2]=float2(0);
+    grad.v[0]=gx.v;grad.v[1]=gy.v;grad.v[2]=float2(0);
     MklDf gn={mkl_ddot(grad,normal)},inv=mkl_c<MklDf>(1)/MklDf{n2};
     for (uint i=0;i<3;++i) tangent.v[i]=(((MklDf{k.v[i]}-MklDf{normal.v[i]}*kn)*MklDf{n1}+MklDf{grad.v[i]}-MklDf{normal.v[i]}*gn)*inv).v;
     float2 disc=mkl_df_sub(float2(1,0),mkl_ddot(tangent,tangent));
     if (disc.x<0.0f) return false;
-    float sign=(knf<0.0f)!=reflected?-1.0f:1.0f;
+    float sign=(kn.v.x<0.0f)!=reflected?-1.0f:1.0f;
     float2 root=mkl_df_mul_f32(mkl_df_sqrt(disc),sign);
     for (uint i=0;i<3;++i) out.v[i]=mkl_df_add(tangent.v[i],mkl_df_mul(normal.v[i],root));
-    delta=(scale*v.v).v;return true;
+    return true;
 }
 
+// Stable vector Snell in f32: false on TIR; cos i and the signed coefficient
+// gamma of `normal` in k' = mu k + gamma normal.
 static inline bool mkl_refract(float3 k, float3 normal, float n1, float n2,
                                thread float& cos_out, thread float& gamma_out) {
     float cos_i = mkl_dot3(k, normal);
@@ -548,6 +546,14 @@ static inline float2 mkl_fresnel(float n1, float n2, float cos_i) {
     float rp = (c + dd == 0.0f) ? 1.0f : (c - dd) / (c + dd);
     float rs2 = rs * rs, rp2 = rp * rp;
     return float2(0.5f * (rs2 + rp2), 0.5f * ((1.0f - rs2) + (1.0f - rp2)));
+}
+
+// Unpolarised (R, T) at a surface for incidence cosine cos_i
+// (trace_kernel::trace_ray `rt`; never a transmission at a mirror).
+static inline float2 mkl_surface_rt(constant MklPackedSurface& s, bool mirror, float n1, float n2, float cos_i) {
+    if (s.coating == MKL_COATING_IDEAL) return float2(s.coating_r, s.coating_t);
+    if (mirror) return float2(1.0f, 0.0f);
+    return mkl_fresnel(n1, n2, cos_i);
 }
 
 // Aperture test in double-float with the packed sizes' residuals.
@@ -703,6 +709,8 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
             break;
         }
         // 4. Interact (0 none, 1 refract, 2 reflect, 3 lens, 4 reflecting lens).
+        // A DOE's selected nonzero order replaces 1 and 2 (trace_kernel's
+        // Act::Diffract), tested first: faster than a separate act code.
         const bool is_image = (surf.flags & MKL_SURF_IMAGE) != 0u;
         const bool paraxial = surf.shape == MKL_SHAPE_PARAXIAL;
         const bool mirror = surf.interaction == MKL_INTERACT_REFLECT;
@@ -719,15 +727,26 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
         }
         const uint coating = surf.coating;
         const float3 dfv = mkl_hi3(dir);
-        if (surf.shape==MKL_SHAPE_DIFFRACTIVE && !dummy && !is_image && mkl_surface_data(surf,coefficients)[2*MKL_COEFF_TRACE_ORDER]!=0.0f && (act==1u||act==2u)) {
-            bool reflected=act==2u; float2 n2=reflected?n1:n_other;
-            MklDv d2; float2 delta;
-            if (!mkl_diffract(surf,coefficients,w,pos,dir,hit.g,n1,n2,reflected,d2,delta)) {status=MKL_RAY_EVANESCENT|fail_s;break;}
-            dir=d2;n_cur=n2;opl=mkl_df_add(opl,delta);
+        if ((act == 1u || act == 2u) && surf.shape == MKL_SHAPE_DIFFRACTIVE && !dummy && !is_image &&
+            mkl_surface_data(surf, coefficients)[2 * MKL_COEFF_TRACE_ORDER] != 0.0f) {
+            // m lambda/(2 pi) scales grad Phi to momentum and Phi to optical path.
+            const MklDf scale = mkl_load<MklDf>(mkl_surface_data(surf, coefficients), MKL_COEFF_PREFIX + w);
+            const MklJet<MklDf> v = mkl_phase(surf, coefficients, MklDf{pos.v[0]}, MklDf{pos.v[1]});
+            const bool refl = act == 2u;
+            const float2 n2 = refl ? n1 : n_other;
+            MklDv d2;
+            if (!mkl_diffract(dir, hit.g, n1, n2, v.x * scale, v.y * scale, refl, d2)) {
+                status = MKL_RAY_EVANESCENT | fail_s;
+                break;
+            }
+            dir = d2;
+            n_cur = n2;
+            opl = mkl_df_add(opl, (scale * v.v).v);
             if (radiometry) {
-                float cos_i=min(fabs(mkl_dot3(dfv,hit.normal)),1.0f);
-                float2 rt=coating==MKL_COATING_IDEAL?float2(surf.coating_r,surf.coating_t):mirror?float2(1,0):mkl_fresnel(n1.x,n_other.x,cos_i);
-                tw=tw*(reflected?rt.x:rt.y);
+                float cos_i;
+                mkl_reflect(dfv, hit.normal, cos_i);
+                const float2 rt = mkl_surface_rt(surf, mirror, n1.x, n_other.x, cos_i);
+                tw = tw * (refl ? rt.x : rt.y);
             }
         } else if (act == 1u) {
             float cos_i, gamma;
@@ -743,12 +762,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
             }
             dir = mkl_renorm_along(mkl_renorm_along(d2, hit.g), hit.g);
             n_cur = n_other;
-            if (radiometry) {
-                float t = mirror ? 0.0f
-                        : coating == MKL_COATING_IDEAL ? surf.coating_t
-                        : mkl_fresnel(n1.x, n_other.x, cos_i).y;
-                tw = tw * t;
-            }
+            if (radiometry) tw = tw * mkl_surface_rt(surf, mirror, n1.x, n_other.x, cos_i).y;
         } else if (act == 2u) {
             float cos_i;
             mkl_reflect(dfv, hit.normal, cos_i);
@@ -757,12 +771,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
             MklDv d2;
             for (int c = 0; c < 3; ++c) d2.v[c] = mkl_df_add(dir.v[c], mkl_df_mul_f32(hit.g.v[c], b));
             dir = mkl_renorm_along(d2, hit.g);
-            if (radiometry) {
-                float r = coating == MKL_COATING_IDEAL ? surf.coating_r
-                        : mirror ? 1.0f
-                        : mkl_fresnel(n1.x, n_other.x, cos_i).x;
-                tw = tw * r;
-            }
+            if (radiometry) tw = tw * mkl_surface_rt(surf, mirror, n1.x, n_other.x, cos_i).x;
         } else if (act >= 3u) {
             const bool refl = act == 4u;
             MklDv kk = dir;

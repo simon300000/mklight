@@ -635,7 +635,7 @@ fn extended_full_capacity_and_steep_rays_bitwise() {
 }
 
 /// Same rays, one refracting surface and full coefficient capacities; best
-/// of three warm dispatches. Device time excludes upload/readback; wall
+/// of ten interleaved dispatches. Device time excludes upload/readback; wall
 /// includes the host ray planes and output unpacking (GPU.md §5.3).
 #[test]
 #[ignore = "benchmark"]
@@ -662,16 +662,24 @@ fn benchmark_extended_shapes() {
         },
     )];
     shapes.extend(testutil::extended_shapes());
-    let mut baseline = 0.0;
-    for (name, shape) in shapes {
-        let p = PackedSystem::pack_all(&testutil::resolve(testutil::one_surface(shape))).unwrap();
-        let h = g.upload_system(&p).unwrap();
-        let mut req = TraceRequest::new(h, rays.clone(), 0, 1);
-        req.apply_apertures = false;
-        req.radiometry = Radiometry::Off;
-        trace(g, req.clone());
-        let (mut device, mut wall) = (f64::INFINITY, f64::INFINITY);
-        for _ in 0..3 {
+    let reqs: Vec<_> = shapes
+        .iter()
+        .map(|(_, shape)| {
+            let rs = testutil::resolve(testutil::one_surface(shape.clone()));
+            let h = g
+                .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+                .unwrap();
+            let mut req = TraceRequest::new(h, rays.clone(), 0, 1);
+            req.apply_apertures = false;
+            req.radiometry = Radiometry::Off;
+            req
+        })
+        .collect();
+    // Rounds interleave the shapes, so GPU clock ramps and machine load
+    // affect them alike; the first round is a warm-up.
+    let mut best = vec![(f64::INFINITY, f64::INFINITY); shapes.len()];
+    for round in 0..11 {
+        for ((name, _), (req, best)) in shapes.iter().zip(reqs.iter().zip(&mut best)) {
             let r = g
                 .run(Job::Trace(Box::new(req.clone())), &JobContext::new())
                 .unwrap();
@@ -679,18 +687,21 @@ fn benchmark_extended_shapes() {
                 panic!()
             };
             assert!(t.status.iter().all(|s| *s == 0), "{name}");
-            device = device.min(r.stats.device_seconds);
-            wall = wall.min(r.stats.wall_seconds);
+            if round > 0 {
+                best.0 = best.0.min(r.stats.device_seconds);
+                best.1 = best.1.min(r.stats.wall_seconds);
+            }
         }
-        if name == "even10" {
-            baseline = device;
-        }
+    }
+    for ((name, _), (device, wall)) in shapes.iter().zip(&best) {
         eprintln!(
-            "| {name} | {:.3} | {:.3} | {:.3} |",
+            "| {name} | {:.1} | {:.1} | {:.3} |",
             n as f64 / device / 1e6,
             n as f64 / wall / 1e6,
-            baseline / device
+            best[0].0 / device
         );
-        g.release_systems(h).unwrap();
+    }
+    for req in reqs {
+        g.release_systems(req.systems).unwrap();
     }
 }

@@ -275,11 +275,12 @@ included, fields are sampling requests. This classification is conservative
 and can be used to disable symmetry shortcuts. It makes no claim about
 arbitrary coating, mechanics or scatter symmetry.
 
-GPU packing, stray geometry, ghost paths, Seidel, Coddington, rotational
-layout and merit evaluation reject extended shapes until those solvers are
+Stray geometry, ghost paths, Seidel, Coddington, rotational layout and
+merit evaluation reject extended shapes until those solvers are
 implemented, with the single error of `OpticalSystem::require_legacy_shapes`
-(the GPU packer and stray patches reject them in their shape matches). CPU tracing and these mathematical APIs
-are the reference for that work. The app is unchanged.
+(stray patches reject them in their shape match). The GPU trace supports
+every shape (`docs/GPU.md` §2.2, §4.1). CPU tracing and these mathematical
+APIs are the reference for that work. The app is unchanged.
 
 ## 9. Reference samples and verification
 
@@ -306,4 +307,4 @@ Q^con to m=3) and all twenty Q^bfs terms to their slope orthonormality,
 and every supported Zernike term to its independent factorial definition;
 the wave crate checks that Zernike sag equals its own basis term by term. Legacy-only solver
 cross-validation sets explicitly exclude extended shapes; engine tests check
-their unsupported-analysis errors and CPU fallback from GPU packing.
+their unsupported-analysis errors.
