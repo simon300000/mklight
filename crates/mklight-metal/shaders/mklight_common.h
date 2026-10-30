@@ -221,6 +221,29 @@ static inline float mkl_hypot3(float x, float y, float z) {
     return sqrt(mkl_dot3(v, v)) * sc.y;
 }
 
+// e^x in f32 (mklight_gpu::fmath::exp): k = rint(x log2 e), Cody-Waite
+// reduction with fma, degree-7 Taylor polynomial, two exact power-of-two
+// factors. Platform exp() is not used: its results differ between devices.
+static inline float mkl_exp(float x) {
+    if (isnan(x)) return x;
+    if (x > 88.72284f) return INFINITY;
+    if (x < -103.97208f) return 0.0f;
+    float kf = rint(x * as_type<float>(0x3FB8AA3Bu));
+    int k = int(kf);
+    float r = fma(-kf, as_type<float>(0x3F317200u), x);
+    r = fma(-kf, as_type<float>(0x35BFBE8Eu), r);
+    float p = as_type<float>(0x39500D01u);
+    p = fma(p, r, as_type<float>(0x3AB60B61u));
+    p = fma(p, r, as_type<float>(0x3C088889u));
+    p = fma(p, r, as_type<float>(0x3D2AAAABu));
+    p = fma(p, r, as_type<float>(0x3E2AAAABu));
+    p = fma(p, r, 0.5f);
+    p = fma(p, r, 1.0f);
+    p = fma(p, r, 1.0f);
+    int k1 = k / 2;
+    return (p * MKL_POW2(k1)) * MKL_POW2(k - k1);
+}
+
 // ---------------------------------------------------------------------------
 // Surface sag (packed layout, see mklight_gpu_types.h)
 // ---------------------------------------------------------------------------

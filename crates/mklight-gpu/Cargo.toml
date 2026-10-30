@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 mklight-core.workspace = true
+mklight-trace.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bytemuck.workspace = true

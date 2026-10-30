@@ -358,6 +358,7 @@ dependencies = [
  "approx",
  "bytemuck",
  "mklight-core",
+ "mklight-trace",
  "rayon",
  "serde",
  "serde_json",
@@ -373,9 +374,12 @@ dependencies = [
  "dispatch2",
  "mklight-core",
  "mklight-gpu",
+ "mklight-trace",
  "objc2",
  "objc2-foundation",
  "objc2-metal",
+ "rayon",
+ "serde_json",
 ]
 
 [[package]]

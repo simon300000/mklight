@@ -242,3 +242,25 @@ which means *undefined* (a vignetted field, a failed ray, a quantity without
 a value), as `null`. Readers accept numbers, `null`, `"inf"`, `"-inf"` and
 `"nan"`. `mklight_analysis::util::nf` implements this for `f64`, vectors and
 fixed arrays.
+
+## 12. GPU traces and path programs
+
+* A GPU trace reports f32 points and directions with a double-float optical
+  path that refers to the **reported** point: the rounding of the point
+  along the ray is moved into the OPL. Compare OPLs of two traces at the
+  same point (`OPL_ref + n·(p_gpu − p_ref)·d`), and form OPD from the
+  reported values as `mklight_trace::opd` does.
+* In a path program (ghost paths) the medium of the gap between surfaces
+  `j` and `j + 1` is the medium after surface `j`, in both travel
+  directions; a backward step uses the inverse of surface `j`'s
+  `to_next` transform. Sequential steps reproduce `mklight_trace`.
+* Direction of travel through the surface sequence in a path program: a
+  transmission keeps it, a ghost reflection at a refracting surface
+  reverses it, and a reflection at a mirror keeps it (forward or
+  backward), because both gaps next to a sequential mirror lie on its
+  reflecting side. Transmission through a mirror does not exist.
+* A backend that fails precision qualification for a system is not used
+  for it: the result is computed by the CPU f64 reference and its `RunInfo`
+  names the rejected backend and the reason (`docs/GPU.md` §5.2). A
+  qualification passes only with the sampled errors within a third of the
+  §7 budget; a cancelled qualification is an error, not a failure.

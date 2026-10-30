@@ -95,16 +95,28 @@ kernel void mkl_layout_probe(device uint* out [[buffer(0)]],
     out[k++] = MKL_OFF(MklPackedSurface, asphere_inv_norm2);
     out[k++] = MKL_OFF(MklPackedSurface, num_asphere);
     out[k++] = MKL_OFF(MklPackedSurface, source_index);
-    out[k++] = MKL_OFF(MklPackedSurface, reserved0);
-    out[k++] = MKL_OFF(MklPackedSurface, reserved1);
+    out[k++] = MKL_OFF(MklPackedSurface, coating);
+    out[k++] = MKL_OFF(MklPackedSurface, curvature_lo);
     out[k++] = MKL_OFF(MklPackedSurface, asphere);
     out[k++] = MKL_OFF(MklPackedSurface, aperture_params);
     out[k++] = MKL_OFF(MklPackedSurface, to_next_rot);
     out[k++] = MKL_OFF(MklPackedSurface, to_next_origin);
     out[k++] = MKL_OFF(MklPackedSurface, to_next_origin_lo);
-    out[k++] = MKL_OFF(MklPackedSurface, reserved2);
+    out[k++] = MKL_OFF(MklPackedSurface, coating_r);
+    out[k++] = MKL_OFF(MklPackedSurface, coating_t);
+    out[k++] = MKL_OFF(MklPackedSurface, conic_lo);
     out[k++] = MKL_OFF(MklPackedSurface, n_after);
     out[k++] = MKL_OFF(MklPackedSurface, alpha_after);
+    out[k++] = MKL_OFF(MklPackedSurface, vergence);
+    out[k++] = MKL_OFF(MklPackedSurface, to_next_rot_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, to_next_shift);
+    out[k++] = MKL_OFF(MklPackedSurface, to_next_shift_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, paraxial_power_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, n_after_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, vergence_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, aperture_params_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, asphere_lo);
+    out[k++] = MKL_OFF(MklPackedSurface, reserved3);
 }
 
 // Sag of one packed surface (absolute index into the surface array) at the
