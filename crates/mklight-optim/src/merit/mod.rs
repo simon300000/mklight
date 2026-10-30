@@ -18,13 +18,19 @@
 //! plug-in operands come from further evaluators combined with
 //! [`CompositeEvaluator`].
 
+pub mod builtin;
 pub mod default;
 pub mod geometric;
 pub mod gpu_eval;
+mod mtf_default;
+pub mod mtf_eval;
 pub mod operand;
 pub mod problem;
 pub mod quadrature;
+#[cfg(test)]
+mod quality_tests;
 pub mod reference;
+pub mod solver_eval;
 mod surface;
 pub mod trace_eval;
 
@@ -36,6 +42,7 @@ use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 use crate::deriv::FdScheme;
 use crate::problem::CandidateBatch;
 
+pub use builtin::BuiltinEvaluator;
 pub use gpu_eval::{GpuEvalSettings, GpuEvalStats, GpuTraceEvaluator};
 pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
 pub use operand::{CentroidScope, RayGroup};
@@ -625,6 +632,9 @@ mod tests {
                 frequency: 40.0,
                 orientation: MtfOrientation::Sagittal,
                 method: MtfMethod::Diffraction,
+                defocus_mm: 0.0,
+                detector: None,
+                wavelengths: Vec::new(),
             })
             .greater_than(0.5)
             .at_field(2)

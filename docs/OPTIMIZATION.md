@@ -38,10 +38,10 @@ OperandEvaluator ───┘     (Problem)        ├── GpuTraceEvaluator (
   many candidates on a GPU in one dispatch and reads them with the same code;
   `GpuTraceEvaluator::composite` puts it in front of a `TraceEvaluator` for
   everything else (see GPU-batched evaluation).
-* MTF, ghost, stray-light and plug-in (`Custom`) operands are **not**
-  computed here. Their crates provide `OperandEvaluator`s, combined with
-  `CompositeEvaluator::new().with(TraceEvaluator::…).with(…)`; each operand
-  goes to the first evaluator that supports it.
+* `BuiltinEvaluator` combines `TraceEvaluator`, `MtfEvaluator` and
+  `SolverEvaluator`. Engine optimise and tolerance jobs use this full set,
+  also after GPU ray evaluation. `Custom` operands still need a plug-in.
+  `CompositeEvaluator` routes each operand to its first supporting evaluator.
 
 ## The tracer-backed evaluator
 
@@ -182,9 +182,9 @@ uses the wavelength (`λ1` = one wavelength required).
 | `q_max_departure_slope` | M | maximum gradient magnitude of that departure | mm/mm | – | nonnegative; uses the same fitted sphere, whose piston has zero slope |
 | `freeform_max_departure` | M | maximum absolute XY/Zernike sag departure from its base conic | mm | – | nonnegative; includes piston and tilt when present |
 | `tolerance_sensitivity` | T | `√((c(+δ) − c₀)² + (c(−δ) − c₀)²)/√2` for the criterion operand | criterion | as criterion | supported when the criterion is |
-| `mtf` | X | MTF at a frequency | – | f λ | MTF evaluator (not here) |
-| `ghost_focus`, `ghost_irradiance` | X | ghost focus distance / irradiance | mm / rel. | | ghost evaluator (not here) |
-| `stray_light_power` | X | stray-light power in a path class | rel. | | stray-light evaluator (not here) |
+| `mtf` | MTF | MTF at a frequency | – | f λ | fixed-grid diffraction FFT or geometric analysis |
+| `ghost_focus`, `ghost_irradiance` | Ghost | ghost focus distance / irradiance | mm / rel. | λ / f λ | explicit solver (below) |
+| `stray_light_power` | StrayLight | MC stray power fraction | rel. | f λ | fixed seed / common random numbers; unsuitable for LM |
 | `combine` | – | arithmetic on earlier operands | | | resolved by `OpticalProblem` |
 | `custom` | X | plug-in kind registered in the `OperandRegistry` | | | plug-in evaluator |
 
@@ -192,6 +192,83 @@ uses the wavelength (`λ1` = one wavelength required).
 of the chief ray, which keeps the sign), and the exit-pupil position.
 **Paraxial distortion** comes from the same `distortion` operand: the real
 chief ray against the paraxial chief ray.
+
+### Image quality, ghosts and stray light
+
+`mtf` has `frequency` in cycles/mm, `orientation` (`tangential`, `sagittal`,
+`average`) and `method` (`diffraction`, the default, or `geometric`). Use
+`comparison: "greater_than"` for an MTF lower bound. The outer field and
+wavelength selectors apply; `all` fields gives their weighted average.
+`all` wavelengths sums **complex OTFs** with normalised spectral weights,
+including lateral colour, before taking the modulus. Optional `wavelengths`
+inside the kind selects a spectral subset (takes precedence over the outer
+selector). `defocus_mm` defaults to zero; positive shifts the image plane
+along propagation. `detector` takes the wave solver's `DetectorSettings`
+(pixel pitch, fill factor/aperture, diffusion), multiplying each directional
+optical MTF by its detector MTF before an `average`.
+
+Diffraction uses the wave solver's FFT MTF with fixed `grid=64`, `rays=65`,
+`supersample=4`, chief-ray reference and transmission amplitudes. Adaptive
+rim tracing is disabled (`rim=false`). Entrance/exit grid counts and
+supersampling never change between candidates. Each candidate caches its
+traced pupils by field/wavelength and FFT OTFs by field/wavelength/defocus;
+frequency, direction and spectral operands share those computations. Caches
+are discarded after that candidate. The geometric route uses the geometric
+analysis' fixed square sampling (`rings=32`) and defocus projection.
+
+Recommended relative finite-difference steps are **1e-6 forward / 1e-5
+central**, selected automatically by the evaluator, with
+`h = eta * max(abs(parameter), variable scale)`. The Richardson check uses
+`eta=3e-5`; the Cooke curvature/focus test requires relative agreement of
+2e-3 forward / 2e-4 central. Fixed sampling removes adaptive sampling noise,
+but clipping, resampling-cell crossings and FFT interpolation knots remain
+piecewise smooth: check derivatives at the intended design and refine the
+fixed grid for final analysis. These are sampled MTF targets, not a
+convergence guarantee for arbitrarily aberrated pupils.
+
+`ghost_focus` accepts either `pair: {first, second}` (stable surface IDs;
+reflection at `second` then `first`) or `path` (the explicit solver's
+`GhostPath` signature, surface **indices**, including optional DOE order
+overrides). Without either, it ranks ghosts by paraxial relative irradiance
+and selects the strongest `worst` N (default 1). `metric: "distance"`
+(default) returns the **minimum absolute axial focus distance** from the
+image across those paths, in mm; larger is better. Wavelength selection
+averages those distances with spectral weights. `metric: "peak"` instead
+returns the largest selected path's real-ray peak/primary peak ratio
+(smaller is better). The paraxial focus ranking is field independent; peak
+mode uses the solver's system fields.
+
+`ghost_irradiance` accepts the same `pair` or `path`, or sums enumerated
+paths when neither is supplied. `max_reflections` (default 2) sets the
+highest enumerated even order, up to the solver's limit of 8. Optional
+`orders` filters enumerated reflection orders (empty keeps all up to that
+limit); explicit signatures select their own order. `metric` is `peak`
+(total map peak/primary peak), `power` (integrated detector ghost/primary
+power), or `mean` (mean ghost/mean primary irradiance over the same detector,
+equal to the power ratio). It uses the explicit ghost solver, with fixed
+32×32 initial pupil cells and 64×64 detector bins; the solver refines clipped
+cells. Detector dimensions come from the sensor or image clear aperture.
+Peak ratios therefore depend on the bin size. `SolverEvaluator::ghost`
+allows a Rust caller to choose finer settings, which must accompany the
+run settings. Ghost objectives have path/ranking/bin/clipping changes;
+derivative-free search is recommended.
+
+`stray_light_power` uses the MC solver's fraction of the unobstructed
+primary reference power, with `class` = `ghost`, `scatter`, `mechanical`,
+`sneak` or `all_non_primary`. This is a standalone stray run: when combining
+it with an explicit ghost operand, select the disjoint stray classes to
+avoid counting ghosts twice. `rays` and `seed` are fixed settings, with the
+**same seed for every candidate**, including finite-difference neighbours
+(common random numbers, Philox). The snapshot hash and evaluation order
+never modify that seed. Outer field/spectral selectors apply; field `all`
+averages the per-field fractions with field weights. The merit uses one
+detector bin (only integrated power matters), with the solver's default
+scene and transport controls. `SolverEvaluator::stray` exposes these to Rust
+callers. This stochastic operand is **unsuitable for LM**: CRN improves
+comparisons but does not remove event/clipping discontinuities or MC error.
+Use derivative-free/global methods and verify with more rays afterwards.
+Solver errors follow the merit's failure policy; cancellation propagates.
+Engine results carry the effective merit/settings and `RunInfo` as usual.
 
 ### Extended-surface operands
 
@@ -296,6 +373,28 @@ symmetry. For a tolerancing criterion, `generate_for_tolerancing(sys,
 variables. Every ray operand carries its `RayGroup`, also with a `chief`
 reference, so the evaluator knows which half pupil it belongs to. An
 asymmetric candidate is still evaluated exactly (see Conventions).
+
+`DefaultCriterion::Mtf` emits polychromatic tangential and sagittal lower
+bounds at every requested frequency and selected field/configuration. For
+example:
+
+```json
+{"criterion":{"type":"mtf","frequencies":[10,30],"target":0.5,
+              "method":"diffraction","worst_field":true},"thickness":null}
+```
+
+The default generator's `fields` and `wavelengths` select fields and the
+polychromatic spectral subset, using their model weights. Without
+`worst_field`, weights normalise over fields, configurations, frequencies
+and the two directions. With `worst_field`, each field's MTF is a zero-weight
+value operand and `combine:min` adds a lower-bound residual for each
+frequency/direction/configuration. Thus it penalises the largest field
+shortfall (minimax), giving a weakest field control without averaging it
+away. Field weights still select the participating positive-weight fields;
+they do not scale the minimum. This exact minimum has a kink when the
+weakest field changes. The Cooke focus-optimisation test checks improvement
+of the minimum across **all** emitted field/direction MTF values at 30
+cycles/mm, so a constant or missing evaluator cannot pass.
 
 Symmetry uses the core system classification, including shape coefficients,
 placements and apertures. A system that is not meridionally symmetric

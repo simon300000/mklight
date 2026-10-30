@@ -654,10 +654,13 @@ const WAVEFRONT: DefaultCriterion = DefaultCriterion::Wavefront {
 #[test]
 fn gpu_finite_differences_use_noise_aware_steps() {
     for (criterion, forward, central) in [(SPOT, 1e-3, 2e-4), (WAVEFRONT, 3e-4, 3e-5)] {
-        let cpu = triplet_problem(criterion, TraceEvaluator::builtin());
+        let cpu = triplet_problem(criterion.clone(), TraceEvaluator::builtin());
         let x = cpu.start_point().unwrap();
         let r = reference_jacobian(&cpu, &x, 1e-4);
-        let gpu = triplet_problem(criterion, gpu_eval(emulation(), cpu.base()).composite());
+        let gpu = triplet_problem(
+            criterion.clone(),
+            gpu_eval(emulation(), cpu.base()).composite(),
+        );
         let f = fd_error(&gpu, &x, FdScheme::Forward, None, &r);
         let c = fd_error(&gpu, &x, FdScheme::Central, None, &r);
         let naive = fd_error(&gpu, &x, FdScheme::Forward, Some(f64::EPSILON.sqrt()), &r);

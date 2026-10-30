@@ -801,6 +801,9 @@ fn plug_in_seam_for_mtf_ghost_and_stray_operands() {
         frequency: 30.0,
         orientation: MtfOrientation::Tangential,
         method: MtfMethod::Diffraction,
+        defocus_mm: 0.0,
+        detector: None,
+        wavelengths: Vec::new(),
     };
     let reg = OperandRegistry::builtin();
     for d in &reg.kinds {

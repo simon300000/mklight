@@ -52,9 +52,19 @@ use super::quadrature::{PupilSampling, PupilSymmetry};
 use super::{FieldSelector, MeritFunctionSpec, Operand, VariableSpec};
 use crate::tolerance::ToleranceSpec;
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DefaultCriterion {
+    /// Polychromatic T/S lower bounds at fixed frequencies (cycles/mm).
+    Mtf {
+        frequencies: Vec<f64>,
+        target: f64,
+        #[serde(default)]
+        method: super::operand::MtfMethod,
+        /// Min over fields, separately for each frequency and orientation.
+        #[serde(default)]
+        worst_field: bool,
+    },
     RmsSpot {
         #[serde(default)]
         reference: SpotReference,
@@ -337,6 +347,16 @@ impl DefaultMeritSpec {
                 "default merit: no field/wavelength with positive weight".into(),
             ));
         }
+        if matches!(self.criterion, DefaultCriterion::Mtf { .. }) {
+            let ops = super::mtf_default::operands(
+                &self.criterion,
+                &field_points,
+                &wls,
+                &configs,
+                self.weight,
+            )?;
+            return self.finish(s, &configs, ops);
+        }
         let mut ops = Vec::new();
         for &c in &configs {
             for &(field, field_weight) in &field_points {
@@ -344,16 +364,19 @@ impl DefaultMeritSpec {
                     let base =
                         self.weight * field_weight * s.wavelengths.wavelengths[w].weight / norm;
                     for nd in &nodes {
-                        let kinds: Vec<OperandKind> = match self.criterion {
+                        let kinds: Vec<OperandKind> = match &self.criterion {
                             DefaultCriterion::RmsSpot { reference, scope } => {
-                                let group = Some(RayGroup { sampling, scope });
+                                let group = Some(RayGroup {
+                                    sampling,
+                                    scope: *scope,
+                                });
                                 [Axis::X, Axis::Y]
                                     .into_iter()
                                     .map(|axis| OperandKind::RayAberration {
                                         axis,
                                         px: nd.px,
                                         py: nd.py,
-                                        reference,
+                                        reference: *reference,
                                         group,
                                     })
                                     .collect()
@@ -363,10 +386,11 @@ impl DefaultMeritSpec {
                                 vec![OperandKind::WavefrontAberration {
                                     px: nd.px,
                                     py: nd.py,
-                                    reference,
+                                    reference: *reference,
                                     group,
                                 }]
                             }
+                            DefaultCriterion::Mtf { .. } => unreachable!(),
                         };
                         for k in kinds {
                             let mut op = Operand::new(k)
@@ -380,8 +404,17 @@ impl DefaultMeritSpec {
                 }
             }
         }
+        self.finish(s, &configs, ops)
+    }
+
+    fn finish(
+        &self,
+        s: &OpticalSystem,
+        configs: &[usize],
+        mut ops: Vec<Operand>,
+    ) -> MkResult<MeritFunctionSpec> {
         if let Some(target) = self.squeeze_target {
-            for &c in &configs {
+            for &c in configs {
                 ops.push(
                     Operand::new(OperandKind::AnamorphicSqueeze)
                         .target(target)
@@ -391,7 +424,7 @@ impl DefaultMeritSpec {
             }
         }
         if let Some(tb) = &self.thickness {
-            ops.extend(thickness_operands(s, tb, &configs));
+            ops.extend(thickness_operands(s, tb, configs));
         }
         Ok(MeritFunctionSpec {
             name: "default".into(),

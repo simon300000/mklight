@@ -161,7 +161,7 @@ fn half_pupil_merit_on_asymmetric_candidates_equals_the_full_pupil() {
         },
     ] {
         let gen_half = DefaultMeritSpec {
-            criterion,
+            criterion: criterion.clone(),
             sampling: half,
             thickness: None,
             ..Default::default()

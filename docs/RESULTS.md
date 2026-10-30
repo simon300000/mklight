@@ -1840,7 +1840,7 @@ Buffers:
 
 Category `optimization`, result version 1, **GPU path**.
 
-Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
+Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront / polychromatic MTF merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
 
 Settings:
 
@@ -1849,15 +1849,15 @@ Settings:
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator settings, laid over the defaults (criterion, pupil sampling, fields, wavelengths, thickness boundaries). |
-| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
 | `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
 | `hold_efl` | boolean | `true` |  | Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead. |
 | `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
 | `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
-| `operands` | array | `[]` |  | Operands appended to the merit (e.g. an EFL target). |
+| `operands` | array | `[]` |  | Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM. |
 | `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
@@ -1967,7 +1967,7 @@ Settings:
 | `compensator_iterations` | integer | `20` |  | ≥ 1 |
 | `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. |
 | `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  |  |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `gpu_batch` | integer | `512` |  | ≥ 1 |
 | `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
 | `seed` | integer | `0` |  | ≥ 0 |

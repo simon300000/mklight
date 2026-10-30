@@ -48,8 +48,8 @@ use mklight_optim::merit::geometric::optical_gaps;
 use mklight_optim::merit::gpu_eval::{gpu_beats_cpu, gpu_rays_per_candidate};
 use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
-    Comparison, GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand, OperandEvaluator,
-    OperandRegistry, OperandRole, OperandValue, OpticalProblem, TraceEvaluator, VariableSpec,
+    BuiltinEvaluator, Comparison, GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand,
+    OperandEvaluator, OperandRegistry, OperandRole, OperandValue, OpticalProblem, VariableSpec,
 };
 use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
@@ -300,6 +300,23 @@ fn patched<T: Serialize + DeserializeOwned>(
     parse(&v, what)
 }
 
+/// Shared schema for the image-quality criterion accepted by both jobs.
+fn default_merit_schema(default: Value) -> Value {
+    json!({"type": "object", "default": default, "title": "Default merit",
+    "description": "Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries.",
+    "properties": {"criterion": {"oneOf": [
+        {"type": "object", "properties": {"type": {"const": "rms_spot"}}},
+        {"type": "object", "properties": {"type": {"const": "wavefront"}}, "required": ["type"]},
+        {"type": "object", "required": ["type", "frequencies", "target"], "properties": {
+            "type": {"const": "mtf"},
+            "frequencies": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0}, "description": "Fixed image frequencies in cycles/mm."},
+            "target": {"type": "number", "minimum": 0, "maximum": 1},
+            "method": {"type": "string", "enum": ["diffraction", "geometric"], "default": "diffraction"},
+            "worst_field": {"type": "boolean", "default": false, "description": "Use combine:min over fields for each frequency and T/S direction."}
+        }}
+    ]}}})
+}
+
 /// Which evaluator computes the merit during the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -339,7 +356,7 @@ impl Workload {
     /// `rays` estimated on the start system (configuration 0) for the
     /// operands of `spec`.
     fn new(
-        cpu: &TraceEvaluator,
+        cpu: &BuiltinEvaluator,
         system: &OpticalSystem,
         spec: &MeritFunctionSpec,
         batch: usize,
@@ -392,7 +409,7 @@ fn gpu_backend(
 /// The merit evaluator of a run: the CPU reference alone, or a qualified
 /// GPU evaluator in front of it.
 struct Evaluation {
-    cpu: TraceEvaluator,
+    cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
     gpu: Option<(GpuTraceEvaluator, Arc<GpuDevice>)>,
     work: Workload,
@@ -406,7 +423,7 @@ struct Evaluation {
 /// library, and the reference tracer it was qualified with.
 fn qualify(
     device: &GpuDevice,
-    cpu: &TraceEvaluator,
+    cpu: &BuiltinEvaluator,
     snapshot: &Snapshot,
     input: &AnalysisInput<'_>,
     ctx: &JobContext,
@@ -427,7 +444,7 @@ impl Evaluation {
         work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
-        let cpu = TraceEvaluator::new(input.library.clone());
+        let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
         let gpu = match gpu_backend(choice, input, &work) {
@@ -442,7 +459,7 @@ impl Evaluation {
                     .values;
                 let g = GpuTraceEvaluator::with_qualification(
                     device.backend.clone(),
-                    cpu.clone(),
+                    cpu.trace().clone(),
                     settings,
                     q.as_ref().clone(),
                     hints,
@@ -494,9 +511,9 @@ impl Evaluation {
     ) -> EngineResult<()> {
         let mut b = json!({
             "requested": requested.name(),
-            "evaluated_on": TraceEvaluator::BACKEND,
+            "evaluated_on": BuiltinEvaluator::BACKEND,
             "precision": Precision::F64Reference,
-            "reported_on": TraceEvaluator::BACKEND,
+            "reported_on": BuiltinEvaluator::BACKEND,
             "workload": self.work.report(),
         });
         // The GPU evaluated the search only if it traced candidates.
@@ -581,7 +598,7 @@ fn start_merit(
     system: &OpticalSystem,
     variables: &[VariableSpec],
     spec: &MeritFunctionSpec,
-    cpu: &TraceEvaluator,
+    cpu: &BuiltinEvaluator,
     reg: &OperandRegistry,
 ) -> EngineResult<f64> {
     let p = OpticalProblem::new(
@@ -605,7 +622,7 @@ fn relax_fixed_boundaries(
     system: &OpticalSystem,
     spec: &mut MeritFunctionSpec,
     variables: &[VariableSpec],
-    cpu: &TraceEvaluator,
+    cpu: &BuiltinEvaluator,
     reg: &OperandRegistry,
     ctx: &JobContext,
 ) -> EngineResult<Vec<String>> {
@@ -810,7 +827,7 @@ struct Reference {
 }
 
 fn reference_values(
-    p: &OpticalProblem<TraceEvaluator>,
+    p: &OpticalProblem<BuiltinEvaluator>,
     points: &[&[f64]],
 ) -> EngineResult<Reference> {
     let n = p.num_variables();
@@ -1098,7 +1115,7 @@ impl Analysis for Optimize {
     }
     fn description(&self) -> &str {
         "Optimises the variables against a merit function (explicit, or the default RMS spot / \
-         wavefront merit with thickness boundaries) with explicit constraints, by \
+         wavefront / polychromatic MTF merit with thickness boundaries) with explicit constraints, by \
          Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin \
          hopping. Returns the optimised system, the merit history and the operand table."
     }
@@ -1114,10 +1131,9 @@ impl Analysis for Optimize {
                     "description": "Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead."},
                 "merit": {"type": ["object", "null"], "default": null, "title": "Merit function",
                     "description": "A merit-function spec; null generates the default merit from `default_merit` for the variables."},
-                "default_merit": {"type": "object", "default": default_merit, "title": "Default merit",
-                    "description": "Default-merit generator settings, laid over the defaults (criterion, pupil sampling, fields, wavelengths, thickness boundaries)."},
+                "default_merit": default_merit_schema(default_merit),
                 "operands": {"type": "array", "default": [], "title": "Extra operands",
-                    "description": "Operands appended to the merit (e.g. an EFL target)."},
+                    "description": "Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM."},
                 "constraints": {"type": "array", "default": [], "title": "Constraints",
                     "description": "Operands appended as explicit constraints (role forced to constraint)."},
                 "algorithm": {"type": "string", "enum": ["lm", "dogleg", "de", "cma_es", "nelder_mead", "hammer"],
@@ -1131,7 +1147,7 @@ impl Analysis for Optimize {
                     "title": "Finite differences"},
                 "fd_relative_step": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null,
                     "title": "FD relative step",
-                    "description": "null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md)."},
+                    "description": "null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md)."},
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation",
@@ -1303,7 +1319,7 @@ impl Analysis for Optimize {
         let mut s: OptimizeSettings = parse(settings, "settings")?;
         let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
         let system = input.snapshot.system().clone();
-        let cpu = TraceEvaluator::new(input.library.clone());
+        let cpu = BuiltinEvaluator::new(input.library.clone());
         let reg = OperandRegistry::builtin();
         let mut warnings = Vec::new();
         if s.variables.is_empty() {
@@ -1425,7 +1441,7 @@ impl Analysis for Optimize {
                     system.clone(),
                     s.variables.clone(),
                     spec.clone(),
-                    g.clone().composite(),
+                    g.clone().composite().with(cpu.clone()),
                     &reg,
                 )
                 .and_then(|p| algo.run(&p, &x0, &mon)),
@@ -1645,7 +1661,7 @@ impl Analysis for Tolerance {
                     "description": "{\"param\": ParamPath, \"range\", \"scale\"}: re-optimised for every trial."},
                 "criterion": {"type": ["object", "null"], "default": null, "title": "Criterion",
                     "description": "A merit-function spec; null generates the default merit for tolerancing from `default_merit`."},
-                "default_merit": {"type": "object", "default": default_merit, "title": "Default criterion"},
+                "default_merit": default_merit_schema(default_merit),
                 "mode": {"type": "string", "enum": ["sensitivity", "monte_carlo", "both"],
                     "default": "both", "title": "Analysis"},
                 "trials": {"type": "integer", "minimum": 1, "default": 100, "title": "Monte-Carlo trials"},
@@ -1868,7 +1884,7 @@ impl Analysis for Tolerance {
             SENSITIVITY_BATCH.min(2 * spec.operands.len() + 1)
         };
         let work = Workload::new(
-            &TraceEvaluator::new(input.library.clone()),
+            &BuiltinEvaluator::new(input.library.clone()),
             &system,
             &criterion,
             batch,
@@ -1901,7 +1917,7 @@ impl Analysis for Tolerance {
             };
             match ev.active_gpu() {
                 Some(g) => {
-                    let comp = g.clone().composite();
+                    let comp = g.clone().composite().with(ev.cpu.clone());
                     run(&Runner {
                         nominal: &system,
                         criterion: &criterion,
@@ -2124,7 +2140,7 @@ mod tests {
     }
 
     fn efl(sys: &OpticalSystem) -> f64 {
-        TraceEvaluator::builtin()
+        BuiltinEvaluator::builtin()
             .evaluate_system(sys, &[&Operand::new(OperandKind::Efl)], &JobContext::new())
             .unwrap()
             .remove(0)
@@ -2236,7 +2252,10 @@ mod tests {
         assert_eq!(r.buffers[0].shape, vec![h.len(), 4]);
         assert_eq!(r.run_info.analysis, "optimize");
         assert_eq!(r.run_info.seed, Some(0));
-        assert_eq!(j["backend"]["evaluated_on"], json!(TraceEvaluator::BACKEND));
+        assert_eq!(
+            j["backend"]["evaluated_on"],
+            json!(BuiltinEvaluator::BACKEND)
+        );
         // Apply the result as a new snapshot.
         let best: OpticalSystem = serde_json::from_value(j["system"].clone()).unwrap();
         let hash = session.set_system(best.clone()).unwrap();
@@ -2472,7 +2491,7 @@ mod tests {
             assert_eq!(b["qualification"]["passed"], json!(true));
             assert_eq!(b["final_qualification"]["passed"], json!(true));
             assert!(b["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
-            assert_eq!(b["reported_on"], json!(TraceEvaluator::BACKEND));
+            assert_eq!(b["reported_on"], json!(BuiltinEvaluator::BACKEND));
             assert_eq!(b["requested"], json!(backend));
             assert_eq!(
                 b["evaluated_on"].as_str().unwrap().starts_with("metal:"),
@@ -2825,6 +2844,43 @@ mod tests {
     }
 
     #[test]
+    fn image_quality_merits_run_in_optimize_and_tolerance() {
+        let system = samples::cooke_triplet();
+        let variable = VariableSpec::new(ParamPath::Thickness {
+            surface: SurfaceId(6),
+        });
+        let merit = json!({"operands": [{"kind": {"type": "mtf", "frequency": 30},
+            "field": {"field": "index", "index": 1}, "wavelength": {"wavelength": "all"},
+            "target": 0.8, "comparison": "greater_than"}]});
+        let default = json!({"criterion": {"type": "mtf", "frequencies": [10,30],
+            "target": 0.8, "worst_field": true}, "fields": [0,1], "thickness": null});
+        for settings in [
+            json!({"merit": merit, "variables": [variable.clone()], "hold_efl": false, "backend": "cpu", "max_iterations": 1}),
+            json!({"default_merit": default, "variables": [variable], "hold_efl": false, "backend": "gpu_emulation", "max_iterations": 1}),
+        ] {
+            let r = run(system.clone(), "optimize", settings).unwrap();
+            assert_eq!(r.json["start"]["status"]["status"], "ok");
+            assert_eq!(r.json["final"]["status"]["status"], "ok");
+            let rows: Vec<_> = r.json["operands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|o| o["kind"] == "mtf")
+                .collect();
+            assert!(!rows.is_empty());
+            assert!(
+                rows.iter()
+                    .all(|o| o["start"].as_f64().is_some_and(|v| v > 0.0 && v < 1.0))
+            );
+            assert!(!r.run_info.snapshot_hash.is_empty());
+        }
+        let r = run(system, "tolerance", json!({"criterion": merit, "mode": "sensitivity", "backend": "cpu",
+            "tolerances": [{"param": ParamPath::Thickness { surface: SurfaceId(6) }, "minus": 0.01, "plus": 0.01}]})).unwrap();
+        assert_eq!(r.json["sensitivity"]["nominal"]["ok"], true);
+        assert_eq!(r.json["sensitivity"]["operands"][0]["ok"], true);
+    }
+
+    #[test]
     fn axis_defaults_optimise_squeeze_and_tolerance_both_curvatures() {
         let sys = samples::biconic_element();
         let fy = efl(&sys);
@@ -2839,7 +2895,7 @@ mod tests {
         )
         .unwrap();
         let best: OpticalSystem = serde_json::from_value(r.json["system"].clone()).unwrap();
-        let values = TraceEvaluator::builtin()
+        let values = BuiltinEvaluator::builtin()
             .evaluate_system(
                 &best,
                 &[

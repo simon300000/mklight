@@ -207,10 +207,19 @@ pub enum GhostMetric {
     /// Peak irradiance on the image (relative to the primary image peak).
     #[default]
     Peak,
-    /// Mean irradiance over the sensor.
+    /// Mean ghost irradiance divided by mean primary irradiance.
     Mean,
     /// Total ghost power reaching the sensor (relative to primary).
     Power,
+}
+
+/// Quantity returned by `ghost_focus` for the selected path or strongest paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GhostFocusMetric {
+    #[default]
+    Distance,
+    Peak,
 }
 
 /// Path classes of ARCHITECTURE §Solvers.
@@ -220,6 +229,7 @@ pub enum StrayPathClass {
     Ghost,
     Scatter,
     Mechanical,
+    Sneak,
     /// Everything except the primary path.
     #[default]
     AllNonPrimary,
@@ -444,6 +454,14 @@ pub enum OperandKind {
         orientation: MtfOrientation,
         #[serde(default)]
         method: MtfMethod,
+        /// Image-plane shift in mm (along propagation).
+        #[serde(default)]
+        defocus_mm: f64,
+        #[serde(default)]
+        detector: Option<mklight_wave::detector::DetectorSettings>,
+        /// Explicit spectral subset; empty uses the operand wavelength selector.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        wavelengths: Vec<usize>,
     },
     /// Distortion of the real chief ray at the selected field and
     /// wavelength against the paraxial image height scaled by the mapping,
@@ -477,7 +495,18 @@ pub enum OperandKind {
     /// Distance of a two-reflection ghost's focus from the image surface
     /// (mm, absolute value). Large is good.
     GhostFocus {
-        pair: GhostPair,
+        #[serde(default)]
+        pair: Option<GhostPair>,
+        /// Solver path signature (surface indices, including DOE overrides).
+        #[serde(default)]
+        path: Option<mklight_ghost::GhostPath>,
+        /// Strongest N paths by paraxial irradiance; ignored for an explicit path.
+        #[serde(default = "default_worst_ghosts")]
+        worst: usize,
+        #[serde(default)]
+        metric: GhostFocusMetric,
+        #[serde(default = "default_ghost_order")]
+        max_reflections: u32,
     },
     /// Ghost irradiance on the sensor; `pair = None` sums all two-reflection
     /// ghosts.
@@ -486,6 +515,13 @@ pub enum OperandKind {
         pair: Option<GhostPair>,
         #[serde(default)]
         metric: GhostMetric,
+        /// Reflection orders to include (empty = every enumerated order).
+        #[serde(default)]
+        orders: Vec<u32>,
+        #[serde(default)]
+        path: Option<mklight_ghost::GhostPath>,
+        #[serde(default = "default_ghost_order")]
+        max_reflections: u32,
     },
     /// Stray-light power reaching the sensor in the given path class,
     /// relative to the primary-path power.
@@ -975,6 +1011,9 @@ impl OperandRegistry {
                     frequency: 50.0,
                     orientation: MtfOrientation::Tangential,
                     method: MtfMethod::Diffraction,
+                    defocus_mm: 0.0,
+                    detector: None,
+                    wavelengths: Vec::new(),
                 },
                 "MTF at frequency",
                 "",
@@ -991,10 +1030,14 @@ impl OperandRegistry {
             (RelativeIllumination, "Relative illumination", ""),
             (
                 GhostFocus {
-                    pair: GhostPair {
+                    pair: Some(GhostPair {
                         first: s(1),
                         second: s(2),
-                    },
+                    }),
+                    path: None,
+                    worst: 1,
+                    metric: GhostFocusMetric::Distance,
+                    max_reflections: 2,
                 },
                 "Ghost focus distance from image",
                 "mm",
@@ -1003,6 +1046,9 @@ impl OperandRegistry {
                 GhostIrradiance {
                     pair: None,
                     metric: GhostMetric::Peak,
+                    orders: Vec::new(),
+                    path: None,
+                    max_reflections: 2,
                 },
                 "Ghost irradiance",
                 "relative",
@@ -1099,4 +1145,11 @@ impl OperandRegistry {
             (_, d) => d.is_some_and(|d| d.capability != Capability::Plugin),
         }
     }
+}
+
+fn default_worst_ghosts() -> usize {
+    1
+}
+fn default_ghost_order() -> u32 {
+    2
 }
