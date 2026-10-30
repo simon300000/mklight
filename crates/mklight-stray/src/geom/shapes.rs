@@ -105,6 +105,12 @@ impl SagPatch {
                 "sag patch needs 0 ≤ r_inner < r_outer < ∞ (got {r_inner}, {r_outer})"
             )));
         }
+        // A phase screen has the geometry of its substrate. In particular,
+        // a plane DOE keeps the exact plane intersection and finite bounds.
+        let shape = match shape {
+            SurfaceShape::Diffractive { base, .. } => *base,
+            shape => shape,
+        };
         let kind = match &shape {
             SurfaceShape::Plane | SurfaceShape::Paraxial { .. } => Kind::Plane,
             SurfaceShape::CoordinateBreak => {

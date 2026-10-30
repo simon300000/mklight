@@ -612,7 +612,47 @@ fn shape_radius_limit(shape: &SurfaceShape) -> f64 {
         SurfaceShape::Conic { curvature, conic } => conic_domain_radius(*curvature, *conic),
         SurfaceShape::EvenAsphere {
             curvature, conic, ..
+        }
+        | SurfaceShape::OddAsphere {
+            curvature, conic, ..
         } => conic_domain_radius(*curvature, *conic) * (1.0 - 1e-6),
+        SurfaceShape::QCon {
+            curvature,
+            conic,
+            norm_radius,
+            ..
+        }
+        | SurfaceShape::XYPolynomial {
+            curvature,
+            conic,
+            norm_radius,
+            ..
+        }
+        | SurfaceShape::ZernikeSag {
+            curvature,
+            conic,
+            norm_radius,
+            ..
+        } => norm_radius.min(conic_domain_radius(*curvature, *conic) * (1.0 - 1e-6)),
+        SurfaceShape::QBfs {
+            curvature,
+            norm_radius,
+            ..
+        } => norm_radius.min(conic_domain_radius(*curvature, 0.0) * (1.0 - 1e-6)),
+        SurfaceShape::Diffractive { base, phase } => {
+            phase.norm_radius.min(shape_radius_limit(base))
+        }
+        SurfaceShape::Biconic {
+            curvature_x,
+            curvature_y,
+            conic_x,
+            conic_y,
+            ..
+        } => {
+            conic_domain_radius(*curvature_x, *conic_x)
+                .min(conic_domain_radius(*curvature_y, *conic_y))
+                * (1.0 - 1e-6)
+        }
         _ => f64::INFINITY,
     }
 }

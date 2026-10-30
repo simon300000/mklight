@@ -542,6 +542,7 @@ fn hybrid_doe_orders_partition_without_double_counting() {
     )
     .unwrap();
     assert!(all.energy.is_balanced(), "{}", all.energy.summary());
+    assert_eq!(all.energy.detected, excl.energy.detected);
     assert!(excl.energy.detected_covered_ghost > 0.0);
     assert!(excl.energy.detected_uncovered_ghost > 0.0);
     let reference = all.source.reference_flux;

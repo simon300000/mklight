@@ -11,7 +11,7 @@ pub enum DiffractionEfficiency {
     Ideal,
     Kinoform,
     Multilevel {
-        levels: std::num::NonZeroU8,
+        levels: std::num::NonZeroU16,
     },
 }
 
@@ -51,22 +51,33 @@ impl DiffractionEfficiency {
         if self == Self::Kinoform && blaze == blaze.round() {
             return blaze as i32;
         }
-        let (center, scale, bound) = match self {
-            Self::Multilevel { levels } => (0, levels.get() as f64, 4.0 * levels.get() as f64),
-            _ => (blaze.round() as i32, 1.0, 4.0),
-        };
+        if let Self::Multilevel { levels } = self {
+            let n = levels.get() as i32;
+            // The residue spectrum is the aliased continuous-ramp spectrum:
+            // P(r)=Σ_l sinc²(r+lN−b)=|Dirichlet_N((b−r)/N)|².
+            // Given r, P(k|r)=sinc²(k+r/N), m=r+kN. Two kinoform
+            // draws therefore sample the staircase exactly, at O(1) cost.
+            loop {
+                let r = Self::Kinoform.sample(selected, blaze, rng).rem_euclid(n);
+                let k = Self::Kinoform.sample(selected, -(r as f64) / n as f64, rng);
+                if let Some(m) = k.checked_mul(n).and_then(|m| m.checked_add(r)) {
+                    return m;
+                }
+            }
+        }
+        let center = blaze.round() as i32;
         loop {
-            let k = (scale * (PI * (rng.uniform() - 0.5)).tan()).round() as i32;
+            let k = ((PI * (rng.uniform() - 0.5)).tan()).round() as i32;
             let Some(m) = center.checked_add(k) else {
                 continue;
             };
             let x = k as f64;
             let q = if k == 0 {
-                2.0 * (0.5 / scale).atan() / PI
+                2.0 * 0.5f64.atan() / PI
             } else {
-                scale.atan2((x - 0.5) * (x + 0.5) + scale * scale) / PI
+                1.0f64.atan2((x - 0.5) * (x + 0.5) + 1.0) / PI
             };
-            if rng.uniform() * bound * q < self.efficiency(m, selected, blaze) {
+            if rng.uniform() * 4.0 * q < self.efficiency(m, selected, blaze) {
                 return m;
             }
         }
@@ -102,7 +113,7 @@ pub fn blaze(
             before.index(lambda)
         }
     } else {
-        (after.index(lambda) - before.index(lambda)).abs()
+        (after.index(lambda) - before.index(lambda)) * (after.index(l0) - before.index(l0)).signum()
     };
     // A same-medium phase screen has no relief substrate: use the
     // nondispersive phase-screen limit rather than an undefined 0/0 depth.
@@ -214,6 +225,12 @@ mod tests {
             // coating absorption is independent of the phase partition.
             assert!(outgoing + 0.1 <= 1.0 + 1e-13 && outgoing + 0.1 > 0.99997);
         }
+        // A cemented relief can reverse its phase when the two dispersions
+        // cross; absolute index contrasts would incorrectly keep a positive blaze.
+        let mut crossing = s.clone();
+        crossing.surfaces[1].material = MaterialRef::Constant { n: 1.52 };
+        crossing.surfaces[2].material = MaterialRef::glass("N-BK7");
+        assert!(blaze(&resolve(crossing), 2, 0.4861327, false, false) < 0.0);
         s.surfaces[2].interaction = Interaction::Reflect;
         let r = resolve(s);
         assert!((blaze(&r, 2, l0, true, false) - 1.0).abs() < 1e-15);

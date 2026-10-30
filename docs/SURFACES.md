@@ -145,7 +145,7 @@ controlled truncation error against constant total OPL at the focus.
 
 Every `Surface` has `diffraction_efficiency`: `{"type":"ideal"}` (default,
 unit efficiency in `trace_order`), `{"type":"kinoform"}`, or
-`{"type":"multilevel","levels":N}` (1–255; N=1 is an unetched screen).
+`{"type":"multilevel","levels":N}` (1–65535; N=1 is an unetched screen).
 This is a thin-element, scalar, locally periodic, normal-incidence relief
 model. It omits vector/resonance effects, shadowing and fabrication errors.
 It is an incoherent power partition, not a coherent wave-imaging model.
@@ -161,8 +161,9 @@ c_m = ∫₀¹ exp[−i2π(b−m)u] du
 ```
 
 For a relief separating two media, define the manufactured depth using
-`D₀=|n_after(λ₀)−n_before(λ₀)|`. At λ, `D=|n_after(λ)−n_before(λ)|`, so
-`α=(λ₀/λ)D/D₀`. Both materials are evaluated at their actual environment,
+`D₀=|n_after(λ₀)−n_before(λ₀)|`. At λ,
+`D=sign[n_after(λ₀)−n_before(λ₀)] [n_after(λ)−n_before(λ)]`, so
+`α=(λ₀/λ)D/D₀`. This retains a phase reversal if two glass dispersions cross. Both materials are evaluated at their actual environment,
 including λ₀ even when it is absent from the wavelength list. For a glass
 in air this is `(λ₀/λ)[n(λ)−1]/[n(λ₀)−1]`. Reversing transmission leaves
 the ratio unchanged. For a designed reflecting relief use `D₀=2n_inc(λ₀)`
@@ -188,7 +189,11 @@ Parseval gives `Σ[m∈Z]η_m=1` for either unit-modulus phase ramp. Any finite
 order window sums to at most one; its omitted tail must not be normalised
 away or called material absorption. The MC samples integer orders with a
 rounded-Cauchy rejection envelope, including negative orders and zero,
-without a finite order window. Non-propagating orders terminate in the
+without a finite order window. For a staircase it first samples residue
+`r=m mod N` by aliasing a continuous-ramp draw, then draws the alias k from
+`sinc²(k+r/N)` and returns `m=r+kN`. The residue mass is the squared
+N-term geometric sum, so this exact factorisation avoids rejection costs
+that grow with N. Non-propagating orders terminate in the
 explicit `diffraction` energy sink: this scalar approximation does not
 redistribute their power into propagating modes.
 
