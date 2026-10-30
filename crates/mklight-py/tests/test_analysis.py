@@ -20,9 +20,15 @@ def test_every_runnable_registered_analysis(engine, achromat):
             continue
         if a["default_settings"] is None:
             continue  # needs required settings (glass_info), tested below
-        r = achromat.run(a["name"])
+        settings = a["default_settings"].copy()
+        if a["name"] == "glass_substitution":
+            settings.update(
+                material_variables=[{"surface": 1, "candidates": {"nearest": 2}}],
+                budget={"max_combinations": 2}, local={"max_iterations": 2},
+            )
+        r = achromat.run(a["name"], settings)
         assert r.analysis == a["name"]
-        assert r.run_info["settings"] == a["default_settings"]
+        assert r.run_info["settings"] == settings
         assert r.run_info["engine_version"] == mklight.ENGINE_VERSION
         ran += 1
     if ran == 0:

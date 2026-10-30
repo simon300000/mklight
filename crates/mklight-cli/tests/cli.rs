@@ -1014,6 +1014,8 @@ fn run_produces_a_result_envelope_for_every_available_analysis() {
         let name = a["name"].as_str().unwrap();
         let settings = if name == "glass_info" {
             r#"{"name":"N-SK16"}"#
+        } else if name == "glass_substitution" {
+            r#"{"material_variables":[{"surface":1,"candidates":{"nearest":2}}],"budget":{"max_combinations":2},"local":{"max_iterations":2}}"#
         } else {
             "{}"
         };

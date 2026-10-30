@@ -67,10 +67,14 @@ use crate::buffer::{Buffer, BufferData};
 use crate::error::{EngineError, EngineResult};
 use crate::gpu::GpuDevice;
 
-/// Register `optimize` and `tolerance`.
+#[path = "glass.rs"]
+mod glass;
+
+/// Register continuous optimisation, glass substitution and tolerancing.
 pub fn register(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Optimize));
     r.register(Arc::new(Tolerance));
+    r.register(Arc::new(glass::GlassSubstitution));
 }
 
 // The `backend` record shared by both result schemas.
@@ -141,7 +145,7 @@ fn stops() -> &'static Mutex<HashMap<String, StopEntry>> {
     S.get_or_init(Default::default)
 }
 
-/// Ask the running `optimize` or `tolerance` job started with
+/// Ask the running optimisation, glass-substitution or tolerance job started with
 /// `"stop_key": key` to stop and return its best result so far (the job
 /// ends normally, `"status": "stopped"`). Returns whether such a job was
 /// running.
@@ -213,6 +217,7 @@ enum Interrupt {
     None,
     Stopped,
     Cancelled,
+    TimeLimit,
 }
 
 /// Run `f` with a context that is cancelled when `ctx` is or when `stop` is
@@ -223,14 +228,30 @@ fn interruptible<T>(
     stop: &StopRequest,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
+    interruptible_for(ctx, stop, None, f)
+}
+
+fn interruptible_for<T>(
+    ctx: &JobContext,
+    stop: &StopRequest,
+    limit: Option<Duration>,
+    f: impl FnOnce(&JobContext) -> T,
+) -> (T, Interrupt) {
     let stop = &stop.token;
     let mut inner = ctx.subrange(0.0, 1.0);
     inner.cancel = CancelToken::new();
     let done = AtomicBool::new(false);
+    let timed_out = AtomicBool::new(false);
+    let started = std::time::Instant::now();
     let out = std::thread::scope(|s| {
         s.spawn(|| {
             while !done.load(Ordering::Acquire) {
                 if ctx.cancel.is_cancelled() || stop.is_cancelled() {
+                    inner.cancel.cancel();
+                    break;
+                }
+                if limit.is_some_and(|d| started.elapsed() >= d) {
+                    timed_out.store(true, Ordering::Release);
                     inner.cancel.cancel();
                     break;
                 }
@@ -245,6 +266,8 @@ fn interruptible<T>(
         Interrupt::Cancelled
     } else if stop.is_cancelled() {
         Interrupt::Stopped
+    } else if timed_out.load(Ordering::Acquire) {
+        Interrupt::TimeLimit
     } else {
         Interrupt::None
     };
@@ -848,7 +871,7 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
         Interrupt::Cancelled => "cancelled",
         Interrupt::Stopped => "stopped",
         Interrupt::None if termination.is_converged() => "converged",
-        Interrupt::None => "finished",
+        Interrupt::None | Interrupt::TimeLimit => "finished",
     }
 }
 
@@ -1933,7 +1956,7 @@ impl Analysis for Tolerance {
         };
         ev.finish(input, s.backend, None, ctx)?;
         let status = match why {
-            Interrupt::None => "complete",
+            Interrupt::None | Interrupt::TimeLimit => "complete",
             Interrupt::Stopped => "stopped",
             Interrupt::Cancelled => "cancelled",
         };

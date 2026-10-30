@@ -63,8 +63,26 @@ pub struct Glass {
     /// Relative cost or availability code, used by the glass-substitution optimiser.
     #[serde(default)]
     pub relative_cost: Option<f64>,
+    /// Availability and resistance data retained when loading an AGF catalog.
+    #[serde(default, skip_serializing_if = "GlassSubstitution::is_default")]
+    pub substitution: GlassSubstitution,
     #[serde(default)]
     pub comment: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GlassSubstitution {
+    pub status: agf::GlassStatus,
+    pub exclude_substitution: bool,
+    pub climate_resistance: Option<f64>,
+    pub stain_resistance: Option<f64>,
+}
+
+impl GlassSubstitution {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Glass {
@@ -103,10 +121,9 @@ pub struct GlassCatalog {
 impl GlassCatalog {
     /// Loads an AGF catalog file in any common encoding (UTF-8, Latin-1,
     /// UTF-16 LE/BE), named after the file stem, with the default
-    /// skip-or-keep policy. The warnings and the AGF-only metadata (status,
-    /// exclude-substitution flag, ΔP_g,F, resistance codes, …) are dropped;
-    /// use `agf::read_agf_file` to keep them, e.g. for glass substitution
-    /// (`AgfCatalog::substitution_candidates`).
+    /// skip-or-keep policy. Availability and climate/stain resistance are
+    /// retained in `Glass::substitution`; use `agf::read_agf_file` to also
+    /// keep warnings and the complete AGF metadata.
     pub fn from_agf_file(path: impl AsRef<std::path::Path>) -> MkResult<Self> {
         Ok(agf::read_agf_file(path, &agf::AgfOptions::default())?.catalog)
     }

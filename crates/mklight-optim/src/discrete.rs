@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use mklight_core::{JobContext, MkError, MkResult};
 
 use crate::lsq::{LsqSettings, least_squares};
-use crate::monitor::{IterationRecord, Monitor, Termination};
+use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
 use crate::problem::{EvalStatus, Problem, ScalarEval};
 use crate::rand::{Rng, streams};
 
@@ -435,16 +435,69 @@ pub struct LocallyRefined {
     pub settings: LsqSettings,
 }
 
+impl LocallyRefined {
+    /// Refine in parallel, retaining the full local answers (including a
+    /// stopped solve's best point). Optional starts let mixed basin hopping
+    /// explore different shapes for the same assignment. Results stay in input
+    /// order, independent of worker completion order.
+    pub fn refine_batch(
+        &self,
+        assignments: &[Vec<usize>],
+        starts: Option<&[Vec<f64>]>,
+        ctx: &JobContext,
+        feasibility_tol: f64,
+    ) -> Vec<MkResult<OptimResult>> {
+        assignments
+            .par_iter()
+            .enumerate()
+            .map(|(i, a)| {
+                ctx.check()?;
+                let (p, x0) = (self.build)(a)?;
+                let mut mon =
+                    Monitor::new(JobContext::with(ctx.cancel.clone(), Default::default()));
+                mon.keep_history = false;
+                mon.feasibility_tol = feasibility_tol;
+                let mut r = least_squares(
+                    &*p,
+                    starts.map_or(x0.as_slice(), |s| s[i].as_slice()),
+                    &self.settings,
+                    &mon,
+                )?;
+                if r.termination == Termination::Cancelled
+                    && let Some(best) = mon.best.get()
+                    && (ScalarEval {
+                        merit: best.merit,
+                        violation: best.violation,
+                        status: EvalStatus::Ok,
+                    })
+                    .better_than(
+                        &ScalarEval {
+                            merit: r.merit,
+                            violation: r.violation,
+                            status: EvalStatus::Ok,
+                        },
+                        feasibility_tol,
+                    )
+                {
+                    r.x = best.x;
+                    r.merit = best.merit;
+                    r.violation = best.violation;
+                }
+                Ok(r)
+            })
+            .collect()
+    }
+}
+
 impl DiscreteProblem for LocallyRefined {
     fn num_choices(&self) -> &[usize] {
         &self.choices
     }
     fn evaluate_batch(&self, a: &[Vec<usize>], ctx: &JobContext) -> MkResult<Vec<ScalarEval>> {
-        a.par_iter()
-            .map(|x| {
-                ctx.check()?;
-                let (prob, x0) = (self.build)(x)?;
-                let r = least_squares(&*prob, &x0, &self.settings, &Monitor::new(ctx.clone()))?;
+        self.refine_batch(a, None, ctx, Monitor::default().feasibility_tol)
+            .into_iter()
+            .map(|r| {
+                let r = r?;
                 if r.termination == Termination::Cancelled {
                     return Err(MkError::Cancelled);
                 }
