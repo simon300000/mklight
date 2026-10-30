@@ -69,9 +69,10 @@ primary specification, and flagged in the source:
   documentation. `a0 … a6` are verified.
 
 **Verification of formulas 12 and 13** against the manufacturer's own data.
-Source: Nikon Corporation, *Zemax Data: AGF format* (`nikon_zemax_data.zip`
-→ `NIKON-HIKARI_201911.AGF`, updated November 2019), from the Nikon
-optical-components downloads page (nikon.com/business/components/downloads).
+Source: Nikon Corporation, glass data in AGF format
+(`NIKON-HIKARI_201911.AGF`, updated November 2019), the AGF download on the
+Nikon optical-components downloads page
+(nikon.com/business/components/downloads).
 Each glass's `NM` record carries the manufacturer's catalog `n_d` and `V_d`;
 the coefficients were evaluated at the d, F and C lines
 (0.5875618 / 0.4861327 / 0.6562725 µm):

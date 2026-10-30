@@ -1337,7 +1337,7 @@ LD 0.31 2.325
     }
 
     /// Four glasses of the manufacturer catalog `NIKON-HIKARI_201911.AGF`
-    /// (Nikon, "Zemax Data: AGF format", nikon.com, November 2019), copied
+    /// (Nikon, AGF-format glass data, nikon.com, November 2019), copied
     /// record for record: formula 13 (J-FK5; J-SFH1 with a7, a8 ≠ 0) and
     /// formula 12 (E-LAKH1, E-KZFH1), with `CD` and `TD` wrapped over
     /// several lines as in the file. `docs/MATERIALS.md` lists the source.
