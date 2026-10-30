@@ -89,6 +89,60 @@ pub enum Clip {
     },
 }
 
+/// The clipping of every surface for `mode` (module docs), from the
+/// interface kinds and the clear semi-diameters of the system. This is the
+/// single definition of the apertures a ghost run clips at:
+/// [`GhostModel::new`] uses it with `SequentialTracer::semi_diameters` at
+/// default settings, and a stray-light solver that is combined with a ghost
+/// run builds its clear apertures from it, so both partition at identical
+/// apertures (CONVENTIONS §10, `GhostCoverage::same_apertures`).
+pub fn clip_apertures(
+    sys: &ResolvedSystem,
+    kinds: &[InterfaceKind],
+    semi: &SemiDiameters,
+    mode: ClipMode,
+) -> Vec<Clip> {
+    let n = sys.num_surfaces();
+    let stop_radius = semi.values[sys.stop].max(semi.traced[sys.stop]) * (1.0 + 1e-12);
+    (0..n)
+        .map(|i| {
+            let s = &sys.surfaces[i];
+            let has_fixed = s.aperture.is_some() || s.fixed_semi_diameter.is_some();
+            let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
+            if i == 0 || is_cb {
+                return Clip::None;
+            }
+            if has_fixed {
+                return match mode {
+                    ClipMode::None => Clip::None,
+                    _ => Clip::Surface,
+                };
+            }
+            let is_stop = i == sys.stop;
+            match mode {
+                ClipMode::None => Clip::None,
+                ClipMode::FixedApertures if is_stop => Clip::Radius {
+                    radius: stop_radius,
+                },
+                ClipMode::FixedApertures => Clip::None,
+                ClipMode::ClearApertures { .. } if is_stop => Clip::Radius {
+                    radius: stop_radius,
+                },
+                // Physically absent surfaces (dummies, bare same-index
+                // planes) and the image never clip on their own.
+                ClipMode::ClearApertures { .. }
+                    if i == n - 1 || kinds[i] == InterfaceKind::Passive =>
+                {
+                    Clip::None
+                }
+                ClipMode::ClearApertures { margin_mm } => Clip::Radius {
+                    radius: semi.values[i] + margin_mm,
+                },
+            }
+        })
+        .collect()
+}
+
 /// The shared ghost-solver model (module docs). Immutable and `Sync`.
 #[derive(Clone, Debug)]
 pub struct GhostModel {
@@ -112,47 +166,9 @@ impl GhostModel {
             ));
         }
         let sys = tracer.system();
-        let n = sys.num_surfaces();
         let kinds = interface_kinds(sys);
         let semi = tracer.semi_diameters(&SemiDiameterSettings::default());
-        let stop_radius = semi.values[sys.stop].max(semi.traced[sys.stop]) * (1.0 + 1e-12);
-        let clip = (0..n)
-            .map(|i| {
-                let s = &sys.surfaces[i];
-                let has_fixed = s.aperture.is_some() || s.fixed_semi_diameter.is_some();
-                let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
-                if i == 0 || is_cb {
-                    return Clip::None;
-                }
-                if has_fixed {
-                    return match settings.clip {
-                        ClipMode::None => Clip::None,
-                        _ => Clip::Surface,
-                    };
-                }
-                let is_stop = i == sys.stop;
-                match settings.clip {
-                    ClipMode::None => Clip::None,
-                    ClipMode::FixedApertures if is_stop => Clip::Radius {
-                        radius: stop_radius,
-                    },
-                    ClipMode::FixedApertures => Clip::None,
-                    ClipMode::ClearApertures { .. } if is_stop => Clip::Radius {
-                        radius: stop_radius,
-                    },
-                    // Physically absent surfaces (dummies, bare same-index
-                    // planes) and the image never clip on their own.
-                    ClipMode::ClearApertures { .. }
-                        if i == n - 1 || kinds[i] == InterfaceKind::Passive =>
-                    {
-                        Clip::None
-                    }
-                    ClipMode::ClearApertures { margin_mm } => Clip::Radius {
-                        radius: semi.values[i] + margin_mm,
-                    },
-                }
-            })
-            .collect();
+        let clip = clip_apertures(sys, &kinds, &semi, settings.clip);
         // Inverse transforms. With to_next = (o, R) (next frame in this
         // one: p_i = o + R p_{i+1}), the inverse in the same
         // subtract-then-rotate form as the forward map is

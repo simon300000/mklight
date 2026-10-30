@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 mklight-core.workspace = true
 mklight-trace.workspace = true
+mklight-ghost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true

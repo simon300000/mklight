@@ -16,7 +16,8 @@
 //! the explicit ghost solver reports ghosts for the same run), `Ghost` is
 //! removed from the total, so a front end can add ghost-solver and
 //! stray-solver irradiance without counting any path twice
-//! (`docs/STRAY.md`, "Partition").
+//! (`docs/STRAY.md`, "Partition"). Pass the ghost run's coverage record
+//! (`ghost_coverage`) to have the shared apertures checked.
 //!
 //! # Reproducibility
 //!
@@ -31,7 +32,7 @@
 //! # Validation
 //!
 //! Settings are JSON with every field optional; unknown keys are rejected
-//! (except inside `semi_diameters`, owned by `mklight-trace`). The detector
+//! (also inside `semi_diameters`). The detector
 //! map is limited to [`crate::system::MAX_DETECTOR_PIXELS`], source strengths
 //! must be finite, and a fraction of a zero reference flux is `None`.
 
@@ -181,6 +182,11 @@ pub struct StrayAnalysisSettings {
     /// Remove `Ghost` from `classes` because the explicit ghost solver owns
     /// those paths.
     pub exclude_ghost_class: bool,
+    /// The coverage record of the ghost run this analysis is combined with.
+    /// When given, the analysis fails unless the scene clips at exactly the
+    /// ghost run's apertures ([`StraySystem::check_ghost_coverage`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ghost_coverage: Option<mklight_ghost::GhostCoverage>,
     /// Detector map size `(nx, ny)`.
     pub detector_pixels: (u32, u32),
     /// Number of path signatures reported.
@@ -204,6 +210,7 @@ impl Default for StrayAnalysisSettings {
             seed: 1,
             classes: ClassMask::ALL_STRAY,
             exclude_ghost_class: false,
+            ghost_coverage: None,
             detector_pixels: (128, 128),
             top_signatures: 20,
             scene: sys.scene,
@@ -363,6 +370,9 @@ pub fn analyze_system(
     ctx: &JobContext,
 ) -> MkResult<StrayAnalysisResult> {
     settings.validate()?;
+    if let Some(cov) = &settings.ghost_coverage {
+        sys.check_ghost_coverage(cov)?;
+    }
     let timer = RunTimer::start();
     ctx.check()?;
     let beam = settings.source.resolve(sys)?;

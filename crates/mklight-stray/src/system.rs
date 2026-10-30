@@ -17,6 +17,15 @@
 //! * fixed semi-diameters, explicit apertures and values supplied by the
 //!   caller are kept.
 //!
+//! The stop and the other optical surfaces take their radii from
+//! `mklight_ghost::clip_apertures` (clear apertures, no margin), the single
+//! definition of the apertures an explicit ghost run clips at, so the
+//! stray solver's `Ghost` class and a ghost run with default settings
+//! partition at identical apertures (CONVENTIONS §10).
+//! [`StraySystem::ghost_apertures`] reports the clipping of the built scene
+//! in the ghost solver's terms, and [`StraySystem::check_ghost_coverage`]
+//! checks it against a ghost run's [`GhostCoverage`].
+//!
 //! The same values define the *clipped sequential model*
 //! ([`StraySystem::clipped_system`]): the resolved system with every
 //! automatic semi-diameter frozen to the scene's clear aperture. Its
@@ -75,6 +84,7 @@ use mklight_core::job::JobContext;
 use mklight_core::math::Vec3;
 use mklight_core::model::SurfaceShape;
 use mklight_core::resolved::ResolvedSystem;
+use mklight_ghost::{Clip, ClipMode, GhostCoverage, clip_apertures, interface_kinds};
 use mklight_trace::{
     FieldPoint, ObjectSource, SemiDiameterSettings, SemiDiameterSource, SemiDiameters,
     SequentialTracer,
@@ -227,6 +237,14 @@ impl StraySystem {
         let n = rs.num_surfaces();
         let image = n - 1;
         let has_sensor = rs.system().sensor.is_some();
+        // The ghost solver's clear apertures, shared so that both solvers
+        // clip at bit-identical radii.
+        let ghost = clip_apertures(
+            rs,
+            &interface_kinds(rs),
+            &sd,
+            ClipMode::ClearApertures { margin_mm: 0.0 },
+        );
         let mut clear = vec![None; n];
         for (j, c) in clear.iter_mut().enumerate() {
             let user = opts
@@ -236,13 +254,18 @@ impl StraySystem {
                 .copied()
                 .flatten()
                 .filter(|r| r.is_finite() && *r > 0.0);
-            let traced = match sd.sources[j] {
-                SemiDiameterSource::Traced if j == image => {
+            let traced = match (sd.sources[j], ghost[j]) {
+                (SemiDiameterSource::Traced, _) if j == image => {
                     Some(sd.values[j] * (1.0 + opts.detector_margin))
                 }
-                SemiDiameterSource::Traced => Some(sd.values[j]),
-                SemiDiameterSource::Stop => Some(sd.values[j].max(sd.traced[j])),
-                SemiDiameterSource::Fixed | SemiDiameterSource::None => None,
+                (
+                    SemiDiameterSource::Traced | SemiDiameterSource::Stop,
+                    Clip::Radius { radius },
+                ) => Some(radius),
+                // Passive surfaces (no geometry unless they are the stop).
+                (SemiDiameterSource::Traced, _) => Some(sd.values[j]),
+                (SemiDiameterSource::Stop, _) => Some(sd.values[j].max(sd.traced[j])),
+                (SemiDiameterSource::Fixed | SemiDiameterSource::None, _) => None,
             };
             *c = user.or(traced.filter(|r| r.is_finite() && *r > 0.0));
         }
@@ -312,6 +335,68 @@ impl StraySystem {
 
     pub fn tracer(&self) -> &SequentialTracer {
         &self.tracer
+    }
+
+    /// How the scene clips each surface, in the ghost solver's terms
+    /// (`mklight_ghost::Clip`): `Surface` for a fixed semi-diameter or
+    /// explicit aperture, `Radius` for an automatic clear aperture of an
+    /// interface or the stop plate (outside it the scene has an opaque
+    /// mount, or a polished zone whose hits are `Sneak`), `None` for the
+    /// object, coordinate breaks, surfaces without geometry and an
+    /// automatic image surface (the detector bounds detection, not a path).
+    /// The stray `Ghost` class holds only paths inside these apertures.
+    pub fn ghost_apertures(&self) -> Vec<Clip> {
+        let rs = self.resolved();
+        let image = rs.image_index();
+        rs.surfaces
+            .iter()
+            .enumerate()
+            .map(|(j, s)| {
+                if j == 0 || matches!(s.shape, SurfaceShape::CoordinateBreak) {
+                    Clip::None
+                } else if s.aperture.is_some() || s.fixed_semi_diameter.is_some() {
+                    Clip::Surface
+                } else if j == image {
+                    Clip::None
+                } else {
+                    match &self.scene.surfaces[j] {
+                        Some(g) => Clip::Radius {
+                            radius: g.clear_semi_diameter,
+                        },
+                        None => Clip::None,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Checks that this scene partitions consistently with the ghost run of
+    /// `coverage` (CONVENTIONS §10): the same interface kinds and the same
+    /// clipping apertures ([`GhostCoverage::same_apertures`] with
+    /// [`Self::ghost_apertures`]). Run the stray solver with the `Ghost`
+    /// class excluded only when this holds; otherwise paths clipped by one
+    /// solver and not the other are counted twice or not at all.
+    pub fn check_ghost_coverage(&self, coverage: &GhostCoverage) -> MkResult<()> {
+        let kinds = interface_kinds(self.resolved());
+        if coverage.interfaces != kinds {
+            return Err(MkError::InvalidModel(
+                "the ghost run used a different system (interface kinds differ)".into(),
+            ));
+        }
+        let mine = self.ghost_apertures();
+        if !coverage.same_apertures(&mine) {
+            let j = (0..mine.len())
+                .find(|&j| coverage.apertures.get(j) != Some(&mine[j]))
+                .unwrap_or(mine.len());
+            return Err(MkError::InvalidModel(format!(
+                "the ghost run clips at different apertures than the stray scene \
+                 (first at surface {j}: ghost {:?}, stray {:?}); use the default ghost clipping \
+                 (clear apertures, no margin) and the same semi-diameter settings",
+                coverage.apertures.get(j),
+                mine.get(j)
+            )));
+        }
+        Ok(())
     }
     pub fn resolved(&self) -> &ResolvedSystem {
         self.tracer.system()

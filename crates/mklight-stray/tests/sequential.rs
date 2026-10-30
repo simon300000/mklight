@@ -268,7 +268,10 @@ fn plate() -> OpticalSystem {
 #[test]
 fn reference_transmittance_of_a_plate() {
     let sys = stray_system(plate(), &no_scatter_options());
-    assert_eq!(sys.clear_semi_diameters[1], Some(5.0), "stop radius");
+    // The ghost solver's stop radius (paraxial radius × (1 + 10⁻¹²)), shared
+    // so that both solvers clip at the same aperture.
+    let r_stop = sys.clear_semi_diameters[1].unwrap();
+    assert!((r_stop / 5.0 - 1.0).abs() <= 2e-12, "stop radius {r_stop}");
     let beam = sys.system_field_source(0, 0.2, 1.0).unwrap();
     let t = fresnel(1.0, 1.5, 1.0).t_unpolarized();
     let r = primary_reference(&sys, &beam.spec, 400, &JobContext::new()).unwrap();

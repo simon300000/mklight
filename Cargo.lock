@@ -414,6 +414,7 @@ dependencies = [
  "approx",
  "blake3",
  "mklight-core",
+ "mklight-ghost",
  "mklight-trace",
  "rayon",
  "serde",

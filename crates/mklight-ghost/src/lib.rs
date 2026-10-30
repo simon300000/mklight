@@ -50,7 +50,7 @@ pub use irradiance::{
     FieldIrradiance, FieldRef, GhostIrradiance, IrradianceMap, IrradianceSettings, PathIrradiance,
     ghost_irradiance,
 };
-pub use model::{Clip, ClipMode, GhostModel, GhostSettings};
+pub use model::{Clip, ClipMode, GhostModel, GhostSettings, clip_apertures};
 pub use paraxial::{
     ParaxialGhost, ParaxialGhostReport, ParaxialGhostSettings, ParaxialTrace, paraxial_ghosts,
     real_ghost_focus,
