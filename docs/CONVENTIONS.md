@@ -307,3 +307,17 @@ may change.
 * Ray clouds, grids, maps and scene geometry travel as row-major buffers
   with NaN for "no value" (a ray that did not arrive); curves along one
   axis stay in the JSON (§11 rules for non-finite numbers).
+
+## 15. Wave-optics pupils
+
+* Normalised exit-pupil coordinates `(u, v)` are **positions on the
+  reference sphere** relative to its centre, divided by `R·sinθ'max`, with
+  `u` along image `x` and `v` along image `y`. A ray converging to the
+  centre with direction `k̂` sits at `−(k̂·ê_u, k̂·ê_v)/sinθ'max`.
+* An image-space telecentric system (exit pupil at infinity) takes the
+  `R → ∞` limit of the §4 OPD:
+  `OPD = (OPL_c − OPL_r) + n'(d_r·(Q_r − P) − d_c·(Q_c − P))` for image
+  points `Q`, directions `d` and sphere centre `P`.
+* When light reaches the image toward local `−z`, wave optics works in the
+  image frame mirrored in `z`, so maps, PSFs and MTF directions are in the
+  image surface's `x`, `y`. Details: `docs/WAVE.md`.

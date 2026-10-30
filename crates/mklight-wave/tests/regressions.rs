@@ -377,7 +377,7 @@ fn off_axis_psf_matches_huygens_on_image_surface() {
     let e = big.energy_in_grid() / big.total_energy;
     assert!(e > 0.97 && e < 1.0, "{e}");
     // `pupil_coords` puts the chief ray at the pupil centre and a marginal
-    // ray at radius 1.
+    // ray at radius 1, on the side of the pupil the ray comes from.
     let g = p.geometry();
     let [eu, ev, ew] = g.chief_frame();
     let (u0, v0) = g.pupil_coords(ew);
@@ -385,7 +385,7 @@ fn off_axis_psf_matches_huygens_on_image_surface() {
     let sm = g.sin_max();
     let k = (ew * (1.0 - sm * sm).sqrt() + (eu * 0.6 + ev * 0.8) * sm).normalized();
     let (u1, v1) = g.pupil_coords(k);
-    assert!((u1 - 0.6).abs() < 1e-12 && (v1 - 0.8).abs() < 1e-12);
+    assert!((u1 + 0.6).abs() < 1e-12 && (v1 + 0.8).abs() < 1e-12);
 }
 
 // ------------------------------------------------- FFT length rounding

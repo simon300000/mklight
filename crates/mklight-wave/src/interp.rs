@@ -46,9 +46,9 @@ use crate::zernike::{ZernikeBasis, ZernikeFit, ZernikeFitSettings, fit_zernike};
 /// One traced ray at the exit pupil.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RaySample {
-    /// Normalised exit-pupil coordinates in the chief-ray frame
-    /// (direction-cosine scaled, see [`crate::pupil`] and
-    /// [`PupilGeometry::pupil_coords`]).
+    /// Normalised exit-pupil coordinates in the chief-ray frame (the ray's
+    /// position on the reference sphere, see [`crate::pupil`],
+    /// [`PupilGeometry::sphere_coords`] and [`PupilGeometry::pupil_coords`]).
     pub u: f64,
     pub v: f64,
     pub opd_waves: f64,

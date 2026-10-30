@@ -37,6 +37,11 @@ pub enum WaveWarning {
     /// `max_gap` against a typical ray spacing `typical_spacing`, both in
     /// normalised pupil units), so the wavefront there is extrapolated.
     SparseRays { max_gap: f64, typical_spacing: f64 },
+    /// Only `energy_in_grid` of the PSF's energy falls inside the image
+    /// grid: the PSF is truncated (spot larger than the grid), so
+    /// centroids, encircled energies and an MTF taken from it are biased.
+    /// Enlarge the grid or its spacing.
+    PsfTruncated { energy_in_grid: f64 },
 }
 
 impl fmt::Display for WaveWarning {
@@ -93,6 +98,12 @@ impl fmt::Display for WaveWarning {
                 f,
                 "parts of the aperture are {max_gap:.3} (pupil units) from the nearest ray, \
                  against a ray spacing of {typical_spacing:.3}; the wavefront there is extrapolated"
+            ),
+            WaveWarning::PsfTruncated { energy_in_grid } => write!(
+                f,
+                "only {:.1} % of the PSF energy lies inside the image grid; the PSF is \
+                 truncated (enlarge the grid or its spacing)",
+                100.0 * energy_in_grid
             ),
         }
     }
