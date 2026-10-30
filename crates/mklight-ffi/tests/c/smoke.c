@@ -45,7 +45,7 @@ static void sleep_ms(long ms) {
     nanosleep(&ts, NULL);
 }
 
-/* ---- callback bookkeeping (called on engine threads) ---- */
+/* ---- callback bookkeeping (called on the engine's event thread) ---- */
 static atomic_int g_events = 0;
 static atomic_int g_progress_events = 0;
 static atomic_int g_terminal_events = 0;
@@ -133,6 +133,9 @@ int main(int argc, char **argv) {
     char *h0 = NULL;
     OK(mk_session_current_snapshot_hash(s, &h0));
     CHECK(strlen(h0) == 64);
+    char *lh = NULL;
+    OK(mk_session_current_library_hash(s, &lh));
+    CHECK(strlen(lh) == 64);
 
     char *sys = NULL;
     OK(mk_session_get_system_json(s, &sys));
@@ -174,6 +177,7 @@ int main(int argc, char **argv) {
     json = run_job(eng, s, "system_summary", NULL, &bufs, &nb);
     CHECK(strstr(json, "\"run_info\"") && strstr(json, "\"snapshot_hash\""));
     CHECK(strstr(json, h1) != NULL); /* stamped with the snapshot it ran on */
+    CHECK(strstr(json, "\"library_hash\"") && strstr(json, lh) != NULL);
     CHECK(nb == 2 && bufs != NULL);
     CHECK(strcmp(bufs[0].name, "n_after") == 0);
     CHECK(bufs[0].dtype == MK_DTYPE_F64 && bufs[0].ndim == 2);
@@ -357,13 +361,14 @@ int main(int argc, char **argv) {
     mk_string_free(json);
 
     /* ---- callback: lifecycle and progress were delivered ---- */
+    /* 8 jobs finished. Events are delivered asynchronously by the event
+     * thread, so give the last terminal events a moment to arrive. */
+    for (int i = 0; i < 500 && atomic_load(&g_terminal_events) < 8; i++) sleep_ms(10);
     OK(mk_engine_set_job_callback(eng, NULL, NULL));
     int events_after_clear = atomic_load(&g_events);
     CHECK(atomic_load(&user_count) == events_after_clear);
     CHECK(atomic_load(&g_progress_events) >= 1);
-    /* 8 jobs finished; the last terminal event may still be on its way when
-     * mk_job_wait returns, so allow one to be missing. */
-    CHECK(atomic_load(&g_terminal_events) >= 7);
+    CHECK(atomic_load(&g_terminal_events) == 8);
     OK(mk_session_submit_analysis(s, "validate", NULL, NULL, &job));
     OK(mk_job_wait(eng, job, 30000, &state));
     OK(mk_job_release(eng, job));
@@ -373,6 +378,7 @@ int main(int argc, char **argv) {
     mk_string_free(sys);
     mk_string_free(h0);
     mk_string_free(h1);
+    mk_string_free(lh);
     mk_session_destroy(s);
     mk_engine_destroy(eng);
     mk_session_destroy(s2);

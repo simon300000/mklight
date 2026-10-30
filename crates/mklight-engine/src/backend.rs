@@ -3,12 +3,17 @@
 //! The CPU f64 reference is always present. GPU backends (`mklight-gpu`
 //! implementations such as Metal) register a `BackendProvider` once they are
 //! wired in; until then a Metal entry is listed as unavailable on macOS so
-//! front ends can show the choice. Requesting an unavailable backend is an
-//! error unless the caller allows fallback, in which case the job runs on the
-//! CPU reference and its `RunInfo` says so (CONVENTIONS §7: never silently
-//! degrade).
+//! front ends can show the choice.
+//!
+//! Selection is per analysis: a GPU backend is used only for the analyses it
+//! lists in `capabilities.analyses`. Requesting a backend that is
+//! unavailable, or that does not implement the analysis, is an error unless
+//! the caller allows fallback, in which case the job runs on the CPU
+//! reference and its `RunInfo` says so (never silently degrade). The chosen
+//! provider's `device()` handle travels to the analysis in `AnalysisInput`.
 
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::sync::Arc;
 
 use mklight_core::job::Precision;
@@ -72,6 +77,12 @@ pub struct BackendInfo {
 }
 
 impl BackendInfo {
+    /// Can this backend run `analysis`? The reference runs everything; any
+    /// other backend only what it lists.
+    pub fn supports(&self, analysis: &str) -> bool {
+        self.capabilities.reference || self.capabilities.analyses.iter().any(|a| a == analysis)
+    }
+
     pub fn cpu_reference() -> Self {
         BackendInfo {
             backend: Backend::CpuReference,
@@ -89,10 +100,48 @@ impl BackendInfo {
     }
 }
 
-/// Implemented by GPU backend crates to describe (and later provide) a
-/// device. Integration point: `mklight-gpu` / `mklight-metal`.
+/// An opaque handle to a compute device. Analyses downcast it to the
+/// interface they need (`mklight-gpu`'s compute-backend trait object once
+/// that crate is wired in).
+pub type DeviceHandle = Arc<dyn Any + Send + Sync>;
+
+/// Implemented by GPU backend crates to describe and provide a device.
+/// Integration point: `mklight-gpu` / `mklight-metal`.
 pub trait BackendProvider: Send + Sync {
     fn info(&self) -> BackendInfo;
+    /// The device analyses compute on; `None` for the CPU reference.
+    fn device(&self) -> Option<DeviceHandle> {
+        None
+    }
+}
+
+/// The outcome of backend selection for one analysis run.
+#[derive(Clone)]
+pub struct SelectedBackend {
+    pub info: BackendInfo,
+    pub device: Option<DeviceHandle>,
+    /// Set when the run fell back to the CPU reference; goes into `RunInfo`.
+    pub warning: Option<String>,
+}
+
+impl std::fmt::Debug for SelectedBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SelectedBackend")
+            .field("info", &self.info)
+            .field("device", &self.device.is_some())
+            .field("warning", &self.warning)
+            .finish()
+    }
+}
+
+impl SelectedBackend {
+    pub fn cpu_reference() -> Self {
+        SelectedBackend {
+            info: BackendInfo::cpu_reference(),
+            device: None,
+            warning: None,
+        }
+    }
 }
 
 struct Static(BackendInfo);
@@ -148,39 +197,53 @@ impl BackendRegistry {
     }
 
     pub fn info(&self, b: &Backend) -> Option<BackendInfo> {
-        let id = b.id();
-        self.providers.iter().map(|p| p.info()).find(|i| i.id == id)
+        self.provider(b).map(|(_, i)| i)
     }
 
-    /// Resolve a request to a usable backend. With `allow_fallback`, an
-    /// unavailable backend falls back to the CPU reference and a warning
-    /// for `RunInfo` is returned.
+    fn provider(&self, b: &Backend) -> Option<(&Arc<dyn BackendProvider>, BackendInfo)> {
+        let id = b.id();
+        self.providers
+            .iter()
+            .map(|p| (p, p.info()))
+            .find(|(_, i)| i.id == id)
+    }
+
+    /// Resolve a request for running `analysis` (`None`: only check that
+    /// the backend is available). A backend that is unavailable or does not
+    /// implement the analysis is an error, or, with `allow_fallback`, the CPU
+    /// reference plus a warning for `RunInfo`.
     pub fn select(
         &self,
         requested: &Backend,
+        analysis: Option<&str>,
         allow_fallback: bool,
-    ) -> EngineResult<(BackendInfo, Option<String>)> {
-        match self.info(requested) {
-            Some(i) if i.available => Ok((i, None)),
-            other => {
-                let why = other
-                    .and_then(|i| i.reason)
-                    .unwrap_or_else(|| "unknown backend".into());
-                if allow_fallback && *requested != Backend::CpuReference {
-                    Ok((
-                        BackendInfo::cpu_reference(),
-                        Some(format!(
-                            "backend '{}' unavailable ({why}); ran on the CPU reference",
-                            requested.id()
-                        )),
-                    ))
-                } else {
-                    Err(EngineError::BackendUnavailable(format!(
-                        "{}: {why}",
-                        requested.id()
-                    )))
+    ) -> EngineResult<SelectedBackend> {
+        let why = match self.provider(requested) {
+            None => "unknown backend".to_string(),
+            Some((_, i)) if !i.available => i.reason.unwrap_or_else(|| "unavailable".into()),
+            Some((p, i)) => match analysis {
+                Some(a) if !i.supports(a) => format!("it does not implement '{a}'"),
+                _ => {
+                    return Ok(SelectedBackend {
+                        device: p.device(),
+                        info: i,
+                        warning: None,
+                    });
                 }
-            }
+            },
+        };
+        if allow_fallback && *requested != Backend::CpuReference {
+            let mut s = SelectedBackend::cpu_reference();
+            s.warning = Some(format!(
+                "backend '{}' not used ({why}); ran on the CPU reference",
+                requested.id()
+            ));
+            Ok(s)
+        } else {
+            Err(EngineError::BackendUnavailable(format!(
+                "{}: {why}",
+                requested.id()
+            )))
         }
     }
 }
@@ -204,31 +267,68 @@ mod tests {
     #[test]
     fn selection_and_fallback() {
         let r = BackendRegistry::with_defaults();
-        let (i, w) = r.select(&Backend::CpuReference, false).unwrap();
-        assert!(i.available && i.capabilities.fp64 && w.is_none());
+        let s = r
+            .select(&Backend::CpuReference, Some("validate"), false)
+            .unwrap();
+        assert!(s.info.available && s.info.capabilities.fp64 && s.warning.is_none());
+        assert!(s.device.is_none());
         let gpu = Backend::Gpu("nonexistent".into());
         assert!(matches!(
-            r.select(&gpu, false),
+            r.select(&gpu, None, false),
             Err(EngineError::BackendUnavailable(_))
         ));
-        let (i, w) = r.select(&gpu, true).unwrap();
-        assert_eq!(i.backend, Backend::CpuReference);
-        assert!(w.unwrap().contains("gpu:nonexistent"));
+        let s = r.select(&gpu, Some("validate"), true).unwrap();
+        assert_eq!(s.info.backend, Backend::CpuReference);
+        assert!(s.warning.unwrap().contains("gpu:nonexistent"));
+    }
+
+    /// A fake device, standing in for a GPU compute backend.
+    struct FakeDevice(&'static str);
+
+    struct Emu;
+    impl BackendProvider for Emu {
+        fn info(&self) -> BackendInfo {
+            let b = Backend::Gpu("emu".into());
+            BackendInfo {
+                id: b.id(),
+                backend: b,
+                title: "emulated".into(),
+                available: true,
+                reason: None,
+                precision: Precision::F32Gpu,
+                capabilities: BackendCapabilities {
+                    analyses: vec!["spot_diagram".into()],
+                    ..Default::default()
+                },
+            }
+        }
+        fn device(&self) -> Option<DeviceHandle> {
+            Some(Arc::new(FakeDevice("emu-0")))
+        }
     }
 
     #[test]
-    fn providers_can_be_registered() {
+    fn providers_supply_devices_per_analysis() {
         let mut r = BackendRegistry::with_defaults();
+        r.register(Arc::new(Emu));
         let b = Backend::Gpu("emu".into());
-        r.register(Arc::new(Static(BackendInfo {
-            id: b.id(),
-            backend: b.clone(),
-            title: "emulated".into(),
-            available: true,
-            reason: None,
-            precision: Precision::F32Gpu,
-            capabilities: BackendCapabilities::default(),
-        })));
-        assert_eq!(r.select(&b, false).unwrap().0.precision, Precision::F32Gpu);
+        // Availability only.
+        assert!(r.select(&b, None, false).is_ok());
+        // An analysis it implements: the GPU, with its device.
+        let s = r.select(&b, Some("spot_diagram"), false).unwrap();
+        assert_eq!(s.info.precision, Precision::F32Gpu);
+        assert!(s.warning.is_none());
+        let dev = s.device.unwrap();
+        assert_eq!(dev.downcast_ref::<FakeDevice>().unwrap().0, "emu-0");
+        // One it does not: an error, or a CPU fallback that says why.
+        let e = r.select(&b, Some("mtf"), false).unwrap_err();
+        assert!(e.to_string().contains("does not implement 'mtf'"), "{e}");
+        let s = r.select(&b, Some("mtf"), true).unwrap();
+        assert_eq!(s.info.backend, Backend::CpuReference);
+        assert!(s.device.is_none());
+        let w = s.warning.unwrap();
+        assert!(w.contains("gpu:emu") && w.contains("'mtf'"), "{w}");
+        // The reference supports everything.
+        assert!(BackendInfo::cpu_reference().supports("anything"));
     }
 }

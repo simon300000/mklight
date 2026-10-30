@@ -131,12 +131,15 @@ typedef int32_t MKJobState;
 
 /* Job event callback. Called on every state change and, while a job runs,
  * when its progress or stage changed (polled every progress_interval_ms).
- * THREADING: invoked on engine worker/progress threads, or on the thread
- * calling a submit/cancel/release function, never concurrently for the same
- * job and in lifecycle order per job. It must be thread-safe, return
- * quickly, and must not call mk_engine_set_job_callback or
- * mk_engine_destroy. Other mk_* functions may be called. `stage` is valid
- * only during the call. */
+ * THREADING: invoked on one dedicated engine thread ("mklight-events"), one
+ * event at a time, never on the thread that submitted, cancelled or
+ * released the job, and with no engine or session lock held. Per job the
+ * events arrive in lifecycle order: QUEUED, then CANCELLED, or RUNNING
+ * (repeated for progress) followed by one terminal state. Events are queued,
+ * so a slow callback delays later events but never blocks jobs. The
+ * callback may call any mk_* function (including mk_job_wait and
+ * mk_engine_set_job_callback) except mk_engine_destroy on this engine.
+ * `stage` is valid only during the call. */
 typedef void (*MKJobCallback)(void *user_data, uint64_t job_id, MKJobState state,
                               double progress, const char *stage);
 
@@ -162,8 +165,8 @@ void mk_session_destroy(MKSession *session);
  * path the session was opened from or last saved to. */
 MKStatus mk_session_save(MKSession *session, const char *path);
 
-/* {"session_id", "path", "dirty", "snapshot_hash", "name", "open_warnings",
- *  "migration", "catalogs"} */
+/* {"session_id", "path", "dirty", "snapshot_hash", "library_hash", "name",
+ *  "open_warnings", "migration", "catalogs"} */
 MKStatus mk_session_info_json(const MKSession *session, char **out_json);
 
 /* The whole project document (same schema as the .mklight file). */
@@ -190,6 +193,12 @@ MKStatus mk_session_set_project_section_json(MKSession *session, const char *sec
 
 /* 64 lowercase hex characters (BLAKE3 of the canonical system JSON). */
 MKStatus mk_session_current_snapshot_hash(const MKSession *session, char **out_hash);
+
+/* 64 lowercase hex characters (BLAKE3 of the glass library's catalogs in
+ * load order). Changes when a catalog is added, replaced or reloaded with
+ * different data. A result is current while BOTH its run_info.snapshot_hash
+ * and its library_hash equal the session's. */
+MKStatus mk_session_current_library_hash(const MKSession *session, char **out_hash);
 
 /* ---- Glass catalogs ----------------------------------------------------- */
 
@@ -244,8 +253,9 @@ MKStatus mk_job_wait(const MKEngine *engine, uint64_t job, int64_t timeout_ms,
                      MKJobState *out_state);
 
 /* Take the result of a finished job and forget the job.
- *   MK_OK:             *out_json = {"run_info", "result", "buffers": [{"index",
- *                      "name", "dtype", "shape"}]}; *out_buffers and
+ *   MK_OK:             *out_json = {"run_info", "library_hash", "result",
+ *                      "buffers": [{"index", "name", "dtype", "shape"}]};
+ *                      *out_buffers and
  *                      *out_count = typed buffers (NULL and 0 when none).
  *   MK_ERR_JOB_FAILED: the job failed (message in mk_last_error).
  *   MK_ERR_CANCELLED:  the job was cancelled or superseded.

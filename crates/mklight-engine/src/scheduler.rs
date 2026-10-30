@@ -14,15 +14,22 @@
 //! * Finished jobs keep their outcome until `take_result` or `release`. At most
 //!   `max_retained` finished jobs are kept; the oldest are dropped beyond that.
 //!
-//! Locking: the table lock may be held while taking a job's lock, never the
-//! reverse. Event callbacks run with no lock held, so they may call back into
-//! the scheduler.
+//! Events: every state change (and, while a job runs, every progress change
+//! seen by the progress thread) is posted to a FIFO and delivered to the
+//! callback by one dedicated event thread, never by the thread that caused
+//! it. The callback therefore runs with no scheduler (or caller) lock held
+//! and may call back into the scheduler, even `wait`. A job's events are
+//! posted under its lock together with the state change they report, so
+//! they arrive in lifecycle order (`Queued` → `Running`* → terminal, or
+//! `Queued` → `Cancelled`) whichever threads submit, cancel or run it.
+//!
+//! Locking order: table → job → event queue. Callback slot is taken alone.
 
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
@@ -152,10 +159,6 @@ struct Job<T> {
     ctx: JobContext,
     inner: Mutex<JobInner<T>>,
     done: Condvar,
-    /// Serialises this job's Queued/Running/progress/terminal events so the
-    /// callback sees them in lifecycle order. Only event delivery for this
-    /// job happens under it (plus queueing, in `submit`).
-    emit_lock: Mutex<()>,
 }
 
 impl<T> Job<T> {
@@ -221,18 +224,48 @@ struct CallbackSlot {
     in_flight: Vec<ThreadId>,
 }
 
+/// Events waiting for the event thread, in posting order.
+#[derive(Default)]
+struct EventQueue {
+    queue: VecDeque<JobEvent>,
+    /// Events posted / handed to the callback (or dropped) so far.
+    posted: u64,
+    delivered: u64,
+    shutdown: bool,
+}
+
 struct Shared<T> {
     table: Mutex<Table<T>>,
     next_id: AtomicU64,
     work_cv: Condvar,
     callback: Mutex<CallbackSlot>,
     callback_cv: Condvar,
+    /// Cheap check that spares posting events nobody listens to.
+    has_callback: AtomicBool,
+    events: Mutex<EventQueue>,
+    /// Signalled when an event is posted and when one has been delivered.
+    events_cv: Condvar,
+    event_thread: OnceLock<ThreadId>,
     monitor: (Mutex<bool>, Condvar),
     config: SchedulerConfig,
 }
 
 impl<T: Send + 'static> Shared<T> {
-    fn emit(&self, ev: &JobEvent) {
+    /// Queue an event for the event thread. Callers post while holding the
+    /// job's lock across the state change the event reports, so the events
+    /// of one job are queued (and therefore delivered) in lifecycle order.
+    fn post(&self, ev: JobEvent) {
+        if !self.has_callback.load(Ordering::Acquire) {
+            return;
+        }
+        let mut q = lock(&self.events);
+        q.queue.push_back(ev);
+        q.posted += 1;
+        self.events_cv.notify_all();
+    }
+
+    /// Run the callback (if any) for one event, with no scheduler lock held.
+    fn deliver(&self, ev: &JobEvent) {
         let me = thread::current().id();
         let cb = {
             let mut g = lock(&self.callback);
@@ -240,13 +273,33 @@ impl<T: Send + 'static> Shared<T> {
             g.in_flight.push(me);
             cb
         };
-        // A panicking callback must not take a worker down with it.
+        // A panicking callback must not take the event thread down with it.
         let _ = catch_unwind(AssertUnwindSafe(|| cb(ev)));
         let mut g = lock(&self.callback);
         if let Some(i) = g.in_flight.iter().position(|t| *t == me) {
             g.in_flight.swap_remove(i);
         }
         self.callback_cv.notify_all();
+    }
+
+    fn event_loop(self: Arc<Self>) {
+        loop {
+            let ev = {
+                let mut q = lock(&self.events);
+                loop {
+                    if let Some(ev) = q.queue.pop_front() {
+                        break ev;
+                    }
+                    if q.shutdown {
+                        return;
+                    }
+                    q = self.events_cv.wait(q).unwrap_or_else(|e| e.into_inner());
+                }
+            };
+            self.deliver(&ev);
+            lock(&self.events).delivered += 1;
+            self.events_cv.notify_all();
+        }
     }
 
     /// Book-keeping after a job reached a terminal state.
@@ -278,6 +331,7 @@ impl<T: Send + 'static> Shared<T> {
                 g.work = None;
                 g.outcome = Some(Err(EngineError::Core(MkError::Cancelled)));
                 g.finished = Some(Instant::now());
+                self.post(job.event(JobState::Cancelled));
                 job.done.notify_all();
                 true
             } else {
@@ -286,7 +340,6 @@ impl<T: Send + 'static> Shared<T> {
         };
         if became_cancelled {
             self.record_finished(job);
-            self.emit(&job.event(JobState::Cancelled));
         }
     }
 
@@ -311,13 +364,10 @@ impl<T: Send + 'static> Shared<T> {
                 }
                 g.state = JobState::Running;
                 g.started = Some(Instant::now());
+                self.post(job.event(JobState::Running));
                 g.work.take()
             };
             let Some(work) = work else { continue };
-            {
-                let _e = lock(&job.emit_lock);
-                self.emit(&job.event(JobState::Running));
-            }
 
             let ctx = job.ctx.clone();
             let outcome = match catch_unwind(AssertUnwindSafe(|| work(&ctx))) {
@@ -352,11 +402,10 @@ impl<T: Send + 'static> Shared<T> {
                 } else {
                     outcome
                 });
+                self.post(job.event(state));
                 job.done.notify_all();
             }
             self.record_finished(&job);
-            let _e = lock(&job.emit_lock);
-            self.emit(&job.event(state));
         }
     }
 
@@ -372,36 +421,32 @@ impl<T: Send + 'static> Shared<T> {
                     return;
                 }
             }
-            if lock(&self.callback).cb.is_none() {
+            if !self.has_callback.load(Ordering::Acquire) {
                 continue;
             }
-            let running: Vec<Arc<Job<T>>> = {
+            let jobs: Vec<Arc<Job<T>>> = {
                 let t = lock(&self.table);
                 t.jobs.values().cloned().collect()
             };
-            for job in running {
-                // Holding the emit lock while checking the state guarantees no
-                // progress event is delivered after the job's terminal event.
-                let _e = lock(&job.emit_lock);
-                let ev = {
-                    let mut g = job.lock();
-                    if g.state != JobState::Running {
-                        continue;
-                    }
-                    let f = job.ctx.progress.fraction();
-                    let s = job.ctx.progress.stage();
-                    if (f - g.reported.0).abs() < 1e-4 && s == g.reported.1 {
-                        continue;
-                    }
-                    g.reported = (f, s.clone());
-                    JobEvent {
-                        id: job.id,
-                        state: JobState::Running,
-                        progress: f,
-                        stage: s,
-                    }
-                };
-                self.emit(&ev);
+            for job in jobs {
+                // Checking the state and posting under the job lock means no
+                // progress event can follow the job's terminal event.
+                let mut g = job.lock();
+                if g.state != JobState::Running {
+                    continue;
+                }
+                let f = job.ctx.progress.fraction();
+                let s = job.ctx.progress.stage();
+                if (f - g.reported.0).abs() < 1e-4 && s == g.reported.1 {
+                    continue;
+                }
+                g.reported = (f, s.clone());
+                self.post(JobEvent {
+                    id: job.id,
+                    state: JobState::Running,
+                    progress: f,
+                    stage: s,
+                });
             }
         }
     }
@@ -410,8 +455,9 @@ impl<T: Send + 'static> Shared<T> {
 /// The worker pool. Dropping it cancels all jobs and joins the threads.
 pub struct Scheduler<T: Send + 'static> {
     shared: Arc<Shared<T>>,
+    /// Workers and the progress thread.
     threads: Vec<JoinHandle<()>>,
-    thread_ids: Vec<ThreadId>,
+    event_thread: Option<JoinHandle<()>>,
 }
 
 impl<T: Send + 'static> Scheduler<T> {
@@ -429,6 +475,10 @@ impl<T: Send + 'static> Scheduler<T> {
             work_cv: Condvar::new(),
             callback: Mutex::new(CallbackSlot::default()),
             callback_cv: Condvar::new(),
+            has_callback: AtomicBool::new(false),
+            events: Mutex::new(EventQueue::default()),
+            events_cv: Condvar::new(),
+            event_thread: OnceLock::new(),
             monitor: (Mutex::new(false), Condvar::new()),
             config,
         });
@@ -449,11 +499,16 @@ impl<T: Send + 'static> Scheduler<T> {
                 .spawn(move || s.monitor_loop())
                 .expect("spawn progress thread"),
         );
-        let thread_ids = threads.iter().map(|t| t.thread().id()).collect();
+        let s = shared.clone();
+        let event_thread = thread::Builder::new()
+            .name("mklight-events".into())
+            .spawn(move || s.event_loop())
+            .expect("spawn event thread");
+        let _ = shared.event_thread.set(event_thread.thread().id());
         Scheduler {
             shared,
             threads,
-            thread_ids,
+            event_thread: Some(event_thread),
         }
     }
 
@@ -461,18 +516,20 @@ impl<T: Send + 'static> Scheduler<T> {
         &self.shared.config
     }
 
-    /// Install (or clear) the event callback. It runs on worker threads, the
-    /// progress thread, or the thread calling `submit`/`cancel`/`release`
-    /// (for the `Queued` event and for jobs cancelled while queued), with no
-    /// scheduler lock held.
+    /// Install (or clear) the event callback. It runs on the scheduler's
+    /// single event thread, one event at a time, with no scheduler lock
+    /// held, so it may call any scheduler (or engine) method, including
+    /// `wait`. Events posted while no callback is installed are not kept.
     ///
     /// When this returns, no other thread is still running the previous
-    /// callback, so whatever it captured may be freed. It must therefore not
-    /// be called from inside a callback running on another thread's behalf
-    /// (calling it from the callback's own thread is allowed).
+    /// callback, so whatever it captured may be freed. Calling it from
+    /// inside the callback is allowed.
     pub fn set_callback(&self, cb: Option<EventCallback>) {
         let me = thread::current().id();
         let mut g = lock(&self.shared.callback);
+        self.shared
+            .has_callback
+            .store(cb.is_some(), Ordering::Release);
         g.cb = cb;
         while g.in_flight.iter().any(|t| *t != me) {
             g = self
@@ -481,6 +538,38 @@ impl<T: Send + 'static> Scheduler<T> {
                 .wait(g)
                 .unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    /// Block until every event posted before this call has been handed to
+    /// the callback, or until `timeout`. Returns whether that happened.
+    /// From the event thread itself (inside the callback) it returns `false`
+    /// at once, since waiting there could never finish.
+    pub fn flush_events(&self, timeout: Duration) -> bool {
+        if self.shared.event_thread.get() == Some(&thread::current().id()) {
+            return false;
+        }
+        let deadline = Instant::now().checked_add(timeout);
+        let mut q = lock(&self.shared.events);
+        let target = q.posted;
+        while q.delivered < target {
+            let wait = match deadline {
+                None => Duration::from_secs(3600),
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d {
+                        return false;
+                    }
+                    d - now
+                }
+            };
+            q = self
+                .shared
+                .events_cv
+                .wait_timeout(q, wait)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
     }
 
     /// Queue a job. A view key cancels the previous job with the same key.
@@ -502,22 +591,21 @@ impl<T: Send + 'static> Scheduler<T> {
                 reported: (0.0, String::new()),
             }),
             done: Condvar::new(),
-            emit_lock: Mutex::new(()),
         });
-        // Held until `Queued` has been delivered: the worker's `Running`
-        // event waits for it, so events arrive in lifecycle order.
-        let emit_guard = lock(&job.emit_lock);
         let superseded = {
             let mut t = lock(&self.shared.table);
             if t.shutdown {
                 return Err(EngineError::ShutDown);
             }
+            // Posted before the job becomes visible to workers or `cancel`,
+            // so `Queued` precedes every other event of this job.
+            self.shared.post(job.event(JobState::Queued));
             let superseded = spec
                 .view_key
                 .and_then(|k| t.by_view.insert(k, id))
                 .and_then(|old| t.jobs.get(&old).cloned());
             t.jobs.insert(id, job.clone());
-            t.queue.push_back(job.clone());
+            t.queue.push_back(job);
             self.shared.work_cv.notify_one();
             superseded
         };
@@ -525,13 +613,6 @@ impl<T: Send + 'static> Scheduler<T> {
             old.lock().superseded_by = Some(id);
             self.shared.cancel_job(&old);
         }
-        self.shared.emit(&JobEvent {
-            id,
-            state: JobState::Queued,
-            progress: 0.0,
-            stage: String::new(),
-        });
-        drop(emit_guard);
         Ok(id)
     }
 
@@ -562,11 +643,12 @@ impl<T: Send + 'static> Scheduler<T> {
         Ok(())
     }
 
-    /// Block until the job finishes, or until `timeout` (`None` = forever).
-    /// Returns the terminal state, or `Timeout`.
+    /// Block until the job finishes, or until `timeout` (`None` = forever;
+    /// a timeout too large to represent also waits forever). Returns the
+    /// terminal state, or `Timeout`.
     pub fn wait(&self, id: JobId, timeout: Option<Duration>) -> EngineResult<JobState> {
         let job = self.get(id)?;
-        let deadline = timeout.map(|t| Instant::now() + t);
+        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
         let mut g = job.lock();
         while !g.state.is_terminal() {
             match deadline {
@@ -642,13 +724,22 @@ impl<T: Send + 'static> Drop for Scheduler<T> {
             *lock(m) = true;
             cv.notify_all();
         }
-        // If the last owner is dropped from inside a callback on one of our
-        // own threads, joining that thread would deadlock: detach it instead.
+        // A job closure may own the last handle; never join the own thread.
         let me = thread::current().id();
-        for (t, id) in self.threads.drain(..).zip(&self.thread_ids) {
-            if *id != me {
+        for t in self.threads.drain(..) {
+            if t.thread().id() != me {
                 let _ = t.join();
             }
+        }
+        // Every event has been posted now; the event thread delivers what is
+        // left and exits. If the last owner is dropped from inside the
+        // callback (on the event thread), joining it would deadlock: detach.
+        lock(&self.shared.events).shutdown = true;
+        self.shared.events_cv.notify_all();
+        if let Some(t) = self.event_thread.take()
+            && t.thread().id() != me
+        {
+            let _ = t.join();
         }
     }
 }
@@ -838,10 +929,7 @@ mod tests {
             .unwrap();
         s.wait(id, Some(LONG)).unwrap();
         // `wait` may return just before the terminal event is delivered.
-        let t0 = Instant::now();
-        while !lock(&events).iter().any(|e| e.state.is_terminal()) && t0.elapsed() < LONG {
-            thread::sleep(Duration::from_millis(1));
-        }
+        assert!(s.flush_events(LONG));
         s.set_callback(None);
         let ev = lock(&events).clone();
         let states: Vec<JobState> = ev.iter().map(|e| e.state).collect();
@@ -944,6 +1032,114 @@ mod tests {
         }
         // Nothing left running.
         assert!(s.statuses().iter().all(|st| st.state.is_terminal()));
+    }
+
+    /// Per job: `Queued`, then `Cancelled` directly, or `Running`* and one
+    /// terminal state last.
+    fn check_lifecycle(id: JobId, ev: &[JobState]) -> Result<(), String> {
+        let bad = || Err(format!("job {id}: {ev:?}"));
+        match ev {
+            [JobState::Queued, JobState::Cancelled] => Ok(()),
+            [JobState::Queued, JobState::Running, rest @ ..] => match rest.split_last() {
+                Some((last, mid))
+                    if last.is_terminal() && mid.iter().all(|s| *s == JobState::Running) =>
+                {
+                    Ok(())
+                }
+                _ => bad(),
+            },
+            _ => bad(),
+        }
+    }
+
+    #[test]
+    fn event_order_holds_under_concurrent_supersede_and_cancel() {
+        let s = Arc::new(sched(4));
+        let log = Arc::new(Mutex::new(HashMap::<JobId, Vec<JobState>>::new()));
+        let l = log.clone();
+        s.set_callback(Some(Arc::new(move |ev: &JobEvent| {
+            lock(&l).entry(ev.id).or_default().push(ev.state);
+        })));
+        let mut hs = Vec::new();
+        for t in 0..8u64 {
+            let s = s.clone();
+            hs.push(thread::spawn(move || {
+                let mut ids = Vec::new();
+                for i in 0..200u64 {
+                    let id = s
+                        .submit(
+                            JobSpec::new("h", move |ctx: &JobContext| {
+                                ctx.report(0.5, "half");
+                                ctx.check()?;
+                                Ok(t * 1000 + i)
+                            })
+                            .with_view_key("same"),
+                        )
+                        .unwrap();
+                    if i % 5 == 0 {
+                        let _ = s.cancel(id);
+                    }
+                    ids.push(id);
+                }
+                ids
+            }));
+        }
+        let ids: Vec<JobId> = hs.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        for &id in &ids {
+            match s.wait(id, Some(LONG)) {
+                Ok(st) => assert!(st.is_terminal()),
+                Err(EngineError::UnknownJob(_)) => {} // pruned after finishing
+                Err(e) => panic!("{e}"),
+            }
+        }
+        assert!(s.flush_events(LONG));
+        s.set_callback(None);
+        let log = lock(&log);
+        assert_eq!(log.len(), ids.len());
+        let bad: Vec<String> = ids
+            .iter()
+            .filter_map(|id| check_lifecycle(*id, &log[id]).err())
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "{} bad, e.g. {:?}",
+            bad.len(),
+            &bad[..bad.len().min(5)]
+        );
+    }
+
+    #[test]
+    fn callback_may_wait_on_the_job_it_is_told_about() {
+        let s = Arc::new(sched(1));
+        let weak = Arc::downgrade(&s);
+        let (tx, rx) = mpsc::channel::<(JobId, Result<JobState, EngineError>)>();
+        let tx = Mutex::new(tx);
+        s.set_callback(Some(Arc::new(move |ev: &JobEvent| {
+            if ev.state == JobState::Queued
+                && let Some(s) = weak.upgrade()
+            {
+                // Re-entering the scheduler from the callback, and blocking
+                // on the very job just queued, must not deadlock.
+                let r = s.wait(ev.id, Some(LONG));
+                let _ = s.status(ev.id);
+                let _ = lock(&tx).send((ev.id, r));
+            }
+        })));
+        let t0 = Instant::now();
+        let id = s.submit(JobSpec::new("x", |_: &JobContext| Ok(5))).unwrap();
+        assert!(t0.elapsed() < Duration::from_secs(5), "submit blocked");
+        let (got, r) = rx.recv_timeout(LONG).expect("callback never finished");
+        assert_eq!((got, r), (id, Ok(JobState::Done)));
+        assert_eq!(s.take_result(id).unwrap(), 5);
+        s.set_callback(None);
+    }
+
+    #[test]
+    fn huge_timeouts_mean_forever() {
+        let s = sched(1);
+        let id = s.submit(JobSpec::new("x", |_: &JobContext| Ok(1))).unwrap();
+        assert_eq!(s.wait(id, Some(Duration::MAX)).unwrap(), JobState::Done);
+        assert!(s.flush_events(Duration::MAX));
     }
 
     #[test]

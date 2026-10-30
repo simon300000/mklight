@@ -12,7 +12,7 @@ use std::time::Duration;
 use mklight_core::OpticalSystem;
 
 use crate::analysis::{Analysis, AnalysisInfo, AnalysisRegistry, AnalysisResult};
-use crate::backend::{Backend, BackendInfo, BackendProvider, BackendRegistry};
+use crate::backend::{Backend, BackendInfo, BackendProvider, BackendRegistry, SelectedBackend};
 use crate::error::EngineResult;
 use crate::project::Project;
 use crate::scheduler::{
@@ -150,7 +150,7 @@ impl Engine {
 
     /// Make `b` the default for new jobs. Fails if it is unavailable.
     pub fn set_default_backend(&self, b: Backend) -> EngineResult<()> {
-        read(&self.inner.backends).select(&b, false)?;
+        read(&self.inner.backends).select(&b, None, false)?;
         if let Ok(mut d) = self.inner.default_backend.write() {
             *d = b;
         }
@@ -161,18 +161,27 @@ impl Engine {
         read(&self.inner.default_backend).clone()
     }
 
-    pub(crate) fn select_backend(
+    /// Pick the backend for one run of `analysis`. An explicit request is
+    /// honoured or fails (unless `allow_fallback`); the engine default is a
+    /// preference, so analyses it does not implement run on the CPU
+    /// reference, with a `RunInfo` warning saying so.
+    pub fn select_backend(
         &self,
         requested: Option<&Backend>,
+        analysis: &str,
         allow_fallback: bool,
-    ) -> EngineResult<(BackendInfo, Option<String>)> {
-        let b = requested.cloned().unwrap_or_else(|| self.default_backend());
-        read(&self.inner.backends).select(&b, allow_fallback)
+    ) -> EngineResult<SelectedBackend> {
+        let reg = read(&self.inner.backends);
+        match requested {
+            Some(b) => reg.select(b, Some(analysis), allow_fallback),
+            None => reg.select(&self.default_backend(), Some(analysis), true),
+        }
     }
 
     // --- jobs
 
-    pub(crate) fn submit(&self, spec: JobSpec<AnalysisResult>) -> EngineResult<JobId> {
+    /// Queue a prepared job (see `Session::analysis_job`).
+    pub fn submit_job(&self, spec: JobSpec<AnalysisResult>) -> EngineResult<JobId> {
         self.inner.scheduler.submit(spec)
     }
 
@@ -207,10 +216,17 @@ impl Engine {
         self.inner.scheduler.release(id)
     }
 
-    /// Install or clear the job event callback (see `Scheduler::set_callback`
-    /// for the threading rules).
+    /// Install or clear the job event callback. It runs on the engine's
+    /// event thread, one event at a time, with no engine lock held (see
+    /// `Scheduler::set_callback`).
     pub fn set_event_callback(&self, cb: Option<EventCallback>) {
         self.inner.scheduler.set_callback(cb)
+    }
+
+    /// Wait until every job event posted so far has reached the callback
+    /// (see `Scheduler::flush_events`).
+    pub fn flush_events(&self, timeout: Duration) -> bool {
+        self.inner.scheduler.flush_events(timeout)
     }
 }
 

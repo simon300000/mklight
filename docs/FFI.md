@@ -98,18 +98,23 @@ engine:
 void cb(void *user_data, uint64_t job_id, MKJobState state, double progress, const char *stage);
 ```
 
-* It is invoked on **engine threads** (workers, the progress poller), or on
-  the thread that calls `mk_session_submit_analysis*` / `mk_job_cancel` /
-  `mk_job_release` (for the `QUEUED` event and for jobs cancelled while
-  queued). Marshal to the main thread yourself (for example with
-  `DispatchQueue.main.async`).
-* Per job, events arrive in lifecycle order and never concurrently:
-  `QUEUED` → `RUNNING` (+ progress updates) → `DONE` | `FAILED` | `CANCELLED`.
-  Progress updates are polled every `progress_interval_ms` and sent only
-  when the fraction or stage changed. Progress is monotone.
-* The callback must be thread-safe and return quickly. It may call other
-  `mk_*` functions, but not `mk_engine_set_job_callback` or
-  `mk_engine_destroy`.
+* It is invoked on **one dedicated engine thread** (`mklight-events`), one
+  event at a time. It never runs on the thread that submitted, cancelled or
+  released the job, and no engine or session lock is held during the call.
+  Workers and the progress poller only queue events, so a slow callback
+  delays later events but never stalls a job. Marshal to the main thread
+  yourself (for example with `DispatchQueue.main.async`).
+* Per job, events arrive in lifecycle order whichever threads submit,
+  cancel or run it: `QUEUED`, then either `CANCELLED` (cancelled or
+  superseded while queued) or `RUNNING` (repeated for progress updates)
+  followed by exactly one of `DONE` | `FAILED` | `CANCELLED`. Progress
+  updates are polled every `progress_interval_ms` and sent only when the
+  fraction or stage changed. Progress is monotone.
+* The callback may call any `mk_*` function, including session functions,
+  `mk_job_wait` (even on the job it is being told about) and
+  `mk_engine_set_job_callback`. The one exception is `mk_engine_destroy` on
+  the engine whose callback is running.
+* Events raised while no callback is installed are not kept.
 * When `mk_engine_set_job_callback` returns (including when clearing it with
   `cb == NULL`), no other thread is still inside the previous callback, so
   its `user_data` can be released. `mk_engine_destroy` clears the callback
@@ -216,6 +221,14 @@ unavailable backend fails with `MK_ERR_UNSUPPORTED` unless the request sets
 `allow_backend_fallback`, in which case the job runs on the CPU reference
 and `run_info.warnings` says so.
 
+Selection is per analysis: a GPU backend runs only the analyses listed in
+its `capabilities.analyses` (the CPU reference runs all). Requesting it
+explicitly for any other analysis is handled like an unavailable backend
+(error, or fallback with a warning). When the request names no backend,
+the engine default applies as a preference: analyses the default backend
+does not implement run on the CPU reference, and `run_info.warnings` notes
+it.
+
 ### Analysis request (`mk_session_submit_analysis_json`)
 
 ```json
@@ -242,18 +255,26 @@ through `mk_job_status`).
                 "backend": "cpu_reference", "precision": "f64_reference",
                 "seed": null, "started_unix_ms": 1761840000000,
                 "duration_ms": 0.31, "warnings": [] },
+  "library_hash": "<64 hex>",
   "result": { … analysis specific … },
   "buffers": [ {"index": 0, "name": "n_after", "dtype": "f64", "shape": [4, 3]} ] }
 ```
 
-Compare `run_info.snapshot_hash` with `mk_session_current_snapshot_hash` to
-tell whether a displayed result is stale.
+A result's inputs are identified by the pair (`run_info.snapshot_hash`,
+`library_hash`): the system and the glass data it was computed with.
+`library_hash` is the BLAKE3 hash of every catalog in the session's
+material library (name and canonical JSON, in load order), so loading,
+replacing or reloading an edited catalog changes it even though the system
+(and its snapshot hash) did not change. A displayed result is **current**
+only while both equal `mk_session_current_snapshot_hash` and
+`mk_session_current_library_hash`; otherwise it is stale. (`library_hash`
+sits beside `run_info` until `RunInfo` in mklight-core carries it.)
 
 ### Session info (`mk_session_info_json`)
 
 ```json
 { "session_id": 1, "path": "/…/lens.mklight", "dirty": false,
-  "snapshot_hash": "<64 hex>", "name": "Untitled",
+  "snapshot_hash": "<64 hex>", "library_hash": "<64 hex>", "name": "Untitled",
   "open_warnings": ["glass catalog 'MYCAT' could not be loaded (…)"],
   "migration": {"from_version": 0, "to_version": 1, "notes": ["…"]},
   "catalogs": [ {"name": "BUILTIN", "source": "builtin", "path": null, "glass_count": 13} ] }
@@ -326,7 +347,10 @@ Names reserved for analyses of later phases are listed with
 ## Project file (`.mklight`)
 
 Pretty-printed UTF-8 JSON, written atomically (temporary file in the same
-directory, `fsync`, rename), so a crash never leaves a half-written file.
+directory, `fsync` — `F_FULLFSYNC` on Apple platforms — then rename), so a
+crash never leaves a half-written file. Saving through a symbolic link
+replaces the link's target and keeps the link; the existing file's
+permissions are kept; a read-only file is refused (`MK_ERR_IO`).
 
 ```json
 { "format": "mklight-project", "schema_version": 1,
@@ -339,6 +363,14 @@ directory, `fsync`, rename), so a crash never leaves a half-written file.
   "views": [ {"key": "win-1", "analysis": "system_summary", "settings": {}, "ui": {}} ],
   "merit": null, "variables": null, "tolerances": null }
 ```
+
+Catalog references: on open, `relative_path` (relative to the project's
+directory) is tried first, then `path`. The catalog's `path` is updated to
+where it was actually found, and saving recomputes `relative_path` from it,
+so a project folder can be moved (or copied to another machine) any number
+of times. When the catalog file is not found at all, the previous
+`relative_path` is kept on save. A catalog outside the project folder gets
+`relative_path: null`.
 
 Unknown top-level keys are preserved on a round trip. Migrations run one
 version step at a time (`MIGRATIONS[k]`: version k → k+1). Version 0 denotes

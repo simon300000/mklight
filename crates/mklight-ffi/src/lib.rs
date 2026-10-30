@@ -465,8 +465,11 @@ unsafe impl Send for UserData {}
 unsafe impl Sync for UserData {}
 
 /// Install (`cb != NULL`) or clear (`cb == NULL`) the job-event callback.
-/// It is invoked on engine threads. When this returns, no other thread is
-/// still inside the previous callback.
+/// It is invoked on the engine's single event thread, one event at a time,
+/// never on the thread that submitted or cancelled the job, and with no
+/// engine or session lock held; it may call any `mk_*` function except
+/// destroying this engine. When this returns, no other thread is still
+/// inside the previous callback.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_engine_set_job_callback(
     engine: *mut MKEngine,
@@ -668,6 +671,24 @@ pub unsafe extern "C" fn mk_session_current_snapshot_hash(
     })
 }
 
+/// 64 hex characters of the BLAKE3 content hash of the session's glass
+/// library. A result is current while both its `run_info.snapshot_hash` and
+/// its `library_hash` equal the session's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_current_library_hash(
+    session: *const MKSession,
+    out_hash: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_hash) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        unsafe { out_ptr(out_hash, "out_hash") }?;
+        let h = s.lock().library_hash().to_string();
+        unsafe { put_string(out_hash, &h) };
+        Ok(())
+    })
+}
+
 /// Load a user glass catalog (AGF, or JSON when the extension is `.json`).
 /// `*out_json` (if not NULL) receives the catalog summary.
 #[unsafe(no_mangle)]
@@ -716,7 +737,12 @@ pub unsafe extern "C" fn mk_session_list_glasses(
 }
 
 fn submit(s: &MKSession, req: &AnalysisRequest, out_job: &mut u64) -> FfiResult<()> {
-    *out_job = s.lock().submit_analysis(req)?;
+    // Build the job under the session lock, queue it after releasing it.
+    let (engine, spec) = {
+        let g = s.lock();
+        (g.engine().clone(), g.analysis_job(req)?)
+    };
+    *out_job = engine.submit_job(spec)?;
     Ok(())
 }
 

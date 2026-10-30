@@ -23,7 +23,7 @@ use mklight_core::job::RunTimer;
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkResult, ResolvedSystem, RunInfo, Snapshot};
 
-use crate::backend::BackendInfo;
+use crate::backend::{BackendInfo, DeviceHandle};
 use crate::buffer::{Buffer, BufferDesc};
 use crate::error::{EngineError, EngineResult};
 use crate::settings;
@@ -59,13 +59,19 @@ pub struct AnalysisOutput {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnalysisResult {
     pub run_info: RunInfo,
+    /// Content hash of the glass library the run resolved materials with
+    /// (see `library_hash`). Together with `run_info.snapshot_hash` it
+    /// identifies the inputs: a result is current only while both match the
+    /// session's. (Moves into `RunInfo` once mklight-core carries it.)
+    pub library_hash: String,
     pub json: Value,
     pub buffers: Vec<Buffer>,
 }
 
 impl AnalysisResult {
     /// The JSON envelope handed to front ends:
-    /// `{"run_info": …, "result": …, "buffers": [{index, name, dtype, shape}]}`.
+    /// `{"run_info": …, "library_hash": …, "result": …,
+    /// "buffers": [{index, name, dtype, shape}]}`.
     pub fn envelope(&self) -> Value {
         let descs: Vec<BufferDesc> = self
             .buffers
@@ -75,6 +81,7 @@ impl AnalysisResult {
             .collect();
         json!({
             "run_info": self.run_info,
+            "library_hash": self.library_hash,
             "result": self.json,
             "buffers": descs,
         })
@@ -82,6 +89,23 @@ impl AnalysisResult {
 }
 
 type Resolver<'a> = Box<dyn Fn() -> MkResult<Arc<ResolvedSystem>> + 'a>;
+
+/// BLAKE3 content hash (64 hex digits) of a material library: every
+/// catalog's name and canonical JSON, length-prefixed, in load order (the
+/// order matters because unqualified glass names resolve to the first
+/// catalog that has them). Equal hashes mean every lookup gives the same
+/// glass data.
+pub fn library_hash(library: &MaterialLibrary) -> String {
+    let mut h = blake3::Hasher::new();
+    for c in library.catalogs() {
+        let bytes = serde_json::to_vec(c.as_ref()).unwrap_or_default();
+        for part in [c.name.as_bytes(), &bytes] {
+            h.update(&(part.len() as u64).to_le_bytes());
+            h.update(part);
+        }
+    }
+    h.finalize().to_hex().to_string()
+}
 
 /// Everything an analysis may read. The resolved system is built lazily (and
 /// normally comes from the session's cache), so analyses that do not need it
@@ -91,8 +115,12 @@ pub struct AnalysisInput<'a> {
     pub snapshot: Snapshot,
     pub library: Arc<MaterialLibrary>,
     pub backend: BackendInfo,
+    /// The selected backend's device (`None` on the CPU reference). GPU
+    /// analyses downcast it to the compute interface they use.
+    pub device: Option<DeviceHandle>,
     resolver: Resolver<'a>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
+    library_hash: OnceCell<String>,
 }
 
 impl<'a> AnalysisInput<'a> {
@@ -117,9 +145,29 @@ impl<'a> AnalysisInput<'a> {
             snapshot,
             library,
             backend,
+            device: None,
             resolver,
             resolved: OnceCell::new(),
+            library_hash: OnceCell::new(),
         }
+    }
+
+    pub fn with_device(mut self, device: Option<DeviceHandle>) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// Supply the library hash when the caller already knows it (sessions
+    /// keep it), instead of hashing the library on first use.
+    pub fn with_library_hash(self, hash: String) -> Self {
+        let _ = self.library_hash.set(hash);
+        self
+    }
+
+    /// See `library_hash`.
+    pub fn library_hash(&self) -> &str {
+        self.library_hash
+            .get_or_init(|| library_hash(&self.library))
     }
 
     /// The resolved system (built on first use).
@@ -224,6 +272,7 @@ pub fn run_analysis(
     ctx.report(1.0, "");
     Ok(AnalysisResult {
         run_info,
+        library_hash: input.library_hash().to_string(),
         json: out.json,
         buffers: out.buffers,
     })
@@ -333,7 +382,10 @@ mod tests {
         assert_eq!(r.run_info.seed, Some(9));
         assert_eq!(r.run_info.backend, "cpu_reference");
         assert_eq!(r.run_info.warnings, vec!["pre", "w"]);
+        let lib_hash = library_hash(&MaterialLibrary::with_builtin());
+        assert_eq!(r.library_hash, lib_hash);
         let env = r.envelope();
+        assert_eq!(env["library_hash"], lib_hash.as_str());
         assert_eq!(env["buffers"][0]["name"], "v");
         assert_eq!(env["buffers"][0]["dtype"], "f64");
         assert_eq!(ctx.progress.fraction(), 1.0);
@@ -345,6 +397,43 @@ mod tests {
             reg.get("nope"),
             Err(EngineError::UnknownAnalysis(_))
         ));
+    }
+
+    #[test]
+    fn library_hash_tracks_content_and_order() {
+        use mklight_core::materials::GlassCatalog;
+        let base = MaterialLibrary::with_builtin();
+        let h0 = library_hash(&base);
+        assert_eq!(h0.len(), 64);
+        assert_eq!(h0, library_hash(&MaterialLibrary::with_builtin()));
+        let builtin = base.catalogs()[0].as_ref().clone();
+        let mut a = builtin.clone();
+        a.name = "A".into();
+        let mut lib = base.clone();
+        lib.add_catalog(Arc::new(a.clone()));
+        let h1 = library_hash(&lib);
+        assert_ne!(h0, h1);
+        // Same content again: same hash.
+        lib.add_catalog(Arc::new(a.clone()));
+        assert_eq!(library_hash(&lib), h1);
+        // One coefficient changed: different hash.
+        let mut a2 = a.clone();
+        let g = a2.glasses.values_mut().next().unwrap();
+        g.nd += 1e-12;
+        lib.add_catalog(Arc::new(a2));
+        assert_ne!(library_hash(&lib), h1);
+        // Same catalogs, other order: different hash.
+        let b = GlassCatalog {
+            name: "B".into(),
+            glasses: a.glasses.clone(),
+        };
+        let mut ab = base.clone();
+        ab.add_catalog(Arc::new(a.clone()));
+        ab.add_catalog(Arc::new(b.clone()));
+        let mut ba = base.clone();
+        ba.add_catalog(Arc::new(b));
+        ba.add_catalog(Arc::new(a));
+        assert_ne!(library_hash(&ab), library_hash(&ba));
     }
 
     #[test]

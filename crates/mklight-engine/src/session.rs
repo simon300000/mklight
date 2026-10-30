@@ -4,7 +4,9 @@
 //!
 //! Every edit builds a new snapshot (validated, content-hashed) and swaps it
 //! in only if it is valid, so the session never holds an invalid system and
-//! running jobs keep the snapshot they started with. `ResolvedSystem`s are
+//! running jobs keep the snapshot they started with. The library has a
+//! content hash too (`library_hash`); a result is current while both its
+//! snapshot hash and its library hash equal the session's. `ResolvedSystem`s are
 //! cached in a small LRU keyed by `(snapshot hash, library generation)`:
 //! undo/redo between recent states, and repeated analyses of one state, do
 //! not re-resolve materials.
@@ -20,7 +22,7 @@ use mklight_core::param::ParamPath;
 use mklight_core::snapshot::SnapshotHash;
 use mklight_core::{JobContext, MkError, OpticalSystem, ResolvedSystem, Snapshot};
 
-use crate::analysis::{AnalysisInput, AnalysisResult, run_analysis};
+use crate::analysis::{AnalysisInput, AnalysisResult, library_hash, run_analysis};
 use crate::backend::Backend;
 use crate::engine::Engine;
 use crate::error::{EngineError, EngineResult};
@@ -100,6 +102,8 @@ pub struct Session {
     /// Bumped whenever the library changes, so cached resolutions made with
     /// an older library are never reused.
     library_generation: u64,
+    /// `analysis::library_hash` of `library`.
+    library_hash: String,
     resolved: ResolvedCache,
     path: Option<PathBuf>,
     dirty: bool,
@@ -171,6 +175,7 @@ impl Session {
             current,
             library: Arc::new(MaterialLibrary::with_builtin()),
             library_generation: 0,
+            library_hash: String::new(),
             resolved: Arc::new(Mutex::new(LruCache::new(
                 engine.config().resolved_cache_capacity,
             ))),
@@ -194,15 +199,25 @@ impl Session {
     }
 
     /// Load every catalog the project references. Missing or broken files
-    /// become `open_warnings`; the project keeps the references.
+    /// become `open_warnings`; the project keeps the references. A catalog
+    /// found through its relative path (the project folder was moved) gets
+    /// its absolute `path` updated to where it was found, so the next save
+    /// records both correctly.
     fn reload_catalogs(&mut self) {
         let dir = self
             .path
             .as_deref()
             .and_then(Path::parent)
+            .map(|d| {
+                if d.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    d
+                }
+            })
             .map(Path::to_path_buf);
         let mut lib = MaterialLibrary::with_builtin();
-        for r in &self.project.catalogs {
+        for r in &mut self.project.catalogs {
             let mut last_err = None;
             let mut loaded = false;
             for cand in r.candidates(dir.as_deref()) {
@@ -210,6 +225,8 @@ impl Session {
                     Ok(mut c) => {
                         c.name = r.name.clone();
                         lib.add_catalog(Arc::new(c));
+                        let abs = std::fs::canonicalize(&cand).unwrap_or(cand);
+                        r.path = Some(abs.display().to_string());
                         loaded = true;
                         break;
                     }
@@ -228,6 +245,7 @@ impl Session {
     }
 
     fn set_library(&mut self, lib: MaterialLibrary) {
+        self.library_hash = library_hash(&lib);
         self.library = Arc::new(lib);
         self.library_generation += 1;
         self.resolved
@@ -275,6 +293,11 @@ impl Session {
     pub fn library(&self) -> &Arc<MaterialLibrary> {
         &self.library
     }
+    /// Content hash of the material library (64 hex digits); changes when
+    /// a catalog is added, replaced or reloaded with different data.
+    pub fn library_hash(&self) -> &str {
+        &self.library_hash
+    }
 
     /// Session state for front ends.
     pub fn info(&self) -> Value {
@@ -283,6 +306,7 @@ impl Session {
             "path": self.path.as_ref().map(|p| p.display().to_string()),
             "dirty": self.dirty,
             "snapshot_hash": self.current.hash(),
+            "library_hash": self.library_hash,
             "name": self.current.system().name,
             "open_warnings": self.open_warnings,
             "migration": self.migration,
@@ -342,7 +366,11 @@ impl Session {
 
     /// Save atomically to `path`, or to the current path when `None`.
     /// Stamps `modified`, the app and engine versions, and records catalog
-    /// paths relative to the project directory where possible.
+    /// paths relative to the project directory where possible: from the
+    /// catalog's (resolved) absolute path when it lies under the directory;
+    /// otherwise the previous relative path is kept only while the absolute
+    /// path is unusable (the catalog file was not found), since it is then
+    /// the only location information left.
     pub fn save(&mut self, path: Option<&Path>) -> EngineResult<()> {
         let path = match path {
             Some(p) => p.to_path_buf(),
@@ -379,11 +407,13 @@ impl Session {
             .and_then(|d| std::fs::canonicalize(d).ok())
         {
             for c in &mut p.catalogs {
-                c.relative_path = c
-                    .path
-                    .as_deref()
-                    .and_then(|a| Path::new(a).strip_prefix(&dir).ok())
+                let abs = c.path.as_deref().map(Path::new);
+                let rel = abs
+                    .and_then(|a| a.strip_prefix(&dir).ok())
                     .map(|r| r.to_string_lossy().into_owned());
+                if rel.is_some() || abs.is_some_and(Path::is_file) {
+                    c.relative_path = rel;
+                }
             }
         }
         p.save(&path)?;
@@ -511,9 +541,11 @@ impl Session {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisResult> {
         let analysis = self.engine.analysis(&req.analysis)?;
-        let (backend, fallback) = self
-            .engine
-            .select_backend(req.backend.as_ref(), req.allow_backend_fallback)?;
+        let backend = self.engine.select_backend(
+            req.backend.as_ref(),
+            &req.analysis,
+            req.allow_backend_fallback,
+        )?;
         let (cache, snap, lib, generation) = (
             &self.resolved,
             &self.current,
@@ -523,29 +555,36 @@ impl Session {
         let input = AnalysisInput::with_resolver(
             snap.clone(),
             lib.clone(),
-            backend,
+            backend.info,
             Box::new(move || resolve_cached(cache, snap, lib, generation)),
-        );
+        )
+        .with_device(backend.device)
+        .with_library_hash(self.library_hash.clone());
         run_analysis(
             analysis.as_ref(),
             &input,
             &req.settings,
-            fallback.into_iter().collect(),
+            backend.warning.into_iter().collect(),
             ctx,
         )
     }
 
-    /// Queue an analysis on the current snapshot. Settings, availability and
-    /// backend are checked now, so those errors surface here rather than as
-    /// failed jobs.
-    pub fn submit_analysis(&self, req: &AnalysisRequest) -> EngineResult<JobId> {
+    /// Build the job for an analysis of the current snapshot without queueing
+    /// it. Settings, availability and backend are checked now, so those
+    /// errors surface here rather than as failed jobs. The job owns
+    /// everything it needs, so callers may release any lock on the session
+    /// before handing it to `Engine::submit_job`.
+    pub fn analysis_job(&self, req: &AnalysisRequest) -> EngineResult<JobSpec<AnalysisResult>> {
         let analysis = self.engine.analysis(&req.analysis)?;
         let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
-        let (backend, fallback) = self
-            .engine
-            .select_backend(req.backend.as_ref(), req.allow_backend_fallback)?;
+        let backend = self.engine.select_backend(
+            req.backend.as_ref(),
+            &req.analysis,
+            req.allow_backend_fallback,
+        )?;
         let snap = self.current.clone();
         let lib = self.library.clone();
+        let lib_hash = self.library_hash.clone();
         let cache = self.resolved.clone();
         let generation = self.library_generation;
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
@@ -553,21 +592,28 @@ impl Session {
             let input = AnalysisInput::with_resolver(
                 snap.clone(),
                 lib.clone(),
-                backend,
+                backend.info,
                 Box::new(|| resolve_cached(&cache, &snap, &lib, generation)),
-            );
+            )
+            .with_device(backend.device)
+            .with_library_hash(lib_hash);
             run_analysis(
                 analysis.as_ref(),
                 &input,
                 &settings,
-                fallback.into_iter().collect(),
+                backend.warning.into_iter().collect(),
                 ctx,
             )
         });
         if let Some(k) = &req.view_key {
             spec = spec.with_view_key(format!("session-{}/{k}", self.id));
         }
-        self.engine.submit(spec)
+        Ok(spec)
+    }
+
+    /// Queue an analysis on the current snapshot (see `analysis_job`).
+    pub fn submit_analysis(&self, req: &AnalysisRequest) -> EngineResult<JobId> {
+        self.engine.submit_job(self.analysis_job(req)?)
     }
 }
 
@@ -746,6 +792,109 @@ mod tests {
     }
 
     #[test]
+    fn moved_project_keeps_relative_catalog_paths() {
+        let root = TempDir::new("move");
+        let a = root.path().join("A");
+        std::fs::create_dir_all(a.join("glass")).unwrap();
+        std::fs::write(
+            a.join("glass/mycat.json"),
+            serde_json::to_string(&user_catalog()).unwrap(),
+        )
+        .unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        s.load_catalog_file(&a.join("glass/mycat.json")).unwrap();
+        s.save(Some(&a.join("p.mklight"))).unwrap();
+        assert_eq!(
+            s.project().catalogs[0].relative_path.as_deref(),
+            Some("glass/mycat.json")
+        );
+        // Move the folder twice, opening and re-saving in between.
+        let mut here = a;
+        for name in ["B", "C"] {
+            let next = root.path().join(name);
+            std::fs::rename(&here, &next).unwrap();
+            here = next;
+            let mut s = e.open_session(&here.join("p.mklight")).unwrap();
+            assert!(s.open_warnings().is_empty(), "{:?}", s.open_warnings());
+            let canon_dir = std::fs::canonicalize(&here).unwrap();
+            let c = &s.project().catalogs[0];
+            assert!(
+                Path::new(c.path.as_deref().unwrap()).starts_with(&canon_dir),
+                "absolute path not updated: {c:?}"
+            );
+            s.save(None).unwrap();
+            let c = &s.project().catalogs[0];
+            assert_eq!(c.relative_path.as_deref(), Some("glass/mycat.json"));
+        }
+        // Remove the catalog: the reference keeps its relative path on save
+        // (the only location left), and loads again once the file is back.
+        let cat = here.join("glass/mycat.json");
+        let bytes = std::fs::read(&cat).unwrap();
+        std::fs::remove_file(&cat).unwrap();
+        let mut s = e.open_session(&here.join("p.mklight")).unwrap();
+        assert_eq!(s.open_warnings().len(), 1);
+        s.save(None).unwrap();
+        assert_eq!(
+            s.project().catalogs[0].relative_path.as_deref(),
+            Some("glass/mycat.json")
+        );
+        std::fs::write(&cat, bytes).unwrap();
+        let s = e.open_session(&here.join("p.mklight")).unwrap();
+        assert!(s.open_warnings().is_empty(), "{:?}", s.open_warnings());
+        // A catalog outside the project folder gets no relative path.
+        let other = TempDir::new("move-out");
+        let mut s = e.new_session();
+        let outside = other.path().join("OUT.json");
+        let mut cat = user_catalog();
+        cat.name = "OUT".into();
+        std::fs::write(&outside, serde_json::to_string(&cat).unwrap()).unwrap();
+        s.load_catalog_file(&outside).unwrap();
+        s.save(Some(&here.join("q.mklight"))).unwrap();
+        assert_eq!(s.project().catalogs[0].relative_path, None);
+    }
+
+    #[test]
+    fn library_changes_are_visible_in_hashes_and_results() {
+        let dir = TempDir::new("libhash");
+        let p = dir.path().join("mycat.json");
+        let mut cat = user_catalog();
+        std::fs::write(&p, serde_json::to_string(&cat).unwrap()).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        let h0 = s.library_hash().to_string();
+        assert_eq!(s.info()["library_hash"], h0.as_str());
+        s.load_catalog_file(&p).unwrap();
+        let h1 = s.library_hash().to_string();
+        assert_ne!(h0, h1);
+        let snap = s.snapshot_hash();
+        let req = AnalysisRequest::new("validate", Value::Null);
+        let r1 = s.run_analysis(&req, &JobContext::new()).unwrap();
+        assert_eq!(r1.library_hash, h1);
+        // Reloading identical data keeps the hash.
+        s.load_catalog_file(&p).unwrap();
+        assert_eq!(s.library_hash(), h1);
+        // Edited catalog file, same name, same system: the snapshot hash is
+        // unchanged but the library hash (and so result identity) is not.
+        cat.glasses.get_mut("FAKE1").unwrap().dispersion = Dispersion::Cauchy {
+            a: 1.7,
+            b: 0.0,
+            c: 0.0,
+        };
+        std::fs::write(&p, serde_json::to_string(&cat).unwrap()).unwrap();
+        s.load_catalog_file(&p).unwrap();
+        assert_eq!(s.snapshot_hash(), snap);
+        assert_ne!(s.library_hash(), h1);
+        let id = s.submit_analysis(&req).unwrap();
+        e.wait_job(id, LONG).unwrap();
+        let r2 = e.take_result(id).unwrap();
+        assert_eq!(r2.run_info.snapshot_hash, r1.run_info.snapshot_hash);
+        assert_eq!(r2.library_hash, s.library_hash());
+        assert_ne!(r2.library_hash, r1.library_hash);
+        assert_eq!(r2.envelope()["library_hash"], s.library_hash());
+    }
+
+    #[test]
     fn agf_loading_reports_parser_errors() {
         let dir = TempDir::new("agf");
         let p = dir.path().join("X.agf");
@@ -796,7 +945,7 @@ mod tests {
             Err(EngineError::InvalidSettings(_))
         ));
         let mut req = AnalysisRequest::new("validate", Value::Null);
-        req.backend = Some(Backend::Gpu("metal".into()));
+        req.backend = Some(Backend::Gpu("nonexistent".into()));
         assert!(matches!(
             s.submit_analysis(&req),
             Err(EngineError::BackendUnavailable(_))
@@ -806,7 +955,66 @@ mod tests {
         e.wait_job(id, LONG).unwrap();
         let r = e.take_result(id).unwrap();
         assert_eq!(r.run_info.backend, "cpu_reference");
-        assert!(r.run_info.warnings[0].contains("gpu:metal"));
+        assert!(r.run_info.warnings[0].contains("gpu:nonexistent"));
+    }
+
+    #[test]
+    fn default_gpu_backend_is_used_per_analysis() {
+        use crate::backend::{BackendCapabilities, BackendInfo, BackendProvider, DeviceHandle};
+        use mklight_core::job::Precision;
+        struct Emu;
+        impl BackendProvider for Emu {
+            fn info(&self) -> BackendInfo {
+                let b = Backend::Gpu("emu".into());
+                BackendInfo {
+                    id: b.id(),
+                    backend: b,
+                    title: "emulated".into(),
+                    available: true,
+                    reason: None,
+                    precision: Precision::F32Gpu,
+                    capabilities: BackendCapabilities {
+                        analyses: vec!["system_summary".into()],
+                        ..Default::default()
+                    },
+                }
+            }
+            fn device(&self) -> Option<DeviceHandle> {
+                Some(Arc::new(7u32))
+            }
+        }
+        let e = engine();
+        e.register_backend(Arc::new(Emu));
+        e.set_default_backend(Backend::Gpu("emu".into())).unwrap();
+        let s = e.new_session();
+        let run = |name: &str| {
+            let id = s
+                .submit_analysis(&AnalysisRequest::new(name, Value::Null))
+                .unwrap();
+            assert_eq!(e.wait_job(id, LONG).unwrap(), JobState::Done);
+            e.take_result(id).unwrap().run_info
+        };
+        let ri = run("system_summary");
+        assert_eq!(
+            (ri.backend.as_str(), ri.precision),
+            ("gpu:emu", Precision::F32Gpu)
+        );
+        assert!(ri.warnings.is_empty(), "{:?}", ri.warnings);
+        // Not implemented by the default backend: the reference, with a note.
+        let ri = run("validate");
+        assert_eq!(ri.backend, "cpu_reference");
+        assert!(
+            ri.warnings
+                .iter()
+                .any(|w| w.contains("does not implement 'validate'"))
+        );
+        // Explicitly requested without fallback: an error at submission.
+        let mut req = AnalysisRequest::new("validate", Value::Null);
+        req.backend = Some(Backend::Gpu("emu".into()));
+        assert!(matches!(
+            s.submit_analysis(&req),
+            Err(EngineError::BackendUnavailable(_))
+        ));
     }
 
     #[test]

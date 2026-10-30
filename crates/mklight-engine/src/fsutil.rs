@@ -25,23 +25,50 @@ fn temp_sibling(path: &Path) -> io::Result<PathBuf> {
 /// Atomically replace `path` with the bytes produced by `fill`.
 ///
 /// The data goes to a temporary file in the same directory, is flushed to
-/// disk (`fsync`), and is then renamed over `path`. Readers see either the
-/// old file or the complete new one, never a partial write. If `fill` or any
-/// I/O step fails, the temporary file is removed and `path` is untouched.
+/// disk (`File::sync_all`, which is `F_FULLFSYNC` on Apple platforms and
+/// `fsync` elsewhere), and is then renamed over `path`. Readers see either
+/// the old file or the complete new one, never a partial write. If `fill` or
+/// any I/O step fails, the temporary file is removed and `path` is untouched.
+///
+/// The replacement is transparent for an existing file: a symbolic link is
+/// followed, so the link stays and its target is replaced; the file's
+/// permissions are carried over; and a read-only file is refused with
+/// `PermissionDenied`, exactly as an in-place write would be.
 pub fn atomic_write_with(
     path: &Path,
     fill: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    let tmp = temp_sibling(path)?;
+    // Resolve symlinks (and `..`) for an existing file; a new file keeps
+    // the path as given.
+    let target = match fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(e),
+    };
+    let existing = match fs::metadata(&target) {
+        Ok(m) => Some(m.permissions()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    if existing.as_ref().is_some_and(|p| p.readonly()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is read-only", target.display()),
+        ));
+    }
+    let tmp = temp_sibling(&target)?;
     let result = (|| {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         fill(&mut f)?;
         f.flush()?;
+        if let Some(perm) = existing {
+            f.set_permissions(perm)?;
+        }
         f.sync_all()?;
         drop(f);
-        fs::rename(&tmp, path)?;
+        fs::rename(&tmp, &target)?;
         // Persist the directory entry too (best effort; not supported everywhere).
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty())
             && let Ok(d) = File::open(dir)
         {
             let _ = d.sync_all();
@@ -125,6 +152,41 @@ mod tests {
         assert_eq!(err.to_string(), "simulated crash mid-write");
         assert_eq!(fs::read(&p).unwrap(), b"original");
         assert_eq!(dir.entries(), vec!["a.mklight".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_and_permissions_are_preserved() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = TempDir::new("atomic-link");
+        let real = dir.path().join("real.mklight");
+        atomic_write(&real, b"v1").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = dir.path().join("link.mklight");
+        symlink(&real, &link).unwrap();
+        atomic_write(&link, b"v2").unwrap();
+        // The link is still a link, and its target got the new bytes.
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&real).unwrap(), b"v2");
+        assert_eq!(
+            fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(
+            dir.entries(),
+            vec!["link.mklight".to_string(), "real.mklight".to_string()]
+        );
+        // A read-only file is refused and left alone.
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o444)).unwrap();
+        let err = atomic_write(&link, b"v3").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&real).unwrap(), b"v2");
+        assert_eq!(dir.entries().len(), 2);
     }
 
     #[test]
