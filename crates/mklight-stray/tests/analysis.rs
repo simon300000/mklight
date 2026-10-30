@@ -429,3 +429,174 @@ fn settings_round_trip_and_defaults() {
         .is_err()
     );
 }
+
+/// Settings that would exhaust memory, produce non-finite results or hide a
+/// typo are rejected; a zero reference flux gives no fraction (and the
+/// result still round-trips through JSON).
+#[test]
+fn settings_validation() {
+    let bad = |s: StrayAnalysisSettings| s.validate().is_err();
+    assert!(bad(StrayAnalysisSettings {
+        detector_pixels: (100_000, 100_000),
+        ..Default::default()
+    }));
+    assert!(bad(StrayAnalysisSettings {
+        detector_pixels: (2048, 1024),
+        ..Default::default()
+    }));
+    assert!(
+        StrayAnalysisSettings {
+            detector_pixels: (1024, 1024),
+            ..Default::default()
+        }
+        .validate()
+        .is_ok()
+    );
+    for typo in [
+        r#"{"ray": 10}"#,
+        r#"{"transport": {"mode": {"mode": "analog"}, "max_event": 3}}"#,
+        r#"{"scene": {"include_mechanic": false}}"#,
+        r#"{"source": {"type": "out_of_field", "angle_y_deg": 20, "margin": 0.1, "irradiance": 1, "angle_x": 0}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<StrayAnalysisSettings>(typo).is_err(),
+            "{typo}"
+        );
+    }
+
+    let (rs, base) = barrelled();
+    let sys = mklight_stray::StraySystem::new(rs, &base.system_options()).unwrap();
+    for source in [
+        StraySource::OutOfField {
+            angle_x_deg: 0.0,
+            angle_y_deg: 20.0,
+            margin: 0.1,
+            irradiance: f64::INFINITY,
+        },
+        StraySource::SystemField {
+            index: 0,
+            margin: 0.1,
+            strength: f64::INFINITY,
+        },
+        StraySource::Field {
+            hx: 0.0,
+            hy: 0.0,
+            margin: 0.1,
+            strength: f64::NAN,
+        },
+    ] {
+        assert!(source.resolve(&sys).is_err(), "{source:?}");
+    }
+    let beam = sys.out_of_field_source(0.0, 20.0, 0.1, 1.0).unwrap();
+    let custom = |reference_flux| StrayAnalysisSettings {
+        source: StraySource::Custom {
+            spec: beam.spec.clone(),
+            reference_flux,
+        },
+        rays: 2000,
+        ..base.clone()
+    };
+    assert!(analyze_system(&sys, &custom(f64::NAN), &JobContext::new()).is_err());
+    let r = analyze_system(&sys, &custom(0.0), &JobContext::new()).unwrap();
+    assert!(r.stray_flux > 0.0);
+    assert_eq!(r.stray_fraction, None);
+    assert!(r.totals.iter().all(|t| t.fraction.is_none()));
+    let back: StrayAnalysisResult =
+        serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+    assert_eq!(back.stray_fraction, None);
+    assert_eq!(back.stray_flux, r.stray_flux);
+}
+
+/// `analyze_system` keeps the scene the system was built with; settings
+/// that ask for another detector get a warning, and `RunInfo` records the
+/// options actually used.
+#[test]
+fn analyze_system_reports_the_scene_it_used() {
+    let (rs, base) = barrelled();
+    let sys = mklight_stray::StraySystem::new(rs, &base.system_options()).unwrap();
+    let settings = StrayAnalysisSettings {
+        source: sun(20.0),
+        rays: 2000,
+        ..base.clone()
+    };
+    let same = analyze_system(&sys, &settings, &JobContext::new()).unwrap();
+    assert!(
+        !same.warnings.iter().any(|w| w.contains("differ")),
+        "{:?}",
+        same.warnings
+    );
+    let other = StrayAnalysisSettings {
+        detector_pixels: (7, 9),
+        ..settings
+    };
+    let r = analyze_system(&sys, &other, &JobContext::new()).unwrap();
+    assert_eq!((r.detector.nx, r.detector.ny), (128, 128));
+    assert!(
+        r.warnings.iter().any(|w| w.contains("differ")),
+        "{:?}",
+        r.warnings
+    );
+    let used = &r.run_info.settings["system_options"]["scene"]["detector_pixels"];
+    assert_eq!(used, &serde_json::json!([128, 128]));
+    assert_eq!(
+        r.run_info.settings["settings"]["detector_pixels"],
+        serde_json::json!([7, 9])
+    );
+}
+
+/// Building a system and the sequential reference honour cancellation and
+/// report monotone progress up to 1.
+#[test]
+fn system_build_and_reference_job_control() {
+    let (rs, base) = barrelled();
+    let opts = base.system_options();
+    let ctx = JobContext::with(CancelToken::new(), Progress::default());
+    ctx.cancel.cancel();
+    assert_eq!(
+        mklight_stray::StraySystem::build(rs.clone(), &opts, &ctx).unwrap_err(),
+        MkError::Cancelled
+    );
+    let ctx = JobContext::new();
+    let sys = mklight_stray::StraySystem::build(rs, &opts, &ctx).unwrap();
+    assert_eq!(ctx.progress.fraction(), 1.0);
+    let beam = sys.system_field_source(0, 0.1, 1.0).unwrap();
+    let cancelled = JobContext::with(CancelToken::new(), Progress::default());
+    cancelled.cancel.cancel();
+    assert_eq!(
+        mklight_stray::primary_reference(&sys, &beam.spec, 64, &cancelled).unwrap_err(),
+        MkError::Cancelled
+    );
+    let half = JobContext::new();
+    mklight_stray::primary_reference(&sys, &beam.spec, 64, &half.subrange(0.0, 0.5)).unwrap();
+    assert_eq!(half.progress.fraction(), 0.5);
+    // The retaining ring in front of L1 (inner radius = L1's clear radius,
+    // 0.5 mm in front of its vertex) clips the oblique 10° beam, which
+    // crosses its plane displaced from where it meets the convex surface.
+    // The Monte-Carlo Primary agrees with the obstruction-checked reference,
+    // not with the purely sequential flux.
+    assert_eq!(sys.obstruction[0], Some(0.0));
+    let o = sys.obstruction[1].unwrap();
+    assert!(o > 0.005 && o < 0.1, "{o}");
+    assert!(sys.warnings.iter().any(|w| w.starts_with("field 1:")));
+    let beam = sys.system_field_source(1, 0.1, 1.0).unwrap();
+    let reference =
+        mklight_stray::primary_reference(&sys, &beam.spec, 300, &JobContext::new()).unwrap();
+    let set = mklight_stray::StraySettings {
+        rays: 120_000,
+        seed: 61,
+        ..Default::default()
+    };
+    let r = run(&sys.scene, &beam.spec, &set);
+    let mc = r.energy.detected_in(PathClass::Primary);
+    let se = r.energy.std_error_in(PathClass::Primary);
+    let (zf, zs) = (
+        z(mc, reference.flux, se),
+        z(mc, reference.sequential_flux, se),
+    );
+    println!(
+        "barrelled double Gauss 10°: obstruction {:.2} %, MC Primary z = {zf:+.2} vs checked, {zs:+.2} vs purely sequential",
+        100.0 * reference.obstruction()
+    );
+    assert!(zf.abs() < 3.0, "z = {zf}");
+    assert!(zs < -5.0, "z = {zs}");
+}

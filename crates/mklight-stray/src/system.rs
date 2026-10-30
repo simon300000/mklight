@@ -30,8 +30,8 @@
 //! # Sources
 //!
 //! All margins are relative overfills of the entrance-pupil radius (or of
-//! the front aperture), so the stop and the mounts, not the source, limit
-//! the beam.
+//! the scene's projected radius), so the stop and the mounts, not the
+//! source, limit the beam.
 //!
 //! * [`StraySystem::field_source`], object at infinity: a uniform collimated
 //!   beam along the field direction that fills a disk of radius
@@ -442,8 +442,9 @@ impl StraySystem {
     }
 
     /// Out-of-field collimated source from angles `(θx, θy)` in degrees
-    /// (direction `∝ (tan θx, tan θy, 1)`, CONVENTIONS §2) that overfills the
-    /// front aperture (module docs). `irradiance` is normal to the beam.
+    /// (direction `∝ (tan θx, tan θy, 1)`, CONVENTIONS §2) on a disk that
+    /// covers the whole scene's projection along the beam (module docs).
+    /// `irradiance` is normal to the beam.
     pub fn out_of_field_source(
         &self,
         angle_x_deg: f64,

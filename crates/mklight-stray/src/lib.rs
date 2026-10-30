@@ -25,10 +25,11 @@
 //! * [`system`] — the connection to the sequential reference tracer
 //!   (`mklight-trace`): scenes sized with its automatic clear
 //!   semi-diameters (stop included), field sources aimed at the paraxial
-//!   entrance pupil, out-of-field (sun) sources that overfill the front
-//!   aperture.
+//!   entrance pupil, out-of-field (sun) sources whose beam covers the
+//!   whole scene (lens hoods and tubes included).
 //! * [`reference`] — the deterministic sequential expectation of the
-//!   `Primary` class (flux, centroid, RMS radius) for cross-validation.
+//!   `Primary` class (flux, centroid, RMS radius) for cross-validation, with
+//!   every designed path checked for obstruction by non-sequential geometry.
 //! * [`analysis`] — the engine entry point: settings, per-class maps with
 //!   standard errors, totals, top path signatures, `RunInfo`.
 //!

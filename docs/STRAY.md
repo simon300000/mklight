@@ -20,12 +20,14 @@ Units follow CONVENTIONS §1 (mm, µm, W, W/mm²). Rays carry unpolarised
 | `tally` | per-class maps, totals and image moments with Monte-Carlo standard errors, the exact energy ledger, signature histogram |
 | `tracer` | the thread-count-independent path tracer (rare-branch forcing, splitting, Russian roulette, weight windows) |
 | `system` | connection to the sequential tracer: automatic semi-diameters, field and out-of-field sources |
-| `reference` | the deterministic sequential expectation of the `Primary` class |
+| `reference` | the deterministic sequential expectation of the `Primary` class, with designed paths checked for obstruction by the scene |
 | `analysis` | the engine entry point (`analyze`, `analyze_system`) |
 
 ## Connection to the sequential tracer
 
-`StraySystem::new(resolved, &SystemOptions)` builds a
+`StraySystem::new(resolved, &SystemOptions)` (or `StraySystem::build` with
+a `JobContext`: cancellation before and after the sizing traces, after the
+scene build and per grid row of the obstruction check) builds a
 `mklight_trace::SequentialTracer`, computes the automatic clear
 semi-diameters with `SequentialTracer::semi_diameters` (the largest traced
 ray height over all system fields, wavelengths and the pupil rim), and
@@ -45,8 +47,41 @@ refracting surface), and the image surface is the detector.
 
 `StraySystem::clipped_system()` is the resolved system with every automatic
 semi-diameter frozen to the scene's clear aperture: the *clipped sequential
-model*. Its unvignetted, transmitted rays are exactly the paths the Monte
-Carlo classes as `Primary`.
+model*. Its unvignetted, transmitted rays are the paths the Monte Carlo
+classes as `Primary`, **except those that non-sequential geometry
+obstructs** (next section).
+
+With paraxial ray aiming (`RayAiming::Off`) the off-axis beams cross the
+stop slightly outside its paraxial radius, so the frozen stop is larger
+than the paraxial one (sample singlet: 10.075 vs 10 mm) and on axis the
+scene passes a slightly wider beam than the paraxial entrance pupil (+1.5 %
+flux, +1.8 % RMS spot for the singlet). The scene is the physical system
+here; with real aiming the two agree.
+
+### Obstruction of the designed beam
+
+The sequential model only sees its own surfaces. Geometry that is not on
+the designed path can still block it: the back of a Newtonian's fold flat
+and its mount in the incoming beam, a secondary mirror and spider, a
+retaining ring or baffle reaching into an oblique beam, or the second
+surface of an element whose surfaces cross inside their clear apertures.
+`reference::primary_reference` follows every designed path segment by
+segment (source → first interface → … → detector, through the sequential
+hit points) with the scene's ray caster, and a segment whose first hit is
+not the next designed surface is *obstructed*. The reference reports
+
+* `flux` (and the moments): unobstructed designed paths, the expectation of
+  the Monte-Carlo `Primary` class;
+* `sequential_flux`: every designed path, what a purely sequential solver
+  reports; `obstruction() = 1 − flux / sequential_flux`.
+
+`StraySystem::new` evaluates the obstruction of a pupil-filling beam for
+every system field (`StraySystem::obstruction`, 48 × 48 grid) and warns
+above 0.1 %; the analysis reports `primary_obstruction` for field sources
+and warns likewise. Measured: Newtonian 11.8 % (fold flat back and mount),
+sample Double Gauss at 14° 5.0 % (crossing surfaces of L1 and L6), the test
+fixture "Double Gauss in a barrel" at 10° 2.9 % (the front retaining ring
+clips the oblique beam); 0 for the other samples.
 
 The scene reports two surfaces of one element that **intersect inside their
 clear apertures** (negative edge thickness at the smaller clear radius).
@@ -65,12 +100,17 @@ never the source, limit the beam.
 |---|---|---|---|
 | field point, object at infinity (`StraySystem::field_source`) | collimated along the field direction, uniform over a disk of radius `r_EP (1 + margin)` on the paraxial entrance-pupil plane `z = z_EP`, centred on the chief ray's aim point | irradiance `E` normal to the beam; power `E π r² \|d_z\|` | `E π r_EP² \|d_z\|` |
 | field point, finite object | point source at the object point, uniform in solid angle in a cone about the line to the chief aim point with `tan α = (1 + margin) tan α_EP` (`α_EP`: largest angle to the pupil rim; telecentric: chief direction and marginal slope) | intensity `I` (W/sr) | `2π I (1 − cos α_EP)` |
-| out of field (`out_of_field_source`), e.g. the sun | collimated from `(θx, θy)`, uniform on a disk normal to the beam centred on the first vertex, radius `(1 + margin)` × the largest mechanical radius (surfaces, stop plates, barrels, baffles) | irradiance `E` | `E π r_front² cos θ` (front mechanical aperture) |
+| out of field (`out_of_field_source`), e.g. the sun | collimated from `(θx, θy)`, uniform on a disk normal to the beam that covers the projection of the whole scene along the beam: centred on the centre of the bounding rectangle of all projected primitive bounding-box corners, radius `(1 + margin)` × their largest distance from it | irradiance `E` | `E π r_front² cos θ` (front mechanical aperture) |
 
 A disk on the pupil plane is uniform in flux even for an oblique beam,
 because its projection on the beam cross-section has the constant Jacobian
-`|d·n|`. Any ray that can enter the lens through its front opening crosses
-the out-of-field disk.
+`|d·n|`. Every ray of the out-of-field beam that meets any geometry starts
+inside its disk, including light entering a lens hood or telescope tube far
+in front of the first vertex (`tests/system.rs`: a singlet behind a 40 mm
+hood at 30° detects the same flux as a three times wider beam, z = +1.4,
+while a disk sized from the front lens catches only 5 % of it). The price
+is efficiency for long systems at large angles, where most of the disk
+misses the scene (a missed ray costs one BVH query).
 
 ## Partition of detected light (no double counting)
 
@@ -97,9 +137,16 @@ Ownership, precisely:
 
 * **Sequential tracer (`Primary`)**: the designed path, transmitted (or, at
   mirrors, reflected) at every optical surface in sequence, inside every
-  clear aperture. Its flux is `τ · Π T_i` with the unpolarised coating
-  transmittance `T_i = ResolvedCoating::rt(...)` (`R` at mirrors) and the
-  internal transmittance `τ`.
+  clear aperture, **and not obstructed by other geometry**. Its flux is
+  `τ · Π T_i` with the unpolarised coating transmittance
+  `T_i = ResolvedCoating::rt(...)` (`R` at mirrors) and the internal
+  transmittance `τ`. A purely sequential solver cannot see obstruction and
+  overcounts by the obstructed flux (the obstructed light is absorbed, or
+  scattered into the stray classes, by the Monte Carlo). When
+  `StraySystem::obstruction` / `primary_obstruction` is not negligible, use
+  the obstruction-checked `primary_reference(...).flux` (or the Monte-Carlo
+  `Primary`) as the `Primary` term; scaling a sequential result by
+  `1 − obstruction` is exact for the flux of the same source, not for maps.
 * **Explicit ghost solver (`Ghost`)**: deterministic, purely specular paths
   through the optical interfaces with at least two reflections at
   refracting interfaces, all inside the clear (clipping) apertures, never
@@ -117,7 +164,10 @@ the stray total and maps then hold `Scatter + Mechanical + Sneak` only, and
 detected = Primary (sequential) + Ghost (ghost solver) + stray total
 ```
 
-holds path by path. The exclusion changes only the tallies, not the random
+holds path by path, with the obstruction-checked `Primary` (above). An
+explicit ghost solver that ignores non-sequential geometry overcounts
+obstructed ghost paths in the same way. The exclusion changes only the
+tallies, not the random
 streams, so a run with and without it differs by exactly the `Ghost` flux
 (tested).
 
@@ -169,12 +219,14 @@ the Monte-Carlo error.
 ## Cross-validation (tests)
 
 `tests/sequential.rs`, all scatter disabled (black, non-scattering edges,
-no mechanics, no surface BSDFs), 60 000 rays, default (weighted) transport.
+no mechanics, no surface BSDFs), 60 000 rays, default (weighted) transport,
+a distinct seed per case, `|z| < 3` required.
 The reference is `reference::primary_reference`: an `n × n` grid over the
-source's own sampling disk (exact cell weights, so only the clip boundary
-inside the beam adds quadrature error; checked to be < 0.2 SE between
-`n = 250` and `360`), traced through the clipped sequential model at every
-wavelength. z = (MC − reference)/SE_MC:
+source's own sampling disk (exact cell weights, so only the clip and
+obstruction boundaries inside the beam add quadrature error; checked to be
+< 0.2 SE between `n = 250` and `360`), traced through the clipped
+sequential model at every wavelength and checked for obstruction.
+z = (MC − reference)/SE_MC:
 
 | system, field | transmitted fraction MC / ref (z) | centroid y z | RMS radius MC / ref (z) |
 |---|---|---|---|
@@ -186,35 +238,72 @@ wavelength. z = (MC − reference)/SE_MC:
 | Cooke, lossy AR coating + 0.02/mm glass absorption, 14° | 0.6742 / 0.6718 (+1.51) | +1.14 | 25.18 / 25.14 µm (+0.39) |
 | 1:1 relay (point source), 0 mm | 0.6821 / 0.6822 (−0.05) | −1.04 | 3.15 / 3.14 µm (+0.52) |
 | 1:1 relay, 5 mm | 0.6770 / 0.6769 (+0.06) | −1.01 | 45.37 / 45.34 µm (+0.34) |
+| Newtonian (obstructed 11.8 %), 0.25° | 0.7280 / 0.7293 (−0.76) | −1.55 | 4.36 / 4.39 µm (−2.05) |
+| Newtonian (obstructed 11.8 %), 0.35° | 0.7306 / 0.7295 (+0.60) | +0.59 | 6.17 / 6.18 µm (−0.46) |
 
-Fractions are of the emitted (overfilled) power. Ghost class on an
-uncoated plate (n = 1.5, normal incidence, `rare_floor = 0.25`): all orders
-0.1187 vs `E π r² T²R²/(1−R²)` = 0.1160 W (z = +0.70), second order vs
-`T²R²` (z = +0.69), 3.3 % relative SE. With every branch split the second
-order matches `T²R²` to 1e-10 (`tests/window.rs`).
+Fractions are of the emitted (overfilled) power. For the refracting
+systems nothing is obstructed and the reference equals the purely
+sequential model exactly (asserted). Against the purely sequential flux the
+Newtonian gives z = −54 and the Double Gauss at 14° z = −9.7 (obstruction
+checked: −0.68).
+
+The reference shares the source sampling with the Monte Carlo, so two
+checks are independent of it:
+
+* **Margin**: the reference flux in W at fixed irradiance agrees within
+  `2·10⁻³` between margins 0.1 and 0.5 for the singlet, achromat, Cooke
+  triplet, Double Gauss and Petzval at two fields each (observed ≤ 8·10⁻⁴);
+  without a margin the pupil-plane disk underfills the stop and loses
+  0.3–8.6 %.
+* **Spot**: with real ray aiming, the reference's geometric (equal-weight)
+  centroid and RMS radius match the sequential tracer's own spot over a
+  121 × 121 pupil grid (`SequentialTracer::trace`) within 2 % of the RMS:
+  centroids within 0.01 RMS, RMS radii within 0.3 % except the Cooke
+  triplet (0.8 % on axis, 1.5 % at 20°: pupil aberration, since the beam is
+  uniform on the entrance-pupil plane and the tracer's grid uniform on the
+  stop).
+
+Ghost class on an uncoated plate (n = 1.5, normal incidence,
+`rare_floor = 0.25`): all orders 0.1187 vs `E π r² T²R²/(1−R²)` = 0.1160 W
+(z = +0.70), second order vs `T²R²` (z = +0.69), 3.3 % relative SE. With
+every branch split the second order matches `T²R²` to 1e-10
+(`tests/window.rs`).
 
 ## Analysis entry point
 
 `analysis::analyze(Arc<ResolvedSystem>, &StrayAnalysisSettings, &JobContext)`
 (or `analyze_system` on a built `StraySystem`).
 
-Settings (JSON, every field optional): `source` (`field {hx, hy, margin,
+Settings (JSON, every field optional, unknown keys rejected except inside
+`semi_diameters`): `source` (`field {hx, hy, margin,
 strength}`, `system_field {index, margin, strength}`, `out_of_field
 {angle_x_deg, angle_y_deg, margin, irradiance}`, `custom {spec,
 reference_flux}`), `rays`, `seed`, `classes` (bit mask, default all but
 `Primary`), `exclude_ghost_class`, `detector_pixels`, `top_signatures`,
 `scene` (`SceneOptions`), `semi_diameters`, `detector_margin`, `transport`
 (`mode`, `max_events`, `roulette_threshold`, `split_ceiling`,
-`scatter_reflection`, `scatter_transmission`, `chunk_rays`).
+`scatter_reflection`, `scatter_transmission`, `chunk_rays`). Validation:
+the detector map is limited to `MAX_DETECTOR_PIXELS` = 2²⁰ pixels (about
+0.5 kB of tallies and results per pixel), source strengths and powers must
+be finite, a custom reference flux finite and ≥ 0.
+
+`analyze_system` keeps the scene and detector its `StraySystem` was built
+with; when the settings' scene, semi-diameter or detector options differ
+from `StraySystem::options` the result carries a warning, and `RunInfo`
+records the options actually used (`system_options`).
 
 Result: the resolved source with its reference flux; one irradiance map
 with per-pixel standard errors per included class; the total stray map and
-its errors; stray flux, error and fraction of the reference flux; per-class
-totals (flux, error, fraction, hits, image moments) for all five classes;
+its errors; stray flux, error and fraction of the reference flux (`None`
+for a zero reference flux); for field sources the obstructed fraction of
+the designed flux (`primary_obstruction`); per-class totals (flux, error,
+fraction, hits, image moments) for all five classes;
 the top path signatures; the energy report; the clear semi-diameters used;
 `RunInfo` (snapshot hash, settings, resolved source, scene fingerprint,
-seed) and warnings. Progress: sizing 0–10 %, transport 10–100 %, monotone;
-cancellation every 64 rays.
+seed, effective system options) and warnings. Progress (monotone): system
+build 0–10 %, the source's obstruction check to 12 %, transport to 100 %;
+cancellation between build stages, per grid row of the obstruction checks
+and every 64 rays.
 
 ## Performance
 

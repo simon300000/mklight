@@ -8,7 +8,8 @@
 //!   interface with the radius of that interface's mechanical semi-diameter
 //!   (times an overfill factor), so the whole front aperture and its edge are
 //!   lit. Field sources aimed at the paraxial entrance pupil, and
-//!   out-of-field sources that overfill the whole front aperture, come from
+//!   out-of-field sources whose beam covers the whole scene (hoods and
+//!   tubes in front of the first vertex included), come from
 //!   `crate::system::StraySystem`.
 //! * [`SourceSpec::CollimatedThrough`] — a uniform collimated beam that
 //!   fills a disk lying in a plane that need not be perpendicular to the

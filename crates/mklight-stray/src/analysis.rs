@@ -73,7 +73,7 @@ pub enum StraySource {
         strength: f64,
     },
     /// A collimated source outside the field of view (for example the sun)
-    /// that overfills the front aperture ([`StraySystem::out_of_field_source`]).
+    /// whose beam covers the whole scene ([`StraySystem::out_of_field_source`]).
     OutOfField {
         angle_x_deg: f64,
         angle_y_deg: f64,
