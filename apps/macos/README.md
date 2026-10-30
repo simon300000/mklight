@@ -14,8 +14,10 @@ swift test                                   # model, boundary, FFI integration 
 The app runs on the Rust engine through `FFIEngine`; see `docs/APP.md` for
 the build integration, the binding, its thread safety and the tests.
 
-Requires Xcode 16 or later (Swift 6 language mode, strict concurrency) and
-macOS 15 or later.
+Requires Xcode 27.2 or later (Swift 6.4, Swift 6 language mode, strict
+concurrency) and macOS 27 or later: the window is designed for Liquid Glass
+and uses its SwiftUI APIs without availability checks (docs/APP.md,
+"Platform" and "Design brief").
 
 ## Package layout
 
@@ -23,7 +25,7 @@ macOS 15 or later.
 |---|---|
 | `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. Every surface shape of `docs/SURFACES.md` is mirrored (odd asphere, Q-con/Q-bfs, diffractive on a plane/conic/even-asphere base, toroid, biconic with its cylinder preset, XY polynomial, Zernike sag), with the `shape_coefficient`/`shape_param` parameter paths, their limits and term numbering (`CoefficientSet`, `ShapeParameter`, `XYTerm`, `ZernikeTerm`), checked against `extended_shapes.json`. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
 | `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests and settings, result types, `RunInfo`, the `AnalysisJob` handle and `MockEngine`. |
-| `MKLightUI` | The document app. `Document/` (`ProjectDocument` file adapter, `DesignDocument` design state with undo), `ViewModels/` (`Workspace` snapshots and panes, `AnalysisPane`, `WindowState` and the saved `WorkspaceLayout`, `LensTable`, the data-driven `SurfaceTypes`, design-job sessions, result readers; platform-neutral), `Views/` (window, sidebar, lens table, inspectors, analysis panes and dedicated plots in Swift Charts, design-job sheets, welcome window), `Viewport/` (Metal renderer, engine layout reader, NS/UIViewRepresentable wrappers), `Support/` (palette, parsers, platform adapters). See docs/APP.md for the design. |
+| `MKLightUI` | The document app. `Document/` (`ProjectDocument` file adapter, `DesignDocument` design state with undo), `ViewModels/` (`Workspace` snapshots and panes, `AnalysisPane`, `WindowState` and the saved `WorkspaceLayout`, `LensTable`, the data-driven `SurfaceTypes` and the display sags of their previews (`ShapeSag`), design-job sessions, result readers; platform-neutral), `Views/` (window, toolbar status, sidebar, lens table, inspectors with shape previews, analysis panes and dedicated plots in Swift Charts, design-job inspector panels, welcome window with layout thumbnails), `Viewport/` (Metal renderer, engine layout reader, NS/UIViewRepresentable wrappers), `Support/` (palette, parsers, platform adapters). See docs/APP.md for the design. |
 | `CMKLight` | System-library module over `crates/mklight-ffi/include/mklight.h`; present only when `Frameworks/libmklight_ffi.a` exists. |
 | `MKLightFFI` | `FFIEngine`: `EngineClient` over the C ABI (sessions, projects, catalogs, jobs, zero-copy buffers). Compiles without the library and then reports it unavailable. |
 | `MKLight` | The executable. It uses `FFIEngine` (debug builds without the library fall back to `MockEngine`) and runs `MKLightScene`. |
@@ -101,7 +103,7 @@ approximations for MTF and PSF. Extended surface shapes are traced as their
 rotational y-meridian base (toroid and biconic: the y profile; Q, XY and
 Zernike: the base conic without the departure; diffractive: the base, plus the
 first phase term's paraxial power). The app labels its output everywhere: the
-orange "MOCK ENGINE" badge in the viewport, the status bar, and
+orange "MOCK ENGINE" badge in the viewport, the toolbar's status capsule, and
 `RunInfo.backend == "mock"` with a warning. Its paraxial and ray code is
 checked against known answers (thick-lens equations, a paraboloid's perfect
 focus, third-order spherical aberration of a mirror), so the synthetic data is
@@ -146,7 +148,7 @@ surface inspector, built from `SurfaceTypes` descriptors.
 
 * Return or a double click edits the selected row; in a cell, Tab / ⇧Tab
   move across, ↑ / ↓ and Return move between rows (committing), Esc
-  reverts. Rejected input reverts and the reason appears in the status bar.
+  reverts. Rejected input reverts and the reason appears in a glass toast.
 * Numbers follow `LensValueParser`: `inf` or `∞` for a plane radius and an
   infinite object distance, `auto` for an automatic semi-diameter (shown
   dimmed with the engine's computed value). The material column accepts

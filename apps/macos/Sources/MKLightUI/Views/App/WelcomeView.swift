@@ -270,9 +270,8 @@ struct SchematicThumbnail: View {
             let margin = max((oMax - oMin) * 0.5, 2 * hMax)
             let zMin = oMin - margin
             let zMax = max(oMax + margin, min(profiles.last?.z ?? oMax, oMax + 3 * margin))
-            let scale = min(size.width / max(zMax - zMin, 1e-9), size.height / max(2 * hMax, 1e-9))
-            // A schematic: heights may be exaggerated so thin, long systems stay legible.
-            let yScale = min(max(scale, size.height * 0.6 / max(2 * hMax, 1e-9)), scale * 12)
+            let scale = min(size.width / max(zMax - zMin, 1e-9), size.height * 0.8 / max(2 * hMax, 1e-9))
+            let yScale = scale
             let ox = (size.width - (zMax - zMin) * scale) / 2
             func p(_ q: (Double, Double)) -> CGPoint { CGPoint(x: ox + (q.0 - zMin) * scale, y: size.height / 2 - q.1 * yScale) }
             for k in profiles.indices.dropLast() where profiles[k].glass {

@@ -240,9 +240,9 @@ struct PaneHeader: View {
                 } label: {
                     Label(AnalysisCatalog.title(of: pane.analysis), systemImage: AnalysisCatalog.symbol(for: pane.analysis))
                         .font(.headline)
+                        .lineLimit(1)
                 }
                 .menuStyle(.borderlessButton)
-                .fixedSize()
                 .help(descriptor?.description ?? "")
                 Text(subtitle)
                     .font(.caption)
@@ -252,51 +252,75 @@ struct PaneHeader: View {
                     .padding(.leading, 2)
                     .contentTransition(.opacity)
             }
-            Spacer(minLength: Space.s)
-            GlassEffectContainer(spacing: Space.s) {
-                HStack(spacing: Space.xs) {
-                    if pane.isRunning {
-                        Button("Cancel", systemImage: "xmark") { pane.cancel() }
-                            .help("Cancel this analysis (⌘.)")
-                    } else {
-                        Button("Run", systemImage: "arrow.clockwise") { pane.rerun() }
-                            .help("Run again (⌘R)")
-                    }
-                    Toggle(isOn: Binding(get: { pane.autoUpdate }, set: { pane.autoUpdate = $0; if $0 { pane.rerun() } })) {
-                        Label("Update Automatically", systemImage: pane.autoUpdate ? "bolt.fill" : "bolt.slash")
-                    }
-                    .toggleStyle(.button)
-                    .help(pane.autoUpdate ? "Updates when the design changes. Click to update on request only." : "Updates on request only. Click to update automatically.")
-                    if let descriptor, descriptor.available, !descriptor.settingsFields.isEmpty {
-                        Button("Settings", systemImage: "slider.horizontal.3") { showSettings.toggle() }
-                            .help("Settings of this analysis")
-                            .popover(isPresented: $showSettings, arrowEdge: .bottom) {
-                                SettingsPopover(pane: pane, descriptor: descriptor, system: system)
-                            }
-                    }
-                    Menu {
-                        Button("Duplicate Pane") { workspace.addPane(pane.analysis, settings: pane.settings, after: pane) }
-                        Button("Move Left") { workspace.movePane(pane, by: -1) }.disabled(workspace.panes.first === pane)
-                        Button("Move Right") { workspace.movePane(pane, by: 1) }.disabled(workspace.panes.last === pane)
-                        Divider()
-                        Toggle("Pin Settings in Pane", isOn: Binding(get: { pane.showsSettings }, set: { pane.showsSettings = $0 }))
-                        Button("Copy Result as JSON") { copyJSON() }.disabled(pane.output == nil)
-                        Divider()
-                        Button("Close Pane", role: .destructive) { workspace.removePane(pane) }
-                    } label: {
-                        Label("More", systemImage: "ellipsis")
-                    }
-                    .menuIndicator(.hidden)
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .controlSize(.small)
+            .frame(minWidth: 110, alignment: .leading)
+            Spacer(minLength: Space.xs)
+            // The full cluster, or only Run and More when the pane is narrow.
+            ViewThatFits(in: .horizontal) {
+                cluster(compact: false)
+                cluster(compact: true)
+            }
+            .layoutPriority(1)
+            .popover(isPresented: $showSettings, arrowEdge: .bottom) {
+                if let descriptor { SettingsPopover(pane: pane, descriptor: descriptor, system: system) }
             }
         }
         .padding(.horizontal, Space.m)
         .padding(.top, Space.s)
         .padding(.bottom, Space.xs)
+    }
+
+    private var hasSettings: Bool { descriptor.map { $0.available && !$0.settingsFields.isEmpty } ?? false }
+
+    private func cluster(compact: Bool) -> some View {
+        GlassEffectContainer(spacing: Space.s) {
+            HStack(spacing: Space.xs) {
+                if pane.isRunning {
+                    Button("Cancel", systemImage: "xmark") { pane.cancel() }
+                        .help("Cancel this analysis (⌘.)")
+                } else {
+                    Button("Run", systemImage: "arrow.clockwise") { pane.rerun() }
+                        .help("Run again (⌘R)")
+                }
+                if !compact {
+                    Toggle(isOn: autoUpdate) {
+                        Label("Update Automatically", systemImage: pane.autoUpdate ? "bolt.fill" : "bolt.slash")
+                    }
+                    .toggleStyle(.button)
+                    .help(pane.autoUpdate ? "Updates when the design changes. Click to update on request only." : "Updates on request only. Click to update automatically.")
+                    if hasSettings {
+                        Button("Settings", systemImage: "slider.horizontal.3") { showSettings.toggle() }
+                            .help("Settings of this analysis")
+                    }
+                }
+                Menu {
+                    if compact {
+                        Toggle("Update Automatically", isOn: autoUpdate)
+                        if hasSettings { Button("Settings…") { showSettings = true } }
+                        Divider()
+                    }
+                    Button("Duplicate Pane") { workspace.addPane(pane.analysis, settings: pane.settings, after: pane) }
+                    Button("Move Left") { workspace.movePane(pane, by: -1) }.disabled(workspace.panes.first === pane)
+                    Button("Move Right") { workspace.movePane(pane, by: 1) }.disabled(workspace.panes.last === pane)
+                    Divider()
+                    Toggle("Pin Settings in Pane", isOn: Binding(get: { pane.showsSettings }, set: { pane.showsSettings = $0 }))
+                    Button("Copy Result as JSON") { copyJSON() }.disabled(pane.output == nil)
+                    Divider()
+                    Button("Close Pane", role: .destructive) { workspace.removePane(pane) }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+                .menuIndicator(.hidden)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+        }
+        .fixedSize()
+    }
+
+    private var autoUpdate: Binding<Bool> {
+        Binding(get: { pane.autoUpdate }, set: { pane.autoUpdate = $0; if $0 { pane.rerun() } })
     }
 
     /// State, then the settings that differ from the defaults.
@@ -389,9 +413,13 @@ struct PaneFooter: View {
             Button {
                 showDetails.toggle()
             } label: {
-                BackendBadge(output: output)
+                ViewThatFits(in: .horizontal) {
+                    BackendBadge(output: output)
+                    BackendBadge(output: output, compact: true)
+                }
             }
             .buttonStyle(.plain)
+            .layoutPriority(2)
             .help("How this result was computed")
             .popover(isPresented: $showDetails) { RunDetails(output: output).frame(width: 380) }
         }
@@ -420,6 +448,8 @@ struct PaneFooter: View {
 /// fallback adds an orange mark. Content, not glass.
 struct BackendBadge: View {
     let output: AnalysisOutput
+    /// Only the processor symbol (narrow panes).
+    var compact = false
 
     var body: some View {
         let gpu = output.runInfo.precision != .f64Reference
@@ -429,8 +459,10 @@ struct BackendBadge: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }
             Image(systemName: gpu ? "cpu.fill" : "cpu")
-            Text(gpu ? "GPU · f32" : "CPU · f64")
-            Text(duration).foregroundStyle(.secondary)
+            if !compact {
+                Text(gpu ? "GPU · f32" : "CPU · f64")
+                Text(duration).foregroundStyle(.secondary)
+            }
         }
         .font(.caption2.weight(.medium).monospacedDigit())
         .lineLimit(1)
