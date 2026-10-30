@@ -323,15 +323,13 @@ intersection, clipping, interaction) with one split:
   the closest-approach conic intersection with Kahan's discriminant, stable
   roots and vertex-sheet selection; the even-asphere Newton iteration from
   the conic seed with the reference's Miss / NoConvergence / OutsideDomain
-  classification; clipping against every aperture shape; the TIR test of the
-  stable vector Snell law (CONVENTIONS §7.3). These decide the status and
-  give a first `t`.
+  classification; the TIR test of the stable vector Snell law
+  (CONVENTIONS §7.3). These decide the status and give a first `t`.
 * **Geometry in double-float** (CONVENTIONS §7.4): the ray point and
   direction between surfaces, the transfers (axial fast path `p − (0, 0, t)`
   or `rot·p − shift`, both hi + lo), the closest approach `t₀ = −P·D`,
   `Q = P + t₀D`, one Newton refinement of every hit on the exact line
-  (`c(x² + y² + κz²) − 2z`, or `z − sag(r²)` with the conic part in
-  double-float), the unnormalised normal `G = (−cx, −cy, 1 − κcz)` or
+  (`c(x² + y² + κz²) − 2z`, or `z − sag(r²)`), the unnormalised normal `G = (−cx, −cy, 1 − κcz)` or
   `(−x·g, −y·g, w)`, and the interactions: refraction `D' = μD + bG` with
   `μ = n₁/n₂` from double-float indices and reflection `D' = D + bG`, where
   `b` comes from the f32 law and is then corrected along `G` until
