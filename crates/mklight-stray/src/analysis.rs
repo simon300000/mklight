@@ -23,8 +23,17 @@
 //! The result depends only on the snapshot, the settings and the seed: the
 //! sizing traces, the scene and the transport are all deterministic and
 //! independent of the number of threads (tested). Progress runs from 0 to
-//! 1 over sizing (5 %), scene (5 %) and transport (90 %); cancellation is
-//! checked between stages and every 64 rays.
+//! 1 over the system build (sizing, scene and obstruction check, 10 %), the
+//! source's obstruction check (2 %) and transport; cancellation is checked
+//! between the build stages, per grid row of the obstruction checks and
+//! every 64 rays of transport.
+//!
+//! # Validation
+//!
+//! Settings are JSON with every field optional; unknown keys are rejected
+//! (except inside `semi_diameters`, owned by `mklight-trace`). The detector
+//! map is limited to [`crate::system::MAX_DETECTOR_PIXELS`], source strengths
+//! must be finite, and a fraction of a zero reference flux is `None`.
 
 use std::sync::Arc;
 
@@ -36,15 +45,16 @@ use mklight_core::resolved::ResolvedSystem;
 use mklight_trace::FieldPoint;
 
 use crate::path::{ClassMask, PathClass};
+use crate::reference::primary_reference;
 use crate::scene::{DetectorSpec, SceneOptions};
 use crate::source::SourceSpec;
-use crate::system::{Beam, StraySystem, SystemOptions};
+use crate::system::{Beam, OBSTRUCTION_WARNING, StraySystem, SystemOptions};
 use crate::tally::{EnergyReport, ImageMoments, SignatureFlux};
 use crate::tracer::{SplitMode, StraySettings, run};
 
 /// Where the light comes from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StraySource {
     /// A normalised field point `(Hx, Hy)` (CONVENTIONS §3): a beam that
     /// fills the entrance pupil with a relative `margin`
@@ -114,6 +124,11 @@ impl StraySource {
                 reference_flux,
             } => {
                 spec.validate()?;
+                if !(reference_flux.is_finite() && *reference_flux >= 0.0) {
+                    return Err(MkError::InvalidModel(
+                        "custom source: reference flux must be finite and ≥ 0".into(),
+                    ));
+                }
                 Ok(Beam {
                     spec: spec.clone(),
                     reference_flux: *reference_flux,
@@ -126,7 +141,7 @@ impl StraySource {
 
 /// Transport controls (see [`StraySettings`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TransportOptions {
     pub mode: SplitMode,
     pub max_events: u32,
@@ -154,7 +169,7 @@ impl Default for TransportOptions {
 
 /// Settings of [`analyze`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StrayAnalysisSettings {
     pub source: StraySource,
     /// Source rays.
@@ -242,9 +257,7 @@ impl StrayAnalysisSettings {
         if self.classes.0 & !ClassMask::ALL.0 != 0 {
             return Err(MkError::InvalidModel("unknown path class bits".into()));
         }
-        if self.detector_pixels.0 == 0 || self.detector_pixels.1 == 0 {
-            return Err(MkError::InvalidModel("detector needs pixels".into()));
-        }
+        self.system_options().validate()?;
         self.stray_settings().validate()
     }
 }
@@ -267,8 +280,8 @@ pub struct ClassTotal {
     /// W.
     pub flux: f64,
     pub std_error: f64,
-    /// `flux / reference_flux`.
-    pub fraction: f64,
+    /// `flux / reference_flux` (`None` when the reference flux is 0).
+    pub fraction: Option<f64>,
     /// Part of the stray total.
     pub included: bool,
     pub hits: u64,
@@ -292,8 +305,12 @@ pub struct StrayAnalysisResult {
     /// Stray total (W) and its standard error.
     pub stray_flux: f64,
     pub stray_std_error: f64,
-    /// `stray_flux / reference_flux`.
-    pub stray_fraction: f64,
+    /// `stray_flux / reference_flux` (`None` when the reference flux is 0).
+    pub stray_fraction: Option<f64>,
+    /// Field sources: fraction of the designed (sequential) flux that
+    /// non-sequential geometry obstructs (module docs); `None` for other
+    /// sources.
+    pub primary_obstruction: Option<f64>,
     /// Every class, included or not.
     pub totals: Vec<ClassTotal>,
     /// The strongest `top_signatures` (class, path signature) pairs among
@@ -316,6 +333,8 @@ impl StrayAnalysisResult {
 #[derive(Serialize)]
 struct RunSettings<'a> {
     settings: &'a StrayAnalysisSettings,
+    /// The options the scene and detector were actually built with.
+    system_options: &'a SystemOptions,
     source: &'a Beam,
     scene_fingerprint: String,
 }
@@ -327,15 +346,17 @@ pub fn analyze(
     ctx: &JobContext,
 ) -> MkResult<StrayAnalysisResult> {
     settings.validate()?;
-    ctx.report(0.0, "stray light: sizing apertures");
-    ctx.check()?;
-    let sys = StraySystem::new(rs, &settings.system_options())?;
+    let sys = StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
     ctx.report(0.1, "stray light: scene built");
     analyze_system(&sys, settings, &ctx.subrange(0.1, 1.0))
 }
 
+/// Grid size of the per-source obstruction check.
+const OBSTRUCTION_GRID: usize = 64;
+
 /// As [`analyze`] on a built system. The scene options of `settings` are
-/// not reapplied (the system already holds its scene).
+/// not reapplied (the system already holds its scene); a difference is
+/// reported as a warning and `RunInfo` records the system's options.
 pub fn analyze_system(
     sys: &StraySystem,
     settings: &StrayAnalysisSettings,
@@ -345,19 +366,21 @@ pub fn analyze_system(
     let timer = RunTimer::start();
     ctx.check()?;
     let beam = settings.source.resolve(sys)?;
+    let primary_obstruction = match settings.source {
+        StraySource::Field { .. } | StraySource::SystemField { .. } => Some(
+            primary_reference(sys, &beam.spec, OBSTRUCTION_GRID, &ctx.subrange(0.0, 0.02))?
+                .obstruction(),
+        ),
+        _ => None,
+    };
+    ctx.report(0.02, "stray light: transport");
     let ss = settings.stray_settings();
-    let r = run(&sys.scene, &beam.spec, &ss, ctx)?;
+    let r = run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?;
     let owned = ss.owned_classes;
     let det = &r.detector;
     let area = det.spec.pixel_area();
     let reference = beam.reference_flux;
-    let frac = |f: f64| {
-        if reference > 0.0 {
-            f / reference
-        } else {
-            f64::NAN
-        }
-    };
+    let frac = |f: f64| (reference > 0.0).then(|| f / reference);
     let maps = PathClass::ALL
         .iter()
         .filter(|c| owned.contains(**c))
@@ -391,15 +414,22 @@ pub fn analyze_system(
         .cloned()
         .collect();
     let mut warnings = r.warnings.clone();
-    for w in sys.tracer().warnings() {
+    for w in &sys.warnings {
         if !warnings.contains(w) {
             warnings.push(w.clone());
         }
     }
-    let f = sys.semi_diameters.failed_rays;
-    if f > 0 {
+    if settings.system_options() != sys.options {
+        warnings.push(
+            "the settings' scene, semi-diameter or detector options differ from those the system was built with; the system's options were used".into(),
+        );
+    }
+    if let Some(o) = primary_obstruction
+        && o > OBSTRUCTION_WARNING
+    {
         warnings.push(format!(
-            "{f} sizing rays failed in the sequential trace; automatic semi-diameters may be too small"
+            "{:.2} % of this source's designed flux is obstructed by non-sequential geometry; a purely sequential Primary overcounts it",
+            100.0 * o
         ));
     }
     let snapshot = &sys.resolved().snapshot;
@@ -408,6 +438,7 @@ pub fn analyze_system(
         "stray_light",
         &RunSettings {
             settings,
+            system_options: &sys.options,
             source: &beam,
             scene_fingerprint: sys.scene.fingerprint(),
         },
@@ -427,6 +458,7 @@ pub fn analyze_system(
         stray_flux: e.detected_owned,
         stray_std_error: e.detected_owned_std_error,
         stray_fraction: frac(e.detected_owned),
+        primary_obstruction,
         totals,
         top_signatures,
         energy: r.energy,

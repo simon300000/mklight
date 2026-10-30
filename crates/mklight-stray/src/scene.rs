@@ -548,7 +548,7 @@ impl SceneBuilder {
 
 /// Options for [`Scene::from_system`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SceneOptions {
     /// Clear semi-diameters per surface index for surfaces with automatic
     /// semi-diameters (normally the sequential tracer's values). `None`

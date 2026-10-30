@@ -278,3 +278,87 @@ fn owned_classes_exclude_ghost_solver_paths() {
     let ghost_map: f64 = r.detector.flux_of(PathClass::Ghost).iter().sum();
     assert!((ghost_map - r.energy.detected_in(PathClass::Ghost)).abs() < 1e-15);
 }
+
+/// The barrelled singlet behind a 40 mm lens hood: a passive dummy surface
+/// 40 mm in front of the lens, and the black barrel (Lambertian, TIS 0.5)
+/// running from the hood opening to the image.
+fn hooded_singlet() -> mklight_core::model::OpticalSystem {
+    use mklight_core::model::{MechanicalPart, SurfaceId};
+    let mut s = barrel_singlet(ScatterModel::Lambertian { tis: 0.5 });
+    let mut hood = Surface::new(10, SurfaceShape::Plane, 40.0, MaterialRef::Air);
+    fixed(&mut hood, 12.0);
+    s.surfaces.insert(1, hood);
+    s.stop = 2;
+    for m in &mut s.mechanics {
+        if let MechanicalPart::Barrel { from, .. } = m {
+            *from = SurfaceId(10);
+        }
+    }
+    s
+}
+
+/// Sun light that enters a lens hood far in front of the first vertex
+/// reaches the detector by scattering off the hood: the out-of-field source
+/// must cover the hood opening. Its detected flux matches a collimated beam
+/// of the same irradiance three times wider, while a disk sized from the
+/// front lens alone (the old construction) misses most of it.
+#[test]
+fn out_of_field_source_covers_a_lens_hood() {
+    let sys = stray_system(hooded_singlet(), &mklight_stray::SystemOptions::default());
+    assert_eq!(sys.scene.sequence, [2, 3, 4]);
+    let set = |rays, seed| StraySettings {
+        rays,
+        seed,
+        ..Default::default()
+    };
+    let ctx = JobContext::new();
+    let detected = |spec: &SourceSpec, rays, seed| {
+        let r = mklight_stray::run(&sys.scene, spec, &set(rays, seed), &ctx).unwrap();
+        assert!(r.energy.is_balanced(), "{}", r.energy.summary());
+        let e = &r.energy;
+        (e.detected, e.detected_std_error)
+    };
+    let theta = 30.0;
+    let sun = sys.out_of_field_source(0.0, theta, 0.1, 1.0).unwrap();
+    let SourceSpec::Collimated {
+        direction,
+        center,
+        radius,
+        start_distance,
+        ..
+    } = sun.spec
+    else {
+        panic!("{:?}", sun.spec)
+    };
+    let wide = SourceSpec::Collimated {
+        direction,
+        center,
+        radius: 3.0 * radius,
+        start_distance: start_distance + 2.0 * radius,
+        power: std::f64::consts::PI * 9.0 * radius * radius,
+    };
+    // Old construction: centred on the lens vertex, 1.1 × the largest
+    // mechanical radius (the 12 mm barrel).
+    let lens = sys.scene.surfaces[2].as_ref().unwrap().frame.origin;
+    let narrow = SourceSpec::Collimated {
+        direction,
+        center: lens,
+        radius: 13.2,
+        start_distance,
+        power: std::f64::consts::PI * 13.2 * 13.2,
+    };
+    let (a, sa) = detected(&sun.spec, 600_000, 81);
+    let (b, sb) = detected(&wide, 3_000_000, 82);
+    let (c, sc) = detected(&narrow, 600_000, 83);
+    let zw = (a - b) / sa.hypot(sb);
+    let zn = (c - b) / sc.hypot(sb);
+    println!(
+        "hood at {theta}°: sun source {a:.4e} ± {sa:.1e} W, 3× wider beam {b:.4e} ± {sb:.1e} W (z = {zw:+.2}); lens-sized disk {c:.4e} ± {sc:.1e} W (z = {zn:+.2})"
+    );
+    assert!(a > 0.0 && sa < 0.1 * a, "{a} ± {sa}");
+    assert!(zw.abs() < 3.0, "z = {zw}");
+    assert!(
+        zn < -5.0,
+        "the test cannot tell a lens-sized disk apart: z = {zn}"
+    );
+}

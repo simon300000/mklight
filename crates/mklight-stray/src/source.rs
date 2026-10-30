@@ -38,7 +38,7 @@ use crate::geom::{Ray, onb};
 use crate::scene::Scene;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceSpec {
     Collimated {
         direction: Vec3,
@@ -223,6 +223,9 @@ impl SourceSpec {
                     );
                 }
             }
+        }
+        if !self.power().is_finite() {
+            return bad("emitted power must be finite");
         }
         Ok(())
     }

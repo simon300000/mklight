@@ -1,17 +1,17 @@
 //! Deterministic sequential reference for the `Primary` class.
 //!
 //! [`primary_reference`] integrates the designed path over a source's own
-//! sampling domain with the sequential reference tracer, so it computes
-//! exactly the expectation that the Monte Carlo's `Primary` class
-//! estimates:
+//! sampling domain with the sequential reference tracer, and checks every
+//! designed path against the non-sequential scene, so it computes the
+//! expectation that the Monte Carlo's `Primary` class estimates:
 //!
 //! * the source's unit disk (beam cross-section, pupil-plane disk, or the
 //!   equal-area map of a point source's cone, `1 − cos θ = s²(1 − cos α)`)
 //!   is covered by the centres of an `n × n` square grid; each centre
 //!   inside the disk carries the exact weight `P·(2/n)²/π`, so the beam's
 //!   outer edge (which the stop always blocks) adds no quadrature error and
-//!   only the clipping boundary inside the beam does (≈ `n^{-4/3}`
-//!   relative);
+//!   only the clipping and obstruction boundaries inside the beam do
+//!   (≈ `n^{-4/3}` relative);
 //! * each sample is traced through [`StraySystem::clipped_system`] (the
 //!   scene's clear apertures as hard clips) at every system wavelength and
 //!   counted when it reaches the detector ([`StraySystem::detector_shape`]);
@@ -22,6 +22,25 @@
 //!   Carlo uses at every interface;
 //! * wavelengths are mixed with the normalised system weights, as the Monte
 //!   Carlo draws them.
+//!
+//! # Obstruction
+//!
+//! The sequential model only knows its own surfaces. Non-sequential
+//! geometry can block a designed path: the back of a fold mirror or a
+//! secondary and its mount in front of a telescope primary, a spider, a
+//! baffle reaching into the beam. Each designed path is therefore followed
+//! segment by segment (source → first interface → … → detector, through the
+//! sequential hit points) with the scene's ray caster; a segment whose first
+//! hit is anything other than the next designed surface is *obstructed*.
+//! The Monte Carlo never classes such a path `Primary` (the light is
+//! absorbed, or scattered into another class), so
+//!
+//! * [`PrimaryReference::flux`] and the moments count unobstructed paths
+//!   only: the expectation of the Monte-Carlo `Primary` class;
+//! * [`PrimaryReference::sequential_flux`] counts every designed path: what
+//!   a purely sequential solver reports. Their ratio is
+//!   [`PrimaryReference::obstruction`]; a sequential `Primary` overcounts by
+//!   exactly the obstructed flux (`docs/STRAY.md`, "Partition").
 //!
 //! The result gives the transmitted flux and the flux-weighted centroid and
 //! RMS radius on the image surface, plus the unweighted geometric spot of
@@ -37,9 +56,12 @@ use mklight_core::job::JobContext;
 use mklight_core::math::{KahanSum, Vec3};
 use mklight_core::model::{Interaction, SurfaceShape};
 use mklight_core::resolved::ResolvedSystem;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use mklight_trace::{Ray, SurfaceRecord, TraceOptions, TraceStatus, trace_ray};
 
-use crate::geom::onb;
+use crate::geom::{RayCaster, onb};
+use crate::scene::{Behavior, Scene};
 use crate::source::SourceSpec;
 use crate::system::StraySystem;
 
@@ -49,22 +71,122 @@ use crate::system::StraySystem;
 pub struct PrimaryReference {
     /// Emitted power of the source (W).
     pub emitted: f64,
-    /// Transmitted flux on the detector (W), wavelength-weighted.
+    /// Transmitted flux on the detector (W) of the unobstructed designed
+    /// paths, wavelength-weighted: the expectation of the Monte-Carlo
+    /// `Primary` class.
     pub flux: f64,
     /// `flux` per wavelength, each as if the source emitted all its power
     /// at that wavelength.
     pub flux_by_wavelength: Vec<f64>,
-    /// Flux-weighted centroid and RMS radius about it.
+    /// Transmitted flux of every designed path, obstructed or not (W): what
+    /// the sequential model alone predicts.
+    pub sequential_flux: f64,
+    /// Flux-weighted centroid and RMS radius about it (unobstructed paths).
     pub centroid: [f64; 2],
     pub rms_radius: f64,
     /// Unweighted (geometric) spot of the rays that reach the detector, over
     /// all wavelengths with equal weight.
     pub geometric_centroid: [f64; 2],
     pub geometric_rms_radius: f64,
-    /// Grid samples inside the source disk, and samples (× wavelengths)
-    /// that reached the detector.
+    /// Grid samples inside the source disk, samples (× wavelengths) that
+    /// reached the detector unobstructed, and designed paths (× wavelengths)
+    /// that the scene obstructs.
     pub samples: usize,
     pub passed: usize,
+    pub obstructed: usize,
+}
+
+impl PrimaryReference {
+    /// Fraction of the sequential (designed) flux that non-sequential
+    /// geometry blocks, `1 − flux / sequential_flux` (0 without designed
+    /// flux).
+    pub fn obstruction(&self) -> f64 {
+        if self.sequential_flux > 0.0 {
+            (1.0 - self.flux / self.sequential_flux).max(0.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Follows designed paths through the scene (module docs, "Obstruction").
+struct PathCheck<'a> {
+    scene: &'a Scene,
+    /// Sequential surfaces each primitive stands for (interface passes, the
+    /// detector's surface; none for opaque geometry).
+    owners: Vec<Vec<usize>>,
+}
+
+impl<'a> PathCheck<'a> {
+    fn new(scene: &'a Scene) -> Self {
+        let owners = (0..scene.primitives().len())
+            .map(|p| match scene.behavior(p) {
+                Behavior::Interface(i) => i.passes.iter().map(|q| q.surface).collect(),
+                Behavior::Detector => vec![scene.detector.surface],
+                Behavior::Opaque(_) => Vec::new(),
+            })
+            .collect();
+        PathCheck { scene, owners }
+    }
+
+    /// Whether the designed path that starts at `origin` (global) and has
+    /// the sequential records `rec` meets anything but its next designed
+    /// surface on the way.
+    fn obstructed(&self, rs: &ResolvedSystem, origin: Vec3, rec: &[SurfaceRecord]) -> bool {
+        let mut from = origin;
+        let mut prev = None;
+        for &j in &self.scene.sequence {
+            let Some(r) = rec.get(j) else {
+                return false;
+            };
+            let to = rs.surfaces[j].frame.to_global_point(r.point);
+            if self.segment_blocked(from, to, prev, j) {
+                return true;
+            }
+            from = to;
+            prev = Some(j);
+        }
+        false
+    }
+
+    /// Whether the straight segment `from → to` (ending on surface `target`,
+    /// starting on surface `prev`) first hits something else. The start
+    /// offset matches the tracer's (`1e-9·(1 + |p|)`); a re-hit of the start
+    /// surface right at the origin is stepped over.
+    fn segment_blocked(&self, from: Vec3, to: Vec3, prev: Option<usize>, target: usize) -> bool {
+        let v = to - from;
+        let len = v.norm();
+        if !(len > 0.0 && len.is_finite()) {
+            return false;
+        }
+        let d = v / len;
+        let tol = 1e-7 * (1.0 + len + to.norm());
+        let mut o = from;
+        let mut done = 0.0;
+        for _ in 0..4 {
+            let eps = 1e-9 * (1.0 + o.norm());
+            let ray = crate::geom::Ray::new(o + d * eps, d);
+            let left = len - done - eps;
+            let Some(h) = self.scene.bvh().closest_hit(&ray, left + tol) else {
+                return false;
+            };
+            let owners = &self.owners[h.prim as usize];
+            if owners.contains(&target) {
+                return false;
+            }
+            let t = h.local.t;
+            if t >= left - tol {
+                return false;
+            }
+            if prev.is_some_and(|p| owners.contains(&p)) && t < tol {
+                o = ray.at(t);
+                done += eps + t;
+                continue;
+            }
+            return true;
+        }
+        false
+    }
 }
 
 /// Unit-disk point `(u, v)` → starting ray (global frame) of `src`.
@@ -190,18 +312,22 @@ impl Acc {
     }
 }
 
-/// One grid row: per-wavelength flux accumulators, the geometric
-/// accumulator, and sample and pass counts.
+/// One grid row: per-wavelength flux accumulators (unobstructed paths),
+/// per-wavelength sequential flux, the geometric accumulator, and sample,
+/// pass and obstruction counts.
 struct Row {
     acc: Vec<Acc>,
+    seq: Vec<KahanSum>,
     geo: Acc,
     samples: usize,
     passed: usize,
+    obstructed: usize,
 }
 
 /// The deterministic `Primary` reference of `source` on `sys` with an
 /// `n × n` grid (module docs). Rows run in parallel and are folded in
-/// order, so the result does not depend on the thread count.
+/// order, so the result does not depend on the thread count. Cancellation
+/// is checked and progress reported per row.
 pub fn primary_reference(
     sys: &StraySystem,
     source: &SourceSpec,
@@ -227,14 +353,18 @@ pub fn primary_reference(
     let power = source.power();
     let cell = 4.0 / (n * n) as f64 / PI * power;
     let h = 2.0 / n as f64;
+    let check = PathCheck::new(&sys.scene);
+    let rows_done = AtomicUsize::new(0);
+    ctx.report(0.0, "");
     let rows: Vec<MkResult<Row>> = (0..n)
         .into_par_iter()
         .map(|iy| {
             ctx.check()?;
             let v = -1.0 + h * (iy as f64 + 0.5);
             let mut acc = vec![Acc::default(); nw];
+            let mut seq = vec![KahanSum::default(); nw];
             let mut geo = Acc::default();
-            let (mut samples, mut passed) = (0usize, 0usize);
+            let (mut samples, mut passed, mut obstructed) = (0usize, 0usize, 0usize);
             let mut rec = Vec::with_capacity(rs.surfaces.len());
             for ix in 0..n {
                 let u = -1.0 + h * (ix as f64 + 0.5);
@@ -253,36 +383,45 @@ pub fn primary_reference(
                     if !det.contains(x, y) {
                         continue;
                     }
-                    passed += 1;
                     let t = path_transmittance(&rs, wl, &rec, r.transmittance);
+                    seq[wl].add(cell * t);
+                    if check.obstructed(&rs, o, &rec) {
+                        obstructed += 1;
+                        continue;
+                    }
+                    passed += 1;
                     a.add(cell * t, x, y);
                     geo.add(1.0, x, y);
                 }
             }
+            let k = rows_done.fetch_add(1, Ordering::Relaxed) + 1;
+            ctx.report(k as f64 / n as f64, "");
             Ok(Row {
                 acc,
+                seq,
                 geo,
                 samples,
                 passed,
+                obstructed,
             })
         })
         .collect();
     let mut acc = vec![Acc::default(); nw];
+    let mut seq = vec![KahanSum::default(); nw];
     let mut geo = Acc::default();
-    let (mut samples, mut passed) = (0, 0);
+    let (mut samples, mut passed, mut obstructed) = (0, 0, 0);
     for row in rows {
-        let Row {
-            acc: a,
-            geo: g,
-            samples: s,
-            passed: p,
-        } = row?;
-        for (x, y) in acc.iter_mut().zip(&a) {
+        let row = row?;
+        for (x, y) in acc.iter_mut().zip(&row.acc) {
             x.merge(y);
         }
-        geo.merge(&g);
-        samples += s;
-        passed += p;
+        for (x, y) in seq.iter_mut().zip(&row.seq) {
+            x.add(y.value());
+        }
+        geo.merge(&row.geo);
+        samples += row.samples;
+        passed += row.passed;
+        obstructed += row.obstructed;
     }
     let mut mix = Acc::default();
     for (a, w) in acc.iter().zip(&wfrac) {
@@ -291,6 +430,10 @@ pub fn primary_reference(
         mix.sy.add(w * a.sy.value());
         mix.sr.add(w * a.sr.value());
     }
+    let mut sequential = KahanSum::default();
+    for (a, w) in seq.iter().zip(&wfrac) {
+        sequential.add(w * a.value());
+    }
     let (centroid, rms_radius) = mix.moments();
     let (geometric_centroid, geometric_rms_radius) = geo.moments();
     ctx.report(1.0, "");
@@ -298,11 +441,13 @@ pub fn primary_reference(
         emitted: power,
         flux: mix.f.value(),
         flux_by_wavelength: acc.iter().map(|a| a.f.value()).collect(),
+        sequential_flux: sequential.value(),
         centroid,
         rms_radius,
         geometric_centroid,
         geometric_rms_radius,
         samples,
         passed,
+        obstructed,
     })
 }

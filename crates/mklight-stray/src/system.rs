@@ -19,9 +19,13 @@
 //!
 //! The same values define the *clipped sequential model*
 //! ([`StraySystem::clipped_system`]): the resolved system with every
-//! automatic semi-diameter frozen to the scene's clear aperture. It is what
-//! the `Primary` class of the Monte Carlo must reproduce
-//! ([`crate::reference`]).
+//! automatic semi-diameter frozen to the scene's clear aperture. Its
+//! transmitted rays are the `Primary` paths of the Monte Carlo **unless
+//! non-sequential geometry obstructs them** (the back of a fold mirror, a
+//! secondary mount, a baffle in the beam), which the sequential model cannot
+//! see. [`crate::reference`] checks every designed path against the scene;
+//! [`StraySystem::new`] measures the obstructed fraction of every system
+//! field ([`StraySystem::obstruction`]) and warns when it is not negligible.
 //!
 //! # Sources
 //!
@@ -44,11 +48,15 @@
 //!   uses the chief direction and the marginal slope instead. `strength` is
 //!   the intensity (W/sr).
 //! * [`StraySystem::out_of_field_source`]: a collimated beam from angles
-//!   `(θx, θy)` (for example the sun outside the field of view), on a disk
-//!   normal to the beam centred on the first interface's vertex, with radius
-//!   `(1 + margin)` times the largest mechanical radius in the scene
-//!   (surfaces, barrels, baffles). Any ray that can enter the lens through
-//!   its front opening crosses that disk.
+//!   `(θx, θy)` (for example the sun outside the field of view) on a disk
+//!   normal to the beam that covers the projection of the **whole scene**
+//!   along the beam: every corner of every primitive's bounding box is
+//!   projected onto the plane normal to the beam, the disk is centred on
+//!   the centre of the projections' bounding rectangle and its radius is
+//!   `(1 + margin)` times the largest distance of a projected corner from
+//!   that centre. Every ray that meets any geometry, including a lens hood
+//!   or telescope tube far in front of the first vertex, therefore starts
+//!   inside the disk.
 //!
 //! Each source comes with a *reference flux* ([`Beam::reference_flux`]),
 //! the usual normalisation of stray-light ratios: the flux through the
@@ -63,20 +71,35 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use mklight_core::error::{MkError, MkResult};
+use mklight_core::job::JobContext;
 use mklight_core::math::Vec3;
-use mklight_core::model::{MechanicalPart, SurfaceShape};
+use mklight_core::model::SurfaceShape;
 use mklight_core::resolved::ResolvedSystem;
 use mklight_trace::{
     FieldPoint, ObjectSource, SemiDiameterSettings, SemiDiameterSource, SemiDiameters,
     SequentialTracer,
 };
 
+use crate::geom::onb;
+use crate::reference::primary_reference;
 use crate::scene::{Scene, SceneOptions};
 use crate::source::SourceSpec;
 
+/// Largest detector map, in pixels (`nx·ny`). The tallies hold about
+/// 0.5 kB per pixel (per-class sums and squares, result maps and errors),
+/// so this bounds them near 0.5 GB.
+pub const MAX_DETECTOR_PIXELS: u64 = 1 << 20;
+
+/// Obstructed fraction of a system field's designed flux above which
+/// [`StraySystem::new`] warns.
+pub const OBSTRUCTION_WARNING: f64 = 1e-3;
+
+/// Grid size of the obstruction check in [`StraySystem::new`].
+const OBSTRUCTION_GRID: usize = 48;
+
 /// Options of [`StraySystem::new`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SystemOptions {
     /// Scene options. Entries of `clear_semi_diameters` that are `Some`
     /// override the traced values.
@@ -94,6 +117,26 @@ impl Default for SystemOptions {
             semi_diameters: SemiDiameterSettings::default(),
             detector_margin: 0.05,
         }
+    }
+}
+
+impl SystemOptions {
+    pub fn validate(&self) -> MkResult<()> {
+        if !(self.detector_margin.is_finite() && self.detector_margin >= 0.0) {
+            return Err(MkError::InvalidModel(
+                "detector margin must be finite and ≥ 0".into(),
+            ));
+        }
+        let (nx, ny) = self.scene.detector_pixels;
+        if nx == 0 || ny == 0 {
+            return Err(MkError::InvalidModel("detector needs pixels".into()));
+        }
+        if nx as u64 * ny as u64 > MAX_DETECTOR_PIXELS {
+            return Err(MkError::InvalidModel(format!(
+                "detector map {nx} × {ny} exceeds {MAX_DETECTOR_PIXELS} pixels"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -137,22 +180,49 @@ pub struct StraySystem {
     pub clear_semi_diameters: Vec<Option<f64>>,
     pub scene: Scene,
     pub detector_shape: DetectorShape,
+    /// The options the system was built with.
+    pub options: SystemOptions,
+    /// Per system field: the fraction of the designed (sequential) flux of a
+    /// pupil-filling beam that non-sequential geometry obstructs
+    /// ([`crate::reference`]), `None` where no field source exists.
+    pub obstruction: Vec<Option<f64>>,
+    /// Warnings of the sizing traces, the scene and the obstruction check.
+    pub warnings: Vec<String>,
 }
 
 impl StraySystem {
     /// Builds the tracer, the semi-diameters and the scene.
     pub fn new(rs: Arc<ResolvedSystem>, opts: &SystemOptions) -> MkResult<StraySystem> {
-        Self::with_tracer(SequentialTracer::new(rs)?, opts)
+        Self::build(rs, opts, &JobContext::new())
+    }
+
+    /// As [`StraySystem::new`], with cancellation and progress (module docs).
+    pub fn build(
+        rs: Arc<ResolvedSystem>,
+        opts: &SystemOptions,
+        ctx: &JobContext,
+    ) -> MkResult<StraySystem> {
+        ctx.check()?;
+        Self::with_tracer_ctx(SequentialTracer::new(rs)?, opts, ctx)
     }
 
     /// As [`StraySystem::new`] with an existing tracer (custom aiming).
     pub fn with_tracer(tracer: SequentialTracer, opts: &SystemOptions) -> MkResult<StraySystem> {
-        if !(opts.detector_margin.is_finite() && opts.detector_margin >= 0.0) {
-            return Err(MkError::InvalidModel(
-                "detector margin must be finite and ≥ 0".into(),
-            ));
-        }
+        Self::with_tracer_ctx(tracer, opts, &JobContext::new())
+    }
+
+    /// As [`StraySystem::with_tracer`], with cancellation and progress.
+    pub fn with_tracer_ctx(
+        tracer: SequentialTracer,
+        opts: &SystemOptions,
+        ctx: &JobContext,
+    ) -> MkResult<StraySystem> {
+        opts.validate()?;
+        ctx.check()?;
+        ctx.report(0.0, "stray light: sizing apertures");
         let sd = tracer.semi_diameters(&opts.semi_diameters);
+        ctx.check()?;
+        ctx.report(0.4, "stray light: building the scene");
         let rs = tracer.system();
         let n = rs.num_surfaces();
         let image = n - 1;
@@ -179,6 +249,8 @@ impl StraySystem {
         let mut sopts = opts.scene.clone();
         sopts.clear_semi_diameters = clear.clone();
         let scene = Scene::from_system(rs, &sopts)?;
+        ctx.check()?;
+        ctx.report(0.6, "stray light: checking for obstruction");
         let detector_shape = if has_sensor {
             DetectorShape::Rect {
                 half_x: scene.detector.half_x,
@@ -189,13 +261,53 @@ impl StraySystem {
                 radius: scene.detector.half_x,
             }
         };
-        Ok(StraySystem {
+        let mut sys = StraySystem {
             tracer,
             semi_diameters: sd,
             clear_semi_diameters: clear,
             scene,
             detector_shape,
-        })
+            options: opts.clone(),
+            obstruction: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let mut warnings: Vec<String> = sys.tracer.warnings().to_vec();
+        let f = sys.semi_diameters.failed_rays;
+        if f > 0 {
+            warnings.push(format!(
+                "{f} sizing rays failed in the sequential trace; automatic semi-diameters may be too small"
+            ));
+        }
+        let nf = sys.resolved().system().fields.fields.len();
+        for k in 0..nf {
+            let sub = ctx.subrange(
+                0.6 + 0.4 * k as f64 / nf as f64,
+                0.6 + 0.4 * (k + 1) as f64 / nf as f64,
+            );
+            let o = match sys.system_field_source(k, 0.1, 1.0) {
+                Ok(beam) => {
+                    Some(primary_reference(&sys, &beam.spec, OBSTRUCTION_GRID, &sub)?.obstruction())
+                }
+                Err(_) => None,
+            };
+            if let Some(o) = o
+                && o > OBSTRUCTION_WARNING
+            {
+                warnings.push(format!(
+                    "field {k}: {:.2} % of the designed flux is obstructed by non-sequential geometry; a purely sequential Primary overcounts it (use the Monte-Carlo Primary or primary_reference)",
+                    100.0 * o
+                ));
+            }
+            sys.obstruction.push(o);
+        }
+        for w in &sys.scene.warnings {
+            if !warnings.contains(w) {
+                warnings.push(w.clone());
+            }
+        }
+        sys.warnings = warnings;
+        ctx.report(1.0, "");
+        Ok(sys)
     }
 
     pub fn tracer(&self) -> &SequentialTracer {
@@ -351,29 +463,46 @@ impl StraySystem {
             .first()
             .and_then(|&s| scene.surfaces.get(s).cloned().flatten())
             .ok_or_else(|| MkError::InvalidModel("scene has no entrance surface".into()))?;
-        let mut r_max = scene
-            .surfaces
-            .iter()
-            .flatten()
-            .map(|g| g.mechanical_semi_diameter)
-            .fold(0.0, f64::max);
-        let include = scene.options.as_ref().is_none_or(|o| o.include_mechanics);
-        if include {
-            for part in &self.resolved().system().mechanics {
-                r_max = r_max.max(match *part {
-                    MechanicalPart::Barrel { inner_radius, .. } => inner_radius,
-                    MechanicalPart::AnnularBaffle { outer_radius, .. } => outer_radius,
-                });
-            }
-        }
         let d = Vec3::new(
             angle_x_deg.to_radians().tan(),
             angle_y_deg.to_radians().tan(),
             1.0,
         )
         .normalized();
-        let radius = r_max * (1.0 + margin);
-        let c = front.frame.origin;
+        // Projections of every primitive's bounding-box corners on the plane
+        // normal to the beam, relative to the front vertex.
+        let c0 = front.frame.origin;
+        let (t1, t2) = onb(d);
+        let mut corners = Vec::with_capacity(8 * scene.primitives().len());
+        for p in scene.primitives() {
+            let b = p.aabb();
+            for i in 0..8 {
+                let q = Vec3::new(
+                    if i & 1 == 0 { b.min.x } else { b.max.x },
+                    if i & 2 == 0 { b.min.y } else { b.max.y },
+                    if i & 4 == 0 { b.min.z } else { b.max.z },
+                ) - c0;
+                corners.push((q.dot(t1), q.dot(t2)));
+            }
+        }
+        let (mut lo, mut hi) = (
+            (f64::INFINITY, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for &(u, v) in &corners {
+            lo = (lo.0.min(u), lo.1.min(v));
+            hi = (hi.0.max(u), hi.1.max(v));
+        }
+        let (mu, mv) = (0.5 * (lo.0 + hi.0), 0.5 * (lo.1 + hi.1));
+        let r_scene = corners
+            .iter()
+            .map(|&(u, v)| (u - mu).hypot(v - mv))
+            .fold(0.0, f64::max);
+        if !(r_scene.is_finite() && r_scene > 0.0) {
+            return Err(MkError::InvalidModel("scene has no finite extent".into()));
+        }
+        let radius = r_scene * (1.0 + margin);
+        let c = c0 + t1 * mu + t2 * mv;
         let (sc, sr) = scene.bounding_sphere();
         let spec = SourceSpec::Collimated {
             direction: d,
@@ -389,7 +518,7 @@ impl StraySystem {
             spec,
             reference_flux: irradiance * PI * r_front * r_front * d.dot(axis).abs(),
             description: format!(
-                "out-of-field collimated source at ({angle_x_deg}°, {angle_y_deg}°) overfilling the front aperture (r = {radius:.6} mm)"
+                "out-of-field collimated source at ({angle_x_deg}°, {angle_y_deg}°) covering the whole scene (r = {radius:.6} mm)"
             ),
         })
     }

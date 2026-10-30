@@ -367,24 +367,38 @@ fn sources_fill_pupil_and_front_aperture() {
         ref s => panic!("{s:?}"),
     }
     let sunb = sys.out_of_field_source(0.0, 30.0, 0.1, 1.0).unwrap();
-    let barrel = match sys.resolved().system().mechanics[0] {
-        mklight_core::model::MechanicalPart::Barrel { inner_radius, .. } => inner_radius,
-        _ => unreachable!(),
-    };
     match sunb.spec {
-        mklight_stray::SourceSpec::Collimated { radius, center, .. } => {
-            // The largest mechanical radius: the barrel, or the stop plate
-            // that reaches just past it.
-            let rmax = sys
-                .scene
-                .surfaces
-                .iter()
-                .flatten()
-                .map(|g| g.mechanical_semi_diameter)
-                .fold(barrel, f64::max);
-            assert!(rmax >= barrel && rmax < barrel + 1.0);
-            assert!((radius - 1.1 * rmax).abs() < 1e-12);
-            assert!(center.norm() < 1e-12, "front vertex at the origin");
+        mklight_stray::SourceSpec::Collimated {
+            radius,
+            center,
+            direction,
+            start_distance,
+            ..
+        } => {
+            // The disk covers the projection of every primitive's bounding
+            // box along the beam, and is no larger than needed (some corner
+            // sits on the un-margined rim).
+            let mut far = 0.0f64;
+            for p in sys.scene.primitives() {
+                let b = p.aabb();
+                for i in 0..8 {
+                    let q = mklight_core::math::Vec3::new(
+                        if i & 1 == 0 { b.min.x } else { b.max.x },
+                        if i & 2 == 0 { b.min.y } else { b.max.y },
+                        if i & 4 == 0 { b.min.z } else { b.max.z },
+                    ) - center;
+                    let perp = q - direction * q.dot(direction);
+                    far = far.max(perp.norm());
+                }
+            }
+            assert!(
+                (far - radius / 1.1).abs() < 1e-9 * radius,
+                "{far} vs {radius}"
+            );
+            // It starts in front of everything.
+            let (sc, sr) = sys.scene.bounding_sphere();
+            let start = center - direction * start_distance;
+            assert!((start - sc).dot(direction) < -sr);
         }
         ref s => panic!("{s:?}"),
     }

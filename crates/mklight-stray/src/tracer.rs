@@ -84,7 +84,7 @@ use crate::tally::{ChunkTally, DetectorResult, EnergyReport, SignatureFlux, Sink
 
 /// Branch selection strategy at interactions.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SplitMode {
     /// Physical branch probabilities, unit weights.
     Analog,
