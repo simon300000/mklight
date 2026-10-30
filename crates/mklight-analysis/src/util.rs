@@ -383,6 +383,70 @@ impl Moments {
     }
 }
 
+// ----- 2×2 matrices ----------------------------------------------------------------
+
+/// Small dense 2×2 helpers (row-major `m[row][col]`), with `fma` in every
+/// determinant-like expression.
+pub(crate) mod m2 {
+    pub type M = [[f64; 2]; 2];
+
+    pub const I: M = [[1.0, 0.0], [0.0, 1.0]];
+
+    #[inline]
+    pub fn det(a: &M) -> f64 {
+        a[0][0].mul_add(a[1][1], -(a[0][1] * a[1][0]))
+    }
+    #[inline]
+    pub fn mul(a: &M, b: &M) -> M {
+        let e = |i: usize, j: usize| a[i][0].mul_add(b[0][j], a[i][1] * b[1][j]);
+        [[e(0, 0), e(0, 1)], [e(1, 0), e(1, 1)]]
+    }
+    #[inline]
+    pub fn t(a: &M) -> M {
+        [[a[0][0], a[1][0]], [a[0][1], a[1][1]]]
+    }
+    #[inline]
+    pub fn add(a: &M, b: &M) -> M {
+        [
+            [a[0][0] + b[0][0], a[0][1] + b[0][1]],
+            [a[1][0] + b[1][0], a[1][1] + b[1][1]],
+        ]
+    }
+    #[inline]
+    pub fn scale(a: &M, s: f64) -> M {
+        [[a[0][0] * s, a[0][1] * s], [a[1][0] * s, a[1][1] * s]]
+    }
+    #[inline]
+    pub fn apply(a: &M, v: [f64; 2]) -> [f64; 2] {
+        [
+            a[0][0].mul_add(v[0], a[0][1] * v[1]),
+            a[1][0].mul_add(v[0], a[1][1] * v[1]),
+        ]
+    }
+    /// Inverse; `None` when singular or not finite.
+    #[inline]
+    pub fn inv(a: &M) -> Option<M> {
+        let d = det(a);
+        if !(d.is_finite() && d != 0.0) {
+            return None;
+        }
+        let r = [[a[1][1] / d, -a[0][1] / d], [-a[1][0] / d, a[0][0] / d]];
+        r.iter().flatten().all(|v| v.is_finite()).then_some(r)
+    }
+    /// Eigen-decomposition of the symmetric part of `a`: `(λ₊, λ₋, v₊)`
+    /// with `λ₊ ≥ λ₋` and `v₊` the unit eigenvector of `λ₊` (`v₋ ⟂ v₊`).
+    /// Formed from the half-difference and the off-diagonal, so a nearly
+    /// isotropic matrix keeps full accuracy in both eigenvalues.
+    pub fn sym_eigen(a: &M) -> (f64, f64, [f64; 2]) {
+        let m = 0.5 * (a[0][0] + a[1][1]);
+        let d = 0.5 * (a[0][0] - a[1][1]);
+        let c = 0.5 * (a[0][1] + a[1][0]);
+        let r = d.hypot(c);
+        let th = 0.5 * c.atan2(d);
+        (m + r, m - r, [th.cos(), th.sin()])
+    }
+}
+
 // ----- Brent minimisation -----------------------------------------------------------
 
 /// Result of [`brent_minimize`].
