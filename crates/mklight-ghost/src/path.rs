@@ -302,7 +302,9 @@ impl Search<'_> {
         } else if self.higher.len() < self.budget {
             f64::NEG_INFINITY
         } else {
-            self.higher.peek().map_or(f64::NEG_INFINITY, |r| r.0.reflectance_product)
+            self.higher
+                .peek()
+                .map_or(f64::NEG_INFINITY, |r| r.0.reflectance_product)
         }
     }
 

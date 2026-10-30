@@ -48,7 +48,13 @@ pub fn surf(id: u64, shape: SurfaceShape, t: f64, m: MaterialRef) -> Surface {
 /// Object at infinity, stop plane (air) 5 mm before a plane-parallel plate
 /// of index `n` and thickness `d`, image plane `back` mm behind it. Field
 /// angles in degrees.
-pub fn plate(n: f64, d: f64, back: f64, fields_deg: &[f64], coating: Option<CoatingDef>) -> OpticalSystem {
+pub fn plate(
+    n: f64,
+    d: f64,
+    back: f64,
+    fields_deg: &[f64],
+    coating: Option<CoatingDef>,
+) -> OpticalSystem {
     let mut s = OpticalSystem::new_empty();
     s.wavelengths = mono();
     s.aperture = ApertureSpec::EntrancePupilDiameter { value: 10.0 };

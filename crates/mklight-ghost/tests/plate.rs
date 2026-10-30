@@ -4,9 +4,7 @@
 mod common;
 
 use common::*;
-use mklight_core::{
-    ApertureSpec, JobContext, MaterialRef, OpticalSystem, SurfaceShape,
-};
+use mklight_core::{ApertureSpec, JobContext, MaterialRef, OpticalSystem, SurfaceShape};
 use mklight_ghost::{
     GhostPath, IrradianceSettings, ParaxialGhostSettings, ghost_irradiance, paraxial_ghosts,
     real_ghost_focus,
@@ -45,7 +43,10 @@ fn two_reflection_geometry_and_intensity_oblique() {
     assert!(q.ray.dir.max_abs_diff(p.ray.dir) < 1e-14);
     // Extra optical path: one glass round trip, 2 n d / cos θ'.
     let dopl = q.opl.diff(&p.opl);
-    assert!((dopl - 2.0 * n * d / tp.cos()).abs() < 1e-11, "ΔOPL = {dopl}");
+    assert!(
+        (dopl - 2.0 * n * d / tp.cos()).abs() < 1e-11,
+        "ΔOPL = {dopl}"
+    );
 
     // Intensity: T² R² per polarisation (reciprocity: the inside
     // reflectance at θ' equals the outside one at θ).
@@ -81,7 +82,11 @@ fn normal_incidence_ghost_ratio_is_r_squared() {
     let g = &res.ghosts[0];
     // Every ray meets the plate at normal incidence: ghost / primary = R²
     // ray by ray, so for flux and for every bin.
-    assert!((g.flux_ratio - r * r).abs() < 1e-14 * r * r + 1e-16, "{}", g.flux_ratio);
+    assert!(
+        (g.flux_ratio - r * r).abs() < 1e-14 * r * r + 1e-16,
+        "{}",
+        g.flux_ratio
+    );
     assert!((g.peak_ratio - r * r).abs() < 1e-12 * r * r);
     let gm = g.map.as_ref().unwrap();
     let pm = res.primary.map.as_ref().unwrap();
@@ -90,8 +95,8 @@ fn normal_incidence_ghost_ratio_is_r_squared() {
     }
     // Primary flux: (1 − R)² of the sampled pupil fraction.
     let t2 = (1.0 - r) * (1.0 - r);
-    let sampled = res.primary.fields[0].rays_traced as f64 * (2.0f64 / 24.0).powi(2)
-        / std::f64::consts::PI;
+    let sampled =
+        res.primary.fields[0].rays_traced as f64 * (2.0f64 / 24.0).powi(2) / std::f64::consts::PI;
     assert!((res.primary.flux - t2 * sampled).abs() < 1e-12);
     assert!((res.total_flux_ratio - r * r).abs() < 1e-14);
 }
@@ -120,7 +125,11 @@ fn quarter_wave_ar_reduces_ghost_by_r_ratio() {
     let rc = ((n - nf * nf) / (n + nf * nf)).powi(2);
     let rb = r_normal(1.0, n);
     let expect = (rc * rc * (1.0 - rc).powi(2)) / (rb * rb * (1.0 - rb).powi(2));
-    assert!(((gc / gb) / expect - 1.0).abs() < 1e-10, "{} vs {expect}", gc / gb);
+    assert!(
+        ((gc / gb) / expect - 1.0).abs() < 1e-10,
+        "{} vs {expect}",
+        gc / gb
+    );
     assert!(((rc_ratio / rb_ratio) / (rc / rb).powi(2) - 1.0).abs() < 1e-10);
     // The AR coating transmits more signal.
     assert!(pc > pb);
@@ -158,16 +167,28 @@ fn ghost_focus_shift_in_converging_beam() {
     .unwrap();
     assert!(rep.primary_focus_from_sensor.abs() < 1e-12);
     let g = &rep.ghosts[0];
-    assert!((g.focus_from_sensor + 2.0 * d / n).abs() < 1e-11, "{}", g.focus_from_sensor);
+    assert!(
+        (g.focus_from_sensor + 2.0 * d / n).abs() < 1e-11,
+        "{}",
+        g.focus_from_sensor
+    );
     // Blur: behind the plate the ghost marginal ray has the primary's air
     // slope −5/100 and has passed its focus 2d/n before the sensor.
     let y_m = 5.0 * (2.0 * d / n) / 100.0;
-    assert!((g.spot_diameter - 2.0 * y_m).abs() < 1e-12, "{}", g.spot_diameter);
+    assert!(
+        (g.spot_diameter - 2.0 * y_m).abs() < 1e-12,
+        "{}",
+        g.spot_diameter
+    );
     let r = r_normal(1.0, n);
     assert!((g.reflectance_product - r * r).abs() < 1e-15);
     // Real ghost focus at a small aperture agrees with the paraxial one.
     let z = real_ghost_focus(&m, &GhostPath::new(vec![3, 2]), 0, 0.01).unwrap();
-    assert!((z - g.focus_from_sensor).abs() < 1e-5, "{z} vs {}", g.focus_from_sensor);
+    assert!(
+        (z - g.focus_from_sensor).abs() < 1e-5,
+        "{z} vs {}",
+        g.focus_from_sensor
+    );
     // ... and departs from it at full aperture (plate spherical aberration).
     let zf = real_ghost_focus(&m, &GhostPath::new(vec![3, 2]), 0, 1.0).unwrap();
     assert!((zf - g.focus_from_sensor).abs() > 1e-3);
