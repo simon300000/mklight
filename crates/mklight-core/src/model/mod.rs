@@ -3,12 +3,14 @@
 pub mod coating;
 pub mod material;
 pub mod mechanics;
+pub mod solve;
 pub mod spec;
 pub mod surface;
 
 pub use coating::{CoatingDef, Layer};
 pub use material::MaterialRef;
 pub use mechanics::{MechanicalPart, ScatterModel, Sensor};
+pub use solve::{Solve, SolveKind};
 pub use spec::{
     ApertureSpec, Environment, Field, FieldKind, FieldSet, RayAiming, Vignetting, Wavelength,
     WavelengthSet,
@@ -61,6 +63,11 @@ pub struct OpticalSystem {
     pub sensor: Option<Sensor>,
     #[serde(default)]
     pub configurations: Vec<Configuration>,
+    /// Solves and pickups (`docs/SOLVES.md`). They are applied by
+    /// `mklight_trace::solves::apply_solves`, per configuration after its
+    /// overrides; the model itself stores whatever values were last solved.
+    #[serde(default)]
+    pub solves: Vec<Solve>,
 }
 
 impl OpticalSystem {
@@ -86,6 +93,7 @@ impl OpticalSystem {
             mechanics: Vec::new(),
             sensor: None,
             configurations: Vec::new(),
+            solves: Vec::new(),
         }
     }
 
@@ -211,7 +219,7 @@ impl OpticalSystem {
                     .map_err(|e| MkError::InvalidModel(format!("configuration {k}: {e}")))?;
             }
         }
-        Ok(())
+        solve::validate_solves(self)
     }
 
     /// Apply configuration `k`'s overrides. Configuration `0` and an empty
