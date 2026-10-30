@@ -113,7 +113,7 @@ pub struct Session {
 
 /// Read a catalog file. AGF files are named by their file stem.
 pub fn read_catalog_file(path: &Path, format: CatalogFormat) -> EngineResult<GlassCatalog> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
+    let bytes = std::fs::read(path).map_err(|e| {
         EngineError::Core(MkError::Io(format!("cannot read {}: {e}", path.display())))
     })?;
     let stem = path
@@ -121,8 +121,20 @@ pub fn read_catalog_file(path: &Path, format: CatalogFormat) -> EngineResult<Gla
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let mut cat = match format {
-        CatalogFormat::Agf => agf::parse_agf(&stem, &text)?,
-        CatalogFormat::Json => serde_json::from_str::<GlassCatalog>(&text)?,
+        // Vendor AGF files are often UTF-16; `parse_agf_bytes` detects the encoding.
+        CatalogFormat::Agf => {
+            let agf = agf::parse_agf_bytes(&stem, &bytes, &agf::AgfOptions::default())?;
+            if agf.catalog.glasses.is_empty() {
+                let detail: Vec<String> = agf.warnings.iter().map(|w| w.to_string()).collect();
+                return Err(EngineError::Core(MkError::Parse(format!(
+                    "{}: no usable glasses ({})",
+                    path.display(),
+                    detail.join("; ")
+                ))));
+            }
+            agf.catalog
+        }
+        CatalogFormat::Json => serde_json::from_slice::<GlassCatalog>(&bytes)?,
     };
     if cat.name.is_empty() {
         cat.name = stem;
@@ -906,6 +918,28 @@ mod tests {
         assert!(s.load_catalog_file(&p).is_err());
         assert_eq!(s.catalogs().len(), 1);
         assert!(s.project().catalogs.is_empty());
+    }
+
+    #[test]
+    fn agf_loading_accepts_utf16_catalogs() {
+        // Re-export a built-in glass as UTF-16 LE AGF, the common vendor encoding.
+        let builtin = mklight_core::materials::builtin::catalog();
+        let mut cat = GlassCatalog {
+            name: "USER".into(),
+            glasses: Default::default(),
+        };
+        cat.glasses
+            .insert("N-BK7".into(), builtin.glasses["N-BK7"].clone());
+        let (text, _) = agf::write_agf(&agf::AgfCatalog::from_catalog(cat));
+        let bytes = agf::encode_text(&text, agf::TextEncoding::Utf16Le);
+        let dir = TempDir::new("agf16");
+        let p = dir.path().join("USER.agf");
+        std::fs::write(&p, bytes).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        let summary = s.load_catalog_file(&p).unwrap();
+        assert_eq!(summary.glass_count, 1);
+        assert_eq!(s.catalogs().len(), 2);
     }
 
     #[test]
