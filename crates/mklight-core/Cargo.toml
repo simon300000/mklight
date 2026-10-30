@@ -1,0 +1,17 @@
+[package]
+name = "mklight-core"
+description = "MKLight shared physical model, materials, coatings, snapshots and job framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+num-complex.workspace = true
+
+[dev-dependencies]
+approx.workspace = true

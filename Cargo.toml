@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mklight-core",
+    "crates/mklight-trace",
+    "crates/mklight-analysis",
+    "crates/mklight-wave",
+    "crates/mklight-ghost",
+    "crates/mklight-stray",
+    "crates/mklight-optim",
+    "crates/mklight-gpu",
+    "crates/mklight-metal",
+    "crates/mklight-engine",
+    "crates/mklight-ffi",
+    "crates/mklight-py",
+    "crates/mklight-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Proprietary"
+rust-version = "1.90"
+
+[workspace.dependencies]
+mklight-core = { path = "crates/mklight-core" }
+mklight-trace = { path = "crates/mklight-trace" }
+mklight-analysis = { path = "crates/mklight-analysis" }
+mklight-wave = { path = "crates/mklight-wave" }
+mklight-ghost = { path = "crates/mklight-ghost" }
+mklight-stray = { path = "crates/mklight-stray" }
+mklight-optim = { path = "crates/mklight-optim" }
+mklight-gpu = { path = "crates/mklight-gpu" }
+mklight-metal = { path = "crates/mklight-metal" }
+mklight-engine = { path = "crates/mklight-engine" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+blake3 = "1"
+rayon = "1"
+rustfft = "6"
+num-complex = "0.4"
+approx = "0.5"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,25 @@
+[package]
+name = "mklight-engine"
+description = "MKLight engine facade: sessions, projects, job scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mklight-core.workspace = true
+mklight-trace.workspace = true
+mklight-analysis.workspace = true
+mklight-wave.workspace = true
+mklight-ghost.workspace = true
+mklight-stray.workspace = true
+mklight-optim.workspace = true
+mklight-gpu.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mklight-metal.workspace = true
+[dev-dependencies]
+approx.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "mklight-gpu"
+description = "MKLight backend-agnostic GPU compute interface and packed f32 layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mklight-core.workspace = true
+mklight-trace.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+[dev-dependencies]
+approx.workspace = true

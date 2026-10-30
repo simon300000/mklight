@@ -1,0 +1,18 @@
+[package]
+name = "mklight-wave"
+description = "MKLight wave optics: OPD, Zernike, PSF, MTF"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mklight-core.workspace = true
+mklight-trace.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+rustfft.workspace = true
+num-complex.workspace = true
+[dev-dependencies]
+approx.workspace = true

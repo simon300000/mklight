@@ -1,0 +1,301 @@
+//! Optical materials: glass catalogs, dispersion, thermal index changes and
+//! internal absorption, plus interface physics (Fresnel equations and
+//! thin-film coatings) in `coating`.
+
+pub mod agf;
+pub mod builtin;
+pub mod coating;
+pub mod dispersion;
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
+
+pub use dispersion::{Dispersion, ThermalCoefficients, air_index};
+
+use crate::error::{MkError, MkResult};
+use crate::model::{Environment, MaterialRef};
+
+/// Catalog reference conditions.
+pub const CATALOG_T_C: f64 = 20.0;
+pub const CATALOG_P_ATM: f64 = 1.0;
+
+/// Wavelengths of the standard spectral lines (µm).
+pub mod lines {
+    pub const D: f64 = 0.5875618; // He d
+    pub const F: f64 = 0.4861327; // H F
+    pub const C: f64 = 0.6562725; // H C
+    pub const G: f64 = 0.4358343; // Hg g
+    pub const E: f64 = 0.5460740; // Hg e
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransmittancePoint {
+    pub um: f64,
+    /// Internal transmittance (excluding Fresnel losses) of a sample of `thickness_mm`.
+    pub tau: f64,
+    pub thickness_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Glass {
+    pub name: String,
+    pub dispersion: Dispersion,
+    /// Catalog `n_d` and `V_d`, used for display and to check consistency
+    /// against `dispersion`.
+    pub nd: f64,
+    pub vd: f64,
+    /// Valid wavelength range of the dispersion data (µm).
+    pub min_um: f64,
+    pub max_um: f64,
+    #[serde(default)]
+    pub thermal: Option<ThermalCoefficients>,
+    /// Coefficient of thermal expansion (1/K) for −30…+70 °C.
+    #[serde(default)]
+    pub cte: Option<f64>,
+    /// Density (g/cm³).
+    #[serde(default)]
+    pub density: Option<f64>,
+    #[serde(default)]
+    pub transmittance: Vec<TransmittancePoint>,
+    /// Relative cost or availability code, used by the glass-substitution optimiser.
+    #[serde(default)]
+    pub relative_cost: Option<f64>,
+    #[serde(default)]
+    pub comment: String,
+}
+
+impl Glass {
+    /// Index relative to air at catalog conditions.
+    pub fn catalog_index(&self, lambda_um: f64) -> f64 {
+        self.dispersion.index(lambda_um)
+    }
+
+    /// Internal absorption coefficient α (1/mm), so that `τ(L) = exp(−α L)`.
+    /// Returns 0 when no transmittance data exists.
+    pub fn absorption_per_mm(&self, lambda_um: f64) -> f64 {
+        let t = &self.transmittance;
+        if t.is_empty() {
+            return 0.0;
+        }
+        let alpha = |p: &TransmittancePoint| -(p.tau.max(1e-300)).ln() / p.thickness_mm;
+        if lambda_um <= t[0].um {
+            return alpha(&t[0]);
+        }
+        for w in t.windows(2) {
+            if lambda_um <= w[1].um {
+                let f = (lambda_um - w[0].um) / (w[1].um - w[0].um);
+                return alpha(&w[0]) * (1.0 - f) + alpha(&w[1]) * f;
+            }
+        }
+        alpha(&t[t.len() - 1])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct GlassCatalog {
+    pub name: String,
+    pub glasses: BTreeMap<String, Glass>,
+}
+
+/// Every catalog loaded into a session. Lookups are case-insensitive.
+#[derive(Clone, Debug, Default)]
+pub struct MaterialLibrary {
+    catalogs: Vec<Arc<GlassCatalog>>,
+}
+
+/// A material resolved for one environment, so it can be evaluated quickly
+/// at any wavelength.
+#[derive(Clone, Debug)]
+pub enum ResolvedMaterial {
+    Air,
+    Vacuum { env: Environment },
+    Glass { glass: Arc<Glass>, env: Environment },
+    Model { cauchy: [f64; 3] },
+    Constant { n: f64 },
+}
+
+impl ResolvedMaterial {
+    /// Index relative to air at the system environment (CONVENTIONS §2).
+    pub fn index(&self, lambda_um: f64) -> f64 {
+        match self {
+            ResolvedMaterial::Air => 1.0,
+            ResolvedMaterial::Vacuum { env } => {
+                1.0 / air_index(lambda_um, env.temperature_c, env.pressure_atm)
+            }
+            ResolvedMaterial::Constant { n } => *n,
+            ResolvedMaterial::Model { cauchy } => {
+                cauchy[0] + cauchy[1] / (lambda_um * lambda_um) + cauchy[2] / lambda_um.powi(4)
+            }
+            ResolvedMaterial::Glass { glass, env } => {
+                let n_cat = glass.catalog_index(lambda_um);
+                let at_ref = env.temperature_c == CATALOG_T_C && env.pressure_atm == CATALOG_P_ATM;
+                if at_ref && glass.thermal.is_none() {
+                    return n_cat;
+                }
+                let n_air_ref = air_index(lambda_um, CATALOG_T_C, CATALOG_P_ATM);
+                let n_abs_ref = n_cat * n_air_ref;
+                let dn = glass.thermal.map_or(0.0, |th| {
+                    th.delta_n_abs(n_abs_ref, lambda_um, env.temperature_c)
+                });
+                (n_abs_ref + dn) / air_index(lambda_um, env.temperature_c, env.pressure_atm)
+            }
+        }
+    }
+
+    pub fn absorption_per_mm(&self, lambda_um: f64) -> f64 {
+        match self {
+            ResolvedMaterial::Glass { glass, .. } => glass.absorption_per_mm(lambda_um),
+            _ => 0.0,
+        }
+    }
+
+    /// Valid wavelength range, if the material has one.
+    pub fn range_um(&self) -> Option<(f64, f64)> {
+        match self {
+            ResolvedMaterial::Glass { glass, .. } => Some((glass.min_um, glass.max_um)),
+            _ => None,
+        }
+    }
+}
+
+/// Normal-glass line for the relative partial dispersion `P_g,F` against `V_d`
+/// (the line through the K7 and F2 reference glasses).
+pub fn normal_pgf(vd: f64) -> f64 {
+    0.6438 - 0.001682 * vd
+}
+
+/// Fits a Cauchy formula `n = A + B/λ² + C/λ⁴` to a model glass so that it
+/// reproduces `n_d`, `n_F − n_C = (n_d − 1)/V_d`, and
+/// `n_g − n_F = (P_gF,normal + ΔP_gF)(n_F − n_C)`.
+pub fn model_glass_cauchy(nd: f64, vd: f64, dpgf: f64) -> MkResult<[f64; 3]> {
+    if !(nd > 1.0 && vd > 0.0) {
+        return Err(MkError::InvalidModel(format!(
+            "model glass needs nd > 1 and vd > 0 (got {nd}, {vd})"
+        )));
+    }
+    let dfc = (nd - 1.0) / vd;
+    let pgf = normal_pgf(vd) + dpgf;
+    let u = |l: f64| 1.0 / (l * l);
+    let w = |l: f64| 1.0 / l.powi(4);
+    // Unknowns A, B, C:
+    //   A + B u_d + C w_d               = nd
+    //       B(u_F−u_C) + C(w_F−w_C)     = dfc
+    //       B(u_g−u_F) + C(w_g−w_F)     = pgf·dfc
+    let (a11, a12, b1) = (u(lines::F) - u(lines::C), w(lines::F) - w(lines::C), dfc);
+    let (a21, a22, b2) = (
+        u(lines::G) - u(lines::F),
+        w(lines::G) - w(lines::F),
+        pgf * dfc,
+    );
+    let det = a11 * a22 - a12 * a21;
+    let b = (b1 * a22 - a12 * b2) / det;
+    let c = (a11 * b2 - a21 * b1) / det;
+    let a = nd - b * u(lines::D) - c * w(lines::D);
+    Ok([a, b, c])
+}
+
+impl MaterialLibrary {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The library with only the built-in catalog loaded.
+    pub fn with_builtin() -> Self {
+        static BUILTIN: OnceLock<Arc<GlassCatalog>> = OnceLock::new();
+        let mut lib = Self::new();
+        lib.add_catalog(BUILTIN.get_or_init(|| Arc::new(builtin::catalog())).clone());
+        lib
+    }
+
+    pub fn add_catalog(&mut self, cat: Arc<GlassCatalog>) {
+        self.catalogs
+            .retain(|c| !c.name.eq_ignore_ascii_case(&cat.name));
+        self.catalogs.push(cat);
+    }
+
+    pub fn catalogs(&self) -> &[Arc<GlassCatalog>] {
+        &self.catalogs
+    }
+
+    pub fn find_glass(&self, catalog: Option<&str>, name: &str) -> MkResult<Arc<Glass>> {
+        for cat in &self.catalogs {
+            if let Some(c) = catalog
+                && !cat.name.eq_ignore_ascii_case(c)
+            {
+                continue;
+            }
+            if let Some(g) = cat.glasses.get(name) {
+                return Ok(Arc::new(g.clone()));
+            }
+            if let Some((_, g)) = cat
+                .glasses
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            {
+                return Ok(Arc::new(g.clone()));
+            }
+        }
+        Err(MkError::UnknownMaterial(match catalog {
+            Some(c) => format!("{c}:{name}"),
+            None => name.to_string(),
+        }))
+    }
+
+    pub fn resolve(&self, m: &MaterialRef, env: &Environment) -> MkResult<ResolvedMaterial> {
+        Ok(match m {
+            MaterialRef::Air => ResolvedMaterial::Air,
+            MaterialRef::Vacuum => ResolvedMaterial::Vacuum { env: *env },
+            MaterialRef::Constant { n } => {
+                if !(*n > 0.0 && n.is_finite()) {
+                    return Err(MkError::InvalidModel(format!(
+                        "constant index must be positive (got {n})"
+                    )));
+                }
+                ResolvedMaterial::Constant { n: *n }
+            }
+            MaterialRef::Model { nd, vd, dpgf } => ResolvedMaterial::Model {
+                cauchy: model_glass_cauchy(*nd, *vd, *dpgf)?,
+            },
+            MaterialRef::Catalog { catalog, name } => ResolvedMaterial::Glass {
+                glass: self.find_glass(catalog.as_deref(), name)?,
+                env: *env,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_glass_reproduces_nd_vd() {
+        let c = model_glass_cauchy(1.6, 40.0, 0.0).unwrap();
+        let m = ResolvedMaterial::Model { cauchy: c };
+        assert!((m.index(lines::D) - 1.6).abs() < 1e-12);
+        let vd = (m.index(lines::D) - 1.0) / (m.index(lines::F) - m.index(lines::C));
+        assert!((vd - 40.0).abs() < 1e-9);
+        let pgf = (m.index(lines::G) - m.index(lines::F)) / (m.index(lines::F) - m.index(lines::C));
+        assert!((pgf - normal_pgf(40.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn vacuum_below_air() {
+        let lib = MaterialLibrary::with_builtin();
+        let v = lib
+            .resolve(&MaterialRef::Vacuum, &Environment::default())
+            .unwrap();
+        assert!(v.index(0.55) < 1.0 && v.index(0.55) > 0.9996);
+    }
+
+    #[test]
+    fn thermal_identity_at_reference() {
+        let lib = MaterialLibrary::with_builtin();
+        let g = lib
+            .resolve(&MaterialRef::glass("N-BK7"), &Environment::default())
+            .unwrap();
+        let n = g.index(lines::D);
+        assert!((n - 1.5168).abs() < 2e-5, "N-BK7 nd = {n}");
+    }
+}

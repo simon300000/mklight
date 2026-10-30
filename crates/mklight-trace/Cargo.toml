@@ -1,0 +1,15 @@
+[package]
+name = "mklight-trace"
+description = "MKLight CPU double-precision reference sequential ray tracer and paraxial optics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mklight-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+[dev-dependencies]
+approx.workspace = true
