@@ -160,17 +160,24 @@ c_m = ∫₀¹ exp[−i2π(b−m)u] du
 η_m = |c_m|² = sinc²(m−αm₀),     sinc(x)=sin(πx)/(πx).
 ```
 
-For a relief separating two media, define the manufactured depth using
-`D₀=|n_after(λ₀)−n_before(λ₀)|`. At λ,
-`D=sign[n_after(λ₀)−n_before(λ₀)] [n_after(λ)−n_before(λ)]`, so
-`α=(λ₀/λ)D/D₀`. This retains a phase reversal if two glass dispersions cross. Both materials are evaluated at their actual environment,
-including λ₀ even when it is absent from the wavelength list. For a glass
-in air this is `(λ₀/λ)[n(λ)−1]/[n(λ₀)−1]`. Reversing transmission leaves
-the ratio unchanged. For a designed reflecting relief use `D₀=2n_inc(λ₀)`
-and `D=2n_inc(λ)`: the relief changes a round-trip optical path. A Fresnel
-reflection at a *transmitting* DOE uses `D=2n_inc(λ)` over the original
-transmission depth D₀; it generally blazes into a different order. A
-same-medium mathematical phase screen has no material depth; its defined
+Let D be the optical path a channel gains per unit relief depth at λ, and
+D₀ that of the designed channel at λ₀; then `α=(λ₀/λ)D/D₀`. Both are signed
+along the same depth axis, and both materials are evaluated in their
+actual environment, including λ₀ even when it is absent from the wavelength
+list.
+
+* Transmission, in either direction: `D=n_before(λ)−n_after(λ)`,
+  `D₀=n_before(λ₀)−n_after(λ₀)`. For a glass in air this is
+  `(λ₀/λ)[n(λ)−1]/[n(λ₀)−1]`, and a cemented relief reverses its phase
+  where the two dispersions cross.
+* Fresnel reflection off a transmitting relief, over the same D₀:
+  `D=+2n_before(λ)` from the medium before and `D=−2n_after(λ)` from the
+  medium after. At λ₀ a relief between glass n=1.5 and air blazes its
+  reflection inside the glass into αm₀ = +6 and the one in air into −4,
+  on whichever side the glass is: the facets' specular directions.
+* A designed reflecting relief: `D₀=2n_inc(λ₀)`, `D=2n_inc(λ)`.
+
+A same-medium mathematical phase screen has no material depth; its defined
 limit is α=λ₀/λ. This convention needs no extra fictitious substrate.
 
 For N equal-width steps with heights proportional to j/N, integrate each

@@ -84,9 +84,11 @@ impl DiffractionEfficiency {
     }
 }
 
-/// Blaze depth from the actual media on both sides, evaluated at λ and λ₀.
-/// A designed reflective relief uses 2n; a transmissive relief uses |n₂−n₁|.
-/// Its Fresnel-reflected channel uses 2n_in over that same manufactured depth.
+/// Blaze αm₀ of an outgoing channel at λ (SURFACES §3.1): the optical path
+/// the relief adds per unit depth on that channel, over the path it adds on
+/// the designed channel at λ₀. A transmitting relief adds n_before − n_after
+/// in either direction; its Fresnel reflection adds +2n from the medium
+/// before and −2n from the medium after; a designed mirror adds 2n.
 pub fn blaze(
     sys: &ResolvedSystem,
     surface: usize,
@@ -101,35 +103,31 @@ pub fn blaze(
     let before = &sys.surfaces[surface - 1].medium_after;
     let after = &s.medium_after;
     let l0 = phase.design_wavelength_um;
-    let depth_index = if s.is_mirror() {
-        2.0 * before.index(l0)
+    let (path, design) = if s.is_mirror() {
+        let n = if backward { after } else { before };
+        (n.index(lambda), before.index(l0))
     } else {
-        (after.index(l0) - before.index(l0)).abs()
+        let contrast = |l| before.index(l) - after.index(l);
+        let path = match (reflected, backward) {
+            (false, _) => contrast(lambda),
+            (true, false) => 2.0 * before.index(lambda),
+            (true, true) => -2.0 * after.index(lambda),
+        };
+        (path, contrast(l0))
     };
-    let contrast = if reflected {
-        2.0 * if backward {
-            after.index(lambda)
-        } else {
-            before.index(lambda)
-        }
-    } else {
-        (after.index(lambda) - before.index(lambda)) * (after.index(l0) - before.index(l0)).signum()
-    };
-    // A same-medium phase screen has no relief substrate: use the
-    // nondispersive phase-screen limit rather than an undefined 0/0 depth.
-    let ratio = if depth_index == 0.0 {
-        1.0
-    } else {
-        contrast / depth_index
-    };
+    // A same-medium phase screen has no relief depth: use its
+    // nondispersive limit rather than an undefined 0/0.
+    let ratio = if design == 0.0 { 1.0 } else { path / design };
     phase.design_order as f64 * l0 / lambda * ratio
 }
 
+/// η of `order` (`None`: the trace order) on one channel of a surface; 1 for
+/// a surface that is not diffractive.
 pub fn order_efficiency(
     sys: &ResolvedSystem,
     surface: usize,
     wl: usize,
-    order: i32,
+    order: Option<i32>,
     reflected: bool,
     backward: bool,
 ) -> f64 {
@@ -139,7 +137,7 @@ pub fn order_efficiency(
     sys.system().surfaces[surface]
         .diffraction_efficiency
         .efficiency(
-            order,
+            order.unwrap_or(phase.trace_order),
             phase.trace_order,
             blaze(sys, surface, sys.wavelengths_um[wl], reflected, backward),
         )
@@ -191,12 +189,9 @@ mod tests {
         }
     }
     #[test]
-    fn substrate_contrast_reflection_and_energy_closure() {
-        use crate::{Interaction, MaterialRef, Snapshot};
+    fn blaze_matches_facet_optics_and_orders_close_energy() {
+        use crate::{Interaction, MaterialRef, Snapshot, Vec3};
         use std::sync::Arc;
-        let mut s = crate::samples::hybrid_diffractive_achromat();
-        s.surfaces[1].material = MaterialRef::Constant { n: 1.5 };
-        s.surfaces[2].diffraction_efficiency = DiffractionEfficiency::Kinoform;
         let resolve = |s| {
             let snap = Snapshot::new(s).unwrap();
             ResolvedSystem::new(
@@ -205,35 +200,61 @@ mod tests {
             )
             .unwrap()
         };
-        let r = resolve(s.clone());
-        let l0 = if let SurfaceShape::Diffractive { phase, .. } = &s.surfaces[2].shape {
-            phase.design_wavelength_um
-        } else {
+        let mut s = crate::samples::hybrid_diffractive_achromat();
+        let SurfaceShape::Diffractive { phase, .. } = &s.surfaces[2].shape else {
             unreachable!()
         };
-        assert!((blaze(&r, 2, l0, false, false) - 1.0).abs() < 1e-15);
-        assert!((blaze(&r, 2, l0, true, false) - 6.0).abs() < 1e-15);
-        assert!((blaze(&r, 2, l0, true, true) - 4.0).abs() < 1e-15);
+        let l0 = phase.design_wavelength_um;
+        // Glass in air: α = (λ₀/λ)(n(λ)−1)/(n(λ₀)−1).
+        let r = resolve(s.clone());
+        let n = |l| r.surfaces[1].medium_after.index(l);
+        for l in [0.4861327, 0.6562725] {
+            let alpha = l0 / l * (n(l) - 1.0) / (n(l0) - 1.0);
+            assert!((blaze(&r, 2, l, false, false) - alpha).abs() < 1e-14);
+        }
+        // Geometric limit: a facet z = εx between n_b (z < 0) and n_a blazes
+        // each channel into the order whose grating momentum equals the
+        // facet's specular kick; the transmitted channel defines order m₀ = 1.
+        for (nb, na) in [(1.5, 1.0), (1.0, 1.5)] {
+            let mut facet = s.clone();
+            facet.surfaces[1].material = MaterialRef::Constant { n: nb };
+            facet.surfaces[2].material = MaterialRef::Constant { n: na };
+            let r = resolve(facet);
+            let f = Vec3::new(-1e-7, 0.0, 1.0).normalized();
+            let reflect = |k: Vec3| k - f * (2.0 * k.dot(f));
+            let tangent = Vec3::Z - f * f.dot(Vec3::Z);
+            let t =
+                tangent * (nb / na) + f * (1.0 - (nb / na).powi(2) * tangent.dot(tangent)).sqrt();
+            let kick = na * t.x;
+            let forward = nb * reflect(Vec3::Z).x / kick;
+            let backward = na * reflect(-Vec3::Z).x / kick;
+            assert!((blaze(&r, 2, l0, false, false) - 1.0).abs() < 1e-15);
+            assert!((blaze(&r, 2, l0, true, false) - forward).abs() < 1e-6);
+            assert!((blaze(&r, 2, l0, true, true) - backward).abs() < 1e-6);
+        }
+        // Σ_m (T η_T + R η_R) + A = 1 up to the omitted sinc² tail.
+        s.surfaces[2].diffraction_efficiency = DiffractionEfficiency::Kinoform;
+        let r = resolve(s.clone());
         let model = DiffractionEfficiency::Kinoform;
         for lambda in [l0, 0.45, 0.7] {
             let bt = blaze(&r, 2, lambda, false, false);
-            let br = blaze(&r, 2, lambda, true, false);
+            let br = blaze(&r, 2, lambda, true, true);
             let outgoing: f64 = (-10000..=10000)
                 .map(|m| 0.8 * model.efficiency(m, 1, bt) + 0.1 * model.efficiency(m, 1, br))
                 .sum();
-            // The finite-window omission is bounded by the sinc² tail, while
-            // coating absorption is independent of the phase partition.
             assert!(outgoing + 0.1 <= 1.0 + 1e-13 && outgoing + 0.1 > 0.99997);
         }
-        // A cemented relief can reverse its phase when the two dispersions
-        // cross; absolute index contrasts would incorrectly keep a positive blaze.
+        // A cemented relief reverses its phase where the two dispersions cross.
         let mut crossing = s.clone();
         crossing.surfaces[1].material = MaterialRef::Constant { n: 1.52 };
         crossing.surfaces[2].material = MaterialRef::glass("N-BK7");
         assert!(blaze(&resolve(crossing), 2, 0.4861327, false, false) < 0.0);
+        // A designed mirror relief scales with the incident medium's index.
         s.surfaces[2].interaction = Interaction::Reflect;
         let r = resolve(s);
+        let n = |l| r.surfaces[1].medium_after.index(l);
         assert!((blaze(&r, 2, l0, true, false) - 1.0).abs() < 1e-15);
-        assert!((blaze(&r, 2, l0 * 2.0, true, false) - 0.5).abs() < 1e-15);
+        let expected = 0.5 * n(2.0 * l0) / n(l0);
+        assert!((blaze(&r, 2, l0 * 2.0, true, false) - expected).abs() < 1e-15);
     }
 }

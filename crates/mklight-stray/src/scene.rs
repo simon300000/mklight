@@ -642,6 +642,17 @@ fn shape_radius_limit(shape: &SurfaceShape) -> f64 {
         SurfaceShape::Diffractive { base, phase } => {
             phase.norm_radius.min(shape_radius_limit(base))
         }
+        // At y = 0 the x section is a circle of curvature c_x; this bound is
+        // exact while the y profile sags no further than that circle.
+        SurfaceShape::Toroid {
+            curvature_x,
+            curvature_y,
+            conic_y,
+            ..
+        } => {
+            conic_domain_radius(*curvature_y, *conic_y).min(curvature_x.abs().recip())
+                * (1.0 - 1e-6)
+        }
         SurfaceShape::Biconic {
             curvature_x,
             curvature_y,
@@ -1294,5 +1305,34 @@ impl Scene {
         let mut scene = b.build()?;
         scene.options = Some(opts.clone());
         Ok(scene)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_patch_radii_stay_in_the_sag_domain() {
+        // A toroid whose x circle (radius 4) is tighter than its y conic.
+        let toroid = SurfaceShape::Toroid {
+            curvature_x: 0.25,
+            curvature_y: 0.1,
+            conic_y: 0.0,
+            y_asphere: vec![],
+        };
+        assert!(shape_radius_limit(&toroid) <= 4.0);
+        let samples = mklight_core::samples::all().into_iter();
+        let shapes = samples.flat_map(|(_, s)| s.surfaces.into_iter().map(|s| s.shape));
+        for shape in shapes.filter(|s| !s.is_legacy()).chain([toroid]) {
+            let r = shape_radius_limit(&shape).min(1e3);
+            for k in 0..3600 {
+                let a = k as f64 * std::f64::consts::TAU / 3600.0;
+                assert!(
+                    mklight_core::surface_math::in_domain(&shape, r * a.cos(), r * a.sin()),
+                    "{shape:?} at r = {r}"
+                );
+            }
+        }
     }
 }

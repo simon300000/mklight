@@ -82,27 +82,12 @@ pub fn unpolarized_interface_product(steps: &[InterfaceStep]) -> f64 {
     steps.iter().map(InterfaceStep::path_unpolarized).product()
 }
 
-/// Scalar DOE factor of the selected sequential orders, excluding passive/image surfaces.
+/// η of the trace order at every active DOE of the sequential path (SURFACES §3.1).
 pub fn diffraction_product(sys: &mklight_core::ResolvedSystem, wl: usize) -> f64 {
+    use mklight_core::materials::diffraction::order_efficiency;
     (1..sys.image_index())
-        .filter_map(|i| {
-            let s = &sys.surfaces[i];
-            if s.is_passive() {
-                return None;
-            }
-            if let mklight_core::SurfaceShape::Diffractive { phase, .. } = &s.shape {
-                Some(mklight_core::materials::diffraction::order_efficiency(
-                    sys,
-                    i,
-                    wl,
-                    phase.trace_order,
-                    s.is_mirror(),
-                    false,
-                ))
-            } else {
-                None
-            }
-        })
+        .filter(|&i| !sys.surfaces[i].is_passive())
+        .map(|i| order_efficiency(sys, i, wl, None, sys.surfaces[i].is_mirror(), false))
         .product()
 }
 

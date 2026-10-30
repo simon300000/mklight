@@ -197,15 +197,13 @@ fn surface_step(
             shape => {
                 let h = mklight_core::surface_math::vertex_curvatures(shape);
                 let c = if axis == ParaxialAxis::X { h[0] } else { h[2] };
-                // DOE: the reduced slope is the transverse n·k, also on
-                // reflected paths, so φ = −mλA₁/(π r_norm²) (SURFACES §3).
                 let doe = match shape {
                     SurfaceShape::Diffractive { phase, .. } => {
-                        -(phase.trace_order as f64)
-                            * sys.wavelengths_um[wl]
-                            * 1e-3
-                            * phase.coefficients.first().copied().unwrap_or(0.0)
-                            / (std::f64::consts::PI * phase.norm_radius * phase.norm_radius)
+                        mklight_core::surface_math::phase_power(
+                            phase,
+                            phase.trace_order,
+                            sys.wavelengths_um[wl],
+                        )
                     }
                     _ => 0.0,
                 };

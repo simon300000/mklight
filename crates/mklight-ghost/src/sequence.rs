@@ -528,45 +528,40 @@ impl GhostModel {
                     }
                 }
             }
-            if s != image && !surf.is_passive() {
-                if let SurfaceShape::Diffractive { phase, .. } = &surf.shape {
-                    let order = st.order.unwrap_or(phase.trace_order);
-                    let reflected = surf.is_mirror() || st.action == Action::Reflect;
-                    let v =
-                        mklight_core::surface_math::phase(phase, hit.point.x, hit.point.y).unwrap();
-                    let scale = order as f64 * lambda * 1e-3 / std::f64::consts::TAU;
-                    let Some(d) = diffract(
-                        dir_in,
-                        hit.normal,
-                        n_in,
-                        n_out,
-                        [scale * v.gradient[0], scale * v.gradient[1]],
-                        reflected,
-                    ) else {
-                        return done(
-                            fail(SequenceFail::Degenerate),
-                            ray,
-                            s,
-                            k,
-                            ws,
-                            wp,
-                            absorb,
-                            opl,
-                        );
-                    };
-                    ray.dir = d;
-                    opl.add(scale * v.sag);
-                    let eta = mklight_core::materials::diffraction::order_efficiency(
-                        sys,
+            if s != image
+                && !surf.is_passive()
+                && let SurfaceShape::Diffractive { phase, .. } = &surf.shape
+            {
+                // The reference tracer's grating step, in the step's order.
+                let order = st.order.unwrap_or(phase.trace_order);
+                let reflected = surf.is_mirror() || st.action == Action::Reflect;
+                let v = mklight_core::surface_math::phase(phase, hit.point.x, hit.point.y)
+                    .expect("intersection checked the phase domain");
+                let scale = order as f64 * lambda * 1e-3 / std::f64::consts::TAU;
+                let g = v.gradient.map(|d| d * scale);
+                let Some(d) = diffract(dir_in, hit.normal, n_in, n_out, g, reflected) else {
+                    return done(
+                        fail(SequenceFail::Degenerate),
+                        ray,
                         s,
-                        wl,
-                        order,
-                        reflected,
-                        st.direction == Direction::Backward,
+                        k,
+                        ws,
+                        wp,
+                        absorb,
+                        opl,
                     );
-                    applied[0] *= eta;
-                    applied[1] *= eta;
-                }
+                };
+                ray.dir = d;
+                opl.add_product(scale, v.sag);
+                let eta = mklight_core::materials::diffraction::order_efficiency(
+                    sys,
+                    s,
+                    wl,
+                    st.order,
+                    reflected,
+                    st.direction == Direction::Backward,
+                );
+                applied = applied.map(|a| a * eta);
             }
             ws *= applied[0];
             wp *= applied[1];

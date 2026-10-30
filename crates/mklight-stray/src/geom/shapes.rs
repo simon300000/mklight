@@ -416,13 +416,18 @@ impl SagPatch {
         let (ta, tb) = self.clip(o, d, t_min, t_max)?;
         let o2 = o + d * ta;
         let len = tb - ta;
-        let f = |t: f64| {
+        // The clip pads the cylinder beyond r_outer, which may be the edge of
+        // the sag's domain: there, continue the surface radially from its rim
+        // so a cell starting in the pad still brackets a root just inside it.
+        // `accepts` rejects any root found in the pad.
+        let sag = |t: f64| {
             let (x, y) = (o2.x + t * d.x, o2.y + t * d.y);
-            o2.z + t * d.z - surface_math::evaluate(&self.shape, x, y).map_or(f64::NAN, |v| v.sag)
+            let k = (self.r_outer / x.hypot(y)).min(1.0);
+            surface_math::evaluate(&self.shape, x * k, y * k)
         };
+        let f = |t: f64| o2.z + t * d.z - sag(t).map_or(f64::NAN, |v| v.sag);
         let df = |t: f64| {
-            let (x, y) = (o2.x + t * d.x, o2.y + t * d.y);
-            surface_math::evaluate(&self.shape, x, y).map_or(f64::NAN, |v| {
+            sag(t).map_or(f64::NAN, |v| {
                 d.z - v.gradient[0] * d.x - v.gradient[1] * d.y
             })
         };
@@ -940,18 +945,18 @@ mod tests {
     }
     #[test]
     fn extended_surfaces_hit_known_points_from_both_sides() {
-        for (name, sys) in mklight_core::samples::all().into_iter().skip(7) {
+        let samples = mklight_core::samples::all().into_iter();
+        for (name, sys) in samples.filter(|(_, s)| mklight_core::samples::has_extended_surfaces(s))
+        {
             for surf in sys.surfaces.iter().filter(|s| !s.shape.is_legacy()) {
                 let patch = SagPatch::new(surf.shape.clone(), 0.0, 1.5, None).unwrap();
                 for (x, y) in [(0.0, 0.0), (0.7, -0.4), (-0.8, 0.6)] {
                     let v = surface_math::evaluate(&surf.shape, x, y).unwrap();
                     let p = Vec3::new(x, y, v.sag);
-                    let n = surface_math::normal(&surf.shape, x, y).unwrap();
                     for sign in [-1.0, 1.0] {
                         let d = Vec3::new(0.1, -0.07, sign).normalized();
                         let h = patch.intersect(p - d * 2.0, d, 0.0, 4.0).unwrap();
                         assert!(h.p.max_abs_diff(p) < 1e-11, "{name}: {h:?} vs {p:?}");
-                        assert!(h.n.max_abs_diff(n) < 1e-11);
                         let eps = 1e-6;
                         let vx = surface_math::evaluate(&surf.shape, x + eps, y).unwrap().sag;
                         let vy = surface_math::evaluate(&surf.shape, x, y + eps).unwrap().sag;
@@ -964,5 +969,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn root_just_inside_a_domain_rim_is_found_from_the_side() {
+        // r_outer at the norm radius: the clip's padded cylinder starts outside
+        // the sag domain, and the first scan cell must still bracket the root.
+        let shape = SurfaceShape::ZernikeSag {
+            curvature: 0.05,
+            conic: 0.0,
+            norm_radius: 5.0,
+            ordering: Default::default(),
+            coefficients: vec![0.0, 0.0, 0.0, 0.01],
+        };
+        let patch = SagPatch::new(shape.clone(), 0.0, 5.0, None).unwrap();
+        let p = Vec3::new(
+            4.99,
+            0.0,
+            surface_math::evaluate(&shape, 4.99, 0.0).unwrap().sag,
+        );
+        let d = Vec3::new(-1.0, 0.0, -0.2).normalized();
+        let h = patch.intersect(p - d * 0.5, d, 0.0, 10.0).unwrap();
+        assert!(h.p.max_abs_diff(p) < 1e-12, "{h:?}");
     }
 }

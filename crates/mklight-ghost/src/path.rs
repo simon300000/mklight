@@ -38,7 +38,7 @@
 
 use std::collections::BinaryHeap;
 
-use mklight_core::{MkError, MkResult};
+use mklight_core::{MkError, MkResult, SurfaceShape};
 use serde::{Deserialize, Serialize};
 
 use crate::model::GhostModel;
@@ -271,16 +271,14 @@ impl GhostPath {
             st.order = self
                 .diffraction
                 .iter()
-                .find(|o| o.surface == st.surface && o.visit == *visit)
+                .find(|o| (o.surface, o.visit) == (st.surface, *visit))
                 .map(|o| o.order);
             *visit += 1;
         }
-        for o in &self.diffraction {
-            if o.visit >= visits.get(&o.surface).copied().unwrap_or(0) {
-                return Err(MkError::InvalidModel(
-                    "diffraction visit is outside the path".into(),
-                ));
-            }
+        if out.iter().filter(|st| st.order.is_some()).count() != self.diffraction.len() {
+            return Err(MkError::InvalidModel(
+                "diffraction visit is outside the path".into(),
+            ));
         }
         Ok(out)
     }
@@ -492,72 +490,66 @@ pub fn enumerate(model: &GhostModel, settings: &EnumerationSettings) -> MkResult
     let mut paths = search.two;
     let higher: Vec<EnumeratedPath> = search.higher.into_iter().map(|r| r.0).collect();
     paths.extend(higher);
+    if !settings.diffraction_orders.is_empty() {
+        // Every combination of the selected and requested orders at every
+        // DOE visit of the primary and of each reflection path.
+        let primary = EnumeratedPath {
+            path: GhostPath::primary(),
+            reflectance_product: 1.0,
+        };
+        let mut extra = Vec::new();
+        for base in std::iter::once(&primary).chain(&paths) {
+            let mut variants = vec![base.path.clone()];
+            let mut visits = std::collections::BTreeMap::new();
+            for st in base.path.steps(n)? {
+                let visit = visits.entry(st.surface).or_insert(0u32);
+                *visit += 1;
+                let SurfaceShape::Diffractive { phase, .. } =
+                    &sys.surfaces[st.surface as usize].shape
+                else {
+                    continue;
+                };
+                let orders: std::collections::BTreeSet<i32> = settings
+                    .diffraction_orders
+                    .iter()
+                    .copied()
+                    .filter(|&m| m != phase.trace_order)
+                    .collect();
+                let kept = variants.len();
+                for order in orders {
+                    for k in 0..kept {
+                        let mut p = variants[k].clone();
+                        p.diffraction.push(DiffractionOrder {
+                            surface: st.surface,
+                            visit: *visit - 1,
+                            order,
+                        });
+                        variants.push(p);
+                    }
+                }
+                if extra.len() + variants.len() - 1 > settings.max_diffraction_paths {
+                    return Err(MkError::InvalidModel(
+                        "diffraction path budget exceeded; narrow orders or reflection coverage"
+                            .into(),
+                    ));
+                }
+            }
+            extra.extend(variants.into_iter().skip(1).map(|mut path| {
+                path.diffraction.sort();
+                EnumeratedPath {
+                    path,
+                    reflectance_product: base.reflectance_product,
+                }
+            }));
+        }
+        paths.extend(extra);
+    }
     paths.sort_by(|a, b| {
         a.path
             .order()
             .cmp(&b.path.order())
             .then_with(|| a.path.cmp(&b.path))
     });
-    if !settings.diffraction_orders.is_empty() {
-        let bases = std::iter::once(GhostPath::primary())
-            .chain(paths.iter().map(|p| p.path.clone()))
-            .collect::<Vec<_>>();
-        let mut extra = Vec::new();
-        for base in bases {
-            let mut variants = vec![base.clone()];
-            let mut visits = std::collections::BTreeMap::new();
-            for st in base.steps(n)? {
-                let visit = visits.entry(st.surface).or_insert(0u32);
-                if let mklight_core::SurfaceShape::Diffractive { phase, .. } =
-                    &sys.surfaces[st.surface as usize].shape
-                {
-                    let original = variants.clone();
-                    let orders: std::collections::BTreeSet<_> = settings
-                        .diffraction_orders
-                        .iter()
-                        .copied()
-                        .filter(|&m| m != phase.trace_order)
-                        .collect();
-                    for order in orders {
-                        for p in &original {
-                            if extra.len() + variants.len() > settings.max_diffraction_paths {
-                                return Err(MkError::InvalidModel("diffraction path budget exceeded; narrow orders or reflection coverage".into()));
-                            }
-                            let mut p = p.clone();
-                            p.diffraction.push(DiffractionOrder {
-                                surface: st.surface,
-                                visit: *visit,
-                                order,
-                            });
-                            p.diffraction.sort();
-                            variants.push(p);
-                        }
-                    }
-                }
-                *visit += 1;
-            }
-            for p in variants.into_iter().skip(1) {
-                let reflectance_product = p
-                    .reflections
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &s)| {
-                        if k % 2 == 0 {
-                            r_fwd[s as usize]
-                        } else {
-                            r_bwd[s as usize]
-                        }
-                    })
-                    .product();
-                extra.push(EnumeratedPath {
-                    path: p,
-                    reflectance_product,
-                });
-            }
-        }
-        paths.extend(extra);
-        paths.sort_by(|a, b| a.path.cmp(&b.path));
-    }
     let coverage = model.coverage(paths.iter().map(|p| p.path.clone()));
     Ok(PathEnumeration {
         paths,

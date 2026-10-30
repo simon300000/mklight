@@ -404,10 +404,15 @@ XY-polynomial, Zernike sag and DOE bases through the core Cartesian
 ray derivative is `d_z−sag_x d_x−sag_y d_y`. The existing finite-cell scan
 brackets sign changes and searches derivative sign changes for grazing root
 pairs; safeguarded Newton/bisection refines the nearest valid positive root.
-Normals are the core `normal`, toward local +z. Cartesian sag/gradient
-sampling extends the radial z bounds for freeforms. These sampled bounds
-and the finite scan are numerical bounds, not interval proofs for arbitrarily
-oscillatory prescriptions. Closed-form plane/conic intersections retain their
+Normals are the core `normal`, toward local +z. A patch never extends past
+the shape's real domain (the norm radius of Q, XY, Zernike and DOE phases,
+the conic domains of both biconic axes, and for a toroid the y conic and
+the x circle `1/|c_x|`); in the clip's thin pad beyond the patch radius the
+residual continues the rim radially, so a root just inside the rim is
+still bracketed. Cartesian sag/gradient sampling extends the radial z
+bounds for freeforms. These sampled bounds and the finite scan are
+numerical bounds, not interval proofs for arbitrarily oscillatory
+prescriptions. Closed-form plane/conic intersections retain their
 stable roots, including vertical conic rims.
 
 A DOE is a physical interface even when its two indices match. After choosing

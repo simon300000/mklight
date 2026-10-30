@@ -78,14 +78,13 @@ fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64)
     let i = st.surface as usize;
     let s = &sys.surfaces[i];
     let c = mklight_core::surface_math::vertex_curvatures(&s.shape)[2];
-    let doe_power = if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
-        -(st.order.unwrap_or(phase.trace_order) as f64)
-            * sys.wavelengths_um[wl]
-            * 1e-3
-            * phase.coefficients.first().copied().unwrap_or(0.0)
-            / (std::f64::consts::PI * phase.norm_radius.powi(2))
-    } else {
-        0.0
+    let doe_power = match &s.shape {
+        SurfaceShape::Diffractive { phase, .. } => mklight_core::surface_math::phase_power(
+            phase,
+            st.order.unwrap_or(phase.trace_order),
+            sys.wavelengths_um[wl],
+        ),
+        _ => 0.0,
     };
     if i == sys.image_index() {
         return match st.action {
@@ -190,16 +189,14 @@ pub fn axial_throughput(model: &GhostModel, steps: &[Step], wl: usize) -> (f64, 
             continue;
         }
         let (n_in, n_far) = model.media(i, st.direction, wl);
-        if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
-            t *= mklight_core::materials::diffraction::order_efficiency(
-                sys,
-                i,
-                wl,
-                st.order.unwrap_or(phase.trace_order),
-                s.is_mirror() || st.action == Action::Reflect,
-                st.direction == Direction::Backward,
-            );
-        }
+        t *= mklight_core::materials::diffraction::order_efficiency(
+            sys,
+            i,
+            wl,
+            st.order,
+            s.is_mirror() || st.action == Action::Reflect,
+            st.direction == Direction::Backward,
+        );
         if s.interaction == Interaction::Reflect {
             t *= s.coating.rt(lambda, n_in, n_in, 1.0, true).r_unpolarized();
         } else {

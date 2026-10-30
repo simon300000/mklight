@@ -354,15 +354,13 @@ impl GhostModel {
     pub fn check_path(&self, path: &GhostPath) -> MkResult<Vec<Step>> {
         let steps = path.steps(self.system().num_surfaces())?;
         for st in &steps {
-            if let Some(order) = st.order {
-                match &self.system().surfaces[st.surface as usize].shape {
-                    SurfaceShape::Diffractive { phase, .. } if order != phase.trace_order => {}
-                    _ => {
-                        return Err(MkError::InvalidModel(
-                            "order override must name a non-selected DOE order".into(),
-                        ));
-                    }
-                }
+            if let Some(order) = st.order
+                && !matches!(&self.system().surfaces[st.surface as usize].shape,
+                    SurfaceShape::Diffractive { phase, .. } if order != phase.trace_order)
+            {
+                return Err(MkError::InvalidModel(
+                    "order override must name a non-selected DOE order".into(),
+                ));
             }
             if st.action == Action::Reflect && !self.is_reflector(st.surface as usize) {
                 return Err(MkError::InvalidModel(format!(
