@@ -77,7 +77,11 @@ fn check_schema(e: &Engine, r: &AnalysisResult) {
         .iter()
         .map(|b| {
             let dt = serde_json::to_value(b.dtype()).unwrap();
-            (b.name.clone(), dt.as_str().unwrap().to_string(), b.shape.len())
+            (
+                b.name.clone(),
+                dt.as_str().unwrap().to_string(),
+                b.shape.len(),
+            )
         })
         .collect();
     if let Err(m) = check_buffers(&schema, &descs) {
@@ -180,7 +184,10 @@ fn geometric_numbers_equal_the_crate() {
         assert_eq!(r.json, direct(&d));
 
         let r = run(&s, "ray_fan", Value::Null);
-        assert_eq!(r.json, direct(&ma::fans::ray_fan(&t, &Default::default()).unwrap()));
+        assert_eq!(
+            r.json,
+            direct(&ma::fans::ray_fan(&t, &Default::default()).unwrap())
+        );
         let r = run(&s, "opd_fan", json!({"samples": 11}));
         let st = ma::fans::FanSettings {
             samples: 11,
@@ -395,8 +402,8 @@ fn ghost_stray_radiometry_and_solves_equal_the_crates() {
     // Radiometry.
     let r = run(&s, "system_transmission", Value::Null);
     let t = SequentialTracer::new(rs.clone()).unwrap();
-    let d = mklight_trace::system_transmission(&t, &Default::default(), &JobContext::new())
-        .unwrap();
+    let d =
+        mklight_trace::system_transmission(&t, &Default::default(), &JobContext::new()).unwrap();
     assert_eq!(r.json, direct(&d));
     let r = run(&s, "polarization_pupil_map", json!({"grid": 9, "field": 1}));
     let ps = mklight_trace::PolarizationMapSettings {

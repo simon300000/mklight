@@ -342,12 +342,16 @@ mod tests {
     #[test]
     fn auto_prefers_a_gpu_that_implements_the_analysis() {
         let mut r = BackendRegistry::cpu_only();
-        let s = r.select(&Backend::Auto, Some("spot_diagram"), false).unwrap();
+        let s = r
+            .select(&Backend::Auto, Some("spot_diagram"), false)
+            .unwrap();
         assert_eq!(s.info.backend, Backend::CpuReference);
         assert_eq!(s.requested, "auto");
         assert!(s.warning.is_none() && s.note.is_some());
         r.register(Arc::new(Emu));
-        let s = r.select(&Backend::Auto, Some("spot_diagram"), false).unwrap();
+        let s = r
+            .select(&Backend::Auto, Some("spot_diagram"), false)
+            .unwrap();
         assert_eq!(s.info.id, "gpu:emu");
         assert!(s.device.is_some() && s.note.is_none());
         let s = r.select(&Backend::Auto, Some("validate"), false).unwrap();

@@ -126,7 +126,11 @@ fn metal_matches_the_reference_within_budget() {
     match metal {
         Some(m) if m.available => {
             assert_eq!(m.precision, Precision::F32Gpu);
-            assert!(m.capabilities.analyses.contains(&"spot_diagram".to_string()));
+            assert!(
+                m.capabilities
+                    .analyses
+                    .contains(&"spot_diagram".to_string())
+            );
             assert!(m.capabilities.device_name.is_some());
             cross_check(&e, "gpu:metal");
         }
@@ -147,7 +151,12 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
     let r = run_on(&s, "seidel", Value::Null, Some(Backend::Auto));
     assert_eq!(r.run_info.backend, "cpu_reference");
-    assert!(r.backend.fallback_reason.unwrap().contains("no GPU path for 'seidel'"));
+    assert!(
+        r.backend
+            .fallback_reason
+            .unwrap()
+            .contains("no GPU path for 'seidel'")
+    );
     assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
     // As the engine default.
     e.set_default_backend(Backend::Auto).unwrap();

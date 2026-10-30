@@ -36,7 +36,10 @@ fn apply_solves_commits_a_new_snapshot() {
 
     // The dry run reports the value without changing anything.
     let preview = s
-        .run_analysis(&AnalysisRequest::new("solves", Value::Null), &JobContext::new())
+        .run_analysis(
+            &AnalysisRequest::new("solves", Value::Null),
+            &JobContext::new(),
+        )
         .unwrap();
     assert_eq!(s.snapshot_hash(), h0);
     let solved = preview.json["outcomes"][0]["value"].as_f64().unwrap();
@@ -59,7 +62,10 @@ fn apply_solves_commits_a_new_snapshot() {
         s.apply_solves(&json!({"tolerance": 2.0}), &JobContext::new()),
         Err(EngineError::InvalidSettings(_))
     ));
-    assert!(s.apply_solves(&json!({"configuration": 0}), &JobContext::new()).is_err());
+    assert!(
+        s.apply_solves(&json!({"configuration": 0}), &JobContext::new())
+            .is_err()
+    );
     assert_eq!(s.snapshot_hash(), h1);
     // A cancelled solve is an error and leaves the session unchanged.
     s.apply_edits(&[mklight_engine::ParamEdit {
@@ -72,7 +78,11 @@ fn apply_solves_commits_a_new_snapshot() {
     let h3 = s.snapshot_hash();
     let ctx = JobContext::new();
     ctx.cancel.cancel();
-    assert!(s.apply_solves(&Value::Null, &ctx).unwrap_err().is_cancelled());
+    assert!(
+        s.apply_solves(&Value::Null, &ctx)
+            .unwrap_err()
+            .is_cancelled()
+    );
     assert_eq!(s.snapshot_hash(), h3);
 }
 
@@ -90,7 +100,10 @@ fn validate_reports_engine_checks() {
         .iter()
         .map(|i| i["code"].as_str().unwrap())
         .collect();
-    assert!(codes.contains(&"aperture_value") && codes.contains(&"paraxial"), "{codes:?}");
+    assert!(
+        codes.contains(&"aperture_value") && codes.contains(&"paraxial"),
+        "{codes:?}"
+    );
     let ok = e
         .session_from_project(Project::new(samples::achromatic_doublet()))
         .unwrap()
@@ -119,7 +132,11 @@ fn autosave_writes_a_recoverable_copy_without_touching_the_session() {
     assert_eq!(a, d.join("lens.mklight.autosave"));
     assert!(s.is_dirty());
     assert_eq!(s.path(), Some(p.as_path()));
-    assert_eq!(std::fs::read(&p).unwrap(), saved, "the project file is untouched");
+    assert_eq!(
+        std::fs::read(&p).unwrap(),
+        saved,
+        "the project file is untouched"
+    );
     let r = e.open_session(&a).unwrap();
     assert_eq!(r.snapshot_hash(), s.snapshot_hash());
     std::fs::remove_dir_all(&d).ok();
@@ -161,7 +178,8 @@ fn parameter_values() {
     assert_eq!(t, Some(s.system().surfaces[1].thickness));
     // An automatic semi-diameter has no value, but exists.
     assert_eq!(
-        s.param_value(&ParamPath::SemiDiameter { surface: id }).unwrap(),
+        s.param_value(&ParamPath::SemiDiameter { surface: id })
+            .unwrap(),
         None
     );
     // A surface that does not exist is an error.

@@ -74,7 +74,10 @@ pub fn model_checks(sys: &OpticalSystem) -> Vec<Issue> {
             "error",
             "non_finite",
             None,
-            format!("… and {} more non-finite numbers", bad.len() - MAX_NON_FINITE),
+            format!(
+                "… and {} more non-finite numbers",
+                bad.len() - MAX_NON_FINITE
+            ),
         ));
     }
     let aperture_value = match sys.aperture {
@@ -318,7 +321,12 @@ impl<'a> ser::Serializer for &'a mut Walker {
     fn serialize_unit(self) -> Result<(), WalkError> {
         Ok(())
     }
-    fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Result<(), WalkError> {
+    fn serialize_unit_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        _: &'static str,
+    ) -> Result<(), WalkError> {
         Ok(())
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
@@ -338,13 +346,25 @@ impl<'a> ser::Serializer for &'a mut Walker {
         self.nested(variant.to_string(), v)
     }
     fn serialize_seq(self, _: Option<usize>) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
     fn serialize_tuple(self, _: usize) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
     fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
     fn serialize_tuple_variant(
         self,
@@ -353,13 +373,25 @@ impl<'a> ser::Serializer for &'a mut Walker {
         _: &'static str,
         _: usize,
     ) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
     fn serialize_map(self, _: Option<usize>) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
     fn serialize_struct(self, _: &'static str, _: usize) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
     fn serialize_struct_variant(
         self,
@@ -368,7 +400,11 @@ impl<'a> ser::Serializer for &'a mut Walker {
         _: &'static str,
         _: usize,
     ) -> Result<Coll<'a>, WalkError> {
-        Ok(Coll { w: self, i: 0, key: None })
+        Ok(Coll {
+            w: self,
+            i: 0,
+            key: None,
+        })
     }
 }
 
@@ -452,7 +488,11 @@ mod tests {
     #[test]
     fn samples_are_clean() {
         for (name, sys) in samples::all() {
-            assert!(model_checks(&sys).is_empty(), "{name}: {:?}", model_checks(&sys));
+            assert!(
+                model_checks(&sys).is_empty(),
+                "{name}: {:?}",
+                model_checks(&sys)
+            );
         }
     }
 
@@ -470,7 +510,11 @@ mod tests {
         };
         let p = non_finite_paths(&s);
         assert_eq!(p.len(), 4, "{p:?}");
-        assert!(p.iter().any(|x| x.starts_with("surfaces[2].shape") && x.ends_with("conic")), "{p:?}");
+        assert!(
+            p.iter()
+                .any(|x| x.starts_with("surfaces[2].shape") && x.ends_with("conic")),
+            "{p:?}"
+        );
         assert!(p.contains(&"surfaces[3].thickness".to_string()), "{p:?}");
         assert!(p.iter().any(|x| x.starts_with("fields.fields[1]")), "{p:?}");
         let issues = model_checks(&s);
@@ -495,7 +539,12 @@ mod tests {
             finish: mklight_core::ScatterModel::Lambertian { tis: 0.1 },
         });
         let c = codes(&model_checks(&s));
-        for k in ["aperture_value", "field_weight", "wavelength_weight", "mechanics"] {
+        for k in [
+            "aperture_value",
+            "field_weight",
+            "wavelength_weight",
+            "mechanics",
+        ] {
             assert!(c.contains(&k), "{k} missing from {c:?}");
         }
     }

@@ -100,9 +100,29 @@ fn merge(mut a: serde_json::Map<String, Value>, b: Value) -> Value {
 
 fn coverage_schema() -> Value {
     obj(&[
-        ("interfaces", arr(string(""), "Interface kind per surface: object, passive, refractive, ideal_lens, mirror, image.")),
-        ("apertures", arr(opaque("{\"type\": \"none\"} | {\"type\": \"surface\"} | {\"type\": \"radius\", \"radius\": mm}"), "Clipping of every surface in this run.")),
-        ("paths", arr(arr(int(""), ""), "The exact set of ghost paths this run counted.")),
+        (
+            "interfaces",
+            arr(
+                string(""),
+                "Interface kind per surface: object, passive, refractive, ideal_lens, mirror, image.",
+            ),
+        ),
+        (
+            "apertures",
+            arr(
+                opaque(
+                    "{\"type\": \"none\"} | {\"type\": \"surface\"} | {\"type\": \"radius\", \"radius\": mm}",
+                ),
+                "Clipping of every surface in this run.",
+            ),
+        ),
+        (
+            "paths",
+            arr(
+                arr(int(""), ""),
+                "The exact set of ghost paths this run counted.",
+            ),
+        ),
     ])
 }
 
@@ -169,24 +189,63 @@ impl Analysis for GhostPaths {
         let ghost = obj(&[
             ("path", arr(int(""), "Reflecting surfaces, in order.")),
             ("label", string("e.g. `R11·R9`.")),
-            ("reflectance_product", num("", "Π R, normal incidence, unpolarised.")),
-            ("transmittance", num("", "Π T of the passes times axial bulk transmittance.")),
-            ("focus_from_sensor", nf_u("mm", "Signed distance of the ghost focus from the sensor (image local z).")),
-            ("spot_diameter", nf_u("mm", "Ghost blur diameter on the sensor (full aperture, on axis).")),
-            ("image_height", nf_u("mm", "Ghost centre height on the sensor at the maximum field.")),
-            ("vignetting", nf_u("", "Paraxial vignetting estimate in (0, 1].")),
-            ("relative_irradiance", nf_u("", "Estimated ghost irradiance relative to the signal.")),
+            (
+                "reflectance_product",
+                num("", "Π R, normal incidence, unpolarised."),
+            ),
+            (
+                "transmittance",
+                num("", "Π T of the passes times axial bulk transmittance."),
+            ),
+            (
+                "focus_from_sensor",
+                nf_u(
+                    "mm",
+                    "Signed distance of the ghost focus from the sensor (image local z).",
+                ),
+            ),
+            (
+                "spot_diameter",
+                nf_u(
+                    "mm",
+                    "Ghost blur diameter on the sensor (full aperture, on axis).",
+                ),
+            ),
+            (
+                "image_height",
+                nf_u(
+                    "mm",
+                    "Ghost centre height on the sensor at the maximum field.",
+                ),
+            ),
+            (
+                "vignetting",
+                nf_u("", "Paraxial vignetting estimate in (0, 1]."),
+            ),
+            (
+                "relative_irradiance",
+                nf_u("", "Estimated ghost irradiance relative to the signal."),
+            ),
             ("near_focus", boolean("")),
         ]);
         result(
             &[
                 ("wavelength", int("System wavelength index.")),
                 ("signal_diameter", nf_u("mm", "")),
-                ("primary_transmittance", num("", "Normal incidence, axial absorption.")),
+                (
+                    "primary_transmittance",
+                    num("", "Normal incidence, axial absorption."),
+                ),
                 ("primary_focus_from_sensor", nf_u("mm", "")),
                 ("primary_image_height", nf_u("mm", "")),
-                ("ghosts", arr(ghost, "Ranked by relative_irradiance, strongest first.")),
-                ("truncated", boolean("Higher-order paths were dropped by the budget.")),
+                (
+                    "ghosts",
+                    arr(ghost, "Ranked by relative_irradiance, strongest first."),
+                ),
+                (
+                    "truncated",
+                    boolean("Higher-order paths were dropped by the budget."),
+                ),
                 ("coverage", coverage_schema()),
             ],
             vec![],
@@ -321,8 +380,19 @@ impl Analysis for GhostIrradiance {
     }
     fn result_schema(&self) -> Value {
         let field = obj(&[
-            ("field", opaque("{\"type\": \"system\", \"index\": i} or {\"type\": \"point\", \"point\": {hx, hy}}")),
-            ("flux", num("", "Detected flux (on or off the map), relative to the entrance-pupil input.")),
+            (
+                "field",
+                opaque(
+                    "{\"type\": \"system\", \"index\": i} or {\"type\": \"point\", \"point\": {hx, hy}}",
+                ),
+            ),
+            (
+                "flux",
+                num(
+                    "",
+                    "Detected flux (on or off the map), relative to the entrance-pupil input.",
+                ),
+            ),
             ("flux_on_map", num("", "")),
             ("peak", num("1/mm²", "Peak irradiance of this field's map.")),
             ("centroid", tuple(nf(), 2, "mm")),
@@ -331,31 +401,80 @@ impl Analysis for GhostIrradiance {
             ("rays_detected", int("")),
         ]);
         let path = obj(&[
-            ("path", arr(int(""), "Reflecting surfaces (empty: the primary).")),
+            (
+                "path",
+                arr(int(""), "Reflecting surfaces (empty: the primary)."),
+            ),
             ("label", string("")),
             ("fields", arr(field, "")),
-            ("flux_ratio", num("", "Flux on the map / primary flux on the map.")),
-            ("peak_ratio", num("", "Max over fields of peak / primary peak.")),
+            (
+                "flux_ratio",
+                num("", "Flux on the map / primary flux on the map."),
+            ),
+            (
+                "peak_ratio",
+                num("", "Max over fields of peak / primary peak."),
+            ),
             ("flux", num("", "Flux on the map, all fields.")),
-            ("map_index", nullable(int("Index into path_maps when keep_path_maps."))),
+            (
+                "map_index",
+                nullable(int("Index into path_maps when keep_path_maps.")),
+            ),
         ]);
         result(
             &[
-                ("map", obj(&[
-                    ("bins", tuple(int(""), 2, "[nx, ny]")),
-                    ("half_size", tuple(num("mm", ""), 2, "[x, y]; the maps span −half_size … +half_size.")),
-                ])),
+                (
+                    "map",
+                    obj(&[
+                        ("bins", tuple(int(""), 2, "[nx, ny]")),
+                        (
+                            "half_size",
+                            tuple(
+                                num("mm", ""),
+                                2,
+                                "[x, y]; the maps span −half_size … +half_size.",
+                            ),
+                        ),
+                    ]),
+                ),
                 ("primary", path.clone()),
-                ("ghosts", arr(path, "Ranked by peak_ratio, strongest first.")),
-                ("total_peak_ratio", num("", "Total ghost peak / primary peak.")),
-                ("total_flux_ratio", num("", "Total ghost flux / primary flux.")),
+                (
+                    "ghosts",
+                    arr(path, "Ranked by peak_ratio, strongest first."),
+                ),
+                (
+                    "total_peak_ratio",
+                    num("", "Total ghost peak / primary peak."),
+                ),
+                (
+                    "total_flux_ratio",
+                    num("", "Total ghost flux / primary flux."),
+                ),
                 ("truncated", boolean("")),
                 ("coverage", coverage_schema()),
             ],
             vec![
-                buffer("primary_map", "f64", &["ny", "nx"], "1/mm²", "Primary irradiance (flux per mm², relative to the entrance-pupil input); row 0 at y = −half_y, x fastest."),
-                buffer("total_ghost_map", "f64", &["ny", "nx"], "1/mm²", "Sum of every ghost's irradiance."),
-                buffer("path_maps", "f64", &["G", "ny", "nx"], "1/mm²", "Per-ghost maps in `ghosts` order (keep_path_maps only)."),
+                buffer(
+                    "primary_map",
+                    "f64",
+                    &["ny", "nx"],
+                    "1/mm²",
+                    "Primary irradiance (flux per mm², relative to the entrance-pupil input); row 0 at y = −half_y, x fastest.",
+                ),
+                buffer(
+                    "total_ghost_map",
+                    "f64",
+                    &["ny", "nx"],
+                    "1/mm²",
+                    "Sum of every ghost's irradiance.",
+                ),
+                buffer(
+                    "path_maps",
+                    "f64",
+                    &["G", "ny", "nx"],
+                    "1/mm²",
+                    "Per-ghost maps in `ghosts` order (keep_path_maps only).",
+                ),
             ],
         )
     }

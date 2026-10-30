@@ -560,8 +560,8 @@ impl Session {
     ) -> EngineResult<(SnapshotHash, Value)> {
         let schema = crate::analysis::solves::solve_settings_schema();
         let s = crate::settings::normalize(&schema, settings)?;
-        let o: crate::analysis::solves::SolveOptions = serde_json::from_value(s)
-            .map_err(|e| EngineError::InvalidSettings(e.to_string()))?;
+        let o: crate::analysis::solves::SolveOptions =
+            serde_json::from_value(s).map_err(|e| EngineError::InvalidSettings(e.to_string()))?;
         if o.configuration.is_some() {
             return Err(EngineError::InvalidSettings(
                 "apply_solves solves the base system; run the `solves` analysis to preview a \

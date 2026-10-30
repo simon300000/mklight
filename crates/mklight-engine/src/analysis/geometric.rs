@@ -216,7 +216,10 @@ fn wl_list() -> Value {
     arr(int(""), "Selected system wavelength indices.")
 }
 fn wl_um() -> Value {
-    arr(num("µm", ""), "All system wavelengths (µm), indexed by system wavelength index.")
+    arr(
+        num("µm", ""),
+        "All system wavelengths (µm), indexed by system wavelength index.",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -469,9 +472,11 @@ fn all() -> Vec<Geo> {
             description: "Hit points of a pupil pattern on one surface (local frame), with the \
                           points the surface's aperture clips. Points in typed buffers.",
             settings: || {
-                settings_from_default::<illumination::FootprintSettings>(sampling_annotations(json!({
-                    "surface": a_count(1, 100_000, "Surface index (1 … image).")
-                })))
+                settings_from_default::<illumination::FootprintSettings>(sampling_annotations(
+                    json!({
+                        "surface": a_count(1, 100_000, "Surface index (1 … image).")
+                    }),
+                ))
             },
             result: footprint_schema,
             run: run_footprint,
@@ -484,12 +489,14 @@ fn all() -> Vec<Geo> {
             description: "Geometric encircled and ensquared energy versus radius per field, \
                           with r50/r80/r90. GPU path.",
             settings: || {
-                settings_from_default::<energy::EncircledEnergySettings>(sampling_annotations(json!({
-                    "reference": a_reference(),
-                    "defocus": {"unit": "mm", "description": "Defocus from the image surface."},
-                    "samples": a_count(2, 100_001, "Radius samples from 0 to max_radius."),
-                    "max_radius": {"type": ["number", "null"], "minimum": 0.0, "unit": "mm", "description": "Largest radius; null = the largest GEO radius over the fields."}
-                })))
+                settings_from_default::<energy::EncircledEnergySettings>(sampling_annotations(
+                    json!({
+                        "reference": a_reference(),
+                        "defocus": {"unit": "mm", "description": "Defocus from the image surface."},
+                        "samples": a_count(2, 100_001, "Radius samples from 0 to max_radius."),
+                        "max_radius": {"type": ["number", "null"], "minimum": 0.0, "unit": "mm", "description": "Largest radius; null = the largest GEO radius over the fields."}
+                    }),
+                ))
             },
             result: encircled_energy_schema,
             run: run_encircled_energy,
@@ -538,9 +545,7 @@ fn all() -> Vec<Geo> {
             description: "Image-surface hits (local frame) and directions of a fields × \
                           wavelengths × pupil ray grid, plus the chief rays, as typed buffers \
                           (NaN for rays that did not arrive). GPU path.",
-            settings: || {
-                settings_from_default::<RayGridSettings>(sampling_annotations(json!({})))
-            },
+            settings: || settings_from_default::<RayGridSettings>(sampling_annotations(json!({}))),
             result: ray_grid_schema,
             run: run_ray_grid,
             gpu: true,
@@ -561,7 +566,13 @@ fn first_order_schema() -> Value {
     ]);
     result(
         &[
-            ("entries", arr(entry.clone(), "The report at the first selected wavelength.")),
+            (
+                "entries",
+                arr(
+                    entry.clone(),
+                    "The report at the first selected wavelength.",
+                ),
+            ),
             ("wavelength_um", num("µm", "Wavelength of `entries`.")),
             (
                 "tables",
@@ -574,7 +585,12 @@ fn first_order_schema() -> Value {
                     "One report per selected wavelength.",
                 ),
             ),
-            ("system", opaque("System summary: name, surfaces, stop, wavelengths_um, primary_wavelength, field_kind, field_unit, max_field, object_at_infinity, ray_aiming.")),
+            (
+                "system",
+                opaque(
+                    "System summary: name, surfaces, stop, wavelengths_um, primary_wavelength, field_kind, field_unit, max_field, object_at_infinity, ray_aiming.",
+                ),
+            ),
         ],
         vec![],
     )
@@ -589,7 +605,10 @@ fn layout_schema() -> Value {
         ("id", int("Stable surface id.")),
         ("label", string("")),
         ("vertex", tuple(nf(), 3, "Global vertex position (mm).")),
-        ("axis", tuple(nf(), 3, "Global direction of the local +z axis.")),
+        (
+            "axis",
+            tuple(nf(), 3, "Global direction of the local +z axis."),
+        ),
         ("semi_diameter", nf_u("mm", "Clear semi-diameter drawn.")),
         ("semi_diameter_is_auto", boolean("")),
         ("mechanical_semi_diameter", nf_u("mm", "")),
@@ -600,29 +619,93 @@ fn layout_schema() -> Value {
         ("first_surface", int("")),
         ("last_surface", int("")),
         ("mechanical_semi_diameter", nf_u("mm", "")),
-        ("outline_polyline", int("Index of the element's closed outline in the polyline buffers (kind 7).")),
+        (
+            "outline_polyline",
+            int("Index of the element's closed outline in the polyline buffers (kind 7)."),
+        ),
     ]);
     result(
         &[
-            ("origin", tuple(num("mm", ""), 3, "Global point subtracted from the f32 `vertices` (the bounds centre).")),
-            ("bounds", obj(&[("min", tuple(nf(), 3, "")), ("max", tuple(nf(), 3, ""))])),
+            (
+                "origin",
+                tuple(
+                    num("mm", ""),
+                    3,
+                    "Global point subtracted from the f32 `vertices` (the bounds centre).",
+                ),
+            ),
+            (
+                "bounds",
+                obj(&[("min", tuple(nf(), 3, "")), ("max", tuple(nf(), 3, ""))]),
+            ),
             ("surfaces", arr(surface, "Per drawn surface.")),
-            ("elements", arr(element, "Lens elements (consecutive refracting surfaces with glass between them).")),
-            ("polyline_count", int("Polylines P (rays, profiles, … then element outlines).")),
+            (
+                "elements",
+                arr(
+                    element,
+                    "Lens elements (consecutive refracting surfaces with glass between them).",
+                ),
+            ),
+            (
+                "polyline_count",
+                int("Polylines P (rays, profiles, … then element outlines)."),
+            ),
             ("vertex_count", int("Vertices V.")),
-            ("kind_names", arr(string(""), "Name of each kind code: 0 surface_profile, 1 ring, 2 rim, 3 ray, 4 stop, 5 image, 6 axis, 7 element_outline.")),
+            (
+                "kind_names",
+                arr(
+                    string(""),
+                    "Name of each kind code: 0 surface_profile, 1 ring, 2 rim, 3 ray, 4 stop, 5 image, 6 axis, 7 element_outline.",
+                ),
+            ),
             ("wavelengths_um", wl_um()),
             ("field_count", int("Number of system fields.")),
         ],
         vec![
-            buffer("vertices", "f32", &["V", "3"], "mm", "x, y, z relative to `origin` (global frame)."),
-            buffer("vertices_f64", "f64", &["V", "3"], "mm", "Absolute global x, y, z."),
-            buffer("offsets", "u32", &["P+1"], "", "Polyline i is vertices offsets[i] .. offsets[i+1]."),
+            buffer(
+                "vertices",
+                "f32",
+                &["V", "3"],
+                "mm",
+                "x, y, z relative to `origin` (global frame).",
+            ),
+            buffer(
+                "vertices_f64",
+                "f64",
+                &["V", "3"],
+                "mm",
+                "Absolute global x, y, z.",
+            ),
+            buffer(
+                "offsets",
+                "u32",
+                &["P+1"],
+                "",
+                "Polyline i is vertices offsets[i] .. offsets[i+1].",
+            ),
             buffer("kinds", "u8", &["P"], "", "Kind code (see `kind_names`)."),
             buffer("surfaces", "i32", &["P"], "", "Surface index, −1 for none."),
-            buffer("fields", "i32", &["P"], "", "Field index of a ray, −1 for none."),
-            buffer("wavelengths", "i32", &["P"], "", "Wavelength index of a ray, −1 for none."),
-            buffer("flags", "u8", &["P"], "", "Bit 0: in the meridional section (x = 0); bit 1: vignetted ray."),
+            buffer(
+                "fields",
+                "i32",
+                &["P"],
+                "",
+                "Field index of a ray, −1 for none.",
+            ),
+            buffer(
+                "wavelengths",
+                "i32",
+                &["P"],
+                "",
+                "Wavelength index of a ray, −1 for none.",
+            ),
+            buffer(
+                "flags",
+                "u8",
+                &["P"],
+                "",
+                "Bit 0: in the meridional section (x = 0); bit 1: vignetted ray.",
+            ),
         ],
     )
 }
@@ -686,7 +769,13 @@ fn spot_stats() -> Value {
     obj(&[
         ("rays_launched", int("")),
         ("rays_arrived", int("")),
-        ("vignetted_fraction", nf_u("", "Weighted fraction of launched rays that did not arrive.")),
+        (
+            "vignetted_fraction",
+            nf_u(
+                "",
+                "Weighted fraction of launched rays that did not arrive.",
+            ),
+        ),
         ("centroid", xy("Centroid relative to the chief ray (mm).")),
         ("rms_radius_centroid", nf_u("mm", "")),
         ("rms_radius_chief", nf_u("mm", "")),
@@ -702,19 +791,41 @@ fn spot_schema() -> Value {
         ("wavelength", int("System wavelength index.")),
         ("wavelength_um", num("µm", "")),
         ("weight", num("", "Spectral weight.")),
-        ("chief", xy("This wavelength's chief ray on the image surface (local mm).")),
+        (
+            "chief",
+            xy("This wavelength's chief ray on the image surface (local mm)."),
+        ),
         ("stats", spot_stats()),
     ]);
     let field = obj_opt(
         &[
             ("field", int("System field index.")),
             ("field_value", field_value()),
-            ("point_range", tuple(int(""), 2, "[offset, count] of this field's rows in the point buffers.")),
-            ("reference", xy("Reference point of the plotted points (image local mm).")),
-            ("chief", xy("Primary-wavelength chief ray (image local mm).")),
+            (
+                "point_range",
+                tuple(
+                    int(""),
+                    2,
+                    "[offset, count] of this field's rows in the point buffers.",
+                ),
+            ),
+            (
+                "reference",
+                xy("Reference point of the plotted points (image local mm)."),
+            ),
+            (
+                "chief",
+                xy("Primary-wavelength chief ray (image local mm)."),
+            ),
             ("centroid", xy("Polychromatic centroid (image local mm).")),
-            ("rms_radius", nf_u("mm", "Polychromatic RMS radius about the reference.")),
-            ("geo_radius", nf_u("mm", "Largest distance from the reference.")),
+            (
+                "rms_radius",
+                nf_u("mm", "Polychromatic RMS radius about the reference."),
+            ),
+            (
+                "geo_radius",
+                nf_u("mm", "Largest distance from the reference."),
+            ),
             ("polychromatic", spot_stats()),
             ("per_wavelength", arr(per_wl, "")),
             (
@@ -736,13 +847,37 @@ fn spot_schema() -> Value {
             ("fields", arr(field, "One entry per selected field.")),
             ("wavelengths_um", wl_um()),
             ("wavelengths", wl_list()),
-            ("airy_radius", nf_u("mm", "1.22 λ N_w at the primary wavelength; \"inf\" when afocal.")),
+            (
+                "airy_radius",
+                nf_u(
+                    "mm",
+                    "1.22 λ N_w at the primary wavelength; \"inf\" when afocal.",
+                ),
+            ),
             ("defocus", num("mm", "")),
         ],
         vec![
-            buffer("points", "f64", &["N", "2"], "mm", "Ray points (x, y) relative to their field's `reference`, image local frame; empty unless include_points."),
-            buffer("point_field", "u32", &["N"], "", "Position of each point's field in `fields`."),
-            buffer("point_wavelength", "u32", &["N"], "", "System wavelength index of each point."),
+            buffer(
+                "points",
+                "f64",
+                &["N", "2"],
+                "mm",
+                "Ray points (x, y) relative to their field's `reference`, image local frame; empty unless include_points.",
+            ),
+            buffer(
+                "point_field",
+                "u32",
+                &["N"],
+                "",
+                "Position of each point's field in `fields`.",
+            ),
+            buffer(
+                "point_wavelength",
+                "u32",
+                &["N"],
+                "",
+                "System wavelength index of each point.",
+            ),
         ],
     )
 }
@@ -816,13 +951,22 @@ fn fan_settings() -> Value {
 
 fn fan_schema(ray: bool) -> Value {
     let (unit, what) = if ray {
-        ("mm", "εy (tangential) / εx (sagittal) on the image surface, mm")
+        (
+            "mm",
+            "εy (tangential) / εx (sagittal) on the image surface, mm",
+        )
     } else {
         ("waves", "OPD in waves at the curve's wavelength")
     };
     let mut curve_props = vec![
         ("wavelength", int("System wavelength index.")),
-        ("pupil", arr(num("", ""), "Normalised pupil coordinate P_y (tangential) or P_x (sagittal), −1 … 1.")),
+        (
+            "pupil",
+            arr(
+                num("", ""),
+                "Normalised pupil coordinate P_y (tangential) or P_x (sagittal), −1 … 1.",
+            ),
+        ),
         ("values", nf_vec(unit, what)),
     ];
     if ray {
@@ -834,14 +978,20 @@ fn fan_schema(ray: bool) -> Value {
     let curve = obj_opt(&curve_props, &["cross"]);
     result(
         &[
-            ("quantity", enumeration(&["transverse_aberration", "opd"], "")),
+            (
+                "quantity",
+                enumeration(&["transverse_aberration", "opd"], ""),
+            ),
             (
                 "fields",
                 arr(
                     obj(&[
                         ("field", int("System field index.")),
                         ("field_value", field_value()),
-                        ("tangential", arr(curve.clone(), "One curve per selected wavelength.")),
+                        (
+                            "tangential",
+                            arr(curve.clone(), "One curve per selected wavelength."),
+                        ),
                         ("sagittal", arr(curve, "One curve per selected wavelength.")),
                     ]),
                     "",
@@ -860,20 +1010,47 @@ fn field_curvature_schema() -> Value {
     let curve = obj(&[
         ("wavelength", int("System wavelength index.")),
         ("wavelength_um", num("µm", "")),
-        ("tangential", nf_vec("mm", "Tangential focus shift from the image surface along z (Coddington).")),
-        ("sagittal", nf_vec("mm", "Sagittal focus shift (Coddington).")),
-        ("tangential_close_rays", nf_vec("mm", "Close-ray cross-check of `tangential`.")),
-        ("sagittal_close_rays", nf_vec("mm", "Close-ray cross-check of `sagittal`.")),
-        ("distortion_percent", nf_vec("%", "100 (y_real − y_paraxial)/y_paraxial.")),
-        ("f_tan_theta_distortion_percent", nf_vec("%", "Against f·tanθ.")),
+        (
+            "tangential",
+            nf_vec(
+                "mm",
+                "Tangential focus shift from the image surface along z (Coddington).",
+            ),
+        ),
+        (
+            "sagittal",
+            nf_vec("mm", "Sagittal focus shift (Coddington)."),
+        ),
+        (
+            "tangential_close_rays",
+            nf_vec("mm", "Close-ray cross-check of `tangential`."),
+        ),
+        (
+            "sagittal_close_rays",
+            nf_vec("mm", "Close-ray cross-check of `sagittal`."),
+        ),
+        (
+            "distortion_percent",
+            nf_vec("%", "100 (y_real − y_paraxial)/y_paraxial."),
+        ),
+        (
+            "f_tan_theta_distortion_percent",
+            nf_vec("%", "Against f·tanθ."),
+        ),
         ("f_theta_distortion_percent", nf_vec("%", "Against f·θ.")),
         ("real_height", nf_vec("mm", "Real chief-ray image height.")),
-        ("paraxial_height", nf_vec("mm", "Paraxial chief-ray image height.")),
+        (
+            "paraxial_height",
+            nf_vec("mm", "Paraxial chief-ray image height."),
+        ),
     ]);
     result(
         &[
             ("field_values", nf_vec("", "Field samples in `field_unit`.")),
-            ("normalized_field", nf_vec("", "Field samples normalised to the maximum field.")),
+            (
+                "normalized_field",
+                nf_vec("", "Field samples normalised to the maximum field."),
+            ),
             ("field_unit", string("`°` for angles, `mm` for heights.")),
             ("curves", arr(curve, "One per selected wavelength.")),
             ("wavelengths_um", wl_um()),
@@ -890,10 +1067,34 @@ fn grid_distortion_schema() -> Value {
             ("max_abs_distortion_percent", nf_u("%", "")),
         ],
         vec![
-            buffer("field", "f64", &["n*n", "2"], "", "Normalised field (Hx, Hy), x fastest."),
-            buffer("paraxial", "f64", &["n*n", "2"], "mm", "Paraxial image point."),
-            buffer("real", "f64", &["n*n", "2"], "mm", "Real chief-ray image point (NaN if it failed)."),
-            buffer("distortion_percent", "f64", &["n*n"], "%", "Radial distortion of each point."),
+            buffer(
+                "field",
+                "f64",
+                &["n*n", "2"],
+                "",
+                "Normalised field (Hx, Hy), x fastest.",
+            ),
+            buffer(
+                "paraxial",
+                "f64",
+                &["n*n", "2"],
+                "mm",
+                "Paraxial image point.",
+            ),
+            buffer(
+                "real",
+                "f64",
+                &["n*n", "2"],
+                "mm",
+                "Real chief-ray image point (NaN if it failed).",
+            ),
+            buffer(
+                "distortion_percent",
+                "f64",
+                &["n*n"],
+                "%",
+                "Radial distortion of each point.",
+            ),
         ],
     )
 }
@@ -941,24 +1142,44 @@ fn seidel_terms() -> Value {
 fn seidel_schema() -> Value {
     let mut surf = seidel_terms();
     surf["properties"]["surface"] = int("Surface index.");
-    surf["required"].as_array_mut().unwrap().push(json!("surface"));
+    surf["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("surface"));
     let w = |unit: &str| {
-        let keys = ["w020", "w040", "w111", "w131", "w220", "w220p", "w222", "w311"];
+        let keys = [
+            "w020", "w040", "w111", "w131", "w220", "w220p", "w222", "w311",
+        ];
         let props: Vec<(&str, Value)> = keys.iter().map(|k| (*k, nf_u(unit, ""))).collect();
         obj(&props)
     };
     result(
         &[
-            ("wavelength", int("System wavelength index of the paraxial rays.")),
+            (
+                "wavelength",
+                int("System wavelength index of the paraxial rays."),
+            ),
             ("wavelength_um", num("µm", "")),
             ("short_wavelength", int("Short wavelength of δn.")),
             ("long_wavelength", int("Long wavelength of δn.")),
-            ("surfaces", arr(surf, "Per-surface contributions (surfaces that contribute).")),
+            (
+                "surfaces",
+                arr(
+                    surf,
+                    "Per-surface contributions (surfaces that contribute).",
+                ),
+            ),
             ("sums", seidel_terms()),
             ("petzval_sum", nf_u("1/mm", "Σ φ/(n n').")),
-            ("petzval_radius", nf_u("mm", "−1/(n'_k P), signed image-space reduced index.")),
+            (
+                "petzval_radius",
+                nf_u("mm", "−1/(n'_k P), signed image-space reduced index."),
+            ),
             ("lagrange_invariant", nf_u("mm", "")),
-            ("image_marginal_slope", nf_u("", "Image-space reduced marginal slope ω'.")),
+            (
+                "image_marginal_slope",
+                nf_u("", "Image-space reduced marginal slope ω'."),
+            ),
             ("wavefront_mm", w("mm")),
             ("wavefront_waves", w("waves")),
         ],
@@ -970,7 +1191,10 @@ fn longitudinal_schema() -> Value {
     result(
         &[
             ("pupil", arr(num("", ""), "Pupil zones P_y from 0 to 1.")),
-            ("primary_paraxial_focus", nf_u("mm", "Primary paraxial focus from the image surface.")),
+            (
+                "primary_paraxial_focus",
+                nf_u("mm", "Primary paraxial focus from the image surface."),
+            ),
             (
                 "curves",
                 arr(
@@ -978,8 +1202,17 @@ fn longitudinal_schema() -> Value {
                         ("wavelength", int("")),
                         ("wavelength_um", num("µm", "")),
                         ("paraxial_focus", nf_u("mm", "")),
-                        ("focus", nf_vec("mm", "Axis crossing of each zonal ray, from the image surface.")),
-                        ("aberration", nf_vec("mm", "Crossing relative to the primary paraxial focus.")),
+                        (
+                            "focus",
+                            nf_vec(
+                                "mm",
+                                "Axis crossing of each zonal ray, from the image surface.",
+                            ),
+                        ),
+                        (
+                            "aberration",
+                            nf_vec("mm", "Crossing relative to the primary paraxial focus."),
+                        ),
                     ]),
                     "",
                 ),
@@ -993,8 +1226,14 @@ fn chromatic_focal_shift_schema() -> Value {
     result(
         &[
             ("wavelengths_um", arr(num("µm", ""), "Sweep wavelengths.")),
-            ("paraxial_focus", nf_vec("mm", "Paraxial focus from the image surface.")),
-            ("focal_shift", nf_vec("mm", "Focus relative to the primary wavelength's.")),
+            (
+                "paraxial_focus",
+                nf_vec("mm", "Paraxial focus from the image surface."),
+            ),
+            (
+                "focal_shift",
+                nf_vec("mm", "Focus relative to the primary wavelength's."),
+            ),
             ("primary_wavelength_um", num("µm", "")),
             ("range", nf_u("mm", "max − min of `focal_shift`.")),
         ],
@@ -1014,12 +1253,18 @@ fn lateral_colour_schema() -> Value {
                     obj(&[
                         ("wavelength", int("")),
                         ("wavelength_um", num("µm", "")),
-                        ("offset", nf_vec("mm", "Chief-ray height minus the primary wavelength's.")),
+                        (
+                            "offset",
+                            nf_vec("mm", "Chief-ray height minus the primary wavelength's."),
+                        ),
                     ]),
                     "",
                 ),
             ),
-            ("lateral_colour", nf_vec("mm", "Short minus long chief-ray height.")),
+            (
+                "lateral_colour",
+                nf_vec("mm", "Short minus long chief-ray height."),
+            ),
             ("short_wavelength", int("")),
             ("long_wavelength", int("")),
             ("airy_radius", nf_u("mm", "")),
@@ -1036,10 +1281,25 @@ fn relative_illumination_schema() -> Value {
             ("field_unit", string("")),
             ("wavelength", int("")),
             ("relative_illumination", nf_vec("", "Ω_p(H)/Ω_p(0).")),
-            ("projected_solid_angle", nf_vec("sr", "Projected solid angle of the real exit pupil seen from the image point.")),
-            ("vignetting_fraction", nf_vec("", "Clipped share of the stop area.")),
-            ("chief_ray_angle_deg", nf_vec("°", "Chief-ray angle of incidence on the image surface.")),
-            ("cos4_object", nf_vec("", "cos⁴ of the object-space chief angle, for comparison.")),
+            (
+                "projected_solid_angle",
+                nf_vec(
+                    "sr",
+                    "Projected solid angle of the real exit pupil seen from the image point.",
+                ),
+            ),
+            (
+                "vignetting_fraction",
+                nf_vec("", "Clipped share of the stop area."),
+            ),
+            (
+                "chief_ray_angle_deg",
+                nf_vec("°", "Chief-ray angle of incidence on the image surface."),
+            ),
+            (
+                "cos4_object",
+                nf_vec("", "cos⁴ of the object-space chief angle, for comparison."),
+            ),
         ],
         vec![],
     )
@@ -1052,9 +1312,18 @@ fn footprint_schema() -> Value {
     result(
         &[
             ("surface", int("")),
-            ("semi_diameter", nf_u("mm", "Clear semi-diameter (fixed, stop or traced).")),
-            ("aperture", any("The surface's aperture shape (model JSON) or null.")),
-            ("extent", nf_vec("mm", "[x_min, x_max, y_min, y_max] over all passing hits.")),
+            (
+                "semi_diameter",
+                nf_u("mm", "Clear semi-diameter (fixed, stop or traced)."),
+            ),
+            (
+                "aperture",
+                any("The surface's aperture shape (model JSON) or null."),
+            ),
+            (
+                "extent",
+                nf_vec("mm", "[x_min, x_max, y_min, y_max] over all passing hits."),
+            ),
             ("max_radius", nf_u("mm", "")),
             (
                 "sets",
@@ -1065,15 +1334,30 @@ fn footprint_schema() -> Value {
                         ("launched", int("")),
                         ("lost_before", int("Rays lost before reaching the surface.")),
                         ("points", tuple(int(""), 2, "[offset, count] in `points`.")),
-                        ("clipped", tuple(int(""), 2, "[offset, count] in `clipped`.")),
+                        (
+                            "clipped",
+                            tuple(int(""), 2, "[offset, count] in `clipped`."),
+                        ),
                     ]),
                     "One per (field, wavelength).",
                 ),
             ),
         ],
         vec![
-            buffer("points", "f64", &["N", "2"], "mm", "Hit points (local frame) of rays that pass."),
-            buffer("clipped", "f64", &["M", "2"], "mm", "Hit points of rays the aperture clips."),
+            buffer(
+                "points",
+                "f64",
+                &["N", "2"],
+                "mm",
+                "Hit points (local frame) of rays that pass.",
+            ),
+            buffer(
+                "clipped",
+                "f64",
+                &["M", "2"],
+                "mm",
+                "Hit points of rays the aperture clips.",
+            ),
         ],
     )
 }
@@ -1129,19 +1413,37 @@ fn sampled_batch(
 fn encircled_energy_schema() -> Value {
     result(
         &[
-            ("radius", arr(num("mm", ""), "Radii / half-widths shared by every field.")),
+            (
+                "radius",
+                arr(num("mm", ""), "Radii / half-widths shared by every field."),
+            ),
             (
                 "fields",
                 arr(
                     obj(&[
                         ("field", int("")),
                         ("field_value", field_value()),
-                        ("encircled", arr(num("", ""), "Fraction of the arrived energy inside radius[i].")),
-                        ("ensquared", arr(num("", ""), "Fraction inside the square of half-width radius[i].")),
+                        (
+                            "encircled",
+                            arr(
+                                num("", ""),
+                                "Fraction of the arrived energy inside radius[i].",
+                            ),
+                        ),
+                        (
+                            "ensquared",
+                            arr(
+                                num("", ""),
+                                "Fraction inside the square of half-width radius[i].",
+                            ),
+                        ),
                         ("r50", nf_u("mm", "")),
                         ("r80", nf_u("mm", "")),
                         ("r90", nf_u("mm", "")),
-                        ("half_width80", nf_u("mm", "Half-width of the square enclosing 80 %.")),
+                        (
+                            "half_width80",
+                            nf_u("mm", "Half-width of the square enclosing 80 %."),
+                        ),
                         ("rays_arrived", int("")),
                     ]),
                     "",
@@ -1177,14 +1479,29 @@ fn geometric_mtf_schema() -> Value {
                     obj(&[
                         ("field", int("System field index.")),
                         ("orientation", enumeration(&["tangential", "sagittal"], "")),
-                        ("modulation", nf_vec("", "Modulation per frequency (1 at 0).")),
+                        (
+                            "modulation",
+                            nf_vec("", "Modulation per frequency (1 at 0)."),
+                        ),
                     ]),
                     "",
                 ),
             ),
-            ("diffraction_limit", any("Always null for the geometric MTF.")),
-            ("cutoff_frequency", nf_u("cycles/mm", "Incoherent diffraction cutoff 1/(λN_w), for reference.")),
-            ("field_values", arr(field_value(), "Field value of each computed field.")),
+            (
+                "diffraction_limit",
+                any("Always null for the geometric MTF."),
+            ),
+            (
+                "cutoff_frequency",
+                nf_u(
+                    "cycles/mm",
+                    "Incoherent diffraction cutoff 1/(λN_w), for reference.",
+                ),
+            ),
+            (
+                "field_values",
+                arr(field_value(), "Field value of each computed field."),
+            ),
         ],
         vec![],
     )
@@ -1207,17 +1524,44 @@ fn run_geometric_mtf(
 fn best_focus_schema() -> Value {
     result(
         &[
-            ("defocus", num("mm", "Best defocus from the image surface (image local +z).")),
-            ("merit", num("mm", "Field-weighted mean RMS radius at the best focus.")),
-            ("merit_at_zero", num("mm", "The merit at the current image surface.")),
+            (
+                "defocus",
+                num(
+                    "mm",
+                    "Best defocus from the image surface (image local +z).",
+                ),
+            ),
+            (
+                "merit",
+                num("mm", "Field-weighted mean RMS radius at the best focus."),
+            ),
+            (
+                "merit_at_zero",
+                num("mm", "The merit at the current image surface."),
+            ),
             ("fields", arr(int(""), "Fields used.")),
-            ("field_rms", nf_vec("mm", "Per-field RMS radius at the best focus.")),
-            ("field_rms_at_zero", nf_vec("mm", "Per-field RMS radius at zero defocus.")),
-            ("mean_square_defocus", num("mm", "Closed-form minimiser of the mean square RMS (cross-check).")),
+            (
+                "field_rms",
+                nf_vec("mm", "Per-field RMS radius at the best focus."),
+            ),
+            (
+                "field_rms_at_zero",
+                nf_vec("mm", "Per-field RMS radius at zero defocus."),
+            ),
+            (
+                "mean_square_defocus",
+                num(
+                    "mm",
+                    "Closed-form minimiser of the mean square RMS (cross-check).",
+                ),
+            ),
             ("range", tuple(num("mm", ""), 2, "Search range.")),
             ("evaluations", int("")),
             ("converged", boolean("")),
-            ("through_focus_defocus", arr(num("mm", ""), "Empty unless requested.")),
+            (
+                "through_focus_defocus",
+                arr(num("mm", ""), "Empty unless requested."),
+            ),
             ("through_focus_merit", arr(num("mm", ""), "")),
         ],
         vec![],
@@ -1267,16 +1611,43 @@ fn ray_grid_schema() -> Value {
         &[
             ("fields", arr(int(""), "Selected system fields (axis F).")),
             ("wavelengths", wl_list()),
-            ("wavelengths_um", arr(num("µm", ""), "Wavelengths of axis W.")),
+            (
+                "wavelengths_um",
+                arr(num("µm", ""), "Wavelengths of axis W."),
+            ),
             ("pupil_count", int("Pupil samples P.")),
             ("arrived", int("Rays that reached the image surface.")),
             ("launched", int("F × W × P.")),
         ],
         vec![
-            buffer("pupil", "f64", &["P", "2"], "", "Normalised pupil coordinates (Px, Py)."),
-            buffer("points", "f64", &["F", "W", "P", "2"], "mm", "Hit (x, y) on the image surface, local frame; NaN where the ray did not arrive."),
-            buffer("directions", "f64", &["F", "W", "P", "3"], "", "Unit direction (image local frame); NaN where the ray did not arrive."),
-            buffer("chief", "f64", &["F", "W", "2"], "mm", "Unclipped chief-ray hit (x, y); NaN if it failed."),
+            buffer(
+                "pupil",
+                "f64",
+                &["P", "2"],
+                "",
+                "Normalised pupil coordinates (Px, Py).",
+            ),
+            buffer(
+                "points",
+                "f64",
+                &["F", "W", "P", "2"],
+                "mm",
+                "Hit (x, y) on the image surface, local frame; NaN where the ray did not arrive.",
+            ),
+            buffer(
+                "directions",
+                "f64",
+                &["F", "W", "P", "3"],
+                "",
+                "Unit direction (image local frame); NaN where the ray did not arrive.",
+            ),
+            buffer(
+                "chief",
+                "f64",
+                &["F", "W", "2"],
+                "mm",
+                "Unclipped chief-ray hit (x, y); NaN if it failed.",
+            ),
         ],
     )
 }
@@ -1290,7 +1661,9 @@ fn run_ray_grid(
     let st: RayGridSettings = parse(s)?;
     let sm = &st.sampling;
     if !(1..=512).contains(&sm.rings) {
-        return Err(EngineError::InvalidSettings("rings must be in 1 … 512".into()));
+        return Err(EngineError::InvalidSettings(
+            "rings must be in 1 … 512".into(),
+        ));
     }
     let (fields, wls) = selection(t, &sm.fields, &sm.wavelengths)?;
     let pupil = util::pupil_points(sm.pattern, sm.rings, sm.seed);
@@ -1312,7 +1685,11 @@ fn run_ray_grid(
             let nc = h.chief_wavelengths.len();
             for fi in 0..nf {
                 for (wi, wl) in wls.iter().enumerate() {
-                    let k = h.chief_wavelengths.iter().position(|w| w == wl).unwrap_or(0);
+                    let k = h
+                        .chief_wavelengths
+                        .iter()
+                        .position(|w| w == wl)
+                        .unwrap_or(0);
                     if let Some(c) = h.chiefs[fi * nc + k] {
                         chief[2 * (fi * nw + wi)..2 * (fi * nw + wi) + 2].copy_from_slice(&c.point);
                     }

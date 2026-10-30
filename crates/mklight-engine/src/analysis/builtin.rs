@@ -303,27 +303,69 @@ impl Analysis for SystemSummary {
             ("index", int("Surface index.")),
             ("id", int("Stable surface id.")),
             ("label", string("")),
-            ("type", enumeration(&["plane", "sphere", "conic", "even_asphere", "paraxial", "coordinate_break"], "")),
+            (
+                "type",
+                enumeration(
+                    &[
+                        "plane",
+                        "sphere",
+                        "conic",
+                        "even_asphere",
+                        "paraxial",
+                        "coordinate_break",
+                    ],
+                    "",
+                ),
+            ),
             ("is_stop", boolean("")),
             ("curvature", num("1/mm", "")),
             ("radius", nf_u("mm", "1/curvature; \"inf\" for a plane.")),
             ("conic", num("", "")),
             ("shape", opaque("The model's SurfaceShape.")),
-            ("thickness", nf_u("mm", "To the next vertex (\"inf\" for an object at infinity).")),
-            ("material", nullable(string("Display name of the medium after the surface."))),
+            (
+                "thickness",
+                nf_u(
+                    "mm",
+                    "To the next vertex (\"inf\" for an object at infinity).",
+                ),
+            ),
+            (
+                "material",
+                nullable(string("Display name of the medium after the surface.")),
+            ),
             ("material_ref", any("The model's MaterialRef.")),
             ("interaction", string("refract or reflect.")),
             ("semi_diameter", any("The model's SemiDiameter.")),
             ("aperture", any("Resolved aperture shape or null.")),
             ("coating", nullable(string(""))),
-            ("n_after", arr(num("", ""), "Index after the surface at every system wavelength (relative to air).")),
+            (
+                "n_after",
+                arr(
+                    num("", ""),
+                    "Index after the surface at every system wavelength (relative to air).",
+                ),
+            ),
             ("nd_after", nf_u("", "")),
             ("vd_after", nullable(nf())),
-            ("alpha_after_per_mm", arr(num("1/mm", ""), "Absorption coefficient per system wavelength.")),
-            ("frame", nullable(obj(&[
-                ("origin", tuple(num("mm", ""), 3, "Global vertex.")),
-                ("rot", any("3×3 rotation, rows; columns are the local axes in global coordinates.")),
-            ]))),
+            (
+                "alpha_after_per_mm",
+                arr(
+                    num("1/mm", ""),
+                    "Absorption coefficient per system wavelength.",
+                ),
+            ),
+            (
+                "frame",
+                nullable(obj(&[
+                    ("origin", tuple(num("mm", ""), 3, "Global vertex.")),
+                    (
+                        "rot",
+                        any(
+                            "3×3 rotation, rows; columns are the local axes in global coordinates.",
+                        ),
+                    ),
+                ])),
+            ),
             ("to_next_is_axial", boolean("")),
         ]);
         result(
@@ -338,16 +380,37 @@ impl Analysis for SystemSummary {
                 ("aperture", opaque("The model's ApertureSpec.")),
                 ("fields", opaque("The model's FieldSet.")),
                 ("ray_aiming", opaque("")),
-                ("environment", opaque("Temperature (°C) and pressure (atm).")),
-                ("n_object", arr(num("", ""), "Object-space index per wavelength.")),
+                (
+                    "environment",
+                    opaque("Temperature (°C) and pressure (atm)."),
+                ),
+                (
+                    "n_object",
+                    arr(num("", ""), "Object-space index per wavelength."),
+                ),
                 ("surfaces", arr(row, "")),
-                ("first_to_image_distance", num("mm", "Distance from surface 1 to the image vertex.")),
+                (
+                    "first_to_image_distance",
+                    num("mm", "Distance from surface 1 to the image vertex."),
+                ),
                 ("num_configurations", int("")),
                 ("warnings", arr(string(""), "")),
             ],
             vec![
-                buffer("n_after", "f64", &["surfaces", "wavelengths"], "", "Index after each surface."),
-                buffer("vertex_global", "f64", &["surfaces", "3"], "mm", "Global vertex (NaN for an object at infinity)."),
+                buffer(
+                    "n_after",
+                    "f64",
+                    &["surfaces", "wavelengths"],
+                    "",
+                    "Index after each surface.",
+                ),
+                buffer(
+                    "vertex_global",
+                    "f64",
+                    &["surfaces", "3"],
+                    "mm",
+                    "Global vertex (NaN for an object at infinity).",
+                ),
             ],
         )
     }
@@ -507,7 +570,10 @@ impl Analysis for GlassInfo {
                 ("name", string("")),
                 ("catalog_nd", num("", "Catalog n_d.")),
                 ("catalog_vd", num("", "Catalog V_d.")),
-                ("nd", num("", "Computed at the d line (catalog conditions).")),
+                (
+                    "nd",
+                    num("", "Computed at the d line (catalog conditions)."),
+                ),
                 ("ne", num("", "")),
                 ("vd", nf()),
                 ("pgf", nf_u("", "Partial dispersion P_g,F.")),
@@ -534,7 +600,13 @@ impl Analysis for GlassInfo {
                     ),
                 ),
             ],
-            vec![buffer("dispersion_curve", "f64", &["samples", "2"], "", "(λ µm, n) over the glass's range.")],
+            vec![buffer(
+                "dispersion_curve",
+                "f64",
+                &["samples", "2"],
+                "",
+                "(λ µm, n) over the glass's range.",
+            )],
         )
     }
     fn settings_schema(&self) -> Value {
@@ -703,7 +775,13 @@ impl Analysis for RngStream {
                 ("max", num("", "")),
                 ("first", arr(num("", ""), "The first (up to) four draws.")),
             ],
-            vec![buffer("uniform", "f64", &["count"], "", "The draws, in order.")],
+            vec![buffer(
+                "uniform",
+                "f64",
+                &["count"],
+                "",
+                "The draws, in order.",
+            )],
         )
     }
     fn settings_schema(&self) -> Value {

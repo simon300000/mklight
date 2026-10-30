@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use mklight_core::JobContext;
 use mklight_trace::{
-    FieldPoint, PolarizationMapSettings, PolarizationState, SequentialTracer,
-    TransmissionSettings, polarization_pupil_map, system_transmission,
+    FieldPoint, PolarizationMapSettings, PolarizationState, SequentialTracer, TransmissionSettings,
+    polarization_pupil_map, system_transmission,
 };
 
 use super::geometric::{crate_json, output, parse};
@@ -77,18 +77,36 @@ impl Analysis for SystemTransmission {
             ("field", int("Index into `fields`.")),
             ("wavelength", int("System wavelength index.")),
             ("wavelength_um", num("µm", "")),
-            ("transmission", num("", "Mean throughput over all usable samples (blocked rays count 0).")),
-            ("mean_unvignetted", num("", "Mean throughput of the rays that reach the image.")),
+            (
+                "transmission",
+                num(
+                    "",
+                    "Mean throughput over all usable samples (blocked rays count 0).",
+                ),
+            ),
+            (
+                "mean_unvignetted",
+                num("", "Mean throughput of the rays that reach the image."),
+            ),
             ("unvignetted_fraction", num("", "")),
             ("samples", int("Usable samples.")),
             ("failed", int("Samples excluded after a numerical failure.")),
         ]);
         result(
             &[
-                ("fields", arr(opaque("Normalised field point {hx, hy, vignetting}."), "")),
+                (
+                    "fields",
+                    arr(opaque("Normalised field point {hx, hy, vignetting}."), ""),
+                ),
                 ("wavelengths", arr(int(""), "")),
                 ("points", arr(point, "Field-major: entry f·W + w.")),
-                ("polychromatic", arr(num("", ""), "Per field: spectral-weight average of transmission.")),
+                (
+                    "polychromatic",
+                    arr(
+                        num("", ""),
+                        "Per field: spectral-weight average of transmission.",
+                    ),
+                ),
             ],
             vec![],
         )
@@ -167,28 +185,102 @@ impl Analysis for PolarizationPupilMap {
     fn result_schema(&self) -> Value {
         result(
             &[
-                ("field", opaque("The normalised field point {hx, hy, vignetting}.")),
+                (
+                    "field",
+                    opaque("The normalised field point {hx, hy, vignetting}."),
+                ),
                 ("wavelength", int("System wavelength index.")),
                 ("wavelength_um", num("µm", "")),
                 ("grid", int("")),
-                ("sample_count", int("Samples N (grid points inside the unit disk).")),
-                ("mean_intensity", num("", "Pupil-mean intensity over the samples reaching the image.")),
+                (
+                    "sample_count",
+                    int("Samples N (grid points inside the unit disk)."),
+                ),
+                (
+                    "mean_intensity",
+                    num(
+                        "",
+                        "Pupil-mean intensity over the samples reaching the image.",
+                    ),
+                ),
                 ("max_diattenuation", num("", "")),
-                ("max_retardance", num("rad", "Over samples with a defined retarder.")),
+                (
+                    "max_retardance",
+                    num("rad", "Over samples with a defined retarder."),
+                ),
                 ("rms_retardance", num("rad", "")),
-                ("undefined_retarder", int("Samples reaching the image with a singular Jones matrix (excluded from the retardance statistics).")),
+                (
+                    "undefined_retarder",
+                    int(
+                        "Samples reaching the image with a singular Jones matrix (excluded from the retardance statistics).",
+                    ),
+                ),
             ],
             vec![
-                buffer("pupil", "f64", &["N", "2"], "", "Normalised pupil coordinates (Px, Py)."),
-                buffer("reached", "u8", &["N"], "", "1 when the ray reached the image (else every value is zero)."),
-                buffer("jones", "f64", &["N", "2", "2", "2"], "", "Amplitude Jones matrix √τ·J, [row][col][re, im], double-pole bases."),
-                buffer("intensity", "f64", &["N"], "", "Transmitted power fraction for `state` (normalised by S₀)."),
-                buffer("diattenuation", "f64", &["N"], "", "(T_max − T_min)/(T_max + T_min)."),
-                buffer("diattenuation_axis", "f64", &["N", "3"], "", "Unit Stokes vector of the best-transmitted state."),
-                buffer("retardance", "f64", &["N"], "rad", "Proper retardance δ ∈ [0, π] (0 when undefined)."),
-                buffer("fast_axis", "f64", &["N", "3"], "", "Unit Stokes vector of the fast eigenpolarisation."),
+                buffer(
+                    "pupil",
+                    "f64",
+                    &["N", "2"],
+                    "",
+                    "Normalised pupil coordinates (Px, Py).",
+                ),
+                buffer(
+                    "reached",
+                    "u8",
+                    &["N"],
+                    "",
+                    "1 when the ray reached the image (else every value is zero).",
+                ),
+                buffer(
+                    "jones",
+                    "f64",
+                    &["N", "2", "2", "2"],
+                    "",
+                    "Amplitude Jones matrix √τ·J, [row][col][re, im], double-pole bases.",
+                ),
+                buffer(
+                    "intensity",
+                    "f64",
+                    &["N"],
+                    "",
+                    "Transmitted power fraction for `state` (normalised by S₀).",
+                ),
+                buffer(
+                    "diattenuation",
+                    "f64",
+                    &["N"],
+                    "",
+                    "(T_max − T_min)/(T_max + T_min).",
+                ),
+                buffer(
+                    "diattenuation_axis",
+                    "f64",
+                    &["N", "3"],
+                    "",
+                    "Unit Stokes vector of the best-transmitted state.",
+                ),
+                buffer(
+                    "retardance",
+                    "f64",
+                    &["N"],
+                    "rad",
+                    "Proper retardance δ ∈ [0, π] (0 when undefined).",
+                ),
+                buffer(
+                    "fast_axis",
+                    "f64",
+                    &["N", "3"],
+                    "",
+                    "Unit Stokes vector of the fast eigenpolarisation.",
+                ),
                 buffer("retarder_defined", "u8", &["N"], "", ""),
-                buffer("retardance_jones", "f64", &["N"], "rad", "Retardance of the Jones matrix itself (includes the geometric rotation and mirror parity)."),
+                buffer(
+                    "retardance_jones",
+                    "f64",
+                    &["N"],
+                    "rad",
+                    "Retardance of the Jones matrix itself (includes the geometric rotation and mirror parity).",
+                ),
                 buffer("t_max", "f64", &["N"], "", ""),
                 buffer("t_min", "f64", &["N"], "", ""),
             ],

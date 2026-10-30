@@ -18,8 +18,8 @@
 
 use std::sync::Arc;
 
-use mklight_analysis::spot::{FieldRays, ImageHit, ImageRay, RayBatch as SpotBatch};
 use mklight_analysis::spot::trace_field_rays;
+use mklight_analysis::spot::{FieldRays, ImageHit, ImageRay, RayBatch as SpotBatch};
 use mklight_analysis::util::BackendInfo as AnalysisBackend;
 use mklight_core::job::Precision;
 use mklight_core::{JobContext, MkError, MkResult, Vec3};
@@ -165,7 +165,11 @@ pub fn trace_grid_gpu(
             let g = if rays.is_empty() {
                 None
             } else {
-                Some(run_trace(backend, request(rays, true), &sub.subrange(0.3, 0.9))?)
+                Some(run_trace(
+                    backend,
+                    request(rays, true),
+                    &sub.subrange(0.3, 0.9),
+                )?)
             };
             let c = if chiefs.is_empty() {
                 None
@@ -277,7 +281,11 @@ pub fn try_gpu_grid(
         fallback_reason: Some(reason),
         qualification: q,
     };
-    let key = format!("{}:{}", input.snapshot.hash().to_hex(), input.library_hash());
+    let key = format!(
+        "{}:{}",
+        input.snapshot.hash().to_hex(),
+        input.library_hash()
+    );
     ctx.report(0.0, "GPU precision qualification");
     let q = dev.qualify(&key, tracer, &ctx.subrange(0.0, 0.1))?;
     let qv = serde_json::to_value(q.as_ref()).ok();
@@ -337,7 +345,14 @@ pub fn field_rays(
             Ok((b, label))
         }
         Traced::Cpu => {
-            let b = trace_field_rays(tracer, fields, wls, pupil, &ctx.subrange(0.0, 0.9), warnings)?;
+            let b = trace_field_rays(
+                tracer,
+                fields,
+                wls,
+                pupil,
+                &ctx.subrange(0.0, 0.9),
+                warnings,
+            )?;
             Ok((b, AnalysisBackend::cpu_reference()))
         }
     }

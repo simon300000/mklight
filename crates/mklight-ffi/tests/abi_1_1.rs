@@ -61,14 +61,18 @@ fn open(sys: &mklight_core::OpticalSystem) -> Handles {
     }
 }
 
-/// Run synchronously; returns the envelope and (name, dtype, ndim, f64 data).
-fn run(h: &Handles, request: Value) -> (Value, Vec<(String, String, usize, Vec<f64>)>) {
+/// (name, dtype, ndim, data as f64).
+type BufferCopy = (String, String, usize, Vec<f64>);
+
+/// Run synchronously; returns the envelope and copies of the buffers.
+fn run(h: &Handles, request: Value) -> (Value, Vec<BufferCopy>) {
     unsafe {
         let req = c(&request.to_string());
         let mut json = ptr::null_mut();
         let mut bufs: *mut MKBuffer = ptr::null_mut();
         let mut n = 0usize;
-        let st = mk_session_run_analysis_json(h.session, req.as_ptr(), &mut json, &mut bufs, &mut n);
+        let st =
+            mk_session_run_analysis_json(h.session, req.as_ptr(), &mut json, &mut bufs, &mut n);
         assert_eq!(st, MK_OK, "{request}: {}", last_error());
         let env: Value = serde_json::from_str(&take(json)).unwrap();
         let mut out = Vec::new();
@@ -107,11 +111,20 @@ fn every_listed_analysis_has_schemas_and_results_match_them() {
         assert!(a["result_version"].as_u64().unwrap() >= 1);
         assert!(a["gpu_path"].is_boolean());
     }
-    for name in ["spot_diagram", "layout", "ghost_paths", "polarization_pupil_map", "first_order"] {
+    for name in [
+        "spot_diagram",
+        "layout",
+        "ghost_paths",
+        "polarization_pupil_map",
+        "first_order",
+    ] {
         let info: Value = unsafe {
             let mut out = ptr::null_mut();
             let n = c(name);
-            assert_eq!(mk_engine_analysis_info(h.engine, n.as_ptr(), &mut out), MK_OK);
+            assert_eq!(
+                mk_engine_analysis_info(h.engine, n.as_ptr(), &mut out),
+                MK_OK
+            );
             serde_json::from_str(&take(out)).unwrap()
         };
         let (env, bufs) = run(&h, json!({"analysis": name}));
@@ -125,7 +138,10 @@ fn every_listed_analysis_has_schemas_and_results_match_them() {
         check_buffers(&info["result_schema"], &descs).unwrap();
     }
     // Spot points: one row per (field, ray) with the field ranges in JSON.
-    let (env, bufs) = run(&h, json!({"analysis": "spot_diagram", "settings": {"rings": 3}}));
+    let (env, bufs) = run(
+        &h,
+        json!({"analysis": "spot_diagram", "settings": {"rings": 3}}),
+    );
     let pts = &bufs.iter().find(|b| b.0 == "points").unwrap().3;
     let total: u64 = env["result"]["fields"]
         .as_array()
@@ -183,7 +199,10 @@ fn solves_params_backends_and_validation() {
     let (env, _) = run(&h, json!({"analysis": "seidel"}));
     assert_eq!(env["backend"]["requested"], "default:auto");
     assert_eq!(env["run_info"]["backend"], "cpu_reference");
-    let (env, _) = run(&h, json!({"analysis": "ray_grid", "settings": {"rings": 2}}));
+    let (env, _) = run(
+        &h,
+        json!({"analysis": "ray_grid", "settings": {"rings": 2}}),
+    );
     // A GPU when this machine has one that qualifies, else the reference;
     // either way the report and RunInfo agree.
     assert_eq!(env["backend"]["used"], env["run_info"]["backend"]);

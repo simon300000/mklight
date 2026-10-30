@@ -24,22 +24,13 @@ pub fn register_all(r: &mut AnalysisRegistry) {
 }
 
 /// Settings of the `solves` analysis and of `Session::apply_solves`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SolveOptions {
     #[serde(flatten)]
     pub solver: SolveSettings,
     /// Solve this configuration instead of the base system (dry run only).
     pub configuration: Option<usize>,
-}
-
-impl Default for SolveOptions {
-    fn default() -> Self {
-        SolveOptions {
-            solver: SolveSettings::default(),
-            configuration: None,
-        }
-    }
 }
 
 pub fn solve_settings_schema() -> Value {
@@ -57,21 +48,62 @@ pub fn solve_report_schema() -> Value {
         ("index", int("Index into OpticalSystem::solves.")),
         ("kind", string("Solve kind.")),
         ("target", opaque("The ParamPath the solve sets.")),
-        ("previous", nullable(num("", "Value in the input system (null: none, e.g. an automatic semi-diameter)."))),
-        ("value", num("", "Solved value (units of the target parameter).")),
-        ("residual", num("", "measured − goal of the condition in the solved system (mm, slope, F/# or c·D − 1).")),
-        ("method", enumeration(&["unchanged", "closed_form", "fixed_point", "root_finding"], "")),
+        (
+            "previous",
+            nullable(num(
+                "",
+                "Value in the input system (null: none, e.g. an automatic semi-diameter).",
+            )),
+        ),
+        (
+            "value",
+            num("", "Solved value (units of the target parameter)."),
+        ),
+        (
+            "residual",
+            num(
+                "",
+                "measured − goal of the condition in the solved system (mm, slope, F/# or c·D − 1).",
+            ),
+        ),
+        (
+            "method",
+            enumeration(
+                &["unchanged", "closed_form", "fixed_point", "root_finding"],
+                "",
+            ),
+        ),
         ("evaluations", int("")),
     ]);
     result(
         &[
-            ("outcomes", arr(outcome, "One per solve, in declaration order.")),
-            ("order", arr(int(""), "Evaluation order (indices into solves).")),
+            (
+                "outcomes",
+                arr(outcome, "One per solve, in declaration order."),
+            ),
+            (
+                "order",
+                arr(int(""), "Evaluation order (indices into solves)."),
+            ),
             ("sweeps", int("")),
-            ("max_change", num("", "Largest relative parameter change in the last sweep.")),
-            ("solved_params", arr(opaque("ParamPath"), "Parameters controlled by solves (exclude them from optimisation).")),
+            (
+                "max_change",
+                num("", "Largest relative parameter change in the last sweep."),
+            ),
+            (
+                "solved_params",
+                arr(
+                    opaque("ParamPath"),
+                    "Parameters controlled by solves (exclude them from optimisation).",
+                ),
+            ),
             ("warnings", arr(string(""), "")),
-            ("configuration", nullable(int("The configuration solved, or null for the base system."))),
+            (
+                "configuration",
+                nullable(int(
+                    "The configuration solved, or null for the base system.",
+                )),
+            ),
         ],
         vec![],
     )

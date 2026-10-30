@@ -309,8 +309,8 @@ fn check(schema: &Value, v: &Value, path: &str, strict: bool) -> Result<(), Stri
 
 fn short(v: &Value) -> String {
     let s = v.to_string();
-    if s.len() > 60 {
-        format!("{}…", &s[..s.floor_char_boundary(60)])
+    if s.chars().count() > 60 {
+        format!("{}…", s.chars().take(60).collect::<String>())
     } else {
         s
     }

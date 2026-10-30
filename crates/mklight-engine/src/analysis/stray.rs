@@ -26,9 +26,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use mklight_core::{JobContext, MkError, ResolvedSystem, SurfaceShape};
-use mklight_ghost::{
-    Clip, ClipMode, EnumerationSettings, GhostPath, InterfaceKind, enumerate,
-};
+use mklight_ghost::{Clip, ClipMode, EnumerationSettings, GhostPath, InterfaceKind, enumerate};
 use mklight_stray::PathClass;
 use mklight_stray::analysis::{StrayAnalysisSettings, analyze};
 
@@ -77,7 +75,11 @@ pub struct GhostPartition {
 /// surface with its own fixed aperture clips there (`Surface`); every other
 /// optical surface, and an automatic stop, clips at the scene's clear
 /// semi-diameter (beyond it lies an opaque mount or stop plate).
-pub fn stray_clips(rs: &ResolvedSystem, kinds: &[InterfaceKind], clear: &[Option<f64>]) -> Vec<Clip> {
+pub fn stray_clips(
+    rs: &ResolvedSystem,
+    kinds: &[InterfaceKind],
+    clear: &[Option<f64>],
+) -> Vec<Clip> {
     let n = rs.num_surfaces();
     (0..n)
         .map(|j| {
@@ -143,45 +145,123 @@ impl Analysis for StrayLight {
     }
     fn result_schema(&self) -> Value {
         let class_total = obj(&[
-            ("class", enumeration(&["primary", "ghost", "scatter", "mechanical", "sneak"], "")),
+            (
+                "class",
+                enumeration(&["primary", "ghost", "scatter", "mechanical", "sneak"], ""),
+            ),
             ("flux", num("W", "")),
             ("std_error", num("W", "Monte-Carlo standard error.")),
             ("fraction", nullable(num("", "flux / reference_flux."))),
             ("included", boolean("Part of the stray total.")),
             ("hits", int("Detector hits.")),
-            ("moments", opaque("Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm).")),
+            (
+                "moments",
+                opaque(
+                    "Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm).",
+                ),
+            ),
         ]);
         let partition = obj(&[
             ("excluded_class", string("Always `ghost`.")),
-            ("same_apertures", boolean("GhostCoverage::same_apertures held (always true: a mismatch is an error).")),
-            ("apertures", arr(opaque(""), "The shared clipping per surface.")),
+            (
+                "same_apertures",
+                boolean(
+                    "GhostCoverage::same_apertures held (always true: a mismatch is an error).",
+                ),
+            ),
+            (
+                "apertures",
+                arr(opaque(""), "The shared clipping per surface."),
+            ),
             ("ghost_paths", int("Paths in the ghost run's coverage.")),
-            ("ghost_class_flux_mc", num("W", "Monte-Carlo estimate of the excluded ghost class (comparison only).")),
+            (
+                "ghost_class_flux_mc",
+                num(
+                    "W",
+                    "Monte-Carlo estimate of the excluded ghost class (comparison only).",
+                ),
+            ),
             ("ghost_class_std_error", num("W", "")),
         ]);
         result(
             &[
-                ("source", opaque("Resolved source beam: spec, reference_flux, description.")),
+                (
+                    "source",
+                    opaque("Resolved source beam: spec, reference_flux, description."),
+                ),
                 ("emitted", num("W", "Emitted power.")),
                 ("classes", int("Class mask of the stray total and maps.")),
-                ("detector", opaque("Detector: surface, nx, ny, half_x, half_y (mm), accept.")),
-                ("map_classes", arr(string(""), "Class of each row of class_irradiance, in path-class order.")),
+                (
+                    "detector",
+                    opaque("Detector: surface, nx, ny, half_x, half_y (mm), accept."),
+                ),
+                (
+                    "map_classes",
+                    arr(
+                        string(""),
+                        "Class of each row of class_irradiance, in path-class order.",
+                    ),
+                ),
                 ("stray_flux", num("W", "Stray total.")),
                 ("stray_std_error", num("W", "")),
-                ("stray_fraction", nullable(num("", "stray_flux / reference_flux."))),
+                (
+                    "stray_fraction",
+                    nullable(num("", "stray_flux / reference_flux.")),
+                ),
                 ("primary_obstruction", nullable(nf())),
                 ("totals", arr(class_total, "Every class, included or not.")),
-                ("top_signatures", arr(opaque("{class, events, overflow, label, flux, std_error, hits}"), "Strongest (class, signature) pairs among the included classes.")),
-                ("energy", opaque("Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md).")),
-                ("clear_semi_diameters", arr(nullable(num("mm", "")), "Clear semi-diameters the scene used per surface (null: the surface's own).")),
+                (
+                    "top_signatures",
+                    arr(
+                        opaque("{class, events, overflow, label, flux, std_error, hits}"),
+                        "Strongest (class, signature) pairs among the included classes.",
+                    ),
+                ),
+                (
+                    "energy",
+                    opaque(
+                        "Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md).",
+                    ),
+                ),
+                (
+                    "clear_semi_diameters",
+                    arr(
+                        nullable(num("mm", "")),
+                        "Clear semi-diameters the scene used per surface (null: the surface's own).",
+                    ),
+                ),
                 ("warnings", arr(string(""), "")),
                 ("partition", nullable(partition)),
             ],
             vec![
-                buffer("class_irradiance", "f64", &["C", "ny", "nx"], "W/mm²", "Irradiance per included class (rows of map_classes); row 0 at y = −half_y, x fastest."),
-                buffer("class_irradiance_std_error", "f64", &["C", "ny", "nx"], "W/mm²", "Standard error per pixel."),
-                buffer("total_irradiance", "f64", &["ny", "nx"], "W/mm²", "Stray total."),
-                buffer("total_irradiance_std_error", "f64", &["ny", "nx"], "W/mm²", ""),
+                buffer(
+                    "class_irradiance",
+                    "f64",
+                    &["C", "ny", "nx"],
+                    "W/mm²",
+                    "Irradiance per included class (rows of map_classes); row 0 at y = −half_y, x fastest.",
+                ),
+                buffer(
+                    "class_irradiance_std_error",
+                    "f64",
+                    &["C", "ny", "nx"],
+                    "W/mm²",
+                    "Standard error per pixel.",
+                ),
+                buffer(
+                    "total_irradiance",
+                    "f64",
+                    &["ny", "nx"],
+                    "W/mm²",
+                    "Stray total.",
+                ),
+                buffer(
+                    "total_irradiance_std_error",
+                    "f64",
+                    &["ny", "nx"],
+                    "W/mm²",
+                    "",
+                ),
             ],
         )
     }

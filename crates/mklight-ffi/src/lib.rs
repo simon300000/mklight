@@ -28,9 +28,9 @@ use serde_json::Value;
 
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem};
+use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
 use mklight_engine::session::{AnalysisRequest, ParamEdit, Session};
-use mklight_engine::backend::Backend;
 use mklight_engine::{
     AnalysisResult, Buffer, Engine, EngineConfig, EngineError, JobEvent, JobState,
 };
@@ -1129,8 +1129,8 @@ pub unsafe extern "C" fn mk_session_get_param(
         let s = unsafe { session_ref(session) }?;
         let text = unsafe { in_str(path_json, "path_json") }?;
         unsafe { out_ptr(out_json, "out_json") }?;
-        let p: ParamPath = serde_json::from_str(text)
-            .map_err(|e| FfiError::arg(format!("path_json: {e}")))?;
+        let p: ParamPath =
+            serde_json::from_str(text).map_err(|e| FfiError::arg(format!("path_json: {e}")))?;
         let v = s.lock().param_value(&p)?;
         let value = match v {
             None => Value::Null,
