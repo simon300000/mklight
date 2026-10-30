@@ -432,6 +432,22 @@ public struct AnalysisSettingsSet: Codable, Sendable, Hashable {
     public var execution = ExecutionSettings()
     public init() {}
 
+    /// The configuration every analysis of the window uses (reads the layout's;
+    /// setting it sets all).
+    public var configuration: Int {
+        get { layout.configuration }
+        set {
+            layout.configuration = newValue
+            spot.configuration = newValue
+            rayFan.configuration = newValue
+            opdFan.configuration = newValue
+            fieldCurvature.configuration = newValue
+            mtf.configuration = newValue
+            psf.configuration = newValue
+            firstOrder.configuration = newValue
+        }
+    }
+
     /// The request for `kind`, carrying the window's `execution` settings.
     public func request(for kind: AnalysisKind) -> AnalysisRequest {
         var r: AnalysisRequest =

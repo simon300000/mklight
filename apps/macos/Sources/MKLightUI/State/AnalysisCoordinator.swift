@@ -9,7 +9,11 @@ import Observation
 /// and the visible analyses are re-run asynchronously. A newer request for an
 /// analysis cancels the older job. Results stay on screen while a new one is
 /// computed and are marked stale when they no longer match the current
-/// snapshot and settings.
+/// snapshot (system **and** glass library) and settings.
+///
+/// The coordinator talks to a per-document engine
+/// (`EngineClient.makeDocumentEngine()`), so user glass catalogs loaded in
+/// one window do not affect another.
 @MainActor
 @Observable
 public final class AnalysisCoordinator {
@@ -18,6 +22,8 @@ public final class AnalysisCoordinator {
         case running(JobProgress)
         case finished
         case failed(String)
+        /// The engine build does not offer the analysis (with its reason).
+        case unavailable(String)
         case cancelled
     }
 
@@ -26,31 +32,50 @@ public final class AnalysisCoordinator {
         public var phase = Phase.idle
         var job: AnalysisJob?
         var request: AnalysisRequest?
+        var engineRequest: EngineAnalysisRequest?
     }
 
+    /// The engine every window shares (`attach`).
     public private(set) var engine: any EngineClient
+    /// This window's session of it.
+    public private(set) var documentEngine: any EngineClient
     public private(set) var snapshot: ModelSnapshot?
     /// Errors from the latest validation; while non-empty, analyses are not
     /// run and every shown result is stale.
     public private(set) var validationErrors: [String] = []
     public private(set) var slots: [AnalysisKind: Slot] = [:]
+    /// The analysis requested by name (the "Engine" pane), if visible.
+    public private(set) var engineSlot = Slot()
+    /// Every analysis the engine offers, with settings schemas.
+    public private(set) var descriptors: [AnalysisDescriptor] = []
+    /// User glass catalogs of this document's session.
+    public private(set) var catalogs: [CatalogInfo] = []
+    /// Problems loading the project's catalogs (missing files, parse errors).
+    public private(set) var catalogWarnings: [String] = []
     public var debounce: Duration = .milliseconds(150)
 
     private var latestSystem: OpticalSystem?
     private var snapshotTask: Task<Void, Never>?
     private var visible: Set<AnalysisKind> = []
     private var settings = AnalysisSettingsSet()
+    private var engineRequest: EngineAnalysisRequest?
 
     public init(engine: any EngineClient) {
         self.engine = engine
+        documentEngine = engine.makeDocumentEngine()
+        Task { await self.loadEngineMetadata() }
     }
 
     public func attach(engine: any EngineClient) {
         guard engine.info != self.engine.info else { return }
         cancelAll()
         self.engine = engine
+        documentEngine = engine.makeDocumentEngine()
         slots = [:]
+        engineSlot = Slot()
         snapshot = nil
+        descriptors = []
+        Task { await loadEngineMetadata() }
         if let s = latestSystem { update(system: s, immediately: true) }
     }
 
@@ -61,12 +86,21 @@ public final class AnalysisCoordinator {
     /// Whether the shown result of `kind` is out of date.
     public func isStale(_ kind: AnalysisKind) -> Bool {
         guard let out = slots[kind]?.output else { return false }
-        return !validationErrors.isEmpty || !out.runInfo.isCurrent(for: snapshot, request: settings.request(for: kind))
+        return !validationErrors.isEmpty || !out.isCurrent(for: snapshot, request: settings.request(for: kind))
+    }
+
+    /// Whether the shown result of the request by name is out of date.
+    public var isEngineResultStale: Bool {
+        guard let out = engineSlot.output else { return false }
+        guard let engineRequest else { return true }
+        return !validationErrors.isEmpty || !out.isCurrent(for: snapshot, request: engineRequest)
     }
 
     public var isBusy: Bool {
-        slots.values.contains { if case .running = $0.phase { true } else { false } }
+        (slots.values.map(\.phase) + [engineSlot.phase]).contains { if case .running = $0 { true } else { false } }
     }
+
+    public func descriptor(_ name: String) -> AnalysisDescriptor? { descriptors.first { $0.name == name } }
 
     // MARK: Inputs
 
@@ -94,29 +128,94 @@ public final class AnalysisCoordinator {
         refreshVisible()
     }
 
+    /// The analysis by name to keep current (`nil`: none is visible).
+    public func setEngineRequest(_ request: EngineAnalysisRequest?) {
+        guard request != engineRequest else { return }
+        engineRequest = request
+        if request == nil { engineSlot.job?.cancel() }
+        refreshVisible()
+    }
+
     /// Runs `kind` again even if its result is current.
     public func rerun(_ kind: AnalysisKind) {
         guard let snapshot else { return }
         start(kind, request: settings.request(for: kind), on: snapshot)
     }
 
+    public func rerunEngineAnalysis() {
+        guard let snapshot, let engineRequest else { return }
+        startEngine(engineRequest, on: snapshot)
+    }
+
     public func rerunVisible() {
         for k in visible { rerun(k) }
+        rerunEngineAnalysis()
     }
 
     public func cancel(_ kind: AnalysisKind) {
         slots[kind]?.job?.cancel()
     }
 
+    public func cancelEngineAnalysis() { engineSlot.job?.cancel() }
+
     public func cancelAll() {
         for k in slots.keys { cancel(k) }
+        cancelEngineAnalysis()
+    }
+
+    // MARK: Glass catalogs
+
+    /// Loads a user glass catalog into this document's session. The library
+    /// hash changes, so every result becomes stale and visible ones re-run.
+    public func loadCatalog(at url: URL) async throws -> CatalogInfo {
+        let info = try await documentEngine.loadCatalog(at: url)
+        await catalogsChanged()
+        return info
+    }
+
+    /// Loads the catalogs a project references, trying each reference's
+    /// relative path (from `projectDirectory`) and then its absolute path,
+    /// as the engine does on open. Missing catalogs become warnings.
+    public func loadProjectCatalogs(_ refs: [CatalogReference], projectDirectory: URL?) async {
+        var warnings: [String] = []
+        for ref in refs {
+            let candidates = ref.candidates(projectDirectory: projectDirectory)
+            var loaded = false
+            var lastError: String?
+            for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    _ = try await documentEngine.loadCatalog(at: url)
+                    loaded = true
+                    break
+                } catch {
+                    lastError = error.localizedDescription
+                }
+            }
+            if !loaded {
+                warnings.append("glass catalog '\(ref.name)' could not be loaded (\(lastError ?? "file not found"))")
+            }
+        }
+        catalogWarnings = warnings
+        await catalogsChanged()
+    }
+
+    private func catalogsChanged() async {
+        catalogs = await documentEngine.catalogs()
+        if let s = latestSystem { await openSnapshot(s) }
     }
 
     // MARK: Internals
 
+    /// Reads the analysis list and catalogs of the document engine.
+    public func loadEngineMetadata() async {
+        let engine = documentEngine
+        descriptors = await engine.analysisDescriptors()
+        catalogs = await engine.catalogs()
+    }
+
     private func openSnapshot(_ system: OpticalSystem) async {
         do {
-            let snap = try await engine.openSnapshot(system)
+            let snap = try await documentEngine.openSnapshot(system)
             guard system == latestSystem else { return }  // superseded by a newer edit
             snapshot = snap
             validationErrors = []
@@ -135,39 +234,81 @@ public final class AnalysisCoordinator {
         for kind in visible {
             let request = settings.request(for: kind)
             let slot = self.slot(kind)
-            if let out = slot.output, out.runInfo.isCurrent(for: snapshot, request: request) { continue }
-            if let job = slot.job, case .running = slot.phase, job.snapshotHash == snapshot.hash, slot.request == request {
-                continue
-            }
+            if let out = slot.output, out.isCurrent(for: snapshot, request: request) { continue }
+            if slot.request == request, slot.job?.snapshotHash == snapshot.hash, case .running = slot.phase { continue }
             start(kind, request: request, on: snapshot)
+        }
+        if let engineRequest {
+            if let out = engineSlot.output, out.isCurrent(for: snapshot, request: engineRequest) { return }
+            if engineSlot.engineRequest == engineRequest, engineSlot.job?.snapshotHash == snapshot.hash,
+                case .running = engineSlot.phase
+            {
+                return
+            }
+            startEngine(engineRequest, on: snapshot)
         }
     }
 
     private func start(_ kind: AnalysisKind, request: AnalysisRequest, on snapshot: ModelSnapshot) {
         slots[kind, default: Slot()].job?.cancel()
-        let job = engine.submit(request, on: snapshot)
+        let job = documentEngine.submit(request, on: snapshot)
         slots[kind, default: Slot()].job = job
         slots[kind, default: Slot()].request = request
         slots[kind, default: Slot()].phase = .running(JobProgress(fraction: 0, stage: "Queued"))
-        let id = job.id
-        Task { [weak self] in
-            for await p in job.progress {
-                guard let self, self.slots[kind]?.job?.id == id else { return }
-                self.slots[kind]?.phase = .running(p)
+        observe(job) { [weak self] update in self?.slots[kind]?.apply(update, job: job.id) }
+    }
+
+    private func startEngine(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) {
+        engineSlot.job?.cancel()
+        let job = documentEngine.submit(request, on: snapshot)
+        engineSlot.job = job
+        engineSlot.engineRequest = request
+        engineSlot.phase = .running(JobProgress(fraction: 0, stage: "Queued"))
+        observe(job) { [weak self] update in self?.engineSlot.apply(update, job: job.id) }
+    }
+
+    /// Forwards a job's progress and outcome to the main actor.
+    private func observe(_ job: AnalysisJob, _ apply: @escaping @MainActor (Slot.Update) -> Void) {
+        Task { @MainActor in
+            for await p in job.progress { apply(.progress(p)) }
+        }
+        Task { @MainActor in
+            do {
+                apply(.finished(try await job.result()))
+            } catch let error as EngineError {
+                switch error {
+                case .cancelled: apply(.phase(.cancelled))
+                case .unsupported(let why): apply(.phase(.unavailable(why)))
+                default: apply(.phase(.failed(error.localizedDescription)))
+                }
+            } catch {
+                apply(.phase(.failed(error.localizedDescription)))
             }
         }
-        Task { [weak self] in
-            do {
-                let out = try await job.result()
-                guard let self, self.slots[kind]?.job?.id == id else { return }
-                self.slots[kind]?.output = out
-                self.slots[kind]?.phase = .finished
-                self.slots[kind]?.job = nil
-            } catch {
-                guard let self, self.slots[kind]?.job?.id == id else { return }
-                self.slots[kind]?.phase = (error as? EngineError) == .cancelled ? .cancelled : .failed(error.localizedDescription)
-                self.slots[kind]?.job = nil
-            }
+    }
+}
+
+extension AnalysisCoordinator.Slot {
+    enum Update {
+        case progress(JobProgress)
+        case finished(AnalysisOutput)
+        case phase(AnalysisCoordinator.Phase)
+    }
+
+    /// Applies an update from job `id`; updates of a superseded job are
+    /// ignored.
+    mutating func apply(_ update: Update, job id: UUID) {
+        guard job?.id == id else { return }
+        switch update {
+        case .progress(let p):
+            if case .running = phase { phase = .running(p) }
+        case .finished(let out):
+            output = out
+            phase = .finished
+            job = nil
+        case .phase(let p):
+            phase = p
+            job = nil
         }
     }
 }
