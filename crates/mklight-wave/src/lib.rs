@@ -6,9 +6,12 @@
 //! Everything here starts from a [`PupilFunction`]: the complex amplitude
 //! `A·exp(i2π·W)` on an `n × n` grid over the normalised exit pupil, plus
 //! the image-space geometry (exit-pupil radius, reference-sphere radius,
-//! image index) that scales image-plane coordinates. The tracer fills it
-//! either directly (rays traced at the grid points) or through
-//! [`interp`] from scattered ray samples.
+//! image index) that scales image-plane coordinates. [`traced::trace_pupil`]
+//! builds it from the reference tracer (`mklight-trace`): reference sphere,
+//! OPD, amplitudes and the traced vignetting rim, resampled through
+//! [`interp`]. The engine-facing analyses (wavefront map, PSF, MTF,
+//! encircled energy, line spread; [`analysis::ANALYSES`]) build on it, and
+//! [`detector`] adds the pixel MTF. Design notes: `docs/WAVE.md`.
 //!
 //! Conventions (see `docs/CONVENTIONS.md`): lengths in mm, wavelengths in
 //! µm, OPD in waves with `OPD = OPL_chief − OPL_ray`, Fringe Zernikes by

@@ -777,6 +777,102 @@ fn radiometric_amplitude_of_an_ideal_lens() {
     );
 }
 
+/// A 1:1 ideal-lens relay at finite conjugates (object at 2f) is perfect on
+/// axis, with image-space NA equal to the object-space NA. Its ray
+/// directions are mirror images (`sinθ' = sinθ`), so the radiometric
+/// amplitude `A² ∝ m·γ/J` with the isotropic-source measure
+/// `m = |∂(L,M)/∂P|/cosθ`, `J = |∂(u,v)/∂P| ∝ |∂(L,M)/∂P|` and `γ = cosθ` is
+/// flat.
+#[test]
+fn finite_conjugate_ideal_relay() {
+    let f = 50.0;
+    let mut s = OpticalSystem::new_empty();
+    s.aperture = ApertureSpec::ObjectSpaceNa { value: 0.2 };
+    s.fields = FieldSet {
+        kind: FieldKind::ObjectHeight,
+        fields: vec![Field::new(0.0, 0.0), Field::new(0.0, 2.0)],
+    };
+    s.wavelengths = mono(LAM);
+    s.surfaces = vec![
+        surf(0, SurfaceShape::Plane, 2.0 * f),
+        surf(1, SurfaceShape::Paraxial { focal_length: f }, 2.0 * f),
+        surf(2, SurfaceShape::Plane, 0.0),
+    ];
+    s.stop = 1;
+    let t = tracer_for(s).unwrap();
+    let tp = pupil(
+        &t,
+        0,
+        &PupilSettings {
+            amplitude: AmplitudeModel::Radiometric,
+            rays: 41,
+            ..Default::default()
+        },
+    );
+    assert!(tp.pupil.opd_stats(true).rms < 1e-6);
+    assert!(
+        (tp.info.numerical_aperture - 0.2).abs() < 1e-6,
+        "{}",
+        tp.info.numerical_aperture
+    );
+    // Symmetric relay: the object-side and image-side direction measures
+    // cancel and the amplitude is flat.
+    for r in tp.samples.samples.iter().flatten() {
+        if r.u.hypot(r.v) < 0.9 {
+            assert!((r.amplitude - 1.0).abs() < 2e-3, "{}", r.amplitude);
+        }
+    }
+    let off = pupil(&t, 1, &uniform());
+    assert!(
+        off.pupil.opd_stats(true).rms < 1e-3,
+        "{}",
+        off.pupil.opd_stats(true).rms
+    );
+}
+
+/// MTF vs field at the system field positions equals the MTF analysis of
+/// those fields (same pupils, same transform).
+#[test]
+fn mtf_vs_field_matches_mtf_at_system_fields() {
+    let t = tracer_for(samples::singlet()).unwrap();
+    let pupil = PupilSettings {
+        grid: 32,
+        rays: 25,
+        ..Default::default()
+    };
+    let vf = mtf_vs_field(
+        &t,
+        &MtfVsFieldSettings {
+            pupil,
+            field_samples: 3,
+            frequencies: vec![10.0, 30.0],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(vf.normalized_field, vec![0.0, 0.5, 1.0]);
+    assert_eq!(vf.field_values[2], [0.0, 5.0]);
+    let m = mtf_analysis(
+        &t,
+        &MtfSettings {
+            fields: FieldSelection::List {
+                indices: vec![0, 2],
+            },
+            pupil,
+            max_frequency: Some(30.0),
+            frequency_samples: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for (h, f) in [(0, 0), (2, 1)] {
+        for (q, k) in [(0, 1), (1, 3)] {
+            assert_eq!(vf.curves[q].tangential[h], m.fields[f].tangential[k]);
+            assert_eq!(vf.curves[q].sagittal[h], m.fields[f].sagittal[k]);
+        }
+    }
+}
+
 // ----------------------------------------------------------------- detector
 
 #[test]
