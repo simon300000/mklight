@@ -97,8 +97,6 @@ const SAMPLES: &[&str] = &[
     "relay",
 ];
 
-const EXTENDED_SAMPLES: &[&str] = &["hybrid_doe", "anamorphic", "q_con", "q_bfs", "xy_freeform"];
-
 // ---------------------------------------------------------------------------
 // usage and info
 
@@ -194,60 +192,56 @@ fn show_reports_lens_data_of_the_achromat() {
 }
 
 #[test]
-fn extended_samples_show_surface_parameters_and_anamorphic_first_order() {
-    let d = TempDir::new("extended-samples");
-    for name in EXTENDED_SAMPLES {
+fn show_lists_parameters_of_the_extended_samples() {
+    let d = TempDir::new("extended");
+    for (name, ty, expected) in [
+        (
+            "hybrid_doe",
+            "diffractive",
+            "A1 ρ^2 -76.957542; normalisation radius 5 mm; design order 1; design wavelength 0.5875618 µm; trace order 1",
+        ),
+        ("anamorphic", "biconic", "cx 0.01 mm⁻¹"),
+        ("biconic", "biconic", "A4 x^4 1e-6; A4 y^4 -1e-6"),
+        ("toroid", "toroid", "ky -0.5; A4 y^4 1e-6"),
+        ("q_con", "q_con", "Q1 -0.0004"),
+        ("q_bfs", "q_bfs", "normalisation radius 5 mm"),
+        ("odd_asphere", "odd_asphere", "β1 r 0, β2 r^2 1e-5"),
+        ("xy_freeform", "xy_polynomial", "C(x^2 y) -0.0001"),
+        ("zernike_sag", "zernike_sag", "Z5 0.001"),
+    ] {
         let p = sample(&d, name);
-        let shown = mklight(["show", s(&p)]);
-        assert_eq!(code(&shown), 0, "{}", stderr(&shown));
-        let text = stdout(&shown);
-        match *name {
-            "hybrid_doe" => assert!(
-                text.contains("diffractive")
-                    && text.contains("design wavelength")
-                    && text.contains("trace order"),
-                "{text}"
-            ),
-            "anamorphic" => {
-                assert!(text.contains("biconic") && text.contains("cx"), "{text}");
-                let paraxial = json_run(&["paraxial", s(&p)], 0);
-                assert!(paraxial["paraxial_xy"]["x"].is_array());
-                let report = stdout(&mklight(["paraxial", s(&p)]));
-                assert!(
-                    report.contains("Anamorphic first order") && report.contains("squeeze y/x"),
-                    "{report}"
-                );
-            }
-            "q_con" | "q_bfs" => assert!(
-                text.contains("normalisation radius") && text.contains("Q"),
-                "{text}"
-            ),
-            "xy_freeform" => assert!(
-                text.contains("normalisation radius") && text.contains("C(x²)"),
-                "{text}"
-            ),
-            _ => unreachable!(),
-        }
-        let show_json = json_run(&["show", s(&p)], 0);
+        assert_eq!(json_run(&["validate", s(&p)], 0)["ok"], true, "{name}");
+        let text = stdout(&mklight(["show", s(&p)]));
+        assert!(text.contains(&format!(" {ty}: ")), "{name}: {text}");
+        assert!(text.contains(expected), "{name}: {text}");
+        let v = json_run(&["show", s(&p)], 0);
         assert!(
-            show_json["surfaces"]
+            v["surfaces"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|r| r["type"]
-                    == if *name == "xy_freeform" {
-                        "xy_polynomial"
-                    } else if *name == "q_con" {
-                        "q_con"
-                    } else if *name == "q_bfs" {
-                        "q_bfs"
-                    } else if *name == "hybrid_doe" {
-                        "diffractive"
-                    } else {
-                        "biconic"
-                    })
+                .any(|r| r["type"] == ty && r["shape"]["type"] == ty),
+            "{name}: {v}"
         );
     }
+}
+
+#[test]
+fn paraxial_reports_x_and_y_first_order_of_anamorphic_systems() {
+    let d = TempDir::new("anamorphic");
+    let p = sample(&d, "anamorphic");
+    let v = json_run(&["paraxial", s(&p)], 0);
+    let primary = v["primary"].as_u64().unwrap() as usize;
+    let xy = &v["paraxial_xy"];
+    assert!((f(&xy["squeeze"][primary]) - 2.0).abs() < 1e-9, "{xy}");
+    assert!((f(&xy["y"][primary]["efl"]) - 2.0 * f(&xy["x"][primary]["efl"])).abs() < 1e-9);
+    let text = stdout(&mklight(["paraxial", s(&p)]));
+    assert!(
+        text.contains("anamorphic first order") && text.contains("squeeze EFL_y/EFL_x: 2\n"),
+        "{text}"
+    );
+    let rotational = stdout(&mklight(["paraxial", s(&sample(&d, "achromat"))]));
+    assert!(!rotational.contains("squeeze"), "{rotational}");
 }
 
 #[test]

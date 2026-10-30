@@ -115,11 +115,12 @@ radius (`inf` for a plane), thickness, material, `n_d` after the surface,
 semi-diameter, semi-diameter mode, conic, and notes (stop, mirror, ideal-lens
 focal length, asphere coefficients, decenter/tilt, coating).
 
-The type column uses the model surface type names. After the lens table, each
-non-legacy surface lists its coefficients with mathematical labels (such as
-`A4 r^4`, `C(x^2 y)`, `Z7`, or `Q2`), normalisation radius where applicable,
-and diffractive design order, design wavelength and trace order. `--json`
-continues to print the model report with each full surface shape in `surfaces`.
+The type column uses the model surface type names. After the lens table,
+`surface parameters` lists each extended surface's coefficients with
+mathematical labels (such as `β2 r^2`, `A4 y^4`, `A1 ρ^2`, `C(x^2 y)`, `Z7`
+or `Q2`), its normalisation radius, the x/y curvatures and conics of
+toroids and biconics, and the diffractive design order, design wavelength and
+trace order. `--json` is unchanged: each surface carries its full `shape`.
 
 Semi-diameter modes: `fixed` (user value, clips rays), `aperture` (explicit
 aperture, its bounding radius), `stop` (the stop, sized by the aperture

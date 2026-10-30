@@ -5,6 +5,7 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+use mklight_core::surface_math::Symmetry;
 use mklight_core::{ResolvedSystem, Vec3};
 use mklight_engine::Session;
 use mklight_trace::trace::to_global;
@@ -368,29 +369,28 @@ pub fn paraxial(ctx: &Ctx, a: &ParaxialArgs) -> CliResult<Report> {
     }
     let mut text = format!("{}  (* primary)\n", session.system().name);
     text.push_str(&t.render());
-    if xy.symmetry != mklight_core::surface_math::Symmetry::Rotational {
-        text.push_str("\nAnamorphic first order (x / y)\n");
+    if xy.symmetry != Symmetry::Rotational {
+        let (fx, fy) = (&xy.x[xy.primary], &xy.y[xy.primary]);
         let mut axes = Table::new(&[
             ("quantity", Align::Left),
             ("x", Align::Right),
             ("y", Align::Right),
-            ("squeeze y/x", Align::Right),
+            ("unit", Align::Left),
         ]);
-        let fx = &xy.x[xy.primary];
-        let fy = &xy.y[xy.primary];
-        for (key, label, unit) in QUANTITIES {
+        for (k, label, unit) in QUANTITIES {
             axes.row(vec![
-                format!("{label} ({unit})"),
-                fmt_g(quantity(fx, key), 8),
-                fmt_g(quantity(fy, key), 8),
-                if *key == "efl" {
-                    fmt_g(xy.squeeze[xy.primary], 8)
-                } else {
-                    String::new()
-                },
+                (*label).into(),
+                fmt_g(quantity(fx, k), 8),
+                fmt_g(quantity(fy, k), 8),
+                (*unit).into(),
             ]);
         }
+        text.push_str("\nanamorphic first order at the primary wavelength\n");
         text.push_str(&axes.render());
+        text.push_str(&format!(
+            "squeeze EFL_y/EFL_x: {}\n",
+            fmt_g(xy.squeeze[xy.primary], 8)
+        ));
     }
     if a.rays {
         let mut r = Table::new(&[

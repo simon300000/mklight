@@ -6,6 +6,7 @@ use std::path::Path;
 
 use mklight_core::model::ValidationIssue;
 use mklight_core::param::ParamPath;
+use mklight_core::surface_math::xy_powers;
 use mklight_core::{
     ApertureSpec, Interaction, MkError, OpticalSystem, SemiDiameter, SurfaceShape, samples,
 };
@@ -229,16 +230,36 @@ pub(crate) fn shape_type(s: &SurfaceShape) -> &'static str {
     }
 }
 
+/// `v^n`, with the exponent omitted for n = 1.
+fn power(v: &str, n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => v.into(),
+        _ => format!("{v}^{n}"),
+    }
+}
+
+fn terms(c: &[f64], label: impl Fn(usize) -> String) -> String {
+    let t: Vec<String> = c
+        .iter()
+        .enumerate()
+        .map(|(i, v)| format!("{} {}", label(i), fmt_g(*v, 8)))
+        .collect();
+    t.join(", ")
+}
+
+/// Parameters of the extended shapes that the lens table does not show.
 fn shape_parameters(shape: &SurfaceShape) -> Option<String> {
-    match shape {
-        SurfaceShape::OddAsphere { coefficients, .. } => Some(
-            coefficients
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("β{} r^{} {}", i + 1, i + 1, fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ),
+    let g = |v: f64| fmt_g(v, 8);
+    let norm = |r: f64| format!("normalisation radius {} mm", g(r));
+    let even =
+        |v: &'static str| move |i: usize| format!("A{0} {1}", 2 * i + 4, power(v, 2 * i + 4));
+    let parts = match shape {
+        SurfaceShape::OddAsphere { coefficients, .. } => {
+            vec![terms(coefficients, |i| {
+                format!("β{} {}", i + 1, power("r", i + 1))
+            })]
+        }
         SurfaceShape::QCon {
             norm_radius,
             coefficients,
@@ -248,47 +269,30 @@ fn shape_parameters(shape: &SurfaceShape) -> Option<String> {
             norm_radius,
             coefficients,
             ..
-        } => Some(format!(
-            "{}; normalisation radius {} mm",
-            coefficients
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("Q{} {}", i, fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            fmt_g(*norm_radius, 8)
-        )),
-        SurfaceShape::Diffractive { phase, .. } => Some(format!(
-            "{}; normalisation radius {} mm; design order {}; design wavelength {} µm; trace order {}",
-            phase
-                .coefficients
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("A{} ρ^{} {}", i + 1, 2 * (i + 1), fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            fmt_g(phase.norm_radius, 8),
-            phase.design_order,
-            fmt_g(phase.design_wavelength_um, 8),
-            phase.trace_order
-        )),
+        } => vec![terms(coefficients, |i| format!("Q{i}")), norm(*norm_radius)],
+        SurfaceShape::Diffractive { phase, .. } => vec![
+            terms(&phase.coefficients, |i| {
+                format!("A{} {}", i + 1, power("ρ", 2 * i + 2))
+            }),
+            norm(phase.norm_radius),
+            format!("design order {}", phase.design_order),
+            format!("design wavelength {} µm", g(phase.design_wavelength_um)),
+            format!("trace order {}", phase.trace_order),
+        ],
         SurfaceShape::Toroid {
             curvature_x,
             curvature_y,
             conic_y,
             y_asphere,
-        } => Some(format!(
-            "cx {} mm⁻¹, cy {} mm⁻¹, ky {}; {}",
-            fmt_g(*curvature_x, 8),
-            fmt_g(*curvature_y, 8),
-            fmt_g(*conic_y, 8),
-            y_asphere
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("A{} y^{} {}", 2 * i + 4, 2 * i + 4, fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
+        } => vec![
+            format!(
+                "cx {} mm⁻¹, cy {} mm⁻¹, ky {}",
+                g(*curvature_x),
+                g(*curvature_y),
+                g(*conic_y)
+            ),
+            terms(y_asphere, even("y")),
+        ],
         SurfaceShape::Biconic {
             curvature_x,
             curvature_y,
@@ -296,98 +300,41 @@ fn shape_parameters(shape: &SurfaceShape) -> Option<String> {
             conic_y,
             x_asphere,
             y_asphere,
-        } => Some(format!(
-            "cx {} mm⁻¹, cy {} mm⁻¹, kx {}, ky {}; x: {}; y: {}",
-            fmt_g(*curvature_x, 8),
-            fmt_g(*curvature_y, 8),
-            fmt_g(*conic_x, 8),
-            fmt_g(*conic_y, 8),
-            x_asphere
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("A{} x^{} {}", 2 * i + 4, 2 * i + 4, fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            y_asphere
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("A{} y^{} {}", 2 * i + 4, 2 * i + 4, fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
+        } => vec![
+            format!(
+                "cx {} mm⁻¹, cy {} mm⁻¹, kx {}, ky {}",
+                g(*curvature_x),
+                g(*curvature_y),
+                g(*conic_x),
+                g(*conic_y)
+            ),
+            terms(x_asphere, even("x")),
+            terms(y_asphere, even("y")),
+        ],
         SurfaceShape::XYPolynomial {
             norm_radius,
             coefficients,
             ..
-        } => Some(format!(
-            "{}; normalisation radius {} mm",
-            coefficients
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("C({}) {}", xy_label(i), fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            fmt_g(*norm_radius, 8)
-        )),
+        } => {
+            let label = |i| {
+                let (m, n) = xy_powers(i);
+                let xy = [power("x", m), power("y", n)];
+                format!("C({})", xy.join(" ").trim())
+            };
+            vec![terms(coefficients, label), norm(*norm_radius)]
+        }
         SurfaceShape::ZernikeSag {
             norm_radius,
             coefficients,
             ..
-        } => Some(format!(
-            "{}; normalisation radius {} mm",
-            coefficients
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("Z{} {}", i + 1, fmt_g(*v, 8)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            fmt_g(*norm_radius, 8)
-        )),
-        _ => None,
-    }
-}
-
-fn xy_label(index: usize) -> String {
-    let mut degree = 1;
-    let mut start = 0;
-    while index >= start + degree + 1 {
-        start += degree + 1;
-        degree += 1;
-    }
-    let y = index - start;
-    let x = degree - y;
-    let power = |n: usize| {
-        n.to_string()
-            .chars()
-            .map(|c| match c {
-                '0' => '⁰',
-                '1' => '¹',
-                '2' => '²',
-                '3' => '³',
-                '4' => '⁴',
-                '5' => '⁵',
-                '6' => '⁶',
-                '7' => '⁷',
-                '8' => '⁸',
-                '9' => '⁹',
-                _ => c,
-            })
-            .collect::<String>()
+        } => vec![
+            terms(coefficients, |i| format!("Z{}", i + 1)),
+            norm(*norm_radius),
+        ],
+        _ => return None,
     };
-    let mut term = String::new();
-    if x > 0 {
-        term.push('x');
-        if x > 1 {
-            term.push_str(&power(x));
-        }
-    }
-    if y > 0 {
-        term.push('y');
-        if y > 1 {
-            term.push_str(&power(y));
-        }
-    }
-    term
+    let parts: Vec<String> = parts.into_iter().filter(|p| !p.is_empty()).collect();
+    Some(parts.join("; "))
 }
 
 fn aperture_text(a: &ApertureSpec) -> String {
@@ -618,20 +565,15 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
     ]);
     text.push('\n');
     text.push_str(&t.render());
-    let parameters: Vec<String> = sys
-        .surfaces
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| {
-            shape_parameters(&s.shape)
-                .map(|p| format!("surface {i} ({}): {p}\n", shape_type(&s.shape)))
-        })
-        .collect();
-    if !parameters.is_empty() {
-        text.push_str("\nSurface parameters\n");
-        for p in parameters {
-            text.push_str(&p);
+    let mut parameters = String::new();
+    for (i, s) in sys.surfaces.iter().enumerate() {
+        if let Some(p) = shape_parameters(&s.shape) {
+            parameters.push_str(&format!("{i:>3} {}: {p}\n", shape_type(&s.shape)));
         }
+    }
+    if !parameters.is_empty() {
+        text.push_str("\nsurface parameters\n");
+        text.push_str(&parameters);
     }
     text.push_str(&warning_lines(&warnings));
     Ok(Report::ok(json, text))
