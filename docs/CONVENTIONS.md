@@ -210,3 +210,27 @@ Coatings return complex amplitude coefficients next to the power ones
   the minimal rotation that takes the pole `±ẑ` to `k`. The pole is the
   starting frame's `+ẑ` in object space, and in image space the image
   frame's `+ẑ`, or `−ẑ` (with `−ŷ`) when the light travels toward `−z`.
+
+## 10. Path classes and signatures
+
+* A path's **signature** is the ordered list of physical events
+  `(surface, Transmit | Reflect)` at the non-passive surfaces, from leaving
+  the object to the end of the path. A designed mirror's bounce is a
+  `Reflect`; detection is a final `Transmit` at the image surface. Passive
+  surfaces (dummies, coordinate breaks, bare surfaces with the same index on
+  both sides) never appear.
+* Its **ghost reflections** are the `Reflect` events at non-mirror surfaces.
+  A detected, purely specular path is `Primary` (none) or `Ghost(k)`
+  (`k` of them) when its signature equals the sequential expansion of its
+  ghost reflections; otherwise it is `Irregular`. Any scatter event makes it
+  `Scatter`, any non-optical geometry `Mechanical`.
+* Owners: `Primary` → sequential/wave solvers; `Ghost(k)` → the ghost solver
+  if the path is in that run's coverage, else the stray solver;
+  `Scatter`, `Mechanical`, `Irregular` → the stray solver. The reference
+  implementation is `mklight_ghost::signature` (`PathSignature`, `classify`,
+  `GhostCoverage::owner`); details in `docs/GHOST.md` §2.
+* Ownership assumes both solvers clip at identical apertures: the stray
+  solver must clip the optical surfaces exactly as the ghost run did
+  (`GhostCoverage::apertures`, checked with `same_apertures`), otherwise a
+  ray clipped by one solver and not the other is counted twice or not at
+  all.
