@@ -1,11 +1,11 @@
 //! Shared fixtures of the analysis integration tests.
 #![allow(dead_code)]
 
+pub use mklight_analysis::tracer_for;
 use mklight_core::{
     ApertureSpec, Field, FieldKind, FieldSet, Interaction, MaterialRef, OpticalSystem, Surface,
     SurfaceShape, Wavelength, WavelengthSet,
 };
-pub use mklight_analysis::tracer_for;
 use mklight_trace::SequentialTracer;
 
 pub fn mono() -> WavelengthSet {
@@ -36,9 +36,19 @@ pub fn infinite_system(epd: f64, body: Vec<Surface>, stop: usize, fields: &[f64]
     s.fields = angle_fields(fields);
     s.wavelengths = mono();
     let n = body.len();
-    let mut surfaces = vec![surf(0, SurfaceShape::Plane, f64::INFINITY, MaterialRef::Air)];
+    let mut surfaces = vec![surf(
+        0,
+        SurfaceShape::Plane,
+        f64::INFINITY,
+        MaterialRef::Air,
+    )];
     surfaces.extend(body);
-    surfaces.push(surf(n as u64 + 1, SurfaceShape::Plane, 0.0, MaterialRef::Air));
+    surfaces.push(surf(
+        n as u64 + 1,
+        SurfaceShape::Plane,
+        0.0,
+        MaterialRef::Air,
+    ));
     s.surfaces = surfaces;
     s.stop = stop;
     s

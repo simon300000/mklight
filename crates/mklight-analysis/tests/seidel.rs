@@ -20,7 +20,10 @@ fn mirror(r: f64, conic: f64, stop_at_centre: bool, epd: f64, field: f64) -> Seq
     );
     m.interaction = Interaction::Reflect;
     let (body, stop) = if stop_at_centre {
-        (vec![surf(1, SurfaceShape::Plane, r, MaterialRef::Air), m], 1)
+        (
+            vec![surf(1, SurfaceShape::Plane, r, MaterialRef::Air), m],
+            1,
+        )
     } else {
         (vec![m], 1)
     };
@@ -49,7 +52,11 @@ fn spherical_mirror_closed_forms() {
     // W040 = y⁴/(4R³): twice the sphere–paraboloid sag difference.
     assert!((s.wavefront_mm.w040 - y.powi(4) / (4.0 * r.powi(3))).abs() < 1e-15);
     // Petzval radius of a mirror: R/2, concave towards the mirror (+z).
-    assert!((s.petzval_radius - 0.5 * r).abs() < 1e-9, "{}", s.petzval_radius);
+    assert!(
+        (s.petzval_radius - 0.5 * r).abs() < 1e-9,
+        "{}",
+        s.petzval_radius
+    );
     // Paraboloid: no spherical aberration; coma etc. unchanged (stop at mirror).
     let p = seidel(&mirror(r, -1.0, false, epd, th), &SeidelSettings::default()).unwrap();
     assert!(p.sums.s1.abs() < 1e-15);
@@ -86,12 +93,18 @@ fn thin_plano_convex_lens_matches_thin_lens_theory() {
     let (b, c) = (1.0, -1.0);
     let s1 = y.powi(4) * k.powi(3) / 4.0
         * ((n / (n - 1.0)).powi(2)
-            + (n + 2.0) / (n * (n - 1.0).powi(2)) * (b + 2.0 * (n * n - 1.0) / (n + 2.0) * c).powi(2)
+            + (n + 2.0) / (n * (n - 1.0).powi(2))
+                * (b + 2.0 * (n * n - 1.0) / (n + 2.0) * c).powi(2)
             - n / (n + 2.0) * c * c);
     let s2 = y * y * k * k * h / 2.0 * ((n + 1.0) / (n * (n - 1.0)) * b + (2.0 * n + 1.0) / n * c);
     let rel = |a: f64, e: f64| (a - e).abs() / e.abs();
     assert!(rel(s.sums.s1, s1) < 1e-4, "{} {}", s.sums.s1, s1);
-    assert!(rel(s.sums.s2.abs(), s2.abs()) < 1e-4, "{} {}", s.sums.s2, s2);
+    assert!(
+        rel(s.sums.s2.abs(), s2.abs()) < 1e-4,
+        "{} {}",
+        s.sums.s2,
+        s2
+    );
     assert!(rel(s.sums.s3, h * h * k) < 1e-4);
     assert!(rel(s.sums.s4, h * h * k / n) < 1e-4);
     assert!(s.sums.s5.abs() < 1e-4 * s.sums.s3.abs());
@@ -105,10 +118,18 @@ fn petzval_sum_matches_paraxial_powers_on_every_sample() {
         let s = seidel(&t, &SeidelSettings::default()).unwrap();
         let m = ParaxialModel::new(t.system(), t.system().primary_wavelength);
         let n = &m.reduced_index;
-        let p: f64 = (1..n.len() - 1).map(|j| m.power[j] / (n[j - 1] * n[j])).sum();
-        assert!((s.petzval_sum - p).abs() < 1e-14 * (1.0 + p.abs()), "{name}");
+        let p: f64 = (1..n.len() - 1)
+            .map(|j| m.power[j] / (n[j - 1] * n[j]))
+            .sum();
+        assert!(
+            (s.petzval_sum - p).abs() < 1e-14 * (1.0 + p.abs()),
+            "{name}"
+        );
         let h2 = s.lagrange_invariant.powi(2);
-        assert!((s.sums.s4 - h2 * p).abs() < 1e-12 * (1.0 + s.sums.s4.abs()), "{name}");
+        assert!(
+            (s.sums.s4 - h2 * p).abs() < 1e-12 * (1.0 + s.sums.s4.abs()),
+            "{name}"
+        );
         // S_V division-free form equals (Ā/A)(S_III + S_IV) wherever A ≠ 0.
         let fo = t.paraxial().primary();
         for row in &s.surfaces {
@@ -116,11 +137,16 @@ fn petzval_sum_matches_paraxial_powers_on_every_sample() {
             let cv = t.system().surfaces[j].shape.curvature();
             let a = fo.marginal.nu[j - 1] + n[j - 1] * fo.marginal.y[j] * cv;
             let ab = fo.chief.nu[j - 1] + n[j - 1] * fo.chief.y[j] * cv;
-            let asph = matches!(t.system().surfaces[j].shape, SurfaceShape::EvenAsphere { .. })
-                || t.system().surfaces[j].shape.conic() != 0.0;
+            let asph = matches!(
+                t.system().surfaces[j].shape,
+                SurfaceShape::EvenAsphere { .. }
+            ) || t.system().surfaces[j].shape.conic() != 0.0;
             if a.abs() > 1e-6 && !asph && !t.system().surfaces[j].is_passive() {
                 let e = ab / a * (row.terms.s3 + row.terms.s4);
-                assert!((row.terms.s5 - e).abs() < 1e-10 * (1.0 + e.abs()), "{name} {j}");
+                assert!(
+                    (row.terms.s5 - e).abs() < 1e-10 * (1.0 + e.abs()),
+                    "{name} {j}"
+                );
             }
         }
     }
@@ -138,7 +164,11 @@ fn real_eps(t: &SequentialTracer, h: f64, px: f64, py: f64) -> [f64; 2] {
 
 /// A sample at reduced aperture and field, monochromatic, with the image at
 /// the paraxial focus.
-fn small(sys: mklight_core::OpticalSystem, aperture_scale: f64, max_field: f64) -> SequentialTracer {
+fn small(
+    sys: mklight_core::OpticalSystem,
+    aperture_scale: f64,
+    max_field: f64,
+) -> SequentialTracer {
     let mut s = sys;
     s.wavelengths = mono();
     s.fields = angle_fields(&[0.0, max_field]);
@@ -178,7 +208,10 @@ fn seidel_predicts_real_ray_aberrations_at_small_aperture_and_field() {
         );
         // Coma (even part) and astigmatism + field curvature (odd part) of
         // the full-field tangential fan.
-        let (a, b) = (real_eps(&t, 1.0, 0.0, 1.0)[1], real_eps(&t, 1.0, 0.0, -1.0)[1]);
+        let (a, b) = (
+            real_eps(&t, 1.0, 0.0, 1.0)[1],
+            real_eps(&t, 1.0, 0.0, -1.0)[1],
+        );
         let qa = s.transverse_aberration(1.0, 0.0, 1.0, false)[1];
         let qb = s.transverse_aberration(1.0, 0.0, -1.0, false)[1];
         check("tangential coma", 0.5 * (a + b), 0.5 * (qa + qb));
@@ -192,7 +225,11 @@ fn seidel_predicts_real_ray_aberrations_at_small_aperture_and_field() {
         let f = t.prepare_field(FieldPoint::normalized(0.0, 1.0)).unwrap();
         let yc = t.chief(&f, 0).ray.pos.y;
         let yp = t.paraxial().primary().paraxial_image_height;
-        check("distortion", yc - yp, s.transverse_aberration(1.0, 0.0, 0.0, true)[1]);
+        check(
+            "distortion",
+            yc - yp,
+            s.transverse_aberration(1.0, 0.0, 0.0, true)[1],
+        );
     }
 }
 
@@ -203,7 +240,10 @@ fn w040_matches_on_axis_opd() {
     let f = t.prepare_field(FieldPoint::normalized(0.0, 0.0)).unwrap();
     let opd = t.opd(&f, 0, 0.0, 1.0, &TraceOptions::unclipped()).unwrap();
     let w = s.wavefront_waves.w040;
-    assert!(w > 0.0 && (opd - w).abs() < 0.02 * w, "OPD {opd} vs W040 {w}");
+    assert!(
+        w > 0.0 && (opd - w).abs() < 0.02 * w,
+        "OPD {opd} vs W040 {w}"
+    );
 }
 
 #[test]
@@ -247,7 +287,11 @@ fn colour_terms_match_paraxial_and_real_colour() {
     let v = (n(1) - 1.0) / (n(0) - n(2));
     let efl = par.primary().efl;
     let dz = cfs.focal_shift[0] - cfs.focal_shift[k];
-    assert!((dz + efl / v).abs() < 0.03 * efl / v, "{dz} vs {}", -efl / v);
+    assert!(
+        (dz + efl / v).abs() < 0.03 * efl / v,
+        "{dz} vs {}",
+        -efl / v
+    );
     // Third order: δz = −n' C_L / ω'², δy = C_T / ω' (at full field).
     let w1 = s.image_marginal_slope;
     let pz = -s.sums.cl / (w1 * w1);

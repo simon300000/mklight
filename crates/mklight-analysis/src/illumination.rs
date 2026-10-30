@@ -236,7 +236,14 @@ pub fn relative_illumination_job(
         vignetting_fraction: rows.iter().map(|r| 1.0 - r[1]).collect(),
         chief_ray_angle_deg: rows.iter().map(|r| r[2]).collect(),
         cos4_object: rows.iter().map(|r| r[3]).collect(),
-        run_info: run_info(timer, tracer, "relative_illumination", settings, None, warnings),
+        run_info: run_info(
+            timer,
+            tracer,
+            "relative_illumination",
+            settings,
+            None,
+            warnings,
+        ),
     })
 }
 
@@ -300,7 +307,10 @@ pub struct FootprintResult {
 }
 
 /// Ray footprint on a surface (module docs).
-pub fn footprint(tracer: &SequentialTracer, settings: &FootprintSettings) -> MkResult<FootprintResult> {
+pub fn footprint(
+    tracer: &SequentialTracer,
+    settings: &FootprintSettings,
+) -> MkResult<FootprintResult> {
     footprint_job(tracer, settings, &JobContext::new())
 }
 
@@ -338,7 +348,12 @@ pub fn footprint_job(
     let rays = trace_grid_job(tracer, &grid, &opts, &ctx.subrange(0.0, 0.9))?;
     let np = pupil.len();
     let mut out = Vec::with_capacity(fields.len() * wls.len());
-    let mut ext = [f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY];
+    let mut ext = [
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ];
     let mut max_r = f64::NAN;
     for (fi, &f) in fields.iter().enumerate() {
         for (wi, &w) in wls.iter().enumerate() {
@@ -355,7 +370,12 @@ pub fn footprint_job(
                 let p = [r.point.x, r.point.y];
                 match r.status {
                     TraceStatus::Ok => {
-                        ext = [ext[0].min(p[0]), ext[1].max(p[0]), ext[2].min(p[1]), ext[3].max(p[1])];
+                        ext = [
+                            ext[0].min(p[0]),
+                            ext[1].max(p[0]),
+                            ext[2].min(p[1]),
+                            ext[3].max(p[1]),
+                        ];
                         max_r = max_r.max(p[0].hypot(p[1]));
                         fr.points.push(p);
                     }
@@ -373,8 +393,11 @@ pub fn footprint_job(
     };
     let sd = tracer.semi_diameters(&SemiDiameterSettings::default());
     ctx.report(1.0, "footprint");
-    let seed = matches!(settings.pattern, PupilPattern::Random | PupilPattern::Dithered)
-        .then_some(settings.seed);
+    let seed = matches!(
+        settings.pattern,
+        PupilPattern::Random | PupilPattern::Dithered
+    )
+    .then_some(settings.seed);
     Ok(FootprintResult {
         surface: s,
         semi_diameter: sd.values[s],

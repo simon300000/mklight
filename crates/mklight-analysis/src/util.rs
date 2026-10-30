@@ -198,7 +198,11 @@ pub(crate) fn linspace(a: f64, b: f64, n: usize) -> Vec<f64> {
             .map(|i| {
                 let t = i as f64 / (n - 1) as f64;
                 // Exact end points; (1 − t)a + tb is monotone and exact at both ends.
-                if i == n - 1 { b } else { (1.0 - t).mul_add(a, t * b) }
+                if i == n - 1 {
+                    b
+                } else {
+                    (1.0 - t).mul_add(a, t * b)
+                }
             })
             .collect(),
     }
@@ -550,7 +554,10 @@ pub mod nf {
             s.collect_seq(v.iter().map(|x| Num(*x)))
         }
         pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
-            Ok(Vec::<Num>::deserialize(d)?.into_iter().map(|n| n.0).collect())
+            Ok(Vec::<Num>::deserialize(d)?
+                .into_iter()
+                .map(|n| n.0)
+                .collect())
         }
     }
 
@@ -644,7 +651,10 @@ mod tests {
             assert!(x.windows(2).all(|p| p[0] < p[1]));
             for deg in 0..2 * n {
                 let q: f64 = x.iter().zip(&w).map(|(x, w)| w * x.powi(deg as i32)).sum();
-                assert!((q - 1.0 / (deg + 1) as f64).abs() < 1e-14, "n {n} deg {deg}");
+                assert!(
+                    (q - 1.0 / (deg + 1) as f64).abs() < 1e-14,
+                    "n {n} deg {deg}"
+                );
             }
         }
     }
@@ -665,15 +675,7 @@ mod tests {
     #[test]
     fn brent_finds_minimum() {
         // Asymmetric smooth function with minimum at x = ln 2.
-        let r = brent_minimize(
-            |x| Ok((x).exp() - 2.0 * x),
-            -3.0,
-            5.0,
-            1e-12,
-            1e-14,
-            200,
-        )
-        .unwrap();
+        let r = brent_minimize(|x| Ok((x).exp() - 2.0 * x), -3.0, 5.0, 1e-12, 1e-14, 200).unwrap();
         assert!(r.converged);
         assert!((r.x - 2f64.ln()).abs() < 1e-7, "{}", r.x);
         // |x − 0.3| is not smooth: golden-section steps still converge.
@@ -696,7 +698,10 @@ mod tests {
             - m.centroid[0] * m.centroid[0])
             .max(0.0)
             .sqrt();
-        assert!((naive - half).abs() > 1e-8, "naive form unexpectedly accurate");
+        assert!(
+            (naive - half).abs() > 1e-8,
+            "naive form unexpectedly accurate"
+        );
     }
 
     #[test]

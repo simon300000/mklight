@@ -257,10 +257,15 @@ impl FieldRays {
     pub fn moments_wl(&self, k: usize, delta: f64) -> Moments {
         let (cq, cdt) = self.wl_chief[k];
         let c = [delta.mul_add(cdt[0], cq[0]), delta.mul_add(cdt[1], cq[1])];
-        Moments::of(self.rays.iter().filter(move |r| r.wl_pos == k).map(move |r| {
-            let p = r.at(delta);
-            ([p[0] - c[0], p[1] - c[1]], 1.0)
-        }))
+        Moments::of(
+            self.rays
+                .iter()
+                .filter(move |r| r.wl_pos == k)
+                .map(move |r| {
+                    let p = r.at(delta);
+                    ([p[0] - c[0], p[1] - c[1]], 1.0)
+                }),
+        )
     }
 }
 
@@ -314,7 +319,11 @@ pub(crate) fn trace_field_rays(
                 warnings.push(format!(
                     "field {f}: primary chief ray failed; statistics about the chief are undefined"
                 ));
-                ([r.point.x, r.point.y], slope(r.dir).unwrap_or([0.0, 0.0]), false)
+                (
+                    [r.point.x, r.point.y],
+                    slope(r.dir).unwrap_or([0.0, 0.0]),
+                    false,
+                )
             }
             (None, None) => ([0.0, 0.0], [0.0, 0.0], false),
         };
@@ -370,7 +379,14 @@ pub(crate) fn trace_field_rays(
     Ok(out)
 }
 
-fn stats(m: &Moments, launched: f64, arrived: usize, missing_weight: f64, total: f64, chief_ok: bool) -> SpotStats {
+fn stats(
+    m: &Moments,
+    launched: f64,
+    arrived: usize,
+    missing_weight: f64,
+    total: f64,
+    chief_ok: bool,
+) -> SpotStats {
     let nan_if = |v: f64| if chief_ok { v } else { f64::NAN };
     SpotStats {
         rays_launched: launched as usize,
@@ -397,7 +413,10 @@ pub(crate) fn validate_sampling(pattern: PupilPattern, rings: usize) -> MkResult
 
 /// Spot diagram (module docs). Equivalent to [`spot_diagram_job`] with a
 /// fresh context.
-pub fn spot_diagram(tracer: &SequentialTracer, settings: &SpotDiagramSettings) -> MkResult<SpotDiagram> {
+pub fn spot_diagram(
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+) -> MkResult<SpotDiagram> {
     spot_diagram_job(tracer, settings, &JobContext::new())
 }
 
@@ -516,11 +535,7 @@ pub fn spot_diagram_job(
                         FocusSample {
                             defocus: d,
                             rms_radius_centroid: m.rms_centroid,
-                            rms_radius_chief: if fr.chief_ok {
-                                m.rms_origin
-                            } else {
-                                f64::NAN
-                            },
+                            rms_radius_chief: if fr.chief_ok { m.rms_origin } else { f64::NAN },
                         }
                     })
                     .collect()

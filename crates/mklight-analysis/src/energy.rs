@@ -245,7 +245,12 @@ pub fn encircled_energy_job(
                 .iter()
                 .map(|(q, w)| (q[0].abs().max(q[1].abs()), *w))
                 .collect();
-            (Cumulative::new(circ), Cumulative::new(sq), fr.field, fr.rays.len())
+            (
+                Cumulative::new(circ),
+                Cumulative::new(sq),
+                fr.field,
+                fr.rays.len(),
+            )
         })
         .collect();
     let rmax = match settings.max_radius {
@@ -409,7 +414,12 @@ pub fn geometric_mtf_job(
         None => 100.0,
     };
     let mut warnings = Vec::new();
-    let (data, _) = trace(tracer, &settings.sampling, &ctx.subrange(0.0, 0.8), &mut warnings)?;
+    let (data, _) = trace(
+        tracer,
+        &settings.sampling,
+        &ctx.subrange(0.0, 0.8),
+        &mut warnings,
+    )?;
     let freqs = linspace(0.0, fmax, settings.frequency_samples);
     let mut curves = Vec::with_capacity(2 * data.len());
     let mut field_values = Vec::with_capacity(data.len());
@@ -417,10 +427,17 @@ pub fn geometric_mtf_job(
         ctx.check()?;
         let p = tracer.field(fr.field).point;
         let h = p.hx.hypot(p.hy);
-        let et = if h > 0.0 { [p.hx / h, p.hy / h] } else { [0.0, 1.0] };
+        let et = if h > 0.0 {
+            [p.hx / h, p.hy / h]
+        } else {
+            [0.0, 1.0]
+        };
         let es = [et[1], -et[0]];
         let pts = relative_points(fr, settings.defocus, SpotReference::Centroid);
-        for (e, o) in [(et, MtfOrientation::Tangential), (es, MtfOrientation::Sagittal)] {
+        for (e, o) in [
+            (et, MtfOrientation::Tangential),
+            (es, MtfOrientation::Sagittal),
+        ] {
             let x: Vec<(f64, f64)> = pts
                 .iter()
                 .map(|(q, w)| (q[0].mul_add(e[0], q[1] * e[1]), *w))
@@ -432,7 +449,10 @@ pub fn geometric_mtf_job(
             });
         }
         field_values.push(field_value(tracer, fr.field));
-        ctx.report(0.8 + 0.2 * (k + 1) as f64 / data.len() as f64, "geometric MTF");
+        ctx.report(
+            0.8 + 0.2 * (k + 1) as f64 / data.len() as f64,
+            "geometric MTF",
+        );
     }
     Ok(GeometricMtfResult {
         frequencies: freqs,
@@ -532,7 +552,11 @@ fn quadratic(fr: &FieldRays, reference: SpotReference) -> Option<(f64, f64, f64)
         ),
         SpotReference::Chief => ([0.0; 2], [0.0; 2]),
     };
-    let (mut a, mut b, mut c) = (KahanSum::default(), KahanSum::default(), KahanSum::default());
+    let (mut a, mut b, mut c) = (
+        KahanSum::default(),
+        KahanSum::default(),
+        KahanSum::default(),
+    );
     for r in &fr.rays {
         let q = [r.q[0] - mq[0], r.q[1] - mq[1]];
         let t = [r.dt[0] - mt[0], r.dt[1] - mt[1]];
@@ -544,7 +568,10 @@ fn quadratic(fr: &FieldRays, reference: SpotReference) -> Option<(f64, f64, f64)
 }
 
 /// Best focus (module docs).
-pub fn best_focus(tracer: &SequentialTracer, settings: &BestFocusSettings) -> MkResult<BestFocusResult> {
+pub fn best_focus(
+    tracer: &SequentialTracer,
+    settings: &BestFocusSettings,
+) -> MkResult<BestFocusResult> {
     best_focus_job(tracer, settings, &JobContext::new())
 }
 
@@ -561,15 +588,19 @@ pub fn best_focus_job(
     }
     check_count("evaluations", settings.max_evaluations, 3, 100_000)?;
     let mut warnings = Vec::new();
-    let (data, _) = trace(tracer, &settings.sampling, &ctx.subrange(0.0, 0.9), &mut warnings)?;
+    let (data, _) = trace(
+        tracer,
+        &settings.sampling,
+        &ctx.subrange(0.0, 0.9),
+        &mut warnings,
+    )?;
     let osys = tracer.system().system();
     if !matches!(
         tracer.system().surfaces[tracer.system().image_index()].shape,
         mklight_core::SurfaceShape::Plane
     ) {
-        warnings.push(
-            "curved image surface: defocus is a first-order transfer along the rays".into(),
-        );
+        warnings
+            .push("curved image surface: defocus is a first-order transfer along the rays".into());
     }
     // Field weights and quadratic coefficients of the fields with rays.
     let mut used = Vec::new();
@@ -603,7 +634,9 @@ pub fn best_focus_job(
             / wsum
     };
     // Mean-square minimiser and the per-field minimisers.
-    let (num, den) = used.iter().fold((0.0, 0.0), |(n, d), u| (n + u.1 * u.2.1, d + u.1 * u.2.2));
+    let (num, den) = used
+        .iter()
+        .fold((0.0, 0.0), |(n, d), u| (n + u.1 * u.2.1, d + u.1 * u.2.2));
     let ms = if den > 0.0 { -num / den } else { 0.0 };
     let range = match settings.range {
         Some([a, b]) => {

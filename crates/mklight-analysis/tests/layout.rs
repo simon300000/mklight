@@ -1,5 +1,7 @@
 //! Layout scene geometry in global coordinates.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;
@@ -30,16 +32,31 @@ fn singlet_scene_geometry() {
         let prof = s
             .polylines
             .iter()
-            .find(|p| p.surface == Some(j) && matches!(p.kind, PolylineKind::SurfaceProfile | PolylineKind::ImagePlane) && p.in_section)
+            .find(|p| {
+                p.surface == Some(j)
+                    && matches!(
+                        p.kind,
+                        PolylineKind::SurfaceProfile | PolylineKind::ImagePlane
+                    )
+                    && p.in_section
+            })
             .unwrap();
         let sd = info.semi_diameter;
         let z = sys.surfaces[j].frame.origin.z + sys.surfaces[j].shape.sag(sd * sd).unwrap();
-        assert!(close(*prof.points.last().unwrap(), Vec3::new(0.0, sd, z), 1e-12));
+        assert!(close(
+            *prof.points.last().unwrap(),
+            Vec3::new(0.0, sd, z),
+            1e-12
+        ));
         assert!(close(prof.points[0], Vec3::new(0.0, -sd, z), 1e-12));
         assert!(e.mechanical_semi_diameter >= sd || j == 3);
     }
     // Rays: tangential + sagittal fans per field; each ends at its image hit.
-    let rays: Vec<_> = s.polylines.iter().filter(|p| p.kind == PolylineKind::Ray).collect();
+    let rays: Vec<_> = s
+        .polylines
+        .iter()
+        .filter(|p| p.kind == PolylineKind::Ray)
+        .collect();
     assert_eq!(rays.len(), 3 * (7 + 6));
     for r in &rays {
         assert!(!r.vignetted);
@@ -51,7 +68,12 @@ fn singlet_scene_geometry() {
         assert_eq!(r.in_section, tangential);
     }
     let chief = t.chief(t.field(2), 1);
-    assert!(rays.iter().any(|r| r.field == Some(2) && close(*r.points.last().unwrap(), chief.ray.pos + Vec3::new(0.0, 0.0, sys.surfaces[3].frame.origin.z), 1e-9)));
+    assert!(rays.iter().any(|r| r.field == Some(2)
+        && close(
+            *r.points.last().unwrap(),
+            chief.ray.pos + Vec3::new(0.0, 0.0, sys.surfaces[3].frame.origin.z),
+            1e-9
+        )));
     // Every point is finite and inside the bounds.
     for p in s.polylines.iter().flat_map(|p| &p.points) {
         for k in 0..3 {
@@ -67,11 +89,26 @@ fn singlet_scene_geometry() {
 fn cemented_lenses_form_shared_elements() {
     let t = tracer(samples::double_gauss());
     let s = layout(&t, &LayoutSettings::default()).unwrap();
-    let pairs: Vec<_> = s.elements.iter().map(|e| (e.first_surface, e.last_surface)).collect();
-    assert_eq!(pairs, vec![(1, 2), (3, 4), (4, 5), (7, 8), (8, 9), (10, 11)]);
+    let pairs: Vec<_> = s
+        .elements
+        .iter()
+        .map(|e| (e.first_surface, e.last_surface))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![(1, 2), (3, 4), (4, 5), (7, 8), (8, 9), (10, 11)]
+    );
     // The pure-aperture stop has markers but no profile.
-    assert!(s.polylines.iter().any(|p| p.kind == PolylineKind::Stop && p.surface == Some(6)));
-    assert!(!s.polylines.iter().any(|p| p.kind == PolylineKind::SurfaceProfile && p.surface == Some(6)));
+    assert!(
+        s.polylines
+            .iter()
+            .any(|p| p.kind == PolylineKind::Stop && p.surface == Some(6))
+    );
+    assert!(
+        !s.polylines
+            .iter()
+            .any(|p| p.kind == PolylineKind::SurfaceProfile && p.surface == Some(6))
+    );
 }
 
 #[test]
@@ -82,13 +119,24 @@ fn folded_newtonian_is_in_global_coordinates() {
     let img = sys.image_index();
     let o = sys.surfaces[img].frame.origin;
     // The fold sends the beam along −y: the image is 100 mm below the axis.
-    assert!((o.y + 100.0).abs() < 1e-9 && (o.z + 400.0).abs() < 1e-9, "{o:?}");
+    assert!(
+        (o.y + 100.0).abs() < 1e-9 && (o.z + 400.0).abs() < 1e-9,
+        "{o:?}"
+    );
     assert!(s.surfaces.iter().any(|i| i.index == 1 && i.is_mirror));
-    for r in s.polylines.iter().filter(|p| p.kind == PolylineKind::Ray && p.in_section) {
+    for r in s
+        .polylines
+        .iter()
+        .filter(|p| p.kind == PolylineKind::Ray && p.in_section)
+    {
         let last = *r.points.last().unwrap();
         assert!((last[1] - o.y).abs() < 1e-9, "ray ends on the image plane");
     }
-    let axis = s.polylines.iter().find(|p| p.kind == PolylineKind::Axis).unwrap();
+    let axis = s
+        .polylines
+        .iter()
+        .find(|p| p.kind == PolylineKind::Axis)
+        .unwrap();
     assert!(close(*axis.points.last().unwrap(), o, 1e-12));
     assert!(s.elements.is_empty());
 }
@@ -98,14 +146,21 @@ fn vignetted_rays_end_at_the_clipping_surface() {
     let mut sys = ideal_lens(100.0, 20.0, &[0.0]);
     sys.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 8.0 };
     let t = tracer(sys);
-    let s = layout(&t, &LayoutSettings {
-        include_3d: false,
-        rays_per_field: 5,
-        lead_in: Some(30.0),
-        ..Default::default()
-    })
+    let s = layout(
+        &t,
+        &LayoutSettings {
+            include_3d: false,
+            rays_per_field: 5,
+            lead_in: Some(30.0),
+            ..Default::default()
+        },
+    )
     .unwrap();
-    let rays: Vec<_> = s.polylines.iter().filter(|p| p.kind == PolylineKind::Ray).collect();
+    let rays: Vec<_> = s
+        .polylines
+        .iter()
+        .filter(|p| p.kind == PolylineKind::Ray)
+        .collect();
     assert_eq!(rays.len(), 5);
     assert_eq!(rays.iter().filter(|r| r.vignetted).count(), 2);
     for r in &rays {
@@ -146,8 +201,14 @@ fn compact_buffers_round_trip() {
     assert_eq!(b.kinds[np - 1], ELEMENT_OUTLINE_KIND);
     let bytes = b.to_le_bytes();
     assert_eq!(&bytes[..4], b"MKLL");
-    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize, np);
-    assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize, nv);
+    assert_eq!(
+        u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize,
+        np
+    );
+    assert_eq!(
+        u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize,
+        nv
+    );
     let head = 40 + 4 * (np + 1) + 12 * np + (2 * np).div_ceil(4) * 4;
     assert_eq!(bytes.len(), head + 12 * nv);
 }

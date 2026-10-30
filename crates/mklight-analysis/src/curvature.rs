@@ -185,7 +185,14 @@ pub fn coddington_focus(
     let sys = tracer.system();
     let img = sys.image_index();
     let mut rec = Vec::with_capacity(sys.num_surfaces());
-    let r = tracer.trace_with(field, wl, 0.0, 0.0, &TraceOptions::unclipped(), Some(&mut rec));
+    let r = tracer.trace_with(
+        field,
+        wl,
+        0.0,
+        0.0,
+        &TraceOptions::unclipped(),
+        Some(&mut rec),
+    );
     if !r.status.is_ok() || rec.len() != img + 1 {
         return None;
     }
@@ -454,7 +461,11 @@ pub fn field_curvature_job(
                 }
                 if h == 0.0 {
                     row[6] = 0.0;
-                    row[7] = if sys.object_at_infinity { 0.0 } else { f64::NAN };
+                    row[7] = if sys.object_at_infinity {
+                        0.0
+                    } else {
+                        f64::NAN
+                    };
                     row[8] = row[7];
                 } else {
                     row[6] = percent(row[4], row[5]);
@@ -493,7 +504,14 @@ pub fn field_curvature_job(
         field_unit: field_unit(sys.system().fields.kind).to_string(),
         curves,
         wavelengths_um: sys.wavelengths_um.clone(),
-        run_info: run_info(timer, tracer, "field_curvature_distortion", settings, None, warnings),
+        run_info: run_info(
+            timer,
+            tracer,
+            "field_curvature_distortion",
+            settings,
+            None,
+            warnings,
+        ),
     })
 }
 

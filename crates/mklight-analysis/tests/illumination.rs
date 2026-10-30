@@ -11,23 +11,32 @@ use mklight_core::{MaterialRef, SemiDiameter, SurfaceShape};
 /// the disk: `π/2 · (1 − (f² + h² − a²)/√((f² + h² + a²)² − 4a²h²))`.
 fn disk_psa(a: f64, f: f64, h: f64) -> f64 {
     let s = f * f + h * h;
-    0.5 * std::f64::consts::PI * (1.0 - (s - a * a) / ((s + a * a).powi(2) - 4.0 * a * a * h * h).sqrt())
+    0.5 * std::f64::consts::PI
+        * (1.0 - (s - a * a) / ((s + a * a).powi(2) - 4.0 * a * a * h * h).sqrt())
 }
 
 #[test]
 fn ideal_lens_relative_illumination_is_the_disk_view_factor() {
     let (f, epd, th) = (100.0, 10.0, 30.0f64);
     let t = tracer(ideal_lens(f, epd, &[0.0, th]));
-    let r = relative_illumination(&t, &RelativeIlluminationSettings {
-        field_samples: 4,
-        ..Default::default()
-    })
+    let r = relative_illumination(
+        &t,
+        &RelativeIlluminationSettings {
+            field_samples: 4,
+            ..Default::default()
+        },
+    )
     .unwrap();
     for (i, &h) in r.normalized_field.iter().enumerate() {
         let a = (th * h).to_radians();
         let exact = disk_psa(0.5 * epd, f, f * a.tan());
         let ri = exact / disk_psa(0.5 * epd, f, 0.0);
-        assert!((r.projected_solid_angle[i] - exact).abs() < 1e-8 * exact, "{} {}", r.projected_solid_angle[i], exact);
+        assert!(
+            (r.projected_solid_angle[i] - exact).abs() < 1e-8 * exact,
+            "{} {}",
+            r.projected_solid_angle[i],
+            exact
+        );
         assert!((r.relative_illumination[i] - ri).abs() < 1e-8);
         // Small aperture: the cos⁴ law.
         assert!((r.relative_illumination[i] - a.cos().powi(4)).abs() < 2e-3);
@@ -60,19 +69,27 @@ fn vignetting_by_a_field_aperture_matches_disk_overlap() {
     let sys = infinite_system(
         epd,
         vec![
-            surf(1, SurfaceShape::Paraxial { focal_length: f }, d, MaterialRef::Air),
+            surf(
+                1,
+                SurfaceShape::Paraxial { focal_length: f },
+                d,
+                MaterialRef::Air,
+            ),
             clip,
         ],
         1,
         &[0.0, th],
     );
     let t = tracer(sys);
-    let r = relative_illumination(&t, &RelativeIlluminationSettings {
-        field_samples: 3,
-        radial_samples: 32,
-        azimuth_samples: 128,
-        ..Default::default()
-    })
+    let r = relative_illumination(
+        &t,
+        &RelativeIlluminationSettings {
+            field_samples: 3,
+            radial_samples: 32,
+            azimuth_samples: 128,
+            ..Default::default()
+        },
+    )
     .unwrap();
     let rb = 0.5 * epd * (1.0 - d / f);
     for (i, &h) in r.normalized_field.iter().enumerate() {

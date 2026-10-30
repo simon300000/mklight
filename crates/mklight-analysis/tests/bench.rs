@@ -33,5 +33,5 @@ fn spot_diagram_throughput() {
         rays as f64 / dt / 1e6,
         rayon::current_num_threads()
     );
-    assert!(rays > 100_000);
+    assert_eq!(rays, 9 * (1 + 3 * 60 * 61));
 }

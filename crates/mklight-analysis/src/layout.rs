@@ -48,7 +48,7 @@
 use mklight_core::job::RunTimer;
 use mklight_core::materials::ResolvedMaterial;
 use mklight_core::math::Frame;
-use mklight_core::{Interaction, MkResult, RunInfo, SurfaceId, SurfaceShape, Vec3};
+use mklight_core::{Interaction, JobContext, MkResult, RunInfo, SurfaceId, SurfaceShape, Vec3};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer, TraceStatus};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -180,10 +180,10 @@ impl Bounds3 {
         }
     }
     fn add(&mut self, p: [f64; 3]) {
-        for k in 0..3 {
-            if p[k].is_finite() {
-                self.min[k] = self.min[k].min(p[k]);
-                self.max[k] = self.max[k].max(p[k]);
+        for ((lo, hi), v) in self.min.iter_mut().zip(&mut self.max).zip(p) {
+            if v.is_finite() {
+                *lo = lo.min(v);
+                *hi = hi.max(v);
             }
         }
     }
@@ -191,7 +191,9 @@ impl Bounds3 {
         std::array::from_fn(|k| 0.5 * (self.min[k] + self.max[k]))
     }
     pub fn size(&self) -> f64 {
-        (0..3).map(|k| self.max[k] - self.min[k]).fold(0.0, f64::max)
+        (0..3)
+            .map(|k| self.max[k] - self.min[k])
+            .fold(0.0, f64::max)
     }
 }
 
@@ -250,6 +252,15 @@ fn is_air(m: &ResolvedMaterial) -> bool {
 
 /// Layout scene (module docs).
 pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<LayoutScene> {
+    layout_job(tracer, settings, &JobContext::new())
+}
+
+/// [`layout`] with cancellation and progress (geometry, then rays).
+pub fn layout_job(
+    tracer: &SequentialTracer,
+    settings: &LayoutSettings,
+    ctx: &JobContext,
+) -> MkResult<LayoutScene> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("rays per field", settings.rays_per_field, 1, 10_001)?;
@@ -321,8 +332,10 @@ pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<
             vertex: arr(f.origin),
             axis: arr(f.to_global_dir(Vec3::Z)),
             semi_diameter: clear[j],
-            semi_diameter_is_auto: matches!(sd.sources[j], SemiDiameterSource::Traced | SemiDiameterSource::Stop)
-                && s.fixed_semi_diameter.is_none()
+            semi_diameter_is_auto: matches!(
+                sd.sources[j],
+                SemiDiameterSource::Traced | SemiDiameterSource::Stop
+            ) && s.fixed_semi_diameter.is_none()
                 && s.aperture.is_none(),
             mechanical_semi_diameter: mech[j],
             is_mirror: s.is_mirror(),
@@ -442,14 +455,25 @@ pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<
         .collect();
     let track = axis
         .windows(2)
-        .map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2) + (w[1][2] - w[0][2]).powi(2)).sqrt())
+        .map(|w| {
+            ((w[1][0] - w[0][0]).powi(2)
+                + (w[1][1] - w[0][1]).powi(2)
+                + (w[1][2] - w[0][2]).powi(2))
+            .sqrt()
+        })
         .sum::<f64>();
     polys.push(polyline(PolylineKind::Axis, axis, None));
 
+    ctx.check()?;
+    ctx.report(0.3, "layout geometry");
     // Rays.
     let lead = settings.lead_in.unwrap_or(0.25 * track).max(1e-3);
     let fan = linspace(-1.0, 1.0, settings.rays_per_field);
-    let fan = if settings.rays_per_field == 1 { vec![0.0] } else { fan };
+    let fan = if settings.rays_per_field == 1 {
+        vec![0.0]
+    } else {
+        fan
+    };
     let mut jobs = Vec::new();
     for &f in &fields {
         for &w in &wls {
@@ -485,7 +509,8 @@ pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<
                 pts.push(arr(frame(i).to_global_point(sr.point)));
             }
             if !r.status.is_ok()
-                && let TraceStatus::Clipped { surface } | TraceStatus::TotalInternalReflection { surface } = r.status
+                && let TraceStatus::Clipped { surface }
+                | TraceStatus::TotalInternalReflection { surface } = r.status
             {
                 pts.push(arr(frame(surface).to_global_point(r.ray.pos)));
             }
@@ -512,6 +537,7 @@ pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<
             }
         })
         .collect();
+    ctx.check()?;
     polys.extend(rays);
     polys.retain(|p| p.points.len() >= 2 || p.kind != PolylineKind::Ray);
 
@@ -532,6 +558,7 @@ pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<
     for p in &mut polys {
         p.in_section = p.points.iter().all(|q| q[0].abs() <= tol);
     }
+    ctx.report(1.0, "layout");
     Ok(LayoutScene {
         polylines: polys,
         elements,
@@ -602,12 +629,26 @@ impl LayoutScene {
         };
         for p in &self.polylines {
             let flags = p.in_section as u8 | (p.vignetted as u8) << 1;
-            push(&p.points, p.kind.code(), idx(p.surface), idx(p.field), idx(p.wavelength), flags);
+            push(
+                &p.points,
+                p.kind.code(),
+                idx(p.surface),
+                idx(p.field),
+                idx(p.wavelength),
+                flags,
+            );
         }
         let tol = 1e-9 * (1.0 + self.bounds.size());
         for e in &self.elements {
             let flags = e.outline.iter().all(|q| q[0].abs() <= tol) as u8;
-            push(&e.outline, ELEMENT_OUTLINE_KIND, e.first_surface as i32, -1, -1, flags);
+            push(
+                &e.outline,
+                ELEMENT_OUTLINE_KIND,
+                e.first_surface as i32,
+                -1,
+                -1,
+                flags,
+            );
         }
         b
     }

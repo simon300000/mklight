@@ -33,12 +33,20 @@ fn compute(t: &mklight_trace::SequentialTracer) -> Value {
     let first_order: serde_json::Map<String, Value> = fo
         .entries
         .iter()
-        .map(|e| (e.key.clone(), serde_json::to_value(mklight_analysis::util::nf::Num(e.value)).unwrap()))
+        .map(|e| {
+            (
+                e.key.clone(),
+                serde_json::to_value(mklight_analysis::util::nf::Num(e.value)).unwrap(),
+            )
+        })
         .collect();
-    let spot = spot_diagram(t, &SpotDiagramSettings {
-        include_points: false,
-        ..Default::default()
-    })
+    let spot = spot_diagram(
+        t,
+        &SpotDiagramSettings {
+            include_points: false,
+            ..Default::default()
+        },
+    )
     .unwrap();
     let spots: Vec<Value> = spot
         .fields
@@ -55,10 +63,13 @@ fn compute(t: &mklight_trace::SequentialTracer) -> Value {
         })
         .collect();
     let s = seidel(t, &SeidelSettings::default()).unwrap();
-    let fc = field_curvature(t, &FieldCurvatureSettings {
-        field_samples: 6,
-        ..Default::default()
-    })
+    let fc = field_curvature(
+        t,
+        &FieldCurvatureSettings {
+            field_samples: 6,
+            ..Default::default()
+        },
+    )
     .unwrap();
     let c = fc.curve(t.system().primary_wavelength).unwrap();
     json!({
@@ -71,11 +82,21 @@ fn compute(t: &mklight_trace::SequentialTracer) -> Value {
         },
         "field_curvature": {
             "normalized_field": fc.normalized_field,
-            "tangential": serde_json::to_value(&c.tangential.iter().map(|v| mklight_analysis::util::nf::Num(*v)).collect::<Vec<_>>()).unwrap(),
-            "sagittal": serde_json::to_value(&c.sagittal.iter().map(|v| mklight_analysis::util::nf::Num(*v)).collect::<Vec<_>>()).unwrap(),
-            "distortion_percent": serde_json::to_value(&c.distortion_percent.iter().map(|v| mklight_analysis::util::nf::Num(*v)).collect::<Vec<_>>()).unwrap(),
+            "tangential": nums(&c.tangential),
+            "sagittal": nums(&c.sagittal),
+            "distortion_percent": nums(&c.distortion_percent),
         },
     })
+}
+
+/// Values with NaN as `null` and `±∞` as strings.
+fn nums(v: &[f64]) -> Value {
+    serde_json::to_value(
+        v.iter()
+            .map(|x| mklight_analysis::util::nf::Num(*x))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap()
 }
 
 fn compare(path: &str, a: &Value, b: &Value, errs: &mut Vec<String>) {
@@ -116,8 +137,12 @@ fn golden_results_of_every_sample() {
             std::fs::write(&file, serde_json::to_string_pretty(&now).unwrap() + "\n").unwrap();
             continue;
         }
-        let text = std::fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("{}: {e} (set MKLIGHT_UPDATE_GOLDEN=1 to create)", file.display()));
+        let text = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e} (set MKLIGHT_UPDATE_GOLDEN=1 to create)",
+                file.display()
+            )
+        });
         let golden: Value = serde_json::from_str(&text).unwrap();
         compare(name, &now, &golden, &mut errs);
     }

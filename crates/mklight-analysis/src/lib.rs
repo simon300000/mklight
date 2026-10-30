@@ -1,4 +1,32 @@
-//! MKLight geometric image-quality analyses (WIP)
+//! MKLight geometric image-quality analyses on top of the CPU f64 reference
+//! tracer (`mklight-trace`). Design notes: `docs/ANALYSIS.md`.
+//!
+//! Every analysis is a pure function of a [`SequentialTracer`] (which owns
+//! the `ResolvedSystem` and its snapshot) and a serde settings struct with
+//! `Default`, returning a serde result that carries a `RunInfo` (snapshot
+//! hash, settings, backend `cpu-f64`, seed where random, warnings). Long
+//! computations have a `*_job` variant taking a `JobContext` for
+//! cancellation and monotone progress. Results are deterministic: fixed
+//! ordering, compensated sums, Philox for random pupil sampling.
+//!
+//! | module | analyses |
+//! |---|---|
+//! | [`spot`] | spot diagrams (square, hexapolar, random, dithered sampling), centroid / RMS / GEO about centroid and chief, polychromatic weighting, Airy radius, vignetted fraction, through-focus |
+//! | [`fans`] | transverse ray fans and OPD fans |
+//! | [`curvature`] | field curvature (Coddington along the real chief ray, close-ray cross-check), distortion (paraxial, `f·tan θ`, `f·θ`), grid distortion |
+//! | [`seidel`] | Seidel sums per surface, Petzval, wavefront coefficients, third-order ray aberrations, longitudinal aberration, chromatic focal shift, lateral colour |
+//! | [`illumination`] | relative illumination (projected solid angle with real aiming), vignetting vs field, surface footprints |
+//! | [`energy`] | geometric encircled / ensquared energy, geometric MTF, best focus (Brent) |
+//! | [`layout`] | the viewport scene in global coordinates, with compact buffers |
+//! | [`system_data`] | first-order report table |
+//! | [`util`] | selections, pupil patterns, weighted moments, Brent, Gauss–Legendre, non-finite-safe serde (`nf`) |
+//!
+//! Non-finite result numbers serialise as `"inf"` / `"-inf"` (core
+//! `serde_util` convention) and NaN ("undefined", e.g. a vignetted field) as
+//! `null` ([`util::nf`]).
+
+// `!(x > 0.0)` deliberately rejects NaN as well; keep that form.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use std::sync::Arc;
 

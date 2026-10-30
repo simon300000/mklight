@@ -91,32 +91,113 @@ fn table(tracer: &SequentialTracer, w: usize) -> FirstOrderTable {
     let fu = field_unit(osys.fields.kind);
     let m = ParaxialModel::new(sys, w);
     let n = &m.reduced_index;
-    let petzval: f64 = (1..n.len() - 1).map(|j| m.power[j] / (n[j - 1] * n[j])).sum();
+    let petzval: f64 = (1..n.len() - 1)
+        .map(|j| m.power[j] / (n[j - 1] * n[j]))
+        .sum();
     let n_img = n[n.len() - 2].abs();
     let opt = |v: Option<f64>| v.unwrap_or(f64::NAN);
     let entries = vec![
         entry("efl", "Effective focal length", fo.efl, "mm"),
         entry("bfl", "Back focal length", fo.bfl, "mm"),
         entry("ffl", "Front focal point from surface 1", fo.ffl, "mm"),
-        entry("image_distance", "Paraxial image distance", fo.image_distance, "mm"),
-        entry("object_distance", "Object distance", sys.surfaces[0].thickness, "mm"),
-        entry("entrance_pupil_diameter", "Entrance pupil diameter", fo.entrance_pupil_diameter, "mm"),
-        entry("entrance_pupil_position", "Entrance pupil position from surface 1", fo.entrance_pupil_position, "mm"),
-        entry("exit_pupil_diameter", "Exit pupil diameter", fo.exit_pupil_diameter, "mm"),
-        entry("exit_pupil_position", "Exit pupil position from image", fo.exit_pupil_position, "mm"),
+        entry(
+            "image_distance",
+            "Paraxial image distance",
+            fo.image_distance,
+            "mm",
+        ),
+        entry(
+            "object_distance",
+            "Object distance",
+            sys.surfaces[0].thickness,
+            "mm",
+        ),
+        entry(
+            "entrance_pupil_diameter",
+            "Entrance pupil diameter",
+            fo.entrance_pupil_diameter,
+            "mm",
+        ),
+        entry(
+            "entrance_pupil_position",
+            "Entrance pupil position from surface 1",
+            fo.entrance_pupil_position,
+            "mm",
+        ),
+        entry(
+            "exit_pupil_diameter",
+            "Exit pupil diameter",
+            fo.exit_pupil_diameter,
+            "mm",
+        ),
+        entry(
+            "exit_pupil_position",
+            "Exit pupil position from image",
+            fo.exit_pupil_position,
+            "mm",
+        ),
         entry("image_f_number", "Image-space F/#", fo.image_f_number, ""),
-        entry("working_f_number", "Paraxial working F/#", fo.working_f_number, ""),
+        entry(
+            "working_f_number",
+            "Paraxial working F/#",
+            fo.working_f_number,
+            "",
+        ),
         entry("object_na", "Object-space NA", fo.object_na, ""),
         entry("image_na", "Image-space NA", fo.image_na, ""),
-        entry("magnification", "Paraxial magnification", fo.magnification, ""),
-        entry("lagrange_invariant", "Lagrange invariant", fo.lagrange_invariant, "mm"),
-        entry("total_track", "Total track (surface 1 to image)", fo.total_track, "mm"),
-        entry("stop_semi_diameter", "Stop semi-diameter", fo.stop_semi_diameter, "mm"),
+        entry(
+            "magnification",
+            "Paraxial magnification",
+            fo.magnification,
+            "",
+        ),
+        entry(
+            "lagrange_invariant",
+            "Lagrange invariant",
+            fo.lagrange_invariant,
+            "mm",
+        ),
+        entry(
+            "total_track",
+            "Total track (surface 1 to image)",
+            fo.total_track,
+            "mm",
+        ),
+        entry(
+            "stop_semi_diameter",
+            "Stop semi-diameter",
+            fo.stop_semi_diameter,
+            "mm",
+        ),
         entry("max_field", "Maximum field", osys.fields.max_radial(), fu),
-        entry("paraxial_image_height", "Paraxial image height", fo.paraxial_image_height, "mm"),
-        entry("image_height_per_tan", "Image height per unit tan θ", opt(fo.image_height_per_tan), "mm"),
-        entry("petzval_radius", "Petzval radius", if petzval != 0.0 { -1.0 / (n_img * petzval) } else { f64::INFINITY }, "mm"),
-        entry("airy_radius", "Airy radius", 1.22 * fo.wavelength_um * 1e-3 * fo.working_f_number, "mm"),
+        entry(
+            "paraxial_image_height",
+            "Paraxial image height",
+            fo.paraxial_image_height,
+            "mm",
+        ),
+        entry(
+            "image_height_per_tan",
+            "Image height per unit tan θ",
+            opt(fo.image_height_per_tan),
+            "mm",
+        ),
+        entry(
+            "petzval_radius",
+            "Petzval radius",
+            if petzval != 0.0 {
+                -1.0 / (n_img * petzval)
+            } else {
+                f64::INFINITY
+            },
+            "mm",
+        ),
+        entry(
+            "airy_radius",
+            "Airy radius",
+            1.22 * fo.wavelength_um * 1e-3 * fo.working_f_number,
+            "mm",
+        ),
     ];
     FirstOrderTable {
         wavelength: w,
@@ -126,7 +207,10 @@ fn table(tracer: &SequentialTracer, w: usize) -> FirstOrderTable {
 }
 
 /// First-order report (module docs).
-pub fn system_data(tracer: &SequentialTracer, settings: &SystemDataSettings) -> MkResult<SystemDataResult> {
+pub fn system_data(
+    tracer: &SequentialTracer,
+    settings: &SystemDataSettings,
+) -> MkResult<SystemDataResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     let wls = settings

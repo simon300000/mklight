@@ -112,7 +112,9 @@ pub struct SeidelTerms {
 
 impl SeidelTerms {
     fn as_array(&self) -> [f64; 7] {
-        [self.s1, self.s2, self.s3, self.s4, self.s5, self.cl, self.ct]
+        [
+            self.s1, self.s2, self.s3, self.s4, self.s5, self.cl, self.ct,
+        ]
     }
     fn from_array(a: [f64; 7]) -> Self {
         SeidelTerms {
@@ -201,7 +203,13 @@ impl SeidelResult {
     /// (module docs). `include_distortion` adds the `S_V H³` chief-ray term,
     /// i.e. the aberration relative to the paraxial chief ray rather than the
     /// real one.
-    pub fn transverse_aberration(&self, h: f64, px: f64, py: f64, include_distortion: bool) -> [f64; 2] {
+    pub fn transverse_aberration(
+        &self,
+        h: f64,
+        px: f64,
+        py: f64,
+        include_distortion: bool,
+    ) -> [f64; 2] {
         let s = &self.sums;
         let k = 1.0 / (2.0 * self.image_marginal_slope);
         let r2 = px.mul_add(px, py * py);
@@ -209,23 +217,37 @@ impl SeidelResult {
         let ey = s.s1 * r2 * py
             + s.s2 * h * (3.0 * py * py + px * px)
             + (3.0 * s.s3 + s.s4) * h * h * py
-            + if include_distortion { s.s5 * h * h * h } else { 0.0 };
+            + if include_distortion {
+                s.s5 * h * h * h
+            } else {
+                0.0
+            };
         let ex = s.s1 * r2 * px + s.s2 * h * 2.0 * px * py + (s.s3 + s.s4) * h * h * px;
         [k * ex, k * ey]
     }
 }
 
-fn select_short_long(sys: &ResolvedSystem, s: Option<usize>, l: Option<usize>) -> MkResult<(usize, usize)> {
+fn select_short_long(
+    sys: &ResolvedSystem,
+    s: Option<usize>,
+    l: Option<usize>,
+) -> MkResult<(usize, usize)> {
     let wl = &sys.wavelengths_um;
     let check = |w: usize| {
         if w < wl.len() {
             Ok(w)
         } else {
-            Err(MkError::InvalidModel(format!("wavelength {w} does not exist")))
+            Err(MkError::InvalidModel(format!(
+                "wavelength {w} does not exist"
+            )))
         }
     };
-    let argmin = (0..wl.len()).min_by(|&a, &b| wl[a].total_cmp(&wl[b])).unwrap_or(0);
-    let argmax = (0..wl.len()).max_by(|&a, &b| wl[a].total_cmp(&wl[b])).unwrap_or(0);
+    let argmin = (0..wl.len())
+        .min_by(|&a, &b| wl[a].total_cmp(&wl[b]))
+        .unwrap_or(0);
+    let argmax = (0..wl.len())
+        .max_by(|&a, &b| wl[a].total_cmp(&wl[b]))
+        .unwrap_or(0);
     Ok((check(s.unwrap_or(argmin))?, check(l.unwrap_or(argmax))?))
 }
 
@@ -446,7 +468,14 @@ pub fn longitudinal_aberration(
         pupil,
         primary_paraxial_focus: p0,
         curves,
-        run_info: run_info(timer, tracer, "longitudinal_aberration", settings, None, Vec::new()),
+        run_info: run_info(
+            timer,
+            tracer,
+            "longitudinal_aberration",
+            settings,
+            None,
+            Vec::new(),
+        ),
     })
 }
 
@@ -495,9 +524,12 @@ pub fn chromatic_focal_shift(
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("wavelength samples", settings.samples, 2, 10_001)?;
-    let lo = settings
-        .min_um
-        .unwrap_or_else(|| sys.wavelengths_um.iter().copied().fold(f64::INFINITY, f64::min));
+    let lo = settings.min_um.unwrap_or_else(|| {
+        sys.wavelengths_um
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+    });
     let hi = settings
         .max_um
         .unwrap_or_else(|| sys.wavelengths_um.iter().copied().fold(0.0, f64::max));
@@ -509,7 +541,10 @@ pub fn chromatic_focal_shift(
     let sweep = linspace(lo, hi, settings.samples);
     let primary_um = sys.wavelengths_um[sys.primary_wavelength];
     let mut osys = sys.system().clone();
-    let mut wl: Vec<Wavelength> = sweep.iter().map(|&um| Wavelength { um, weight: 1.0 }).collect();
+    let mut wl: Vec<Wavelength> = sweep
+        .iter()
+        .map(|&um| Wavelength { um, weight: 1.0 })
+        .collect();
     wl.push(Wavelength {
         um: primary_um,
         weight: 1.0,
@@ -521,7 +556,9 @@ pub fn chromatic_focal_shift(
     let snap = Snapshot::new(osys)?;
     let rs = ResolvedSystem::new(&snap, sys.library.clone())?;
     let par = Paraxial::new(&rs)?;
-    let foci: Vec<f64> = (0..rs.wavelengths_um.len()).map(|w| paraxial_focus(&par, w)).collect();
+    let foci: Vec<f64> = (0..rs.wavelengths_um.len())
+        .map(|w| paraxial_focus(&par, w))
+        .collect();
     let p0 = foci[foci.len() - 1];
     let focus: Vec<f64> = foci[..sweep.len()].to_vec();
     let shift: Vec<f64> = focus.iter().map(|f| f - p0).collect();
@@ -533,7 +570,14 @@ pub fn chromatic_focal_shift(
         paraxial_focus: focus,
         primary_wavelength_um: primary_um,
         range,
-        run_info: run_info(timer, tracer, "chromatic_focal_shift", settings, None, rs.warnings.clone()),
+        run_info: run_info(
+            timer,
+            tracer,
+            "chromatic_focal_shift",
+            settings,
+            None,
+            rs.warnings.clone(),
+        ),
     })
 }
 
@@ -607,15 +651,21 @@ pub fn lateral_colour_job(
     ctx.report(0.0, "lateral colour");
     let heights: Vec<Vec<f64>> = hs
         .par_iter()
-        .map(|&h| match tracer.prepare_field(FieldPoint::normalized(0.0, h)) {
-            Ok(f) => (0..nw)
-                .map(|w| {
-                    let c = tracer.chief(&f, w);
-                    if c.status.is_ok() { c.ray.pos.y } else { f64::NAN }
-                })
-                .collect(),
-            Err(_) => vec![f64::NAN; nw],
-        })
+        .map(
+            |&h| match tracer.prepare_field(FieldPoint::normalized(0.0, h)) {
+                Ok(f) => (0..nw)
+                    .map(|w| {
+                        let c = tracer.chief(&f, w);
+                        if c.status.is_ok() {
+                            c.ray.pos.y
+                        } else {
+                            f64::NAN
+                        }
+                    })
+                    .collect(),
+                Err(_) => vec![f64::NAN; nw],
+            },
+        )
         .collect();
     ctx.check()?;
     ctx.report(1.0, "lateral colour");

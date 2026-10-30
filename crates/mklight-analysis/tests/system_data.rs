@@ -10,9 +10,12 @@ use mklight_core::{MaterialRef, SurfaceShape, samples};
 #[test]
 fn report_matches_paraxial_data() {
     let t = tracer(samples::cooke_triplet());
-    let r = system_data(&t, &SystemDataSettings {
-        wavelength: WavelengthSelection::All,
-    })
+    let r = system_data(
+        &t,
+        &SystemDataSettings {
+            wavelength: WavelengthSelection::All,
+        },
+    )
     .unwrap();
     assert_eq!(r.tables.len(), 3);
     for tb in &r.tables {
@@ -37,8 +40,20 @@ fn afocal_values_serialise_as_infinity() {
     let sys = infinite_system(
         10.0,
         vec![
-            surf(1, SurfaceShape::Paraxial { focal_length: 100.0 }, 150.0, MaterialRef::Air),
-            surf(2, SurfaceShape::Paraxial { focal_length: 50.0 }, 20.0, MaterialRef::Air),
+            surf(
+                1,
+                SurfaceShape::Paraxial {
+                    focal_length: 100.0,
+                },
+                150.0,
+                MaterialRef::Air,
+            ),
+            surf(
+                2,
+                SurfaceShape::Paraxial { focal_length: 50.0 },
+                20.0,
+                MaterialRef::Air,
+            ),
         ],
         1,
         &[0.0, 1.0],
@@ -48,8 +63,20 @@ fn afocal_values_serialise_as_infinity() {
     let e = r.entries.iter().find(|e| e.key == "efl").unwrap();
     assert!(e.value.is_infinite());
     let j = serde_json::to_value(&r).unwrap();
-    let efl = j["entries"].as_array().unwrap().iter().find(|e| e["key"] == "efl").unwrap();
+    let efl = j["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["key"] == "efl")
+        .unwrap();
     assert!(efl["value"] == "inf" || efl["value"] == "-inf");
     let back: SystemDataResult = serde_json::from_value(j).unwrap();
-    assert!(back.entries.iter().find(|e| e.key == "efl").unwrap().value.is_infinite());
+    assert!(
+        back.entries
+            .iter()
+            .find(|e| e.key == "efl")
+            .unwrap()
+            .value
+            .is_infinite()
+    );
 }
