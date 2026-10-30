@@ -74,6 +74,21 @@ pub enum CentroidScope {
 /// pupil stands for the mirrored full pupil (x centroid and x tilt are zero by
 /// symmetry, not the mean over `px ≥ 0`). Rays that fail are left out of the
 /// reference.
+///
+/// A group may also be attached to a `Chief`-referenced per-ray operand; it
+/// then only declares the sampling the operand belongs to.
+///
+/// **Half pupil on an asymmetric candidate.** The half pupil is exact only
+/// when the candidate is mirror-symmetric about the meridional plane (and the
+/// field is on the y axis). Otherwise an evaluator must trace the mirrored
+/// nodes `(−px, py)` as well (each node keeping half its weight), form the
+/// reference over that full set without symmetry assumptions, and report a
+/// per-ray operand at node `p` as the *pair value*
+/// `v = s·√((v(p)² + v(p̄)²)/2)`, where `v(p̄)` is the same operand at the
+/// mirrored node and `s` the sign of the part even under the mirror
+/// (`v(p) − v(p̄)` for x aberrations, `v(p) + v(p̄)` for y aberrations and
+/// OPD). Then `Σ w v²` over the half pupil equals the full-pupil sum exactly,
+/// and `v` reduces to the plain value as the candidate becomes symmetric.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RayGroup {
     pub sampling: PupilSampling,
@@ -130,6 +145,31 @@ pub enum DistortionMapping {
     FTanTheta,
     /// Relative to `y = f θ` (fisheye / scanning), in percent.
     FTheta,
+}
+
+/// Which paraxial ray of the first-order model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParaxialRayKind {
+    /// Axial object point to the edge of the pupil, scaled by the aperture
+    /// specification.
+    #[default]
+    Marginal,
+    /// Through the stop centre, scaled to the maximum radial field.
+    Chief,
+}
+
+/// Quantity of a paraxial ray at a surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParaxialQuantity {
+    /// Height `y` at the surface (mm).
+    #[default]
+    Height,
+    /// Slope `u = dy/dz` after the surface (dimensionless).
+    Slope,
+    /// `atan u` after the surface (degrees).
+    Angle,
 }
 
 /// Quantity of a single real ray at a surface.
@@ -243,6 +283,24 @@ pub enum OperandKind {
     EntrancePupilDiameter,
     /// Exit-pupil position relative to the image surface (mm).
     ExitPupilPosition,
+    /// Entrance-pupil position relative to the first surface, in object
+    /// space (mm).
+    EntrancePupilPosition,
+    /// A paraxial marginal or chief ray quantity after `surface` (default:
+    /// the image surface).
+    ParaxialRay {
+        #[serde(default)]
+        ray: ParaxialRayKind,
+        #[serde(default)]
+        quantity: ParaxialQuantity,
+        #[serde(default)]
+        surface: Option<SurfaceId>,
+    },
+    /// Petzval sum `P = Σ c (N' − N)/(N N')` over the surfaces (mm⁻¹); the
+    /// Petzval surface has curvature `−N'_image · P`. Ideal (paraxial)
+    /// lenses contribute nothing: they image a plane onto a plane (a thin
+    /// lens of infinite index).
+    PetzvalSum,
 
     // ---- geometry of the model ----
     /// Sum of thicknesses from `from` to the vertex of `to` (default:
@@ -263,8 +321,10 @@ pub enum OperandKind {
         to: Option<SurfaceId>,
     },
     /// Physical thickness of the gap from `surface` to `to` (default: the
-    /// next surface) at `height` (default: the larger fixed semi-diameter of
-    /// the two bounding surfaces), mm.
+    /// next surface) at `height` (default: the rim of the larger clear
+    /// semi-diameter, each surface's sag taken at its own semi-diameter —
+    /// the smaller one continues flat; see [`geometric`](super::geometric)),
+    /// mm.
     EdgeThickness {
         surface: SurfaceId,
         #[serde(default)]
@@ -339,7 +399,9 @@ pub enum OperandKind {
         #[serde(default)]
         group: Option<RayGroup>,
     },
-    /// Chief-ray angle of incidence on `surface` (default: image), degrees.
+    /// Chief-ray angle of incidence on `surface` (default: image), degrees,
+    /// unsigned. At the image this is the chief-ray angle (CRA); 0 means
+    /// image-space telecentric.
     ChiefRayAngle {
         #[serde(default)]
         surface: Option<SurfaceId>,
@@ -373,17 +435,26 @@ pub enum OperandKind {
         #[serde(default)]
         method: MtfMethod,
     },
-    /// Distortion at the selected field (percent).
+    /// Distortion of the real chief ray at the selected field and
+    /// wavelength against the paraxial image height scaled by the mapping,
+    /// `100 (h_real − h_ref)/h_ref` along the field direction (percent).
     Distortion {
         #[serde(default)]
         mapping: DistortionMapping,
     },
-    /// Lateral colour: chief-ray image height difference between two
-    /// wavelengths (indices into the system wavelengths), mm.
+    /// Lateral colour: chief-ray image height at `short` minus at `long`
+    /// (indices into the system wavelengths), measured along the field
+    /// direction (`+y` on axis), mm.
     LateralColour { short: usize, long: usize },
-    /// Axial colour: paraxial focus difference between two wavelengths, mm.
+    /// Axial colour (chromatic focal shift): paraxial image distance at
+    /// `short` minus at `long`, mm (negative when the short wavelength
+    /// focuses closer, as in an uncorrected positive lens).
     AxialColour { short: usize, long: usize },
-    /// Relative illumination at the selected field (0…1, vs on-axis).
+    /// Relative illumination at the selected field (0…1, vs on-axis): the
+    /// image irradiance at the chief ray for a uniform-radiance Lambertian
+    /// object relative to the on-axis one, from energy conservation —
+    /// transmitted object-space étendue (vignetting included) over the image
+    /// area per unit field (geometric: no coating or bulk losses).
     RelativeIllumination,
 
     // ---- ghosts and stray light ----
@@ -466,6 +537,9 @@ impl OperandKind {
             Magnification => "magnification",
             EntrancePupilDiameter => "entrance_pupil_diameter",
             ExitPupilPosition => "exit_pupil_position",
+            EntrancePupilPosition => "entrance_pupil_position",
+            ParaxialRay { .. } => "paraxial_ray",
+            PetzvalSum => "petzval_sum",
             TotalTrack { .. } => "total_track",
             CentreThickness { .. } => "centre_thickness",
             EdgeThickness { .. } => "edge_thickness",
@@ -504,6 +578,9 @@ impl OperandKind {
             | Magnification
             | EntrancePupilDiameter
             | ExitPupilPosition
+            | EntrancePupilPosition
+            | ParaxialRay { .. }
+            | PetzvalSum
             | AxialColour { .. } => Capability::Paraxial,
             TotalTrack { .. }
             | CentreThickness { .. }
@@ -662,6 +739,21 @@ impl OperandRegistry {
             (Magnification, "Paraxial magnification", ""),
             (EntrancePupilDiameter, "Entrance pupil diameter", "mm"),
             (ExitPupilPosition, "Exit pupil position from image", "mm"),
+            (
+                EntrancePupilPosition,
+                "Entrance pupil position from first surface",
+                "mm",
+            ),
+            (
+                ParaxialRay {
+                    ray: ParaxialRayKind::Marginal,
+                    quantity: ParaxialQuantity::Height,
+                    surface: None,
+                },
+                "Paraxial ray height / slope / angle",
+                "mm / - / deg",
+            ),
+            (PetzvalSum, "Petzval sum", "1/mm"),
             (
                 TotalTrack {
                     from: None,
@@ -890,6 +982,9 @@ impl OperandRegistry {
     /// e.g. `"efl"`, is rejected).
     pub fn knows(&self, kind: &OperandKind) -> bool {
         match (kind, self.get(kind.name())) {
+            (OperandKind::ToleranceSensitivity { criterion, .. }, Some(d)) => {
+                d.capability == Capability::Tolerance && self.knows(criterion)
+            }
             (OperandKind::Custom { .. }, Some(d)) => d.capability == Capability::Plugin,
             (OperandKind::Custom { .. }, None) => false,
             (_, d) => d.is_some_and(|d| d.capability != Capability::Plugin),
