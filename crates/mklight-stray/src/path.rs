@@ -113,7 +113,197 @@ pub mod flags {
 /// No surface recorded.
 pub const NO_SURFACE: u16 = u16::MAX;
 
-/// Event history of one path (12 bytes, cheap to copy on splitting).
+/// Events kept per path signature; later events set `Signature::overflow`.
+pub const MAX_SIGNATURE_EVENTS: usize = 6;
+
+/// Kind of a non-designed event in a [`Signature`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// Specular (Fresnel or coating) reflection at a refracting interface.
+    Reflect = 1,
+    /// Total internal reflection at a refracting interface.
+    Tir = 2,
+    /// BSDF scatter into the reflected hemisphere of an optical surface.
+    ScatterReflect = 3,
+    /// BSDF scatter into the transmitted hemisphere of an optical surface.
+    ScatterTransmit = 4,
+    /// Specular reflection off non-optical geometry.
+    MechanicalSpecular = 5,
+    /// BSDF scatter off non-optical geometry.
+    MechanicalScatter = 6,
+    /// Crossed or reflected off an optical surface outside its sequential
+    /// clipping aperture.
+    OutsideClip = 7,
+}
+
+impl EventKind {
+    fn from_code(c: u32) -> Option<EventKind> {
+        Some(match c {
+            1 => EventKind::Reflect,
+            2 => EventKind::Tir,
+            3 => EventKind::ScatterReflect,
+            4 => EventKind::ScatterTransmit,
+            5 => EventKind::MechanicalSpecular,
+            6 => EventKind::MechanicalScatter,
+            7 => EventKind::OutsideClip,
+            _ => return None,
+        })
+    }
+    /// True for events whose id is a primitive index (non-optical geometry)
+    /// rather than a sequential surface index.
+    pub fn is_mechanical(self) -> bool {
+        matches!(
+            self,
+            EventKind::MechanicalSpecular | EventKind::MechanicalScatter
+        )
+    }
+}
+
+/// The ordered non-designed events of a path: every interaction that is not
+/// the designed transmission (or designed mirror reflection) of the next
+/// surface in sequence. Designed interactions between the recorded events
+/// are implied, so for a `Ghost` path the signature is the ordered list of
+/// its reflecting surfaces, which [`Signature::expand_ghost`] turns into the
+/// full ordered `(surface, transmit | reflect)` signature used by the
+/// explicit ghost solver. Only the first [`MAX_SIGNATURE_EVENTS`] events are
+/// kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Signature {
+    len: u8,
+    /// More events happened than were kept.
+    overflow: bool,
+    /// `kind << 28 | id`.
+    events: [u32; MAX_SIGNATURE_EVENTS],
+}
+
+/// Largest id a signature event can hold.
+const SIG_ID_MASK: u32 = (1 << 28) - 1;
+
+/// Designed interaction of a surface in a full ghost signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceOp {
+    Transmit,
+    Reflect,
+}
+
+impl Signature {
+    /// Appends an event; `id` is the sequential surface index for optical
+    /// events and the primitive index for mechanical ones.
+    #[inline]
+    pub fn push(&mut self, kind: EventKind, id: usize) {
+        let k = self.len as usize;
+        if k < MAX_SIGNATURE_EVENTS {
+            self.events[k] = ((kind as u32) << 28) | (id.min(SIG_ID_MASK as usize) as u32);
+            self.len += 1;
+        } else {
+            self.overflow = true;
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn overflow(&self) -> bool {
+        self.overflow
+    }
+    /// The kept events in order.
+    pub fn events(&self) -> impl Iterator<Item = (EventKind, usize)> + '_ {
+        self.events[..self.len as usize]
+            .iter()
+            .filter_map(|&e| EventKind::from_code(e >> 28).map(|k| (k, (e & SIG_ID_MASK) as usize)))
+    }
+    /// Compact text: `R5` (reflection at surface 5), `TIR5`, `Sr5` / `St5`
+    /// (scatter at surface 5, reflected / transmitted side), `C5` (outside
+    /// the clipping aperture of surface 5), `M[label]` / `Ms[label]`
+    /// (specular / scatter off non-optical primitive), `…` on overflow, and
+    /// `designed` for an empty signature. `label` names primitives.
+    pub fn describe(&self, label: impl Fn(usize) -> String) -> String {
+        let mut parts: Vec<String> = self
+            .events()
+            .map(|(k, id)| match k {
+                EventKind::Reflect => format!("R{id}"),
+                EventKind::Tir => format!("TIR{id}"),
+                EventKind::ScatterReflect => format!("Sr{id}"),
+                EventKind::ScatterTransmit => format!("St{id}"),
+                EventKind::OutsideClip => format!("C{id}"),
+                EventKind::MechanicalSpecular => format!("M[{}]", label(id)),
+                EventKind::MechanicalScatter => format!("Ms[{}]", label(id)),
+            })
+            .collect();
+        if self.overflow {
+            parts.push("…".into());
+        }
+        if parts.is_empty() {
+            "designed".into()
+        } else {
+            parts.join(" ")
+        }
+    }
+    /// The full ordered `(surface, op)` signature of a purely specular path
+    /// whose recorded events are all reflections at refracting interfaces
+    /// (a `Ghost`-class or designed path), assuming it meets the interfaces
+    /// of `sequence` in order: transmit through every interface up to the
+    /// next reflecting one, reverse, and so on, ending at the detector (the
+    /// last entry of `sequence`, which is not included). Mirrors in the
+    /// sequence keep their designed reflection. `None` when the signature
+    /// holds other events, overflowed, or does not fit the sequence.
+    pub fn expand_ghost(
+        &self,
+        sequence: &[usize],
+        is_mirror: impl Fn(usize) -> bool,
+    ) -> Option<Vec<(usize, SurfaceOp)>> {
+        if self.overflow || sequence.is_empty() {
+            return None;
+        }
+        let ifaces = &sequence[..sequence.len() - 1];
+        let op = |s: usize| {
+            if is_mirror(s) {
+                SurfaceOp::Reflect
+            } else {
+                SurfaceOp::Transmit
+            }
+        };
+        let mut out = Vec::new();
+        // Position of the next interface to meet and the walking direction.
+        let mut pos: isize = 0;
+        let mut forward = true;
+        for (kind, surf) in self.events() {
+            if !matches!(kind, EventKind::Reflect | EventKind::Tir) {
+                return None;
+            }
+            // Walk to the reflecting surface, transmitting on the way.
+            loop {
+                if pos < 0 || pos as usize >= ifaces.len() {
+                    return None;
+                }
+                let s = ifaces[pos as usize];
+                if s == surf {
+                    out.push((s, SurfaceOp::Reflect));
+                    forward = !forward;
+                    pos += if forward { 1 } else { -1 };
+                    break;
+                }
+                out.push((s, op(s)));
+                pos += if forward { 1 } else { -1 };
+            }
+        }
+        if !forward {
+            return None;
+        }
+        while (pos as usize) < ifaces.len() {
+            let s = ifaces[pos as usize];
+            out.push((s, op(s)));
+            pos += 1;
+        }
+        Some(out)
+    }
+}
+
+/// Event history of one path (cheap to copy on splitting).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct History {
     pub flags: u8,
@@ -125,6 +315,8 @@ pub struct History {
     pub first_reflections: [u16; 2],
     /// Number of scattering events (saturating).
     pub scatter_events: u16,
+    /// Ordered non-designed events.
+    pub signature: Signature,
 }
 
 impl Default for History {
@@ -135,6 +327,7 @@ impl Default for History {
             next_seq: 0,
             first_reflections: [NO_SURFACE; 2],
             scatter_events: 0,
+            signature: Signature::default(),
         }
     }
 }
@@ -257,6 +450,58 @@ mod tests {
         h.flags |= flags::OUTSIDE_CLIP;
         h.stray_reflections = 2;
         assert_eq!(h.classify(&SEQ), PathClass::Sneak);
+    }
+
+    #[test]
+    fn signatures_record_and_expand() {
+        let mut sig = Signature::default();
+        assert_eq!(sig.describe(|_| String::new()), "designed");
+        assert_eq!(
+            sig.expand_ghost(&SEQ, |_| false).unwrap(),
+            [
+                (1, SurfaceOp::Transmit),
+                (2, SurfaceOp::Transmit),
+                (3, SurfaceOp::Transmit)
+            ]
+        );
+        sig.push(EventKind::Reflect, 3);
+        sig.push(EventKind::Reflect, 1);
+        assert_eq!(sig.describe(|_| String::new()), "R3 R1");
+        // T1 T2 R3 T2 R1 T2 T3: the ghost solver's ordered signature.
+        use SurfaceOp::{Reflect as R, Transmit as T};
+        assert_eq!(
+            sig.expand_ghost(&SEQ, |_| false).unwrap(),
+            [(1, T), (2, T), (3, R), (2, T), (1, R), (2, T), (3, T)]
+        );
+        // A path that ends travelling backwards never reaches the detector.
+        let mut odd = Signature::default();
+        odd.push(EventKind::Reflect, 2);
+        assert!(odd.expand_ghost(&SEQ, |_| false).is_none());
+        // A designed mirror keeps its reflection.
+        assert_eq!(
+            Signature::default().expand_ghost(&SEQ, |s| s == 2).unwrap()[1],
+            (2, R)
+        );
+        // Mechanical events are not ghosts; labels name the primitive.
+        let mut m = sig;
+        m.push(EventKind::MechanicalScatter, 7);
+        assert!(m.expand_ghost(&SEQ, |_| false).is_none());
+        assert_eq!(m.describe(|p| format!("prim {p}")), "R3 R1 Ms[prim 7]");
+        // Overflow keeps the first events.
+        let mut long = Signature::default();
+        for k in 0..MAX_SIGNATURE_EVENTS + 2 {
+            long.push(EventKind::Tir, k);
+        }
+        assert_eq!(long.len(), MAX_SIGNATURE_EVENTS);
+        assert!(long.overflow() && long.describe(|_| String::new()).ends_with('…'));
+        assert!(long.expand_ghost(&SEQ, |_| false).is_none());
+        // Ordering is total and distinguishes kinds.
+        let mut a = Signature::default();
+        a.push(EventKind::Reflect, 3);
+        let mut b = Signature::default();
+        b.push(EventKind::Tir, 3);
+        assert_ne!(a, b);
+        assert_eq!(a.events().next(), Some((EventKind::Reflect, 3)));
     }
 
     #[test]

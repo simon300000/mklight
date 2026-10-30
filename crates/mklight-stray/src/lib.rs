@@ -22,13 +22,22 @@
 //! * [`tracer`] — the rayon-parallel, thread-count-independent path tracer
 //!   with rare-branch forcing, Russian roulette, splitting and weight
 //!   windows.
+//! * [`system`] — the connection to the sequential reference tracer
+//!   (`mklight-trace`): scenes sized with its automatic clear
+//!   semi-diameters (stop included), field sources aimed at the paraxial
+//!   entrance pupil, out-of-field (sun) sources whose beam covers the
+//!   whole scene (lens hoods and tubes included).
+//! * [`reference`] — the deterministic sequential expectation of the
+//!   `Primary` class (flux, centroid, RMS radius) for cross-validation, with
+//!   every designed path checked for obstruction by non-sequential geometry.
+//! * [`analysis`] — the engine entry point: settings, per-class maps with
+//!   standard errors, totals, top path signatures, `RunInfo`.
+//!
+//! The partition of detected light between the sequential, ghost and
+//! stray solvers is specified in `docs/STRAY.md` and [`path`].
 //!
 //! # Integration points (later phase)
 //!
-//! * Clear semi-diameters of automatic surfaces, including the stop, come
-//!   from the sequential tracer through `SceneOptions::clear_semi_diameters`.
-//! * Sources aimed at the entrance pupil (paraxial tracer) instead of the
-//!   first surface's mechanical aperture.
 //! * A hardware ray-tracing [`geom::RayCaster`] (Metal acceleration
 //!   structures); it also needs the BSDF's TIS table and lobe parameters.
 //! * Rays carry unpolarised (s/p-averaged) flux, while the ghost solver may
@@ -36,18 +45,28 @@
 //!
 //! Units follow CONVENTIONS §1: mm, µm, W, W/mm².
 
+pub mod analysis;
 pub mod bsdf;
 pub mod geom;
 pub mod integrate;
 pub mod path;
+pub mod reference;
 pub mod scene;
 pub mod source;
+pub mod system;
 pub mod tally;
 pub mod tracer;
 
+pub use analysis::{
+    ClassMap, ClassTotal, StrayAnalysisResult, StrayAnalysisSettings, StraySource,
+    TransportOptions, analyze, analyze_system,
+};
+pub use reference::{PrimaryReference, primary_reference};
+pub use system::{Beam, DetectorShape, StraySystem, SystemOptions};
+
 pub use bsdf::Bsdf;
-pub use path::{ClassMask, History, PathClass};
+pub use path::{ClassMask, EventKind, History, PathClass, Signature, SurfaceOp};
 pub use scene::{Scene, SceneBuilder, SceneOptions};
 pub use source::SourceSpec;
-pub use tally::{DetectorResult, EnergyReport, Sink};
+pub use tally::{DetectorResult, EnergyReport, ImageMoments, SignatureFlux, Sink};
 pub use tracer::{SplitMode, StrayResult, StraySettings, run, run_with};

@@ -55,7 +55,10 @@
 //!
 //! The clear semi-diameter is the fixed semi-diameter, the aperture shape's
 //! bounding radius, or `SceneOptions::clear_semi_diameters` (the sequential
-//! tracer's automatic values; **integration point**). The mechanical
+//! tracer's automatic values, filled in by `crate::system::StraySystem`).
+//! Two surfaces of one element that intersect inside their clear apertures
+//! are reported (rays near the rim then meet the second surface first,
+//! which the sequential model ignores). The mechanical
 //! semi-diameter is `EdgeSpec::mechanical_semi_diameter`, or the clear value
 //! plus `default_edge_margin`. A mirror with a rectangular or elliptical
 //! aperture and no explicit mechanical semi-diameter ends at its aperture
@@ -545,7 +548,7 @@ impl SceneBuilder {
 
 /// Options for [`Scene::from_system`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SceneOptions {
     /// Clear semi-diameters per surface index for surfaces with automatic
     /// semi-diameters (normally the sequential tracer's values). `None`
@@ -749,6 +752,7 @@ impl Scene {
         struct Rim {
             surface: usize,
             msd: f64,
+            clear: f64,
             frame: Frame,
             shape: SurfaceShape,
         }
@@ -852,6 +856,7 @@ impl Scene {
                     rims.push(Rim {
                         surface: i,
                         msd,
+                        clear,
                         frame,
                         shape: rsurf.shape.clone(),
                     });
@@ -980,6 +985,7 @@ impl Scene {
             rims.push(Rim {
                 surface: i,
                 msd,
+                clear: ca,
                 frame: rsurf.frame,
                 shape: rsurf.shape.clone(),
             });
@@ -1004,7 +1010,22 @@ impl Scene {
             }
             let za = a.shape.sag(a.msd * a.msd).unwrap_or(0.0);
             let zc = rel.origin.z + c.shape.sag(c.msd * c.msd).unwrap_or(0.0);
-            if (zc - za) * rel.origin.z < 0.0 {
+            // Thickness at the smaller clear radius: a sign change means the
+            // two surfaces intersect inside their clear apertures, so rays
+            // near the rim meet the second surface first (the element is
+            // not physical at these semi-diameters, and non-sequential
+            // results there differ from the sequential model).
+            let rc = a.clear.min(c.clear);
+            let ta = a.shape.sag(rc * rc).unwrap_or(0.0);
+            let tc = rel.origin.z + c.shape.sag(rc * rc).unwrap_or(0.0);
+            if (tc - ta) * rel.origin.z < 0.0 {
+                warnings.push(format!(
+                    "surfaces {} and {} intersect inside their clear apertures (edge thickness {:.4} mm at r = {rc:.4} mm); rays near the rim leave the designed path",
+                    a.surface,
+                    c.surface,
+                    (tc - ta) * rel.origin.z.signum()
+                ));
+            } else if (zc - za) * rel.origin.z < 0.0 {
                 warnings.push(format!(
                     "negative edge thickness between surfaces {} and {}",
                     a.surface, c.surface

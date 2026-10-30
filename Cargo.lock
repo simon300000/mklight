@@ -295,6 +295,7 @@ dependencies = [
  "approx",
  "blake3",
  "mklight-core",
+ "mklight-trace",
  "rayon",
  "serde",
  "serde_json",
