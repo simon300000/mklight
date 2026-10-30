@@ -387,9 +387,12 @@ At 3 × 6 sampling the rays dominate. A single candidate is traced
 sequentially, because its 171 rays are too few to parallelise, which is why
 a one-candidate LM trial step runs at ~5 k evals/s while batches (FD
 Jacobians, DE/CMA-ES populations, basin-hopping screens, tolerance trials)
-run at the full rate. `ParametricBatch`/`evaluate_parametric` remains the
-entry point for a GPU backend that keeps the base system packed and uploads
-only the parameter vectors.
+run at the full rate. These are single timed runs. The GPU benchmark
+(GPU-batched evaluation) reports the best of repeated runs, so its CPU column
+is up to 1.5× higher for the same evaluator. The GPU evaluator packs every
+candidate (10 µs) instead of patching parameter vectors into a packed base:
+the packer's representability checks and double-float residuals depend on
+the values.
 
 ## GPU-batched evaluation
 
@@ -480,9 +483,58 @@ F/2 sample (default merit, 8 curvatures and the back focus as variables)
 on an Apple M2 Pro (12 rayon threads, Metal). Each figure is the best
 evaluations/s over ~0.3 s at a batch size:
 
-GPU_TABLE
+| batch | spot 3 × 6 (171 rays/cand.): CPU / GPU evals/s | wavefront 3 × 6 | spot 6 × 12 (657 rays) | spot 12 × 24 (2601 rays) |
+|---:|---|---|---|---|
+| 1 | 5 703 / 1 956 (0.34) | 5 954 / 2 048 (0.34) | 3 191 / 1 542 (0.48) | 1 098 / 806 (0.73) |
+| 4 | 15 509 / 4 878 (0.31) | 17 824 / 5 561 (0.31) | 7 271 / 3 507 (0.48) | 2 179 / 1 766 (0.81) |
+| 16 | 27 760 / 11 910 (0.43) | 32 673 / 13 162 (0.40) | 8 936 / 6 952 (0.78) | 2 453 / 2 800 (**1.14**) |
+| 64 | 33 257 / 22 183 (0.67) | 38 576 / 25 383 (0.66) | 10 359 / 9 954 (0.96) | 2 732 / 3 390 (**1.24**) |
+| 256 | 36 464 / 27 942 (0.77) | 42 581 / 30 634 (0.72) | 10 626 / 11 224 (**1.06**) | 2 861 / 3 484 (**1.22**) |
+| 1024 | 35 750 / 30 540 (0.85) | 42 778 / 36 617 (0.86) | 10 716 / 12 718 (**1.19**) | 2 767 / 4 218 (**1.52**) |
+| 4096 | 35 410 / 32 435 (0.92) | 41 710 / 37 329 (0.89) | 10 458 / 13 529 (**1.29**) | 2 680 / 4 029 (**1.50**) |
 
-GPU_DISCUSSION
+(GPU/CPU ratio in parentheses; measured with the machine otherwise idle,
+±10 % run to run. Sub-batches of 128 or 2048 instead of 512 changed the
+large-batch figures by less than that.)
+
+**Crossover.** It depends on the rays per candidate more than on the batch
+size:
+
+* Default merit (3 rings × 6 arms, half pupil, 171 rays per candidate): there
+  is **no crossover**. The GPU path reaches 0.9× the CPU at 1024–4096
+  candidates and is 3× slower for single LM trial points.
+* 6 × 12 (657 rays): crossover at about **256** candidates, 1.3× at 4096.
+* 12 × 24 (2601 rays): crossover at about **16** candidates, 1.5× from 1024 on.
+
+The CPU f64 reference is efficient: one ray through the Double Gauss costs
+~0.7 µs, and 12 threads trace 5–6 M rays/s. The GPU traces the same rays in
+~5 µs of device time per default-merit candidate at large batches (14 µs
+averaged over all batch sizes, launch overhead included), so the device is
+not the limit. The limit is the per-candidate host work, which both paths
+pay or which the GPU path adds. Measured serially per Double Gauss
+candidate:
+
+| work | µs |
+|---|---:|
+| `Snapshot` (content hash) + `ResolvedSystem` + `SequentialTracer` | 27 (17 of them the hash) |
+| CPU trace of the 162 pupil rays (CPU path only) | 119 |
+| packing (`PackedSystem::pack` + validation; GPU only) | 10 |
+| generating the 171 rays (GPU only) | 3.5 |
+
+The operands are read the same way on both paths (`value_with`, a few µs).
+With the GPU path's extra allocation, the serial upload / concatenation /
+unpacking between pipelined sub-batches, and the 4 efficiency cores, the
+GPU path ends up about even with the CPU at 171 rays. It pulls ahead in
+proportion to the rays a candidate traces. To speed it up further, move ray
+generation and the operand reductions (centroids, RMS) onto the device, and
+skip the snapshot hash for transient candidates (`mklight-core`).
+
+**Use.** The engine jobs evaluate on the GPU only when asked (`backend:
+"gpu"`, or `"auto"` with an engine-selected GPU device). The gain comes from
+dense samplings (wavefront merits for MTF-limited designs, many fields, many
+configurations) in batched work: FD Jacobians with many variables, DE /
+CMA-ES populations, uncompensated tolerancing trials. Small single-point LM
+steps are faster on the CPU.
 
 ## Engine jobs: `optimize` and `tolerance`
 

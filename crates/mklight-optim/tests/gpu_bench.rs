@@ -121,7 +121,14 @@ fn double_gauss_cpu_vs_gpu_throughput() {
             gpu.clone(),
             TraceEvaluator::builtin(),
             &sys,
-            GpuEvalSettings::default(),
+            GpuEvalSettings {
+                // `MKLIGHT_BENCH_GPU_BATCH` overrides the sub-batch size.
+                batch: std::env::var("MKLIGHT_BENCH_GPU_BATCH")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(GpuEvalSettings::default().batch),
+                ..Default::default()
+            },
             &JobContext::new(),
         )
         .unwrap();
