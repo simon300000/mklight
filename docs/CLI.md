@@ -167,7 +167,7 @@ registered later by solver crates are available without CLI changes.
 |---|---|
 | `--settings <json>` / `--settings @file` | settings object (partial; missing keys take the schema defaults, unknown keys are rejected) |
 | `--seed <n>` | sets `settings.seed`; only for analyses whose schema has a `seed` |
-| `--backend cpu\|metal\|auto` | `auto` (default): the first available non-reference backend that implements the analysis, else the CPU reference. `metal`: explicit; exit 3 if the Metal backend is unavailable or does not implement the analysis (no silent fallback). `cpu`: the f64 reference |
+| `--backend cpu\|metal\|auto` | `auto` (default): the engine's `auto`, i.e. the first available GPU backend that implements the analysis and passes precision qualification for the system, else the CPU reference; ray grids below 65 536 rays stay on the CPU reference, docs/RESULTS.md §5 (the envelope's `backend` object records which and why). `metal`: explicit; exit 3 if the Metal backend is unavailable or does not implement the analysis (no silent fallback). `cpu`: the f64 reference |
 | `--out <file>` | write the result envelope to a file (atomically); stdout gets `{"out", "run_info"}` |
 | `--buffers` | inline each buffer's contents as a `data` array in the envelope |
 | `--progress` | progress on stderr while the job runs (`progress  42.0%  stage`, or one JSON object per line with `--json`) |

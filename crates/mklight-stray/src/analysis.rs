@@ -370,6 +370,23 @@ pub fn analyze(
     analyze_system(&sys, settings, &ctx.subrange(0.1, 1.0))
 }
 
+/// As [`analyze`], also returning the flux of **every** (class, path
+/// signature) pair the run detected, included in the total or not, largest
+/// first (signature tallying is on whatever `top_signatures` says; it does
+/// not change any other number). A front end that partitions against an
+/// explicit ghost run uses it to hand the stray total the `Ghost`-class
+/// paths outside that run's coverage (CONVENTIONS §10).
+pub fn analyze_with_signatures(
+    rs: Arc<ResolvedSystem>,
+    settings: &StrayAnalysisSettings,
+    ctx: &JobContext,
+) -> MkResult<(StrayAnalysisResult, Vec<SignatureFlux>)> {
+    settings.validate()?;
+    let sys = StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
+    ctx.report(0.1, "stray light: scene built");
+    analyze_system_impl(&sys, settings, true, &ctx.subrange(0.1, 1.0))
+}
+
 /// Grid size of the per-source obstruction check.
 const OBSTRUCTION_GRID: usize = 64;
 
@@ -381,6 +398,17 @@ pub fn analyze_system(
     settings: &StrayAnalysisSettings,
     ctx: &JobContext,
 ) -> MkResult<StrayAnalysisResult> {
+    analyze_system_impl(sys, settings, false, ctx).map(|r| r.0)
+}
+
+/// [`analyze_system`]; with `all_signatures`, signature tallying is forced
+/// on and every tallied signature is returned too.
+fn analyze_system_impl(
+    sys: &StraySystem,
+    settings: &StrayAnalysisSettings,
+    all_signatures: bool,
+    ctx: &JobContext,
+) -> MkResult<(StrayAnalysisResult, Vec<SignatureFlux>)> {
     settings.validate()?;
     if let Some(cov) = &settings.ghost_coverage {
         sys.check_ghost_coverage(cov)?;
@@ -396,8 +424,9 @@ pub fn analyze_system(
         _ => None,
     };
     ctx.report(0.02, "stray light: transport");
-    let ss = settings.stray_settings();
-    let r = run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?;
+    let mut ss = settings.stray_settings();
+    ss.signatures |= all_signatures;
+    let mut r = run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?;
     let owned = ss.owned_classes;
     let det = &r.detector;
     let area = det.spec.pixel_area();
@@ -435,6 +464,11 @@ pub fn analyze_system(
         .take(settings.top_signatures)
         .cloned()
         .collect();
+    let all = if all_signatures {
+        std::mem::take(&mut r.signatures)
+    } else {
+        Vec::new()
+    };
     let mut warnings = r.warnings.clone();
     for w in &sys.warnings {
         if !warnings.contains(w) {
@@ -470,7 +504,7 @@ pub fn analyze_system(
         warnings.clone(),
     );
     ctx.report(1.0, "stray light: done");
-    Ok(StrayAnalysisResult {
+    let result = StrayAnalysisResult {
         emitted: e.emitted,
         classes: owned,
         detector: det.spec.clone(),
@@ -488,5 +522,6 @@ pub fn analyze_system(
         run_info,
         warnings,
         source: beam,
-    })
+    };
+    Ok((result, all))
 }

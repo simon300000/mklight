@@ -295,3 +295,15 @@ the configured system: an issue it causes is reported at
 tagged enums (`{"mode": "auto"}`, `{"type": "plane"}`, …) take no other
 keys, like every other object of the model. Codes are stable; messages
 may change.
+
+## 14. Analysis results
+
+* Every engine analysis publishes a settings schema (with defaults) and a
+  versioned result schema whose `x-buffers` declare its typed buffers;
+  `docs/RESULTS.md` documents them and is generated from the schemas.
+* `RunInfo.backend` names the backend that computed a result (after any
+  fallback, §12), not the one requested; the envelope's `backend` object
+  records the request and the reason for a fallback.
+* Ray clouds, grids, maps and scene geometry travel as row-major buffers
+  with NaN for "no value" (a ray that did not arrive); curves along one
+  axis stay in the JSON (§11 rules for non-finite numbers).

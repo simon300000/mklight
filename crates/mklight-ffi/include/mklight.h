@@ -31,7 +31,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 0
+#define MK_ABI_VERSION_MINOR 1
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -113,11 +113,14 @@ MKStatus mk_engine_create(const char *config_json, MKEngine **out_engine);
 void mk_engine_destroy(MKEngine *engine);
 
 /* JSON array of analysis descriptions (name, title, category, description,
- * available, unavailable_reason, settings_schema, default_settings). */
+ * available, unavailable_reason, settings_schema, default_settings,
+ * result_schema, result_version, gpu_path). The result schemas, and every
+ * analysis' result fields and buffers, are documented in docs/RESULTS.md. */
 MKStatus mk_engine_list_analyses(const MKEngine *engine, char **out_json);
 
-/* JSON array of compute backends (id, title, available, reason, precision,
- * capabilities). */
+/* JSON array of compute backends (backend, id, title, available, reason,
+ * precision, capabilities). On macOS "gpu:metal" is listed; it is available
+ * when the machine has a Metal device that passes the numerics probe. */
 MKStatus mk_engine_list_backends(const MKEngine *engine, char **out_json);
 
 /* ---- Jobs: states and event callback ------------------------------------ */
@@ -227,7 +230,10 @@ MKStatus mk_session_submit_analysis(const MKSession *session, const char *analys
                                     uint64_t *out_job);
 
 /* Same, from {"analysis", "settings", "view_key", "backend",
- * "allow_backend_fallback"}. */
+ * "allow_backend_fallback"}. "backend" is {"kind": "cpu_reference"},
+ * {"kind": "gpu", "name": "metal"} or {"kind": "auto"} (a GPU when one
+ * implements the analysis and qualifies for the system, else the CPU
+ * reference); the result's "backend" object says what was used and why. */
 MKStatus mk_session_submit_analysis_json(const MKSession *session, const char *request_json,
                                          uint64_t *out_job);
 
@@ -253,7 +259,8 @@ MKStatus mk_job_wait(const MKEngine *engine, uint64_t job, int64_t timeout_ms,
                      MKJobState *out_state);
 
 /* Take the result of a finished job and forget the job.
- *   MK_OK:             *out_json = {"run_info", "library_hash", "result",
+ *   MK_OK:             *out_json = {"run_info", "library_hash", "backend",
+ *                      "result_version", "result",
  *                      "buffers": [{"index", "name", "dtype", "shape"}]};
  *                      *out_buffers and
  *                      *out_count = typed buffers (NULL and 0 when none).
@@ -266,6 +273,61 @@ MKStatus mk_job_take_result(const MKEngine *engine, uint64_t job, char **out_jso
 
 /* Cancel if needed and forget a job without taking its result. */
 MKStatus mk_job_release(const MKEngine *engine, uint64_t job);
+
+/* ---- ABI 1.1 ------------------------------------------------------------ */
+
+/* One analysis description (an element of mk_engine_list_analyses). */
+MKStatus mk_engine_analysis_info(const MKEngine *engine, const char *name, char **out_json);
+
+/* Default backend for requests that name none: {"kind": "cpu_reference"}
+ * (the initial default), {"kind": "auto"} or {"kind": "gpu", "name": ...}.
+ * An unavailable explicit backend is refused (MK_ERR_UNSUPPORTED). */
+MKStatus mk_engine_set_default_backend(const MKEngine *engine, const char *backend_json);
+
+/* Migrate a project file in place to the current schema version. backup != 0
+ * keeps the original as "<file>.v<N>.bak"; dry_run != 0 writes nothing.
+ * out_json (nullable): {"path", "from_version", "to_version", "notes",
+ * "migrated", "backup", "dry_run"}. */
+MKStatus mk_engine_migrate_project(const MKEngine *engine, const char *path, int32_t backup,
+                                   int32_t dry_run, char **out_json);
+
+/* Run an analysis in the calling thread (blocking; no job, no callback, not
+ * cancellable) on the current snapshot. request_json as for
+ * mk_session_submit_analysis_json (view_key ignored). Outputs as for
+ * mk_job_take_result; errors of the run are returned directly. The session
+ * is locked only while the request is checked, not during the run. For
+ * quick analyses; submit long ones as jobs. */
+MKStatus mk_session_run_analysis_json(const MKSession *session, const char *request_json,
+                                      char **out_json, MKBuffer **out_buffers,
+                                      size_t *out_count);
+
+/* The validate report {"ok", "errors", "warnings", "issues"} of the current
+ * snapshot (non-finite numbers, aperture value, weights, mechanics, materials,
+ * coatings, tracer set-up, chief and marginal rays; docs/RESULTS.md).
+ * Blocking; runs without holding the session lock. */
+MKStatus mk_session_validate_json(const MKSession *session, char **out_json);
+
+/* Apply the system's solves and commit the solved system as a new snapshot.
+ * settings_json (nullable): solve settings (see the "solves" analysis).
+ * out_report (nullable): the solve report; out_hash (nullable): the new
+ * snapshot hash (unchanged when every solve already held). On failure the
+ * session is unchanged. Blocking and not cancellable, but the solve runs
+ * without holding the session lock; if the session changed meanwhile nothing
+ * is committed and MK_ERR_CANCELLED (superseded) is returned. */
+MKStatus mk_session_apply_solves(MKSession *session, const char *settings_json,
+                                 char **out_report, char **out_hash);
+
+/* Write the current project to path, or to "<project file>.autosave" when
+ * path is NULL, without changing the session (its path and dirty flag stay).
+ * An untitled session needs a path. out_path (nullable): the path written.
+ * Recover by opening the autosave file with mk_session_open. */
+MKStatus mk_session_autosave(const MKSession *session, const char *path, char **out_path);
+
+/* Current value of a parameter: {"value": number | "inf" | "-inf" | null}
+ * (null: no value, e.g. an automatic semi-diameter). path_json is a
+ * ParamPath as in mk_session_apply_param_edit. */
+MKStatus mk_session_get_param(const MKSession *session, const char *path_json,
+                              char **out_json);
 
 #ifdef __cplusplus
 } /* extern "C" */

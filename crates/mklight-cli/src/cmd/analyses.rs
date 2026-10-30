@@ -152,18 +152,16 @@ pub fn parse_settings(arg: Option<&str>) -> CliResult<Value> {
     Ok(v)
 }
 
-/// Resolve the `--backend` choice for one analysis. `auto` picks the first
-/// available non-reference backend that implements the analysis, else the
-/// CPU reference; `metal` is an explicit request (an error if unavailable).
-pub fn choose_backend(engine: &Engine, analysis: &str, choice: BackendChoice) -> Backend {
+/// Resolve the `--backend` choice. `auto` is the engine's `auto`: the
+/// first available GPU backend that implements the analysis and qualifies
+/// for the system, else the CPU reference (the envelope's `backend` says
+/// which, and why); `metal` is an explicit request (an error if unavailable
+/// or not implemented for the analysis).
+pub fn choose_backend(_engine: &Engine, _analysis: &str, choice: BackendChoice) -> Backend {
     match choice {
         BackendChoice::Cpu => Backend::CpuReference,
         BackendChoice::Metal => Backend::Gpu("metal".into()),
-        BackendChoice::Auto => engine
-            .backends()
-            .into_iter()
-            .find(|b| b.available && !b.capabilities.reference && b.supports(analysis))
-            .map_or(Backend::CpuReference, |b| b.backend),
+        BackendChoice::Auto => Backend::Auto,
     }
 }
 
@@ -414,11 +412,14 @@ mod tests {
     }
 
     #[test]
-    fn auto_backend_falls_back_to_the_reference() {
+    fn auto_backend_is_the_engines_auto() {
         let e = Engine::default();
-        // No GPU backend implements the built-in analyses yet.
         assert_eq!(
             choose_backend(&e, "system_summary", BackendChoice::Auto),
+            Backend::Auto
+        );
+        assert_eq!(
+            choose_backend(&e, "x", BackendChoice::Cpu),
             Backend::CpuReference
         );
         assert_eq!(

@@ -1,16 +1,29 @@
 //! Compute-backend selection.
 //!
 //! The CPU f64 reference is always present. GPU backends (`mklight-gpu`
-//! implementations such as Metal) register a `BackendProvider` once they are
-//! wired in; until then a Metal entry is listed as unavailable on macOS so
-//! front ends can show the choice.
+//! implementations) register a `BackendProvider`; on macOS the Metal
+//! backend (`crate::gpu::GpuProvider::metal`) is registered by default and
+//! is available when the machine has a Metal device that passes the
+//! numerics probe.
 //!
-//! Selection is per analysis: a GPU backend is used only for the analyses it
-//! lists in `capabilities.analyses`. Requesting a backend that is
-//! unavailable, or that does not implement the analysis, is an error unless
-//! the caller allows fallback, in which case the job runs on the CPU
-//! reference and its `RunInfo` says so (never silently degrade). The chosen
-//! provider's `device()` handle travels to the analysis in `AnalysisInput`.
+//! A request names a backend (`{"kind": "cpu_reference"}`,
+//! `{"kind": "gpu", "name": "metal"}`) or asks for `{"kind": "auto"}`.
+//!
+//! * **Explicit.** A GPU backend is used only for the analyses it lists in
+//!   `capabilities.analyses`. Requesting a backend that is unavailable, or
+//!   that does not implement the analysis, is an error unless the caller
+//!   allows fallback, in which case the job runs on the CPU reference and
+//!   its `RunInfo` says so (never silently degrade).
+//! * **Auto.** The first available GPU backend that implements the analysis,
+//!   else the CPU reference (the reason is in the result's
+//!   `BackendReport::fallback_reason`; no warning, since this is the
+//!   expected outcome for analyses without a GPU path).
+//!
+//! Either way a selected GPU analysis first qualifies the backend's
+//! precision for the snapshot (docs/GPU.md §5.2, CONVENTIONS §12) and falls
+//! back to the CPU reference, with a `RunInfo` warning, when it fails. The
+//! chosen provider's `device()` handle travels to the analysis in
+//! `AnalysisInput`.
 
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -29,21 +42,26 @@ pub enum Backend {
     CpuReference,
     /// A GPU backend by short name (`"metal"`, later `"vulkan"`, `"cuda"`).
     Gpu(String),
+    /// The first available GPU backend implementing the analysis, else the
+    /// CPU reference.
+    Auto,
 }
 
 impl Backend {
-    /// Stable string id: `cpu_reference` or `gpu:<name>`. Recorded in
-    /// `RunInfo.backend`.
+    /// Stable string id: `cpu_reference`, `gpu:<name>` or `auto`. The id
+    /// of the backend that computed a result is `RunInfo.backend`.
     pub fn id(&self) -> String {
         match self {
             Backend::CpuReference => "cpu_reference".into(),
             Backend::Gpu(n) => format!("gpu:{n}"),
+            Backend::Auto => "auto".into(),
         }
     }
     /// Inverse of `id` (also accepts `cpu` and a bare GPU name like `metal`).
     pub fn parse(s: &str) -> Self {
         match s.trim() {
             "" | "cpu" | "cpu_reference" => Backend::CpuReference,
+            "auto" => Backend::Auto,
             other => Backend::Gpu(other.strip_prefix("gpu:").unwrap_or(other).to_string()),
         }
     }
@@ -106,8 +124,13 @@ impl BackendInfo {
 pub type DeviceHandle = Arc<dyn Any + Send + Sync>;
 
 /// Implemented by GPU backend crates to describe and provide a device.
-/// Integration point: `mklight-gpu` / `mklight-metal`.
+/// Integration point: `mklight-gpu` / `mklight-metal` (`crate::gpu`).
 pub trait BackendProvider: Send + Sync {
+    /// `BackendInfo::id`, without probing the device (providers that open
+    /// devices lazily override it).
+    fn id(&self) -> String {
+        self.info().id
+    }
     fn info(&self) -> BackendInfo;
     /// The device analyses compute on; `None` for the CPU reference.
     fn device(&self) -> Option<DeviceHandle> {
@@ -122,6 +145,11 @@ pub struct SelectedBackend {
     pub device: Option<DeviceHandle>,
     /// Set when the run fell back to the CPU reference; goes into `RunInfo`.
     pub warning: Option<String>,
+    /// What was requested (`BackendReport::requested`).
+    pub requested: String,
+    /// Why the preferred backend was not selected, without a warning
+    /// (`auto` and engine-default preferences): `BackendReport::fallback_reason`.
+    pub note: Option<String>,
 }
 
 impl std::fmt::Debug for SelectedBackend {
@@ -130,6 +158,8 @@ impl std::fmt::Debug for SelectedBackend {
             .field("info", &self.info)
             .field("device", &self.device.is_some())
             .field("warning", &self.warning)
+            .field("requested", &self.requested)
+            .field("note", &self.note)
             .finish()
     }
 }
@@ -140,6 +170,8 @@ impl SelectedBackend {
             info: BackendInfo::cpu_reference(),
             device: None,
             warning: None,
+            requested: Backend::CpuReference.id(),
+            note: None,
         }
     }
 }
@@ -163,32 +195,27 @@ impl Default for BackendRegistry {
 }
 
 impl BackendRegistry {
-    /// The CPU reference, plus (on macOS) a placeholder Metal entry that is
-    /// listed as unavailable until `mklight-metal` is wired in.
+    /// The CPU reference, plus on macOS the Metal backend (opened on first
+    /// use; unavailable without a qualifying device).
     pub fn with_defaults() -> Self {
-        let mut r = BackendRegistry {
-            providers: vec![Arc::new(Static(BackendInfo::cpu_reference()))],
-        };
+        let mut r = Self::cpu_only();
         if cfg!(target_os = "macos") {
-            // PLACEHOLDER: replaced by the real Metal provider.
-            let b = Backend::Gpu("metal".into());
-            r.register(Arc::new(Static(BackendInfo {
-                id: b.id(),
-                backend: b,
-                title: "Metal GPU (f32)".into(),
-                available: false,
-                reason: Some("the Metal backend is not wired into the engine yet".into()),
-                precision: Precision::F32Gpu,
-                capabilities: BackendCapabilities::default(),
-            })));
+            r.register(Arc::new(crate::gpu::GpuProvider::metal()));
         }
         r
     }
 
+    /// Only the CPU reference.
+    pub fn cpu_only() -> Self {
+        BackendRegistry {
+            providers: vec![Arc::new(Static(BackendInfo::cpu_reference()))],
+        }
+    }
+
     /// Add a provider, replacing one with the same id.
     pub fn register(&mut self, p: Arc<dyn BackendProvider>) {
-        let id = p.info().id;
-        self.providers.retain(|q| q.info().id != id);
+        let id = p.id();
+        self.providers.retain(|q| q.id() != id);
         self.providers.push(p);
     }
 
@@ -204,20 +231,64 @@ impl BackendRegistry {
         let id = b.id();
         self.providers
             .iter()
+            .find(|p| p.id() == id)
             .map(|p| (p, p.info()))
-            .find(|(_, i)| i.id == id)
+    }
+
+    /// `auto`: the first available GPU backend implementing `analysis`
+    /// (registration order), else the CPU reference with the reason as a
+    /// note.
+    fn select_auto(&self, analysis: Option<&str>) -> SelectedBackend {
+        let mut why = Vec::new();
+        for p in &self.providers {
+            let i = p.info();
+            if i.capabilities.reference {
+                continue;
+            }
+            if !i.available {
+                why.push(format!(
+                    "{}: {}",
+                    i.id,
+                    i.reason.as_deref().unwrap_or("unavailable")
+                ));
+                continue;
+            }
+            match analysis {
+                Some(a) if !i.supports(a) => why.push(format!("{}: no GPU path for '{a}'", i.id)),
+                _ => {
+                    return SelectedBackend {
+                        device: p.device(),
+                        info: i,
+                        warning: None,
+                        requested: Backend::Auto.id(),
+                        note: None,
+                    };
+                }
+            }
+        }
+        let mut s = SelectedBackend::cpu_reference();
+        s.requested = Backend::Auto.id();
+        s.note = Some(if why.is_empty() {
+            "no GPU backend is registered".into()
+        } else {
+            why.join("; ")
+        });
+        s
     }
 
     /// Resolve a request for running `analysis` (`None`: only check that
     /// the backend is available). A backend that is unavailable or does not
     /// implement the analysis is an error, or, with `allow_fallback`, the CPU
-    /// reference plus a warning for `RunInfo`.
+    /// reference plus a warning for `RunInfo`. `auto` never fails.
     pub fn select(
         &self,
         requested: &Backend,
         analysis: Option<&str>,
         allow_fallback: bool,
     ) -> EngineResult<SelectedBackend> {
+        if *requested == Backend::Auto {
+            return Ok(self.select_auto(analysis));
+        }
         let why = match self.provider(requested) {
             None => "unknown backend".to_string(),
             Some((_, i)) if !i.available => i.reason.unwrap_or_else(|| "unavailable".into()),
@@ -228,12 +299,16 @@ impl BackendRegistry {
                         device: p.device(),
                         info: i,
                         warning: None,
+                        requested: requested.id(),
+                        note: None,
                     });
                 }
             },
         };
         if allow_fallback && *requested != Backend::CpuReference {
             let mut s = SelectedBackend::cpu_reference();
+            s.requested = requested.id();
+            s.note = Some(why.clone());
             s.warning = Some(format!(
                 "backend '{}' not used ({why}); ran on the CPU reference",
                 requested.id()
@@ -261,6 +336,31 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Backend::Gpu("metal".into())).unwrap(),
             serde_json::json!({"kind": "gpu", "name": "metal"})
+        );
+    }
+
+    #[test]
+    fn auto_prefers_a_gpu_that_implements_the_analysis() {
+        let mut r = BackendRegistry::cpu_only();
+        let s = r
+            .select(&Backend::Auto, Some("spot_diagram"), false)
+            .unwrap();
+        assert_eq!(s.info.backend, Backend::CpuReference);
+        assert_eq!(s.requested, "auto");
+        assert!(s.warning.is_none() && s.note.is_some());
+        r.register(Arc::new(Emu));
+        let s = r
+            .select(&Backend::Auto, Some("spot_diagram"), false)
+            .unwrap();
+        assert_eq!(s.info.id, "gpu:emu");
+        assert!(s.device.is_some() && s.note.is_none());
+        let s = r.select(&Backend::Auto, Some("validate"), false).unwrap();
+        assert_eq!(s.info.backend, Backend::CpuReference);
+        assert!(s.note.unwrap().contains("no GPU path for 'validate'"));
+        assert_eq!(Backend::parse("auto"), Backend::Auto);
+        assert_eq!(
+            serde_json::to_value(Backend::Auto).unwrap(),
+            serde_json::json!({"kind": "auto"})
         );
     }
 

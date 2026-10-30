@@ -544,6 +544,124 @@ impl Session {
             .len()
     }
 
+    // --- solves, validation, autosave
+
+    /// Apply the system's solves (docs/SOLVES.md) and commit the solved
+    /// system as a new snapshot. `settings` follows the `solves` analysis'
+    /// schema (`configuration` must be null: a solved configuration has no
+    /// configuration list, so it cannot be stored back). Returns the new
+    /// snapshot hash (unchanged when every solve already held) and the
+    /// solve report (the `solves` result shape). On failure the session is
+    /// unchanged.
+    pub fn apply_solves(
+        &mut self,
+        settings: &Value,
+        ctx: &JobContext,
+    ) -> EngineResult<(SnapshotHash, Value)> {
+        let p = self.prepare_solves(settings)?;
+        let (sys, report) = p.run(ctx)?;
+        let hash = self.commit_solves(&p, sys)?;
+        Ok((hash, report))
+    }
+
+    /// `apply_solves` in three steps, so a caller that shares the session
+    /// behind a lock can solve without holding it: `prepare_solves` (under
+    /// the lock: checks the settings and captures the current system and
+    /// library), `PendingSolves::run` (no lock), `commit_solves` (under the
+    /// lock again).
+    pub fn prepare_solves(&self, settings: &Value) -> EngineResult<PendingSolves> {
+        let schema = crate::analysis::solves::solve_settings_schema();
+        let s = crate::settings::normalize(&schema, settings)?;
+        let o: crate::analysis::solves::SolveOptions =
+            serde_json::from_value(s).map_err(|e| EngineError::InvalidSettings(e.to_string()))?;
+        if o.configuration.is_some() {
+            return Err(EngineError::InvalidSettings(
+                "apply_solves solves the base system; run the `solves` analysis to preview a \
+                 configuration"
+                    .into(),
+            ));
+        }
+        Ok(PendingSolves {
+            base: self.current.clone(),
+            library: self.library.clone(),
+            library_generation: self.library_generation,
+            solver: o.solver,
+        })
+    }
+
+    /// Commit a solved system computed from `pending`. If the session
+    /// changed in between (an edit, undo, a new library), nothing is
+    /// committed and the call fails with `MkError::Cancelled` (superseded,
+    /// like a job with the same view key): solve again.
+    pub fn commit_solves(
+        &mut self,
+        pending: &PendingSolves,
+        solved: OpticalSystem,
+    ) -> EngineResult<SnapshotHash> {
+        if self.current.hash() != pending.base.hash()
+            || self.library_generation != pending.library_generation
+        {
+            return Err(MkError::Cancelled.into());
+        }
+        self.set_system(solved)
+    }
+
+    /// The engine's `validate` report of the current snapshot (computed in
+    /// the calling thread): `{ok, errors, warnings, issues}`.
+    pub fn validate(&self) -> EngineResult<Value> {
+        let r = self.run_analysis(
+            &AnalysisRequest::new("validate", Value::Null),
+            &JobContext::new(),
+        )?;
+        Ok(r.json)
+    }
+
+    /// Current value of one parameter (`None` where it has none, e.g. an
+    /// automatic semi-diameter).
+    pub fn param_value(&self, path: &ParamPath) -> EngineResult<Option<f64>> {
+        match path.get(self.system()) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) => {
+                // Distinguish "no value" from "no such parameter": a path
+                // that cannot be set does not exist.
+                let mut probe = self.system().clone();
+                path.set(&mut probe, 1.0).map_err(|_| e)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Where `autosave(None)` writes: `<project file>.autosave` next to the
+    /// project, `None` for an untitled session.
+    pub fn autosave_path(&self) -> Option<PathBuf> {
+        self.path.as_ref().map(|p| {
+            let mut s = p.clone().into_os_string();
+            s.push(".autosave");
+            PathBuf::from(s)
+        })
+    }
+
+    /// Write the current project atomically to `path` (or `autosave_path`)
+    /// without changing the session: its path, dirty flag and saved file
+    /// stay as they are. The file is a normal project (open it to recover);
+    /// catalog paths are recorded as absolute paths. Returns the path
+    /// written.
+    pub fn autosave(&self, path: Option<&Path>) -> EngineResult<PathBuf> {
+        let target = match path {
+            Some(p) => p.to_path_buf(),
+            None => self.autosave_path().ok_or_else(|| {
+                EngineError::Core(MkError::InvalidParam(
+                    "an untitled session needs an explicit autosave path".into(),
+                ))
+            })?,
+        };
+        let mut p = self.project.clone();
+        p.metadata.modified = now_rfc3339();
+        p.metadata.engine_version = mklight_core::ENGINE_VERSION.to_string();
+        p.save(&target)?;
+        Ok(target)
+    }
+
     // --- analyses
 
     /// Run an analysis on the current snapshot in the calling thread.
@@ -571,6 +689,7 @@ impl Session {
             Box::new(move || resolve_cached(cache, snap, lib, generation)),
         )
         .with_device(backend.device)
+        .with_selection(backend.requested, backend.note)
         .with_library_hash(self.library_hash.clone());
         run_analysis(
             analysis.as_ref(),
@@ -608,6 +727,7 @@ impl Session {
                 Box::new(|| resolve_cached(&cache, &snap, &lib, generation)),
             )
             .with_device(backend.device)
+            .with_selection(backend.requested, backend.note)
             .with_library_hash(lib_hash);
             run_analysis(
                 analysis.as_ref(),
@@ -626,6 +746,30 @@ impl Session {
     /// Queue an analysis on the current snapshot (see `analysis_job`).
     pub fn submit_analysis(&self, req: &AnalysisRequest) -> EngineResult<JobId> {
         self.engine.submit_job(self.analysis_job(req)?)
+    }
+}
+
+/// Solves captured by `Session::prepare_solves`, run without the session.
+pub struct PendingSolves {
+    base: Snapshot,
+    library: Arc<MaterialLibrary>,
+    library_generation: u64,
+    solver: mklight_trace::SolveSettings,
+}
+
+impl PendingSolves {
+    /// The snapshot the solves start from.
+    pub fn base_hash(&self) -> SnapshotHash {
+        self.base.hash()
+    }
+
+    /// Solve (`mklight_trace::apply_solves_with`): the solved system and
+    /// the solve report (the `solves` result shape).
+    pub fn run(&self, ctx: &JobContext) -> EngineResult<(OpticalSystem, Value)> {
+        let (sys, report) =
+            mklight_trace::apply_solves_with(self.base.system(), &self.library, &self.solver, ctx)?;
+        let (json, _) = crate::analysis::geometric::crate_json(&report)?;
+        Ok((sys, json))
     }
 }
 
@@ -971,7 +1115,7 @@ mod tests {
             Err(EngineError::UnknownAnalysis(_))
         ));
         assert!(matches!(
-            s.submit_analysis(&AnalysisRequest::new("spot_diagram", Value::Null)),
+            s.submit_analysis(&AnalysisRequest::new("psf", Value::Null)),
             Err(EngineError::AnalysisUnavailable { .. })
         ));
         assert!(matches!(

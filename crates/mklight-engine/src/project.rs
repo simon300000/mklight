@@ -226,6 +226,21 @@ pub fn migrate_with(doc: Value, steps: &[Migration]) -> EngineResult<(Value, Mig
     Ok((doc, report))
 }
 
+/// Backup name for a file migrated from schema version `from`:
+/// `<file>.v<from>.bak`, or `<file>.v<from>.bak.<k>` with the first free
+/// `k` when that exists.
+pub fn backup_path(path: &Path, from: u32) -> std::path::PathBuf {
+    let base = format!("{}.v{from}.bak", path.display());
+    let first = std::path::PathBuf::from(&base);
+    if !first.exists() {
+        return first;
+    }
+    (1..)
+        .map(|k| std::path::PathBuf::from(format!("{base}.{k}")))
+        .find(|p| !p.exists())
+        .expect("unbounded search")
+}
+
 /// Upgrade a raw document to `PROJECT_SCHEMA_VERSION`.
 pub fn migrate(doc: Value) -> EngineResult<(Value, MigrationReport)> {
     migrate_with(doc, MIGRATIONS)

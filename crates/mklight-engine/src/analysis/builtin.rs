@@ -1,5 +1,6 @@
-//! Analyses that need nothing beyond `mklight-core`, plus placeholders that
-//! reserve the names of the solver analyses still to be wired in.
+//! Model analyses (`validate`, `system_summary`, `glass_info`), the
+//! `rng_stream` diagnostic, and placeholders that reserve the names of the
+//! wave-optics analyses still to be wired in.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,8 +15,10 @@ use mklight_core::{ApertureSpec, Interaction, JobContext, MkError, SemiDiameter,
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
 use crate::error::{EngineError, EngineResult};
+use crate::validation::{self, Issue};
 
-/// Register every built-in analysis and placeholder.
+/// Register every built-in analysis and placeholder (registered first, so
+/// the real analyses registered after them replace placeholders).
 pub fn register_all(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Validate));
     r.register(Arc::new(SystemSummary));
@@ -54,16 +57,11 @@ fn parse<T: for<'de> Deserialize<'de>>(settings: &Value) -> EngineResult<T> {
 
 /// Model checks beyond structural validation: material and coating
 /// resolution per surface, data-range warnings, aperture definition,
-/// thickness signs after mirrors, weights and configurations.
+/// thickness signs after mirrors, weights and configurations, plus the
+/// engine-level checks of `crate::validation` (non-finite numbers, aperture
+/// value, weights, mechanics references, tracer set-up, chief and marginal
+/// rays).
 pub struct Validate;
-
-#[derive(serde::Serialize)]
-struct Issue {
-    severity: &'static str,
-    code: &'static str,
-    surface: Option<usize>,
-    message: String,
-}
 
 impl Analysis for Validate {
     fn name(&self) -> &str {
@@ -76,9 +74,35 @@ impl Analysis for Validate {
         "model"
     }
     fn description(&self) -> &str {
-        "Checks that the system is complete and consistent: materials and coatings \
-         resolve, wavelengths lie inside glass data ranges, the aperture is defined, \
-         thickness signs follow mirrors, and configurations apply."
+        "Checks that the system is complete and consistent: every number is finite, \
+         materials and coatings resolve, wavelengths lie inside glass data ranges, the \
+         aperture is defined and positive, weights are not negative, mechanical parts \
+         reference existing surfaces, thickness signs follow mirrors, configurations apply, \
+         the reference tracer can set the system up, and the chief and marginal rays reach \
+         the image."
+    }
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        result(
+            &[
+                ("ok", boolean("No error-severity issue.")),
+                ("errors", int("")),
+                ("warnings", int("")),
+                (
+                    "issues",
+                    arr(
+                        obj(&[
+                            ("severity", enumeration(&["error", "warning", "info"], "")),
+                            ("code", string("Issue code (docs/RESULTS.md).")),
+                            ("surface", nullable(int("Surface index."))),
+                            ("message", string("")),
+                        ]),
+                        "",
+                    ),
+                ),
+            ],
+            vec![],
+        )
     }
     fn run(
         &self,
@@ -92,12 +116,7 @@ impl Analysis for Validate {
         let n = sys.surfaces.len();
         let mut issues = Vec::new();
         let mut push = |severity, code, surface, message: String| {
-            issues.push(Issue {
-                severity,
-                code,
-                surface,
-                message,
-            })
+            issues.push(Issue::new(severity, code, surface, message))
         };
 
         if let Err(e) = sys.validate() {
@@ -132,12 +151,14 @@ impl Analysis for Validate {
             }
         }
         ctx.check()?;
+        let mut resolved = None;
         if material_errors == 0 {
             match input.resolved() {
                 Ok(r) => {
                     for w in &r.warnings {
                         push("warning", "material_range", None, w.clone());
                     }
+                    resolved = Some(r);
                 }
                 Err(e) => push("error", "resolve", None, e.to_string()),
             }
@@ -223,6 +244,12 @@ impl Analysis for Validate {
             }
         }
 
+        issues.extend(validation::model_checks(sys));
+        ctx.check()?;
+        if let Some(r) = resolved {
+            issues.extend(validation::tracer_checks(r));
+        }
+
         let errors = issues.iter().filter(|i| i.severity == "error").count();
         let warnings = issues.iter().filter(|i| i.severity == "warning").count();
         Ok(AnalysisOutput {
@@ -269,6 +296,123 @@ impl Analysis for SystemSummary {
         "Surface table with resolved refractive indices at every system wavelength and \
          the global frame (vertex position and orientation) of every surface. Buffers: \
          `n_after` [surfaces × wavelengths], `vertex_global` [surfaces × 3] (mm)."
+    }
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        let row = obj(&[
+            ("index", int("Surface index.")),
+            ("id", int("Stable surface id.")),
+            ("label", string("")),
+            (
+                "type",
+                enumeration(
+                    &[
+                        "plane",
+                        "sphere",
+                        "conic",
+                        "even_asphere",
+                        "paraxial",
+                        "coordinate_break",
+                    ],
+                    "",
+                ),
+            ),
+            ("is_stop", boolean("")),
+            ("curvature", num("1/mm", "")),
+            ("radius", nf_u("mm", "1/curvature; \"inf\" for a plane.")),
+            ("conic", num("", "")),
+            ("shape", opaque("The model's SurfaceShape.")),
+            (
+                "thickness",
+                nf_u(
+                    "mm",
+                    "To the next vertex (\"inf\" for an object at infinity).",
+                ),
+            ),
+            (
+                "material",
+                nullable(string("Display name of the medium after the surface.")),
+            ),
+            ("material_ref", any("The model's MaterialRef.")),
+            ("interaction", string("refract or reflect.")),
+            ("semi_diameter", any("The model's SemiDiameter.")),
+            ("aperture", any("Resolved aperture shape or null.")),
+            ("coating", nullable(string(""))),
+            (
+                "n_after",
+                arr(
+                    num("", ""),
+                    "Index after the surface at every system wavelength (relative to air).",
+                ),
+            ),
+            ("nd_after", nf_u("", "")),
+            ("vd_after", nullable(nf())),
+            (
+                "alpha_after_per_mm",
+                arr(
+                    num("1/mm", ""),
+                    "Absorption coefficient per system wavelength.",
+                ),
+            ),
+            (
+                "frame",
+                nullable(obj(&[
+                    ("origin", tuple(num("mm", ""), 3, "Global vertex.")),
+                    (
+                        "rot",
+                        any(
+                            "3×3 rotation, rows; columns are the local axes in global coordinates.",
+                        ),
+                    ),
+                ])),
+            ),
+            ("to_next_is_axial", boolean("")),
+        ]);
+        result(
+            &[
+                ("name", string("")),
+                ("num_surfaces", int("")),
+                ("stop", int("")),
+                ("object_at_infinity", boolean("")),
+                ("wavelengths_um", arr(num("µm", ""), "")),
+                ("wavelength_weights", arr(num("", ""), "")),
+                ("primary_wavelength", int("")),
+                ("aperture", opaque("The model's ApertureSpec.")),
+                ("fields", opaque("The model's FieldSet.")),
+                ("ray_aiming", opaque("")),
+                (
+                    "environment",
+                    opaque("Temperature (°C) and pressure (atm)."),
+                ),
+                (
+                    "n_object",
+                    arr(num("", ""), "Object-space index per wavelength."),
+                ),
+                ("surfaces", arr(row, "")),
+                (
+                    "first_to_image_distance",
+                    num("mm", "Distance from surface 1 to the image vertex."),
+                ),
+                ("num_configurations", int("")),
+                ("warnings", arr(string(""), "")),
+            ],
+            vec![
+                buffer(
+                    "n_after",
+                    "f64",
+                    &["surfaces", "wavelengths"],
+                    "",
+                    "Index after each surface.",
+                ),
+                buffer(
+                    "vertex_global",
+                    "f64",
+                    &["surfaces", "3"],
+                    "mm",
+                    "Global vertex (NaN for an object at infinity).",
+                ),
+            ],
+        )
     }
     fn run(
         &self,
@@ -417,6 +561,53 @@ impl Analysis for GlassInfo {
         "Catalog data of one glass and its index relative to air at chosen wavelengths and \
          environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the \
          glass's valid range."
+    }
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        result(
+            &[
+                ("catalog", string("Catalog the glass was found in.")),
+                ("name", string("")),
+                ("catalog_nd", num("", "Catalog n_d.")),
+                ("catalog_vd", num("", "Catalog V_d.")),
+                (
+                    "nd",
+                    num("", "Computed at the d line (catalog conditions)."),
+                ),
+                ("ne", num("", "")),
+                ("vd", nf()),
+                ("pgf", nf_u("", "Partial dispersion P_g,F.")),
+                ("dispersion", opaque("Dispersion formula and coefficients.")),
+                ("min_um", num("µm", "")),
+                ("max_um", num("µm", "")),
+                ("has_thermal_data", boolean("")),
+                ("cte", any("Thermal expansion (1/K) or null.")),
+                ("density", any("g/cm³ or null.")),
+                ("relative_cost", any("")),
+                ("comment", any("")),
+                ("environment", opaque("Temperature and pressure used.")),
+                (
+                    "indices",
+                    arr(
+                        obj(&[
+                            ("wavelength_um", num("µm", "")),
+                            ("n", nf_u("", "Index relative to air at the environment.")),
+                            ("n_catalog", nf_u("", "At catalog conditions.")),
+                            ("absorption_per_mm", num("1/mm", "")),
+                            ("in_range", boolean("")),
+                        ]),
+                        "",
+                    ),
+                ),
+            ],
+            vec![buffer(
+                "dispersion_curve",
+                "f64",
+                &["samples", "2"],
+                "",
+                "(λ µm, n) over the glass's range.",
+            )],
+        )
     }
     fn settings_schema(&self) -> Value {
         json!({
@@ -573,6 +764,26 @@ impl Analysis for RngStream {
          and variance (expected 1/2 and 1/12). Buffer `uniform` [count]. `delay_ms` \
          sleeps after each chunk, to test progress and cancellation."
     }
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        result(
+            &[
+                ("count", int("")),
+                ("mean", num("", "")),
+                ("variance", num("", "")),
+                ("min", num("", "")),
+                ("max", num("", "")),
+                ("first", arr(num("", ""), "The first (up to) four draws.")),
+            ],
+            vec![buffer(
+                "uniform",
+                "f64",
+                &["count"],
+                "",
+                "The draws, in order.",
+            )],
+        )
+    }
     fn settings_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -650,52 +861,11 @@ pub struct PlannedAnalysis {
     pub provider: &'static str,
 }
 
-/// PLACEHOLDERS: analyses that later phases register under these names
-/// (replacing the placeholder). They are listed with `available: false`, and
+/// PLACEHOLDERS: the wave-optics analyses `mklight-wave` registers under
+/// these names (each replacing its placeholder with one `register` line in
+/// `analysis::register_all`). They are listed with `available: false`, and
 /// submitting one fails with `AnalysisUnavailable`.
 pub const PLANNED: &[PlannedAnalysis] = &[
-    PlannedAnalysis {
-        name: "paraxial",
-        title: "First-order properties",
-        category: "geometric",
-        provider: "mklight-trace",
-    },
-    PlannedAnalysis {
-        name: "layout",
-        title: "Layout",
-        category: "geometric",
-        provider: "mklight-trace",
-    },
-    PlannedAnalysis {
-        name: "spot_diagram",
-        title: "Spot diagram",
-        category: "geometric",
-        provider: "mklight-analysis",
-    },
-    PlannedAnalysis {
-        name: "ray_fan",
-        title: "Ray aberration fans",
-        category: "geometric",
-        provider: "mklight-analysis",
-    },
-    PlannedAnalysis {
-        name: "opd_fan",
-        title: "OPD fans",
-        category: "geometric",
-        provider: "mklight-analysis",
-    },
-    PlannedAnalysis {
-        name: "field_curvature_distortion",
-        title: "Field curvature and distortion",
-        category: "geometric",
-        provider: "mklight-analysis",
-    },
-    PlannedAnalysis {
-        name: "seidel",
-        title: "Seidel aberration sums",
-        category: "geometric",
-        provider: "mklight-analysis",
-    },
     PlannedAnalysis {
         name: "wavefront_map",
         title: "Wavefront map",
@@ -713,18 +883,6 @@ pub const PLANNED: &[PlannedAnalysis] = &[
         title: "MTF",
         category: "wave",
         provider: "mklight-wave",
-    },
-    PlannedAnalysis {
-        name: "ghost_paths",
-        title: "Ghost paths",
-        category: "ghost",
-        provider: "mklight-ghost",
-    },
-    PlannedAnalysis {
-        name: "stray_light",
-        title: "Stray light",
-        category: "stray",
-        provider: "mklight-stray",
     },
 ];
 
@@ -844,7 +1002,8 @@ mod tests {
         let mut s = singlet();
         s.aperture = ApertureSpec::FloatByStopSize;
         let r = run("validate", s.clone(), Value::Null).unwrap();
-        assert_eq!(codes(&r.json), vec!["stop_size_undefined"]);
+        // The reference tracer cannot size the pupil either.
+        assert_eq!(codes(&r.json), vec!["stop_size_undefined", "paraxial"]);
         s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 5.0 };
         assert_eq!(
             run("validate", s, Value::Null).unwrap().json["ok"],
@@ -987,8 +1146,10 @@ mod tests {
     fn placeholders_are_unavailable() {
         let reg = AnalysisRegistry::with_builtin();
         let info = reg.list();
+        let psf = info.iter().find(|i| i.name == "psf").unwrap();
+        assert!(!psf.available && psf.unavailable_reason.is_some());
         let spot = info.iter().find(|i| i.name == "spot_diagram").unwrap();
-        assert!(!spot.available && spot.unavailable_reason.is_some());
+        assert!(spot.available && spot.gpu_path);
         assert!(
             info.iter()
                 .find(|i| i.name == "validate")

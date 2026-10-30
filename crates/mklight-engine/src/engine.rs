@@ -20,6 +20,20 @@ use crate::scheduler::{
 };
 use crate::session::Session;
 
+/// Result of `Engine::migrate_file`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MigrationOutcome {
+    pub path: String,
+    pub from_version: u32,
+    pub to_version: u32,
+    pub notes: Vec<String>,
+    /// The file was rewritten at the current version.
+    pub migrated: bool,
+    /// Where the original was kept.
+    pub backup: Option<String>,
+    pub dry_run: bool,
+}
+
 /// Engine configuration. Every field has a default, so `{}` is valid JSON.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -119,6 +133,60 @@ impl Engine {
         Session::open(self, path)
     }
 
+    /// Migrate a project file to the current schema version in place.
+    /// Unless `backup` is false, the original bytes are kept as
+    /// `project::backup_path`; with `dry_run` nothing is written. A file
+    /// already at the current version is left untouched.
+    pub fn migrate_file(
+        &self,
+        path: &Path,
+        backup: bool,
+        dry_run: bool,
+    ) -> EngineResult<MigrationOutcome> {
+        let bytes = std::fs::read(path).map_err(|e| {
+            crate::EngineError::Core(mklight_core::MkError::Io(format!(
+                "cannot read {}: {e}",
+                path.display()
+            )))
+        })?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| {
+            crate::EngineError::Core(mklight_core::MkError::Parse(format!(
+                "{}: not UTF-8 text: {e}",
+                path.display()
+            )))
+        })?;
+        let (_, report) = Project::from_json_str(text)?;
+        let mut out = MigrationOutcome {
+            path: path.display().to_string(),
+            from_version: report.from_version,
+            to_version: report.to_version,
+            notes: report.notes.clone(),
+            migrated: false,
+            backup: None,
+            dry_run,
+        };
+        if !report.migrated() || dry_run {
+            return Ok(out);
+        }
+        // Open through a session (catalogs resolve relative to the file)
+        // before writing anything, so a file that cannot be opened is left
+        // untouched.
+        let mut session = self.open_session(path)?;
+        if backup {
+            let b = crate::project::backup_path(path, report.from_version);
+            crate::fsutil::atomic_write(&b, &bytes).map_err(|e| {
+                crate::EngineError::Core(mklight_core::MkError::Io(format!(
+                    "cannot write backup {}: {e}",
+                    b.display()
+                )))
+            })?;
+            out.backup = Some(b.display().to_string());
+        }
+        session.save(None)?;
+        out.migrated = true;
+        Ok(out)
+    }
+
     // --- analyses
 
     pub fn analyses(&self) -> Vec<AnalysisInfo> {
@@ -162,9 +230,10 @@ impl Engine {
     }
 
     /// Pick the backend for one run of `analysis`. An explicit request is
-    /// honoured or fails (unless `allow_fallback`); the engine default is a
-    /// preference, so analyses it does not implement run on the CPU
-    /// reference, with a `RunInfo` warning saying so.
+    /// honoured or fails (unless `allow_fallback`); `auto` picks a GPU with
+    /// a path for the analysis, else the CPU reference; the engine default
+    /// is a preference, so analyses it does not implement run on the CPU
+    /// reference (with a `RunInfo` warning for an explicit GPU default).
     pub fn select_backend(
         &self,
         requested: Option<&Backend>,
@@ -174,7 +243,12 @@ impl Engine {
         let reg = read(&self.inner.backends);
         match requested {
             Some(b) => reg.select(b, Some(analysis), allow_fallback),
-            None => reg.select(&self.default_backend(), Some(analysis), true),
+            None => {
+                let d = self.default_backend();
+                let mut s = reg.select(&d, Some(analysis), true)?;
+                s.requested = format!("default:{}", d.id());
+                Ok(s)
+            }
         }
     }
 

@@ -2,20 +2,18 @@
 
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mklight_core::model::ValidationIssue;
 use mklight_core::param::ParamPath;
 use mklight_core::{
     ApertureSpec, Interaction, MkError, OpticalSystem, SemiDiameter, SurfaceShape, samples,
 };
-use mklight_engine::fsutil::atomic_write;
 use mklight_engine::project::MigrationReport;
 use mklight_engine::{EngineError, ParamEdit, Project, Session};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer};
 
-use super::trace::status_parts;
-use super::{Ctx, Report, check_utf8, open_warnings, run_sync, save, warning_lines};
+use super::{Ctx, Report, open_warnings, run_sync, save, warning_lines};
 use crate::cli::{MigrateArgs, NewArgs, SetArgs, ShowArgs};
 use crate::error::{CliError, CliResult, Exit, open_error};
 use crate::output::{Align, Table, cell, fmt_f, fmt_g, key_values, num};
@@ -73,121 +71,13 @@ pub fn new(ctx: &Ctx, a: &NewArgs) -> CliResult<Report> {
 // ---------------------------------------------------------------------------
 // validate
 
-fn issue(severity: &str, code: &str, surface: Option<usize>, message: String) -> Value {
-    json!({"severity": severity, "code": code, "surface": surface, "message": message})
-}
-
-/// Checks `mklight` adds to the engine's `validate` analysis, so that a
-/// project reported valid can also be traced by `paraxial`, `trace` and the
-/// ray-based analyses:
-///
-/// * errors: an aperture value that is not > 0 (`aperture_value`), a
-///   negative field weight (`field_weight`), and a system that resolves but
-///   for which the reference tracer cannot build its paraxial model
-///   (`paraxial`, e.g. an F/# of 0 or an afocal system with an F/#
-///   aperture);
-/// * warnings: a field that cannot be resolved, a chief ray (primary
-///   wavelength, unclipped) that does not reach the image, and an axial
-///   marginal ray (field 0, pupil `(0, 1)`, clipped) that does not reach it
-///   (`field`, `chief_ray`, `marginal_ray`). Real-ray failures are warnings:
-///   a system in the middle of a redesign, or one vignetted on purpose, is
-///   still a valid model.
-///
-/// When the system does not resolve (unknown glass and similar) only the
-/// range checks run: the engine has already reported the cause.
-pub fn cli_checks(session: &Session) -> Vec<Value> {
-    let sys = session.system();
-    let mut out = Vec::new();
-    let aperture_value = match sys.aperture {
-        ApertureSpec::EntrancePupilDiameter { value }
-        | ApertureSpec::ImageSpaceFNumber { value }
-        | ApertureSpec::ObjectSpaceNa { value }
-        | ApertureSpec::ParaxialWorkingFNumber { value } => Some(value),
-        ApertureSpec::FloatByStopSize => None,
-    };
-    if let Some(v) = aperture_value
-        && !(v > 0.0 && v.is_finite())
-    {
-        out.push(issue(
-            "error",
-            "aperture_value",
-            None,
-            format!("the aperture value must be > 0 (is {v})"),
-        ));
-    }
-    for (k, f) in sys.fields.fields.iter().enumerate() {
-        if f.weight.is_nan() || f.weight < 0.0 {
-            out.push(issue(
-                "error",
-                "field_weight",
-                None,
-                format!("field {k}: weight must be ≥ 0 (is {})", f.weight),
-            ));
-        }
-    }
-    let Ok(resolved) = session.resolved() else {
-        return out;
-    };
-    let tracer = match SequentialTracer::new(resolved) {
-        Ok(t) => t,
-        Err(e) => {
-            out.push(issue(
-                "error",
-                "paraxial",
-                None,
-                format!("the reference tracer cannot set up the system: {e}"),
-            ));
-            return out;
-        }
-    };
-    let wl = tracer.system().primary_wavelength;
-    for (k, field) in tracer.fields().iter().enumerate() {
-        if let Some(e) = &field.error {
-            out.push(issue("warning", "field", None, format!("field {k}: {e}")));
-            continue;
-        }
-        let r = tracer.chief(field, wl);
-        if let Some(s) = r.status.surface() {
-            let (status, _, _) = status_parts(&r.status);
-            out.push(issue(
-                "warning",
-                "chief_ray",
-                Some(s),
-                format!("field {k}: the chief ray is stopped ({status}) at surface {s}"),
-            ));
-        }
-    }
-    if let Some(field) = tracer.fields().first().filter(|f| f.is_valid()) {
-        let r = tracer.trace(field, wl, 0.0, 1.0, &tracer.options());
-        if let Some(s) = r.status.surface() {
-            let (status, _, _) = status_parts(&r.status);
-            out.push(issue(
-                "warning",
-                "marginal_ray",
-                Some(s),
-                format!(
-                    "field 0: the marginal ray (pupil 0, 1) is stopped ({status}) at surface {s}"
-                ),
-            ));
-        }
-    }
-    out
-}
-
-/// The engine's `validate` report extended with [`cli_checks`]: `ok`,
-/// `errors`, `warnings` and `issues` (engine issues first).
+/// The engine's `validate` report: `ok`, `errors`, `warnings` and
+/// `issues`. It includes the checks that make a project reported valid
+/// traceable by `paraxial`, `trace` and the ray-based analyses (aperture
+/// value, weights, non-finite numbers, tracer set-up, chief and marginal
+/// rays; `mklight_engine::validation`).
 pub fn validation(session: &Session) -> CliResult<Value> {
-    let v = run_sync(session, "validate")?;
-    let mut issues = v["issues"].as_array().cloned().unwrap_or_default();
-    issues.extend(cli_checks(session));
-    let count = |sev: &str| issues.iter().filter(|i| i["severity"] == sev).count();
-    let (errors, warnings) = (count("error"), count("warning"));
-    Ok(json!({
-        "ok": errors == 0,
-        "errors": errors,
-        "warnings": warnings,
-        "issues": issues,
-    }))
+    run_sync(session, "validate")
 }
 
 /// A project file that parses but fails the engine's structural validation
@@ -578,80 +468,43 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
 // ---------------------------------------------------------------------------
 // migrate
 
-/// `<file>.v<from>.bak`, or `….bak.<k>` for the first free `k` when taken.
-fn backup_path(path: &Path, from: u32) -> PathBuf {
-    let base = format!("{}.v{from}.bak", path.display());
-    let first = PathBuf::from(&base);
-    if !first.exists() {
-        return first;
-    }
-    (1..)
-        .map(|k| PathBuf::from(format!("{base}.{k}")))
-        .find(|p| !p.exists())
-        .expect("unbounded search")
-}
-
+/// Migrate in place with the engine (`Engine::migrate_file`: the backup is
+/// `<file>.v<from>.bak`, or `….bak.<k>` for the first free `k` when taken;
+/// the file is opened through a session before anything is written).
 pub fn migrate(ctx: &Ctx, a: &MigrateArgs) -> CliResult<Report> {
     let path = &a.project;
-    let bytes = std::fs::read(path)
-        .map_err(|e| CliError::io(format!("cannot read {}: {e}", path.display())))?;
-    check_utf8(path, &bytes)?;
-    let text_in = String::from_utf8_lossy(&bytes);
-    let (_, report) = Project::from_json_str(&text_in).map_err(|e| open_error(path, e))?;
-    let mut json = json!({
-        "path": path_str(path),
-        "from_version": report.from_version,
-        "to_version": report.to_version,
-        "notes": report.notes,
-        "migrated": false,
-        "backup": null,
-        "dry_run": a.dry_run,
-    });
-    if !report.migrated() {
+    let out = ctx
+        .engine
+        .migrate_file(path, !a.no_backup, a.dry_run)
+        .map_err(|e| open_error(path, e))?;
+    let json = serde_json::to_value(&out)
+        .map_err(|e| CliError::new(Exit::AnalysisFailed, e.to_string()))?;
+    if out.from_version == out.to_version {
         let text = format!(
             "{} is already at schema version {}; nothing to do\n",
             path.display(),
-            report.to_version
+            out.to_version
         );
         return Ok(Report::ok(json, text));
     }
-    let mut text: String = report
-        .notes
-        .iter()
-        .map(|n| format!("note: {n}\n"))
-        .collect();
-    if a.dry_run {
+    let mut text: String = out.notes.iter().map(|n| format!("note: {n}\n")).collect();
+    if !out.migrated {
         text.push_str(&format!(
             "{} would be migrated from schema version {} to {} (dry run, nothing written)\n",
             path.display(),
-            report.from_version,
-            report.to_version
+            out.from_version,
+            out.to_version
         ));
         return Ok(Report::ok(json, text));
     }
-    // Open through the session (catalog references are resolved relative to
-    // the project) before writing anything, so a file that cannot be opened
-    // is left untouched.
-    let mut session = ctx.open(path)?;
-    let backup = if a.no_backup {
-        None
-    } else {
-        let b = backup_path(path, report.from_version);
-        atomic_write(&b, &bytes)
-            .map_err(|e| CliError::io(format!("cannot write backup {}: {e}", b.display())))?;
-        Some(b)
-    };
-    save(&mut session, None)?;
-    json["migrated"] = json!(true);
-    json["backup"] = json!(backup.as_ref().map(|b| path_str(b)));
     text.push_str(&format!(
         "migrated {} from schema version {} to {}\n",
         path.display(),
-        report.from_version,
-        report.to_version
+        out.from_version,
+        out.to_version
     ));
-    if let Some(b) = &backup {
-        text.push_str(&format!("backup: {}\n", b.display()));
+    if let Some(b) = &out.backup {
+        text.push_str(&format!("backup: {b}\n"));
     }
     Ok(Report::ok(json, text))
 }
@@ -826,7 +679,7 @@ fn set_unopened(
 
 /// Apply one `ParamPath` edit. The edit is applied through the session
 /// (structural validation, new snapshot) and checked with [`validation`]
-/// (the engine's `validate` analysis plus [`cli_checks`]); it is rejected
+/// (the engine's `validate` analysis); it is rejected
 /// (exit 2, nothing written) if it introduces an error that the project did
 /// not already have, for example a system the tracer can no longer set up.
 /// A path that does not address a parameter of this system is a usage error

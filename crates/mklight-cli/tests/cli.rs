@@ -968,7 +968,15 @@ fn run_produces_a_result_envelope_for_every_available_analysis() {
         let v = json_run(&["run", s(&p), name, "--settings", settings], exit);
         if exit == 0 {
             assert_eq!(v["run_info"]["analysis"], name);
-            assert_eq!(v["run_info"]["backend"], "cpu_reference");
+            // `--backend auto` (the default): a GPU only for analyses with a
+            // GPU path, when this machine has one that qualifies.
+            let b = v["run_info"]["backend"].as_str().unwrap();
+            if a["gpu_path"] == true {
+                assert!(b == "cpu_reference" || b.starts_with("gpu:"), "{name}: {b}");
+            } else {
+                assert_eq!(b, "cpu_reference", "{name}");
+            }
+            assert_eq!(v["backend"]["used"], b);
             assert_eq!(v["run_info"]["snapshot_hash"].as_str().unwrap().len(), 64);
             assert_eq!(v["library_hash"].as_str().unwrap().len(), 64);
             assert!(v["run_info"]["duration_ms"].is_number());

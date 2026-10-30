@@ -30,7 +30,19 @@ fn staticlib() -> PathBuf {
 /// (`rustc --print native-static-libs`).
 fn native_libs() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
-        &["-lm"]
+        // The engine links the Metal backend (docs/FFI.md, "Building and
+        // linking").
+        &[
+            "-lm",
+            "-liconv",
+            "-lobjc",
+            "-framework",
+            "Metal",
+            "-framework",
+            "Foundation",
+            "-framework",
+            "CoreFoundation",
+        ]
     } else {
         &["-lpthread", "-ldl", "-lm", "-lc"]
     }
@@ -102,4 +114,11 @@ fn module_map_is_consistent() {
     assert!(mm.contains("module CMKLight"));
     assert!(mm.contains("header \"mklight.h\""));
     assert!(mm.contains("link \"mklight_ffi\""));
+    // The static library contains the Metal backend: Swift autolinks these.
+    for f in ["Metal", "Foundation", "CoreFoundation"] {
+        assert!(mm.contains(&format!("link framework \"{f}\"")), "{f}");
+    }
+    for l in ["objc", "iconv"] {
+        assert!(mm.contains(&format!("link \"{l}\"")), "{l}");
+    }
 }
