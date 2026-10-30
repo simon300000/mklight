@@ -7,8 +7,10 @@
 //! averaged: every interface uses the unpolarised `R`, `T` (CONVENTIONS §5).
 //! At each step:
 //!
-//! 1. Closest hit through the [`RayCaster`]. A miss means the ray escapes
-//!    (or, inside an absorbing medium, is absorbed).
+//! 1. Closest hit through the [`RayCaster`]. A miss means the ray escapes.
+//!    A ray that leaves the scene from inside a non-ambient medium (a leak
+//!    out of a solid) is booked separately as `escaped_from_solid`, with a
+//!    warning.
 //! 2. **Beer–Lambert** along the segment: the weight is multiplied by
 //!    `exp(−α L)` and the difference is booked as bulk absorption (implicit,
 //!    noise-free absorption).
@@ -24,17 +26,38 @@
 //! 4. A branch is chosen by [`SplitMode`]:
 //!    * `Analog` — branch (or absorption) with its physical probability. The
 //!      weight is unchanged.
-//!    * `Weighted` — absorption is implicit (`w·A` is booked). A branch is
-//!      drawn with the defensive mixture `q = (1−m)·p/Σp + m/#branches`, and
-//!      the weight becomes `w·p/q`. Rare branches (ghost reflections, scatter)
-//!      are thereby sampled far more often than their probability.
+//!    * `Weighted` (default) — absorption is implicit (`w·A` is booked).
+//!      Rare branches are forced: a branch is drawn with
+//!      `q_j ∝ max(p_j/Σp, rare_floor)` and the weight becomes `w·p_j/q_j`.
+//!      Branches more likely than the floor keep (to the normalisation
+//!      `Z = Σ max(p_j/Σp, f) ≤ 1 + #branches·f`) their analog probability,
+//!      so the designed transmission path is inflated by at most `Z` per
+//!      interface instead of the large factor a uniform mixture would give,
+//!      while ghost reflections and scatter (`p ≪ f`) are sampled `f/p`
+//!      times more often at proportionally smaller weight.
 //!    * `Split` — all branches are followed with weights `w·p` (up to
 //!      `max_splits` splitting levels per path), then `Weighted`.
 //! 5. **Russian roulette** when the weight falls below `roulette_threshold`
-//!    times the initial weight: survive with probability `w/w_t` at weight `w_t`.
+//!    times the source-ray weight `w₀`: survive with probability `w/w_t` at
+//!    weight `w_t`.
+//! 6. **Weight window**: a path whose weight exceeds `split_ceiling·w₀` is
+//!    split into `k = ⌈w/w₀⌉` (at most 64) copies of weight `w/k`, which
+//!    are followed independently. Together with roulette this keeps every
+//!    weight within `[roulette_threshold, split_ceiling]·w₀`, so no path can
+//!    accumulate the rare, huge weights that make an unbiased estimator
+//!    heavy-tailed.
 //!
 //! All estimators are unbiased. The weight changes of steps 4–5 are booked
-//! as the MC adjustment (see `tally`), so the energy books balance exactly.
+//! as the MC adjustment (see `tally`), so the energy books balance exactly;
+//! splitting conserves weight exactly. Every result carries per-class
+//! standard errors (`tally`).
+//!
+//! # Repeated surfaces
+//!
+//! An interface may carry several sequential passes (`scene::Pass`). A hit
+//! is attributed to the pass whose surface is the path's next designed
+//! surface when it arrives on that pass's incident side, so both passes of a
+//! double-pass element count as designed.
 //!
 //! # Reproducibility and parallelism
 //!
@@ -55,7 +78,7 @@ use serde::{Deserialize, Serialize};
 use crate::bsdf::Bsdf;
 use crate::geom::{Ray, RayCaster, onb, reflect, refract};
 use crate::path::{ClassMask, History, flags};
-use crate::scene::{Behavior, InterfaceKind, MediumId, Scene, Side};
+use crate::scene::{Behavior, InterfaceKind, MediumId, Scene, SceneOptions, Side};
 use crate::source::SourceSpec;
 use crate::tally::{ChunkTally, DetectorResult, EnergyReport, Sink, StrayTally};
 
@@ -63,14 +86,25 @@ use crate::tally::{ChunkTally, DetectorResult, EnergyReport, Sink, StrayTally};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SplitMode {
+    /// Physical branch probabilities, unit weights.
     Analog,
-    Weighted { uniform_mix: f64 },
-    Split { max_splits: u32, uniform_mix: f64 },
+    /// Rare-branch forcing: branch `j` is drawn with probability
+    /// `∝ max(p_j/Σp, rare_floor)` (module docs).
+    Weighted { rare_floor: f64 },
+    /// Follow every branch for the first `max_splits` levels, then `Weighted`.
+    Split { max_splits: u32, rare_floor: f64 },
 }
+
+/// Default `rare_floor` of [`SplitMode::Weighted`].
+pub const DEFAULT_RARE_FLOOR: f64 = 0.02;
+/// Largest number of copies one weight-window split produces.
+pub const MAX_WINDOW_COPIES: f64 = 64.0;
 
 impl Default for SplitMode {
     fn default() -> Self {
-        SplitMode::Weighted { uniform_mix: 0.5 }
+        SplitMode::Weighted {
+            rare_floor: DEFAULT_RARE_FLOOR,
+        }
     }
 }
 
@@ -82,8 +116,11 @@ pub struct StraySettings {
     pub seed: u64,
     /// Interactions per path before the remaining weight is booked as truncated.
     pub max_events: u32,
-    /// Russian-roulette threshold relative to the initial ray weight.
+    /// Russian-roulette threshold relative to the source-ray weight.
     pub roulette_threshold: f64,
+    /// Weight-window ceiling relative to the source-ray weight (> 1; `∞`
+    /// disables splitting).
+    pub split_ceiling: f64,
     pub mode: SplitMode,
     /// Apply surface BSDFs to the reflected channel of optical surfaces.
     pub scatter_reflection: bool,
@@ -105,6 +142,7 @@ impl Default for StraySettings {
             seed: 1,
             max_events: 512,
             roulette_threshold: 1e-3,
+            split_ceiling: 2.0,
             mode: SplitMode::default(),
             scatter_reflection: true,
             scatter_transmission: true,
@@ -117,15 +155,16 @@ impl Default for StraySettings {
 
 impl StraySettings {
     pub fn validate(&self) -> MkResult<()> {
-        let mix_ok = |m: f64| (0.0..=1.0).contains(&m);
+        let floor_ok = |f: f64| (0.0..=0.5).contains(&f);
         let ok = self.rays > 0
             && self.chunk_rays > 0
             && self.max_events > 0
             && (0.0..1.0).contains(&self.roulette_threshold)
+            && self.split_ceiling > 1.0
             && match self.mode {
                 SplitMode::Analog => true,
-                SplitMode::Weighted { uniform_mix } | SplitMode::Split { uniform_mix, .. } => {
-                    mix_ok(uniform_mix)
+                SplitMode::Weighted { rare_floor } | SplitMode::Split { rare_floor, .. } => {
+                    floor_ok(rare_floor)
                 }
             };
         if ok {
@@ -217,13 +256,15 @@ impl<C: RayCaster> Tracer<'_, C> {
     fn trace_chunk(&self, chunk: u64, ctx: &JobContext) -> MkResult<ChunkTally> {
         let n = self.settings.chunk_rays as u64;
         let (lo, hi) = (chunk * n, ((chunk + 1) * n).min(self.settings.rays));
-        let mut tally = ChunkTally::new(self.scene.num_wavelengths());
+        let mut tally = ChunkTally::new(self.scene.num_wavelengths(), self.settings.owned_classes);
         let mut stack = Vec::with_capacity(32);
         for (k, i) in (lo..hi).enumerate() {
             if k % 64 == 0 {
                 ctx.check()?;
             }
+            tally.begin_ray();
             self.trace_ray(i, &mut tally, &mut stack);
+            tally.end_ray();
         }
         Ok(tally)
     }
@@ -296,6 +337,7 @@ impl<C: RayCaster> Tracer<'_, C> {
         });
         let prims = scene.primitives();
         let w_rr = set.roulette_threshold * w0;
+        let w_split = set.split_ceiling * w0;
         while let Some(mut s) = stack.pop() {
             loop {
                 if s.w <= 0.0 {
@@ -309,10 +351,10 @@ impl<C: RayCaster> Tracer<'_, C> {
                 tally.events += 1;
                 let alpha = scene.media[s.medium as usize].alpha[wl];
                 let Some(hit) = self.caster.closest_hit(&s.ray, f64::INFINITY) else {
-                    if alpha > 0.0 {
-                        tally.absorb(Sink::Bulk, s.w);
-                    } else {
+                    if s.medium == scene.ambient {
                         tally.escaped += s.w;
+                    } else {
+                        tally.escaped_from_solid += s.w;
                     }
                     break;
                 };
@@ -374,11 +416,13 @@ impl<C: RayCaster> Tracer<'_, C> {
                     }
                     Behavior::Interface(i) => {
                         let mirror = i.kind == InterfaceKind::Mirror;
-                        if mirror && side != i.incident_side {
+                        let expected = scene.sequence.get(s.hist.next_seq as usize).copied();
+                        let (pass, designed) = i.pass_for(side, expected);
+                        if mirror && !designed {
                             tally.absorb(Sink::MirrorBack, s.w);
                             break;
                         }
-                        if let Some(c) = &i.clip
+                        if let Some(c) = &pass.clip
                             && !c.passes(hit.local.p.x, hit.local.p.y)
                         {
                             s.hist.flags |= flags::OUTSIDE_CLIP;
@@ -430,7 +474,6 @@ impl<C: RayCaster> Tracer<'_, C> {
                             }
                             _ => 0.0,
                         };
-                        let designed = side == i.incident_side;
                         (
                             [r * (1.0 - sr), r * sr, t * (1.0 - st), t * st],
                             (1.0 - r - t).max(0.0),
@@ -443,7 +486,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                                 m_in,
                                 m_out,
                                 surface: Some((
-                                    i.surface,
+                                    pass.surface,
                                     designed && !mirror,
                                     designed && mirror,
                                     !mirror,
@@ -463,15 +506,17 @@ impl<C: RayCaster> Tracer<'_, C> {
                     break;
                 }
                 let sum_p: f64 = probs.iter().sum();
-                let weighted = |s: State, mix: f64, rng: &mut Philox, tally: &mut ChunkTally| {
+                let weighted = |s: State, floor: f64, rng: &mut Philox, tally: &mut ChunkTally| {
                     tally.absorb(sink, s.w * absorbed);
-                    let q = |j: usize| {
+                    let raw = |j: usize| {
                         if probs[j] > 0.0 {
-                            (1.0 - mix) * probs[j] / sum_p + mix / m as f64
+                            (probs[j] / sum_p).max(floor)
                         } else {
                             0.0
                         }
                     };
+                    let z: f64 = (0..probs.len()).map(raw).sum();
+                    let q = |j: usize| raw(j) / z;
                     let u = rng.uniform();
                     let mut acc = 0.0;
                     let mut pick = None;
@@ -509,12 +554,10 @@ impl<C: RayCaster> Tracer<'_, C> {
                         }
                         (pick, s.w)
                     }
-                    SplitMode::Weighted { uniform_mix } => {
-                        weighted(s, uniform_mix, &mut rng, tally)
-                    }
+                    SplitMode::Weighted { rare_floor } => weighted(s, rare_floor, &mut rng, tally),
                     SplitMode::Split {
                         max_splits,
-                        uniform_mix,
+                        rare_floor,
                     } => {
                         if s.splits < max_splits && m >= 2 {
                             tally.absorb(sink, s.w * absorbed);
@@ -544,7 +587,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                                 None => break,
                             }
                         }
-                        weighted(s, uniform_mix, &mut rng, tally)
+                        weighted(s, rare_floor, &mut rng, tally)
                     }
                 };
                 let (j, w) = next;
@@ -557,6 +600,14 @@ impl<C: RayCaster> Tracer<'_, C> {
                 }
                 if !self.roulette(&mut s, w_rr, &mut rng, tally) {
                     break;
+                }
+                // Weight window: split heavy paths into equal copies.
+                if s.w > w_split {
+                    let k = (s.w / w0).ceil().min(MAX_WINDOW_COPIES);
+                    s.w /= k;
+                    for _ in 1..k as u32 {
+                        stack.push(s);
+                    }
                 }
             }
         }
@@ -595,6 +646,10 @@ fn ideal_lens(dl: Vec3, p: Vec3, f: f64) -> Option<Vec3> {
 struct RunSettings<'a> {
     settings: &'a StraySettings,
     source: &'a SourceSpec,
+    /// Options the scene was built with (`None` for synthetic scenes).
+    scene_options: Option<&'a SceneOptions>,
+    /// [`Scene::fingerprint`], which also covers edits made after building.
+    scene_fingerprint: String,
 }
 
 /// Runs the stray-light Monte Carlo with the scene's own BVH.
@@ -671,6 +726,13 @@ pub fn run_with<C: RayCaster>(
             energy.sampling_failed
         ));
     }
+    if energy.escaped_from_solid > 1e-12 * energy.emitted {
+        warnings.push(format!(
+            "{:.3e} W ({:.3e} of the emitted flux) left the scene from inside a solid: a leak through a seam, an element that is not closed, or an open non-ambient image space",
+            energy.escaped_from_solid,
+            energy.escaped_from_solid / energy.emitted.max(f64::MIN_POSITIVE)
+        ));
+    }
     if energy.truncated > 1e-6 * energy.emitted {
         warnings.push(format!(
             "{:.3e} W truncated at {} events per path",
@@ -681,7 +743,12 @@ pub fn run_with<C: RayCaster>(
         timer.finish(
             snap,
             "stray_light",
-            &RunSettings { settings, source },
+            &RunSettings {
+                settings,
+                source,
+                scene_options: scene.options.as_ref(),
+                scene_fingerprint: scene.fingerprint(),
+            },
             "cpu-f64",
             Precision::F64Reference,
             Some(settings.seed),

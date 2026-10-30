@@ -19,13 +19,28 @@ fn scene_structure_of_a_barrelled_singlet() {
     let mut kinds = Vec::new();
     for i in 0..sc.primitives().len() {
         kinds.push(match sc.behavior(i) {
-            Behavior::Interface(f) => format!("if{}", f.surface),
+            Behavior::Interface(f) => format!("if{}", f.surface()),
             Behavior::Opaque(o) => format!("{:?}", o.kind),
             Behavior::Detector => "det".into(),
         });
     }
     kinds.sort();
-    assert_eq!(kinds, ["Baffle", "Barrel", "LensEdge", "det", "if1", "if2"]);
+    // Surface 1 is the stop: its non-clear zone and the ring outside the
+    // element are stop plates. Surface 2's non-clear zone is a mount zone.
+    assert_eq!(
+        kinds,
+        [
+            "Baffle",
+            "Barrel",
+            "LensEdge",
+            "Mount",
+            "StopPlate",
+            "StopPlate",
+            "det",
+            "if1",
+            "if2"
+        ]
+    );
     assert_eq!(sc.sequence, vec![1, 2, 3]);
     // Edge cylinder joins the rims: sag(9) of R = ±40 at z = 0 and z = 4.
     let sag = 40.0 - (1600.0f64 - 81.0).sqrt();
@@ -100,8 +115,8 @@ fn stop_plate_flats_and_mirror_sides() {
                     );
                 }
             }
-            Behavior::Interface(f) if f.surface == 4 => {
-                assert_eq!(f.incident_side, Side::Minus);
+            Behavior::Interface(f) if f.surface() == 4 => {
+                assert_eq!(f.passes[0].incident_side, Side::Minus);
                 assert_eq!(
                     sc.media[f.medium_minus as usize],
                     sc.media[f.medium_plus as usize]
@@ -179,7 +194,7 @@ fn results_do_not_depend_on_thread_count() {
         SplitMode::default(),
         SplitMode::Split {
             max_splits: 4,
-            uniform_mix: 0.3,
+            rare_floor: 0.1,
         },
     ] {
         let set = StraySettings {

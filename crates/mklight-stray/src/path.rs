@@ -20,6 +20,18 @@
 //! nor ghosts that the ghost solver enumerates, so the partition stays
 //! disjoint and complete.
 //!
+//! `Sneak` is a fifth class beyond the four of ARCHITECTURE "Solvers and
+//! double counting" (which still lists four; the stray solver owns the fifth).
+//! With apertures built as geometry, an opaque non-clear zone and stop
+//! plates, specular light outside the clipping apertures is rare by
+//! construction; `Sneak` mostly holds single stray reflections (for example
+//! the front-surface reflection of a Mangin mirror or a tilted window) and
+//! out-of-sequence specular paths.
+//!
+//! A surface the sequential model visits twice is one primitive with two
+//! passes (`scene::Pass`); the tracer reports the pass that matches the
+//! path's next designed surface, so the designed return pass stays `Primary`.
+//!
 //! When the stray solver runs alongside the ghost solver, the engine tallies
 //! only [`ClassMask::STRAY_WITH_GHOST`] (`Scatter | Mechanical | Sneak`).
 //! Running alone, it can report `Ghost` and `Primary` too

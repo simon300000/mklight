@@ -24,7 +24,7 @@ fn split_settings(rays: u64) -> StraySettings {
         rays,
         mode: SplitMode::Split {
             max_splits: 64,
-            uniform_mix: 0.5,
+            rare_floor: 0.1,
         },
         roulette_threshold: 1e-5,
         ..Default::default()
@@ -64,7 +64,9 @@ fn ghost_energy_is_r_squared_with_splitting() {
     }
 }
 
-/// With biased branch selection, the ghost fraction is an unbiased estimate.
+/// With rare-branch forcing, the ghost fraction is an unbiased estimate. The
+/// bare reflectance (4 %) is above the default floor, so the test raises the
+/// floor to force the reflections.
 #[test]
 fn ghost_energy_weighted_and_analog_estimates() {
     let n = 1.5;
@@ -75,6 +77,7 @@ fn ghost_energy_weighted_and_analog_estimates() {
         let set = StraySettings {
             rays: 5000,
             seed,
+            mode: SplitMode::Weighted { rare_floor: 0.2 },
             ..Default::default()
         };
         run(&sc, &beam(0.0), &set).energy.ghost_by_order[2]
@@ -124,7 +127,7 @@ fn beer_lambert_in_glass() {
     let alpha = 0.02;
     let glass = (0..sc.primitives().len())
         .find_map(|i| match sc.behavior(i) {
-            Behavior::Interface(f) if f.surface == 1 => Some(f.medium_plus),
+            Behavior::Interface(f) if f.surface() == 1 => Some(f.medium_plus),
             _ => None,
         })
         .unwrap();

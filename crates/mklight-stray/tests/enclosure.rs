@@ -148,16 +148,14 @@ fn rays_from_inside_glass_and_tir() {
         let air = b.add_medium(vec![1.0], vec![0.0]);
         let glass = b.add_medium(vec![1.5], vec![alpha]);
         let iface = || {
-            Behavior::Interface(Interface {
-                surface: 1,
-                kind: InterfaceKind::Refract,
-                medium_minus: air,
-                medium_plus: glass,
-                incident_side: Side::Minus,
-                coating: Arc::new(coating.clone()),
-                scatter: None,
-                clip: None,
-            })
+            Behavior::Interface(Interface::single(
+                1,
+                InterfaceKind::Refract,
+                air,
+                glass,
+                Side::Minus,
+                Arc::new(coating.clone()),
+            ))
         };
         let cap = || Shape::Sag(SagPatch::new(SurfaceShape::sphere(R), 0.0, R, None).unwrap());
         b.add(Frame::IDENTITY, cap(), iface(), "south");

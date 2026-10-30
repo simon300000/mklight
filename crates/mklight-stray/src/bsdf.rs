@@ -21,7 +21,12 @@
 //! * Gaussian: `F(ρ) = K·exp(−ρ²/(2s²))` with `s = 2·σ_slope`. A facet tilted
 //!   by `α` deviates the reflected beam by `2α`, so `|Δβ| ≈ 2α` for small
 //!   slopes. `K` makes the integral over the unit disk at normal incidence
-//!   equal `tis`.
+//!   equal `tis`. **Convention**: `σ_slope` is the RMS slope *per axis* (the
+//!   profile RMS slope a profilometer measures), so each component of `Δβ`
+//!   has standard deviation `2σ_slope`. If a value is the total 2-D RMS slope
+//!   `m = √(⟨s_x² + s_y²⟩)` (the microfacet "RMS slope"), pass `m/√2`. The
+//!   shared model (`ScatterModel::Gaussian`) does not yet state either
+//!   convention; this one is the stray solver's until it does.
 //!
 //! The part of a lobe outside the unit disk is evanescent and is not
 //! scattered, so `TIS` falls toward grazing incidence. The same lobe is used
@@ -184,6 +189,14 @@ fn rho_edge(b: f64, phi: f64) -> f64 {
     }
 }
 
+/// Scaled lobe parameters ([`Bsdf::lobe_params`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LobeParams {
+    Lambertian { value: f64 },
+    Abg { a: f64, b: f64, g: f64 },
+    Gaussian { k: f64, s: f64 },
+}
+
 /// A ready-to-use BSDF for one [`ScatterModel`] (validated, normalised, with
 /// its TIS table).
 #[derive(Clone, Debug)]
@@ -295,6 +308,35 @@ impl Bsdf {
     /// True when the model's parameters were clamped or rescaled.
     pub fn was_normalised(&self) -> bool {
         self.clamped
+    }
+
+    /// The TIS table a GPU backend packs: `TIS_TABLE_NODES` values at
+    /// incidence angles `θ_j = j·(π/2)/(N−1)`, interpolated as in
+    /// [`Bsdf::tis`]. Empty when the TIS does not depend on incidence (then
+    /// [`Bsdf::tis`] returns the constant).
+    pub fn tis_table(&self) -> &[f64] {
+        &self.tis_table
+    }
+
+    /// Lobe parameters for a GPU backend, with the energy scale applied:
+    /// `Lambertian { value }` (`f = value`), `Abg { a, b, g }`
+    /// (`f = a/(b + ρ^g)`) or `Gaussian { k, s }` (`f = k·exp(−ρ²/2s²)`),
+    /// where `ρ = |β − β₀|`.
+    pub fn lobe_params(&self) -> LobeParams {
+        match self.lobe {
+            Lobe::Lambertian { value } => LobeParams::Lambertian {
+                value: self.scale * value,
+            },
+            Lobe::Abg { a, b, g, .. } => LobeParams::Abg {
+                a: self.scale * a,
+                b,
+                g,
+            },
+            Lobe::Gaussian { k, s } => LobeParams::Gaussian {
+                k: self.scale * k,
+                s,
+            },
+        }
     }
 
     /// Unscaled radial profile `F(ρ)`.
@@ -590,6 +632,25 @@ mod tests {
             400,
         )
         .value
+    }
+
+    /// The exported lobe parameters (for GPU backends) reproduce `eval`,
+    /// including the energy scale of an over-unity ABg model.
+    #[test]
+    fn lobe_params_reproduce_eval() {
+        let (b0, beta): ([f64; 2], [f64; 2]) = ([0.1, -0.2], [0.25, 0.05]);
+        let rho = (beta[0] - b0[0]).hypot(beta[1] - b0[1]);
+        for f in [lam(0.3), abg(1.0, 1e-3, 2.0), gauss(0.02, 0.01)] {
+            let v = match f.lobe_params() {
+                LobeParams::Lambertian { value } => value,
+                LobeParams::Abg { a, b, g } => a / (b + rho.powf(g)),
+                LobeParams::Gaussian { k, s } => k * (-0.5 * (rho / s).powi(2)).exp(),
+            };
+            assert!((v / f.eval(b0, beta) - 1.0).abs() < 1e-14);
+        }
+        assert!(abg(1.0, 1e-3, 2.0).was_normalised());
+        assert_eq!(lam(0.3).tis_table().len(), 0);
+        assert_eq!(gauss(0.02, 0.01).tis_table().len(), TIS_TABLE_NODES);
     }
 
     #[test]

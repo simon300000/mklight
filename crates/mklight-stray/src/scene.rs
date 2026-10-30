@@ -4,18 +4,37 @@
 //! [`Scene::from_system`] builds a scene from an `OpticalSystem` and its
 //! `ResolvedSystem`:
 //!
-//! * **Optical surfaces** become [`Interface`]s. Each is a sag patch out to
-//!   the surface's *mechanical* semi-diameter, placed by
-//!   `ResolvedSurface::frame`. Surfaces that do nothing optically (dummies,
-//!   coordinate breaks, and bare air-to-air planes) get no interface.
+//! * **Optical surfaces** become [`Interface`]s: a sag patch covering the
+//!   surface's *clear aperture* as geometry, placed by
+//!   `ResolvedSurface::frame`. An `Annular` aperture gives a patch with a
+//!   central hole, and `Rectangular` / `Elliptical` apertures are masks on
+//!   the patch. Surfaces that do nothing optically (dummies, coordinate
+//!   breaks, and bare air-to-air planes) get no interface.
+//! * **Non-clear zones** (see *Semi-diameters*): the ring between the clear
+//!   aperture and the mechanical semi-diameter is an opaque *mount zone*
+//!   (ground, bevelled or held by the mount) with the edge finish. The
+//!   central hole of an annular aperture is a real hole in a mirror (a
+//!   Cassegrain primary) and an opaque obscuration on a refracting surface.
+//! * **Repeated surfaces**: a surface that the sequential model visits more
+//!   than once (double-pass Mangin mirrors, folded catadioptric systems) is
+//!   detected by coincident frame and shape and becomes **one** primitive
+//!   with several [`Pass`]es, so the return pass is recognised as designed.
+//!   Coincident lens edges and flats are built once.
 //! * **Lens edges**: between consecutive interfaces whose gap medium differs
 //!   from the ambient (object-space) medium, an edge cylinder at
 //!   `max(MSD_front, MSD_back)` joins the two rims. A flat annulus closes the
 //!   step on the side with the smaller mechanical semi-diameter, so each
 //!   element is a closed solid.
-//! * **Aperture stops**: a passive surface with a clipping aperture (fixed
-//!   semi-diameter or aperture shape) becomes an opaque plate covering
-//!   everything outside the aperture.
+//! * **Aperture stop and field apertures**: a passive surface with a
+//!   clipping aperture becomes an opaque plate covering everything outside
+//!   the aperture. The aperture stop (`system.stop`) always blocks: its
+//!   radius is the aperture shape, the fixed semi-diameter or, for an
+//!   automatic one, the supplied clear semi-diameter (the sequential model
+//!   aims rays to fill the stop, so nothing designed passes outside it). A
+//!   stop on a refracting surface gets an opaque mount zone plus a flat
+//!   *stop ring* from its mechanical semi-diameter outward, so light cannot
+//!   pass around the element. A stop on a mirror is the mirror's own edge.
+//!   A stop whose radius cannot be determined is reported as a warning.
 //! * **Mechanics**: `Barrel` (cylinder between two vertex planes, along the
 //!   `from` surface's axis) and `AnnularBaffle` from `OpticalSystem::mechanics`.
 //! * **Detector**: the image surface, bounded by the sensor rectangle or by
@@ -38,9 +57,23 @@
 //! bounding radius, or `SceneOptions::clear_semi_diameters` (the sequential
 //! tracer's automatic values; **integration point**). The mechanical
 //! semi-diameter is `EdgeSpec::mechanical_semi_diameter`, or the clear value
-//! plus `default_edge_margin`. Glass between the clear and the mechanical
-//! semi-diameter is treated as the same polished interface. Mounts are
-//! modelled with explicit baffles.
+//! plus `default_edge_margin`. A mirror with a rectangular or elliptical
+//! aperture and no explicit mechanical semi-diameter ends at its aperture
+//! (no mount zone). By default the zone between the clear aperture and the
+//! mechanical semi-diameter is opaque ([`OpaqueKind::Mount`]), so an
+//! overfilled entrance does not leak unmounted, unclipped light into the
+//! image. `SceneOptions::polished_outer_zone` makes it part of the polished
+//! interface instead (hits there are flagged `OUTSIDE_CLIP` and classed
+//! `Sneak`); the stop surface always blocks outside its aperture.
+//!
+//! # Scatter on optical surfaces
+//!
+//! `Surface::scatter` is applied **relative to each channel**: the scattered
+//! fraction of the reflected flux is `R·TIS(β₀_R)` and of the transmitted
+//! flux `T·TIS(β₀_T)` (the usual convention in which the TIS of a polished
+//! surface is quoted relative to its specular reflectance or transmittance).
+//! A BRDF measured in absolute terms on a coated lens surface must be divided
+//! by `R` before it is used here. The same lobe is used for both channels.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -109,30 +142,84 @@ pub enum InterfaceKind {
     IdealLens { focal_length: f64 },
 }
 
-/// An optical surface.
-#[derive(Clone, Debug)]
-pub struct Interface {
+/// One visit of the designed (sequential) path to an interface.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pass {
     /// Sequential surface index.
     pub surface: usize,
-    pub kind: InterfaceKind,
-    pub medium_minus: MediumId,
-    pub medium_plus: MediumId,
-    /// Side on which designed light arrives.
+    /// Side on which designed light arrives on this pass.
     pub incident_side: Side,
-    pub coating: Arc<ResolvedCoating>,
-    /// Surface roughness or contamination scatter (`Surface::scatter`).
-    pub scatter: Option<Arc<Bsdf>>,
-    /// The sequential model's clipping aperture. Hits outside it are flagged
-    /// (`history::OUTSIDE_CLIP`) because the sequential and ghost solvers
-    /// discard such rays.
+    /// The sequential model's clipping aperture on this pass. Hits outside it
+    /// are flagged (`flags::OUTSIDE_CLIP`) because the sequential and ghost
+    /// solvers discard such rays.
     pub clip: Option<ApertureShape>,
 }
 
+/// An optical surface.
+#[derive(Clone, Debug)]
+pub struct Interface {
+    /// The sequential passes through this surface, in sequence order (one for
+    /// an ordinary surface; two or more for a surface the sequential model
+    /// repeats, such as the front face of a Mangin mirror).
+    pub passes: Vec<Pass>,
+    pub kind: InterfaceKind,
+    pub medium_minus: MediumId,
+    pub medium_plus: MediumId,
+    pub coating: Arc<ResolvedCoating>,
+    /// Surface roughness or contamination scatter (`Surface::scatter`),
+    /// relative to the R and T channels (module docs).
+    pub scatter: Option<Arc<Bsdf>>,
+}
+
 impl Interface {
+    /// A single-pass interface.
+    pub fn single(
+        surface: usize,
+        kind: InterfaceKind,
+        medium_minus: MediumId,
+        medium_plus: MediumId,
+        incident_side: Side,
+        coating: Arc<ResolvedCoating>,
+    ) -> Interface {
+        Interface {
+            passes: vec![Pass {
+                surface,
+                incident_side,
+                clip: None,
+            }],
+            kind,
+            medium_minus,
+            medium_plus,
+            coating,
+            scatter: None,
+        }
+    }
+    /// Sequential index of the first pass.
+    pub fn surface(&self) -> usize {
+        self.passes[0].surface
+    }
     pub fn medium(&self, side: Side) -> MediumId {
         match side {
             Side::Minus => self.medium_minus,
             Side::Plus => self.medium_plus,
+        }
+    }
+    /// The pass a hit arriving on `side` belongs to, and whether `side` is a
+    /// designed incident side. `expected` is the next designed surface of
+    /// the path: the pass for it wins when the side matches, then any pass
+    /// incident on `side`, then the first pass (arrival from a non-designed
+    /// side).
+    pub fn pass_for(&self, side: Side, expected: Option<usize>) -> (&Pass, bool) {
+        if let Some(p) = self
+            .passes
+            .iter()
+            .find(|p| p.incident_side == side && Some(p.surface) == expected)
+        {
+            return (p, true);
+        }
+        match self.passes.iter().find(|p| p.incident_side == side) {
+            Some(p) => (p, true),
+            None => (&self.passes[0], false),
         }
     }
 }
@@ -143,6 +230,11 @@ impl Interface {
 pub enum OpaqueKind {
     LensEdge,
     LensFlat,
+    /// Non-clear zone of an optical surface: the ring between its clear
+    /// aperture and its mechanical semi-diameter, or the central obscuration
+    /// of an annular aperture on a refracting surface.
+    Mount,
+    /// Aperture-stop plate, ring or mount zone, and field-aperture plates.
     StopPlate,
     Barrel,
     Baffle,
@@ -242,6 +334,9 @@ pub struct Scene {
     /// Per sequential surface (index), when it has geometry.
     pub surfaces: Vec<Option<SurfaceGeom>>,
     pub snapshot: Option<Snapshot>,
+    /// The options the scene was built with (`None` for synthetic scenes).
+    /// Recorded in every result's `RunInfo`.
+    pub options: Option<SceneOptions>,
     pub warnings: Vec<String>,
     bounds: Aabb,
 }
@@ -275,6 +370,23 @@ impl Scene {
     /// Position of `surface` in `sequence`, if it is an interface or the detector.
     pub fn sequence_position(&self, surface: usize) -> Option<usize> {
         self.sequence.iter().position(|&s| s == surface)
+    }
+    /// BLAKE3 hash (hex) of everything the tracer reads: media, primitives,
+    /// behaviours, detector and sequence. It changes with any edit made to
+    /// the scene after it was built, so `RunInfo` identifies the exact scene.
+    pub fn fingerprint(&self) -> String {
+        let text = format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            self.wavelengths_um,
+            self.wavelength_weights,
+            self.media,
+            self.ambient,
+            self.bvh.primitives(),
+            self.behaviors,
+            self.detector,
+            self.sequence
+        );
+        blake3::hash(text.as_bytes()).to_hex().to_string()
     }
 }
 
@@ -375,14 +487,20 @@ impl SceneBuilder {
             return Err(MkError::InvalidModel("ambient medium missing".into()));
         }
         for b in &self.behaviors {
-            if let Behavior::Interface(i) = b
-                && (i.medium_minus as usize >= self.media.len()
-                    || i.medium_plus as usize >= self.media.len())
-            {
-                return Err(MkError::InvalidModel(format!(
-                    "interface {} refers to a missing medium",
-                    i.surface
-                )));
+            if let Behavior::Interface(i) = b {
+                if i.passes.is_empty() {
+                    return Err(MkError::InvalidModel(
+                        "interface without a sequential pass".into(),
+                    ));
+                }
+                if i.medium_minus as usize >= self.media.len()
+                    || i.medium_plus as usize >= self.media.len()
+                {
+                    return Err(MkError::InvalidModel(format!(
+                        "interface {} refers to a missing medium",
+                        i.surface()
+                    )));
+                }
             }
         }
         let detector = self
@@ -418,6 +536,7 @@ impl SceneBuilder {
             sequence: self.sequence,
             surfaces: self.surfaces,
             snapshot: self.snapshot,
+            options: None,
             warnings: self.warnings,
             bounds,
         })
@@ -444,6 +563,11 @@ pub struct SceneOptions {
     pub detector_pixels: (u32, u32),
     /// Include `OpticalSystem::mechanics`.
     pub include_mechanics: bool,
+    /// Treat the zone between an optical surface's clear aperture and its
+    /// mechanical semi-diameter as the same polished interface (unmounted,
+    /// unclipped glass or mirror) instead of an opaque mount zone. The stop
+    /// surface ignores this and always blocks outside its aperture.
+    pub polished_outer_zone: bool,
 }
 
 impl Default for SceneOptions {
@@ -455,6 +579,7 @@ impl Default for SceneOptions {
             mechanical_specular_reflectance: 0.0,
             detector_pixels: (128, 128),
             include_mechanics: true,
+            polished_outer_zone: false,
         }
     }
 }
@@ -499,6 +624,54 @@ impl BsdfCache {
     }
 }
 
+/// Two frames that coincide to rounding.
+fn same_frame(a: &Frame, b: &Frame) -> bool {
+    let tol = 1e-9 * (1.0 + a.origin.norm().max(b.origin.norm()));
+    a.origin.max_abs_diff(b.origin) <= tol
+        && a.rot
+            .m
+            .iter()
+            .flatten()
+            .zip(b.rot.m.iter().flatten())
+            .all(|(x, y)| (x - y).abs() <= 1e-12)
+}
+
+/// Global keys of the lens edges and flats already built, so that a solid
+/// visited twice by the sequential model (a double-pass element) gets its
+/// edge geometry once.
+#[derive(Default)]
+struct EdgeKeys(Vec<(Vec3, Vec3, f64, f64)>);
+
+impl EdgeKeys {
+    /// Inserts a key `(p, q, a, b)`, with the points compared unordered.
+    /// Returns false when an equal key already exists.
+    fn insert(&mut self, p: Vec3, q: Vec3, a: f64, b: f64) -> bool {
+        let tol = 1e-9 * (1.0 + p.norm().max(q.norm()) + a.abs().max(b.abs()));
+        let near = |u: Vec3, v: Vec3| u.max_abs_diff(v) <= tol;
+        let dup = self.0.iter().any(|&(p2, q2, a2, b2)| {
+            ((near(p, p2) && near(q, q2)) || (near(p, q2) && near(q, p2)))
+                && (a - a2).abs() <= tol
+                && (b - b2).abs() <= tol
+        });
+        if !dup {
+            self.0.push((p, q, a, b));
+        }
+        !dup
+    }
+}
+
+/// An interface primitive under construction.
+struct IfaceGeom {
+    prim: usize,
+    surface: usize,
+    frame: Frame,
+    shape: SurfaceShape,
+    kind: InterfaceKind,
+    media: (usize, usize),
+    msd: f64,
+    clear: f64,
+}
+
 impl Scene {
     /// Builds the non-sequential scene for a resolved system (see the module
     /// documentation).
@@ -506,6 +679,7 @@ impl Scene {
         let sys = rs.system();
         let n = rs.num_surfaces();
         let image = n - 1;
+        let stop = rs.stop;
         let mut b = SceneBuilder::new(rs.wavelengths_um.clone(), rs.wavelength_weights.clone());
         b.snapshot = Some(rs.snapshot.clone());
         b.surfaces = vec![None; n];
@@ -529,17 +703,45 @@ impl Scene {
                     .all(|(x, y)| (x - y).abs() <= 1e-15)
         };
 
+        let supplied = |i: usize| {
+            opts.clear_semi_diameters
+                .get(i)
+                .copied()
+                .flatten()
+                .filter(|r| r.is_finite() && *r > 0.0)
+        };
         let clear_sd = |i: usize| -> Option<f64> {
             let s = &rs.surfaces[i];
             s.fixed_semi_diameter
                 .or_else(|| s.aperture.as_ref().map(|a| a.bounding_radius()))
-                .or_else(|| opts.clear_semi_diameters.get(i).copied().flatten())
+                .or_else(|| supplied(i))
         };
+        // The sequential clipping aperture. An automatic semi-diameter does
+        // not clip, except at the stop, which the sequential model fills
+        // exactly (so its supplied clear semi-diameter is the stop radius).
         let clip_of = |i: usize| -> Option<ApertureShape> {
             let s = &rs.surfaces[i];
-            s.aperture.clone().or(s
-                .fixed_semi_diameter
-                .map(|r| ApertureShape::Circular { radius: r }))
+            s.aperture.clone().or_else(|| {
+                s.fixed_semi_diameter
+                    .or_else(|| supplied(i).filter(|_| i == stop))
+                    .map(|radius| ApertureShape::Circular { radius })
+            })
+        };
+        let edge_finish = |i: usize, cache: &mut BsdfCache, w: &mut Vec<String>| {
+            let m = sys.surfaces[i]
+                .edge
+                .edge_scatter
+                .clone()
+                .unwrap_or_else(|| opts.default_edge_finish.clone());
+            cache.get(&m, w)
+        };
+        let opaque = |kind, surface, finish| {
+            Behavior::Opaque(Opaque {
+                kind,
+                surface: Some(surface),
+                finish: Some(finish),
+                specular_reflectance: opts.mechanical_specular_reflectance,
+            })
         };
 
         // Classify surfaces and lay out interfaces.
@@ -551,7 +753,10 @@ impl Scene {
             shape: SurfaceShape,
         }
         let mut rims: Vec<Rim> = Vec::new();
-        let mut stops: Vec<usize> = Vec::new();
+        let mut ifaces: Vec<IfaceGeom> = Vec::new();
+        let mut plates: Vec<usize> = Vec::new();
+        // (surface, frame, shape, msd) of a stop on a refracting surface.
+        let mut stop_ring: Option<(usize, Frame, SurfaceShape, f64)> = None;
         let mut seq = Vec::new();
         let mut image_side = Side::Minus;
         for i in 1..n {
@@ -572,21 +777,107 @@ impl Scene {
                     && same_medium(i - 1, i)
                     && matches!(rsurf.coating, ResolvedCoating::Bare));
             if passive {
-                if !matches!(rsurf.shape, SurfaceShape::CoordinateBreak) && clip_of(i).is_some() {
-                    stops.push(i);
+                if matches!(rsurf.shape, SurfaceShape::CoordinateBreak) {
+                    if i == stop {
+                        warnings.push(format!(
+                            "the aperture stop (surface {i}) is a coordinate break and blocks nothing"
+                        ));
+                    }
+                } else if clip_of(i).is_some() {
+                    plates.push(i);
+                } else if i == stop {
+                    warnings.push(format!(
+                        "the aperture stop (surface {i}) has an automatic semi-diameter and none was supplied in SceneOptions::clear_semi_diameters; no stop plate was built, so the stop blocks nothing"
+                    ));
                 }
                 continue;
             }
-            let ca = clear_sd(i).ok_or_else(|| {
+            let ca0 = clear_sd(i).ok_or_else(|| {
                 MkError::InvalidModel(format!(
                     "surface {i} has an automatic semi-diameter; supply SceneOptions::clear_semi_diameters"
                 ))
             })?;
-            let edge = &sys.surfaces[i].edge;
-            let mut msd = edge
-                .mechanical_semi_diameter
-                .unwrap_or(ca + opts.default_edge_margin)
-                .max(ca);
+            let mirror = rsurf.is_mirror();
+            let kind = match rsurf.shape {
+                SurfaceShape::Paraxial { focal_length } => {
+                    InterfaceKind::IdealLens { focal_length }
+                }
+                _ if mirror => InterfaceKind::Mirror,
+                _ => InterfaceKind::Refract,
+            };
+            let media = match incident {
+                Side::Minus => (i - 1, i),
+                Side::Plus => (i, i - 1),
+            };
+            let pass = Pass {
+                surface: i,
+                incident_side: incident,
+                clip: clip_of(i),
+            };
+            seq.push(i);
+            if mirror {
+                mirrors += 1;
+            }
+
+            // A surface the sequence visits again: merge with the first visit.
+            if let Some(g) = ifaces
+                .iter()
+                .find(|g| same_frame(&g.frame, &rsurf.frame) && g.shape == rsurf.shape)
+            {
+                let consistent = g.kind == kind
+                    && same_medium(g.media.0, media.0)
+                    && same_medium(g.media.1, media.1);
+                if consistent {
+                    let (first, prim, msd, clear, frame) =
+                        (g.surface, g.prim, g.msd, g.clear, g.frame);
+                    if let Behavior::Interface(f) = &mut b.behaviors[prim] {
+                        f.passes.push(pass);
+                    }
+                    let (sa, sb) = (&sys.surfaces[first], &sys.surfaces[i]);
+                    if sa.coating != sb.coating || sa.scatter != sb.scatter {
+                        warnings.push(format!(
+                            "surface {i} repeats surface {first} with a different coating or scatter model; surface {first}'s is used for both passes"
+                        ));
+                    }
+                    if ca0 > clear * (1.0 + 1e-12) {
+                        warnings.push(format!(
+                            "surface {i} repeats surface {first} with a larger clear aperture; surface {first}'s geometry is used"
+                        ));
+                    }
+                    b.surfaces[i] = Some(SurfaceGeom {
+                        frame,
+                        clear_semi_diameter: clear,
+                        mechanical_semi_diameter: msd,
+                    });
+                    rims.push(Rim {
+                        surface: i,
+                        msd,
+                        frame,
+                        shape: rsurf.shape.clone(),
+                    });
+                    continue;
+                }
+                warnings.push(format!(
+                    "surfaces {} and {i} coincide but differ in interaction or media; they are built as two primitives and the first one is hit",
+                    g.surface
+                ));
+            }
+
+            let aperture = rsurf.aperture.clone();
+            let masked = matches!(
+                aperture,
+                Some(ApertureShape::Rectangular { .. } | ApertureShape::Elliptical { .. })
+            );
+            let explicit_msd = sys.surfaces[i].edge.mechanical_semi_diameter;
+            // A rectangular or elliptical mirror ends at its aperture unless
+            // it is given a circular substrate.
+            let outer_zone = !(mirror && masked && explicit_msd.is_none());
+            let default_msd = if outer_zone {
+                ca0 + opts.default_edge_margin
+            } else {
+                ca0
+            };
+            let mut msd = explicit_msd.unwrap_or(default_msd).max(ca0);
             let lim = shape_radius_limit(&rsurf.shape);
             if msd > lim {
                 warnings.push(format!(
@@ -594,73 +885,109 @@ impl Scene {
                 ));
                 msd = lim;
             }
-            let kind = match rsurf.shape {
-                SurfaceShape::Paraxial { focal_length } => {
-                    InterfaceKind::IdealLens { focal_length }
-                }
-                _ if rsurf.is_mirror() => InterfaceKind::Mirror,
-                _ => InterfaceKind::Refract,
-            };
-            let (before, after) = ((i - 1) as MediumId, i as MediumId);
-            let (minus, plus) = match incident {
-                Side::Minus => (before, after),
-                Side::Plus => (after, before),
-            };
+            let ca = ca0.min(msd);
             let scatter = match &sys.surfaces[i].scatter {
                 Some(m) => Some(cache.get(m, &mut warnings)?),
                 None => None,
             };
-            let patch = SagPatch::new(rsurf.shape.clone(), 0.0, msd, None)?;
-            b.add(
+
+            // Clear zone (the interface) and non-clear zones.
+            let is_stop = i == stop;
+            let polished = opts.polished_outer_zone && !is_stop;
+            let (r_in, clear_mask) = match &aperture {
+                Some(ApertureShape::Annular { inner_radius, .. }) => (inner_radius.max(0.0), None),
+                Some(a) if masked => (0.0, Some(Mask::Inside(a.clone()))),
+                _ => (0.0, None),
+            };
+            let (patch_r, patch_mask) = if polished && outer_zone {
+                (msd, None)
+            } else {
+                (ca, clear_mask)
+            };
+            let prim = b.add(
                 rsurf.frame,
-                Shape::Sag(patch),
+                Shape::Sag(SagPatch::new(
+                    rsurf.shape.clone(),
+                    r_in,
+                    patch_r,
+                    patch_mask,
+                )?),
                 Behavior::Interface(Interface {
-                    surface: i,
+                    passes: vec![pass],
                     kind,
-                    medium_minus: minus,
-                    medium_plus: plus,
-                    incident_side: incident,
+                    medium_minus: media.0 as MediumId,
+                    medium_plus: media.1 as MediumId,
                     coating: Arc::new(rsurf.coating.clone()),
                     scatter,
-                    clip: clip_of(i),
                 }),
                 format!("surface {i}"),
             );
+            let zone_kind = if is_stop {
+                OpaqueKind::StopPlate
+            } else {
+                OpaqueKind::Mount
+            };
+            if outer_zone && !polished {
+                let zone = if masked {
+                    Some(SagPatch::new(
+                        rsurf.shape.clone(),
+                        0.0,
+                        msd,
+                        aperture.clone().map(Mask::Outside),
+                    )?)
+                } else if msd > ca * (1.0 + 1e-12) {
+                    Some(SagPatch::new(rsurf.shape.clone(), ca, msd, None)?)
+                } else {
+                    None
+                };
+                if let Some(z) = zone {
+                    let fin = edge_finish(i, &mut cache, &mut warnings)?;
+                    b.add(
+                        rsurf.frame,
+                        Shape::Sag(z),
+                        opaque(zone_kind, i, fin),
+                        format!("mount zone {i}"),
+                    );
+                }
+            }
+            if r_in > 0.0 && !mirror {
+                let fin = edge_finish(i, &mut cache, &mut warnings)?;
+                b.add(
+                    rsurf.frame,
+                    Shape::Sag(SagPatch::new(rsurf.shape.clone(), 0.0, r_in, None)?),
+                    opaque(zone_kind, i, fin),
+                    format!("obscuration {i}"),
+                );
+            }
+            if is_stop && !mirror {
+                stop_ring = Some((i, rsurf.frame, rsurf.shape.clone(), msd));
+            }
             b.surfaces[i] = Some(SurfaceGeom {
                 frame: rsurf.frame,
-                clear_semi_diameter: ca.min(msd),
+                clear_semi_diameter: ca,
                 mechanical_semi_diameter: msd,
             });
-            seq.push(i);
+            ifaces.push(IfaceGeom {
+                prim,
+                surface: i,
+                frame: rsurf.frame,
+                shape: rsurf.shape.clone(),
+                kind,
+                media,
+                msd,
+                clear: ca,
+            });
             rims.push(Rim {
                 surface: i,
                 msd,
                 frame: rsurf.frame,
                 shape: rsurf.shape.clone(),
             });
-            if rsurf.is_mirror() {
-                mirrors += 1;
-            }
         }
         seq.push(image);
 
         // Lens edges and flats between consecutive interfaces in a solid gap.
-        let edge_finish = |i: usize, cache: &mut BsdfCache, w: &mut Vec<String>| {
-            let m = sys.surfaces[i]
-                .edge
-                .edge_scatter
-                .clone()
-                .unwrap_or_else(|| opts.default_edge_finish.clone());
-            cache.get(&m, w)
-        };
-        let opaque = |kind, surface, finish| {
-            Behavior::Opaque(Opaque {
-                kind,
-                surface: Some(surface),
-                finish: Some(finish),
-                specular_reflectance: opts.mechanical_specular_reflectance,
-            })
-        };
+        let mut keys = EdgeKeys::default();
         for w in rims.windows(2) {
             let (a, c) = (&w[0], &w[1]);
             if same_medium(a.surface, 0) {
@@ -684,17 +1011,19 @@ impl Scene {
                 ));
             }
             let re = a.msd.max(c.msd);
-            let fin = edge_finish(a.surface, &mut cache, &mut warnings)?;
-            if (zc - za).abs() > 1e-9 {
+            let on_axis = |z: f64| a.frame.to_global_point(Vec3::new(0.0, 0.0, z));
+            if (zc - za).abs() > 1e-9 && keys.insert(on_axis(za), on_axis(zc), re, re) {
+                let fin = edge_finish(a.surface, &mut cache, &mut warnings)?;
                 b.add(
                     a.frame,
                     Shape::Cylinder(Cylinder::new(re, za, zc)?),
-                    opaque(OpaqueKind::LensEdge, a.surface, fin.clone()),
+                    opaque(OpaqueKind::LensEdge, a.surface, fin),
                     format!("edge {}–{}", a.surface, c.surface),
                 );
             }
             for (r, z, s) in [(a.msd, za, a.surface), (c.msd, zc, c.surface)] {
-                if r < re * (1.0 - 1e-12) {
+                let centre = on_axis(z);
+                if r < re * (1.0 - 1e-12) && keys.insert(centre, centre, r, re) {
                     let fin = edge_finish(s, &mut cache, &mut warnings)?;
                     b.add(
                         translate(&a.frame, z),
@@ -762,10 +1091,10 @@ impl Scene {
             }
         }
 
-        // Aperture-stop plates.
-        for i in stops {
+        // Aperture-stop and field-aperture plates on passive surfaces.
+        for i in plates {
             let rsurf = &rs.surfaces[i];
-            let clip = clip_of(i).expect("stop has a clip");
+            let clip = clip_of(i).expect("plate has a clip");
             let r_clip = clip.bounding_radius();
             let mut r_out = sys.surfaces[i].edge.mechanical_semi_diameter.unwrap_or(
                 (r_clip + opts.default_edge_margin).max(max_radius + opts.default_edge_margin),
@@ -792,6 +1121,20 @@ impl Scene {
                 clear_semi_diameter: r_clip,
                 mechanical_semi_diameter: r_out,
             });
+        }
+
+        // A stop on a refracting surface: a flat ring from the element's rim
+        // outward, so light cannot pass around the element.
+        if let Some((i, frame, shape, msd)) = stop_ring {
+            let r_out = (max_radius + opts.default_edge_margin).max(msd + opts.default_edge_margin);
+            let z = shape.sag(msd * msd).unwrap_or(0.0);
+            let fin = edge_finish(i, &mut cache, &mut warnings)?;
+            b.add(
+                translate(&frame, z),
+                Shape::Sag(SagPatch::new(SurfaceShape::Plane, msd, r_out, None)?),
+                opaque(OpaqueKind::StopPlate, i, fin),
+                format!("stop ring {i}"),
+            );
         }
 
         // Detector at the image surface.
@@ -853,6 +1196,8 @@ impl Scene {
         b.set_sequence(seq);
         b.warnings.extend(rs.warnings.iter().cloned());
         b.warnings.extend(warnings);
-        b.build()
+        let mut scene = b.build()?;
+        scene.options = Some(opts.clone());
+        Ok(scene)
     }
 }
