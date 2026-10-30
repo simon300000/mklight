@@ -55,8 +55,11 @@
 /* ------------------------------------------------------------------------ */
 /* Versioning and fixed capacities                                           */
 /* ------------------------------------------------------------------------ */
-/* Layout version: bump on any change to a struct or enum below. */
-#define MKL_LAYOUT_VERSION 2u
+/* Layout version: bump on any change to a struct or enum below.
+ * 3: surface record gained ideal-lens vergences, double-float transform
+ *    parts (to_next_rot_lo, to_next_shift), coating codes; trace kernel
+ *    parameters, path steps and new ray status codes. */
+#define MKL_LAYOUT_VERSION 3u
 /* 'MKLP' little-endian; first word of every packed system header. */
 #define MKL_PACKED_MAGIC 0x504C4B4Du
 
@@ -104,10 +107,20 @@
 #define MKL_SURF_HAS_TO_NEXT (1u << 0)     /* to_next_* fields are valid */
 #define MKL_SURF_AXIAL (1u << 1)           /* to_next is a pure shift: rot = I, origin = (0, 0, thickness) */
 #define MKL_SURF_IS_STOP (1u << 2)         /* aperture stop */
-#define MKL_SURF_COATED (1u << 3)          /* has a coating (tables are not on the GPU in layout v1) */
+#define MKL_SURF_COATED (1u << 3)          /* has a coating (see MklPackedSurface.coating) */
 #define MKL_SURF_APERTURE_FROM_SD (1u << 4) /* CIRCULAR aperture comes from a fixed semi-diameter */
 #define MKL_SURF_OBJECT (1u << 5)          /* surface 0 */
 #define MKL_SURF_IMAGE (1u << 6)           /* surface N-1 */
+
+/* MklPackedSurface.coating: how the interface splits flux (CONVENTIONS §5).
+ *   BARE   uncoated: Fresnel on refracting surfaces, R = 1 on mirrors
+ *   IDEAL  constant R = coating_r, T = coating_t (T = 0 on mirrors)
+ *   TABLE  thin-film stack or tabulated R(λ): not available on the GPU in
+ *          layout v3; traces with radiometry through such a surface are
+ *          refused (geometry-only traces are unaffected). */
+#define MKL_COATING_BARE 0u
+#define MKL_COATING_IDEAL 1u
+#define MKL_COATING_TABLE 2u
 
 /* MklPackedHeader.flags */
 #define MKL_SYS_OBJECT_AT_INFINITY (1u << 0)
@@ -124,6 +137,8 @@
 #define MKL_RAY_VIGNETTED 3u     /* blocked by an aperture */
 #define MKL_RAY_NONFINITE 4u     /* NaN/Inf appeared (always a bug or invalid input) */
 #define MKL_RAY_NOT_CONVERGED 5u /* asphere Newton iteration failed its sag tolerance */
+#define MKL_RAY_OUTSIDE_DOMAIN 6u /* an asphere iterate left the sag's domain 1 - (1+k)c^2 r^2 >= 0 */
+#define MKL_RAY_DEGENERATE 7u     /* ray parallel to an ideal-lens plane */
 #define MKL_RAY_CODE_MASK 0xFFu
 #define MKL_RAY_SURFACE_SHIFT 8u
 
@@ -175,6 +190,22 @@ struct MklPackedHeader {
  * In terms of mklight_core::ResolvedSurface::to_next (a Frame giving the pose
  * of the next surface in this one): origin = to_next.origin and
  * rot = to_next.rot transposed.
+ *
+ * Trace kernels apply the transform in double-float: rot = to_next_rot +
+ * to_next_rot_lo (each entry to ~2^-48) and, for a point p near THIS
+ * surface's vertex (a hit point), p_next = rot·p − shift with
+ * shift = rot·origin = to_next_shift + to_next_shift_lo (computed in f64 by
+ * the packer). Both terms are exact to ~2^-48 relative, so neither form
+ * loses accuracy to cancellation. The inverse (backward steps of a path
+ * program) is p = rotᵀ·p_next + origin. For an object at infinity surface 0
+ * has no geometric successor transform in the model; the packer stores the
+ * map from the entrance (global) frame into surface 1 there instead, so the
+ * starting frame of a trace is always "surface 0's frame".
+ *
+ * vergence[w]: for MKL_SHAPE_PARAXIAL surfaces, the paraxial object vergence
+ * 1/a of the axial object point at this lens (mklight_trace::paraxial::
+ * ideal_lens_object_vergence), which fixes the conjugate at which the ideal
+ * lens is perfect in phase. Zero on every other surface.
  */
 struct MklPackedSurface {
     MKL_U32 shape;             /*   0  MKL_SHAPE_* */
@@ -187,21 +218,28 @@ struct MklPackedSurface {
     MKL_F32 asphere_inv_norm2; /*  28  1/R² (1/mm²), exact power of two; 1 when unused */
     MKL_U32 num_asphere;       /*  32  coefficients in use (0..MKL_MAX_ASPHERE) */
     MKL_U32 source_index;      /*  36  surface index in the model */
-    MKL_U32 reserved0;         /*  40  zero */
-    MKL_U32 reserved1;         /*  44  zero */
+    MKL_U32 coating;           /*  40  MKL_COATING_* */
+    MKL_U32 reserved0;         /*  44  zero */
     MKL_F32 asphere[MKL_MAX_ASPHERE]; /*  48  normalised coefficients (mm), see above */
     MKL_F32 aperture_params[4];       /*  88  mm, meaning per MKL_APERTURE_* */
     MKL_F32 to_next_rot[9];           /* 104  row-major rotation into the next local frame */
     MKL_F32 to_next_origin[3];        /* 140  next vertex in this local frame (mm), f32 hi part */
     MKL_F32 to_next_origin_lo[3];     /* 152  f32 residual of to_next_origin (mm) */
-    MKL_U32 reserved2[3];             /* 164  zero */
+    MKL_F32 coating_r;                /* 164  MKL_COATING_IDEAL reflectance, else 0 */
+    MKL_F32 coating_t;                /* 168  MKL_COATING_IDEAL transmittance, else 0 */
+    MKL_U32 reserved1;                /* 172  zero */
     MKL_F32 n_after[MKL_MAX_WAVELENGTHS];     /* 176  index after the surface per packed wavelength */
     MKL_F32 alpha_after[MKL_MAX_WAVELENGTHS]; /* 240  internal absorption after the surface (1/mm) */
-};                                            /* 304 bytes */
+    MKL_F32 vergence[MKL_MAX_WAVELENGTHS];    /* 304  ideal lens: paraxial object vergence 1/a (1/mm), else 0 */
+    MKL_F32 to_next_rot_lo[9];        /* 368  f32 residual of to_next_rot */
+    MKL_F32 to_next_shift[3];         /* 404  to_next_rot · to_next_origin (mm), hi part */
+    MKL_F32 to_next_shift_lo[3];      /* 416  f32 residual of to_next_shift */
+    MKL_U32 reserved2;                /* 428  zero */
+};                                    /* 432 bytes */
 
 /* Size checks (sizes are also asserted in Rust). */
 #define MKL_PACKED_HEADER_SIZE 176u
-#define MKL_PACKED_SURFACE_SIZE 304u
+#define MKL_PACKED_SURFACE_SIZE 432u
 MKL_STATIC_ASSERT(sizeof(struct MklPackedHeader) == MKL_PACKED_HEADER_SIZE, "MklPackedHeader size");
 MKL_STATIC_ASSERT(sizeof(struct MklPackedSurface) == MKL_PACKED_SURFACE_SIZE, "MklPackedSurface size");
 
@@ -238,6 +276,89 @@ struct MklSagParams {
     MKL_U32 reserved[2];
 };                    /* 16 bytes */
 
+/* ------------------------------------------------------------------------ */
+/* Sequential / path trace kernel (mkl_trace)                                */
+/* ------------------------------------------------------------------------ */
+/*
+ * A trace runs a *path program*: a list of steps, each one u32 word
+ *   surface | (interaction << MKL_STEP_MODE_SHIFT) | (MKL_STEP_BACKWARD if backward)
+ * starting from rays given in the local frame of start_surface. A forward
+ * step goes from the current surface c to c + 1 (with c's to_next transform),
+ * a backward step to c - 1 (inverse of the target's to_next). The medium of
+ * the gap between surfaces j and j + 1 is n_after[j] / alpha_after[j]
+ * (absorption of gap 0 is 0 for an object at infinity). Interactions:
+ *   SEQUENTIAL  the surface's own interaction, exactly as mklight-trace
+ *               (the image surface never interacts);
+ *   TRANSMIT    refraction from the incoming gap into the gap beyond the
+ *               surface (dummy surfaces pass; the image surface records only);
+ *   REFLECT     specular reflection (any surface except coordinate breaks).
+ * Coordinate breaks only change the frame. A sequential trace from s to e is
+ * the program (s+1, SEQUENTIAL, fwd) ... (e, SEQUENTIAL, fwd).
+ *
+ * Ray data are planes of `stride` values (SoA): input float planes
+ * MKL_TRACE_IN_* and uint planes MKL_TRACE_INU_*, output float planes
+ * MKL_TRACE_OUT_* and uint planes MKL_TRACE_OUTU_*. Records (flag
+ * MKL_TRACE_RECORD) hold num_steps + 1 slots per ray: slot 0 is the input,
+ * slot k + 1 the state after step k: rec_f[(slot*stride + ray)*9 + j] in the
+ * MKL_TRACE_RECORD_FLOATS order and rec_u[slot*stride + ray] the status.
+ */
+#define MKL_STEP_SURFACE_MASK 0xFFFFu
+#define MKL_STEP_MODE_SHIFT 16u
+#define MKL_STEP_MODE_MASK 0xFu
+#define MKL_STEP_SEQUENTIAL 0u
+#define MKL_STEP_TRANSMIT 1u
+#define MKL_STEP_REFLECT 2u
+#define MKL_STEP_BACKWARD (1u << 20)
+#define MKL_MAX_STEPS 4096u
+
+/* MklTraceParams.flags */
+#define MKL_TRACE_CLIP (1u << 0)       /* apply apertures */
+#define MKL_TRACE_RADIOMETRY (1u << 1) /* unpolarised interface T/R and bulk absorption act on the weight */
+#define MKL_TRACE_RECORD (1u << 2)     /* write per-step records */
+
+/* Input planes. */
+#define MKL_TRACE_IN_X 0u
+#define MKL_TRACE_IN_Y 1u
+#define MKL_TRACE_IN_Z 2u
+#define MKL_TRACE_IN_L 3u
+#define MKL_TRACE_IN_M 4u
+#define MKL_TRACE_IN_N 5u
+#define MKL_TRACE_IN_OPL_HI 6u
+#define MKL_TRACE_IN_OPL_LO 7u
+#define MKL_TRACE_IN_WEIGHT 8u
+#define MKL_TRACE_IN_FLOATS 9u
+#define MKL_TRACE_INU_WAVELENGTH 0u
+#define MKL_TRACE_INU_SYSTEM 1u
+#define MKL_TRACE_IN_UINTS 2u
+/* Output planes. */
+#define MKL_TRACE_OUT_X 0u
+#define MKL_TRACE_OUT_Y 1u
+#define MKL_TRACE_OUT_Z 2u
+#define MKL_TRACE_OUT_L 3u
+#define MKL_TRACE_OUT_M 4u
+#define MKL_TRACE_OUT_N 5u
+#define MKL_TRACE_OUT_OPL_HI 6u
+#define MKL_TRACE_OUT_OPL_LO 7u
+#define MKL_TRACE_OUT_WEIGHT 8u
+#define MKL_TRACE_OUT_TRANSMITTANCE 9u /* internal (bulk) transmittance exp(-sum alpha t) */
+#define MKL_TRACE_OUT_FLOATS 10u
+#define MKL_TRACE_OUTU_STATUS 0u       /* code | surface << MKL_RAY_SURFACE_SHIFT */
+#define MKL_TRACE_OUTU_LAST_SURFACE 1u /* surface of the reported state (the failing one on failure) */
+#define MKL_TRACE_OUTU_STEPS 2u        /* path steps completed (num_steps on success) */
+#define MKL_TRACE_OUT_UINTS 3u
+
+struct MklTraceParams {
+    MKL_U32 num_rays;       /*  0  rays in this launch */
+    MKL_U32 stride;         /*  4  plane stride (rays in the whole batch) */
+    MKL_U32 num_steps;      /*  8  path program length */
+    MKL_U32 start_surface;  /* 12  surface whose frame the input rays are in */
+    MKL_U32 flags;          /* 16  MKL_TRACE_* */
+    MKL_U32 max_iterations; /* 20  asphere Newton step cap */
+    MKL_F32 tolerance_abs;  /* 24  asphere sag residual tolerance: abs + rel·|z| (mm) */
+    MKL_F32 tolerance_rel;  /* 28 */
+};                          /* 32 bytes */
+
+MKL_STATIC_ASSERT(sizeof(struct MklTraceParams) == 32, "MklTraceParams size");
 MKL_STATIC_ASSERT(sizeof(struct MklPhiloxParams) == 32, "MklPhiloxParams size");
 MKL_STATIC_ASSERT(sizeof(struct MklReduceParams) == 16, "MklReduceParams size");
 MKL_STATIC_ASSERT(sizeof(struct MklSagParams) == 16, "MklSagParams size");

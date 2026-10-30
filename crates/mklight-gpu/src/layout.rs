@@ -18,6 +18,7 @@
 //! of the quantities they modify.
 
 use bytemuck::{Pod, Zeroable};
+use mklight_core::materials::coating::ResolvedCoating;
 use mklight_core::math::Mat3;
 use mklight_core::model::{ApertureShape, Interaction, SurfaceShape};
 use mklight_core::snapshot::SnapshotHash;
@@ -60,16 +61,23 @@ pub struct PackedSurface {
     pub asphere_inv_norm2: f32,
     pub num_asphere: u32,
     pub source_index: u32,
+    pub coating: u32,
     pub reserved0: u32,
-    pub reserved1: u32,
     pub asphere: [f32; MAX_ASPHERE],
     pub aperture_params: [f32; 4],
     pub to_next_rot: [f32; 9],
     pub to_next_origin: [f32; 3],
     pub to_next_origin_lo: [f32; 3],
-    pub reserved2: [u32; 3],
+    pub coating_r: f32,
+    pub coating_t: f32,
+    pub reserved1: u32,
     pub n_after: [f32; MAX_WAVELENGTHS],
     pub alpha_after: [f32; MAX_WAVELENGTHS],
+    pub vergence: [f32; MAX_WAVELENGTHS],
+    pub to_next_rot_lo: [f32; 9],
+    pub to_next_shift: [f32; 3],
+    pub to_next_shift_lo: [f32; 3],
+    pub reserved2: u32,
 }
 
 /// Mirror of `struct MklPhiloxParams`.
@@ -93,6 +101,20 @@ pub struct ReduceParams {
     pub first_group: u32,
 }
 
+/// Mirror of `struct MklTraceParams`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct TraceParams {
+    pub num_rays: u32,
+    pub stride: u32,
+    pub num_steps: u32,
+    pub start_surface: u32,
+    pub flags: u32,
+    pub max_iterations: u32,
+    pub tolerance_abs: f32,
+    pub tolerance_rel: f32,
+}
+
 /// Mirror of `struct MklSagParams`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -110,6 +132,7 @@ const _: () = {
     assert!(std::mem::size_of::<PhiloxParams>() == 32);
     assert!(std::mem::size_of::<ReduceParams>() == 16);
     assert!(std::mem::size_of::<SagParams>() == 16);
+    assert!(std::mem::size_of::<TraceParams>() == 32);
     assert!(MKL_PACKED_HEADER_SIZE.is_multiple_of(16));
     assert!(MKL_PACKED_SURFACE_SIZE.is_multiple_of(16));
 };
@@ -149,16 +172,23 @@ pub fn surface_offsets() -> Vec<(&'static str, usize)> {
         ("asphere_inv_norm2", o!(S, asphere_inv_norm2)),
         ("num_asphere", o!(S, num_asphere)),
         ("source_index", o!(S, source_index)),
+        ("coating", o!(S, coating)),
         ("reserved0", o!(S, reserved0)),
-        ("reserved1", o!(S, reserved1)),
         ("asphere", o!(S, asphere)),
         ("aperture_params", o!(S, aperture_params)),
         ("to_next_rot", o!(S, to_next_rot)),
         ("to_next_origin", o!(S, to_next_origin)),
         ("to_next_origin_lo", o!(S, to_next_origin_lo)),
-        ("reserved2", o!(S, reserved2)),
+        ("coating_r", o!(S, coating_r)),
+        ("coating_t", o!(S, coating_t)),
+        ("reserved1", o!(S, reserved1)),
         ("n_after", o!(S, n_after)),
         ("alpha_after", o!(S, alpha_after)),
+        ("vergence", o!(S, vergence)),
+        ("to_next_rot_lo", o!(S, to_next_rot_lo)),
+        ("to_next_shift", o!(S, to_next_shift)),
+        ("to_next_shift_lo", o!(S, to_next_shift_lo)),
+        ("reserved2", o!(S, reserved2)),
     ]
 }
 
@@ -399,23 +429,52 @@ impl PackedSystem {
                 }
             }
 
-            if let Some(f) = &s.to_next {
+            // The transform into the next frame. For an object at infinity,
+            // surface 0 carries the entrance frame -> surface 1 map (header
+            // docs), so a trace's starting frame is always surface 0's.
+            let to_next = match (&s.to_next, i) {
+                (Some(f), _) => Some((*f, s.to_next_is_axial)),
+                (None, 0) if rs.object_at_infinity => {
+                    let f = rs.surfaces[1].frame;
+                    let axial = f.rot.is_identity() && f.origin.x == 0.0 && f.origin.y == 0.0;
+                    Some((f, axial))
+                }
+                (None, _) => None,
+            };
+            if let Some((f, axial)) = to_next {
                 p.flags |= MKL_SURF_HAS_TO_NEXT;
-                if s.to_next_is_axial {
+                if axial {
                     p.flags |= MKL_SURF_AXIAL;
                 }
                 let rt: Mat3 = f.rot.transpose();
                 for r in 0..3 {
                     for c in 0..3 {
-                        p.to_next_rot[3 * r + c] = normal_or_zero(rt.m[r][c] as f32);
+                        let v = rt.m[r][c];
+                        let hi = normal_or_zero(v as f32);
+                        p.to_next_rot[3 * r + c] = hi;
+                        p.to_next_rot_lo[3 * r + c] = normal_or_zero((v - hi as f64) as f32);
                     }
                 }
-                for (k, &o) in [f.origin.x, f.origin.y, f.origin.z].iter().enumerate() {
+                let origin = [f.origin.x, f.origin.y, f.origin.z];
+                for (k, &o) in origin.iter().enumerate() {
                     let hi = f32_checked(o, &what("position"))?;
                     p.to_next_origin[k] = hi;
                     p.to_next_origin_lo[k] = normal_or_zero((o - hi as f64) as f32);
                 }
-                if !s.to_next_is_axial {
+                // shift = rot · origin, in f64 (compensated dot product).
+                for r in 0..3 {
+                    let v = mklight_core::math::KahanSum::from_iter(
+                        (0..3).map(|c| rt.m[r][c] * origin[c]),
+                    )
+                    .value();
+                    let hi = normal_or_zero(v as f32);
+                    if !hi.is_finite() {
+                        return Err(MkError::Unsupported(what("position overflows f32")));
+                    }
+                    p.to_next_shift[r] = hi;
+                    p.to_next_shift_lo[r] = normal_or_zero((v - hi as f64) as f32);
+                }
+                if !axial {
                     header.flags |= MKL_SYS_HAS_TILTS;
                 }
             } else {
@@ -430,15 +489,29 @@ impl PackedSystem {
             if i == n - 1 {
                 p.flags |= MKL_SURF_IMAGE;
             }
-            if !matches!(
-                s.coating,
-                mklight_core::materials::coating::ResolvedCoating::Bare
-            ) {
-                p.flags |= MKL_SURF_COATED;
+            match &s.coating {
+                ResolvedCoating::Bare => p.coating = MKL_COATING_BARE,
+                ResolvedCoating::Ideal {
+                    reflectance,
+                    transmittance,
+                } => {
+                    p.flags |= MKL_SURF_COATED;
+                    p.coating = MKL_COATING_IDEAL;
+                    p.coating_r = normal_or_zero(*reflectance as f32);
+                    p.coating_t = normal_or_zero(*transmittance as f32);
+                }
+                ResolvedCoating::ThinFilm { .. } | ResolvedCoating::Tabulated { .. } => {
+                    p.flags |= MKL_SURF_COATED;
+                    p.coating = MKL_COATING_TABLE;
+                }
             }
             for (k, &w) in wls.iter().enumerate() {
                 p.n_after[k] = f32_checked(s.n_after[w], &what("index"))?;
                 p.alpha_after[k] = f32_checked(s.alpha_after[w], &what("absorption"))?;
+                if p.shape == MKL_SHAPE_PARAXIAL {
+                    let v = mklight_trace::paraxial::ideal_lens_object_vergence(rs, i, w);
+                    p.vergence[k] = f32_checked(v, &what("ideal-lens object vergence"))?;
+                }
             }
             surfaces.push(p);
         }
@@ -512,6 +585,15 @@ impl PackedSystem {
             if s.flags & !SURF_FLAGS != 0 {
                 return bad(&format!("flags {:#x}", s.flags));
             }
+            if s.coating > MKL_COATING_TABLE {
+                return bad(&format!("coating code {}", s.coating));
+            }
+            if !(0.0..=1.0).contains(&s.coating_r)
+                || !(0.0..=1.0).contains(&s.coating_t)
+                || s.coating_r + s.coating_t > 1.0 + 1e-6
+            {
+                return bad("ideal coating needs R, T in [0, 1] and R + T <= 1");
+            }
             if s.num_asphere as usize > MAX_ASPHERE {
                 return bad(&format!("num_asphere {}", s.num_asphere));
             }
@@ -521,7 +603,10 @@ impl PackedSystem {
                 .chain(s.aperture_params)
                 .chain(s.to_next_rot)
                 .chain(s.to_next_origin)
-                .chain(s.to_next_origin_lo);
+                .chain(s.to_next_origin_lo)
+                .chain(s.to_next_rot_lo)
+                .chain(s.to_next_shift)
+                .chain(s.to_next_shift_lo);
             if floats.into_iter().any(|v| !v.is_finite()) {
                 return bad("non-finite parameter");
             }
@@ -539,6 +624,12 @@ impl PackedSystem {
                 .any(|a| !(a.is_finite() && *a >= 0.0))
             {
                 return bad("absorption not finite and non-negative");
+            }
+            if s.vergence[..nw].iter().any(|v| !v.is_finite()) {
+                return bad("ideal-lens vergence not finite");
+            }
+            if s.shape == MKL_SHAPE_PARAXIAL && s.paraxial_power == 0.0 {
+                return bad("ideal lens with zero power");
             }
         }
         Ok(())
@@ -611,8 +702,12 @@ mod tests {
             MKL_SYS_OBJECT_AT_INFINITY
         );
         assert_eq!(p.header.flags & MKL_SYS_HAS_TILTS, 0);
+        // Object at infinity: surface 0 carries the entrance frame -> surface
+        // 1 map (here the identity, an axial zero shift).
         let s0 = &p.surfaces[0];
-        assert_eq!(s0.flags & MKL_SURF_HAS_TO_NEXT, 0);
+        assert_ne!(s0.flags & MKL_SURF_HAS_TO_NEXT, 0);
+        assert_ne!(s0.flags & MKL_SURF_AXIAL, 0);
+        assert_eq!(s0.to_next_origin, [0.0; 3]);
         assert_ne!(s0.flags & MKL_SURF_OBJECT, 0);
         let s1 = &p.surfaces[1];
         assert_eq!(s1.shape, MKL_SHAPE_CONIC);
