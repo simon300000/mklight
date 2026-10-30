@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{FieldPupils, check_pos, fields, run_info, system_field_pupils, wavelengths};
 use crate::psf::{
-    HuygensSettings, ImagePlane, PolyPsfSettings, Psf, PsfNormalization, PsfTransform,
-    huygens_psf, polychromatic_psf,
+    HuygensSettings, ImagePlane, PolyPsfSettings, Psf, PsfNormalization, PsfTransform, huygens_psf,
+    polychromatic_psf,
 };
 use crate::pupil::PupilFunction;
 use crate::traced::PupilSettings;
@@ -190,9 +190,7 @@ pub(crate) fn compute_psf(
             }
             let (data, total_energy, diffraction_peak) = match normalization {
                 PsfNormalization::UnitEnergy => (acc, 1.0, dl),
-                PsfNormalization::Strehl => {
-                    (acc.iter().map(|v| v / dl).collect(), 1.0 / dl, 1.0)
-                }
+                PsfNormalization::Strehl => (acc.iter().map(|v| v / dl).collect(), 1.0 / dl, 1.0),
             };
             Ok(Psf {
                 size: grid,
@@ -210,7 +208,11 @@ pub(crate) fn compute_psf(
 }
 
 /// Default image spacing `λ_min·F#/padding` of a field's pupils.
-pub(crate) fn default_spacing(fp: &FieldPupils, spacing: Option<f64>, padding: f64) -> MkResult<f64> {
+pub(crate) fn default_spacing(
+    fp: &FieldPupils,
+    spacing: Option<f64>,
+    padding: f64,
+) -> MkResult<f64> {
     match spacing {
         Some(s) => {
             check_pos("PSF spacing", s)?;
@@ -249,14 +251,22 @@ pub fn psf_analysis_job(
     let mut psfs = Vec::new();
     let jobs: usize = per
         .iter()
-        .map(|(_, _, fp)| if settings.polychromatic { 1 } else { fp.pupils.len() })
+        .map(|(_, _, fp)| {
+            if settings.polychromatic {
+                1
+            } else {
+                fp.pupils.len()
+            }
+        })
         .sum::<usize>()
         .max(1);
     let mut done = 0usize;
     for (f, value, fp) in &per {
         warnings.extend(fp.warnings.iter().cloned());
         let spacing = default_spacing(fp, settings.spacing_mm, settings.padding)?;
-        let groups: Vec<(Option<usize>, Vec<(&PupilFunction, f64)>)> = if settings.polychromatic {
+        // (wavelength, weighted pupils) of each PSF of this field.
+        type Group<'a> = (Option<usize>, Vec<(&'a PupilFunction, f64)>);
+        let groups: Vec<Group> = if settings.polychromatic {
             vec![(
                 (fp.pupils.len() == 1).then(|| fp.pupils[0].0),
                 fp.weighted(),

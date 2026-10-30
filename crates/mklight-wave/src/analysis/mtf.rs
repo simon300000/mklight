@@ -191,8 +191,18 @@ fn with_detector(
         None => (None, None, None),
         Some(d) => {
             let dc = d.curve(freqs, &fp.orientation());
-            let st = c.tangential.iter().zip(&dc.tangential).map(|(a, b)| a * b).collect();
-            let ss = c.sagittal.iter().zip(&dc.sagittal).map(|(a, b)| a * b).collect();
+            let st = c
+                .tangential
+                .iter()
+                .zip(&dc.tangential)
+                .map(|(a, b)| a * b)
+                .collect();
+            let ss = c
+                .sagittal
+                .iter()
+                .zip(&dc.sagittal)
+                .map(|(a, b)| a * b)
+                .collect();
             (Some(dc), Some(st), Some(ss))
         }
     }
@@ -545,7 +555,14 @@ pub fn through_focus_mtf_analysis_job(
                 .map(|(p, (_, w, _))| (p, *w))
                 .collect();
             let sub = ctx.subrange(0.3 + 0.7 * done / total, 0.3 + 0.7 * (done + 1.0) / total);
-            let c = field_mtf(fp, &weighted, &freqs, settings.method, &settings.huygens, &sub)?;
+            let c = field_mtf(
+                fp,
+                &weighted,
+                &freqs,
+                settings.method,
+                &settings.huygens,
+                &sub,
+            )?;
             done += 1.0;
             for w in &c.warnings {
                 let m = format!("field {f}: {w}");

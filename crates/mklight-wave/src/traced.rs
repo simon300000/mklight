@@ -151,7 +151,7 @@ impl Default for PupilSettings {
     fn default() -> Self {
         PupilSettings {
             grid: 64,
-            rays: 64,
+            rays: 65,
             supersample: 4,
             reference: ReferencePoint::Chief,
             amplitude: AmplitudeModel::Transmission,
@@ -402,9 +402,7 @@ pub(crate) fn even_odd_area(loops: &[Vec<[f64; 2]>]) -> f64 {
             let depth = loops
                 .iter()
                 .enumerate()
-                .filter(|(j, o)| {
-                    *j != i && PupilMask::polygon((*o).clone()).contains(v[0], v[1])
-                })
+                .filter(|(j, o)| *j != i && PupilMask::polygon((*o).clone()).contains(v[0], v[1]))
                 .count();
             let a = polygon_area(l).abs();
             if depth % 2 == 0 { a } else { -a }
@@ -601,10 +599,7 @@ pub fn trace_pupil(
         .opd_reference(field, wl)
         .map_err(|st| MkError::Trace(format!("chief ray failed: {st:?}")))?;
     let img = sys.image_index();
-    if !matches!(
-        sys.surfaces[img].shape,
-        mklight_core::SurfaceShape::Plane
-    ) {
+    if !matches!(sys.surfaces[img].shape, mklight_core::SurfaceShape::Plane) {
         warnings.push(
             "curved image surface: the PSF plane is normal to the image's vertex axis".into(),
         );
@@ -655,7 +650,10 @@ pub fn trace_pupil(
     }
 
     // --- Rim ----------------------------------------------------------------
-    let (rim, rim_loops): (Vec<([f64; 2], NodeRay)>, Vec<Vec<usize>>) = if settings.rim {
+    // Rim points (entrance-pupil point, its ray) and loops of indices into
+    // them.
+    type Rim = (Vec<([f64; 2], NodeRay)>, Vec<Vec<usize>>);
+    let (rim, rim_loops): Rim = if settings.rim {
         let segs = rim_segments(&lat, &inside, |i, j| {
             let h = 0.5 * lat.h;
             let p = lat.point(i, j);

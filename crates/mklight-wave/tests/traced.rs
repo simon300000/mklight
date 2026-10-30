@@ -9,8 +9,8 @@ use mklight_analysis::spot::{SpotDiagramSettings, spot_diagram};
 use mklight_analysis::tracer_for;
 use mklight_analysis::util::{FieldSelection, WavelengthSelection};
 use mklight_core::{
-    ApertureSpec, Field, FieldKind, FieldSet, Interaction, JobContext, MaterialRef,
-    OpticalSystem, SemiDiameter, Surface, SurfaceShape, Wavelength, WavelengthSet, samples,
+    ApertureSpec, Field, FieldKind, FieldSet, Interaction, JobContext, MaterialRef, OpticalSystem,
+    SemiDiameter, Surface, SurfaceShape, Wavelength, WavelengthSet, samples,
 };
 use mklight_trace::SequentialTracer;
 use mklight_wave::analysis::*;
@@ -107,10 +107,7 @@ fn lattice_point(rays: usize, k: usize) -> [f64; 2] {
     let side = rays + 2;
     let h = 2.0 / (rays - 1) as f64;
     let c = 0.5 * (side - 1) as f64;
-    [
-        ((k % side) as f64 - c) * h,
-        ((k / side) as f64 - c) * h,
-    ]
+    [((k % side) as f64 - c) * h, ((k / side) as f64 - c) * h]
 }
 
 // ----------------------------------------------------- exactness of the OPD
@@ -155,7 +152,11 @@ fn check_diffraction_limited(t: &SequentialTracer, label: &str, mtf_tol: f64) {
     let tp = pupil(t, 0, &uniform());
     let p = &tp.pupil;
     let st = p.opd_stats(true);
-    assert!(p.strehl_at_reference() > 0.999, "{label}: {}", p.strehl_at_reference());
+    assert!(
+        p.strehl_at_reference() > 0.999,
+        "{label}: {}",
+        p.strehl_at_reference()
+    );
     assert!(st.rms < 0.005, "{label}: rms {}", st.rms);
     // Full circular pupil at the scale: area π up to the inscribed rim.
     assert!((tp.info.clear_area / PI - 1.0).abs() < 5e-4, "{label}");
@@ -282,12 +283,17 @@ fn defocus_known_answer_and_zernike() {
     for rs in tp.samples.samples.iter().flatten() {
         let rho = rs.u.hypot(rs.v);
         let exact = defocus_opd_exact(dz, r, sm, rho) / lam_mm;
-        assert!((rs.opd_waves - exact).abs() < 1e-8, "ρ {rho}: {} vs {exact}", rs.opd_waves);
+        assert!(
+            (rs.opd_waves - exact).abs() < 1e-8,
+            "ρ {rho}: {} vs {exact}",
+            rs.opd_waves
+        );
         edge = edge.max(rs.opd_waves);
     }
     // Image beyond focus: the wave converges more than the reference
     // sphere, so the OPD is positive at the edge (CONVENTIONS §4).
-    assert!(edge > 1.0, "{edge}");
+    let w020 = dz * sm * sm / (2.0 * lam_mm);
+    assert!(edge > 0.95 * w020 && edge < 1.05 * w020, "{edge} vs {w020}");
     // The grid (triangle interpolation) to second order in the spacing.
     let p = &tp.pupil;
     for k in 0..p.n() * p.n() {
@@ -307,7 +313,6 @@ fn defocus_known_answer_and_zernike() {
     )
     .unwrap();
     let m = &res.maps[0];
-    let w020 = dz * sm * sm / (2.0 * lam_mm);
     assert!(
         (m.seidel.focus / w020 - 1.0).abs() < 0.01,
         "{} vs {w020}",
@@ -384,8 +389,10 @@ fn cooke_triplet_off_axis_mtf_fft_matches_huygens() {
         },
         frequency_samples: 13,
         huygens: HuygensGrid {
-            grid_size: 96,
-            padding: 3.0,
+            // 128 samples at λF#/2 span the alias-free field of 64 pupil
+            // samples, which holds the whole PSF.
+            grid_size: 128,
+            padding: 2.0,
         },
         ..Default::default()
     };
@@ -417,10 +424,18 @@ fn cooke_triplet_off_axis_mtf_fft_matches_huygens() {
     for k in 0..fft.frequencies.len() {
         let dt = (a.tangential[k] - b.tangential[k]).abs();
         let ds = (a.sagittal[k] - b.sagittal[k]).abs();
-        assert!(dt < 0.03 && ds < 0.03, "ν {}: T {} / {}, S {} / {}",
-            fft.frequencies[k], a.tangential[k], b.tangential[k], a.sagittal[k], b.sagittal[k]);
-        assert!((a.tangential[k] - c.tangential[k]).abs() < 0.01);
-        assert!((a.sagittal[k] - c.sagittal[k]).abs() < 0.01);
+        assert!(
+            dt < 0.03 && ds < 0.03,
+            "ν {}: T {} / {}, S {} / {}",
+            fft.frequencies[k],
+            a.tangential[k],
+            b.tangential[k],
+            a.sagittal[k],
+            b.sagittal[k]
+        );
+        // FFT interpolates between its lattice points (Δν = 1/(nλF#)).
+        assert!((a.tangential[k] - c.tangential[k]).abs() < 0.02);
+        assert!((a.sagittal[k] - c.sagittal[k]).abs() < 0.02);
         spread = spread.max((a.tangential[k] - a.sagittal[k]).abs());
     }
     // Off axis the two orientations differ markedly.
@@ -432,8 +447,8 @@ fn cooke_triplet_off_axis_mtf_fft_matches_huygens() {
 
 #[test]
 fn large_defocus_mtf_approaches_geometric_mtf() {
-    use mklight_analysis::energy::{GeometricMtfSettings, MtfOrientation as GO, geometric_mtf};
     use mklight_analysis::energy::RaySampling;
+    use mklight_analysis::energy::{GeometricMtfSettings, MtfOrientation as GO, geometric_mtf};
     // W020 ≈ 10 waves of defocus on an ideal F/5 lens.
     let (f, epd) = (100.0, 20.0);
     let dz = 10.0 * 2.0 * LAM * 1e-3 / 0.01;
@@ -541,12 +556,22 @@ fn image_space_telecentric_uses_the_plane_wave_limit() {
     for r in tp.samples.samples.iter().flatten() {
         let s2 = (r.u * r.u + r.v * r.v) * sm * sm;
         let exact = dz * s2 / (1.0 + (1.0 - s2).sqrt()) / (LAM * 1e-3);
-        assert!((r.opd_waves - exact).abs() < 1e-8, "{} vs {exact}", r.opd_waves);
+        assert!(
+            (r.opd_waves - exact).abs() < 1e-8,
+            "{} vs {exact}",
+            r.opd_waves
+        );
     }
     // The pupil's own refocus brings it back to perfect.
     let back = tp.pupil.with_focus_shift(-dz);
-    assert!(back.opd_stats(false).rms < 1e-9);
-    assert!(back.strehl_at_reference() > 1.0 - 1e-12);
+    // (to the resampling error: grey edge cells hold the OPD averaged over
+    // their covered part, while the refocus term is added at the centre).
+    assert!(
+        back.opd_stats(false).rms < 1e-3,
+        "{}",
+        back.opd_stats(false).rms
+    );
+    assert!(back.strehl_at_reference() > 0.9999);
     // Huygens (plane waves) and FFT PSFs agree on the refocused pupil and
     // on the defocused one.
     for p in [&back, &tp.pupil] {
@@ -607,11 +632,12 @@ fn centroid_check(t: &SequentialTracer, field: usize, label: &str) {
             wavelengths: WavelengthSelection::Primary,
             pupil: PupilSettings {
                 amplitude: AmplitudeModel::Radiometric,
-                rays: 64,
+                grid: 128,
                 ..Default::default()
             },
-            grid_size: 128,
-            padding: 3.0,
+            // The whole alias-free field of the 128-sample pupil.
+            grid_size: 256,
+            padding: 2.0,
             ..Default::default()
         },
     )
@@ -636,9 +662,17 @@ fn centroid_check(t: &SequentialTracer, field: usize, label: &str) {
     let fs = &sp.fields[0];
     let shift = [fs.centroid[0] - fs.chief[0], fs.centroid[1] - fs.chief[1]];
     let got = [psf_c[0] - fs.chief[0], psf_c[1] - fs.chief[1]];
-    let lf = p.psf.spacing_mm * 3.0;
-    let tol = 0.05 * shift[1].abs() + 0.05 * lf;
-    assert!(shift[1].abs() > 0.3 * lf, "{label}: centroid shift {shift:?} too small");
+    let lf = p.psf.spacing_mm * 2.0;
+    assert!(
+        shift[1].abs() > lf,
+        "{label}: centroid shift {shift:?} too small"
+    );
+    // The whole-plane PSF centroid equals the ray centroid (moment
+    // theorem). The sampled field misses part of the far diffraction wings,
+    // whose first moment converges like 1/(field width): about 1.5 % here
+    // (3 % on a 64λF# field, 0.6 % on 256λF#). A sign or orientation error
+    // would be off by 200 %.
+    let tol = 0.03 * shift[1].abs() + 0.02 * lf;
     assert!(
         (got[0] - shift[0]).abs() < tol && (got[1] - shift[1]).abs() < tol,
         "{label}: PSF centroid {got:?} vs ray centroid {shift:?}"
@@ -658,13 +692,24 @@ fn mirror_frames_and_signs() {
     // equal to the refracting closed form.
     let dz = 0.2;
     let td = paraboloid(f, epd, dz, &[0.0]);
-    let tpd = pupil(&td, 0, &PupilSettings { rays: 32, ..uniform() });
+    let tpd = pupil(
+        &td,
+        0,
+        &PupilSettings {
+            rays: 32,
+            ..uniform()
+        },
+    );
     let r = tpd.info.reference_radius_mm;
     assert!((r - (f + dz)).abs() < 1e-6, "R {r}");
     for rs in tpd.samples.samples.iter().flatten() {
         let rho = rs.u.hypot(rs.v);
         let exact = defocus_opd_exact(dz, r, tpd.info.sin_max, rho) / (LAM * 1e-3);
-        assert!((rs.opd_waves - exact).abs() < 1e-6, "{} vs {exact}", rs.opd_waves);
+        assert!(
+            (rs.opd_waves - exact).abs() < 1e-6,
+            "{} vs {exact}",
+            rs.opd_waves
+        );
     }
     // Off-axis coma of the paraboloid and of the folded Newtonian: the PSF
     // centroid sits where the rays do.
@@ -678,6 +723,58 @@ fn mirror_frames_and_signs() {
     let mut c = samples::cooke_triplet();
     c.wavelengths = mono(0.5875618);
     centroid_check(&tracer_for(c).unwrap(), 1, "triplet");
+}
+
+// --------------------------------------------------------------- amplitudes
+
+/// An ideal lens maps entrance-pupil height `h` to `sinθ = h/√(f² + h²)`,
+/// so the flux per unit `(u, v)` area grows as `1/cos⁴θ` and the sphere
+/// amplitude as `A² ∝ γ/J = 1/cos³θ`. Transmission is 1 (ideal lens in
+/// air), and the uniform model is flat.
+#[test]
+fn radiometric_amplitude_of_an_ideal_lens() {
+    let t = ideal(50.0, 50.0, 0.0, &[0.0]);
+    let s = PupilSettings {
+        amplitude: AmplitudeModel::Radiometric,
+        rays: 41,
+        ..Default::default()
+    };
+    let tp = pupil(&t, 0, &s);
+    let sm = tp.info.sin_max;
+    let mut n = 0;
+    for (k, r) in tp.samples.samples.iter().enumerate() {
+        let Some(r) = r else { continue };
+        let p = lattice_point(s.rays, k);
+        // Interior nodes only (central differences).
+        if p[0].hypot(p[1]) > 0.9 {
+            continue;
+        }
+        let s2 = (r.u * r.u + r.v * r.v) * sm * sm;
+        let cos = (1.0 - s2).sqrt();
+        let expect = cos.powi(-3);
+        assert!(
+            (r.amplitude * r.amplitude / expect - 1.0).abs() < 2e-3,
+            "{p:?}: {} vs {expect}",
+            r.amplitude * r.amplitude
+        );
+        n += 1;
+    }
+    assert!(n > 900);
+    let tr = pupil(
+        &t,
+        0,
+        &PupilSettings {
+            amplitude: AmplitudeModel::Transmission,
+            ..s
+        },
+    );
+    assert!(
+        tr.samples
+            .samples
+            .iter()
+            .flatten()
+            .all(|r| (r.amplitude - 1.0).abs() < 1e-12)
+    );
 }
 
 // ----------------------------------------------------------------- detector
@@ -710,7 +807,11 @@ fn pixel_mtf_zeros_nyquist_and_product() {
     let r = mtf_analysis(
         &t,
         &MtfSettings {
-            pupil: PupilSettings { rays: 24, grid: 32, ..uniform() },
+            pupil: PupilSettings {
+                rays: 24,
+                grid: 32,
+                ..uniform()
+            },
             max_frequency: Some(2.0 / p),
             frequency_samples: 9,
             detector: Some(d),
@@ -723,8 +824,8 @@ fn pixel_mtf_zeros_nyquist_and_product() {
     let det = fm.detector.as_ref().unwrap();
     assert_eq!(det.nyquist_tangential, 125.0);
     let st = fm.system_tangential.as_ref().unwrap();
-    for k in 0..r.frequencies.len() {
-        assert!((st[k] - fm.tangential[k] * det.tangential[k]).abs() < 1e-15);
+    for ((s, o), d) in st.iter().zip(&fm.tangential).zip(&det.tangential) {
+        assert!((s - o * d).abs() < 1e-15);
     }
     // Frequencies 0, 62.5, …, 500: the sinc zero at 1/p = 250 is index 4.
     assert!(st[4].abs() < 1e-12 && fm.tangential[4] > 0.1);
@@ -869,7 +970,11 @@ fn configurations_and_through_focus() {
     let (f, epd) = (100.0, 20.0);
     let mut sys = system(
         epd,
-        vec![surf(1, SurfaceShape::Paraxial { focal_length: f }, f + 0.03)],
+        vec![surf(
+            1,
+            SurfaceShape::Paraxial { focal_length: f },
+            f + 0.03,
+        )],
         1,
         &[0.0],
     );
@@ -890,7 +995,8 @@ fn configurations_and_through_focus() {
     let t1 = tracer_for_configuration(&sys, lib, 1).unwrap();
     let p0 = pupil(&t0, 0, &uniform());
     let p1 = pupil(&t1, 0, &uniform());
-    assert!(p0.pupil.opd_stats(true).rms > 0.1);
+    // W020 = dz·NA²/(2λ) ≈ 0.27 waves: σ = W020/√12.
+    assert!(p0.pupil.opd_stats(true).rms > 0.07);
     assert!(p1.pupil.opd_stats(true).rms < 1e-6);
     let tf = through_focus_mtf_analysis(
         &t0,
@@ -913,8 +1019,15 @@ fn configurations_and_through_focus() {
         .max_by(|&a, &b| c.tangential[a].total_cmp(&c.tangential[b]))
         .unwrap();
     assert_eq!(best, 1, "{:?}", c.tangential);
-    let dl = diffraction_limited_mtf(100.0 * LAM * 1e-3 * p1.pupil.geometry().working_f_number(), 0.0);
-    assert!((c.tangential[1] - dl).abs() < 5e-3, "{} vs {dl}", c.tangential[1]);
+    let dl = diffraction_limited_mtf(
+        100.0 * LAM * 1e-3 * p1.pupil.geometry().working_f_number(),
+        0.0,
+    );
+    assert!(
+        (c.tangential[1] - dl).abs() < 5e-3,
+        "{} vs {dl}",
+        c.tangential[1]
+    );
     // Symmetric about the focus.
     assert!((c.tangential[0] - c.tangential[2]).abs() < 5e-3);
 }
@@ -943,11 +1056,37 @@ fn encircled_energy_and_line_spread_known_answers() {
             break;
         }
         let a = mklight_wave::special::airy_encircled_energy(PI * r / lf);
-        assert!((fe.encircled[k] - a).abs() < 5e-3, "r {}: {} vs {a}", r / lf, fe.encircled[k]);
+        assert!(
+            (fe.encircled[k] - a).abs() < 5e-3,
+            "r {}: {} vs {a}",
+            r / lf,
+            fe.encircled[k]
+        );
         assert!((fe.diffraction_limit[k] - fe.encircled[k]).abs() < 1e-3);
     }
-    // r80 of the Airy pattern ≈ 1.8 λN (EE(3.6/π·…)); r50 ≈ 0.52 λN.
-    assert!((fe.r50_mm / lf - 0.5145).abs() < 0.02, "{}", fe.r50_mm / lf);
+    // r50 and r80 of the Airy pattern, by bisection on the closed form.
+    let airy_r = |level: f64| {
+        let (mut a, mut b) = (0.0, 5.0);
+        for _ in 0..100 {
+            let m = 0.5 * (a + b);
+            if mklight_wave::special::airy_encircled_energy(PI * m) < level {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        0.5 * (a + b)
+    };
+    assert!(
+        (fe.r50_mm / lf - airy_r(0.5)).abs() < 5e-3,
+        "{}",
+        fe.r50_mm / lf
+    );
+    assert!(
+        (fe.r80_mm / lf - airy_r(0.8)).abs() < 2e-2,
+        "{}",
+        fe.r80_mm / lf
+    );
     let ls = line_spread(
         &t,
         &LineSpreadSettings {
@@ -960,6 +1099,13 @@ fn encircled_energy_and_line_spread_known_answers() {
     let dx = l.positions_mm[1] - l.positions_mm[0];
     let ix: f64 = l.x.iter().sum::<f64>() * dx;
     let iy: f64 = l.y.iter().sum::<f64>() * dx;
-    assert!((ix - 1.0).abs() < 0.02 && (iy - 1.0).abs() < 0.02, "{ix} {iy}");
-    assert!(l.x.iter().zip(&l.y).all(|(a, b)| (a - b).abs() < 1e-6 * l.x[l.x.len() / 2]));
+    assert!(
+        (ix - 1.0).abs() < 0.02 && (iy - 1.0).abs() < 0.02,
+        "{ix} {iy}"
+    );
+    assert!(
+        l.x.iter()
+            .zip(&l.y)
+            .all(|(a, b)| (a - b).abs() < 1e-6 * l.x[l.x.len() / 2])
+    );
 }

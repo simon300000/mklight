@@ -106,8 +106,8 @@ impl DetectorSettings {
     pub fn otf(&self, nu: [f64; 2]) -> f64 {
         let w = self.aperture();
         let s = self.diffusion_sigma_mm;
-        let g = (-2.0 * std::f64::consts::PI.powi(2) * s * s * (nu[0] * nu[0] + nu[1] * nu[1]))
-            .exp();
+        let g =
+            (-2.0 * std::f64::consts::PI.powi(2) * s * s * (nu[0] * nu[0] + nu[1] * nu[1])).exp();
         sinc(w[0] * nu[0]) * sinc(w[1] * nu[1]) * g
     }
 

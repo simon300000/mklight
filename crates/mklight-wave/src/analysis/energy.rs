@@ -161,10 +161,15 @@ pub fn diffraction_encircled_energy_job(
         for w in &psf.warnings {
             warnings.push(format!("field {f}: {w}"));
         }
-        let clean: Vec<PupilFunction> =
-            pupils.iter().map(|(p, _)| p.without_aberrations()).collect();
-        let clean_w: Vec<(&PupilFunction, f64)> =
-            clean.iter().zip(&pupils).map(|(p, (_, w))| (p, *w)).collect();
+        let clean: Vec<PupilFunction> = pupils
+            .iter()
+            .map(|(p, _)| p.without_aberrations())
+            .collect();
+        let clean_w: Vec<(&PupilFunction, f64)> = clean
+            .iter()
+            .zip(&pupils)
+            .map(|(p, (_, w))| (p, *w))
+            .collect();
         let dl_psf = compute_psf(
             &clean_w,
             PsfMethod::Fft,
@@ -176,7 +181,12 @@ pub fn diffraction_encircled_energy_job(
         let c = settings.center;
         let enc = encircled_energy(&psf, &radius, c, &sub.subrange(0.7, 0.8))?;
         let sq = ensquared_energy(&psf, &radius, c, &sub.subrange(0.8, 0.85))?;
-        let dl = encircled_energy(&dl_psf, &radius, EnergyCenter::Centroid, &sub.subrange(0.85, 0.9))?;
+        let dl = encircled_energy(
+            &dl_psf,
+            &radius,
+            EnergyCenter::Centroid,
+            &sub.subrange(0.85, 0.9),
+        )?;
         let fine = encircled_energy(&psf, &dense, c, &sub.subrange(0.9, 1.0))?;
         let center_mm = match c {
             EnergyCenter::Reference => psf.center_mm,
@@ -203,7 +213,13 @@ pub fn diffraction_encircled_energy_job(
     Ok(WaveEncircledEnergyResult {
         radius_mm: radius,
         fields: out,
-        run_info: run_info(timer, tracer, "diffraction_encircled_energy", settings, warnings),
+        run_info: run_info(
+            timer,
+            tracer,
+            "diffraction_encircled_energy",
+            settings,
+            warnings,
+        ),
     })
 }
 

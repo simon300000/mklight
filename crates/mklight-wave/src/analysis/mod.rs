@@ -32,8 +32,8 @@ use mklight_analysis::util::{FieldSelection, WavelengthSelection};
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::{JobContext, MkError, MkResult, RunInfo, Vec3};
 use mklight_trace::{FieldPoint, PreparedField, SequentialTracer};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::mtf::MtfOrientation;
@@ -51,7 +51,9 @@ pub use mtf::{
     ThroughFocusSettings, WaveMtfResult, mtf_analysis, mtf_analysis_job, mtf_vs_field,
     mtf_vs_field_job, through_focus_mtf_analysis, through_focus_mtf_analysis_job,
 };
-pub use psf::{FieldPsf, PsfAnalysisSettings, PsfMethod, PsfResult, psf_analysis, psf_analysis_job};
+pub use psf::{
+    FieldPsf, PsfAnalysisSettings, PsfMethod, PsfResult, psf_analysis, psf_analysis_job,
+};
 pub use wavefront::{
     WavefrontMap, WavefrontResult, WavefrontSettings, wavefront_map, wavefront_map_job,
 };
@@ -266,6 +268,17 @@ impl FieldPupils {
     }
 }
 
+/// `e` with `label` prefixed to its message (cancellation and the other
+/// variants pass through unchanged).
+fn in_context(e: MkError, label: &str) -> MkError {
+    match e {
+        MkError::Trace(m) => MkError::Trace(format!("{label}: {m}")),
+        MkError::Numerical(m) => MkError::Numerical(format!("{label}: {m}")),
+        MkError::InvalidModel(m) => MkError::InvalidModel(format!("{label}: {m}")),
+        other => other,
+    }
+}
+
 /// Trace the pupils of a prepared field at `wls` and place them (module
 /// docs, polychromatic weighting).
 pub(crate) fn field_pupils(
@@ -282,7 +295,7 @@ pub(crate) fn field_pupils(
     for (k, &(wl, w)) in wls.iter().enumerate() {
         let sub = ctx.subrange(k as f64 / nw, (k + 1) as f64 / nw);
         let tp = trace_pupil(tracer, field, wl, settings, &sub)
-            .map_err(|e| MkError::Trace(format!("{label}, wavelength {wl}: {e}")))?;
+            .map_err(|e| in_context(e, &format!("{label}, wavelength {wl}")))?;
         for x in &tp.warnings {
             warnings.push(format!("{label}, wavelength {wl}: {x}"));
         }
@@ -355,7 +368,9 @@ pub(crate) fn check_pos(what: &str, v: f64) -> MkResult<()> {
     if v > 0.0 && v.is_finite() {
         Ok(())
     } else {
-        Err(MkError::InvalidParam(format!("{what} must be positive: {v}")))
+        Err(MkError::InvalidParam(format!(
+            "{what} must be positive: {v}"
+        )))
     }
 }
 

@@ -151,7 +151,11 @@ pub fn wavefront_map_job(
     let mut warnings = Vec::new();
     let mut maps = Vec::new();
     let fit_ctx = ctx.subrange(0.85, 1.0);
-    let total = per.iter().map(|(_, _, fp)| fp.pupils.len()).sum::<usize>().max(1);
+    let total = per
+        .iter()
+        .map(|(_, _, fp)| fp.pupils.len())
+        .sum::<usize>()
+        .max(1);
     for (f, value, fp) in per {
         warnings.extend(fp.warnings.iter().cloned());
         for (wl, _, tp) in fp.pupils {
