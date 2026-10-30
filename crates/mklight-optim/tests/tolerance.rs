@@ -204,6 +204,69 @@ fn monte_carlo_cancellation_returns_partial() {
     assert!(r.trials < 100_000 && r.trials > 0);
 }
 
+/// A sensitivity analysis cancelled after its first batch keeps the
+/// operands whose both limits were evaluated, with the values of an
+/// uncancelled run; cancelled before the nominal, it is an error.
+#[test]
+fn sensitivity_cancellation_keeps_completed_operands() {
+    let n = 40;
+    let spec = ToleranceSpec::new(
+        (0..n)
+            .map(|i| ToleranceOperand::symmetric(t(i as u64), 0.01 * (i + 1) as f64))
+            .collect(),
+    );
+    let criterion = |d: &[f64]| TrialOutcome {
+        criterion: d
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (i + 1) as f64 * x * x)
+            .sum(),
+        compensators: vec![],
+        ok: true,
+    };
+    let full = sensitivity(
+        &spec,
+        &FnToleranceEvaluator::new(criterion),
+        &Monitor::default(),
+    )
+    .unwrap();
+    assert!(!full.cancelled);
+    assert_eq!(full.operands.len(), n);
+    assert_eq!(full.evaluations, 2 * n + 1);
+    // Cancel while the second batch (points 32..64, with operand 20's
+    // limits) is evaluated: the evaluator stops, the first batch (the
+    // nominal and operands 0..15, the minus limit of 15) is kept.
+    let ctx = JobContext::new();
+    let token = ctx.cancel.clone();
+    let ev = FnToleranceEvaluator::new(move |d| {
+        if d[20] != 0.0 {
+            token.cancel();
+        }
+        criterion(d)
+    });
+    let r = sensitivity(&spec, &ev, &Monitor::new(ctx)).unwrap();
+    assert!(r.cancelled);
+    assert_eq!(r.evaluations, 32);
+    assert_eq!(r.operands.len(), 15);
+    assert_eq!(r.ranking.len(), 15);
+    assert_eq!(r.nominal, full.nominal);
+    for (a, b) in r.operands.iter().zip(&full.operands) {
+        assert_eq!(a, b);
+    }
+    // Ranked worst first among the completed operands.
+    assert_eq!(r.ranking[0], 14);
+    let ctx = JobContext::new();
+    ctx.cancel.cancel();
+    assert!(
+        sensitivity(
+            &spec,
+            &FnToleranceEvaluator::new(criterion),
+            &Monitor::new(ctx)
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn spec_serialises() {
     let mut spec = ToleranceSpec::new(vec![

@@ -17,6 +17,11 @@
 //!   computed with the CPU f64 reference, whatever evaluated the search; the
 //!   result says which backend evaluated it, with its precision
 //!   qualification, and `RunInfo.warnings` repeats it.
+//! * **Never worse than the start**: the result is the better of the start
+//!   and the optimiser's answer on the reference (feasibility first), with
+//!   a warning when the optimiser found nothing better.
+//! * **Backend `auto`** uses the engine's GPU device only past the measured
+//!   GPU/CPU crossover for the run's rays per candidate and batch size.
 //! * The result carries the final system as model JSON (`"system"`), so a
 //!   front end can apply it as a new (undoable) snapshot.
 
@@ -973,7 +978,7 @@ impl Analysis for Optimize {
                 "variables": {"type": "array", "default": [], "title": "Variables",
                     "description": "Variable specs: {\"param\": ParamPath, \"lower\", \"upper\", \"scale\", \"fd_step\", \"label\"}. Empty: the curvature of every curved optical surface and the back focus."},
                 "hold_efl": {"type": "boolean", "default": true, "title": "Hold focal length",
-                    "description": "Add an EFL equality constraint at the start value, unless the merit already has an efl operand."},
+                    "description": "Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead."},
                 "merit": {"type": ["object", "null"], "default": null, "title": "Merit function",
                     "description": "A merit-function spec; null generates the default merit from `default_merit` for the variables."},
                 "default_merit": {"type": "object", "default": default_merit, "title": "Default merit",
@@ -991,20 +996,20 @@ impl Analysis for Optimize {
                     "description": "Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20."},
                 "fd_scheme": {"type": "string", "enum": ["forward", "central"], "default": "forward",
                     "title": "Finite differences"},
-                "fd_relative_step": {"type": ["number", "null"], "minimum": 0, "default": null,
+                "fd_relative_step": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null,
                     "title": "FD relative step",
                     "description": "null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md)."},
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation",
-                    "description": "auto: the GPU when the engine selected a GPU backend, else the CPU reference."},
+                    "description": "auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference."},
                 "gpu_batch": {"type": "integer", "minimum": 1, "default": 512,
                     "title": "GPU sub-batch", "description": "Candidates per GPU dispatch."},
                 "feasibility_tolerance": {"type": "number", "minimum": 0, "default": 1e-6,
                     "title": "Feasibility tolerance",
                     "description": "Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`)."},
                 "stop_key": {"type": ["string", "null"], "default": null, "title": "Stop key",
-                    "description": "Key for `request_stop`: stop and keep the best point."}
+                    "description": "Key for `request_stop`: stop and keep the best point. One running job per key."}
             }
         })
     }

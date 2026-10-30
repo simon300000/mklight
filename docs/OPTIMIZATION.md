@@ -341,9 +341,12 @@ full pupil to 1e-9. Wrap the drivers in `TraceEvaluator::run` to get their
 `OpticalToleranceEvaluator` with a `TraceEvaluator` perturbs the nominal
 system by the `ToleranceSpec`, re-optimises the compensators (for example the
 back focus, within `±range` of nominal) by LM on the criterion merit, and
-reports the resulting merit. `sensitivity` evaluates each tolerance at its
-limits in one batch and ranks the operands worst first, with the RSS
-prediction. `monte_carlo` draws trial `i` from Philox stream `TOLERANCE | i`,
+reports the resulting merit. `sensitivity` evaluates the nominal and each
+tolerance at its limits in batches of `SENSITIVITY_BATCH` (32) points and
+ranks the operands worst first, with the RSS prediction. Cancelled after the
+nominal, it returns the operands whose both limits were evaluated
+(`SensitivityReport::cancelled`). The compensator solves of the trials share
+the job's cancellation but not its progress bar. `monte_carlo` draws trial `i` from Philox stream `TOLERANCE | i`,
 so statistics are bit-reproducible for a seed and any trial can be replayed on
 its own. Both are tested on the Cooke triplet with a back-focus compensator.
 Without compensators every trial is a single evaluation, so the evaluator
@@ -446,7 +449,15 @@ and the CPU reference computes everything. Candidates the packer cannot
 represent (more than 16 wavelengths, asphere terms beyond A22, values outside
 the normal f32 range, for example a conic of 1e-300) also go to the CPU
 reference, and so does a sub-batch whose upload or dispatch fails. All of
-these are counted in `GpuEvalStats::cpu_candidates`.
+these are counted in `GpuEvalStats::cpu_candidates`. Two kinds of real-ray
+values are always traced on the CPU, because the qualification does not
+sample them: rays to a passive surface (coordinate break, dummy), whose
+reported point can lie hundreds of mm from the frame origin (a fold's
+coordinate break exceeded the position budget on a perturbed Newtonian),
+and points farther than `REAL_RAY_F32_LIMIT_MM` (100 mm) from their
+surface's origin, where rounding the point to f32 alone uses about a third
+of the budget. A cancelled or failed evaluation releases the system sets of
+its unfinished sub-batches on the backend.
 `GpuTraceEvaluator::record(&mut RunInfo)` writes the qualification decision
 (`Qualification::record`) and the counters (`settings["gpu_evaluation"]`).
 `requalify(system)` checks a later design, for example the end of an
@@ -454,9 +465,14 @@ optimisation, which may have moved far from the qualified start.
 
 **Agreement with the f64 reference** (`tests/gpu_eval.rs`). The default spot
 and wavefront merits plus every other accelerated kind make 521 operands.
-They are evaluated on each sample, an x-decentered copy (mirrored half
-pupils) and a bent copy, with the emulation backend and on the M2 Pro (the
-two are bit-identical). The largest |GPU − CPU| measured:
+They are evaluated on each of the seven samples (the Newtonian's mirrors
+and fold, the finite-conjugate relay included), an x-decentered copy
+(mirrored half pupils), a bent copy, two tilted and decentred copies and six
+strongly perturbed candidates (curvatures ±25 %, thicknesses ±30 %), with the
+emulation backend and on the M2 Pro (the two are bit-identical). The worst
+value over all of them is 0.14 of its budget (the Newtonian's distortion).
+The largest |GPU − CPU| on the four refracting samples' unperturbed
+candidates:
 
 | system | ray aberration (mm) | real ray (mm, cosines) | RMS spot (mm) | OPD (waves) | distortion (%) | worst, fraction of budget |
 |---|---:|---:|---:|---:|---:|---:|
@@ -529,12 +545,17 @@ proportion to the rays a candidate traces. To speed it up further, move ray
 generation and the operand reductions (centroids, RMS) onto the device, and
 skip the snapshot hash for transient candidates (`mklight-core`).
 
-**Use.** The engine jobs evaluate on the GPU only when asked (`backend:
-"gpu"`, or `"auto"` with an engine-selected GPU device). The gain comes from
-dense samplings (wavefront merits for MTF-limited designs, many fields, many
-configurations) in batched work: FD Jacobians with many variables, DE /
-CMA-ES populations, uncompensated tolerancing trials. Small single-point LM
-steps are faster on the CPU.
+**Use.** `gpu_beats_cpu(rays_per_candidate, batch)` encodes the crossover,
+conservatively between the measured points: at least 2600 rays per
+candidate and 16 candidates per batch, or 650 rays and 256 candidates.
+`gpu_rays_per_candidate` counts the rays the evaluator would trace for a
+system and operand list (its own plan). The engine jobs' `backend: "auto"`
+uses the engine's GPU device only when that rule says the GPU is faster for
+the run (see Engine jobs), so the default merit's LM, DE and CMA-ES runs stay
+on the CPU. The gain comes from dense samplings (wavefront merits for
+MTF-limited designs, many fields, many configurations) in batched work: FD
+Jacobians with many variables, DE / CMA-ES populations, uncompensated
+tolerancing trials. Small single-point LM steps are faster on the CPU.
 
 ## Engine jobs: `optimize` and `tolerance`
 
@@ -559,7 +580,18 @@ job `Cancelled` and drops its result, because a superseded result is stale.
 A front end that wants a **Stop** button that keeps the result gives the
 job a `stop_key` and calls `analysis::optim::request_stop(key)`. The job
 then ends normally (`Done`) with `"status": "stopped"` and its best point
-so far.
+so far (a `tolerance` job stopped in its sensitivity phase keeps the
+operands completed so far, `sensitivity.cancelled`). A key is held by one
+running job at a time: a job submitted with a key already in use fails with
+`InvalidSettings`, so the running job stays stoppable.
+
+**Never worse than the start.** The job evaluates the start and the
+optimiser's answer on the CPU f64 reference and returns the better of the
+two, feasibility first, then merit (`ScalarEval::better_than` with
+`feasibility_tolerance`). When the optimiser found nothing better,
+`"improved": false`, the result is the start design and a warning says so.
+The global methods never evaluate the start itself, and a GPU-driven search
+ranks on f32 values, so this check is needed for them.
 
 **Reported numbers.** The `start` and `final` merits, the operand table and
 the constraint check are always computed on the CPU f64 reference, whichever
@@ -573,7 +605,34 @@ the engine's backend selection.
 Both jobs also run with no settings at all: `optimize` then varies every
 curvature and the back focus against the default merit (thickness boundaries
 included) and holds the focal length; `tolerance` analyses a basic tolerance
-set without compensators.
+set without compensators. With the generated default merit, a thickness
+boundary that the start violates and that no variable changes (moving each
+variable by its scale leaves its value unchanged) is relaxed to its start
+value, with a warning and the label `"<kind> (relaxed to the start)"`. The
+Cooke triplet sample's 0.99997 mm flint is an example: no search can meet the
+default 1 mm glass minimum on it.
+
+**Constraints by method.** LM, dogleg and basin hopping (its local LM) hold
+constraints with the augmented Lagrangian. The job caps every inner solve at
+an infeasible point at 10 iterations (`AugLagSettings::max_inner_iterations`,
+`options.constraints.max_inner_iterations`, `null` for no cap), so the
+multipliers are updated and a run that ends on its iteration budget ends close
+to feasible. Without the cap, the first round of the Petzval and relay
+samples used all 200 iterations at `μ₀` and ended with EFL errors of 6e-5
+and 1.3e-4 mm. DE, CMA-ES and Nelder–Mead rank trial points by Deb's
+feasibility rule, and random trial points never meet an equality exactly,
+so for them the EFL hold is a penalty residual instead (label
+`hold EFL (penalty)`). Its weight makes a relative EFL error of 1e-4 cost as
+much as the start merit. That is about 5000 times the merit gained by
+scaling the lens, so the EFL stays within about 1e-8 relative of what
+scaling alone would push it to. Explicit equality constraints with these
+methods get a warning. Their populations also start closer to the design
+than the library defaults: DE `init_spread` 0.03 and CMA-ES `sigma0` 0.05
+variable scales (10 % of a curvature by default), instead of 1.0 and 0.3,
+which sample candidates so much worse that the search stays at the start.
+Measured on the seven samples with the default settings, every method
+(`lm`, `dogleg`, `de`, `cma_es`, `nelder_mead`, `hammer`) improved every
+sample and ended feasible.
 
 **Applying the result.** `result.system` is the optimised `OpticalSystem` in
 model JSON. The app applies it with `Session::set_system`, which creates a new
@@ -584,21 +643,21 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
 | key | type, default | meaning |
 |---|---|---|
 | `variables` | array, `[]` | `VariableSpec`s (`param`, optional `lower`, `upper`, `scale`, `fd_step`, `label`); empty: the curvature of every curved, optically active surface and the back focus (the thickness before the image) |
-| `hold_efl` | boolean, `true` | add the constraint EFL = its start value (label `hold EFL`), unless the merit already has an enabled `efl` operand |
+| `hold_efl` | boolean, `true` | hold the EFL at its start value, unless the merit already has an enabled `efl` operand: a constraint (label `hold EFL`) for `lm`, `dogleg`, `hammer`, a penalty residual (label `hold EFL (penalty)`) for `de`, `cma_es`, `nelder_mead` (Constraints by method) |
 | `merit` | object or null, `null` | a `MeritFunctionSpec`; `null` generates the default merit from `default_merit` for the variables |
 | `default_merit` | object, the full `DefaultMeritSpec` default | generator settings, laid key by key over the defaults (`{"thickness": null}` drops the thickness boundaries; `{"thickness": {"glass_min_centre": 0.9}}` changes one) |
 | `operands` | array, `[]` | operands appended to the merit (e.g. an EFL target residual) |
 | `constraints` | array, `[]` | operands appended as explicit constraints (role forced to `constraint`) |
 | `algorithm` | `lm` \| `dogleg` \| `de` \| `cma_es` \| `nelder_mead` \| `hammer`, `lm` | the optimiser |
-| `options` | object, `{}` | the algorithm's settings (`LsqSettings`, `DeSettings`, `CmaEsSettings`, `NelderMeadSettings`, `HammerSettings`), laid over its defaults |
+| `options` | object, `{}` | the algorithm's settings (`LsqSettings`, `DeSettings`, `CmaEsSettings`, `NelderMeadSettings`, `HammerSettings`), laid over the job's defaults: the library defaults except `constraints.max_inner_iterations` 10 (LM, dogleg, hammer's `local`), `init_spread` 0.03 (DE) and `sigma0` 0.05 (CMA-ES) |
 | `max_iterations` | integer or null, `null` | iterations (`lm`, `dogleg`, `nelder_mead`), generations (`de`, `cma_es`) or rounds (`hammer`); `null`: 200, 200, 2000, 100, 200, 20 |
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
-| `fd_relative_step` | number or null, `null` | `null`: chosen per operand and evaluator (Derivatives) |
+| `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation: `auto` and `gpu` use the GPU device the engine selected for the analysis (`AnalysisInput::device` holding an `Arc<dyn ComputeBackend>`, or a `CpuF32Backend`); without one, `auto` uses the CPU reference and `gpu` does too, with a warning. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` is the CPU-f32 emulation (validation, tests) |
+| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding an `Arc<dyn ComputeBackend>`, or a `CpuF32Backend`), or the CPU reference with a warning when there is none. `auto` uses that device only when `gpu_beats_cpu(rays per candidate, batch)` holds for the run (GPU-batched evaluation, Use): rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system, batch = the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. The decision is in `backend.workload`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` is the CPU-f32 emulation (validation, tests) |
 | `gpu_batch` | integer, `512` | candidates per GPU dispatch (`GpuEvalSettings::batch`) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
-| `stop_key` | string or null, `null` | key for `request_stop` |
+| `stop_key` | string or null, `null` | key for `request_stop`; a key held by a running job is rejected |
 
 ### `optimize` result
 
@@ -610,9 +669,12 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
                | "evaluation_failure" | "infeasible" | "stalled" | "derivative_failure",
   "algorithm": "lm",
   "iterations": 40, "evaluations": 361,
+  "improved": true,                                  // false: the result is the start
   "start": {"merit": 3.97e-4, "violation": 0.0, "status": {"status": "ok"}},
   "final": {"merit": 2.6e-4, "violation": 2e-9, "status": {"status": "ok"}, "feasible": true},
-  "search": {"merit": 2.6e-4, "violation": 2e-9},   // as seen by the search evaluator
+  "search": {"merit": 2.6e-4, "violation": 2e-9,     // the optimiser's answer, as seen by the
+             "reference_merit": 2.6e-4,              // search evaluator, and on the reference
+             "reference_violation": 2e-9},
   "improvement": 0.35,                               // 1 − final/start (null if start is 0)
   "multipliers": [/* per constraint */] | null,
   "failed_variables": [],
@@ -630,6 +692,7 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
                "best_merit": 3.9e-4, "violation": 0.0}],
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
+              "workload": {"rays_per_candidate": 38, "batch": 7, "gpu_faster": false},
               "qualification": {/* xval::Qualification at the start; GPU only */},
               "final_qualification": {/* at the final design; GPU only */},
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
@@ -648,15 +711,16 @@ on the CPU reference, and differs from it by the f32 noise on a GPU. The
 history holds one row per accepted iteration (LM, dogleg), generation (DE,
 CMA-ES), iteration (Nelder–Mead) or round (hammer). `best_merit` is the
 feasibility-ranked best, so it can rise when a feasible point replaces a
-better infeasible one. On normal termination `final` is the optimiser's
-answer. When stopped or cancelled it is the better of that answer and the
-best point seen.
+better infeasible one. The optimiser's answer is its result on normal
+termination; when stopped or cancelled it is the better of that result and
+the best point seen. `final` is the better of the answer and the start
+(Never worse than the start).
 
 ### `tolerance` settings
 
 | key | type, default | meaning |
 |---|---|---|
-| `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface |
+| `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface. A parameter the system does not have (here and in `compensators`) is rejected |
 | `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial |
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
@@ -674,7 +738,7 @@ goes to the evaluator as one batch (one GPU dispatch).
 ```jsonc
 {
   "status": "complete" | "stopped" | "cancelled",
-  "sensitivity": {                                  // null when not run or cancelled
+  "sensitivity": {                                  // null when not run, or stopped before the nominal
     "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
     "operands": [{"index": 0, "label": "...", "param": {/* ParamPath */},
                   "minus": 0.05, "plus": 0.05,
@@ -684,7 +748,8 @@ goes to the evaluator as one batch (one GPU dispatch).
     "ranking": [2, 0, 5, 1, 4, 3],                   // operand indices, worst first
     "rss_change": 2.1e-5,
     "predicted_criterion": 4.18e-4,                  // nominal + rss_change
-    "evaluations": 13
+    "evaluations": 13,
+    "cancelled": false                               // true: the operands completed before a stop
   },
   "monte_carlo": {                                  // null when not run
     "trials": 100, "failures": 0, "seed": 0,
@@ -713,7 +778,11 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
 | cancel and stop | cancelled after two LM iterations: `cancelled`, best-so-far below the start; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
-| GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, both qualifications pass, reported on the reference, merit decreases |
+| GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, both qualifications pass, reported on the reference, merit decreases; `auto` with a device stays on the CPU for LM on a two-field, one-wavelength default merit (38 rays, batch 7) and uses the GPU for a 12 × 24 merit with DE populations of 16 |
+| global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
+| defaults feasible | `{}` on the Cooke triplet (the 1 mm glass minimum relaxed to 0.99997, warned), the Petzval and the relay: feasible, improved, EFL held to 1e-6 mm |
+| bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface, a `stop_key` in use → `InvalidSettings` |
+| stopped sensitivity | a compensated sensitivity of 30 tolerances stopped after its first batch: `stopped`, 15 operands kept, `cancelled: true` |
 
 ## Known gaps
 
@@ -731,4 +800,11 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
   F/# and relative illumination on the CPU.
 * A scheduler-cancelled `optimize` or `tolerance` job loses its best point
   (the scheduler drops cancelled results); front ends use `stop_key` and
-  `request_stop` to keep it.
+  `request_stop` to keep it. Neither the FFI nor the app exposes
+  `request_stop` yet: it is `mklight_engine::analysis::optim::request_stop`,
+  for the FFI and app owners to wire to a Stop button.
+* The GPU evaluator is qualified at the start and, for the report, at the
+  final design; candidates in between are not requalified. The agreement
+  tests cover strongly perturbed candidates of every sample (worst 0.14 of
+  the budget), and real rays on passive surfaces or far from their surface's
+  origin, the one case found over budget, are traced on the CPU.

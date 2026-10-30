@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::*;
 use mklight_core::JobContext;
 use mklight_optim::lsq::{LsqSettings, least_squares};
-use mklight_optim::{FdScheme, FnProblem, JacobianSettings, Monitor, Termination, Variable};
+use mklight_optim::{
+    Constraint, EvalStatus, FdScheme, FnProblem, JacobianSettings, Monitor, Termination, Variable,
+};
 
 fn methods() -> Vec<(&'static str, LsqSettings)> {
     let geo = LsqSettings {
@@ -299,5 +301,56 @@ fn cancellation_inside_evaluation_returns_best_so_far() {
         assert!(r.merit < 215.0 && r.merit.is_finite());
         assert!(mon.best.get().unwrap().merit <= r.merit);
         assert!(calls.load(Ordering::SeqCst) <= 45);
+    }
+}
+
+/// Powell's singular function (linear convergence, so an inner solve takes
+/// many iterations) with the equality `x₁ + x₂ + x₃ + x₄ = 1`.
+fn slow_constrained() -> FnProblem {
+    FnProblem::new(vars(4), 4, |x, r, c| {
+        r[0] = x[0] + 10.0 * x[1];
+        r[1] = 5f64.sqrt() * (x[2] - x[3]);
+        r[2] = (x[1] - 2.0 * x[2]).powi(2);
+        r[3] = 10f64.sqrt() * (x[0] - x[3]).powi(2);
+        c[0] = x[0] + x[1] + x[2] + x[3];
+        EvalStatus::Ok
+    })
+    .with_constraints(vec![Constraint::equal("sum", 1.0)])
+}
+
+/// `max_inner_iterations` bounds every augmented-Lagrangian round taken at
+/// an infeasible point, so a run that ends on its iteration budget has
+/// updated its multipliers and is close to feasible; without the cap the
+/// first round (at μ₀) uses the whole budget. Converged runs reach the same
+/// point either way.
+#[test]
+fn augmented_lagrangian_inner_cap() {
+    let p = slow_constrained();
+    let x0 = [3.0, -1.0, 0.0, 1.0];
+    let run = |cap: Option<usize>, iters: usize| {
+        let mut s = LsqSettings {
+            max_iterations: iters,
+            ..Default::default()
+        };
+        s.constraints.max_inner_iterations = cap;
+        least_squares(&p, &x0, &s, &Monitor::default()).unwrap()
+    };
+    let (free, capped) = (run(None, 40), run(Some(5), 40));
+    eprintln!(
+        "40 iterations: violation {:.3e} uncapped, {:.3e} capped",
+        free.violation, capped.violation
+    );
+    assert!(capped.violation < 1e-3 * free.violation);
+    // While infeasible no round exceeds the cap.
+    let mut rows = std::collections::BTreeMap::<String, usize>::new();
+    for h in capped.history.iter().filter(|h| h.violation > 1e-9) {
+        *rows.entry(h.stage.clone()).or_default() += 1;
+    }
+    assert!(rows.len() > 1 && rows.values().all(|&n| n <= 5), "{rows:?}");
+    let (a, b) = (run(None, 2000), run(Some(5), 2000));
+    assert!(a.termination.is_converged() && b.termination.is_converged());
+    assert!(a.violation < 1e-8 && b.violation < 1e-8);
+    for (u, v) in a.x.iter().zip(&b.x) {
+        assert!((u - v).abs() < 1e-5, "{:?} vs {:?}", a.x, b.x);
     }
 }

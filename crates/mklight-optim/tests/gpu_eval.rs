@@ -5,12 +5,13 @@
 //! independence and determinism, CPU fallback, finite-difference Jacobians
 //! and population methods on GPU evaluations.
 
+use std::sync::atomic::{AtomicI64, Ordering::SeqCst};
 use std::sync::{Arc, OnceLock};
 
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::model::{OpticalSystem, Placement};
 use mklight_core::param::ParamPath;
-use mklight_core::{JobContext, MkResult, SurfaceId, samples};
+use mklight_core::{JobContext, MkError, MkResult, SurfaceId, samples};
 use mklight_gpu::{
     ComputeBackend, CpuF32Backend, DeviceInfo, Job, JobKind, JobResult, PackedSystem, Pending,
     PrecisionDescriptor, SystemHandle,
@@ -21,10 +22,13 @@ use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
-use mklight_optim::merit::gpu_eval::gpu_supports;
+use mklight_optim::merit::gpu_eval::{
+    REAL_RAY_F32_LIMIT_MM, gpu_beats_cpu, gpu_rays_per_candidate, gpu_supports,
+};
 use mklight_optim::merit::operand::{
     Axis, DistortionMapping, OperandKind, RayQuantity, SpotReference, WavefrontReference,
 };
+use mklight_optim::merit::quadrature::PupilSampling;
 use mklight_optim::merit::{
     GpuEvalSettings, GpuTraceEvaluator, Operand, OperandEvaluator, OperandRegistry, OperandValue,
     OpticalProblem, TraceEvaluator, VariableSpec, WavelengthSelector,
@@ -250,18 +254,65 @@ fn candidates(sys: &OpticalSystem) -> Vec<OpticalSystem> {
     vec![sys.clone(), decentered, bent]
 }
 
+/// A copy of `sys` with surface `s` tilted about x (degrees) and decentred
+/// 0.05 mm in y, the frame restored after it or not.
+fn tilted(sys: &OpticalSystem, s: usize, tilt: f64, restore: bool) -> OpticalSystem {
+    let mut t = sys.clone();
+    let mut p = t.surfaces[s].placement.unwrap_or_default();
+    p.tilt_x += tilt;
+    p.decenter_y += 0.05;
+    p.restore_after = restore;
+    t.surfaces[s].placement = Some(p);
+    t
+}
+
+/// Strongly perturbed copies of `sys`: every curvature ±25 % and every
+/// thickness above 1 mm ±30 % (a fixed LCG, reproducible).
+fn perturbed(sys: &OpticalSystem, n: usize) -> Vec<OpticalSystem> {
+    let mut seed: u64 = 12345;
+    let mut rnd = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    (0..n)
+        .map(|_| {
+            let mut c = sys.clone();
+            for s in 1..c.surfaces.len() - 1 {
+                let id = c.surfaces[s].id;
+                let cp = ParamPath::Curvature { surface: id };
+                if let Ok(v) = cp.get(&c)
+                    && v != 0.0
+                {
+                    cp.set(&mut c, v * (1.0 + 0.25 * rnd())).unwrap();
+                }
+                let tp = ParamPath::Thickness { surface: id };
+                if let Ok(v) = tp.get(&c)
+                    && v.abs() > 1.0
+                {
+                    tp.set(&mut c, v * (1.0 + 0.3 * rnd())).unwrap();
+                }
+            }
+            c
+        })
+        .collect()
+}
+
+/// Every sample, including the Newtonian (mirrors, a 45° fold coordinate
+/// break, on which `operands` puts its inner real rays) and the
+/// finite-conjugate relay, with tilted and decentred copies and strongly
+/// perturbed candidates far from the qualified start.
 fn agreement(backend: Arc<dyn ComputeBackend>) {
-    for (name, sys) in [
-        ("singlet", samples::singlet()),
-        ("cooke_triplet", samples::cooke_triplet()),
-        ("double_gauss", samples::double_gauss()),
-        ("petzval_asphere", samples::petzval_asphere()),
-    ] {
+    for (name, sys) in samples::all() {
         let gpu = gpu_eval(backend.clone(), &sys);
         assert!(gpu.is_active(), "{name}: {:?}", gpu.qualification().reason);
         let ops = operands(&sys);
         assert!(ops.iter().all(|o| gpu_supports(&o.kind, true)));
-        let cands = candidates(&sys);
+        let mut cands = candidates(&sys);
+        cands.push(tilted(&sys, 1, 0.5, true));
+        cands.push(tilted(&sys, 2, 1.0, false));
+        cands.extend(perturbed(&sys, 6));
         let g = values(&gpu, &cands, &ops);
         let c = values(&TraceEvaluator::builtin(), &cands, &ops);
         eprintln!(
@@ -300,6 +351,200 @@ fn metal_gpu_agrees_with_cpu_reference_and_emulation() {
             (x, y) => assert_eq!(x, y),
         }
     }
+}
+
+fn real_rays(surface: Option<SurfaceId>, field: usize) -> Vec<Operand> {
+    let mut ops = Vec::new();
+    for global in [false, true] {
+        for quantity in [
+            RayQuantity::X,
+            RayQuantity::Y,
+            RayQuantity::Z,
+            RayQuantity::L,
+            RayQuantity::M,
+            RayQuantity::N,
+        ] {
+            ops.push(
+                Operand::new(OperandKind::RealRay {
+                    quantity,
+                    surface,
+                    px: 0.5,
+                    py: 0.7,
+                    global,
+                })
+                .at_field(field),
+            );
+        }
+    }
+    ops
+}
+
+/// Real rays on a passive surface (the Newtonian's 45° fold coordinate
+/// break, where the reported point can lie hundreds of mm from the frame
+/// origin and the f32 value exceeded the budget on a perturbed candidate)
+/// and real-ray points farther than `REAL_RAY_F32_LIMIT_MM` from their
+/// surface's origin are computed on the CPU reference: bit-identical. The
+/// same rays on an optical surface near the axis come from the GPU.
+#[test]
+fn real_rays_on_passive_surfaces_and_far_points_use_the_cpu() {
+    let sys = samples::newtonian_telescope();
+    assert!(sys.surfaces[2].is_coordinate_break());
+    let gpu = gpu_eval(emulation(), &sys);
+    assert!(gpu.is_active());
+    let mut cands = vec![sys.clone()];
+    cands.extend(perturbed(&sys, 8));
+    let fold = real_rays(Some(sys.surfaces[2].id), 1);
+    assert_bits_eq(
+        &values(&gpu, &cands, &fold),
+        &values(&TraceEvaluator::builtin(), &cands, &fold),
+    );
+    let primary = real_rays(Some(sys.surfaces[1].id), 1);
+    let g = values(&gpu, &cands, &primary);
+    let c = values(&TraceEvaluator::builtin(), &cands, &primary);
+    assert!(compare(&g, &c, &primary) <= 1.0);
+    let differs = g
+        .iter()
+        .flatten()
+        .zip(c.iter().flatten())
+        .any(|(a, b)| a.as_ref().unwrap().to_bits() != b.as_ref().unwrap().to_bits());
+    assert!(differs, "the primary's rays should be traced on the GPU");
+
+    // A 55° field on the singlet images more than 100 mm off axis.
+    let sys = samples::singlet();
+    let gpu = gpu_eval(emulation(), &sys);
+    let mut wide = sys.clone();
+    wide.fields.fields[2].y = 55.0;
+    let far = real_rays(None, 2);
+    let g = values(&gpu, std::slice::from_ref(&wide), &far);
+    let y = g[0][1].as_ref().unwrap().abs();
+    assert!(y > REAL_RAY_F32_LIMIT_MM, "{y}");
+    assert_bits_eq(
+        &g,
+        &values(
+            &TraceEvaluator::builtin(),
+            std::slice::from_ref(&wide),
+            &far,
+        ),
+    );
+}
+
+/// A backend wrapper counting live uploaded system sets, cancelling a
+/// context at the `cancel_at`-th upload.
+struct Counting {
+    inner: CpuF32Backend,
+    live: AtomicI64,
+    uploads: AtomicI64,
+    cancel_at: AtomicI64,
+    token: std::sync::Mutex<Option<mklight_core::job::CancelToken>>,
+}
+
+impl Counting {
+    fn new() -> Self {
+        Counting {
+            inner: CpuF32Backend::new(),
+            live: 0.into(),
+            uploads: 0.into(),
+            cancel_at: i64::MAX.into(),
+            token: Default::default(),
+        }
+    }
+}
+
+impl ComputeBackend for Counting {
+    fn info(&self) -> &DeviceInfo {
+        self.inner.info()
+    }
+    fn precision(&self) -> &PrecisionDescriptor {
+        self.inner.precision()
+    }
+    fn supports(&self, kind: JobKind) -> bool {
+        self.inner.supports(kind)
+    }
+    fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle> {
+        self.live.fetch_add(1, SeqCst);
+        let n = self.uploads.fetch_add(1, SeqCst) + 1;
+        if n == self.cancel_at.load(SeqCst)
+            && let Some(t) = self.token.lock().unwrap().as_ref()
+        {
+            t.cancel();
+        }
+        self.inner.upload_systems(systems)
+    }
+    fn release_systems(&self, h: SystemHandle) -> MkResult<()> {
+        self.live.fetch_sub(1, SeqCst);
+        self.inner.release_systems(h)
+    }
+    fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
+        self.inner.submit(job, ctx)
+    }
+}
+
+/// Uploaded system sets are released whether an evaluation finishes or is
+/// cancelled between pipelined sub-batches (they used to stay on the
+/// backend after a cancel).
+#[test]
+fn cancelled_evaluations_release_their_uploads() {
+    let sys = samples::cooke_triplet();
+    let b = Arc::new(Counting::new());
+    let gpu = GpuTraceEvaluator::new(
+        b.clone(),
+        TraceEvaluator::builtin(),
+        &sys,
+        GpuEvalSettings {
+            batch: 2,
+            ..Default::default()
+        },
+        &JobContext::new(),
+    )
+    .unwrap();
+    let live0 = b.live.load(SeqCst);
+    let ops = operands(&sys);
+    let refs: Vec<&Operand> = ops.iter().collect();
+    let cands: Vec<OpticalSystem> = (0..8).map(|_| sys.clone()).collect();
+    gpu.evaluate_batch(&cands, &refs, &JobContext::new())
+        .unwrap();
+    assert_eq!(b.live.load(SeqCst), live0);
+    for at in 1..=4 {
+        let ctx = JobContext::new();
+        *b.token.lock().unwrap() = Some(ctx.cancel.clone());
+        b.cancel_at.store(b.uploads.load(SeqCst) + at, SeqCst);
+        let r = gpu.evaluate_batch(&cands, &refs, &ctx);
+        assert!(matches!(r, Err(MkError::Cancelled)), "{at}");
+        assert_eq!(b.live.load(SeqCst), live0, "cancelled at upload {at}");
+    }
+}
+
+/// The measured crossover decides `auto`: never at the default merit's
+/// sampling, from 256 candidates at 6 × 12, from 16 at 12 × 24; and the ray
+/// count is the evaluator's plan.
+#[test]
+fn crossover_rule_and_ray_count() {
+    assert!(!gpu_beats_cpu(171, 1 << 20));
+    assert!(!gpu_beats_cpu(657, 255) && gpu_beats_cpu(657, 256));
+    assert!(!gpu_beats_cpu(2601, 15) && gpu_beats_cpu(2601, 16));
+    let sys = samples::double_gauss();
+    let cpu = TraceEvaluator::builtin();
+    let rays = |rings: usize, arms: usize| {
+        let spec = DefaultMeritSpec {
+            thickness: None,
+            sampling: PupilSampling {
+                rings,
+                arms,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .generate(&sys)
+        .unwrap();
+        let ops: Vec<&Operand> = spec.operands.iter().collect();
+        gpu_rays_per_candidate(&cpu, &sys, &ops, true).unwrap()
+    };
+    // 3 fields × 3 wavelengths × (pupil nodes + chief).
+    assert_eq!(rays(3, 6), 171);
+    assert_eq!(rays(12, 24), 2601);
+    // Paraxial operands trace nothing on the GPU.
+    let efl = Operand::new(OperandKind::Efl);
+    assert_eq!(gpu_rays_per_candidate(&cpu, &sys, &[&efl], true), Some(0));
 }
 
 /// A candidate's values do not depend on the batch around it, and two runs
