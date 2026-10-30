@@ -544,6 +544,94 @@ impl Session {
             .len()
     }
 
+    // --- solves, validation, autosave
+
+    /// Apply the system's solves (docs/SOLVES.md) and commit the solved
+    /// system as a new snapshot. `settings` follows the `solves` analysis'
+    /// schema (`configuration` must be null: a solved configuration has no
+    /// configuration list, so it cannot be stored back). Returns the new
+    /// snapshot hash (unchanged when every solve already held) and the
+    /// solve report (the `solves` result shape). On failure the session is
+    /// unchanged.
+    pub fn apply_solves(
+        &mut self,
+        settings: &Value,
+        ctx: &JobContext,
+    ) -> EngineResult<(SnapshotHash, Value)> {
+        let schema = crate::analysis::solves::solve_settings_schema();
+        let s = crate::settings::normalize(&schema, settings)?;
+        let o: crate::analysis::solves::SolveOptions = serde_json::from_value(s)
+            .map_err(|e| EngineError::InvalidSettings(e.to_string()))?;
+        if o.configuration.is_some() {
+            return Err(EngineError::InvalidSettings(
+                "apply_solves solves the base system; run the `solves` analysis to preview a \
+                 configuration"
+                    .into(),
+            ));
+        }
+        let (sys, report) =
+            mklight_trace::apply_solves_with(self.system(), &self.library, &o.solver, ctx)?;
+        let (json, _) = crate::analysis::geometric::crate_json(&report)?;
+        let hash = self.set_system(sys)?;
+        Ok((hash, json))
+    }
+
+    /// The engine's `validate` report of the current snapshot (computed in
+    /// the calling thread): `{ok, errors, warnings, issues}`.
+    pub fn validate(&self) -> EngineResult<Value> {
+        let r = self.run_analysis(
+            &AnalysisRequest::new("validate", Value::Null),
+            &JobContext::new(),
+        )?;
+        Ok(r.json)
+    }
+
+    /// Current value of one parameter (`None` where it has none, e.g. an
+    /// automatic semi-diameter).
+    pub fn param_value(&self, path: &ParamPath) -> EngineResult<Option<f64>> {
+        match path.get(self.system()) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) => {
+                // Distinguish "no value" from "no such parameter": a path
+                // that cannot be set does not exist.
+                let mut probe = self.system().clone();
+                path.set(&mut probe, 1.0).map_err(|_| e)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Where `autosave(None)` writes: `<project file>.autosave` next to the
+    /// project, `None` for an untitled session.
+    pub fn autosave_path(&self) -> Option<PathBuf> {
+        self.path.as_ref().map(|p| {
+            let mut s = p.clone().into_os_string();
+            s.push(".autosave");
+            PathBuf::from(s)
+        })
+    }
+
+    /// Write the current project atomically to `path` (or `autosave_path`)
+    /// without changing the session: its path, dirty flag and saved file
+    /// stay as they are. The file is a normal project (open it to recover);
+    /// catalog paths are recorded as absolute paths. Returns the path
+    /// written.
+    pub fn autosave(&self, path: Option<&Path>) -> EngineResult<PathBuf> {
+        let target = match path {
+            Some(p) => p.to_path_buf(),
+            None => self.autosave_path().ok_or_else(|| {
+                EngineError::Core(MkError::InvalidParam(
+                    "an untitled session needs an explicit autosave path".into(),
+                ))
+            })?,
+        };
+        let mut p = self.project.clone();
+        p.metadata.modified = now_rfc3339();
+        p.metadata.engine_version = mklight_core::ENGINE_VERSION.to_string();
+        p.save(&target)?;
+        Ok(target)
+    }
+
     // --- analyses
 
     /// Run an analysis on the current snapshot in the calling thread.

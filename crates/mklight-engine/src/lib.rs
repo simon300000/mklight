@@ -44,7 +44,7 @@ pub use analysis::{
 };
 pub use backend::{Backend, BackendInfo};
 pub use buffer::{Buffer, BufferData, DType};
-pub use engine::{Engine, EngineConfig};
+pub use engine::{Engine, EngineConfig, MigrationOutcome};
 pub use error::{EngineError, EngineResult};
 pub use project::{PROJECT_SCHEMA_VERSION, Project};
 pub use scheduler::{JobEvent, JobId, JobState, JobStatus};
