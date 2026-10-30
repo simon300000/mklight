@@ -4,11 +4,13 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use mklight_core::model::ValidationIssue;
 use mklight_core::param::ParamPath;
 use mklight_core::{
     ApertureSpec, Interaction, MkError, OpticalSystem, SemiDiameter, SurfaceShape, samples,
 };
 use mklight_engine::fsutil::atomic_write;
+use mklight_engine::project::MigrationReport;
 use mklight_engine::{EngineError, ParamEdit, Project, Session};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer};
 
@@ -188,14 +190,121 @@ pub fn validation(session: &Session) -> CliResult<Value> {
     }))
 }
 
+/// A project file that parses but fails the engine's structural validation
+/// (`OpticalSystem::validation_issues`, CONVENTIONS §13), such as an F/# of
+/// 0 or a negative field weight edited by hand. No session can be opened on
+/// it, so `validate` lists its issues and `set` edits it in this form.
+struct Unopened {
+    project: Project,
+    migration: MigrationReport,
+    issues: Vec<ValidationIssue>,
+}
+
+/// Open `path` as a session, or, if the engine refuses it because its model
+/// is structurally invalid, load it without validation. Every other failure
+/// is returned as the open error.
+fn open_or_unopened(ctx: &Ctx, path: &Path) -> CliResult<Result<Session, Unopened>> {
+    let err = match ctx.open(path) {
+        Ok(s) => return Ok(Ok(s)),
+        Err(e) if e.exit == Exit::InvalidModel => e,
+        Err(e) => return Err(e),
+    };
+    match Project::load(path) {
+        Ok((project, migration)) => {
+            let issues = project.system.validation_issues();
+            if issues.is_empty() {
+                return Err(err);
+            }
+            Ok(Err(Unopened {
+                project,
+                migration,
+                issues,
+            }))
+        }
+        Err(_) => Err(err),
+    }
+}
+
+/// A structural issue in the form of the `validate` report (an error), with
+/// its JSON `path`; `surface` is the index when the path is in `surfaces`.
+fn structural_issue(i: &ValidationIssue) -> Value {
+    let surface = i
+        .path
+        .strip_prefix("surfaces[")
+        .and_then(|r| r.split_once(']'))
+        .and_then(|(k, _)| k.parse::<usize>().ok());
+    json!({
+        "severity": "error",
+        "code": i.code,
+        "surface": surface,
+        "path": i.path,
+        "message": i.message,
+    })
+}
+
+fn issue_table(issues: &[Value]) -> String {
+    let mut t = Table::new(&[
+        ("severity", Align::Left),
+        ("code", Align::Left),
+        ("surface", Align::Right),
+        ("message", Align::Left),
+    ]);
+    for i in issues {
+        let msg = match i["path"].as_str() {
+            Some(p) => format!("{p}: {}", cell(&i["message"])),
+            None => cell(&i["message"]),
+        };
+        t.row(vec![
+            cell(&i["severity"]),
+            cell(&i["code"]),
+            cell(&i["surface"]),
+            msg,
+        ]);
+    }
+    t.render()
+}
+
+/// `validate` of a structurally invalid file: every structural issue, with
+/// its code and JSON path. The other checks need a valid model and do not
+/// run (`structural_only`).
+fn validate_unopened(path: &Path, u: &Unopened) -> Report {
+    let issues: Vec<Value> = u.issues.iter().map(structural_issue).collect();
+    let json = json!({
+        "path": path_str(path),
+        "name": u.project.system.name,
+        "ok": false,
+        "structural_only": true,
+        "errors": issues.len(),
+        "warnings": 0,
+        "issues": issues,
+        "open_warnings": u.migration.notes,
+        "migration": u.migration,
+        "snapshot_hash": Value::Null,
+        "library_hash": Value::Null,
+    });
+    let mut text = warning_lines(&u.migration.notes);
+    text.push_str(&issue_table(&issues));
+    text.push_str(&format!(
+        "{}: INVALID ({} structural error(s); the other checks run once they are fixed, \
+         e.g. with `mklight set`)\n",
+        path.display(),
+        issues.len()
+    ));
+    Report::ok(json, text).with_exit(Exit::InvalidModel)
+}
+
 pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
-    let session = ctx.open(path)?;
+    let session = match open_or_unopened(ctx, path)? {
+        Ok(s) => s,
+        Err(u) => return Ok(validate_unopened(path, &u)),
+    };
     let v = validation(&session)?;
     let ok = v["ok"].as_bool().unwrap_or(false);
     let json = json!({
         "path": path_str(path),
         "name": session.system().name,
         "ok": ok,
+        "structural_only": false,
         "errors": v["errors"],
         "warnings": v["warnings"],
         "issues": v["issues"],
@@ -207,21 +316,7 @@ pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
     let mut text = warning_lines(session.open_warnings());
     let issues = v["issues"].as_array().cloned().unwrap_or_default();
     if !issues.is_empty() {
-        let mut t = Table::new(&[
-            ("severity", Align::Left),
-            ("code", Align::Left),
-            ("surface", Align::Right),
-            ("message", Align::Left),
-        ]);
-        for i in &issues {
-            t.row(vec![
-                cell(&i["severity"]),
-                cell(&i["code"]),
-                cell(&i["surface"]),
-                cell(&i["message"]),
-            ]);
-        }
-        text.push_str(&t.render());
+        text.push_str(&issue_table(&issues));
     }
     text.push_str(&format!(
         "{}: {} ({} error(s), {} warning(s))\n",
@@ -608,6 +703,127 @@ fn param_reason(e: &MkError) -> String {
     }
 }
 
+/// Does the path address a parameter of this system? Probe it on a copy
+/// with a value it accepts (its own, or 1 for an automatic semi-diameter),
+/// so a rejected value is not mistaken for a bad path (usage error, 1).
+fn probe_path(
+    a: &SetArgs,
+    param: &ParamPath,
+    sys: &OpticalSystem,
+    old: Option<f64>,
+) -> CliResult<()> {
+    param
+        .set(&mut sys.clone(), old.unwrap_or(1.0))
+        .map_err(|e| {
+            CliError::usage(format!(
+                "invalid parameter path '{}' for this system: {}",
+                a.path,
+                param_reason(&e)
+            ))
+        })
+}
+
+/// `set` on a structurally invalid file ([`Unopened`]), so that a broken
+/// file can be repaired step by step. The edit is applied to the model
+/// directly; it is rejected (exit 2, nothing written) if it adds a
+/// structural issue (a code at a JSON path) the file did not already have.
+/// While issues remain the edited file is written as is (`valid: false`,
+/// `remaining_issues` lists them). The edit that removes the last one opens
+/// the repaired project like any other: the result carries its snapshot
+/// hash, and its `validate` errors and warnings in `remaining_issues`.
+fn set_unopened(
+    ctx: &Ctx,
+    a: &SetArgs,
+    param: &ParamPath,
+    value: f64,
+    mut u: Unopened,
+) -> CliResult<Report> {
+    let sys = &mut u.project.system;
+    let old = param.get(sys).ok();
+    probe_path(a, param, sys, old)?;
+    param.set(sys, value).map_err(|e| {
+        CliError::model(format!(
+            "edit rejected, invalid value {} for {}: {}",
+            a.value.trim(),
+            a.path,
+            param_reason(&e)
+        ))
+    })?;
+    let key = |i: &ValidationIssue| (i.code.clone(), i.path.clone());
+    let before: BTreeSet<_> = u.issues.iter().map(key).collect();
+    let after = sys.validation_issues();
+    let new_issues: Vec<String> = after
+        .iter()
+        .filter(|i| !before.contains(&key(i)))
+        .map(ToString::to_string)
+        .collect();
+    if !new_issues.is_empty() {
+        return Err(CliError::model(format!(
+            "edit rejected, it makes the system invalid: {}",
+            new_issues.join("; ")
+        )));
+    }
+    let target = a.out.clone().unwrap_or_else(|| a.project.clone());
+    let saved = !a.dry_run;
+    let valid = after.is_empty();
+    let (snapshot_hash, remaining) = if valid {
+        // Repaired: open it as a session (from the written file, so its
+        // catalogs resolve relative to it) and run the full checks.
+        let mut session = ctx.engine.session_from_project(u.project)?;
+        if saved {
+            save(&mut session, Some(&target))?;
+            session = ctx.open(&target)?;
+        }
+        let v = validation(&session)?;
+        (
+            json!(session.snapshot_hash()),
+            v["issues"].as_array().cloned().unwrap_or_default(),
+        )
+    } else {
+        if saved {
+            let mut p = u.project.clone();
+            p.metadata.modified = mklight_engine::time::now_rfc3339();
+            p.save(&target)
+                .map_err(|e| CliError::io(format!("cannot save {}: {e}", target.display())))?;
+        }
+        (Value::Null, after.iter().map(structural_issue).collect())
+    };
+    let json = json!({
+        "path": path_str(&a.project),
+        "param": param,
+        "old": old.map_or(Value::Null, num),
+        "new": num(value),
+        "changed": old != Some(value),
+        "saved": saved,
+        "saved_to": if saved { json!(path_str(&target)) } else { Value::Null },
+        "snapshot_hash_before": Value::Null,
+        "snapshot_hash": snapshot_hash,
+        "new_warnings": Vec::<String>::new(),
+        "valid": valid,
+        "remaining_issues": remaining,
+    });
+    let mut text = format!(
+        "{}: {} -> {}\n",
+        a.path,
+        old.map_or("(automatic)".into(), |v| fmt_g(v, 10)),
+        fmt_g(value, 10)
+    );
+    text.push_str(&if saved {
+        format!("saved {}\n", target.display())
+    } else {
+        "dry run: nothing written\n".into()
+    });
+    if !remaining.is_empty() {
+        text.push_str(&issue_table(&remaining));
+    }
+    text.push_str(if valid {
+        "the model is structurally valid again\n"
+    } else {
+        "the model is still structurally invalid\n"
+    });
+    Ok(Report::ok(json, text))
+}
+
 /// Apply one `ParamPath` edit. The edit is applied through the session
 /// (structural validation, new snapshot) and checked with [`validation`]
 /// (the engine's `validate` analysis plus [`cli_checks`]); it is rejected
@@ -620,21 +836,13 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
     let param: ParamPath = serde_json::from_str(&a.path)
         .map_err(|e| CliError::usage(format!("invalid parameter path '{}': {e}", a.path)))?;
     let value = parse_value(&a.value)?;
-    let mut session = ctx.open(&a.project)?;
+    let mut session = match open_or_unopened(ctx, &a.project)? {
+        Ok(s) => s,
+        Err(u) => return set_unopened(ctx, a, &param, value, u),
+    };
     // No current value for some paths (an automatic semi-diameter).
     let old = param.get(session.system()).ok();
-    // Does the path address a parameter of this system? Probe it on a copy
-    // with a value it accepts (its own, or 1 for an automatic
-    // semi-diameter), so a rejected value is not mistaken for a bad path.
-    param
-        .set(&mut session.system().clone(), old.unwrap_or(1.0))
-        .map_err(|e| {
-            CliError::usage(format!(
-                "invalid parameter path '{}' for this system: {}",
-                a.path,
-                param_reason(&e)
-            ))
-        })?;
+    probe_path(a, &param, session.system(), old)?;
     let before_hash = session.snapshot_hash();
     let before = validation(&session)?;
     session

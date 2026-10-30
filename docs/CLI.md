@@ -77,8 +77,8 @@ ray-based commands (a project reported valid can be traced):
 
 | code | severity | check |
 |---|---|---|
-| `aperture_value` | error | the aperture value (EPD, F/#, NA) is not > 0 (the engine's structural validation now rejects this on load: exit 2 with `[invalid_aperture_value]`, CONVENTIONS §13) |
-| `field_weight` | error | a field weight is negative (likewise rejected on load: `[negative_weight]`) |
+| `aperture_value` | error | the aperture value (EPD, F/#, NA) is not > 0 (a file with this is structurally invalid, see below; the check covers models built in memory) |
+| `field_weight` | error | a field weight is negative (likewise) |
 | `paraxial` | error | the system resolves, but the reference tracer cannot set it up (no finite marginal ray for the aperture specification, an afocal system with an F/# aperture, …); `paraxial`, `trace` and the ray-based analyses would fail with exit 2 |
 | `field` | warning | a field cannot be resolved (e.g. the aim does not converge) |
 | `chief_ray` | warning | a chief ray (primary wavelength, unclipped) does not reach the image |
@@ -89,10 +89,24 @@ vignetted on purpose, is still a valid model. When the system does not
 resolve (unknown glass) the engine's issue reports the cause and the tracer
 checks are skipped.
 
-JSON: `ok`, `errors`, `warnings`, `issues` (severity, code, surface,
-message; engine issues first), `open_warnings`, `migration`,
-`snapshot_hash`, `library_hash`. Exit 2 when `ok` is false (the report is
-still printed).
+**Structurally invalid files.** A file that parses but fails the engine's
+structural validation (`OpticalSystem::validation_issues`, codes in
+CONVENTIONS §13: an F/# of 0, a negative weight, a NaN, a reference to a
+missing surface, …) cannot be opened as a session, so `paraxial`, `trace`
+and the analyses refuse it (exit 2). `validate` then lists *every*
+structural issue as an error with its code (`invalid_aperture_value`,
+`negative_weight`, …), its JSON `path` (`aperture.value`,
+`fields.fields[1].weight`) and the surface index when the path is in
+`surfaces`; `structural_only` is true and the other checks, which need a
+valid model, do not run. Fix the issues with `mklight set` (below) or by
+hand. A file that does not parse (unknown keys, wrong types, not a
+project) keeps its load error.
+
+JSON: `ok`, `structural_only`, `errors`, `warnings`, `issues` (severity,
+code, surface, message, and `path` for structural issues; engine issues
+first), `open_warnings`, `migration`, `snapshot_hash`, `library_hash`
+(`null` when structurally invalid). Exit 2 when `ok` is false (the report
+is still printed).
 
 ### `mklight show <project> [--no-semi-diameters]`
 
@@ -229,7 +243,14 @@ project did not already have is rejected with exit 2 and nothing is
 written. So `set` never turns a working project into one that `paraxial` or
 `trace` refuse (an F/# of 0, a negative field weight). An edit to a project
 that already fails a check is allowed when it adds no new error, so a
-broken file can be repaired step by step. New warnings (a real ray that no
+broken file can be repaired step by step. That includes a structurally
+invalid file (see `validate`): the edit is applied to the model directly
+and refused (exit 2, nothing written) only if it adds a structural issue
+(a code at a JSON path) the file did not have; the result has `valid`
+(structurally valid after the edit) and `remaining_issues` (the remaining
+structural issues, or, once valid, the full `validate` issues of the
+repaired project, whose `snapshot_hash` is then reported).
+`snapshot_hash_before` is `null` for such a file. New warnings (a real ray that no
 longer reaches the image, a wavelength outside a glass's data range, a gap
 sign opposite to the propagation direction) are reported but do not block
 the edit. Otherwise the project is saved atomically (to `--out` if given).
@@ -253,7 +274,8 @@ chief-ray height against the paraxial image height, the Newtonian's folded
 image at global (0, −100, −400) for any pupil point, the relay's m = −1 and
 5 mm edge field imaged at −5 mm, coordinate breaks reported without AOI, a user AGF glass with N-BK7 coefficients reproducing N-BK7's
 first-order data), exit codes (including non-UTF-8 projects for every command), `validate` and
-`set` agreeing with `paraxial`/`trace` (F/# 0, negative field weight),
+`set` agreeing with `paraxial`/`trace` (F/# 0, negative field weight:
+every structural issue listed, step-by-step repair with `set`),
 migration backups, atomic `set`, Ctrl-C and
 `--timeout` cancellation with monotone progress, and byte-identical
 `--no-timing` output.

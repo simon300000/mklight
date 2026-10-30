@@ -802,29 +802,99 @@ fn validate_agrees_with_the_ray_commands() {
     let d = TempDir::new("validate-rays");
     let p = sample(&d, "achromat");
     let doc: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-    // A file edited by hand to F/# 0, or to a negative field weight: the
-    // engine's structural validation rejects the model, so validate fails
-    // (with the issue code and the JSON path) like paraxial and trace do.
-    for (key, edit) in [
-        (
-            "[invalid_aperture_value] aperture.value",
-            &(|v: &mut Value| v["system"]["aperture"]["value"] = json!(0.0)) as &dyn Fn(&mut Value),
-        ),
-        (
-            "[negative_weight] fields.fields[1].weight",
-            &|v: &mut Value| v["system"]["fields"]["fields"][1]["weight"] = json!(-1.0),
-        ),
-    ] {
-        let mut bad = doc.clone();
-        edit(&mut bad);
-        let b = d.join("bad.mklight");
-        std::fs::write(&b, bad.to_string()).unwrap();
-        let v = json_run(&["validate", s(&b)], 2);
-        assert_eq!(v["error"]["kind"], "invalid_model", "{v}");
-        assert!(v["error"]["message"].as_str().unwrap().contains(key), "{v}");
-        assert_eq!(code(&mklight(["paraxial", s(&b)])), 2);
-        assert_eq!(code(&mklight(["trace", s(&b), "--pupil", "0,1"])), 2);
-    }
+    // A file edited by hand to F/# 0 and to a negative field weight: the
+    // engine's structural validation refuses to open it, so paraxial and
+    // trace fail, and validate lists every structural issue (code, JSON
+    // path, surface) instead of a single load error.
+    let mut bad = doc.clone();
+    bad["system"]["aperture"]["value"] = json!(0.0);
+    bad["system"]["fields"]["fields"][1]["weight"] = json!(-1.0);
+    let b = d.join("bad.mklight");
+    std::fs::write(&b, bad.to_string()).unwrap();
+    let v = json_run(&["validate", s(&b)], 2);
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["structural_only"], true);
+    assert_eq!(f(&v["errors"]), 2.0);
+    assert_eq!(v["snapshot_hash"], Value::Null);
+    let issues: Vec<(&str, &str)> = v["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["code"].as_str().unwrap(), i["path"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        issues,
+        [
+            ("invalid_aperture_value", "aperture.value"),
+            ("negative_weight", "fields.fields[1].weight"),
+        ]
+    );
+    let text = stdout(&mklight(["validate", s(&b)]));
+    assert!(
+        text.contains("aperture.value") && text.contains("fields.fields[1].weight"),
+        "{text}"
+    );
+    assert_eq!(code(&mklight(["paraxial", s(&b)])), 2);
+    assert_eq!(code(&mklight(["trace", s(&b), "--pupil", "0,1"])), 2);
+    // The broken file can be repaired step by step with set: an edit that
+    // adds no structural issue is saved (also one that does not repair
+    // anything), one that adds an issue is refused and not written.
+    let before = std::fs::read(&b).unwrap();
+    let e = json_run(
+        &[
+            "set",
+            s(&b),
+            r#"{"param":"wavelength_weight","index":0}"#,
+            "-2",
+        ],
+        2,
+    );
+    let msg = e["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("[negative_weight] wavelengths.wavelengths[0].weight"),
+        "{msg}"
+    );
+    assert_eq!(std::fs::read(&b).unwrap(), before);
+    let r = json_run(
+        &["set", s(&b), r#"{"param":"thickness","surface":3}"#, "90"],
+        0,
+    );
+    assert_eq!(
+        (r["saved"].clone(), r["valid"].clone()),
+        (json!(true), json!(false))
+    );
+    assert_eq!(r["remaining_issues"].as_array().unwrap().len(), 2);
+    let r = json_run(&["set", s(&b), r#"{"param":"aperture_value"}"#, "-1"], 0);
+    assert_eq!(f(&r["old"]), 0.0);
+    assert_eq!(r["remaining_issues"].as_array().unwrap().len(), 2);
+    let r = json_run(&["set", s(&b), r#"{"param":"aperture_value"}"#, "5"], 0);
+    assert_eq!(r["valid"], false);
+    assert_eq!(r["remaining_issues"][0]["code"], "negative_weight");
+    // A dry run of the last repair reports a valid model and writes nothing.
+    let before = std::fs::read(&b).unwrap();
+    let path_w = r#"{"param":"field_weight","index":1}"#;
+    let r = json_run(&["set", s(&b), path_w, "1", "--dry-run"], 0);
+    assert_eq!(
+        (r["valid"].clone(), r["saved"].clone()),
+        (json!(true), json!(false))
+    );
+    assert!(r["snapshot_hash"].is_string());
+    assert_eq!(std::fs::read(&b).unwrap(), before);
+    let r = json_run(&["set", s(&b), path_w, "1"], 0);
+    assert_eq!(r["valid"], true);
+    assert!(r["snapshot_hash"].is_string());
+    let v = json_run(&["validate", s(&b)], 0);
+    assert_eq!(
+        (v["ok"].clone(), v["structural_only"].clone()),
+        (json!(true), json!(false))
+    );
+    assert_eq!(code(&mklight(["paraxial", s(&b)])), 0);
+    let efl = |p: &Path| f(&json_run(&["paraxial", s(p)], 0)["wavelengths"][0]["efl"]);
+    assert_eq!(efl(&b), efl(&p));
+    // A file that is not a project at all keeps its load error.
+    std::fs::write(&b, "{\"format\": \"x\"}").unwrap();
+    let e = json_run(&["validate", s(&b)], 2);
+    assert!(e["error"]["message"].is_string(), "{e}");
     assert_eq!(json_run(&["validate", s(&p)], 0)["ok"], true);
     assert_eq!(code(&mklight(["paraxial", s(&p)])), 0);
 }

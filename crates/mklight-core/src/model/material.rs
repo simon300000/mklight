@@ -3,7 +3,12 @@ use serde::{Deserialize, Serialize};
 /// Reference to an optical medium. Resolution into numbers happens in
 /// `materials::MaterialLibrary`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum MaterialRef {
     /// Air at the system temperature and pressure (index 1 by convention, CONVENTIONS §2).
     Air,
@@ -27,6 +32,8 @@ pub enum MaterialRef {
     /// Constant index at every wavelength (ideal/test media).
     Constant { n: f64 },
 }
+
+crate::serde_util::strict_unit_variants!(MaterialRef, "type", ["air", "vacuum"]);
 
 impl MaterialRef {
     pub fn glass(name: &str) -> Self {

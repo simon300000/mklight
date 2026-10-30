@@ -32,6 +32,55 @@ pub mod f64_inf {
     }
 }
 
+/// Deserializes an internally tagged enum whose tag-only (unit) variants
+/// must not carry other keys. serde's `deny_unknown_fields` applies to struct
+/// variants only, so without this `{"mode": "auto", "value": 5}` would load
+/// as `Auto` and silently drop `value`. `inner` is the derived
+/// deserializer (`#[serde(remote = "Self")]`).
+pub(crate) fn deserialize_strict_unit_variants<'de, D, T>(
+    d: D,
+    tag: &str,
+    unit_variants: &[&str],
+    inner: impl FnOnce(serde_json::Value) -> Result<T, serde_json::Error>,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = serde_json::Value::deserialize(d)?;
+    if let Some(obj) = v.as_object()
+        && let Some(t) = obj.get(tag).and_then(|t| t.as_str())
+        && unit_variants.contains(&t)
+        && let Some(k) = obj.keys().find(|k| *k != tag)
+    {
+        return Err(D::Error::custom(format!(
+            "unknown field `{k}`: `{tag}: {t}` takes no other fields"
+        )));
+    }
+    inner(v).map_err(D::Error::custom)
+}
+
+/// `Serialize`/`Deserialize` for an internally tagged enum derived with
+/// `#[serde(remote = "Self")]`, rejecting extra keys on its unit variants
+/// ([`deserialize_strict_unit_variants`]). The JSON form is unchanged.
+macro_rules! strict_unit_variants {
+    ($ty:ty, $tag:literal, [$($unit:literal),+ $(,)?]) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                <$ty>::serialize(self, s)
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                $crate::serde_util::deserialize_strict_unit_variants(
+                    d,
+                    $tag, &[$($unit),+], <$ty>::deserialize)
+            }
+        }
+    };
+}
+pub(crate) use strict_unit_variants;
+
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};

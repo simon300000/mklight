@@ -10,7 +10,12 @@ use crate::error::{MkError, MkResult};
 use crate::model::{ApertureSpec, MaterialRef, OpticalSystem, Placement, SurfaceId, SurfaceShape};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "param", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "param",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ParamPath {
     Curvature {
         surface: SurfaceId,
@@ -76,6 +81,12 @@ pub enum ParamPath {
     TemperatureC,
     PressureAtm,
 }
+
+crate::serde_util::strict_unit_variants!(
+    ParamPath,
+    "param",
+    ["aperture_value", "temperature_c", "pressure_atm"]
+);
 
 fn surf(s: &OpticalSystem, id: SurfaceId) -> MkResult<&crate::model::Surface> {
     s.surfaces

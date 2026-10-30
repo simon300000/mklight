@@ -13,7 +13,12 @@ pub struct SurfaceId(pub u64);
 
 /// Surface shape in its local frame (CONVENTIONS §2). Curvature `c = 1/R`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum SurfaceShape {
     /// Flat surface `z = 0`.
     Plane,
@@ -37,6 +42,8 @@ pub enum SurfaceShape {
     /// Changes the frame only and does not interact with light. Uses `placement`.
     CoordinateBreak,
 }
+
+crate::serde_util::strict_unit_variants!(SurfaceShape, "type", ["plane", "coordinate_break"]);
 
 impl SurfaceShape {
     pub fn curvature(&self) -> f64 {
@@ -120,7 +127,12 @@ pub enum Interaction {
 
 /// Clear-aperture size.
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "mode",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum SemiDiameter {
     /// Computed by the tracer: the largest ray height over all fields and
     /// wavelengths at the current aperture. It does not clip rays.
@@ -129,6 +141,8 @@ pub enum SemiDiameter {
     /// A user-fixed value that clips rays at this radius (mm).
     Fixed { value: f64 },
 }
+
+crate::serde_util::strict_unit_variants!(SemiDiameter, "mode", ["auto"]);
 
 /// Optional explicit aperture that clips rays. It overrides the circular
 /// `SemiDiameter` when present.

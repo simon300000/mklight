@@ -1035,5 +1035,70 @@ mod tests {
         assert!(e.contains("enviroment"), "{e}");
         let e = typo(&|v| v["surfaces"][1]["material"]["catalogue"] = "X".into());
         assert!(e.contains("catalogue"), "{e}");
+        // Tag-only variants take no other keys (serde's `deny_unknown_fields`
+        // alone does not cover them): the value would be silently dropped.
+        use serde_json::json;
+        type Edit<'a> = &'a dyn Fn(&mut serde_json::Value);
+        let cases: [(&str, Edit); 8] = [
+            ("value", &|v| {
+                v["surfaces"][2]["semi_diameter"] = json!({"mode": "auto", "value": 5.0})
+            }),
+            ("curvature", &|v| {
+                v["surfaces"][6]["shape"] = json!({"type": "plane", "curvature": 0.02})
+            }),
+            ("tilt", &|v| {
+                v["surfaces"][6]["shape"] = json!({"type": "coordinate_break", "tilt": 3.0})
+            }),
+            ("n", &|v| {
+                v["surfaces"][2]["material"] = json!({"type": "air", "n": 1.5})
+            }),
+            ("n", &|v| {
+                v["surfaces"][2]["material"] = json!({"type": "vacuum", "n": 1.0})
+            }),
+            ("tolerance", &|v| {
+                v["ray_aiming"] = json!({"mode": "off", "tolerance": 1e-3})
+            }),
+            ("value", &|v| {
+                v["aperture"] = json!({"type": "float_by_stop_size", "value": 4.0})
+            }),
+            ("surface", &|v| {
+                v["configurations"] = json!([{"name": "c", "overrides": [
+                    [{"param": "aperture_value", "surface": 3}, 2.0]]}])
+            }),
+        ];
+        for (key, edit) in cases {
+            let e = typo(edit);
+            assert!(e.contains(&format!("unknown field `{key}`")), "{e}");
+        }
+        for p in [
+            json!({"param": "temperature_c", "index": 0}),
+            json!({"param": "pressure_atm", "x": 1}),
+        ] {
+            assert!(serde_json::from_value::<ParamPath>(p).is_err());
+        }
+        // The same keys without the extras load, and the JSON form of the
+        // tag-only variants is unchanged.
+        let mut v = good.clone();
+        v["surfaces"][2]["semi_diameter"] = json!({"mode": "auto"});
+        v["surfaces"][2]["material"] = json!({"type": "air"});
+        v["aperture"] = json!({"type": "float_by_stop_size"});
+        v["ray_aiming"] = json!({"mode": "off"});
+        let s: OpticalSystem = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&s).unwrap(), v);
+        assert_eq!(
+            serde_json::to_value(ParamPath::ApertureValue).unwrap(),
+            json!({"param": "aperture_value"})
+        );
+        // Errors from the strict path still carry the JSON position.
+        let text = serde_json::to_string_pretty(&{
+            let mut v = good.clone();
+            v["ray_aiming"] = json!({"mode": "off", "tolerance": 1e-3});
+            v
+        })
+        .unwrap();
+        let e = serde_json::from_str::<OpticalSystem>(&text)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("tolerance") && e.contains("line"), "{e}");
     }
 }

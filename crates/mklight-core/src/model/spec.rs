@@ -2,7 +2,12 @@ use serde::{Deserialize, Serialize};
 
 /// How the system aperture is specified.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ApertureSpec {
     /// Entrance pupil diameter (mm).
     EntrancePupilDiameter { value: f64 },
@@ -15,6 +20,8 @@ pub enum ApertureSpec {
     /// The stop's fixed semi-diameter sets the aperture.
     FloatByStopSize,
 }
+
+crate::serde_util::strict_unit_variants!(ApertureSpec, "type", ["float_by_stop_size"]);
 
 impl Default for ApertureSpec {
     fn default() -> Self {
@@ -165,7 +172,12 @@ impl WavelengthSet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "mode",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RayAiming {
     /// Pupil coordinates map onto the paraxial entrance pupil.
     #[default]
@@ -177,6 +189,8 @@ pub enum RayAiming {
         tolerance: f64,
     },
 }
+
+crate::serde_util::strict_unit_variants!(RayAiming, "mode", ["off"]);
 
 fn aim_tol() -> f64 {
     1e-10
