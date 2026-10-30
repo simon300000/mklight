@@ -153,3 +153,60 @@ take the paraxial **slope** `u = dy/dz` after a surface: dimensionless, not
 an angle in degrees, and not `tan` of a real-ray angle. The JSON field is
 `slope`. UI and FFI must label it as a slope (or "paraxial angle u") and pass
 it through unconverted; §1's "angles in degrees" does not apply to it.
+
+## 9. Complex amplitudes and polarisation
+
+Coatings return complex amplitude coefficients next to the power ones
+(`mklight_core::materials::coating`), and polarisation ray tracing
+(`mklight_trace::polarization`) builds on them. Details: `docs/POLARIZATION.md`.
+
+* **Time dependence** `exp(i(ωt − k·r))`, with complex indices `N = n − ik`
+  (Macleod). A wave delayed by an extra optical path `L` picks up the factor
+  `exp(−i2πL/λ)`, so a phase *lag* is a negative phase. Evanescent and
+  absorbed waves decay because `Im(N cos θ) ≤ 0`.
+* **s/p basis.** At an interface with unit normal `n̂` (either orientation)
+  and incident direction `k`: `s = (k × n̂)/|k × n̂|`, `p = k × s` before and
+  `p' = k' × s` after the interface (reflected or transmitted `k'`). Both
+  `(s, p, k)` and `(s, p', k')` are right-handed. At normal incidence `s` is
+  any unit vector normal to `k` (results do not depend on the choice,
+  because then `r_p = −r_s` and `t_p = t_s`).
+* With this basis the bare Fresnel coefficients are
+  `r_s = (n₁c₁ − n₂c₂)/(n₁c₁ + n₂c₂)`, `r_p = (n₂c₁ − n₁c₂)/(n₂c₁ + n₁c₂)`,
+  `t_s = 2n₁c₁/(n₁c₁ + n₂c₂)`, `t_p = 2n₁c₁/(n₂c₁ + n₁c₂)`. So
+  `r_p = −r_s` at normal incidence, `r_p = 0` at Brewster's angle, and a
+  **perfect conductor** (`E_tangential = 0`) has `r_s = −1`, `r_p = +1`. The
+  perfect conductor is the phase of every phase-free reflector (bare mirrors,
+  `Ideal` coatings, tabulated mirrors): it is non-retarding. A `Reflect`
+  surface therefore never gets a total-internal-reflection phase, even when
+  it models a prism face (TIR face, roof, rhomb): the surface has no outer
+  medium. Prism faces whose retardance matters need a coating that carries
+  the phase (e.g. a `ThinFilm` mirror) until such an option exists.
+* At grazing incidence (`cos θ₁ = 0`, or so small that `n₁ cos θ₁` rounds
+  to zero) every coefficient takes the limit `r_s = r_p = −1`, `t = 0`.
+* Beyond the critical angle `|r_s| = |r_p| = 1` with **positive** phases
+  `φ_s = 2 atan(g/(n₁c₁))`, `φ_p = 2 atan(n₁g/(n₂²c₁))`,
+  `g = √(n₁²sin²θ₁ − n₂²)`.
+* Field transmission `t` is the ratio of full field amplitudes. The power
+  transmittance is `T = |t|²·flux`, with `flux = n₂c₂/(n₁c₁)` for
+  non-absorbing media. Polarisation ray tracing uses the **flux-normalised**
+  `t̃ = t·√flux` (same phase), so `|E|²` is the power carried by the ray.
+  Reflection needs no factor (`R = |r|²`).
+* Coatings without phase data: `Ideal` coatings are non-polarising
+  (`r_s = −√R`, `r_p = +√R`, `t̃_s = t̃_p = +√T`). `Tabulated` coatings keep
+  the bare-Fresnel phases with moduli rescaled to the tabulated powers.
+* **Jones vectors** `(E_x, E_y)` are given in a right-handed transverse basis
+  `(x̂, ŷ, k)`. **Stokes** parameters:
+  `S₀ = |E_x|² + |E_y|²`, `S₁ = |E_x|² − |E_y|²`, `S₂ = 2 Re(E_x* E_y)`,
+  `S₃ = 2 Im(E_x* E_y)`. `S₃ > 0` (e.g. `E_y = +i E_x`) is a field that
+  turns from `+x̂` toward `−ŷ`: clockwise for an observer looking toward the
+  source.
+* **Diattenuation** `D = (T_max − T_min)/(T_max + T_min)` from the singular
+  values of the Jones (or PRT) matrix. **Retardance** `δ ∈ [0, π]` is the
+  eigenphase difference of the unitary factor of the polar decomposition
+  `J = U·H`. Its **fast axis** is the Stokes vector of the eigenpolarisation
+  with the larger phase (the leading one).
+* **Pupil basis.** Jones pupils use the *double-pole* basis: the local
+  `(x̂, ŷ)` of a ray with direction `k` is the frame's `(x̂, ±ŷ)` carried by
+  the minimal rotation that takes the pole `±ẑ` to `k`. The pole is the
+  starting frame's `+ẑ` in object space, and in image space the image
+  frame's `+ẑ`, or `−ẑ` (with `−ŷ`) when the light travels toward `−z`.

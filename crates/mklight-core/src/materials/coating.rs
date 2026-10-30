@@ -333,6 +333,395 @@ pub fn tmm(n0: C, layers: &[(C, f64)], ns: C, cos_i: f64, lambda_um: f64) -> Int
     InterfaceRT { rs, rp, ts, tp }
 }
 
+// ---------------------------------------------------------------------------
+// Complex amplitude coefficients (CONVENTIONS §9).
+//
+// The power functions above stay the reference for `R`, `T` and `A`; the
+// amplitude functions below reproduce them (`|r|²`, `|t|²·flux`) and add the
+// phases that polarisation ray tracing and vector wave optics need.
+
+/// Complex number type of the amplitude API (re-exported so that dependent
+/// crates use the same type without their own `num-complex` dependency).
+pub use num_complex::Complex64;
+
+/// Complex amplitude reflection and transmission coefficients for s and p
+/// polarisation (CONVENTIONS §9): time dependence `exp(i(ωt − k·r))`,
+/// `N = n − ik`, s along `k × normal`, p along `k × s` before and `k' × s`
+/// after the interface, so at normal incidence `r_p = −r_s` and `t_p = t_s`.
+///
+/// `t_s`, `t_p` are ratios of the full field amplitudes. The transmitted
+/// power fraction is `T = |t|²·flux`, where `flux` is the ratio of the
+/// normal energy-flux densities per unit squared amplitude,
+/// `Re(N₂ cos θ₂)/(n₁ cos θ₁)` for s and
+/// `Re(N₂ / cos θ₂)/(n₁ / cos θ₁) · |cos θ₂ / cos θ₁|²` for p; both equal
+/// `n₂ cos θ₂ / (n₁ cos θ₁)` for a non-absorbing exit medium. On a mirror,
+/// and for evanescent (totally reflected) transmission, `flux = 0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InterfaceAmplitudes {
+    pub rs: Complex64,
+    pub rp: Complex64,
+    pub ts: Complex64,
+    pub tp: Complex64,
+    /// `T_s = |t_s|²·flux_s`.
+    pub flux_s: f64,
+    /// `T_p = |t_p|²·flux_p`.
+    pub flux_p: f64,
+}
+
+const CZERO: C = C::new(0.0, 0.0);
+
+impl InterfaceAmplitudes {
+    /// A perfect conductor (`E_tangential = 0`): `r_s = −1`, `r_p = +1`.
+    /// This is the phase given to every ideal reflector (bare mirrors,
+    /// ideal coatings): a non-polarising mirror without retardance.
+    pub const PERFECT_CONDUCTOR: InterfaceAmplitudes = InterfaceAmplitudes {
+        rs: C::new(-1.0, 0.0),
+        rp: C::new(1.0, 0.0),
+        ts: CZERO,
+        tp: CZERO,
+        flux_s: 0.0,
+        flux_p: 0.0,
+    };
+    /// A lossless, phase-free, non-reflecting interface (`t = 1`, `flux = 1`).
+    pub const TRANSPARENT: InterfaceAmplitudes = InterfaceAmplitudes {
+        rs: CZERO,
+        rp: CZERO,
+        ts: C::new(1.0, 0.0),
+        tp: C::new(1.0, 0.0),
+        flux_s: 1.0,
+        flux_p: 1.0,
+    };
+
+    /// Power coefficients: `R = |r|²`, `T = |t|²·flux`.
+    pub fn power(&self) -> InterfaceRT {
+        InterfaceRT {
+            rs: self.rs.norm_sqr(),
+            rp: self.rp.norm_sqr(),
+            ts: self.ts.norm_sqr() * self.flux_s,
+            tp: self.tp.norm_sqr() * self.flux_p,
+        }
+    }
+    /// Flux-normalised s transmission `t_s·√flux_s`: same phase as `t_s`,
+    /// squared modulus `T_s`.
+    pub fn ts_flux(&self) -> Complex64 {
+        self.ts * self.flux_s.sqrt()
+    }
+    /// Flux-normalised p transmission `t_p·√flux_p`.
+    pub fn tp_flux(&self) -> Complex64 {
+        self.tp * self.flux_p.sqrt()
+    }
+    /// The same amplitudes with the transmission removed (`t = 0`,
+    /// `flux = 0`): a reflecting surface counts transmitted power as absorbed.
+    fn opaque(mut self) -> Self {
+        self.ts = CZERO;
+        self.tp = CZERO;
+        self.flux_s = 0.0;
+        self.flux_p = 0.0;
+        self
+    }
+}
+
+/// Complex Fresnel amplitudes of a bare interface between non-absorbing
+/// media (`cos_i` in medium `n1`, clamped to [0, 1]), consistent with
+/// [`fresnel`]:
+///
+/// * `r_s = (n₁c₁ − n₂c₂)/(n₁c₁ + n₂c₂)`, `t_s = 2n₁c₁/(n₁c₁ + n₂c₂)`,
+/// * `r_p = (n₂c₁ − n₁c₂)/(n₂c₁ + n₁c₂)`, `t_p = 2n₁c₁/(n₂c₁ + n₁c₂)`.
+///
+/// The numerators are evaluated without cancellation (Snell's law gives
+/// `n₁²c₁² − n₂²c₂² = (n₁ − n₂)(n₁ + n₂)` and
+/// `n₂²c₁² − n₁²c₂² = (n₂² − n₁²)(n₂c₁ − n₁s₁)(n₂c₁ + n₁s₁)/n₂²`), so
+/// low-contrast (cemented) interfaces keep full relative accuracy.
+///
+/// Beyond the critical angle `n₂c₂ = −i·g`, `g = √(n₁²s₁² − n₂²)` (the
+/// decaying root for `N = n − ik`), so `r_s = (n₁c₁ + ig)/(n₁c₁ − ig)` and
+/// `r_p = (n₂c₁ + i g n₁/n₂)/(n₂c₁ − i g n₁/n₂)` have unit modulus and the
+/// phases `φ_s = 2 atan(g/(n₁c₁))`, `φ_p = 2 atan(n₁ g/(n₂² c₁))`. The
+/// evanescent `t` is returned with `flux = 0`.
+pub fn fresnel_amplitudes(n1: f64, n2: f64, cos_i: f64) -> InterfaceAmplitudes {
+    let ci = cos_i.clamp(0.0, 1.0);
+    let sin2_i = (1.0 - ci) * (1.0 + ci);
+    let mu = n1 / n2;
+    let sin2_t = mu * mu * sin2_i;
+    let a = n1 * ci; // n₁c₁
+    if sin2_t >= 1.0 {
+        let si = sin2_i.sqrt();
+        let g = ((n1 * si - n2) * (n1 * si + n2)).max(0.0).sqrt();
+        let b = n2 * ci; // n₂c₁
+        let h = g * mu; // |n₁c₂|
+        let rs = C::new(a, g) / C::new(a, -g);
+        let rp = C::new(b, h) / C::new(b, -h);
+        let ts = C::new(2.0 * a, 0.0) / C::new(a, -g);
+        let tp = C::new(2.0 * a, 0.0) / C::new(b, -h);
+        return InterfaceAmplitudes {
+            rs,
+            rp,
+            ts,
+            tp,
+            flux_s: 0.0,
+            flux_p: 0.0,
+        };
+    }
+    let ct = (-mu * mu).mul_add(sin2_i, 1.0).max(0.0).sqrt();
+    let b = n2 * ct; // n₂c₂
+    let c = n2 * ci; // n₂c₁
+    let d = n1 * ct; // n₁c₂
+    let ss = a + b;
+    let sp = c + d;
+    let rs = (n1 - n2) * (n1 + n2) / (ss * ss);
+    let si = sin2_i.sqrt();
+    let rp = ((n2 - n1) * (n2 + n1) * ((c - n1 * si) * (c + n1 * si)) / (n2 * n2)) / (sp * sp);
+    let (ts, tp, flux) = if a > 0.0 {
+        (2.0 * a / ss, 2.0 * a / sp, b / a)
+    } else {
+        (0.0, 0.0, 0.0) // grazing incidence: nothing enters
+    };
+    InterfaceAmplitudes {
+        rs: C::new(rs, 0.0),
+        rp: C::new(rp, 0.0),
+        ts: C::new(ts, 0.0),
+        tp: C::new(tp, 0.0),
+        flux_s: flux,
+        flux_p: flux,
+    }
+}
+
+/// Characteristic-matrix amplitudes for a stack ordered from the incident
+/// medium `n0` to the exit medium `ns`, the amplitude counterpart of
+/// [`tmm`] (same branch choices and degenerate cases, so
+/// `tmm_amplitudes(..).power()` equals `tmm(..)` to rounding).
+///
+/// Macleod's tilted admittances (`η_s = N cos θ`, `η_p = N / cos θ`) give
+/// the tangential-field coefficients `ρ = (η₀B − C)/(η₀B + C)` and
+/// `τ = 2η₀/(η₀B + C)` with `[B, C]ᵀ = M·[1, η_sub]ᵀ` and the layer
+/// matrices `[[cos δ, i sin δ/η], [iη sin δ, cos δ]]`, `δ = 2πN d cos θ/λ`.
+/// In the basis of CONVENTIONS §9 the field coefficients are
+/// `r_s = ρ_s`, `t_s = τ_s`, `r_p = −ρ_p` (the reflected p vector `k' × s`
+/// has the opposite tangential component) and
+/// `t_p = τ_p · cos θ₀ / cos θ_sub` (the p field is `E_tan / cos θ`), with
+/// `cos θ = (N cos θ)/N` complex in absorbing media.
+pub fn tmm_amplitudes(
+    n0: C,
+    layers: &[(C, f64)],
+    ns: C,
+    cos_i: f64,
+    lambda_um: f64,
+) -> InterfaceAmplitudes {
+    let ci = cos_i.clamp(0.0, 1.0);
+    let s0 = n0.re * ((1.0 - ci) * (1.0 + ci)).sqrt();
+    let y0c = n_cos(n0, s0);
+    let ysc = n_cos(ns, s0);
+    if y0c.norm() == 0.0 {
+        // Grazing incidence (`cos θ₀` rounds to zero in `N₀ cos θ₀`): the
+        // p admittance `N₀²/(N₀ cos θ₀)` is infinite, so take the limit
+        // `ρ_s → −1`, `ρ_p → +1` (`r_s = r_p = −1`, as `fresnel_amplitudes`
+        // at `cos_i = 0`); nothing enters. [`tmm`] gives `R = 1`, `T = 0`.
+        return InterfaceAmplitudes {
+            rs: C::new(-1.0, 0.0),
+            rp: C::new(-1.0, 0.0),
+            ts: CZERO,
+            tp: CZERO,
+            flux_s: 0.0,
+            flux_p: 0.0,
+        };
+    }
+    let one = C::new(1.0, 0.0);
+    // Returns (ρ, τ, Re η₀·Re η_s/|η₀|²) for the tangential fields.
+    let calc = |pol_p: bool| -> (C, C, f64) {
+        let adm = |n: C, nc: C| if pol_p { n * n / nc } else { nc };
+        let eta0 = adm(n0, y0c);
+        let etas = if ysc.norm() == 0.0 {
+            CZERO
+        } else {
+            adm(ns, ysc)
+        };
+        let mut m = [[one, CZERO], [CZERO, one]];
+        for &(n, d) in layers {
+            let nc = n_cos(n, s0);
+            let delta = 2.0 * PI * nc * d / lambda_um;
+            let eta = adm(n, nc);
+            let (cd, sd) = (delta.cos(), delta.sin());
+            let i = C::new(0.0, 1.0);
+            let l = [[cd, i * sd / eta], [i * eta * sd, cd]];
+            m = [
+                [
+                    m[0][0] * l[0][0] + m[0][1] * l[1][0],
+                    m[0][0] * l[0][1] + m[0][1] * l[1][1],
+                ],
+                [
+                    m[1][0] * l[0][0] + m[1][1] * l[1][0],
+                    m[1][0] * l[0][1] + m[1][1] * l[1][1],
+                ],
+            ];
+        }
+        let b = m[0][0] + m[0][1] * etas;
+        let c = m[1][0] + m[1][1] * etas;
+        let den = eta0 * b + c;
+        if den.norm() == 0.0 {
+            return (one, CZERO, 0.0);
+        }
+        let rho = (eta0 * b - c) / den;
+        let tau = 2.0 * eta0 / den;
+        let e2 = eta0.norm_sqr();
+        let flux = if e2 > 0.0 {
+            (eta0.re * etas.re / e2).max(0.0)
+        } else {
+            0.0
+        };
+        (rho, tau, flux)
+    };
+    let (rho_s, tau_s, flux_s) = calc(false);
+    let (rho_p, tau_p, flux_tan_p) = calc(true);
+    // cos θ₀ / cos θ_sub for the p field amplitude.
+    let (tp, flux_p) = if ysc.norm() == 0.0 || y0c.norm() == 0.0 {
+        (CZERO, 0.0)
+    } else {
+        let ratio = (y0c / n0) / (ysc / ns);
+        (tau_p * ratio, flux_tan_p / ratio.norm_sqr())
+    };
+    InterfaceAmplitudes {
+        rs: rho_s,
+        rp: -rho_p,
+        ts: tau_s,
+        tp,
+        flux_s,
+        flux_p,
+    }
+}
+
+/// Field-amplitude transmission `t` with `|t|²·flux = T` for a coefficient
+/// that has only a power value: the bare-interface flux factor
+/// `n₂c₂/(n₁c₁)` (1 when it is undefined), so the amplitudes stay
+/// consistent with CONVENTIONS §9 while carrying no phase.
+fn phase_free_transmission(n_in: f64, n_out: f64, cos_i: f64, t_power: f64) -> (C, f64) {
+    let ci = cos_i.clamp(0.0, 1.0);
+    let mu = n_in / n_out;
+    let disc = (-mu * mu).mul_add((1.0 - ci) * (1.0 + ci), 1.0);
+    let flux = if disc > 0.0 && ci > 0.0 {
+        n_out * disc.sqrt() / (n_in * ci)
+    } else {
+        1.0
+    };
+    (C::new((t_power / flux).sqrt(), 0.0), flux)
+}
+
+/// `amp` rescaled to modulus `√power` (keeping its phase; a zero `amp`
+/// becomes the positive real `√power`).
+fn with_power(amp: C, power: f64) -> C {
+    let m = amp.norm();
+    if m > 0.0 {
+        amp * (power.max(0.0).sqrt() / m)
+    } else {
+        C::new(power.max(0.0).sqrt(), 0.0)
+    }
+}
+
+impl ResolvedCoating {
+    /// Complex amplitude coefficients, the counterpart of [`Self::rt`] with
+    /// the same arguments: `self.amplitudes(..).power()` equals
+    /// `self.rt(..)` to rounding for every coating kind.
+    ///
+    /// Phases (CONVENTIONS §9):
+    /// * `Bare`: Fresnel ([`fresnel_amplitudes`]); a bare mirror is a
+    ///   perfect conductor (`r_s = −1`, `r_p = +1`).
+    /// * `Ideal`: phase-free and non-polarising. Reflection
+    ///   `r_s = −√R`, `r_p = +√R` (a scaled perfect conductor, zero
+    ///   retardance), transmission `t_s = t_p` real positive with
+    ///   `|t|²·flux = T` (bare-interface flux factor).
+    /// * `Tabulated`: the bare-Fresnel phases with moduli rescaled to the
+    ///   tabulated powers (the table holds no phase information); on a
+    ///   mirror a scaled perfect conductor.
+    /// * `ThinFilm`: [`tmm_amplitudes`].
+    pub fn amplitudes(
+        &self,
+        lambda_um: f64,
+        n_in: f64,
+        n_out: f64,
+        cos_i: f64,
+        mirror: bool,
+    ) -> InterfaceAmplitudes {
+        match self {
+            ResolvedCoating::Bare => {
+                if mirror {
+                    InterfaceAmplitudes::PERFECT_CONDUCTOR
+                } else {
+                    fresnel_amplitudes(n_in, n_out, cos_i)
+                }
+            }
+            ResolvedCoating::Ideal {
+                reflectance,
+                transmittance,
+            } => {
+                let r = reflectance.sqrt();
+                let (t, flux) = if mirror {
+                    (CZERO, 0.0)
+                } else {
+                    phase_free_transmission(n_in, n_out, cos_i, *transmittance)
+                };
+                InterfaceAmplitudes {
+                    rs: C::new(-r, 0.0),
+                    rp: C::new(r, 0.0),
+                    ts: t,
+                    tp: t,
+                    flux_s: flux,
+                    flux_p: flux,
+                }
+            }
+            ResolvedCoating::Tabulated { .. } => {
+                let p = self.rt(lambda_um, n_in, n_out, cos_i, mirror);
+                if mirror {
+                    let r = p.rs.sqrt();
+                    return InterfaceAmplitudes {
+                        rs: C::new(-r, 0.0),
+                        rp: C::new(r, 0.0),
+                        ..InterfaceAmplitudes::PERFECT_CONDUCTOR
+                    };
+                }
+                let bare = fresnel_amplitudes(n_in, n_out, cos_i);
+                if bare.flux_s == 0.0 && bare.flux_p == 0.0 {
+                    // Total internal reflection stays total (and keeps its phase).
+                    return bare;
+                }
+                let scale_t = |t: C, flux: f64, power: f64| {
+                    if flux > 0.0 {
+                        with_power(t, power / flux)
+                    } else {
+                        CZERO
+                    }
+                };
+                InterfaceAmplitudes {
+                    rs: with_power(bare.rs, p.rs),
+                    rp: with_power(bare.rp, p.rp),
+                    ts: scale_t(bare.ts, bare.flux_s, p.ts),
+                    tp: scale_t(bare.tp, bare.flux_p, p.tp),
+                    ..bare
+                }
+            }
+            ResolvedCoating::ThinFilm {
+                layers,
+                mirror_substrate,
+                ..
+            } => {
+                let ni = C::new(n_in, 0.0);
+                if mirror {
+                    let (n, k) = mirror_substrate.unwrap_or((1e-9, 1e9));
+                    let sub = C::new(n, -k);
+                    let seq: Vec<(C, f64)> =
+                        layers.iter().rev().map(|l| layer_n(l, lambda_um)).collect();
+                    return tmm_amplitudes(ni, &seq, sub, cos_i, lambda_um).opaque();
+                }
+                let no = C::new(n_out, 0.0);
+                let seq: Vec<(C, f64)> = if n_out >= n_in {
+                    layers.iter().rev().map(|l| layer_n(l, lambda_um)).collect()
+                } else {
+                    layers.iter().map(|l| layer_n(l, lambda_um)).collect()
+                };
+                tmm_amplitudes(ni, &seq, no, cos_i, lambda_um)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +805,358 @@ mod tests {
     fn metal_mirror_reflects() {
         let r = tmm(C::new(1.0, 0.0), &[], C::new(0.96, -6.69), 1.0, 0.55); // aluminium
         assert!(r.r_unpolarized() > 0.9 && r.r_unpolarized() < 0.93, "{r:?}");
+    }
+}
+
+#[cfg(test)]
+mod amplitude_tests {
+    use super::*;
+    use crate::model::{Layer, MaterialRef};
+    use crate::rng::Philox;
+
+    fn close(a: C, b: C, tol: f64) -> bool {
+        (a - b).norm() <= tol
+    }
+
+    /// NaN-propagating comparison: every component must be finite and
+    /// within `tol` (`f64::max` would silently drop a NaN difference).
+    fn assert_power_eq(a: InterfaceRT, b: InterfaceRT, tol: f64, what: &str) {
+        for (x, y) in [(a.rs, b.rs), (a.rp, b.rp), (a.ts, b.ts), (a.tp, b.tp)] {
+            let d = (x - y).abs();
+            assert!(
+                x.is_finite() && y.is_finite() && d <= tol,
+                "{what}: {a:?} vs {b:?} (diff {d:e})"
+            );
+        }
+    }
+
+    /// A random stack: 0–6 layers, some absorbing.
+    fn random_stack(r: &mut Philox, absorbing: bool) -> Vec<(C, f64)> {
+        let n = (r.uniform() * 7.0) as usize;
+        (0..n)
+            .map(|_| {
+                let k = if absorbing && r.uniform() < 0.4 {
+                    r.uniform() * 0.8
+                } else {
+                    0.0
+                };
+                (C::new(1.3 + 1.1 * r.uniform(), -k), 0.3 * r.uniform())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fresnel_amplitudes_match_power() {
+        let mut r = Philox::new(11, 0);
+        for _ in 0..20_000 {
+            let n1 = 1.0 + r.uniform();
+            let n2 = 1.0 + r.uniform();
+            let ci = r.uniform();
+            let a = fresnel_amplitudes(n1, n2, ci);
+            let p = fresnel(n1, n2, ci);
+            assert_power_eq(a.power(), p, 1e-12, &format!("n=({n1},{n2}) c={ci}"));
+        }
+        // Cemented interface at near-normal incidence keeps relative accuracy.
+        let (n1, n2) = (1.5168, 1.5168 + 1e-9);
+        let a = fresnel_amplitudes(n1, n2, 1.0);
+        let exact = (n1 - n2) / (n1 + n2);
+        assert!((a.rs.re - exact).abs() <= 1e-14 * exact.abs());
+        assert!((a.rp.re + exact).abs() <= 1e-14 * exact.abs());
+    }
+
+    #[test]
+    fn tmm_amplitudes_match_power_for_random_stacks() {
+        let mut r = Philox::new(7, 1);
+        for case in 0..5_000 {
+            let stack = random_stack(&mut r, true);
+            let n0 = C::new(1.0 + 0.8 * r.uniform(), 0.0);
+            let ns = C::new(1.0 + 0.8 * r.uniform(), 0.0);
+            let ci = 0.02 + 0.98 * r.uniform();
+            let lam = 0.4 + 0.4 * r.uniform();
+            let a = tmm_amplitudes(n0, &stack, ns, ci, lam);
+            let p = tmm(n0, &stack, ns, ci, lam);
+            assert_power_eq(a.power(), p, 1e-12, &format!("case {case}"));
+            // Metal substrate (mirror back side) too.
+            let sub = C::new(0.2 + r.uniform(), -(2.0 + 6.0 * r.uniform()));
+            let a = tmm_amplitudes(n0, &stack, sub, ci, lam);
+            let p = tmm(n0, &stack, sub, ci, lam);
+            assert_power_eq(a.power(), p, 1e-12, &format!("metal case {case}"));
+        }
+    }
+
+    #[test]
+    fn empty_stack_equals_bare_fresnel_including_tir() {
+        let mut r = Philox::new(3, 2);
+        for _ in 0..5_000 {
+            let n1 = 1.0 + r.uniform();
+            let n2 = 1.0 + r.uniform();
+            let ci = 0.01 + 0.99 * r.uniform();
+            let a = fresnel_amplitudes(n1, n2, ci);
+            let b = tmm_amplitudes(C::new(n1, 0.0), &[], C::new(n2, 0.0), ci, 0.55);
+            for (x, y) in [(a.rs, b.rs), (a.rp, b.rp), (a.ts, b.ts), (a.tp, b.tp)] {
+                assert!(close(x, y, 1e-12), "n=({n1},{n2}) c={ci}: {a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn normal_incidence_is_isotropic() {
+        // The basis convention makes r_p = −r_s and t_p = t_s at normal
+        // incidence for every stack (no preferred direction exists).
+        let mut r = Philox::new(5, 3);
+        for _ in 0..2_000 {
+            let stack = random_stack(&mut r, true);
+            let a = tmm_amplitudes(C::new(1.0, 0.0), &stack, C::new(1.52, 0.0), 1.0, 0.55);
+            assert!(
+                close(a.rp, -a.rs, 1e-12) && close(a.tp, a.ts, 1e-12),
+                "{a:?}"
+            );
+            assert!((a.flux_s - a.flux_p).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn stokes_relations_and_reciprocity() {
+        // Forward: n0 → stack → ns at angle θ0; reverse: ns → reversed stack
+        // → n0 at the Snell angle θs. Flux-normalised transmission is
+        // reciprocal (t̃ = t̃'), and for lossless stacks the scattering matrix
+        // is unitary: |r|² + |t̃|² = 1 and r' = −r*·t̃/t̃*.
+        let mut r = Philox::new(9, 4);
+        let mut checked = 0;
+        for case in 0..3_000 {
+            let absorbing = case % 2 == 1;
+            let stack = random_stack(&mut r, absorbing);
+            let (n0, ns) = (1.0 + 0.6 * r.uniform(), 1.0 + 0.6 * r.uniform());
+            let ci = 0.05 + 0.95 * r.uniform();
+            let s0 = n0 * ((1.0 - ci) * (1.0 + ci)).sqrt();
+            if s0 >= ns * 0.999 {
+                continue; // no propagating transmitted wave
+            }
+            checked += 1;
+            let cs = (1.0 - (s0 / ns) * (s0 / ns)).sqrt();
+            let rev: Vec<_> = stack.iter().rev().copied().collect();
+            let lam = 0.55;
+            let f = tmm_amplitudes(C::new(n0, 0.0), &stack, C::new(ns, 0.0), ci, lam);
+            let b = tmm_amplitudes(C::new(ns, 0.0), &rev, C::new(n0, 0.0), cs, lam);
+            for (pol, (tf, tb, rf, rb)) in [
+                ("s", (f.ts_flux(), b.ts_flux(), f.rs, b.rs)),
+                ("p", (f.tp_flux(), b.tp_flux(), f.rp, b.rp)),
+            ] {
+                assert!(close(tf, tb, 1e-11), "{case} {pol}: t {tf} vs {tb}");
+                if !absorbing {
+                    assert!((rf.norm_sqr() + tf.norm_sqr() - 1.0).abs() < 1e-12);
+                    let expect = -rf.conj() * tf / tf.conj();
+                    assert!(
+                        close(rb, expect, 1e-11),
+                        "{case} {pol}: r' {rb} vs {expect}"
+                    );
+                }
+            }
+        }
+        assert!(checked > 1000);
+    }
+
+    #[test]
+    fn tir_phase_matches_closed_form() {
+        // Glass → air beyond the critical angle: |r| = 1 with
+        // tan(φs/2) = √(sin²θ − n²)/cos θ and tan(φp/2) = √(sin²θ − n²)/(n² cos θ),
+        // n = n₂/n₁.
+        let (n1, n2) = (1.5, 1.0);
+        let n = n2 / n1;
+        for deg in [41.9f64, 45.0, 50.0, 60.0, 75.0, 89.0] {
+            let th = deg.to_radians();
+            let (s, c) = th.sin_cos();
+            let g = (s * s - n * n).sqrt();
+            let phi_s = 2.0 * (g / c).atan();
+            let phi_p = 2.0 * (g / (n * n * c)).atan();
+            for a in [
+                fresnel_amplitudes(n1, n2, c),
+                tmm_amplitudes(C::new(n1, 0.0), &[], C::new(n2, 0.0), c, 0.55),
+            ] {
+                assert!((a.rs.norm() - 1.0).abs() < 1e-14 && (a.rp.norm() - 1.0).abs() < 1e-14);
+                assert!(
+                    (a.rs.arg() - phi_s).abs() < 1e-12,
+                    "{deg}: {} {phi_s}",
+                    a.rs.arg()
+                );
+                assert!(
+                    (a.rp.arg() - phi_p).abs() < 1e-12,
+                    "{deg}: {} {phi_p}",
+                    a.rp.arg()
+                );
+                assert_eq!(a.power().ts, 0.0);
+                assert_eq!(a.power().tp, 0.0);
+            }
+        }
+        // Fresnel rhomb: n = 1.51 at 54.6° gives a 45° p–s phase difference.
+        let th = 54.6f64.to_radians();
+        let a = fresnel_amplitudes(1.51, 1.0, th.cos());
+        let d = (a.rp / a.rs).arg().to_degrees();
+        assert!((d - 45.0).abs() < 0.3, "{d}");
+    }
+
+    #[test]
+    fn brewster_angle_amplitudes() {
+        for (n1, n2) in [(1.0, 1.5), (1.0, 1.9), (1.6, 1.0), (1.52, 1.62)] {
+            let tb = f64::atan(n2 / n1);
+            let a = fresnel_amplitudes(n1, n2, tb.cos());
+            assert!(a.rp.norm() < 1e-15, "{a:?}");
+            // Known answer: t_p = n₁/n₂ at Brewster's angle, and T_p = 1.
+            assert!((a.tp.re - n1 / n2).abs() < 1e-14);
+            assert!((a.power().tp - 1.0).abs() < 1e-14);
+            let b = tmm_amplitudes(C::new(n1, 0.0), &[], C::new(n2, 0.0), tb.cos(), 0.55);
+            assert!(b.rp.norm() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn metal_mirror_phase_matches_closed_form() {
+        // Aluminium at 550 nm, N = 0.96 − 6.69i, from air.
+        let nm = C::new(0.96, -6.69);
+        let one = C::new(1.0, 0.0);
+        let a = tmm_amplitudes(one, &[], nm, 1.0, 0.55);
+        let r0 = (one - nm) / (one + nm);
+        assert!(close(a.rs, r0, 1e-14) && close(a.rp, -r0, 1e-14), "{a:?}");
+        // Closed-form complex Fresnel at 45°: N₂cos θ₂ = √(N² − sin²θ) on the
+        // decaying branch, cos θ₂ = (N₂ cos θ₂)/N₂.
+        let th = 45f64.to_radians();
+        let (s, c) = th.sin_cos();
+        let mut nc = (nm * nm - C::new(s * s, 0.0)).sqrt();
+        if nc.im > 0.0 {
+            nc = -nc;
+        }
+        let c2 = nc / nm;
+        let rs = (c - nc) / (c + nc);
+        let rp = (nm * c - c2) / (nm * c + c2);
+        let a = tmm_amplitudes(one, &[], nm, c, 0.55);
+        assert!(
+            close(a.rs, rs, 1e-13) && close(a.rp, rp, 1e-13),
+            "{a:?} {rs} {rp}"
+        );
+        // Reflection retardance relative to a perfect mirror, arg(r_p/(−r_s)),
+        // agrees with the good-conductor expansion
+        // r_p/(−r_s) ≈ 1 − 2 sin θ tan θ / N, i.e. a phase ≈ −2 sin θ tan θ·Im(1/N)
+        // (≈ −11.9° for aluminium at 45°; the expansion is first order in 1/|N|).
+        let ret = (a.rp / (-a.rs)).arg();
+        let approx = -2.0 * s * (s / c) * (one / nm).im;
+        assert!(
+            ret < 0.0 && (ret - approx).abs() < 0.05 * approx.abs(),
+            "{ret} {approx}"
+        );
+        // The default thin-film mirror substrate approximates a perfect conductor.
+        let pc = tmm_amplitudes(one, &[], C::new(1e-9, -1e9), 0.7, 0.55);
+        let ideal = InterfaceAmplitudes::PERFECT_CONDUCTOR;
+        assert!(
+            close(pc.rs, ideal.rs, 1e-8) && close(pc.rp, ideal.rp, 1e-8),
+            "{pc:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_coating_amplitudes_match_rt() {
+        let lib = MaterialLibrary::with_builtin();
+        let env = Environment::default();
+        let layer = |n: f64, q: f64, k: f64| Layer {
+            material: MaterialRef::Constant { n },
+            thickness_um: 0.0,
+            quarter_waves: Some(q),
+            extinction: k,
+        };
+        let defs = [
+            None,
+            Some(CoatingDef::Ideal {
+                reflectance: 0.3,
+                transmittance: 0.6,
+            }),
+            Some(CoatingDef::Tabulated {
+                reflectance: vec![(0.4, 0.02), (0.55, 0.005), (0.7, 0.03)],
+            }),
+            Some(CoatingDef::ThinFilm {
+                reference_wavelength_um: 0.55,
+                layers: vec![layer(2.1, 1.0, 0.0), layer(1.38, 1.0, 0.0)],
+                mirror_substrate: None,
+            }),
+            Some(CoatingDef::ThinFilm {
+                reference_wavelength_um: 0.55,
+                layers: vec![layer(1.6, 1.0, 0.02), layer(1.38, 0.7, 0.0)],
+                mirror_substrate: Some((0.96, 6.69)),
+            }),
+        ];
+        for def in &defs {
+            let c = ResolvedCoating::resolve(def.as_ref(), &lib, &env).unwrap();
+            for (n_in, n_out) in [(1.0, 1.52), (1.52, 1.0), (1.62, 1.52)] {
+                for deg in [0.0f64, 10.0, 30.0, 40.0, 50.0, 70.0, 85.0] {
+                    let ci = deg.to_radians().cos();
+                    for mirror in [false, true] {
+                        for lam in [0.45, 0.55, 0.65] {
+                            let a = c.amplitudes(lam, n_in, n_out, ci, mirror);
+                            let p = c.rt(lam, n_in, n_out, ci, mirror);
+                            assert_power_eq(
+                                a.power(),
+                                p,
+                                1e-12,
+                                &format!("{def:?} n=({n_in},{n_out}) {deg}° m={mirror}"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Grazing incidence, where `n₀ cos θ₀` rounds to zero: every
+        // coefficient stays finite and the powers still equal `rt`.
+        for def in &defs {
+            let c = ResolvedCoating::resolve(def.as_ref(), &lib, &env).unwrap();
+            for (n_in, n_out) in [(1.0, 1.52), (1.52, 1.0), (1.62, 1.52)] {
+                for ci in [0.0, 1e-300, 1e-200, 1e-160, 1e-12, 1e-9, 1e-8, 1e-7] {
+                    for mirror in [false, true] {
+                        let a = c.amplitudes(0.55, n_in, n_out, ci, mirror);
+                        let what = format!("{def:?} n=({n_in},{n_out}) c={ci:e} m={mirror}");
+                        for z in [a.rs, a.rp, a.ts, a.tp] {
+                            assert!(z.re.is_finite() && z.im.is_finite(), "{what}: {a:?}");
+                        }
+                        let p = c.rt(0.55, n_in, n_out, ci, mirror);
+                        assert_power_eq(a.power(), p, 1e-12, &what);
+                    }
+                }
+            }
+        }
+        // Ideal coatings are non-polarising: r_p = −r_s, t_p = t_s at any angle.
+        let c = ResolvedCoating::resolve(defs[1].as_ref(), &lib, &env).unwrap();
+        let a = c.amplitudes(0.55, 1.0, 1.5, 0.6, false);
+        assert!(a.rp == -a.rs && a.tp == a.ts);
+        assert!(a.rs.re < 0.0 && a.ts.im == 0.0 && a.ts.re > 0.0);
+    }
+
+    #[test]
+    fn tmm_amplitudes_grazing_limit() {
+        // A MgF₂ layer on glass: at `cos_i = 0` the amplitudes are the
+        // grazing limit `r_s = r_p = −1` of `fresnel_amplitudes`, and they
+        // approach it continuously.
+        let stack = [(C::new(1.38, 0.0), 0.1)];
+        let (n0, ns) = (C::new(1.0, 0.0), C::new(1.52, 0.0));
+        let bare = fresnel_amplitudes(1.0, 1.52, 0.0);
+        assert!(close(bare.rs, C::new(-1.0, 0.0), 1e-15));
+        assert!(close(bare.rp, C::new(-1.0, 0.0), 1e-15));
+        for ci in [0.0, 1e-300, 1e-160, 1e-12] {
+            let a = tmm_amplitudes(n0, &stack, ns, ci, 0.55);
+            assert!(
+                close(a.rs, bare.rs, 1e-15) && close(a.rp, bare.rp, 1e-15),
+                "{a:?}"
+            );
+            assert!(a.ts == CZERO && a.tp == CZERO && a.flux_s == 0.0 && a.flux_p == 0.0);
+            assert_power_eq(a.power(), tmm(n0, &stack, ns, ci, 0.55), 1e-15, "grazing");
+        }
+        let near = tmm_amplitudes(n0, &stack, ns, 1e-6, 0.55);
+        assert!(
+            close(near.rs, bare.rs, 1e-4) && close(near.rp, bare.rp, 1e-4),
+            "{near:?}"
+        );
+        // The same limit for an empty stack and from the dense side.
+        let a = tmm_amplitudes(ns, &[], n0, 0.0, 0.55);
+        let b = fresnel_amplitudes(1.52, 1.0, 0.0);
+        assert!(
+            close(a.rs, b.rs, 1e-15) && close(a.rp, b.rp, 1e-15),
+            "{a:?} {b:?}"
+        );
     }
 }
