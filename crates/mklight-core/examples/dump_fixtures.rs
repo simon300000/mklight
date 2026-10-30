@@ -567,6 +567,13 @@ fn extended_shapes() -> OpticalSystem {
     s.surfaces[4].label = "STOP".into();
     s.surfaces[9].label = "cylinder".into();
     s.surfaces[12].semi_diameter = SemiDiameter::Fixed { value: 9.0 };
+    // Every order-efficiency model (surface 4 keeps the default, ideal).
+    s.surfaces[5].diffraction_efficiency =
+        mklight_core::materials::diffraction::DiffractionEfficiency::Kinoform;
+    s.surfaces[6].diffraction_efficiency =
+        mklight_core::materials::diffraction::DiffractionEfficiency::Multilevel {
+            levels: std::num::NonZeroU16::new(8).unwrap(),
+        };
     s
 }
 

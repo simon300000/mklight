@@ -57,6 +57,9 @@
       "placement": null,
       "coating": null,
       "scatter": null,
+      "diffraction_efficiency": {
+        "type": "ideal"
+      },
       "edge": {
         "mechanical_semi_diameter": null,
         "edge_scatter": null
@@ -80,6 +83,9 @@
       "placement": null,
       "coating": null,
       "scatter": null,
+      "diffraction_efficiency": {
+        "type": "ideal"
+      },
       "edge": {
         "mechanical_semi_diameter": null,
         "edge_scatter": null
@@ -103,6 +109,9 @@
       "placement": null,
       "coating": null,
       "scatter": null,
+      "diffraction_efficiency": {
+        "type": "ideal"
+      },
       "edge": {
         "mechanical_semi_diameter": null,
         "edge_scatter": null

@@ -81,6 +81,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -108,6 +111,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -133,6 +139,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -156,6 +165,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -263,7 +275,7 @@
       "configuration": null,
       "run_info": {
         "engine_version": "0.1.0",
-        "snapshot_hash": "1fd33838488687b9e6722f6b5cdc633cd08644af9c0076249810d78ed6b88d9b",
+        "snapshot_hash": "317beff35714aac8002159bc8a5909dc9f29cbf1cc913b73deefdd2206466856",
         "analysis": "solves",
         "settings": {
           "closed_form": true,
@@ -274,8 +286,8 @@
         "backend": "cpu-f64",
         "precision": "f64_reference",
         "seed": null,
-        "started_unix_ms": 1793370974953,
-        "duration_ms": 3.236666,
+        "started_unix_ms": 1793403559306,
+        "duration_ms": 3.2966670000000002,
         "warnings": []
       }
     }
@@ -362,6 +374,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -389,6 +404,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -414,6 +432,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -437,6 +458,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -527,7 +551,7 @@
       "configuration": 0,
       "run_info": {
         "engine_version": "0.1.0",
-        "snapshot_hash": "1493210b17e7622f3284aa2e0de4052469d7bea93e6a0a167b82db16a82b0263",
+        "snapshot_hash": "f7b53576ca91734701673e08f40926e8e8a74576dcce6ea12d9f676e462f103e",
         "analysis": "solves",
         "settings": {
           "closed_form": true,
@@ -539,8 +563,8 @@
         "backend": "cpu-f64",
         "precision": "f64_reference",
         "seed": null,
-        "started_unix_ms": 1793370974956,
-        "duration_ms": 2.2658750000000003,
+        "started_unix_ms": 1793403559309,
+        "duration_ms": 1.999583,
         "warnings": []
       }
     }
@@ -627,6 +651,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -654,6 +681,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -679,6 +709,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -702,6 +735,9 @@
           "placement": null,
           "coating": null,
           "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
           "edge": {
             "mechanical_semi_diameter": null,
             "edge_scatter": null
@@ -794,7 +830,7 @@
       "configuration": 1,
       "run_info": {
         "engine_version": "0.1.0",
-        "snapshot_hash": "43bb31008e52af4279f0788d4a67fd934f443ce82ca59c20d80bde1f526dd6a0",
+        "snapshot_hash": "877903c9b01b3394dea563cbafd5920c200b3d47d76002f39b7745eaa36ff343",
         "analysis": "solves",
         "settings": {
           "closed_form": true,
@@ -806,8 +842,8 @@
         "backend": "cpu-f64",
         "precision": "f64_reference",
         "seed": null,
-        "started_unix_ms": 1793370974959,
-        "duration_ms": 2.3855,
+        "started_unix_ms": 1793403559311,
+        "duration_ms": 1.869,
         "warnings": [
           "configuration 1 overrides Thickness { surface: SurfaceId(2) }, which a solve controls: the solve wins"
         ]

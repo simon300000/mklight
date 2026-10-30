@@ -205,25 +205,26 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(ok.result.analysisName == "validate")
     }
 
-    /// Extended surface shapes open and validate (every sample above), but
-    /// the engine's legacy-only solvers (layout, Seidel, field curvature,
-    /// ghosts, merit evaluation) refuse them with a clear error.
+    /// Extended surface shapes open, validate and now run through every
+    /// solver, including the layout (which draws their real profiles, marks
+    /// DOE surfaces and reports automatic semi-diameters) and Seidel.
     @Test(arguments: ["q_con", "hybrid_doe", "anamorphic", "zernike_sag"])
-    func legacyOnlyAnalysesRefuseExtendedShapes(id: String) async throws {
+    func extendedShapesRunThroughLayoutAndSeidel(id: String) async throws {
         let e = try engine()
         let system = try sample(id)
         let extended = system.surfaces.contains { !$0.shape.isLegacy }
         #expect(extended)
         let snap = try await e.openSnapshot(system)
         for analysis in ["seidel", "layout"] {
-            do {
-                _ = try await e.submit(EngineAnalysisRequest(analysis: analysis), on: snap).result()
-                Issue.record("\(id): \(analysis) accepted extended shapes")
-            } catch let error as EngineError {
-                let text = error.errorDescription ?? "\(error)"
-                #expect(text.contains("extended surface shapes"), "\(id) \(analysis): \(text)")
-            }
+            let out = try await e.submit(EngineAnalysisRequest(analysis: analysis), on: snap).result()
+            #expect(out.result.analysisName == analysis, "\(id) \(analysis)")
         }
+        let layout = try await e.submit(EngineAnalysisRequest(analysis: "layout"), on: snap).result()
+        let surfaces = layout.json["surfaces"]?.array ?? []
+        #expect(!surfaces.isEmpty)
+        let doe = surfaces.contains { $0["is_diffractive"]?.bool == true }
+        #expect(doe == system.surfaces.contains { if case .diffractive = $0.shape { true } else { false } }, "\(id)")
+        #expect(surfaces.allSatisfy { ($0["semi_diameter"]?.nf ?? .nan).isFinite || $0["index"]?.int == 0 }, "\(id)")
     }
 
     /// The fixture with every extended shape: the engine accepts the mirror's

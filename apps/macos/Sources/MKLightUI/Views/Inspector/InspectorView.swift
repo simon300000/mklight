@@ -127,6 +127,11 @@ struct SurfaceInspector: View {
                     }
                 }
             }
+            if type.orderEfficiency, case .diffractive(_, let phase) = surface.shape {
+                DiffractionEfficiencySection(
+                    model: surface.diffractionEfficiency, phase: phase, wavelengths: system.wavelengths.wavelengths.map(\.um)
+                ) { m in edit("Change Diffraction Efficiency") { $0.diffractionEfficiency = m } }
+            }
             if surface.shape.kind == .biconic {
                 Section {
                     Menu("Make Cylinder") {

@@ -205,6 +205,74 @@ public struct EdgeSpec: Codable, Sendable, Hashable {
     }
 }
 
+/// Scalar order efficiency of a diffractive surface (SURFACES §3): which
+/// share of the light goes into each diffraction order. `ideal` puts it all
+/// into the trace order; a `kinoform` (continuous blaze) and a `multilevel`
+/// staircase of N levels spread it by the thin-element Fourier model.
+public enum DiffractionEfficiency: Codable, Sendable, Hashable {
+    case ideal
+    case kinoform
+    case multilevel(levels: Int)
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        let type: String = try c.value("type")
+        switch type {
+        case "ideal":
+            try c.allowOnly("type")
+            self = .ideal
+        case "kinoform":
+            try c.allowOnly("type")
+            self = .kinoform
+        case "multilevel":
+            try c.allowOnly("type", "levels")
+            let n: Int = try c.value("levels")
+            guard n >= 1, n <= Int(UInt16.max) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: AnyKey("levels"), in: c, debugDescription: "levels must be 1 … 65535")
+            }
+            self = .multilevel(levels: n)
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: AnyKey("type"), in: c, debugDescription: "unknown diffraction efficiency '\(type)'")
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        switch self {
+        case .ideal: try c.put("ideal", "type")
+        case .kinoform: try c.put("kinoform", "type")
+        case .multilevel(let n):
+            try c.put("multilevel", "type")
+            try c.put(n, "levels")
+        }
+    }
+
+    /// The efficiency of `order` for a relief blazed at `blaze` (α·m₀: the
+    /// design order times the relief's optical path at this wavelength over
+    /// its design path, SURFACES §3.1), `selected` being the trace order.
+    /// Mirrors the engine's `DiffractionEfficiency::efficiency` for the
+    /// inspector's readout; the engine traces with its own.
+    public func efficiency(order: Int, selected: Int, blaze: Double) -> Double {
+        func sinc(_ x: Double) -> Double {
+            if x == 0 { return 1 }
+            let r = x - x.rounded()
+            return sin(Double.pi * r) / (Double.pi * x)
+        }
+        let m = Double(order)
+        switch self {
+        case .ideal: return order == selected ? 1 : 0
+        case .kinoform: return pow(sinc(m - blaze), 2)
+        case .multilevel(let levels):
+            let n = Double(levels)
+            var r = (blaze - m) / n
+            r -= r.rounded()
+            return pow(sinc(m / n) * sinc(n * r) / sinc(r), 2)
+        }
+    }
+}
+
 /// One surface of the sequential train.
 public struct Surface: Codable, Sendable, Hashable, Identifiable {
     public var id: SurfaceID
@@ -221,13 +289,15 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
     /// Name of a coating in `OpticalSystem.coatings`; `nil` is a bare interface.
     public var coating: String?
     public var scatter: ScatterModel?
+    /// Order efficiency model; meaningful on diffractive surfaces only.
+    public var diffractionEfficiency: DiffractionEfficiency
     public var edge: EdgeSpec
 
     public init(
         id: SurfaceID, label: String = "", shape: SurfaceShape = .plane, thickness: Double = 0,
         material: MaterialRef = .air, interaction: Interaction = .refract, semiDiameter: SemiDiameter = .auto,
         aperture: ApertureShape? = nil, placement: Placement? = nil, coating: String? = nil,
-        scatter: ScatterModel? = nil, edge: EdgeSpec = EdgeSpec()
+        scatter: ScatterModel? = nil, diffractionEfficiency: DiffractionEfficiency = .ideal, edge: EdgeSpec = EdgeSpec()
     ) {
         self.id = id
         self.label = label
@@ -240,6 +310,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         self.placement = placement
         self.coating = coating
         self.scatter = scatter
+        self.diffractionEfficiency = diffractionEfficiency
         self.edge = edge
     }
 
@@ -249,7 +320,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         try c.allowOnly(
             "id", "label", "shape", "thickness", "material", "interaction", "semi_diameter", "aperture", "placement",
-            "coating", "scatter", "edge")
+            "coating", "scatter", "diffraction_efficiency", "edge")
         id = try c.value("id")
         label = try c.value("label", default: "")
         shape = try c.value("shape")
@@ -261,6 +332,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         placement = try c.optional("placement")
         coating = try c.optional("coating")
         scatter = try c.optional("scatter")
+        diffractionEfficiency = try c.value("diffraction_efficiency", default: .ideal)
         edge = try c.value("edge", default: EdgeSpec())
     }
 
@@ -277,6 +349,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         try c.putOptional(placement, "placement")
         try c.putOptional(coating, "coating")
         try c.putOptional(scatter, "scatter")
+        try c.put(diffractionEfficiency, "diffraction_efficiency")
         try c.put(edge, "edge")
     }
 }
