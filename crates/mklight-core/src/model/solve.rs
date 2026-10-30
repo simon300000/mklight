@@ -351,7 +351,7 @@ pub(crate) fn validate_solves(sys: &OpticalSystem) -> MkResult<()> {
             }
             SolveKind::FNumber { value } => {
                 powered()?;
-                if !(*value > 0.0) {
+                if *value <= 0.0 {
                     return Err(err("the F/# must be > 0".into()));
                 }
                 if matches!(
@@ -418,7 +418,7 @@ pub(crate) fn validate_solves(sys: &OpticalSystem) -> MkResult<()> {
             }
             SolveKind::EdgeThickness { radius, .. } => {
                 let j = inner_thickness()?;
-                if radius.is_some_and(|r| !(r > 0.0)) {
+                if radius.is_some_and(|r| r <= 0.0) {
                     return Err(err("the radius must be > 0".into()));
                 }
                 for i in [j, j + 1] {

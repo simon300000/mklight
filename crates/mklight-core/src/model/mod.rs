@@ -66,7 +66,9 @@ pub struct OpticalSystem {
     /// Solves and pickups (`docs/SOLVES.md`). They are applied by
     /// `mklight_trace::solves::apply_solves`, per configuration after its
     /// overrides; the model itself stores whatever values were last solved.
-    #[serde(default)]
+    /// Omitted from JSON when empty, so systems without solves serialise (and
+    /// hash) exactly as before solves existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub solves: Vec<Solve>,
 }
 

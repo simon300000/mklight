@@ -676,7 +676,7 @@ impl Var {
             Var::Reciprocal => 1.0 / v,
         }
     }
-    fn from_param(self, x: f64) -> f64 {
+    fn of_param(self, x: f64) -> f64 {
         self.to_param(x)
     }
     fn initial_step(self, p: &ParamPath, v: f64) -> f64 {
@@ -766,7 +766,7 @@ fn run_solve(
             // otherwise (coupling through dependents or the ray scaling)
             // hand over to root finding.
             let r = m.residual().abs();
-            if !(r <= 0.9 * last_res) {
+            if r.is_nan() || r > 0.9 * last_res {
                 slow += 1;
                 if slow >= 3 {
                     why_not = format!("fixed-point iteration stalled at residual {r:.3e}");
@@ -794,7 +794,7 @@ fn run_solve(
     // Bracketed root finding in the smooth variable.
     let var = Var::of(&s.target);
     let x0 = s.target.get(cur).map_err(|e| err(&e.to_string()))?;
-    let v0 = var.from_param(x0);
+    let v0 = var.of_param(x0);
     let base = cur.clone();
     let mut evals_rf = 0usize;
     let trial = |v: f64| -> Option<OpticalSystem> {
