@@ -119,7 +119,7 @@ struct GlassProgress: View {
                 Text(detail.isEmpty ? (progress.stage.isEmpty ? "Running" : progress.stage) : detail)
                     .font(.callout.monospacedDigit())
                     .lineLimit(1)
-                if progress.fraction > 0 {
+                if progress.fraction >= 0.01 {
                     Text(Fmt.percent(progress.fraction, digits: 0)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }

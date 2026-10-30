@@ -382,7 +382,7 @@ struct PaneFooter: View {
                 numbersRow(numbers.prefix(3))
                 numbersRow(numbers.prefix(2))
                 numbersRow(numbers.prefix(1))
-                Color.clear.frame(width: 0)
+                Color.clear.frame(width: 0, height: 0)
             }
             .layoutPriority(1)
             Spacer(minLength: Space.s)
@@ -397,8 +397,7 @@ struct PaneFooter: View {
         }
         .font(.caption)
         .padding(.horizontal, Space.m)
-        .padding(.vertical, Space.xs)
-        .frame(minHeight: 26)
+        .frame(height: 28)
         .opacity(pane.isStale ? 0.5 : 1)
     }
 

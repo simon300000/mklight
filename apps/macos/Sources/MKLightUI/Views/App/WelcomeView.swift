@@ -263,11 +263,18 @@ struct SchematicThumbnail: View {
                 profiles.append((z, h, pts, !sf.material.isAir && sf.interaction == .refract && i < s.imageIndex))
                 if sf.thickness.isFinite { z += sf.thickness }
             }
-            let all = profiles.flatMap(\.pts)
-            guard let zMin = all.map(\.0).min(), let zMax = all.map(\.0).max(), let hMax = profiles.map(\.h).max() else { return }
+            // The optical surfaces, with room around them; the image plane
+            // only when it is close (a schematic shows the lens, not the focus).
+            let optics = profiles.dropLast().flatMap(\.pts)
+            guard let oMin = optics.map(\.0).min(), let oMax = optics.map(\.0).max(), let hMax = profiles.map(\.h).max() else { return }
+            let margin = max((oMax - oMin) * 0.5, 2 * hMax)
+            let zMin = oMin - margin
+            let zMax = max(oMax + margin, min(profiles.last?.z ?? oMax, oMax + 3 * margin))
             let scale = min(size.width / max(zMax - zMin, 1e-9), size.height / max(2 * hMax, 1e-9))
+            // A schematic: heights may be exaggerated so thin, long systems stay legible.
+            let yScale = min(max(scale, size.height * 0.6 / max(2 * hMax, 1e-9)), scale * 12)
             let ox = (size.width - (zMax - zMin) * scale) / 2
-            func p(_ q: (Double, Double)) -> CGPoint { CGPoint(x: ox + (q.0 - zMin) * scale, y: size.height / 2 - q.1 * scale) }
+            func p(_ q: (Double, Double)) -> CGPoint { CGPoint(x: ox + (q.0 - zMin) * scale, y: size.height / 2 - q.1 * yScale) }
             for k in profiles.indices.dropLast() where profiles[k].glass {
                 let a = profiles[k].pts, b = profiles[k + 1].pts
                 guard a.count > 1, b.count > 1 else { continue }
@@ -283,7 +290,7 @@ struct SchematicThumbnail: View {
             axis.move(to: CGPoint(x: 0, y: size.height / 2))
             axis.addLine(to: CGPoint(x: size.width, y: size.height / 2))
             ctx.stroke(axis, with: .color(.secondary.opacity(0.4)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-            if let last = profiles.last, let a = last.pts.first, let b = last.pts.last {
+            if let last = profiles.last, last.z <= zMax, let a = last.pts.first, let b = last.pts.last {
                 var img = Path()
                 img.move(to: p(a))
                 img.addLine(to: p(b))

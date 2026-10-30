@@ -236,6 +236,11 @@ private struct LensCell: View {
 
     var body: some View {
         HStack(spacing: 3) {
+            if let hint = row.hints[column] {
+                Text(hint).font(.caption2.weight(.medium)).foregroundStyle(.tertiary)
+                    .help("The \(hint) section's value (the surface is anamorphic; the other section is in the inspector)")
+                    .accessibilityLabel("\(hint) section")
+            }
             if row.editable.contains(column) {
                 field
             } else {

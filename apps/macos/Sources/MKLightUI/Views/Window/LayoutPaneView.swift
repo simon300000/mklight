@@ -132,6 +132,29 @@ struct LayoutPaneView: View {
         case .unavailable(let why):
             ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(why))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+        case .failed(let why) where !system.surfaces.allSatisfy(\.shape.isLegacy):
+            // The engine's layout does not draw the extended shapes yet: a
+            // schematic section from the model, clearly labelled.
+            SchematicThumbnail(system: system)
+                .padding(.horizontal, Space.xxl)
+                .padding(.vertical, 56)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.background)
+                .overlay(alignment: .bottom) {
+                    Label("Schematic from the model. The engine's layout does not draw these surface types yet.", systemImage: "info.circle")
+                        .font(.caption)
+                        .padding(.horizontal, Space.l)
+                        .padding(.vertical, Space.s)
+                        .glassEffect(.regular, in: .capsule)
+                        .padding(.bottom, 40)
+                        .padding(.horizontal, Space.l)
+                        .help(why)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Schematic section of the design. The engine's layout does not draw these surface types yet.")
+        case .failed(let why) where workspace.issues.contains { $0.severity == .error }:
+            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(why))
+                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         case .failed(let why):
             ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(why))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)

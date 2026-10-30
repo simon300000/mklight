@@ -78,8 +78,8 @@ struct KeyNumbers: View {
                 number("F/#", e.formatted)
             }
             if let e = entries?.entry(["total_track", "track"]) { number("TT", e.formatted) }
-            if entries == nil && !workspace.modelErrors.isEmpty {
-                Text("Design not ready").foregroundStyle(.secondary)
+            if entries == nil && (!workspace.modelErrors.isEmpty || workspace.issues.contains { $0.severity == .error }) {
+                Text("Design has errors").foregroundStyle(.secondary)
             } else if entries == nil {
                 Text(system.name.isEmpty ? "Untitled" : system.name).foregroundStyle(.secondary)
             }

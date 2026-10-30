@@ -86,7 +86,7 @@ struct DepartureMap: View {
     let radius: Double
 
     var body: some View {
-        let n = 48
+        let n = 64
         let cells = SurfaceTypes.departureMap(shape, semiDiameter: radius, n: n)
         let values = cells.map { $0 ?? .nan }
         // Row 0 of a Grid2D is the bottom; the map's first row is the top.
@@ -161,25 +161,38 @@ struct DOEFigures: View {
         let design = ShapeSag.phasePower(phase, order: phase.designOrder, wavelengthUm: phase.designWavelengthUm)
         let period = ShapeSag.minimumPeriod(phase, upTo: radius)
         let zones = abs(ShapeSag.phase(phase, r: radius)) / (2 * .pi)
-        Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
-            row(
-                "Power, order \(phase.traceOrder) at \(Fmt.short(primaryWavelengthUm)) µm",
-                trace == 0 ? "0" : "\(Fmt.short(trace)) mm⁻¹  (f \(Fmt.short(1 / trace)) mm)")
-            row(
-                "Power, design order \(phase.designOrder) at \(Fmt.short(phase.designWavelengthUm)) µm",
-                design == 0 ? "0" : "\(Fmt.short(design)) mm⁻¹  (f \(Fmt.short(1 / design)) mm)")
-            row("Smallest zone period", period.map { "\(Fmt.length($0.period)) at r = \(Fmt.short($0.radius)) mm" } ?? "—")
-            row("Zones over ±\(Fmt.short(radius)) mm", String(format: "%.1f", zones))
+        let sameAsDesign = phase.traceOrder == phase.designOrder && abs(primaryWavelengthUm - phase.designWavelengthUm) < 1e-9
+        VStack(alignment: .leading, spacing: Space.s) {
+            figure(
+                "Paraxial power", "order \(phase.traceOrder), \(Fmt.short(primaryWavelengthUm)) µm",
+                trace == 0 ? "0" : "\(Fmt.short(trace)) mm⁻¹", trace == 0 ? nil : "f \(Fmt.short(1 / trace)) mm")
+            if !sameAsDesign {
+                figure(
+                    "At design", "order \(phase.designOrder), \(Fmt.short(phase.designWavelengthUm)) µm",
+                    design == 0 ? "0" : "\(Fmt.short(design)) mm⁻¹", design == 0 ? nil : "f \(Fmt.short(1 / design)) mm")
+            }
+            figure(
+                "Smallest zone period", period.map { "at r = \(Fmt.short($0.radius)) mm" } ?? "",
+                period.map { Fmt.length($0.period) } ?? "—", nil)
+            figure("Zones", "over ±\(Fmt.short(radius)) mm", String(format: "%.1f", zones), nil)
         }
-        .font(.caption)
         .textSelection(.enabled)
-        .help("Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. Abbe number of a DOE ≈ −3.45.")
+        .help("Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. A DOE's Abbe number is about −3.45.")
     }
 
-    private func row(_ k: String, _ v: String) -> some View {
-        GridRow {
-            Text(k).foregroundStyle(.secondary)
-            Text(v).monospacedDigit().gridColumnAlignment(.trailing)
+    private func figure(_ title: String, _ detail: String, _ value: String, _ extra: String?) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.callout)
+                if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer(minLength: Space.s)
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(value).font(.callout.monospacedDigit().weight(.medium))
+                if let extra { Text(extra).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            }
+            .fixedSize()
         }
+        .accessibilityElement(children: .combine)
     }
 }
