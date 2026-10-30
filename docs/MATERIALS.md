@@ -1,0 +1,117 @@
+# MKLight Materials
+
+How MKLight represents optical materials, which dispersion formulas it
+supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materials/`.
+
+## Index conventions
+
+* Wavelengths are in **µm**. Glass data are indices **relative to air** at the
+  catalog reference conditions, **20 °C and 1 atm** (`CATALOG_T_C`,
+  `CATALOG_P_ATM`). This is the convention glass catalogs use, and it matches
+  `docs/CONVENTIONS.md` §2.
+* Air is `n = 1` at the system temperature and pressure by definition.
+  Vacuum is `1/n_air(λ, T, P)`. `air_index` is the Kohlrausch/Edlén formula at
+  15 °C with ideal-gas T/P scaling.
+* **Thermal model.** For a system at temperature `T` and pressure `P`,
+  `ResolvedMaterial::index` does the following:
+  1. `n_rel,ref = n_catalog(λ)` (relative to air at 20 °C, 1 atm);
+  2. `n_abs,ref = n_rel,ref · n_air(λ, 20 °C, 1 atm)`;
+  3. `Δn_abs = (n_abs,ref² − 1)/(2 n_abs,ref) · (D0 ΔT + D1 ΔT² + D2 ΔT³ + (E0 ΔT + E1 ΔT²)/(λ² − λ_tk²))`,
+     with `ΔT = T − T_ref` (catalog `TD` record, usually `T_ref = 20 °C`);
+  4. `n = (n_abs,ref + Δn_abs) / n_air(λ, T, P)`.
+
+  At 20 °C and 1 atm this returns the catalog index unchanged. A glass
+  without `TD` data still gets the air-index correction for `T` and `P`.
+* Internal absorption uses the catalog internal transmittance `τ` of a sample
+  of thickness `d`. The absorption coefficient `α = −ln τ / d` is interpolated
+  linearly in λ, and a path of length `L` transmits `exp(−α L)` (Beer–Lambert).
+* Thermal expansion (`Glass::cte`, 1/K) is the catalog TCE for −30…+70 °C.
+  When a catalog sets the "ignore thermal expansion" flag, `cte` is `None` and
+  the raw value is kept in the AGF metadata.
+
+## Dispersion formulas
+
+`Dispersion` variants (`dispersion.rs`), with the standard AGF formula numbers.
+`λ` is in µm, and `C`-type Sellmeier constants are in µm².
+
+| # | name | formula | variant |
+|---|---|---|---|
+| 1 | Schott | `n² = a0 + a1λ² + a2λ⁻² + a3λ⁻⁴ + a4λ⁻⁶ + a5λ⁻⁸` | `Schott` |
+| 2 | Sellmeier 1 | `n² − 1 = Σ₁³ Kᵢλ²/(λ² − Lᵢ)`, CD order `K1 L1 K2 L2 K3 L3` | `Sellmeier` (3 terms) |
+| 3 | Herzberger | `n = A + B·L + C·L² + Dλ² + Eλ⁴ + Fλ⁶`, `L = 1/(λ² − 0.028)` | `Herzberger` |
+| 4 | Sellmeier 2 | `n² − 1 = A + B1λ²/(λ² − λ1²) + B2λ²/(λ² − λ2²)`, CD order `A B1 λ1 B2 λ2` | `Sellmeier2` |
+| 5 | Conrady | `n = n0 + A/λ + B/λ^3.5` | `Conrady` |
+| 6 | Sellmeier 3 | as 2 with 4 terms | `Sellmeier` (4 terms) |
+| 7 | Handbook of Optics 1 | `n² = A + B/(λ² − C) − Dλ²` | `Handbook1` |
+| 8 | Handbook of Optics 2 | `n² = A + Bλ²/(λ² − C) − Dλ²` | `Handbook2` |
+| 9 | Sellmeier 4 | `n² = A + Bλ²/(λ² − C) + Dλ²/(λ² − E)` (no implicit 1) | `Sellmeier4` |
+| 10 | Extended | `n² = a0 + a1λ² + a2λ⁻² + … + a7λ⁻¹²` | `Extended` |
+| 11 | Sellmeier 5 | as 2 with 5 terms | `Sellmeier` (5 terms) |
+| 12 | Extended 2 | `n² = a0 + a1λ² + a2λ⁻² + a3λ⁻⁴ + a4λ⁻⁶ + a5λ⁻⁸ + a6λ⁴ + a7λ⁶` ⚠ | `Extended2` |
+| 13 | Extended 3 | `n² = a0 + a1λ² + a2λ⁴ + a3λ⁻² + a4λ⁻⁴ + a5λ⁻⁶ + a6λ⁻⁸ + a7λ⁻¹⁰ + a8λ⁻¹²` ⚠ | `Extended3` |
+| – | Cauchy | `n = A + B/λ² + C/λ⁴` (model glasses), exported exactly as formula 1 | `Cauchy` |
+| – | Tabulated | monotone cubic interpolation of `(λ, n)` pairs; no AGF form | `Tabulated` |
+
+⚠ For formulas 12 and 13, the set of terms is standard, but the
+*coefficient order* has not been checked against a primary specification. It
+comes from secondary documentation and is flagged in the source. In the
+tests, formulas 1 and 2 reproduce published glass data (N-BK7, F2, BK7) to the
+catalog n_d/V_d. Every formula is checked against hand-evaluated values, and
+the resonance forms (4, 6–9, 11) are also checked against exact algebraic
+identities with the plain Sellmeier sum.
+
+`n²`-type formulas are evaluated as a compensated (Neumaier) sum of their
+terms and then square-rooted. A negative `n²` gives NaN rather than a wrong
+number.
+
+## Loading catalogs
+
+MKLight ships only a small built-in catalog (`BUILTIN`: N-BK7, F2, N-SF6,
+fused silica, CaF₂ and a few others, with published Sellmeier data). Vendor
+catalogs are user-supplied AGF files:
+
+```rust
+use mklight_core::materials::{GlassCatalog, MaterialLibrary, agf};
+use std::sync::Arc;
+
+// Simple: glasses only, default policy.
+let cat = GlassCatalog::from_agf_file("catalogs/VENDOR.agf")?;
+
+// Detailed: warnings, AGF metadata (MIL code, status, TCE 100/300, ΔPgF,
+// resistance codes, unknown records) and the detected encoding.
+let detailed = agf::read_agf_file("catalogs/VENDOR.agf", &agf::AgfOptions::default())?;
+for w in &detailed.warnings {
+    eprintln!("{w}");
+}
+
+let mut lib = MaterialLibrary::with_builtin();
+lib.add_catalog(Arc::new(cat));
+```
+
+The catalog is named after the file stem. Glass lookups are case-insensitive,
+and a `MaterialRef::Catalog` with `catalog: None` searches the catalogs in
+load order.
+
+**Encodings.** The reader accepts UTF-8 (with or without BOM), Latin-1 and
+UTF-16 LE/BE (with or without BOM; many vendor files are UTF-16 LE), with
+CRLF, LF or CR line endings.
+
+**Tolerance and policy.** Unknown records are kept verbatim and written back
+on export. `-` means a missing value, and missing trailing fields are allowed.
+A glass is **skipped** with a warning when its dispersion cannot be evaluated
+(no `CD`, formula outside 1–13, or a non-numeric coefficient). A glass whose
+coefficients do not reproduce its catalog `n_d` within 1·10⁻⁴ or `V_d` within
+0.2 is **kept** by default with an `IndexMismatch` warning, because the
+coefficients are the authoritative data. Set `AgfOptions::mismatch =
+MismatchPolicy::Skip` to drop such glasses instead. The check runs only when
+the d line lies in the glass's `LD` range and the catalog lists `n_d, V_d > 0`.
+
+## Exporting glasses
+
+`agf::write_agf` (or `write_agf_file`, with a choice of encoding) writes any
+catalog, including edited glasses and model glasses (`agf::model_glass(name,
+nd, vd, dpgf)`, the same Cauchy fit `MaterialRef::Model` uses). Numbers are
+written in their shortest exactly-round-tripping form, so a write → read cycle
+reproduces every glass bit for bit. Tabulated dispersions and Sellmeier sums
+with more than five terms have no AGF form. The writer leaves them out with a
+`NotExportable` warning.

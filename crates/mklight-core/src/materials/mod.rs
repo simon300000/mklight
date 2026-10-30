@@ -98,6 +98,16 @@ pub struct GlassCatalog {
     pub glasses: BTreeMap<String, Glass>,
 }
 
+impl GlassCatalog {
+    /// Loads an AGF catalog file in any common encoding (UTF-8, Latin-1,
+    /// UTF-16 LE/BE), named after the file stem, with the default
+    /// skip-or-keep policy. Use `agf::read_agf_file` to also get the warnings
+    /// and AGF-only metadata.
+    pub fn from_agf_file(path: impl AsRef<std::path::Path>) -> MkResult<Self> {
+        Ok(agf::read_agf_file(path, &agf::AgfOptions::default())?.catalog)
+    }
+}
+
 /// Every catalog loaded into a session. Lookups are case-insensitive.
 #[derive(Clone, Debug, Default)]
 pub struct MaterialLibrary {
