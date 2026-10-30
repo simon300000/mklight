@@ -274,6 +274,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-metal",
  "rayon",
+ "serde_json",
 ]
 
 [[package]]

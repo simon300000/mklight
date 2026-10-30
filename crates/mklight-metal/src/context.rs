@@ -250,6 +250,14 @@ impl MetalContext {
     pub fn buffer_zeroed<T: Pod>(&self, len: usize) -> MkResult<SharedBuffer<T>> {
         SharedBuffer::zeroed(&self.device, len)
     }
+    /// See [`SharedBuffer::filled`].
+    pub fn buffer_filled<T: Pod>(
+        &self,
+        len: usize,
+        fill: impl FnOnce(&mut [T]),
+    ) -> MkResult<SharedBuffer<T>> {
+        SharedBuffer::filled(&self.device, len, fill)
+    }
 
     /// The compute pipeline for `key`, compiled once and cached.
     pub fn pipeline(&self, key: &PipelineKey) -> MkResult<Pso> {

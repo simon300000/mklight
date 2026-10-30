@@ -459,14 +459,18 @@ impl Inner {
         let gpu = &self.ctx;
         let prep = PreparedTrace::new(req, &up.set)?;
         let n = req.rays.len();
-        let (in_f, in_u) = PreparedTrace::input_planes(&req.rays);
-        let (bf, bu) = (gpu.buffer(&in_f)?, gpu.buffer(&in_u)?);
+        let mut bu = gpu.buffer_zeroed::<u32>(n * MKL_TRACE_IN_UINTS as usize)?;
+        let bf = gpu.buffer_filled::<f32>(n * MKL_TRACE_IN_FLOATS as usize, |f| {
+            PreparedTrace::write_input_planes(&req.rays, f, bu.as_mut_slice())
+        })?;
         let steps = gpu.buffer(&prep.steps)?;
-        let mut out_f = gpu.buffer_zeroed::<f32>(n * MKL_TRACE_OUT_FLOATS as usize)?;
-        let mut out_u = gpu.buffer_zeroed::<u32>(n * MKL_TRACE_OUT_UINTS as usize)?;
+        // The kernel writes every output and record element of every ray,
+        // so these skip the explicit zeroing pass.
+        let mut out_f = gpu.buffer_filled::<f32>(n * MKL_TRACE_OUT_FLOATS as usize, |_| {})?;
+        let mut out_u = gpu.buffer_filled::<u32>(n * MKL_TRACE_OUT_UINTS as usize, |_| {})?;
         let rec_floats = MKL_TRACE_RECORD_FLOATS as usize;
-        let mut rec_f = gpu.buffer_zeroed::<f32>(prep.record_slots * n * rec_floats)?;
-        let mut rec_u = gpu.buffer_zeroed::<u32>(prep.record_slots * n)?;
+        let mut rec_f = gpu.buffer_filled::<f32>(prep.record_slots * n * rec_floats, |_| {})?;
+        let mut rec_u = gpu.buffer_filled::<u32>(prep.record_slots * n, |_| {})?;
         let pso = gpu.pipeline(&PipelineKey::plain("mkl_trace"))?;
         let recording = prep.record_slots > 0;
         self.chunked(n, ctl, "trace", stats, |start, len| {

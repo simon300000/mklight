@@ -37,6 +37,14 @@ impl<T: Pod> SharedBuffer<T> {
     /// A zero-initialised buffer of `len` elements (at least 16 bytes are
     /// allocated, since Metal rejects empty buffers).
     pub fn zeroed(device: &ProtocolObject<dyn MTLDevice>, len: usize) -> MkResult<Self> {
+        let mut b = Self::allocate(device, len)?;
+        // Shared buffers are documented to be zero-filled on creation; make it
+        // explicit so results never depend on it.
+        b.as_mut_slice().fill(T::zeroed());
+        Ok(b)
+    }
+
+    fn allocate(device: &ProtocolObject<dyn MTLDevice>, len: usize) -> MkResult<Self> {
         let bytes = len
             .checked_mul(size_of::<T>())
             .ok_or_else(|| MkError::Backend("buffer size overflow".into()))?;
@@ -52,14 +60,24 @@ impl<T: Pod> SharedBuffer<T> {
                     | MTLResourceOptions::HazardTrackingModeTracked,
             )
             .ok_or_else(|| MkError::Backend(format!("allocation of {bytes} bytes failed")))?;
-        // Shared buffers are documented to be zero-filled on creation; make it
-        // explicit so results never depend on it.
-        let mut b = SharedBuffer {
+        Ok(SharedBuffer {
             raw,
             len,
             _t: PhantomData,
-        };
-        b.as_mut_slice().fill(T::zeroed());
+        })
+    }
+
+    /// A buffer of `len` elements written by `fill`, which must overwrite
+    /// every element (anything it skips holds the zeros Metal initialises
+    /// shared buffers with). Saves the explicit zeroing pass of
+    /// [`SharedBuffer::zeroed`] for large uploads.
+    pub fn filled(
+        device: &ProtocolObject<dyn MTLDevice>,
+        len: usize,
+        fill: impl FnOnce(&mut [T]),
+    ) -> MkResult<Self> {
+        let mut b = Self::allocate(device, len)?;
+        fill(b.as_mut_slice());
         Ok(b)
     }
 

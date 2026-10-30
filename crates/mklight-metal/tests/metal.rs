@@ -94,7 +94,7 @@ fn device_info_and_numerics_probe() {
     );
     assert!(p.fast_math_disabled);
     assert!(b.supports(JobKind::DfOps) && b.supports(JobKind::Reduce));
-    assert!(!b.supports(JobKind::Trace));
+    assert!(b.supports(JobKind::Trace));
     assert!(info.backend_id().starts_with("metal:"));
 }
 
@@ -833,7 +833,24 @@ fn async_submission_and_unsupported_jobs() {
     let h = b
         .upload_system(&PackedSystem::pack_all(&rs).unwrap())
         .unwrap();
+    // An empty trace completes; a trace through a thin-film coating with
+    // radiometry is refused as unsupported (the caller uses the CPU).
     let trace = Job::Trace(Box::new(TraceRequest::new(h, Default::default(), 0, 3)));
+    assert!(b.submit(trace, &JobContext::new()).unwrap().wait().is_ok());
+    let mut sys = testutil::singlet();
+    sys.coatings.insert(
+        "AR".into(),
+        mklight_core::model::CoatingDef::ThinFilm {
+            reference_wavelength_um: 0.55,
+            layers: vec![],
+            mirror_substrate: None,
+        },
+    );
+    sys.surfaces[1].coating = Some("AR".into());
+    let hc = b
+        .upload_system(&PackedSystem::pack_all(&testutil::resolve(sys)).unwrap())
+        .unwrap();
+    let trace = Job::Trace(Box::new(TraceRequest::new(hc, Default::default(), 0, 3)));
     assert!(matches!(
         b.submit(trace, &JobContext::new()),
         Err(MkError::Unsupported(_))

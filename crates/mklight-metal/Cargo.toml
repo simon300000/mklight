@@ -23,3 +23,4 @@ dispatch2 = "0.3.0"
 approx.workspace = true
 mklight-trace.workspace = true
 rayon.workspace = true
+serde_json.workspace = true

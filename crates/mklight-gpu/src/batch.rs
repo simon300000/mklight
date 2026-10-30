@@ -624,44 +624,61 @@ impl PreparedTrace {
 
     /// The kernel's input planes for `rays`: `MKL_TRACE_IN_FLOATS` float
     /// planes and `MKL_TRACE_IN_UINTS` uint planes of `rays.len()` values
-    /// (empty weights become 1, empty system indices 0).
+    /// (empty weights become 1, empty system indices and residuals 0).
     pub fn input_planes(rays: &RayBatch) -> (Vec<f32>, Vec<u32>) {
         let n = rays.len();
-        let mut f = Vec::with_capacity(n * MKL_TRACE_IN_FLOATS as usize);
-        for p in [
-            &rays.x,
-            &rays.y,
-            &rays.z,
-            &rays.l,
-            &rays.m,
-            &rays.n,
-            &rays.opl_hi,
-            &rays.opl_lo,
-        ] {
-            f.extend_from_slice(p);
-        }
-        if rays.weight.is_empty() {
-            f.resize(f.len() + n, 1.0);
-        } else {
-            f.extend_from_slice(&rays.weight);
-        }
-        for p in [
-            &rays.x_lo, &rays.y_lo, &rays.z_lo, &rays.l_lo, &rays.m_lo, &rays.n_lo,
-        ] {
-            if p.is_empty() {
-                f.resize(f.len() + n, 0.0);
+        let mut f = vec![0.0; n * MKL_TRACE_IN_FLOATS as usize];
+        let mut u = vec![0; n * MKL_TRACE_IN_UINTS as usize];
+        Self::write_input_planes(rays, &mut f, &mut u);
+        (f, u)
+    }
+
+    /// [`PreparedTrace::input_planes`] written into caller-provided storage
+    /// (e.g. a mapped device buffer), every element overwritten.
+    ///
+    /// # Panics
+    ///
+    /// When `f` or `u` is not exactly the planes' size.
+    pub fn write_input_planes(rays: &RayBatch, f: &mut [f32], u: &mut [u32]) {
+        let n = rays.len();
+        assert_eq!(f.len(), n * MKL_TRACE_IN_FLOATS as usize);
+        assert_eq!(u.len(), n * MKL_TRACE_IN_UINTS as usize);
+        let fplanes: [(u32, &Vec<f32>, f32); 15] = [
+            (MKL_TRACE_IN_X, &rays.x, 0.0),
+            (MKL_TRACE_IN_Y, &rays.y, 0.0),
+            (MKL_TRACE_IN_Z, &rays.z, 0.0),
+            (MKL_TRACE_IN_L, &rays.l, 0.0),
+            (MKL_TRACE_IN_M, &rays.m, 0.0),
+            (MKL_TRACE_IN_N, &rays.n, 0.0),
+            (MKL_TRACE_IN_OPL_HI, &rays.opl_hi, 0.0),
+            (MKL_TRACE_IN_OPL_LO, &rays.opl_lo, 0.0),
+            (MKL_TRACE_IN_WEIGHT, &rays.weight, 1.0),
+            (MKL_TRACE_IN_X_LO, &rays.x_lo, 0.0),
+            (MKL_TRACE_IN_Y_LO, &rays.y_lo, 0.0),
+            (MKL_TRACE_IN_Z_LO, &rays.z_lo, 0.0),
+            (MKL_TRACE_IN_L_LO, &rays.l_lo, 0.0),
+            (MKL_TRACE_IN_M_LO, &rays.m_lo, 0.0),
+            (MKL_TRACE_IN_N_LO, &rays.n_lo, 0.0),
+        ];
+        for (k, src, empty) in fplanes {
+            let dst = &mut f[k as usize * n..(k as usize + 1) * n];
+            if src.is_empty() {
+                dst.fill(empty);
             } else {
-                f.extend_from_slice(p);
+                dst.copy_from_slice(src);
             }
         }
-        let mut u = Vec::with_capacity(n * MKL_TRACE_IN_UINTS as usize);
-        u.extend_from_slice(&rays.wavelength);
-        if rays.system.is_empty() {
-            u.resize(u.len() + n, 0);
-        } else {
-            u.extend_from_slice(&rays.system);
+        for (k, src) in [
+            (MKL_TRACE_INU_WAVELENGTH, &rays.wavelength),
+            (MKL_TRACE_INU_SYSTEM, &rays.system),
+        ] {
+            let dst = &mut u[k as usize * n..(k as usize + 1) * n];
+            if src.is_empty() {
+                dst.fill(0);
+            } else {
+                dst.copy_from_slice(src);
+            }
         }
-        (f, u)
     }
 }
 
