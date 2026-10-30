@@ -1,1 +1,5 @@
-//! MKLight geometric image-quality analyses (to be implemented)
+//! MKLight geometric image-quality analyses (WIP)
+
+pub mod fans;
+pub mod spot;
+pub mod util;
