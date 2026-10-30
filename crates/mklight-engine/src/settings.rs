@@ -15,7 +15,7 @@
 //!
 //! Supported keywords: `type` (a name or a list of names among `number`,
 //! `integer`, `string`, `boolean`, `array`, `object`, `null`), `default`,
-//! `minimum`, `maximum`, `enum`, `items` (one schema for every array element),
+//! `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `enum`, `items` (one schema for every array element),
 //! `required`, plus the descriptive `title`/`description`/`unit`.
 //!
 //! `normalize` validates user settings against such a schema, fills in
@@ -68,6 +68,13 @@ fn check(path: &str, schema: &Value, v: &Value) -> EngineResult<()> {
             && x > hi
         {
             return err(format!("{x} is above the maximum {hi}"));
+        }
+        for (key, below) in [("exclusiveMinimum", true), ("exclusiveMaximum", false)] {
+            if let Some(bound) = schema.get(key).and_then(Value::as_f64)
+                && if below { x <= bound } else { x >= bound }
+            {
+                return err(format!("{x} violates {key} {bound}"));
+            }
         }
     }
     if let Some(Value::Array(allowed)) = schema.get("enum")
@@ -161,6 +168,22 @@ mod tests {
             },
             "required": ["name"]
         })
+    }
+
+    #[test]
+    fn exclusive_bounds_and_array_items() {
+        let schema = json!({"properties": {
+            "step": {"type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+            "values": {"type": "array", "items": {"type": "number", "exclusiveMaximum": 2}}
+        }});
+        for x in [-0.1, 0.0, 1.0, 1.1] {
+            assert!(normalize(&schema, &json!({"step": x})).is_err());
+        }
+        for x in [json!(null), json!(0.5)] {
+            assert!(normalize(&schema, &json!({"step": x})).is_ok());
+        }
+        assert!(normalize(&schema, &json!({"values": [1, 2]})).is_err());
+        assert!(normalize(&schema, &json!({"values": [1, 1.5]})).is_ok());
     }
 
     #[test]

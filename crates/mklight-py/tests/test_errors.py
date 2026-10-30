@@ -52,7 +52,7 @@ def test_engine_config_rejects_unknown_keys():
 def test_engine_default_backend_takes_the_run_forms():
     assert mklight.Engine(default_backend="cpu").default_backend == {"kind": "cpu_reference"}
     assert mklight.Engine(default_backend="auto").config["default_backend"] == {
-        "kind": "cpu_reference"
+        "kind": "auto"
     }
     assert mklight.Engine(default_backend={"kind": "cpu_reference"}).config[
         "default_backend"

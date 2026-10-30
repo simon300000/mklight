@@ -49,7 +49,7 @@ Python `Result.envelope()` return:
   minor version.
 * Settings may be partial; missing keys take the schema defaults. Unknown
   top-level keys are rejected (`MK_ERR_INVALID_ARGUMENT`); values are
-  checked against the schema's `type`, `minimum`, `maximum` and `enum`
+  checked against the schema's `type`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` and `enum`
   before the job is queued. Nested objects (field selections, source specs,
   …) are validated when the analysis parses them.
 * Settings schemas of analyses implemented in a solver crate are derived
@@ -147,11 +147,14 @@ applies when they name none (`backend.requested` = `default:<id>`).
   and result assembly. Moving ray aiming and the reductions to the device
   is future work.
 * `MKLIGHT_DISABLE_GPU=1` makes every GPU backend unavailable.
-* Front ends spell `auto` differently: the engine (`Backend::parse("auto")`),
-  the FFI (`{"kind": "auto"}`) and the CLI (`--backend auto`) mean the
-  selection above, but the Python binding's string `"auto"` (its `backend`
-  default) means "the engine default" (docs/PYTHON.md); Python callers get
-  the selection with `backend={"kind": "auto"}`.
+* `auto` has the same meaning in Rust, FFI, CLI and Python. Python `None`
+  (or an omitted backend) uses the engine default.
+* `optimize` and `tolerance` also use the selected provider and its cached
+  qualification. Automatic merit evaluation uses the candidate-batch
+  crossover in `docs/OPTIMIZATION.md`; an explicitly requested GPU bypasses
+  that threshold. The envelope and `RunInfo` name the search backend; the
+  optimiser's start/final operand tables are recomputed on the CPU f64
+  reference. Per-candidate CPU fallbacks are counted in `result.backend.gpu_stats`.
 
 ## 6. Cross-solver conventions
 
@@ -179,15 +182,14 @@ applies when they name none (`backend.requested` = `default:<id>`).
   the ghost solver) are Monte-Carlo estimates. The partition
   needs `clip: {"mode": "clear_apertures", …}` in the ghost options (the
   stray scene always clips at clear apertures).
-* **Validation codes** (`validate`, `mk_session_validate_json`): `structure`
-  (core structural validation), `non_finite`, `aperture_value`,
-  `field_weight`, `wavelength_weight`, `mechanics`, `material`, `coating`,
-  `resolve`, `material_range` (warning), `stop_size_undefined`,
-  `stop_on_coordinate_break` (warning), `thickness_sign` (warning),
-  `zero_weights` (warning), `configuration`, `unused_coating` (info),
-  `paraxial` (the reference tracer cannot set the system up), `field`,
-  `chief_ray`, `marginal_ray` (warnings). A system with no error can be
-  traced by every ray-based analysis.
+* **Validation codes** (`validate`, `mk_session_validate_json`): structural
+  problems are rejected before a snapshot/session exists, with the core codes
+  of CONVENTIONS §13. The CLI's `validate` on such a file reports all core
+  issues with their JSON paths (`structural_only: true`). For valid snapshots,
+  material/coating resolution, material ranges, aperture definition, thickness
+  signs and zero weights are reported by the analysis. Engine-only tracer
+  checks are `paraxial` (setup error), `chief_ray` and `marginal_ray`
+  (reachability warnings, including a chief field that could not be prepared).
 * **Solves** change the model, so applying them is a session operation
   (`Session::apply_solves`, `mk_session_apply_solves`: a new snapshot plus
   the `solves` report); the `solves` analysis is its dry run.
@@ -227,6 +229,86 @@ applies when they name none (`backend.requested` = `default:<id>`).
   (CONVENTIONS §9), `[row][col][re, im]`; retardance in radians.
 * `solves`: `residual` in the condition's units (mm, slope, F/#, or
   dimensionless).
+
+* `optimize`: merit is Σ weight × residual² (default spot merit in mm²,
+  wavefront merit in waves²); custom operands can mix units through their
+  weights. Equal residuals are value − target; inequalities keep only the
+  violating side. Constraint violation is normalised and non-negative.
+  `variables[].change` is value − start in the parameter's model units
+  (curvature 1/mm, thickness/decenter mm, tilt degrees). `improvement` is
+  1 − final/start merit, so positive means improvement. History and the
+  `merit_history` buffer use the search evaluator; the final operand table
+  uses the CPU f64 reference and chooses the better of start and answer,
+  feasibility first. `stopped: true` is a retained early result from Stop;
+  Cancel/supersession discards it. The app applies `result.system` with
+  `mk_session_set_system_json` (`Session::set_system`) as an undoable document
+  edit, creating a snapshot with `result.system_hash`. Check the input
+  snapshot and library hashes before applying to a document edited meanwhile.
+* `tolerance`: `minus`/`plus` are positive perturbation magnitudes in each
+  parameter's model units; evaluate nominal − minus and nominal + plus.
+  Criterion values have the criterion merit's units; `change_minus` and
+  `change_plus` are trial − nominal (positive is degradation), `worst` is
+  the largest absolute change and `rss_change` is their root sum of squares.
+  Compensators report parameter values in model units. Yield is the fraction
+  with criterion ≤ threshold; a failed Monte-Carlo trial has criterion `inf`.
+  Stop retains completed sensitivity operands and Monte-Carlo trials with
+  `stopped: true`. Tolerancing does not replace the session's model.
+
+### Wave optics
+
+`wavefront_map`, `psf`, `mtf`, `diffraction_encircled_energy`,
+`line_spread`, `through_focus_mtf` and `mtf_vs_field` run the CPU f64 wave
+solver on the selected, solved `configuration` (default 0). Their RunInfo
+records the session snapshot hash, configuration, settings and solve/sampling
+warnings. These analyses have no GPU path.
+
+* **Wavefront.** OPD is `OPL_chief − OPL_ray` at the exit-pupil reference
+  sphere, in waves at the reported wavelength (µm); the chief ray has zero
+  OPD. Pupil coordinates are cell centres over `[-1, 1]`, `u` along image
+  x and `v` along image y. Maps are `[v, u]`, u fastest, with NaN outside
+  the clear pupil. Zernike coefficients are in waves, Fringe order Z1
+  onward by default; `standard` selects Noll order and RMS normalisation.
+  Coefficients fit the lattice rays with amplitude-squared weights, rather
+  than the resampled map. RMS removes piston; tilt-removed statistics also
+  remove best-fit tilt.
+* **PSF.** The default `strehl` normalisation sets the aberration-free peak
+  of the same pupil to 1; the peak intensity is the Strehl ratio.
+  `unit_energy` instead gives intensity in mm⁻² with whole-plane integral
+  1. `total_energy` is the whole-plane integral, so a finite window can
+  contain less. PSF buffers are `[image_y, image_x]`, x fastest. Spacing,
+  grid centres, peak and centroid coordinates are mm relative to the
+  common image-local `reference_mm`. Polychromatic PSFs use normalised
+  system wavelength weights and include lateral colour.
+* **Energy and line spread.** `diffraction_encircled_energy` gives fractions
+  of total PSF energy inside circles of `radius_mm`, and squares of that
+  half-width, plus an aberration-free encircled reference and r50/r80/r90
+  in mm. An unreachable radius is undefined. `line_spread.x` integrates
+  the unit-energy PSF over y, and `.y` over x, in mm⁻¹.
+* **MTF.** Frequencies and cutoffs are image-space cycles/mm; optical MTF
+  is normalised to 1 at zero frequency. Tangential is along the local
+  field direction (image y on axis), sagittal perpendicular (image x on
+  axis). `mtf_vs_field` also uses the sweep direction at its axial sample.
+  Through-focus shifts are mm, positive along image-space propagation;
+  the reference point shifts along the chief ray by δz/cosθ.
+* **Detector option.** All three MTF analyses accept `detector`: pixel
+  aperture sinc factors and Gaussian diffusion multiply the optical MTF.
+  `mtf` retains separate optical, detector and system curves. Its
+  `nyquist = [1/(2 pitch_x), 1/(2 pitch_y)]` and per-field directional
+  Nyquist values are markers in cycles/mm, not clipping thresholds. The
+  directional marker is `min(1/(2 pitch_x |e_x|), 1/(2 pitch_y |e_y|))`.
+  Field/focus sweeps return the product when a detector is supplied.
+* **Buffers.** Wave arrays, including sampled curve axes and Zernike
+  coefficients, travel as f64 buffers. Their JSON fields contain the
+  corresponding buffer names. Numeric suffixes identify the JSON group
+  position (not the system field index), with a second suffix for nested
+  curves or rim loops. Shapes and units are listed below. Unusable field
+  samples in MTF-versus-field buffers are NaN; unusable per-field pupils
+  are skipped with a warning.
+* **Sampling warnings.** `pupil_undersampled` (phase steps over half a
+  wave), `field_wraps` (image window wider than the alias-free field), and
+  `psf_truncated` (less than 95 % energy in the window) are retained in
+  RunInfo as the solver's descriptive warning text. Increase pupil
+  sampling or adjust the image window as described in `docs/WAVE.md`.
 
 ## 8. Analysis reference
 
@@ -1272,7 +1354,7 @@ Result (`result` in the envelope):
 
 ### `stray_light` — Stray light
 
-Category `stray`, result version 1.
+Category `stray`, result version 2.
 
 Non-sequential Monte-Carlo stray light: detector irradiance per path class (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, the strongest path signatures and an energy balance. With `ghost_partition` the ghost paths the explicit ghost run covers are left to it, with identical apertures; uncovered ghost paths stay in the stray total.
 
@@ -1304,32 +1386,29 @@ Result (`result` in the envelope):
 | `energy` | object |  | Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md). |
 | `map_classes` | array<string> |  | Class of each row of class_irradiance, in path-class order. |
 | `partition` | object? |  |  |
-| `partition.ambiguous_ghost_flux` | number | W | Part of uncovered_ghost_flux whose signature overflowed and may be covered (warned). |
 | `partition.apertures` | array<object> |  | The shared clipping per surface. |
 | `partition.covered_ghost_flux_mc` | number | W | Monte-Carlo flux of the ghost signatures the ghost run covers (its counterpart is the ghost solver's total). |
-| `partition.covered_ghost_std_error` | number | W | Upper bound: the sum of the signatures' standard errors. |
+| `partition.covered_ghost_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error. |
 | `partition.excluded_class` | string |  | Always `ghost`. |
 | `partition.ghost_class_flux_mc` | number | W | Monte-Carlo estimate of the excluded ghost class (comparison only). |
 | `partition.ghost_class_std_error` | number | W |  |
 | `partition.ghost_paths` | integer |  | ≥ 0; Paths in the ghost run's coverage. |
-| `partition.mapped_stray_flux` | number | W | Stray total of the maps (stray_flux without the handed-back ghosts). |
-| `partition.mapped_stray_std_error` | number | W | Exact. |
 | `partition.same_apertures` | boolean |  | GhostCoverage::same_apertures held (always true: a mismatch is an error). |
-| `partition.uncovered_ghost_flux` | number | W | Ghost-class flux outside the ghost run's coverage, handed back to stray_flux (CONVENTIONS §10); not in the maps. |
+| `partition.uncovered_ghost_flux` | number | W | Ghost-class flux outside the ghost run's coverage, included in stray_flux and the maps (CONVENTIONS §10). |
 | `partition.uncovered_ghost_signatures` | integer |  | ≥ 0; Number of handed-back ghost signatures. |
-| `partition.uncovered_ghost_std_error` | number | W | Upper bound: the sum of the signatures' standard errors. |
+| `partition.uncovered_ghost_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error. |
 | `primary_obstruction` | nf? |  |  |
 | `source` | object |  | Resolved source beam: spec, reference_flux, description. |
-| `stray_flux` | number | W | Stray total (under ghost_partition: mapped_stray_flux + uncovered_ghost_flux). |
+| `stray_flux` | number | W | Stray-owned flux, including uncovered ghost paths. |
 | `stray_fraction` | number? |  |  |
-| `stray_std_error` | number | W | Exact; under ghost_partition with uncovered ghosts the bound mapped + uncovered. |
+| `stray_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts. |
 | `top_signatures` | array<object> |  | Strongest (class, signature) pairs among the included classes. |
 | `totals` | array<object> |  | Every class, included or not. |
 | `totals[].class` | string |  | one of `"primary"`, `"ghost"`, `"scatter"`, `"mechanical"`, `"sneak"` |
 | `totals[].flux` | number | W |  |
 | `totals[].fraction` | number? |  |  |
 | `totals[].hits` | integer |  | ≥ 0; Detector hits. |
-| `totals[].included` | boolean |  | Part of the stray total. |
+| `totals[].included` | boolean |  | Whole class selected; uncovered ghosts may be included separately. |
 | `totals[].moments` | object |  | Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm). |
 | `totals[].std_error` | number | W | Monte-Carlo standard error. |
 | `warnings` | array<string> |  |  |
@@ -1338,34 +1417,581 @@ Buffers:
 
 | name | dtype | shape | unit | notes |
 |---|---|---|---|---|
-| `class_irradiance` | f64 | [C, ny, nx] | W/mm² | Irradiance per included class (rows of map_classes); row 0 at y = −half_y, x fastest. |
+| `class_irradiance` | f64 | [C, ny, nx] | W/mm² | Irradiance per owned class (rows of map_classes); under ghost_partition the Ghost row contains only uncovered paths. Row 0 at y = −half_y, x fastest. |
 | `class_irradiance_std_error` | f64 | [C, ny, nx] | W/mm² | Standard error per pixel. |
 | `total_irradiance` | f64 | [ny, nx] | W/mm² | Stray total. |
 | `total_irradiance_std_error` | f64 | [ny, nx] | W/mm² |  |
 
+### `diffraction_encircled_energy` — Diffraction encircled energy
+
+Category `wave`, result version 1.
+
+Encircled and ensquared energy of the diffraction PSF, with the diffraction-limited reference.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `center` | object | `{"type":"centroid"}` |  | Tagged energy centre: {type: reference}, {type: centroid}, {type: peak}, or {type: point, x, y} in mm. |
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `max_radius_mm` | number\|null | `null` | mm | > 0.0; Positive maximum radius; null uses the PSF window. |
+| `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
+| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `samples` | integer | `51` |  | ≥ 2 |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].center_mm` | [nf; 2] |  | Energy centre relative to the common reference, mm. |
+| `fields[].diffraction_limit` | string | 1 | Buffer name; aberration-free encircled energy. |
+| `fields[].encircled` | string | 1 | Buffer name; energy inside a circle of radius radius_mm. |
+| `fields[].ensquared` | string | 1 | Buffer name; energy inside a square of half-width radius_mm. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].r50_mm` | nf | mm | Radius enclosing 50 % of total energy. |
+| `fields[].r80_mm` | nf | mm | Radius enclosing 80 % of total energy. |
+| `fields[].r90_mm` | nf | mm | Radius enclosing 90 % of total energy. |
+| `radius_mm` | string | mm | Buffer name; radii / square half-widths. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `radius_mm` | f64 | [radii] | mm | Circle radii / square half-widths. |
+| `encircled_*` | f64 | [radii] | 1 | Encircled fraction of total PSF energy. |
+| `ensquared_*` | f64 | [radii] | 1 | Ensquared fraction of total PSF energy. |
+| `diffraction_limit_*` | f64 | [radii] | 1 | Aberration-free encircled energy. |
+
+### `line_spread` — Line spread function
+
+Category `wave`, result version 1.
+
+Diffraction line-spread functions along the image axes.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
+| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].positions_mm` | string | mm | Buffer name; positions relative to the common reference. |
+| `fields[].x` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over y. |
+| `fields[].y` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over x. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `positions_mm_*` | f64 | [positions] | mm | Coordinates relative to the common reference. |
+| `x_*` | f64 | [positions] | mm^-1 | Integral of PSF over y. |
+| `y_*` | f64 | [positions] | mm^-1 | Integral of PSF over x. |
+
 ### `mtf` — MTF
 
-Category `wave`, result version 1, **not available**: provided by mklight-wave, which is not wired into the engine yet.
+Category `wave`, result version 1.
 
-Settings: none.
+Diffraction MTF (FFT, pupil autocorrelation or from the Huygens PSF) vs frequency, tangential and sagittal, with the diffraction limit and an optional detector (pixel) MTF.
 
-Result: an object (not documented field by field).
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `frequency_samples` | integer | `41` |  | ≥ 2 |
+| `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
+| `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null uses the largest optical cutoff. |
+| `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].cutoff` | number | cycles/mm | Largest image-space cutoff over the selected wavelengths. |
+| `fields[].detector` | object? |  |  |
+| `fields[].detector.nyquist_sagittal` | nf | cycles/mm | Detector Nyquist marker along the sagittal direction. |
+| `fields[].detector.nyquist_tangential` | nf | cycles/mm | Detector Nyquist marker along the tangential direction. |
+| `fields[].detector.sagittal` | string | 1 | Buffer name; detector sagittal MTF. |
+| `fields[].detector.tangential` | string | 1 | Buffer name; detector tangential MTF. |
+| `fields[].diffraction_limit` | string | 1 | Buffer name; aberration-free MTF of the same pupil. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].sagittal` | string | 1 | Buffer name; optical sagittal MTF. |
+| `fields[].system_sagittal` | string? |  |  |
+| `fields[].system_tangential` | string? |  |  |
+| `fields[].tangential` | string | 1 | Buffer name; optical tangential MTF. |
+| `fields[].tangential_direction` | [nf; 2] |  | Tangential unit vector in image x/y; sagittal is perpendicular. |
+| `frequencies` | string | cycles/mm | Buffer name; image-space spatial frequencies. |
+| `nyquist` | [nf; 2]? |  |  |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `tangential_*` | f64 | [frequency_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `sagittal_*` | f64 | [frequency_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `diffraction_limit_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `detector_tangential_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `detector_sagittal_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `system_tangential_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `system_sagittal_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `frequencies` | f64 | [frequency_samples] | cycles/mm | Image-space spatial frequencies. |
+
+### `mtf_vs_field` — MTF vs field
+
+Category `wave`, result version 1.
+
+Diffraction MTF at fixed frequencies across the field.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
+| `direction` | [number; 2] | `[0.0,1.0]` |  | Nonzero direction in normalised field coordinates. |
+| `field_samples` | integer | `11` |  | 1 … 1001 |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
+| `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
+| `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `curves` | array<object> |  | One curve per frequency; includes the detector when supplied. |
+| `curves[].frequency` | number | cycles/mm | Image-space frequency. |
+| `curves[].sagittal` | string | 1 | Buffer name; MTF perpendicular to the local field direction. |
+| `curves[].tangential` | string | 1 | Buffer name; MTF along the local field direction. |
+| `field_values` | string | degrees or mm | Buffer name; specified [x, y] of each field sample. |
+| `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
+| `normalized_field` | string | 1 | Buffer name; normalised radial field from axis to edge. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `tangential_*` | f64 | [field_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `sagittal_*` | f64 | [field_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `normalized_field` | f64 | [field_samples] | 1 | Normalised radial field. |
+| `field_values` | f64 | [field_samples, 2] | degrees or mm | Specified field [x, y]. |
+| `frequencies` | f64 | [frequencies] | cycles/mm | Image-space frequencies. |
 
 ### `psf` — Point spread function
 
-Category `wave`, result version 1, **not available**: provided by mklight-wave, which is not wired into the engine yet.
+Category `wave`, result version 1.
 
-Settings: none.
+Diffraction PSF by FFT or Huygens integration, monochromatic or polychromatic, with the Strehl ratio.
 
-Result: an object (not documented field by field).
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `grid_size` | integer | `128` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
+| `normalization` | string | `"strehl"` |  | one of `"strehl"`, `"unit_energy"`; strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2. |
+| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `polychromatic` | boolean | `true` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spacing_mm` | number\|null | `null` | mm | > 0.0; Positive explicit spacing; null uses padding. |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `psfs` | array<object> |  | One PSF per usable field (and wavelength when monochromatic). |
+| `psfs[].centroid_mm` | [nf; 2] |  | Centroid relative to reference_mm, mm. |
+| `psfs[].field` | integer |  | ≥ 0; System field index. |
+| `psfs[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `psfs[].peak_mm` | [nf; 2] |  | Peak relative to reference_mm, mm. |
+| `psfs[].psf` | object |  |  |
+| `psfs[].psf.center_mm` | [nf; 2] |  | Grid centre relative to reference_mm, mm; coordinate i is center + (i - floor(size/2)) × spacing. |
+| `psfs[].psf.data` | string | 1 or mm^-2 | Buffer name; Strehl-normalised intensity (ideal peak 1), or unit-energy density. |
+| `psfs[].psf.diffraction_peak` | number | 1 or mm^-2 | Aberration-free peak in the selected normalisation. |
+| `psfs[].psf.normalization` | string |  | one of `"strehl"`, `"unit_energy"` |
+| `psfs[].psf.size` | integer |  | ≥ 0; Image samples per axis. |
+| `psfs[].psf.spacing_mm` | number | mm | Image-plane sample spacing. |
+| `psfs[].psf.total_energy` | number | mm^2 or 1 | Integral over the infinite image plane in the selected normalisation. |
+| `psfs[].psf.warnings` | array<any> |  | Also carried as text in RunInfo warnings. |
+| `psfs[].psf.wavelength_um` | number? |  |  |
+| `psfs[].reference_mm` | [nf; 2] |  | Common image-local reference point, mm. |
+| `psfs[].strehl` | number | 1 | Peak / aberration-free peak for the same pupil and spectral weights. |
+| `psfs[].wavelength` | integer? |  |  |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `data_*` | f64 | [image_y, image_x] | 1 or mm^-2 | Strehl-normalised intensity (ideal peak 1), or unit-energy density; x fastest. |
+
+### `through_focus_mtf` — Through-focus MTF
+
+Category `wave`, result version 1.
+
+Diffraction MTF at fixed frequencies vs image-plane defocus.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `focus_range_mm` | number\|null | `null` | mm | > 0.0; Positive half-range; null uses 4 wavelength × F/# squared. |
+| `focus_samples` | integer | `21` |  | 1 … 1001 |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
+| `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
+| `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].curves` | array<object> |  | One curve per frequency; includes the detector when supplied. |
+| `fields[].curves[].frequency` | number | cycles/mm | Image-space frequency. |
+| `fields[].curves[].sagittal` | string | 1 | Buffer name; MTF perpendicular to the local field direction. |
+| `fields[].curves[].tangential` | string | 1 | Buffer name; MTF along the local field direction. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `focus_mm` | string | mm | Buffer name; image-plane shift, positive along propagation. |
+| `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `tangential_*` | f64 | [focus_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `sagittal_*` | f64 | [focus_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `focus_mm` | f64 | [focus_samples] | mm | Image-plane shift; positive along propagation. |
+| `frequencies` | f64 | [frequencies] | cycles/mm | Image-space frequencies. |
 
 ### `wavefront_map` — Wavefront map
 
-Category `wave`, result version 1, **not available**: provided by mklight-wave, which is not wired into the engine yet.
+Category `wave`, result version 1.
 
-Settings: none.
+OPD on the exit-pupil reference sphere from the reference tracer, with RMS/PV, Strehl estimate and Zernike fit.
 
-Result: an object (not documented field by field).
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+| `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |
+| `zernike_terms` | integer | `37` |  | ≥ 1; Number of fitted terms; Fringe supports at most 37. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `maps` | array<object> |  | One map per usable field and wavelength. |
+| `maps[].amplitude` | string | 1 | Buffer name; relative field amplitude, zero outside the pupil. |
+| `maps[].coordinates` | string | 1 | Buffer name; cell centres over [-1, 1], shared by u and v. |
+| `maps[].exit_pupil` | object |  |  |
+| `maps[].exit_pupil.chief_direction` | [number; 3] |  | Chief direction, image-local. |
+| `maps[].exit_pupil.chief_point_mm` | [nf; 3] |  | Chief image point, image-local mm. |
+| `maps[].exit_pupil.clear_area` | number | 1 | Clear area in normalised pupil coordinates. |
+| `maps[].exit_pupil.effective_f_number` | number | 1 | Working F/# including the clear-area scale. |
+| `maps[].exit_pupil.exit_pupil_point_mm` | [nf; 3]? |  |  |
+| `maps[].exit_pupil.image_index` | number | 1 | Image-space refractive index. |
+| `maps[].exit_pupil.lattice_rays` | integer |  | ≥ 0 |
+| `maps[].exit_pupil.numerical_aperture` | number | 1 | Image index × sin_max. |
+| `maps[].exit_pupil.paraxial_position_mm` | nf | mm | Paraxial exit-pupil position from the image. |
+| `maps[].exit_pupil.paraxial_radius_mm` | nf | mm | Paraxial exit-pupil radius. |
+| `maps[].exit_pupil.propagation_sign` | number | 1 | Sign of propagation along image-local z. |
+| `maps[].exit_pupil.reference` | string |  | one of `"chief"`, `"centroid"` |
+| `maps[].exit_pupil.reference_point_mm` | [nf; 3] |  | Reference-sphere centre, image-local mm. |
+| `maps[].exit_pupil.reference_radius_mm` | nf | mm | Reference-sphere radius; infinity for telecentric beams. |
+| `maps[].exit_pupil.rim_points` | integer |  | ≥ 0 |
+| `maps[].exit_pupil.sin_max` | number | 1 | Pupil angular scale. |
+| `maps[].exit_pupil.surviving_rays` | integer |  | ≥ 0 |
+| `maps[].exit_pupil.telecentric` | boolean |  | Exit pupil at infinity. |
+| `maps[].exit_pupil.transmitted_fraction` | number | 1 | Surviving entrance-pupil area fraction. |
+| `maps[].exit_pupil.wavelength_um` | number | µm |  |
+| `maps[].field` | integer |  | ≥ 0; System field index. |
+| `maps[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `maps[].grid` | integer |  | ≥ 0; Samples per pupil axis. |
+| `maps[].opd_waves` | string | waves | Buffer name; OPL_chief minus OPL_ray at the reference sphere; NaN outside the pupil. |
+| `maps[].pv_waves` | number | waves | Peak-to-valley OPD. |
+| `maps[].pv_waves_tilt_removed` | number | waves | Peak-to-valley with best-fit tilt removed. |
+| `maps[].rim` | array<string> |  | Clear-aperture loops; empty when rim tracing is disabled. |
+| `maps[].rms_waves` | number | waves | Weighted RMS with piston removed. |
+| `maps[].rms_waves_tilt_removed` | number | waves | Weighted RMS with piston and best-fit tilt removed. |
+| `maps[].seidel` | object |  |  |
+| `maps[].seidel.astigmatism` | number | waves |  |
+| `maps[].seidel.astigmatism_angle_deg` | number | degrees | From +x toward +y. |
+| `maps[].seidel.coma` | number | waves |  |
+| `maps[].seidel.coma_angle_deg` | number | degrees | From +x toward +y. |
+| `maps[].seidel.focus` | number | waves |  |
+| `maps[].seidel.piston` | number | waves |  |
+| `maps[].seidel.spherical` | number | waves | Pupil-edge Seidel-equivalent term. |
+| `maps[].seidel.tilt` | number | waves |  |
+| `maps[].seidel.tilt_angle_deg` | number | degrees | From +x toward +y. |
+| `maps[].strehl_at_reference` | number | 1 | Sampled-pupil Strehl at the reference point. |
+| `maps[].strehl_marechal` | number | 1 | exp(-(2π RMS_tilt_removed)^2). |
+| `maps[].wavelength` | integer |  | ≥ 0; System wavelength index. |
+| `maps[].wavelength_um` | number | µm |  |
+| `maps[].zernike` | object |  |  |
+| `maps[].zernike.coefficients` | string | waves | Buffer name; Z1 onward, fitted to lattice rays with amplitude-squared weights. |
+| `maps[].zernike.ordering` | string |  | one of `"fringe"`, `"standard"`; Fringe by default. |
+| `maps[].zernike_condition` | number | 1 | Fit condition estimate. |
+| `maps[].zernike_residual_rms` | number | waves | Weighted fit residual RMS. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `coordinates_*` | f64 | [grid] | 1 | Cell-centred normalised pupil coordinates. |
+| `opd_waves_*` | f64 | [grid_v, grid_u] | waves | OPL_chief minus OPL_ray; NaN outside the clear pupil. u along image x, v along image y. |
+| `amplitude_*` | f64 | [grid_v, grid_u] | 1 | Relative field amplitude; zero outside the clear pupil. |
+| `coefficients_*` | f64 | [zernike_terms] | waves | Z1 onward in the reported ordering; Fringe by default. |
+| `rim_*` | f64 | [points, 2] | 1 | Clear-aperture loop vertices [u, v]. |
+
+### `optimize` — Optimize
+
+Category `optimization`, result version 1, **GPU path**.
+
+Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator settings, laid over the defaults (criterion, pupil sampling, fields, wavelengths, thickness boundaries). |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
+| `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
+| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
+| `hold_efl` | boolean | `true` |  | Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead. |
+| `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
+| `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
+| `operands` | array | `[]` |  | Operands appended to the merit (e.g. an EFL target). |
+| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
+| `seed` | integer | `0` |  | ≥ 0 |
+| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `algorithm` | string |  |  |
+| `backend` | object |  |  |
+| `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
+| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
+| `backend.gpu_stats` (optional) | object |  |  |
+| `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.device_seconds` | number | s |  |
+| `backend.gpu_stats.dispatches` | integer |  | ≥ 0 |
+| `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.rays` | integer |  | ≥ 0 |
+| `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
+| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
+| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.workload` | object |  |  |
+| `backend.workload.batch` | integer |  | ≥ 0 |
+| `backend.workload.gpu_faster` | boolean |  |  |
+| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `evaluations` | integer |  | ≥ 0 |
+| `failed_variables` | array<integer> |  |  |
+| `final` | object |  |  |
+| `final.feasible` | boolean |  | Violation within feasibility_tolerance. |
+| `final.merit` | nf |  |  |
+| `final.status` | object |  | EvalStatus. |
+| `final.violation` | nf |  |  |
+| `history` | array<object> |  | One record per reported iteration. |
+| `history[].best_merit` | nf |  |  |
+| `history[].evaluations` | integer |  | ≥ 0 |
+| `history[].iteration` | integer |  | ≥ 0 |
+| `history[].merit` | nf |  |  |
+| `history[].stage` | string |  |  |
+| `history[].violation` | nf |  |  |
+| `improved` | boolean |  | Better than the start, feasibility first. |
+| `improvement` | nf |  | 1 - final/start merit; null for zero start. |
+| `iterations` | integer |  | ≥ 0 |
+| `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands. |
+| `multipliers` | array<nf>? |  |  |
+| `operands` | array<object> |  | Start/final values on the CPU f64 reference; operand units in OPTIMIZATION.md. |
+| `operands[].comparison` | string |  | one of `"equal"`, `"less_than"`, `"greater_than"` |
+| `operands[].config` | integer |  | ≥ 0 |
+| `operands[].contribution` | nf | merit | weight * residual squared; null for constraints/disabled operands. |
+| `operands[].contribution_fraction` | nf |  |  |
+| `operands[].enabled` | boolean |  |  |
+| `operands[].error` | string? |  |  |
+| `operands[].field` | object |  | FieldSelector. |
+| `operands[].index` | integer |  | ≥ 0 |
+| `operands[].kind` | string |  | Operand name. |
+| `operands[].label` | string |  |  |
+| `operands[].residual` | nf | operand | Signed value - target for equal; one-sided violation otherwise. |
+| `operands[].role` | string |  | one of `"residual"`, `"constraint"` |
+| `operands[].start` | nf |  |  |
+| `operands[].target` | nf |  |  |
+| `operands[].value` | nf |  |  |
+| `operands[].wavelength` | object |  | WavelengthSelector. |
+| `operands[].weight` | nf |  |  |
+| `search` | object |  |  |
+| `search.merit` | nf |  |  |
+| `search.reference_merit` | nf |  |  |
+| `search.reference_violation` | nf |  |  |
+| `search.violation` | nf |  |  |
+| `start` | object |  |  |
+| `start.merit` | nf |  |  |
+| `start.status` | object |  | EvalStatus. |
+| `start.violation` | nf |  |  |
+| `status` | string |  | one of `"converged"`, `"finished"`, `"stopped"`, `"cancelled"` |
+| `stopped` | boolean |  | Stop requested; best-so-far result retained. |
+| `system` | object |  | Optimised OpticalSystem. Apply with Session::set_system / mk_session_set_system_json. |
+| `system_hash` | string |  | Hash of the optimised model, not the input snapshot. |
+| `termination` | string |  | Optimiser termination reason. |
+| `variables` | array<object> |  | Values in each parameter's model units. |
+| `variables[].at_bound` | boolean |  |  |
+| `variables[].change` | nf | parameter | value - start. |
+| `variables[].label` | string |  |  |
+| `variables[].lower` | nf |  |  |
+| `variables[].param` | object |  | ParamPath; stable surface id. |
+| `variables[].start` | nf |  |  |
+| `variables[].upper` | nf |  |  |
+| `variables[].value` | nf |  |  |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `merit_history` | f64 | [records, 4] | mixed | Columns: iteration, evaluations, merit, best merit (search evaluator). |
+
+### `tolerance` — Tolerance analysis
+
+Category `optimization`, result version 1, **GPU path**.
+
+Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo analysis, with compensators re-optimised for every trial.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"` |
+| `batch` | integer | `16` |  | ≥ 1 |
+| `compensator_iterations` | integer | `20` |  | ≥ 1 |
+| `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. |
+| `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  |  |
+| `gpu_batch` | integer | `512` |  | ≥ 1 |
+| `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
+| `seed` | integer | `0` |  | ≥ 0 |
+| `stop_key` | string\|null | `null` |  |  |
+| `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
+| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |
+| `trials` | integer | `100` |  | ≥ 1 |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `backend` | object |  |  |
+| `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
+| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
+| `backend.gpu_stats` (optional) | object |  |  |
+| `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.device_seconds` | number | s |  |
+| `backend.gpu_stats.dispatches` | integer |  | ≥ 0 |
+| `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.rays` | integer |  | ≥ 0 |
+| `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
+| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
+| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.workload` | object |  |  |
+| `backend.workload.batch` | integer |  | ≥ 0 |
+| `backend.workload.gpu_faster` | boolean |  |  |
+| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `compensators` | array<object> |  | Model parameter units. |
+| `criterion_spec` | object |  | Effective MeritFunctionSpec. |
+| `monte_carlo` | object? |  |  |
+| `monte_carlo.cancelled` | boolean |  | Statistics of completed trials after interruption. |
+| `monte_carlo.compensator_mean` | array<nf> |  |  |
+| `monte_carlo.compensator_std` | array<nf> |  |  |
+| `monte_carlo.criteria` | array<nf> |  | Criterion per trial; inf for failed trials. |
+| `monte_carlo.failures` | integer |  | ≥ 0 |
+| `monte_carlo.max` | nf |  |  |
+| `monte_carlo.mean` | nf |  |  |
+| `monte_carlo.min` | nf |  |  |
+| `monte_carlo.percentiles` | array<object> |  |  |
+| `monte_carlo.percentiles[].percentile` | number | % |  |
+| `monte_carlo.percentiles[].value` | nf |  |  |
+| `monte_carlo.seed` | integer |  | ≥ 0; Philox seed. |
+| `monte_carlo.std_dev` | nf |  |  |
+| `monte_carlo.threshold` | nf |  |  |
+| `monte_carlo.trials` | integer |  | ≥ 0; Completed trials. |
+| `monte_carlo.yield_fraction` | nf |  | Fraction at or below threshold; null without threshold. |
+| `sensitivity` | object? |  |  |
+| `sensitivity.cancelled` | boolean |  | Partial sensitivity after interruption. |
+| `sensitivity.evaluations` | integer |  | ≥ 0 |
+| `sensitivity.nominal` | object |  |  |
+| `sensitivity.nominal.compensators` | array<nf> |  | Parameter values. |
+| `sensitivity.nominal.criterion` | nf |  |  |
+| `sensitivity.nominal.ok` | boolean |  |  |
+| `sensitivity.operands` | array<object> |  | Completed operands in declaration order. |
+| `sensitivity.operands[].change_minus` | nf | criterion | criterion_minus - nominal. |
+| `sensitivity.operands[].change_plus` | nf | criterion | criterion_plus - nominal. |
+| `sensitivity.operands[].compensators_minus` | array<nf> |  |  |
+| `sensitivity.operands[].compensators_plus` | array<nf> |  |  |
+| `sensitivity.operands[].criterion_minus` | nf |  |  |
+| `sensitivity.operands[].criterion_plus` | nf |  |  |
+| `sensitivity.operands[].index` | integer |  | ≥ 0; Tolerance index. |
+| `sensitivity.operands[].label` | string |  |  |
+| `sensitivity.operands[].minus` | nf |  |  |
+| `sensitivity.operands[].ok` | boolean |  | Both limits evaluated successfully. |
+| `sensitivity.operands[].param` | object |  | ParamPath. |
+| `sensitivity.operands[].plus` | nf |  |  |
+| `sensitivity.operands[].worst` | nf | criterion | Largest absolute criterion change at either limit. |
+| `sensitivity.predicted_criterion` | nf | criterion | Nominal + rss_change. |
+| `sensitivity.ranking` | array<integer> |  | Worst first. |
+| `sensitivity.rss_change` | nf | criterion | Root sum of squared worst changes. |
+| `status` | string |  | one of `"complete"`, `"stopped"`, `"cancelled"` |
+| `stopped` | boolean |  | Stop requested; completed sensitivity operands/trials retained. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `monte_carlo_criteria` | f64 | [trials] | criterion | Per completed Monte-Carlo trial; inf for failures. Absent without Monte Carlo. |
 
 ### `rng_stream` — Random stream check
 

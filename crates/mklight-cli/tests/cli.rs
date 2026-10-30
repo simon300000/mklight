@@ -1272,3 +1272,61 @@ fn progress_is_reported_on_stderr() {
     assert!(lines.len() >= 2, "{err}");
     assert!(stdout(&o).contains("result:"));
 }
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_optimization_and_second_signal_cancels() {
+    for signals in [1, 2] {
+        use std::io::{BufRead, BufReader};
+        let dir = TempDir::new("stop-optim");
+        let path = sample(&dir, "singlet");
+        let mut child = Command::new(BIN)
+            .args([
+                "run",
+                s(&path),
+                "optimize",
+                "--backend",
+                "cpu",
+                "--settings",
+                r#"{"algorithm":"de","max_iterations":100000,"options":{"population":32}}"#,
+                "--progress",
+                "--json",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = BufReader::new(child.stderr.take().unwrap());
+        let mut line = String::new();
+        loop {
+            assert!(stderr.read_line(&mut line).unwrap() > 0);
+            if serde_json::from_str::<Value>(line.trim()).is_ok_and(|v| v["state"] == "running") {
+                break;
+            }
+            line.clear();
+        }
+        unsafe {
+            assert_eq!(libc::kill(child.id() as libc::pid_t, libc::SIGINT), 0);
+            if signals == 2 {
+                assert_eq!(libc::kill(child.id() as libc::pid_t, libc::SIGTERM), 0);
+            }
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(if signals == 1 { 0 } else { 130 }),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+        if signals == 2 {
+            assert_eq!(result["cancelled"], true);
+            assert_eq!(result["status"]["state"], "cancelled");
+            continue;
+        }
+        assert_eq!(result["result"]["stopped"], true);
+        assert_eq!(result["result"]["status"], "stopped");
+        assert!(f(&result["result"]["final"]["merit"]) <= f(&result["result"]["start"]["merit"]));
+        assert!(result["result"]["system_hash"].is_string());
+    }
+}

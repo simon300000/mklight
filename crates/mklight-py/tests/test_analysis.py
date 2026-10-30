@@ -239,3 +239,36 @@ def test_seed_must_be_a_u64(achromat):
         with pytest.raises(mklight.InvalidSettingsError):
             achromat.submit("rng_stream", {"count": 10}, seed=bad)
     assert achromat.run("rng_stream", {"count": 10}, seed=np.uint64(2**64 - 1)).seed == 2**64 - 1
+
+
+def test_auto_selects_instead_of_using_engine_default(achromat):
+    r = achromat.run("ray_grid", {"rings": 2}, backend="auto")
+    assert r.envelope()["backend"]["requested"] == "auto"
+    assert r.envelope()["backend"]["used"] == r.run_info["backend"]
+    assert r.envelope()["result_version"] == 1
+    default = achromat.run("ray_grid", {"rings": 2}, backend=None)
+    assert default.envelope()["backend"]["requested"] == "default:cpu_reference"
+
+
+def test_stop_retains_optimization_and_tolerance_results(achromat):
+    job = achromat.submit("optimize", {"algorithm": "de", "max_iterations": 100000})
+    job.stop()
+    r = job.result(timeout=30)
+    assert job.state == "done"
+    assert r.data["stopped"] and r.data["status"] == "stopped"
+    assert r.data["final"]["merit"] <= r.data["start"]["merit"]
+    achromat.set_system(r.data["system"])
+    assert achromat.snapshot_hash == r.data["system_hash"]
+    job.stop()  # collected: no-op
+    job = achromat.submit("tolerance", {"mode": "monte_carlo", "trials": 100000})
+    job.stop()
+    assert job.result(timeout=30).data["stopped"]
+
+
+def test_stop_other_active_jobs_is_unsupported(achromat):
+    job = achromat.submit("rng_stream", {"count": 1000, "chunk": 1, "delay_ms": 10.0})
+    with pytest.raises(mklight.UnsupportedError):
+        job.stop()
+    job.cancel()
+    with pytest.raises(mklight.CancelledError):
+        job.result(timeout=5)

@@ -577,13 +577,14 @@ batch. Cancelling the job context stops the optimiser between evaluations,
 and `Analysis::run` returns the best point so far, ranked by feasibility,
 with `"status": "cancelled"`. The scheduler, however, ends every cancelled
 job `Cancelled` and drops its result, because a superseded result is stale.
-A front end that wants a **Stop** button that keeps the result gives the
-job a `stop_key` and calls `analysis::optim::request_stop(key)`. The job
-then ends normally (`Done`) with `"status": "stopped"` and its best point
-so far (a `tolerance` job stopped in its sensitivity phase keeps the
-operands completed so far, `sensitivity.cancelled`). A key is held by one
-running job at a time: a job submitted with a key already in use fails with
-`InvalidSettings`, so the running job stays stoppable.
+Front ends use `Engine::stop_job`, `mk_job_stop` (ABI 1.2), Python
+`Job.stop()`, or the CLI's first Ctrl-C to keep the result. Stop has its own
+job token: even a queued request is retained until the job starts, and the
+job ends normally (`Done`) with `status: "stopped"` and `stopped: true`.
+A second CLI Ctrl-C cancels. Cancel/supersession still discards the result.
+The legacy `stop_key` / `analysis::optim::request_stop(key)` remains supported;
+one running job holds each key. A stopped sensitivity keeps completed
+operands; stopped Monte Carlo keeps completed trials.
 
 **Never worse than the start.** The job evaluates the start and the
 optimiser's answer on the CPU f64 reference and returns the better of the
@@ -597,10 +598,15 @@ ranks on f32 values, so this check is needed for them.
 the constraint check are always computed on the CPU f64 reference, whichever
 evaluator drove the search. `backend` says what evaluated the search
 (`evaluated_on`, `precision`), with the GPU qualification at the start and
-at the final design. `RunInfo.warnings` repeats it ("ray operands evaluated
-on metal:Apple M2 Pro (f32, precision-qualified); reported values from the
-CPU f64 reference", or the reason a GPU was not used). `RunInfo.backend` is
-the engine's backend selection.
+at the final design. `RunInfo.warnings` names the search evaluator or the
+reason a GPU was not used. Tolerance statistics use the search evaluator;
+`reported_on` names it there. `RunInfo.backend` and
+the envelope's `backend` record the backend that evaluated the search after
+fallback, using the same ids as other analyses (`gpu:metal`, `cpu_reference`).
+The device comes from the engine's lazily opened `GpuProvider`; its
+`GpuDevice::qualify` caches the start and final qualifications per snapshot
+and library. `GpuTraceEvaluator::with_qualification` reuses that verdict.
+An explicit GPU request bypasses the automatic workload crossover.
 
 Both jobs also run with no settings at all: `optimize` then varies every
 curvature and the back focus against the default merit (thickness boundaries
@@ -654,7 +660,7 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding an `Arc<dyn ComputeBackend>`, or a `CpuF32Backend`), or the CPU reference with a warning when there is none. `auto` uses that device only when `gpu_beats_cpu(rays per candidate, batch)` holds for the run (GPU-batched evaluation, Use): rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system, batch = the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. The decision is in `backend.workload`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` is the CPU-f32 emulation (validation, tests) |
+| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device only when `gpu_beats_cpu(rays per candidate, batch)` holds for the run (GPU-batched evaluation, Use): rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system, batch = the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. The decision is in `backend.workload`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
 | `gpu_batch` | integer, `512` | candidates per GPU dispatch (`GpuEvalSettings::batch`) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
 | `stop_key` | string or null, `null` | key for `request_stop`; a key held by a running job is rejected |
@@ -664,6 +670,7 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
 ```jsonc
 {
   "status": "converged" | "finished" | "stopped" | "cancelled",
+  "stopped": false,
   "termination": "small_merit_change" | "small_step" | "small_gradient" | "target_reached"
                | "converged" | "max_iterations" | "max_evaluations" | "cancelled"
                | "evaluation_failure" | "infeasible" | "stalled" | "derivative_failure",
@@ -738,6 +745,7 @@ goes to the evaluator as one batch (one GPU dispatch).
 ```jsonc
 {
   "status": "complete" | "stopped" | "cancelled",
+  "stopped": false,
   "sensitivity": {                                  // null when not run, or stopped before the nominal
     "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
     "operands": [{"index": 0, "label": "...", "param": {/* ParamPath */},
@@ -798,11 +806,8 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
   generation and reductions would remove it.
 * The GPU evaluator traces chief-ray angles, incidence angles, real working
   F/# and relative illumination on the CPU.
-* A scheduler-cancelled `optimize` or `tolerance` job loses its best point
-  (the scheduler drops cancelled results); front ends use `stop_key` and
-  `request_stop` to keep it. Neither the FFI nor the app exposes
-  `request_stop` yet: it is `mklight_engine::analysis::optim::request_stop`,
-  for the FFI and app owners to wire to a Stop button.
+* The engine, C ABI, Python and CLI expose Stop; the native app still needs
+  to wire its Stop button to `mk_job_stop`.
 * The GPU evaluator is qualified at the start and, for the report, at the
   final design; candidates in between are not requalified. The agreement
   tests cover strongly perturbed candidates of every sample (worst 0.14 of

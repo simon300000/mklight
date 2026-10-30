@@ -31,7 +31,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 1
+#define MK_ABI_VERSION_MINOR 2
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -247,6 +247,12 @@ MKStatus mk_job_stage(const MKEngine *engine, uint64_t job, char **out_stage);
 /* {"id", "state", "progress", "stage", "label", "view_key", "error",
  *  "superseded_by", "elapsed_ms"} */
 MKStatus mk_job_status_json(const MKEngine *engine, uint64_t job, char **out_json);
+
+/* Stop optimize/tolerance, keeping the best-so-far result as DONE with
+ * result.stopped = true. Queued jobs start and return their initial result.
+ * MK_ERR_UNSUPPORTED for other active jobs. No-op for finished jobs.
+ * Cancellation/supersession still discards the result, even after stop. */
+MKStatus mk_job_stop(const MKEngine *engine, uint64_t job);
 
 /* Request cancellation. A queued job is cancelled at once; a running job
  * stops at its next cancellation check. No-op for finished jobs. */

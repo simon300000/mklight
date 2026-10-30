@@ -93,11 +93,9 @@ fn normal_incidence_ghost_ratio_is_r_squared() {
     for (a, b) in gm.values.iter().zip(&pm.values) {
         assert!((a - r * r * b).abs() <= 1e-12 * b.abs());
     }
-    // Primary flux: (1 − R)² of the sampled pupil fraction.
+    // Unit pupil area: boundary quadrature must conserve incident flux.
     let t2 = (1.0 - r) * (1.0 - r);
-    let sampled =
-        res.primary.fields[0].rays_traced as f64 * (2.0f64 / 24.0).powi(2) / std::f64::consts::PI;
-    assert!((res.primary.flux - t2 * sampled).abs() < 1e-12);
+    assert!((res.primary.flux / t2 - 1.0).abs() < 3e-4);
     assert!((res.total_flux_ratio - r * r).abs() < 1e-14);
 }
 

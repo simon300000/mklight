@@ -424,12 +424,13 @@ fn double_pass_surface_is_one_primitive_and_primary() {
         e.summary()
     );
     // Exits after k internal reflections at the front face deliver T²Rᵏ:
-    // k = 1 has one stray reflection (Sneak, as has the external front
-    // reflection R), k ≥ 2 are ghosts. Nothing designed is mistaken for them.
+    // Even k ≥ 2 follow canonical ghost paths; odd k leave the sequential
+    // train toward object space but meet this folded detector (Sneak, as
+    // does the external front reflection R). Nothing designed is misclassified.
     let sneak = e.detected_in(PathClass::Sneak);
-    let want = rr + t * t * rr;
-    assert!((sneak / want - 1.0).abs() < 1e-10, "{sneak} vs {want}");
+    let want = rr + t * t * rr / (1.0 - rr * rr);
+    assert!((sneak / want - 1.0).abs() < 1e-6, "{sneak} vs {want}");
     let ghost = e.detected_in(PathClass::Ghost);
-    let want = t * t * rr * rr / (1.0 - rr);
+    let want = t * t * rr * rr / (1.0 - rr * rr);
     assert!((ghost / want - 1.0).abs() < 1e-4, "{ghost} vs {want}");
 }

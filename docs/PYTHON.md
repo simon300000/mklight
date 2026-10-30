@@ -114,8 +114,8 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 | `save(path=None)` | Atomic save (to the session's path when omitted). |
 | `load_catalog(path)`, `catalogs()`, `glasses(catalog=None)` | AGF (or `.json`) glass catalogs. |
 | `set_project_section(section, value)` | `views`, `merit`, `variables`, `tolerances`, `metadata`. |
-| `run(analysis, settings=None, seed=None, backend="auto", progress=None, allow_backend_fallback=False, timeout=None)` | Run and wait → `Result`. |
-| `submit(analysis, settings=None, seed=None, backend="auto", allow_backend_fallback=False, view_key=None)` | Queue → `Job`. |
+| `run(analysis, settings=None, seed=None, backend=None, progress=None, allow_backend_fallback=False, timeout=None)` | Run and wait → `Result`. |
+| `submit(analysis, settings=None, seed=None, backend=None, allow_backend_fallback=False, view_key=None)` | Queue → `Job`. |
 
 * `settings` is a partial dict; missing keys take the schema defaults and
   unknown keys raise `InvalidSettingsError`. The complete normalised settings
@@ -125,7 +125,8 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
   `settings["seed"]`. Equal seeds give bit-identical results (Philox,
   `docs/CONVENTIONS.md` §6); the seed is recorded in `run_info["seed"]`.
   It must be an integer in `0..2**64` (otherwise `InvalidSettingsError`).
-* `backend`: `"auto"`/`None` (engine default, a preference), `"cpu"`,
+* `backend`: `None` (engine default, a preference), `"auto"` (engine automatic
+  selection, consistent with the CLI), `"cpu"`,
   `"metal"` / `"gpu:metal"`, or `{"kind": "gpu", "name": "metal"}`.
   Semantics as in `docs/FFI.md` (*Backends*).
 * `view_key`: a newer job with the same key in the same session supersedes
@@ -140,9 +141,14 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 `evicted`, below), `progress` (monotone: 1.0 once a result was retrieved,
 the last value seen for a failed or cancelled job), `stage`, `status()`
 (the C ABI status dict, `None` after the result was retrieved), `done()`,
-`cancel()`, `wait(timeout=None)` → bool, `result(timeout=None,
+`stop()`, `cancel()`, `wait(timeout=None)` → bool, `result(timeout=None,
 progress=None)` → `Result`. Timeouts are seconds; `None` or `inf` wait
 forever; NaN or negative values raise `InvalidArgumentError`.
+
+`stop()` requests an early `optimize`/`tolerance` result: `result()` returns
+normally, the job ends `done`, and `result.data["stopped"]` is true. Queued
+jobs still start; a finished job is unchanged. Other active jobs raise
+`UnsupportedError`. `cancel()` (also after Stop) discards the result.
 
 **Result retention.** The engine keeps a finished job's outcome until it is
 collected. Its `max_retained_jobs` bound (256 in the C ABI, for front ends
@@ -169,7 +175,7 @@ For `asyncio`, use `await asyncio.to_thread(job.result)`.
 | `arrays` | `{name: ndarray}` (or nested lists). |
 | `buffers()` | The underlying `mklight.Array` objects. |
 | `analysis`, `snapshot_hash`, `library_hash`, `seed`, `warnings` | Shortcuts. |
-| `envelope()` | The C ABI JSON envelope (`run_info`, `library_hash`, `result`, buffer descriptors). |
+| `envelope()` | The C ABI JSON envelope (`run_info`, `library_hash`, `backend`, `result_version`, `result`, buffer descriptors). |
 
 ### Arrays and zero copy
 

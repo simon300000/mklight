@@ -31,6 +31,7 @@ pub mod radiometry;
 pub mod schema;
 pub mod solves;
 pub mod stray;
+pub mod wave;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -38,7 +39,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mklight_core::job::{Precision, RunTimer};
+use mklight_core::job::{CancelToken, Precision, RunTimer};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkResult, ResolvedSystem, RunInfo, Snapshot};
 
@@ -193,6 +194,8 @@ pub struct AnalysisInput<'a> {
     pub requested_backend: String,
     /// Why the preferred backend was not selected (`BackendReport`).
     pub selection_note: Option<String>,
+    /// Job-level stop that retains the best result (optimisation/tolerancing).
+    pub stop: CancelToken,
     resolver: Resolver<'a>,
     backend_used: RefCell<Option<BackendUse>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
@@ -224,11 +227,17 @@ impl<'a> AnalysisInput<'a> {
             device: None,
             requested_backend: Backend::CpuReference.id(),
             selection_note: None,
+            stop: CancelToken::new(),
             resolver,
             backend_used: RefCell::new(None),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
         }
+    }
+
+    pub fn with_stop_token(mut self, stop: CancelToken) -> Self {
+        self.stop = stop;
+        self
     }
 
     pub fn with_device(mut self, device: Option<DeviceHandle>) -> Self {
@@ -419,12 +428,12 @@ pub fn run_analysis(
     })
 }
 
-/// Register every analysis of this build. Wave-optics analyses are added
-/// here, one line each, when `mklight-wave` is wired in: each replaces the
-/// placeholder of the same name (e.g. `r.register(Arc::new(wave::Psf))`).
+/// Register every analysis of this build. The wave-optics analyses replace
+/// the builtin placeholders of the same name.
 pub fn register_all(r: &mut AnalysisRegistry) {
     builtin::register_all(r);
     geometric::register_all(r);
+    wave::register_all(r);
     ghost::register_all(r);
     stray::register_all(r);
     radiometry::register_all(r);

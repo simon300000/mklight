@@ -38,13 +38,12 @@ pub fn sample_system(name: &str) -> Result<OpticalSystem, String> {
         })
 }
 
-/// Parse the `backend` argument: `None`/`"auto"` → engine default,
+/// Parse the `backend` argument: `None` → engine default, `"auto"` → automatic selection,
 /// `"cpu"`/`"cpu_reference"` → CPU reference, `"metal"`/`"gpu:metal"` → a
 /// GPU backend, or the JSON form `{"kind": "gpu", "name": "metal"}`.
 pub fn parse_backend(v: &Value) -> Result<Option<Backend>, String> {
     match v {
         Value::Null => Ok(None),
-        Value::String(s) if s.trim().eq_ignore_ascii_case("auto") => Ok(None),
         Value::String(s) => Ok(Some(Backend::parse(s))),
         Value::Object(_) => serde_json::from_value(v.clone())
             .map(Some)
@@ -538,7 +537,7 @@ impl PySession {
     ///
     /// * `settings`: partial settings dict (missing keys take defaults).
     /// * `seed`: sets the analysis' `seed` setting (stochastic analyses).
-    /// * `backend`: `"auto"` (engine default), `"cpu"`, `"metal"`, or
+    /// * `backend`: `"auto"` (automatic selection), `"cpu"`, `"metal"`, or
     ///   `{"kind": "gpu", "name": "metal"}`.
     /// * `view_key`: a newer job with the same key supersedes this one.
     #[pyo3(signature = (analysis, settings=None, seed=None, backend=None, allow_backend_fallback=false, view_key=None))]
@@ -603,7 +602,7 @@ mod tests {
     #[test]
     fn backend_argument_forms() {
         assert_eq!(parse_backend(&Value::Null), Ok(None));
-        assert_eq!(parse_backend(&json!("auto")), Ok(None));
+        assert_eq!(parse_backend(&json!("auto")), Ok(Some(Backend::Auto)));
         assert_eq!(
             parse_backend(&json!("cpu")),
             Ok(Some(Backend::CpuReference))
@@ -649,7 +648,7 @@ mod tests {
             cfg(json!({"default_backend": "auto"}))
                 .unwrap()
                 .default_backend,
-            Backend::CpuReference
+            Backend::Auto
         );
         let e = cfg(json!({"worker_thread": 2})).unwrap_err();
         assert!(

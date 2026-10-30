@@ -77,11 +77,8 @@ ray-based commands (a project reported valid can be traced):
 
 | code | severity | check |
 |---|---|---|
-| `aperture_value` | error | the aperture value (EPD, F/#, NA) is not > 0 (a file with this is structurally invalid, see below; the check covers models built in memory) |
-| `field_weight` | error | a field weight is negative (likewise) |
 | `paraxial` | error | the system resolves, but the reference tracer cannot set it up (no finite marginal ray for the aperture specification, an afocal system with an F/# aperture, …); `paraxial`, `trace` and the ray-based analyses would fail with exit 2 |
-| `field` | warning | a field cannot be resolved (e.g. the aim does not converge) |
-| `chief_ray` | warning | a chief ray (primary wavelength, unclipped) does not reach the image |
+| `chief_ray` | warning | a chief field cannot be prepared or its ray (primary wavelength, unclipped) does not reach the image |
 | `marginal_ray` | warning | the axial marginal ray (field 0, pupil `(0, 1)`, clipped) does not reach the image |
 
 Real-ray failures are warnings: a system in the middle of a redesign, or one
@@ -177,13 +174,13 @@ The JSON output is the engine's result envelope:
 `{run_info, library_hash, result, buffers: [{index, name, dtype, shape}]}`.
 The human output shows the run info, the result JSON and the buffer list.
 
-**Cancellation.** The first Ctrl-C (SIGINT, or SIGTERM) cancels the job
-through the engine; the analysis stops at its next cancellation check and
-`mklight` reports the partial status: on stderr
-`… cancelled (interrupt) at 42.0% during 'drawing' after 0.81 s`, and with
-`--json` on stdout `{"cancelled": true, "reason": "interrupt"|"timeout",
-"analysis", "status": {id, state, progress, stage, …}}`. Exit code 130. A
-second Ctrl-C terminates immediately (also 130).
+**Stop and cancellation.** For `optimize` and `tolerance`, the first Ctrl-C
+(SIGINT, or SIGTERM) requests Stop through the engine: the job finishes with
+its best-so-far result, `result.stopped: true`, and normal output (exit 0).
+A second signal cancels and discards the result (exit 130). Analyses without
+Stop support cancel on the first signal. `--timeout` always cancels. Cancelled
+runs report partial status on stderr and, with `--json`, on stdout:
+`{"cancelled": true, "reason": "interrupt"|"timeout", "analysis", "status": …}`.
 
 ### `mklight trace <project> [--field i] [--wavelength j] [--pupil px,py] [--surfaces] [--no-clip]`
 

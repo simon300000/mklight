@@ -131,18 +131,43 @@ fn validate_reports_engine_checks() {
     let e = Engine::default();
     let mut sys = samples::achromatic_doublet();
     sys.aperture = mklight_core::ApertureSpec::ImageSpaceFNumber { value: 0.0 };
-    let s = e.session_from_project(Project::new(sys)).unwrap();
+    let err = e.session_from_project(Project::new(sys)).err().unwrap();
+    assert!(err.to_string().contains("invalid_aperture_value"), "{err}");
+
+    // Structurally valid, but afocal: an F/# cannot define its pupil.
+    let mut afocal = samples::achromatic_doublet();
+    for surface in &mut afocal.surfaces {
+        surface.shape = mklight_core::SurfaceShape::Plane;
+    }
+    afocal.aperture = mklight_core::ApertureSpec::ImageSpaceFNumber { value: 5.0 };
+    let s = e.session_from_project(Project::new(afocal)).unwrap();
     let v = s.validate().unwrap();
     assert_eq!(v["ok"], false);
-    let codes: Vec<&str> = v["issues"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|i| i["code"].as_str().unwrap())
-        .collect();
     assert!(
-        codes.contains(&"aperture_value") && codes.contains(&"paraxial"),
-        "{codes:?}"
+        v["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["code"] == "paraxial"),
+        "{v}"
+    );
+
+    // A clipped marginal ray is a warning, so the model remains valid.
+    let mut clipped = samples::achromatic_doublet();
+    clipped.surfaces[2].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 0.01 };
+    let v = e
+        .session_from_project(Project::new(clipped))
+        .unwrap()
+        .validate()
+        .unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(
+        v["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["code"] == "marginal_ray" && i["severity"] == "warning"),
+        "{v}"
     );
     let ok = e
         .session_from_project(Project::new(samples::achromatic_doublet()))

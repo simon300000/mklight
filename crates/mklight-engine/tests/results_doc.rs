@@ -22,6 +22,7 @@ const CATEGORIES: &[&str] = &[
     "ghost",
     "stray",
     "wave",
+    "optimization",
     "diagnostic",
 ];
 

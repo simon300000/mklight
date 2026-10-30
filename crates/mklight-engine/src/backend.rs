@@ -65,6 +65,12 @@ impl Backend {
             other => Backend::Gpu(other.strip_prefix("gpu:").unwrap_or(other).to_string()),
         }
     }
+    /// Whether a recorded request id (`SelectedBackend::requested`, which
+    /// carries a `default:` prefix when the engine default applied) asked
+    /// for `auto`.
+    pub fn is_auto_request(requested: &str) -> bool {
+        requested.strip_prefix("default:").unwrap_or(requested) == Backend::Auto.id()
+    }
 }
 
 /// What a backend can do. Extended as GPU backends land.

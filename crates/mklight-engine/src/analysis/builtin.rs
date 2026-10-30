@@ -57,10 +57,9 @@ fn parse<T: for<'de> Deserialize<'de>>(settings: &Value) -> EngineResult<T> {
 
 /// Model checks beyond structural validation: material and coating
 /// resolution per surface, data-range warnings, aperture definition,
-/// thickness signs after mirrors, weights and configurations, plus the
-/// engine-level checks of `crate::validation` (non-finite numbers, aperture
-/// value, weights, mechanics references, tracer set-up, chief and marginal
-/// rays).
+/// thickness signs after mirrors and zero weights, plus the
+/// engine-level tracer setup and reachability checks of `crate::validation`.
+/// Structural checks have already run when the snapshot was created.
 pub struct Validate;
 
 impl Analysis for Validate {
@@ -118,10 +117,6 @@ impl Analysis for Validate {
         let mut push = |severity, code, surface, message: String| {
             issues.push(Issue::new(severity, code, surface, message))
         };
-
-        if let Err(e) = sys.validate() {
-            push("error", "structure", None, e.to_string());
-        }
 
         // Materials, per surface, so every unresolved one is reported.
         let mut material_errors = 0;
@@ -233,18 +228,6 @@ impl Analysis for Validate {
                 "all field weights are zero".into(),
             );
         }
-        for k in 0..sys.configurations.len() {
-            if let Err(e) = sys.with_configuration(k).and_then(|s| s.validate()) {
-                push(
-                    "error",
-                    "configuration",
-                    None,
-                    format!("configuration {k}: {e}"),
-                );
-            }
-        }
-
-        issues.extend(validation::model_checks(sys));
         ctx.check()?;
         if let Some(r) = resolved {
             issues.extend(validation::tracer_checks(r));
@@ -946,7 +929,9 @@ mod tests {
         sys: OpticalSystem,
         settings: Value,
     ) -> EngineResult<super::super::AnalysisResult> {
-        let reg = AnalysisRegistry::with_builtin();
+        // The placeholders again, over the solvers that replace them.
+        let mut reg = AnalysisRegistry::with_builtin();
+        register_all(&mut reg);
         let a = reg.get(name)?;
         let input = AnalysisInput::new(
             Snapshot::new(sys).unwrap(),
@@ -1144,7 +1129,8 @@ mod tests {
 
     #[test]
     fn placeholders_are_unavailable() {
-        let reg = AnalysisRegistry::with_builtin();
+        let mut reg = AnalysisRegistry::with_builtin();
+        register_all(&mut reg);
         let info = reg.list();
         let psf = info.iter().find(|i| i.name == "psf").unwrap();
         assert!(!psf.available && psf.unavailable_reason.is_some());

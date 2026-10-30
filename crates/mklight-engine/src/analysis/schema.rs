@@ -264,6 +264,13 @@ fn check(schema: &Value, v: &Value, path: &str, strict: bool) -> Result<(), Stri
         {
             return fail(format!("{x} > maximum {hi}"));
         }
+        for (key, below) in [("exclusiveMinimum", true), ("exclusiveMaximum", false)] {
+            if let Some(bound) = schema.get(key).and_then(Value::as_f64)
+                && if below { x <= bound } else { x >= bound }
+            {
+                return fail(format!("{x} violates {key} {bound}"));
+            }
+        }
     }
     if let Value::Array(a) = v {
         if let Some(n) = schema.get("minItems").and_then(Value::as_u64)
@@ -404,6 +411,11 @@ fn notes(s: &Value) -> String {
         (Some(a), None) => parts.push(format!("≥ {a}")),
         (None, Some(b)) => parts.push(format!("≤ {b}")),
         _ => {}
+    }
+    for (key, sign) in [("exclusiveMinimum", ">"), ("exclusiveMaximum", "<")] {
+        if let Some(bound) = s.get(key) {
+            parts.push(format!("{sign} {bound}"));
+        }
     }
     if let Some(d) = s.get("description").and_then(Value::as_str) {
         parts.push(d.to_string());

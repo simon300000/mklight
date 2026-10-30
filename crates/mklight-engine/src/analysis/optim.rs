@@ -10,9 +10,9 @@
 //!   the optimiser, and `Analysis::run` returns the best point so far
 //!   (feasibility-ranked) with `"status": "cancelled"`. The scheduler,
 //!   however, discards the results of cancelled jobs (a superseded result is
-//!   stale). To stop a job *and keep* its best point, give it a `stop_key`
-//!   and call [`request_stop`]: the job then ends normally with
-//!   `"status": "stopped"`.
+//!   stale). To stop a job *and keep* its best point, call
+//!   `Engine::stop_job` (or give it a `stop_key` and call [`request_stop`]):
+//!   the job then ends normally with `"status": "stopped"`.
 //! * **Reported numbers** (start and final merit, operand table) are always
 //!   computed with the CPU f64 reference, whatever evaluated the search; the
 //!   result says which backend evaluated it, with its precision
@@ -36,7 +36,7 @@ use std::time::Duration;
 use mklight_core::job::{CancelToken, Precision, Progress};
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem, Snapshot};
-use mklight_gpu::{ComputeBackend, CpuF32Backend};
+use mklight_gpu::xval::Qualification;
 use mklight_optim::deriv::{FdScheme, JacobianSettings};
 use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
@@ -59,16 +59,73 @@ use mklight_optim::tolerance::{
     ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
+use mklight_trace::{SemiDiameterSettings, SequentialTracer};
 
+use super::BackendUse;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
-use crate::backend::DeviceHandle;
 use crate::buffer::{Buffer, BufferData};
 use crate::error::{EngineError, EngineResult};
+use crate::gpu::GpuDevice;
 
 /// Register `optimize` and `tolerance`.
 pub fn register(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Optimize));
     r.register(Arc::new(Tolerance));
+}
+
+// The `backend` record shared by both result schemas.
+fn evaluation_backend_schema() -> Value {
+    use super::schema::*;
+    obj_opt(
+        &[
+            (
+                "requested",
+                enumeration(
+                    &["auto", "cpu", "gpu", "gpu_emulation"],
+                    "Merit evaluator preference.",
+                ),
+            ),
+            (
+                "evaluated_on",
+                string("Search evaluator backend; envelope uses engine backend ids."),
+            ),
+            (
+                "precision",
+                enumeration(&["f64_reference", "f32_gpu"], "Search precision."),
+            ),
+            (
+                "reported_on",
+                string("CPU reference for optimize; search evaluator for tolerance."),
+            ),
+            (
+                "workload",
+                obj(&[
+                    ("rays_per_candidate", nullable(int(""))),
+                    ("batch", int("")),
+                    ("gpu_faster", boolean("")),
+                ]),
+            ),
+            (
+                "qualification",
+                opaque("Cached GPU precision qualification for the start snapshot."),
+            ),
+            (
+                "final_qualification",
+                opaque("GPU qualification at the optimised system."),
+            ),
+            (
+                "gpu_stats",
+                obj(&[
+                    ("gpu_candidates", int("")),
+                    ("cpu_candidates", int("")),
+                    ("rays", int("")),
+                    ("dispatches", int("")),
+                    ("device_seconds", num("s", "")),
+                ]),
+            ),
+        ],
+        &["qualification", "final_qualification", "gpu_stats"],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -125,16 +182,15 @@ impl StopGuard {
     }
 }
 
-/// A job's stop request: its token, registered under the job's `stop_key`
-/// for the lifetime of the value.
+/// A job's stop request: the job's stop token (`AnalysisInput::stop`),
+/// also registered under its `stop_key` for the lifetime of the value.
 struct StopRequest {
     token: CancelToken,
     _guard: Option<StopGuard>,
 }
 
 impl StopRequest {
-    fn register(key: Option<&str>) -> EngineResult<StopRequest> {
-        let token = CancelToken::new();
+    fn register(key: Option<&str>, token: CancelToken) -> EngineResult<StopRequest> {
         let _guard = key
             .map(|k| StopGuard::register(k, token.clone()))
             .transpose()?;
@@ -271,19 +327,6 @@ impl BackendChoice {
     }
 }
 
-/// The compute interface behind an engine device handle: an
-/// `Arc<dyn ComputeBackend>` (the engine's form, `docs/GPU.md` §1) or the
-/// CPU-f32 emulation backend itself.
-fn device_backend(dev: &DeviceHandle) -> Option<Arc<dyn ComputeBackend>> {
-    if let Some(b) = dev.downcast_ref::<Arc<dyn ComputeBackend>>() {
-        return Some(b.clone());
-    }
-    if let Ok(b) = dev.clone().downcast::<CpuF32Backend>() {
-        return Some(b);
-    }
-    None
-}
-
 /// The work of a run, for `backend: "auto"`: rays the GPU evaluator would
 /// trace per candidate and the typical batch of candidates per evaluation.
 #[derive(Clone, Copy, Debug)]
@@ -329,12 +372,17 @@ fn gpu_backend(
     choice: BackendChoice,
     input: &AnalysisInput<'_>,
     work: &Workload,
-) -> Result<Option<Arc<dyn ComputeBackend>>, String> {
-    let engine = input.device.as_ref().and_then(device_backend);
+) -> Result<Option<Arc<GpuDevice>>, String> {
+    let engine = super::gpu::device(input);
     match choice {
         BackendChoice::Cpu => Ok(None),
-        BackendChoice::Auto => Ok(engine.filter(|_| work.gpu_faster())),
-        BackendChoice::GpuEmulation => Ok(Some(Arc::new(CpuF32Backend::new()))),
+        BackendChoice::Auto => Ok(engine.filter(|_| {
+            !crate::backend::Backend::is_auto_request(&input.requested_backend) || work.gpu_faster()
+        })),
+        BackendChoice::GpuEmulation => engine
+            .filter(|d| d.id == "gpu:cpu_f32")
+            .map(Some)
+            .ok_or_else(|| "select the engine's gpu:cpu_f32 provider for gpu_emulation".into()),
         BackendChoice::Gpu => engine
             .map(Some)
             .ok_or_else(|| "the engine selected no GPU device for this analysis".to_string()),
@@ -345,48 +393,75 @@ fn gpu_backend(
 /// GPU evaluator in front of it.
 struct Evaluation {
     cpu: TraceEvaluator,
-    gpu: Option<GpuTraceEvaluator>,
+    /// The GPU evaluator and the engine device behind it.
+    gpu: Option<(GpuTraceEvaluator, Arc<GpuDevice>)>,
     work: Workload,
+    fallback_reason: Option<String>,
     /// `"backend"` block of the result.
     report: Value,
     warnings: Vec<String>,
+}
+
+/// The device's qualification of `snapshot`, cached per snapshot and
+/// library, and the reference tracer it was qualified with.
+fn qualify(
+    device: &GpuDevice,
+    cpu: &TraceEvaluator,
+    snapshot: &Snapshot,
+    input: &AnalysisInput<'_>,
+    ctx: &JobContext,
+) -> EngineResult<(SequentialTracer, Arc<Qualification>)> {
+    let tracer = cpu
+        .tracer(snapshot.system())
+        .map_err(|e| invalid(format!("tracer: {e:?}")))?;
+    let key = format!("{}:{}", snapshot.hash().to_hex(), input.library_hash());
+    let q = device.qualify(&key, &tracer, ctx)?;
+    Ok((tracer, q))
 }
 
 impl Evaluation {
     fn new(
         choice: BackendChoice,
         input: &AnalysisInput<'_>,
-        system: &OpticalSystem,
         batch: usize,
         work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
         let cpu = TraceEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
+        let mut fallback_reason = input.selection_note.clone();
         let gpu = match gpu_backend(choice, input, &work) {
-            Ok(Some(b)) => {
+            Ok(Some(device)) => {
                 let settings = GpuEvalSettings {
                     batch: batch.max(1),
                     ..Default::default()
                 };
-                let g = GpuTraceEvaluator::new(b, cpu.clone(), system, settings, ctx)?;
-                if g.is_active() {
-                    warnings.push(format!(
-                        "ray operands evaluated on {} (f32, precision-qualified); reported values \
-                         from the CPU f64 reference",
-                        g.backend_id()
-                    ));
-                } else {
-                    warnings.push(format!(
-                        "GPU backend {} not used ({}); computed with the CPU f64 reference",
-                        g.backend_id(),
-                        g.qualification().reason.unwrap_or_default()
-                    ));
-                }
-                Some(g)
+                let (tracer, q) = qualify(&device, &cpu, &input.snapshot, input, ctx)?;
+                let hints = tracer
+                    .semi_diameters(&SemiDiameterSettings::default())
+                    .values;
+                let g = GpuTraceEvaluator::with_qualification(
+                    device.backend.clone(),
+                    cpu.clone(),
+                    settings,
+                    q.as_ref().clone(),
+                    hints,
+                );
+                Some((g, device))
             }
-            Ok(None) => None,
+            Ok(None) => {
+                if super::gpu::device(input).is_some() {
+                    fallback_reason = Some(if choice == BackendChoice::Cpu {
+                        "merit evaluation requested the CPU reference".into()
+                    } else {
+                        "auto: merit workload below the GPU crossover; using the CPU reference"
+                            .into()
+                    });
+                }
+                None
+            }
             Err(why) => {
+                fallback_reason = Some(why.clone());
                 warnings.push(format!(
                     "GPU not used ({why}); computed with the CPU f64 reference"
                 ));
@@ -397,19 +472,26 @@ impl Evaluation {
             cpu,
             gpu,
             work,
+            fallback_reason,
             report: Value::Null,
             warnings,
         })
     }
 
     fn active_gpu(&self) -> Option<&GpuTraceEvaluator> {
-        self.gpu.as_ref().filter(|g| g.is_active())
+        self.gpu.as_ref().map(|(g, _)| g).filter(|g| g.is_active())
     }
 
     /// The `"backend"` block: who evaluated the search, its qualification
     /// (at the start and, after a GPU run, at the final design) and the GPU
-    /// work counters.
-    fn finish(&mut self, requested: BackendChoice, final_system: Option<&OpticalSystem>) {
+    /// work counters. Reports the backend used to the engine.
+    fn finish(
+        &mut self,
+        input: &AnalysisInput<'_>,
+        requested: BackendChoice,
+        final_snapshot: Option<&Snapshot>,
+        ctx: &JobContext,
+    ) -> EngineResult<()> {
         let mut b = json!({
             "requested": requested.name(),
             "evaluated_on": TraceEvaluator::BACKEND,
@@ -417,14 +499,22 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
-        if let Some(g) = &self.gpu {
-            let start = g.qualification();
-            if g.is_active() {
+        // The GPU evaluated the search only if it traced candidates.
+        let active = self
+            .active_gpu()
+            .is_some_and(|g| g.stats().gpu_candidates > 0);
+        if let Some((g, device)) = &self.gpu {
+            if active {
+                self.warnings.push(format!(
+                    "ray operands evaluated on {} (f32, precision-qualified)",
+                    g.backend_id()
+                ));
                 b["evaluated_on"] = json!(g.backend_id());
                 b["precision"] = json!(Precision::F32Gpu);
                 // A qualification of the final design (the search moved
                 // away from the qualified start).
-                if let Some(Ok(q)) = final_system.map(|s| g.requalify(s, &JobContext::new())) {
+                if let Some(snapshot) = final_snapshot {
+                    let (_, q) = qualify(device, &self.cpu, snapshot, input, ctx)?;
                     if !q.passed {
                         self.warnings.push(format!(
                             "the final design fails the GPU precision qualification ({}); its \
@@ -432,13 +522,38 @@ impl Evaluation {
                             q.reason.clone().unwrap_or_default()
                         ));
                     }
-                    b["final_qualification"] = serde_json::to_value(&q).unwrap_or(Value::Null);
+                    b["final_qualification"] =
+                        serde_json::to_value(q.as_ref()).unwrap_or(Value::Null);
+                } else {
+                    b["reported_on"] = json!(g.backend_id());
                 }
             }
-            b["qualification"] = serde_json::to_value(&start).unwrap_or(Value::Null);
+            b["qualification"] = serde_json::to_value(g.qualification()).unwrap_or(Value::Null);
             b["gpu_stats"] = serde_json::to_value(g.stats()).unwrap_or(Value::Null);
         }
+        let used = self.gpu.as_ref().filter(|_| active);
+        let fallback_reason = match &self.gpu {
+            _ if active => None,
+            Some((g, _)) => g
+                .qualification()
+                .reason
+                .or_else(|| Some("no candidates traced on the GPU".into())),
+            None => self.fallback_reason.clone(),
+        };
+        input.report_backend(BackendUse {
+            id: used.map_or("cpu_reference".into(), |(_, d)| d.id.clone()),
+            precision: if active {
+                Precision::F32Gpu
+            } else {
+                Precision::F64Reference
+            },
+            device: used.map(|(_, d)| d.device_name()),
+            fallback_reason,
+            qualification: b.get("qualification").cloned(),
+            deliberate: self.gpu.is_none(),
+        });
         self.report = b;
+        Ok(())
     }
 }
 
@@ -1014,6 +1129,153 @@ impl Analysis for Optimize {
         })
     }
 
+    fn gpu_path(&self) -> bool {
+        true
+    }
+
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        let evaluation = [
+            ("merit", nf()),
+            ("violation", nf()),
+            ("status", opaque("EvalStatus.")),
+        ];
+        let mut final_value = evaluation.to_vec();
+        final_value.push((
+            "feasible",
+            boolean("Violation within feasibility_tolerance."),
+        ));
+        result(
+            &[
+                (
+                    "status",
+                    enumeration(&["converged", "finished", "stopped", "cancelled"], ""),
+                ),
+                (
+                    "stopped",
+                    boolean("Stop requested; best-so-far result retained."),
+                ),
+                ("termination", string("Optimiser termination reason.")),
+                ("algorithm", string("")),
+                ("iterations", int("")),
+                ("evaluations", int("")),
+                (
+                    "improved",
+                    boolean("Better than the start, feasibility first."),
+                ),
+                ("start", obj(&evaluation)),
+                ("final", obj(&final_value)),
+                (
+                    "search",
+                    obj(&[
+                        ("merit", nf()),
+                        ("violation", nf()),
+                        ("reference_merit", nf()),
+                        ("reference_violation", nf()),
+                    ]),
+                ),
+                (
+                    "improvement",
+                    nf_u("", "1 - final/start merit; null for zero start."),
+                ),
+                ("multipliers", nullable(arr(nf(), "Per constraint."))),
+                ("failed_variables", arr(int("Variable index."), "")),
+                (
+                    "variables",
+                    arr(
+                        obj(&[
+                            ("label", string("")),
+                            ("param", opaque("ParamPath; stable surface id.")),
+                            ("start", nf()),
+                            ("value", nf()),
+                            ("change", nf_u("parameter", "value - start.")),
+                            ("lower", nf()),
+                            ("upper", nf()),
+                            ("at_bound", boolean("")),
+                        ]),
+                        "Values in each parameter's model units.",
+                    ),
+                ),
+                (
+                    "operands",
+                    arr(
+                        obj(&[
+                            ("index", int("")),
+                            ("kind", string("Operand name.")),
+                            ("label", string("")),
+                            ("enabled", boolean("")),
+                            ("role", enumeration(&["residual", "constraint"], "")),
+                            (
+                                "comparison",
+                                enumeration(&["equal", "less_than", "greater_than"], ""),
+                            ),
+                            ("target", nf()),
+                            ("weight", nf()),
+                            ("config", int("")),
+                            ("field", opaque("FieldSelector.")),
+                            ("wavelength", opaque("WavelengthSelector.")),
+                            ("start", nf()),
+                            ("value", nf()),
+                            (
+                                "residual",
+                                nf_u(
+                                    "operand",
+                                    "Signed value - target for equal; one-sided violation otherwise.",
+                                ),
+                            ),
+                            (
+                                "contribution",
+                                nf_u(
+                                    "merit",
+                                    "weight * residual squared; null for constraints/disabled operands.",
+                                ),
+                            ),
+                            ("contribution_fraction", nf()),
+                            ("error", nullable(string("Operand failure."))),
+                        ]),
+                        "Start/final values on the CPU f64 reference; operand units in OPTIMIZATION.md.",
+                    ),
+                ),
+                (
+                    "history",
+                    arr(
+                        obj(&[
+                            ("stage", string("")),
+                            ("iteration", int("")),
+                            ("evaluations", int("")),
+                            ("merit", nf()),
+                            ("violation", nf()),
+                            ("best_merit", nf()),
+                        ]),
+                        "One record per reported iteration.",
+                    ),
+                ),
+                ("backend", evaluation_backend_schema()),
+                (
+                    "merit_spec",
+                    opaque("Effective MeritFunctionSpec, including generated operands."),
+                ),
+                (
+                    "system",
+                    opaque(
+                        "Optimised OpticalSystem. Apply with Session::set_system / mk_session_set_system_json.",
+                    ),
+                ),
+                (
+                    "system_hash",
+                    string("Hash of the optimised model, not the input snapshot."),
+                ),
+            ],
+            vec![buffer(
+                "merit_history",
+                "f64",
+                &["records", "4"],
+                "mixed",
+                "Columns: iteration, evaluations, merit, best merit (search evaluator).",
+            )],
+        )
+    }
+
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -1021,14 +1283,7 @@ impl Analysis for Optimize {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: OptimizeSettings = parse(settings, "settings")?;
-        if let Some(h) = s.fd_relative_step
-            && !(h > 0.0 && h.is_finite())
-        {
-            return Err(invalid(format!(
-                "'fd_relative_step' must be positive (or null), got {h}"
-            )));
-        }
-        let stop = StopRequest::register(s.stop_key.as_deref())?;
+        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
         let system = input.snapshot.system().clone();
         let cpu = TraceEvaluator::new(input.library.clone());
         let reg = OperandRegistry::builtin();
@@ -1117,7 +1372,7 @@ impl Analysis for Optimize {
         let x0 = reference.start_point()?;
         let work = Workload::new(&cpu, &system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         ctx.check()?;
 
         // The search.
@@ -1229,9 +1484,9 @@ impl Analysis for Optimize {
                 refs.merit[0], refs.violation[0], refs.merit[1], refs.violation[1]
             ));
         }
-        let final_system = reference.apply(&x)?;
-        ev.finish(s.backend, Some(&final_system));
-        let hash = Snapshot::new(final_system.clone())?.hash().to_hex();
+        let final_system = Snapshot::new(reference.apply(&x)?)?;
+        ev.finish(input, s.backend, Some(&final_system), ctx)?;
+        let hash = final_system.hash().to_hex();
         let history = history.lock().map(|h| h.clone()).unwrap_or_default();
         let variables: Vec<Value> = s
             .variables
@@ -1254,6 +1509,7 @@ impl Analysis for Optimize {
         let feasible = refs.violation[k] <= feas_tol;
         let json = json!({
             "status": interrupt_status(why, result.termination),
+            "stopped": why == Interrupt::Stopped,
             "termination": result.termination,
             "algorithm": method,
             "iterations": result.iterations,
@@ -1273,7 +1529,7 @@ impl Analysis for Optimize {
             "history": history,
             "backend": ev.report,
             "merit_spec": spec,
-            "system": final_system,
+            "system": final_system.system(),
             "system_hash": hash,
         });
         let mut flat = Vec::with_capacity(history.len() * 4);
@@ -1389,6 +1645,136 @@ impl Analysis for Tolerance {
         })
     }
 
+    fn gpu_path(&self) -> bool {
+        true
+    }
+
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        result(
+            &[
+                (
+                    "status",
+                    enumeration(&["complete", "stopped", "cancelled"], ""),
+                ),
+                (
+                    "stopped",
+                    boolean("Stop requested; completed sensitivity operands/trials retained."),
+                ),
+                (
+                    "sensitivity",
+                    nullable(obj(&[
+                        (
+                            "nominal",
+                            obj(&[
+                                ("criterion", nf()),
+                                ("ok", boolean("")),
+                                ("compensators", arr(nf(), "Parameter values.")),
+                            ]),
+                        ),
+                        (
+                            "operands",
+                            arr(
+                                obj(&[
+                                    ("index", int("Tolerance index.")),
+                                    ("label", string("")),
+                                    ("param", opaque("ParamPath.")),
+                                    ("minus", nf()),
+                                    ("plus", nf()),
+                                    ("criterion_minus", nf()),
+                                    ("criterion_plus", nf()),
+                                    (
+                                        "change_minus",
+                                        nf_u("criterion", "criterion_minus - nominal."),
+                                    ),
+                                    (
+                                        "change_plus",
+                                        nf_u("criterion", "criterion_plus - nominal."),
+                                    ),
+                                    (
+                                        "worst",
+                                        nf_u(
+                                            "criterion",
+                                            "Largest absolute criterion change at either limit.",
+                                        ),
+                                    ),
+                                    ("ok", boolean("Both limits evaluated successfully.")),
+                                    ("compensators_minus", arr(nf(), "")),
+                                    ("compensators_plus", arr(nf(), "")),
+                                ]),
+                                "Completed operands in declaration order.",
+                            ),
+                        ),
+                        ("ranking", arr(int("Tolerance index."), "Worst first.")),
+                        (
+                            "rss_change",
+                            nf_u("criterion", "Root sum of squared worst changes."),
+                        ),
+                        (
+                            "predicted_criterion",
+                            nf_u("criterion", "Nominal + rss_change."),
+                        ),
+                        ("evaluations", int("")),
+                        (
+                            "cancelled",
+                            boolean("Partial sensitivity after interruption."),
+                        ),
+                    ])),
+                ),
+                (
+                    "monte_carlo",
+                    nullable(obj(&[
+                        ("trials", int("Completed trials.")),
+                        ("failures", int("")),
+                        ("seed", int("Philox seed.")),
+                        ("mean", nf()),
+                        ("std_dev", nf()),
+                        ("min", nf()),
+                        ("max", nf()),
+                        (
+                            "percentiles",
+                            arr(obj(&[("percentile", num("%", "")), ("value", nf())]), ""),
+                        ),
+                        (
+                            "yield_fraction",
+                            nf_u(
+                                "",
+                                "Fraction at or below threshold; null without threshold.",
+                            ),
+                        ),
+                        ("threshold", nf()),
+                        ("compensator_mean", arr(nf(), "")),
+                        ("compensator_std", arr(nf(), "")),
+                        (
+                            "cancelled",
+                            boolean("Statistics of completed trials after interruption."),
+                        ),
+                        (
+                            "criteria",
+                            arr(nf(), "Criterion per trial; inf for failed trials."),
+                        ),
+                    ])),
+                ),
+                (
+                    "compensators",
+                    arr(
+                        opaque("Compensator: param, range, scale."),
+                        "Model parameter units.",
+                    ),
+                ),
+                ("criterion_spec", opaque("Effective MeritFunctionSpec.")),
+                ("backend", evaluation_backend_schema()),
+            ],
+            vec![buffer(
+                "monte_carlo_criteria",
+                "f64",
+                &["trials"],
+                "criterion",
+                "Per completed Monte-Carlo trial; inf for failures. Absent without Monte Carlo.",
+            )],
+        )
+    }
+
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -1396,7 +1782,7 @@ impl Analysis for Tolerance {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: ToleranceSettings = parse(settings, "settings")?;
-        let stop = StopRequest::register(s.stop_key.as_deref())?;
+        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
         let system = input.snapshot.system().clone();
         // Every parameter must exist on the nominal system (a missing one
         // would fail every trial).
@@ -1470,7 +1856,7 @@ impl Analysis for Tolerance {
             batch,
         );
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         ctx.check()?;
         let split = if do_sens && do_mc {
             0.2
@@ -1527,7 +1913,7 @@ impl Analysis for Tolerance {
             Some(Err(MkError::Cancelled)) | None => None,
             Some(Err(e)) => return Err(e.into()),
         };
-        ev.finish(s.backend, None);
+        ev.finish(input, s.backend, None, ctx)?;
         let status = match why {
             Interrupt::None => "complete",
             Interrupt::Stopped => "stopped",
@@ -1589,6 +1975,7 @@ impl Analysis for Tolerance {
         });
         let json = json!({
             "status": status,
+            "stopped": why == Interrupt::Stopped,
             "sensitivity": sens_json,
             "monte_carlo": mc_json,
             "compensators": spec.compensators,
@@ -1663,7 +2050,7 @@ impl<E: OperandEvaluator> ToleranceRunner for Runner<'_, E> {
 mod tests {
     use super::*;
     use crate::analysis::{AnalysisResult, prepare, run_analysis};
-    use crate::backend::BackendInfo;
+    use crate::backend::{BackendInfo, DeviceHandle};
     use crate::engine::{Engine, EngineConfig};
     use crate::scheduler::JobState;
     use crate::session::AnalysisRequest;
@@ -1671,6 +2058,7 @@ mod tests {
     use mklight_core::model::{ApertureSpec, SurfaceShape};
     use mklight_core::param::ParamPath;
     use mklight_core::{SurfaceId, samples};
+    use mklight_gpu::{ComputeBackend, CpuF32Backend};
     use mklight_optim::merit::operand::OperandKind;
     use std::time::Instant;
 
@@ -1925,37 +2313,48 @@ mod tests {
         assert!(m1 < m0, "{m0} -> {m1}");
         serde_json::from_value::<OpticalSystem>(j["system"].clone()).unwrap();
 
-        // Through the scheduler with a stop key.
-        assert!(!request_stop("no-such-job"));
-        let engine = Engine::new(EngineConfig {
-            worker_threads: 1,
-            ..Default::default()
-        });
-        let mut session = engine.new_session();
-        session.set_system(samples::cooke_triplet()).unwrap();
-        s["stop_key"] = json!("test-stop-triplet");
-        let job = session
-            .submit_analysis(&AnalysisRequest::new("optimize", s))
-            .unwrap();
-        let t = Instant::now();
-        loop {
-            let st = engine.job_status(job).unwrap();
-            if st.stage.starts_with("lm 2") || st.state.is_terminal() {
-                break;
+        // The legacy key and the job-level stop both retain the best point.
+        for keyed in [true, false] {
+            assert!(!request_stop("no-such-job"));
+            let engine = Engine::new(EngineConfig {
+                worker_threads: 1,
+                ..Default::default()
+            });
+            let mut session = engine.new_session();
+            session.set_system(samples::cooke_triplet()).unwrap();
+            s["stop_key"] = if keyed {
+                json!("test-stop-triplet")
+            } else {
+                Value::Null
+            };
+            let job = session
+                .submit_analysis(&AnalysisRequest::new("optimize", s.clone()))
+                .unwrap();
+            let t = Instant::now();
+            loop {
+                let st = engine.job_status(job).unwrap();
+                if st.stage.starts_with("lm 2") || st.state.is_terminal() {
+                    break;
+                }
+                assert!(t.elapsed() < Duration::from_secs(600));
+                std::thread::sleep(Duration::from_millis(1));
             }
-            assert!(t.elapsed() < Duration::from_secs(600));
-            std::thread::sleep(Duration::from_millis(1));
+            if keyed {
+                assert!(request_stop("test-stop-triplet"));
+            } else {
+                engine.stop_job(job).unwrap();
+            }
+            assert_eq!(engine.wait_job(job, LONG).unwrap(), JobState::Done);
+            let r = engine.take_result(job).unwrap();
+            assert_eq!(r.json["status"], json!("stopped"));
+            assert_eq!(r.json["stopped"], true);
+            assert!(r.json["iterations"].as_u64().unwrap() < 200);
+            assert!(f(&r.json["final"]["merit"]) < f(&r.json["start"]["merit"]));
+            assert!(
+                !request_stop("test-stop-triplet"),
+                "unregistered after the run"
+            );
         }
-        assert!(request_stop("test-stop-triplet"));
-        assert_eq!(engine.wait_job(job, LONG).unwrap(), JobState::Done);
-        let r = engine.take_result(job).unwrap();
-        assert_eq!(r.json["status"], json!("stopped"));
-        assert!(r.json["iterations"].as_u64().unwrap() < 200);
-        assert!(f(&r.json["final"]["merit"]) < f(&r.json["start"]["merit"]));
-        assert!(
-            !request_stop("test-stop-triplet"),
-            "unregistered after the run"
-        );
     }
 
     /// Sensitivity and Monte Carlo on the Cooke triplet with a back-focus
@@ -2015,9 +2414,14 @@ mod tests {
     /// the CPU reference, qualification in the result.
     #[test]
     fn optimize_on_gpu_backends() {
-        // The engine hands GPU analyses their device as an
-        // `Arc<dyn ComputeBackend>` inside the `DeviceHandle`.
-        let handle = |b: Arc<dyn ComputeBackend>| -> DeviceHandle { Arc::new(b) };
+        let handle = |b: Arc<dyn ComputeBackend>| -> DeviceHandle {
+            let id = if b.info().backend_id().starts_with("metal:") {
+                "gpu:metal"
+            } else {
+                "gpu:cpu_f32"
+            };
+            Arc::new(GpuDevice::new(id, b))
+        };
         let emulation = handle(Arc::new(CpuF32Backend::new()));
         let metal = mklight_metal::MetalBackend::new()
             .ok()
@@ -2026,7 +2430,10 @@ mod tests {
         if metal.is_none() {
             eprintln!("SKIP (Metal part): no GPU device");
         }
-        let mut cases = vec![("gpu_emulation", None), ("gpu", Some(emulation.clone()))];
+        let mut cases = vec![
+            ("gpu_emulation", Some(emulation.clone())),
+            ("gpu", Some(emulation.clone())),
+        ];
         if let Some(m) = metal {
             cases.push(("gpu", Some(m)));
         }
@@ -2037,7 +2444,8 @@ mod tests {
             let reg = AnalysisRegistry::with_builtin();
             let a = reg.get("optimize").unwrap();
             let is_metal = device.as_ref().is_some_and(|d| {
-                device_backend(d).is_some_and(|b| b.info().backend_id().starts_with("metal:"))
+                d.downcast_ref::<GpuDevice>()
+                    .is_some_and(|g| g.id == "gpu:metal")
             });
             let inp = input(samples::cooke_triplet()).with_device(device);
             let r = run_analysis(a.as_ref(), &inp, &s, vec![], &JobContext::new()).unwrap();
@@ -2070,7 +2478,9 @@ mod tests {
         let auto = |s: Value| {
             let reg = AnalysisRegistry::with_builtin();
             let a = reg.get("optimize").unwrap();
-            let inp = input(samples::cooke_triplet()).with_device(Some(emulation.clone()));
+            let inp = input(samples::cooke_triplet())
+                .with_device(Some(emulation.clone()))
+                .with_selection("auto", None);
             run_analysis(a.as_ref(), &inp, &s, vec![], &JobContext::new()).unwrap()
         };
         let mut s = unconstrained_triplet();
@@ -2248,7 +2658,7 @@ mod tests {
             }
         }
         // A second job may not take a running job's stop key.
-        let held = StopRequest::register(Some("test-key-in-use")).unwrap();
+        let held = StopRequest::register(Some("test-key-in-use"), CancelToken::new()).unwrap();
         for (name, s) in [
             (
                 "optimize",
