@@ -176,5 +176,8 @@ for `n = 64`).
   point; a tangent-plane frame would need the surface normal at `P`.
 * The rim polygon is inscribed between bisected boundary points (area
   deficit `≈ 2π²/(3N²)` for `N` vertices, 1.6e-4 at `rays = 65`).
+* `mtf_vs_field` sweeps normalised field points without the system
+  fields' vignetting factors (the traced rim still models real
+  vignetting).
 * Polarisation (vector pupils from `mklight_trace::vector_pupil`) and GPU
   pupil tracing are not wired in; the link is CPU f64.

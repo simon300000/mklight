@@ -815,9 +815,7 @@ pub fn trace_pupil(
             .iter()
             .map(|r| r.as_ref().map_or(0.0, |r| r.throughput.max(0.0).sqrt()))
             .collect(),
-        AmplitudeModel::Radiometric => {
-            radiometric_amplitudes(tracer, field, &lat, &rays, &placed, sin_max)
-        }
+        AmplitudeModel::Radiometric => radiometric_amplitudes(field, &lat, &rays, &placed, sin_max),
     };
     let centre_node = (side / 2) * side + side / 2;
     let norm = if side % 2 == 1 && placed[centre_node].is_some() && amp[centre_node] > 0.0 {
@@ -948,7 +946,6 @@ fn v3(v: Vec3) -> [f64; 3] {
 /// `√(T·m·γ/J)` per lattice node (module docs), from central (or
 /// one-sided) differences between neighbouring surviving rays.
 fn radiometric_amplitudes(
-    tracer: &SequentialTracer,
     field: &PreparedField,
     lat: &Lattice,
     rays: &[Option<NodeRay>],
@@ -967,7 +964,6 @@ fn radiometric_amplitudes(
         }
         ObjectSource::Point { .. } => (Vec3::X, Vec3::Y, false),
     };
-    let _ = tracer;
     let obj = |r: &NodeRay| -> [f64; 2] {
         if at_inf {
             [r.start.pos.dot(e1), r.start.pos.dot(e2)]

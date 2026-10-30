@@ -521,8 +521,7 @@ pub fn through_focus_mtf_analysis_job(
             r
         }
         None => {
-            let (wl, _, p) = &first.pupils[0];
-            let _ = wl;
+            let p = &first.pupils[0].2;
             let n = p.pupil.geometry().working_f_number();
             4.0 * p.pupil.wavelength_um() * 1e-3 * n * n
         }
