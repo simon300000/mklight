@@ -29,9 +29,12 @@
 //! the alternation rule above, a surface range, exclusions and a minimum
 //! normal-incidence reflectance product. Products only decrease as
 //! reflections are added, so the search prunes on the product. All
-//! two-reflection paths that pass the filters are kept; higher orders are
-//! ranked by reflectance product and cut to a budget. The output order is
-//! canonical (by order, then lexicographic) and deterministic.
+//! two-reflection paths that pass the filters are kept; higher orders
+//! compete for `max_higher_order_paths` slots in a bounded heap under the
+//! total order (product descending, then path), and once it is full a
+//! branch below the weakest kept product is pruned. The kept set is the top
+//! of that order whatever the search order. The output order is canonical
+//! (by order, then lexicographic) and deterministic.
 
 use std::collections::{BTreeSet, BinaryHeap};
 
