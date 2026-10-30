@@ -1,60 +1,84 @@
-import AppKit
 import SwiftUI
 
-/// Colours for wavelengths, fields and the PSF heat map. Display only.
+/// Data colours for plots and the viewport. Display only.
+///
+/// Series use a fixed, validated categorical order (light and dark steps of
+/// the same eight hues; adjacent pairs pass the colour-vision checks), never
+/// cycled hues. Wavelengths keep their physical meaning: each maps to the
+/// categorical slot nearest its spectral colour, so F is blue, d is aqua and
+/// C is red everywhere in the app. Magnitude maps use one hue (blue), light
+/// to dark; signed maps (OPD) use blue ↔ neutral ↔ red.
 public enum Palette {
-    /// Approximate perceived colour of a wavelength (µm). Visible wavelengths
-    /// follow the spectrum; UV and IR get distinct fallback hues.
-    public static func wavelengthRGB(_ um: Double) -> SIMD3<Double> {
-        let nm = um * 1000
-        if nm < 380 { return SIMD3(0.55, 0.25, 0.85) }
-        if nm > 780 { return SIMD3(0.55, 0.12, 0.10) }
-        var r = 0.0, g = 0.0, b = 0.0
-        switch nm {
-        case ..<440: (r, g, b) = (-(nm - 440) / 60, 0, 1)
-        case ..<490: (r, g, b) = (0, (nm - 440) / 50, 1)
-        case ..<510: (r, g, b) = (0, 1, -(nm - 510) / 20)
-        case ..<580: (r, g, b) = ((nm - 510) / 70, 1, 0)
-        case ..<645: (r, g, b) = (1, -(nm - 645) / 65, 0)
-        default: (r, g, b) = (1, 0, 0)
+    /// Categorical slots: blue, orange, aqua, yellow, magenta, green, violet, red.
+    static let lightSlots: [UInt32] = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x6250d6, 0xe34948]
+    static let darkSlots: [UInt32] = [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767]
+
+    static func rgb(_ hex: UInt32) -> SIMD3<Double> {
+        SIMD3(Double((hex >> 16) & 0xff), Double((hex >> 8) & 0xff), Double(hex & 0xff)) / 255
+    }
+
+    static func color(_ c: SIMD3<Double>) -> Color { Color(.sRGB, red: c.x, green: c.y, blue: c.z) }
+
+    /// Categorical slot `i` (clamped into the eight; callers fold more
+    /// series into small multiples).
+    public static func slotRGB(_ i: Int, dark: Bool) -> SIMD3<Double> {
+        let slots = dark ? darkSlots : lightSlots
+        return rgb(slots[min(max(i, 0), slots.count - 1)])
+    }
+
+    /// Field `i`'s colour (fields take the slots in order).
+    public static func fieldRGB(_ i: Int, dark: Bool) -> SIMD3<Double> { slotRGB(i % 8, dark: dark) }
+
+    public static func fieldColor(_ i: Int) -> Color { dynamic { fieldRGB(i, dark: $0) } }
+
+    /// The slot nearest the wavelength's spectral colour: violet, blue,
+    /// aqua, green, yellow, orange, red; infrared and ultraviolet take red
+    /// and violet.
+    static func wavelengthSlot(_ um: Double) -> Int {
+        switch um * 1000 {
+        case ..<450: 6  // violet (g line and below)
+        case ..<500: 0  // blue (F, F')
+        case ..<540: 2  // aqua
+        case ..<565: 5  // green (e)
+        case ..<600: 3  // yellow (d)
+        case ..<630: 1  // orange
+        default: 7  // red (C, C') and the infrared
         }
-        // Darken towards the ends of the visible range and keep yellows readable.
-        let edge: Double = nm < 420 ? 0.3 + 0.7 * (nm - 380) / 40 : (nm > 700 ? 0.3 + 0.7 * (780 - nm) / 80 : 1)
-        let v = SIMD3(r, g, b) * edge
-        return v * (g > 0.8 && r > 0.6 ? 0.82 : 1)
     }
 
-    public static func wavelengthColor(_ um: Double) -> Color {
-        let c = wavelengthRGB(um)
-        return Color(.sRGB, red: c.x, green: c.y, blue: c.z)
+    public static func wavelengthRGB(_ um: Double, dark: Bool) -> SIMD3<Double> {
+        slotRGB(wavelengthSlot(um), dark: dark)
     }
 
-    /// Categorical colours for fields (distinguishable, colour-blind aware).
-    static let fieldRGB: [SIMD3<Double>] = [
-        SIMD3(0.00, 0.45, 0.70), SIMD3(0.00, 0.62, 0.45), SIMD3(0.84, 0.37, 0.00),
-        SIMD3(0.80, 0.47, 0.65), SIMD3(0.35, 0.70, 0.90), SIMD3(0.90, 0.62, 0.00),
-        SIMD3(0.40, 0.40, 0.40), SIMD3(0.60, 0.30, 0.20),
-    ]
+    public static func wavelengthColor(_ um: Double) -> Color { dynamic { wavelengthRGB(um, dark: $0) } }
 
-    public static func fieldRGBValue(_ i: Int) -> SIMD3<Double> { fieldRGB[((i % fieldRGB.count) + fieldRGB.count) % fieldRGB.count] }
+    /// Sequential blue ramp, steps 100…700.
+    static let blueRamp: [UInt32] = [0xcde2fb, 0x9ec5f4, 0x6da7ec, 0x3987e5, 0x256abf, 0x184f95, 0x0d366b]
 
-    public static func fieldColor(_ i: Int) -> Color {
-        let c = fieldRGBValue(i)
-        return Color(.sRGB, red: c.x, green: c.y, blue: c.z)
+    /// Magnitude `t` in 0…1: near zero recedes into the plot surface.
+    public static func sequential(_ t: Double, dark: Bool) -> SIMD3<Double> {
+        let surface = dark ? rgb(0x1a1a19) : rgb(0xfcfcfb)
+        let stops = [surface] + (dark ? blueRamp.reversed().map(rgb) : blueRamp.map(rgb))
+        return interpolate(stops, t)
     }
 
-    /// Perceptually uniform heat-map colour for `t` in 0…1 (viridis control
-    /// points, linearly interpolated).
-    public static func heat(_ t: Double) -> SIMD3<Double> {
-        let stops: [SIMD3<Double>] = [
-            SIMD3(0.267, 0.005, 0.329), SIMD3(0.283, 0.141, 0.458), SIMD3(0.254, 0.265, 0.530),
-            SIMD3(0.207, 0.372, 0.553), SIMD3(0.164, 0.471, 0.558), SIMD3(0.128, 0.567, 0.551),
-            SIMD3(0.135, 0.659, 0.518), SIMD3(0.267, 0.749, 0.441), SIMD3(0.478, 0.821, 0.318),
-            SIMD3(0.741, 0.873, 0.150), SIMD3(0.993, 0.906, 0.144),
-        ]
+    /// Signed value `t` in −1…1: blue (negative) ↔ neutral ↔ red (positive).
+    public static func diverging(_ t: Double, dark: Bool) -> SIMD3<Double> {
+        let mid = dark ? rgb(0x383835) : rgb(0xf0efec)
+        let blue = dark ? [0x3987e5, 0x184f95].map(rgb) : [0x6da7ec, 0x184f95].map(rgb)
+        let red = dark ? [0xe66767, 0x9b2a29].map(rgb) : [0xee8f8e, 0xa52b2a].map(rgb)
+        let x = t.isFinite ? min(max(t, -1), 1) : 0
+        return x < 0 ? interpolate([mid] + blue, -x) : interpolate([mid] + red, x)
+    }
+
+    static func interpolate(_ stops: [SIMD3<Double>], _ t: Double) -> SIMD3<Double> {
         let x = (t.isFinite ? min(max(t, 0), 1) : 0) * Double(stops.count - 1)
         let i = min(Int(x), stops.count - 2)
-        let f = x - Double(i)
-        return stops[i] + (stops[i + 1] - stops[i]) * f
+        return stops[i] + (stops[i + 1] - stops[i]) * (x - Double(i))
+    }
+
+    /// A colour that follows the light or dark appearance.
+    static func dynamic(_ f: @escaping @Sendable (Bool) -> SIMD3<Double>) -> Color {
+        PlatformColor.dynamic(light: f(false), dark: f(true))
     }
 }
