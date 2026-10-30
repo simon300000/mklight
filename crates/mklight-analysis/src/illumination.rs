@@ -76,14 +76,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::{
     FieldSelection, PupilPattern, WavelengthSelection, check_count, field_scale, field_unit,
-    gauss_legendre_01, linspace, m2, nf, pupil_points, run_info, wavelength_or_primary,
+    gauss_legendre_01, m2, nf, pupil_points, run_info, wavelength_or_primary,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RelativeIlluminationSettings {
-    /// Field samples from the axis to the maximum field along `+y`.
+    /// Samples per selected field axis (signed where symmetry requires it).
     pub field_samples: usize,
+    pub field_axes: crate::util::FieldAxes,
     /// System wavelength index; the primary when `None`.
     pub wavelength: Option<usize>,
     /// Gauss–Legendre nodes in the pupil radius.
@@ -96,6 +97,7 @@ impl Default for RelativeIlluminationSettings {
     fn default() -> Self {
         RelativeIlluminationSettings {
             field_samples: 11,
+            field_axes: Default::default(),
             wavelength: None,
             radial_samples: 12,
             azimuth_samples: 48,
@@ -105,6 +107,7 @@ impl Default for RelativeIlluminationSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RelativeIlluminationResult {
+    pub field_coordinates: Vec<[f64; 2]>,
     pub field_values: Vec<f64>,
     pub normalized_field: Vec<f64>,
     pub field_unit: String,
@@ -166,9 +169,12 @@ impl Probe<'_> {
                 dir: Vec3::new(q[0], q[1], 1.0).normalized(),
             }
         } else {
-            let z = self.rt.system().surfaces[0]
-                .shape
-                .sag(q[0].mul_add(q[0], q[1] * q[1]))?;
+            let z = mklight_core::surface_math::evaluate(
+                &self.rt.system().surfaces[0].shape,
+                q[0],
+                q[1],
+            )?
+            .sag;
             ObjectSource::Point {
                 point: Vec3::new(q[0], q[1], z),
             }
@@ -293,7 +299,8 @@ fn integrate_field(
     wl: usize,
     nodes: &[(f64, f64, f64)],
     q_scale: f64,
-) -> Option<([f64; 4], usize)> {
+    ctx: &JobContext,
+) -> MkResult<Option<([f64; 4], usize)>> {
     let sys = rt.system();
     let img = sys.image_index();
     let mut rec = Vec::with_capacity(sys.num_surfaces());
@@ -306,7 +313,7 @@ fn integrate_field(
         Some(&mut rec),
     );
     if !chief.status.is_ok() || rec.len() != img + 1 {
-        return None;
+        return Ok(None);
     }
     let nrm = rec[img].normal;
     let mut t1 = Vec3::X - nrm * nrm.x;
@@ -324,15 +331,20 @@ fn integrate_field(
         hq: 1e-5 * q_scale,
     };
     let q0 = source_params(&field.source);
-    let j0inv = probe.x_q_inverse(q0, [0.0, 0.0])?;
+    let Some(j0inv) = probe.x_q_inverse(q0, [0.0, 0.0]) else {
+        return Ok(None);
+    };
     let parts: Vec<(f64, f64, bool)> = nodes
         .par_iter()
-        .map(|&(px, py, w)| match probe.node(q0, &j0inv, [px, py]) {
-            Node::Ok(j) => (w * j, w, false),
-            Node::Vignetted => (0.0, 0.0, false),
-            Node::Failed => (0.0, 0.0, true),
+        .map(|&(px, py, w)| {
+            ctx.check()?;
+            Ok(match probe.node(q0, &j0inv, [px, py]) {
+                Node::Ok(j) => (w * j, w, false),
+                Node::Vignetted => (0.0, 0.0, false),
+                Node::Failed => (0.0, 0.0, true),
+            })
         })
-        .collect();
+        .collect::<MkResult<_>>()?;
     let omega: KahanSum = parts.iter().map(|p| p.0).collect();
     let area: KahanSum = parts.iter().map(|p| p.1).collect();
     let total: KahanSum = nodes.iter().map(|n| n.2).collect();
@@ -348,10 +360,10 @@ fn integrate_field(
         }
         Err(_) => f64::NAN,
     };
-    Some((
+    Ok(Some((
         [omega.value(), area.value() / total.value(), cra, cos4],
         failed,
-    ))
+    )))
 }
 
 /// Relative illumination and vignetting vs field (module docs).
@@ -368,6 +380,7 @@ pub fn relative_illumination_job(
     settings: &RelativeIlluminationSettings,
     ctx: &JobContext,
 ) -> MkResult<RelativeIlluminationResult> {
+    ctx.check()?;
     let timer = RunTimer::start();
     check_count("field samples", settings.field_samples, 2, 10_001)?;
     check_count("radial samples", settings.radial_samples, 1, 512)?;
@@ -396,7 +409,8 @@ pub fn relative_illumination_job(
             nodes.push((r * c, r * s, w * r * dphi));
         }
     }
-    let hs = linspace(0.0, 1.0, settings.field_samples);
+    let sweep = crate::util::field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let hs = &sweep.heights;
     let mut rows = Vec::with_capacity(hs.len());
     let mut warnings = Vec::new();
     ctx.report(0.0, "relative illumination");
@@ -409,36 +423,44 @@ pub fn relative_illumination_job(
         })
         .unwrap_or(0.0)
         .max(1e-3);
-    for (k, &h) in hs.iter().enumerate() {
+    for k in 0..hs.len() {
         ctx.check()?;
-        let row = match rt.prepare_field(FieldPoint::normalized(0.0, h)) {
-            Ok(f) if f.aims[wl].converged => match integrate_field(rt, &f, wl, &nodes, q_scale) {
-                Some((row, failed)) => {
-                    if failed > 0 {
-                        warnings.push(format!(
-                            "field Hy = {h}: {failed} of {} pupil nodes have no ray \
+        let [hx, hy] = sweep.coordinates[k];
+        let row = match rt.prepare_field(FieldPoint::normalized(hx, hy)) {
+            Ok(f) if f.aims[wl].converged => {
+                match integrate_field(rt, &f, wl, &nodes, q_scale, ctx)? {
+                    Some((row, failed)) => {
+                        if failed > 0 {
+                            warnings.push(format!(
+                                "field ({hx}, {hy}): {failed} of {} pupil nodes have no ray \
                                  through the image point",
-                            nodes.len()
-                        ));
+                                nodes.len()
+                            ));
+                        }
+                        row
                     }
-                    row
+                    None => {
+                        warnings.push(format!(
+                            "field ({hx}, {hy}): chief ray or its object Jacobian failed"
+                        ));
+                        [f64::NAN; 4]
+                    }
                 }
-                None => {
-                    warnings.push(format!(
-                        "field Hy = {h}: chief ray or its object Jacobian failed"
-                    ));
-                    [f64::NAN; 4]
-                }
-            },
+            }
             _ => {
-                warnings.push(format!("field Hy = {h}: chief ray could not be aimed"));
+                warnings.push(format!("field ({hx}, {hy}): chief ray could not be aimed"));
                 [f64::NAN; 4]
             }
         };
         rows.push(row);
         ctx.report((k + 1) as f64 / hs.len() as f64, "relative illumination");
     }
-    let omega0 = rows[0][0];
+    let omega0 = if let Some(k) = sweep.coordinates.iter().position(|p| *p == [0.0; 2]) {
+        rows[k][0]
+    } else {
+        let on_axis = rt.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
+        integrate_field(rt, &on_axis, wl, &nodes, q_scale, ctx)?.map_or(f64::NAN, |(row, _)| row[0])
+    };
     if !(omega0 > 0.0) {
         return Err(MkError::Numerical(
             "on-axis beam has no projected solid angle".into(),
@@ -448,7 +470,8 @@ pub fn relative_illumination_job(
     Ok(RelativeIlluminationResult {
         field_values: hs.iter().map(|h| h * scale).collect(),
         field_unit: field_unit(tracer.system().system().fields.kind).to_string(),
-        normalized_field: hs,
+        normalized_field: hs.clone(),
+        field_coordinates: sweep.coordinates,
         wavelength: wl,
         relative_illumination: rows.iter().map(|r| r[0] / omega0).collect(),
         projected_solid_angle: rows.iter().map(|r| r[0]).collect(),
@@ -511,6 +534,7 @@ pub struct FootprintRays {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FootprintResult {
+    pub field_values: Vec<[f64; 2]>,
     pub surface: usize,
     /// Clear semi-diameter of the surface (fixed, stop or traced, mm).
     pub semi_diameter: f64,
@@ -539,6 +563,8 @@ pub fn footprint_job(
     settings: &FootprintSettings,
     ctx: &JobContext,
 ) -> MkResult<FootprintResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     let sys = tracer.system();
     let s = settings.surface;
@@ -618,6 +644,9 @@ pub fn footprint_job(
     )
     .then_some(settings.seed);
     Ok(FootprintResult {
+        field_values: (0..tracer.fields().len())
+            .map(|i| crate::util::field_value(tracer, i))
+            .collect(),
         surface: s,
         semi_diameter: sd.values[s],
         aperture: sys.surfaces[s].aperture.clone(),

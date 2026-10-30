@@ -274,6 +274,16 @@ impl SequentialTracer {
     pub fn field(&self, i: usize) -> &PreparedField {
         &self.fields[i]
     }
+    /// Append analysis-local fields without changing the physical snapshot.
+    /// Existing field indices keep their meaning; new ones follow them.
+    pub fn with_additional_fields(&self, points: &[FieldPoint]) -> MkResult<Self> {
+        let mut tracer = self.clone();
+        for &point in points {
+            tracer.fields.push(self.prepare_field(point)?);
+        }
+        Ok(tracer)
+    }
+
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }

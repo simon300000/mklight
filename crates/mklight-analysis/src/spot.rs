@@ -553,6 +553,8 @@ pub fn spot_diagram_job(
     settings: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     let sys = tracer.system();
     validate_spot_settings(settings)?;

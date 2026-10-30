@@ -128,6 +128,104 @@ impl FieldSelection {
     }
 }
 
+/// Prepare missing axis fields for an automatic selection. These have
+/// analysis-local indices after the system fields and retain the snapshot.
+pub fn default_fields<'a>(
+    tracer: &'a SequentialTracer,
+    selection: &FieldSelection,
+) -> MkResult<std::borrow::Cow<'a, SequentialTracer>> {
+    use mklight_core::surface_math::{Symmetry, system_symmetry};
+    let symmetry = system_symmetry(tracer.system().system());
+    if *selection != FieldSelection::All || symmetry == Symmetry::Rotational {
+        return Ok(std::borrow::Cow::Borrowed(tracer));
+    }
+    let mut points = Vec::new();
+    let candidates: &[[f64; 2]] = if symmetry == Symmetry::None {
+        &[[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+    } else {
+        &[[1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+    };
+    for &[hx, hy] in candidates {
+        if !tracer
+            .fields()
+            .iter()
+            .any(|f| f.point.hx == hx && f.point.hy == hy)
+        {
+            points.push(mklight_trace::FieldPoint::normalized(hx, hy));
+        }
+    }
+    if points.is_empty() {
+        Ok(std::borrow::Cow::Borrowed(tracer))
+    } else {
+        Ok(std::borrow::Cow::Owned(
+            tracer.with_additional_fields(&points)?,
+        ))
+    }
+}
+
+/// Axis sweeps for scalar field curves. Auto covers both axes outside
+/// rotational symmetry; only x-reflection permits a positive-x shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldAxes {
+    #[default]
+    Auto,
+    X,
+    Y,
+    Both,
+}
+
+impl FieldAxes {
+    pub(crate) fn components(self, tracer: &SequentialTracer) -> &'static [usize] {
+        use mklight_core::surface_math::{Symmetry, system_symmetry};
+        match self {
+            Self::X => &[0],
+            Self::Y => &[1],
+            Self::Both => &[1, 0],
+            Self::Auto if system_symmetry(tracer.system().system()) == Symmetry::Rotational => &[1],
+            Self::Auto => &[1, 0],
+        }
+    }
+}
+
+pub(crate) struct FieldSweep {
+    pub heights: Vec<f64>,
+    pub coordinates: Vec<[f64; 2]>,
+    pub components: Vec<usize>,
+}
+pub(crate) fn field_sweep(
+    tracer: &SequentialTracer,
+    samples: usize,
+    axes: FieldAxes,
+) -> FieldSweep {
+    use mklight_core::surface_math::{Symmetry, system_symmetry};
+    let symmetry = system_symmetry(tracer.system().system());
+    let components = axes.components(tracer);
+    let mut sweep = FieldSweep {
+        heights: Vec::new(),
+        coordinates: Vec::new(),
+        components: Vec::new(),
+    };
+    for &component in components {
+        let lo = if symmetry == Symmetry::Rotational
+            || (symmetry == Symmetry::Meridional && component == 0)
+        {
+            0.0
+        } else {
+            -1.0
+        };
+        let hs = linspace(lo, 1.0, samples);
+        for &h in &hs {
+            let mut xy = [0.0; 2];
+            xy[component] = h;
+            sweep.heights.push(h);
+            sweep.coordinates.push(xy);
+            sweep.components.push(component);
+        }
+    }
+    sweep
+}
+
 /// Which system wavelengths an analysis covers. JSON: `{"type": "all"}`,
 /// `{"type": "primary"}`, `{"type": "index", "index": 0}` or
 /// `{"type": "list", "indices": [...]}`.
@@ -198,8 +296,13 @@ pub fn field_unit(kind: FieldKind) -> &'static str {
 
 /// Field value `(x, y)` of system field `i`, in the system's field units.
 pub(crate) fn field_value(tracer: &SequentialTracer, i: usize) -> [f64; 2] {
-    let f = &tracer.system().system().fields.fields[i];
-    [f.x, f.y]
+    if let Some(f) = tracer.system().system().fields.fields.get(i) {
+        [f.x, f.y]
+    } else {
+        let f = tracer.field(i).point;
+        let scale = field_scale(tracer);
+        [f.hx * scale, f.hy * scale]
+    }
 }
 
 /// Physical field value (system field units) of normalised field `h`.
@@ -218,15 +321,21 @@ pub(crate) fn paraxial_image_point(
     wl: usize,
 ) -> Option<[f64; 2]> {
     let fo = tracer.paraxial().at(wl);
+    let fx = mklight_trace::paraxial::first_order_axis(
+        tracer.system(),
+        wl,
+        mklight_trace::ParaxialAxis::X,
+    )
+    .ok()?;
     match field.source {
         ObjectSource::Direction { dir } => {
-            let k = fo.image_height_per_tan?;
-            (dir.z != 0.0).then(|| [k * dir.x / dir.z, k * dir.y / dir.z])
+            let (kx, ky) = (fx.image_height_per_tan?, fo.image_height_per_tan?);
+            (dir.z != 0.0).then(|| [kx * dir.x / dir.z, ky * dir.y / dir.z])
         }
-        ObjectSource::Point { point } => {
-            let k = fo.image_height_per_object_height?;
-            Some([k * point.x, k * point.y])
-        }
+        ObjectSource::Point { point } => Some([
+            fx.image_height_per_object_height? * point.x,
+            fo.image_height_per_object_height? * point.y,
+        ]),
     }
 }
 

@@ -31,6 +31,12 @@
 //! without aberration and contribute nothing; planes contribute only through
 //! `Δ(u/n)` and `Δ(1/n²)` terms.
 //!
+//! Extended rotational sag bases use their exact r⁴ expansion (ANALYSIS §2.3).
+//! Odd r¹/r³ terms are omitted with a warning. DOE contributions use the
+//! algebraic infinite-index thin-plate limit, including phase dispersion;
+//! its power adds no Petzval curvature. Non-rotational systems return
+//! `NotApplicable` and undefined coefficients, with real-ray guidance.
+//!
 //! The **Petzval sum** is `P = Σ φ/(n n')` with `φ = c (n' − n)`
 //! (`S_IV = H² P` summed), and the Petzval surface has radius
 //! `R_p = −1/(n'_k P)` in the image surface's local `z` sense, with the
@@ -175,8 +181,17 @@ impl WavefrontCoefficients {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeidelStatus {
+    Applicable,
+    NotApplicable,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SeidelResult {
+    pub status: SeidelStatus,
+    pub reason: Option<String>,
     pub wavelength: usize,
     pub wavelength_um: f64,
     pub short_wavelength: usize,
@@ -185,13 +200,16 @@ pub struct SeidelResult {
     pub surfaces: Vec<SurfaceSeidel>,
     pub sums: SeidelTerms,
     /// `H = n(ū y − u ȳ)` (mm·rad).
+    #[serde(with = "nf")]
     pub lagrange_invariant: f64,
     /// `Σ φ/(n n')` (1/mm).
+    #[serde(with = "nf")]
     pub petzval_sum: f64,
     /// Petzval radius (mm, image local `z` sense); ∞ when flat.
     #[serde(with = "nf")]
     pub petzval_radius: f64,
     /// Image-space reduced marginal slope `ω' = n'_k u'_k`.
+    #[serde(with = "nf")]
     pub image_marginal_slope: f64,
     /// Wavefront coefficients in mm.
     pub wavefront_mm: WavefrontCoefficients,
@@ -254,13 +272,149 @@ fn select_short_long(
     Ok((check(s.unwrap_or(argmin))?, check(l.unwrap_or(argmax))?))
 }
 
+/// Vertex curvature and total r⁴ sag coefficient, without numerical differencing.
+fn fourth_order(shape: &SurfaceShape) -> (f64, f64) {
+    let c = mklight_core::surface_math::vertex_curvatures(shape)[2];
+    let base = (1.0 + shape.conic()) * shape.curvature().powi(3) / 8.0;
+    let fourth = match shape {
+        SurfaceShape::EvenAsphere { coefficients, .. } => {
+            base + coefficients.first().copied().unwrap_or(0.0)
+        }
+        SurfaceShape::OddAsphere { coefficients, .. } => {
+            base + coefficients.get(3).copied().unwrap_or(0.0)
+        }
+        SurfaceShape::QCon {
+            coefficients,
+            norm_radius,
+            ..
+        } => {
+            // P_m^(0,4)(-1) = (-1)^m binomial(m+4,4).
+            let mut q = 1.0;
+            let mut sum = mklight_core::math::KahanSum::default();
+            for (m, a) in coefficients.iter().enumerate() {
+                sum.add(a * q);
+                q *= -((m + 5) as f64) / (m + 1) as f64;
+            }
+            base + sum.value() / norm_radius.powi(4)
+        }
+        SurfaceShape::XYPolynomial {
+            coefficients,
+            norm_radius,
+            ..
+        } => {
+            base + coefficients
+                .get(mklight_core::surface_math::xy_index(0, 4))
+                .copied()
+                .unwrap_or(0.0)
+                / norm_radius.powi(4)
+        }
+        SurfaceShape::ZernikeSag {
+            coefficients,
+            norm_radius,
+            ordering,
+            ..
+        } => {
+            let mut sum = mklight_core::math::KahanSum::default();
+            for (j, a) in coefficients.iter().enumerate() {
+                let (n, m) = mklight_core::surface_math::zernike_term(*ordering, j + 1)
+                    .expect("validated Zernike count");
+                let p = n / 2;
+                if m == 0 && p >= 2 {
+                    let p = p as f64;
+                    let q = (p - 1.0) * p * (p + 1.0) * (p + 2.0) / 4.0;
+                    let sign = if (n / 2).is_multiple_of(2) { 1.0 } else { -1.0 };
+                    let norm =
+                        if *ordering == mklight_core::model::surface::ZernikeOrdering::Standard {
+                            ((n + 1) as f64).sqrt()
+                        } else {
+                            1.0
+                        };
+                    sum.add(a * sign * norm * q);
+                }
+            }
+            base + sum.value() / norm_radius.powi(4)
+        }
+        SurfaceShape::QBfs {
+            coefficients,
+            norm_radius,
+            curvature,
+        } => {
+            let (q0, q1) = qbfs_vertex(coefficients);
+            base + (q1 - q0) / norm_radius.powi(4)
+                + 0.5 * curvature.powi(2) * q0 / norm_radius.powi(2)
+        }
+        _ => base,
+    };
+    (c, fourth)
+}
+
+/// Qbfs sum and its t derivative at t=0, from the defining triangular basis.
+fn qbfs_vertex(coefficients: &[f64]) -> (f64, f64) {
+    let mut f = [0.0; mklight_core::surface_math::MAX_Q_TERMS];
+    let mut g = f;
+    let mut h = f;
+    f[0] = 2.0;
+    f[1] = 19.0_f64.sqrt() / 2.0;
+    g[0] = -0.5;
+    for m in 2..f.len() {
+        h[m - 2] = -((m * (m - 1)) as f64) / (2.0 * f[m - 2]);
+        g[m - 1] = -(1.0 + g[m - 2] * h[m - 2]) / f[m - 1];
+        f[m] = ((m * (m + 1) + 3) as f64 - g[m - 1].powi(2) - h[m - 2].powi(2)).sqrt();
+    }
+    let (mut p0, mut p1) = ([2.0, 0.0], [6.0, -8.0]);
+    let (mut q0, mut q1) = ([0.0; 2], [0.0; 2]);
+    let mut sums = [mklight_core::math::KahanSum::default(); 2];
+    for (m, a) in coefficients.iter().enumerate() {
+        let p = if m == 0 { p0 } else { p1 };
+        let q = std::array::from_fn(|i| {
+            (p[i]
+                - if m > 0 { g[m - 1] * q1[i] } else { 0.0 }
+                - if m > 1 { h[m - 2] * q0[i] } else { 0.0 })
+                / f[m]
+        });
+        for i in 0..2 {
+            sums[i].add(a * q[i]);
+        }
+        (q0, q1) = (q1, q);
+        if m > 0 {
+            (p0, p1) = (
+                p1,
+                [2.0 * p1[0] - p0[0], -4.0 * p1[0] + 2.0 * p1[1] - p0[1]],
+            );
+        }
+    }
+    (sums[0].value(), sums[1].value())
+}
+
 /// Seidel sums (module docs).
 pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<SeidelResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
-    sys.system().require_legacy_shapes("Seidel")?;
     let w = wavelength_or_primary(tracer, settings.wavelength)?;
     let (ws, wlong) = select_short_long(sys, settings.short_wavelength, settings.long_wavelength)?;
+    if mklight_core::surface_math::system_symmetry(sys.system())
+        != mklight_core::surface_math::Symmetry::Rotational
+    {
+        let reason = "Seidel coefficients are not applicable to non-rotational systems; use full real-ray spots, fans, grid distortion and field curvature".to_string();
+        let sums = SeidelTerms::from_array([f64::NAN; 7]);
+        return Ok(SeidelResult {
+            status: SeidelStatus::NotApplicable,
+            reason: Some(reason.clone()),
+            wavelength: w,
+            wavelength_um: sys.wavelengths_um[w],
+            short_wavelength: ws,
+            long_wavelength: wlong,
+            surfaces: Vec::new(),
+            lagrange_invariant: f64::NAN,
+            petzval_sum: f64::NAN,
+            petzval_radius: f64::NAN,
+            image_marginal_slope: f64::NAN,
+            wavefront_mm: WavefrontCoefficients::from_sums(&sums, 1.0),
+            wavefront_waves: WavefrontCoefficients::from_sums(&sums, 1.0),
+            sums,
+            run_info: run_info(timer, tracer, "seidel", settings, None, vec![reason]),
+        });
+    }
     let fo = tracer.paraxial().at(w);
     let model = ParaxialModel::new(sys, w);
     let ns = ParaxialModel::new(sys, ws).reduced_index;
@@ -284,7 +438,18 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
         }
         if !s.is_passive() && !ideal {
             let (n, n2) = (nn[j - 1], nn[j]);
-            let cv = s.shape.curvature();
+            let base = match &s.shape {
+                SurfaceShape::Diffractive { base, .. } => base.as_ref(),
+                shape => shape,
+            };
+            let (cv, fourth) = fourth_order(base);
+            if let SurfaceShape::OddAsphere { coefficients, .. } = base
+                && [0, 2]
+                    .iter()
+                    .any(|&i| coefficients.get(i).is_some_and(|v| *v != 0.0))
+            {
+                warnings.push(format!("surface {j}: non-analytic r¹/r³ terms omitted; Seidel describes only the regular fourth-order equivalent, use real rays for their aberrations"));
+            }
             let (y, yb) = (m.y[j], c.y[j]);
             let a = n.mul_add(y * cv, m.nu[j - 1]);
             let ab = n.mul_add(yb * cv, c.nu[j - 1]);
@@ -297,13 +462,7 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
             t[3] = -h * h * cv * d1n;
             t[4] = -ab * ab * ab * y * d1n2 + ab * yb * cv * ab.mul_add(y, h) * d1n;
             let dn = n2 - n;
-            let g = s.shape.conic() * cv * cv * cv / 8.0
-                + match &s.shape {
-                    SurfaceShape::EvenAsphere { coefficients, .. } => {
-                        coefficients.first().copied().unwrap_or(0.0)
-                    }
-                    _ => 0.0,
-                };
+            let g = fourth - cv.powi(3) / 8.0;
             if g != 0.0 {
                 let e = 8.0 * g * dn * y;
                 t[0] += e * y * y * y;
@@ -315,8 +474,30 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
             let dd = dr(j) - dr(j - 1);
             t[5] = a * y * dd;
             t[6] = ab * y * dd;
-            let phi = model.power[j];
-            petzval += phi / (n * n2);
+            petzval += cv * (n2 - n) / (n * n2);
+            if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
+                let scale =
+                    phase.trace_order as f64 * sys.wavelengths_um[w] * 1e-3 / std::f64::consts::TAU;
+                let p = -2.0 * scale * phase.coefficients.first().copied().unwrap_or(0.0)
+                    / phase.norm_radius.powi(2);
+                let q4 = scale * phase.coefficients.get(1).copied().unwrap_or(0.0)
+                    / phase.norm_radius.powi(4);
+                let (a2, ab2) = (a - p * y, ab - p * yb);
+                let (vi, vo) = (m.nu[j - 1] / n.powi(2), m.nu[j] / n2.powi(2));
+                // Exact N -> infinity limit of two coincident interfaces:
+                // c1=c, c2=c-p/N, z2_4=z1_4+q4/N. No large index subtraction.
+                let gg = dn * g - q4 - 3.0 * cv * cv * p / 8.0;
+                t[0] = y * (a * a * vi - a2 * a2 * vo) + 8.0 * gg * y.powi(4);
+                t[1] = y * (a * ab * vi - a2 * ab2 * vo) + 8.0 * gg * y.powi(3) * yb;
+                t[2] = y * (ab * ab * vi - ab2 * ab2 * vo) + 8.0 * gg * y.powi(2) * yb.powi(2);
+                t[4] = y * (ab.powi(3) / n.powi(2) - ab2.powi(3) / n2.powi(2))
+                    + yb * cv * (ab2 * (ab2 * y + h) / n2 - ab * (ab * y + h) / n)
+                    + 8.0 * gg * y * yb.powi(3);
+                let dispersion =
+                    (sys.wavelengths_um[ws] - sys.wavelengths_um[wlong]) / sys.wavelengths_um[w];
+                t[5] = y * (a2 * dr(j) - a * dr(j - 1) + p * y * dispersion);
+                t[6] = y * (ab2 * dr(j) - ab * dr(j - 1) + p * yb * dispersion);
+            }
         }
         surfaces.push(SurfaceSeidel {
             surface: j,
@@ -337,6 +518,8 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
     let n_img = nn[img - 1];
     let wl_mm = sys.wavelengths_um[w] * 1e-3;
     Ok(SeidelResult {
+        status: SeidelStatus::Applicable,
+        reason: None,
         wavelength: w,
         wavelength_um: sys.wavelengths_um[w],
         short_wavelength: ws,
@@ -362,7 +545,8 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LongitudinalSettings {
-    /// Pupil zones from 0 to 1 (`P_y`).
+    pub axes: crate::util::FieldAxes,
+    /// Zones 0..1 for rotational systems; signed -1..1 otherwise.
     pub pupil_samples: usize,
     pub wavelengths: WavelengthSelection,
 }
@@ -370,6 +554,7 @@ pub struct LongitudinalSettings {
 impl Default for LongitudinalSettings {
     fn default() -> Self {
         LongitudinalSettings {
+            axes: Default::default(),
             pupil_samples: 21,
             wavelengths: WavelengthSelection::All,
         }
@@ -378,6 +563,7 @@ impl Default for LongitudinalSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LongitudinalCurve {
+    pub axis: mklight_trace::ParaxialAxis,
     pub wavelength: usize,
     pub wavelength_um: f64,
     /// This wavelength's paraxial focus from the image surface (mm, local z).
@@ -393,7 +579,7 @@ pub struct LongitudinalCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LongitudinalResult {
-    /// Pupil zones `P_y`.
+    /// Pupil zones along each curve's selected axis.
     pub pupil: Vec<f64>,
     #[serde(with = "nf")]
     pub primary_paraxial_focus: f64,
@@ -427,6 +613,14 @@ pub fn longitudinal_aberration(
     tracer: &SequentialTracer,
     settings: &LongitudinalSettings,
 ) -> MkResult<LongitudinalResult> {
+    longitudinal_aberration_job(tracer, settings, &JobContext::new())
+}
+
+pub fn longitudinal_aberration_job(
+    tracer: &SequentialTracer,
+    settings: &LongitudinalSettings,
+    ctx: &JobContext,
+) -> MkResult<LongitudinalResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("pupil samples", settings.pupil_samples, 2, 100_001)?;
@@ -434,41 +628,72 @@ pub fn longitudinal_aberration(
         .wavelengths
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
     let field = tracer.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
-    let pupil = linspace(0.0, 1.0, settings.pupil_samples);
+    let lo = if mklight_core::surface_math::system_symmetry(sys.system())
+        == mklight_core::surface_math::Symmetry::Rotational
+    {
+        0.0
+    } else {
+        -1.0
+    };
+    let pupil = linspace(lo, 1.0, settings.pupil_samples);
     let p0 = paraxial_focus(tracer.paraxial(), sys.primary_wavelength);
     let opts = TraceOptions::unclipped();
-    let curves = wls
-        .iter()
-        .map(|&w| {
-            let pf = paraxial_focus(tracer.paraxial(), w);
+    let mut curves = Vec::new();
+    let axes = settings.axes.components(tracer);
+    let focus = |fo: &mklight_trace::FirstOrder| {
+        let m = &fo.marginal;
+        -m.y[sys.image_index()] / m.u[sys.image_index() - 1]
+    };
+    for (axis_index, &component) in axes.iter().enumerate() {
+        let axis = if component == 0 {
+            mklight_trace::ParaxialAxis::X
+        } else {
+            mklight_trace::ParaxialAxis::Y
+        };
+        let primary = mklight_trace::paraxial::first_order_axis(sys, sys.primary_wavelength, axis)?;
+        let primary_focus = focus(&primary);
+        for (wi, &w) in wls.iter().enumerate() {
+            ctx.check()?;
+            let pf = focus(&mklight_trace::paraxial::first_order_axis(sys, w, axis)?);
             let chief = tracer.trace(&field, w, 0.0, 0.0, &opts);
             let focus: Vec<f64> = pupil
                 .par_iter()
                 .map(|&rho| {
+                    ctx.check()?;
                     if rho == 0.0 {
-                        return pf;
+                        return Ok(pf);
                     }
                     if !chief.status.is_ok() {
-                        return f64::NAN;
+                        return Ok(f64::NAN);
                     }
-                    let r = tracer.trace(&field, w, 0.0, rho, &opts);
+                    let (px, py) = if component == 0 {
+                        (rho, 0.0)
+                    } else {
+                        (0.0, rho)
+                    };
+                    let r = tracer.trace(&field, w, px, py, &opts);
                     if !r.status.is_ok() {
-                        return f64::NAN;
+                        return Ok(f64::NAN);
                     }
                     let (pc, c) = (chief.ray.pos, chief.ray.dir);
                     let s = crossing_along_chief(pc, c, r.ray.pos, r.ray.dir);
-                    pc.z + s * c.z
+                    Ok(pc.z + s * c.z)
                 })
-                .collect();
-            LongitudinalCurve {
+                .collect::<MkResult<_>>()?;
+            curves.push(LongitudinalCurve {
+                axis,
                 wavelength: w,
                 wavelength_um: sys.wavelengths_um[w],
                 paraxial_focus: pf,
-                aberration: focus.iter().map(|f| f - p0).collect(),
+                aberration: focus.iter().map(|f| f - primary_focus).collect(),
                 focus,
-            }
-        })
-        .collect();
+            });
+            ctx.report(
+                (axis_index * wls.len() + wi + 1) as f64 / (axes.len() * wls.len()) as f64,
+                "longitudinal aberration",
+            );
+        }
+    }
     Ok(LongitudinalResult {
         pupil,
         primary_paraxial_focus: p0,
@@ -507,6 +732,10 @@ impl Default for ChromaticFocalShiftSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChromaticFocalShiftResult {
+    #[serde(with = "nf::vec")]
+    pub focal_shift_x: Vec<f64>,
+    #[serde(with = "nf::vec")]
+    pub paraxial_focus_x: Vec<f64>,
     pub wavelengths_um: Vec<f64>,
     /// Paraxial focus minus the primary wavelength's (mm).
     #[serde(with = "nf::vec")]
@@ -525,6 +754,14 @@ pub struct ChromaticFocalShiftResult {
 pub fn chromatic_focal_shift(
     tracer: &SequentialTracer,
     settings: &ChromaticFocalShiftSettings,
+) -> MkResult<ChromaticFocalShiftResult> {
+    chromatic_focal_shift_job(tracer, settings, &JobContext::new())
+}
+
+pub fn chromatic_focal_shift_job(
+    tracer: &SequentialTracer,
+    settings: &ChromaticFocalShiftSettings,
+    ctx: &JobContext,
 ) -> MkResult<ChromaticFocalShiftResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
@@ -560,7 +797,13 @@ pub fn chromatic_focal_shift(
     };
     let snap = Snapshot::new(osys)?;
     let rs = ResolvedSystem::new(&snap, sys.library.clone())?;
-    let par = Paraxial::new(&rs)?;
+    ctx.check()?;
+    let xy = mklight_trace::ParaxialXY::new_job(&rs, ctx)?;
+    let par = Paraxial {
+        wavelengths: xy.y,
+        primary: rs.primary_wavelength,
+        warnings: xy.run_info.warnings,
+    };
     let foci: Vec<f64> = (0..rs.wavelengths_um.len())
         .map(|w| paraxial_focus(&par, w))
         .collect();
@@ -569,7 +812,16 @@ pub fn chromatic_focal_shift(
     let shift: Vec<f64> = focus.iter().map(|f| f - p0).collect();
     let range = shift.iter().copied().fold(f64::NEG_INFINITY, f64::max)
         - shift.iter().copied().fold(f64::INFINITY, f64::min);
+    let x_focus = |fo: &mklight_trace::FirstOrder| {
+        let m = &fo.marginal;
+        -m.y[rs.image_index()] / m.u[rs.image_index() - 1]
+    };
+    let x0 = x_focus(xy.x.last().unwrap());
+    let paraxial_focus_x: Vec<f64> = xy.x[..sweep.len()].iter().map(x_focus).collect();
+    let focal_shift_x = paraxial_focus_x.iter().map(|v| v - x0).collect();
     Ok(ChromaticFocalShiftResult {
+        paraxial_focus_x,
+        focal_shift_x,
         wavelengths_um: sweep,
         focal_shift: shift,
         paraxial_focus: focus,
@@ -591,6 +843,7 @@ pub fn chromatic_focal_shift(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LateralColourSettings {
+    pub field_axes: crate::util::FieldAxes,
     pub field_samples: usize,
     pub short_wavelength: Option<usize>,
     pub long_wavelength: Option<usize>,
@@ -599,6 +852,7 @@ pub struct LateralColourSettings {
 impl Default for LateralColourSettings {
     fn default() -> Self {
         LateralColourSettings {
+            field_axes: Default::default(),
             field_samples: 21,
             short_wavelength: None,
             long_wavelength: None,
@@ -617,6 +871,7 @@ pub struct LateralColourCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LateralColourResult {
+    pub field_coordinates: Vec<[f64; 2]>,
     pub field_values: Vec<f64>,
     pub normalized_field: Vec<f64>,
     pub field_unit: String,
@@ -646,23 +901,27 @@ pub fn lateral_colour_job(
     settings: &LateralColourSettings,
     ctx: &JobContext,
 ) -> MkResult<LateralColourResult> {
+    ctx.check()?;
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("field samples", settings.field_samples, 2, 100_001)?;
     let (ws, wl) = select_short_long(sys, settings.short_wavelength, settings.long_wavelength)?;
-    let hs = linspace(0.0, 1.0, settings.field_samples);
+    let sweep = crate::util::field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let hs = &sweep.heights;
     let nw = sys.wavelengths_um.len();
     let primary = sys.primary_wavelength;
     ctx.report(0.0, "lateral colour");
-    let heights: Vec<Vec<f64>> = hs
+    let heights: Vec<Vec<f64>> = sweep
+        .coordinates
         .par_iter()
+        .zip(&sweep.components)
         .map(
-            |&h| match tracer.prepare_field(FieldPoint::normalized(0.0, h)) {
+            |(&[hx, hy], &axis)| match tracer.prepare_field(FieldPoint::normalized(hx, hy)) {
                 Ok(f) => (0..nw)
                     .map(|w| {
                         let c = tracer.chief(&f, w);
                         if c.status.is_ok() {
-                            c.ray.pos.y
+                            if axis == 0 { c.ray.pos.x } else { c.ray.pos.y }
                         } else {
                             f64::NAN
                         }
@@ -686,7 +945,8 @@ pub fn lateral_colour_job(
     let kind: FieldKind = sys.system().fields.kind;
     Ok(LateralColourResult {
         field_values: hs.iter().map(|h| h * scale).collect(),
-        normalized_field: hs,
+        normalized_field: hs.clone(),
+        field_coordinates: sweep.coordinates,
         field_unit: field_unit(kind).to_string(),
         short_wavelength: ws,
         long_wavelength: wl,

@@ -236,6 +236,8 @@ pub fn encircled_energy_job(
     settings: &EncircledEnergySettings,
     ctx: &JobContext,
 ) -> MkResult<EncircledEnergyResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.sampling.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     validate_ee(settings)?;
     let mut warnings = Vec::new();
@@ -447,6 +449,8 @@ pub fn geometric_mtf_job(
     settings: &GeometricMtfSettings,
     ctx: &JobContext,
 ) -> MkResult<GeometricMtfResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.sampling.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     validate_mtf(settings)?;
     let mut warnings = Vec::new();
@@ -609,6 +613,7 @@ impl Default for BestFocusSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BestFocusResult {
+    pub field_values: Vec<[f64; 2]>,
     /// Best defocus from the image surface (mm, image local `+z`).
     pub defocus: f64,
     /// Field-weighted mean RMS radius at the best focus (mm).
@@ -683,6 +688,8 @@ pub fn best_focus_job(
     settings: &BestFocusSettings,
     ctx: &JobContext,
 ) -> MkResult<BestFocusResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.sampling.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     validate_best_focus(settings)?;
     let mut warnings = Vec::new();
@@ -767,7 +774,11 @@ fn best_focus_reduce(
             continue;
         }
         if let Some(q) = quadratic(fr, settings.reference) {
-            used.push((fr, osys.fields.fields[fr.field].weight, q));
+            used.push((
+                fr,
+                osys.fields.fields.get(fr.field).map_or(1.0, |f| f.weight),
+                q,
+            ));
         } else {
             warnings.push(format!("field {}: no rays arrived", fr.field));
         }
@@ -849,6 +860,10 @@ fn best_focus_reduce(
         (Vec::new(), Vec::new())
     };
     Ok(BestFocusResult {
+        field_values: used
+            .iter()
+            .map(|u| field_value(tracer, u.0.field))
+            .collect(),
         defocus: br.x,
         merit: br.fx,
         merit_at_zero: merit(0.0),

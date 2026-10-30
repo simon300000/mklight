@@ -226,6 +226,13 @@ fn petzval_radius_matches_third_order_foci_of_a_refractive_lens() {
 fn s4_and_s5_are_consistent_on_every_sample() {
     for (name, t) in samples() {
         let s = seidel(&t, &SeidelSettings::default()).unwrap();
+        if s.status == SeidelStatus::NotApplicable {
+            assert_ne!(
+                mklight_core::surface_math::system_symmetry(t.system().system()),
+                mklight_core::surface_math::Symmetry::Rotational
+            );
+            continue;
+        }
         let m = ParaxialModel::new(t.system(), t.system().primary_wavelength);
         let n = &m.reduced_index;
         // S_IV = H² P (P checked against closed forms elsewhere).

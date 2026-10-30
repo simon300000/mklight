@@ -36,13 +36,10 @@
 //! * dummies and coordinate breaks: nothing (the basis is carried into each
 //!   surface frame).
 //!
-//! `K` comes from the principal curvatures of the surface of revolution at
-//! radius `r`, the meridional `κ_m = f''/(1 + f'²)^{3/2}` and the sagittal
-//! `κ_s = f'/(r √(1 + f'²))` ([`principal_curvatures`], evaluated without
-//! dividing by `r` or by the conic square root). Their directions are the
-//! radial direction projected onto the tangent plane and its perpendicular.
-//! The equations hold for skew chief rays and any tilts. No principal-plane
-//! assumption is made.
+//! `K` is the second fundamental form of the sag graph, projected from its
+//! Cartesian Hessian onto the orthonormal tangent basis. A DOE adds its
+//! covariant phase Hessian to the direction matching. Both mixed surface
+//! power and curved-base phase connections are retained. See ANALYSIS §2.2.
 //!
 //! At the image the **focal lines** follow from the eigen-decomposition of
 //! the symmetric focal-distance matrix `F = −X T⁻¹ = C⁻¹` (or of `C` for an
@@ -160,7 +157,19 @@ pub fn principal_curvatures(shape: &SurfaceShape, r: f64) -> Option<(f64, f64)> 
             let sq = q.sqrt();
             Some((f2 / (q * sq), g / sq))
         }
-        _ => None, // Extended surface tensors belong to the next analysis round.
+        _ => {
+            if mklight_core::surface_math::shape_symmetry(shape)
+                != mklight_core::surface_math::Symmetry::Rotational
+            {
+                return None;
+            }
+            let v = mklight_core::surface_math::evaluate(shape, 0.0, r)?;
+            if !v.hessian.iter().all(|v| v.is_finite()) {
+                return None;
+            }
+            let q = 1.0 + v.gradient[1].powi(2);
+            Some((v.hessian[2] / (q * q.sqrt()), v.hessian[0] / q.sqrt()))
+        }
     }
 }
 
@@ -184,25 +193,49 @@ impl AstigmaticFocus {
     }
 }
 
-/// Tangent basis `E` (principal directions) and second fundamental form `K`
-/// (diagonal in `E`, relative to the normal `n`) of a surface of revolution
-/// at local hit `p`.
+/// Orthonormal tangent basis and second fundamental form of z(x,y).
 fn surface_tensor(shape: &SurfaceShape, p: Vec3, n: Vec3) -> Option<([Vec3; 2], m2::M)> {
-    let r = p.x.hypot(p.y);
-    let (km, ks) = principal_curvatures(shape, r)?;
-    let m = if r > 0.0 && km != ks {
-        let er = Vec3::new(p.x / r, p.y / r, 0.0);
-        er - n * er.dot(n)
-    } else {
-        let t = Vec3::X - n * n.x;
-        if t.norm() > 1e-6 {
-            t
-        } else {
-            Vec3::Y - n * n.y
-        }
+    let v = mklight_core::surface_math::evaluate(shape, p.x, p.y)?;
+    if !v.hessian.iter().all(|v| v.is_finite()) {
+        return None; // The cone vertex has no differential curvature.
+    }
+    let e0 = Vec3::new(1.0, 0.0, v.gradient[0]).normalized();
+    let e = [e0, n.cross(e0)];
+    let h = v.hessian;
+    let k = std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            n.z * (e[i].x * (h[0] * e[j].x + h[1] * e[j].y)
+                + e[i].y * (h[1] * e[j].x + h[2] * e[j].y))
+        })
+    });
+    Some((e, k))
+}
+
+/// Covariant phase Hessian in the surface tangent basis. The connection
+/// term accounts for the normal acceleration of a geodesic on the base.
+fn phase_tensor(
+    shape: &SurfaceShape,
+    p: Vec3,
+    n: Vec3,
+    e: &[Vec3; 2],
+    k: &m2::M,
+    wl_um: f64,
+) -> Option<m2::M> {
+    let SurfaceShape::Diffractive { phase, .. } = shape else {
+        return Some([[0.0; 2]; 2]);
     };
-    let m = m.normalized();
-    Some(([m, n.cross(m)], [[km, 0.0], [0.0, ks]]))
+    let v = mklight_core::surface_math::phase(phase, p.x, p.y)?;
+    let h = v.hessian;
+    let gn = v.gradient[0] * n.x + v.gradient[1] * n.y;
+    let scale = phase.trace_order as f64 * wl_um * 1e-3 / std::f64::consts::TAU;
+    Some(std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            scale
+                * (e[i].x * (h[0] * e[j].x + h[1] * e[j].y)
+                    + e[i].y * (h[1] * e[j].x + h[2] * e[j].y)
+                    + gn * k[i][j])
+        })
+    }))
 }
 
 /// `P_ab = u_a · e_b`: transverse coordinates of tangent vectors.
@@ -378,9 +411,17 @@ pub fn coddington_focus(
             let p_out = proj(&u_out, &e);
             let ds = m2::mul(&m2::inv(&p)?, &x);
             let g = n2.mul_add(kout.dot(nrm), -n * k.dot(nrm));
+            let phase = phase_tensor(
+                &s.shape,
+                rec[i].point,
+                nrm,
+                &e,
+                &kmat,
+                sys.wavelengths_um[wl],
+            )?;
             let rhs = m2::add(
                 &m2::scale(&m2::mul(&m2::t(&p), &t), n),
-                &m2::scale(&m2::mul(&kmat, &ds), -g),
+                &m2::mul(&m2::add(&m2::scale(&kmat, -g), &phase), &ds),
             );
             t = m2::scale(&m2::mul(&m2::t(&m2::inv(&p_out)?), &rhs), 1.0 / n2);
             x = m2::mul(&p_out, &ds);
@@ -455,8 +496,9 @@ pub fn close_ray_focus(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FieldCurvatureSettings {
-    /// Field samples from the axis to the maximum field along `+y`.
+    /// Samples per selected field axis (signed where symmetry requires it).
     pub field_samples: usize,
+    pub field_axes: crate::util::FieldAxes,
     pub wavelengths: WavelengthSelection,
     /// Normalised pupil step of the close-ray cross-check.
     pub close_ray_step: f64,
@@ -466,6 +508,7 @@ impl Default for FieldCurvatureSettings {
     fn default() -> Self {
         FieldCurvatureSettings {
             field_samples: 21,
+            field_axes: Default::default(),
             wavelengths: WavelengthSelection::All,
             close_ray_step: 1e-3,
         }
@@ -508,9 +551,10 @@ pub struct FieldCurvatureCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldCurvatureResult {
+    pub field_coordinates: Vec<[f64; 2]>,
     /// Field values (in `field_unit`) from the axis to the maximum field.
     pub field_values: Vec<f64>,
-    /// The same samples as normalised `Hy`.
+    /// Signed scalar coordinates on each selected axis; see field_coordinates.
     pub normalized_field: Vec<f64>,
     pub field_unit: String,
     pub curves: Vec<FieldCurvatureCurve>,
@@ -542,9 +586,9 @@ pub fn field_curvature_job(
     settings: &FieldCurvatureSettings,
     ctx: &JobContext,
 ) -> MkResult<FieldCurvatureResult> {
+    ctx.check()?;
     let timer = RunTimer::start();
     let sys = tracer.system();
-    sys.system().require_legacy_shapes("field curvature")?;
     check_count("field samples", settings.field_samples, 2, 100_001)?;
     check_finite("close-ray step", settings.close_ray_step)?;
     if !(settings.close_ray_step > 0.0 && settings.close_ray_step < 0.5) {
@@ -555,31 +599,39 @@ pub fn field_curvature_job(
     let wls = settings
         .wavelengths
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
-    let hs = linspace(0.0, 1.0, settings.field_samples);
+    let sweep = crate::util::field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let hs = &sweep.heights;
     let mut warnings = Vec::new();
     ctx.report(0.0, "field curvature");
     // Prepare every field sample once (real image heights solve here).
-    let fields: Vec<Option<PreparedField>> = hs
+    let fields: Vec<Option<PreparedField>> = sweep
+        .coordinates
         .par_iter()
-        .map(|&h| tracer.prepare_field(FieldPoint::normalized(0.0, h)).ok())
-        .collect();
-    for (h, f) in hs.iter().zip(&fields) {
+        .map(|&[hx, hy]| {
+            ctx.check()?;
+            Ok(tracer.prepare_field(FieldPoint::normalized(hx, hy)).ok())
+        })
+        .collect::<MkResult<_>>()?;
+    for (xy, f) in sweep.coordinates.iter().zip(&fields) {
         if f.is_none() {
-            warnings.push(format!("field Hy = {h}: could not be resolved"));
+            warnings.push(format!("field {xy:?}: could not be resolved"));
         }
     }
     ctx.check()?;
     let n0 = |w: usize| sys.n_object[w];
     let mut curves = Vec::with_capacity(wls.len());
     for (k, &w) in wls.iter().enumerate() {
-        let fo = tracer.paraxial().at(w);
-        let f_eff = n0(w) * fo.efl;
+        let fx = mklight_trace::paraxial::first_order_axis(sys, w, mklight_trace::ParaxialAxis::X)?;
+        let efl = [fx.efl, tracer.paraxial().at(w).efl];
         let rows: Vec<[f64; 10]> = fields
             .par_iter()
-            .zip(&hs)
-            .map(|(f, &h)| {
+            .zip(hs)
+            .zip(&sweep.components)
+            .map(|((f, &h), &axis)| {
+                ctx.check()?;
+                let f_eff = n0(w) * efl[axis];
                 let mut row = [f64::NAN; 10];
-                let Some(f) = f else { return row };
+                let Some(f) = f else { return Ok(row) };
                 if let Some(a) = coddington_focus(tracer, f, w) {
                     (row[0], row[1]) = a.axial();
                 }
@@ -588,12 +640,15 @@ pub fn field_curvature_job(
                 }
                 let c = tracer.chief(f, w);
                 if c.status.is_ok() {
-                    row[4] = c.ray.pos.y;
+                    row[4] = if axis == 0 { c.ray.pos.x } else { c.ray.pos.y };
                 }
                 if let Some(p) = paraxial_image_point(tracer, f, w) {
-                    row[5] = p[1];
+                    row[5] = p[axis];
                 }
-                if h == 0.0 {
+                if h == 0.0
+                    && mklight_core::surface_math::system_symmetry(sys.system())
+                        == mklight_core::surface_math::Symmetry::Rotational
+                {
                     row[6] = 0.0;
                     row[7] = if sys.object_at_infinity {
                         0.0
@@ -606,25 +661,29 @@ pub fn field_curvature_job(
                     if let ObjectSource::Direction { dir } = f.source
                         && sys.object_at_infinity
                     {
-                        let t = dir.y / dir.z;
+                        let t = if axis == 0 {
+                            dir.x / dir.z
+                        } else {
+                            dir.y / dir.z
+                        };
                         row[7] = percent(row[4], f_eff * t);
                         row[8] = percent(row[4], f_eff * t.atan());
                     }
                 }
-                row
+                Ok(row)
             })
-            .collect();
+            .collect::<MkResult<_>>()?;
         // Independent estimates of the same foci: flag disagreements.
-        let bad: Vec<f64> = rows
+        let bad: Vec<[f64; 2]> = rows
             .iter()
-            .zip(&hs)
+            .zip(&sweep.coordinates)
             .filter(|(r, _)| (0..2).any(|j| (r[j] - r[j + 2]).abs() > 1e-3 * (1.0 + r[j].abs())))
-            .map(|(_, &h)| h)
+            .map(|(_, &xy)| xy)
             .collect();
         if let (Some(first), Some(last)) = (bad.first(), bad.last()) {
             warnings.push(format!(
                 "wavelength {w}: Coddington and close-ray foci differ by more than \
-                 1e-3 (1 + |Δz|) mm at {} field sample(s), Hy = {first}…{last}",
+                 1e-3 (1 + |Δz|) mm at {} field sample(s), [Hx, Hy] = {first:?}…{last:?}",
                 bad.len()
             ));
         }
@@ -648,7 +707,8 @@ pub fn field_curvature_job(
     let scale = field_scale(tracer);
     Ok(FieldCurvatureResult {
         field_values: hs.iter().map(|h| h * scale).collect(),
-        normalized_field: hs,
+        normalized_field: hs.clone(),
+        field_coordinates: sweep.coordinates,
         field_unit: field_unit(sys.system().fields.kind).to_string(),
         curves,
         wavelengths_um: sys.wavelengths_um.clone(),
@@ -762,7 +822,11 @@ pub fn grid_distortion_job(
                     g.paraxial = p;
                 }
                 let rp = g.paraxial[0].hypot(g.paraxial[1]);
-                g.distortion_percent = if hx == 0.0 && hy == 0.0 {
+                g.distortion_percent = if hx == 0.0
+                    && hy == 0.0
+                    && mklight_core::surface_math::system_symmetry(tracer.system().system())
+                        == mklight_core::surface_math::Symmetry::Rotational
+                {
                     0.0
                 } else {
                     percent(g.real[0].hypot(g.real[1]), rp)
