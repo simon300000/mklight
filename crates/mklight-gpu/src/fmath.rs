@@ -218,6 +218,25 @@ pub fn packed_sag_in<E: FpEnv>(s: &PackedSurface, r2: f32) -> f32 {
     }
 }
 
+/// Positive-y meridian sag including extended shapes (SURFACES §1).
+/// `pool` is the validated system set's coefficient pool.
+pub fn packed_sag_with_pool_in<E: FpEnv>(s: &PackedSurface, pool: &[crate::Df32], r2: f32) -> f32 {
+    use crate::{fx::F, surface_math};
+    if s.shape <= MKL_SHAPE_COORD_BREAK {
+        return packed_sag_in::<E>(s, r2);
+    }
+    let y = F::<E>::new(r2).sqrt();
+    if s.shape == MKL_SHAPE_DIFFRACTIVE {
+        if !surface_math::domain(s, pool, F::<E>::ZERO, y) {
+            return f32::NAN;
+        }
+        let mut base = *s;
+        base.shape = surface_math::data(s, pool)[MKL_COEFF_KIND as usize].hi as u32;
+        return packed_sag_in::<E>(&base, r2);
+    }
+    surface_math::evaluate(s, pool, F::<E>::ZERO, y).map_or(f32::NAN, |v| v.v.v())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -28,7 +28,7 @@ use crate::batch::{PreparedTrace, TraceRequest, TraceResult};
 use crate::consts::*;
 use crate::df::Df32;
 use crate::fenv::{FpEnv, Ftz, Ieee};
-use crate::fmath::{packed_sag_in, u32_to_unit_f32};
+use crate::fmath::{packed_sag_with_pool_in, u32_to_unit_f32};
 use crate::layout::{PackedSystem, PackedSystemSet};
 use crate::pending::{JobControl, Pending, pending, spawn_job};
 use crate::reduce;
@@ -238,7 +238,7 @@ impl Inner {
                 }
                 let s = set.surfaces[(h.surface_offset + surface) as usize];
                 JobOutput::F32(chunked(r2.len(), ctl, "sag", &mut stats, |i| {
-                    packed_sag_in::<E>(&s, r2[i])
+                    packed_sag_with_pool_in::<E>(&s, &set.coefficients, r2[i])
                 })?)
             }
             Job::Trace(req) => {
@@ -344,7 +344,15 @@ fn trace_job<E: FpEnv>(
         let mut rec = vec![KState::default(); slots];
         let r = (slots > 0).then_some(rec.as_mut_slice());
         (
-            trace_ray::<E>(h, surf, &prep.steps, &prep.params, &ray, r),
+            trace_ray::<E>(
+                h,
+                surf,
+                &set.coefficients,
+                &prep.steps,
+                &prep.params,
+                &ray,
+                r,
+            ),
             rec,
         )
     })?;

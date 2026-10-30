@@ -1191,3 +1191,196 @@ fn many_wavelengths_are_validated_in_chunks() {
     let q = qualify(&b, &t, None, &ctx).unwrap();
     assert!(q.passed, "{q:?}");
 }
+
+#[test]
+fn extended_qualification_cpu_f32() {
+    let b = CpuF32Backend::with_subnormals(false);
+    for (name, sys) in samples::all()
+        .into_iter()
+        .filter(|(_, s)| samples::has_extended_surfaces(s))
+    {
+        let q = qualify(&b, &testutil::tracer(sys), None, &JobContext::new()).unwrap();
+        assert!(q.passed, "{name}: {q:?}");
+    }
+}
+
+#[test]
+fn extended_steep_rays_classify_and_match_f64() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let rays: Vec<_> = testutil::steep_random_rays()
+        .into_iter()
+        .map(|r| (r, 1))
+        .collect();
+    for (name, shape) in testutil::extended_shapes() {
+        let rs = testutil::resolve(testutil::one_surface(shape));
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
+        let mut req = TraceRequest::new(h, batch(&rays), 0, 1);
+        req.apply_apertures = false;
+        let got = trace(&b, req);
+        let mut reference_hit_steps = Vec::new();
+        let mut f32_only_residual = 0f64;
+        let mut pairs = std::collections::BTreeMap::new();
+        let (mut matched, mut common, mut geometry_outliers) = (0, 0, 0);
+        let (mut max_p, mut max_d, mut max_opl) = (0f64, 0f64, 0f64);
+        for (i, (ray, _)) in rays.iter().enumerate() {
+            let r = trace_ray(&rs, ray, 1, &TraceOptions::unclipped().to_surface(1), None);
+            let want = reference_status_word(&r.status);
+            if got.status[i] == want {
+                matched += 1;
+            } else {
+                if want == MKL_RAY_OK {
+                    let needed = (0..=40)
+                        .find(|&cap| {
+                            trace_ray(
+                                &rs,
+                                ray,
+                                1,
+                                &TraceOptions {
+                                    intersect: IntersectSettings {
+                                        tolerance: 1e-12,
+                                        max_iterations: cap,
+                                    },
+                                    ..TraceOptions::unclipped().to_surface(1)
+                                },
+                                None,
+                            )
+                            .status
+                            .is_ok()
+                        })
+                        .unwrap();
+                    reference_hit_steps.push(needed);
+                } else if got.status[i] == MKL_RAY_OK {
+                    let (p, _) = v3(&got, i);
+                    let sag = mklight_core::surface_math::evaluate(&rs.surfaces[1].shape, p.x, p.y)
+                        .unwrap()
+                        .sag;
+                    f32_only_residual = f32_only_residual.max((p.z - sag).abs());
+                }
+                *pairs.entry((want & 255, got.status[i] & 255)).or_insert(0) += 1;
+            }
+            if want == MKL_RAY_OK && got.status[i] == MKL_RAY_OK {
+                common += 1;
+                let (p, d) = v3(&got, i);
+                let ep = (p - r.ray.pos).norm();
+                let ed = (d - r.ray.dir).norm();
+                // OPLs must be compared at the same reported point.
+                let eo = (got.opl_hi[i] as f64 + got.opl_lo[i] as f64
+                    - r.opl.value()
+                    - rs.surfaces[1].n_after[1] * (p - r.ray.pos).dot(r.ray.dir))
+                .abs();
+                max_p = max_p.max(ep);
+                max_d = max_d.max(ed);
+                max_opl = max_opl.max(eo);
+                geometry_outliers +=
+                    usize::from(ep > 2e-5 || ed > 2e-6 || eo > rs.wavelengths_um[1] * 1e-3 * 5e-3);
+            }
+        }
+        eprintln!(
+            "{name}: matched {matched}/{} common {common} geometry_outliers {geometry_outliers} max position {max_p:e} direction {max_d:e} OPL {max_opl:e}; status (f64,f32) {pairs:?}",
+            rays.len()
+        );
+        eprintln!(
+            "{name}: mismatched reference hits need {:?}..{:?} iterations; f32-only hit max sag residual {f32_only_residual:e} mm",
+            reference_hit_steps.iter().min(),
+            reference_hit_steps.iter().max()
+        );
+        assert!(common > 1000, "{name}");
+        assert!(
+            (rays.len() - matched) * 100 < rays.len(),
+            "{name}: {pairs:?}"
+        );
+        assert_eq!(geometry_outliers, 0, "{name}");
+        b.release_systems(h).unwrap();
+    }
+}
+
+#[test]
+fn doe_orders_opl_and_evanescence() {
+    use mklight_core::model::surface::DiffractivePhase;
+    let b = CpuF32Backend::with_subnormals(false);
+    for interaction in [
+        Interaction::Refract,
+        Interaction::Reflect,
+        Interaction::Dummy,
+    ] {
+        for order in [-2, 0, 1, 3, 10000] {
+            let shape = SurfaceShape::Diffractive {
+                base: Box::new(SurfaceShape::Conic {
+                    curvature: 0.04,
+                    conic: -0.5,
+                }),
+                phase: DiffractivePhase {
+                    norm_radius: 10.0,
+                    coefficients: vec![-400.0, 20.0, -2.0],
+                    design_order: 2,
+                    design_wavelength_um: 0.55,
+                    trace_order: order,
+                },
+            };
+            let mut sys = testutil::one_surface(shape);
+            sys.surfaces[1].interaction = interaction;
+            let rs = testutil::resolve(sys);
+            let h = b
+                .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+                .unwrap();
+            let rays: Vec<_> = (0..3)
+                .flat_map(|w| {
+                    (0..12).map(move |j| {
+                        (
+                            Ray::new(
+                                Vec3::new(0.3 + j as f64 * 0.5, 0.7, -5.0),
+                                Vec3::new(0.06, -0.04, 1.0).normalized(),
+                            ),
+                            w,
+                        )
+                    })
+                })
+                .collect();
+            let mut req = TraceRequest::new(h, batch(&rays), 0, 1);
+            req.record = RecordMode::AllSurfaces;
+            req.apply_apertures = false;
+            let got = trace(&b, req);
+            let mut evanescent = 0;
+            for (i, (ray, w)) in rays.iter().enumerate() {
+                let r = trace_ray(
+                    &rs,
+                    ray,
+                    *w as usize,
+                    &TraceOptions::unclipped().to_surface(1),
+                    None,
+                );
+                assert_eq!(
+                    got.status[i],
+                    reference_status_word(&r.status),
+                    "{interaction:?} {order} ray {i}"
+                );
+                evanescent += usize::from(matches!(
+                    got.ray_status(i),
+                    RayStatus::EvanescentOrder { .. }
+                ));
+                if !r.status.is_ok() {
+                    continue;
+                }
+                let (p, d) = v3(&got, i);
+                assert!((p - r.ray.pos).norm() < 2e-5);
+                assert!((d - r.ray.dir).norm() < 2e-6);
+                let n = if interaction == Interaction::Refract {
+                    rs.surfaces[1].n_after[*w as usize]
+                } else {
+                    rs.surfaces[0].n_after[*w as usize]
+                };
+                let expected = r.opl.value() + n * (p - r.ray.pos).dot(r.ray.dir);
+                assert!(
+                    (got.opl_hi[i] as f64 + got.opl_lo[i] as f64 - expected).abs() < 1e-8,
+                    "DOE OPL {interaction:?} {order}"
+                );
+            }
+            if order == 10000 && interaction != Interaction::Dummy {
+                assert_eq!(evanescent, rays.len());
+            }
+            b.release_systems(h).unwrap();
+        }
+    }
+}

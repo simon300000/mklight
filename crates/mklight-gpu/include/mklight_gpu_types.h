@@ -62,8 +62,9 @@
  *    new ray status codes.
  * 4: double-float ideal lens (paraxial_power_lo in place of reserved2,
  *    vergence_lo), apertures (aperture_params_lo) and asphere polynomial
- *    (asphere_lo); trace flag MKL_TRACE_NEWTON_CAP_NOT_CONVERGED. */
-#define MKL_LAYOUT_VERSION 4u
+ *    (asphere_lo); trace flag MKL_TRACE_NEWTON_CAP_NOT_CONVERGED.
+ * 5: coefficient pool, extended shapes and evanescent diffraction status. */
+#define MKL_LAYOUT_VERSION 5u
 /* 'MKLP' little-endian; first word of every packed system header. */
 #define MKL_PACKED_MAGIC 0x504C4B4Du
 
@@ -87,6 +88,31 @@
 #define MKL_SHAPE_EVEN_ASPHERE 2u
 #define MKL_SHAPE_PARAXIAL 3u
 #define MKL_SHAPE_COORD_BREAK 4u
+#define MKL_SHAPE_ODD_ASPHERE 5u
+#define MKL_SHAPE_Q_CON 6u
+#define MKL_SHAPE_Q_BFS 7u
+#define MKL_SHAPE_DIFFRACTIVE 8u
+#define MKL_SHAPE_TOROID 9u
+#define MKL_SHAPE_BICONIC 10u
+#define MKL_SHAPE_XY 11u
+#define MKL_SHAPE_ZERNIKE 12u
+
+/* Coefficient pool: interleaved f32 hi, lo pairs, indexed in PAIRS.
+ * Extended surfaces start with this prefix, then coefficients A, then B.
+ * DOE inserts 16 wavelength-dependent m*lambda_mm/(2*pi) pairs before A.
+ * Counts and enum values are exact integers stored as (float(value), 0).
+ * Physical power series use a power-of-two radius; other radii are model values. */
+#define MKL_COEFF_RADIUS 0u
+#define MKL_COEFF_CX 1u
+#define MKL_COEFF_KX 2u
+#define MKL_COEFF_NA 3u
+#define MKL_COEFF_NB 4u
+#define MKL_COEFF_KIND 5u /* DOE base shape; Zernike 0 Fringe, 1 Standard */
+#define MKL_COEFF_EXACT_CONIC 6u
+#define MKL_COEFF_TRACE_ORDER 7u
+#define MKL_COEFF_DESIGN_ORDER 8u
+#define MKL_COEFF_DESIGN_WAVELENGTH 9u
+#define MKL_COEFF_PREFIX 10u
 
 /* MklPackedSurface.interaction */
 #define MKL_INTERACT_REFRACT 0u
@@ -143,6 +169,7 @@
 #define MKL_RAY_NOT_CONVERGED 5u /* asphere Newton iteration failed its sag tolerance */
 #define MKL_RAY_OUTSIDE_DOMAIN 6u /* an asphere iterate left the sag's domain 1 - (1+k)c^2 r^2 >= 0 */
 #define MKL_RAY_DEGENERATE 7u     /* ray parallel to an ideal-lens plane */
+#define MKL_RAY_EVANESCENT 8u    /* selected diffraction order cannot propagate */
 #define MKL_RAY_CODE_MASK 0xFFu
 #define MKL_RAY_SURFACE_SHIFT 8u
 
@@ -248,7 +275,8 @@ struct MklPackedSurface {
     MKL_F32 vergence_lo[MKL_MAX_WAVELENGTHS]; /* 496  f32 residual of vergence */
     MKL_F32 aperture_params_lo[4];            /* 560  f32 residual of aperture_params */
     MKL_F32 asphere_lo[MKL_MAX_ASPHERE];      /* 576  f32 residual of asphere (normalised) */
-    MKL_U32 reserved3[2];                     /* 616  zero */
+    MKL_U32 coefficient_offset;              /* 616  first hi/lo PAIR in pool */
+    MKL_U32 coefficient_count;               /* 620  pairs, including prefix; 0 for legacy shapes */
 };                                    /* 624 bytes */
 
 /* Size checks (sizes are also asserted in Rust). */

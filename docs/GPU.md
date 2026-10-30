@@ -96,7 +96,9 @@ curvature, conic, indices and transforms, and coating codes; the trace
 kernel's parameter block, path-step words, ray planes and status codes were
 added; now 4: residuals of the ideal-lens power and vergences, the aperture
 sizes and the asphere coefficients, and the trace flag
-`MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`); the header carries a magic word and
+`MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`; now **5**: the coefficient-pool
+indices in the former final padding words, extended shape codes, and
+`MKL_RAY_EVANESCENT`); the header carries a magic word and
 the version, and backends validate both on upload.
 
 **Representability.** The packer rounds each model value once to f32 and
@@ -132,7 +134,7 @@ Systems with more than 16 wavelengths are packed in chunks
 
 | field | meaning / units |
 |---|---|
-| `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK}` |
+| `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK, ODD_ASPHERE, Q_CON, Q_BFS, DIFFRACTIVE, TOROID, BICONIC, XY, ZERNIKE}` |
 | `interaction` | `MKL_INTERACT_{REFRACT, REFLECT, DUMMY}` |
 | `aperture`, `aperture_params[4]` (+`_lo`) | `MKL_APERTURE_*`; mm. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
 | `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE` |
@@ -145,6 +147,8 @@ Systems with more than 16 wavelengths are packed in chunks
 | `to_next_rot[9]` (+`_lo`), `to_next_origin[3]` (+`_lo`), `to_next_shift[3]` (+`_lo`) | transform into the next local frame (below) |
 | `n_after[16]` (+`_lo`), `alpha_after[16]` | index after the surface, internal absorption (1/mm), per packed wavelength |
 
+| `coefficient_offset`, `coefficient_count` | first pair and number of pairs in the shared coefficient pool (0 count for legacy shapes) |
+
 **Aspheres.** The sag is `conic(r²) + ρ⁴ Σⱼ asphere[j] ρ²ʲ` with
 `ρ² = r²·asphere_inv_norm2`. The packer stores `asphere[j] = A₂ⱼ₊₄ R²ʲ⁺⁴`
 with `R = 2ᵉ` chosen near the surface's semi-diameter. Because `R` is a power
@@ -152,6 +156,33 @@ of two, the normalisation is exact (it changes only exponents), yet it keeps
 A22-scale coefficients (~1e-35) out of the f32 subnormal range and keeps
 Horner intermediates O(sag). Terms beyond A22, or coefficient sets that no
 exponent can make representable, are rejected.
+
+**Extended shapes (v5).** The surface record stays **624 bytes**; bytes
+616 and 620 now index a separate coefficient buffer. An entry is two
+4-byte scalars `(hi, lo)`, addressed in pairs, without vector alignment.
+`PackedSystemSet` concatenates pools and rebases each surface offset.
+Upload validates ranges, coefficient capacities, tags and all pool values
+before either kernel reads them. The C and Metal layout probes check the
+new offsets as well as the unchanged record size.
+
+The ten-pair prefix is defined by `MKL_COEFF_*` in the header: radius,
+x curvature/conic, two coefficient counts, base-shape/Zernike-ordering
+code, exact-conic flag, trace order, design order and design wavelength.
+It is followed by coefficients A then B (x then y for axis series). A DOE
+inserts sixteen double-float `m λ_mm/(2π)` values before its phase
+coefficients; the base uses the existing conic/even-asphere fields.
+Precomputing these wavelength factors preserves the model wavelength and
+signed i32 order without rounding them to a single f32. Design order and
+wavelength remain metadata and never rescale the traced phase.
+
+Capacities are odd 20, Q 20, XY 65 (degree 10), Zernike 37 Fringe or 45
+Standard, phase 10, and 10 per toroid/biconic axis. Odd and axis power
+series are normalized with an exact power-of-two radius chosen near the
+aperture, as for even aspheres. Q, XY, Zernike and phase retain their model
+normalization radius as hi + lo. QBfs uses the Forbes triangular conversion
+once in the packer, storing auxiliary-basis coefficients as hi + lo; the
+kernel evaluates the differentiated auxiliary Clenshaw recurrence directly.
+No conversion to monomials is involved.
 
 **Transforms** (CONVENTIONS §7.1). `to_next_origin` is the next vertex in this
 surface's local frame and `to_next_rot` maps this frame's axes to the next
@@ -374,6 +405,34 @@ pay for more (an asphere whose polynomial cancels the conic needs up to
 `MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`: a search the cap stops is then
 `NOT_CONVERGED`, never `MISS`, since the reference would iterate on.
 
+**Extended sag paths.** `surface_math.rs` and `surface_math.h` carry the
+same first-order Cartesian jets in f32 and double-float. Horner evaluates
+odd/axis/XY/phase polynomials, differentiated Clenshaw evaluates Q, and
+Jacobi plus complex Cartesian powers evaluates Zernike without polar
+singularities. Toroid and biconic formulas keep their cylinder limits
+without dividing by curvature. The odd cone has the reference's axial
+normal at the vertex. An exact-conic departure retains the closed-form
+intersection and checks its finite normalization domain afterward.
+
+General sag intersections use the reference's y-curvature/conic seed,
+positive/negative crossing bracket, Newton step and twenty-step residual
+backtracking, with the same Miss/NoConvergence/OutsideDomain decisions.
+The f32 convergence tolerance is `abs + rel*(|t|+|z|+|sag|)`; two Newton
+refinements on the double-float line and a fresh double-float gradient
+produce the carried point and normal. Normalization-domain comparisons in
+the refinement use hi + lo and the reference's radial margin. A DOE first
+intersects its base using the legacy path, then checks the phase domain.
+
+DOE interaction projects the phase gradient onto the actual base tangent
+plane. The selected order adds `m λ ∇surfaceΦ/(2π)` to tangential momentum
+and `m λ Φ/(2π)` to double-float OPL before writing the surface record.
+Transmission preserves the incident normal hemisphere, reflection reverses
+it and uses the incident index. A negative outgoing normal-momentum square
+returns `EVANESCENT`, distinct from TIR. Zero order takes ordinary
+refraction/reflection; dummy and image surfaces have no phase interaction.
+The f32 propagating-order test and double-float direction/phase calculations
+have matching CPU and MSL operations, including FTZ.
+
 **Reported state.** The output point and direction are the double-float
 ones rounded to f32. The rounding residual of the point along the
 direction is moved into the reported optical path (`OPL − n·(δ·D)`), so
@@ -403,6 +462,7 @@ repeats its final state).
 | `TIR` | `TotalInternalReflection` |
 | `NOT_CONVERGED` | `Failed { NoConvergence }` |
 | `OUTSIDE_DOMAIN` | `Failed { OutsideDomain }` |
+| `EVANESCENT` | `Failed { EvanescentOrder }` |
 | `DEGENERATE` | `Failed { Degenerate }` |
 | `NONFINITE` | `Failed { NonFinite }` (at the start surface for non-finite input) |
 

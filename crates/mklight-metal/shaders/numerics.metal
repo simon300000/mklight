@@ -2,7 +2,7 @@
 // floating-point behaviour probe, the packed-layout probe and the packed-sag
 // probe. Results are compared with the CPU-f32 emulation and the f64
 // reference by the crate's tests.
-#include "mklight_common.h"
+#include "surface_math.h"
 
 // Operation selector (MKL_DFOP_*), specialised per pipeline.
 constant uint mkl_fc_df_op [[function_constant(0)]];
@@ -116,7 +116,8 @@ kernel void mkl_layout_probe(device uint* out [[buffer(0)]],
     out[k++] = MKL_OFF(MklPackedSurface, vergence_lo);
     out[k++] = MKL_OFF(MklPackedSurface, aperture_params_lo);
     out[k++] = MKL_OFF(MklPackedSurface, asphere_lo);
-    out[k++] = MKL_OFF(MklPackedSurface, reserved3);
+    out[k++] = MKL_OFF(MklPackedSurface, coefficient_offset);
+    out[k++] = MKL_OFF(MklPackedSurface, coefficient_count);
 }
 
 // Sag of one packed surface (absolute index into the surface array) at the
@@ -125,7 +126,17 @@ kernel void mkl_sag_probe(constant MklPackedSurface* surfaces [[buffer(0)]],
                           constant MklSagParams& p [[buffer(1)]],
                           device const float* r2 [[buffer(2)]],
                           device float* out [[buffer(3)]],
+                          constant float* coefficients [[buffer(4)]],
                           uint i [[thread_position_in_grid]]) {
     if (i >= p.count) return;
-    out[i] = mkl_packed_sag(surfaces[p.surface], r2[i]);
+    constant MklPackedSurface& s=surfaces[p.surface];
+    if (s.shape<=MKL_SHAPE_COORD_BREAK) {out[i]=mkl_packed_sag(s,r2[i]);return;}
+    float y=sqrt(r2[i]);
+    if (s.shape==MKL_SHAPE_DIFFRACTIVE) {
+        if (!mkl_surface_domain(s,coefficients,0.0f,y)) {out[i]=NAN;return;}
+        MklPackedSurface base=s; base.shape=uint(mkl_surface_data(s,coefficients)[2*MKL_COEFF_KIND]);
+        out[i]=mkl_packed_sag(base,r2[i]);return;
+    }
+    MklJet<float> v;
+    out[i]=mkl_surface_eval(s,coefficients,0.0f,y,v)?v.v:NAN;
 }

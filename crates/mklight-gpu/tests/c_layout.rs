@@ -23,6 +23,7 @@ fn probe_source() -> String {
     for (f, _) in surface_offsets() {
         s += &format!("printf(\"surface.{f} %zu\\n\", offsetof(struct MklPackedSurface, {f}));\n");
     }
+    s += "printf(\"layout.version %u\\n\", MKL_LAYOUT_VERSION);\n";
     s += "return 0;}\n";
     s
 }
@@ -85,6 +86,9 @@ fn rust_layout_matches_c_header() {
             .parse()
             .unwrap()
     };
+    assert_eq!(get("layout.version"), 5);
+    assert_eq!(get("surface.coefficient_offset"), 616);
+    assert_eq!(get("surface.coefficient_count"), 620);
     assert_eq!(get("header.size"), size_of::<PackedHeader>());
     assert_eq!(get("surface.size"), size_of::<PackedSurface>());
     assert_eq!(get("header.align"), align_of::<PackedHeader>());

@@ -458,10 +458,7 @@ pub fn absorbing_triplet() -> OpticalSystem {
 /// and the fixtures above.
 pub fn xval_systems() -> Vec<(String, OpticalSystem)> {
     let mut v = Vec::new();
-    for (name, sys) in samples::all()
-        .into_iter()
-        .filter(|(_, s)| !samples::has_extended_surfaces(s))
-    {
+    for (name, sys) in samples::all() {
         let vig = vignetted(&sys, 0.93);
         v.push((name.to_string(), sys));
         v.push((format!("{name} (vignetted)"), vig));
@@ -632,4 +629,146 @@ pub fn plate(tilted: bool) -> OpticalSystem {
     }
     s.stop = 1;
     s
+}
+
+/// Full coefficient capacities, both Zernike orderings, cylinder limits,
+/// and a curved DOE. Shared by emulation, device and steep-ray tests.
+pub fn extended_shapes() -> Vec<(&'static str, SurfaceShape)> {
+    use mklight_core::model::surface::{DiffractivePhase, ZernikeOrdering};
+    let mut shapes = vec![
+        (
+            "odd20",
+            SurfaceShape::OddAsphere {
+                curvature: 0.04,
+                conic: -0.4,
+                coefficients: (0..20)
+                    .map(|j| {
+                        if j == 0 {
+                            0.0
+                        } else {
+                            0.01 * (-1f64).powi(j) / 16f64.powi(j + 1)
+                        }
+                    })
+                    .collect(),
+            },
+        ),
+        (
+            "qcon20",
+            SurfaceShape::QCon {
+                curvature: 0.04,
+                conic: -0.4,
+                norm_radius: 12.0,
+                coefficients: (0..20)
+                    .map(|j| 0.002 / (j + 1) as f64 / (j + 1) as f64)
+                    .collect(),
+            },
+        ),
+        (
+            "qbfs20",
+            SurfaceShape::QBfs {
+                curvature: 0.04,
+                norm_radius: 12.0,
+                coefficients: (0..20)
+                    .map(|j| 0.02 / (j + 1) as f64 / (j + 1) as f64)
+                    .collect(),
+            },
+        ),
+        (
+            "toroid10",
+            SurfaceShape::Toroid {
+                curvature_x: -0.05,
+                curvature_y: 0.03,
+                conic_y: -0.5,
+                y_asphere: (0..10).map(|j| 0.01 / 16f64.powi(2 * j + 4)).collect(),
+            },
+        ),
+        (
+            "biconic20",
+            SurfaceShape::Biconic {
+                curvature_x: 0.05,
+                curvature_y: 0.03,
+                conic_x: 0.2,
+                conic_y: -0.5,
+                x_asphere: (0..10).map(|j| 0.01 / 16f64.powi(2 * j + 4)).collect(),
+                y_asphere: (0..10).map(|j| -0.01 / 16f64.powi(2 * j + 4)).collect(),
+            },
+        ),
+        (
+            "xy65",
+            SurfaceShape::XYPolynomial {
+                curvature: 0.04,
+                conic: 0.3,
+                norm_radius: 12.0,
+                coefficients: (0..65).map(|j| 0.005 * ((j % 3) as f64 - 1.0)).collect(),
+            },
+        ),
+        (
+            "doe10",
+            SurfaceShape::Diffractive {
+                base: Box::new(SurfaceShape::EvenAsphere {
+                    curvature: 0.04,
+                    conic: -0.3,
+                    coefficients: vec![1e-6, -1e-9],
+                }),
+                phase: DiffractivePhase {
+                    norm_radius: 12.0,
+                    coefficients: (0..10).map(|j| -50.0 / (j + 1) as f64).collect(),
+                    design_order: 2,
+                    design_wavelength_um: 0.55,
+                    trace_order: 1,
+                },
+            },
+        ),
+    ];
+    for (name, ordering) in [
+        ("fringe37", ZernikeOrdering::Fringe),
+        ("standard45", ZernikeOrdering::Standard),
+    ] {
+        shapes.push((
+            name,
+            SurfaceShape::ZernikeSag {
+                curvature: 0.04,
+                conic: 0.3,
+                norm_radius: 12.0,
+                ordering,
+                coefficients: (0..ordering.max_terms())
+                    .map(|j| 0.002 * ((j % 3) as f64 - 1.0) / (j + 1) as f64)
+                    .collect(),
+            },
+        ));
+    }
+    for (name, cx, cy) in [("cylinder_x", 0.05, 0.0), ("cylinder_y", 0.0, -0.05)] {
+        shapes.push((
+            name,
+            SurfaceShape::Toroid {
+                curvature_x: cx,
+                curvature_y: cy,
+                conic_y: 0.0,
+                y_asphere: vec![],
+            },
+        ));
+    }
+    shapes
+}
+
+/// Reproducible Cartesian rays spanning ±80 degrees, including both sides
+/// of the finite sag domains. No aiming or symmetry shortcut is used.
+pub fn steep_random_rays() -> Vec<mklight_trace::Ray> {
+    let mut rng = mklight_core::rng::Philox::new(0x4d4b4c5355524635, 0);
+    (0..8192)
+        .map(|_| {
+            let x = 28.0 * rng.uniform() - 14.0;
+            let y = 28.0 * rng.uniform() - 14.0;
+            let angle = (160.0 * rng.uniform() - 80.0).to_radians();
+            let azimuth = std::f64::consts::TAU * rng.uniform();
+            mklight_trace::Ray::new(
+                mklight_core::Vec3::new(x, y, -5.0),
+                mklight_core::Vec3::new(
+                    angle.sin() * azimuth.cos(),
+                    angle.sin() * azimuth.sin(),
+                    angle.cos(),
+                ),
+            )
+        })
+        .collect()
 }

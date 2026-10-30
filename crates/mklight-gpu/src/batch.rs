@@ -733,6 +733,7 @@ pub enum RayStatus {
     NotConverged { surface: u32 },
     OutsideDomain { surface: u32 },
     Degenerate { surface: u32 },
+    EvanescentOrder { surface: u32 },
     Unknown { code: u32, surface: u32 },
 }
 
@@ -748,6 +749,7 @@ impl RayStatus {
             MKL_RAY_NOT_CONVERGED => RayStatus::NotConverged { surface },
             MKL_RAY_OUTSIDE_DOMAIN => RayStatus::OutsideDomain { surface },
             MKL_RAY_DEGENERATE => RayStatus::Degenerate { surface },
+            MKL_RAY_EVANESCENT => RayStatus::EvanescentOrder { surface },
             code => RayStatus::Unknown { code, surface },
         }
     }
@@ -761,6 +763,7 @@ impl RayStatus {
             RayStatus::NotConverged { surface } => (MKL_RAY_NOT_CONVERGED, surface),
             RayStatus::OutsideDomain { surface } => (MKL_RAY_OUTSIDE_DOMAIN, surface),
             RayStatus::Degenerate { surface } => (MKL_RAY_DEGENERATE, surface),
+            RayStatus::EvanescentOrder { surface } => (MKL_RAY_EVANESCENT, surface),
             RayStatus::Unknown { code, surface } => (code & MKL_RAY_CODE_MASK, surface),
         };
         code | (s << MKL_RAY_SURFACE_SHIFT)

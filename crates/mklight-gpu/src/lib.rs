@@ -31,6 +31,7 @@ pub mod fx;
 pub mod layout;
 pub mod pending;
 pub mod reduce;
+mod surface_math;
 pub mod trace_kernel;
 pub mod xval;
 

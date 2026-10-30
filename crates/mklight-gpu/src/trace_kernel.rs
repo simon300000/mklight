@@ -478,15 +478,15 @@ fn refine_t<E: FpEnv>(t1: F<E>, r: F<E>, rp: F<E>) -> D<E> {
 /// `mkl_intersect`: `mklight_trace::surface::intersect` from the
 /// double-float point `p` along `d` (module docs, steps 2–5).
 #[inline(always)]
-fn intersect<E: FpEnv>(
+fn intersect_legacy<E: FpEnv>(
     s: &PackedSurface,
+    shape: u32,
     p: DV<E>,
     d: DV<E>,
     prm: &TraceParams,
 ) -> Result<Hit<E>, u32> {
     let zg = [D::ZERO, D::ZERO, D::from_f(F::ONE)];
     let zn = [F::ZERO, F::ZERO, F::ONE];
-    let shape = s.shape;
     if shape == MKL_SHAPE_COORD_BREAK {
         return Ok(Hit {
             ta: D::ZERO,
@@ -566,6 +566,194 @@ fn intersect<E: FpEnv>(
         g,
         normal: normalized(hi3(g)),
     })
+}
+
+/// Safeguarded Newton, matching the general sag reference including failure
+/// classes, bracket updates, residual backtracking and the final correction.
+fn sag_from<E: FpEnv>(
+    s: &PackedSurface,
+    pool: &[Df32],
+    q: V<E>,
+    d: V<E>,
+    prm: &TraceParams,
+) -> Result<F<E>, u32> {
+    let seed = conic_from(f(s.curvature), f(s.conic), q, d);
+    let seed_hit = seed.is_some();
+    let mut t = seed.map_or(F::ZERO, |(t, _)| t);
+    let (mut positive, mut negative): (Option<F<E>>, Option<F<E>>) = (None, None);
+    let mut previous = f::<E>(f32::INFINITY);
+    for it in 0..=prm.max_iterations {
+        let bracketed = positive.is_some() && negative.is_some();
+        let left_domain = if !seed_hit && !bracketed {
+            MISS
+        } else {
+            DOMAIN
+        };
+        let pt = at(t, d, q);
+        let v = crate::surface_math::evaluate(s, pool, pt[0], pt[1]).ok_or(left_domain)?;
+        let g = pt[2] - v.v;
+        let gp = d[2] - v.x * d[0] - v.y * d[1];
+        if g > 0.0 {
+            positive = Some(t);
+        } else if g < 0.0 {
+            negative = Some(t);
+        }
+        let bracket = positive.zip(negative).map(|(a, b)| (a.min(b), a.max(b)));
+        let failure = if bracket.is_some() { NO_CONV } else { MISS };
+        let tol =
+            f::<E>(prm.tolerance_abs) + prm.tolerance_rel * ((t.abs() + pt[2].abs()) + v.v.abs());
+        if g.abs() <= tol {
+            let corrected = at(t - g / gp, d, q);
+            if crate::surface_math::evaluate(s, pool, corrected[0], corrected[1]).is_some() {
+                t = t - g / gp;
+            }
+            return Ok(t);
+        }
+        if it == prm.max_iterations {
+            return Err(
+                if g.abs() <= 0.5 * previous || prm.flags & MKL_TRACE_NEWTON_CAP_NOT_CONVERGED != 0
+                {
+                    NO_CONV
+                } else {
+                    failure
+                },
+            );
+        }
+        if !g.is_finite() || gp == 0.0 || !gp.is_finite() {
+            return Err(failure);
+        }
+        let mut next = t - g / gp;
+        if let Some((lo, hi)) = bracket
+            && !(next > lo && next < hi)
+        {
+            next = lo + 0.5 * (hi - lo);
+        }
+        let (mut outside, mut accepted) = (false, false);
+        for _ in 0..20 {
+            let p = at(next, d, q);
+            match crate::surface_math::evaluate(s, pool, p[0], p[1]) {
+                Some(v) if bracket.is_some() || (p[2] - v.v).abs() < g.abs() => {
+                    accepted = true;
+                    break;
+                }
+                Some(_) => {}
+                None => outside = true,
+            }
+            next = t + 0.5 * (next - t);
+        }
+        if !accepted {
+            return Err(if outside && bracket.is_none() {
+                left_domain
+            } else {
+                failure
+            });
+        }
+        previous = g.abs();
+        t = next;
+    }
+    unreachable!()
+}
+
+fn intersect<E: FpEnv>(
+    s: &PackedSurface,
+    pool: &[Df32],
+    p: DV<E>,
+    d: DV<E>,
+    prm: &TraceParams,
+) -> Result<Hit<E>, u32> {
+    use crate::surface_math::{data, domain, evaluate};
+    if s.shape <= MKL_SHAPE_COORD_BREAK {
+        return intersect_legacy(s, s.shape, p, d, prm);
+    }
+    let data = data(s, pool);
+    if s.shape == MKL_SHAPE_DIFFRACTIVE {
+        let hit = intersect_legacy(s, data[MKL_COEFF_KIND as usize].hi as u32, p, d, prm)?;
+        return if domain(s, pool, hit.x[0], hit.x[1]) {
+            Ok(hit)
+        } else {
+            Err(DOMAIN)
+        };
+    }
+    if data[MKL_COEFF_EXACT_CONIC as usize].hi != 0.0 {
+        let hit = intersect_legacy(s, MKL_SHAPE_CONIC, p, d, prm)?;
+        return evaluate(s, pool, hit.x[0], hit.x[1])
+            .map(|_| hit)
+            .ok_or(DOMAIN);
+    }
+    let ta = -ddot(p, d);
+    let q = point_on(p, ta, d);
+    let t = sag_from(s, pool, hi3(q), hi3(d), prm)?;
+    let mut tb = D::from_f(t);
+    // Two refinements on the exact line: steep high-order departures can
+    // amplify the f32 seed error enough that one step exceeds the budget.
+    for _ in 0..2 {
+        let x = point_on(q, tb, d);
+        let v = evaluate(s, pool, x[0], x[1]).ok_or(DOMAIN)?;
+        let gp = d[2] - v.x * d[0] - v.y * d[1];
+        let step = (x[2] - v.v) / gp;
+        if gp.hi() != 0.0 && step.hi().is_finite() {
+            tb = tb - step;
+        }
+    }
+    let x = point_on(q, tb, d);
+    let v = evaluate(s, pool, x[0], x[1]).ok_or(DOMAIN)?;
+    let g = [-v.x, -v.y, D::from_f(F::ONE)];
+    if !finite3(hi3(g)) {
+        return Err(DOMAIN);
+    }
+    Ok(Hit {
+        ta,
+        tb,
+        x,
+        g,
+        normal: normalized(hi3(g)),
+    })
+}
+
+/// Tangent momentum on the actual base surface, including its metric.
+fn diffract<E: FpEnv>(
+    s: &PackedSurface,
+    pool: &[Df32],
+    w: usize,
+    x: DV<E>,
+    k: DV<E>,
+    g: DV<E>,
+    n1: D<E>,
+    n2: D<E>,
+    reflected: bool,
+) -> Option<(DV<E>, D<E>)> {
+    use crate::surface_math::{data, phase};
+    let scale = D::<E>::from_df(data(s, pool)[MKL_COEFF_PREFIX as usize + w]);
+    let nf = normalized(hi3(g));
+    let kf = hi3(k);
+    let pf = phase(s, pool, x[0].hi(), x[1].hi());
+    let gf = [pf.x * scale.hi(), pf.y * scale.hi(), F::ZERO];
+    let knf = dot(kf, nf);
+    let gnf = dot(gf, nf);
+    let inv = F::ONE / n2.hi();
+    let tf = std::array::from_fn(|i| ((kf[i] - nf[i] * knf) * n1.hi() + gf[i] - nf[i] * gnf) * inv);
+    if 1.0 - dot(tf, tf) < 0.0 {
+        return None;
+    }
+    let v = phase(s, pool, x[0], x[1]);
+    let length = dnorm(g);
+    let normal = g.map(|a| a / length);
+    let kn = ddot(k, normal);
+    let grad = [v.x * scale, v.y * scale, D::ZERO];
+    let gn = ddot(grad, normal);
+    let inv = D::from_f(F::ONE) / n2;
+    let tangent =
+        std::array::from_fn(|i| ((k[i] - normal[i] * kn) * n1 + grad[i] - normal[i] * gn) * inv);
+    let disc = D::from_f(F::ONE) - ddot(tangent, tangent);
+    if disc.hi() < 0.0 {
+        return None;
+    }
+    let sign = if (knf < 0.0) != reflected { -1.0 } else { 1.0 };
+    let root = disc.sqrt() * sign;
+    Some((
+        std::array::from_fn(|i| tangent[i] + normal[i] * root),
+        scale * v.v,
+    ))
 }
 
 /// `mkl_refract`: stable vector Snell (`mklight_trace::interact::refract`)
@@ -777,6 +965,7 @@ fn index<E: FpEnv>(s: &PackedSurface, w: usize) -> D<E> {
 pub fn trace_ray<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],
+    pool: &[Df32],
     steps: &[u32],
     prm: &TraceParams,
     ray: &KRayIn,
@@ -857,7 +1046,7 @@ pub fn trace_ray<E: FpEnv>(
         n_cur = n1;
         let fail = |code: u32| code | ((si as u32) << MKL_RAY_SURFACE_SHIFT);
         // 2. Intersect; optical path and absorption of the segment.
-        let hit = match intersect(surf, pos, dir, prm) {
+        let hit = match intersect(surf, pool, pos, dir, prm) {
             Ok(h) => h,
             Err(code) => {
                 status = fail(code);
@@ -920,78 +1109,107 @@ pub fn trace_ray<E: FpEnv>(
         };
         let coating = surf.coating;
         let df = hi3(dir);
-        match act {
-            Act::None => {}
-            Act::Refract => {
-                let Some((_, cos, gamma)) = refract(df, hit.normal, n1.hi(), n_other.hi()) else {
-                    status = fail(MKL_RAY_TIR);
-                    break;
-                };
-                let mu = n1 / n_other;
-                let b = gamma / norm(hi3(hit.g));
-                let d2 = [
-                    dir[0] * mu + hit.g[0] * b,
-                    dir[1] * mu + hit.g[1] * b,
-                    dir[2] * mu + hit.g[2] * b,
-                ];
-                // Two corrections: near grazing exit the f32 γ is only
-                // good to ~√ε and one Newton step leaves O(e²/cos θ').
-                dir = renorm_along(renorm_along(d2, hit.g), hit.g);
-                n_cur = n_other;
-                if radiometry {
-                    let t = if mirror {
-                        F::ZERO
-                    } else if coating == MKL_COATING_IDEAL {
-                        f(surf.coating_t)
-                    } else {
-                        fresnel(n1.hi(), n_other.hi(), cos).1
-                    };
-                    tw = tw * t;
-                }
-            }
-            Act::Reflect => {
-                let (_, cos) = reflect(df, hit.normal);
-                let gh = hi3(hit.g);
-                let b = -2.0 * dot(df, gh) / dot(gh, gh);
-                let d2 = [
-                    dir[0] + hit.g[0] * b,
-                    dir[1] + hit.g[1] * b,
-                    dir[2] + hit.g[2] * b,
-                ];
-                dir = renorm_along(d2, hit.g);
-                if radiometry {
-                    let r = if coating == MKL_COATING_IDEAL {
-                        f(surf.coating_r)
-                    } else if mirror {
-                        F::ONE
-                    } else {
-                        fresnel(n1.hi(), n_other.hi(), cos).0
-                    };
-                    tw = tw * r;
-                }
-            }
-            Act::Lens { reflect: refl } => {
-                let mut kk = dir;
-                if refl {
-                    // Reflection at the lens plane (normal +z): exact.
-                    kk[2] = -kk[2];
-                }
-                let n2 = if refl { n1 } else { n_other };
-                let verg = if back {
-                    D::ZERO
+        if surf.shape == MKL_SHAPE_DIFFRACTIVE
+            && crate::surface_math::data(surf, pool)[MKL_COEFF_TRACE_ORDER as usize].hi != 0.0
+            && matches!(act, Act::Refract | Act::Reflect)
+        {
+            let reflected = matches!(act, Act::Reflect);
+            let n2 = if reflected { n1 } else { n_other };
+            let Some((d2, delta)) = diffract(surf, pool, w, pos, dir, hit.g, n1, n2, reflected)
+            else {
+                status = fail(MKL_RAY_EVANESCENT);
+                break;
+            };
+            dir = d2;
+            n_cur = n2;
+            opl = opl + delta;
+            if radiometry {
+                let cos = dot(df, hit.normal).abs().min(F::ONE);
+                let (r, t) = if coating == MKL_COATING_IDEAL {
+                    (f(surf.coating_r), f(surf.coating_t))
+                } else if mirror {
+                    (F::ONE, F::ZERO)
                 } else {
-                    D::new(surf.vergence[w], surf.vergence_lo[w])
+                    fresnel(n1.hi(), n_other.hi(), cos)
                 };
-                let phi = D::new(surf.paraxial_power, surf.paraxial_power_lo);
-                let Some((d2, delta)) = ideal_lens(pos[0], pos[1], kk, phi, n1, n2, verg) else {
-                    status = fail(MKL_RAY_DEGENERATE);
-                    break;
-                };
-                dir = d2;
-                n_cur = n2;
-                opl = opl + delta;
-                if radiometry && coating == MKL_COATING_IDEAL {
-                    tw = tw * f::<E>(if refl { surf.coating_r } else { surf.coating_t });
+                tw = tw * if reflected { r } else { t };
+            }
+        } else {
+            match act {
+                Act::None => {}
+                Act::Refract => {
+                    let Some((_, cos, gamma)) = refract(df, hit.normal, n1.hi(), n_other.hi())
+                    else {
+                        status = fail(MKL_RAY_TIR);
+                        break;
+                    };
+                    let mu = n1 / n_other;
+                    let b = gamma / norm(hi3(hit.g));
+                    let d2 = [
+                        dir[0] * mu + hit.g[0] * b,
+                        dir[1] * mu + hit.g[1] * b,
+                        dir[2] * mu + hit.g[2] * b,
+                    ];
+                    // Two corrections: near grazing exit the f32 γ is only
+                    // good to ~√ε and one Newton step leaves O(e²/cos θ').
+                    dir = renorm_along(renorm_along(d2, hit.g), hit.g);
+                    n_cur = n_other;
+                    if radiometry {
+                        let t = if mirror {
+                            F::ZERO
+                        } else if coating == MKL_COATING_IDEAL {
+                            f(surf.coating_t)
+                        } else {
+                            fresnel(n1.hi(), n_other.hi(), cos).1
+                        };
+                        tw = tw * t;
+                    }
+                }
+                Act::Reflect => {
+                    let (_, cos) = reflect(df, hit.normal);
+                    let gh = hi3(hit.g);
+                    let b = -2.0 * dot(df, gh) / dot(gh, gh);
+                    let d2 = [
+                        dir[0] + hit.g[0] * b,
+                        dir[1] + hit.g[1] * b,
+                        dir[2] + hit.g[2] * b,
+                    ];
+                    dir = renorm_along(d2, hit.g);
+                    if radiometry {
+                        let r = if coating == MKL_COATING_IDEAL {
+                            f(surf.coating_r)
+                        } else if mirror {
+                            F::ONE
+                        } else {
+                            fresnel(n1.hi(), n_other.hi(), cos).0
+                        };
+                        tw = tw * r;
+                    }
+                }
+                Act::Lens { reflect: refl } => {
+                    let mut kk = dir;
+                    if refl {
+                        // Reflection at the lens plane (normal +z): exact.
+                        kk[2] = -kk[2];
+                    }
+                    let n2 = if refl { n1 } else { n_other };
+                    let verg = if back {
+                        D::ZERO
+                    } else {
+                        D::new(surf.vergence[w], surf.vergence_lo[w])
+                    };
+                    let phi = D::new(surf.paraxial_power, surf.paraxial_power_lo);
+                    let Some((d2, delta)) = ideal_lens(pos[0], pos[1], kk, phi, n1, n2, verg)
+                    else {
+                        status = fail(MKL_RAY_DEGENERATE);
+                        break;
+                    };
+                    dir = d2;
+                    n_cur = n2;
+                    opl = opl + delta;
+                    if radiometry && coating == MKL_COATING_IDEAL {
+                        tw = tw * f::<E>(if refl { surf.coating_r } else { surf.coating_t });
+                    }
                 }
             }
         }

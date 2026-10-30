@@ -39,6 +39,7 @@ const DEFAULT_CHUNK: usize = 1 << 20;
 struct Uploaded {
     headers: SharedBuffer<PackedHeader>,
     surfaces: SharedBuffer<PackedSurface>,
+    coefficients: SharedBuffer<Df32>,
     set: PackedSystemSet,
 }
 
@@ -429,6 +430,7 @@ impl Inner {
                             e.set_buffer(0, &up.surfaces, 0);
                             e.set_bytes(1, &p);
                             e.set_buffer(2, &br, start);
+                            e.set_buffer(4, &up.coefficients, 0);
                             e.set_buffer_mut(3, &mut out, start);
                             e.dispatch_1d(&pso, len);
                             Ok(())
@@ -497,6 +499,7 @@ impl Inner {
                     e.set_buffer(0, &up.headers, 0);
                     e.set_buffer(1, &up.surfaces, 0);
                     e.set_buffer(2, &steps, 0);
+                    e.set_buffer(10, &up.coefficients, 0);
                     e.set_bytes(3, &p);
                     e.set_buffer(4, &bf, start);
                     e.set_buffer(5, &bu, start);
@@ -654,6 +657,7 @@ impl ComputeBackend for MetalBackend {
         let up = Uploaded {
             headers: self.inner.ctx.buffer(&set.headers)?,
             surfaces: self.inner.ctx.buffer(&set.surfaces)?,
+            coefficients: self.inner.ctx.buffer(&set.coefficients)?,
             set,
         };
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
