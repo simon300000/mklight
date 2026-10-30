@@ -10,6 +10,7 @@ pub mod curvature;
 pub mod energy;
 pub mod fans;
 pub mod illumination;
+pub mod layout;
 pub mod seidel;
 pub mod spot;
 pub mod util;
