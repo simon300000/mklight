@@ -26,7 +26,8 @@ struct AnalysisResultView: View {
     private var dedicated: AnyView? {
         let o = output, c = context
         switch analysis {
-        case "first_order": return FirstOrderView(output: o).map { AnyView($0) }
+        case "first_order":
+            return FirstOrderView(output: o, nonRotational: c.system?.hasNonRotationalSurfaces ?? false).map { AnyView($0) }
         case "validate": return AnyView(ValidateResultView(output: o, context: c))
         case "spot_diagram": return SpotDiagramView(output: o, context: c).map { AnyView($0) }
         case "ray_fan", "opd_fan": return FanView(output: o, context: c).map { AnyView($0) }
@@ -107,14 +108,30 @@ struct AnalysisResultView: View {
 /// `first_order`: the keyed report as a two-column table.
 struct FirstOrderView: View {
     let data: FirstOrderData
+    let json: JSONValue
+    /// The design is not rotationally symmetric: show its x / y first-order
+    /// data, or say that the engine reports the y section only.
+    var nonRotational = false
 
-    init?(output: AnalysisOutput) {
+    init?(output: AnalysisOutput, nonRotational: Bool = false) {
         guard let d = FirstOrderData(output.json) else { return nil }
         data = d
+        json = output.json
+        self.nonRotational = nonRotational
     }
 
     var body: some View {
         ScrollView {
+            if nonRotational {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    Text("Anamorphic").font(.subheadline.weight(.semibold))
+                    AnamorphicSummary(json: json)
+                }
+                .padding(Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.fill.quinary, in: .rect(cornerRadius: 10))
+                .padding([.horizontal, .top], Space.l)
+            }
             Grid(alignment: .leading, horizontalSpacing: Space.xl, verticalSpacing: Space.s) {
                 ForEach(data.entries) { e in
                     GridRow {

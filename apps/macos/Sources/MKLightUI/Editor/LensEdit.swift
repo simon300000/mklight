@@ -11,6 +11,9 @@ public enum LensEdit: Equatable, Sendable {
     case setMaterial(SurfaceID, LensValueParser.MaterialEdit)
     case setLabel(SurfaceID, String)
     case setShapeKind(SurfaceID, SurfaceShape.Kind)
+    /// A cylinder: a biconic with one plane axis.
+    case setCylinder(SurfaceID, SurfaceShape.CylinderAxis)
+    case setShapeParameter(SurfaceID, ShapeParameter, Double)
     case setCoating(SurfaceID, String?)
     case insert(at: Int)
     case delete(at: Int)
@@ -24,7 +27,8 @@ public enum LensEdit: Equatable, Sendable {
         case .setSemiDiameter: "Change Semi-Diameter"
         case .setMaterial: "Change Material"
         case .setLabel: "Change Label"
-        case .setShapeKind: "Change Surface Type"
+        case .setShapeKind, .setCylinder: "Change Surface Type"
+        case .setShapeParameter(_, let p, _): "Change \(p.title)"
         case .setCoating: "Change Coating"
         case .insert: "Insert Surface"
         case .delete: "Delete Surface"
@@ -48,6 +52,13 @@ public enum LensEdit: Equatable, Sendable {
             }
         case .setLabel(let id, let l): at(id) { $0.label = l }
         case .setShapeKind(let id, let k): if let i = s.surfaceIndex(of: id) { s.setShapeKind(k, at: i) }
+        case .setCylinder(let id, let axis):
+            if let i = s.surfaceIndex(of: id) {
+                let c = s.surfaces[i].shape.curvature
+                s.setShapeKind(.biconic, at: i)
+                s.surfaces[i].shape = .cylinder(curvature: c, axis: axis)
+            }
+        case .setShapeParameter(let id, let p, let v): at(id) { $0.shape.setShapeParameter(p, v) }
         case .setCoating(let id, let c): at(id) { $0.coating = c }
         case .insert(let i): s.insertSurface(at: i)
         case .delete(let i): s.deleteSurface(at: i)

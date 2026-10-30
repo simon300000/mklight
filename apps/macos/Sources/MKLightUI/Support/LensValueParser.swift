@@ -9,6 +9,7 @@ public enum LensValueParser {
         case mustBePositive
         case mustBeFinite
         case invalidMaterial(String)
+        case mustBeWhole
 
         public var description: String {
             switch self {
@@ -16,6 +17,7 @@ public enum LensValueParser {
             case .mustBePositive: "Value must be greater than zero"
             case .mustBeFinite: "Value must be finite"
             case .invalidMaterial(let s): "'\(s)' is not a material (glass name, AIR, MIRROR, nd/vd, n=…, CATALOG:NAME)"
+            case .mustBeWhole: "An order is a whole number"
             }
         }
     }

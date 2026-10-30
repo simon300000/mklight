@@ -17,66 +17,6 @@ public struct SurfaceID: RawRepresentable, Codable, Sendable, Hashable, Comparab
     public var description: String { "#\(rawValue)" }
 }
 
-/// Surface shape in its local frame (CONVENTIONS §2). Curvature `c = 1/R` is
-/// stored, never the radius.
-public enum SurfaceShape: Codable, Sendable, Hashable {
-    /// Flat surface `z = 0`.
-    case plane
-    /// Sphere or conic: `z = c r² / (1 + √(1 − (1+k) c² r²))`.
-    case conic(curvature: Double, conic: Double)
-    /// Conic plus `Σ a_i r^(2i+4)`; `coefficients[0]` is A4.
-    case evenAsphere(curvature: Double, conic: Double, coefficients: [Double])
-    /// Ideal thin lens of the given focal length (mm).
-    case paraxial(focalLength: Double)
-    /// Changes the frame only (uses the surface's `placement`).
-    case coordinateBreak
-
-    public init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        switch try c.value("type", as: String.self) {
-        case "plane":
-            try c.allowOnly("type")
-            self = .plane
-        case "conic":
-            try c.allowOnly("type", "curvature", "conic")
-            self = .conic(curvature: try c.value("curvature"), conic: try c.value("conic", default: 0))
-        case "even_asphere":
-            try c.allowOnly("type", "curvature", "conic", "coefficients")
-            self = .evenAsphere(
-                curvature: try c.value("curvature"), conic: try c.value("conic", default: 0),
-                coefficients: try c.value("coefficients"))
-        case "paraxial":
-            try c.allowOnly("type", "focal_length")
-            self = .paraxial(focalLength: try c.value("focal_length"))
-        case "coordinate_break":
-            try c.allowOnly("type")
-            self = .coordinateBreak
-        case let t:
-            throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown surface shape '\(t)'")
-        }
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var c = encoder.container(keyedBy: AnyKey.self)
-        switch self {
-        case .plane: try c.put("plane", "type")
-        case .conic(let cv, let k):
-            try c.put("conic", "type")
-            try c.put(cv, "curvature")
-            try c.put(k, "conic")
-        case .evenAsphere(let cv, let k, let a):
-            try c.put("even_asphere", "type")
-            try c.put(cv, "curvature")
-            try c.put(k, "conic")
-            try c.put(a, "coefficients")
-        case .paraxial(let f):
-            try c.put("paraxial", "type")
-            try c.put(f, "focal_length")
-        case .coordinateBreak: try c.put("coordinate_break", "type")
-        }
-    }
-}
-
 /// What the surface does to light.
 public enum Interaction: String, Codable, Sendable, Hashable, CaseIterable {
     case refract
