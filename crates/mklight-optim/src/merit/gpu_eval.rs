@@ -51,7 +51,7 @@
 //! Reported points are f32 (`docs/GPU.md` §8), so values carry a rounding
 //! noise of about half an f32 ulp of the image coordinates. Finite
 //! differences therefore need larger steps than on the f64 reference
-//! ([`GpuTraceEvaluator::fd_relative_step`], `docs/OPTIMIZATION.md`).
+//! ([`gpu_fd_relative_step`], `docs/OPTIMIZATION.md`).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -150,11 +150,29 @@ pub fn gpu_supports(kind: &OperandKind, wavefront: bool) -> bool {
     }
 }
 
-/// Relative finite-difference step for operands evaluated in f32 on a GPU
-/// (see [`GpuTraceEvaluator::fd_relative_step`]).
-pub const GPU_FD_RELATIVE_STEP_FORWARD: f64 = 1e-4;
-/// Central-difference counterpart of [`GPU_FD_RELATIVE_STEP_FORWARD`].
-pub const GPU_FD_RELATIVE_STEP_CENTRAL: f64 = 1e-3;
+/// Relative finite-difference step `η` for an operand evaluated in f32 on a
+/// GPU. Reported points are f32, so ray positions carry an absolute noise of
+/// about half an f32 ulp of the coordinate (5e-7 mm at 8 mm image height)
+/// and the `√ε` / `∛ε` defaults difference noise (Jacobian column errors
+/// of 6 and 7 on the Cooke triplet). Measured column errors against the f64
+/// reference (`tests/gpu_eval.rs`, `docs/OPTIMIZATION.md`):
+///
+/// | operands | forward | central |
+/// |---|---|---|
+/// | ray positions (spot, real rays, distortion) | `η = 1e-3`: 4e-4 | `3e-3`: 6e-5 |
+/// | wavefront (OPD from the double-float path) | `1e-4`: 9e-5 | `1e-3`: 5e-6 |
+pub fn gpu_fd_relative_step(kind: &OperandKind, scheme: FdScheme) -> f64 {
+    let wavefront = matches!(
+        kind,
+        OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
+    );
+    match (scheme, wavefront) {
+        (FdScheme::Forward, false) => 1e-3,
+        (FdScheme::Central, false) => 3e-3,
+        (FdScheme::Forward, true) => 1e-4,
+        (FdScheme::Central, true) => 1e-3,
+    }
+}
 
 /// Operand evaluator tracing ray-based operands on a GPU backend (module
 /// docs). Cheap to clone (shared state).
@@ -285,17 +303,11 @@ impl GpuTraceEvaluator {
         CompositeEvaluator::new().with(self).with(cpu)
     }
 
-    /// Relative finite-difference step for the operands this evaluator
-    /// traces on the GPU. Reported image points are f32, so a value carries
-    /// an absolute noise of about half an f32 ulp of the coordinate
-    /// (5e-7 mm at 8 mm image height); the f64 defaults (`√ε`, `∛ε`) then
-    /// difference noise. `None` when the evaluator is not active (the CPU
-    /// reference's own rule applies).
-    pub fn gpu_fd_relative_step(&self, scheme: FdScheme) -> Option<f64> {
-        self.is_active().then_some(match scheme {
-            FdScheme::Forward => GPU_FD_RELATIVE_STEP_FORWARD,
-            FdScheme::Central => GPU_FD_RELATIVE_STEP_CENTRAL,
-        })
+    /// Relative finite-difference step for an operand this evaluator traces
+    /// on the GPU ([`gpu_fd_relative_step`]); `None` when the evaluator is
+    /// not active (the CPU reference's own rule applies).
+    pub fn gpu_fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
+        self.is_active().then(|| gpu_fd_relative_step(kind, scheme))
     }
 
     /// One batch of at most `max_batch` candidates.
@@ -316,7 +328,7 @@ impl GpuTraceEvaluator {
         let mut prepared: Vec<Option<(Candidate<'_>, Vec<GenRay>)>> = hosts
             .par_iter()
             .map(|h| match h {
-                Host::Gpu(tr, _) => Some(prepare(&self.cpu, tr, operands)),
+                Host::Gpu(g) => Some(prepare(&self.cpu, &g.0, operands)),
                 _ => None,
             })
             .collect();
@@ -327,11 +339,11 @@ impl GpuTraceEvaluator {
         let mut requests: BTreeMap<(bool, u32), Request> = BTreeMap::new();
         let clip = self.cpu.settings().clip;
         for (k, (h, p)) in hosts.iter().zip(&prepared).enumerate() {
-            let (Host::Gpu(_, ps), Some((_, rays))) = (h, p) else {
+            let (Host::Gpu(g), Some((_, rays))) = (h, p) else {
                 continue;
             };
             let sys_index = packed.len() as u32;
-            packed.push(ps);
+            packed.push(&g.1);
             for (i, g) in rays.iter().enumerate() {
                 let req = requests.entry((g.clip && clip, g.end)).or_default();
                 let (p, d) = (g.ray.pos, g.ray.dir);
@@ -491,7 +503,7 @@ fn qualify_system(
 /// One candidate's host-side state.
 enum Host {
     /// Traced on the GPU.
-    Gpu(SequentialTracer, PackedSystem),
+    Gpu(Box<(SequentialTracer, PackedSystem)>),
     /// The packer cannot represent it: evaluated on the CPU.
     Cpu,
     /// No tracer (invalid system, paraxial failure): every operand fails.
@@ -515,7 +527,7 @@ impl Host {
                 .map(<[f64]>::to_vec),
         };
         match PackedSystem::pack(rs, &opts).and_then(|p| p.validate().map(|_| p)) {
-            Ok(p) => Host::Gpu(tr, p),
+            Ok(p) => Host::Gpu(Box::new((tr, p))),
             Err(_) => Host::Cpu,
         }
     }
@@ -798,7 +810,7 @@ impl OperandEvaluator for GpuTraceEvaluator {
 
     fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
         if self.is_active() {
-            self.gpu_fd_relative_step(scheme)
+            self.gpu_fd_relative_step(kind, scheme)
         } else {
             self.cpu.fd_relative_step(kind, scheme)
         }
