@@ -55,7 +55,7 @@ GPU implementation details.**
 | `mklight-metal` | Metal backend: MSL kernels (precompiled `.metallib`, runtime-source fallback), command scheduling, shared-memory buffers. |
 | `mklight-engine` | Facade used by every front end: `Session` (project + undo-free immutable snapshots), the async job scheduler, analysis dispatch, backend selection, project file I/O. |
 | `mklight-ffi` | C ABI for native apps. Structured data crosses as versioned JSON; bulk data as typed binary buffers. |
-| `mklight-py` | Python bindings (pyo3/maturin). |
+| `mklight-py` | Python bindings (pyo3/maturin, `import mklight`) over the engine facade, plus low-level reference tracing; see `docs/PYTHON.md`. |
 | `mklight-cli` | Headless command line `mklight` over the engine facade: projects (`new`, `validate`, `show`, `migrate`, `set`), catalogs, `analyses`/`run` over the analysis registry, reference `trace` and `paraxial`; JSON or tables, documented exit codes (`docs/CLI.md`). |
 
 ## Apps (`apps/`)

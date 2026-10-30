@@ -11,3 +11,8 @@ __pycache__/
 *.pyc
 /apps/macos/Frameworks/
 /dist/
+
+# Python bindings: virtualenv and the extension maturin develop drops in
+crates/mklight-py/.venv/
+crates/mklight-py/python/mklight/*.so
+crates/mklight-py/.pytest_cache/
