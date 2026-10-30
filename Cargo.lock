@@ -225,10 +225,7 @@ name = "mklight-optim"
 version = "0.1.0"
 dependencies = [
  "approx",
- "mklight-analysis",
  "mklight-core",
- "mklight-trace",
- "mklight-wave",
  "rayon",
  "serde",
  "serde_json",

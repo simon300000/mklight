@@ -1,0 +1,903 @@
+//! Local bound- and constraint-aware nonlinear least squares:
+//! Levenberg–Marquardt and Powell's dogleg, both as trust-region methods in
+//! the scaled norm `‖D p‖` of Moré (1978).
+//!
+//! **Model.** At `x` with weighted residual vector `r` and Jacobian `J`, the
+//! step minimises `‖r + J p‖²` subject to `‖D p‖ ≤ Δ`, where
+//! `D = diag(d_j)`, `d_j = max over iterations of ‖J_{:,j}‖` (Moré scaling,
+//! which makes the method invariant to variable units).
+//!
+//! * **LM** solves the trust-region subproblem exactly: `p(λ)` from
+//!   `min ‖[J; √λ D] p + [r; 0]‖` by Householder QR (never via the normal
+//!   equations), with `λ` found by safeguarded Newton iteration on the secular
+//!   equation `1/‖D p(λ)‖ = 1/Δ` (Moré's algorithm, as in MINPACK `lmpar`).
+//!   Optional geodesic acceleration (Transtrum & Sethna 2012) adds the
+//!   second-order correction `a = −(JᵀJ + λD²)⁻¹ Jᵀ r''_v`, with `r''_v` from
+//!   one extra finite-difference evaluation along the step, accepted when
+//!   `2‖Da‖ ≤ 0.75 ‖Dv‖`.
+//! * **Dogleg** combines the Gauss–Newton step and the scaled Cauchy point on
+//!   the dogleg path, with no `λ` search (cheaper per step, less robust far
+//!   from a solution).
+//!
+//! `Δ` follows MINPACK: shrink to `¼ min(Δ, ‖Dp‖)` when the gain ratio
+//! `ρ = actual / predicted reduction < ¼`, set to `2‖Dp‖` when `ρ ≥ ¾` (or the
+//! Gauss–Newton step was taken); steps with `ρ ≤ 10⁻⁴` are rejected.
+//!
+//! **Bounds: projected active-set.** A variable sitting on a bound whose
+//! gradient pushes it outward is frozen for the iteration; the subproblem is
+//! solved over the free variables and the trial point is projected onto the
+//! box. The predicted reduction is computed for the *projected* step, so the
+//! gain ratio stays honest. This keeps every evaluated point inside the
+//! bounds (lens evaluators must never see e.g. negative thicknesses), keeps
+//! the variables in their natural units (no `sin`/`tanh` transforms that
+//! flatten gradients at the bounds), and reduces to plain LM in the interior.
+//!
+//! **Constraints: augmented Lagrangian (PHR).** For each normalised constraint
+//! row (`h = (c − t)/s = 0`, or `g ≤ 0` built from either side of a range)
+//! the residual vector is extended with
+//! `√μ · (h + y/2μ)` and `√μ · max(0, g + y/2μ)`, so the inner problem is
+//! still a least-squares problem minimising
+//! `Φ + Σ (y h + μ h²) + Σ (1/4μ)(max(0, y + 2μ g)² − y²)`. After each inner
+//! solve the multipliers are updated (`y ← y + 2μh`, `y ← max(0, y + 2μg)`) if
+//! the violation fell below the current threshold `η`, otherwise `μ` grows
+//! (Conn, Gould & Toint; Nocedal & Wright Alg. 17.4). Unlike a pure penalty,
+//! `μ` stays bounded, so the inner problems stay well conditioned, and the
+//! converged multipliers are returned as `OptimResult::multipliers`.
+
+use serde::{Deserialize, Serialize};
+
+use mklight_core::{MkError, MkResult};
+
+use crate::deriv::{JacobianSettings, jacobian};
+use crate::linalg::{Matrix, Qr, dot, norm_inf, norm2, solve_upper, solve_upper_transpose};
+use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
+use crate::problem::{
+    CandidateBatch, Evaluation, Problem, ScalarEval, check_problem, merit, project, total_violation,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LsqMethod {
+    #[default]
+    LevenbergMarquardt,
+    Dogleg,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AugLagSettings {
+    /// Initial penalty `μ₀` (on constraints normalised by their `scale`).
+    pub mu0: f64,
+    pub mu_growth: f64,
+    pub mu_max: f64,
+    pub max_outer: usize,
+    /// Max normalised violation regarded as feasible.
+    pub tol: f64,
+}
+
+impl Default for AugLagSettings {
+    fn default() -> Self {
+        AugLagSettings {
+            mu0: 10.0,
+            mu_growth: 10.0,
+            mu_max: 1e12,
+            max_outer: 30,
+            tol: 1e-9,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LsqSettings {
+    pub method: LsqMethod,
+    /// LM only.
+    pub geodesic_acceleration: bool,
+    /// Jacobian evaluations (outer trust-region iterations), summed over all
+    /// augmented-Lagrangian rounds.
+    pub max_iterations: usize,
+    pub max_evaluations: usize,
+    /// Stop when actual and predicted relative merit reductions are ≤ ftol.
+    pub ftol: f64,
+    /// Stop when `Δ ≤ xtol · ‖D x‖`.
+    pub xtol: f64,
+    /// Stop when `max_j |J_jᵀ r| / (‖J_j‖ ‖r‖) ≤ gtol` over free variables.
+    pub gtol: f64,
+    /// Stop when the (feasible) merit is ≤ this value.
+    pub target_merit: f64,
+    /// `Δ₀ = factor · ‖D x₀‖` (or `factor` when that is zero).
+    pub initial_trust_factor: f64,
+    pub jacobian: JacobianSettings,
+    pub constraints: AugLagSettings,
+}
+
+impl Default for LsqSettings {
+    fn default() -> Self {
+        LsqSettings {
+            method: LsqMethod::LevenbergMarquardt,
+            geodesic_acceleration: false,
+            max_iterations: 500,
+            max_evaluations: 100_000,
+            ftol: 1e-14,
+            xtol: 1e-12,
+            gtol: 1e-12,
+            target_merit: 0.0,
+            initial_trust_factor: 100.0,
+            jacobian: JacobianSettings::default(),
+            constraints: AugLagSettings::default(),
+        }
+    }
+}
+
+impl LsqSettings {
+    pub fn dogleg() -> Self {
+        LsqSettings {
+            method: LsqMethod::Dogleg,
+            ..Default::default()
+        }
+    }
+    fn name(&self) -> &'static str {
+        match self.method {
+            LsqMethod::LevenbergMarquardt => "lm",
+            LsqMethod::Dogleg => "dogleg",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RowKind {
+    Eq,
+    Upper,
+    Lower,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ConsRow {
+    k: usize,
+    kind: RowKind,
+    bound: f64,
+    inv_scale: f64,
+}
+
+/// Augmented-Lagrangian residual map: raw evaluation → least-squares rows.
+#[derive(Clone, Debug)]
+struct Aug {
+    sqrt_w: Vec<f64>,
+    rows: Vec<ConsRow>,
+    y: Vec<f64>,
+    mu: f64,
+}
+
+impl Aug {
+    fn new<P: Problem + ?Sized>(p: &P, mu: f64) -> Aug {
+        let mut rows = Vec::new();
+        for (k, c) in p.constraints().iter().enumerate() {
+            let inv_scale = if c.scale > 0.0 && c.scale.is_finite() {
+                1.0 / c.scale
+            } else {
+                1.0
+            };
+            if c.is_equality() {
+                rows.push(ConsRow {
+                    k,
+                    kind: RowKind::Eq,
+                    bound: c.lower.unwrap_or(0.0),
+                    inv_scale,
+                });
+                continue;
+            }
+            if let Some(hi) = c.upper {
+                rows.push(ConsRow {
+                    k,
+                    kind: RowKind::Upper,
+                    bound: hi,
+                    inv_scale,
+                });
+            }
+            if let Some(lo) = c.lower {
+                rows.push(ConsRow {
+                    k,
+                    kind: RowKind::Lower,
+                    bound: lo,
+                    inv_scale,
+                });
+            }
+        }
+        Aug {
+            sqrt_w: p.weights().iter().map(|w| w.sqrt()).collect(),
+            y: vec![0.0; rows.len()],
+            rows,
+            mu,
+        }
+    }
+    fn n_rows(&self) -> usize {
+        self.sqrt_w.len() + self.rows.len()
+    }
+    /// Normalised constraint value (`= 0` or `≤ 0` wanted).
+    fn g(row: &ConsRow, c: &[f64]) -> f64 {
+        match row.kind {
+            RowKind::Eq | RowKind::Upper => (c[row.k] - row.bound) * row.inv_scale,
+            RowKind::Lower => (row.bound - c[row.k]) * row.inv_scale,
+        }
+    }
+    fn shifted(&self, i: usize, c: &[f64]) -> f64 {
+        Aug::g(&self.rows[i], c) + self.y[i] / (2.0 * self.mu)
+    }
+    fn residual(&self, e: &Evaluation) -> Option<Vec<f64>> {
+        if !e.status.is_usable() {
+            return None;
+        }
+        let sm = self.mu.sqrt();
+        let mut r: Vec<f64> = self
+            .sqrt_w
+            .iter()
+            .zip(&e.residuals)
+            .map(|(s, v)| s * v)
+            .collect();
+        for (i, row) in self.rows.iter().enumerate() {
+            let v = self.shifted(i, &e.constraints);
+            r.push(match row.kind {
+                RowKind::Eq => sm * v,
+                _ => sm * v.max(0.0),
+            });
+        }
+        if r.iter().all(|v| v.is_finite()) {
+            Some(r)
+        } else {
+            None
+        }
+    }
+    fn jacobian(&self, e: &Evaluation, jr: &Matrix, jc: &Matrix) -> Matrix {
+        let n = jr.cols;
+        let m = self.sqrt_w.len();
+        let mut j = Matrix::zeros(self.n_rows(), n);
+        for i in 0..m {
+            let s = self.sqrt_w[i];
+            for (o, v) in j.row_mut(i).iter_mut().zip(jr.row(i)) {
+                *o = s * v;
+            }
+        }
+        let sm = self.mu.sqrt();
+        for (i, row) in self.rows.iter().enumerate() {
+            let active = match row.kind {
+                RowKind::Eq => true,
+                _ => self.shifted(i, &e.constraints) > 0.0,
+            };
+            if !active {
+                continue;
+            }
+            let f = sm
+                * row.inv_scale
+                * match row.kind {
+                    RowKind::Lower => -1.0,
+                    _ => 1.0,
+                };
+            for (o, v) in j.row_mut(m + i).iter_mut().zip(jc.row(row.k)) {
+                *o = f * v;
+            }
+        }
+        j
+    }
+    fn update_multipliers(&mut self, c: &[f64]) {
+        for i in 0..self.rows.len() {
+            let g = Aug::g(&self.rows[i], c);
+            let y = self.y[i] + 2.0 * self.mu * g;
+            self.y[i] = match self.rows[i].kind {
+                RowKind::Eq => y,
+                _ => y.max(0.0),
+            };
+        }
+    }
+    /// Multipliers per problem constraint for `∇Φ + Σ λ_k ∇c_k = 0`.
+    fn multipliers(&self, k: usize) -> Vec<f64> {
+        let mut out = vec![0.0; k];
+        for (row, y) in self.rows.iter().zip(&self.y) {
+            out[row.k] += y
+                * row.inv_scale
+                * match row.kind {
+                    RowKind::Lower => -1.0,
+                    _ => 1.0,
+                };
+        }
+        out
+    }
+}
+
+fn scalar<P: Problem + ?Sized>(p: &P, e: &Evaluation) -> ScalarEval {
+    let m = merit(p.weights(), &e.residuals, e.status);
+    if !m.is_finite() {
+        return ScalarEval::FAILED;
+    }
+    ScalarEval {
+        merit: m,
+        violation: total_violation(p.constraints(), &e.constraints, e.status),
+        status: e.status,
+    }
+}
+
+fn max_violation<P: Problem + ?Sized>(p: &P, c: &[f64]) -> f64 {
+    p.constraints()
+        .iter()
+        .zip(c)
+        .map(|(k, v)| k.violation(*v))
+        .fold(0.0, f64::max)
+}
+
+#[derive(Default)]
+struct Counters {
+    evaluations: usize,
+    iterations: usize,
+}
+
+struct Ctx<'a, P: Problem + ?Sized> {
+    p: &'a P,
+    s: &'a LsqSettings,
+    mon: &'a Monitor,
+    ctr: Counters,
+    history: Vec<IterationRecord>,
+    /// Moré scaling, persistent across iterations and AL rounds.
+    d: Vec<f64>,
+    /// Warm-start LM parameter.
+    lambda: f64,
+}
+
+impl<P: Problem + ?Sized> Ctx<'_, P> {
+    fn eval(&mut self, x: &[f64]) -> MkResult<Evaluation> {
+        let b = CandidateBatch::from_points(x.len(), [x]);
+        let e = self.p.evaluate_batch(&b, &self.mon.job)?;
+        e.validate(1, self.p.num_residuals(), self.p.num_constraints())?;
+        self.ctr.evaluations += 1;
+        let ev = e.get(0);
+        self.mon.offer(x, scalar(self.p, &ev));
+        Ok(ev)
+    }
+    fn budget_left(&self) -> bool {
+        self.ctr.evaluations < self.s.max_evaluations
+    }
+}
+
+/// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
+/// `A₀ᵀA₀ = J_Fᵀ J_F`, `A₀ᵀ b₀ = J_Fᵀ r`.
+struct Sub {
+    a0: Matrix,
+    b0: Vec<f64>,
+    qr: Option<Qr>,
+    d: Vec<f64>,
+    g: Vec<f64>,
+    gn: Option<Vec<f64>>,
+}
+
+impl Sub {
+    fn new(jf: Matrix, r: &[f64], d: Vec<f64>) -> Sub {
+        let g = jf.tr_mul_vec(r);
+        let nf = jf.cols;
+        if jf.rows >= nf {
+            let qr = Qr::new(jf);
+            let mut qtr = r.to_vec();
+            qr.apply_qt(&mut qtr);
+            qtr.truncate(nf);
+            let gn = if qr.is_full_rank() {
+                let a = qr.r();
+                let neg: Vec<f64> = qtr.iter().map(|v| -v).collect();
+                Some(solve_upper(&a, &neg))
+            } else {
+                None
+            };
+            Sub {
+                a0: qr.r(),
+                b0: qtr,
+                qr: Some(qr),
+                d,
+                g,
+                gn,
+            }
+        } else {
+            Sub {
+                a0: jf,
+                b0: r.to_vec(),
+                qr: None,
+                d,
+                g,
+                gn: None,
+            }
+        }
+    }
+    fn transform(&self, v: &[f64]) -> Vec<f64> {
+        match &self.qr {
+            Some(q) => {
+                let mut t = v.to_vec();
+                q.apply_qt(&mut t);
+                t.truncate(self.a0.cols);
+                t
+            }
+            None => v.to_vec(),
+        }
+    }
+    fn dnorm(&self, p: &[f64]) -> f64 {
+        let v: Vec<f64> = p.iter().zip(&self.d).map(|(a, b)| a * b).collect();
+        norm2(&v)
+    }
+    /// `p(λ)` for `λ > 0` and the triangular factor of `[A₀; √λ D]`.
+    fn solve_lambda(&self, lambda: f64, rhs: &[f64]) -> (Vec<f64>, Matrix) {
+        let nf = self.a0.cols;
+        let ra = self.a0.rows;
+        let mut a = Matrix::zeros(ra + nf, nf);
+        a.data[..ra * nf].copy_from_slice(&self.a0.data);
+        let sl = lambda.sqrt();
+        for j in 0..nf {
+            a[(ra + j, j)] = sl * self.d[j];
+        }
+        let mut b = vec![0.0; ra + nf];
+        for (o, v) in b.iter_mut().zip(rhs) {
+            *o = -v;
+        }
+        let qr = Qr::new(a);
+        qr.apply_qt(&mut b);
+        let r = qr.r();
+        (solve_upper(&r, &b[..nf]), r)
+    }
+    /// Moré's LM step for trust radius `delta`; returns `(p, λ)`.
+    fn lm_step(&self, delta: f64, lambda0: f64) -> (Vec<f64>, f64) {
+        let nf = self.a0.cols;
+        let gs: Vec<f64> = self.g.iter().zip(&self.d).map(|(g, d)| g / d).collect();
+        let gnorm = norm2(&gs);
+        let mut lo = 0.0;
+        if let Some(gn) = &self.gn {
+            let dn = self.dnorm(gn);
+            if dn <= 1.1 * delta {
+                return (gn.clone(), 0.0);
+            }
+            // Newton lower bound from λ = 0 (convexity of 1/‖Dp(λ)‖).
+            let w: Vec<f64> = (0..nf).map(|j| self.d[j] * self.d[j] * gn[j]).collect();
+            let wt = solve_upper_transpose(&self.a0, &w);
+            let ww = dot(&wt, &wt);
+            if ww > 0.0 && ww.is_finite() {
+                lo = ((dn - delta) / delta) * dn * dn / ww;
+            }
+        }
+        let mut hi = gnorm / delta;
+        if !(hi > 0.0) || !hi.is_finite() {
+            hi = f64::MAX.sqrt();
+        }
+        let mut lambda = lambda0.clamp(lo, hi);
+        if lambda == 0.0 {
+            lambda = gnorm / delta.max(f64::MIN_POSITIVE);
+        }
+        let mut best = None;
+        for _ in 0..12 {
+            if lambda <= lo || lambda >= hi {
+                lambda = (1e-3 * hi).max((lo * hi).sqrt());
+            }
+            if !(lambda > 0.0) {
+                lambda = f64::MIN_POSITIVE.sqrt();
+            }
+            let (p, r) = self.solve_lambda(lambda, &self.b0);
+            let dp = self.dnorm(&p);
+            let phi = dp - delta;
+            let done = phi.abs() <= 0.1 * delta;
+            best = Some((p.clone(), lambda));
+            if done || dp == 0.0 {
+                break;
+            }
+            if phi > 0.0 {
+                lo = lo.max(lambda);
+            } else {
+                hi = hi.min(lambda);
+            }
+            let w: Vec<f64> = (0..nf).map(|j| self.d[j] * self.d[j] * p[j] / dp).collect();
+            let wt = solve_upper_transpose(&r, &w);
+            let ww = dot(&wt, &wt);
+            if !(ww > 0.0) || !ww.is_finite() {
+                break;
+            }
+            lambda = lo.max(lambda + (phi / delta) / ww);
+        }
+        best.unwrap_or((vec![0.0; nf], lambda))
+    }
+    /// Powell dogleg step.
+    fn dogleg_step(&self, delta: f64) -> Vec<f64> {
+        let nf = self.a0.cols;
+        let gn = match &self.gn {
+            Some(g) => g.clone(),
+            None => {
+                let dmax = self.d.iter().fold(0.0_f64, |m, v| m.max(*v));
+                self.solve_lambda((1e-10 * dmax * dmax).max(f64::MIN_POSITIVE), &self.b0)
+                    .0
+            }
+        };
+        if self.dnorm(&gn) <= delta {
+            return gn;
+        }
+        let s: Vec<f64> = (0..nf)
+            .map(|j| -self.g[j] / (self.d[j] * self.d[j]))
+            .collect();
+        let js = self.a0.mul_vec(&s);
+        let gsd = -dot(&self.g, &s); // ‖D⁻¹g‖²
+        let jj = dot(&js, &js);
+        let ds = self.dnorm(&s);
+        if !(jj > 0.0) || ds == 0.0 {
+            return s
+                .iter()
+                .map(|v| v * delta / ds.max(f64::MIN_POSITIVE))
+                .collect();
+        }
+        let alpha = gsd / jj;
+        if alpha * ds >= delta {
+            return s.iter().map(|v| v * delta / ds).collect();
+        }
+        let a: Vec<f64> = s.iter().map(|v| alpha * v).collect();
+        let b: Vec<f64> = gn.iter().zip(&a).map(|(g, a)| g - a).collect();
+        let da: Vec<f64> = a.iter().zip(&self.d).map(|(x, d)| x * d).collect();
+        let db: Vec<f64> = b.iter().zip(&self.d).map(|(x, d)| x * d).collect();
+        let qa = dot(&db, &db);
+        let qb = 2.0 * dot(&da, &db);
+        let qc = dot(&da, &da) - delta * delta;
+        let disc = (qb * qb - 4.0 * qa * qc).max(0.0).sqrt();
+        // Stable root of qa τ² + qb τ + qc = 0 with qc < 0 (τ ∈ (0, 1]).
+        let tau = if qb > 0.0 {
+            -2.0 * qc / (qb + disc)
+        } else {
+            (-qb + disc) / (2.0 * qa)
+        };
+        let tau = tau.clamp(0.0, 1.0);
+        a.iter().zip(&b).map(|(a, b)| a + tau * b).collect()
+    }
+}
+
+struct InnerOut {
+    x: Vec<f64>,
+    e: Evaluation,
+    termination: Termination,
+}
+
+/// One trust-region solve of the current augmented least-squares problem.
+fn inner<P: Problem + ?Sized>(
+    c: &mut Ctx<'_, P>,
+    aug: &Aug,
+    mut x: Vec<f64>,
+    mut e: Evaluation,
+    stage: &str,
+) -> MkResult<InnerOut> {
+    let vars = c.p.variables();
+    let n = vars.len();
+    let s = c.s;
+    let mut r = match aug.residual(&e) {
+        Some(r) => r,
+        None => {
+            return Ok(InnerOut {
+                x,
+                e,
+                termination: Termination::EvaluationFailure,
+            });
+        }
+    };
+    let mut phi = dot(&r, &r);
+    let mut delta = 0.0;
+    let mut first = true;
+    fn out(x: Vec<f64>, e: Evaluation, termination: Termination) -> MkResult<InnerOut> {
+        Ok(InnerOut { x, e, termination })
+    }
+    loop {
+        if c.mon.cancelled() {
+            return out(x, e, Termination::Cancelled);
+        }
+        if c.ctr.iterations >= s.max_iterations {
+            return out(x, e, Termination::MaxIterations);
+        }
+        if !c.budget_left() {
+            return out(x, e, Termination::MaxEvaluations);
+        }
+        let sc = scalar(c.p, &e);
+        if sc.merit <= s.target_merit && sc.violation <= c.mon.feasibility_tol {
+            return out(x, e, Termination::TargetReached);
+        }
+        // Jacobian.
+        let jac = match jacobian(c.p, &x, &e, &s.jacobian, &c.mon.job) {
+            Ok(j) => j,
+            Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
+            Err(err) => return Err(err),
+        };
+        c.ctr.evaluations += jac.evaluations;
+        c.ctr.iterations += 1;
+        let jm = aug.jacobian(&e, &jac.residuals, &jac.constraints);
+        let g = jm.tr_mul_vec(&r);
+        let cn = jm.column_norms();
+        for j in 0..n {
+            if cn[j] > c.d[j] {
+                c.d[j] = cn[j];
+            }
+            if !(c.d[j] > 0.0) {
+                c.d[j] = 1.0 / vars[j].safe_scale();
+            }
+        }
+        // Free set: not pinned at a bound by an outward gradient, not failed.
+        let free: Vec<usize> = (0..n)
+            .filter(|&j| {
+                let v = &vars[j];
+                !jac.failed_columns.contains(&j)
+                    && !(x[j] <= v.lo() && g[j] > 0.0)
+                    && !(x[j] >= v.hi() && g[j] < 0.0)
+                    && !(v.lo() == v.hi())
+            })
+            .collect();
+        let rnorm = phi.sqrt();
+        let gcos = free
+            .iter()
+            .map(|&j| {
+                if cn[j] > 0.0 && rnorm > 0.0 {
+                    g[j].abs() / (cn[j] * rnorm)
+                } else {
+                    0.0
+                }
+            })
+            .fold(0.0, f64::max);
+        let dx: Vec<f64> = (0..n).map(|j| c.d[j] * x[j]).collect();
+        let xnorm = norm2(&dx);
+        if first {
+            delta = s.initial_trust_factor * if xnorm > 0.0 { xnorm } else { 1.0 };
+        }
+        if free.is_empty() || gcos <= s.gtol || phi == 0.0 {
+            return out(x, e, Termination::SmallGradient);
+        }
+        let df: Vec<f64> = free.iter().map(|&j| c.d[j]).collect();
+        let sub = Sub::new(jm.select_columns(&free), &r, df);
+
+        // Inner loop: find an acceptable step with this Jacobian.
+        loop {
+            if c.mon.cancelled() {
+                return out(x, e, Termination::Cancelled);
+            }
+            if !c.budget_left() {
+                return out(x, e, Termination::MaxEvaluations);
+            }
+            let (mut pf, lambda) = match s.method {
+                LsqMethod::LevenbergMarquardt => sub.lm_step(delta, c.lambda),
+                LsqMethod::Dogleg => (sub.dogleg_step(delta), 0.0),
+            };
+            // Optional geodesic acceleration.
+            if s.geodesic_acceleration
+                && s.method == LsqMethod::LevenbergMarquardt
+                && c.ctr.evaluations + 2 <= s.max_evaluations
+            {
+                let h = 0.1;
+                let mut xv = x.clone();
+                for (k, &j) in free.iter().enumerate() {
+                    xv[j] += h * pf[k];
+                }
+                let inside = xv.iter().zip(vars).all(|(v, var)| *v == var.clamp(*v));
+                if inside {
+                    let ev = match c.eval(&xv) {
+                        Ok(v) => v,
+                        Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
+                        Err(err) => return Err(err),
+                    };
+                    if let Some(rv) = aug.residual(&ev) {
+                        let mut pfull = vec![0.0; n];
+                        for (k, &j) in free.iter().enumerate() {
+                            pfull[j] = pf[k];
+                        }
+                        let jv = jm.mul_vec(&pfull);
+                        let rvv: Vec<f64> = (0..rv.len())
+                            .map(|i| (2.0 / h) * ((rv[i] - r[i]) / h - jv[i]))
+                            .collect();
+                        let rhs = sub.transform(&rvv);
+                        let acc = if lambda > 0.0 {
+                            sub.solve_lambda(lambda, &rhs).0
+                        } else {
+                            let neg: Vec<f64> = rhs.iter().map(|v| -v).collect();
+                            solve_upper(&sub.a0, &neg)
+                        };
+                        if acc.iter().all(|v| v.is_finite())
+                            && 2.0 * sub.dnorm(&acc) <= 0.75 * sub.dnorm(&pf)
+                        {
+                            for (p, a) in pf.iter_mut().zip(&acc) {
+                                *p += 0.5 * a;
+                            }
+                        }
+                    }
+                }
+            }
+            // Projected trial point and the step actually taken.
+            let mut xt = x.clone();
+            for (k, &j) in free.iter().enumerate() {
+                xt[j] += pf[k];
+            }
+            project(vars, &mut xt);
+            let p: Vec<f64> = xt.iter().zip(&x).map(|(a, b)| a - b).collect();
+            let dp: Vec<f64> = p.iter().zip(&c.d).map(|(a, b)| a * b).collect();
+            let pnorm = norm2(&dp);
+            if first {
+                delta = delta.min(pnorm.max(f64::MIN_POSITIVE));
+            }
+            let jp = jm.mul_vec(&p);
+            // pred = ‖r‖² − ‖r + Jp‖² = −(2 rᵀJp + ‖Jp‖²)
+            let pred = -(2.0 * dot(&r, &jp) + dot(&jp, &jp));
+            let (et, rt) = if pnorm > 0.0 {
+                let et = match c.eval(&xt) {
+                    Ok(v) => v,
+                    Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
+                    Err(err) => return Err(err),
+                };
+                let rt = aug.residual(&et);
+                (Some(et), rt)
+            } else {
+                (None, None)
+            };
+            let phit = rt.as_ref().map_or(f64::INFINITY, |v| dot(v, v));
+            let act = phi - phit;
+            let rho = if pred > 0.0 && act.is_finite() {
+                act / pred
+            } else {
+                -1.0
+            };
+            // Trust-region update (MINPACK).
+            if rho < 0.25 {
+                delta = 0.25 * delta.min(pnorm.max(f64::MIN_POSITIVE));
+                c.lambda = lambda * 2.0;
+            } else if rho >= 0.75 || lambda == 0.0 {
+                delta = 2.0 * pnorm;
+                c.lambda = 0.5 * lambda;
+            } else {
+                c.lambda = lambda;
+            }
+            first = false;
+            let accepted = rho > 1e-4;
+            if accepted {
+                let phi_old = phi;
+                x = xt;
+                e = et.expect("evaluated");
+                r = rt.expect("usable");
+                phi = phit;
+                let sc = scalar(c.p, &e);
+                let mut rec = IterationRecord::new(s.name(), c.ctr.iterations, c.ctr.evaluations);
+                rec.stage = stage.to_string();
+                rec.merit = sc.merit;
+                rec.violation = sc.violation;
+                rec.best_merit = c.mon.best.get().map_or(sc.merit, |b| b.merit);
+                rec.trust_radius = Some(delta);
+                rec.damping = Some(lambda);
+                rec.gain_ratio = Some(rho);
+                rec.step_norm = Some(pnorm);
+                rec.gradient_norm = Some(gcos);
+                c.mon.record(&mut c.history, rec);
+                c.mon.progress(
+                    c.ctr.iterations as f64 / s.max_iterations.max(1) as f64,
+                    "least squares",
+                );
+                let rel_act = act.abs() / phi_old.max(f64::MIN_POSITIVE);
+                let rel_pred = pred / phi_old.max(f64::MIN_POSITIVE);
+                if rel_act <= s.ftol && rel_pred <= s.ftol && rho <= 2.0 {
+                    return out(x, e, Termination::SmallMeritChange);
+                }
+                let dx: Vec<f64> = (0..n).map(|j| c.d[j] * x[j]).collect();
+                let xn = norm2(&dx);
+                if delta <= s.xtol * xn || pnorm <= s.xtol * xn {
+                    return out(x, e, Termination::SmallStep);
+                }
+                break;
+            }
+            let xn = norm2(&dx);
+            if delta <= s.xtol * xn || !(delta > 0.0) || (pnorm == 0.0 && delta < 1e-300) {
+                return out(x, e, Termination::SmallStep);
+            }
+        }
+    }
+}
+
+/// Minimise `Σ w r²` from `x0` subject to the problem's bounds and
+/// constraints. Cancellation returns `Ok` with `Termination::Cancelled` and
+/// the last accepted iterate; `monitor.best` holds the best point seen.
+pub fn least_squares<P: Problem + ?Sized>(
+    p: &P,
+    x0: &[f64],
+    settings: &LsqSettings,
+    monitor: &Monitor,
+) -> MkResult<OptimResult> {
+    check_problem(p, x0)?;
+    let vars = p.variables();
+    let n = vars.len();
+    let mut c = Ctx {
+        p,
+        s: settings,
+        mon: monitor,
+        ctr: Counters::default(),
+        history: Vec::new(),
+        d: vec![0.0; n],
+        lambda: 0.0,
+    };
+    let mut x = x0.to_vec();
+    project(vars, &mut x);
+    let mut e = match c.eval(&x) {
+        Ok(e) => e,
+        Err(MkError::Cancelled) => {
+            return Ok(finish(&c, x, None, Termination::Cancelled, None));
+        }
+        Err(err) => return Err(err),
+    };
+    if !e.status.is_usable() {
+        return Ok(finish(&c, x, Some(e), Termination::EvaluationFailure, None));
+    }
+    let al = settings.constraints;
+    let mut aug = Aug::new(p, al.mu0);
+    if aug.rows.is_empty() {
+        let o = inner(&mut c, &aug, x, e, "")?;
+        return Ok(finish(&c, o.x, Some(o.e), o.termination, None));
+    }
+    let k = p.num_constraints();
+    let mut eta = 1.0 / al.mu0.powf(0.1);
+    let mut termination = Termination::MaxIterations;
+    for outer in 0..al.max_outer {
+        let o = inner(&mut c, &aug, x, e, &format!("al {outer}"))?;
+        x = o.x;
+        e = o.e;
+        if matches!(
+            o.termination,
+            Termination::Cancelled
+                | Termination::MaxEvaluations
+                | Termination::MaxIterations
+                | Termination::EvaluationFailure
+        ) {
+            termination = o.termination;
+            break;
+        }
+        let viol = max_violation(p, &e.constraints);
+        if viol <= al.tol {
+            aug.update_multipliers(&e.constraints);
+            if o.termination.is_converged() {
+                termination = o.termination;
+                break;
+            }
+            eta = (eta / aug.mu.powf(0.9)).max(al.tol);
+        } else if viol <= eta {
+            aug.update_multipliers(&e.constraints);
+            eta = (eta / aug.mu.powf(0.9)).max(al.tol);
+        } else {
+            aug.mu *= al.mu_growth;
+            if aug.mu > al.mu_max {
+                termination = Termination::Infeasible;
+                break;
+            }
+            eta = (1.0 / aug.mu.powf(0.1)).max(al.tol);
+        }
+        if outer + 1 == al.max_outer {
+            termination = if viol <= al.tol {
+                Termination::MaxIterations
+            } else {
+                Termination::Infeasible
+            };
+        }
+    }
+    let mult = aug.multipliers(k);
+    Ok(finish(&c, x, Some(e), termination, Some(mult)))
+}
+
+fn finish<P: Problem + ?Sized>(
+    c: &Ctx<'_, P>,
+    x: Vec<f64>,
+    e: Option<Evaluation>,
+    termination: Termination,
+    multipliers: Option<Vec<f64>>,
+) -> OptimResult {
+    let sc = e.as_ref().map_or(ScalarEval::FAILED, |e| scalar(c.p, e));
+    OptimResult {
+        x,
+        merit: sc.merit,
+        violation: sc.violation,
+        termination,
+        iterations: c.ctr.iterations,
+        evaluations: c.ctr.evaluations,
+        multipliers,
+        history: c.history.clone(),
+    }
+}
+
+/// Max-norm of the scaled projected gradient `‖P(x − ∇Φ) − x‖∞`, a
+/// first-order optimality measure for bound-constrained problems (exported
+/// for tests and diagnostics).
+pub fn projected_gradient_norm(vars: &[crate::problem::Variable], x: &[f64], grad: &[f64]) -> f64 {
+    let v: Vec<f64> = x
+        .iter()
+        .zip(grad)
+        .zip(vars)
+        .map(|((xi, gi), var)| var.clamp(xi - gi) - xi)
+        .collect();
+    norm_inf(&v)
+}
