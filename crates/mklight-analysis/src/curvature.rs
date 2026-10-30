@@ -1,52 +1,80 @@
 //! Field curvature (astigmatic foci along the real chief ray) and distortion.
 //!
-//! # Astigmatic foci: Coddington along the real chief ray
+//! # Astigmatic foci: generalised Coddington along the real chief ray
 //!
 //! The chief ray of a field is traced (unclipped) with per-surface records.
-//! Along it, a thin tangential and a thin sagittal pencil are followed with
-//! **vergences** `V = n/t`, where `t` is the signed distance along the ray
-//! from the current point to the pencil's focus (`t > 0`: converging to a
-//! point ahead). `V = 0` is a collimated pencil, so objects at infinity need
-//! no special case; a finite object starts with `V = −n/d` at surface 1 (the
-//! pencil diverges from the object point a distance `d` behind).
+//! Along it, the thin pencil around the chief ray is followed in an
+//! orthonormal basis `U = (u₁, u₂)` transverse to the ray, as a family of
+//! rays `x_⊥ = X a`, `δk_⊥ = T a` (2×2 matrices, parameter `a`). Its wavefront
+//! **curvature matrix** is `C = −T X⁻¹`: near the chief ray the wavefront is
+//! `S(x) = n k·x − (n/2) x_⊥ᵀ C x_⊥`, and a pencil converging to a point a
+//! distance `t` ahead has `C = I/t` (`t > 0` ahead). The pair `(X, T)` stays
+//! finite both for collimated pencils (`T = 0`, the start for objects at
+//! infinity) and at a focus (`X = 0`, e.g. on the image surface). A finite
+//! object starts with `X = d I`, `T = I` (`C = −I/d`), a pencil diverging
+//! from the object point a distance `d` behind surface 1.
 //!
-//! * transfer over a distance `d` along the ray: `V ← V / (1 − d V / n)`;
-//! * refraction (`n → n'`, angles `I`, `I'` of the chief ray with the normal):
-//!   `n' cos²I'/t' = n cos²I/t + (n' cos I' − n cos I) κ_t` (tangential) and
-//!   `n'/s' = n/s + (n' cos I' − n cos I) κ_s` (sagittal);
-//! * reflection: `V_t' = V_t − 2 n κ_t / cos I`, `V_s' = V_s − 2 n κ_s cos I`;
-//! * ideal lens (`Paraxial` shape, which images planes onto planes without
-//!   aberration): `V' = cos U' (V / cos U + n'/f)` in both sections, `U`, `U'`
-//!   being the ray angles with the lens axis;
-//! * dummies and coordinate breaks: nothing.
+//! * transfer over a distance `d` along the ray: `X ← X + d T`;
+//! * refraction or reflection at a surface with unit normal `N` and second
+//!   fundamental form `K` in a tangent basis `E` (both relative to `N`). The
+//!   phase of the incident and the outgoing wave match on the surface to
+//!   second order, which gives
+//!   `n' P'ᵀ C' P' = n Pᵀ C P + (n' k'·N − n k·N) K`, with
+//!   `P = Uᵀ E`, `P' = U'ᵀ E`. In ray form, with surface coordinates
+//!   `δs = P⁻¹ X`: `X' = P' δs`, `T' = P'⁻ᵀ (n Pᵀ T − g K δs)/n'`,
+//!   `g = n' k'·N − n k·N`. Reflection uses `n' = n` and the mirrored basis
+//!   `U' = (I − 2NNᵀ) U`. Refraction carries `U` by the minimal rotation
+//!   taking `k` to `k'`. For a chief ray in a principal plane this reduces
+//!   to Coddington's equations,
+//!   `n' cos²I'/t' = n cos²I/t + (n' cos I' − n cos I) κ_t` and
+//!   `n'/s' = n/s + (n' cos I' − n cos I) κ_s`;
+//! * ideal lens (`Paraxial` shape), which maps the direction tangents
+//!   `τ = (k_x, k_y)/|k_z|` at lens-plane point `s` to `τ' = (n/n') τ − s/f`:
+//!   with `δs = P⁻¹ X` and `B = ∂τ/∂k`, `T' = (B'U')⁻¹ ((n/n') BU T − δs/f)`
+//!   and `X' = P' δs`. In a meridional section this is
+//!   `V' = cos U' (V / cos U + n'/f)` for the vergence `V = n/t`;
+//! * dummies and coordinate breaks: nothing (the basis is carried into each
+//!   surface frame).
 //!
-//! `κ_t`, `κ_s` are the normal curvatures of the surface at the hit point in
-//! the plane of incidence and perpendicular to it, signed positive when the
-//! centre of curvature lies ahead along the incident ray. For a surface of
-//! revolution the principal curvatures at radius `r` are the meridional
-//! `κ_m = f''/(1 + f'²)^{3/2}` and sagittal `κ_s = f'/(r √(1 + f'²))`
-//! ([`principal_curvatures`], evaluated without dividing by `r` or by the
-//! conic square root); along a tangent direction at angle `α` from the
-//! meridional direction the normal curvature is `κ_m cos²α + κ_s sin²α`.
-//! These equations are exact for the chief ray when its plane of incidence is
-//! a principal plane at every surface (every meridional chief ray of a
-//! centred system, including folds about x). For skew chief rays the twist
-//! terms of the generalised equations are neglected, and the close-ray
-//! values below are the reference.
+//! `K` comes from the principal curvatures of the surface of revolution at
+//! radius `r`, the meridional `κ_m = f''/(1 + f'²)^{3/2}` and the sagittal
+//! `κ_s = f'/(r √(1 + f'²))` ([`principal_curvatures`], evaluated without
+//! dividing by `r` or by the conic square root). Their directions are the
+//! radial direction projected onto the tangent plane and its perpendicular.
+//! The equations hold for skew chief rays and any tilts. No principal-plane
+//! assumption is made.
 //!
-//! At the image the foci lie at `t_t = n/V_t` and `t_s = n/V_s` along the
-//! chief ray from its image point. The reported **field curvature** is their
-//! projection on the image surface's local `z` axis, `Δz = t · d_z`, i.e. the
-//! axial focus shift from the image surface (positive along local `+z`).
+//! At the image the **focal lines** follow from the eigen-decomposition of
+//! the symmetric focal-distance matrix `F = −X T⁻¹ = C⁻¹` (or of `C` for an
+//! afocal pencil, `T` singular). Rays displaced along an eigenvector with
+//! eigenvalue `t` meet a distance `t` along the chief ray from its image
+//! point. Following CONVENTIONS §2, the
+//! *tangential* focus is the one whose collapsing direction (eigenvector) is
+//! closer to the image surface's local `y` (meridional) direction, projected
+//! normal to the chief ray. The *sagittal* focus is the other one. On a
+//! surface tilted about `y` the chief ray's plane of incidence is `x–z`, so
+//! the surface's own "tangential" section images the sagittal (x) direction.
+//! The labels follow the image frame, not the plane of incidence, and match
+//! the close-ray pairs below. The reported **field curvature** is the
+//! projection of each focus on the image surface's local `z` axis,
+//! `Δz = t · d_z`, i.e. the axial focus shift from the image surface
+//! (positive along local `+z`).
 //!
 //! # Close-ray cross-check
 //!
 //! Two pairs of rays at pupil offsets `(0, ±h)` and `(±h, 0)` from the chief
 //! are traced to the image. Each ray is moved onto the plane through the
 //! chief image point `I` normal to the chief direction `c`, giving a point
-//! `Q` and a transverse slope `T = d/(d·c) − c`; the pair's focus is the
-//! distance `s = −ΔQ·ΔT/|ΔT|²` along `c` that minimises the pair's separation
-//! (central differences: error `O(h²)`). Both values are reported.
+//! `Q` and a transverse slope `T = d/(d·c) − c`. With `X` and `T` the 2×2
+//! matrices of the pair differences `ΔQ`, `ΔT` (columns: the `y` pair and
+//! the `x` pair; rows: the transverse basis), the pencil at distance `s`
+//! along `c` is `X + sT`. It degenerates into a focal line where
+//! `det(X + sT) = 0`, i.e. at the eigenvalues of the focal-distance matrix
+//! `F = −X T⁻¹ = C⁻¹`. `F` is symmetrised and decomposed like `C` above (for
+//! afocal pencils, `C = −T X⁻¹` is used instead), and the foci are labelled
+//! by the same rule. Central differences give an error of `O(h²)`. Both
+//! values are reported, and [`field_curvature`] adds a warning where they
+//! disagree by more than `10⁻³ (1 + |Δz|)` mm.
 //!
 //! # Distortion
 //!
@@ -72,7 +100,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    WavelengthSelection, check_count, check_finite, field_scale, field_unit, linspace, nf,
+    WavelengthSelection, check_count, check_finite, field_scale, field_unit, linspace, m2, nf,
     paraxial_image_point, run_info, wavelength_or_primary,
 };
 
@@ -155,28 +183,113 @@ impl AstigmaticFocus {
     }
 }
 
-/// Normal curvatures `(κ_t, κ_s)` along the in-surface tangent `e_t` (in the
-/// plane of incidence) and the perpendicular tangent, at local hit `p` with
-/// unit normal `n`.
-fn section_curvatures(shape: &SurfaceShape, p: Vec3, n: Vec3, e_t: Vec3) -> Option<(f64, f64)> {
+/// Tangent basis `E` (principal directions) and second fundamental form `K`
+/// (diagonal in `E`, relative to the normal `n`) of a surface of revolution
+/// at local hit `p`.
+fn surface_tensor(shape: &SurfaceShape, p: Vec3, n: Vec3) -> Option<([Vec3; 2], m2::M)> {
     let r = p.x.hypot(p.y);
     let (km, ks) = principal_curvatures(shape, r)?;
-    if km == ks || r == 0.0 {
-        return Some((km, ks));
-    }
-    // Meridional principal tangent: the radial direction projected onto the
-    // tangent plane.
-    let er = Vec3::new(p.x / r, p.y / r, 0.0);
-    let m = (er - n * er.dot(n)).normalized();
-    let ca = e_t.dot(m);
-    let c2 = (ca * ca).min(1.0);
-    let s2 = 1.0 - c2;
-    Some((km.mul_add(c2, ks * s2), km.mul_add(s2, ks * c2)))
+    let m = if r > 0.0 && km != ks {
+        let er = Vec3::new(p.x / r, p.y / r, 0.0);
+        er - n * er.dot(n)
+    } else {
+        let t = Vec3::X - n * n.x;
+        if t.norm() > 1e-6 {
+            t
+        } else {
+            Vec3::Y - n * n.y
+        }
+    };
+    let m = m.normalized();
+    Some(([m, n.cross(m)], [[km, 0.0], [0.0, ks]]))
 }
 
-/// Coddington tangential/sagittal foci along the real chief ray of `field`
-/// at wavelength `wl` (module docs). `None` if the chief ray fails or a
-/// surface curvature is undefined at its hit.
+/// `P_ab = u_a · e_b`: transverse coordinates of tangent vectors.
+fn proj(u: &[Vec3; 2], e: &[Vec3; 2]) -> m2::M {
+    [
+        [u[0].dot(e[0]), u[0].dot(e[1])],
+        [u[1].dot(e[0]), u[1].dot(e[1])],
+    ]
+}
+
+/// An orthonormal basis transverse to unit `k`.
+fn transverse_basis(k: Vec3) -> [Vec3; 2] {
+    let mut a = Vec3::X - k * k.x;
+    if a.norm() < 1e-6 {
+        a = Vec3::Y - k * k.y;
+    }
+    let a = a.normalized();
+    [a, k.cross(a)]
+}
+
+/// Carry the transverse basis `u` of `k` to `k2` by the minimal rotation
+/// (Rodrigues with the unnormalised axis `k × k2`), or by re-projection for
+/// near-reversals.
+fn carry(u: &[Vec3; 2], k: Vec3, k2: Vec3) -> [Vec3; 2] {
+    let c = k.dot(k2);
+    if c > -0.9 {
+        let a = k.cross(k2);
+        let rot = |v: Vec3| v * c + a.cross(v) + a * (a.dot(v) / (1.0 + c));
+        let u0 = rot(u[0]).normalized();
+        let u1 = (rot(u[1]) - u0 * rot(u[1]).dot(u0)).normalized();
+        [u0, u1]
+    } else {
+        let u0 = (u[0] - k2 * u[0].dot(k2)).normalized();
+        [u0, k2.cross(u0)]
+    }
+}
+
+/// Mirror image of the basis in the plane normal to unit `n`.
+fn householder(u: &[Vec3; 2], n: Vec3) -> [Vec3; 2] {
+    [
+        u[0] - n * (2.0 * u[0].dot(n)),
+        u[1] - n * (2.0 * u[1].dot(n)),
+    ]
+}
+
+/// `(BU)_{ib} = B_i · u_b` with `B = ∂τ/∂k`, `τ = (k_x, k_y)/|k_z|`.
+fn tangent_jacobian(k: Vec3, u: &[Vec3; 2]) -> Option<m2::M> {
+    let az = k.z.abs();
+    if az == 0.0 {
+        return None;
+    }
+    let sz = k.z.signum();
+    let b = [
+        Vec3::new(1.0, 0.0, -sz * k.x / az) * (1.0 / az),
+        Vec3::new(0.0, 1.0, -sz * k.y / az) * (1.0 / az),
+    ];
+    Some([
+        [b[0].dot(u[0]), b[0].dot(u[1])],
+        [b[1].dot(u[0]), b[1].dot(u[1])],
+    ])
+}
+
+/// The two foci `(tangential, sagittal)` from a symmetric pencil matrix in
+/// the transverse basis `u`: a curvature matrix (`curvature = true`, foci
+/// `1/λ`) or a focal-distance matrix (foci `λ`). The tangential focus is the
+/// one whose eigenvector lies closer to `e_t` (module docs).
+fn label_foci(a: &m2::M, curvature: bool, u: &[Vec3; 2], e_t: Vec3) -> (f64, f64) {
+    let (lp, lm, v) = m2::sym_eigen(a);
+    let w = [u[0].dot(e_t), u[1].dot(e_t)];
+    let plus_is_t = (v[0] * w[0] + v[1] * w[1]).abs() >= std::f64::consts::FRAC_1_SQRT_2;
+    let f = |l: f64| if curvature { 1.0 / l } else { l };
+    if plus_is_t {
+        (f(lp), f(lm))
+    } else {
+        (f(lm), f(lp))
+    }
+}
+
+/// The image surface's meridional (local `y`) direction projected normal
+/// to the chief direction `k`.
+fn meridional(k: Vec3) -> Option<Vec3> {
+    let e = Vec3::Y - k * k.y;
+    (e.norm() > 1e-9).then(|| e.normalized())
+}
+
+/// Generalised-Coddington tangential/sagittal foci along the real chief ray
+/// of `field` at wavelength `wl` (module docs). `None` if the chief ray
+/// fails or a surface curvature is undefined at its hit.
 pub fn coddington_focus(
     tracer: &SequentialTracer,
     field: &PreparedField,
@@ -196,80 +309,103 @@ pub fn coddington_focus(
     if !r.status.is_ok() || rec.len() != img + 1 {
         return None;
     }
-    let (mut vt, mut vs) = (0.0f64, 0.0f64);
-    let mut dir_z = f64::NAN;
+    // Pencil rays `x_⊥ = X a`, `δk_⊥ = T a` (module docs): collimated.
+    let (mut x, mut t) = (m2::I, [[0.0; 2]; 2]);
+    let mut u = [Vec3::X, Vec3::Y];
     for i in 1..=img {
         let inc = transfer_into(sys, i, Ray::new(rec[i - 1].point, rec[i - 1].dir));
         let k = inc.dir;
-        let d = (rec[i].point - inc.pos).dot(k);
-        let n = sys.n_before(i, wl);
-        if i == 1 && !sys.object_at_infinity {
-            vt = -n / d;
-            vs = vt;
+        if i == 1 {
+            u = transverse_basis(k);
         } else {
-            vt /= (-d / n).mul_add(vt, 1.0);
-            vs /= (-d / n).mul_add(vs, 1.0);
+            let xf = |v: Vec3| transfer_into(sys, i, Ray::new(Vec3::ZERO, v)).dir;
+            u = [xf(u[0]), xf(u[1])];
+        }
+        let d = (rec[i].point - inc.pos).dot(k);
+        if i == 1 && !sys.object_at_infinity {
+            // Diverging from the object point `d` behind: C = −I/d.
+            (x, t) = ([[d, 0.0], [0.0, d]], m2::I);
+        } else {
+            x = m2::add(&x, &m2::scale(&t, d));
         }
         if i == img {
-            dir_z = k.z;
-            break;
+            let e_t = meridional(k)?;
+            let (ft, fs) = pencil_foci(&x, &t, &u, e_t)?;
+            return Some(AstigmaticFocus {
+                tangential: ft,
+                sagittal: fs,
+                dir_z: k.z,
+            });
         }
         let s = &sys.surfaces[i];
         if s.is_passive() {
             continue;
         }
+        let n = sys.n_before(i, wl);
         let nrm = rec[i].normal;
         let kout = rec[i].dir;
-        let kn = k.dot(nrm);
-        let cos_i = kn.abs().min(1.0);
-        let cos_o = kout.dot(nrm).abs().min(1.0);
+        let reflect = s.interaction == Interaction::Reflect;
         if let SurfaceShape::Paraxial { focal_length } = s.shape {
-            let n2 = if s.interaction == Interaction::Reflect {
-                n
+            // A reflecting ideal lens is a plane mirror (which leaves the
+            // pencil unchanged in the mirrored basis) followed by the lens.
+            let (k, u_in, n2) = if reflect {
+                (k - Vec3::Z * (2.0 * k.z), householder(&u, Vec3::Z), n)
             } else {
-                s.n_after[wl]
+                (k, u, s.n_after[wl])
             };
-            let (cu, cu2) = (k.z.abs(), kout.z.abs());
-            vt = cu2 * (vt / cu + n2 / focal_length);
-            vs = cu2 * (vs / cu + n2 / focal_length);
-            continue;
-        }
-        // Tangent in the plane of incidence (any tangent at normal incidence).
-        let mut e_t = k - nrm * kn;
-        if e_t.norm() < 1e-12 {
-            e_t = Vec3::Y - nrm * nrm.y;
-            if e_t.norm() < 1e-12 {
-                e_t = Vec3::X - nrm * nrm.x;
-            }
-        }
-        let e_t = e_t.normalized();
-        let (kt, ks) = section_curvatures(&s.shape, rec[i].point, nrm, e_t)?;
-        // Signed along the incident propagation direction.
-        let sg = if kn < 0.0 { -1.0 } else { 1.0 };
-        let (kt, ks) = (sg * kt, sg * ks);
-        match s.interaction {
-            Interaction::Reflect => {
-                vt -= 2.0 * n * kt / cos_i;
-                vs -= 2.0 * n * ks * cos_i;
-            }
-            _ => {
-                let n2 = s.n_after[wl];
-                let p = n2.mul_add(cos_o, -n * cos_i);
-                vt = (vt * cos_i * cos_i + p * kt) / (cos_o * cos_o);
-                vs = p.mul_add(ks, vs);
-            }
+            let e = [Vec3::X, Vec3::Y];
+            let u_out = carry(&u_in, k, kout);
+            // δs = P⁻¹X a, δτ = (BU) T a, δτ' = (n/n') δτ − δs/f.
+            let ds = m2::mul(&m2::inv(&proj(&u_in, &e))?, &x);
+            let dtau = m2::add(
+                &m2::scale(&m2::mul(&tangent_jacobian(k, &u_in)?, &t), n / n2),
+                &m2::scale(&ds, -1.0 / focal_length),
+            );
+            t = m2::mul(&m2::inv(&tangent_jacobian(kout, &u_out)?)?, &dtau);
+            x = m2::mul(&proj(&u_out, &e), &ds);
+            u = u_out;
+        } else {
+            let (e, kmat) = surface_tensor(&s.shape, rec[i].point, nrm)?;
+            let (n2, u_out) = if reflect {
+                (n, householder(&u, nrm))
+            } else {
+                (s.n_after[wl], carry(&u, k, kout))
+            };
+            // Surface coordinates δs = P⁻¹X a; with C = −T X⁻¹ the matching
+            // condition gives T' = P'⁻ᵀ (n Pᵀ T − g K δs)/n', X' = P' δs.
+            let p = proj(&u, &e);
+            let p_out = proj(&u_out, &e);
+            let ds = m2::mul(&m2::inv(&p)?, &x);
+            let g = n2.mul_add(kout.dot(nrm), -n * k.dot(nrm));
+            let rhs = m2::add(
+                &m2::scale(&m2::mul(&m2::t(&p), &t), n),
+                &m2::scale(&m2::mul(&kmat, &ds), -g),
+            );
+            t = m2::scale(&m2::mul(&m2::t(&m2::inv(&p_out)?), &rhs), 1.0 / n2);
+            x = m2::mul(&p_out, &ds);
+            u = u_out;
         }
     }
-    let n = sys.n_before(img, wl);
-    Some(AstigmaticFocus {
-        tangential: n / vt,
-        sagittal: n / vs,
-        dir_z,
-    })
+    None
+}
+
+/// Labelled foci `(tangential, sagittal)` of the pencil `(X, T)` in the
+/// transverse basis `u`: from the focal-distance matrix `F = −X T⁻¹`, or
+/// the curvature matrix `C = −T X⁻¹` when `T` is singular (afocal).
+fn pencil_foci(x: &m2::M, t: &m2::M, u: &[Vec3; 2], e_t: Vec3) -> Option<(f64, f64)> {
+    if let Some(ti) = m2::inv(t) {
+        let f = m2::scale(&m2::mul(x, &ti), -1.0);
+        Some(label_foci(&f, false, u, e_t))
+    } else {
+        let xi = m2::inv(x)?;
+        let c = m2::scale(&m2::mul(t, &xi), -1.0);
+        Some(label_foci(&c, true, u, e_t))
+    }
 }
 
 /// Close-ray (finite-difference) foci of `field` at `wl` with pupil step `h`
-/// (module docs). `None` if any of the five rays fails.
+/// (module docs). `None` if any of the five rays fails or the pencil is
+/// degenerate.
 pub fn close_ray_focus(
     tracer: &SequentialTracer,
     field: &PreparedField,
@@ -283,7 +419,7 @@ pub fn close_ray_focus(
     }
     let ip = c.ray.pos;
     let cd = c.ray.dir;
-    let proj = |px: f64, py: f64| -> Option<(Vec3, Vec3)> {
+    let proj_ray = |px: f64, py: f64| -> Option<(Vec3, Vec3)> {
         let r = tracer.trace(field, wl, px, py, &opts);
         if !r.status.is_ok() {
             return None;
@@ -296,23 +432,19 @@ pub fn close_ray_focus(
         let q = r.ray.pos + d * ((ip - r.ray.pos).dot(cd) / dc);
         Some((q, d / dc - cd))
     };
-    let focus = |a: (Vec3, Vec3), b: (Vec3, Vec3)| {
-        let dq = a.0 - b.0;
-        let dt = a.1 - b.1;
-        let t2 = dt.norm2();
-        if t2 > 0.0 {
-            -dq.dot(dt) / t2
-        } else if dq.norm2() == 0.0 {
-            f64::NAN
-        } else {
-            f64::INFINITY
-        }
-    };
-    let tan = focus(proj(0.0, h)?, proj(0.0, -h)?);
-    let sag = focus(proj(h, 0.0)?, proj(-h, 0.0)?);
+    let e_t = meridional(cd)?;
+    let u = [e_t, cd.cross(e_t)];
+    let (ya, yb) = (proj_ray(0.0, h)?, proj_ray(0.0, -h)?);
+    let (xa, xb) = (proj_ray(h, 0.0)?, proj_ray(-h, 0.0)?);
+    let col = |a: Vec3, b: Vec3| [a.dot(u[0]), a.dot(u[1]), b.dot(u[0]), b.dot(u[1])];
+    let qy = col(ya.0 - yb.0, xa.0 - xb.0);
+    let ty = col(ya.1 - yb.1, xa.1 - xb.1);
+    let xm = [[qy[0], qy[2]], [qy[1], qy[3]]];
+    let tm = [[ty[0], ty[2]], [ty[1], ty[3]]];
+    let (t, s) = pencil_foci(&xm, &tm, &u, e_t)?;
     Some(AstigmaticFocus {
-        tangential: tan,
-        sagittal: sag,
+        tangential: t,
+        sagittal: s,
         dir_z: cd.z,
     })
 }
@@ -480,6 +612,20 @@ pub fn field_curvature_job(
                 row
             })
             .collect();
+        // Independent estimates of the same foci: flag disagreements.
+        let bad: Vec<f64> = rows
+            .iter()
+            .zip(&hs)
+            .filter(|(r, _)| (0..2).any(|j| (r[j] - r[j + 2]).abs() > 1e-3 * (1.0 + r[j].abs())))
+            .map(|(_, &h)| h)
+            .collect();
+        if let (Some(first), Some(last)) = (bad.first(), bad.last()) {
+            warnings.push(format!(
+                "wavelength {w}: Coddington and close-ray foci differ by more than \
+                 1e-3 (1 + |Δz|) mm at {} field sample(s), Hy = {first}…{last}",
+                bad.len()
+            ));
+        }
         let col = |j: usize| rows.iter().map(|r| r[j]).collect::<Vec<f64>>();
         curves.push(FieldCurvatureCurve {
             wavelength: w,

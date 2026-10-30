@@ -5,8 +5,10 @@ mod common;
 
 use common::*;
 use mklight_analysis::curvature::{
-    FieldCurvatureSettings, GridDistortionSettings, field_curvature, grid_distortion,
+    FieldCurvatureSettings, GridDistortionSettings, close_ray_focus, coddington_focus,
+    field_curvature, grid_distortion,
 };
+use mklight_trace::{FieldPoint, TraceOptions};
 
 #[test]
 fn coddington_matches_close_rays_on_every_sample() {
@@ -94,4 +96,106 @@ fn ideal_lens_is_flat_and_distortion_free() {
     let g = grid_distortion(&t, &GridDistortionSettings::default()).unwrap();
     assert_eq!(g.points.len(), 121);
     assert!(g.max_abs_distortion_percent < 1e-10);
+}
+
+/// Spherical mirror of radius `r` between two coordinate breaks with the
+/// same tilts (the second re-aims the axis along the reflected chief ray),
+/// stop at the mirror, image `r/2` behind it.
+fn tilted_mirror(r: f64, tilt_x: f64, tilt_y: f64) -> mklight_trace::SequentialTracer {
+    use mklight_core::{Interaction, MaterialRef, Placement, SurfaceShape};
+    let cb = |id: u64, t: f64| {
+        let mut c = surf(id, SurfaceShape::CoordinateBreak, t, MaterialRef::Air);
+        c.placement = Some(Placement {
+            tilt_x,
+            tilt_y,
+            ..Default::default()
+        });
+        c
+    };
+    let mut m = surf(2, SurfaceShape::sphere(-r), 0.0, MaterialRef::Air);
+    m.interaction = Interaction::Reflect;
+    tracer(infinite_system(
+        20.0,
+        vec![cb(1, 0.0), m, cb(3, -0.5 * r)],
+        2,
+        &[0.0, 3.0],
+    ))
+}
+
+/// Mirror incidence cosine and the chief path from the mirror to the image.
+fn mirror_geometry(t: &mklight_trace::SequentialTracer, h: f64) -> (f64, f64) {
+    use mklight_trace::trace::to_global;
+    let f = t.prepare_field(FieldPoint::normalized(0.0, h)).unwrap();
+    let mut rec = Vec::new();
+    let r = t.trace_with(&f, 0, 0.0, 0.0, &TraceOptions::unclipped(), Some(&mut rec));
+    assert!(r.status.is_ok());
+    let sys = t.system();
+    let g = |i: usize| to_global(sys, i, &mklight_trace::Ray::new(rec[i].point, rec[i].dir)).pos;
+    (rec[2].cos_incidence, (g(4) - g(2)).norm())
+}
+
+#[test]
+fn mirror_tilted_about_y_labels_foci_by_the_image_frame() {
+    // Tilt about y: the plane of incidence is x–z, so the mirror's in-plane
+    // focus (R/2) cos I images the image-frame x (sagittal) direction and
+    // R/(2 cos I) the y (tangential) one. The plane-of-incidence labelling
+    // swapped them silently.
+    let r = 200.0;
+    for (tx, ty) in [(0.0, 10.0), (10.0, 0.0)] {
+        let t = tilted_mirror(r, tx, ty);
+        for h in [0.0, 1.0] {
+            let (ci, d) = mirror_geometry(&t, h);
+            let f = t.prepare_field(FieldPoint::normalized(0.0, h)).unwrap();
+            let a = coddington_focus(&t, &f, 0).unwrap();
+            let b = close_ray_focus(&t, &f, 0, 1e-3).unwrap();
+            if h == 0.0 {
+                let (inplane, perp) = (0.5 * r * ci - d, 0.5 * r / ci - d);
+                let (et, es) = if ty != 0.0 {
+                    (perp, inplane)
+                } else {
+                    (inplane, perp)
+                };
+                assert!((a.tangential - et).abs() < 1e-9, "{tx} {ty}: {a:?} vs {et}");
+                assert!((a.sagittal - es).abs() < 1e-9, "{tx} {ty}: {a:?} vs {es}");
+                assert!((a.tangential - a.sagittal).abs() > 3.0);
+            }
+            assert!((a.dir_z + 1.0).abs() < 0.01);
+            assert!(
+                (a.tangential - b.tangential).abs() < 1e-5 * (1.0 + a.tangential.abs()),
+                "{tx} {ty} H {h}: {a:?} vs close rays {b:?}"
+            );
+            assert!(
+                (a.sagittal - b.sagittal).abs() < 1e-5 * (1.0 + a.sagittal.abs()),
+                "{tx} {ty} H {h}: {a:?} vs close rays {b:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compound_tilted_mirror_matches_close_rays_and_focal_lines() {
+    // Tilts about x and y: the astigmatic focal lines are rotated with
+    // respect to the image frame and the chief ray is skew. Both methods
+    // must find the two focal lines, (R/2) cos I and R/(2 cos I) from the
+    // mirror, and label them identically.
+    let r = 200.0;
+    let t = tilted_mirror(r, 7.0, 7.0);
+    for h in [0.0, 0.5, 1.0] {
+        let (ci, d) = mirror_geometry(&t, h);
+        let f = t.prepare_field(FieldPoint::normalized(0.0, h)).unwrap();
+        let a = coddington_focus(&t, &f, 0).unwrap();
+        let b = close_ray_focus(&t, &f, 0, 1e-3).unwrap();
+        let mut got = [a.tangential, a.sagittal];
+        got.sort_by(f64::total_cmp);
+        let expect = [0.5 * r * ci - d, 0.5 * r / ci - d];
+        assert!((got[0] - expect[0]).abs() < 1e-9 && (got[1] - expect[1]).abs() < 1e-9);
+        assert!(
+            (a.tangential - b.tangential).abs() < 1e-5 * (1.0 + a.tangential.abs()),
+            "H {h}: {a:?} vs close rays {b:?}"
+        );
+        assert!(
+            (a.sagittal - b.sagittal).abs() < 1e-5 * (1.0 + a.sagittal.abs()),
+            "H {h}: {a:?} vs close rays {b:?}"
+        );
+    }
 }
