@@ -364,6 +364,8 @@ public struct FFIEngine: EngineClient {
             }
             // `cancel()` raced with the submission: cancel the engine job.
             if !submission.record(id) { try? CABI.jobCancel(core.pointer, id) }
+            // `stop()` came before the engine job existed.
+            if submission.stopRequested { try? CABI.jobStop(core.pointer, id) }
             // Safety net: should an event be missed, poll the job state.
             let poller = Task.detached {
                 while !Task.isCancelled {
@@ -401,8 +403,16 @@ public struct FFIEngine: EngineClient {
         }
         return AnalysisJob(
             request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: progress, task: task,
-            onCancel: { if let id = submission.cancel() { try? CABI.jobCancel(core.pointer, id) } })
+            onCancel: { if let id = submission.cancel() { try? CABI.jobCancel(core.pointer, id) } },
+            onStop: Self.stoppable.contains(wire.analysis)
+                ? { @Sendable in
+                    guard let id = submission.requestStop() else { return true }
+                    return (try? CABI.jobStop(core.pointer, id)) != nil
+                } : nil)
     }
+
+    /// Analyses `mk_job_stop` can stop (ABI 1.2).
+    static let stoppable: Set<String> = ["optimize", "tolerance"]
 
     static func message(of error: EngineError) -> String {
         switch error {
@@ -419,6 +429,16 @@ public struct FFIEngine: EngineClient {
 final class Submission: Sendable {
     private enum State { case pending, submitted(UInt64), cancelled }
     private let state = Mutex(State.pending)
+    private let stop = Mutex(false)
+
+    /// Whether `stop()` was requested (before or after submission).
+    var stopRequested: Bool { stop.withLock { $0 } }
+
+    /// Records a stop request; returns the engine job id when submitted.
+    func requestStop() -> UInt64? {
+        stop.withLock { $0 = true }
+        return state.withLock { if case .submitted(let id) = $0 { id } else { nil } }
+    }
 
     var isCancelled: Bool { state.withLock { if case .cancelled = $0 { true } else { false } } }
 

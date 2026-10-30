@@ -201,6 +201,12 @@ enum CABI {
         try check(mk_job_cancel(e, job), "mk_job_cancel")
     }
 
+    /// `mk_job_stop` (ABI 1.2): ends an `optimize`/`tolerance` job early,
+    /// keeping its best result so far.
+    static func jobStop(_ e: OpaquePointer, _ job: UInt64) throws {
+        try check(mk_job_stop(e, job), "mk_job_stop")
+    }
+
     /// Blocks the calling thread (`timeoutMs < 0`: forever). Never call it
     /// on the main thread.
     static func jobWait(_ e: OpaquePointer, _ job: UInt64, timeoutMs: Int64) throws -> JobState {
@@ -292,6 +298,7 @@ enum CABI {
     }
     static func jobStatusJSON(_ e: OpaquePointer, _ job: UInt64) throws -> String { throw notLinked }
     static func jobCancel(_ e: OpaquePointer, _ job: UInt64) throws { throw notLinked }
+    static func jobStop(_ e: OpaquePointer, _ job: UInt64) throws { throw notLinked }
     static func jobWait(_ e: OpaquePointer, _ job: UInt64, timeoutMs: Int64) throws -> JobState { throw notLinked }
     static func jobTakeResult(_ e: OpaquePointer, _ job: UInt64) throws -> (json: String, buffers: [ResultBuffer]) {
         throw notLinked

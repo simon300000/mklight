@@ -423,7 +423,7 @@ extension MockEngine {
         }
         let hash = try MockEngine.hash(system)
         let json = JSONValue.object([
-            "status": .string(status), "termination": .string(status == "stopped" ? "cancelled" : "small_merit_change"),
+            "status": .string(status), "stopped": .bool(status == "stopped"), "termination": .string(status == "stopped" ? "cancelled" : "small_merit_change"),
             "algorithm": .string(algorithm), "iterations": .integer(Int64(done)),
             "evaluations": .integer(Int64(done * (vars.count + 1))), "improved": .bool(done > 0),
             "start": .object(["merit": .number(start), "violation": .number(0)]),
@@ -493,7 +493,7 @@ extension MockEngine {
                 "yield_fraction": .null, "threshold": .null, "cancelled": .bool(stopped), "criteria": nums(criteria),
             ])
         let json = JSONValue.object([
-            "status": .string(stopped ? "stopped" : "complete"),
+            "status": .string(stopped ? "stopped" : "complete"), "stopped": .bool(stopped),
             "sensitivity": mode == "monte_carlo"
                 ? .null
                 : .object([

@@ -1,0 +1,320 @@
+import Charts
+import CoreGraphics
+import MKLightEngine
+import SwiftUI
+
+/// A row-major grid of values with its extent in plot units.
+struct Grid2D: Sendable {
+    var nx: Int
+    var ny: Int
+    /// Row 0 at the bottom (`y = yRange.lowerBound`), x fastest.
+    var values: [Double]
+    var xRange: ClosedRange<Double>
+    var yRange: ClosedRange<Double>
+
+    init(nx: Int, ny: Int, values: [Double], xRange: ClosedRange<Double> = -1...1, yRange: ClosedRange<Double> = -1...1) {
+        self.nx = nx
+        self.ny = ny
+        self.values = values
+        self.xRange = xRange
+        self.yRange = yRange
+    }
+
+    /// A `[ny, nx]` (or `[k, ny, nx]` slice `k`) buffer.
+    init?(_ b: ResultBuffer?, slice k: Int = 0, xRange: ClosedRange<Double> = -1...1, yRange: ClosedRange<Double> = -1...1) {
+        guard let b, b.shape.count >= 2 else { return nil }
+        let ny = b.shape[b.shape.count - 2], nx = b.shape[b.shape.count - 1]
+        let start = k * nx * ny
+        guard nx > 0, ny > 0, start + nx * ny <= b.count else { return nil }
+        self.init(nx: nx, ny: ny, values: (start..<(start + nx * ny)).map { b[$0] }, xRange: xRange, yRange: yRange)
+    }
+
+    var finite: [Double] { values.filter(\.isFinite) }
+    var range: ClosedRange<Double> {
+        let f = finite
+        guard let lo = f.min(), let hi = f.max(), lo < hi else { return 0...1 }
+        return lo...hi
+    }
+}
+
+enum HeatScale: Equatable {
+    /// Magnitude from `lo` to `hi` (optionally logarithmic).
+    case sequential(log: Bool)
+    /// Signed values, symmetric about zero.
+    case diverging
+}
+
+/// A heat map drawn from a `Grid2D` (NaN cells transparent), with the
+/// one-hue or diverging scale of `Palette`.
+struct HeatMapImage: View {
+    let grid: Grid2D
+    var scale: HeatScale = .sequential(log: false)
+    var range: ClosedRange<Double>?
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        if let image = makeImage(dark: colorScheme == .dark) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .interpolation(grid.nx > 96 ? .medium : .none)
+        } else {
+            Color.clear
+        }
+    }
+
+    static func normalise(_ v: Double, scale: HeatScale, range r: ClosedRange<Double>) -> Double {
+        switch scale {
+        case .sequential(let log):
+            if log {
+                let lo = max(r.upperBound * 1e-5, 1e-300)
+                return (Foundation.log10(max(v, lo)) - Foundation.log10(lo)) / max(Foundation.log10(r.upperBound) - Foundation.log10(lo), 1e-12)
+            }
+            return (v - r.lowerBound) / max(r.upperBound - r.lowerBound, 1e-300)
+        case .diverging:
+            let m = max(abs(r.lowerBound), abs(r.upperBound), 1e-300)
+            return v / m
+        }
+    }
+
+    private func makeImage(dark: Bool) -> CGImage? {
+        let r = range ?? grid.range
+        var px = [UInt8](repeating: 0, count: grid.nx * grid.ny * 4)
+        for j in 0..<grid.ny {
+            let row = grid.ny - 1 - j  // image row 0 at the top
+            for i in 0..<grid.nx {
+                let v = grid.values[j * grid.nx + i]
+                let o = (row * grid.nx + i) * 4
+                guard v.isFinite else { continue }
+                let t = Self.normalise(v, scale: scale, range: r)
+                let c = scale == .diverging ? Palette.diverging(t, dark: dark) : Palette.sequential(t, dark: dark)
+                px[o] = UInt8(min(max(c.x, 0), 1) * 255)
+                px[o + 1] = UInt8(min(max(c.y, 0), 1) * 255)
+                px[o + 2] = UInt8(min(max(c.z, 0), 1) * 255)
+                px[o + 3] = 255
+            }
+        }
+        let data = Data(px) as CFData
+        guard let provider = CGDataProvider(data: data) else { return nil }
+        return CGImage(
+            width: grid.nx, height: grid.ny, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: grid.nx * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
+/// A vertical colour bar with end labels.
+struct ColorBar: View {
+    var scale: HeatScale
+    var range: ClosedRange<Double>
+    var unit: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label(scale == .diverging ? max(abs(range.lowerBound), abs(range.upperBound)) : range.upperBound))
+            HeatMapImage(grid: bar, scale: scale, range: barRange)
+                .frame(width: 10)
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+            Text(label(scale == .diverging ? -max(abs(range.lowerBound), abs(range.upperBound)) : range.lowerBound))
+        }
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Color scale from \(label(range.lowerBound)) to \(label(range.upperBound))")
+    }
+
+    private var barRange: ClosedRange<Double> {
+        scale == .diverging ? -1...1 : 0...1
+    }
+
+    private var bar: Grid2D {
+        let n = 64
+        let values = (0..<n).map { k -> Double in
+            let t = Double(k) / Double(n - 1)
+            return scale == .diverging ? 2 * t - 1 : t
+        }
+        return Grid2D(nx: 1, ny: n, values: values)
+    }
+
+    private func label(_ v: Double) -> String { Fmt.short(v) + (unit.isEmpty ? "" : " " + unit) }
+}
+
+/// A legend entry: a short line or dot in the series colour plus its name.
+struct LegendItem: View {
+    let color: Color
+    let label: String
+    var dashed = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Canvas { ctx, size in
+                var p = Path()
+                p.move(to: CGPoint(x: 0, y: size.height / 2))
+                p.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+                ctx.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: dashed ? [3, 2] : []))
+            }
+            .frame(width: 14, height: 8)
+            Text(label)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+/// Legends for fields or wavelengths, wrapped.
+struct WavelengthLegend: View {
+    let wavelengths: [Int]
+    let um: [Double]
+
+    var body: some View {
+        FlowLayout(spacing: Space.m) {
+            ForEach(wavelengths, id: \.self) { w in
+                if um.indices.contains(w) {
+                    LegendItem(color: Palette.wavelengthColor(um[w]), label: String(format: "%.4f µm", um[w]))
+                }
+            }
+        }
+    }
+}
+
+/// A titled small chart frame used in grids of plots.
+struct PlotCell<Content: View>: View {
+    let title: String
+    var subtitle: String = ""
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.caption.weight(.semibold))
+                if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+            }
+            content
+        }
+    }
+}
+
+/// One `(x, y)` series of a line chart.
+struct Series: Identifiable {
+    var id: String
+    var label: String
+    var color: Color
+    var points: [(Double, Double)]
+    var dashed = false
+}
+
+/// A line chart of several series with axis titles; NaN breaks a line.
+struct LineChart: View {
+    let series: [Series]
+    var xLabel: String
+    var yLabel: String
+    var xDomain: ClosedRange<Double>?
+    var yDomain: ClosedRange<Double>?
+    var zeroLine = true
+    var markers: [(x: Double, label: String)] = []
+
+    var body: some View {
+        Chart {
+            if zeroLine {
+                RuleMark(y: .value("zero", 0)).foregroundStyle(.secondary.opacity(0.4)).lineStyle(StrokeStyle(lineWidth: 0.5))
+            }
+            ForEach(markers, id: \.label) { m in
+                RuleMark(x: .value(m.label, m.x))
+                    .foregroundStyle(.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                    .annotation(position: .top, alignment: .leading, spacing: 2) {
+                        Text(m.label).font(.caption2).foregroundStyle(.secondary)
+                    }
+            }
+            ForEach(series) { s in
+                ForEach(Array(segments(s.points).enumerated()), id: \.offset) { k, seg in
+                    ForEach(Array(seg.enumerated()), id: \.offset) { _, p in
+                        LineMark(x: .value(xLabel, p.0), y: .value(yLabel, p.1), series: .value("s", "\(s.id)-\(k)"))
+                            .foregroundStyle(s.color)
+                            .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round, dash: s.dashed ? [4, 3] : []))
+                            .interpolationMethod(.linear)
+                    }
+                }
+            }
+        }
+        .chartXAxisLabel(xLabel, alignment: .center)
+        .chartYAxisLabel(yLabel)
+        .chartXScale(domain: xDomain ?? autoDomain(\.0))
+        .chartYScale(domain: yDomain ?? autoDomain(\.1))
+        .chartLegend(.hidden)
+        .accessibilityLabel(yLabel + " versus " + xLabel)
+    }
+
+    /// Splits a series at non-finite values.
+    private func segments(_ pts: [(Double, Double)]) -> [[(Double, Double)]] {
+        var out: [[(Double, Double)]] = [[]]
+        for p in pts {
+            if p.0.isFinite && p.1.isFinite { out[out.count - 1].append(p) } else if !(out.last?.isEmpty ?? true) { out.append([]) }
+        }
+        return out.filter { !$0.isEmpty }
+    }
+
+    private func autoDomain(_ key: KeyPath<(Double, Double), Double>) -> ClosedRange<Double> {
+        let v = series.flatMap { $0.points.map { $0[keyPath: key] } }.filter(\.isFinite)
+        guard var lo = v.min(), var hi = v.max() else { return 0...1 }
+        if zeroLine && key == \.1 { lo = min(lo, 0); hi = max(hi, 0) }
+        if lo == hi { lo -= 1; hi += 1 }
+        let pad = (hi - lo) * 0.04
+        return (lo - (key == \.1 ? pad : 0))...(hi + (key == \.1 ? pad : 0))
+    }
+}
+
+/// A short sparkline (merit history).
+struct Sparkline: View {
+    let values: [Double]
+
+    var body: some View {
+        Chart {
+            ForEach(Array(values.enumerated()), id: \.offset) { k, v in
+                LineMark(x: .value("iteration", k), y: .value("merit", v))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: domain)
+        .accessibilityLabel("Merit history, \(values.count) iterations")
+    }
+
+    private var domain: ClosedRange<Double> {
+        guard let lo = values.min(), let hi = values.max(), lo < hi else { return 0...1 }
+        return lo...hi
+    }
+}
+
+/// A small key / value table.
+struct KeyValueGrid: View {
+    let rows: [(String, String)]
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                GridRow {
+                    Text(r.0).foregroundStyle(.secondary)
+                    Text(r.1).numeric().gridColumnAlignment(.trailing)
+                }
+            }
+        }
+        .font(.callout)
+        .textSelection(.enabled)
+    }
+}
+
+/// Nice tick step and "scale bar" length.
+enum Nice {
+    static func length(_ x: Double) -> Double {
+        guard x > 0, x.isFinite else { return 1 }
+        let e = pow(10, floor(log10(x)))
+        let m = x / e
+        return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e
+    }
+
+    static func lengthLabel(_ mm: Double) -> String {
+        mm >= 1 ? String(format: "%g mm", mm) : mm >= 0.001 ? String(format: "%g µm", mm * 1000) : String(format: "%g nm", mm * 1e6)
+    }
+}

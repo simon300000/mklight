@@ -1,4 +1,4 @@
-import AppKit
+import CoreGraphics
 import MKLightEngine
 import simd
 
@@ -27,6 +27,8 @@ struct ViewportStyle: Equatable {
     var dark: Bool
     /// Device pixels per point.
     var scale: Float
+    /// Selection highlight (the system accent colour), sRGB.
+    var accent: SIMD3<Float> = SIMD3(0.16, 0.47, 0.84)
 }
 
 /// The coordinate frame vertex positions are uploaded in. Positions are
@@ -140,10 +142,7 @@ enum SceneGeometry {
         func f4(_ q: SIMD3<Double>) -> SIMD4<Float> { SIMD4(Float(q.x), Float(q.y), Float(q.z), 1) }
         let ink: SIMD3<Float> = style.dark ? SIMD3(0.88, 0.89, 0.91) : SIMD3(0.13, 0.14, 0.16)
         let faint: SIMD3<Float> = style.dark ? SIMD3(0.55, 0.56, 0.60) : SIMD3(0.55, 0.56, 0.58)
-        let accent: SIMD3<Float> = {
-            let c = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
-            return SIMD3(Float(c.redComponent), Float(c.greenComponent), Float(c.blueComponent))
-        }()
+        let accent = style.accent
         let s = style.scale
 
         var segs: [SegmentInstance] = []
@@ -168,8 +167,10 @@ enum SceneGeometry {
         for line in scene.polylines where line.kind == .ray && (style.mode == .orbit3D || line.inSection) {
             let rgb: SIMD3<Double> =
                 style.coloring == .field
-                ? Palette.fieldRGBValue(line.field ?? 0)
-                : Palette.wavelengthRGB(scene.wavelengthsUm.indices.contains(line.wavelength ?? -1) ? scene.wavelengthsUm[line.wavelength!] : 0.55)
+                ? Palette.fieldRGB(line.field ?? 0, dark: style.dark)
+                : Palette.wavelengthRGB(
+                    scene.wavelengthsUm.indices.contains(line.wavelength ?? -1) ? scene.wavelengthsUm[line.wavelength!] : 0.55,
+                    dark: style.dark)
             var a: Float = line.vignetted ? 0.35 : 0.9
             if style.stale { a *= 0.35 }
             add(line, color: SIMD4(SIMD3<Float>(rgb), a), width: 1.1)

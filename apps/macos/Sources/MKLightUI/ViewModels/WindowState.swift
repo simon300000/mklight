@@ -1,0 +1,207 @@
+import Foundation
+import MKLightEngine
+import MKLightModel
+import Observation
+
+public enum ViewportMode: String, CaseIterable, Identifiable, Sendable, Codable {
+    case section2D = "2D"
+    case orbit3D = "3D"
+    public var id: String { rawValue }
+    public var title: String { self == .section2D ? "Section" : "3D" }
+}
+
+public enum RayColoring: String, CaseIterable, Identifiable, Sendable, Codable {
+    case field, wavelength
+    public var id: String { rawValue }
+    public var title: String { self == .field ? "Color by Field" : "Color by Wavelength" }
+}
+
+public enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
+    case surface = "Surface"
+    case system = "System"
+    public var id: String { rawValue }
+}
+
+/// Orthographic viewport camera. Pure view state: it never enters the model.
+public struct ViewportCamera: Equatable, Sendable {
+    /// World point (mm) at the centre of the view.
+    public var center = SIMD3<Double>(0, 0, 0)
+    /// Zoom in points per millimetre.
+    public var pointsPerMM = 4.0
+    /// Orbit angles (radians) for the 3-D view.
+    public var yaw = -0.55
+    public var pitch = 0.35
+    /// False until the camera has been fitted to a scene.
+    public var isFitted = false
+
+    public init() {}
+}
+
+/// Which design job sheet is open.
+public enum DesignJobKind: String, Identifiable, Sendable {
+    case optimize, tolerance, solves
+    public var id: String { rawValue }
+}
+
+/// Per-window UI state, kept apart from the design (`DesignDocument`) and
+/// the analysis state (`Workspace`). The layout parts are saved in the
+/// project's `views` section (`WorkspaceLayout`).
+@MainActor
+@Observable
+public final class WindowState {
+    /// Selected surface, by stable id so it survives inserts and deletes.
+    public var selection: SurfaceID?
+    /// A field to highlight in the system inspector (from an issue).
+    public var highlightedField: Int?
+    public var showInspector = true
+    public var inspectorTab = InspectorTab.system
+    public var showViewport = true
+    public var showIssues = false
+    public var viewportMode = ViewportMode.section2D
+    public var camera = ViewportCamera()
+    public var rayColoring = RayColoring.field
+    /// Incremented to ask the viewport to fit the scene.
+    public var fitRequest = 0
+    /// Height fraction of the lens data editor.
+    public var editorFraction = 0.36
+    /// Width fraction of the viewport in the lower half.
+    public var viewportFraction = 0.42
+    /// Width fractions of the analysis panes (normalised when used).
+    public var paneWidths: [String: Double] = [:]
+    /// A transient message (an edit the editor rejected).
+    public var message: String?
+    public var activeJob: DesignJobKind?
+    /// The lens table's focused cell, for menu commands.
+    public var focusedColumn: LensColumn?
+
+    public init() {}
+
+    /// Shows a transient message; it clears itself after a few seconds.
+    public func flash(_ text: String?) {
+        message = text
+        guard let text else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            if self?.message == text { self?.message = nil }
+        }
+    }
+}
+
+/// The saved layout of a window, stored as the project's `views` section
+/// (`[{key, analysis, settings, ui}]`, docs/FFI.md): one entry per analysis
+/// pane plus a `layout` entry for the viewport and split positions.
+public struct WorkspaceLayout: Equatable, Sendable {
+    public struct Pane: Equatable, Sendable {
+        public var key: String
+        public var analysis: String
+        public var settings: [String: JSONValue]
+        public var autoUpdate: Bool
+        public var showsSettings: Bool
+        public var width: Double?
+    }
+    public var panes: [Pane] = []
+    public var editorFraction = 0.36
+    public var viewportFraction = 0.42
+    public var showViewport = true
+    public var viewportMode = ViewportMode.section2D
+    public var rayColoring = RayColoring.field
+    public var layoutSettings: [String: JSONValue] = [:]
+
+    public init() {}
+
+    /// The default for a new design: spot diagram and ray fan.
+    public static var standard: WorkspaceLayout {
+        var l = WorkspaceLayout()
+        l.panes = [
+            Pane(key: "pane-spot", analysis: "spot_diagram", settings: [:], autoUpdate: true, showsSettings: true, width: nil),
+            Pane(key: "pane-fan", analysis: "ray_fan", settings: [:], autoUpdate: true, showsSettings: true, width: nil),
+        ]
+        return l
+    }
+
+    public init(views: JSONValue) {
+        for v in views.array ?? [] {
+            guard let key = v["key"]?.string else { continue }
+            let ui = v["ui"]?.object ?? [:]
+            let settings = v["settings"]?.object ?? [:]
+            if key == "layout" {
+                editorFraction = ui["editor_fraction"]?.doubleValue ?? editorFraction
+                viewportFraction = ui["viewport_fraction"]?.doubleValue ?? viewportFraction
+                showViewport = ui["show_viewport"]?.bool ?? true
+                viewportMode = ui["mode"]?.string.flatMap(ViewportMode.init(rawValue:)) ?? .section2D
+                rayColoring = ui["ray_coloring"]?.string.flatMap(RayColoring.init(rawValue:)) ?? .field
+                layoutSettings = settings
+            } else if let analysis = v["analysis"]?.string {
+                panes.append(
+                    Pane(
+                        key: key, analysis: analysis, settings: settings, autoUpdate: ui["auto_update"]?.bool ?? true,
+                        showsSettings: ui["settings_visible"]?.bool ?? true, width: ui["width"]?.doubleValue))
+            }
+        }
+    }
+
+    public var views: JSONValue {
+        var out: [JSONValue] = [
+            .object([
+                "key": .string("layout"), "analysis": .string("layout"), "settings": .object(layoutSettings),
+                "ui": .object([
+                    "editor_fraction": .number(editorFraction), "viewport_fraction": .number(viewportFraction),
+                    "show_viewport": .bool(showViewport), "mode": .string(viewportMode.rawValue),
+                    "ray_coloring": .string(rayColoring.rawValue),
+                ]),
+            ])
+        ]
+        for p in panes {
+            var ui: [String: JSONValue] = ["auto_update": .bool(p.autoUpdate), "settings_visible": .bool(p.showsSettings)]
+            if let w = p.width { ui["width"] = .number(w) }
+            out.append(
+                .object([
+                    "key": .string(p.key), "analysis": .string(p.analysis), "settings": .object(p.settings), "ui": .object(ui),
+                ]))
+        }
+        return .array(out)
+    }
+
+    /// Whether `views` holds a saved layout at all.
+    public static func isSaved(_ views: JSONValue) -> Bool {
+        (views.array ?? []).contains { $0["key"]?.string == "layout" }
+    }
+}
+
+extension WorkspaceLayout {
+    /// The layout of a window now.
+    @MainActor
+    public init(workspace: Workspace, window: WindowState) {
+        panes = workspace.panes.map {
+            Pane(
+                key: $0.id, analysis: $0.analysis, settings: $0.settings, autoUpdate: $0.autoUpdate,
+                showsSettings: $0.showsSettings, width: window.paneWidths[$0.id])
+        }
+        editorFraction = window.editorFraction
+        viewportFraction = window.viewportFraction
+        showViewport = window.showViewport
+        viewportMode = window.viewportMode
+        rayColoring = window.rayColoring
+        layoutSettings = workspace.layout.settings
+    }
+
+    /// Panes for a new workspace.
+    @MainActor
+    public func makePanes() -> [AnalysisPane] {
+        panes.map {
+            let p = AnalysisPane(id: $0.key, analysis: $0.analysis, settings: $0.settings, autoUpdate: $0.autoUpdate)
+            p.showsSettings = $0.showsSettings
+            return p
+        }
+    }
+
+    @MainActor
+    public func apply(to window: WindowState) {
+        window.editorFraction = editorFraction
+        window.viewportFraction = viewportFraction
+        window.showViewport = showViewport
+        window.viewportMode = viewportMode
+        window.rayColoring = rayColoring
+        window.paneWidths = Dictionary(panes.compactMap { p in p.width.map { (p.key, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
+}
