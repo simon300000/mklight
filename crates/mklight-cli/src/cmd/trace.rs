@@ -121,10 +121,10 @@ pub fn trace(ctx: &Ctx, a: &TraceArgs) -> CliResult<Report> {
         .map(|(i, s)| {
             let g = to_global(sys, i, &Ray::new(s.point, s.dir));
             let hit = has_hit(i);
-            json!({
+            Ok(json!({
                 "index": i,
                 "label": label(i),
-                "type": model.get(i).map_or("", |s| shape_type(&s.shape)),
+                "type": model.get(i).map(|s| shape_type(&s.shape)).transpose()?.unwrap_or(""),
                 "is_coordinate_break": model.get(i).is_some_and(|s| s.is_coordinate_break()),
                 "point": v3(s.point),
                 "dir": v3(s.dir),
@@ -134,9 +134,9 @@ pub fn trace(ctx: &Ctx, a: &TraceArgs) -> CliResult<Report> {
                 "transmittance": num(s.transmittance),
                 "global_point": v3(g.pos),
                 "global_dir": v3(g.dir),
-            })
+            }))
         })
-        .collect();
+        .collect::<mklight_core::MkResult<_>>()?;
 
     let mut json = json!({
         "path": a.project.display().to_string(),

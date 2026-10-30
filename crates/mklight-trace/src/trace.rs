@@ -42,7 +42,7 @@
 use mklight_core::{Interaction, ResolvedSystem, SurfaceShape, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::interact::{ideal_lens, reflect, refract};
+use crate::interact::{diffract, ideal_lens, reflect, refract};
 use crate::numeric::Compensated;
 use crate::paraxial::ideal_lens_object_vergence;
 use crate::surface::{IntersectError, IntersectSettings, intersect};
@@ -64,6 +64,8 @@ impl Ray {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailReason {
+    /// Selected diffraction order has no real outgoing normal momentum.
+    EvanescentOrder,
     /// Iterative asphere intersection did not converge.
     NoConvergence,
     /// The ray reached a region where the surface sag is undefined.
@@ -321,6 +323,43 @@ pub fn trace_ray(
             match (&s.shape, s.interaction) {
                 // Dummy is a pass-through for every shape, ideal lenses included.
                 (_, Interaction::Dummy) => {}
+                (SurfaceShape::Diffractive { phase, .. }, inter) if phase.trace_order != 0 => {
+                    let v = mklight_core::surface_math::phase(phase, hit.point.x, hit.point.y)
+                        .expect("intersection checked phase domain");
+                    let lambda = sys.wavelengths_um[wl] * 1e-3;
+                    let reflected = inter == Interaction::Reflect;
+                    let n2 = if reflected { n1 } else { s.n_after[wl] };
+                    match diffract(
+                        ray.dir,
+                        hit.normal,
+                        n1,
+                        n2,
+                        v.gradient,
+                        lambda,
+                        phase.trace_order,
+                        reflected,
+                    ) {
+                        Some(d) => {
+                            ray.dir = d;
+                            opl.add_product(
+                                phase.trace_order as f64 * lambda / std::f64::consts::TAU,
+                                v.sag,
+                            );
+                        }
+                        None => {
+                            return done(
+                                TraceStatus::Failed {
+                                    surface: i,
+                                    reason: FailReason::EvanescentOrder,
+                                },
+                                ray,
+                                i,
+                                opl,
+                                absorb,
+                            );
+                        }
+                    }
+                }
                 (SurfaceShape::Paraxial { focal_length }, inter) => {
                     let mut k = ray.dir;
                     let n2 = if inter == Interaction::Reflect {

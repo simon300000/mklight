@@ -74,6 +74,25 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
     use ParamPath::*;
     let a = value.abs();
     match p {
+        ShapeCoefficient { set, index, .. } => {
+            use mklight_core::param::CoefficientSet::*;
+            let floor = match set {
+                Odd => 1e-3 * 10f64.powi(-(*index as i32 + 1)),
+                XAsphere | YAsphere => 1e-3 * 10f64.powi(-(2 * *index as i32 + 4)),
+                Phase => 0.1,             // radians
+                Q | Xy | Zernike => 1e-3, // normalized sag amplitudes in mm
+            };
+            (0.1 * a).max(floor)
+        }
+        ShapeParam { parameter, .. } => {
+            use mklight_core::param::ShapeParameter::*;
+            match parameter {
+                CurvatureX | CurvatureY => (0.1 * a).max(1e-4),
+                ConicX | ConicY | NormRadius => (0.1 * a).max(0.1),
+                DesignWavelengthUm => (0.01 * a).max(1e-3),
+                DesignOrder | TraceOrder => 1.0, // discrete: rejected as continuous variables below
+            }
+        }
         Curvature { .. } => (0.1 * a).max(1e-4),
         Thickness { .. } => (0.1 * a).max(0.1),
         Conic { .. } => (0.1 * a).max(0.1),
@@ -122,6 +141,11 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
         evaluator: E,
         registry: &OperandRegistry,
     ) -> MkResult<Self> {
+        if base.surfaces.iter().any(|s| !s.shape.is_legacy()) {
+            return Err(MkError::Unsupported(
+                "extended surface shapes in optical optimisation".into(),
+            ));
+        }
         spec.validate(registry)?;
         spec.validate_for(&base)?;
         for (i, op) in spec.enabled() {

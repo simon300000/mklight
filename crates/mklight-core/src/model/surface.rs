@@ -36,6 +36,72 @@ pub enum SurfaceShape {
         conic: f64,
         coefficients: Vec<f64>,
     },
+    /// Conic plus β₁r + β₂r² + … (coefficients in mm^(1-i)).
+    OddAsphere {
+        curvature: f64,
+        #[serde(default)]
+        conic: f64,
+        coefficients: Vec<f64>,
+    },
+    /// Forbes conic-based departure, coefficients in mm (SURFACES §2).
+    QCon {
+        curvature: f64,
+        #[serde(default)]
+        conic: f64,
+        norm_radius: f64,
+        coefficients: Vec<f64>,
+    },
+    /// Forbes best-fit-sphere departure; curvature is that of the sphere.
+    QBfs {
+        curvature: f64,
+        norm_radius: f64,
+        coefficients: Vec<f64>,
+    },
+    /// Fixed-period phase structure on a plane, conic or even-asphere base.
+    Diffractive {
+        base: Box<SurfaceShape>,
+        phase: DiffractivePhase,
+    },
+    /// Rotation of the y conic/even-asphere profile about a parallel y axis.
+    Toroid {
+        curvature_x: f64,
+        curvature_y: f64,
+        #[serde(default)]
+        conic_y: f64,
+        #[serde(default)]
+        y_asphere: Vec<f64>,
+    },
+    Biconic {
+        curvature_x: f64,
+        curvature_y: f64,
+        #[serde(default)]
+        conic_x: f64,
+        #[serde(default)]
+        conic_y: f64,
+        #[serde(default)]
+        x_asphere: Vec<f64>,
+        #[serde(default)]
+        y_asphere: Vec<f64>,
+    },
+    /// Total degree ascending, then x power descending; starts with x, y.
+    #[serde(rename = "xy_polynomial")]
+    XYPolynomial {
+        curvature: f64,
+        #[serde(default)]
+        conic: f64,
+        norm_radius: f64,
+        coefficients: Vec<f64>,
+    },
+    /// Sag coefficients in mm, including piston; see SURFACES §6.
+    ZernikeSag {
+        curvature: f64,
+        #[serde(default)]
+        conic: f64,
+        norm_radius: f64,
+        #[serde(default)]
+        ordering: ZernikeOrdering,
+        coefficients: Vec<f64>,
+    },
     /// Ideal thin lens with the given focal length in mm: a perfect paraxial
     /// element that images without aberration (used for afocal output and testing).
     Paraxial { focal_length: f64 },
@@ -48,15 +114,29 @@ crate::serde_util::strict_unit_variants!(SurfaceShape, "type", ["plane", "coordi
 impl SurfaceShape {
     pub fn curvature(&self) -> f64 {
         match *self {
-            SurfaceShape::Conic { curvature, .. } | SurfaceShape::EvenAsphere { curvature, .. } => {
-                curvature
-            }
+            SurfaceShape::Conic { curvature, .. }
+            | SurfaceShape::EvenAsphere { curvature, .. }
+            | SurfaceShape::OddAsphere { curvature, .. }
+            | SurfaceShape::QCon { curvature, .. }
+            | SurfaceShape::QBfs { curvature, .. }
+            | SurfaceShape::XYPolynomial { curvature, .. }
+            | SurfaceShape::ZernikeSag { curvature, .. } => curvature,
+            SurfaceShape::Diffractive { ref base, .. } => base.curvature(),
+            SurfaceShape::Toroid { curvature_y, .. }
+            | SurfaceShape::Biconic { curvature_y, .. } => curvature_y,
             _ => 0.0,
         }
     }
     pub fn conic(&self) -> f64 {
         match *self {
-            SurfaceShape::Conic { conic, .. } | SurfaceShape::EvenAsphere { conic, .. } => conic,
+            SurfaceShape::Conic { conic, .. }
+            | SurfaceShape::EvenAsphere { conic, .. }
+            | SurfaceShape::OddAsphere { conic, .. }
+            | SurfaceShape::QCon { conic, .. }
+            | SurfaceShape::XYPolynomial { conic, .. }
+            | SurfaceShape::ZernikeSag { conic, .. } => conic,
+            SurfaceShape::Diffractive { ref base, .. } => base.conic(),
+            SurfaceShape::Toroid { conic_y, .. } | SurfaceShape::Biconic { conic_y, .. } => conic_y,
             _ => 0.0,
         }
     }
@@ -71,7 +151,22 @@ impl SurfaceShape {
         }
     }
 
-    /// Sag `z(r²)`, computed in f64. Returns `None` outside the conic's domain.
+    /// Whether the shape belongs to the original solver subset. Later solvers
+    /// must reject other shapes until their mathematics is implemented.
+    pub fn is_legacy(&self) -> bool {
+        matches!(
+            self,
+            Self::Plane
+                | Self::Conic { .. }
+                | Self::EvenAsphere { .. }
+                | Self::Paraxial { .. }
+                | Self::CoordinateBreak
+        )
+    }
+
+    /// Sag on the positive y meridian, `z(0, √r²)`. For a freeform use
+    /// [`crate::surface_math::evaluate`] to specify both coordinates.
+    /// Returns `None` outside the surface domain.
     /// This is the definition. Tracers may evaluate it differently, but they
     /// must agree with it.
     pub fn sag(&self, r2: f64) -> Option<f64> {
@@ -96,6 +191,7 @@ impl SurfaceShape {
                 }
                 Some(base + acc * r2 * r2)
             }
+            _ => crate::surface_math::evaluate(self, 0.0, r2.sqrt()).map(|s| s.sag),
         }
     }
 }
@@ -108,6 +204,29 @@ pub fn conic_sag(c: f64, k: f64, r2: f64) -> Option<f64> {
         return None;
     }
     Some(c * r2 / (1.0 + arg.sqrt()))
+}
+
+/// Phase lag Φ at order +1, in radians. Wavelength is in µm; geometry in mm.
+/// Design metadata does not rescale the fixed groove period during tracing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffractivePhase {
+    pub norm_radius: f64,
+    /// A₁ρ² + A₂ρ⁴ + …, at most ten terms.
+    pub coefficients: Vec<f64>,
+    pub design_order: i32,
+    pub design_wavelength_um: f64,
+    pub trace_order: i32,
+}
+
+/// Matches the wave crate's ordering and normalisation, without depending on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZernikeOrdering {
+    #[default]
+    Fringe,
+    #[serde(alias = "noll")]
+    Standard,
 }
 
 /// What the surface does to light that hits it.

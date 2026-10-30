@@ -137,12 +137,21 @@ pub fn intersect(
             conic,
             coefficients,
         } => intersect_even_asphere(*curvature, *conic, coefficients, p, d, settings),
+        SurfaceShape::Diffractive { base, phase } => {
+            let hit = intersect(base, p, d, settings)?;
+            if !mklight_core::surface_math::in_domain(shape, hit.point.x, hit.point.y) {
+                return Err(IntersectError::OutsideDomain);
+            }
+            let _ = phase;
+            Ok(hit)
+        }
         SurfaceShape::CoordinateBreak => Ok(Hit {
             t_transfer: 0.0,
             t_surface: 0.0,
             point: p,
             normal: Vec3::Z,
         }),
+        _ => intersect_sag(shape, p, d, settings),
     }
 }
 
@@ -284,6 +293,18 @@ pub fn sag_and_slope(shape: &SurfaceShape, r2: f64) -> Option<(f64, f64)> {
             let (p, dp) = asphere_poly(coefficients, r2);
             Some((z + p, 0.5 * curvature / w + dp))
         }
+        _ => {
+            let r = r2.sqrt();
+            let v = mklight_core::surface_math::evaluate(shape, 0.0, r)?;
+            Some((
+                v.sag,
+                if r == 0.0 {
+                    0.5 * mklight_core::surface_math::vertex_curvatures(shape)[2]
+                } else {
+                    v.gradient[1] / (2.0 * r)
+                },
+            ))
+        }
     }
 }
 
@@ -310,6 +331,11 @@ pub fn surface_normal(shape: &SurfaceShape, p: Vec3) -> Option<Vec3> {
             conic,
             coefficients,
         } => asphere_normal(*curvature, *conic, coefficients, p),
+        SurfaceShape::Diffractive { base, .. } => surface_normal(base, p),
+        _ => {
+            let v = mklight_core::surface_math::evaluate(shape, p.x, p.y)?;
+            Some(Vec3::new(-v.gradient[0], -v.gradient[1], 1.0).normalized())
+        }
     }
 }
 
@@ -419,6 +445,146 @@ pub fn intersect_even_asphere(
         prev_abs_g = g.abs();
     }
     unreachable!("the loop returns at it == max_iterations")
+}
+
+/// General sag intersection: conic seed, safeguarded Newton in the closest
+/// approach frame. A bracket restricts Newton to its interval; backtracking
+/// keeps unbracketed steps in-domain and decreases the sag residual.
+fn intersect_sag(
+    shape: &SurfaceShape,
+    p: Vec3,
+    d: Vec3,
+    settings: &IntersectSettings,
+) -> Result<Hit, IntersectError> {
+    use mklight_core::surface_math::evaluate;
+    // Preserve the closed-form solution exactly for coincident conics.
+    let coincident = match shape {
+        SurfaceShape::OddAsphere { coefficients, .. }
+        | SurfaceShape::QCon { coefficients, .. }
+        | SurfaceShape::QBfs { coefficients, .. }
+        | SurfaceShape::XYPolynomial { coefficients, .. }
+        | SurfaceShape::ZernikeSag { coefficients, .. } => coefficients.iter().all(|a| *a == 0.0),
+        SurfaceShape::Biconic {
+            curvature_x,
+            curvature_y,
+            conic_x,
+            conic_y,
+            x_asphere,
+            y_asphere,
+        } => {
+            curvature_x == curvature_y
+                && conic_x == conic_y
+                && x_asphere.iter().chain(y_asphere).all(|a| *a == 0.0)
+        }
+        SurfaceShape::Toroid {
+            curvature_x,
+            curvature_y,
+            conic_y,
+            y_asphere,
+        } => curvature_x == curvature_y && *conic_y == 0.0 && y_asphere.iter().all(|a| *a == 0.0),
+        _ => false,
+    };
+    if coincident {
+        let hit = intersect_conic(shape.curvature(), shape.conic(), p, d)?;
+        return evaluate(shape, hit.point.x, hit.point.y)
+            .map(|_| hit)
+            .ok_or(IntersectError::OutsideDomain);
+    }
+    let (t0, q) = to_closest_approach(p, d);
+    let seed = conic_from(shape.curvature(), shape.conic(), q, d);
+    let seed_hit = seed.is_ok();
+    let mut t = seed.map_or(0.0, |(t, _)| t);
+    let at = |t: f64| {
+        Vec3::new(
+            t.mul_add(d.x, q.x),
+            t.mul_add(d.y, q.y),
+            t.mul_add(d.z, q.z),
+        )
+    };
+    let mut positive: Option<f64> = None;
+    let mut negative: Option<f64> = None;
+    let mut previous = f64::INFINITY;
+    for it in 0..=settings.max_iterations {
+        let pt = at(t);
+        let bracketed = positive.is_some() && negative.is_some();
+        let Some(v) = evaluate(shape, pt.x, pt.y) else {
+            return Err(if !seed_hit && !bracketed {
+                IntersectError::Miss
+            } else {
+                IntersectError::OutsideDomain
+            });
+        };
+        let g = pt.z - v.sag;
+        let gp = d.z - v.gradient[0] * d.x - v.gradient[1] * d.y;
+        if g > 0.0 {
+            positive = Some(t);
+        } else if g < 0.0 {
+            negative = Some(t);
+        }
+        let bracket = positive.zip(negative).map(|(a, b)| (a.min(b), a.max(b)));
+        let failure = if bracket.is_some() {
+            IntersectError::NoConvergence
+        } else {
+            IntersectError::Miss
+        };
+        if g.abs() <= settings.tolerance {
+            // One final Newton step, provided it stays on this real sheet.
+            let corrected = t - g / gp;
+            if corrected.is_finite() {
+                let p = at(corrected);
+                if evaluate(shape, p.x, p.y).is_some() {
+                    t = corrected;
+                }
+            }
+            let point = at(t);
+            return Ok(Hit {
+                t_transfer: t0,
+                t_surface: t,
+                point,
+                normal: surface_normal(shape, point).ok_or(IntersectError::OutsideDomain)?,
+            });
+        }
+        if it == settings.max_iterations {
+            return Err(if g.abs() <= 0.5 * previous {
+                IntersectError::NoConvergence
+            } else {
+                failure
+            });
+        }
+        if !g.is_finite() || gp == 0.0 || !gp.is_finite() {
+            return Err(failure);
+        }
+        let mut next = t - g / gp;
+        if let Some((lo, hi)) = bracket {
+            if !next.is_finite() || next <= lo || next >= hi {
+                next = lo + 0.5 * (hi - lo);
+            }
+        }
+        let mut outside = false;
+        let mut accepted = false;
+        for _ in 0..20 {
+            let p = at(next);
+            if let Some(v) = evaluate(shape, p.x, p.y) {
+                if (p.z - v.sag).abs() < g.abs() || bracket.is_some() {
+                    accepted = true;
+                    break;
+                }
+            } else {
+                outside = true;
+            }
+            next = t + 0.5 * (next - t);
+        }
+        if !accepted {
+            return Err(if outside && !bracketed {
+                IntersectError::OutsideDomain
+            } else {
+                failure
+            });
+        }
+        previous = g.abs();
+        t = next;
+    }
+    unreachable!()
 }
 
 #[cfg(test)]

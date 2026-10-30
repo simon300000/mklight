@@ -263,6 +263,11 @@ pub fn layout_job(
 ) -> MkResult<LayoutScene> {
     let timer = RunTimer::start();
     let sys = tracer.system();
+    if sys.surfaces.iter().any(|s| !s.shape.is_legacy()) {
+        return Err(mklight_core::MkError::Unsupported(
+            "extended surface shape in layout".into(),
+        ));
+    }
     check_count("rays per field", settings.rays_per_field, 1, 10_001)?;
     check_count("profile samples", settings.profile_samples, 3, 100_001)?;
     check_count("rings", settings.rings, 1, 100)?;

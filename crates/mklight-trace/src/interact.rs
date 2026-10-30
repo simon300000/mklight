@@ -50,6 +50,34 @@ pub fn refract(k: Vec3, normal: Vec3, n1: f64, n2: f64) -> Option<(Vec3, f64)> {
     Some((out, cos_i))
 }
 
+/// Fixed-period diffraction: n₂ k₂∥ = n₁ k₁∥ + m λ ∇ₛΦ/(2π).
+/// `phase_gradient` is with respect to the base's Cartesian x/y coordinates,
+/// in rad/mm; λ is in mm. The graph's surface gradient is its tangential
+/// projection. `reflected` selects the outgoing normal hemisphere.
+/// `None` is an evanescent order, distinct from ordinary TIR.
+pub fn diffract(
+    k: Vec3,
+    normal: Vec3,
+    n1: f64,
+    n2: f64,
+    phase_gradient: [f64; 2],
+    wavelength_mm: f64,
+    order: i32,
+    reflected: bool,
+) -> Option<Vec3> {
+    let kn = k.dot(normal);
+    let grad = Vec3::new(phase_gradient[0], phase_gradient[1], 0.0);
+    let tangent = (k - normal * kn) * (n1 / n2)
+        + (grad - normal * grad.dot(normal))
+            * (order as f64 * wavelength_mm / (std::f64::consts::TAU * n2));
+    let disc = 1.0 - tangent.dot(tangent);
+    if disc < 0.0 {
+        return None;
+    }
+    let sign = if (kn < 0.0) != reflected { -1.0 } else { 1.0 };
+    Some(tangent + normal * (sign * disc.sqrt()))
+}
+
 /// Specular reflection `k' = k − 2(k·n)n`. Returns `(k', cos i)`.
 #[inline]
 pub fn reflect(k: Vec3, normal: Vec3) -> (Vec3, f64) {

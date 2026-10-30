@@ -111,8 +111,19 @@ impl ParaxialRayTable {
     }
 }
 
+/// Local principal coordinate used for an unfolded first-order sweep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParaxialAxis {
+    X,
+    Y,
+}
+
 impl ParaxialModel {
     pub fn new(sys: &ResolvedSystem, wl: usize) -> Self {
+        Self::for_axis(sys, wl, ParaxialAxis::Y)
+    }
+    pub fn for_axis(sys: &ResolvedSystem, wl: usize, axis: ParaxialAxis) -> Self {
         let n = sys.surfaces.len();
         let mut nn = vec![0.0; n];
         let mut phi = vec![0.0; n];
@@ -120,7 +131,7 @@ impl ParaxialModel {
         nn[0] = sys.n_object[wl];
         t[0] = sys.surfaces[0].thickness;
         for j in 1..n {
-            (nn[j], phi[j]) = surface_step(sys, j, wl, nn[j - 1]);
+            (nn[j], phi[j]) = surface_step_axis(sys, j, wl, nn[j - 1], axis);
             t[j] = if j < n - 1 {
                 sys.surfaces[j].thickness
             } else {
@@ -166,6 +177,16 @@ impl ParaxialModel {
 /// image surface have no power.
 #[inline]
 fn surface_step(sys: &ResolvedSystem, j: usize, wl: usize, n_prev: f64) -> (f64, f64) {
+    surface_step_axis(sys, j, wl, n_prev, ParaxialAxis::Y)
+}
+
+fn surface_step_axis(
+    sys: &ResolvedSystem,
+    j: usize,
+    wl: usize,
+    n_prev: f64,
+    axis: ParaxialAxis,
+) -> (f64, f64) {
     let n = sys.surfaces.len();
     let s = &sys.surfaces[j];
     let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
@@ -177,10 +198,20 @@ fn surface_step(sys: &ResolvedSystem, j: usize, wl: usize, n_prev: f64) -> (f64,
     } else {
         match &s.shape {
             SurfaceShape::Paraxial { focal_length } => nj.abs() / focal_length,
-            SurfaceShape::Conic { curvature, .. } | SurfaceShape::EvenAsphere { curvature, .. } => {
-                curvature * (nj - n_prev)
+            _ => {
+                let h = mklight_core::surface_math::vertex_curvatures(&s.shape);
+                let mut power = h[if axis == ParaxialAxis::X { 0 } else { 2 }] * (nj - n_prev);
+                if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
+                    // Reduced slope is n*k_transverse to first order, also
+                    // on reflected paths. Positive A₁ therefore diverges.
+                    power -= phase.trace_order as f64
+                        * sys.wavelengths_um[wl]
+                        * 1e-3
+                        * phase.coefficients.first().copied().unwrap_or(0.0)
+                        / (std::f64::consts::PI * phase.norm_radius * phase.norm_radius);
+                }
+                power
             }
-            _ => 0.0,
         }
     };
     (nj, phi)
@@ -309,6 +340,81 @@ impl Paraxial {
     }
 }
 
+/// Both unfolded first-order traces. `squeeze = EFL_y/EFL_x` (signed).
+/// x/y are independent only for zero mixed vertex curvature. General
+/// freeforms with xy power require a later coupled 4×4 first-order model;
+/// their two diagonal projections are still reported, with a warning.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParaxialXY {
+    pub x: Vec<FirstOrder>,
+    pub y: Vec<FirstOrder>,
+    pub squeeze: Vec<f64>,
+    pub primary: usize,
+    pub symmetry: mklight_core::surface_math::Symmetry,
+    pub run_info: mklight_core::RunInfo,
+}
+impl ParaxialXY {
+    pub fn new(sys: &ResolvedSystem) -> MkResult<Self> {
+        Self::new_job(sys, &mklight_core::JobContext::new())
+    }
+    pub fn new_job(sys: &ResolvedSystem, ctx: &mklight_core::JobContext) -> MkResult<Self> {
+        use mklight_core::job::{Precision, RunTimer};
+        let timer = RunTimer::start();
+        let mut warnings = Vec::new();
+        for (i, s) in sys.surfaces.iter().enumerate() {
+            if mklight_core::surface_math::vertex_curvatures(&s.shape)[1] != 0.0 {
+                warnings.push(format!("surface {i}: mixed xy power; x/y are diagonal projections, not independent focal lengths"));
+            }
+            if let SurfaceShape::OddAsphere { coefficients, .. } = &s.shape {
+                if coefficients.first().is_some_and(|a| *a != 0.0) {
+                    warnings.push(format!(
+                        "surface {i}: cone vertex; formal quadratic first order omits the r term"
+                    ));
+                }
+            }
+        }
+        if sys
+            .system()
+            .surfaces
+            .iter()
+            .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
+        {
+            warnings.push("placements are ignored by unfolded x/y first order".into());
+        }
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        let mut squeeze = Vec::new();
+        for wl in 0..sys.wavelengths_um.len() {
+            ctx.check()?;
+            let fx = first_order_axis(sys, wl, ParaxialAxis::X)?;
+            let fy = first_order_axis(sys, wl, ParaxialAxis::Y)?;
+            squeeze.push(fy.efl / fx.efl);
+            x.push(fx);
+            y.push(fy);
+            ctx.report(
+                (wl + 1) as f64 / sys.wavelengths_um.len() as f64,
+                "paraxial x/y",
+            );
+        }
+        Ok(Self {
+            x,
+            y,
+            squeeze,
+            primary: sys.primary_wavelength,
+            symmetry: mklight_core::surface_math::system_symmetry(sys.system()),
+            run_info: timer.finish(
+                &sys.snapshot,
+                "paraxial_xy",
+                &serde_json::json!({}),
+                "cpu-f64",
+                Precision::F64Reference,
+                None,
+                warnings,
+            ),
+        })
+    }
+}
+
 fn inf_if_large(z: f64) -> f64 {
     if z.is_finite() && z.abs() <= TELECENTRIC_LIMIT {
         z
@@ -319,7 +425,17 @@ fn inf_if_large(z: f64) -> f64 {
 
 /// Compute the first-order properties at wavelength index `wl`.
 pub fn first_order(sys: &ResolvedSystem, wl: usize) -> MkResult<FirstOrder> {
-    let model = ParaxialModel::new(sys, wl);
+    first_order_axis(sys, wl, ParaxialAxis::Y)
+}
+
+/// Existing first-order definitions applied along one local coordinate.
+/// Cross-axis quadratic terms are not included; see [`ParaxialXY`].
+pub fn first_order_axis(
+    sys: &ResolvedSystem,
+    wl: usize,
+    axis: ParaxialAxis,
+) -> MkResult<FirstOrder> {
+    let model = ParaxialModel::for_axis(sys, wl, axis);
     let nn = &model.reduced_index;
     let n = nn.len();
     let img = n - 1;

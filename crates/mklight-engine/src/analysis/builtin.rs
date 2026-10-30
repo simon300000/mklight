@@ -254,15 +254,20 @@ impl Analysis for Validate {
 /// system wavelength, `n_d`/`V_d`, and every surface's global frame.
 pub struct SystemSummary;
 
-fn shape_name(s: &SurfaceShape) -> &'static str {
-    match s {
+fn shape_name(s: &SurfaceShape) -> mklight_core::MkResult<&'static str> {
+    Ok(match s {
         SurfaceShape::Plane => "plane",
         SurfaceShape::Conic { conic, .. } if *conic == 0.0 => "sphere",
         SurfaceShape::Conic { .. } => "conic",
         SurfaceShape::EvenAsphere { .. } => "even_asphere",
         SurfaceShape::Paraxial { .. } => "paraxial",
         SurfaceShape::CoordinateBreak => "coordinate_break",
-    }
+        _ => {
+            return Err(MkError::Unsupported(
+                "extended surface shape in system summary".into(),
+            ));
+        }
+    })
 }
 
 impl Analysis for SystemSummary {
@@ -435,7 +440,7 @@ impl Analysis for SystemSummary {
                 "index": i,
                 "id": rs.id,
                 "label": s.label,
-                "type": shape_name(&rs.shape),
+                "type": shape_name(&rs.shape)?,
                 "is_stop": i == r.stop,
                 "curvature": c,
                 "radius": num(if c == 0.0 { f64::INFINITY } else { 1.0 / c }),

@@ -97,7 +97,9 @@ pub mod tracer;
 pub use batch::{BatchRay, Grid, opd_grid, opd_grid_job, trace_grid, trace_grid_job};
 pub use numeric::Compensated;
 pub use opd::OpdReference;
-pub use paraxial::{FirstOrder, Paraxial, ParaxialModel, ParaxialRayTable};
+pub use paraxial::{
+    FirstOrder, Paraxial, ParaxialAxis, ParaxialModel, ParaxialRayTable, ParaxialXY,
+};
 pub use polarization::{
     JonesMatrix, JonesVector, PolarizationProperties, PolarizationState, PolarizedRay, PrtMatrix,
     Stokes, VectorPupilSample, trace_ray_polarized, vector_pupil,

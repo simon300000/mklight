@@ -160,6 +160,7 @@ pub fn principal_curvatures(shape: &SurfaceShape, r: f64) -> Option<(f64, f64)> 
             let sq = q.sqrt();
             Some((f2 / (q * sq), g / sq))
         }
+        _ => None, // Extended surface tensors belong to the next analysis round.
     }
 }
 
@@ -543,6 +544,11 @@ pub fn field_curvature_job(
 ) -> MkResult<FieldCurvatureResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
+    if sys.surfaces.iter().any(|s| !s.shape.is_legacy()) {
+        return Err(mklight_core::MkError::Unsupported(
+            "extended surface shape in field curvature".into(),
+        ));
+    }
     check_count("field samples", settings.field_samples, 2, 100_001)?;
     check_finite("close-ray step", settings.close_ray_step)?;
     if !(settings.close_ray_step > 0.0 && settings.close_ray_step < 0.5) {

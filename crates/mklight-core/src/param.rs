@@ -9,6 +9,32 @@ use serde::{Deserialize, Serialize};
 use crate::error::{MkError, MkResult};
 use crate::model::{ApertureSpec, MaterialRef, OpticalSystem, Placement, SurfaceId, SurfaceShape};
 
+/// Coefficient families; indices are zero-based (SURFACES.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoefficientSet {
+    Odd,
+    Q,
+    Phase,
+    XAsphere,
+    YAsphere,
+    Xy,
+    Zernike,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeParameter {
+    CurvatureX,
+    ConicX,
+    CurvatureY,
+    ConicY,
+    NormRadius,
+    DesignOrder,
+    DesignWavelengthUm,
+    TraceOrder,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(
     remote = "Self",
@@ -17,6 +43,16 @@ use crate::model::{ApertureSpec, MaterialRef, OpticalSystem, Placement, SurfaceI
     deny_unknown_fields
 )]
 pub enum ParamPath {
+    ShapeCoefficient {
+        surface: SurfaceId,
+        set: CoefficientSet,
+        index: usize,
+    },
+    /// `parameter` avoids collision with this enum's existing JSON tag `param`.
+    ShapeParam {
+        surface: SurfaceId,
+        parameter: ShapeParameter,
+    },
     Curvature {
         surface: SurfaceId,
     },
@@ -114,6 +150,8 @@ impl ParamPath {
             | Thickness { surface }
             | Conic { surface }
             | Asphere { surface, .. }
+            | ShapeCoefficient { surface, .. }
+            | ShapeParam { surface, .. }
             | ParaxialFocalLength { surface }
             | ModelNd { surface }
             | ModelVd { surface }
@@ -131,20 +169,44 @@ impl ParamPath {
     pub fn get(&self, s: &OpticalSystem) -> MkResult<f64> {
         use ParamPath::*;
         Ok(match self {
-            Curvature { surface } => match surf(s, *surface)?.shape {
+            ShapeCoefficient {
+                surface,
+                set,
+                index,
+            } => {
+                let (c, max) = shape_coefficients(&surf(s, *surface)?.shape, *set)
+                    .ok_or_else(|| bad(self, "coefficient set does not belong to shape"))?;
+                if *index >= max {
+                    return Err(bad(self, "[coefficient_count] index exceeds shape limit"));
+                }
+                c.get(*index).copied().unwrap_or(0.0)
+            }
+            ShapeParam { surface, parameter } => {
+                shape_parameter(&surf(s, *surface)?.shape, *parameter)
+                    .ok_or_else(|| bad(self, "scalar does not belong to shape"))?
+            }
+            Curvature { surface } => match geometry(&surf(s, *surface)?.shape) {
                 SurfaceShape::Conic { curvature, .. }
-                | SurfaceShape::EvenAsphere { curvature, .. } => curvature,
+                | SurfaceShape::EvenAsphere { curvature, .. }
+                | SurfaceShape::OddAsphere { curvature, .. }
+                | SurfaceShape::QCon { curvature, .. }
+                | SurfaceShape::QBfs { curvature, .. }
+                | SurfaceShape::XYPolynomial { curvature, .. }
+                | SurfaceShape::ZernikeSag { curvature, .. } => *curvature,
                 SurfaceShape::Plane => 0.0,
                 _ => return Err(bad(self, "surface has no curvature")),
             },
             Thickness { surface } => surf(s, *surface)?.thickness,
-            Conic { surface } => match surf(s, *surface)?.shape {
-                SurfaceShape::Conic { conic, .. } | SurfaceShape::EvenAsphere { conic, .. } => {
-                    conic
-                }
+            Conic { surface } => match geometry(&surf(s, *surface)?.shape) {
+                SurfaceShape::Conic { conic, .. }
+                | SurfaceShape::EvenAsphere { conic, .. }
+                | SurfaceShape::OddAsphere { conic, .. }
+                | SurfaceShape::QCon { conic, .. }
+                | SurfaceShape::XYPolynomial { conic, .. }
+                | SurfaceShape::ZernikeSag { conic, .. } => *conic,
                 _ => return Err(bad(self, "surface has no conic")),
             },
-            Asphere { surface, index } => match &surf(s, *surface)?.shape {
+            Asphere { surface, index } => match geometry(&surf(s, *surface)?.shape) {
                 SurfaceShape::EvenAsphere { coefficients, .. } => {
                     coefficients.get(*index).copied().unwrap_or(0.0)
                 }
@@ -239,13 +301,67 @@ impl ParamPath {
             return Err(bad(self, "value must be finite"));
         }
         match self {
+            ShapeCoefficient {
+                surface,
+                set,
+                index,
+            } => {
+                let (c, max) = shape_coefficients_mut(&mut surf_mut(s, *surface)?.shape, *set)
+                    .ok_or_else(|| bad(self, "coefficient set does not belong to shape"))?;
+                if *index >= max {
+                    return Err(bad(self, "[coefficient_count] index exceeds shape limit"));
+                }
+                c.resize(c.len().max(*index + 1), 0.0);
+                c[*index] = v;
+            }
+            ShapeParam { surface, parameter } => {
+                use ShapeParameter::*;
+                let sh = &mut surf_mut(s, *surface)?.shape;
+                match parameter {
+                    NormRadius if v <= 0.0 => {
+                        return Err(bad(self, "[invalid_norm_radius] must be > 0"));
+                    }
+                    DesignWavelengthUm if v <= 0.0 => {
+                        return Err(bad(self, "[invalid_design_wavelength] must be > 0"));
+                    }
+                    DesignOrder | TraceOrder => {
+                        if v.fract() != 0.0
+                            || v < i32::MIN as f64
+                            || v > i32::MAX as f64
+                            || (*parameter == DesignOrder && v == 0.0)
+                        {
+                            return Err(bad(
+                                self,
+                                "[invalid_diffraction_order] expected i32, nonzero for design order",
+                            ));
+                        }
+                        let SurfaceShape::Diffractive { phase, .. } = sh else {
+                            return Err(bad(self, "scalar does not belong to shape"));
+                        };
+                        if *parameter == DesignOrder {
+                            phase.design_order = v as i32;
+                        } else {
+                            phase.trace_order = v as i32;
+                        }
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+                *shape_parameter_mut(sh, *parameter)
+                    .ok_or_else(|| bad(self, "scalar does not belong to shape"))? = v;
+            }
             Curvature { surface } => {
                 let sf = surf_mut(s, *surface)?;
-                match &mut sf.shape {
+                match geometry_mut(&mut sf.shape) {
                     SurfaceShape::Conic { curvature, .. }
-                    | SurfaceShape::EvenAsphere { curvature, .. } => *curvature = v,
-                    SurfaceShape::Plane => {
-                        sf.shape = SurfaceShape::Conic {
+                    | SurfaceShape::EvenAsphere { curvature, .. }
+                    | SurfaceShape::OddAsphere { curvature, .. }
+                    | SurfaceShape::QCon { curvature, .. }
+                    | SurfaceShape::QBfs { curvature, .. }
+                    | SurfaceShape::XYPolynomial { curvature, .. }
+                    | SurfaceShape::ZernikeSag { curvature, .. } => *curvature = v,
+                    shape @ SurfaceShape::Plane => {
+                        *shape = SurfaceShape::Conic {
                             curvature: v,
                             conic: 0.0,
                         }
@@ -254,13 +370,16 @@ impl ParamPath {
                 }
             }
             Thickness { surface } => surf_mut(s, *surface)?.thickness = v,
-            Conic { surface } => match &mut surf_mut(s, *surface)?.shape {
-                SurfaceShape::Conic { conic, .. } | SurfaceShape::EvenAsphere { conic, .. } => {
-                    *conic = v
-                }
+            Conic { surface } => match geometry_mut(&mut surf_mut(s, *surface)?.shape) {
+                SurfaceShape::Conic { conic, .. }
+                | SurfaceShape::EvenAsphere { conic, .. }
+                | SurfaceShape::OddAsphere { conic, .. }
+                | SurfaceShape::QCon { conic, .. }
+                | SurfaceShape::XYPolynomial { conic, .. }
+                | SurfaceShape::ZernikeSag { conic, .. } => *conic = v,
                 _ => return Err(bad(self, "surface has no conic")),
             },
-            Asphere { surface, index } => match &mut surf_mut(s, *surface)?.shape {
+            Asphere { surface, index } => match geometry_mut(&mut surf_mut(s, *surface)?.shape) {
                 SurfaceShape::EvenAsphere { coefficients, .. } => {
                     if coefficients.len() <= *index {
                         coefficients.resize(*index + 1, 0.0);
@@ -353,6 +472,135 @@ impl ParamPath {
             PressureAtm => s.environment.pressure_atm = v,
         }
         Ok(())
+    }
+}
+
+fn geometry(shape: &SurfaceShape) -> &SurfaceShape {
+    if let SurfaceShape::Diffractive { base, .. } = shape {
+        base
+    } else {
+        shape
+    }
+}
+fn geometry_mut(shape: &mut SurfaceShape) -> &mut SurfaceShape {
+    if let SurfaceShape::Diffractive { base, .. } = shape {
+        base
+    } else {
+        shape
+    }
+}
+fn shape_coefficients(shape: &SurfaceShape, set: CoefficientSet) -> Option<(&Vec<f64>, usize)> {
+    use crate::surface_math::*;
+    use CoefficientSet::*;
+    use SurfaceShape::*;
+    Some(match (shape, set) {
+        (OddAsphere { coefficients, .. }, Odd) => (coefficients, MAX_ODD_TERMS),
+        (QCon { coefficients, .. } | QBfs { coefficients, .. }, Q) => (coefficients, MAX_Q_TERMS),
+        (Diffractive { phase, .. }, Phase) => (&phase.coefficients, MAX_PHASE_TERMS),
+        (Biconic { x_asphere, .. }, XAsphere) => (x_asphere, MAX_AXIS_TERMS),
+        (Biconic { y_asphere, .. } | Toroid { y_asphere, .. }, YAsphere) => {
+            (y_asphere, MAX_AXIS_TERMS)
+        }
+        (XYPolynomial { coefficients, .. }, Xy) => (coefficients, MAX_XY_TERMS),
+        (
+            ZernikeSag {
+                coefficients,
+                ordering,
+                ..
+            },
+            Zernike,
+        ) => (
+            coefficients,
+            match ordering {
+                crate::model::surface::ZernikeOrdering::Fringe => 37,
+                crate::model::surface::ZernikeOrdering::Standard => 45,
+            },
+        ),
+        _ => return None,
+    })
+}
+fn shape_coefficients_mut(
+    shape: &mut SurfaceShape,
+    set: CoefficientSet,
+) -> Option<(&mut Vec<f64>, usize)> {
+    use crate::surface_math::*;
+    use CoefficientSet::*;
+    use SurfaceShape::*;
+    Some(match (shape, set) {
+        (OddAsphere { coefficients, .. }, Odd) => (coefficients, MAX_ODD_TERMS),
+        (QCon { coefficients, .. } | QBfs { coefficients, .. }, Q) => (coefficients, MAX_Q_TERMS),
+        (Diffractive { phase, .. }, Phase) => (&mut phase.coefficients, MAX_PHASE_TERMS),
+        (Biconic { x_asphere, .. }, XAsphere) => (x_asphere, MAX_AXIS_TERMS),
+        (Biconic { y_asphere, .. } | Toroid { y_asphere, .. }, YAsphere) => {
+            (y_asphere, MAX_AXIS_TERMS)
+        }
+        (XYPolynomial { coefficients, .. }, Xy) => (coefficients, MAX_XY_TERMS),
+        (
+            ZernikeSag {
+                coefficients,
+                ordering,
+                ..
+            },
+            Zernike,
+        ) => (
+            coefficients,
+            match ordering {
+                crate::model::surface::ZernikeOrdering::Fringe => 37,
+                crate::model::surface::ZernikeOrdering::Standard => 45,
+            },
+        ),
+        _ => return None,
+    })
+}
+fn shape_parameter_ref(shape: &SurfaceShape, param: ShapeParameter) -> Option<&f64> {
+    use ShapeParameter::*;
+    use SurfaceShape::*;
+    Some(match (shape, param) {
+        (Toroid { curvature_x, .. } | Biconic { curvature_x, .. }, CurvatureX) => curvature_x,
+        (Toroid { curvature_y, .. } | Biconic { curvature_y, .. }, CurvatureY) => curvature_y,
+        (Biconic { conic_x, .. }, ConicX) => conic_x,
+        (Toroid { conic_y, .. } | Biconic { conic_y, .. }, ConicY) => conic_y,
+        (
+            QCon { norm_radius, .. }
+            | QBfs { norm_radius, .. }
+            | XYPolynomial { norm_radius, .. }
+            | ZernikeSag { norm_radius, .. },
+            NormRadius,
+        ) => norm_radius,
+        (Diffractive { phase, .. }, NormRadius) => &phase.norm_radius,
+        (Diffractive { phase, .. }, DesignWavelengthUm) => &phase.design_wavelength_um,
+        _ => return None,
+    })
+}
+fn shape_parameter_mut(shape: &mut SurfaceShape, param: ShapeParameter) -> Option<&mut f64> {
+    use ShapeParameter::*;
+    use SurfaceShape::*;
+    Some(match (shape, param) {
+        (Toroid { curvature_x, .. } | Biconic { curvature_x, .. }, CurvatureX) => curvature_x,
+        (Toroid { curvature_y, .. } | Biconic { curvature_y, .. }, CurvatureY) => curvature_y,
+        (Biconic { conic_x, .. }, ConicX) => conic_x,
+        (Toroid { conic_y, .. } | Biconic { conic_y, .. }, ConicY) => conic_y,
+        (
+            QCon { norm_radius, .. }
+            | QBfs { norm_radius, .. }
+            | XYPolynomial { norm_radius, .. }
+            | ZernikeSag { norm_radius, .. },
+            NormRadius,
+        ) => norm_radius,
+        (Diffractive { phase, .. }, NormRadius) => &mut phase.norm_radius,
+        (Diffractive { phase, .. }, DesignWavelengthUm) => &mut phase.design_wavelength_um,
+        _ => return None,
+    })
+}
+fn shape_parameter(shape: &SurfaceShape, param: ShapeParameter) -> Option<f64> {
+    match (shape, param) {
+        (SurfaceShape::Diffractive { phase, .. }, ShapeParameter::DesignOrder) => {
+            Some(phase.design_order as f64)
+        }
+        (SurfaceShape::Diffractive { phase, .. }, ShapeParameter::TraceOrder) => {
+            Some(phase.trace_order as f64)
+        }
+        _ => shape_parameter_ref(shape, param).copied(),
     }
 }
 
