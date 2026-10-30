@@ -143,11 +143,11 @@ let mut lib = MaterialLibrary::with_builtin();
 lib.add_catalog(Arc::new(cat));
 ```
 
-`GlassCatalog::from_agf_file` and `MaterialLibrary` keep only the glasses.
-The AGF metadata (status, exclude-substitution flag, ΔP_g,F, resistance
-codes) stays in `AgfCatalog::meta`, so a glass-substitution search should
-keep the `AgfCatalog` and draw from `AgfCatalog::substitution_candidates()`
-(not obsolete, not excluded).
+`GlassCatalog::from_agf_file` and `MaterialLibrary` retain availability,
+exclude-substitution and climate/stain resistance in `Glass::substitution`.
+The complete AGF metadata (including ΔP_g,F and other resistance codes)
+stays in `AgfCatalog::meta`. The `glass_substitution` job filters the retained
+summary; its candidate settings and distance metric are in `OPTIMIZATION.md`.
 
 The catalog is named after the file stem. Glass lookups are case-insensitive,
 and a `MaterialRef::Catalog` with `catalog: None` searches the catalogs in

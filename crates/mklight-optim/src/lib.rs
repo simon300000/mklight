@@ -30,10 +30,12 @@
 
 pub mod deriv;
 pub mod discrete;
+pub mod glass;
 pub mod global;
 pub mod linalg;
 pub mod lsq;
 pub mod merit;
+pub mod mixed;
 pub mod monitor;
 pub mod problem;
 pub mod rand;

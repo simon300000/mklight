@@ -31,7 +31,7 @@ use mklight_core::{MkError, MkResult};
 use super::{Evaluator, require_domain};
 use crate::lsq::{LsqSettings, least_squares};
 use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
-use crate::problem::{EvalStatus, Problem, ScalarEval, project};
+use crate::problem::{Problem, ScalarEval, project};
 use crate::rand::{Rng, streams};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,18 +77,6 @@ impl Default for HammerSettings {
     }
 }
 
-fn as_scalar(r: &OptimResult) -> ScalarEval {
-    if r.merit.is_finite() {
-        ScalarEval {
-            merit: r.merit,
-            violation: r.violation,
-            status: EvalStatus::Ok,
-        }
-    } else {
-        ScalarEval::FAILED
-    }
-}
-
 /// Global search from `x0` by basin hopping with local least squares.
 pub fn hammer<P: Problem + ?Sized>(
     p: &P,
@@ -121,7 +109,7 @@ pub fn hammer<P: Problem + ?Sized>(
         &mon.child(0.0, frac(1), "hammer start"),
     )?;
     ev.evaluations += first.evaluations;
-    let mut cur = (first.x.clone(), as_scalar(&first));
+    let mut cur = (first.x.clone(), first.scalar());
     let mut best = cur.clone();
     if first.termination == Termination::Cancelled {
         return Ok(ev.finish((&best.0, best.1), Termination::Cancelled, 0));
@@ -206,7 +194,7 @@ pub fn hammer<P: Problem + ?Sized>(
             let l = l?;
             ev.evaluations += l.evaluations;
             cancelled |= l.termination == Termination::Cancelled;
-            let sc = as_scalar(&l);
+            let sc = l.scalar();
             if round_best
                 .as_ref()
                 .is_none_or(|(_, b)| sc.better_than(b, ev.tol()))

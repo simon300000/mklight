@@ -740,7 +740,10 @@ impl Session {
                 ctx,
             )
         });
-        if matches!(req.analysis.as_str(), "optimize" | "tolerance") {
+        if matches!(
+            req.analysis.as_str(),
+            "optimize" | "tolerance" | "glass_substitution"
+        ) {
             spec = spec.with_stop_token(stop);
         }
         if let Some(k) = &req.view_key {
@@ -904,6 +907,7 @@ mod tests {
                 density: None,
                 transmittance: vec![],
                 relative_cost: None,
+                substitution: Default::default(),
                 comment: String::new(),
             },
         );

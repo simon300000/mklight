@@ -76,6 +76,16 @@ pub struct BestPoint {
     pub violation: f64,
 }
 
+impl BestPoint {
+    pub fn scalar(&self) -> ScalarEval {
+        ScalarEval {
+            merit: self.merit,
+            violation: self.violation,
+            status: EvalStatus::Ok,
+        }
+    }
+}
+
 /// Thread-safe best-so-far holder. Cloning shares the same slot.
 #[derive(Clone, Debug, Default)]
 pub struct BestSoFar(Arc<Mutex<Option<BestPoint>>>);
@@ -95,14 +105,7 @@ impl BestSoFar {
         };
         let take = match g.as_ref() {
             None => true,
-            Some(b) => e.better_than(
-                &ScalarEval {
-                    merit: b.merit,
-                    violation: b.violation,
-                    status: EvalStatus::Ok,
-                },
-                feas_tol,
-            ),
+            Some(b) => e.better_than(&b.scalar(), feas_tol),
         };
         if take {
             *g = Some(BestPoint {
@@ -345,6 +348,21 @@ pub struct OptimResult {
     /// (see [`Termination::DerivativeFailure`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_variables: Vec<usize>,
+}
+
+impl OptimResult {
+    /// The answer as a [`ScalarEval`]; failed when its merit or violation is not finite.
+    pub fn scalar(&self) -> ScalarEval {
+        if self.merit.is_finite() && self.violation.is_finite() {
+            ScalarEval {
+                merit: self.merit,
+                violation: self.violation,
+                status: EvalStatus::Ok,
+            }
+        } else {
+            ScalarEval::FAILED
+        }
+    }
 }
 
 #[cfg(test)]

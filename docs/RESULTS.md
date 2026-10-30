@@ -1836,6 +1836,105 @@ Buffers:
 | `coefficients_*` | f64 | [zernike_terms] | waves | Z1 onward in the reported ordering; Fringe by default. |
 | `rim_*` | f64 | [points, 2] | 1 | Clear-aperture loop vertices [u, v]. |
 
+### `glass_substitution` — Glass substitution
+
+Category `optimization`, result version 1, **GPU path**.
+
+Replaces the glasses of chosen lenses with real catalogue glasses: searches the combinations (tabu search, or basin hopping over glasses and shape together), re-optimises the continuous variables by LM for every combination, and returns the best combinations ranked, each with its complete optimised system. With no material variables, every model glass is snapped to its nearest real glasses.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `algorithm` | string | `"tabu"` |  | one of `"tabu"`, `"hammer"`; tabu: search glass combinations, every one re-optimised from the input shape. hammer: basin hopping over glasses and shape together, to escape local minima. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator settings, laid over the defaults (criterion, pupil sampling, fields, wavelengths, thickness boundaries). |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
+| `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (ranking, results[].feasible). |
+| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
+| `hold_efl` | boolean | `true` |  | Hold the EFL at its start value, as a constraint, unless the merit already has an efl operand. |
+| `local_iterations` | integer | `100` |  | ≥ 1; LM iterations per re-optimisation. |
+| `material_variables` | array<object> | `[]` |  | One entry per glass that may change; a cemented doublet is two entries. Empty: every model glass, with the default candidates. |
+| `max_combinations` | integer | `100` |  | ≥ 1; Local re-optimisations (tabu: distinct glass combinations; hammer: also the same glasses from another shape). |
+| `max_seconds` | number\|null | `null` | s | > 0; Search wall-time limit, keeping the results so far (termination time_limit; not reproducible). null: none. |
+| `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
+| `operands` | array | `[]` |  | Operands appended to the merit (e.g. an EFL target). |
+| `seed` | integer | `0` |  | ≥ 0 |
+| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the ranked results. One running job per key. |
+| `top_n` | integer | `10` |  | ≥ 1; Best glass combinations returned. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
+| `backend` | object |  |  |
+| `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
+| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
+| `backend.gpu_stats` (optional) | object |  |  |
+| `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.device_seconds` | number | s |  |
+| `backend.gpu_stats.dispatches` | integer |  | ≥ 0 |
+| `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.rays` | integer |  | ≥ 0 |
+| `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
+| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
+| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.workload` | object |  |  |
+| `backend.workload.batch` | integer |  | ≥ 0 |
+| `backend.workload.gpu_faster` | boolean |  |  |
+| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `candidate_sets` | array<object> |  | The resolved candidates of each material variable. |
+| `candidate_sets[].glasses` | array<object> |  | Nearest first. |
+| `candidate_sets[].glasses[].catalog` | string |  |  |
+| `candidate_sets[].glasses[].dpgf` | number |  | Partial-dispersion anomaly delta PgF. |
+| `candidate_sets[].glasses[].max_thickness_mm` | number? |  |  |
+| `candidate_sets[].glasses[].name` | string |  |  |
+| `candidate_sets[].glasses[].nd` | number |  | d-line index from the dispersion formula. |
+| `candidate_sets[].glasses[].vd` | number |  | Abbe number. |
+| `candidate_sets[].surface` | integer |  | ≥ 0 |
+| `history` | array<object> |  | One row per re-optimisation. |
+| `history[].best_merit` | nf |  |  |
+| `history[].combination` | integer |  | ≥ 0; Local-run count. |
+| `history[].evaluations` | integer |  | ≥ 0; Continuous evaluations so far. |
+| `history[].merit` | nf |  |  |
+| `history[].violation` | nf |  |  |
+| `merit_spec` | object |  | The merit; transmission thickness limits are added per combination. |
+| `results` | array<object> |  | Up to top_n distinct glass combinations: feasible first, then by merit (infeasible by violation). |
+| `results[].feasible` | boolean |  |  |
+| `results[].glasses` | array<object> |  | One per material variable, in settings order. |
+| `results[].glasses[].catalog` | string |  |  |
+| `results[].glasses[].dpgf` | number |  | Partial-dispersion anomaly delta PgF. |
+| `results[].glasses[].name` | string |  |  |
+| `results[].glasses[].nd` | number |  | d-line index from the dispersion formula. |
+| `results[].glasses[].surface` | integer |  | ≥ 0; Stable surface id. |
+| `results[].glasses[].vd` | number |  | Abbe number. |
+| `results[].local_termination` | string |  | LM termination; cancelled for a solve cut short by Stop or the time limit. |
+| `results[].merit` | nf |  | CPU f64 reference merit. |
+| `results[].rank` | integer |  | ≥ 0; 1 = best. |
+| `results[].system` | object |  | The complete optimised system, to preview or apply as one edit. |
+| `results[].system_hash` | string |  |  |
+| `results[].variables` | array<object> |  | Continuous variables against the input system. |
+| `results[].variables[].change` | nf |  |  |
+| `results[].variables[].param` | object |  | ParamPath. |
+| `results[].variables[].start` | nf |  |  |
+| `results[].variables[].value` | nf |  |  |
+| `results[].violation` | nf |  |  |
+| `starting_merit` | nf |  |  |
+| `starting_violation` | nf |  |  |
+| `statistics` | object |  |  |
+| `statistics.combinations` | integer |  | ≥ 0; Distinct glass combinations re-optimised. |
+| `statistics.continuous_evaluations` | integer |  | ≥ 0; Merit evaluations of the re-optimisations. |
+| `statistics.failed` | integer |  | ≥ 0; Re-optimisations without a usable point. |
+| `statistics.local_runs` | integer |  | ≥ 0; LM re-optimisations. |
+| `status` | string |  | one of `"finished"`, `"stopped"`; Cancel discards the result. |
+| `stopped` | boolean |  | Stopped; the results so far are kept. |
+| `termination` | string |  | Search termination; time_limit when max_seconds expired. |
+
 ### `optimize` — Optimize
 
 Category `optimization`, result version 1, **GPU path**.

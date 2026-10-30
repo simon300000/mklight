@@ -328,17 +328,36 @@ impl AgfCatalog {
     /// Wraps a catalog without AGF metadata (e.g. built-in or edited glasses)
     /// so it can be written.
     pub fn from_catalog(catalog: GlassCatalog) -> Self {
+        let meta = catalog
+            .glasses
+            .iter()
+            .map(|(name, g)| {
+                let s = g.substitution;
+                (
+                    name.clone(),
+                    AgfGlassMeta {
+                        status: s.status,
+                        exclude_substitution: s.exclude_substitution,
+                        ordering: OrderingData {
+                            climate_resistance: s.climate_resistance,
+                            stain_resistance: s.stain_resistance,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
         AgfCatalog {
             catalog,
+            meta,
             ..Default::default()
         }
     }
 
     /// Glasses a discrete glass-substitution search may use: neither flagged
-    /// "exclude substitution" nor obsolete. This metadata lives only here:
-    /// [`GlassCatalog::from_agf_file`] and `MaterialLibrary` keep the glasses
-    /// alone, so a caller that needs the filter keeps the `AgfCatalog` from
-    /// [`read_agf_file`].
+    /// "exclude substitution" nor obsolete. The compact availability and
+    /// resistance summary also travels with `Glass::substitution`.
     pub fn substitution_candidates(&self) -> impl Iterator<Item = &Glass> {
         self.catalog.glasses.iter().filter_map(|(k, g)| {
             let m = self.meta.get(k);
@@ -511,6 +530,7 @@ pub fn model_glass(name: &str, nd: f64, vd: f64, dpgf: f64) -> MkResult<Glass> {
         density: None,
         transmittance: Vec::new(),
         relative_cost: None,
+        substitution: Default::default(),
         comment: format!("model glass nd={nd} vd={vd} dPgF={dpgf}"),
     })
 }
@@ -698,6 +718,12 @@ impl Reader<'_> {
                 "duplicate glass name; the later definition replaces the earlier".into(),
             );
         }
+        glass.substitution = super::GlassSubstitution {
+            status: meta.status,
+            exclude_substitution: meta.exclude_substitution,
+            climate_resistance: meta.ordering.climate_resistance,
+            stain_resistance: meta.ordering.stain_resistance,
+        };
         self.out.meta.insert(name.clone(), meta);
         self.out.catalog.glasses.insert(name, glass);
     }
@@ -817,6 +843,7 @@ pub fn parse_agf_with(name: &str, text: &str, opts: &AgfOptions) -> MkResult<Agf
                     density: None,
                     transmittance: Vec::new(),
                     relative_cost: None,
+                    substitution: Default::default(),
                     comment: String::new(),
                 },
                 meta: AgfGlassMeta {

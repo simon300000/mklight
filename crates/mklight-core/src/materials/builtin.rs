@@ -35,6 +35,7 @@ fn sellmeier3(
         density: None,
         transmittance: Vec::new(),
         relative_cost: None,
+        substitution: Default::default(),
         comment: String::new(),
     }
 }

@@ -117,6 +117,10 @@ fn every_analysis_matches_its_schemas() {
             // Keep the debug-build test fast.
             "stray_light" => json!({"rays": 300}),
             "ghost_irradiance" => json!({"pupil_samples": 8, "map_bins": [8, 8]}),
+            "glass_substitution" => json!({
+                "material_variables": [{"surface": 1, "candidates": {"nearest": 2}}],
+                "max_combinations": 2, "local_iterations": 2
+            }),
             _ => {
                 assert!(
                     !info.default_settings.is_null(),

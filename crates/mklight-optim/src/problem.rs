@@ -565,6 +565,16 @@ impl ScalarEval {
             }
         }
     }
+    /// Total order consistent with [`Self::better_than`] (best first), for sorting.
+    pub fn compare(&self, o: &ScalarEval, tol: f64) -> std::cmp::Ordering {
+        if self.better_than(o, tol) {
+            std::cmp::Ordering::Less
+        } else if o.better_than(self, tol) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
 }
 
 /// Evaluate a batch and reduce each candidate to a [`ScalarEval`].

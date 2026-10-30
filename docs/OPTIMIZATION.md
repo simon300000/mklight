@@ -7,8 +7,8 @@ CMA-ES, basin hopping, tabu search), the serialisable merit-function model
 and tolerancing. This document covers how a merit function is evaluated on a
 real lens: the tracer-backed operand evaluator, the GPU-batched evaluator,
 the operand reference, the default merit function, derivatives, determinism,
-tolerancing, measured throughput, and the engine's `optimize` and
-`tolerance` jobs.
+tolerancing, measured throughput, and the engine's `optimize`,
+`glass_substitution` and `tolerance` jobs.
 
 ## Pieces
 
@@ -1007,6 +1007,175 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface, a `stop_key` in use → `InvalidSettings` |
 | stopped sensitivity | a compensated sensitivity of 30 tolerances stopped after its first batch: `stopped`, 15 operands kept, `cancelled: true` |
 
+## Glass substitution: `glass_substitution`
+
+Replaces the glasses of chosen lenses with real catalogue glasses. For every
+glass combination it tries, the job re-optimises the continuous variables
+by LM, then ranks the combinations. Use it to replace model or unavailable
+glasses with real ones, and to find better glass pairs. The analysis
+registry and the existing Stop API expose it to every client; no new FFI
+call is needed.
+
+The only setting a run needs is which glasses may change. A material
+variable names the **stable id of the surface in front of the glass**; a
+cemented doublet is two variables (its front and cemented surfaces):
+
+```json
+{"material_variables": [{"surface": 1}, {"surface": 2}]}
+```
+
+With no material variables at all, every model glass is snapped (below).
+Every other setting has a default:
+
+| setting | default | meaning |
+|---|---|---|
+| `material_variables` | `[]` | `[{surface, candidates?}]`; empty: every model glass |
+| `algorithm` | `"tabu"` | `tabu` searches glass combinations; `hammer` hops over glasses and shape together |
+| `max_combinations` | 100 | LM re-optimisations (tabu: distinct combinations; hammer: also the same glasses from another shape) |
+| `max_seconds` | `null` | search wall-time limit; keeps the results so far, `termination: "time_limit"` |
+| `local_iterations` | 100 | LM iterations per re-optimisation |
+| `top_n` | 10 | combinations returned |
+
+`variables`, `merit`, `default_merit`, `operands`, `constraints`,
+`hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend`, `gpu_batch`,
+`feasibility_tolerance` and `stop_key` are those of `optimize`. Empty
+continuous variables select the curvatures of the curved surfaces and the
+back focus; explicit variables may be any `ParamPath`. The re-optimisation is
+`optimize`'s LM: the same merit, augmented-Lagrangian constraints, FD steps
+and evaluator. `hold_efl` holds the input EFL as a constraint unless the
+merit has an EFL operand.
+
+### Candidates and model-glass snapping
+
+Each `candidates` object is optional; its fields are:
+
+| field | default | meaning |
+|---|---|---|
+| `catalogs` | `[]` | loaded catalogues to draw from; empty: every loaded catalogue except `BUILTIN`, or `BUILTIN` when it is the only one |
+| `statuses` | `["standard", "preferred", "melt"]` | allowed AGF status codes: 0 standard, 1 preferred, 2 obsolete, 3 special, 4 melt |
+| `window` | `null` | half-widths `{nd, vd}` around the current glass |
+| `nearest` | 10 | the K glasses nearest the current one, after the other filters; `null`: no limit |
+| `include`, `exclude` | `[]` | names or `catalog:name`, case-insensitive. Includes are kept beyond `window` and `nearest`; excludes always win |
+| `min_transmission` | `null` | internal transmission at the shortest system wavelength through the element's centre thickness |
+| `max_relative_cost` | `null` | AGF relative cost (`OD` field 1) |
+| `max_climate_class`, `max_stain_class` | `null` | AGF climate (CR) and stain (FR) resistance classes (`OD` fields 2, 3) |
+
+The AGF reader keeps status, the exclude-substitution flag and the CR/FR
+classes in `Glass.substitution`, so loaded and saved catalogues keep their
+filters (see `MATERIALS.md`). Glasses flagged exclude-substitution are never
+used, and status and quality filters also apply to includes. A glass
+without transmission, cost or resistance data passes that filter. A
+candidate must cover every system wavelength. Unknown catalogue or include
+names, and an empty candidate set, are errors.
+
+`min_transmission` uses the catalogue's internal transmittance,
+`τ = exp(−α·t)` (no interface losses, axial path only). A glass with data
+also gets the constraint `thickness ≤ −ln(min_transmission)/α` in every
+configuration during its re-optimisation, so a thickness variable cannot
+break the filter.
+
+**Distance.** Glasses are compared at `(n_d, V_d/100, ΔP_g,F)`, computed
+from each glass's dispersion formula at catalogue conditions (not the
+rounded catalogue n_d, V_d), with
+`ΔP_g,F = (n_g − n_F)/(n_F − n_C) − (0.6438 − 0.001682 V_d)`:
+
+```
+d² = (Δn_d)² + (ΔV_d / 100)² + 100 · (Δ ΔP_g,F)²
+```
+
+A change of 0.01 in index, 1 in Abbe number or 0.001 in partial-dispersion
+anomaly counts the same: for typical glasses (n_d − 1 ≈ 0.5, V_d ≈ 50, a
+crown/flint P_g,F difference ≈ 0.04) each changes an element's power, its
+colour or the pair's secondary spectrum by roughly 2–3 %. Model glasses use their stored
+`(nd, vd, dpgf)`. Ties sort by catalogue, then name. Search moves use the
+same metric: each glass can move to its 4 nearest candidates, plus 4 sampled
+two-glass moves per tabu iteration or hammer round.
+
+**Snapping.** With `material_variables` empty, every optical gap with a model
+glass becomes a variable with the default candidates: its 10 nearest real
+glasses. The nearest one is the search's starting point. To choose K, list
+the surfaces with `candidates.nearest`. A substituted surface cannot also
+have `model_nd`, `model_vd` or `model_dpgf` variables.
+
+### Search, ranking and interruption
+
+**Tabu** (`discrete::tabu_search`) starts from each variable's nearest
+candidate and evaluates each iteration's moves as one parallel batch of LM
+re-optimisations (`LocallyRefined`). Every combination starts from the
+**input shape**, so its result does not depend on the order the search
+reached it; tabu caches it by combination. It uses tabu's defaults (tenure 5,
+stall window 20, five seeded restarts of two random changes).
+
+**Hammer** (`mixed::mixed_hammer`) is basin hopping over glasses and shape:
+each round proposes 8 moves, each a Gaussian shape perturbation (0.5
+variable scales, adapted towards 50 % acceptance) plus, with probability
+0.5, a neighbourhood glass swap. All 8 are re-optimised in parallel, and the
+best is accepted when better, or by the relative-temperature (0.05)
+Metropolis rule of `hammer`. There is no pre-refinement screen, which could
+discard a glass pair that is only good once re-bent. It stops on
+`max_combinations` or 20 rounds without a new best, and keeps the best shape
+for each combination.
+
+Each re-optimisation returns the best point it saw under the feasibility
+rule, not just its last iterate. A short or interrupted solve that ends
+infeasible therefore never ranks below its own feasible start (for the
+input glasses, the input design).
+
+The kept combinations are re-scored on the CPU f64 reference and ranked:
+feasible first, then by merit (infeasible ones by violation, then merit),
+ties in combination order. `results` holds up to `top_n` distinct
+combinations, each with merit, violation, its glasses (catalogue, name,
+n_d, V_d, ΔP_g,F), the continuous variables against the input, and the
+complete optimised `system` with its hash, so a front end can preview and
+apply any entry as one undoable edit. `starting_merit`, `candidate_sets`,
+`statistics`, a `history` row per re-optimisation, the effective
+`merit_spec` and the `backend` record come with it.
+
+With fixed settings and seed, and no time limit or Stop, the result is
+identical for any number of Rayon workers. Progress reports the number of
+re-optimisations, the best merit and the best combination's glasses. Stop
+(`Engine::stop_job` or `stop_key`) ends the search and returns the ranking
+so far, including re-optimisations cut short (`local_termination:
+"cancelled"`); Cancel discards the job. `max_seconds` covers the search only,
+not setup, backend qualification or the final ranking.
+
+### Cost and benchmark
+
+Re-optimisation dominates. For C combinations, n continuous variables and
+I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
+merit evaluations, plus rejected steps and constraint updates (central
+differences: 2n). One search iteration's combinations run in parallel. When
+the backend qualifies, all re-optimisations share the qualified GPU
+evaluator, each FD Jacobian batched and split at `gpu_batch`; `auto` decides
+on the Jacobian's workload, as in `optimize`. Qualification is at the input
+and at the best result; the ranking is on the CPU reference. The final
+ranking adds one CPU merit evaluation per kept combination.
+
+The ignored Cooke-triplet benchmark has three glass variables (K = 3), a
+12-combination budget, seven continuous variables and 8 LM iterations per
+combination, with the d-line axis/edge default merit:
+
+```sh
+source ~/.cargo/env
+cargo test -p mklight-engine --release --lib benchmark_cooke_three_glasses -- --ignored --nocapture
+```
+
+On 2026-10-31 (Apple M2 Pro, CPU f64, 12 Rayon workers, a busy host) it ran
+the 12 re-optimisations, 825 merit evaluations, in **24 ms** at best (about
+500 combinations/s; up to several times slower under load), including setup
+and the final ranking. Eight LM iterations do not reach feasibility on this
+lens, so the input design ranks first: the benchmark measures throughput
+only.
+
+Tests cover the cemented-doublet known answer (crown n_d 1.52, V_d 60 and
+flint n_d 1.62, V_d 30 from a bad pair, with the F–C focal shift checked by
+an independent paraxial trace), model snapping, AGF status and quality
+filters, the transmission limit under thickness optimisation, determinism
+across worker counts, sorted unique results, Stop and Cancel, the time
+limit, the defaults, settings validation, and GPU re-optimisation on CPU-f32
+emulation and, when available, Metal. They use only the built-in glasses
+and synthetic catalogues.
+
 ## Known gaps
 
 * No analytic Jacobians (see Derivatives).
@@ -1017,6 +1186,7 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
   transmission. For its integration limits, see Relative illumination.
 * `spot_centroid` uses the default full-pupil sampling (3 rings × 6 arms).
 * There is no cross-call cache: a candidate evaluated twice is traced twice.
+  (Tabu glass substitution caches whole re-optimisations by combination.)
 * GPU-batched evaluation keeps the per-candidate host work on the CPU:
   snapshot, resolution and paraxial setup, ray generation (and aiming),
   packing, and operand reads. At the default merit's sampling this work costs
