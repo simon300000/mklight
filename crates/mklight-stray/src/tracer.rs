@@ -8,9 +8,9 @@
 //! At each step:
 //!
 //! 1. Closest hit through the [`RayCaster`]. A miss means the ray escapes.
-//!    A ray that leaves the scene from inside a non-ambient medium (a leak
-//!    out of a solid) is booked separately as `escaped_from_solid`, with a
-//!    warning.
+//!    A ray that leaves the scene from inside a medium that differs from the
+//!    ambient one (a leak out of a solid) is booked separately as
+//!    `escaped_from_solid`, with a warning.
 //! 2. **Beer–Lambert** along the segment: the weight is multiplied by
 //!    `exp(−α L)` and the difference is booked as bulk absorption (implicit,
 //!    noise-free absorption).
@@ -247,6 +247,10 @@ struct Tracer<'a, C: RayCaster> {
     source: &'a SourceSpec,
     w0: f64,
     wl_cdf: Vec<f64>,
+    /// Per medium: optically identical to the ambient medium (an air gap
+    /// is a different medium id from object space, but a ray leaving the
+    /// scene from it has not leaked out of a solid).
+    ambient_like: Vec<bool>,
 }
 
 impl<C: RayCaster> Tracer<'_, C> {
@@ -385,7 +389,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                 tally.events += 1;
                 let alpha = scene.media[s.medium as usize].alpha[wl];
                 let Some(hit) = self.caster.closest_hit(&s.ray, f64::INFINITY) else {
-                    if s.medium == scene.ambient {
+                    if self.ambient_like[s.medium as usize] {
                         tally.escaped += s.w;
                     } else {
                         tally.escaped_from_solid += s.w;
@@ -737,6 +741,11 @@ pub fn run_with<C: RayCaster>(
         source,
         w0: source.power() / settings.rays as f64,
         wl_cdf,
+        ambient_like: scene
+            .media
+            .iter()
+            .map(|m| *m == scene.media[scene.ambient as usize])
+            .collect(),
     };
     let pixels = (scene.detector.nx * scene.detector.ny) as usize;
     let mut tally = StrayTally::new(scene.num_wavelengths(), pixels);

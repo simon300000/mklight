@@ -108,3 +108,65 @@ pub fn seeds_mean(k: u64, mut f: impl FnMut(u64) -> f64) -> (f64, f64) {
     let v = xs.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1) as f64;
     (m, (v / k as f64).sqrt())
 }
+
+use mklight_stray::{StraySystem, SystemOptions};
+
+/// System options with every scatter mechanism switched off: black (fully
+/// absorbing, non-scattering) edges, flats, mounts and stop plates.
+pub fn no_scatter_options() -> SystemOptions {
+    let mut o = SystemOptions::default();
+    o.scene.default_edge_finish = ScatterModel::Lambertian { tis: 0.0 };
+    o.scene.include_mechanics = false;
+    o
+}
+
+pub fn stray_system(s: OpticalSystem, opts: &SystemOptions) -> StraySystem {
+    StraySystem::new(Arc::new(resolve(s)), opts).unwrap()
+}
+
+/// `(a − b)/σ`.
+pub fn z(a: f64, b: f64, sigma: f64) -> f64 {
+    (a - b) / sigma
+}
+
+/// The sample Double Gauss in a black-anodised barrel, with its field
+/// limited to ±10° and 0.5 mm mounting rims (at the full ±14° field the
+/// automatic clear apertures of L1 and L6 make their surfaces intersect).
+/// The barrel runs from the front vertex to the image, 1 mm outside the
+/// largest element, and a retaining ring closes it from the first
+/// element's clear aperture to the tube.
+pub fn double_gauss_with_barrels() -> (OpticalSystem, SystemOptions) {
+    let mut base = mklight_core::samples::double_gauss();
+    base.fields.fields.truncate(2);
+    let mut opts = SystemOptions::default();
+    opts.scene.default_edge_margin = 0.5;
+    let sys = stray_system(base.clone(), &opts);
+    let rmax = sys
+        .scene
+        .surfaces
+        .iter()
+        .take(base.surfaces.len() - 1)
+        .flatten()
+        .map(|g| g.mechanical_semi_diameter)
+        .fold(0.0, f64::max);
+    let front = sys.scene.surfaces[1].as_ref().unwrap();
+    let mut s = base;
+    let image = SurfaceId(s.surfaces.last().unwrap().id.0);
+    let black = ScatterModel::Lambertian { tis: 0.04 };
+    s.mechanics = vec![
+        MechanicalPart::Barrel {
+            from: SurfaceId(1),
+            to: image,
+            inner_radius: rmax + 1.0,
+            finish: black.clone(),
+        },
+        MechanicalPart::AnnularBaffle {
+            surface: SurfaceId(1),
+            z: -0.5,
+            inner_radius: front.clear_semi_diameter,
+            outer_radius: rmax + 1.0,
+            finish: black,
+        },
+    ];
+    (s, opts)
+}
