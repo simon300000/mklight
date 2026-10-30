@@ -1109,6 +1109,10 @@ mod tests {
     #[test]
     fn submit_errors_surface_immediately() {
         let e = engine();
+        // Install an unavailable fixture now that the wave solver replaces it.
+        let mut planned = crate::analysis::AnalysisRegistry::new();
+        crate::analysis::builtin::register_all(&mut planned);
+        e.register_analysis(planned.get("psf").unwrap());
         let s = e.new_session();
         assert!(matches!(
             s.submit_analysis(&AnalysisRequest::new("nope", Value::Null)),

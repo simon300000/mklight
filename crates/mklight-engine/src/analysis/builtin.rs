@@ -947,6 +947,8 @@ mod tests {
         settings: Value,
     ) -> EngineResult<super::super::AnalysisResult> {
         let reg = AnalysisRegistry::with_builtin();
+        let mut reg = reg;
+        register_all(&mut reg); // Test the builtin placeholders before solver replacement.
         let a = reg.get(name)?;
         let input = AnalysisInput::new(
             Snapshot::new(sys).unwrap(),
@@ -1145,6 +1147,8 @@ mod tests {
     #[test]
     fn placeholders_are_unavailable() {
         let reg = AnalysisRegistry::with_builtin();
+        let mut reg = reg;
+        register_all(&mut reg);
         let info = reg.list();
         let psf = info.iter().find(|i| i.name == "psf").unwrap();
         assert!(!psf.available && psf.unavailable_reason.is_some());

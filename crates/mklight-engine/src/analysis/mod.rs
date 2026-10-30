@@ -31,6 +31,7 @@ pub mod radiometry;
 pub mod schema;
 pub mod solves;
 pub mod stray;
+pub mod wave;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -425,6 +426,7 @@ pub fn run_analysis(
 pub fn register_all(r: &mut AnalysisRegistry) {
     builtin::register_all(r);
     geometric::register_all(r);
+    wave::register_all(r);
     ghost::register_all(r);
     stray::register_all(r);
     radiometry::register_all(r);

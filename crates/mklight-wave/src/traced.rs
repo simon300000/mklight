@@ -304,14 +304,20 @@ pub fn configured_tracer(
     library: Arc<MaterialLibrary>,
     k: usize,
 ) -> MkResult<ConfiguredTracer> {
+    configured_tracer_job(system, library, k, &JobContext::new())
+}
+
+/// [`configured_tracer`] with cancellation and solve progress on the caller's job.
+pub fn configured_tracer_job(
+    system: &OpticalSystem,
+    library: Arc<MaterialLibrary>,
+    k: usize,
+    ctx: &JobContext,
+) -> MkResult<ConfiguredTracer> {
+    ctx.check()?;
     let base_snapshot_hash = mklight_core::snapshot::hash_system(system)?.to_hex();
-    let (solved, report) = apply_solves_configuration(
-        system,
-        &library,
-        k,
-        &SolveSettings::default(),
-        &JobContext::new(),
-    )?;
+    let (solved, report) =
+        apply_solves_configuration(system, &library, k, &SolveSettings::default(), ctx)?;
     let snap = Snapshot::new(solved)?;
     let sys = mklight_core::ResolvedSystem::new(&snap, library)?;
     Ok(ConfiguredTracer {
