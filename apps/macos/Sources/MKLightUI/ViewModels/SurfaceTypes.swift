@@ -80,7 +80,7 @@ public enum SurfaceTypes {
             id: "plane", kind: .plane, title: "Plane", symbol: "rectangle.portrait",
             summary: "A flat surface.", sections: [], sag: { _, _ in 0 }),
         SurfaceTypeDescriptor(
-            id: "conic", kind: .conic, title: "Conic", symbol: "circle.lefthalf.filled",
+            id: "conic", kind: .conic, title: "Sphere / Conic", symbol: "circle.lefthalf.filled",
             summary: "Sphere or conic of revolution.",
             sections: [ParamSection(title: "Shape", params: [radius, conic])],
             sag: { j, r in conicSag(j["curvature"]?.nf ?? 0, j["conic"]?.nf ?? 0, r) }),

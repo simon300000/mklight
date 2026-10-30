@@ -314,6 +314,18 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         #expect(EngineLayout.autoSemiDiameters(scene).count >= 6)
     }
 
+    /// The layout's kind codes are read by `kind_names`, or by the analysis
+    /// crate's enum order when the rays show that the names do not match.
+    @Test func layoutKindCodesFollowTheRays() {
+        let names = ["surface_profile", "ring", "rim", "ray", "stop", "image", "axis", "element_outline"]
+        let kinds = ResultBuffer(name: "kinds", doubles: [0, 3, 4])
+        let fields = ResultBuffer(name: "fields", doubles: [-1, 0, -1])
+        #expect(EngineLayout.kindTable(names: names, kinds: kinds, fields: fields)[3] == .ray)
+        let enumCoded = ResultBuffer(name: "kinds", doubles: [0, 5, 3])
+        let table = EngineLayout.kindTable(names: names, kinds: enumCoded, fields: fields)
+        #expect(table[5] == .ray && table[3] == .stop && table[4] == .imagePlane)
+    }
+
     /// Every analysis the mock offers shows in a dedicated or generic view
     /// without failing, and unknown JSON falls back to the generic view.
     @Test func resultViewsReadEngineJSON() {

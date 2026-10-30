@@ -286,27 +286,40 @@ struct LineChart: View {
     }
 }
 
-/// A short sparkline (merit history).
+/// The merit history of an optimisation, on a logarithmic scale.
 struct Sparkline: View {
     let values: [Double]
 
     var body: some View {
+        let logs = values.map { $0 > 0 ? log10($0) : .nan }
         Chart {
-            ForEach(Array(values.enumerated()), id: \.offset) { k, v in
-                LineMark(x: .value("iteration", k), y: .value("merit", v))
-                    .interpolationMethod(.monotone)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+            ForEach(Array(logs.enumerated()), id: \.offset) { k, v in
+                if v.isFinite {
+                    LineMark(x: .value("Iteration", k), y: .value("log₁₀ merit", v))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.6))
+                }
             }
         }
         .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartYScale(domain: domain)
-        .accessibilityLabel("Merit history, \(values.count) iterations")
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { v in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let d = v.as(Double.self) { Text(String(format: "%.1e", pow(10, d))).font(.caption2) }
+                }
+            }
+        }
+        .chartYScale(domain: domain(logs))
+        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+        .accessibilityLabel("Merit history, \(values.count) iterations, logarithmic scale")
     }
 
-    private var domain: ClosedRange<Double> {
-        guard let lo = values.min(), let hi = values.max(), lo < hi else { return 0...1 }
-        return lo...hi
+    private func domain(_ v: [Double]) -> ClosedRange<Double> {
+        let f = v.filter(\.isFinite)
+        guard let lo = f.min(), let hi = f.max(), lo < hi else { return (f.first ?? 0) - 1...(f.first ?? 0) + 1 }
+        let pad = (hi - lo) * 0.05
+        return (lo - pad)...(hi + pad)
     }
 }
 

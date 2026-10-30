@@ -7,9 +7,28 @@ import MKLightModel
 /// the Metal viewport draws. Glass fills are built from each element's
 /// front and back profiles in the meridional section.
 enum EngineLayout {
-    static let kindNames: [Int: LayoutScene.PolylineKind] = [
-        0: .surfaceProfile, 1: .surfaceRim, 2: .surfaceRim, 3: .ray, 4: .stop, 5: .imagePlane, 6: .axis, 7: .elementEdge,
+    static let byName: [String: LayoutScene.PolylineKind] = [
+        "surface_profile": .surfaceProfile, "ring": .surfaceRim, "rim": .surfaceRim, "ray": .ray, "stop": .stop,
+        "image": .imagePlane, "axis": .axis, "element_outline": .elementEdge, "element_edge": .elementEdge,
     ]
+
+    /// The codes of the analysis crate's `PolylineKind` enum. Engine 0.1
+    /// writes these codes although `kind_names` lists another order; the
+    /// reader tells them apart by where the rays (polylines with a field)
+    /// are.
+    static let enumOrder: [Int: LayoutScene.PolylineKind] = [
+        0: .surfaceProfile, 1: .surfaceRim, 2: .elementEdge, 3: .stop, 4: .imagePlane, 5: .ray, 6: .axis, 7: .elementEdge,
+    ]
+
+    /// Code → kind: `kind_names` when the rays agree with it, else the
+    /// enum order.
+    static func kindTable(names: [String], kinds: ResultBuffer, fields: ResultBuffer?) -> [Int: LayoutScene.PolylineKind] {
+        var named: [Int: LayoutScene.PolylineKind] = [:]
+        for (k, n) in names.enumerated() { named[k] = byName[n] ?? .elementEdge }
+        guard let fields, !named.isEmpty else { return named.isEmpty ? enumOrder : named }
+        let rayCodes = Set((0..<min(kinds.count, fields.count)).filter { fields[$0] >= 0 }.map { Int(kinds[$0]) })
+        return rayCodes.allSatisfy({ named[$0] == .ray }) ? named : enumOrder
+    }
 
     /// `nil` when the output is not a layout the reader understands.
     static func scene(from output: AnalysisOutput?) -> LayoutScene? {
@@ -27,6 +46,7 @@ enum EngineLayout {
         let wav = output.buffer(named: "wavelengths"), flags = output.buffer(named: "flags")
         let n = kinds.count
         guard offsets.count == n + 1 else { return nil }
+        let table = kindTable(names: json["kind_names"]?.array?.compactMap(\.string) ?? [], kinds: kinds, fields: fld)
         var polylines: [LayoutScene.Polyline] = []
         polylines.reserveCapacity(n)
         for i in 0..<n {
@@ -43,7 +63,7 @@ enum EngineLayout {
             }
             polylines.append(
                 LayoutScene.Polyline(
-                    kind: kindNames[Int(kinds[i])] ?? .elementEdge, points: pts, inSection: f & 1 != 0, surface: idx(surf),
+                    kind: table[Int(kinds[i])] ?? .elementEdge, points: pts, inSection: f & 1 != 0, surface: idx(surf),
                     field: idx(fld), wavelength: idx(wav), vignetted: f & 2 != 0))
         }
         let surfaces: [LayoutScene.SurfaceInfo] = (json["surfaces"]?.array ?? []).compactMap { s in

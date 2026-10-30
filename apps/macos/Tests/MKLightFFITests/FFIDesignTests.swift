@@ -77,7 +77,11 @@ import Testing
             #expect(dedicated, "\(p.analysis): the dedicated view cannot read the engine's result")
             #expect(out.backend != nil, "\(p.analysis): the envelope's backend report")
         }
-        #expect(EngineLayout.scene(from: w.layout.output) != nil, "layout buffers")
+        let scene = try #require(EngineLayout.scene(from: w.layout.output), "layout buffers")
+        let rays = scene.polylines.filter { $0.kind == .ray }
+        #expect(!rays.isEmpty && rays.allSatisfy { $0.field != nil }, "rays are the polylines with a field")
+        #expect(scene.polylines.filter { $0.kind == .stop }.allSatisfy { $0.surface == system.stop })
+        #expect(!scene.elements.isEmpty)
         #expect(w.issues.allSatisfy { $0.severity != .error })
         #expect(FirstOrderData(w.summary.output?.json)?.entry(["efl"]) != nil)
     }

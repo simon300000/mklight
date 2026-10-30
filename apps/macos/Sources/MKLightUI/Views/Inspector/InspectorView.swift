@@ -432,11 +432,14 @@ struct SagPreview: View {
             default:
                 let h = semiDiameter ?? 1
                 guard let pts = SurfaceTypes.profile(shape, semiDiameter: h) else { return }
-                let zMax = max(pts.map { abs($0.1) }.max() ?? 0, h * 0.02)
-                let scale = min(rect.height / (2 * h), rect.width / 2 / zMax)
+                // Height to fit; sag exaggerated so a shallow curve still shows.
+                let zMax = max(pts.map { abs($0.1) }.max() ?? 0, 1e-12)
+                let rScale = rect.height / (2 * h)
+                let zScale = max(rScale, min(rect.width * 0.35 / zMax, rScale * 20))
+                let flip: CGFloat = (pts.map(\.1).max() ?? 0) > 0 ? -1 : 1
                 var p = Path()
                 for (k, q) in pts.enumerated() {
-                    let pt = CGPoint(x: rect.midX + CGFloat(q.1) * scale, y: rect.midY - CGFloat(q.0) * scale)
+                    let pt = CGPoint(x: rect.midX + flip * rect.width * 0.15 + CGFloat(q.1) * zScale, y: rect.midY - CGFloat(q.0) * rScale)
                     if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
                 }
                 ctx.stroke(p, with: .color(.primary), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))

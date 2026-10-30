@@ -28,7 +28,7 @@ struct JobSheetFrame<Content: View, Buttons: View>: View {
             HStack(spacing: Space.m) { buttons }
                 .padding(Space.l)
         }
-        .frame(minWidth: 620, idealWidth: 680, minHeight: 520, idealHeight: 600)
+        .frame(minWidth: 640, idealWidth: 700, minHeight: 600, idealHeight: 680)
     }
 }
 
@@ -109,7 +109,20 @@ struct OptimizeSheet: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { if design.variables.isEmpty { session.useDesignVariables = false } }
+        .onAppear {
+            if design.variables.isEmpty { session.useDesignVariables = false }
+            #if DEBUG
+            // Screenshots and UI checks: `-MKLightAutoRun lm` starts at once.
+            if let a = UserDefaults.standard.string(forKey: "MKLightAutoRun") {
+                session.algorithm = a
+                if a == "de" { session.maxIterations = 100_000 }
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    session.start(in: workspace, variables: design.variables)
+                }
+            }
+            #endif
+        }
     }
 
     private func running(_ p: JobProgress) -> some View {
@@ -171,8 +184,12 @@ struct OptimizeSheet: View {
                     }
                     .textSelection(.enabled)
                     if !r.evaluatedOn.isEmpty {
-                        Text("Search evaluated on \(r.evaluatedOn); merits reported on the CPU reference.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text(
+                            r.evaluatedOn.hasPrefix("cpu")
+                                ? "Evaluated on the CPU f64 reference."
+                                : "Searched on \(r.evaluatedOn); merits reported on the CPU f64 reference."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .padding(Space.xl)

@@ -150,6 +150,8 @@ private struct SpotCell: View {
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
         }
     }
 }

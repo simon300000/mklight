@@ -134,10 +134,16 @@ public struct LensRow: Identifiable, Equatable, Sendable {
                 if !m.isEmpty { markers[c] = m }
             }
             return LensRow(
-                id: sf.id, index: i, role: role, kind: sf.shape.kind, typeTitle: SurfaceTypes.descriptor(for: sf.shape).title,
+                id: sf.id, index: i, role: role, kind: sf.shape.kind, typeTitle: Self.typeTitle(sf.shape),
                 isMirror: sf.interaction == .reflect, cells: cells, exact: exact, editable: editable, markers: markers,
                 semiDiameterIsAuto: sf.semiDiameter == .auto)
         }
+    }
+
+    /// Short type name for the table: a conic of k = 0 is a sphere.
+    static func typeTitle(_ shape: SurfaceShape) -> String {
+        if case .conic(_, let k) = shape { return k == 0 ? "Sphere" : "Conic" }
+        return SurfaceTypes.descriptor(for: shape).title
     }
 
     /// Parses `text` typed into `column` into an edit of this row.
