@@ -84,7 +84,7 @@ else
       exit 1
     fi
     echo "==> cargo build --release -p mklight-ffi --target $t"
-    (cd "$ROOT" && MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release -p mklight-ffi --target "$t")
+    (cd "$ROOT" && MACOSX_DEPLOYMENT_TARGET=27.0 cargo build --release -p mklight-ffi --target "$t")
     LIBS+=("$ROOT/target/$t/release/libmklight_ffi.a")
   done
   mkdir -p "$LIB_DIR"
@@ -136,7 +136,7 @@ done
 SHADER="$PKG/Sources/MKLightUI/Viewport/Shaders/Viewport.metal"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-if xcrun metal -c -target air64-apple-macos15.0 -fmetal-math-mode=safe "$SHADER" -o "$TMP/Viewport.air" 2>/dev/null \
+if xcrun metal -c -target air64-apple-macos27.0 -fmetal-math-mode=safe "$SHADER" -o "$TMP/Viewport.air" 2>/dev/null \
    && xcrun metallib "$TMP/Viewport.air" -o "$APP/Contents/Resources/MKLightViewport.metallib" 2>/dev/null; then
   echo "    precompiled MKLightViewport.metallib"
 else
@@ -157,7 +157,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
-  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>LSMinimumSystemVersion</key><string>27.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
