@@ -212,3 +212,17 @@ fn compact_buffers_round_trip() {
     let head = 40 + 4 * (np + 1) + 12 * np + (2 * np).div_ceil(4) * 4;
     assert_eq!(bytes.len(), head + 12 * nv);
 }
+
+#[test]
+fn doe_flag_covers_every_surface_of_an_element() {
+    let t = tracer(samples::hybrid_diffractive_achromat());
+    let b = layout(&t, &LayoutSettings::default()).unwrap().to_buffers();
+    // The only element's first surface is refractive; its rear surface is the DOE.
+    let i = b
+        .kinds
+        .iter()
+        .position(|&k| k == ELEMENT_OUTLINE_KIND)
+        .unwrap();
+    assert_eq!(b.surfaces[i], 1);
+    assert_eq!(b.flags[i] & 4, 4);
+}

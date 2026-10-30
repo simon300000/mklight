@@ -204,12 +204,9 @@ fn qcon(c: &[f64], s: Jet) -> Jet {
     b1 * s * s
 }
 
-// Forbes 2010 OE 18, 19700, Eqs. A.14–16 and 3.5–12. Fixed stack storage;
-// the model boundary limits the coefficient count to MAX_Q_TERMS.
-fn qbfs_sum(c: &[f64], s: Jet) -> Jet {
-    if c.is_empty() {
-        return Jet::ZERO;
-    }
+/// Qbfs three-term recurrence tables `(f, g, h)`, Forbes 2010 OE 18, 19700,
+/// Eqs. A.14–16 and 3.5–12.
+pub fn qbfs_recurrence() -> ([f64; MAX_Q_TERMS], [f64; MAX_Q_TERMS], [f64; MAX_Q_TERMS]) {
     let mut f = [0.0; MAX_Q_TERMS];
     let mut g = f;
     let mut h = f;
@@ -221,6 +218,16 @@ fn qbfs_sum(c: &[f64], s: Jet) -> Jet {
         g[m - 1] = -(1.0 + g[m - 2] * h[m - 2]) / f[m - 1];
         f[m] = ((m * (m + 1) + 3) as f64 - g[m - 1] * g[m - 1] - h[m - 2] * h[m - 2]).sqrt();
     }
+    (f, g, h)
+}
+
+// Fixed stack storage; the model boundary limits the coefficient count to
+// MAX_Q_TERMS.
+fn qbfs_sum(c: &[f64], s: Jet) -> Jet {
+    if c.is_empty() {
+        return Jet::ZERO;
+    }
+    let (f, g, h) = qbfs_recurrence();
     let mut b = [0.0; MAX_Q_TERMS + 2];
     for m in (0..c.len()).rev() {
         b[m] = (c[m] - g[m] * b[m + 1] - h[m] * b[m + 2]) / f[m];

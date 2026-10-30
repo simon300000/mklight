@@ -172,17 +172,17 @@
     ]
   },
   "seidel": {
-    "lagrange_invariant": null,
-    "petzval_sum": null,
-    "status": "not_applicable",
+    "lagrange_invariant": 0.30543641829298296,
+    "petzval_sum": -0.002,
+    "status": "applicable",
     "sums": {
-      "cl": null,
-      "ct": null,
-      "s1": null,
-      "s2": null,
-      "s3": null,
-      "s4": null,
-      "s5": null
+      "cl": 0.0,
+      "ct": 0.0,
+      "s1": 1.734723475976807e-18,
+      "s2": -0.001527182091464915,
+      "s3": 0.00018658281123929213,
+      "s4": -0.0001865828112392921,
+      "s5": 0.0
     }
   },
   "spot": [

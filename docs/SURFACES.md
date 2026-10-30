@@ -275,11 +275,10 @@ included, fields are sampling requests. This classification is conservative
 and can be used to disable symmetry shortcuts. It makes no claim about
 arbitrary coating, mechanics or scatter symmetry.
 
-GPU packing, stray geometry, ghost paths, Seidel, Coddington, rotational
-layout and merit evaluation reject extended shapes until those solvers are
-implemented, with the single error of `OpticalSystem::require_legacy_shapes`
-(the GPU packer and stray patches reject them in their shape matches). CPU tracing and these mathematical APIs
-are the reference for that work. The app is unchanged.
+The geometric analyses (Seidel, Coddington, layout), merit evaluation, the
+Metal tracer and stray geometry support extended shapes. Only ghost-path
+generation still rejects them, with the single error of
+`OpticalSystem::require_legacy_shapes` (`mklight-ghost`).
 
 ## 9. Reference samples and verification
 
