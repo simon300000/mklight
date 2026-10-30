@@ -23,6 +23,7 @@ test = ["pytest>=8", "numpy>=1.26"]
 python-source = "python"
 module-name = "mklight._mklight"
 manifest-path = "Cargo.toml"
+exclude = ["python/mklight/__pycache__/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
