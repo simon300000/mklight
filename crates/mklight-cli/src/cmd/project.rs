@@ -8,11 +8,10 @@ use mklight_core::param::ParamPath;
 use mklight_core::{
     ApertureSpec, Interaction, MkError, OpticalSystem, SemiDiameter, SurfaceShape, samples,
 };
-use mklight_engine::fsutil::atomic_write;
 use mklight_engine::{EngineError, ParamEdit, Project, Session};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer};
 
-use super::{Ctx, Report, check_utf8, open_warnings, run_sync, save, warning_lines};
+use super::{Ctx, Report, open_warnings, run_sync, save, warning_lines};
 use crate::cli::{MigrateArgs, NewArgs, SetArgs, ShowArgs};
 use crate::error::{CliError, CliResult, Exit, open_error};
 use crate::output::{Align, Table, cell, fmt_f, fmt_g, key_values, num};
@@ -374,68 +373,43 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
 // ---------------------------------------------------------------------------
 // migrate
 
-/// `<file>.v<from>.bak`, or `….bak.<k>` for the first free `k` when taken.
+/// Migrate in place with the engine (`Engine::migrate_file`: the backup is
+/// `<file>.v<from>.bak`, or `….bak.<k>` for the first free `k` when taken;
+/// the file is opened through a session before anything is written).
 pub fn migrate(ctx: &Ctx, a: &MigrateArgs) -> CliResult<Report> {
     let path = &a.project;
-    let bytes = std::fs::read(path)
-        .map_err(|e| CliError::io(format!("cannot read {}: {e}", path.display())))?;
-    check_utf8(path, &bytes)?;
-    let text_in = String::from_utf8_lossy(&bytes);
-    let (_, report) = Project::from_json_str(&text_in).map_err(|e| open_error(path, e))?;
-    let mut json = json!({
-        "path": path_str(path),
-        "from_version": report.from_version,
-        "to_version": report.to_version,
-        "notes": report.notes,
-        "migrated": false,
-        "backup": null,
-        "dry_run": a.dry_run,
-    });
-    if !report.migrated() {
+    let out = ctx
+        .engine
+        .migrate_file(path, !a.no_backup, a.dry_run)
+        .map_err(|e| open_error(path, e))?;
+    let json = serde_json::to_value(&out)
+        .map_err(|e| CliError::new(Exit::AnalysisFailed, e.to_string()))?;
+    if out.from_version == out.to_version {
         let text = format!(
             "{} is already at schema version {}; nothing to do\n",
             path.display(),
-            report.to_version
+            out.to_version
         );
         return Ok(Report::ok(json, text));
     }
-    let mut text: String = report
-        .notes
-        .iter()
-        .map(|n| format!("note: {n}\n"))
-        .collect();
-    if a.dry_run {
+    let mut text: String = out.notes.iter().map(|n| format!("note: {n}\n")).collect();
+    if !out.migrated {
         text.push_str(&format!(
             "{} would be migrated from schema version {} to {} (dry run, nothing written)\n",
             path.display(),
-            report.from_version,
-            report.to_version
+            out.from_version,
+            out.to_version
         ));
         return Ok(Report::ok(json, text));
     }
-    // Open through the session (catalog references are resolved relative to
-    // the project) before writing anything, so a file that cannot be opened
-    // is left untouched.
-    let mut session = ctx.open(path)?;
-    let backup = if a.no_backup {
-        None
-    } else {
-        let b = mklight_engine::project::backup_path(path, report.from_version);
-        atomic_write(&b, &bytes)
-            .map_err(|e| CliError::io(format!("cannot write backup {}: {e}", b.display())))?;
-        Some(b)
-    };
-    save(&mut session, None)?;
-    json["migrated"] = json!(true);
-    json["backup"] = json!(backup.as_ref().map(|b| path_str(b)));
     text.push_str(&format!(
         "migrated {} from schema version {} to {}\n",
         path.display(),
-        report.from_version,
-        report.to_version
+        out.from_version,
+        out.to_version
     ));
-    if let Some(b) = &backup {
-        text.push_str(&format!("backup: {}\n", b.display()));
+    if let Some(b) = &out.backup {
+        text.push_str(&format!("backup: {b}\n"));
     }
     Ok(Report::ok(json, text))
 }
