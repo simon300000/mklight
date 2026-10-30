@@ -5,10 +5,14 @@ layout viewport, built around the headless Rust engine. The app never
 computes optics. Every number it shows comes from an `EngineClient`.
 
 ```
-swift build                     # debug build
-swift test                      # model, engine-boundary and UI-logic tests
-../../scripts/build-macos.sh    # release build → build/macos/MKLight.app
+../../scripts/build-macos.sh --engine-only   # Rust engine → Frameworks/libmklight_ffi.a
+swift build                                  # debug build (links the engine when present)
+swift test                                   # model, boundary, FFI integration and UI-logic tests
+../../scripts/build-macos.sh                 # release build → build/macos/MKLight.app
 ```
+
+The app runs on the Rust engine through `FFIEngine`; see `docs/APP.md` for
+the build integration, the binding, its thread safety and the tests.
 
 Requires Xcode 16 or later (Swift 6 language mode, strict concurrency) and
 macOS 15 or later.
@@ -20,7 +24,9 @@ macOS 15 or later.
 | `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
 | `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests and settings, result types, `RunInfo`, the `AnalysisJob` handle and `MockEngine`. |
 | `MKLightUI` | The document app: `ProjectDocument`, `WindowViewState`, `AnalysisCoordinator`, the lens data editor (`NSTableView`), the inspector, the analysis plots (Swift Charts), the PSF heat map and the Metal viewport. |
-| `MKLight` | The executable. It picks the engine (`MockEngine` for now) and runs `MKLightScene`. |
+| `CMKLight` | System-library module over `crates/mklight-ffi/include/mklight.h`; present only when `Frameworks/libmklight_ffi.a` exists. |
+| `MKLightFFI` | `FFIEngine`: `EngineClient` over the C ABI (sessions, projects, catalogs, jobs, zero-copy buffers). Compiles without the library and then reports it unavailable. |
+| `MKLight` | The executable. It uses `FFIEngine` (debug builds without the library fall back to `MockEngine`) and runs `MKLightScene`. |
 
 ## Engine boundary
 
@@ -92,20 +98,13 @@ checked against known answers (thick-lens equations, a paraboloid's perfect
 focus, third-order spherical aberration of a mirror), so the synthetic data is
 at least self-consistent.
 
-### Plugging in the Rust engine
+### The Rust engine
 
-1. `crates/mklight-ffi` exports a C ABI (cbindgen header) that takes JSON
-   strings and returns JSON plus binary buffers. It also exports job handles
-   with progress polling and cancellation.
-2. Add a `MKLightFFI` target with a module map over the header and an
-   `FFIEngine: EngineClient`. Bridge each job's progress into the
-   `JobReporter` and forward `cancel()` to the engine's cancel token.
-   Its tests should check that the binding reproduces the engine's snapshot
-   hashes in `Tests/MKLightModelTests/Fixtures/snapshot_hashes.json` (only
-   an engine binding can: the mock hashes with SHA-256).
-3. Build and link `libmklight_ffi.a` at the hook in `scripts/build-macos.sh`.
-4. Switch `Sources/MKLight/main.swift` from `MockEngine()` to the FFI engine.
-   No UI code changes.
+`FFIEngine` (module `MKLightFFI`) is the production `EngineClient`; see
+`docs/APP.md`. Typed requests run as the engine analysis
+`AnalysisKind.engineName`; results the typed mirrors cannot decode, and
+analyses requested by name (`EngineAnalysisRequest`, the Engine pane), are
+shown generically (`GenericResult`: JSON plus `ResultBuffer`s).
 
 ## State model
 
@@ -129,9 +128,13 @@ at least self-consistent.
 
 ## Files
 
-`.mklight` files are pretty-printed JSON of the form
-`{"format": "mklight-project", "version": 1, "system": {…}}`. Bare
-`OpticalSystem` JSON (engine fixtures, CLI output) opens too. The exported
+`.mklight` files use the engine's project format (docs/FFI.md):
+`{"format": "mklight-project", "schema_version": 1, "metadata", "system",
+"catalogs", "views", "merit", "variables", "tolerances"}`. The app edits the
+system and the catalog list and keeps every other section, including
+unknown keys, verbatim. Bare `OpticalSystem` JSON and the app's early
+`{"format", "version": 1, "system"}` files open too (as the engine's
+version-0 migration does); newer schema versions are refused. The exported
 UTI is `com.mklight.project`, which conforms to `public.json` and is declared
 in the bundle's Info.plist by the build script.
 
@@ -192,10 +195,11 @@ library.
 
 ## Open contract items
 
-* The analysis result schemas and the `.mklight` project envelope are
-  defined only here for now. When `mklight-engine` defines its result
-  structs, it should dump fixtures for them (as `dump_fixtures` does for the
-  model), and the Swift types should be round-trip tested against those.
+* The typed analysis result schemas are defined only here for now. When
+  `mklight-engine` defines its result structs, it should dump fixtures for
+  them (as `dump_fixtures` does for the model), and the Swift types should be
+  round-trip tested against those; until then mismatching results are shown
+  generically.
 * The engine's `OpticalSystem::validate` accepts two things the Swift check
   reports: mechanical parts attached to missing surfaces (a warning here), and
   values with no JSON form, such as a NaN curvature (an error here; such a
