@@ -13,6 +13,13 @@ public struct Solve: Codable, Sendable, Hashable {
         self.kind = kind
     }
 
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("target", "kind")
+        target = try c.value("target")
+        kind = try c.value("kind")
+    }
+
     private enum CodingKeys: String, CodingKey { case target, kind }
 
     /// Surfaces the solve refers to (target, pickup source, position range,
@@ -154,6 +161,15 @@ public enum SolveKind: Codable, Sendable, Hashable {
         let t = try c.value("type", as: String.self)
         guard let kind = Kind(rawValue: t) else {
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown solve '\(t)'")
+        }
+        switch kind {
+        case .marginalRayHeight, .chiefRayHeight: try c.allowOnly("type", "height")
+        case .marginalRayAngle, .chiefRayAngle: try c.allowOnly("type", "slope")
+        case .fNumber: try c.allowOnly("type", "value")
+        case .pickup: try c.allowOnly("type", "source", "scale", "offset")
+        case .position: try c.allowOnly("type", "from", "to", "distance")
+        case .centerOfCurvature: try c.allowOnly("type", "surface")
+        case .edgeThickness: try c.allowOnly("type", "value", "radius")
         }
         switch kind {
         case .marginalRayHeight: self = .marginalRayHeight(height: try c.value("height"))

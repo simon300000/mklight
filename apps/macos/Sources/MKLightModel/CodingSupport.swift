@@ -28,6 +28,18 @@ extension KeyedDecodingContainer where K == AnyKey {
         }
         return v
     }
+    /// Rejects every key outside `allowed`, like serde's
+    /// `deny_unknown_fields` on the engine's model types: a field the
+    /// mirror does not know would otherwise be dropped silently on the next
+    /// save or engine call, and the engine refuses it anyway.
+    func allowOnly(_ allowed: String...) throws {
+        let known = Set(allowed)
+        if let k = allKeys.map(\.stringValue).sorted().first(where: { !known.contains($0) }) {
+            throw DecodingError.dataCorruptedError(
+                forKey: AnyKey(k), in: self,
+                debugDescription: "unknown field '\(k)', expected one of \(allowed.joined(separator: ", "))")
+        }
+    }
     func optional<T: Decodable>(_ key: String, as type: T.Type = T.self) throws -> T? {
         try decodeIfPresent(T.self, forKey: AnyKey(key))
     }

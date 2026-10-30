@@ -31,11 +31,21 @@ public enum MaterialRef: Codable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
-        case "air": self = .air
-        case "vacuum": self = .vacuum
-        case "catalog": self = .catalog(catalog: try c.optional("catalog"), name: try c.value("name"))
-        case "model": self = .model(nd: try c.value("nd"), vd: try c.value("vd"), dpgf: try c.value("dpgf", default: 0))
-        case "constant": self = .constant(n: try c.value("n"))
+        case "air":
+            try c.allowOnly("type")
+            self = .air
+        case "vacuum":
+            try c.allowOnly("type")
+            self = .vacuum
+        case "catalog":
+            try c.allowOnly("type", "catalog", "name")
+            self = .catalog(catalog: try c.optional("catalog"), name: try c.value("name"))
+        case "model":
+            try c.allowOnly("type", "nd", "vd", "dpgf")
+            self = .model(nd: try c.value("nd"), vd: try c.value("vd"), dpgf: try c.value("dpgf", default: 0))
+        case "constant":
+            try c.allowOnly("type", "n")
+            self = .constant(n: try c.value("n"))
         case let t:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown material '\(t)'")
         }
@@ -81,6 +91,7 @@ public struct CoatingLayer: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("material", "thickness_um", "quarter_waves", "extinction")
         material = try c.value("material")
         thicknessUm = try c.value("thickness_um", default: 0)
         quarterWaves = try c.optional("quarter_waves")
@@ -120,11 +131,16 @@ public enum CoatingDef: Codable, Sendable, Hashable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
         case "thin_film":
+            try c.allowOnly("type", "reference_wavelength_um", "layers", "mirror_substrate")
             self = .thinFilm(
                 referenceWavelengthUm: try c.value("reference_wavelength_um"), layers: try c.value("layers"),
                 mirrorSubstrate: try c.optional("mirror_substrate"))
-        case "ideal": self = .ideal(reflectance: try c.value("reflectance"), transmittance: try c.value("transmittance"))
-        case "tabulated": self = .tabulated(reflectance: try c.value("reflectance"))
+        case "ideal":
+            try c.allowOnly("type", "reflectance", "transmittance")
+            self = .ideal(reflectance: try c.value("reflectance"), transmittance: try c.value("transmittance"))
+        case "tabulated":
+            try c.allowOnly("type", "reflectance")
+            self = .tabulated(reflectance: try c.value("reflectance"))
         case let t:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown coating '\(t)'")
         }

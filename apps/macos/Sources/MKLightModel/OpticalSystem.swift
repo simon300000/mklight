@@ -3,6 +3,10 @@ import Foundation
 /// The complete physical description of an optical system: a value-type
 /// mirror of the engine's `OpticalSystem`, encoded with exactly the engine's
 /// JSON representation. It holds no UI state.
+///
+/// Decoding is strict, like the engine's `deny_unknown_fields`: an unknown
+/// key anywhere in the model is an error rather than silently dropped
+/// (every snapshot and save re-encodes the mirror).
 public struct OpticalSystem: Codable, Sendable, Hashable {
     public var name: String
     public var notes: String
@@ -72,6 +76,9 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly(
+            "name", "notes", "aperture", "fields", "wavelengths", "surfaces", "stop", "ray_aiming", "environment",
+            "coatings", "mechanics", "sensor", "configurations", "solves")
         name = try c.value("name", default: "")
         notes = try c.value("notes", default: "")
         aperture = try c.value("aperture")

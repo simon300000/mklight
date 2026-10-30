@@ -359,4 +359,68 @@ import Testing
         #expect(throws: DecodingError.self) { try MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode(json)) }
         #expect(ExtendedDouble.parse("NaN") == nil && ExtendedDouble.parse("-inf") == -.infinity)
     }
+
+    /// The engine's model types deny unknown fields. The mirror must refuse
+    /// them too: it re-encodes every snapshot and save, so an unknown key it
+    /// accepted would vanish silently. Every object of the engine-written
+    /// fixtures (every model variant) gets an extra key in turn.
+    @Test(arguments: [
+        ("kitchen_sink", "system"), ("variants", "systems"), ("solved_triplet", "system"),
+        ("param_paths", "paths"), ("solve_kinds", "solves"),
+    ])
+    func rejectsUnknownKeysEverywhere(fixture: String, kind: String) throws {
+        let original = try JSONValue.parse(Fixtures.data(fixture))
+        func decode(_ json: JSONValue) throws {
+            let data = try MKLightJSON.encode(json)
+            switch kind {
+            case "system": _ = try MKLightJSON.decode(OpticalSystem.self, from: data)
+            case "systems": _ = try MKLightJSON.decode([OpticalSystem].self, from: data)
+            case "paths": _ = try MKLightJSON.decode([ParamPath].self, from: data)
+            default: _ = try MKLightJSON.decode([Solve].self, from: data)
+            }
+        }
+        try decode(original)
+        let paths = Self.objectPaths(in: original)
+        #expect(paths.count > 3)
+        for path in paths {
+            let tampered = Self.inserting("future_field", into: original, at: path[...])
+            do {
+                try decode(tampered)
+                Issue.record("\(fixture): an unknown key at $\(path.map { ".\($0)" }.joined()) was accepted")
+            } catch let DecodingError.dataCorrupted(context) {
+                #expect(context.debugDescription.contains("unknown field 'future_field'"), "\(context.debugDescription)")
+            }
+        }
+    }
+
+    /// Paths (object keys and array indices) of every JSON object, except
+    /// name-keyed maps (`coatings`), whose keys are data.
+    private static func objectPaths(in json: JSONValue, at path: [String] = []) -> [[String]] {
+        switch json {
+        case .object(let o):
+            let here = path.last == "coatings" ? [] : [path]
+            return here + o.keys.sorted().flatMap { objectPaths(in: o[$0]!, at: path + [$0]) }
+        case .array(let a):
+            return a.indices.flatMap { objectPaths(in: a[$0], at: path + [String($0)]) }
+        default: return []
+        }
+    }
+
+    private static func inserting(_ key: String, into json: JSONValue, at path: ArraySlice<String>) -> JSONValue {
+        guard let head = path.first else {
+            guard case .object(var o) = json else { return json }
+            o[key] = .integer(1)
+            return .object(o)
+        }
+        switch json {
+        case .object(var o):
+            o[head] = inserting(key, into: o[head]!, at: path.dropFirst())
+            return .object(o)
+        case .array(var a):
+            let i = Int(head)!
+            a[i] = inserting(key, into: a[i], at: path.dropFirst())
+            return .array(a)
+        default: return json
+        }
+    }
 }

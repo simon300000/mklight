@@ -51,7 +51,8 @@ public struct CatalogReference: Codable, Sendable, Hashable {
 ///
 /// The app edits only `system` (and the catalog list); every other section,
 /// including keys a newer application added, is kept verbatim in `sections`
-/// so a round trip loses nothing. Older documents are accepted like the
+/// so a round trip loses nothing. The system itself is decoded strictly, as
+/// the engine does: an unknown model field is an error, never dropped. Older documents are accepted like the
 /// engine's migrations do: a bare `OpticalSystem`, `{"system": …}` without a
 /// `schema_version`, and the app's own early `{"format", "version": 1,
 /// "system"}` envelope. A newer `schema_version` is refused.

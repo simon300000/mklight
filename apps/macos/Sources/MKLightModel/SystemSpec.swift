@@ -75,7 +75,13 @@ public enum ApertureSpec: Codable, Sendable, Hashable {
         guard let kind = Kind(rawValue: t) else {
             throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown aperture spec '\(t)'")
         }
-        self = kind == .floatByStopSize ? .floatByStopSize : ApertureSpec(kind: kind, value: try c.value("value"))
+        if kind == .floatByStopSize {
+            try c.allowOnly("type")
+            self = .floatByStopSize
+        } else {
+            try c.allowOnly("type", "value")
+            self = ApertureSpec(kind: kind, value: try c.value("value"))
+        }
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -120,6 +126,7 @@ public struct Vignetting: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("vdx", "vdy", "vcx", "vcy")
         vdx = try c.value("vdx", default: 0)
         vdy = try c.value("vdy", default: 0)
         vcx = try c.value("vcx", default: 0)
@@ -150,6 +157,7 @@ public struct Field: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("x", "y", "weight", "vignetting")
         x = try c.value("x")
         y = try c.value("y")
         weight = try c.value("weight", default: 1)
@@ -180,6 +188,13 @@ public struct FieldSet: Codable, Sendable, Hashable {
         return m > 0 ? m : 1
     }
 
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("kind", "fields")
+        kind = try c.value("kind")
+        fields = try c.value("fields")
+    }
+
     private enum CodingKeys: String, CodingKey { case kind, fields }
 }
 
@@ -195,6 +210,7 @@ public struct Wavelength: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("um", "weight")
         um = try c.value("um")
         weight = try c.value("weight", default: 1)
     }
@@ -226,6 +242,7 @@ public struct WavelengthSet: Codable, Sendable, Hashable {
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("wavelengths", "primary")
         wavelengths = try c.value("wavelengths")
         primary = try c.index("primary")
     }
@@ -248,8 +265,12 @@ public enum RayAiming: Codable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("mode", as: String.self) {
-        case "off": self = .off
-        case "real": self = .real(tolerance: try c.value("tolerance", default: RayAiming.defaultTolerance))
+        case "off":
+            try c.allowOnly("mode")
+            self = .off
+        case "real":
+            try c.allowOnly("mode", "tolerance")
+            self = .real(tolerance: try c.value("tolerance", default: RayAiming.defaultTolerance))
         case let m:
             throw DecodingError.dataCorruptedError(forKey: AnyKey("mode"), in: c, debugDescription: "unknown ray aiming '\(m)'")
         }
@@ -273,6 +294,13 @@ public struct EnvironmentConditions: Codable, Sendable, Hashable {
     public init(temperatureC: Double = 20, pressureAtm: Double = 1) {
         self.temperatureC = temperatureC
         self.pressureAtm = pressureAtm
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("temperature_c", "pressure_atm")
+        temperatureC = try c.value("temperature_c")
+        pressureAtm = try c.value("pressure_atm")
     }
 
     private enum CodingKeys: String, CodingKey {
