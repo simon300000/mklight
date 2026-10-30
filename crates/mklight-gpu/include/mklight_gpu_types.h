@@ -57,8 +57,8 @@
 /* ------------------------------------------------------------------------ */
 /* Layout version: bump on any change to a struct or enum below.
  * 3: surface record gained ideal-lens vergences, double-float transform
- *    parts (to_next_rot_lo, to_next_shift), double-float indices
- *    (n_after_lo), coating codes; trace kernel parameters, path steps and
+ *    parts (to_next_rot_lo, to_next_shift), double-float curvature, conic
+ *    and indices (curvature_lo, conic_lo, n_after_lo), coating codes; trace kernel parameters, path steps and
  *    new ray status codes. */
 #define MKL_LAYOUT_VERSION 3u
 /* 'MKLP' little-endian; first word of every packed system header. */
@@ -220,7 +220,7 @@ struct MklPackedSurface {
     MKL_U32 num_asphere;       /*  32  coefficients in use (0..MKL_MAX_ASPHERE) */
     MKL_U32 source_index;      /*  36  surface index in the model */
     MKL_U32 coating;           /*  40  MKL_COATING_* */
-    MKL_U32 reserved0;         /*  44  zero */
+    MKL_F32 curvature_lo;      /*  44  f32 residual of curvature (double-float geometry) */
     MKL_F32 asphere[MKL_MAX_ASPHERE]; /*  48  normalised coefficients (mm), see above */
     MKL_F32 aperture_params[4];       /*  88  mm, meaning per MKL_APERTURE_* */
     MKL_F32 to_next_rot[9];           /* 104  row-major rotation into the next local frame */
@@ -228,7 +228,7 @@ struct MklPackedSurface {
     MKL_F32 to_next_origin_lo[3];     /* 152  f32 residual of to_next_origin (mm) */
     MKL_F32 coating_r;                /* 164  MKL_COATING_IDEAL reflectance, else 0 */
     MKL_F32 coating_t;                /* 168  MKL_COATING_IDEAL transmittance, else 0 */
-    MKL_U32 reserved1;                /* 172  zero */
+    MKL_F32 conic_lo;                 /* 172  f32 residual of conic */
     MKL_F32 n_after[MKL_MAX_WAVELENGTHS];     /* 176  index after the surface per packed wavelength */
     MKL_F32 alpha_after[MKL_MAX_WAVELENGTHS]; /* 240  internal absorption after the surface (1/mm) */
     MKL_F32 vergence[MKL_MAX_WAVELENGTHS];    /* 304  ideal lens: paraxial object vergence 1/a (1/mm), else 0 */

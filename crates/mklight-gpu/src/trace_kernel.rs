@@ -26,28 +26,33 @@
 //!    surface frame: `P − (0, 0, t)` on the axial fast path, else
 //!    `rot·P − shift` and `rot·D` with `rot`, `shift` as packed hi + lo.
 //! 2. **Closest approach** `t₀ = −P·D`, `Q = P + t₀D` in double-float; `Q`
-//!    is O(aperture) and is rounded once (`Q_f`); the residual's component
-//!    along the ray moves into the distance, `t₀' = t₀ − (Q − Q_f)·D`.
-//! 3. **f32 solve** from `Q_f` along `fl(D)`: exactly the reference's conic
+//!    is O(aperture).
+//! 3. **f32 solve** from `fl(Q)` along `fl(D)`: exactly the reference's conic
 //!    or asphere algorithm (f32 tolerances: vertex sheet [`SHEET_TOL`],
 //!    Newton converged at `|g| ≤ tol_abs + tol_rel·(|t| + |z| + |conic sag|
 //!    + |poly|)`, the f32 resolution of the residual, within
 //!    `max_iterations` steps). It gives the status and `t₁`.
 //! 4. **Double-float refinement**: one Newton step on the surface equation
-//!    evaluated in double-float at `X = Q_f + t₁D` (`c(x² + y² + κz²) − 2z`
-//!    for conics, `z − sag(r²)` with the conic part in double-float for
-//!    aspheres), giving `t₁'` (hi + lo) and the hit `X`.
+//!    evaluated in double-float at `X = Q + t₁D` on the exact line
+//!    (`c(x² + y² + κz²) − 2z` for conics, `z − sag(r²)` with the conic part
+//!    in double-float for aspheres), giving `t₁'` (hi + lo) and the hit `X`.
+//!    (Refining from the rounded `fl(Q)` instead would shift the ray
+//!    sideways by ½ ulp of |Q| and tilt the normal by `c` times that.)
 //! 5. **Unnormalised normal in double-float**, `G = (−cx, −cy, 1 − κcz)` or
-//!    `(−x·g, −y·g, w)`, `g = c + 2wP'(r²)` (the f32 unit normal `fl(G)/|·|`
-//!    serves the f32 decisions).
+//!    `(−x·g, −y·g, w)`, `g = c + 2wP'(r²)`, with the packed double-float
+//!    curvature and conic (the f32 unit normal `fl(G)/|·|` serves the f32
+//!    decisions). Near the critical angle refraction amplifies normal errors
+//!    by `1/cos θ'`, so the f32 rounding of `c` alone would visibly bend
+//!    grazing rays.
 //! 6. **Interaction in double-float**: refraction `D' = μD + bG`
 //!    (`μ = n₁/n₂` from double-float indices) and reflection `D' = D + bG`,
 //!    with `b` from the f32 stable Snell / reflection law and then corrected
-//!    along `G` so that `|D'| = 1` to O(ε²) — the tangential component, i.e.
+//!    along `G` (Newton on `|D'|² = 1`; twice for refraction, whose f32 `b`
+//!    loses accuracy near grazing exit) — the tangential component, i.e.
 //!    Snell's law, is exact by construction. The ideal lens is evaluated in
 //!    f32 and its output direction renormalised in double-float. TIR is the
 //!    f32 test.
-//! 7. **Optical path** `Σ n·(t₀' + t₁')` with double-float `n`, plus the
+//! 7. **Optical path** `Σ n·(t₀ + t₁')` with double-float `n`, plus the
 //!    ideal-lens phase; bulk absorption `Σ α·t` in f32.
 //!
 //! The **reported state** is `X` and `D` rounded to f32; the rounding
@@ -426,8 +431,8 @@ struct Hit<E: FpEnv> {
 
 /// `mkl_point_on`: `q + t·d` in double-float.
 #[inline(always)]
-fn point_on<E: FpEnv>(q: V<E>, t: D<E>, d: DV<E>) -> DV<E> {
-    [d[0] * t + q[0], d[1] * t + q[1], d[2] * t + q[2]]
+fn point_on<E: FpEnv>(q: DV<E>, t: D<E>, d: DV<E>) -> DV<E> {
+    [q[0] + d[0] * t, q[1] + d[1] * t, q[2] + d[2] * t]
 }
 
 /// `mkl_refine_t`: `t₁ − r/r'` as a double-float (`r'` and the step are f32;
@@ -488,40 +493,42 @@ fn intersect<E: FpEnv>(
     let q = [p[0] + d[0] * t0, p[1] + d[1] * t0, p[2] + d[2] * t0];
     let qf = hi3(q);
     let df = hi3(d);
-    let ta = t0 - dot(lo3(q), df);
     let (c, k) = (f::<E>(s.curvature), f::<E>(s.conic));
     let kap = 1.0 + k;
+    // Double-float curvature, κ = 1 + k and κc for the refinement and normal.
+    let cd = D::new(s.curvature, s.curvature_lo);
+    let kapd = D::new(s.conic, s.conic_lo) + F::ONE;
+    let kcd = kapd * cd;
     let (tb, x, g) = if shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0 {
         let t1 = asphere_from(s, qf, df, prm)?;
         // Refinement on z − sag(r²), conic part in double-float.
-        let x0 = point_on(qf, D::from_f(t1), d);
+        let x0 = point_on(q, D::from_f(t1), d);
         let r2 = x0[0] * x0[0] + x0[1] * x0[1];
-        let w = (D::from_f(F::ONE) - r2 * (kap * c * c)).sqrt();
-        let csag = (r2 * c) / (w + F::ONE);
+        let w = (D::from_f(F::ONE) - r2 * (kcd * cd)).sqrt();
+        let csag = (r2 * cd) / (w + F::ONE);
         let (poly, dpoly) = asphere_poly(s, r2.hi());
         let res = (x0[2] - csag) - poly;
         let (xh, wh) = (hi3(x0), w.hi());
         let slope_w = (2.0 * wh).fma(dpoly, c);
         let gp = df[2] - slope_w / wh.max(f(f32::MIN_POSITIVE)) * xh[0].fma(df[0], xh[1] * df[1]);
         let tb = refine_t(t1, res.hi(), gp);
-        let x = point_on(qf, tb, d);
-        let gs = (w * dpoly) * 2.0 + c;
+        let x = point_on(q, tb, d);
+        let gs = (w * dpoly) * 2.0 + cd;
         (tb, x, [-(x[0] * gs), -(x[1] * gs), w])
     } else {
         let (t1, _) = conic_from(c, k, qf, df).ok_or(MISS)?;
         // Refinement on F = c(x² + y² + κz²) − 2z.
-        let x0 = point_on(qf, D::from_f(t1), d);
+        let x0 = point_on(q, D::from_f(t1), d);
         let r2 = x0[0] * x0[0] + x0[1] * x0[1];
-        let fv = (r2 + (x0[2] * x0[2]) * kap) * c - x0[2] * 2.0;
+        let fv = (r2 + (x0[2] * x0[2]) * kapd) * cd - x0[2] * 2.0;
         let xh = hi3(x0);
         let fp = 2.0 * (c * (xh[0].fma(df[0], xh[1] * df[1]) + kap * xh[2] * df[2]) - df[2]);
         let tb = refine_t(t1, fv.hi(), fp);
-        let x = point_on(qf, tb, d);
-        let kc = kap * c;
-        (tb, x, [x[0] * -c, x[1] * -c, D::from_f(F::ONE) - x[2] * kc])
+        let x = point_on(q, tb, d);
+        (tb, x, [-(x[0] * cd), -(x[1] * cd), D::from_f(F::ONE) - x[2] * kcd])
     };
     Ok(Hit {
-        ta,
+        ta: t0,
         tb,
         x,
         g,
@@ -870,7 +877,9 @@ pub fn trace_ray<E: FpEnv>(
                     dir[1] * mu + hit.g[1] * b,
                     dir[2] * mu + hit.g[2] * b,
                 ];
-                dir = renorm_along(d2, hit.g);
+                // Two corrections: near grazing exit the f32 γ is only
+                // good to ~√ε and one Newton step leaves O(e²/cos θ').
+                dir = renorm_along(renorm_along(d2, hit.g), hit.g);
                 n_cur = n_other;
                 if radiometry {
                     let t = if mirror {
@@ -957,3 +966,4 @@ pub fn trace_ray<E: FpEnv>(
         steps: done as u32,
     }
 }
+

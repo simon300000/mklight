@@ -246,11 +246,9 @@ static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, floa
     }
 }
 
-static inline MklDv mkl_point_on(float3 q, float2 t, MklDv d) {
+static inline MklDv mkl_point_on(MklDv q, float2 t, MklDv d) {
     MklDv x;
-    x.v[0] = mkl_df_add_f32(mkl_df_mul(d.v[0], t), q.x);
-    x.v[1] = mkl_df_add_f32(mkl_df_mul(d.v[1], t), q.y);
-    x.v[2] = mkl_df_add_f32(mkl_df_mul(d.v[2], t), q.z);
+    for (int k = 0; k < 3; ++k) x.v[k] = mkl_df_add(q.v[k], mkl_df_mul(d.v[k], t));
     return x;
 }
 
@@ -299,17 +297,20 @@ static inline uint mkl_intersect(constant MklPackedSurface& s, MklDv p, MklDv d,
     for (int k = 0; k < 3; ++k) q.v[k] = mkl_df_add(p.v[k], mkl_df_mul(d.v[k], t0));
     float3 qf = mkl_hi3(q);
     float3 dfv = mkl_hi3(d);
-    hit.ta = mkl_df_add_f32(t0, -mkl_dot3(mkl_lo3(q), dfv));
+    hit.ta = t0;
     float c = s.curvature, k = s.conic;
     float kap = 1.0f + k;
+    float2 cd = float2(s.curvature, s.curvature_lo);
+    float2 kapd = mkl_df_add_f32(float2(s.conic, s.conic_lo), 1.0f);
+    float2 kcd = mkl_df_mul(kapd, cd);
     if (shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0u) {
         float t1;
         uint code = mkl_asphere_from(s, qf, dfv, prm, t1);
         if (code != MKL_RAY_OK) return code;
-        MklDv x0 = mkl_point_on(qf, float2(t1, 0.0f), d);
+        MklDv x0 = mkl_point_on(q, float2(t1, 0.0f), d);
         float2 r2 = mkl_df_add(mkl_df_mul(x0.v[0], x0.v[0]), mkl_df_mul(x0.v[1], x0.v[1]));
-        float2 w = mkl_df_sqrt(mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul_f32(r2, kap * c * c)));
-        float2 csag = mkl_df_div(mkl_df_mul_f32(r2, c), mkl_df_add_f32(w, 1.0f));
+        float2 w = mkl_df_sqrt(mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul(r2, mkl_df_mul(kcd, cd))));
+        float2 csag = mkl_df_div(mkl_df_mul(r2, cd), mkl_df_add_f32(w, 1.0f));
         float2 pp = mkl_asphere_poly(s, r2.x);
         float2 res = mkl_df_add_f32(mkl_df_sub(x0.v[2], csag), -pp.x);
         float3 xh = mkl_hi3(x0);
@@ -317,8 +318,8 @@ static inline uint mkl_intersect(constant MklPackedSurface& s, MklDv p, MklDv d,
         float slope_w = fma(2.0f * wh, pp.y, c);
         float gp = dfv.z - slope_w / max(wh, MKL_FLT_MIN) * fma(xh.x, dfv.x, xh.y * dfv.y);
         float2 tb = mkl_refine_t(t1, res.x, gp);
-        MklDv x = mkl_point_on(qf, tb, d);
-        float2 gs = mkl_df_add_f32(mkl_df_mul_f32(mkl_df_mul_f32(w, pp.y), 2.0f), c);
+        MklDv x = mkl_point_on(q, tb, d);
+        float2 gs = mkl_df_add(mkl_df_mul_f32(mkl_df_mul_f32(w, pp.y), 2.0f), cd);
         hit.tb = tb;
         hit.x = x;
         hit.g.v[0] = mkl_df_neg(mkl_df_mul(x.v[0], gs));
@@ -328,21 +329,20 @@ static inline uint mkl_intersect(constant MklPackedSurface& s, MklDv p, MklDv d,
         float t1;
         float3 pt;
         if (!mkl_conic_from(c, k, qf, dfv, t1, pt)) return MKL_RAY_MISS;
-        MklDv x0 = mkl_point_on(qf, float2(t1, 0.0f), d);
+        MklDv x0 = mkl_point_on(q, float2(t1, 0.0f), d);
         float2 r2 = mkl_df_add(mkl_df_mul(x0.v[0], x0.v[0]), mkl_df_mul(x0.v[1], x0.v[1]));
         float2 fv = mkl_df_sub(
-            mkl_df_mul_f32(mkl_df_add(r2, mkl_df_mul_f32(mkl_df_mul(x0.v[2], x0.v[2]), kap)), c),
+            mkl_df_mul(mkl_df_add(r2, mkl_df_mul(mkl_df_mul(x0.v[2], x0.v[2]), kapd)), cd),
             mkl_df_mul_f32(x0.v[2], 2.0f));
         float3 xh = mkl_hi3(x0);
         float fp = 2.0f * (c * (fma(xh.x, dfv.x, xh.y * dfv.y) + kap * xh.z * dfv.z) - dfv.z);
         float2 tb = mkl_refine_t(t1, fv.x, fp);
-        MklDv x = mkl_point_on(qf, tb, d);
-        float kc = kap * c;
+        MklDv x = mkl_point_on(q, tb, d);
         hit.tb = tb;
         hit.x = x;
-        hit.g.v[0] = mkl_df_mul_f32(x.v[0], -c);
-        hit.g.v[1] = mkl_df_mul_f32(x.v[1], -c);
-        hit.g.v[2] = mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul_f32(x.v[2], kc));
+        hit.g.v[0] = mkl_df_neg(mkl_df_mul(x.v[0], cd));
+        hit.g.v[1] = mkl_df_neg(mkl_df_mul(x.v[1], cd));
+        hit.g.v[2] = mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul(x.v[2], kcd));
     }
     hit.normal = mkl_normalized(mkl_hi3(hit.g));
     return MKL_RAY_OK;
@@ -591,7 +591,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
             for (int c = 0; c < 3; ++c) {
                 d2.v[c] = mkl_df_add(mkl_df_mul(dir.v[c], mu), mkl_df_mul_f32(hit.g.v[c], b));
             }
-            dir = mkl_renorm_along(d2, hit.g);
+            dir = mkl_renorm_along(mkl_renorm_along(d2, hit.g), hit.g);
             n_cur = n_other;
             if (radiometry) {
                 float t = mirror ? 0.0f

@@ -62,7 +62,7 @@ pub struct PackedSurface {
     pub num_asphere: u32,
     pub source_index: u32,
     pub coating: u32,
-    pub reserved0: u32,
+    pub curvature_lo: f32,
     pub asphere: [f32; MAX_ASPHERE],
     pub aperture_params: [f32; 4],
     pub to_next_rot: [f32; 9],
@@ -70,7 +70,7 @@ pub struct PackedSurface {
     pub to_next_origin_lo: [f32; 3],
     pub coating_r: f32,
     pub coating_t: f32,
-    pub reserved1: u32,
+    pub conic_lo: f32,
     pub n_after: [f32; MAX_WAVELENGTHS],
     pub alpha_after: [f32; MAX_WAVELENGTHS],
     pub vergence: [f32; MAX_WAVELENGTHS],
@@ -174,7 +174,7 @@ pub fn surface_offsets() -> Vec<(&'static str, usize)> {
         ("num_asphere", o!(S, num_asphere)),
         ("source_index", o!(S, source_index)),
         ("coating", o!(S, coating)),
-        ("reserved0", o!(S, reserved0)),
+        ("curvature_lo", o!(S, curvature_lo)),
         ("asphere", o!(S, asphere)),
         ("aperture_params", o!(S, aperture_params)),
         ("to_next_rot", o!(S, to_next_rot)),
@@ -182,7 +182,7 @@ pub fn surface_offsets() -> Vec<(&'static str, usize)> {
         ("to_next_origin_lo", o!(S, to_next_origin_lo)),
         ("coating_r", o!(S, coating_r)),
         ("coating_t", o!(S, coating_t)),
-        ("reserved1", o!(S, reserved1)),
+        ("conic_lo", o!(S, conic_lo)),
         ("n_after", o!(S, n_after)),
         ("alpha_after", o!(S, alpha_after)),
         ("vergence", o!(S, vergence)),
@@ -389,6 +389,8 @@ impl PackedSystem {
                     p.shape = MKL_SHAPE_CONIC;
                     p.curvature = f32_checked(*curvature, &what("curvature"))?;
                     p.conic = f32_checked(*conic, &what("conic"))?;
+                    p.curvature_lo = normal_or_zero((curvature - p.curvature as f64) as f32);
+                    p.conic_lo = normal_or_zero((conic - p.conic as f64) as f32);
                 }
                 SurfaceShape::EvenAsphere {
                     curvature,
@@ -398,6 +400,8 @@ impl PackedSystem {
                     p.shape = MKL_SHAPE_EVEN_ASPHERE;
                     p.curvature = f32_checked(*curvature, &what("curvature"))?;
                     p.conic = f32_checked(*conic, &what("conic"))?;
+                    p.curvature_lo = normal_or_zero((curvature - p.curvature as f64) as f32);
+                    p.conic_lo = normal_or_zero((conic - p.conic as f64) as f32);
                     let used = coefficients
                         .iter()
                         .rposition(|&a| a != 0.0)
@@ -600,7 +604,13 @@ impl PackedSystem {
             if s.num_asphere as usize > MAX_ASPHERE {
                 return bad(&format!("num_asphere {}", s.num_asphere));
             }
-            let floats = [s.curvature, s.conic, s.paraxial_power]
+            let floats = [
+                s.curvature,
+                s.curvature_lo,
+                s.conic,
+                s.conic_lo,
+                s.paraxial_power,
+            ]
                 .into_iter()
                 .chain(s.asphere)
                 .chain(s.aperture_params)
