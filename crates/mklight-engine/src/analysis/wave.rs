@@ -90,12 +90,12 @@ fn settings_schema(name: &str) -> Value {
         "psf" | "diffraction_encircled_energy" | "line_spread" => {
             annotations["method"] = json!({"enum": ["fft", "huygens"]});
             annotations["grid_size"] = json!({"minimum": 1, "description": "Image samples per axis; Huygens is limited to 1024."});
-            annotations["padding"] = json!({"minimum": 0.0, "description": "Positive factor: image spacing = smallest wavelength × working F/# / padding."});
+            annotations["padding"] = json!({"exclusiveMinimum": 0.0, "description": "Positive factor: image spacing = smallest wavelength × working F/# / padding."});
             if name == "psf" {
-                annotations["spacing_mm"] = json!({"type": ["number", "null"], "minimum": 0.0, "unit": "mm", "description": "Positive explicit spacing; null uses padding."});
+                annotations["spacing_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive explicit spacing; null uses padding."});
                 annotations["normalization"] = json!({"enum": ["strehl", "unit_energy"], "description": "strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2."});
             } else if name == "diffraction_encircled_energy" {
-                annotations["max_radius_mm"] = json!({"type": ["number", "null"], "minimum": 0.0, "unit": "mm", "description": "Positive maximum radius; null uses the PSF window."});
+                annotations["max_radius_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive maximum radius; null uses the PSF window."});
                 annotations["samples"] = json!({"minimum": 2});
                 annotations["center"] = json!({"description": "Tagged energy centre: {type: reference}, {type: centroid}, {type: peak}, or {type: point, x, y} in mm."});
             }
@@ -105,10 +105,10 @@ fn settings_schema(name: &str) -> Value {
             annotations["detector"] = detector_schema();
             annotations["huygens"] = settings_from_default::<wa::HuygensGrid>(json!({
                 "grid_size": {"minimum": 1, "maximum": wa::MAX_HUYGENS_GRID},
-                "padding": {"minimum": 0.0, "description": "Positive image sampling factor."}
+                "padding": {"exclusiveMinimum": 0.0, "description": "Positive image sampling factor."}
             }));
             if name == "mtf" {
-                annotations["max_frequency"] = json!({"type": ["number", "null"], "minimum": 0.0, "unit": "cycles/mm", "description": "Positive maximum image-space frequency; null uses the largest optical cutoff."});
+                annotations["max_frequency"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "cycles/mm", "description": "Positive maximum image-space frequency; null uses the largest optical cutoff."});
                 annotations["frequency_samples"] = json!({"minimum": 2});
             } else {
                 annotations["frequencies"] = json!({"items": {"type": "number", "minimum": 0.0}, "unit": "cycles/mm", "description": "Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2)."});
@@ -120,7 +120,7 @@ fn settings_schema(name: &str) -> Value {
                         "Nonzero direction in normalised field coordinates.",
                     );
                 } else {
-                    annotations["focus_range_mm"] = json!({"type": ["number", "null"], "minimum": 0.0, "unit": "mm", "description": "Positive half-range; null uses 4 wavelength × F/# squared."});
+                    annotations["focus_range_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive half-range; null uses 4 wavelength × F/# squared."});
                     annotations["focus_samples"] = json!({"minimum": 1, "maximum": 1001});
                 }
             }
@@ -157,7 +157,7 @@ fn pupil_schema() -> Value {
 fn detector_schema() -> Value {
     let mut s = settings_from_default::<mklight_wave::DetectorSettings>(json!({
         "pitch_mm": {"unit": "mm", "description": "Positive pixel pitch [x, y]."},
-        "fill_factor": {"minimum": 0.0, "maximum": 1.0, "description": "Positive active-area fraction."},
+        "fill_factor": {"exclusiveMinimum": 0.0, "maximum": 1.0, "description": "Positive active-area fraction."},
         "aperture_mm": {"type": ["array", "null"], "unit": "mm", "description": "Explicit active widths [x, y]; null uses pitch × sqrt(fill_factor)."},
         "diffusion_sigma_mm": {"minimum": 0.0, "unit": "mm"}
     }));

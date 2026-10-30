@@ -1,7 +1,8 @@
 //! Ctrl-C (SIGINT) handling for long jobs.
 //!
 //! The wait loop translates the first signal into stop (when supported),
-//! and the second into cancellation. Signal handlers only count requests.
+//! and the second into cancellation. A third signal exits at once (130), so
+//! a job that never polls for cancellation can still be interrupted.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,7 +15,10 @@ pub fn count() -> u32 {
 
 #[cfg(unix)]
 extern "C" fn on_signal(_: libc::c_int) {
-    COUNT.fetch_add(1, Ordering::SeqCst);
+    if COUNT.fetch_add(1, Ordering::SeqCst) >= 2 {
+        // Async-signal-safe.
+        unsafe { libc::_exit(130) };
+    }
 }
 
 /// Install the handlers (idempotent).

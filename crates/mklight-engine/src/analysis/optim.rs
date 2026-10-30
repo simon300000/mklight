@@ -377,8 +377,7 @@ fn gpu_backend(
     match choice {
         BackendChoice::Cpu => Ok(None),
         BackendChoice::Auto => Ok(engine.filter(|_| {
-            !matches!(input.requested_backend.as_str(), "auto" | "default:auto")
-                || work.gpu_faster()
+            !crate::backend::Backend::is_auto_request(&input.requested_backend) || work.gpu_faster()
         })),
         BackendChoice::GpuEmulation => engine
             .filter(|d| d.id == "gpu:cpu_f32")

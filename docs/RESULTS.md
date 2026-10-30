@@ -1439,9 +1439,9 @@ Settings:
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
-| `max_radius_mm` | number\|null | `null` | mm | ≥ 0.0; Positive maximum radius; null uses the PSF window. |
+| `max_radius_mm` | number\|null | `null` | mm | > 0.0; Positive maximum radius; null uses the PSF window. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
-| `padding` | number | `4.0` |  | ≥ 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `samples` | integer | `51` |  | ≥ 2 |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -1485,7 +1485,7 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
-| `padding` | number | `4.0` |  | ≥ 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1523,7 +1523,7 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `frequency_samples` | integer | `41` |  | ≥ 2 |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
-| `max_frequency` | number\|null | `null` | cycles/mm | ≥ 0.0; Positive maximum image-space frequency; null uses the largest optical cutoff. |
+| `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null uses the largest optical cutoff. |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -1620,10 +1620,10 @@ Settings:
 | `grid_size` | integer | `128` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `normalization` | string | `"strehl"` |  | one of `"strehl"`, `"unit_energy"`; strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2. |
-| `padding` | number | `4.0` |  | ≥ 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `polychromatic` | boolean | `true` |  |  |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
-| `spacing_mm` | number\|null | `null` | mm | ≥ 0.0; Positive explicit spacing; null uses padding. |
+| `spacing_mm` | number\|null | `null` | mm | > 0.0; Positive explicit spacing; null uses padding. |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1668,7 +1668,7 @@ Settings:
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `focus_range_mm` | number\|null | `null` | mm | ≥ 0.0; Positive half-range; null uses 4 wavelength × F/# squared. |
+| `focus_range_mm` | number\|null | `null` | mm | > 0.0; Positive half-range; null uses 4 wavelength × F/# squared. |
 | `focus_samples` | integer | `21` |  | 1 … 1001 |
 | `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |

@@ -450,14 +450,14 @@ int main(int argc, char **argv) {
     mk_string_free(json);
 
     /* ---- callback: lifecycle and progress were delivered ---- */
-    /* 9 jobs finished. Events are delivered asynchronously by the event
+    /* 10 jobs finished. Events are delivered asynchronously by the event
      * thread, so give the last terminal events a moment to arrive. */
-    for (int i = 0; i < 500 && atomic_load(&g_terminal_events) < 9; i++) sleep_ms(10);
+    for (int i = 0; i < 500 && atomic_load(&g_terminal_events) < 10; i++) sleep_ms(10);
     OK(mk_engine_set_job_callback(eng, NULL, NULL));
     int events_after_clear = atomic_load(&g_events);
     CHECK(atomic_load(&user_count) == events_after_clear);
     CHECK(atomic_load(&g_progress_events) >= 1);
-    CHECK(atomic_load(&g_terminal_events) == 9);
+    CHECK(atomic_load(&g_terminal_events) == 10);
     OK(mk_session_submit_analysis(s, "validate", NULL, NULL, &job));
     OK(mk_job_wait(eng, job, 30000, &state));
     OK(mk_job_release(eng, job));

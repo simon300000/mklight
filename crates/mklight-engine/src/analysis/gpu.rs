@@ -372,7 +372,7 @@ pub fn try_gpu_grid(
         deliberate: false,
     };
     let rays = fields.len() * wls.len() * pupil.len();
-    let auto = matches!(input.requested_backend.as_str(), "auto" | "default:auto");
+    let auto = crate::backend::Backend::is_auto_request(&input.requested_backend);
     if auto && rays < AUTO_MIN_GPU_RAYS {
         input.report_backend(BackendUse {
             deliberate: true,
