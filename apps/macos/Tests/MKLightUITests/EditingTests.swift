@@ -121,15 +121,13 @@ import Testing
         let changed = try #require(SurfaceTypes.shape(shape, setting: radius.key, to: stored))
         #expect(changed.curvature == 0.04)
         let list = try #require(asphere.sections[1].coefficients)
-        #expect(list.term(0) == "A4" && list.term(2) == "A8" && list.unit(0) == "mm⁻³")
+        #expect(list.term(0, shape) == "A₄" && list.term(2, shape) == "A₈" && list.unit(0) == "mm⁻³")
+        #expect(list.meaning(1, shape) == "r⁶")
         let longer = try #require(SurfaceTypes.shape(shape, setting: list.key, to: .array([.number(1e-5), .number(2e-7)])))
         #expect(longer.asphereCoefficients == [1e-5, 2e-7])
         #expect(SurfaceTypes.shape(shape, setting: "no_such_key", to: .number(1)) == nil, "the model rejects unknown keys")
         #expect(SurfaceTypes.descriptor(for: SurfaceShape.Kind.coordinateBreak).placementFirst)
-        // The extended shapes get their descriptors with the inspector redesign.
-        #expect(
-            Set(SurfaceTypes.all.map(\.kind)) == Set(SurfaceShape.Kind.allCases.filter(\.isLegacy)),
-            "every legacy model type has a descriptor")
+        #expect(Set(SurfaceTypes.all.map(\.kind)) == Set(SurfaceShape.Kind.allCases), "every model type has a descriptor")
         #expect(SurfaceTypes.all.map(\.id) == SurfaceTypes.all.map(\.kind.typeName), "descriptor ids are the JSON tags")
         // Sag preview of a paraboloid.
         let pts = try #require(SurfaceTypes.profile(.conic(curvature: 0.01, conic: -1), semiDiameter: 10))
