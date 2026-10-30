@@ -5,7 +5,12 @@
 //! `h_j = η · max(|x_j|, scale_j)` with `η = √ε ≈ 1.5·10⁻⁸` (forward) or
 //! `η = ∛ε ≈ 6·10⁻⁶` (central), which balances truncation `O(h)` / `O(h²)`
 //! against rounding `O(ε/h)` / `O(ε/h²)` for functions of unit scale (Dennis &
-//! Schnabel §5.4). The step is then rounded so that `x + h` is exactly
+//! Schnabel §5.4). Values with more than relative rounding noise need a
+//! larger `η`: unless `JacobianSettings::relative_step` is set, the problem
+//! chooses it ([`Problem::fd_relative_step`]; an optical problem asks its
+//! evaluators — `1e-6` / `1e-4` for f64 wavefront operands, larger for f32
+//! GPU evaluation, see `docs/OPTIMIZATION.md`). The step is then rounded so
+//! that `x + h` is exactly
 //! representable (`h ← (x + h) − x`), removing one rounding error from the
 //! quotient. Steps never leave the variable bounds: a forward step that would
 //! cross the upper bound is taken backwards, and a central difference that
@@ -94,6 +99,20 @@ impl Stencil {
             Stencil::OneSided2(_) => &[-1.0, -2.0],
         }
     }
+}
+
+/// The relative step `η` of a finite-difference Jacobian: the settings'
+/// `relative_step`, else the problem's own requirement
+/// ([`Problem::fd_relative_step`], e.g. wavefront operands or f32 GPU
+/// evaluation), else `√ε` (forward) / `∛ε` (central).
+pub fn relative_step<P: Problem + ?Sized>(p: &P, settings: &JacobianSettings) -> f64 {
+    settings
+        .relative_step
+        .or_else(|| p.fd_relative_step(settings.scheme))
+        .unwrap_or(match settings.scheme {
+            FdScheme::Forward => f64::EPSILON.sqrt(),
+            FdScheme::Central => f64::EPSILON.cbrt(),
+        })
 }
 
 /// Base step for variable `v` at `x` with relative step `eta`.
@@ -233,10 +252,7 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
     let vars = p.variables();
     let n = vars.len();
     let (m, k) = (p.num_residuals(), p.num_constraints());
-    let eta = settings.relative_step.unwrap_or(match settings.scheme {
-        FdScheme::Forward => f64::EPSILON.sqrt(),
-        FdScheme::Central => f64::EPSILON.cbrt(),
-    });
+    let eta = relative_step(p, settings);
     let mut jr = Matrix::zeros(m, n);
     let mut jc = Matrix::zeros(k, n);
     let mut evaluations = 0;

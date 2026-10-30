@@ -501,6 +501,9 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     ) -> MkResult<Vec<Result<Vec<OperandValue>, crate::merit::BuildError>>> {
         (**self).evaluate_parametric(batch, operands, ctx)
     }
+    fn fd_relative_step(&self, kind: &OperandKind, scheme: crate::deriv::FdScheme) -> Option<f64> {
+        (**self).fd_relative_step(kind, scheme)
+    }
 }
 
 /// Model-level tolerance evaluator: perturb `nominal` by the spec, then
