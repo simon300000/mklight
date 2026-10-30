@@ -21,8 +21,13 @@
 //!
 //! which is free of cancellation (no `√(R² − p²) − R`). `OPL_c − OPL_r` is
 //! formed from the compensated path sums before rounding. An image-space
-//! telecentric system (exit pupil at infinity) uses the plane through `I`
-//! normal to the chief ray: `OPD = (OPL_c − OPL_r) + n (w·d_c)/(d·d_c)`.
+//! telecentric system (exit pupil at infinity) takes the limit `R → ∞` of
+//! the same expression: the correction term vanishes and
+//! `OPD = (OPL_c − OPL_r) + n (d·w)`, the phase of each ray's plane wave at
+//! `I` (a defocused image beyond focus has positive OPD, as for finite `R`).
+//! (An earlier version referred to the plane through `I` normal to the
+//! chief ray, `n (w·d_c)/(d·d_c)`, which is not that limit and gave the
+//! defocus with the opposite sign.)
 //!
 //! Results are reported in waves at the ray's wavelength (indices are
 //! relative to air, so the air wavelength is the reference).
@@ -62,11 +67,8 @@ impl OpdReference {
         let d = ray.ray.dir;
         let n = self.n_image;
         if !self.s_exit_pupil.is_finite() {
-            let dd = d.dot(self.chief_dir);
-            if dd == 0.0 {
-                return None;
-            }
-            return Some(n.mul_add(w.dot(self.chief_dir) / dd, d_opl));
+            // R → ∞ limit of the sphere formula (module docs).
+            return Some(n.mul_add(d.dot(w), d_opl));
         }
         let r = self.s_exit_pupil.abs();
         let sg = self.s_exit_pupil.signum();

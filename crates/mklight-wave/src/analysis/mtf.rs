@@ -5,9 +5,15 @@
 //! axis), *sagittal* perpendicular to it (CONVENTIONS §4), as in the
 //! geometric MTF of `mklight-analysis`. Methods:
 //!
-//! * `fft`: pupil → PSF → OTF by FFT (exact on the frequency lattice,
-//!   interpolated between, [`crate::otf_fft`]);
-//! * `direct`: pupil autocorrelation at each requested frequency;
+//! * `direct` (default): pupil autocorrelation at each requested frequency
+//!   (`O(n²)` per frequency, no frequency lattice);
+//! * `fft`: pupil → PSF → OTF by FFT (exact on the frequency lattice
+//!   `Δν = cutoff/n`, interpolated between, [`crate::otf_fft`]). For a
+//!   strongly aberrated pupil the interpolation within the first few
+//!   lattice spacings can be far off: singlet sample at full field, `n = 64`
+//!   (`Δν` = 5.4 cycles/mm), 0.088 at 5 cycles/mm against 0.041 converged
+//!   (`direct` gives 0.038). Use it with fine pupil grids or for whole
+//!   lattices;
 //! * `huygens`: direct DFT of the Huygens PSF on the image surface
 //!   ([`crate::mtf_from_psf`]), an independent route through image space.
 //!
@@ -21,19 +27,19 @@
 //! shift of `δz/cosθ_c` along the chief ray ([`PupilFunction::with_focus_shift`],
 //! exact on the reference sphere).
 
-use mklight_analysis::util::{FieldSelection, WavelengthSelection};
+use mklight_analysis::util::{FieldSelection, WavelengthSelection, nf};
 use mklight_core::job::RunTimer;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::{FieldPoint, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
-use super::psf::{PsfMethod, compute_psf};
+use super::psf::{PsfMethod, check_huygens_grid, compute_psf};
 use super::{
-    FieldPupils, check_pos, field_pupils, field_value, fields, linspace, run_info,
-    system_field_pupils, wavelengths,
+    check_pos, field_pupils, field_value, fields, linspace, run_info, system_field_pupils,
+    wavelengths,
 };
 use crate::detector::{DetectorCurve, DetectorSettings};
-use crate::mtf::{MtfCurve, MtfMethod, mtf_from_psf, polychromatic_mtf};
+use crate::mtf::{MtfCurve, MtfMethod, MtfOrientation, mtf_from_psf, polychromatic_mtf};
 use crate::psf::PsfNormalization;
 use crate::pupil::PupilFunction;
 use crate::traced::PupilSettings;
@@ -42,8 +48,8 @@ use crate::traced::PupilSettings;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MtfAnalysisMethod {
-    #[default]
     Fft,
+    #[default]
     Direct,
     Huygens,
 }
@@ -66,16 +72,25 @@ impl Default for HuygensGrid {
     }
 }
 
+impl HuygensGrid {
+    /// Grid side within `8..=`[`super::psf::MAX_HUYGENS_GRID`], positive
+    /// padding.
+    pub fn validate(&self) -> MkResult<()> {
+        check_huygens_grid(self.grid_size)?;
+        check_pos("Huygens padding", self.padding)
+    }
+}
+
 /// MTF of weighted pupils along the field's directions.
 pub(crate) fn field_mtf(
-    fp: &FieldPupils,
+    o: &MtfOrientation,
     pupils: &[(&PupilFunction, f64)],
     freqs: &[f64],
     method: MtfAnalysisMethod,
     huygens: &HuygensGrid,
     ctx: &JobContext,
 ) -> MkResult<MtfCurve> {
-    let o = fp.orientation();
+    let o = *o;
     match method {
         MtfAnalysisMethod::Fft => polychromatic_mtf(pupils, freqs, &o, MtfMethod::Fft, ctx),
         MtfAnalysisMethod::Direct => polychromatic_mtf(pupils, freqs, &o, MtfMethod::Direct, ctx),
@@ -135,7 +150,7 @@ impl Default for MtfSettings {
             fields: FieldSelection::All,
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
-            method: MtfAnalysisMethod::Fft,
+            method: MtfAnalysisMethod::Direct,
             max_frequency: None,
             frequency_samples: 41,
             detector: None,
@@ -184,13 +199,13 @@ pub fn mtf_analysis(tracer: &SequentialTracer, settings: &MtfSettings) -> MkResu
 fn with_detector(
     det: Option<&DetectorSettings>,
     freqs: &[f64],
-    fp: &FieldPupils,
+    o: &MtfOrientation,
     c: &MtfCurve,
 ) -> (Option<DetectorCurve>, Option<Vec<f64>>, Option<Vec<f64>>) {
     match det {
         None => (None, None, None),
         Some(d) => {
-            let dc = d.curve(freqs, &fp.orientation());
+            let dc = d.curve(freqs, o);
             let st = c
                 .tangential
                 .iter()
@@ -214,25 +229,28 @@ pub fn mtf_analysis_job(
     ctx: &JobContext,
 ) -> MkResult<WaveMtfResult> {
     let timer = RunTimer::start();
+    settings.huygens.validate()?;
     if let Some(d) = &settings.detector {
         d.validate()?;
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let per = system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.5))?;
+    let (per, skipped) =
+        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.5))?;
     let cutoff = per
         .iter()
         .map(|(_, _, fp)| fp.max_cutoff())
         .fold(0.0, f64::max);
     let freqs = frequencies(settings.max_frequency, settings.frequency_samples, cutoff)?;
-    let mut warnings = Vec::new();
+    let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
     for (k, (f, value, fp)) in per.iter().enumerate() {
         warnings.extend(fp.warnings.iter().cloned());
         let sub = ctx.subrange(0.5 + 0.5 * k as f64 / nf, 0.5 + 0.5 * (k + 1) as f64 / nf);
+        let o = fp.orientation();
         let c = field_mtf(
-            fp,
+            &o,
             &fp.weighted(),
             &freqs,
             settings.method,
@@ -242,7 +260,7 @@ pub fn mtf_analysis_job(
         for w in &c.warnings {
             warnings.push(format!("field {f}: {w}"));
         }
-        let (det, st, ss) = with_detector(settings.detector.as_ref(), &freqs, fp, &c);
+        let (det, st, ss) = with_detector(settings.detector.as_ref(), &freqs, &o, &c);
         out.push(FieldMtf {
             field: *f,
             field_value: *value,
@@ -301,7 +319,7 @@ impl Default for MtfVsFieldSettings {
         MtfVsFieldSettings {
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
-            method: MtfAnalysisMethod::Fft,
+            method: MtfAnalysisMethod::Direct,
             frequencies: Vec::new(),
             field_samples: 11,
             direction: [0.0, 1.0],
@@ -311,11 +329,14 @@ impl Default for MtfVsFieldSettings {
     }
 }
 
-/// MTF at one frequency across the field.
+/// MTF at one frequency across the field (NaN, `null` in JSON, at
+/// samples whose pupil could not be traced).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtfFieldCurve {
     pub frequency: f64,
+    #[serde(with = "nf::vec")]
     pub tangential: Vec<f64>,
+    #[serde(with = "nf::vec")]
     pub sagittal: Vec<f64>,
 }
 
@@ -344,6 +365,7 @@ pub fn mtf_vs_field_job(
     ctx: &JobContext,
 ) -> MkResult<MtfVsFieldResult> {
     let timer = RunTimer::start();
+    settings.huygens.validate()?;
     if let Some(d) = &settings.detector {
         d.validate()?;
     }
@@ -357,24 +379,44 @@ pub fn mtf_vs_field_job(
     let len = dx.hypot(dy);
     check_pos("field direction length", len)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
+    // The sweep direction is the tangential direction at every sample,
+    // the axial one included.
+    let o = MtfOrientation {
+        tangential: [dx / len, dy / len],
+    };
     let hs = linspace(0.0, 1.0, settings.field_samples);
     let ns = hs.len() as f64;
     let mut warnings = Vec::new();
     let mut values = Vec::new();
-    let mut per_field: Vec<(FieldPupils, MtfCurve)> = Vec::new();
+    // `None` for a sample whose pupil cannot be built (NaN in the curves).
+    let mut per_field: Vec<Option<MtfCurve>> = Vec::new();
     let mut freqs: Option<Vec<f64>> = None;
+    let mut first_error = None;
     for (k, &h) in hs.iter().enumerate() {
         let sub = ctx.subrange(k as f64 / ns, (k + 1) as f64 / ns);
         let point = FieldPoint::normalized(h * dx / len, h * dy / len);
-        let prepared = tracer.prepare_field(point)?;
-        let fp = field_pupils(
-            tracer,
-            &prepared,
-            &format!("field {h:.3}"),
-            &wls,
-            &settings.pupil,
-            &sub.subrange(0.0, 0.6),
-        )?;
+        values.push(field_value(tracer, &point));
+        let label = format!("field {h:.3}");
+        let fp = tracer.prepare_field(point).and_then(|prepared| {
+            field_pupils(
+                tracer,
+                &prepared,
+                &label,
+                &wls,
+                &settings.pupil,
+                &sub.subrange(0.0, 0.6),
+            )
+        });
+        let fp = match fp {
+            Ok(fp) => fp,
+            Err(e @ (MkError::Trace(_) | MkError::Numerical(_))) => {
+                warnings.push(format!("{label} skipped: {e}"));
+                first_error.get_or_insert(e);
+                per_field.push(None);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         warnings.extend(fp.warnings.iter().cloned());
         let f = match &freqs {
             Some(f) => f.clone(),
@@ -385,7 +427,7 @@ pub fn mtf_vs_field_job(
             }
         };
         let c = field_mtf(
-            &fp,
+            &o,
             &fp.weighted(),
             &f,
             settings.method,
@@ -393,19 +435,25 @@ pub fn mtf_vs_field_job(
             &sub.subrange(0.6, 1.0),
         )?;
         for w in &c.warnings {
-            warnings.push(format!("field {h:.3}: {w}"));
+            warnings.push(format!("{label}: {w}"));
         }
-        values.push(field_value(tracer, &point));
-        per_field.push((fp, c));
+        per_field.push(Some(c));
     }
-    let freqs = freqs.unwrap_or_default();
+    let Some(freqs) = freqs else {
+        return Err(first_error.unwrap_or_else(|| MkError::InvalidParam("no field sample".into())));
+    };
     let curves = freqs
         .iter()
         .enumerate()
         .map(|(q, &nu)| {
             let (mut t, mut s) = (Vec::new(), Vec::new());
-            for (fp, c) in &per_field {
-                let (_, st, ss) = with_detector(settings.detector.as_ref(), &freqs, fp, c);
+            for c in &per_field {
+                let Some(c) = c else {
+                    t.push(f64::NAN);
+                    s.push(f64::NAN);
+                    continue;
+                };
+                let (_, st, ss) = with_detector(settings.detector.as_ref(), &freqs, &o, c);
                 t.push(st.map_or(c.tangential[q], |v| v[q]));
                 s.push(ss.map_or(c.sagittal[q], |v| v[q]));
             }
@@ -451,7 +499,7 @@ impl Default for ThroughFocusSettings {
             fields: FieldSelection::All,
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
-            method: MtfAnalysisMethod::Fft,
+            method: MtfAnalysisMethod::Direct,
             frequencies: Vec::new(),
             focus_range_mm: None,
             focus_samples: 21,
@@ -498,6 +546,7 @@ pub fn through_focus_mtf_analysis_job(
     ctx: &JobContext,
 ) -> MkResult<ThroughFocusResult> {
     let timer = RunTimer::start();
+    settings.huygens.validate()?;
     if let Some(d) = &settings.detector {
         d.validate()?;
     }
@@ -509,7 +558,8 @@ pub fn through_focus_mtf_analysis_job(
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let per = system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
+    let (per, skipped) =
+        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
     let first = &per
         .first()
         .ok_or_else(|| MkError::InvalidParam("no field".into()))?
@@ -531,7 +581,7 @@ pub fn through_focus_mtf_analysis_job(
     } else {
         linspace(-half, half, settings.focus_samples)
     };
-    let mut warnings = Vec::new();
+    let mut warnings = skipped;
     let mut out = Vec::new();
     let total = (per.len() * focus.len()).max(1) as f64;
     let mut done = 0.0;
@@ -555,7 +605,7 @@ pub fn through_focus_mtf_analysis_job(
                 .collect();
             let sub = ctx.subrange(0.3 + 0.7 * done / total, 0.3 + 0.7 * (done + 1.0) / total);
             let c = field_mtf(
-                fp,
+                &fp.orientation(),
                 &weighted,
                 &freqs,
                 settings.method,
@@ -569,7 +619,8 @@ pub fn through_focus_mtf_analysis_job(
                     warnings.push(m);
                 }
             }
-            let (_, st, ss) = with_detector(settings.detector.as_ref(), &freqs, fp, &c);
+            let (_, st, ss) =
+                with_detector(settings.detector.as_ref(), &freqs, &fp.orientation(), &c);
             for q in 0..freqs.len() {
                 t[q][z] = st.as_ref().map_or(c.tangential[q], |v| v[q]);
                 s[q][z] = ss.as_ref().map_or(c.sagittal[q], |v| v[q]);

@@ -16,7 +16,7 @@ use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
 
-use super::psf::{PsfMethod, compute_psf};
+use super::psf::{PsfMethod, check_huygens_grid, compute_psf};
 use super::{check_pos, fields, linspace, run_info, system_field_pupils, wavelengths};
 use crate::energy::{
     EnergyCenter, LsfAxis, encircled_energy, ensquared_energy, line_spread_function,
@@ -105,9 +105,12 @@ fn quantile(r: &[f64], e: &[f64], level: f64) -> f64 {
     f64::NAN
 }
 
-fn check_grid(grid: usize, padding: f64) -> MkResult<()> {
+fn check_grid(grid: usize, padding: f64, method: PsfMethod) -> MkResult<()> {
     if !(8..=4096).contains(&grid) {
         return Err(MkError::InvalidParam(format!("PSF grid size {grid}")));
+    }
+    if method == PsfMethod::Huygens {
+        check_huygens_grid(grid)?;
     }
     check_pos("padding", padding)
 }
@@ -118,7 +121,7 @@ pub fn diffraction_encircled_energy_job(
     ctx: &JobContext,
 ) -> MkResult<WaveEncircledEnergyResult> {
     let timer = RunTimer::start();
-    check_grid(settings.grid_size, settings.padding)?;
+    check_grid(settings.grid_size, settings.padding, settings.method)?;
     if !(2..=10_001).contains(&settings.samples) {
         return Err(MkError::InvalidParam(format!(
             "radius samples {}",
@@ -127,7 +130,8 @@ pub fn diffraction_encircled_energy_job(
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let per = system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
+    let (per, skipped) =
+        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
     // One radius list for every field: the finest PSF scale.
     let lf = per
         .iter()
@@ -143,7 +147,7 @@ pub fn diffraction_encircled_energy_job(
     };
     let radius = linspace(0.0, rmax, settings.samples);
     let dense = linspace(0.0, rmax, 8 * settings.samples);
-    let mut warnings = Vec::new();
+    let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
     for (k, (f, value, fp)) in per.iter().enumerate() {
@@ -281,11 +285,12 @@ pub fn line_spread_job(
     ctx: &JobContext,
 ) -> MkResult<LineSpreadResult> {
     let timer = RunTimer::start();
-    check_grid(settings.grid_size, settings.padding)?;
+    check_grid(settings.grid_size, settings.padding, settings.method)?;
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let per = system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.4))?;
-    let mut warnings = Vec::new();
+    let (per, skipped) =
+        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.4))?;
+    let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
     for (k, (f, value, fp)) in per.iter().enumerate() {

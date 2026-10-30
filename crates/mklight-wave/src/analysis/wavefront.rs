@@ -11,7 +11,7 @@
 
 use mklight_analysis::util::{FieldSelection, WavelengthSelection, nf};
 use mklight_core::job::RunTimer;
-use mklight_core::{JobContext, MkResult, RunInfo};
+use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
 
@@ -141,15 +141,16 @@ pub fn wavefront_map_job(
     let basis = ZernikeBasis::new(settings.zernike_ordering, settings.zernike_terms)?;
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let per = system_field_pupils(
+    let (per, skipped) = system_field_pupils(
         tracer,
         &idx,
         &wls,
         &settings.pupil,
         &ctx.subrange(0.0, 0.85),
     )?;
-    let mut warnings = Vec::new();
+    let mut warnings = skipped;
     let mut maps = Vec::new();
+    let mut first_error = None;
     let fit_ctx = ctx.subrange(0.85, 1.0);
     let total = per
         .iter()
@@ -160,7 +161,17 @@ pub fn wavefront_map_job(
         warnings.extend(fp.warnings.iter().cloned());
         for (wl, _, tp) in fp.pupils {
             fit_ctx.check()?;
-            let fit = fit_traced(&tp, &basis, &JobContext::new())?;
+            // A field with too few surviving rays for the fit is skipped
+            // like an unusable field (`super` module docs).
+            let fit = match fit_traced(&tp, &basis, &JobContext::new()) {
+                Ok(fit) => fit,
+                Err(e @ MkError::Numerical(_)) => {
+                    warnings.push(format!("field {f}, wavelength {wl} skipped: {e}"));
+                    first_error.get_or_insert(e);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             for w in &fit.warnings {
                 warnings.push(format!("field {f}, wavelength {wl}: {w}"));
             }
@@ -210,6 +221,11 @@ pub fn wavefront_map_job(
             });
             fit_ctx.report(maps.len() as f64 / total as f64, "Zernike fit");
         }
+    }
+    if maps.is_empty()
+        && let Some(e) = first_error
+    {
+        return Err(e);
     }
     ctx.report(1.0, "wavefront map");
     Ok(WavefrontResult {

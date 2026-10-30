@@ -21,7 +21,7 @@ use crate::psf::{
 };
 use crate::pupil::PupilFunction;
 use crate::traced::PupilSettings;
-use crate::warnings::push_unique;
+use crate::warnings::{WaveWarning, push_unique};
 
 /// How the PSF is computed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -102,6 +102,41 @@ impl PsfResult {
     }
 }
 
+/// Largest image grid side of the Huygens route in the analyses.
+pub const MAX_HUYGENS_GRID: usize = 1024;
+
+/// Largest Huygens cost of one analysis PSF: image points × covered pupil
+/// samples, summed over the wavelengths (each term is one complex
+/// exponential; `2·10¹⁰` is tens of seconds on a desktop).
+pub const MAX_HUYGENS_WORK: f64 = 2e10;
+
+/// Check an analysis Huygens image grid side against [`MAX_HUYGENS_GRID`].
+pub(crate) fn check_huygens_grid(grid: usize) -> MkResult<()> {
+    if (8..=MAX_HUYGENS_GRID).contains(&grid) {
+        Ok(())
+    } else {
+        Err(MkError::InvalidParam(format!(
+            "Huygens image grid {grid} out of range 8..={MAX_HUYGENS_GRID}"
+        )))
+    }
+}
+
+/// Check the cost `grid² × Σ covered pupil samples` of a Huygens PSF
+/// against [`MAX_HUYGENS_WORK`].
+fn check_huygens_work(pupils: &[(&PupilFunction, f64)], grid: usize) -> MkResult<()> {
+    let samples: usize = pupils
+        .iter()
+        .map(|(p, _)| p.coverage().iter().filter(|c| **c > 0.0).count())
+        .sum();
+    let work = (grid * grid) as f64 * samples as f64;
+    if work > MAX_HUYGENS_WORK {
+        return Err(MkError::InvalidParam(format!(
+            "Huygens PSF too expensive: {grid}² image points × {samples} pupil samples =              {work:.2e} > limit {MAX_HUYGENS_WORK:.0e}; reduce the image or pupil grid"
+        )));
+    }
+    Ok(())
+}
+
 /// Huygens PSF on the image surface of `pupil`, on a grid centred on the
 /// field's common reference point (the pupil's `image_offset_mm` places
 /// its reference point relative to it).
@@ -129,9 +164,34 @@ pub(crate) fn huygens_on_surface(
     Ok(psf)
 }
 
+/// Fraction of the whole-plane PSF energy that must fall inside the image
+/// grid; below it a [`WaveWarning::PsfTruncated`] is attached. (An Airy
+/// pattern keeps ≈ 97.6 % on a 16 λF# square, 98.8 % on 32 λF#.)
+pub const MIN_ENERGY_IN_GRID: f64 = 0.95;
+
 /// The (weighted) PSF of `pupils` on a `grid²` image grid of `spacing`,
-/// centred on the common reference point.
+/// centred on the common reference point. Warns when less than
+/// [`MIN_ENERGY_IN_GRID`] of its energy lies inside the grid.
 pub(crate) fn compute_psf(
+    pupils: &[(&PupilFunction, f64)],
+    method: PsfMethod,
+    grid: usize,
+    spacing: f64,
+    normalization: PsfNormalization,
+    ctx: &JobContext,
+) -> MkResult<Psf> {
+    let mut psf = compute_psf_raw(pupils, method, grid, spacing, normalization, ctx)?;
+    let e = psf.energy_in_grid() / psf.total_energy;
+    if e.is_finite() && e < MIN_ENERGY_IN_GRID {
+        push_unique(
+            &mut psf.warnings,
+            WaveWarning::PsfTruncated { energy_in_grid: e },
+        );
+    }
+    Ok(psf)
+}
+
+fn compute_psf_raw(
     pupils: &[(&PupilFunction, f64)],
     method: PsfMethod,
     grid: usize,
@@ -163,6 +223,8 @@ pub(crate) fn compute_psf(
             Ok(psf)
         }
         PsfMethod::Huygens => {
+            check_huygens_grid(grid)?;
+            check_huygens_work(pupils, grid)?;
             if pupils.len() == 1 {
                 return huygens_on_surface(pupils[0].0, grid, spacing, normalization, ctx);
             }
@@ -244,10 +306,14 @@ pub fn psf_analysis_job(
             settings.grid_size
         )));
     }
+    if settings.method == PsfMethod::Huygens {
+        check_huygens_grid(settings.grid_size)?;
+    }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let per = system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.4))?;
-    let mut warnings = Vec::new();
+    let (per, skipped) =
+        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.4))?;
+    let mut warnings = skipped;
     let mut psfs = Vec::new();
     let jobs: usize = per
         .iter()

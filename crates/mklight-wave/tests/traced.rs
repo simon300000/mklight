@@ -388,6 +388,7 @@ fn cooke_triplet_off_axis_mtf_fft_matches_huygens() {
             ..uniform()
         },
         frequency_samples: 13,
+        method: MtfAnalysisMethod::Fft,
         huygens: HuygensGrid {
             // 128 samples at λF#/2 span the alias-free field of 64 pupil
             // samples, which holds the whole PSF.
@@ -562,6 +563,30 @@ fn image_space_telecentric_uses_the_plane_wave_limit() {
             r.opd_waves
         );
     }
+    // The reference tracer's OPD takes the same `R → ∞` limit: equal on
+    // every lattice ray, on and off axis (positive defocus beyond focus).
+    for fi in 0..2 {
+        let s = PupilSettings {
+            rays: 21,
+            ..uniform()
+        };
+        let tpf = pupil(&t, fi, &s);
+        let mut n = 0;
+        for (k, r) in tpf.samples.samples.iter().enumerate() {
+            let Some(r) = r else { continue };
+            let p = lattice_point(s.rays, k);
+            let o = t.opd(t.field(fi), 0, p[0], p[1], &t.options()).unwrap();
+            assert!(
+                (o - r.opd_waves).abs() < 1e-9,
+                "field {fi} {p:?}: trace {o} vs wave {}",
+                r.opd_waves
+            );
+            n += 1;
+        }
+        assert!(n > 300, "{n}");
+        let edge = t.opd(t.field(fi), 0, 0.0, 1.0, &t.options()).unwrap();
+        assert!(edge > 0.1, "field {fi}: edge OPD {edge}");
+    }
     // The pupil's own refocus brings it back to perfect.
     let back = tp.pupil.with_focus_shift(-dz);
     // (to the resampling error: grey edge cells hold the OPD averaged over
@@ -621,22 +646,26 @@ fn image_space_telecentric_uses_the_plane_wave_limit() {
 
 // --------------------------------------------------------- mirrors and signs
 
-/// The PSF centroid equals the geometric ray centroid (both relative to
-/// the chief ray) for an aberrated field: a check of the pupil orientation
-/// (coordinates are sphere positions) and of the mirror frame.
-fn centroid_check(t: &SequentialTracer, field: usize, label: &str) {
+/// PSF centroid and geometric ray centroid of `field` (both relative to
+/// the chief ray, mm), and the PSF spacing `λF#/2`.
+fn psf_and_ray_centroids(
+    t: &SequentialTracer,
+    field: usize,
+    amplitude: AmplitudeModel,
+    grid: usize,
+) -> ([f64; 2], [f64; 2], f64) {
     let ps = psf_analysis(
         t,
         &PsfAnalysisSettings {
             fields: FieldSelection::Index { index: field },
             wavelengths: WavelengthSelection::Primary,
             pupil: PupilSettings {
-                amplitude: AmplitudeModel::Radiometric,
-                grid: 128,
+                amplitude,
+                grid,
                 ..Default::default()
             },
-            // The whole alias-free field of the 128-sample pupil.
-            grid_size: 256,
+            // The whole alias-free field of the pupil.
+            grid_size: 2 * grid,
             padding: 2.0,
             ..Default::default()
         },
@@ -662,17 +691,24 @@ fn centroid_check(t: &SequentialTracer, field: usize, label: &str) {
     let fs = &sp.fields[0];
     let shift = [fs.centroid[0] - fs.chief[0], fs.centroid[1] - fs.chief[1]];
     let got = [psf_c[0] - fs.chief[0], psf_c[1] - fs.chief[1]];
-    let lf = p.psf.spacing_mm * 2.0;
-    assert!(
-        shift[1].abs() > lf,
-        "{label}: centroid shift {shift:?} too small"
-    );
+    (got, shift, p.psf.spacing_mm)
+}
+
+/// The PSF centroid equals the geometric ray centroid (both relative to
+/// the chief ray) for an aberrated field: a check of the pupil orientation
+/// (coordinates are sphere positions) and of the mirror frame, in `x` and
+/// `y`.
+fn centroid_check(t: &SequentialTracer, field: usize, label: &str) {
+    let (got, shift, dx) = psf_and_ray_centroids(t, field, AmplitudeModel::Radiometric, 128);
+    let lf = dx * 2.0;
+    let mag = shift[0].hypot(shift[1]);
+    assert!(mag > lf, "{label}: centroid shift {shift:?} too small");
     // The whole-plane PSF centroid equals the ray centroid (moment
     // theorem). The sampled field misses part of the far diffraction wings,
     // whose first moment converges like 1/(field width): about 1.5 % here
     // (3 % on a 64λF# field, 0.6 % on 256λF#). A sign or orientation error
     // would be off by 200 %.
-    let tol = 0.03 * shift[1].abs() + 0.02 * lf;
+    let tol = 0.03 * mag + 0.02 * lf;
     assert!(
         (got[0] - shift[0]).abs() < tol && (got[1] - shift[1]).abs() < tol,
         "{label}: PSF centroid {got:?} vs ray centroid {shift:?}"
@@ -1204,4 +1240,565 @@ fn encircled_energy_and_line_spread_known_answers() {
             .zip(&l.y)
             .all(|(a, b)| (a - b).abs() < 1e-6 * l.x[l.x.len() / 2])
     );
+}
+
+// ------------------------------------------------------ limits and robustness
+
+/// Huygens image grids are bounded in every analysis (one JSON value must
+/// not start an unbounded job), and so is the Huygens cost.
+#[test]
+fn huygens_grids_and_cost_are_bounded() {
+    let t = ideal(50.0, 10.0, 0.0, &[0.0]);
+    let invalid = |name: &str, v: serde_json::Value| {
+        let r = (find(name).unwrap().run)(&t, &v, &ctx());
+        assert!(
+            matches!(r, Err(mklight_core::MkError::InvalidParam(_))),
+            "{name} {v}: {r:?}"
+        );
+    };
+    let big = serde_json::json!({"method": "huygens", "huygens": {"grid_size": 100000}});
+    invalid("mtf", big.clone());
+    invalid("mtf_vs_field", big.clone());
+    invalid("through_focus_mtf", big);
+    for name in ["psf", "diffraction_encircled_energy", "line_spread"] {
+        invalid(
+            name,
+            serde_json::json!({"method": "huygens", "grid_size": MAX_HUYGENS_GRID + 1}),
+        );
+    }
+    // The FFT route keeps its larger grids.
+    let ok = PsfAnalysisSettings {
+        pupil: PupilSettings {
+            grid: 16,
+            rays: 9,
+            ..uniform()
+        },
+        grid_size: 2 * MAX_HUYGENS_GRID,
+        ..Default::default()
+    };
+    psf_analysis(&t, &ok).unwrap();
+    // Cost: a 512² pupil (≈ 2·10⁵ samples) on a 1024² Huygens grid.
+    let r = psf_analysis(
+        &t,
+        &PsfAnalysisSettings {
+            method: PsfMethod::Huygens,
+            grid_size: MAX_HUYGENS_GRID,
+            pupil: PupilSettings {
+                grid: 512,
+                rays: 9,
+                supersample: 1,
+                ..uniform()
+            },
+            ..ok
+        },
+    );
+    match r {
+        Err(mklight_core::MkError::InvalidParam(m)) => assert!(m.contains("too expensive"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A truncated PSF (spot larger than the grid) is flagged; a
+/// diffraction-limited one on the same grid is not.
+#[test]
+fn truncated_psf_is_flagged() {
+    let truncated = |dz: f64| {
+        let t = ideal(100.0, 20.0, dz, &[0.0]);
+        let r = psf_analysis(
+            &t,
+            &PsfAnalysisSettings {
+                pupil: PupilSettings {
+                    grid: 64,
+                    rays: 33,
+                    ..uniform()
+                },
+                grid_size: 64,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let flagged = r.psfs[0]
+            .psf
+            .warnings
+            .iter()
+            .any(|w| matches!(w, mklight_wave::warnings::WaveWarning::PsfTruncated { .. }));
+        let e = r.psfs[0].psf.energy_in_grid() / r.psfs[0].psf.total_energy;
+        let in_run_info = r.run_info.warnings.iter().any(|w| w.contains("truncated"));
+        assert_eq!(flagged, in_run_info);
+        (flagged, e)
+    };
+    let (f0, e0) = truncated(0.0);
+    assert!(!f0 && e0 > MIN_ENERGY_IN_GRID, "{e0}");
+    // 8 waves of defocus: a spot of ≈ 32 λF# on a 16 λF# grid.
+    let (f1, e1) = truncated(8.0 * 2.0 * 0.55e-3 / 0.1f64.powi(2));
+    assert!(f1 && e1 < 0.9, "{e1}");
+}
+
+/// Cooke triplet with 3 mm front and rear apertures: the full field is
+/// blocked. It is skipped with a warning; the usable fields keep their
+/// results (and `mtf_vs_field` reports `null` there).
+#[test]
+fn unusable_fields_are_skipped_with_a_warning() {
+    let mut sys = samples::cooke_triplet();
+    sys.wavelengths = mono(0.5875618);
+    sys.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 3.0 };
+    sys.surfaces[6].semi_diameter = SemiDiameter::Fixed { value: 3.0 };
+    let t = tracer_for(sys).unwrap();
+    let pupil = PupilSettings {
+        grid: 32,
+        rays: 24,
+        ..Default::default()
+    };
+    let m = mtf_analysis(
+        &t,
+        &MtfSettings {
+            pupil,
+            frequency_samples: 5,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let got: Vec<usize> = m.fields.iter().map(|f| f.field).collect();
+    assert_eq!(got, vec![0, 1]);
+    assert!(
+        m.run_info
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("field 2 skipped")),
+        "{:?}",
+        m.run_info.warnings
+    );
+    let w = wavefront_map(
+        &t,
+        &WavefrontSettings {
+            pupil,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // Field 1 keeps too few of the 24² lattice rays for a 37-term fit: its
+    // map is skipped too, with a warning.
+    assert_eq!(w.maps.len(), 1);
+    for k in [1, 2] {
+        assert!(
+            w.run_info
+                .warnings
+                .iter()
+                .any(|x| x.starts_with(&format!("field {k}")) && x.contains("skipped")),
+            "{:?}",
+            w.run_info.warnings
+        );
+    }
+    // Only the dead field selected: an error.
+    let only = mtf_analysis(
+        &t,
+        &MtfSettings {
+            fields: FieldSelection::Index { index: 2 },
+            pupil,
+            ..Default::default()
+        },
+    );
+    assert!(
+        matches!(only, Err(mklight_core::MkError::Trace(_))),
+        "{only:?}"
+    );
+    let vf = mtf_vs_field(
+        &t,
+        &MtfVsFieldSettings {
+            pupil,
+            field_samples: 3,
+            frequencies: vec![20.0],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = &vf.curves[0];
+    assert!(c.tangential[0].is_finite() && c.tangential[2].is_nan());
+    let json = serde_json::to_value(&vf).unwrap();
+    assert!(json["curves"][0]["tangential"][2].is_null());
+    let back: MtfVsFieldResult = serde_json::from_value(json).unwrap();
+    assert!(back.curves[0].sagittal[2].is_nan());
+}
+
+/// The axial sample of `mtf_vs_field` takes the sweep direction as its
+/// tangential direction, like every other sample: with non-square pixels
+/// the detector factor at `h = 0` is the one along the sweep.
+#[test]
+fn mtf_vs_field_axial_sample_follows_the_sweep_direction() {
+    let t = tracer_for(samples::singlet()).unwrap();
+    let pupil = PupilSettings {
+        grid: 32,
+        rays: 25,
+        ..uniform()
+    };
+    let det = DetectorSettings {
+        pitch_mm: [0.002, 0.008],
+        ..DetectorSettings::square(0.002)
+    };
+    let nu = 40.0;
+    let vf = mtf_vs_field(
+        &t,
+        &MtfVsFieldSettings {
+            pupil,
+            field_samples: 2,
+            frequencies: vec![nu],
+            direction: [1.0, 0.0],
+            detector: Some(det),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let optical = mtf_analysis(
+        &t,
+        &MtfSettings {
+            fields: FieldSelection::Index { index: 0 },
+            pupil,
+            max_frequency: Some(nu),
+            frequency_samples: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // Sweep along x: tangential is the optical x (sagittal of the default
+    // axial orientation) times the x pixel factor, and vice versa (to the
+    // direct method's ±ν asymmetry; a swap would be off by > 0.005).
+    let (ot, os) = (
+        optical.fields[0].tangential[1],
+        optical.fields[0].sagittal[1],
+    );
+    let (dx, dy) = (det.mtf([nu, 0.0]), det.mtf([0.0, nu]));
+    assert!(dx > dy + 0.1);
+    let c = &vf.curves[0];
+    assert!(
+        (c.tangential[0] - os * dx).abs() < 1e-4,
+        "{}",
+        c.tangential[0]
+    );
+    assert!((c.sagittal[0] - ot * dy).abs() < 1e-4, "{}", c.sagittal[0]);
+}
+
+/// A configured tracer stamps the session snapshot's hash, the
+/// configuration and the solve warnings into the `RunInfo`.
+#[test]
+fn configured_runs_record_the_configuration() {
+    let f = 100.0;
+    let mut sys = system(
+        20.0,
+        vec![surf(1, SurfaceShape::Paraxial { focal_length: f }, f)],
+        1,
+        &[0.0],
+    );
+    let thickness = mklight_core::param::ParamPath::Thickness {
+        surface: mklight_core::SurfaceId(1),
+    };
+    sys.solves = vec![mklight_core::Solve {
+        target: thickness.clone(),
+        kind: mklight_core::SolveKind::MarginalRayHeight { height: 0.0 },
+    }];
+    sys.configurations = vec![
+        mklight_core::Configuration::default(),
+        mklight_core::Configuration {
+            name: "moved".into(),
+            overrides: vec![(thickness, f + 1.0)],
+        },
+    ];
+    let lib = std::sync::Arc::new(mklight_core::materials::MaterialLibrary::with_builtin());
+    let cfg = configured_tracer(&sys, lib, 1).unwrap();
+    let base = mklight_core::Snapshot::new(sys.clone())
+        .unwrap()
+        .hash()
+        .to_hex();
+    assert_eq!(cfg.base_snapshot_hash, base);
+    assert_eq!(cfg.configuration, 1);
+    assert!(!cfg.solve_warnings.is_empty());
+    // The solve wins: the configured system is in focus.
+    let tp = pupil(&cfg.tracer, 0, &uniform());
+    assert!(tp.pupil.opd_stats(true).rms < 1e-6);
+    let small = serde_json::json!({"pupil": {"grid": 16, "rays": 9}});
+    let v = find("wavefront_map")
+        .unwrap()
+        .run_configured(&cfg, &small, &ctx())
+        .unwrap();
+    let ri: mklight_core::RunInfo = serde_json::from_value(v["run_info"].clone()).unwrap();
+    assert_eq!(ri.snapshot_hash, base);
+    assert_eq!(ri.settings["configuration"], 1);
+    assert_eq!(ri.settings["pupil"]["grid"], 16);
+    assert_eq!(ri.warnings[0], cfg.solve_warnings[0]);
+    // Unstamped, the run names the configured snapshot.
+    let raw = (find("wavefront_map").unwrap().run)(&cfg.tracer, &small, &ctx()).unwrap();
+    assert_ne!(raw["run_info"]["snapshot_hash"], base.as_str());
+}
+
+// ------------------------------------------------------------- more geometry
+
+/// Stop at `1.5 f` in front of an ideal lens: the exit pupil (at `3f`) lies
+/// beyond the image (`s_E = 2f − dz > 0`, `σ = +1`).
+fn far_exit_pupil(f: f64, epd: f64, dz: f64) -> SequentialTracer {
+    tracer_for(system(
+        epd,
+        vec![
+            surf(1, SurfaceShape::Plane, 1.5 * f),
+            surf(2, SurfaceShape::Paraxial { focal_length: f }, f + dz),
+        ],
+        1,
+        &[0.0],
+    ))
+    .unwrap()
+}
+
+/// Virtual exit pupil beyond the image: the reference sphere lies on the
+/// far sheet, and a defocus beyond focus is still positive. A perfect wave
+/// diverging from the focus `dz` before `I` meets the sphere at
+/// `t(θ) = dz cosθ + √(R² − dz² sin²θ)` from the focus, at pupil radius
+/// `t sinθ/R`, so `OPD = n(dz + R − t(θ))`.
+#[test]
+fn exit_pupil_beyond_the_image() {
+    let (f, epd, dz) = (50.0, 10.0, 0.05);
+    let t = far_exit_pupil(f, epd, dz);
+    let tp = pupil(
+        &t,
+        0,
+        &PupilSettings {
+            rays: 32,
+            ..uniform()
+        },
+    );
+    let r = tp.info.reference_radius_mm;
+    assert!((r - (2.0 * f - dz)).abs() < 1e-6, "R {r}");
+    assert!(tp.info.exit_pupil_point_mm.unwrap()[2] > tp.info.chief_point_mm[2]);
+    let sm = tp.info.sin_max;
+    let lam_mm = LAM * 1e-3;
+    let exact = |rho: f64| {
+        let tt = |th: f64| dz * th.cos() + (r * r - (dz * th.sin()).powi(2)).sqrt();
+        let (mut lo, mut hi) = (0.0, 0.5 * PI);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if tt(mid) * mid.sin() / r < rho * sm {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (dz + r - tt(0.5 * (lo + hi))) / lam_mm
+    };
+    let mut edge: f64 = 0.0;
+    for (k, rs) in tp.samples.samples.iter().enumerate() {
+        let Some(rs) = rs else { continue };
+        let e = exact(rs.u.hypot(rs.v));
+        assert!((rs.opd_waves - e).abs() < 1e-8, "{} vs {e}", rs.opd_waves);
+        let p = lattice_point(32, k);
+        let o = t.opd(t.field(0), 0, p[0], p[1], &t.options()).unwrap();
+        assert!((o - rs.opd_waves).abs() < 1e-9);
+        edge = edge.max(rs.opd_waves);
+    }
+    let w020 = dz * sm * sm / (2.0 * lam_mm);
+    assert!(edge > 0.95 * w020 && edge < 1.05 * w020, "{edge} vs {w020}");
+    // Refocusing on the sphere brings it back to perfect.
+    assert!(tp.pupil.with_focus_shift(-dz).strehl_at_reference() > 0.9999);
+}
+
+/// Annular stop (ε = 0.4 in the entrance pupil): two rim loops, 84 %
+/// transmission, the clear area of the mapped annulus, and the analytic
+/// annular MTF.
+#[test]
+fn annular_pupil_area_and_mtf() {
+    let (f, epd, eps) = (100.0, 20.0, 0.4);
+    let mut sys = system(
+        epd,
+        vec![surf(1, SurfaceShape::Paraxial { focal_length: f }, f)],
+        1,
+        &[0.0],
+    );
+    sys.surfaces[1].aperture = Some(mklight_core::ApertureShape::Annular {
+        inner_radius: eps * 0.5 * epd,
+        outer_radius: 0.5 * epd,
+    });
+    let t = tracer_for(sys).unwrap();
+    let tp = pupil(&t, 0, &uniform());
+    let Some(PupilMask::Polygons { loops }) = &tp.mask else {
+        panic!("no rim")
+    };
+    assert_eq!(loops.len(), 2);
+    assert!(
+        (tp.info.transmitted_fraction - (1.0 - eps * eps)).abs() < 1e-3,
+        "{}",
+        tp.info.transmitted_fraction
+    );
+    // The ideal lens maps height h to sinθ = h/√(f² + h²).
+    let s = |h: f64| h / (f * f + h * h).sqrt();
+    let eps_xp = s(eps * 0.5 * epd) / s(0.5 * epd);
+    let area = PI * (1.0 - eps_xp * eps_xp);
+    assert!(
+        (tp.info.clear_area / area - 1.0).abs() < 2e-3,
+        "{} vs {area}",
+        tp.info.clear_area
+    );
+    let p = &tp.pupil;
+    let n = p.geometry().working_f_number();
+    let nu_c = 1.0 / (LAM * 1e-3 * n);
+    let freqs: Vec<f64> = (0..=20).map(|k| k as f64 * 0.05 * nu_c).collect();
+    let c = mtf_fft(p, &freqs, &MtfOrientation::default(), &ctx()).unwrap();
+    for (k, &nu) in freqs.iter().enumerate() {
+        let a = diffraction_limited_mtf(nu / nu_c, eps_xp);
+        assert!(
+            (c.tangential[k] - a).abs() < 3e-3 && (c.sagittal[k] - a).abs() < 3e-3,
+            "ν {nu}: {} vs {a}",
+            c.tangential[k]
+        );
+    }
+}
+
+/// Cancellation from another thread while the job runs, and progress that
+/// passes through intermediate values and never goes back.
+#[test]
+fn mid_run_cancellation_and_monotone_progress() {
+    let t = tracer_for(samples::cooke_triplet()).unwrap();
+    let s = PsfAnalysisSettings {
+        method: PsfMethod::Huygens,
+        grid_size: 128,
+        pupil: PupilSettings {
+            grid: 48,
+            rays: 24,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // Progress samples of a complete run.
+    let c = JobContext::new();
+    let watch = c.clone();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let samples_seen = std::thread::scope(|sc| {
+        let h = sc.spawn(|| {
+            let mut seen = Vec::new();
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                seen.push(watch.progress.fraction());
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            seen
+        });
+        let small = PsfAnalysisSettings {
+            grid_size: 48,
+            ..s.clone()
+        };
+        psf_analysis_job(&t, &small, &c).unwrap();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        h.join().unwrap()
+    });
+    assert!(samples_seen.windows(2).all(|w| w[1] >= w[0]));
+    assert!(
+        samples_seen.iter().any(|&f| f > 0.05 && f < 0.95),
+        "no intermediate progress"
+    );
+    assert_eq!(c.progress.fraction(), 1.0);
+    // Cancel once the Huygens stage (after 40 % for pupil tracing) runs.
+    let c = JobContext::new();
+    let r = std::thread::scope(|sc| {
+        let watch = c.clone();
+        sc.spawn(move || {
+            while watch.progress.fraction() < 0.45 {
+                std::thread::sleep(std::time::Duration::from_micros(100));
+            }
+            watch.cancel.cancel();
+        });
+        psf_analysis_job(&t, &s, &c)
+    });
+    assert!(matches!(r, Err(mklight_core::MkError::Cancelled)), "{r:?}");
+    assert!(c.progress.fraction() < 1.0);
+}
+
+/// Centroids for fields along `x` and on a diagonal (a sign error in `u`
+/// would go unnoticed with `y` fields alone), on refracting and reflecting
+/// systems.
+#[test]
+fn psf_centroid_follows_x_and_diagonal_fields() {
+    let mut c = samples::cooke_triplet();
+    c.wavelengths = mono(0.5875618);
+    c.fields.fields = vec![
+        mklight_core::Field::new(0.0, 0.0),
+        mklight_core::Field::new(-14.0, 0.0),
+        mklight_core::Field::new(10.0, -10.0),
+    ];
+    let tc = tracer_for(c).unwrap();
+    centroid_check(&tc, 1, "triplet −x");
+    centroid_check(&tc, 2, "triplet diagonal");
+    let mut s = system(
+        50.0,
+        vec![{
+            let mut m = surf(
+                1,
+                SurfaceShape::Conic {
+                    curvature: -0.5 / 250.0,
+                    conic: -1.0,
+                },
+                -250.0,
+            );
+            m.interaction = Interaction::Reflect;
+            m
+        }],
+        1,
+        &[0.0],
+    );
+    s.fields.fields = vec![
+        mklight_core::Field::new(0.0, 0.0),
+        mklight_core::Field::new(1.5, 0.0),
+        mklight_core::Field::new(-1.0, 1.0),
+    ];
+    let tp = tracer_for(s).unwrap();
+    centroid_check(&tp, 1, "paraboloid +x");
+    centroid_check(&tp, 2, "paraboloid diagonal");
+}
+
+/// The default `transmission` amplitude leaves out the ray density, so the
+/// PSF's energy distribution (and centroid) is biased where the pupil is
+/// distorted; `radiometric` restores the moment theorem. Singlet at full
+/// field: the bias is about a third of the centroid shift (WAVE.md §3).
+#[test]
+fn default_amplitude_model_biases_the_psf_centroid() {
+    let mut s = samples::singlet();
+    s.wavelengths = mono(0.5875618);
+    let t = tracer_for(s).unwrap();
+    // 256 pupil samples: at 128 the wavefront steps by 0.67 waves per
+    // sample and the wrapped flare even flips the centroid's sign (a
+    // `pupil_undersampled` warning says so).
+    let (gt, shift, _) = psf_and_ray_centroids(&t, 2, AmplitudeModel::Transmission, 256);
+    let (gr, _, _) = psf_and_ray_centroids(&t, 2, AmplitudeModel::Radiometric, 256);
+    let et = (gt[1] - shift[1]).abs() / shift[1].abs();
+    let er = (gr[1] - shift[1]).abs() / shift[1].abs();
+    assert!(et > 0.15, "transmission bias {et}");
+    assert!(er < 0.1, "radiometric error {er}");
+}
+
+/// The default (direct) MTF of a strongly aberrated field is right near
+/// zero frequency on the default pupil grid, where the FFT route's lattice
+/// interpolation is not (WAVE.md §5): singlet at full field.
+#[test]
+fn default_mtf_method_is_right_at_low_frequencies() {
+    let mut s = samples::singlet();
+    s.wavelengths = mono(0.5875618);
+    let t = tracer_for(s).unwrap();
+    let run = |grid: usize, method: MtfAnalysisMethod| {
+        let r = mtf_analysis(
+            &t,
+            &MtfSettings {
+                fields: FieldSelection::Index { index: 2 },
+                pupil: PupilSettings {
+                    grid,
+                    ..Default::default()
+                },
+                method,
+                max_frequency: Some(40.0),
+                frequency_samples: 9,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        r.fields[0].tangential[1]
+    };
+    assert_eq!(MtfSettings::default().method, MtfAnalysisMethod::Direct);
+    // 5 cycles/mm; the FFT lattice spacing at n = 64 is 5.4 cycles/mm.
+    let reference = run(256, MtfAnalysisMethod::Fft);
+    let direct = run(64, MtfAnalysisMethod::Direct);
+    let fft = run(64, MtfAnalysisMethod::Fft);
+    assert!((direct - reference).abs() < 0.01, "{direct} vs {reference}");
+    assert!((fft - reference).abs() > 0.02, "{fft} vs {reference}");
 }

@@ -13,6 +13,17 @@
 //! [`ANALYSES`] lists them with a uniform JSON entry point
 //! `fn(&SequentialTracer, &serde_json::Value, &JobContext) ->
 //! MkResult<serde_json::Value>`, so a registry adds each with one line.
+//! A tracer is one configuration and its `RunInfo` names the snapshot the
+//! tracer was built from; to analyse configuration `k` of a session
+//! system, build a [`ConfiguredTracer`] ([`crate::traced::configured_tracer`])
+//! and use [`WaveAnalysisEntry::run_configured`] (or
+//! [`ConfiguredTracer::stamp`] on a typed result) so the `RunInfo` carries
+//! the session snapshot's hash, the configuration and the solve warnings.
+//!
+//! Fields whose pupil cannot be built (chief ray failed, fully vignetted)
+//! are left out of per-field results with a `RunInfo` warning (`NaN`,
+//! JSON `null`, in `mtf_vs_field`); an analysis fails only when no
+//! selected field is usable.
 //!
 //! **Polychromatic weighting.** Spectral weights are the system's
 //! wavelength weights (relative energies at the image). Each wavelength's
@@ -38,7 +49,7 @@ use serde_json::Value;
 
 use crate::mtf::MtfOrientation;
 use crate::pupil::PupilFunction;
-use crate::traced::{PupilSettings, ReferencePoint, TracedPupil, trace_pupil};
+use crate::traced::{ConfiguredTracer, PupilSettings, ReferencePoint, TracedPupil, trace_pupil};
 
 pub use energy::{
     EncircledEnergySettings, FieldEnergy, FieldLineSpread, LineSpreadResult, LineSpreadSettings,
@@ -52,7 +63,8 @@ pub use mtf::{
     mtf_vs_field_job, through_focus_mtf_analysis, through_focus_mtf_analysis_job,
 };
 pub use psf::{
-    FieldPsf, PsfAnalysisSettings, PsfMethod, PsfResult, psf_analysis, psf_analysis_job,
+    FieldPsf, MAX_HUYGENS_GRID, MAX_HUYGENS_WORK, MIN_ENERGY_IN_GRID, PsfAnalysisSettings,
+    PsfMethod, PsfResult, psf_analysis, psf_analysis_job,
 };
 pub use wavefront::{
     WavefrontMap, WavefrontResult, WavefrontSettings, wavefront_map, wavefront_map_job,
@@ -72,6 +84,22 @@ pub struct WaveAnalysisEntry {
     /// The default settings as JSON.
     pub default_settings: fn() -> Value,
     pub run: fn(&SequentialTracer, &Value, &JobContext) -> MkResult<Value>,
+}
+
+impl WaveAnalysisEntry {
+    /// Run on one configuration of a system: [`Self::run`] on its tracer,
+    /// with the `run_info` stamped by [`ConfiguredTracer::stamp`] (base
+    /// snapshot hash, `"configuration"` in the settings, solve warnings).
+    pub fn run_configured(
+        &self,
+        cfg: &ConfiguredTracer,
+        settings: &Value,
+        ctx: &JobContext,
+    ) -> MkResult<Value> {
+        let mut v = (self.run)(&cfg.tracer, settings, ctx)?;
+        cfg.stamp_json(&mut v)?;
+        Ok(v)
+    }
 }
 
 impl std::fmt::Debug for WaveAnalysisEntry {
@@ -335,32 +363,53 @@ pub(crate) fn field_pupils(
     })
 }
 
+/// A system field's index, field value and pupils.
+pub(crate) type SystemFieldPupils = (usize, [f64; 2], FieldPupils);
+
 /// The system fields `idx` traced at `wls`, each with its label and field
 /// value, over consecutive progress subranges of `ctx`.
+///
+/// A field whose pupil cannot be built (chief ray failed, fully vignetted:
+/// `Trace` or `Numerical` errors) is left out with a warning, as the
+/// geometric analyses skip fields whose chief ray fails; the call fails
+/// only when no selected field is usable. Returns the usable fields and
+/// those warnings.
 pub(crate) fn system_field_pupils(
     tracer: &SequentialTracer,
     idx: &[usize],
     wls: &[(usize, f64)],
     settings: &PupilSettings,
     ctx: &JobContext,
-) -> MkResult<Vec<(usize, [f64; 2], FieldPupils)>> {
+) -> MkResult<(Vec<SystemFieldPupils>, Vec<String>)> {
     let nf = idx.len().max(1) as f64;
-    idx.iter()
-        .enumerate()
-        .map(|(k, &f)| {
-            let sub = ctx.subrange(k as f64 / nf, (k + 1) as f64 / nf);
-            let fp = field_pupils(
-                tracer,
-                tracer.field(f),
-                &format!("field {f}"),
-                wls,
-                settings,
-                &sub,
-            )?;
-            let sf = &tracer.system().system().fields.fields[f];
-            Ok((f, [sf.x, sf.y], fp))
-        })
-        .collect()
+    let mut out = Vec::with_capacity(idx.len());
+    let mut skipped = Vec::new();
+    let mut first_error = None;
+    for (k, &f) in idx.iter().enumerate() {
+        let sub = ctx.subrange(k as f64 / nf, (k + 1) as f64 / nf);
+        match field_pupils(
+            tracer,
+            tracer.field(f),
+            &format!("field {f}"),
+            wls,
+            settings,
+            &sub,
+        ) {
+            Ok(fp) => {
+                let sf = &tracer.system().system().fields.fields[f];
+                out.push((f, [sf.x, sf.y], fp));
+            }
+            Err(e @ (MkError::Trace(_) | MkError::Numerical(_))) => {
+                skipped.push(format!("field {f} skipped: {e}"));
+                first_error.get_or_insert(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    match first_error {
+        Some(e) if out.is_empty() => Err(e),
+        _ => Ok((out, skipped)),
+    }
 }
 
 /// Positive and finite, or an error naming `what`.

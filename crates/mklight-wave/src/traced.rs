@@ -41,10 +41,10 @@
 //! (CONVENTIONS §4 sign, cancellation free; for `P = I` it is exactly the
 //! formula of `mklight_trace::opd`). As `R → ∞` the bracket tends to
 //! `b_r − b_c`: the phase of each ray's plane wave at the reference point.
-//! This is the **telecentric** reference used here; it differs from the
-//! tracer's telecentric plane-at-the-image OPD (`mklight_trace::opd`) by a
-//! term of order `δz·θ⁴` for a defocused image, and it is the quantity the
-//! Debye integral needs.
+//! This is the **telecentric** reference (the quantity the Debye integral
+//! needs); `mklight_trace::opd` takes the same limit, so the two agree on
+//! every ray (a defocused image beyond focus has positive OPD,
+//! `n'·δz·(1 − cosθ)`).
 //!
 //! # Pupil coordinates and mirrors
 //!
@@ -88,7 +88,7 @@
 use std::sync::Arc;
 
 use mklight_core::materials::MaterialLibrary;
-use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, Snapshot, Vec3};
+use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, RunInfo, Snapshot, Vec3};
 use mklight_trace::radiometry::RayThroughput;
 use mklight_trace::trace::{Ray, TraceResult, trace_ray};
 use mklight_trace::{
@@ -241,13 +241,71 @@ pub struct TracedPupil {
 }
 
 /// A solved configuration `k` of `system` with its reference tracer
-/// (configuration 0 or an empty list is the base system).
+/// (configuration 0 or an empty list is the base system). The tracer's
+/// snapshot is that of the solved, configured system and the solve
+/// warnings are dropped; [`configured_tracer`] keeps both.
 pub fn tracer_for_configuration(
     system: &OpticalSystem,
     library: Arc<MaterialLibrary>,
     k: usize,
 ) -> MkResult<SequentialTracer> {
-    let (solved, _) = apply_solves_configuration(
+    Ok(configured_tracer(system, library, k)?.tracer)
+}
+
+/// The reference tracer of one configuration of a system, with what a
+/// `RunInfo` needs to say which system and configuration it analyses.
+pub struct ConfiguredTracer {
+    /// Tracer of the solved configuration.
+    pub tracer: SequentialTracer,
+    pub configuration: usize,
+    /// Hash of the system as given (all configurations, before solves):
+    /// the session snapshot an engine checks results against.
+    pub base_snapshot_hash: String,
+    /// Warnings of applying the configuration and its solves.
+    pub solve_warnings: Vec<String>,
+}
+
+impl ConfiguredTracer {
+    /// Stamp a `RunInfo` of an analysis run on [`Self::tracer`]: the base
+    /// snapshot hash replaces the configured one, `"configuration": k` is
+    /// added to the settings object, and the solve warnings are prepended.
+    pub fn stamp(&self, info: &mut RunInfo) {
+        info.snapshot_hash = self.base_snapshot_hash.clone();
+        if let serde_json::Value::Object(m) = &mut info.settings {
+            m.insert("configuration".into(), self.configuration.into());
+        }
+        let mut w = self.solve_warnings.clone();
+        for x in info.warnings.drain(..) {
+            if !w.contains(&x) {
+                w.push(x);
+            }
+        }
+        info.warnings = w;
+    }
+
+    /// [`Self::stamp`] on the `run_info` of a result serialised as JSON.
+    pub fn stamp_json(&self, result: &mut serde_json::Value) -> MkResult<()> {
+        let ri = result
+            .get_mut("run_info")
+            .ok_or_else(|| MkError::Numerical("result has no run_info".into()))?;
+        let mut info: RunInfo = serde_json::from_value(ri.clone())
+            .map_err(|e| MkError::Numerical(format!("run_info: {e}")))?;
+        self.stamp(&mut info);
+        *ri = serde_json::to_value(&info)
+            .map_err(|e| MkError::Numerical(format!("run_info: {e}")))?;
+        Ok(())
+    }
+}
+
+/// The solved configuration `k` of `system` with its tracer, the base
+/// snapshot hash and the solve warnings ([`ConfiguredTracer`]).
+pub fn configured_tracer(
+    system: &OpticalSystem,
+    library: Arc<MaterialLibrary>,
+    k: usize,
+) -> MkResult<ConfiguredTracer> {
+    let base_snapshot_hash = mklight_core::snapshot::hash_system(system)?.to_hex();
+    let (solved, report) = apply_solves_configuration(
         system,
         &library,
         k,
@@ -256,7 +314,12 @@ pub fn tracer_for_configuration(
     )?;
     let snap = Snapshot::new(solved)?;
     let sys = mklight_core::ResolvedSystem::new(&snap, library)?;
-    SequentialTracer::new(Arc::new(sys))
+    Ok(ConfiguredTracer {
+        tracer: SequentialTracer::new(Arc::new(sys))?,
+        configuration: k,
+        base_snapshot_hash,
+        solve_warnings: report.warnings,
+    })
 }
 
 /// One traced lattice or rim ray.

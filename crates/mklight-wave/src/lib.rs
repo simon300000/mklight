@@ -44,8 +44,8 @@ pub mod zernike;
 
 pub use detector::{DetectorCurve, DetectorSettings};
 pub use traced::{
-    AmplitudeModel, ExitPupilInfo, PupilSettings, ReferencePoint, TracedPupil, trace_pupil,
-    tracer_for_configuration,
+    AmplitudeModel, ConfiguredTracer, ExitPupilInfo, PupilSettings, ReferencePoint, TracedPupil,
+    configured_tracer, trace_pupil, tracer_for_configuration,
 };
 
 pub use energy::{
