@@ -1868,8 +1868,9 @@ mod tests {
         assert_eq!(a.json, b.json, "same settings, same result");
 
         let de = |seed: u64| {
-            // Unconstrained: with the EFL equality every trial point would be
-            // infeasible and both seeds would keep the start.
+            // Unconstrained: an explicit EFL equality constraint would leave
+            // every DE trial point infeasible (the job's own EFL hold is a
+            // penalty for DE).
             let mut s = unconstrained_triplet();
             s["algorithm"] = json!("de");
             s["max_iterations"] = json!(3);
