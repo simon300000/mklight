@@ -364,7 +364,7 @@ impl Analysis for GlassSubstitution {
             .collect::<MkResult<Vec<_>>>()?;
 
         // The merit, as `optimize` builds it for LM.
-        let cpu = TraceEvaluator::new(input.library.clone());
+        let cpu = BuiltinEvaluator::new(input.library.clone());
         let reg = OperandRegistry::builtin();
         let default_merit = patched(
             &DefaultMeritSpec::default(),
@@ -431,7 +431,7 @@ impl Analysis for GlassSubstitution {
             } else {
                 1
             };
-        let work = Workload::new(&cpu, &system, &spec, jacobian_batch);
+        let work = Workload::new(&cpu.trace, &system, &spec, jacobian_batch);
         let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         let space = Arc::new(LensSpace {
             indices: s
@@ -466,7 +466,9 @@ impl Analysis for GlassSubstitution {
             // Every combination starts from the input shape.
             build: Box::new(move |a| {
                 let p: Box<dyn Problem + Send> = match &gpu {
-                    Some(g) => Box::new(build_space.problem(a, g.clone().composite())?),
+                    Some(g) => Box::new(
+                        build_space.problem(a, g.clone().composite().with(build_cpu.clone()))?,
+                    ),
                     None => Box::new(build_space.problem(a, build_cpu.clone())?),
                 };
                 Ok((p, start_x.clone()))
@@ -591,7 +593,7 @@ impl Analysis for GlassSubstitution {
 }
 
 /// The CPU f64 reference merit and violation at `x`.
-fn reference_score(p: &OpticalProblem<TraceEvaluator>, x: &[f64]) -> EngineResult<ScalarEval> {
+fn reference_score(p: &OpticalProblem<BuiltinEvaluator>, x: &[f64]) -> EngineResult<ScalarEval> {
     let r = reference_values(p, &[x])?;
     Ok(ScalarEval {
         merit: r.merit[0],

@@ -2093,8 +2093,8 @@ Settings:
 | `algorithm` | string | `"tabu"` |  | one of `"tabu"`, `"hammer"`; tabu: search glass combinations, every one re-optimised from the input shape. hammer: basin hopping over glasses and shape together, to escape local minima. |
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator settings, laid over the defaults (criterion, pupil sampling, fields, wavelengths, thickness boundaries). |
-| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (ranking, results[].feasible). |
 | `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
@@ -2104,8 +2104,9 @@ Settings:
 | `max_combinations` | integer | `100` |  | ≥ 1; Local re-optimisations (tabu: distinct glass combinations; hammer: also the same glasses from another shape). |
 | `max_seconds` | number\|null | `null` | s | > 0; Search wall-time limit, keeping the results so far (termination time_limit; not reproducible). null: none. |
 | `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
-| `operands` | array | `[]` |  | Operands appended to the merit (e.g. an EFL target). |
+| `operands` | array | `[]` |  | Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM. |
 | `seed` | integer | `0` |  | ≥ 0 |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the ranked results. One running job per key. |
 | `top_n` | integer | `10` |  | ≥ 1; Best glass combinations returned. |
 | `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |

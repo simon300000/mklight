@@ -324,21 +324,36 @@ fn patched<T: Serialize + DeserializeOwned>(
     parse(&v, what)
 }
 
-/// Shared schema for the image-quality criterion accepted by both jobs.
+/// Shared schema of the default-merit generator (every `DefaultMeritSpec`
+/// key) accepted by `optimize`, `tolerance` and `glass_substitution`.
 fn default_merit_schema(default: Value) -> Value {
-    json!({"type": "object", "default": default, "title": "Default merit",
-    "description": "Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries.",
-    "properties": {"criterion": {"oneOf": [
-        {"type": "object", "properties": {"type": {"const": "rms_spot"}}},
-        {"type": "object", "properties": {"type": {"const": "wavefront"}}, "required": ["type"]},
-        {"type": "object", "required": ["type", "frequencies", "target"], "properties": {
-            "type": {"const": "mtf"},
-            "frequencies": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0}, "description": "Fixed image frequencies in cycles/mm."},
-            "target": {"type": "number", "minimum": 0, "maximum": 1},
-            "method": {"type": "string", "enum": ["diffraction", "geometric"], "default": "diffraction"},
-            "worst_field": {"type": "boolean", "default": false, "description": "One combine:min over every field and both T/S directions per frequency."}
-        }}
-    ]}}})
+    let mut schema = super::schema::settings_from_default::<DefaultMeritSpec>(json!({
+        "criterion": {"type": "object", "oneOf": [
+            {"type": "object", "properties": {"type": {"const": "rms_spot"}}},
+            {"type": "object", "properties": {"type": {"const": "wavefront"}}, "required": ["type"]},
+            {"type": "object", "required": ["type", "frequencies", "target"], "properties": {
+                "type": {"const": "mtf"},
+                "frequencies": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0}, "description": "Fixed image frequencies in cycles/mm."},
+                "target": {"type": "number", "minimum": 0, "maximum": 1},
+                "method": {"type": "string", "enum": ["diffraction", "geometric"], "default": "diffraction"},
+                "worst_field": {"type": "boolean", "default": false, "description": "One combine:min over every field and both T/S directions per frequency."}
+            }}
+        ]},
+        "fields": {"type": ["array", "null"], "items": {"type": "integer", "minimum": 0},
+            "description": "Field indices; null: every field (or the x/y grid for anamorphic and freeform systems)."},
+        "wavelengths": {"type": ["array", "null"], "items": {"type": "integer", "minimum": 0},
+            "description": "Wavelength indices; null: every wavelength."},
+        "thickness": {"type": ["object", "null"],
+            "description": "Centre and edge thickness boundaries; null: none."}
+    }));
+    // Omitted from the serialised default when unset.
+    schema["properties"]["squeeze_target"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0,
+        "default": null, "description": "Anamorphic squeeze EFL_y/EFL_x to hold; null: none."});
+    let o = schema.as_object_mut().unwrap();
+    o.insert("default".into(), default);
+    o.insert("title".into(), json!("Default merit"));
+    o.insert("description".into(), json!("Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries."));
+    schema
 }
 
 /// Which evaluator computes the merit during the search.
