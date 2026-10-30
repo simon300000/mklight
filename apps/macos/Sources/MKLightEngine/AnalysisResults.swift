@@ -1,6 +1,83 @@
 import Foundation
 import MKLightModel
 
+/// A result quantity that may legitimately be non-finite: an afocal system's
+/// EFL is ±∞, an undefined quantity is NaN. JSON has no such numbers;
+/// serde_json writes a non-finite `f64` as `null`, and the engine's convention
+/// for infinities is the strings `"inf"` / `"-inf"` (CONVENTIONS §2).
+/// Decoding accepts a number, `null` (→ NaN), `"inf"`, `"-inf"` or `"nan"`;
+/// encoding writes ±∞ as those strings and NaN as `null`, so any value round
+/// trips. NaN compares equal to NaN here, so results stay `Equatable`.
+@propertyWrapper
+public struct EngineDouble: Codable, Sendable, Hashable {
+    public var wrappedValue: Double
+    public init(wrappedValue: Double) { self.wrappedValue = wrappedValue }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() {
+            wrappedValue = .nan
+        } else if let d = try? c.decode(Double.self) {
+            wrappedValue = d
+        } else {
+            let text = try c.decode(String.self)
+            if text.trimmingCharacters(in: .whitespaces).lowercased() == "nan" {
+                wrappedValue = .nan
+            } else if let v = ExtendedDouble.parse(text) {
+                wrappedValue = v
+            } else {
+                throw DecodingError.dataCorruptedError(in: c, debugDescription: "'\(text)' is not a number, ±inf or nan")
+            }
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.singleValueContainer()
+        if wrappedValue.isNaN {
+            try c.encodeNil()
+        } else if wrappedValue.isInfinite {
+            try c.encode(wrappedValue > 0 ? "inf" : "-inf")
+        } else {
+            try c.encode(wrappedValue)
+        }
+    }
+
+    public static func == (a: Self, b: Self) -> Bool {
+        a.wrappedValue == b.wrappedValue || (a.wrappedValue.isNaN && b.wrappedValue.isNaN)
+    }
+    public func hash(into h: inout Hasher) {
+        h.combine(wrappedValue.isNaN ? .nan : wrappedValue)
+    }
+}
+
+/// An array of `EngineDouble` values.
+@propertyWrapper
+public struct EngineDoubles: Codable, Sendable, Hashable {
+    public var wrappedValue: [Double]
+    public init(wrappedValue: [Double]) { self.wrappedValue = wrappedValue }
+    public init(from decoder: any Decoder) throws {
+        wrappedValue = try [EngineDouble](from: decoder).map(\.wrappedValue)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        try wrappedValue.map(EngineDouble.init(wrappedValue:)).encode(to: encoder)
+    }
+    public static func == (a: Self, b: Self) -> Bool {
+        a.wrappedValue.count == b.wrappedValue.count
+            && zip(a.wrappedValue, b.wrappedValue).allSatisfy { EngineDouble(wrappedValue: $0) == EngineDouble(wrappedValue: $1) }
+    }
+    public func hash(into h: inout Hasher) {
+        for v in wrappedValue { h.combine(EngineDouble(wrappedValue: v)) }
+    }
+}
+
+extension UnkeyedDecodingContainer {
+    mutating func engineDouble() throws -> Double { try decode(EngineDouble.self).wrappedValue }
+}
+
+extension UnkeyedEncodingContainer {
+    mutating func encodeEngineDouble(_ v: Double) throws { try encode(EngineDouble(wrappedValue: v)) }
+}
+
 /// A point in global coordinates (mm), serialised as `[x, y, z]`.
 public struct Point3: Codable, Sendable, Hashable {
     public var x, y, z: Double
@@ -11,16 +88,19 @@ public struct Point3: Codable, Sendable, Hashable {
     }
     public init(from decoder: any Decoder) throws {
         var c = try decoder.unkeyedContainer()
-        x = try c.decode(Double.self)
-        y = try c.decode(Double.self)
-        z = try c.decode(Double.self)
+        x = try c.engineDouble()
+        y = try c.engineDouble()
+        z = try c.engineDouble()
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.unkeyedContainer()
-        try c.encode(x)
-        try c.encode(y)
-        try c.encode(z)
+        try c.encodeEngineDouble(x)
+        try c.encodeEngineDouble(y)
+        try c.encodeEngineDouble(z)
     }
+    public static func == (a: Point3, b: Point3) -> Bool { a.engineValues == b.engineValues }
+    public func hash(into h: inout Hasher) { h.combine(engineValues) }
+    private var engineValues: [EngineDouble] { [x, y, z].map(EngineDouble.init(wrappedValue:)) }
 }
 
 /// A 2-D point (mm or normalised units, as documented per use), `[x, y]`.
@@ -32,14 +112,17 @@ public struct Point2: Codable, Sendable, Hashable {
     }
     public init(from decoder: any Decoder) throws {
         var c = try decoder.unkeyedContainer()
-        x = try c.decode(Double.self)
-        y = try c.decode(Double.self)
+        x = try c.engineDouble()
+        y = try c.engineDouble()
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.unkeyedContainer()
-        try c.encode(x)
-        try c.encode(y)
+        try c.encodeEngineDouble(x)
+        try c.encodeEngineDouble(y)
     }
+    public static func == (a: Point2, b: Point2) -> Bool { a.engineValues == b.engineValues }
+    public func hash(into h: inout Hasher) { h.combine(engineValues) }
+    private var engineValues: [EngineDouble] { [x, y].map(EngineDouble.init(wrappedValue:)) }
 }
 
 public struct Bounds3: Codable, Sendable, Hashable {
@@ -194,10 +277,10 @@ public struct SpotDiagramResult: Codable, Sendable, Hashable {
         /// Reference point on the image surface (global mm).
         public var reference: Point2
         public var centroid: Point2
-        /// RMS radius about the reference (mm).
-        public var rmsRadius: Double
+        /// RMS radius about the reference (mm); NaN when no ray arrived.
+        @EngineDouble public var rmsRadius: Double
         /// Largest distance from the reference (mm).
-        public var geoRadius: Double
+        @EngineDouble public var geoRadius: Double
         public init(
             field: Int, fieldValue: Point2, points: [Point], reference: Point2, centroid: Point2, rmsRadius: Double,
             geoRadius: Double
@@ -218,8 +301,9 @@ public struct SpotDiagramResult: Codable, Sendable, Hashable {
 
     public var fields: [FieldSpot]
     public var wavelengthsUm: [Double]
-    /// Airy disk radius `1.22 λ N_w` at the primary wavelength (mm).
-    public var airyRadius: Double
+    /// Airy disk radius `1.22 λ N_w` at the primary wavelength (mm); ∞ for
+    /// an afocal system.
+    @EngineDouble public var airyRadius: Double
 
     public init(fields: [FieldSpot], wavelengthsUm: [Double], airyRadius: Double) {
         self.fields = fields
@@ -324,7 +408,7 @@ public struct MTFResult: Codable, Sendable, Hashable {
     public struct Curve: Codable, Sendable, Hashable {
         public var field: Int
         public var orientation: Orientation
-        public var modulation: [Double]
+        @EngineDoubles public var modulation: [Double]
         public init(field: Int, orientation: Orientation, modulation: [Double]) {
             self.field = field
             self.orientation = orientation
@@ -337,7 +421,7 @@ public struct MTFResult: Codable, Sendable, Hashable {
     /// Diffraction-limited MTF on axis, if computed.
     public var diffractionLimit: [Double]?
     /// Incoherent cutoff `1/(λ N_w)` (cycles/mm).
-    public var cutoffFrequency: Double
+    @EngineDouble public var cutoffFrequency: Double
     public var fieldValues: [Point2]
     public init(
         frequencies: [Double], curves: [Curve], diffractionLimit: [Double]?, cutoffFrequency: Double,
@@ -362,11 +446,11 @@ public struct PSFResult: Codable, Sendable, Hashable {
     public var width: Int
     public var height: Int
     /// Pixel pitch on the image surface (mm).
-    public var pixelPitch: Double
+    @EngineDouble public var pixelPitch: Double
     /// Row-major intensities (row 0 at −y), normalised so the diffraction-
     /// limited peak is 1; the peak value is therefore the Strehl ratio.
     public var values: [Float]
-    public var strehl: Double
+    @EngineDouble public var strehl: Double
     public init(field: Int, width: Int, height: Int, pixelPitch: Double, values: [Float], strehl: Double) {
         self.field = field
         self.width = width
@@ -387,7 +471,8 @@ public struct FirstOrderResult: Codable, Sendable, Hashable {
         /// Stable key, e.g. `efl`.
         public var key: String
         public var label: String
-        public var value: Double
+        /// May be ±∞ (e.g. the EFL of an afocal system) or NaN (undefined).
+        @EngineDouble public var value: Double
         public var unit: String
         public var id: String { key }
         public init(key: String, label: String, value: Double, unit: String) {

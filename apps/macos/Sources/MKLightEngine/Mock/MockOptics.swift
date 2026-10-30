@@ -178,13 +178,13 @@ struct MockOptics {
             if d != nil { warnings.append("image-space F/# assumes an object at infinity") }
         case .objectSpaceNA(let na):
             let u = na / nAfter[0][w]
-            epRadius = abs(u * (epZ + (d ?? 0)))
+            epRadius = abs(u * (d.map(objectToPupil) ?? epZ))
         case .paraxialWorkingFNumber(let nw):
             let uTarget = 1 / (2 * max(nw, 1e-6) * abs(imageN(w)))
             if let d {
                 let pr = paraxial(y1: d, u0: 1, w: w)
                 let u = abs(pr.nu[pr.nu.count - 2] / imageN(w))
-                epRadius = u > 0 ? uTarget / u * abs(epZ + d) : 1
+                epRadius = u > 0 ? uTarget / u * abs(objectToPupil(d)) : 1
             } else {
                 let pr = paraxial(y1: 1, u0: 0, w: w)
                 let u = abs(pr.nu[pr.nu.count - 2] / imageN(w))
@@ -195,12 +195,18 @@ struct MockOptics {
             if stopSD == nil { warnings.append("float-by-stop without a fixed stop size: mock uses 1 mm") }
             if let d {
                 let u = abs(a * d + b) > 1e-12 ? rs / (a * d + b) : 0
-                epRadius = abs(u * (epZ + d))
+                epRadius = abs(u * objectToPupil(d))
             } else {
                 epRadius = abs(a) > 1e-12 ? abs(rs / a) : 1
             }
         }
-        if !(epRadius.isFinite && epRadius > 0) { epRadius = 1 }
+        if let d, abs(d + epZ) <= 1e-9 * max(1, abs(d), abs(epZ)) {
+            warnings.append("object lies on the entrance pupil: paraxial pupil slopes are degenerate")
+        }
+        if !(epRadius.isFinite && epRadius > 0) {
+            warnings.append("entrance pupil undefined for this aperture specification: mock uses a 1 mm radius")
+            epRadius = 1
+        }
 
         // Paraxial chief-ray image height per unit field parameter.
         let unit = chiefStart()
@@ -212,10 +218,26 @@ struct MockOptics {
     /// object) or unit object height (finite object).
     private func chiefStart() -> (y1: Double, u0: Double) {
         if let d = objectDistance {
-            let u0 = -1 / (epZ + d)
+            let u0 = -1 / objectToPupil(d)
             return (1 + u0 * d, u0)
         }
         return (-epZ, 1)
+    }
+
+    /// Object-to-entrance-pupil distance `d + z_EP`, kept away from zero so
+    /// that an object on the pupil (warned about in `computePupils`) gives
+    /// large but finite slopes instead of NaN.
+    func objectToPupil(_ d: Double) -> Double {
+        let l = d + epZ, floor = 1e-9 * max(1, abs(d), abs(epZ))
+        return abs(l) > floor ? l : (l < 0 ? -floor : floor)
+    }
+
+    /// Paraxial marginal-ray start `(y1, u0)` from the axial object point to
+    /// the edge of the entrance pupil.
+    func marginalStart() -> (y1: Double, u0: Double) {
+        guard let d = objectDistance else { return (epRadius, 0) }
+        let u0 = epRadius / objectToPupil(d)
+        return (u0 * d, u0)
     }
 
     func efl(_ w: Int) -> Double? {

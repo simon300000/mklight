@@ -337,8 +337,18 @@ final class LensTableController: NSObject, NSTableViewDataSource, NSTableViewDel
             if row >= 0 { beginEditing(row: row, column: focusedColumn) }
             return true
         case 0x7F, NSDeleteFunctionKey:
-            if row >= 0, flags.isDisjoint(with: [.command, .option, .control]) {
+            // Structural deletes need the explicit command (⌘⌫, also in the
+            // menu). A plain Backspace/Delete clears the focused cell into
+            // an edit, as in a spreadsheet; Escape restores it.
+            if row >= 0, flags.contains(.command), flags.isDisjoint(with: [.option, .control]) {
                 deleteSurface(at: row)
+                return true
+            }
+            if row >= 0, flags.isDisjoint(with: [.command, .option, .control]) {
+                if !focusedColumn.isPopup, beginEditing(row: row, column: focusedColumn), let editor = table.currentEditor() {
+                    editor.selectAll(nil)
+                    editor.delete(nil)
+                }
                 return true
             }
             return false
@@ -348,11 +358,8 @@ final class LensTableController: NSObject, NSTableViewDataSource, NSTableViewDel
         default:
             break
         }
-        if chars == "+", row >= 0 {
-            insertSurface(at: max(row, 1))
-            return true
-        }
-        // Type-to-edit: a printable character starts editing the focused cell.
+        // Type-to-edit: a printable character (including `+`, `-` and `.`,
+        // which start numbers) starts editing the focused cell.
         if flags.isDisjoint(with: [.command, .control, .option]), row >= 0, let ch = event.characters,
             let first = ch.unicodeScalars.first, first.value >= 0x20, first.value < 0xF700,
             !focusedColumn.isPopup

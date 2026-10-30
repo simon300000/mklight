@@ -370,6 +370,166 @@ fn all_param_paths() -> Vec<ParamPath> {
     ]
 }
 
+/// One model and the engine's verdict on it, for front-end validators that
+/// mirror `OpticalSystem::validate`.
+#[derive(Serialize)]
+struct ValidationCase {
+    name: String,
+    system: OpticalSystem,
+    /// `None` when `validate` accepts the system, else its error message.
+    error: Option<String>,
+}
+
+/// The Cooke triplet with one configuration override each: some that
+/// `ParamPath::get` accepts and some that it rejects for the surface's shape,
+/// material or semi-diameter mode, the aperture spec, or an index range.
+fn validation_cases() -> Vec<ValidationCase> {
+    let id = SurfaceId;
+    let mut base = cooke_triplet();
+    base.surfaces[2].shape = SurfaceShape::EvenAsphere {
+        curvature: -1.0 / 435.76044,
+        conic: 0.0,
+        coefficients: vec![1e-6],
+    };
+    base.surfaces[3].material = MaterialRef::Model {
+        nd: 1.62004,
+        vd: 36.37,
+        dpgf: 0.0,
+    };
+    base.surfaces[4].shape = SurfaceShape::Paraxial { focal_length: 50.0 };
+    base.surfaces[6].semi_diameter = SemiDiameter::Fixed { value: 7.0 };
+    base.surfaces[5].shape = SurfaceShape::CoordinateBreak;
+    base.surfaces[5].placement = Some(Placement::default());
+    base.stop = 1;
+    let with = |name: &str, p: ParamPath, edit: &dyn Fn(&mut OpticalSystem)| {
+        let mut s = base.clone();
+        s.name = name.into();
+        edit(&mut s);
+        s.configurations = vec![Configuration {
+            name: name.into(),
+            overrides: vec![(p, 1.0)],
+        }];
+        let error = s.validate().err().map(|e| e.to_string());
+        ValidationCase {
+            name: name.into(),
+            system: s,
+            error,
+        }
+    };
+    let none = |_: &mut OpticalSystem| {};
+    vec![
+        with(
+            "curvature on conic",
+            ParamPath::Curvature { surface: id(1) },
+            &none,
+        ),
+        with(
+            "curvature on plane",
+            ParamPath::Curvature { surface: id(8) },
+            &none,
+        ),
+        with(
+            "curvature on paraxial",
+            ParamPath::Curvature { surface: id(4) },
+            &none,
+        ),
+        with(
+            "curvature on coordinate break",
+            ParamPath::Curvature { surface: id(5) },
+            &none,
+        ),
+        with(
+            "conic on asphere",
+            ParamPath::Conic { surface: id(2) },
+            &none,
+        ),
+        with("conic on plane", ParamPath::Conic { surface: id(8) }, &none),
+        with(
+            "asphere term beyond list",
+            ParamPath::Asphere {
+                surface: id(2),
+                index: 3,
+            },
+            &none,
+        ),
+        with(
+            "asphere on conic",
+            ParamPath::Asphere {
+                surface: id(1),
+                index: 0,
+            },
+            &none,
+        ),
+        with(
+            "focal length on paraxial",
+            ParamPath::ParaxialFocalLength { surface: id(4) },
+            &none,
+        ),
+        with(
+            "focal length on conic",
+            ParamPath::ParaxialFocalLength { surface: id(1) },
+            &none,
+        ),
+        with(
+            "nd on model glass",
+            ParamPath::ModelNd { surface: id(3) },
+            &none,
+        ),
+        with(
+            "vd on catalog glass",
+            ParamPath::ModelVd { surface: id(1) },
+            &none,
+        ),
+        with(
+            "dpgf on air",
+            ParamPath::ModelDpgf { surface: id(2) },
+            &none,
+        ),
+        with(
+            "tilt on any surface",
+            ParamPath::TiltX { surface: id(7) },
+            &none,
+        ),
+        with(
+            "thickness of missing surface",
+            ParamPath::Thickness { surface: id(99) },
+            &none,
+        ),
+        with(
+            "fixed semi-diameter",
+            ParamPath::SemiDiameter { surface: id(6) },
+            &none,
+        ),
+        with(
+            "auto semi-diameter",
+            ParamPath::SemiDiameter { surface: id(1) },
+            &none,
+        ),
+        with("aperture value", ParamPath::ApertureValue, &none),
+        with(
+            "aperture value floating by stop",
+            ParamPath::ApertureValue,
+            &|s: &mut OpticalSystem| {
+                s.aperture = ApertureSpec::FloatByStopSize;
+                s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 5.0 };
+            },
+        ),
+        with("last field", ParamPath::FieldY { index: 2 }, &none),
+        with(
+            "field out of range",
+            ParamPath::FieldWeight { index: 3 },
+            &none,
+        ),
+        with("wavelength", ParamPath::WavelengthUm { index: 2 }, &none),
+        with(
+            "wavelength out of range",
+            ParamPath::WavelengthWeight { index: 3 },
+            &none,
+        ),
+        with("temperature", ParamPath::TemperatureC, &none),
+    ]
+}
+
 fn run_info(snapshot: &Snapshot) -> RunInfo {
     RunInfo {
         engine_version: ENGINE_VERSION.to_string(),
@@ -419,6 +579,7 @@ fn main() {
     write(&dir, "variants.json", &variants());
     write(&dir, "param_paths.json", &all_param_paths());
     write(&dir, "run_info.json", &run_info(&cooke));
+    write(&dir, "validation_cases.json", &validation_cases());
 
     // Snapshot hashes of the valid fixtures, so a front end can check that its
     // engine binding reproduces the engine's content hashes.

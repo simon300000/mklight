@@ -56,6 +56,9 @@ public struct EngineInfo: Sendable, Hashable {
 public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     case cancelled
     case invalidModel([String])
+    /// The analysis settings do not fit the snapshot (see
+    /// `AnalysisRequest.problems(for:)`).
+    case invalidSettings([String])
     case unsupported(String)
     case failed(String)
 
@@ -63,6 +66,7 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
         switch self {
         case .cancelled: "Cancelled"
         case .invalidModel(let issues): "Invalid model: " + issues.joined(separator: "; ")
+        case .invalidSettings(let issues): "Invalid analysis settings: " + issues.joined(separator: "; ")
         case .unsupported(let s): "Unsupported: \(s)"
         case .failed(let s): s
         }
@@ -87,7 +91,9 @@ public protocol EngineClient: Sendable {
     func validate(_ system: OpticalSystem) async -> [ModelIssue]
 
     /// Starts an analysis of `snapshot`. The job runs asynchronously; observe
-    /// its progress and await its result through the returned handle.
+    /// its progress and await its result through the returned handle. A
+    /// request whose `problems(for:)` is not empty fails immediately with
+    /// `EngineError.invalidSettings`.
     func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob
 
     /// Names of the glasses the engine can resolve (for completion and

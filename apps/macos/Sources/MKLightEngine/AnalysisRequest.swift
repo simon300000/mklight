@@ -100,9 +100,50 @@ public enum WavelengthSelection: Codable, Sendable, Hashable {
     }
 }
 
+/// Which compute backend a job should use. A preference: the engine falls back
+/// to the CPU reference (and says so in `RunInfo.warnings`) when a backend is
+/// unavailable or cannot meet the error budget for a design (CONVENTIONS §7).
+public enum BackendPreference: String, Codable, Sendable, Hashable, CaseIterable {
+    /// The engine chooses: the GPU when `precision` allows it, else the CPU.
+    case auto
+    /// The CPU f64 reference tracer.
+    case cpuReference = "cpu_reference"
+    /// This platform's GPU backend (Metal on macOS).
+    case gpu
+
+    public var title: String {
+        switch self {
+        case .auto: "Automatic"
+        case .cpuReference: "CPU reference"
+        case .gpu: "GPU"
+        }
+    }
+}
+
+/// How a job is executed: with the snapshot and the analysis settings, the
+/// rest of a job's identity `(snapshot, settings, backend, precision, seed)`
+/// (ARCHITECTURE §State model). It is part of every settings struct, so it is
+/// recorded in `RunInfo.settings` and takes part in the staleness check:
+/// switching from the f64 reference to GPU f32 makes the old result stale.
+public struct ExecutionSettings: Codable, Sendable, Hashable {
+    public var backend = BackendPreference.auto
+    /// Requested floating-point model. `RunInfo.precision` records the one
+    /// actually used.
+    public var precision = Precision.f64Reference
+    /// Philox seed for every stochastic part of an analysis (random pupil
+    /// sampling, Monte-Carlo integration; CONVENTIONS §6).
+    public var seed: UInt64 = 1
+    public init(backend: BackendPreference = .auto, precision: Precision = .f64Reference, seed: UInt64 = 1) {
+        self.backend = backend
+        self.precision = precision
+        self.seed = seed
+    }
+}
+
 /// Settings structs are plain serialisable values. Together with the snapshot
-/// hash and the seed they fully determine a result, and they are recorded in
-/// `RunInfo.settings`.
+/// hash they fully determine a result, and they are recorded in
+/// `RunInfo.settings`. `AnalysisRequest.problems(for:)` checks them against a
+/// system before a job starts.
 
 public struct LayoutSettings: Codable, Sendable, Hashable {
     /// Meridional rays per field, evenly spaced across the pupil.
@@ -116,17 +157,18 @@ public struct LayoutSettings: Codable, Sendable, Hashable {
     public var include3D = true
     /// Configuration index (0 = base system).
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case raysPerField = "rays_per_field", fields, wavelengths
-        case profileSamples = "profile_samples", include3D = "include_3d", configuration
+        case profileSamples = "profile_samples", include3D = "include_3d", configuration, execution
     }
 }
 
 public enum PupilPattern: String, Codable, Sendable, Hashable, CaseIterable {
     case hexapolar, square
-    /// Uniform random over the pupil; uses the settings' `seed`.
+    /// Uniform random over the pupil; uses `execution.seed`.
     case random
 }
 
@@ -141,9 +183,8 @@ public struct SpotDiagramSettings: Codable, Sendable, Hashable {
     public var fields = FieldSelection.all
     public var wavelengths = WavelengthSelection.all
     public var reference = SpotReference.chief
-    /// Philox seed for stochastic sampling (CONVENTIONS §6).
-    public var seed: UInt64 = 1
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 }
 
@@ -154,6 +195,7 @@ public struct FanSettings: Codable, Sendable, Hashable {
     public var fields = FieldSelection.all
     public var wavelengths = WavelengthSelection.all
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 }
 
@@ -162,10 +204,11 @@ public struct FieldCurvatureSettings: Codable, Sendable, Hashable {
     public var fieldSamples = 21
     public var wavelengths = WavelengthSelection.all
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case fieldSamples = "field_samples", wavelengths, configuration
+        case fieldSamples = "field_samples", wavelengths, configuration, execution
     }
 }
 
@@ -179,11 +222,12 @@ public struct MTFSettings: Codable, Sendable, Hashable {
     /// Polychromatic over these wavelengths, weighted by the system weights.
     public var wavelengths = WavelengthSelection.all
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case maxFrequency = "max_frequency", frequencySamples = "frequency_samples"
-        case pupilSampling = "pupil_sampling", fields, wavelengths, configuration
+        case pupilSampling = "pupil_sampling", fields, wavelengths, configuration, execution
     }
 }
 
@@ -194,16 +238,19 @@ public struct PSFSettings: Codable, Sendable, Hashable {
     /// Image grid size (pixels per side).
     public var imageSampling = 64
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case field, wavelengths, pupilSampling = "pupil_sampling", imageSampling = "image_sampling", configuration
+        case execution
     }
 }
 
 public struct FirstOrderSettings: Codable, Sendable, Hashable {
     public var wavelength = WavelengthSelection.primary
     public var configuration = 0
+    public var execution = ExecutionSettings()
     public init() {}
 }
 
@@ -232,10 +279,104 @@ public enum AnalysisRequest: Codable, Sendable, Hashable {
         }
     }
 
-    /// Random seed, for stochastic analyses.
+    /// How the job is executed.
+    public var execution: ExecutionSettings {
+        get {
+            switch self {
+            case .layout(let s): s.execution
+            case .spotDiagram(let s): s.execution
+            case .rayFan(let s), .opdFan(let s): s.execution
+            case .fieldCurvature(let s): s.execution
+            case .mtf(let s): s.execution
+            case .psf(let s): s.execution
+            case .firstOrder(let s): s.execution
+            }
+        }
+        set {
+            switch self {
+            case .layout(var s): s.execution = newValue; self = .layout(s)
+            case .spotDiagram(var s): s.execution = newValue; self = .spotDiagram(s)
+            case .rayFan(var s): s.execution = newValue; self = .rayFan(s)
+            case .opdFan(var s): s.execution = newValue; self = .opdFan(s)
+            case .fieldCurvature(var s): s.execution = newValue; self = .fieldCurvature(s)
+            case .mtf(var s): s.execution = newValue; self = .mtf(s)
+            case .psf(var s): s.execution = newValue; self = .psf(s)
+            case .firstOrder(var s): s.execution = newValue; self = .firstOrder(s)
+            }
+        }
+    }
+
+    public var configuration: Int {
+        switch self {
+        case .layout(let s): s.configuration
+        case .spotDiagram(let s): s.configuration
+        case .rayFan(let s), .opdFan(let s): s.configuration
+        case .fieldCurvature(let s): s.configuration
+        case .mtf(let s): s.configuration
+        case .psf(let s): s.configuration
+        case .firstOrder(let s): s.configuration
+        }
+    }
+
+    /// The seed the result depends on (`RunInfo.seed`): `execution.seed` for
+    /// analyses that sample randomly with these settings, else `nil`.
     public var seed: UInt64? {
-        if case .spotDiagram(let s) = self, s.pattern == .random { return s.seed }
+        if case .spotDiagram(let s) = self, s.pattern == .random { return s.execution.seed }
         return nil
+    }
+
+    /// Problems that make the settings unusable for `system` (empty when they
+    /// are valid). Engines refuse such requests with
+    /// `EngineError.invalidSettings` before starting any work.
+    public func problems(for system: OpticalSystem) -> [String] {
+        var out: [String] = []
+        func range(_ name: String, _ v: Int, _ r: ClosedRange<Int>) {
+            if !r.contains(v) { out.append("\(name) must be in \(r.lowerBound)…\(r.upperBound) (is \(v))") }
+        }
+        func fields(_ f: FieldSelection) {
+            if case .index(let i) = f, !system.fields.fields.indices.contains(i) { out.append("field \(i + 1) does not exist") }
+        }
+        func wavelengths(_ w: WavelengthSelection) {
+            if case .index(let i) = w, !system.wavelengths.wavelengths.indices.contains(i) {
+                out.append("wavelength \(i + 1) does not exist")
+            }
+        }
+        let k = configuration
+        if k != 0 && !system.configurations.indices.contains(k) { out.append("configuration \(k) does not exist") }
+        switch self {
+        case .layout(let s):
+            range("rays per field", s.raysPerField, 1...1001)
+            range("profile samples", s.profileSamples, 3...2001)
+            fields(s.fields)
+            wavelengths(s.wavelengths)
+        case .spotDiagram(let s):
+            range("rings", s.rings, 1...256)
+            fields(s.fields)
+            wavelengths(s.wavelengths)
+        case .rayFan(let s), .opdFan(let s):
+            range("fan samples", s.samples, 3...10001)
+            fields(s.fields)
+            wavelengths(s.wavelengths)
+        case .fieldCurvature(let s):
+            range("field samples", s.fieldSamples, 2...10001)
+            wavelengths(s.wavelengths)
+        case .mtf(let s):
+            if !(s.maxFrequency.isFinite && s.maxFrequency > 0) {
+                out.append("maximum frequency must be a positive number of cycles/mm")
+            }
+            range("frequency samples", s.frequencySamples, 2...10001)
+            range("pupil sampling", s.pupilSampling, 8...4096)
+            fields(s.fields)
+            wavelengths(s.wavelengths)
+        case .psf(let s):
+            fields(.index(s.field))
+            range("pupil sampling", s.pupilSampling, 8...4096)
+            range("image sampling", s.imageSampling, 16...4096)
+            wavelengths(s.wavelengths)
+        case .firstOrder(let s):
+            wavelengths(s.wavelength)
+        }
+        return out
     }
 
     private var settingsValue: any Encodable & Sendable {
@@ -287,18 +428,24 @@ public struct AnalysisSettingsSet: Codable, Sendable, Hashable {
     public var mtf = MTFSettings()
     public var psf = PSFSettings()
     public var firstOrder = FirstOrderSettings()
+    /// Backend, precision and seed for every analysis of the window.
+    public var execution = ExecutionSettings()
     public init() {}
 
+    /// The request for `kind`, carrying the window's `execution` settings.
     public func request(for kind: AnalysisKind) -> AnalysisRequest {
-        switch kind {
-        case .layout: .layout(layout)
-        case .spotDiagram: .spotDiagram(spot)
-        case .rayFan: .rayFan(rayFan)
-        case .opdFan: .opdFan(opdFan)
-        case .fieldCurvature: .fieldCurvature(fieldCurvature)
-        case .mtf: .mtf(mtf)
-        case .psf: .psf(psf)
-        case .firstOrder: .firstOrder(firstOrder)
-        }
+        var r: AnalysisRequest =
+            switch kind {
+            case .layout: .layout(layout)
+            case .spotDiagram: .spotDiagram(spot)
+            case .rayFan: .rayFan(rayFan)
+            case .opdFan: .opdFan(opdFan)
+            case .fieldCurvature: .fieldCurvature(fieldCurvature)
+            case .mtf: .mtf(mtf)
+            case .psf: .psf(psf)
+            case .firstOrder: .firstOrder(firstOrder)
+            }
+        r.execution = execution
+        return r
     }
 }

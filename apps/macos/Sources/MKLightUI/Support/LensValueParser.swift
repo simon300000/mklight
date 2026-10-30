@@ -36,6 +36,13 @@ public enum LensValueParser {
         return c.isFinite ? .success(c) : .failure(.mustBeFinite)
     }
 
+    /// A radius whose curvature `1/R` is finite (a subnormal radius such as
+    /// `1e-320` would give `c = ∞`). `∞`, `inf` and `0` mean a plane.
+    public static func radius(_ text: String) -> Result<Double, Failure> {
+        guard let r = number(text) else { return .failure(.notANumber(text)) }
+        return RadiusDisplay.curvature(fromRadius: r).isFinite ? .success(r) : .failure(.mustBeFinite)
+    }
+
     /// Thickness; only the object surface may be infinite.
     public static func thickness(_ text: String, allowInfinite: Bool) -> Result<Double, Failure> {
         guard let t = number(text) else { return .failure(.notANumber(text)) }

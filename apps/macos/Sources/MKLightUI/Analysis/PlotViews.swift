@@ -31,7 +31,8 @@ struct SpotDiagramView: View {
     var body: some View {
         let scale = WavelengthScale(result.wavelengthsUm)
         // Common scale across fields (µm), at least the Airy disk.
-        let extent = max(result.fields.map(\.geoRadius).max() ?? 0, result.airyRadius) * 1000 * 1.1
+        let airy = result.airyRadius.isFinite ? result.airyRadius : 0
+        let extent = max(result.fields.map(\.geoRadius).filter(\.isFinite).max() ?? 0, airy) * 1000 * 1.1
         let m = extent > 0 ? extent : 1
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
@@ -43,7 +44,7 @@ struct SpotDiagramView: View {
                                     .symbolSize(5)
                                     .foregroundStyle(by: .value("Wavelength", scale.labels[p.wavelength]))
                             }
-                            if result.airyRadius > 0 {
+                            if airy > 0 {
                                 ForEach(0...64, id: \.self) { k in
                                     let a = Double(k) / 64 * 2 * .pi
                                     LineMark(
@@ -225,12 +226,12 @@ struct MTFView: View {
         }
         for c in result.curves {
             let name = labels[fieldNames.firstIndex(of: c.field) ?? 0]
-            for (k, f) in result.frequencies.enumerated() {
+            for (k, f) in result.frequencies.enumerated() where c.modulation.indices.contains(k) && c.modulation[k].isFinite {
                 samples.append(Sample(id: samples.count, frequency: f, modulation: c.modulation[k], series: "\(name) \(c.orientation.rawValue)", field: name, orientation: c.orientation.rawValue.capitalized))
             }
         }
         if let dl = result.diffractionLimit {
-            for (k, f) in result.frequencies.enumerated() {
+            for (k, f) in result.frequencies.enumerated() where dl.indices.contains(k) && dl[k].isFinite {
                 samples.append(Sample(id: samples.count, frequency: f, modulation: dl[k], series: "Diffraction limit", field: "Diffraction limit", orientation: "Tangential"))
             }
         }

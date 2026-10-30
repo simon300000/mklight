@@ -130,7 +130,7 @@ struct SystemInspector: View {
                             edit("Change Field Weight") { $0.fields.fields[i].weight = max(v, 0) }
                         }
                         Button {
-                            edit("Remove Field") { $0.fields.fields.remove(at: i) }
+                            edit("Remove Field") { $0.removeField(at: i) }
                         } label: {
                             Image(systemName: "minus.circle")
                         }
@@ -174,10 +174,7 @@ struct SystemInspector: View {
                         CompactNumber(value: w.um, parse: LensValueParser.positive) { v in edit("Change Wavelength") { $0.wavelengths.wavelengths[i].um = v } }
                         CompactNumber(value: w.weight) { v in edit("Change Wavelength Weight") { $0.wavelengths.wavelengths[i].weight = max(v, 0) } }
                         Button {
-                            edit("Remove Wavelength") { s in
-                                s.wavelengths.wavelengths.remove(at: i)
-                                if s.wavelengths.primary >= i && s.wavelengths.primary > 0 { s.wavelengths.primary -= 1 }
-                            }
+                            edit("Remove Wavelength") { $0.removeWavelength(at: i) }
                         } label: {
                             Image(systemName: "minus.circle")
                         }
@@ -269,9 +266,7 @@ struct SurfaceInspector: View {
         Section("Shape") {
             switch s.shape {
             case .plane, .conic, .evenAsphere:
-                NumericField(title: "Radius", value: s.shape.radius, unit: "mm", parse: { t in
-                    LensValueParser.number(t).map { .success($0) } ?? .failure(.notANumber(t))
-                }) { r in
+                NumericField(title: "Radius", value: s.shape.radius, unit: "mm", parse: LensValueParser.radius) { r in
                     change("Change Radius") { $0.shape.setCurvature(RadiusDisplay.curvature(fromRadius: r)) }
                 }
                 NumericField(title: "Curvature", value: s.shape.curvature, unit: "1/mm") { c in change("Change Curvature") { $0.shape.setCurvature(c) } }

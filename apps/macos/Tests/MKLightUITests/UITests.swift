@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Metal
 import Testing
@@ -20,6 +21,9 @@ import simd
 
     @Test func radiusToCurvature() {
         #expect(LensValueParser.curvature(fromRadiusText: "50") == .success(0.02))
+        #expect(LensValueParser.curvature(fromRadiusText: "1e-320") == .failure(.mustBeFinite), "subnormal radius → c = ∞")
+        #expect(LensValueParser.radius("1e-320") == .failure(.mustBeFinite))
+        #expect(LensValueParser.radius("-40") == .success(-40) && LensValueParser.radius("inf") == .success(.infinity))
         #expect(LensValueParser.curvature(fromRadiusText: "inf") == .success(0))
         #expect(LensValueParser.curvature(fromRadiusText: "0") == .success(0))
         #expect(LensValueParser.curvature(fromRadiusText: "x") == .failure(.notANumber("x")))
@@ -78,9 +82,9 @@ import simd
         #expect(rows[0].edit(.thickness, text: "inf").map { (try? $0.get()) != nil } == true)
     }
 
-    @Test func autoSemiDiameterFromLayout() {
+    @Test func autoSemiDiameterFromLayout() throws {
         let s = SampleSystems.cookeTriplet()
-        let scene = MockOptics(system: s).layout(LayoutSettings())
+        let scene = try MockOptics(system: s).layout(LayoutSettings())
         let rows = LensRow.rows(for: s, layout: scene)
         #expect(rows[1].semiDiameter.hasSuffix(" A"))
         #expect(rows[1].semiDiameterExact == "auto")
@@ -149,8 +153,77 @@ import simd
         #expect(ViewportMath.niceLength(0.08) == 0.1)
     }
 
-    @Test func sceneGeometryCentresAndFilters() {
-        let scene = MockOptics(system: SampleSystems.cookeTriplet()).layout(LayoutSettings())
+    /// Projects `p` (world) to screen points in double precision.
+    private func exactScreen(_ p: SIMD3<Double>, _ cam: ViewportCamera, _ mode: ViewportMode) -> SIMD2<Double> {
+        let v = ViewportMath.rotation(cam, mode: mode) * (p - cam.center)
+        return SIMD2(v.x, v.y) * cam.pointsPerMM
+    }
+
+    /// Largest distance (points) of the float-projected segment endpoints from
+    /// the exact projected lines they belong to.
+    private func maxLineError(_ scene: LayoutScene, _ cam: ViewportCamera, _ mode: ViewportMode, _ frame: GeometryFrame, _ size: CGSize) -> Double {
+        let style = ViewportStyle(mode: mode, coloring: .field, selectedSurface: nil, stale: false, dark: false, scale: 1)
+        let (segs, _) = SceneGeometry.build(scene, style: style, frame: frame)
+        let m = ViewportMath.viewProjection(cam, mode: mode, frame: frame, size: size, depthRadius: 200)
+        let lines = scene.polylines.filter { $0.points.count == 2 }
+        var worst = 0.0
+        for (seg, line) in zip(segs, lines) {
+            let a = exactScreen(SIMD3(line.points[0].x, line.points[0].y, line.points[0].z), cam, mode)
+            let b = exactScreen(SIMD3(line.points[1].x, line.points[1].y, line.points[1].z), cam, mode)
+            let dir = simd_normalize(b - a)
+            for p in [seg.p0, seg.p1] {
+                let c = m * p
+                let q = SIMD2(Double(c.x / c.w) * size.width / 2, Double(c.y / c.w) * size.height / 2)
+                let d = q - a
+                worst = max(worst, abs(d.x * dir.y - d.y * dir.x))
+            }
+        }
+        return worst
+    }
+
+    /// At 10⁶ points/mm looking at the image plane, ~60 mm from the scene
+    /// centre, a float32 scene-centred upload jitters by points; the
+    /// camera-relative clipped frame stays far below a pixel.
+    @Test(arguments: [ViewportMode.section2D, .orbit3D])
+    func deepZoomIsJitterFree(mode: ViewportMode) {
+        let focus = SIMD3<Double>(0, 0.0123456, 61.3304)
+        let rays = (0..<8).map { k -> LayoutScene.Polyline in
+            let a = Double(k) * 0.37
+            // Steep rays, so errors along z show up across the line on screen.
+            let start = Point3(focus.x + 20 * cos(a), focus.y + 30 * sin(a + 0.4), focus.z - 30)
+            let end = Point3(focus.x + 1e-4 * sin(a), focus.y + 2e-4 * cos(a), focus.z + 1e-4)
+            return .init(kind: .ray, points: [start, end], inSection: true)
+        }
+        let scene = LayoutScene(
+            polylines: rays, elements: [], surfaces: [],
+            bounds: Bounds3(min: Point3(-10, -10, -60), max: Point3(10, 10, 62)), wavelengthsUm: [0.55], fieldCount: 1)
+        var cam = ViewportCamera()
+        cam.yaw = 0.3
+        cam.pitch = -0.2
+        cam.center = focus
+        cam.pointsPerMM = 1e6
+        let size = CGSize(width: 1000, height: 800)
+        let deep = SceneGeometry.frame(for: scene, camera: cam, mode: mode, size: size)
+        #expect(deep.rotation != nil && deep.clipHalfExtent != nil)
+        #expect(maxLineError(scene, cam, mode, deep, size) < 0.05)
+        let centred = GeometryFrame(origin: SceneGeometry.origin(of: scene), rotation: nil, clipHalfExtent: nil)
+        let coarse = maxLineError(scene, cam, mode, centred, size)
+        #expect(coarse > 0.5, "the scene-centred frame really is too coarse here (\(coarse) pt)")
+        // At ordinary zoom the cheap scene-centred frame is kept.
+        cam.pointsPerMM = 10
+        #expect(SceneGeometry.frame(for: scene, camera: cam, mode: mode, size: size) == centred)
+    }
+
+    @Test func clippingKeepsInsideAndCutsAtWindow() {
+        let h = SIMD2<Double>(1, 1)
+        #expect(SceneGeometry.clip(SIMD3(-3, 0, 0), SIMD3(3, 0, 6), to: h).map { [$0.0, $0.1] } == [SIMD3(-1, 0, 2), SIMD3(1, 0, 4)])
+        #expect(SceneGeometry.clip(SIMD3(2, 2, 0), SIMD3(3, 5, 0), to: h) == nil)
+        let tri = SceneGeometry.clip(polygon: [SIMD3(0, 0, 0), SIMD3(4, 0, 0), SIMD3(0, 4, 0)], to: h)
+        #expect(tri.count == 4 && tri.allSatisfy { abs($0.x) <= 1 + 1e-12 && abs($0.y) <= 1 + 1e-12 })
+    }
+
+    @Test func sceneGeometryCentresAndFilters() throws {
+        let scene = try MockOptics(system: SampleSystems.cookeTriplet()).layout(LayoutSettings())
         let style = ViewportStyle(mode: .section2D, coloring: .field, selectedSurface: nil, stale: false, dark: false, scale: 2)
         let (segs2D, fills) = SceneGeometry.build(scene, style: style)
         var s3 = style
@@ -166,11 +239,77 @@ import simd
     }
 }
 
+/// Keys in the lens table: characters that start numbers and Backspace edit
+/// the focused cell; only explicit commands change the structure.
+@Suite @MainActor struct LensTableKeyTests {
+    private func makeTable() -> (LensTableController, LensTableView, () -> [LensEdit]) {
+        let c = LensTableController()
+        let table = LensTableView()
+        table.controller = c
+        for col in LensColumn.allCases {
+            let tc = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(col.rawValue))
+            tc.width = col.width
+            table.addTableColumn(tc)
+        }
+        table.dataSource = c
+        table.delegate = c
+        c.table = table
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.contentView = table
+        var edits: [LensEdit] = []
+        c.onEdit = { edits.append($0); return false }
+        let s = SampleSystems.cookeTriplet()
+        c.update(rows: LensRow.rows(for: s, layout: nil), selection: s.surfaces[2].id)
+        return (c, table, { edits })
+    }
+
+    private func key(_ chars: String, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+            characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: 0)!
+    }
+
+    @Test func plusAndMinusStartACellEdit() {
+        let (c, table, edits) = makeTable()
+        #expect(table.selectedRow == 2)
+        for ch in ["+", "-"] {
+            #expect(c.handleKey(key(ch)))
+            #expect(edits().isEmpty, "'\(ch)' must not insert or delete a surface")
+            if let editor = table.currentEditor() {
+                #expect(editor.string == ch)
+                table.abortEditing()
+            }
+        }
+    }
+
+    @Test func backspaceClearsTheCellInsteadOfDeletingTheSurface() {
+        let (c, table, edits) = makeTable()
+        for ch in ["\u{7F}", String(UnicodeScalar(UInt16(NSDeleteFunctionKey))!)] {
+            #expect(c.handleKey(key(ch)))
+            #expect(edits().isEmpty)
+            if let editor = table.currentEditor() {
+                #expect(editor.string.isEmpty)
+                table.abortEditing()
+            }
+        }
+    }
+
+    @Test func explicitCommandsStillChangeStructure() {
+        let (c, _, edits) = makeTable()
+        #expect(c.handleKey(key("\u{7F}", .command)))
+        #expect(c.handleKey(key(String(UnicodeScalar(UInt16(NSInsertFunctionKey))!))))
+        #expect(edits() == [.delete(at: 2), .insert(at: 2)])
+    }
+}
+
 @Suite struct ShaderTests {
     /// The viewport shader source compiles with safe math on this machine's
-    /// GPU, and both pipelines can be built.
-    @Test @MainActor func shadersCompile() throws {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+    /// GPU, and both pipelines can be built. Skipped (not passed) without a
+    /// Metal device.
+    @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil, "needs a Metal device"))
+    @MainActor func shadersCompile() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
         let r = try ViewportRenderer(device: device, pixelFormat: .bgra8Unorm)
         #expect(r.sampleCount >= 1)
     }
@@ -178,7 +317,9 @@ import simd
 
 @Suite @MainActor struct CoordinatorTests {
     @Test func runsVisibleAnalysesAndTracksStaleness() async throws {
-        let c = AnalysisCoordinator(engine: MockEngine(simulatedLatency: .milliseconds(10)))
+        // Long enough that the re-run is still in flight when the new
+        // snapshot is observed.
+        let c = AnalysisCoordinator(engine: MockEngine(simulatedLatency: .milliseconds(400)))
         c.debounce = .milliseconds(5)
         c.setVisible([.layout, .firstOrder])
         var s = SampleSystems.cookeTriplet()
@@ -191,9 +332,31 @@ import simd
         s.surfaces[2].thickness += 1
         c.update(system: s)
         try await waitUntil { c.snapshot?.hash != firstHash }
-        #expect(c.isStale(.layout) || c.output(.layout)?.runInfo.snapshotHash == c.snapshot?.hash)
+        // The old result stays on screen, marked stale, while the re-run runs.
+        #expect(c.isStale(.layout))
+        #expect(c.output(.layout)?.runInfo.snapshotHash == firstHash)
+        #expect({ if case .running = c.slot(.layout).phase { true } else { false } }())
         try await waitUntil { !c.isStale(.layout) && !c.isBusy }
         #expect(c.output(.layout)?.runInfo.snapshotHash == c.snapshot?.hash)
+
+        // Execution settings are part of the request: switching precision
+        // makes the result stale until it is recomputed.
+        var settings = AnalysisSettingsSet()
+        settings.execution.precision = .f32GPU
+        c.update(settings: settings)
+        #expect(c.isStale(.layout))
+        try await waitUntil { !c.isStale(.layout) && !c.isBusy }
+    }
+
+    @Test func invalidSettingsFailTheAnalysis() async throws {
+        let c = AnalysisCoordinator(engine: MockEngine(simulatedLatency: .zero))
+        var settings = AnalysisSettingsSet()
+        settings.mtf.maxFrequency = -10
+        c.update(settings: settings)
+        c.setVisible([.mtf])
+        c.update(system: SampleSystems.cookeTriplet(), immediately: true)
+        try await waitUntil { if case .failed = c.slot(.mtf).phase { true } else { false } }
+        #expect(c.output(.mtf) == nil)
     }
 
     @Test func invalidModelBlocksAnalyses() async throws {
@@ -254,6 +417,22 @@ import simd
         #expect(doc.system == original)
         undo.redo()
         #expect(doc.system.surfaces[2].thickness == 7)
+    }
+
+    @Test func editsDropReferencesTheyInvalidate() {
+        var s = SampleSystems.cookeTriplet()
+        let id = s.surfaces[1].id
+        s.configurations = [Configuration(overrides: [Pair(.conic(surface: id), -0.5), Pair(.temperatureC, 30)])]
+        let doc = ProjectDocument(system: s)
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        doc.edit("Change Type", undoManager: undo) { $0.surfaces[1].shape = .paraxial(focalLength: 50) }
+        undo.endUndoGrouping()
+        #expect(doc.system.configurations[0].overrides == [Pair(.temperatureC, 30)])
+        #expect(doc.system.structuralIssues().isEmpty)
+        undo.undo()
+        #expect(doc.system == s, "undo restores the override with the shape")
     }
 
     @Test func snapshotForSavingMatchesModel() throws {

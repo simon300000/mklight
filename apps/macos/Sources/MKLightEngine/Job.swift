@@ -88,15 +88,16 @@ public final class JobReporter: Sendable {
     }
 
     /// Reports `fraction` (clamped to 0…1, never decreasing) and an optional
-    /// new stage label.
+    /// new stage label. Safe to call from concurrent child tasks: the update
+    /// is yielded while the lock is held, so the stream sees the same order
+    /// as the monotone state (yielding to a buffering stream never blocks).
     public func report(_ fraction: Double, stage: String? = nil) {
-        let update: JobProgress = state.withLock { p in
+        state.withLock { p in
             let f = fraction.isFinite ? min(max(fraction, 0), 1) : 0
             p.fraction = max(p.fraction, f)
             if let stage, !stage.isEmpty { p.stage = stage }
-            return p
+            continuation.yield(p)
         }
-        continuation.yield(update)
     }
 
     public var current: JobProgress { state.withLock { $0 } }

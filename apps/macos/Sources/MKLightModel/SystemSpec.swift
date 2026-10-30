@@ -224,7 +224,17 @@ public struct WavelengthSet: Codable, Sendable, Hashable {
 
     public var primaryUm: Double? { wavelengths.indices.contains(primary) ? wavelengths[primary].um : nil }
 
-    private enum CodingKeys: String, CodingKey { case wavelengths, primary }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        wavelengths = try c.value("wavelengths")
+        primary = try c.index("primary")
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.put(wavelengths, "wavelengths")
+        try c.put(primary, "primary")
+    }
 }
 
 public enum RayAiming: Codable, Sendable, Hashable {

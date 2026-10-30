@@ -14,9 +14,19 @@ extension KeyedDecodingContainer where K == AnyKey {
     func value<T: Decodable>(_ key: String, as type: T.Type = T.self) throws -> T {
         try decode(T.self, forKey: AnyKey(key))
     }
-    /// A field with `#[serde(default)]`: missing or `null` yields `fallback`.
+    /// A non-optional field with `#[serde(default)]`: a missing key yields
+    /// `fallback`, while an explicit `null` is an error, as in serde.
     func value<T: Decodable>(_ key: String, default fallback: T) throws -> T {
-        try decodeIfPresent(T.self, forKey: AnyKey(key)) ?? fallback
+        contains(AnyKey(key)) ? try decode(T.self, forKey: AnyKey(key)) : fallback
+    }
+    /// A `usize` field: a negative value is an error, as in serde.
+    func index(_ key: String) throws -> Int {
+        let k = AnyKey(key)
+        let v = try decode(Int.self, forKey: k)
+        guard v >= 0 else {
+            throw DecodingError.dataCorruptedError(forKey: k, in: self, debugDescription: "index \(v) is negative")
+        }
+        return v
     }
     func optional<T: Decodable>(_ key: String, as type: T.Type = T.self) throws -> T? {
         try decodeIfPresent(T.self, forKey: AnyKey(key))
@@ -52,12 +62,16 @@ extension KeyedEncodingContainer where K == AnyKey {
 }
 
 /// Parsing of `±∞` length strings, matching the engine's `serde_util::f64_inf`.
+/// NaN is rejected: it has no JSON form, so a model holding one could not be
+/// saved or sent to the engine.
 public enum ExtendedDouble {
     public static func parse(_ text: String) -> Double? {
         switch text.trimmingCharacters(in: .whitespaces).lowercased() {
         case "inf", "+inf", "infinity", "+infinity": return .infinity
         case "-inf", "-infinity": return -.infinity
-        case let other: return Double(other)
+        case let other:
+            guard let v = Double(other), !v.isNaN else { return nil }
+            return v
         }
     }
 }

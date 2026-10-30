@@ -110,6 +110,20 @@ enum Fixtures {
         #expect(s.environment == EnvironmentConditions())
     }
 
+    /// `snapshot_hashes.json` holds the engine's BLAKE3 hashes of the system
+    /// fixtures. Only an engine binding can reproduce them (the mock hashes
+    /// with SHA-256), so the FFI client's tests compare against it; here we
+    /// check that it covers exactly the valid system fixtures.
+    @Test func snapshotHashFixtureCoversSystemFixtures() throws {
+        let hashes = try MKLightJSON.decode([String: String].self, from: Fixtures.data("snapshot_hashes"))
+        #expect(Set(hashes.keys) == ["empty.json", "cooke_triplet.json", "kitchen_sink.json"])
+        for (file, hex) in hashes {
+            #expect(hex.count == 64 && hex.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+            _ = try MKLightJSON.decode(OpticalSystem.self, from: Fixtures.data(String(file.dropLast(5))))
+        }
+        #expect(Set(hashes.values).count == hashes.count)
+    }
+
     @Test func unknownTagIsRejected() {
         let json = #"{"type":"freeform","curvature":0}"#
         #expect(throws: DecodingError.self) { try MKLightJSON.decode(SurfaceShape.self, from: Data(json.utf8)) }

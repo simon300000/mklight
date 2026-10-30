@@ -89,8 +89,9 @@ struct AnalysisSettingsBar: View {
                 }
                 .fixedSize()
                 if viewState.analysisSettings.spot.pattern == .random {
-                    TextField("Seed", value: $viewState.analysisSettings.spot.seed, format: .number.grouping(.never))
+                    TextField("Seed", value: $viewState.analysisSettings.execution.seed, format: .number.grouping(.never))
                         .frame(width: 80)
+                        .help("Philox seed of the random pupil samples")
                 }
                 wavelengthPicker($viewState.analysisSettings.spot.wavelengths)
             case .rayFan:
@@ -128,8 +129,28 @@ struct AnalysisSettingsBar: View {
                 Text("Paraxial quantities at the primary wavelength").foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            executionMenu
         }
         .controlSize(.small)
+    }
+
+    /// Backend and precision for every analysis of the window. Part of each
+    /// request, so changing them marks results stale and re-runs them.
+    private var executionMenu: some View {
+        Menu {
+            Picker("Backend", selection: $viewState.analysisSettings.execution.backend) {
+                ForEach(BackendPreference.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Picker("Precision", selection: $viewState.analysisSettings.execution.precision) {
+                Text("f64 reference").tag(Precision.f64Reference)
+                Text("f32 GPU (error budget)").tag(Precision.f32GPU)
+            }
+        } label: {
+            Label("Execution", systemImage: "cpu")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Compute backend and precision for this window's analyses")
     }
 
     private func wavelengthPicker(_ sel: Binding<WavelengthSelection>) -> some View {

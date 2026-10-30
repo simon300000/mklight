@@ -26,8 +26,19 @@ enum ViewportMath {
     static func viewProjection(
         _ camera: ViewportCamera, mode: ViewportMode, origin: SIMD3<Double>, size: CGSize, depthRadius: Double
     ) -> simd_float4x4 {
-        let r = rotation(camera, mode: mode)
-        let t = r * (origin - camera.center)  // translation in view space
+        viewProjection(
+            camera, mode: mode, frame: GeometryFrame(origin: origin, rotation: nil, clipHalfExtent: nil), size: size,
+            depthRadius: depthRadius)
+    }
+
+    /// Matrix taking positions in `frame` to clip space. With a
+    /// camera-relative, view-aligned frame (deep zoom) it is a pure scale.
+    static func viewProjection(
+        _ camera: ViewportCamera, mode: ViewportMode, frame: GeometryFrame, size: CGSize, depthRadius: Double
+    ) -> simd_float4x4 {
+        let rc = rotation(camera, mode: mode)
+        let r = frame.rotation.map { rc * $0.transpose } ?? rc  // frame axes → view axes
+        let t = rc * (frame.origin - camera.center)  // translation in view space
         let sx = 2 * camera.pointsPerMM / max(Double(size.width), 1)
         let sy = 2 * camera.pointsPerMM / max(Double(size.height), 1)
         let sz = 0.5 / max(depthRadius, 1e-9)

@@ -78,7 +78,8 @@ final class ViewportRenderer: NSObject, MTKViewDelegate {
 
     private(set) var scene: LayoutScene?
     private var style: ViewportStyle?
-    private(set) var origin = SIMD3<Double>(0, 0, 0)
+    /// Frame of the uploaded geometry; `nil` when it must be rebuilt.
+    private(set) var frame: GeometryFrame?
     private var depthRadius = 1.0
     var camera = ViewportCamera()
     var mode = ViewportMode.section2D
@@ -116,15 +117,24 @@ final class ViewportRenderer: NSObject, MTKViewDelegate {
         guard scene != self.scene || style != self.style else { return }
         self.scene = scene
         self.style = style
-        guard let scene else {
+        frame = nil
+        if scene == nil {
             segmentCount = 0
             fillCount = 0
-            return
         }
-        origin = SceneGeometry.origin(of: scene)
+    }
+
+    /// (Re)builds the GPU buffers when the scene, style or geometry frame
+    /// changed. The frame follows the camera only at deep zoom.
+    private func prepareGeometry(size: CGSize) {
+        guard let scene, let style else { return }
+        let wanted = SceneGeometry.frame(for: scene, camera: camera, mode: mode, size: size)
+        guard wanted != frame else { return }
+        frame = wanted
         let b = scene.bounds
-        depthRadius = max(simd_length(SIMD3(b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z)), 1)
-        let (segs, fills) = SceneGeometry.build(scene, style: style)
+        let diagonal = simd_length(SIMD3(b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z))
+        depthRadius = max(diagonal, SceneGeometry.sceneReach(scene, from: camera.center), 1)
+        let (segs, fills) = SceneGeometry.build(scene, style: style, frame: wanted)
         segmentCount = segs.count
         fillCount = fills.count
         segmentBuffer = segs.isEmpty ? nil : segs.withUnsafeBytes { device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared) }
@@ -140,8 +150,15 @@ final class ViewportRenderer: NSObject, MTKViewDelegate {
             let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: pass)
         else { return }
         let drawableSize = view.drawableSize
+        prepareGeometry(size: view.bounds.size)
+        guard let frame else {
+            enc.endEncoding()
+            cmd.present(drawable)
+            cmd.commit()
+            return
+        }
         var uniforms = Uniforms(
-            viewProjection: ViewportMath.viewProjection(camera, mode: mode, origin: origin, size: view.bounds.size, depthRadius: depthRadius),
+            viewProjection: ViewportMath.viewProjection(camera, mode: mode, frame: frame, size: view.bounds.size, depthRadius: depthRadius),
             viewportSize: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
             feather: 0.75, pad: 0)
         if fillCount > 0, let fb = fillBuffer {

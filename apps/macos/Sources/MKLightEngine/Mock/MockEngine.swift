@@ -32,8 +32,13 @@ public struct MockEngine: EngineClient {
         let issues = system.structuralIssues()
         let errors = issues.filter { $0.severity == .error }
         if !errors.isEmpty { throw EngineError.invalidModel(errors.map(\.description)) }
-        return ModelSnapshot(
-            system: system, hash: try Self.hash(system), warnings: issues.map(\.description))
+        let hash: SnapshotHash
+        do {
+            hash = try Self.hash(system)
+        } catch {
+            throw EngineError.invalidModel(["model cannot be serialised: \(error.localizedDescription)"])
+        }
+        return ModelSnapshot(system: system, hash: hash, warnings: issues.map(\.description))
     }
 
     /// SHA-256 of the sorted-key JSON. (The Rust engine uses BLAKE3 of its
@@ -48,6 +53,10 @@ public struct MockEngine: EngineClient {
     }
 
     public func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
+        let problems = request.problems(for: snapshot.system)
+        guard problems.isEmpty else {
+            return AnalysisJob.run(request: request, snapshot: snapshot) { _ in throw EngineError.invalidSettings(problems) }
+        }
         let latency = simulatedLatency
         return AnalysisJob.run(request: request, snapshot: snapshot) { reporter in
             let started = Date()
@@ -61,9 +70,12 @@ public struct MockEngine: EngineClient {
             try reporter.checkCancelled()
             reporter.report(Double(stages.count) / Double(stages.count + 1), stage: "Assembling result")
             let optics = MockOptics(system: snapshot.system)
-            let result = Self.compute(request, optics)
+            let result = try Self.compute(request, optics)
             var warnings = [Self.mockWarning] + optics.warnings
-            if Self.configuration(of: request) != 0 { warnings.append("mock engine ignores configurations") }
+            if request.configuration != 0 { warnings.append("mock engine ignores configurations") }
+            if request.execution.precision != .f64Reference || request.execution.backend == .gpu {
+                warnings.append("mock engine computes on the CPU in f64 only")
+            }
             let info = RunInfo(
                 engineVersion: Self.version, snapshotHash: snapshot.hash, analysis: request.kind.rawValue,
                 settings: try request.settingsJSON(), backend: "mock", precision: .f64Reference, seed: request.seed,
@@ -85,27 +97,17 @@ public struct MockEngine: EngineClient {
         }
     }
 
-    static func configuration(of r: AnalysisRequest) -> Int {
+    /// Synchronous computation; it checks for cancellation once per field
+    /// (or per block of PSF rows).
+    static func compute(_ r: AnalysisRequest, _ o: MockOptics) throws -> AnalysisResult {
         switch r {
-        case .layout(let s): s.configuration
-        case .spotDiagram(let s): s.configuration
-        case .rayFan(let s), .opdFan(let s): s.configuration
-        case .fieldCurvature(let s): s.configuration
-        case .mtf(let s): s.configuration
-        case .psf(let s): s.configuration
-        case .firstOrder(let s): s.configuration
-        }
-    }
-
-    static func compute(_ r: AnalysisRequest, _ o: MockOptics) -> AnalysisResult {
-        switch r {
-        case .layout(let s): .layout(o.layout(s))
-        case .spotDiagram(let s): .spotDiagram(o.spot(s))
-        case .rayFan(let s): .rayFan(o.rayFan(s))
-        case .opdFan(let s): .opdFan(o.opdFan(s))
-        case .fieldCurvature(let s): .fieldCurvature(o.fieldCurvature(s))
-        case .mtf(let s): .mtf(o.mtf(s))
-        case .psf(let s): .psf(o.psf(s))
+        case .layout(let s): .layout(try o.layout(s))
+        case .spotDiagram(let s): .spotDiagram(try o.spot(s))
+        case .rayFan(let s): .rayFan(try o.rayFan(s))
+        case .opdFan(let s): .opdFan(try o.opdFan(s))
+        case .fieldCurvature(let s): .fieldCurvature(try o.fieldCurvature(s))
+        case .mtf(let s): .mtf(try o.mtf(s))
+        case .psf(let s): .psf(try o.psf(s))
         case .firstOrder(let s): .firstOrder(o.firstOrder(s))
         }
     }

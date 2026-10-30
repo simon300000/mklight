@@ -73,7 +73,7 @@ public struct OpticalSystem: Codable, Sendable, Hashable {
         fields = try c.value("fields")
         wavelengths = try c.value("wavelengths")
         surfaces = try c.value("surfaces")
-        stop = try c.value("stop")
+        stop = try c.index("stop")
         rayAiming = try c.value("ray_aiming", default: .off)
         environment = try c.value("environment", default: EnvironmentConditions())
         coatings = try c.value("coatings", default: [:])
@@ -121,12 +121,15 @@ public struct ModelIssue: Sendable, Hashable, CustomStringConvertible {
 
 extension OpticalSystem {
     /// The checks of the engine's `OpticalSystem::validate`, collected rather
-    /// than stopping at the first.
+    /// than stopping at the first, plus two the engine leaves to its JSON
+    /// boundary or its solvers: values JSON cannot carry (NaN, and ±∞ outside
+    /// the thicknesses that allow it) are errors, and mechanical parts attached
+    /// to missing surfaces are warnings.
     public func structuralIssues() -> [ModelIssue] {
-        var out: [ModelIssue] = []
+        var out: [ModelIssue] = nonRepresentableValueIssues()
         let n = surfaces.count
         guard n >= 3 else {
-            return [ModelIssue(.error, "a system needs object, at least one surface, and image")]
+            return out + [ModelIssue(.error, "a system needs object, at least one surface, and image")]
         }
         if stop < 1 || stop > n - 2 {
             out.append(ModelIssue(.error, "stop index \(stop) must be between 1 and \(n - 2)"))
@@ -171,11 +174,35 @@ extension OpticalSystem {
             out.append(ModelIssue(.error, surface: n - 1, "the image surface cannot be a mirror"))
         }
         for (k, cfg) in configurations.enumerated() {
-            for o in cfg.overrides where !o.first.resolves(in: self) {
-                out.append(ModelIssue(.error, "configuration \(k): parameter \(o.first) does not exist"))
+            for o in cfg.overrides {
+                if let why = o.first.unresolvedReason(in: self) {
+                    out.append(ModelIssue(.error, "configuration \(k): invalid parameter path \(o.first): \(why)"))
+                }
+            }
+        }
+        let surfaceIDs = Set(surfaces.map(\.id))
+        for (k, m) in mechanics.enumerated() {
+            for id in m.surfaces where !surfaceIDs.contains(id) {
+                out.append(ModelIssue(.warning, "mechanical part \(k) refers to missing surface id \(id.rawValue)"))
             }
         }
         return out
+    }
+
+    /// The first value that has no JSON form (the encoder stops there), as an
+    /// error located by its coding path.
+    func nonRepresentableValueIssues() -> [ModelIssue] {
+        do {
+            _ = try MKLightJSON.encode(self)
+            return []
+        } catch EncodingError.invalidValue(let value, let context) {
+            let path = context.codingPath
+            let surface = path.first?.stringValue == "surfaces" ? path.dropFirst().first?.intValue : nil
+            let field = path.map { $0.intValue.map { "[\($0)]" } ?? ".\($0.stringValue)" }.joined()
+            return [ModelIssue(.error, surface: surface, "\(field.drop { $0 == "." }) = \(value) is not a finite number")]
+        } catch {
+            return [ModelIssue(.error, "model cannot be serialised: \(error.localizedDescription)")]
+        }
     }
 }
 

@@ -78,9 +78,12 @@ public struct RunInfo: Codable, Sendable, Hashable {
     }
 
     /// Whether this result was computed from `snapshot` with `request`'s
-    /// settings. A result that is not current is stale.
+    /// settings, including its execution block (backend preference,
+    /// precision and seed). A result that is not current is stale. Settings
+    /// compare as exact JSON values, so 64-bit seeds are not rounded.
     public func isCurrent(for snapshot: ModelSnapshot?, request: AnalysisRequest) -> Bool {
-        guard let snapshot, snapshot.hash == snapshotHash, analysis == request.kind.rawValue else { return false }
+        guard let snapshot, snapshot.hash == snapshotHash, analysis == request.kind.rawValue, seed == request.seed
+        else { return false }
         return (try? request.settingsJSON()) == settings
     }
 }

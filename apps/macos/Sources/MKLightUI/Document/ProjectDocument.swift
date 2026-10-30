@@ -58,11 +58,16 @@ public final class ProjectDocument: ReferenceFileDocument, @unchecked Sendable {
 
     /// Applies `change` to a copy of the system. If the result differs, it
     /// becomes the current value and the change is undoable as `actionName`.
-    /// Returns whether anything changed.
+    /// Configuration overrides and mechanical parts that the change
+    /// invalidates (a conic override on a surface made plane, a
+    /// semi-diameter override on a surface switched to automatic, …) are
+    /// removed as part of the same undoable change. Returns whether anything
+    /// changed.
     @MainActor @discardableResult
     public func edit(_ actionName: String, undoManager: UndoManager?, _ change: (inout OpticalSystem) -> Void) -> Bool {
         var next = system
         change(&next)
+        next.dropReferencesInvalidated(since: system)
         guard next != system else { return false }
         replace(with: next, actionName: actionName, undoManager: undoManager)
         return true

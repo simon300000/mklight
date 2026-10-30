@@ -48,7 +48,7 @@ extension MockOptics {
         }
     }
 
-    func layout(_ s: LayoutSettings) -> LayoutScene {
+    func layout(_ s: LayoutSettings) throws -> LayoutScene {
         let n = system.surfaces.count
         let sd = semiDiameters()
         let m = max(s.profileSamples | 1, 5)
@@ -60,6 +60,7 @@ extension MockOptics {
         var imageHeight = 0.0
         let wls = s.wavelengths.indices(in: system.wavelengths)
         for f in s.fields.indices(count: system.fields.fields.count) {
+            try Task.checkCancellation()
             let fp = fieldPoint(f)
             let meridional = system.fields.fields[f].x == 0
             for w in wls {
@@ -172,18 +173,19 @@ extension MockOptics {
     }
 
     func workingFNumber(_ w: Int) -> Double {
-        let d = objectDistance
-        let pr = paraxial(y1: d.map { epRadius / ($0 + epZ) * $0 } ?? epRadius, u0: d.map { epRadius / ($0 + epZ) } ?? 0, w: w)
+        let m = marginalStart()
+        let pr = paraxial(y1: m.y1, u0: m.u0, w: w)
         let nu = abs(pr.nu[pr.nu.count - 2])
         return nu > 1e-12 ? 1 / (2 * nu) : .infinity
     }
 
-    func spot(_ s: SpotDiagramSettings) -> SpotDiagramResult {
+    func spot(_ s: SpotDiagramSettings) throws -> SpotDiagramResult {
         let wls = s.wavelengths.indices(in: system.wavelengths)
         var fields: [SpotDiagramResult.FieldSpot] = []
         for f in s.fields.indices(count: system.fields.fields.count) {
+            try Task.checkCancellation()
             let fp = fieldPoint(f)
-            var rng = SplitMix64(seed: s.seed ^ (UInt64(f) &* 0x9E37_79B9))
+            var rng = SplitMix64(seed: s.execution.seed ^ (UInt64(f) &* 0x9E37_79B9))
             let pupil = Self.pupilSamples(s.pattern, rings: s.rings, rng: &rng)
             var raw: [(Double, Double, Int)] = []
             for w in wls {
@@ -213,22 +215,24 @@ extension MockOptics {
                     rmsRadius: (ss.value / count).squareRoot(), geoRadius: geo))
         }
         let airy = 1.22 * wavelengthsUm[primary] * 1e-3 * workingFNumber(primary)
-        return SpotDiagramResult(fields: fields, wavelengthsUm: wavelengthsUm, airyRadius: airy.isFinite ? airy : 0)
+        return SpotDiagramResult(fields: fields, wavelengthsUm: wavelengthsUm, airyRadius: airy)
     }
 
     // MARK: Fans
 
-    func rayFan(_ s: FanSettings) -> FanResult {
+    func rayFan(_ s: FanSettings) throws -> FanResult {
         let wls = s.wavelengths.indices(in: system.wavelengths)
         let pupil = linspace(-1, 1, max(s.samples | 1, 3))
-        let fields = s.fields.indices(count: system.fields.fields.count).map { f -> FanResult.FieldFan in
+        let fields = try s.fields.indices(count: system.fields.fields.count).map { f -> FanResult.FieldFan in
+            try Task.checkCancellation()
             let fp = fieldPoint(f)
             var tan: [FanResult.Curve] = [], sag: [FanResult.Curve] = []
             for w in wls {
                 let chief = trace(makeRay(fp, px: 0, py: 0), w: w).atImage?.p
                 func eps(_ px: Double, _ py: Double, _ axis: Int) -> Double? {
                     guard let c = chief, let p = trace(makeRay(fp, px: px, py: py), w: w).atImage?.p else { return nil }
-                    return axis == 1 ? p.y - c.y : p.x - c.x
+                    let e = axis == 1 ? p.y - c.y : p.x - c.x
+                    return e.isFinite ? e : nil
                 }
                 tan.append(.init(wavelength: w, pupil: pupil, values: pupil.map { eps(0, $0, 1) }))
                 sag.append(.init(wavelength: w, pupil: pupil, values: pupil.map { eps($0, 0, 0) }))
@@ -243,8 +247,8 @@ extension MockOptics {
         let w = primary, k = system.surfaces.count - 2
         let nk = imageN(w)
         let chief = paraxial(y1: -epZ, u0: 1, w: w)
-        let d = objectDistance
-        let marg = paraxial(y1: d.map { epRadius / ($0 + epZ) * $0 } ?? epRadius, u0: d.map { epRadius / ($0 + epZ) } ?? 0, w: w)
+        let m0 = marginalStart()
+        let marg = paraxial(y1: m0.y1, u0: m0.u0, w: w)
         let tk = system.surfaces[k].thickness
         let yk = chief.y[k], uk = chief.nu[k] / nk
         guard abs(uk) > 1e-15 else { return (epRadius, .infinity) }
@@ -255,8 +259,8 @@ extension MockOptics {
 
     /// OPD from the transverse fan: `∂W/∂P = −(n' r_xp / R) ε(P)`, integrated
     /// outward from the chief ray (trapezoid rule), in waves.
-    func opdFan(_ s: FanSettings) -> FanResult {
-        let fan = rayFan(s)
+    func opdFan(_ s: FanSettings) throws -> FanResult {
+        let fan = try rayFan(s)
         let (rxp, dist) = exitPupil()
         let nImg = abs(imageN(primary))
         let scale = dist.isFinite && dist > 0 ? nImg * rxp / dist : 0
@@ -271,7 +275,8 @@ extension MockOptics {
                     guard let a = c.values[k], let b = c.values[k + dir] else { break }
                     acc += 0.5 * (a + b) * (c.pupil[k + dir] - c.pupil[k])
                     k += dir
-                    out[k] = -scale * acc / lambdaMM
+                    let w = -scale * acc / lambdaMM
+                    out[k] = w.isFinite ? w : nil
                 }
             }
             return .init(wavelength: c.wavelength, pupil: c.pupil, values: out)
@@ -286,7 +291,7 @@ extension MockOptics {
 
     // MARK: Field curvature and distortion
 
-    func fieldCurvature(_ s: FieldCurvatureSettings) -> FieldCurvatureResult {
+    func fieldCurvature(_ s: FieldCurvatureSettings) throws -> FieldCurvatureResult {
         let values = linspace(0, maxField, max(s.fieldSamples, 2))
         let wls = s.wavelengths.indices(in: system.wavelengths)
         let delta = 0.02
@@ -297,9 +302,10 @@ extension MockOptics {
             guard abs(sa - sb) > 1e-15 else { return nil }
             return -(ya - yb) / (sa - sb)
         }
-        let curves = wls.map { w -> FieldCurvatureResult.Curve in
+        let curves = try wls.map { w -> FieldCurvatureResult.Curve in
             var t: [Double?] = [], sg: [Double?] = [], dist: [Double?] = []
             for v in values {
+                try Task.checkCancellation()
                 let fp = fieldPoint(x: 0, y: v)
                 let chief = trace(makeRay(fp, px: 0, py: 0), w: w).atImage
                 t.append(crossing(trace(makeRay(fp, px: 0, py: delta), w: w).atImage, trace(makeRay(fp, px: 0, py: -delta), w: w).atImage, axis: 1))
@@ -345,14 +351,15 @@ extension MockOptics {
         return ((vx.value / n).squareRoot(), (vy.value / n).squareRoot())
     }
 
-    /// Diffraction-limited MTF of a uniform circular pupil.
+    /// Diffraction-limited MTF of a uniform circular pupil; even in `nu`, so a
+    /// negative frequency gives the same value as its magnitude.
     static func diffractionMTF(_ nu: Double, cutoff: Double) -> Double {
-        guard cutoff > 0, nu < cutoff else { return 0 }
-        let x = nu / cutoff
+        guard cutoff > 0, nu.isFinite, abs(nu) < cutoff else { return 0 }
+        let x = abs(nu) / cutoff
         return 2 / .pi * (acos(x) - x * ((1 - x) * (1 + x)).squareRoot())
     }
 
-    func mtf(_ s: MTFSettings) -> MTFResult {
+    func mtf(_ s: MTFSettings) throws -> MTFResult {
         let wls = s.wavelengths.indices(in: system.wavelengths)
         let weights = wls.map { system.wavelengths.wavelengths[$0].weight }
         let wsum = max(weights.reduce(0, +), 1e-300)
@@ -363,6 +370,7 @@ extension MockOptics {
         var curves: [MTFResult.Curve] = []
         let fieldIdx = s.fields.indices(count: system.fields.fields.count)
         for f in fieldIdx {
+            try Task.checkCancellation()
             let (sx, sy) = blur(field: f, wavelengths: wls)
             for (o, sigma) in [(MTFResult.Orientation.tangential, sy), (.sagittal, sx)] {
                 let g = freqs.map { nu in exp(-2 * .pi * .pi * sigma * sigma * nu * nu) }
@@ -375,7 +383,7 @@ extension MockOptics {
             fieldValues: fieldIdx.map(fieldValue))
     }
 
-    func psf(_ s: PSFSettings) -> PSFResult {
+    func psf(_ s: PSFSettings) throws -> PSFResult {
         let f = min(max(s.field, 0), system.fields.fields.count - 1)
         let wls = s.wavelengths.indices(in: system.wavelengths)
         let weights = wls.map { system.wavelengths.wavelengths[$0].weight }
@@ -388,6 +396,7 @@ extension MockOptics {
         let pitch = 2 * half / Double(size)
         var img = [Double](repeating: 0, count: size * size)
         for row in 0..<size {
+            if row % 16 == 0 { try Task.checkCancellation() }
             let y = (Double(row) + 0.5) * pitch - half
             for col in 0..<size {
                 let x = (Double(col) + 0.5) * pitch - half
@@ -455,11 +464,13 @@ extension MockOptics {
         let k = system.surfaces.count - 2
         let nk = imageN(w)
         var e: [FirstOrderResult.Entry] = []
+        // ±∞ is a legitimate value (an afocal system's EFL); NaN means the
+        // quantity is undefined for this system and is left out.
         func add(_ key: String, _ label: String, _ v: Double?, _ unit: String) {
-            if let v, v.isFinite { e.append(.init(key: key, label: label, value: v, unit: unit)) }
+            if let v, !v.isNaN { e.append(.init(key: key, label: label, value: v, unit: unit)) }
         }
         let efl = efl(w)
-        add("efl", "Effective focal length", efl, "mm")
+        add("efl", "Effective focal length", efl ?? .infinity, "mm")
         let a = paraxial(y1: 1, u0: 0, w: w)
         if abs(a.nu[k]) > 1e-15 { add("bfl", "Back focal length", -a.y[k] * nk / a.nu[k], "mm") }
         add("epd", "Entrance pupil diameter", 2 * epRadius, "mm")
@@ -475,7 +486,7 @@ extension MockOptics {
         add("paraxial_image_height", "Paraxial image height", chiefImagePerUnit * fieldParameterY(fieldPoint(x: 0, y: maxField)), "mm")
         add("total_track", "Total track (surface 1 → image)", trackLength, "mm")
         if let d = objectDistance {
-            let u0 = epRadius / (d + epZ)
+            let u0 = epRadius / objectToPupil(d)
             let m = paraxial(y1: u0 * d, u0: u0, w: w)
             let nuk = m.nu[k]
             if abs(nuk) > 1e-15 { add("magnification", "Paraxial magnification", nAfter[0][w] * u0 / nuk, "") }

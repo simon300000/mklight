@@ -88,10 +88,10 @@ public enum ParamPath: Codable, Sendable, Hashable {
         if let make = Self.surfaceTags[tag] {
             self = make(try c.value("surface"))
         } else if let make = Self.indexTags[tag] {
-            self = make(try c.value("index"))
+            self = make(try c.index("index"))
         } else {
             switch tag {
-            case "asphere": self = .asphere(surface: try c.value("surface"), index: try c.value("index"))
+            case "asphere": self = .asphere(surface: try c.value("surface"), index: try c.index("index"))
             case "aperture_value": self = .apertureValue
             case "temperature_c": self = .temperatureC
             case "pressure_atm": self = .pressureAtm

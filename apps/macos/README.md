@@ -17,7 +17,7 @@ macOS 15 or later.
 
 | target | contents |
 |---|---|
-| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. It also includes structural validation (the same checks as the engine's `validate`), surface insert/delete/stop edits, radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
+| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
 | `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests and settings, result types, `RunInfo`, the `AnalysisJob` handle and `MockEngine`. |
 | `MKLightUI` | The document app: `ProjectDocument`, `WindowViewState`, `AnalysisCoordinator`, the lens data editor (`NSTableView`), the inspector, the analysis plots (Swift Charts), the PSF heat map and the Metal viewport. |
 | `MKLight` | The executable. It picks the engine (`MockEngine` for now) and runs `MKLightScene`. |
@@ -43,11 +43,20 @@ public protocol EngineClient: Sendable {
   Only `cancel()` does. Implementations build jobs with `AnalysisJob.run`
   and report through `JobReporter`.
 * **Reproducibility.** Each settings struct (`SpotDiagramSettings`,
-  `MTFSettings`, …) is a Codable value and carries its seed where one
-  applies. Every `AnalysisOutput` carries a `RunInfo` that mirrors the
-  engine's. It records the engine version, snapshot hash, settings JSON,
-  backend, precision, seed, timing and warnings.
-  `RunInfo.isCurrent(for:request:)` drives the "stale" badges.
+  `MTFSettings`, …) is a Codable value with an `execution` block
+  (`ExecutionSettings`: backend preference, requested precision and the
+  Philox seed), so a request carries a job's whole identity
+  `(snapshot, settings, backend, precision, seed)`. Every `AnalysisOutput`
+  carries a `RunInfo` that mirrors the engine's. It records the engine
+  version, snapshot hash, settings JSON (including the execution block), the
+  backend and precision actually used, the seed, timing and warnings.
+  `RunInfo.isCurrent(for:request:)` drives the "stale" badges; it compares
+  settings as exact JSON values (`JSONValue` keeps integers as `Int64` /
+  `UInt64`, so 64-bit seeds are never rounded through `Double`).
+* **Settings validation.** `AnalysisRequest.problems(for:)` checks sample
+  counts, frequencies and field/wavelength/configuration indices against the
+  snapshot. Engines fail such requests at once with
+  `EngineError.invalidSettings`.
 * **Analyses.** The boundary covers the layout scene, spot diagram, ray fan,
   OPD fan, field curvature/distortion, MTF, PSF and first-order data.
   `LayoutScene` contains polylines for surface profiles, rims, element edges,
@@ -56,6 +65,11 @@ public protocol EngineClient: Sendable {
   section. The scene also has matched front/back element profiles for glass
   fills and the automatic semi-diameters. The viewport only projects and
   draws it.
+* **Non-finite results.** serde_json writes non-finite `f64` as `null`; the
+  engine writes infinities as `"inf"`/`"-inf"`. Result scalars that can
+  legitimately be non-finite (EFL of an afocal system, RMS radius with no
+  surviving rays, MTF samples, points) decode through `EngineDouble`, which
+  accepts a number, `null` (NaN) or those strings and round-trips them.
 * **Wire format.** Every request and result type is Codable with the snake_case
   JSON the Rust side will emit. Requests are `{"analysis", "settings"}`, results
   are `{"analysis", "data"}` and outputs are `{"run_info", "result"}`. An FFI
@@ -86,6 +100,9 @@ at least self-consistent.
 2. Add a `MKLightFFI` target with a module map over the header and an
    `FFIEngine: EngineClient`. Bridge each job's progress into the
    `JobReporter` and forward `cancel()` to the engine's cancel token.
+   Its tests should check that the binding reproduces the engine's snapshot
+   hashes in `Tests/MKLightModelTests/Fixtures/snapshot_hashes.json` (only
+   an engine binding can: the mock hashes with SHA-256).
 3. Build and link `libmklight_ffi.a` at the hook in `scripts/build-macos.sh`.
 4. Switch `Sources/MKLight/main.swift` from `MockEngine()` to the FFI engine.
    No UI code changes.
@@ -96,6 +113,9 @@ at least self-consistent.
   only the `OpticalSystem` value. Each edit goes through
   `edit(_:undoManager:_:)`, which replaces the value and registers the
   previous value for undo, so undo and redo restore whole value snapshots.
+  An edit that invalidates configuration overrides or mechanical parts (a
+  conic override on a surface made plane, a semi-diameter override on a
+  surface switched to automatic) removes them in the same undoable step.
 * **View state.** `WindowViewState` is per window. It holds the selection (by
   `SurfaceID`, so it survives inserts and deletes), the visible panels, the
   inspector tab, the viewport mode and camera, ray colouring, and every
@@ -124,8 +144,11 @@ radius, thickness, material, semi-diameter, conic and coating.
 * Return starts editing the focused cell. Typing a character also starts
   editing, with that character as the first input. While editing, Return
   commits and moves down, Tab commits and moves across, and Esc cancels.
-* Delete removes the selected surface. Insert or `+` inserts a surface.
-  The Lens menu and the context menu have the same commands, plus Make Stop.
+* Backspace/Delete clears the focused cell into an edit (Esc restores it);
+  `+`, `-` and digits start an edit like any other character. Structural
+  edits need explicit commands: ⌘⌫ deletes the selected surface and Insert
+  (or ⌘⇧I / ⌘⌥I) inserts one. The Lens menu and the context menu have the
+  same commands, plus Make Stop.
 * Numeric validation follows `LensValueParser`: `inf` or `∞` means a plane
   radius and an infinite object distance, and semi-diameter accepts `auto`.
   The material column accepts glass names, `AIR`, `MIRROR`, `DUMMY`,
@@ -147,9 +170,17 @@ Controls are drag (pan or orbit), scroll or pinch to zoom about the cursor,
 and double-click (or ⌘0) to fit. Rays are coloured by field or by
 wavelength.
 
-Precision: positions are made relative to the scene centre in double
-precision before rounding to float, and the view matrix is built in double
-precision. The shaders guard divisions by the segment length and by `w`.
+Precision: positions are transformed in double precision before rounding to
+float, and the view matrix is built in double precision. A float32 vertex at
+distance `D` from the upload origin is off by about `D·2⁻²⁴` mm, i.e.
+`D·2⁻²⁴·zoom` points on screen. While that stays below 0.02 pt, geometry is
+uploaded relative to the scene centre and camera moves only change the matrix.
+Beyond it (deep zoom away from the centre), `SceneGeometry.frame` switches to
+a camera-relative, view-aligned frame and clips segments and fills in double
+precision to a window just larger than the view, rebuilding on camera moves.
+Every uploaded coordinate is then within about one viewport of the origin,
+so lines stay sub-pixel exact up to the maximum zoom (tested at 10⁶ pt/mm).
+The shaders guard divisions by the segment length and by `w`.
 
 Shaders: `Viewport.metal` ships as a package resource and is compiled at run
 time with `MTLCompileOptions.mathMode = .safe`. SwiftPM compiles `.metal`
@@ -158,3 +189,14 @@ sources only when the optional Metal Toolchain component is installed
 not installed. When it is installed, `build-macos.sh` precompiles
 `MKLightViewport.metallib` into the app bundle, and the app prefers that
 library.
+
+## Open contract items
+
+* The analysis result schemas and the `.mklight` project envelope are
+  defined only here for now. When `mklight-engine` defines its result
+  structs, it should dump fixtures for them (as `dump_fixtures` does for the
+  model), and the Swift types should be round-trip tested against those.
+* The engine's `OpticalSystem::validate` accepts two things the Swift check
+  reports: mechanical parts attached to missing surfaces (a warning here), and
+  values with no JSON form, such as a NaN curvature (an error here; such a
+  model cannot cross the JSON boundary anyway). The engine should reject both.
