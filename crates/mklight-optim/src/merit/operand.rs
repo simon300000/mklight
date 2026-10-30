@@ -297,7 +297,9 @@ pub enum OperandKind {
         surface: Option<SurfaceId>,
     },
     /// Petzval sum `P = Σ c (N' − N)/(N N')` over the surfaces (mm⁻¹); the
-    /// Petzval surface has curvature `−N'_image · P`.
+    /// Petzval surface has curvature `−N'_image · P`. Ideal (paraxial)
+    /// lenses contribute nothing: they image a plane onto a plane (a thin
+    /// lens of infinite index).
     PetzvalSum,
 
     // ---- geometry of the model ----
@@ -319,8 +321,10 @@ pub enum OperandKind {
         to: Option<SurfaceId>,
     },
     /// Physical thickness of the gap from `surface` to `to` (default: the
-    /// next surface) at `height` (default: the larger fixed semi-diameter of
-    /// the two bounding surfaces), mm.
+    /// next surface) at `height` (default: the rim of the larger clear
+    /// semi-diameter, each surface's sag taken at its own semi-diameter —
+    /// the smaller one continues flat; see [`geometric`](super::geometric)),
+    /// mm.
     EdgeThickness {
         surface: SurfaceId,
         #[serde(default)]
@@ -447,8 +451,10 @@ pub enum OperandKind {
     /// focuses closer, as in an uncorrected positive lens).
     AxialColour { short: usize, long: usize },
     /// Relative illumination at the selected field (0…1, vs on-axis): the
-    /// ratio of the image-space projected solid angles of the ray bundles
-    /// (geometric, uniform-radiance object, no coating losses).
+    /// image irradiance at the chief ray for a uniform-radiance Lambertian
+    /// object relative to the on-axis one, from energy conservation —
+    /// transmitted object-space étendue (vignetting included) over the image
+    /// area per unit field (geometric: no coating or bulk losses).
     RelativeIllumination,
 
     // ---- ghosts and stray light ----

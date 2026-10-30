@@ -31,6 +31,16 @@
 //!   `w_node · w_λ`), and the reference is formed with
 //!   [`spot_centroid`] / [`piston_tilt`], honouring the half-pupil symmetry.
 //!   Failed rays are left out.
+//! * A half-pupil ([`PupilSymmetry::Bilateral`]) sampling is traced as such
+//!   only when the candidate is mirror-symmetric about the meridional plane
+//!   (`is_meridionally_symmetric`) and the field point is on the y axis.
+//!   Otherwise its mirrored nodes are traced too (half weights each):
+//!   references and aggregates are then full-pupil values, and per-ray
+//!   operands of the group report the [`RayGroup`] pair value, so a
+//!   half-pupil merit still equals the full-pupil merit.
+//! * Relative illumination comes from energy conservation (étendue of the
+//!   transmitted beam over the image area per unit field), see
+//!   `Candidate::irradiance`.
 //! * Aggregate operands (`RmsSpot`, `WavefrontRms`) with `FieldSelector::All`
 //!   or `WavelengthSelector::All` average the *squared* RMS over fields and
 //!   wavelengths with their weights (RMS spot at `All` wavelengths is the

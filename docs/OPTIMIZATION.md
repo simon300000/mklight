@@ -69,13 +69,17 @@ always fails the candidate.
 
 `TraceEvalSettings` controls the tracer settings (ray-aiming override,
 intersection settings), whether fixed apertures clip rays (`clip`, default
-on), the azimuth count of automatic semi-diameters (16), and the polar grid of
-relative illumination (12 rings × 24 arms).
+on), the azimuth count of automatic semi-diameters (16), and the pupil
+integration of relative illumination (12 radial samples × 32 azimuths, see
+below).
 
-`TraceEvaluator::run_info` builds the `RunInfo` of an optimisation or
-tolerancing run: snapshot hash of the start system, the run's settings, the
-seed, the backend `cpu-f64-reference`, f64 precision and the tracer's
-warnings.
+**Run info.** `TraceEvaluator::run(start, analysis, settings, seed, || driver)`
+runs an optimisation or tolerancing driver (`least_squares`, `hammer`,
+`sensitivity`, `monte_carlo`, …) and returns `RunResult { result, info }`. The
+`RunInfo` holds the snapshot hash of the start system, the run's settings, the
+seed, the backend `cpu-f64-reference`, f64 precision, the tracer's warnings
+and the wall time of the driver. `run_info` builds the same record from a
+`RunTimer` for callers that cannot wrap the driver in a closure.
 
 ## Conventions
 
@@ -109,6 +113,20 @@ warnings.
   pupil, so the x centroid and x tilt are zero by symmetry. Failed rays are
   left out. The reference therefore does not depend on which operands are in
   the spec. The tests check it against the mirrored full pupil to 1e-12.
+* **Half pupils on asymmetric candidates.** The half pupil is exact only for
+  a candidate that is mirror-symmetric about the meridional plane (no x
+  decenters, no tilts about y or z, fields on the y axis) at a field point on
+  the y axis. The evaluator checks every candidate. For any other candidate it
+  also traces the mirrored nodes `(−px, py)`, each node keeping half its
+  weight, and computes references and aggregates over that full set. A
+  per-ray operand at half-pupil node `p` then reports the pair value
+  `s·√((v(p)² + v(p̄)²)/2)`, where `s` is the sign of the mirror-even part
+  (`v(p) − v(p̄)` for x aberrations, `v(p) + v(p̄)` otherwise). This keeps
+  `Σ w r²` equal to the full-pupil merit and reduces to `v(p)` for a
+  symmetric candidate, at twice the ray cost. Tests on the Cooke triplet with
+  x decenter, y and z tilts and off-axis field points check it against the
+  mirrored full pupil to 1e-10. Before this check, a half-pupil tolerancing
+  criterion overstated x-decenter and y-tilt sensitivities 18–39×.
 
 ## Operand reference
 
@@ -127,11 +145,11 @@ uses the wavelength (`λ1` = one wavelength required).
 | `entrance_pupil_position` | P | entrance pupil from the first surface, object space | mm | λ | `Invalid` when telecentric (at infinity) |
 | `exit_pupil_position` | P | exit pupil from the image surface | mm | λ | `Invalid` when telecentric |
 | `paraxial_ray` | P | marginal or chief paraxial ray `height` (mm), `slope` `u` (–) or `angle` `atan u` (deg) after `surface` (default image) | mm / – / deg | λ | rays scaled by the aperture spec / maximum field |
-| `petzval_sum` | P | `Σ c (N' − N)/(N N')` over the surfaces (reduced indices, so mirrors count) | mm⁻¹ | λ | Petzval surface curvature `−N'_image · P` |
+| `petzval_sum` | P | `Σ c (N' − N)/(N N')` over the surfaces (reduced indices, so mirrors count) | mm⁻¹ | λ | Petzval surface curvature `−N'_image · P`; ideal (paraxial) lenses add 0 (they image plane to plane) |
 | `axial_colour` | P | chromatic focal shift: paraxial image distance at `short` minus at `long` | mm | – | negative when blue focuses closer (uncorrected positive lens) |
 | `total_track` | M | Σ thicknesses from `from` to `to` | mm | – | signed model thicknesses |
 | `centre_thickness` | M | physical gap from `surface` to `to` on axis | mm | – | positive along propagation (also after mirrors) |
-| `edge_thickness` | M | physical gap at `height`, default the larger clear semi-diameter of the two bounding surfaces | mm | – | automatic semi-diameters from the tracer (below) |
+| `edge_thickness` | M | physical gap at `height`; by default at the rim of the larger clear aperture, each surface's sag at its **own** semi-diameter (the smaller surface continues flat) | mm | – | automatic semi-diameters from the tracer (below) |
 | `min_thickness`, `max_thickness` | M | min / max over the optical gaps of a medium | mm | – | the back-focus gap is excluded unless `to` is given |
 | `param_value` | M | any `ParamPath` value | param | – | |
 | `real_ray` | R | `x y z` (mm), `l m n` (direction cosines after the surface), `angle_x/angle_y` = `atan2(l or m, |n|)` (deg), `incidence_angle` (deg), `optical_path` (mm from the start of the trace) at `surface` (default image) for pupil `(px, py)` | mm / – / deg | f1 λ1 | local frame unless `global`; clipped per settings |
@@ -143,7 +161,7 @@ uses the wavelength (`λ1` = one wavelength required).
 | `wavefront_rms` | W | RMS OPD over `sampling` | waves | f λ | piston + tilt removed (`centroid`) or piston only (`chief`) |
 | `distortion` | R | `100 (h_real − h_ref)/h_ref` of the real chief ray at λ along the field direction; `f_tan_theta`: `h_ref` = paraxial chief height (`h'/tan θ · tan θ`, or `h'/h · h` for finite objects), `f_theta`: `h'/tan θ · θ` | % | f1 λ1 | 0 on axis; `f_theta` needs an object at infinity |
 | `lateral_colour` | R | chief-ray image height at `short` minus at `long`, along the field direction | mm | f1 | `+y` on axis |
-| `relative_illumination` | R | projected solid angle of the image-space bundle relative to the on-axis one | – | f1 λ | geometric (uniform-radiance object, no coating losses); polar grid, cells count when all corners reach the image |
+| `relative_illumination` | R | image irradiance at the chief ray relative to on axis, Lambertian uniform-radiance object | – | f1 λ | energy conservation, vignetting included (below); geometric (no coating or bulk losses); the on-axis reference has no vignetting factors |
 | `tolerance_sensitivity` | T | `√((c(+δ) − c₀)² + (c(−δ) − c₀)²)/√2` for the criterion operand | criterion | as criterion | supported when the criterion is |
 | `mtf` | X | MTF at a frequency | – | f λ | MTF evaluator (not here) |
 | `ghost_focus`, `ghost_irradiance` | X | ghost focus distance / irradiance | mm / rel. | | ghost evaluator (not here) |
@@ -156,6 +174,65 @@ of the chief ray, which keeps the sign), and the exit-pupil position.
 **Paraxial distortion** comes from the same `distortion` operand: the real
 chief ray against the paraxial chief ray.
 
+### Relative illumination
+
+The irradiance at the image of a field point, for an object of uniform
+radiance, follows from energy conservation:
+
+```
+E ∝ G · |dμ/dh| / |dA'/dh|
+```
+
+* `G` is the étendue of the transmitted beam per unit object measure. For an
+  object at infinity it is the beam's cross-section perpendicular to its
+  direction (mm²). For a finite object it is the projected solid angle of the
+  transmitted cone about the object normal, which is the area of its
+  direction cosines `(L, M)`. Both are `∬ |∂Q/∂(px, py)| dpx dpy` over the
+  part of the unit pupil whose rays reach the image. `Q` is the generated
+  ray's position across the beam, or its direction cosines, and the formula
+  holds with any ray aiming.
+* `dμ/dh` is the solid angle (at infinity) or object area per unit
+  normalised field area. `dA'/dh` is the image area per unit normalised field
+  area at the chief ray. Both are central differences in `(hx, hy)` with step
+  1e-4.
+
+This holds for any lens: real, distorting or vignetting, aplanatic or not.
+The previous ratio of image-space solid angles was right only for aplanatic
+lenses and gave 1.005 for the unvignetted singlet at 5°, where the correct
+value is 0.985.
+
+**Pupil integration.** Along each azimuth, the transmitted radial intervals
+are found from 12 equally spaced samples, and every pass/block transition is
+refined by bisection to 1e-7. Each interval is integrated by 6-point
+Gauss–Legendre. Across azimuths there are two cases:
+
+* The surfaces bounding the intervals are the same on all 32 azimuths. The
+  integrand is then smooth and periodic, so the trapezoidal sum is spectrally
+  accurate.
+* Otherwise, the azimuths where the bounding surface changes are located by
+  bisection to 1e-6 rad. These are the corners of a vignetted pupil, or the
+  tangents of a pupil region that excludes the centre. Each smooth arc
+  between them is integrated by Gauss–Legendre in a cosine-mapped variable,
+  which also handles the square-root behaviour at a tangent.
+
+Tests (`tests/trace_regressions.rs`):
+
+| case | result |
+|---|---|
+| real singlet, stop at the front, against `cos θ · y'_θ(0)² sin θ / (y' y'_θ)` from real chief heights | < 1e-7 |
+| ideal lens: cos⁴θ | < 1e-9 |
+| ideal lens behind a 9 mm aperture 20 mm in front of the 10 mm pupil, `cos⁴θ · A∩(d tan θ)/A∩(0)` at 10°, 20°, 35° (RI down to 0.078; at 35° the pupil centre is blocked) | < 2e-6 |
+| finite object, ideal lens, view factor of the pupil disc | < 1e-8 |
+| vignetted Cooke triplet (surfaces 1 and 6 stopped down 15 %): 6 × 16 vs 12 × 32 vs 48 × 256 | agree to 1e-8 (the old dropped-cell grid moved 10 % between 12 × 24 and 96 × 192) |
+
+**Cost.** On the Cooke triplet, one operand (field and axis) takes 0.45 ms
+unvignetted and 2.5 ms vignetted.
+
+**Limits.** The integration can miss transmitted or blocked features
+narrower than the radial sample spacing. A corner formed by a single
+surface's own non-circular aperture (for example a rectangle) is not located,
+so near it the azimuthal rule falls back to O(h²).
+
 ## Default merit function
 
 `DefaultMeritSpec` emits one `ray_aberration` per pupil node and axis (or one
@@ -163,7 +240,12 @@ chief ray against the paraxial chief ray.
 The weights are chosen so that `Σ w r²` is the weighted mean of the squared
 RMS spot (or wavefront) radius. A test checks this identity against the
 aggregate operands to 1e-12. A meridionally symmetric system automatically
-uses the half pupil.
+uses the half pupil, unless a variable (`generate_for`) can break the
+symmetry. For a tolerancing criterion, `generate_for_tolerancing(sys,
+&tolerance_spec)` counts the toleranced parameters and compensators as
+variables. Every ray operand carries its `RayGroup`, also with a `chief`
+reference, so the evaluator knows which half pupil it belongs to. An
+asymmetric candidate is still evaluated exactly (see Conventions).
 
 Thickness boundaries go on every physical gap except the back focus.
 `ThicknessBoundaries::with_auto_semi_diameters()` (field
@@ -172,6 +254,13 @@ automatic semi-diameters. For such operands the `TraceEvaluator` computes the
 clear semi-diameters of the candidate with `SequentialTracer::semi_diameters`
 (all fields and wavelengths, chief plus pupil rim, fixed apertures clipping),
 freezes them (`fix_semi_diameters`, margin 0) and applies the model formula.
+Each surface's sag is taken at its own clear semi-diameter, and the smaller
+surface continues flat out to the larger rim. Before this change, the edge of
+the Double Gauss's cemented L3 was measured at the larger L2 aperture. That
+height lies outside the steep interface's sag domain, so the operand was
+`Invalid` and every candidate failed. The edges now evaluate. Two outer edges
+(L1 and L6) are negative at the sample's own clear apertures, a genuine
+violation that the optimiser removes.
 The edge height therefore moves with the design during optimisation. The
 semi-diameters are computed once per candidate, only when such an operand is
 present and some surface is `Auto`. `ModelEvaluator` alone reports these
@@ -201,6 +290,14 @@ where they belong: paraxial operands through differentiated y–nu traces, and
 ray operands through ray-transfer matrices.
 
 ## Tolerancing
+
+The criterion merit should come from
+`DefaultMeritSpec::generate_for_tolerancing`, which selects the full pupil
+when a tolerance can break the meridional symmetry. A half-pupil criterion is
+still evaluated exactly on asymmetric trials, at twice the ray cost. A test
+checks that x-decenter and y-tilt sensitivities equal those of the mirrored
+full pupil to 1e-9. Wrap the drivers in `TraceEvaluator::run` to get their
+`RunInfo`.
 
 `OpticalToleranceEvaluator` with a `TraceEvaluator` perturbs the nominal
 system by the `ToleranceSpec`, re-optimises the compensators (for example the
@@ -235,6 +332,12 @@ tracer. "Rays" counts the pupil samples plus one chief ray per (field, λ).
 | RMS spot, 6 rings × 12 arms | 1296 | 2.0 k evals/s (0.51 ms) | 8.6 k evals/s (5.6 M rays/s) | 6.1 k evals/s |
 | wavefront, 3 rings × 6 arms | 162 | 5.4 k evals/s (0.19 ms) | 32 k evals/s (5.5 M rays/s) | 17 k evals/s |
 
+These figures come from an otherwise idle machine. The benchmark runs for only
+about 0.3 s, so other load shows directly. With other jobs running on the same
+machine, the 3 × 6 spot batch measured 16–20 k evals/s.
+Symmetric candidates pay nothing for the asymmetry check of half pupils. An
+asymmetric candidate traces its half-pupil groups twice.
+
 Each candidate pays ~17 µs for the snapshot hash and ~5 µs for resolving and
 setting up the tracer. A reference ray through the Double Gauss costs ~1 µs.
 At 3 × 6 sampling the rays dominate. A single candidate is traced
@@ -248,9 +351,7 @@ only the parameter vectors.
 ## Known gaps
 
 * No analytic Jacobians (see Derivatives).
-* Relative illumination is geometric. It ignores coating and bulk
-  transmission, and partially vignetted grid cells are dropped (the error is
-  first order in the cell size, and cancels in the ratio when vignetting is
-  absent).
+* Relative illumination is geometric and ignores coating and bulk
+  transmission. For its integration limits, see Relative illumination.
 * `spot_centroid` uses the default full-pupil sampling (3 rings × 6 arms).
 * There is no cross-call cache: a candidate evaluated twice is traced twice.
