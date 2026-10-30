@@ -187,6 +187,13 @@ private struct DesignWindowContent: View {
         }
         if let t = d.string(forKey: "MKLightInspector") { window.inspectorTab = t == "system" ? .system : .surface }
         if d.string(forKey: "MKLightSidebar") == "hidden" { columns = .detailOnly }
+        if d.string(forKey: "MKLightViewport") == "3D" { window.viewportMode = .orbit3D }
+        if d.bool(forKey: "MKLightShowIssues") {
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                window.showIssues = true
+            }
+        }
         if let sheet = d.string(forKey: "MKLightSheet").flatMap(DesignJobKind.init(rawValue:)) {
             Task {
                 try? await Task.sleep(for: .seconds(2))

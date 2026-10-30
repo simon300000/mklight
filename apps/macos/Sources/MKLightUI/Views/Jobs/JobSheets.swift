@@ -320,11 +320,29 @@ struct ToleranceSheet: View {
                     .disabled(workspace.snapshot == nil || !workspace.modelErrors.isEmpty)
             }
         }
+        .onAppear(perform: autoRun)
+    }
+}
+
+extension ToleranceSheet {
+    /// Debug builds: `-MKLightAutoRun tolerance` starts at once.
+    func autoRun() {
+        #if DEBUG
+        if UserDefaults.standard.string(forKey: "MKLightAutoRun") == "tolerance" {
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                session.start(in: workspace)
+            }
+        }
+        #endif
     }
 }
 
 struct ToleranceResultView: View {
     let result: ToleranceResult
+
+    static func sci(_ v: Double) -> String { v.isFinite ? String(format: "%+.3e", v) : "—" }
+    static func e(_ v: Double) -> String { v.isFinite ? String(format: "%.3e", v) : "—" }
 
     var body: some View {
         ScrollView {
@@ -332,7 +350,7 @@ struct ToleranceResultView: View {
                 if !result.sensitivities.isEmpty {
                     VStack(alignment: .leading, spacing: Space.s) {
                         Text("Sensitivity").font(.headline)
-                        Text("Nominal criterion \(Fmt.short(result.nominal)) · RSS change \(Fmt.short(result.rssChange)) · predicted \(Fmt.short(result.predicted))")
+                        Text(String(format: "Nominal criterion %.3e · RSS change %.3e · predicted %.3e", result.nominal, result.rssChange, result.predicted))
                             .font(.caption).foregroundStyle(.secondary)
                         Grid(alignment: .trailing, horizontalSpacing: Space.l, verticalSpacing: 3) {
                             GridRow {
@@ -347,11 +365,11 @@ struct ToleranceResultView: View {
                             let worst = result.sensitivities.map(\.worst).filter(\.isFinite).max() ?? 1
                             ForEach(result.sensitivities) { s in
                                 GridRow {
-                                    Text(s.label).gridColumnAlignment(.leading)
+                                    Text(s.label.prefix(1).uppercased() + s.label.dropFirst()).gridColumnAlignment(.leading)
                                     Text(Fmt.short(s.minus))
                                     Text(Fmt.short(s.plus))
-                                    Text(Fmt.short(s.changeMinus))
-                                    Text(Fmt.short(s.changePlus))
+                                    Text(Self.sci(s.changeMinus))
+                                    Text(Self.sci(s.changePlus))
                                     Capsule().fill(Palette.fieldColor(0)).frame(width: max(2, 80 * CGFloat(s.worst / max(worst, 1e-300))), height: 6)
                                         .frame(width: 80, alignment: .leading)
                                         .accessibilityHidden(true)
@@ -367,8 +385,8 @@ struct ToleranceResultView: View {
                         Text("Monte Carlo · \(result.trials) trials").font(.headline)
                         HStack(alignment: .top, spacing: Space.xl) {
                             KeyValueGrid(
-                                rows: [("Mean", Fmt.short(result.mean)), ("Std. dev.", Fmt.short(result.stdDev)), ("Min", Fmt.short(result.min)), ("Max", Fmt.short(result.max))]
-                                    + result.percentiles.map { (String(format: "%.0f %%", $0.0), Fmt.short($0.1)) }
+                                rows: [("Mean", Self.e(result.mean)), ("Std. dev.", Self.e(result.stdDev)), ("Min", Self.e(result.min)), ("Max", Self.e(result.max))]
+                                    + result.percentiles.map { (String(format: "%.0f %% below", $0.0), Self.e($0.1)) }
                                     + (result.yield.map { [("Yield", Fmt.percent($0))] } ?? []))
                             Histogram(values: result.criteria).frame(height: 180)
                         }
@@ -386,11 +404,16 @@ struct Histogram: View {
 
     var body: some View {
         let bins = Self.bins(values, count: 20)
+        let w = bins.count > 1 ? (bins[1].0 - bins[0].0) : 1
         Chart(bins, id: \.0) { b in
-            BarMark(x: .value("Criterion", b.0), y: .value("Trials", b.1), width: .ratio(0.9))
-                .foregroundStyle(Palette.fieldColor(0))
-                .cornerRadius(2)
+            RectangleMark(
+                xStart: .value("Criterion", b.0 - 0.45 * w), xEnd: .value("Criterion", b.0 + 0.45 * w),
+                yStart: .value("Trials", 0), yEnd: .value("Trials", b.1)
+            )
+            .foregroundStyle(Palette.fieldColor(0))
+            .cornerRadius(2)
         }
+        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
         .chartXAxisLabel("Criterion", alignment: .center)
         .chartYAxisLabel("Trials")
         .accessibilityLabel("Histogram of \(values.count) trial criteria")
@@ -479,6 +502,7 @@ struct SolvesSheet: View {
                 }
             }
             .padding(Space.xl)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

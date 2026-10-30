@@ -106,14 +106,14 @@ struct IssuesButton: View {
             if issues.isEmpty {
                 Label("No Issues", systemImage: "checkmark.circle")
             } else {
-                Label("\(issues.count) Issues", systemImage: errors > 0 ? "xmark.octagon" : "exclamationmark.triangle")
+                Label("\(issues.count) Issue\(issues.count == 1 ? "" : "s")", systemImage: errors > 0 ? "xmark.octagon" : "exclamationmark.triangle")
                     .foregroundStyle(errors > 0 ? .red : .orange)
             }
         }
         .labelStyle(.titleAndIcon)
         .help(issues.isEmpty ? "The engine found no problems in the design" : "Show the design's validation issues (⌃⌘E)")
         .popover(isPresented: $window.showIssues, arrowEdge: .bottom) {
-            IssuesList(workspace: workspace, window: window).frame(width: 420, height: 320)
+            IssuesList(workspace: workspace, window: window).frame(width: 420)
         }
     }
 }
@@ -139,15 +139,23 @@ struct IssuesList: View {
                     "No Issues", systemImage: "checkmark.circle",
                     description: Text("The engine checked the design and found nothing to report."))
             } else {
-                List(issues) { issue in
-                    Button {
-                        select(issue)
-                    } label: {
-                        IssueRow(issue: issue, system: workspace.snapshot?.system)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.s) {
+                        ForEach(issues) { issue in
+                            Button {
+                                select(issue)
+                            } label: {
+                                IssueRow(issue: issue, system: workspace.snapshot?.system)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .help(issue.surface != nil ? "Select surface \(issue.surface!)" : issue.field != nil ? "Show field \(issue.field! + 1)" : "")
+                        }
                     }
-                    .buttonStyle(.plain)
+                    .padding(Space.l)
                 }
-                .listStyle(.plain)
+                .frame(maxHeight: 360)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -352,11 +352,17 @@ public final class SolvesSession {
         outcomes = (report["outcomes"]?.array ?? []).enumerated().map { k, o in
             let path = o["target"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }
             let kind = o["kind"]?.string ?? ""
+            // Curvatures are shown as radii, like everywhere else.
+            var previous = o["previous"]?.nf, value = o["value"]?.nf ?? .nan
+            if case .curvature? = path {
+                previous = previous.map(RadiusDisplay.radius(fromCurvature:))
+                value = RadiusDisplay.radius(fromCurvature: value)
+            }
             return Outcome(
                 id: o["index"]?.int ?? k,
                 target: path.map { p in system.map { p.label(in: $0) } ?? "\(p)" } ?? "?",
-                kind: SolveKind.Kind(rawValue: kind)?.title ?? kind, previous: o["previous"]?.nf,
-                value: o["value"]?.nf ?? .nan, residual: o["residual"]?.nf ?? .nan, method: o["method"]?.string ?? "")
+                kind: SolveKind.Kind(rawValue: kind)?.title ?? kind, previous: previous,
+                value: value, residual: o["residual"]?.nf ?? .nan, method: o["method"]?.string ?? "")
         }
         warnings = (report["warnings"]?.array ?? []).compactMap(\.string)
     }

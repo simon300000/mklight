@@ -218,7 +218,7 @@ struct FanView: View {
         LineChart(
             series: curves.map { c in
                 Series(id: "\(c.wavelength)", label: "", color: color(c.wavelength), points: c.points)
-            }, xLabel: x, yLabel: y, xDomain: -1...1, yDomain: yDomain, xTicks: [-1, -0.5, 0, 0.5, 1])
+            }, xLabel: x, yLabel: y, xDomain: -1...1, yDomain: yDomain, xTicks: [-1, 0, 1])
     }
 
     private func color(_ w: Int) -> Color { Palette.wavelengthColor(wavelengthsUm.indices.contains(w) ? wavelengthsUm[w] : 0.55) }

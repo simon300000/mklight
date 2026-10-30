@@ -90,12 +90,12 @@ struct LayoutPaneView: View {
     @ViewBuilder private var placeholder: some View {
         switch pane.phase {
         case .unavailable(let why):
-            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(why)).background(.background)
+            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(why)).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         case .failed(let why):
-            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(why)).background(.background)
+            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(why)).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         default:
             if let e = workspace.modelErrors.first {
-                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(e)).background(.background)
+                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(e)).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
             } else {
                 ProgressView().controlSize(.small)
             }

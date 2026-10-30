@@ -25,6 +25,11 @@ struct LensTableView: View {
     private var system: OpticalSystem { design.system }
     private var editor: LensEditor { LensEditor(document: design, undoManager: undoManager) }
 
+    /// Issues by surface index.
+    private var issues: [Int: [ValidationIssue]] {
+        Dictionary(grouping: workspace.issues.filter { $0.surface != nil && $0.severity != .info }, by: { $0.surface! })
+    }
+
     private var rows: [LensRow] {
         LensRow.rows(
             for: system, autoSemiDiameters: EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output)),
@@ -36,7 +41,7 @@ struct LensTableView: View {
         VStack(spacing: 0) {
             header
             Table(rows, selection: $window.selection) {
-                TableColumn("Surf") { row in SurfaceLabel(row: row) }
+                TableColumn("Surf") { row in SurfaceLabel(row: row, issues: issues[row.index] ?? []) }
                     .width(min: 40, ideal: 46, max: 64)
                 TableColumn("Type") { row in TypeMenu(row: row, editor: editor) }
                     .width(min: 90, ideal: 112, max: 150)
@@ -167,9 +172,17 @@ struct LensTableView: View {
 /// `OBJ`, `1`, `STO`, …, `IMA`; the stop gets the aperture symbol.
 private struct SurfaceLabel: View {
     let row: LensRow
+    let issues: [ValidationIssue]
 
     var body: some View {
         HStack(spacing: 3) {
+            if let worst = issues.map(\.severity).min() {
+                Image(systemName: worst == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(worst == .error ? .red : .orange)
+                    .help(issues.map(\.message).joined(separator: "\n"))
+                    .accessibilityLabel(issues.map(\.message).joined(separator: ". "))
+            }
             Text(row.surfaceText)
                 .font(row.role == .surface ? .body.monospacedDigit() : .callout.weight(.semibold))
                 .foregroundStyle(row.role == .object || row.role == .image ? .secondary : .primary)

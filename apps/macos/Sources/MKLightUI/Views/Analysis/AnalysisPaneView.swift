@@ -121,12 +121,22 @@ struct AnalysisPaneView: View {
                 "Not Available", systemImage: "nosign",
                 description: Text(why.isEmpty ? "This engine build does not provide this analysis." : why))
         case .failed(let why):
-            ContentUnavailableView {
-                Label("Analysis Failed", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(why)
-            } actions: {
-                Button("Try Again") { pane.rerun() }
+            if workspace.issues.contains(where: { $0.severity == .error }) {
+                ContentUnavailableView {
+                    Label("Design Has Errors", systemImage: "xmark.octagon")
+                } description: {
+                    Text(why)
+                } actions: {
+                    Button("Show Issues") { window.showIssues = true }
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("Analysis Failed", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(why)
+                } actions: {
+                    Button("Try Again") { pane.rerun() }
+                }
             }
         default:
             if !workspace.modelErrors.isEmpty {
