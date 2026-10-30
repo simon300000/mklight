@@ -111,3 +111,34 @@ def test_tracer_follows_edits(achromat):
     after = mklight.trace(achromat, 0, None, 0.0, 1.0)["point"][1]
     # 15 mm before focus the F/5 marginal ray is ~1.5 mm off axis.
     assert abs(before) < 0.05 and abs(after) > 1.0
+
+
+def test_trace_and_trace_grid_read_field_arguments_alike(achromat):
+    # A tuple of two numbers is one normalised point in both functions,
+    # whether the numbers are ints or floats.
+    primary = mklight.paraxial(achromat)["primary_wavelength"]
+    for field in [(0, 1), (0, 0.5), (0.0, 1.0)]:
+        r = mklight.trace(achromat, field, primary, records=False)
+        g = mklight.trace_grid(achromat, fields=field, wavelengths=primary, pupil=[[0.0, 0.0]])
+        assert g["field"].tolist() == [[float(field[0]), float(field[1])]]
+        assert g["point"][0, 0, 0].tolist() == list(r["point"])
+        lst = mklight.trace_grid(achromat, fields=[field], wavelengths=primary, pupil=[[0.0, 0.0]])
+        assert lst["point"].tolist() == g["point"].tolist()
+    # A list is a list of fields: system fields 0 and 1.
+    g = mklight.trace_grid(achromat, fields=[0, 1], wavelengths=primary, pupil=[[0.0, 0.0]])
+    sys_fields = mklight.trace_grid(achromat, wavelengths=primary, pupil=[[0.0, 0.0]])["field"]
+    assert g["field"].tolist() == sys_fields[:2].tolist()
+    assert g["field"].tolist() != [[0.0, 1.0]]
+    with pytest.raises(mklight.InvalidArgumentError, match="tuple"):
+        mklight.trace_grid(achromat, fields=[0.0, 0.5])
+
+
+def test_negative_indices_raise_argument_errors(achromat):
+    for bad in (-1, 2**64, True):
+        with pytest.raises(mklight.InvalidArgumentError):
+            mklight.trace(achromat, 0, bad)
+        with pytest.raises(mklight.InvalidArgumentError):
+            mklight.paraxial(achromat, bad)
+    with pytest.raises(mklight.InvalidArgumentError):
+        mklight.trace_grid(achromat, wavelengths=-1)
+    assert mklight.trace(achromat, 0, np.int64(1))["wavelength_index"] == 1

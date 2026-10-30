@@ -179,3 +179,63 @@ def test_result_is_current_until_edit(achromat):
     sid = achromat.system["surfaces"][3]["id"]
     achromat.set_param({"param": "thickness", "surface": sid}, 50.0)
     assert r.snapshot_hash != achromat.snapshot_hash
+
+
+def test_many_uncollected_jobs_keep_their_results(engine, achromat):
+    # A sweep that submits more jobs than the engine's C-ABI retention bound
+    # (256) before collecting any must not lose results.
+    jobs = [achromat.submit("rng_stream", {"count": 10}, seed=i) for i in range(300)]
+    results = [j.result(timeout=60) for j in jobs]
+    assert [r.seed for r in results] == list(range(300))
+    assert all(j.state == "done" and j.progress == 1.0 for j in jobs)
+
+
+def test_explicit_retention_bound_reports_evicted_jobs():
+    engine = mklight.Engine(worker_threads=1, max_retained_jobs=3)
+    s = engine.new(sample="achromat")
+    jobs = [s.submit("rng_stream", {"count": 10}, seed=i) for i in range(10)]
+    # One worker runs FIFO: once the last job is done, all are finished and
+    # only the newest three outcomes are retained.
+    assert jobs[-1].wait(30)
+    assert [j.state for j in jobs] == ["evicted"] * 7 + ["done"] * 3
+    assert all(j.done() for j in jobs) and jobs[0].wait(1) is True
+    with pytest.raises(mklight.NotFoundError, match="max_retained_jobs=3"):
+        jobs[0].result()
+    assert [j.result().seed for j in jobs[7:]] == [7, 8, 9]
+
+
+def test_timeouts_are_validated_and_large_ones_wait_forever(achromat):
+    job = achromat.submit("rng_stream", {"count": 100}, seed=1)
+    for bad in (float("nan"), -1.0):
+        with pytest.raises(mklight.InvalidArgumentError):
+            job.wait(bad)
+        with pytest.raises(mklight.InvalidArgumentError):
+            job.result(timeout=bad)
+    with pytest.raises(mklight.InvalidArgumentError):
+        achromat.run("rng_stream", {"count": 10}, timeout=float("nan"))
+    assert job.wait(float("inf")) is True
+    assert job.result(timeout=1e20).seed == 1
+    assert achromat.run("rng_stream", {"count": 10}, seed=2, timeout=float("inf")).seed == 2
+
+
+def test_progress_stays_monotone_after_a_cancelled_result(achromat):
+    job = achromat.submit("rng_stream", {"count": 1000, "chunk": 1, "delay_ms": 10.0})
+    deadline = time.monotonic() + 5
+    while job.progress == 0.0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    seen = job.progress
+    assert seen > 0.0
+    job.cancel()
+    with pytest.raises(mklight.CancelledError):
+        job.result(timeout=10)
+    assert job.progress >= seen
+    assert job.progress == job.progress  # stable once taken
+
+
+def test_seed_must_be_a_u64(achromat):
+    for bad in (-1, 2**64, True, 1.5):
+        with pytest.raises(mklight.InvalidSettingsError):
+            achromat.run("rng_stream", {"count": 10}, seed=bad)
+        with pytest.raises(mklight.InvalidSettingsError):
+            achromat.submit("rng_stream", {"count": 10}, seed=bad)
+    assert achromat.run("rng_stream", {"count": 10}, seed=np.uint64(2**64 - 1)).seed == 2**64 - 1

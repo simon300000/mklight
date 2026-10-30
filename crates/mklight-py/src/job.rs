@@ -177,7 +177,54 @@ enum Slot {
     Taken {
         state: JobState,
         outcome: Result<Arc<ResultData>, EngineError>,
+        /// Last progress seen before the outcome was taken (1 on success),
+        /// so `Job.progress` stays monotone.
+        progress: f64,
     },
+    /// The engine dropped the job before its outcome was collected (only
+    /// possible with an explicit `Engine(max_retained_jobs=...)`).
+    Evicted {
+        progress: f64,
+    },
+}
+
+/// Python-visible job state: the engine's, plus `evicted`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PyJobState {
+    Engine(JobState),
+    Evicted,
+}
+
+impl PyJobState {
+    fn name(self) -> String {
+        match self {
+            PyJobState::Engine(s) => state_name(s),
+            PyJobState::Evicted => "evicted".into(),
+        }
+    }
+    fn is_terminal(self) -> bool {
+        match self {
+            PyJobState::Engine(s) => s.is_terminal(),
+            PyJobState::Evicted => true,
+        }
+    }
+}
+
+/// A wait deadline from a Python `timeout` in seconds: `None` waits
+/// forever, and so does a timeout too large to represent (including
+/// `inf`), as the scheduler's own `wait` does. NaN and negative values are
+/// rejected.
+pub fn deadline(timeout: Option<f64>) -> PyResult<Option<Instant>> {
+    match timeout {
+        None => Ok(None),
+        Some(t) if t.is_nan() || t < 0.0 => Err(new_err(
+            ErrorKind::InvalidArgument,
+            format!("timeout must be a number of seconds >= 0 (or None), got {t}"),
+        )),
+        Some(t) => Ok(Duration::try_from_secs_f64(t)
+            .ok()
+            .and_then(|d| Instant::now().checked_add(d))),
+    }
 }
 
 /// An analysis queued on the engine's worker pool. Dropping a `Job` whose
@@ -204,18 +251,60 @@ impl PyJob {
         self.slot.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Take the engine's outcome once (the job must be terminal).
-    fn take(&self, state: JobState) -> Result<Arc<ResultData>, EngineError> {
+    fn evicted_err(&self) -> PyErr {
+        new_err(
+            ErrorKind::NotFound,
+            format!(
+                "the outcome of job {} ({}) was discarded by the engine before it was \
+                 collected: more than max_retained_jobs={} finished jobs were waiting \
+                 (leave max_retained_jobs unset to keep every result until collected)",
+                self.id,
+                self.analysis,
+                self.engine.config().max_retained_jobs
+            ),
+        )
+    }
+
+    /// Mark the job evicted if the engine no longer knows it while the
+    /// slot is still pending. Returns whether the job is (now) evicted.
+    fn check_evicted(&self) -> bool {
+        let mut g = self.lock();
+        match &*g {
+            Slot::Evicted { .. } => true,
+            Slot::Taken { .. } => false,
+            Slot::Pending => {
+                if let Err(EngineError::UnknownJob(_)) = self.engine.job_status(self.id) {
+                    *g = Slot::Evicted { progress: 0.0 };
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Take the engine's outcome once (the job must be terminal). `None`
+    /// when the engine evicted the job first.
+    fn take(&self, state: JobState) -> Option<Result<Arc<ResultData>, EngineError>> {
         let mut g = self.lock();
         if let Slot::Pending = *g {
-            let outcome = self
-                .engine
-                .take_result(self.id)
-                .map(|r| Arc::new(ResultData::from(r)));
-            *g = Slot::Taken { state, outcome };
+            let progress = self.engine.job_status(self.id).map_or(0.0, |s| s.progress);
+            *g = match self.engine.take_result(self.id) {
+                Err(EngineError::UnknownJob(_)) => Slot::Evicted { progress },
+                outcome => {
+                    let outcome = outcome.map(|r| Arc::new(ResultData::from(r)));
+                    let progress = if outcome.is_ok() { 1.0 } else { progress };
+                    Slot::Taken {
+                        state,
+                        outcome,
+                        progress,
+                    }
+                }
+            };
         }
         match &*g {
-            Slot::Taken { outcome, .. } => outcome.clone(),
+            Slot::Taken { outcome, .. } => Some(outcome.clone()),
+            Slot::Evicted { .. } => None,
             Slot::Pending => unreachable!(),
         }
     }
@@ -227,40 +316,48 @@ impl PyJob {
         timeout: Option<f64>,
         progress: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAnalysisResult> {
-        let taken = matches!(*self.lock(), Slot::Taken { .. });
-        let state = if taken {
-            JobState::Done
-        } else {
-            let deadline = match timeout {
-                Some(t) if !(t >= 0.0 && t.is_finite()) => {
-                    return Err(new_err(
-                        ErrorKind::InvalidArgument,
-                        "timeout must be a finite number of seconds >= 0",
-                    ));
+        let state = match &*self.lock() {
+            Slot::Taken { state, .. } => Some(*state),
+            Slot::Evicted { .. } => return Err(self.evicted_err()),
+            Slot::Pending => None,
+        };
+        let state = match state {
+            Some(s) => s,
+            None => {
+                let deadline = deadline(timeout)?;
+                match wait_job(py, &self.engine, self.id, deadline, progress) {
+                    Ok(s) => s,
+                    Err(e) if self.check_evicted() => {
+                        drop(e);
+                        return Err(self.evicted_err());
+                    }
+                    Err(e) => return Err(e),
                 }
-                Some(t) => Instant::now().checked_add(Duration::from_secs_f64(t)),
-                None => None,
-            };
-            wait_job(py, &self.engine, self.id, deadline, progress)?
+            }
         };
         match self.take(state) {
-            Ok(d) => Ok(PyAnalysisResult::new(d)),
-            Err(e) if e.is_cancelled() => Err(new_err(
+            None => Err(self.evicted_err()),
+            Some(Ok(d)) => Ok(PyAnalysisResult::new(d)),
+            Some(Err(e)) if e.is_cancelled() => Err(new_err(
                 ErrorKind::Cancelled,
                 format!("job {} ({}) was cancelled", self.id, self.analysis),
             )),
-            Err(e) => Err(engine_err(e)),
+            Some(Err(e)) => Err(engine_err(e)),
         }
     }
 
-    fn state_value(&self) -> JobState {
-        match &*self.lock() {
-            Slot::Taken { state, .. } => *state,
-            Slot::Pending => self
-                .engine
-                .job_status(self.id)
-                .map(|s| s.state)
-                .unwrap_or(JobState::Cancelled),
+    fn state_value(&self) -> PyJobState {
+        if let Slot::Taken { state, .. } = &*self.lock() {
+            return PyJobState::Engine(*state);
+        }
+        match self.engine.job_status(self.id) {
+            Ok(s) => PyJobState::Engine(s.state),
+            Err(_) if self.check_evicted() => PyJobState::Evicted,
+            // Taken by another thread in between.
+            Err(_) => match &*self.lock() {
+                Slot::Taken { state, .. } => PyJobState::Engine(*state),
+                _ => PyJobState::Evicted,
+            },
         }
     }
 }
@@ -285,23 +382,21 @@ impl PyJob {
         &self.analysis
     }
 
-    /// `queued`, `running`, `done`, `failed` or `cancelled`.
+    /// `queued`, `running`, `done`, `failed` or `cancelled`; `evicted` if
+    /// the engine discarded the outcome before it was collected (only with
+    /// an explicit `Engine(max_retained_jobs=...)`).
     #[getter]
     fn state(&self) -> String {
-        state_name(self.state_value())
+        self.state_value().name()
     }
 
-    /// Progress fraction in `[0, 1]` (monotone).
+    /// Progress fraction in `[0, 1]` (monotone; 1 once a result was
+    /// retrieved, the last value seen for a failed or cancelled job).
     #[getter]
     fn progress(&self) -> f64 {
-        match &*self.lock() {
-            Slot::Taken { outcome, .. } => {
-                if outcome.is_ok() {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+        let g = self.lock();
+        match &*g {
+            Slot::Taken { progress, .. } | Slot::Evicted { progress } => *progress,
             Slot::Pending => self.engine.job_status(self.id).map_or(0.0, |s| s.progress),
         }
     }
@@ -333,7 +428,7 @@ impl PyJob {
     /// Request cancellation. A queued job is cancelled at once; a running
     /// one stops at its next check. `result()` then raises `CancelledError`.
     fn cancel(&self) -> PyResult<()> {
-        if matches!(*self.lock(), Slot::Taken { .. }) {
+        if !matches!(*self.lock(), Slot::Pending) {
             return Ok(());
         }
         match self.engine.cancel_job(self.id) {
@@ -342,19 +437,21 @@ impl PyJob {
         }
     }
 
-    /// Wait for the job; True if it finished within `timeout` seconds.
+    /// Wait for the job; True if it finished within `timeout` seconds
+    /// (`None` or `inf`: wait forever; NaN and negative values raise
+    /// `InvalidArgumentError`).
     #[pyo3(signature = (timeout=None))]
     fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<bool> {
+        let deadline = deadline(timeout)?;
         if self.done() {
             return Ok(true);
         }
-        let deadline = timeout
-            .and_then(|t| Instant::now().checked_add(Duration::from_secs_f64(t.clamp(0.0, 1e9))));
         match wait_job(py, &self.engine, self.id, deadline, None) {
             Ok(_) => Ok(true),
             Err(e) if e.is_instance(py, &crate::errors::class_of(py, ErrorKind::Timeout)) => {
                 Ok(false)
             }
+            Err(_) if self.check_evicted() => Ok(true),
             Err(e) => Err(e),
         }
     }
@@ -379,7 +476,7 @@ impl PyJob {
             "<mklight.Job {} {} {}>",
             self.id,
             self.analysis,
-            state_name(self.state_value())
+            self.state_value().name()
         )
     }
 }
@@ -389,5 +486,25 @@ impl Drop for PyJob {
         if matches!(*self.lock(), Slot::Pending) {
             let _ = self.engine.release_job(self.id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeouts_map_to_deadlines() {
+        pyo3::Python::initialize();
+        Python::attach(|_| {
+            assert_eq!(deadline(None).unwrap(), None);
+            // Too large to represent (or infinite): wait forever, no panic.
+            assert_eq!(deadline(Some(1e20)).unwrap(), None);
+            assert_eq!(deadline(Some(f64::INFINITY)).unwrap(), None);
+            let d = deadline(Some(0.5)).unwrap().unwrap();
+            assert!(d > Instant::now() && d <= Instant::now() + Duration::from_secs(1));
+            assert!(deadline(Some(f64::NAN)).is_err());
+            assert!(deadline(Some(-1.0)).is_err());
+        });
     }
 }

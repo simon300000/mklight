@@ -1,5 +1,6 @@
 """Arrays (buffer protocol, numpy / list fallback) and GIL release."""
 
+import sys
 import threading
 import time
 
@@ -35,6 +36,24 @@ def test_multidimensional_buffer_protocol(achromat):
     # Element (f, w, p, k) is where the row-major layout says it is.
     flat = np.frombuffer(memoryview(p).cast("B"), dtype=np.float64)
     assert flat[((1 * w + 2) * n + 3) * 3 + 1] == p[1, 2, 3, 1]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="__buffer__ needs Python 3.12")
+def test_fortran_contiguous_requests_are_refused_unless_layouts_coincide(achromat):
+    import inspect
+
+    bufs = {b.name: b for b in achromat.run("system_summary").buffers()}
+    a = bufs["n_after"]
+    assert a.ndim == 2 and min(a.shape) > 1
+    F = inspect.BufferFlags
+    with pytest.raises(BufferError):
+        a.__buffer__(F.F_CONTIGUOUS | F.FORMAT)
+    for ok in (F.C_CONTIGUOUS, F.ANY_CONTIGUOUS, F.STRIDES, F.FULL_RO):
+        m = a.__buffer__(ok | F.FORMAT)
+        assert m.c_contiguous and m.shape == a.shape
+    # A 1-d array is both C and Fortran contiguous.
+    u = achromat.run("rng_stream", {"count": 8}, seed=1).buffers()[0]
+    assert u.__buffer__(F.F_CONTIGUOUS | F.FORMAT).f_contiguous
 
 
 def test_lists_without_numpy(achromat):

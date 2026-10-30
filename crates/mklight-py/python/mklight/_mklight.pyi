@@ -20,7 +20,12 @@ Backend: TypeAlias = str | dict[str, str] | None
 ``{"kind": "gpu", "name": "metal"}``."""
 Progress: TypeAlias = Callable[[float, str], object]
 """``progress(fraction, stage)``; fractions are monotone in [0, 1]."""
-FieldArg: TypeAlias = int | tuple[float, float] | Sequence[float]
+FieldArg: TypeAlias = int | tuple[float, float]
+"""A system field index, or a normalised ``(hx, hy)`` point (a tuple)."""
+FieldsArg: TypeAlias = int | tuple[float, float] | Sequence[int | tuple[float, float]]
+"""``trace_grid`` fields: an index, one ``(hx, hy)`` tuple (read exactly as
+``trace`` reads it), or a list of those. A list is always a list of fields:
+``[0, 1]`` means system fields 0 and 1, ``(0, 1)`` the point hx=0, hy=1."""
 ArrayLike: TypeAlias = Any
 """A numpy array (read-only, zero copy) or nested lists without numpy."""
 
@@ -60,7 +65,12 @@ class Array:
 class Engine:
     """Worker pool, analysis registry and compute backends."""
 
-    def __init__(self, config: dict[str, JSON] | None = None, **kwargs: JSON) -> None: ...
+    def __init__(self, config: dict[str, JSON] | None = None, **kwargs: JSON) -> None:
+        """Keys: ``worker_threads``, ``max_retained_jobs`` (default: unlimited;
+        results are kept until collected or their Job is dropped),
+        ``resolved_cache_capacity``, ``progress_interval_ms``, ``app_name``,
+        ``app_version``, ``default_backend`` (a :data:`Backend`). Unknown keys
+        raise ``InvalidArgumentError``."""
     def new(self, sample: str | None = None, system: dict[str, JSON] | None = None) -> Session:
         """A new session from a built-in sample, a system dict, or empty."""
     def open(self, path: str | os.PathLike[str]) -> Session:
@@ -137,15 +147,21 @@ class Job:
     @property
     def analysis(self) -> str: ...
     @property
-    def state(self) -> Literal["queued", "running", "done", "failed", "cancelled"]: ...
+    def state(self) -> Literal["queued", "running", "done", "failed", "cancelled", "evicted"]:
+        """``evicted``: the engine discarded the outcome before it was
+        collected (only with an explicit ``Engine(max_retained_jobs=...)``);
+        ``result()`` then raises ``NotFoundError``."""
     @property
-    def progress(self) -> float: ...
+    def progress(self) -> float:
+        """Monotone fraction in [0, 1]."""
     @property
     def stage(self) -> str: ...
     def status(self) -> dict[str, JSON] | None: ...
     def done(self) -> bool: ...
     def cancel(self) -> None: ...
-    def wait(self, timeout: float | None = None) -> bool: ...
+    def wait(self, timeout: float | None = None) -> bool:
+        """True once finished; False after ``timeout`` seconds (``None`` or
+        ``inf`` wait forever; NaN or negative raise InvalidArgumentError)."""
     def result(self, timeout: float | None = None, progress: Progress | None = None) -> Result:
         """Wait for and return the result (raises CancelledError,
         JobTimeoutError, or the analysis' error)."""
@@ -190,7 +206,7 @@ def trace(
 @overload
 def trace_grid(
     session: Session,
-    fields: FieldArg | Sequence[FieldArg] | None = None,
+    fields: FieldsArg | None = None,
     wavelengths: int | Sequence[int] | None = None,
     pupil: int | None = None,
     clip: bool = True,
@@ -199,7 +215,7 @@ def trace_grid(
 @overload
 def trace_grid(
     session: Session,
-    fields: FieldArg | Sequence[FieldArg] | None = None,
+    fields: FieldsArg | None = None,
     wavelengths: int | Sequence[int] | None = None,
     pupil: dict[str, JSON] | Sequence[Sequence[float]] | ArrayLike = ...,
     clip: bool = True,

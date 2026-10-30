@@ -30,10 +30,20 @@ def test_paraxial_per_wavelength_and_colour(achromat):
 
 
 def test_infinite_values_stay_floats(engine):
-    # The singlet has its stop at the first surface: finite pupils. Any
-    # infinities are floats, never strings or None.
-    p = mklight.paraxial(engine.new(sample="singlet"))
-    assert p["efl"] == pytest.approx(100.0, rel=0.01)
+    # A plane-parallel plate is afocal: EFL, BFL and the image-space
+    # F-number are infinite and must come back as float infinities (not the
+    # model's "inf" strings, and not None).
+    s = engine.new(sample="singlet")
+    finite = mklight.paraxial(s)
+    assert finite["efl"] == pytest.approx(100.0, rel=0.01)
+    sys = s.system
+    for surf in sys["surfaces"][1:3]:
+        surf["shape"]["curvature"] = 0.0
+    s.set_system(sys)
+    p = mklight.paraxial(s)
+    for key in ("efl", "bfl", "image_f_number"):
+        assert isinstance(p[key], float), key
+        assert math.isinf(p[key]), (key, p[key])
     for k, v in p.items():
         if isinstance(v, float):
             assert not math.isnan(v), k

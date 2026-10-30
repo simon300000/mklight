@@ -85,7 +85,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 
 | name | |
 |---|---|
-| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`). |
+| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`). Unknown keys raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
 | `default_engine()`, `new(sample=, system=)`, `open(path)` | Convenience wrappers over a lazily created process-wide engine. |
 | `samples()`, `sample(name)` | Built-in sample identifiers; a sample's system dict. |
 | `trace`, `trace_grid`, `paraxial` | Low-level reference tracing (below). |
@@ -124,6 +124,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
   `seed` in their schema) reject it, as does a conflicting
   `settings["seed"]`. Equal seeds give bit-identical results (Philox,
   `docs/CONVENTIONS.md` §6); the seed is recorded in `run_info["seed"]`.
+  It must be an integer in `0..2**64` (otherwise `InvalidSettingsError`).
 * `backend`: `"auto"`/`None` (engine default, a preference), `"cpu"`,
   `"metal"` / `"gpu:metal"`, or `{"kind": "gpu", "name": "metal"}`.
   Semantics as in `docs/FFI.md` (*Backends*).
@@ -135,10 +136,23 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 
 ### `Job`
 
-`id`, `analysis`, `state` (`queued|running|done|failed|cancelled`),
-`progress`, `stage`, `status()` (the C ABI status dict, `None` after the
-result was retrieved), `done()`, `cancel()`, `wait(timeout=None)` → bool,
-`result(timeout=None, progress=None)` → `Result`.
+`id`, `analysis`, `state` (`queued|running|done|failed|cancelled`, or
+`evicted`, below), `progress` (monotone: 1.0 once a result was retrieved,
+the last value seen for a failed or cancelled job), `stage`, `status()`
+(the C ABI status dict, `None` after the result was retrieved), `done()`,
+`cancel()`, `wait(timeout=None)` → bool, `result(timeout=None,
+progress=None)` → `Result`. Timeouts are seconds; `None` or `inf` wait
+forever; NaN or negative values raise `InvalidArgumentError`.
+
+**Result retention.** The engine keeps a finished job's outcome until it is
+collected. Its `max_retained_jobs` bound (256 in the C ABI, for front ends
+that may never collect) would silently discard results a script still holds
+a `Job` for, e.g. a sweep that submits 300 jobs before collecting any, so
+Python engines default to **unlimited** retention: every job belongs to a
+`Job` object (or a blocking `run`), and a `Job` that is dropped releases its
+job. With an explicit `Engine(max_retained_jobs=n)` the oldest uncollected
+outcomes beyond `n` are discarded; such a job reports `state == "evicted"`,
+`done()` is true and `result()` raises `NotFoundError` naming the bound.
 
 `result()` raises `CancelledError` (cancelled or superseded),
 `JobTimeoutError` (the job keeps running), or the analysis' own error
@@ -160,7 +174,9 @@ For `asyncio`, use `await asyncio.to_thread(job.result)`.
 ### Arrays and zero copy
 
 Engine buffers are wrapped in `mklight.Array`, which exports the Python
-buffer protocol (format, shape and C-order strides). `numpy.asarray(array)`
+buffer protocol (format, shape and C-order strides; a Fortran-contiguous
+request on an array that is not also Fortran-contiguous raises
+`BufferError`, as the protocol requires). `numpy.asarray(array)`
 therefore wraps the engine's memory **without copying**; the resulting
 ndarrays are read-only (`arr.copy()` for a writable copy) and keep the data
 alive. `Array` also has `name`, `dtype` (numpy name), `shape`, `ndim`,
@@ -174,8 +190,10 @@ mklight.trace_grid(session, fields=None, wavelengths=None, pupil=None, clip=True
 mklight.paraxial(session, wavelength=None)
 ```
 
-* `field`: a system field index, or a normalised `(hx, hy)` pair (two
-  floats). `wavelength`: a system wavelength index (`None`: primary).
+* `field`: a system field index, or a normalised `(hx, hy)` tuple (ints or
+  floats: `(0, 1)` is the full +y field point, not fields 0 and 1).
+  `wavelength`: a system wavelength index (`None`: primary). Negative or
+  out-of-range indices raise `InvalidArgumentError`.
 * `trace` returns `status` (`ok`, `miss`, `clipped`,
   `total_internal_reflection`, `failed`), `reason` (for failures), `ok`,
   `surface` (where the ray stopped; the image on success), `point`, `dir`
@@ -186,7 +204,11 @@ mklight.paraxial(session, wavelength=None)
   `cos_incidence`, `opl`, `transmittance` `(N,)`. Record 0 is the starting
   ray (entrance frame for an object at infinity), record `i` surface `i`.
 * `trace_grid` traces fields × wavelengths × pupil points in parallel.
-  `fields`: `None` (all), an index, `(hx, hy)` or a list; `wavelengths`:
+  `fields`: `None` (all), an index, one `(hx, hy)` tuple (read exactly as
+  `trace` reads it), or a **list** of indices and `(hx, hy)` pairs. A list
+  is always a list of fields: `[0, 1]` is system fields 0 and 1,
+  `(0, 1)` the point hx = 0, hy = 1, `[(0, 1)]` that point as a list;
+  `wavelengths`:
   `None` (all), an index or a list; `pupil`: an int `n` (`n × n` grid
   clipped to the unit disk; default 16), a pattern dict
   (`{"type": "hexapolar", "rings": 6}`, `{"type": "fan_y", "n": 21}`, … as

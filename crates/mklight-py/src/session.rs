@@ -84,12 +84,81 @@ fn invalid(msg: impl Into<String>) -> PyErr {
     new_err(ErrorKind::InvalidArgument, msg)
 }
 
+/// Build the engine configuration from the merged `config` dict and
+/// keyword arguments.
+///
+/// * Keys must be `EngineConfig` fields (the C ABI's configuration keys);
+///   a misspelt key is an error rather than silently ignored.
+/// * `default_backend` takes the same forms as the `backend` argument of
+///   `run`/`submit` (`"cpu"`, `"metal"`, `{"kind": "gpu", ...}`; `"auto"`
+///   or `None` keep the engine default).
+/// * `max_retained_jobs` defaults to unlimited. The engine's bounded
+///   retention exists for front ends that may never collect a result; here
+///   every job is owned by a `Job` object (whose result is collected, or
+///   which releases the job when garbage-collected) or by a blocking
+///   `run`, so a bound would only discard results a script still holds a
+///   `Job` for (a sweep submitting more jobs than the bound before
+///   collecting any). An explicit value is honoured; jobs discarded by it
+///   report the state `evicted`.
+pub fn engine_config(mut cfg: serde_json::Map<String, Value>) -> Result<EngineConfig, String> {
+    let known = match serde_json::to_value(EngineConfig::default()) {
+        Ok(Value::Object(o)) => o,
+        _ => return Err("engine configuration is not a JSON object".into()),
+    };
+    let mut unknown: Vec<&str> = cfg
+        .keys()
+        .filter(|k| !known.contains_key(*k))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        let mut names: Vec<&str> = known.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        return Err(format!(
+            "unknown engine configuration key(s) {} (known: {})",
+            unknown.join(", "),
+            names.join(", ")
+        ));
+    }
+    if let Some(b) = cfg.remove("default_backend")
+        && let Some(backend) = parse_backend(&b)?
+    {
+        let v = serde_json::to_value(backend).map_err(|e| e.to_string())?;
+        cfg.insert("default_backend".into(), v);
+    }
+    if !cfg.contains_key("max_retained_jobs") {
+        cfg.insert("max_retained_jobs".into(), json!(usize::MAX));
+    }
+    serde_json::from_value(Value::Object(cfg)).map_err(|e| format!("invalid engine config: {e}"))
+}
+
+/// Parse an integer argument that must fit `0..2^64` (seeds, indices),
+/// so negative or huge values raise `kind` instead of `OverflowError`.
+pub fn u64_arg(obj: &Bound<'_, PyAny>, what: &str, kind: ErrorKind) -> PyResult<u64> {
+    if obj.is_instance_of::<pyo3::types::PyBool>() {
+        return Err(new_err(
+            kind,
+            format!("{what} must be an integer, got a bool"),
+        ));
+    }
+    obj.extract::<u64>().map_err(|_| {
+        let repr = obj
+            .repr()
+            .map_or_else(|_| "?".to_string(), |r| r.to_string());
+        new_err(
+            kind,
+            format!("{what} must be an integer in 0..2**64, got {repr}"),
+        )
+    })
+}
+
 /// The MKLight engine: worker pool, analysis registry and backends.
 /// Cheap to share; sessions keep it alive.
 ///
 /// `Engine(config=None, **kwargs)`: configuration keys are those of the C
 /// ABI (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`,
-/// `progress_interval_ms`, `app_name`, `app_version`, `default_backend`).
+/// `progress_interval_ms`, `app_name`, `app_version`, `default_backend`);
+/// see [`engine_config`] for validation and the retention default.
 #[pyclass(frozen, module = "mklight", name = "Engine")]
 pub struct PyEngine {
     pub(crate) engine: Engine,
@@ -113,8 +182,7 @@ impl PyEngine {
         {
             cfg.extend(o);
         }
-        let config: EngineConfig = serde_json::from_value(Value::Object(cfg))
-            .map_err(|e| invalid(format!("invalid engine config: {e}")))?;
+        let config = engine_config(cfg).map_err(invalid)?;
         Ok(PyEngine {
             engine: Engine::new(config),
         })
@@ -269,11 +337,15 @@ impl PySession {
         &self,
         analysis: &str,
         settings: Option<&Bound<'_, PyAny>>,
-        seed: Option<u64>,
+        seed: Option<&Bound<'_, PyAny>>,
         backend: Option<&Bound<'_, PyAny>>,
         allow_backend_fallback: bool,
         view_key: Option<String>,
     ) -> PyResult<AnalysisRequest> {
+        let seed = seed
+            .filter(|s| !s.is_none())
+            .map(|s| u64_arg(s, "seed", ErrorKind::InvalidSettings))
+            .transpose()?;
         let settings = opt_value(settings)?;
         let backend = parse_backend(&opt_value(backend)?).map_err(invalid)?;
         let schema = self
@@ -442,7 +514,7 @@ impl PySession {
         py: Python<'_>,
         analysis: &str,
         settings: Option<Bound<'_, PyAny>>,
-        seed: Option<u64>,
+        seed: Option<Bound<'_, PyAny>>,
         backend: Option<Bound<'_, PyAny>>,
         progress: Option<Bound<'_, PyAny>>,
         allow_backend_fallback: bool,
@@ -451,7 +523,7 @@ impl PySession {
         let req = self.request(
             analysis,
             settings.as_ref(),
-            seed,
+            seed.as_ref(),
             backend.as_ref(),
             allow_backend_fallback,
             None,
@@ -476,7 +548,7 @@ impl PySession {
         py: Python<'_>,
         analysis: &str,
         settings: Option<Bound<'_, PyAny>>,
-        seed: Option<u64>,
+        seed: Option<Bound<'_, PyAny>>,
         backend: Option<Bound<'_, PyAny>>,
         allow_backend_fallback: bool,
         view_key: Option<String>,
@@ -484,7 +556,7 @@ impl PySession {
         let req = self.request(
             analysis,
             settings.as_ref(),
-            seed,
+            seed.as_ref(),
             backend.as_ref(),
             allow_backend_fallback,
             view_key,
@@ -562,6 +634,30 @@ mod tests {
             Ok(json!({"seed": 9}))
         );
         assert!(apply_seed(&seeded, json!({"seed": 8}), Some(9)).is_err());
+    }
+
+    #[test]
+    fn engine_config_validates_keys_backend_and_retention() {
+        let cfg = |v: Value| engine_config(v.as_object().unwrap().clone());
+        let c = cfg(json!({})).unwrap();
+        assert_eq!(c.max_retained_jobs, usize::MAX);
+        assert_eq!(c.default_backend, Backend::CpuReference);
+        let c = cfg(json!({"max_retained_jobs": 4, "default_backend": "gpu:metal"})).unwrap();
+        assert_eq!(c.max_retained_jobs, 4);
+        assert_eq!(c.default_backend, Backend::Gpu("metal".into()));
+        assert_eq!(
+            cfg(json!({"default_backend": "auto"}))
+                .unwrap()
+                .default_backend,
+            Backend::CpuReference
+        );
+        let e = cfg(json!({"worker_thread": 2})).unwrap_err();
+        assert!(
+            e.contains("worker_thread") && e.contains("worker_threads"),
+            "{e}"
+        );
+        assert!(cfg(json!({"default_backend": 3})).is_err());
+        assert!(cfg(json!({"worker_threads": "many"})).is_err());
     }
 
     #[test]

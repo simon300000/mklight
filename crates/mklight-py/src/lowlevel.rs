@@ -25,7 +25,7 @@ use mklight_trace::{
 use crate::array::export_owned;
 use crate::convert::{from_py, ser_to_py};
 use crate::errors::{ErrorKind, core_err, engine_err, new_err};
-use crate::session::PySession;
+use crate::session::{PySession, u64_arg};
 use crate::wait::run_interruptible;
 
 /// Status codes of `trace_grid`'s `status` array, by name.
@@ -81,18 +81,66 @@ fn field_spec(v: &Value, n_fields: usize) -> Result<FieldSpec, String> {
     }
 }
 
-/// `None` → every system field; an index or `(hx, hy)` → that one; a list
-/// of those → each.
+/// `None` → every system field; an index → that one; a list → each entry
+/// (an index or an `(hx, hy)` pair). A top-level list is always a list of
+/// fields, so `[0, 1]` means system fields 0 and 1; a single normalised
+/// point arrives here already wrapped (see [`fields_value`]).
 pub fn parse_fields(v: &Value, n_fields: usize) -> Result<Vec<FieldSpec>, String> {
     match v {
         Value::Null => Ok((0..n_fields).map(FieldSpec::System).collect()),
         Value::Number(_) => Ok(vec![field_spec(v, n_fields)?]),
-        Value::Array(a) if a.len() == 2 && a.iter().all(|x| x.is_f64()) => {
-            Ok(vec![field_spec(v, n_fields)?])
-        }
-        Value::Array(a) => a.iter().map(|x| field_spec(x, n_fields)).collect(),
+        Value::Array(a) => a
+            .iter()
+            .map(|x| field_spec(x, n_fields))
+            .collect::<Result<_, _>>()
+            .map_err(|e| {
+                if a.len() == 2 && a.iter().all(Value::is_number) {
+                    format!(
+                        "{e} (a list of fields; write one normalised field point as a \
+                         tuple (hx, hy))"
+                    )
+                } else {
+                    e
+                }
+            }),
         other => Err(format!("invalid fields {other}")),
     }
+}
+
+/// The `fields` argument of `trace_grid` as JSON. A Python `tuple` of two
+/// numbers is one normalised `(hx, hy)` point, read exactly as `trace`
+/// reads its `field` argument (whether the numbers are ints or floats);
+/// it is wrapped into a one-element list. Everything else converts as is.
+pub fn fields_value(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Value> {
+    let Some(obj) = obj else {
+        return Ok(Value::Null);
+    };
+    let v = from_py(obj)?;
+    match &v {
+        Value::Array(a)
+            if obj.is_instance_of::<PyTuple>()
+                && a.len() == 2
+                && a.iter().all(Value::is_number) =>
+        {
+            Ok(Value::Array(vec![v]))
+        }
+        _ => Ok(v),
+    }
+}
+
+/// An optional wavelength index argument: `None` → `None`; otherwise an
+/// integer in range (anything else raises `InvalidArgumentError`).
+fn wavelength_arg(obj: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Option<usize>> {
+    let Some(obj) = obj.filter(|o| !o.is_none()) else {
+        return Ok(None);
+    };
+    let w = u64_arg(obj, "wavelength index", ErrorKind::InvalidArgument)?;
+    if w >= n as u64 {
+        return Err(invalid(format!(
+            "wavelength index {w} out of range (0..{n})"
+        )));
+    }
+    Ok(Some(w as usize))
 }
 
 /// `None` → every system wavelength; an index or a list of indices.
@@ -293,7 +341,7 @@ pub fn trace<'py>(
     pyo: Python<'py>,
     session: &PySession,
     field: Option<Bound<'py, PyAny>>,
-    wavelength: Option<usize>,
+    wavelength: Option<Bound<'py, PyAny>>,
     px: f64,
     py: f64,
     records: bool,
@@ -302,12 +350,8 @@ pub fn trace<'py>(
     let tracer = session.tracer(pyo)?;
     let fv = field.as_ref().map_or(Ok(Value::from(0)), from_py)?;
     let spec = field_spec(&fv, tracer.fields().len()).map_err(invalid)?;
-    let wl = match wavelength {
-        Some(w) => {
-            parse_wavelengths(&Value::from(w), tracer.num_wavelengths()).map_err(invalid)?[0]
-        }
-        None => tracer.system().primary_wavelength,
-    };
+    let wl = wavelength_arg(wavelength.as_ref(), tracer.num_wavelengths())?
+        .unwrap_or(tracer.system().primary_wavelength);
     let opts = TraceOptions {
         clip,
         ..tracer.options()
@@ -367,7 +411,7 @@ pub fn trace_grid<'py>(
     progress: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let tracer = session.tracer(py)?;
-    let fv = fields.as_ref().map_or(Ok(Value::Null), from_py)?;
+    let fv = fields_value(fields.as_ref())?;
     let specs = parse_fields(&fv, tracer.fields().len()).map_err(invalid)?;
     let wv = wavelengths.as_ref().map_or(Ok(Value::Null), from_py)?;
     let wls = parse_wavelengths(&wv, tracer.num_wavelengths()).map_err(invalid)?;
@@ -514,7 +558,7 @@ fn first_order_dict<'py>(py: Python<'py>, fo: &FirstOrder) -> PyResult<Bound<'py
 pub fn paraxial<'py>(
     py: Python<'py>,
     session: &PySession,
-    wavelength: Option<usize>,
+    wavelength: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let par = py
         .detach(|| -> Result<Paraxial, mklight_engine::EngineError> {
@@ -522,16 +566,7 @@ pub fn paraxial<'py>(
             Ok(Paraxial::new(&resolved)?)
         })
         .map_err(engine_err)?;
-    let wl = match wavelength {
-        None => par.primary,
-        Some(w) if w < par.wavelengths.len() => w,
-        Some(w) => {
-            return Err(invalid(format!(
-                "wavelength index {w} out of range (0..{})",
-                par.wavelengths.len()
-            )));
-        }
-    };
+    let wl = wavelength_arg(wavelength.as_ref(), par.wavelengths.len())?.unwrap_or(par.primary);
     let d = first_order_dict(py, par.at(wl))?;
     d.set_item("wavelength_index", wl)?;
     d.set_item("primary_wavelength", par.primary)?;
@@ -562,9 +597,16 @@ mod tests {
                 FieldSpec::System(2)
             ]
         );
+        // A top-level list is a list of fields, whatever the numbers.
         assert_eq!(
-            parse_fields(&json!([0.0, 0.5]), 3).unwrap(),
-            vec![FieldSpec::Normalized(0.0, 0.5)]
+            parse_fields(&json!([0, 1]), 3).unwrap(),
+            vec![FieldSpec::System(0), FieldSpec::System(1)]
+        );
+        let e = parse_fields(&json!([0.0, 0.5]), 3).unwrap_err();
+        assert!(e.contains("tuple (hx, hy)"), "{e}");
+        assert_eq!(
+            parse_fields(&json!([[0, 1]]), 3).unwrap(),
+            vec![FieldSpec::Normalized(0.0, 1.0)]
         );
         assert_eq!(
             parse_fields(&json!([2, [0.0, 1.0]]), 3).unwrap(),

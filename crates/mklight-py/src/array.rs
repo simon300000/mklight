@@ -67,6 +67,13 @@ pub fn c_strides(shape: &[usize], itemsize: usize) -> Vec<isize> {
     s
 }
 
+/// Whether a row-major array of `shape` is also column-major (Fortran)
+/// contiguous: true when at most one axis has more than one element, or
+/// the array is empty.
+pub fn is_f_contiguous(shape: &[usize]) -> bool {
+    shape.contains(&0) || shape.iter().filter(|&&n| n > 1).count() <= 1
+}
+
 #[pyclass(frozen, module = "mklight", name = "Array")]
 pub struct Array {
     buf: Arc<Buffer>,
@@ -191,6 +198,16 @@ impl Array {
             return Err(PyBufferError::new_err("mklight arrays are read-only"));
         }
         let this = slf.get();
+        // The data are row-major: C and "any" contiguity requests are
+        // satisfied as is; a Fortran-order request only when the layouts
+        // coincide (the buffer protocol forbids granting it otherwise).
+        if (flags & ffi::PyBUF_F_CONTIGUOUS) == ffi::PyBUF_F_CONTIGUOUS
+            && !is_f_contiguous(&this.buf.shape)
+        {
+            return Err(PyBufferError::new_err(
+                "mklight arrays are C (row-major) contiguous, not Fortran contiguous",
+            ));
+        }
         let dtype = this.buf.dtype();
         let itemsize = dtype.size_bytes() as isize;
         // SAFETY: `view` is a valid `Py_buffer` supplied by the interpreter.
@@ -277,6 +294,16 @@ mod tests {
         assert_eq!(c_strides(&[2, 3, 4], 8), vec![96, 32, 8]);
         assert_eq!(c_strides(&[5], 4), vec![4]);
         assert_eq!(c_strides(&[], 8), Vec::<isize>::new());
+    }
+
+    #[test]
+    fn fortran_contiguity() {
+        assert!(is_f_contiguous(&[]));
+        assert!(is_f_contiguous(&[7]));
+        assert!(is_f_contiguous(&[1, 5, 1]));
+        assert!(is_f_contiguous(&[0, 3]));
+        assert!(!is_f_contiguous(&[5, 3]));
+        assert!(!is_f_contiguous(&[2, 1, 2]));
     }
 
     #[test]

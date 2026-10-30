@@ -40,3 +40,27 @@ def test_engine_config_is_validated():
         mklight.Engine(worker_threads="many")
     e = mklight.Engine({"worker_threads": 1}, app_name="pytest")
     assert e.config["worker_threads"] == 1 and e.config["app_name"] == "pytest"
+
+
+def test_engine_config_rejects_unknown_keys():
+    with pytest.raises(mklight.InvalidArgumentError, match="worker_thread"):
+        mklight.Engine(worker_thread=2)
+    with pytest.raises(mklight.InvalidArgumentError, match="bogus"):
+        mklight.Engine({"bogus": 1})
+
+
+def test_engine_default_backend_takes_the_run_forms():
+    assert mklight.Engine(default_backend="cpu").default_backend == {"kind": "cpu_reference"}
+    assert mklight.Engine(default_backend="auto").config["default_backend"] == {
+        "kind": "cpu_reference"
+    }
+    assert mklight.Engine(default_backend={"kind": "cpu_reference"}).config[
+        "default_backend"
+    ] == {"kind": "cpu_reference"}
+    with pytest.raises(mklight.InvalidArgumentError):
+        mklight.Engine(default_backend=3)
+
+
+def test_python_engines_retain_results_until_collected():
+    assert mklight.Engine().config["max_retained_jobs"] == 2**64 - 1
+    assert mklight.Engine(max_retained_jobs=5).config["max_retained_jobs"] == 5
