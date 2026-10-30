@@ -26,8 +26,11 @@
 //! 3. clip against the surface's fixed aperture (`ResolvedSurface::passes_aperture`),
 //!    unless [`TraceOptions::clip`] is false. Coordinate breaks never clip;
 //! 4. interact: refract (stable vector Snell, TIR detection), reflect, ideal
-//!    lens, or nothing (dummy, coordinate break, and the image surface, where
-//!    the direction is reported as incident).
+//!    lens, or nothing (dummy of any shape, coordinate break, and the image
+//!    surface, where the direction is reported as incident). An ideal lens
+//!    takes its object vergence from
+//!    [`crate::paraxial::ideal_lens_object_vergence`] (an `O(i)` scalar y–nu
+//!    sweep, done only when a ray reaches an ideal lens).
 //!
 //! The object surface (index 0) never interacts. A trace of an object at
 //! infinity starts its optical path at the input ray's point; ray generation
@@ -41,6 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::interact::{ideal_lens, reflect, refract};
 use crate::numeric::Compensated;
+use crate::paraxial::ideal_lens_object_vergence;
 use crate::surface::{IntersectError, IntersectSettings, intersect};
 
 /// A ray: point and unit direction in one frame.
@@ -64,13 +68,17 @@ pub enum FailReason {
     NoConvergence,
     /// The ray reached a region where the surface sag is undefined.
     OutsideDomain,
-    /// A non-finite value appeared.
+    /// A non-finite value appeared (including a non-finite input ray, which
+    /// is reported at surface 0).
     NonFinite,
     /// The ray is parallel to an ideal-lens plane.
     Degenerate,
     /// Real ray aiming did not converge, so the requested pupil point could not
     /// be generated.
     AimNotConverged,
+    /// The field point could not be resolved (e.g. a real image height that
+    /// no chief ray reaches); no ray of the field is generated.
+    FieldUnreachable,
 }
 
 /// Outcome of a trace. `surface` is the index where the ray stopped.
@@ -245,6 +253,19 @@ pub fn trace_ray(
             opl,
             transmittance: (-a).exp(),
         };
+    // A non-finite input is a numerical failure, not a geometric miss.
+    if !(start.pos.is_finite() && start.dir.is_finite()) {
+        return done(
+            TraceStatus::Failed {
+                surface: 0,
+                reason: FailReason::NonFinite,
+            },
+            ray,
+            0,
+            opl,
+            absorb,
+        );
+    }
 
     for i in 1..=last {
         ray = transfer_into(sys, i, ray);
@@ -298,17 +319,18 @@ pub fn trace_ray(
         let mut cos_i = ray.dir.dot(hit.normal).abs().min(1.0);
         if i < image && !is_cb {
             match (&s.shape, s.interaction) {
+                // Dummy is a pass-through for every shape, ideal lenses included.
+                (_, Interaction::Dummy) => {}
                 (SurfaceShape::Paraxial { focal_length }, inter) => {
                     let mut k = ray.dir;
                     let n2 = if inter == Interaction::Reflect {
                         k = reflect(k, hit.normal).0;
                         n1
-                    } else if inter == Interaction::Dummy {
-                        n1
                     } else {
                         s.n_after[wl]
                     };
-                    match ideal_lens(hit.point, k, *focal_length, n1, n2) {
+                    let vergence = ideal_lens_object_vergence(sys, i, wl);
+                    match ideal_lens(hit.point, k, *focal_length, n1, n2, vergence) {
                         Some((d, delta)) => {
                             ray.dir = d;
                             opl.add(delta);
@@ -349,7 +371,6 @@ pub fn trace_ray(
                     ray.dir = d;
                     cos_i = c;
                 }
-                (_, Interaction::Dummy) => {}
             }
         }
         if let Some(r) = record.as_deref_mut() {

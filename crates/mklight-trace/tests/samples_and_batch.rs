@@ -182,6 +182,38 @@ fn batch_job_cancels_and_reports_progress() {
     let ctx = JobContext::new();
     trace_grid_job(&t, &grid, &TraceOptions::default(), &ctx).unwrap();
     assert!((ctx.progress.fraction() - 1.0).abs() < 1e-12);
+    // An empty grid still finishes at 1.
+    let empty: [[f64; 2]; 0] = [];
+    let none = Grid {
+        fields: t.fields(),
+        wavelengths: &wls,
+        pupil: &empty,
+    };
+    let ctx = JobContext::new();
+    assert!(
+        trace_grid_job(&t, &none, &TraceOptions::default(), &ctx)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(ctx.progress.fraction(), 1.0);
+    let ctx = JobContext::new();
+    assert!(
+        opd_grid_job(&t, &none, &TraceOptions::default(), &ctx)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(ctx.progress.fraction(), 1.0);
+    // OPD jobs reach 1 and cancel before any reference is computed.
+    let ctx = JobContext::new();
+    opd_grid_job(&t, &grid, &TraceOptions::default(), &ctx).unwrap();
+    assert!((ctx.progress.fraction() - 1.0).abs() < 1e-12);
+    let ctx = JobContext::new();
+    ctx.cancel.cancel();
+    assert_eq!(
+        opd_grid_job(&t, &grid, &TraceOptions::default(), &ctx).unwrap_err(),
+        MkError::Cancelled
+    );
+    assert_eq!(ctx.progress.fraction(), 0.0);
     let ctx = JobContext::new();
     ctx.cancel.cancel();
     assert_eq!(

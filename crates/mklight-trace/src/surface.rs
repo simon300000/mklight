@@ -10,10 +10,13 @@
 //! Implicit form `F = c(x² + y² + (1+k) z²) − 2z = 0`, with the vertex sheet
 //! `z = c r² / (1 + √(1 − (1+k)c²r²))`.
 //!
-//! 1. **Transfer to the vertex tangent plane**: `t₀ = −P_z / D_z` and
-//!    `Q = P + t₀ D` (so `Q_z = 0`). This keeps the quadratic's coefficients
-//!    small (CONVENTIONS §7.2). The step is skipped when `|D_z| < 1e-9`
-//!    (ray almost parallel to the tangent plane), with `t₀ = 0`.
+//! 1. **Transfer to the point of closest approach to the vertex**:
+//!    `t₀ = −P·D` and `Q = P + t₀ D` (so `Q·D = 0` and `|Q| ≤ |P|` for every
+//!    direction). This keeps the quadratic's coefficients small
+//!    (CONVENTIONS §7.2): for near-axial rays `Q` is close to the vertex
+//!    tangent plane, and for grazing rays it stays bounded, whereas a transfer
+//!    to the tangent plane (`t₀ = −P_z/D_z`) would move the ray up to
+//!    `|P_z/D_z|` away and lose all accuracy as `D_z → 0`.
 //! 2. With `κ = 1 + k`, substituting `Q + t D` gives `A t² + 2B t + C = 0`:
 //!    `A = c(D_x² + D_y² + κ D_z²)`, `B = c(Q·D)_κ − D_z`,
 //!    `C = c(Q_x² + Q_y² + κ Q_z²) − 2 Q_z`, where `(Q·D)_κ = Q_xD_x + Q_yD_y + κQ_zD_z`.
@@ -37,13 +40,27 @@
 //!
 //! # Even asphere
 //!
-//! The base conic intersection seeds Newton's method on the sag residual
-//! `g(t) = z(t) − sag(r²(t))` with `g'(t) = D_z − 2 sag'(r²)(x D_x + y D_y)`.
-//! Iteration stops when `|g| ≤ tol` (then one last Newton correction is
-//! applied, which squares the error) or fails after `max_iter` steps.
+//! The base conic intersection from `Q` (the plane `z = 0` when `c = 0`)
+//! seeds Newton's method on the sag residual `g(t) = z(t) − sag(r²(t))` with
+//! `g'(t) = D_z − 2 sag'(r²)(x D_x + y D_y)`. Iteration stops when
+//! `|g| ≤ tol` (then one last Newton correction is applied, which squares the
+//! error); otherwise it gives up after `max_iter` Newton steps.
 //! `sag'(r²) = c / (2w) + Σ aᵢ (i+2) r^(2i+2)`, `w = √(1 − κc²r²)`; the normal
 //! `N ∝ (−x(c + 2wP'), −y(c + 2wP'), w)` (multiplied through by `w`, so no
 //! division by `w`).
+//!
+//! Failures are classified so that every backend agrees on ray survival:
+//!
+//! * [`IntersectError::Miss`]: the iteration broke down (`g' = 0`,
+//!   non-finite step), or stalled at the iteration cap without converging,
+//!   **and** `g` never changed sign over the iterates, i.e. nothing indicates
+//!   that the ray crosses the surface. Leaving the sag domain before any sign
+//!   change, when the conic seed already missed, is also a miss.
+//! * [`IntersectError::NoConvergence`]: `g` changed sign (a root is
+//!   bracketed) but Newton did not converge, or the cap was reached while
+//!   `|g|` was still decreasing by at least a factor two per step.
+//! * [`IntersectError::OutsideDomain`]: an iterate left the domain
+//!   `1 − κc²r² ≥ 0` in any other case.
 //!
 //! # Plane, ideal lens, coordinate break
 //!
@@ -56,9 +73,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::numeric::discriminant;
 
-/// Below this `|D_z|`, the conic solve starts from the ray point itself
-/// instead of transferring to the vertex tangent plane.
-const MIN_DZ_TRANSFER: f64 = 1e-9;
 /// Tolerance of the vertex-sheet test `1 − κcz ≥ −tol`.
 const SHEET_TOL: f64 = 1e-12;
 
@@ -97,9 +111,10 @@ pub enum IntersectError {
 /// optical path can be accumulated without rounding the sum first.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit {
-    /// Distance to the vertex tangent plane (step 1 above).
+    /// Distance to the point of closest approach to the vertex (step 1
+    /// above; the plane distance for planes and ideal lenses).
     pub t_transfer: f64,
-    /// Remaining distance from the tangent plane to the surface.
+    /// Remaining distance from that point to the surface.
     pub t_surface: f64,
     /// Local intersection point.
     pub point: Vec3,
@@ -150,18 +165,19 @@ pub fn intersect_plane(p: Vec3, d: Vec3) -> Result<Hit, IntersectError> {
     })
 }
 
-/// Step 1: transfer to the vertex tangent plane. Returns `(t₀, Q)`.
+/// Step 1: transfer to the point of closest approach to the vertex.
+/// Returns `(t₀, Q)` with `t₀ = −P·D`.
 #[inline]
-fn to_tangent_plane(p: Vec3, d: Vec3) -> (f64, Vec3) {
-    if d.z.abs() > MIN_DZ_TRANSFER {
-        let t0 = -p.z / d.z;
-        (
-            t0,
-            Vec3::new(t0.mul_add(d.x, p.x), t0.mul_add(d.y, p.y), 0.0),
-        )
-    } else {
-        (0.0, p)
-    }
+fn to_closest_approach(p: Vec3, d: Vec3) -> (f64, Vec3) {
+    let t0 = -p.dot(d);
+    (
+        t0,
+        Vec3::new(
+            t0.mul_add(d.x, p.x),
+            t0.mul_add(d.y, p.y),
+            t0.mul_add(d.z, p.z),
+        ),
+    )
 }
 
 /// Conic intersection (module docs, steps 1–5).
@@ -169,7 +185,7 @@ pub fn intersect_conic(c: f64, k: f64, p: Vec3, d: Vec3) -> Result<Hit, Intersec
     if c == 0.0 {
         return intersect_plane(p, d);
     }
-    let (t0, q) = to_tangent_plane(p, d);
+    let (t0, q) = to_closest_approach(p, d);
     let (t1, point) = conic_from(c, k, q, d)?;
     Ok(Hit {
         t_transfer: t0,
@@ -179,8 +195,9 @@ pub fn intersect_conic(c: f64, k: f64, p: Vec3, d: Vec3) -> Result<Hit, Intersec
     })
 }
 
-/// Steps 2–5 from a point `q` (normally on the tangent plane). Returns the
-/// distance from `q` and the hit point.
+/// Steps 2–5 from a point `q` (normally the closest approach to the vertex).
+/// Returns the distance from `q` and the hit point. Also valid for `c = 0`
+/// (the plane `z = 0`).
 #[inline]
 fn conic_from(c: f64, k: f64, q: Vec3, d: Vec3) -> Result<(f64, Vec3), IntersectError> {
     let kap = 1.0 + k;
@@ -317,42 +334,57 @@ pub fn intersect_even_asphere(
     if coefficients.iter().all(|a| *a == 0.0) {
         return intersect_conic(c, k, p, d);
     }
-    let (t0, q) = to_tangent_plane(p, d);
-    let mut t = if c != 0.0 {
-        conic_from(c, k, q, d).map_or(0.0, |(t, _)| t)
-    } else if q.z == 0.0 {
-        0.0
-    } else {
-        // No tangent-plane transfer happened (ray almost parallel to it).
-        return Err(IntersectError::Miss);
-    };
+    let (t0, q) = to_closest_approach(p, d);
+    let seed = conic_from(c, k, q, d);
+    let seed_hit = seed.is_ok();
+    let mut t = seed.map_or(0.0, |(t, _)| t);
     let kap = 1.0 + k;
-    for _ in 0..settings.max_iterations {
+    // Sign of the first residual and whether any later one differs.
+    let mut g_first = 0.0f64;
+    let mut sign_changed = false;
+    let mut prev_abs_g = f64::INFINITY;
+    // Breakdown without evidence of a crossing is a miss (module docs).
+    let breakdown = |sign_changed: bool| {
+        if sign_changed {
+            IntersectError::NoConvergence
+        } else {
+            IntersectError::Miss
+        }
+    };
+    for it in 0..=settings.max_iterations {
         let x = t.mul_add(d.x, q.x);
         let y = t.mul_add(d.y, q.y);
         let z = t.mul_add(d.z, q.z);
         let r2 = x.mul_add(x, y * y);
         let arg = (-kap * c * c).mul_add(r2, 1.0);
         if arg.is_nan() || arg < 0.0 {
-            return Err(IntersectError::OutsideDomain);
+            return Err(if !seed_hit && !sign_changed {
+                IntersectError::Miss
+            } else {
+                IntersectError::OutsideDomain
+            });
         }
         let w = arg.sqrt();
         let (poly, dpoly) = asphere_poly(coefficients, r2);
         let sag = c * r2 / (1.0 + w) + poly;
         let g = z - sag;
+        if !g.is_finite() {
+            return Err(breakdown(sign_changed));
+        }
+        if it == 0 {
+            g_first = g;
+        } else if g != 0.0 && (g > 0.0) != (g_first > 0.0) {
+            sign_changed = true;
+        }
         // g'(t) · w, kept free of 1/w so it is finite at the rim.
         let slope_w = (2.0 * w).mul_add(dpoly, c);
         let gp = d.z - slope_w / w.max(f64::MIN_POSITIVE) * x.mul_add(d.x, y * d.y);
-        if !(gp.is_finite() && gp != 0.0) {
-            return Err(IntersectError::NoConvergence);
-        }
-        let dt = g / gp;
-        t -= dt;
-        if !t.is_finite() {
-            return Err(IntersectError::NoConvergence);
-        }
+        let gp_ok = gp.is_finite() && gp != 0.0;
         if g.abs() <= settings.tolerance {
-            // The final correction has been applied; the residual is now O(g²).
+            // Final correction: the residual is now O(g²).
+            if gp_ok {
+                t -= g / gp;
+            }
             let point = Vec3::new(
                 t.mul_add(d.x, q.x),
                 t.mul_add(d.y, q.y),
@@ -367,8 +399,26 @@ pub fn intersect_even_asphere(
                 normal,
             });
         }
+        if it == settings.max_iterations {
+            // Cap reached: still converging, or a bracketed root, is a
+            // non-convergence; a stalled search with no crossing is a miss.
+            let converging = g.abs() <= 0.5 * prev_abs_g;
+            return Err(if converging {
+                IntersectError::NoConvergence
+            } else {
+                breakdown(sign_changed)
+            });
+        }
+        if !gp_ok {
+            return Err(breakdown(sign_changed));
+        }
+        t -= g / gp;
+        if !t.is_finite() {
+            return Err(breakdown(sign_changed));
+        }
+        prev_abs_g = g.abs();
     }
-    Err(IntersectError::NoConvergence)
+    unreachable!("the loop returns at it == max_iterations")
 }
 
 #[cfg(test)]
@@ -461,6 +511,99 @@ mod tests {
         assert!((h.point.z - shape.sag(r2).unwrap()).abs() < 1e-12);
     }
 
+    /// Sag residual of a hit on `shape`.
+    fn residual(shape: &SurfaceShape, h: &Hit) -> f64 {
+        let r2 = h.point.x.mul_add(h.point.x, h.point.y * h.point.y);
+        h.point.z - shape.sag(r2).unwrap()
+    }
+
+    #[test]
+    fn grazing_rays_stay_on_the_surface() {
+        // Rays almost parallel to the vertex tangent plane, D_z down to 0:
+        // the closest-approach transfer keeps the hit exact.
+        let cases = [
+            (0.01, 0.0, Vec3::new(0.0, -5.0, 0.1)),
+            (0.02, 0.0, Vec3::new(0.0, -30.0, 2.0)),
+            (-0.02, -0.7, Vec3::new(3.0, -30.0, -2.0)),
+            (0.05, -1.0, Vec3::new(0.0, -20.0, 1.0)),
+        ];
+        for (c, k, p) in cases {
+            let shape = SurfaceShape::Conic {
+                curvature: c,
+                conic: k,
+            };
+            let asph = SurfaceShape::EvenAsphere {
+                curvature: c,
+                conic: k,
+                coefficients: vec![1e-6, -2e-9],
+            };
+            for e in 2..=12 {
+                for dz in [10f64.powi(-e), -(10f64.powi(-e))] {
+                    let d = unit(0.0, 1.0, dz);
+                    for s in [&shape, &asph] {
+                        let h = intersect(s, p, d, &Default::default())
+                            .unwrap_or_else(|err| panic!("c={c} k={k} dz={dz}: {err:?}"));
+                        assert!(
+                            residual(s, &h).abs() < 1e-12,
+                            "c={c} k={k} dz={dz}: residual {}",
+                            residual(s, &h)
+                        );
+                        let t = h.t_transfer + h.t_surface;
+                        assert!((p + d * t).max_abs_diff(h.point) < 1e-12);
+                    }
+                }
+            }
+            // Exactly parallel to the tangent plane.
+            let h = intersect(&shape, p, Vec3::Y, &Default::default()).unwrap();
+            assert!(residual(&shape, &h).abs() < 1e-12);
+        }
+        // The near-vertex root of the reviewer's case: y = −√(R² − (R − z)²).
+        let shape = SurfaceShape::Conic {
+            curvature: 0.01,
+            conic: 0.0,
+        };
+        let h = intersect(
+            &shape,
+            Vec3::new(0.0, -5.0, 0.1),
+            unit(0.0, 1.0, 2e-9),
+            &Default::default(),
+        )
+        .unwrap();
+        let y = (1e4f64 - 99.9f64.powi(2)).sqrt();
+        assert!((h.point.y.abs() - y).abs() < 1e-6, "{:?}", h.point);
+    }
+
+    #[test]
+    fn asphere_without_a_crossing_is_a_miss() {
+        // z − 1e-3 r⁴ < 0 along the whole ray: no root, so the ray misses
+        // (not a numerical failure).
+        let shape = SurfaceShape::EvenAsphere {
+            curvature: 0.0,
+            conic: 0.0,
+            coefficients: vec![1e-3],
+        };
+        let p = Vec3::new(0.0, 9.0, -1.0);
+        let d = unit(0.0, 0.5, 1.0);
+        for s in 0..=2500 {
+            let t = -50.0 + 0.1 * s as f64;
+            let q = p + d * t;
+            assert!(q.z - 1e-3 * q.y.powi(4) < 0.0);
+        }
+        assert_eq!(
+            intersect(&shape, p, d, &Default::default()),
+            Err(IntersectError::Miss)
+        );
+        // A ray that does cross converges.
+        let h = intersect(
+            &shape,
+            Vec3::new(0.0, 2.0, -1.0),
+            Vec3::Z,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!((h.point.z - 1.6e-2).abs() < 1e-14);
+    }
+
     #[test]
     fn asphere_failures_are_reported() {
         let shape = SurfaceShape::EvenAsphere {
@@ -474,7 +617,7 @@ mod tests {
             max_iterations: 1,
         };
         assert_eq!(
-            intersect(&shape, p, Vec3::Z, &one_step),
+            intersect(&shape, p, unit(0.0, 0.25, 1.0), &one_step),
             Err(IntersectError::NoConvergence)
         );
         // Beyond the sphere's rim (r > 30) the sag is undefined.

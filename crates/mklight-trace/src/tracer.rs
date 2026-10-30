@@ -110,12 +110,28 @@ pub struct AimData {
 }
 
 /// A field resolved for tracing: its source and per-wavelength aim cache.
+///
+/// A system field that cannot be resolved (e.g. a real image height that no
+/// chief ray reaches) is still prepared, with `error` set: every ray traced
+/// from it is reported as `Failed { surface: 0, reason: FieldUnreachable }`,
+/// so the other fields stay usable (optimiser trial steps, partial results).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PreparedField {
     pub point: FieldPoint,
+    /// Placeholder (on-axis) when `error` is set.
     pub source: ObjectSource,
     /// Indexed by system wavelength.
     pub aims: Vec<AimData>,
+    /// Why the field could not be resolved; `None` for a usable field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PreparedField {
+    /// `true` unless the field could not be resolved.
+    pub fn is_valid(&self) -> bool {
+        self.error.is_none()
+    }
 }
 
 /// Convergence report of one generated ray.
@@ -213,11 +229,20 @@ impl SequentialTracer {
         let n = t.sys.system().fields.fields.len();
         let mut fields = Vec::with_capacity(n);
         for i in 0..n {
-            let f = t.prepare_field(FieldPoint::system(t.sys.system(), i))?;
-            if f.aims.iter().any(|a| !a.converged) {
-                t.warnings
-                    .push(format!("field {i}: chief-ray aiming did not converge"));
-            }
+            let point = FieldPoint::system(t.sys.system(), i);
+            let f = match t.prepare_field(point) {
+                Ok(f) => {
+                    if f.aims.iter().any(|a| !a.converged) {
+                        t.warnings
+                            .push(format!("field {i}: chief-ray aiming did not converge"));
+                    }
+                    f
+                }
+                Err(e) => {
+                    t.warnings.push(format!("field {i} unusable: {e}"));
+                    t.failed_field(point, e.to_string())
+                }
+            };
             fields.push(f);
         }
         t.fields = fields;
@@ -390,7 +415,29 @@ impl SequentialTracer {
             point,
             source,
             aims,
+            error: None,
         })
+    }
+
+    /// A field that could not be resolved (see [`PreparedField`]).
+    fn failed_field(&self, point: FieldPoint, error: String) -> PreparedField {
+        let source = if self.sys.object_at_infinity {
+            ObjectSource::Direction { dir: Vec3::Z }
+        } else {
+            ObjectSource::Point { point: Vec3::ZERO }
+        };
+        let aim = AimData {
+            chief: [0.0, 0.0],
+            jacobian: None,
+            converged: false,
+            residual: f64::INFINITY,
+        };
+        PreparedField {
+            point,
+            source,
+            aims: vec![aim; self.num_wavelengths()],
+            error: Some(error),
+        }
     }
 
     /// The object source of a normalised field point (module docs).
@@ -536,6 +583,9 @@ impl SequentialTracer {
             residual: f64::INFINITY,
             converged: false,
         };
+        if !field.is_valid() {
+            return Err(fail);
+        }
         match self.aiming {
             RayAiming::Off => {
                 let a = self.paraxial_aim([px, py]);
@@ -604,7 +654,9 @@ impl SequentialTracer {
     }
 
     /// Generate and trace pupil point `(px, py)`. A ray that cannot be aimed
-    /// is reported as `Failed { surface: stop, reason: AimNotConverged }`.
+    /// is reported as `Failed { surface: stop, reason: AimNotConverged }`,
+    /// and every ray of an unresolved field as
+    /// `Failed { surface: 0, reason: FieldUnreachable }`.
     pub fn trace(
         &self,
         field: &PreparedField,
@@ -616,7 +668,8 @@ impl SequentialTracer {
         self.trace_with(field, wl, px, py, opts, None)
     }
 
-    /// As [`Self::trace`], filling `record` with per-surface data.
+    /// As [`Self::trace`], filling `record` with per-surface data. A ray that
+    /// cannot be generated leaves `record` empty.
     pub fn trace_with(
         &self,
         field: &PreparedField,
@@ -628,16 +681,23 @@ impl SequentialTracer {
     ) -> TraceResult {
         match self.generate(field, wl, px, py) {
             Ok(g) => trace_ray(&self.sys, &g.ray, wl, opts, record),
-            Err(_) => TraceResult {
-                status: TraceStatus::Failed {
-                    surface: self.sys.stop,
-                    reason: FailReason::AimNotConverged,
-                },
-                ray: Ray::new(Vec3::ZERO, Vec3::Z),
-                surface: 0,
-                opl: Default::default(),
-                transmittance: 0.0,
-            },
+            Err(_) => {
+                if let Some(r) = record {
+                    r.clear();
+                }
+                let (surface, reason) = if field.is_valid() {
+                    (self.sys.stop, FailReason::AimNotConverged)
+                } else {
+                    (0, FailReason::FieldUnreachable)
+                };
+                TraceResult {
+                    status: TraceStatus::Failed { surface, reason },
+                    ray: Ray::new(Vec3::ZERO, Vec3::Z),
+                    surface,
+                    opl: Default::default(),
+                    transmittance: 0.0,
+                }
+            }
         }
     }
 

@@ -17,6 +17,8 @@ use crate::tracer::{PreparedField, SequentialTracer};
 
 /// Rays per cancellation / progress block in the job variants.
 const BLOCK: usize = 8192;
+/// OPD references (chief-ray aims and traces) per block in [`opd_grid_job`].
+const REF_BLOCK: usize = 16;
 
 /// One traced sample of a batch.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,13 +95,17 @@ pub fn trace_grid_job(
     opts: &TraceOptions,
     ctx: &JobContext,
 ) -> MkResult<Vec<BatchRay>> {
-    run_blocks(grid.len(), ctx, "tracing rays", |i| {
+    run_blocks(grid.len(), BLOCK, ctx, "tracing rays", |i| {
         one(tracer, grid, opts, i)
     })
 }
 
+/// Evaluate `f(0..total)` in parallel blocks of `block`, checking for
+/// cancellation before each block and reporting progress after it (ending
+/// at 1, also for an empty range).
 fn run_blocks<T: Send>(
     total: usize,
+    block: usize,
     ctx: &JobContext,
     stage: &str,
     f: impl Fn(usize) -> T + Sync,
@@ -109,7 +115,7 @@ fn run_blocks<T: Send>(
     ctx.report(0.0, stage);
     while start < total {
         ctx.check()?;
-        let end = (start + BLOCK).min(total);
+        let end = (start + block).min(total);
         let mut block: Vec<T> = (start..end)
             .into_par_iter()
             .with_min_len(64)
@@ -120,6 +126,7 @@ fn run_blocks<T: Send>(
         ctx.report(start as f64 / total as f64, stage);
     }
     ctx.check()?;
+    ctx.report(1.0, stage);
     Ok(out)
 }
 
@@ -141,22 +148,43 @@ pub fn opd_grid_job(
     opts: &TraceOptions,
     ctx: &JobContext,
 ) -> MkResult<Vec<Option<f64>>> {
-    ctx.check()?;
-    let refs = references(tracer, grid);
-    run_blocks(grid.len(), ctx, "computing OPD", |i| {
-        opd_one(tracer, grid, opts, &refs, i)
-    })
+    // Progress share of the references: each costs a chief-ray aim and
+    // trace, weighted here as 8 rays.
+    let n_refs = grid.fields.len() * grid.wavelengths.len();
+    let rays = if grid.pupil.is_empty() { 0 } else { grid.len() };
+    let split = if n_refs + rays == 0 {
+        0.0
+    } else {
+        (8 * n_refs) as f64 / (8 * n_refs + rays) as f64
+    };
+    let refs = run_blocks(
+        n_refs,
+        REF_BLOCK,
+        &ctx.subrange(0.0, split),
+        "OPD references",
+        |k| reference(tracer, grid, k),
+    )?;
+    run_blocks(
+        grid.len(),
+        BLOCK,
+        &ctx.subrange(split, 1.0),
+        "computing OPD",
+        |i| opd_one(tracer, grid, opts, &refs, i),
+    )
+}
+
+fn reference(tracer: &SequentialTracer, grid: &Grid, k: usize) -> Option<OpdReference> {
+    let w = grid.wavelengths.len();
+    tracer
+        .opd_reference(&grid.fields[k / w], grid.wavelengths[k % w])
+        .ok()
 }
 
 fn references(tracer: &SequentialTracer, grid: &Grid) -> Vec<Option<OpdReference>> {
     let w = grid.wavelengths.len();
     (0..grid.fields.len() * w)
         .into_par_iter()
-        .map(|k| {
-            tracer
-                .opd_reference(&grid.fields[k / w], grid.wavelengths[k % w])
-                .ok()
-        })
+        .map(|k| reference(tracer, grid, k))
         .collect()
 }
 

@@ -300,6 +300,160 @@ fn ideal_lens_is_perfect_for_collimated_beams() {
     }
 }
 
+/// Finite-conjugate system of ideal lenses: object `t0` before surface 1,
+/// `(focal length, material after, thickness after)` per lens, the stop on
+/// surface `stop`, object-height fields; the last thickness is replaced by the
+/// paraxial image distance.
+fn ideal_relay(
+    t0: f64,
+    lenses: &[(Option<f64>, MaterialRef, f64)],
+    stop: usize,
+    na: f64,
+    heights: &[f64],
+) -> mklight_trace::SequentialTracer {
+    let build = |last: Option<f64>| {
+        let mut s = mklight_core::OpticalSystem::new_empty();
+        s.wavelengths = mono();
+        s.aperture = mklight_core::ApertureSpec::ObjectSpaceNa { value: na };
+        s.fields = mklight_core::FieldSet {
+            kind: mklight_core::FieldKind::ObjectHeight,
+            fields: heights
+                .iter()
+                .map(|&y| mklight_core::Field::new(0.0, y))
+                .collect(),
+        };
+        let mut surfaces = vec![surf(0, SurfaceShape::Plane, t0, MaterialRef::Air)];
+        for (j, (f, m, t)) in lenses.iter().enumerate() {
+            let shape = match f {
+                Some(f) => SurfaceShape::Paraxial { focal_length: *f },
+                None => SurfaceShape::Plane,
+            };
+            let t = if j + 1 == lenses.len() {
+                last.unwrap_or(*t)
+            } else {
+                *t
+            };
+            surfaces.push(surf(j as u64 + 1, shape, t, m.clone()));
+        }
+        let m_img = lenses.last().unwrap().1.clone();
+        surfaces.push(surf(99, SurfaceShape::Plane, 0.0, m_img));
+        s.surfaces = surfaces;
+        s.stop = stop;
+        s
+    };
+    let t = tracer(build(None));
+    let b = t.paraxial().primary().image_distance;
+    tracer(build(Some(b)))
+}
+
+/// Largest |OPD| (waves) and spot radius (mm) over a hexapolar pupil.
+fn worst_opd_and_spot(t: &mklight_trace::SequentialTracer) -> (f64, f64) {
+    let (mut opd, mut spot) = (0.0f64, 0.0f64);
+    for f in t.fields() {
+        let reference = t.opd_reference(f, 0).unwrap();
+        let chief = t.chief(f, 0);
+        for p in (PupilSampling::Hexapolar { rings: 8 }).points() {
+            let r = t.trace(f, 0, p[0], p[1], &TraceOptions::default());
+            assert!(r.status.is_ok());
+            spot = spot.max((r.ray.pos - chief.ray.pos).norm());
+            opd = opd.max(reference.opd_waves(&r).unwrap().abs());
+        }
+    }
+    (opd, spot)
+}
+
+#[test]
+fn ideal_lens_is_perfect_at_finite_conjugates() {
+    let air = || MaterialRef::Air;
+    let cases: Vec<(&str, mklight_trace::SequentialTracer)> = vec![
+        // 2f–2f at NA 0.2 (previously off by ~150 waves with a plane-wave
+        // phase law).
+        (
+            "2f-2f",
+            ideal_relay(200.0, &[(Some(100.0), air(), 200.0)], 1, 0.2, &[0.0, 10.0]),
+        ),
+        // Object-space telecentric: stop in the back focal plane.
+        (
+            "telecentric",
+            ideal_relay(
+                100.0,
+                &[(Some(50.0), air(), 50.0), (None, air(), 50.0)],
+                2,
+                0.05,
+                &[0.0, 5.0],
+            ),
+        ),
+        // Second lens sees a virtual (converging) object.
+        (
+            "virtual object",
+            ideal_relay(
+                75.0,
+                &[(Some(50.0), air(), 100.0), (Some(100.0), air(), 30.0)],
+                1,
+                0.15,
+                &[0.0, 4.0],
+            ),
+        ),
+        // Image space in glass (n₁ ≠ n₂).
+        (
+            "glass image space",
+            ideal_relay(
+                150.0,
+                &[(Some(80.0), MaterialRef::glass("N-BK7"), 100.0)],
+                1,
+                0.25,
+                &[0.0, 6.0],
+            ),
+        ),
+    ];
+    for (name, t) in &cases {
+        let (opd, spot) = worst_opd_and_spot(t);
+        assert!(spot < 1e-11, "{name}: spot {spot:e} mm");
+        assert!(opd < 1e-9, "{name}: OPD {opd:e} waves");
+    }
+}
+
+#[test]
+fn ideal_lens_carries_incoming_aberration_unchanged() {
+    // A plano-convex singlet followed by an ideal lens placed in its
+    // converging beam (virtual object): perfect imaging preserves the wave
+    // aberration of every ray, so the fitted W040 (same entrance-pupil
+    // coordinates) must equal the singlet's own. This holds only because the
+    // ideal lens's path term is stationary in the incoming direction.
+    let singlet = |extra: bool| {
+        let mut body = vec![
+            surf(
+                1,
+                SurfaceShape::sphere(50.0),
+                4.0,
+                MaterialRef::glass("N-BK7"),
+            ),
+            surf(2, SurfaceShape::Plane, 60.0, MaterialRef::Air),
+        ];
+        if extra {
+            body.push(surf(
+                3,
+                SurfaceShape::Paraxial { focal_length: 40.0 },
+                60.0,
+                MaterialRef::Air,
+            ));
+        }
+        let sys = infinite_system(8.0, body, 9);
+        let t = tracer(sys.clone());
+        let mut sys = sys;
+        let n = sys.surfaces.len();
+        sys.surfaces[n - 2].thickness = t.paraxial().primary().image_distance;
+        tracer(sys)
+    };
+    let w_single = fitted_w040(&singlet(false));
+    let w_relay = fitted_w040(&singlet(true));
+    assert!(w_single.abs() > 0.05, "{w_single}");
+    assert!(
+        (w_relay - w_single).abs() < 1e-6 * w_single.abs(),
+        "{w_single} vs {w_relay}"
+    );
+}
+
 #[test]
 fn intersection_matches_sag_definition_on_aspheres_near_the_edge() {
     // Strong asphere, rays up to 99.5 % of the conic domain: Newton converges

@@ -68,53 +68,92 @@ pub fn reflect(k: Vec3, normal: Vec3) -> (Vec3, f64) {
 /// Ideal thin lens of focal length `f` (image-space, in the medium after the
 /// lens; `f > 0` converges) at the local plane `z = 0`.
 ///
-/// With direction tangents taken along the propagation direction,
-/// `t = (k_x, k_y)/|k_z|`, and the hit point `(x, y)`, the outgoing tangents
-/// are `t' = (n₁/n₂)·t − (x, y)/f`. Every ray of an incoming plane wave with
-/// tangent `t` then passes through the focal point `F = (f(n₁/n₂)t, ±f)`, and
-/// (for `n₁ = n₂`) every ray from an object point at distance `a` in front
-/// passes through its Gaussian image at `b` behind (`1/a + 1/b = 1/f`): the
-/// element is free of ray aberrations for real rays, not only paraxially.
+/// # Ray geometry
 ///
-/// Optical path: so that the element is also perfect in phase, the
-/// optical path of the ray is increased by
-/// `Δ = sgn(f)·n₂(|F| − |F − X|) − n₁ (X·k)`, `X = (x, y, 0)`.
-/// This makes every ray of an incoming plane wave arrive at `F` with the same
-/// optical path as the vertex ray (`Δ(0) = 0`). `|F| − |F − X|` is evaluated
-/// as `(2F·X − X·X)/(|F| + |F − X|)`, free of cancellation. The path
-/// correction is exact for collimated input (the standard use of an ideal
-/// lens: focusing afocal systems or idealised eyepieces); for finite
-/// conjugates the ray geometry is still perfect but OPD contains the residual
-/// of this plane-wave phase law.
+/// With direction tangents taken along the propagation direction,
+/// `t = (k_x, k_y, k_z)/|k_z|` (so `t_z = ±1`), and the hit point
+/// `X = (x, y, 0)`, the outgoing lateral tangents are
+/// `t'_⊥ = r·t_⊥ − X/f`, `r = n₁/n₂`. Every ray from an object point at
+/// distance `a` in front of the lens (along the incoming propagation) then
+/// passes through its Gaussian image at distance `b` behind it, where
+/// `n₂/b + n₁/a = n₂/f`, for every `a` (plane waves: `b = f`). The element
+/// is free of ray aberrations for real rays, not only paraxially.
+///
+/// # Optical path
+///
+/// A thin element can only be perfect in phase for one conjugate pair. The
+/// caller passes the paraxial **object vergence** `ρ_a = 1/a` of the axial
+/// object (see [`crate::paraxial::ideal_lens_object_vergence`]); the image
+/// vergence is `ρ_b = 1/b = 1/f − r ρ_a`. For each ray, its object point is
+/// put on the incoming line, `O = X − a t`, and its image point on the
+/// outgoing line, `O' = X + b t'`. All rays of a pencil from one object point
+/// share `O` and `O'` (above), and the path added at the lens is
+///
+/// `Δ = n₁ sgn(a)(|O| − |X − O|) + n₂ sgn(b)(|O'| − |O' − X|)`,
+///
+/// which makes the optical path `O → X → O'` equal to the one through the
+/// vertex (`Δ(0) = 0`), with the signs selecting diverging (real) or
+/// converging (virtual) spheres. `Δ` is also stationary with respect to the
+/// incoming direction (the `O` and `O'` terms change by `∓n₁ X·δt`), so
+/// aberrations of the incoming wavefront are carried through unchanged to
+/// first order, as by a physical thin lens. Each term is evaluated by
+/// [`sphere_term`] without cancellation, and reduces to the plane-wave law
+/// `−n₁ X·k` (object) or `n₂ X·k'` (image) at zero vergence.
 ///
 /// Returns `None` when the ray is parallel to the lens plane.
 #[inline]
-pub fn ideal_lens(point: Vec3, k: Vec3, f: f64, n1: f64, n2: f64) -> Option<(Vec3, f64)> {
+pub fn ideal_lens(
+    point: Vec3,
+    k: Vec3,
+    f: f64,
+    n1: f64,
+    n2: f64,
+    object_vergence: f64,
+) -> Option<(Vec3, f64)> {
     if k.z == 0.0 || f == 0.0 || !f.is_finite() {
         return None;
     }
     let sz = k.z.signum();
     let az = k.z.abs();
     let r = n1 / n2;
-    let tx = k.x / az;
-    let ty = k.y / az;
-    let tx2 = r.mul_add(tx, -point.x / f);
-    let ty2 = r.mul_add(ty, -point.y / f);
+    let t = Vec3::new(k.x / az, k.y / az, sz);
+    let tx2 = r.mul_add(t.x, -point.x / f);
+    let ty2 = r.mul_add(t.y, -point.y / f);
     let inv = 1.0 / (tx2.mul_add(tx2, ty2.mul_add(ty2, 1.0))).sqrt();
     let out = Vec3::new(tx2 * inv, ty2 * inv, sz * inv);
-    // Path correction.
-    let fx = f * r * tx;
-    let fy = f * r * ty;
-    let fz = f; // |F| uses f²; the z sign does not matter for lengths.
-    let f_len = (fx.mul_add(fx, fy.mul_add(fy, fz * fz))).sqrt();
-    let dx = fx - point.x;
-    let dy = fy - point.y;
-    let fx_len = (dx.mul_add(dx, dy.mul_add(dy, fz * fz))).sqrt();
-    let fdotx = fx.mul_add(point.x, fy * point.y);
-    let xx = point.x.mul_add(point.x, point.y * point.y);
-    let diff = (2.0f64.mul_add(fdotx, -xx)) / (f_len + fx_len);
-    let delta = f.signum() * n2 * diff - n1 * point.x.mul_add(k.x, point.y * k.y);
+    let t_out = Vec3::new(tx2, ty2, sz);
+    let x = Vec3::new(point.x, point.y, 0.0);
+    let rho_b = (-r).mul_add(object_vergence, 1.0 / f);
+    let delta = n1.mul_add(
+        sphere_term(x, t, object_vergence),
+        -n2 * sphere_term(x, t_out, -rho_b),
+    );
     Some((out, delta))
+}
+
+/// `sgn(a)(|O| − |X − O|)` with `O = X − a t`, from the vergence `ρ = 1/a`
+/// (`X·ẑ = 0`, `|t_z| = 1`). With `D = |O|² − |X − O|² = X·X − 2a t·X`:
+///
+/// * far point (`|a||t| ≥ |X|`, including `ρ = 0`): divide `D` and the sum
+///   of lengths by `|a|`, giving `(ρ X·X − 2 t·X) / (|t − ρX| + |t|)`
+///   (`−t·X/|t| = −k·X` for a plane wave);
+/// * near point: `sgn(a)(2 O·X − X·X)/(|O| + |a||t|)` (`a = 0`: `±|X|`).
+///
+/// Neither form subtracts two nearly equal lengths. The image-side term is
+/// `sgn(b)(|O'| − |O' − X|) = −sphere_term(X, t', −1/b)`.
+#[inline]
+pub fn sphere_term(x: Vec3, t: Vec3, rho: f64) -> f64 {
+    let tn = t.norm();
+    let xx = x.dot(x);
+    let tx = t.dot(x);
+    if rho.abs() * xx.sqrt() <= tn {
+        let den = (t - x * rho).norm() + tn;
+        rho.mul_add(xx, -2.0 * tx) / den
+    } else {
+        let a = 1.0 / rho;
+        let o = x - t * a;
+        a.signum() * 2.0f64.mul_add(o.dot(x), -xx) / (o.norm() + a.abs() * tn)
+    }
 }
 
 #[cfg(test)]
@@ -171,7 +210,7 @@ mod tests {
         let mut opls = Vec::new();
         for &(x, y) in &[(0.0, 0.0), (10.0, 0.0), (-7.0, 9.0), (3.0, -12.0)] {
             let p = Vec3::new(x, y, 0.0);
-            let (kp, delta) = ideal_lens(p, k, f, 1.0, 1.0).unwrap();
+            let (kp, delta) = ideal_lens(p, k, f, 1.0, 1.0, 0.0).unwrap();
             let t = (focus.z - p.z) / kp.z;
             assert!((p + kp * t).max_abs_diff(focus) < 1e-12);
             // Path from the incoming plane wavefront through the origin.
@@ -180,5 +219,68 @@ mod tests {
         for o in &opls {
             assert!((o - opls[0]).abs() < 1e-12, "{opls:?}");
         }
+    }
+
+    #[test]
+    fn ideal_lens_is_perfect_at_finite_conjugates() {
+        // Object point O at axial distance a (real a > 0 in front, virtual
+        // a < 0 behind): all rays through the lens meet at one image point
+        // O', and the optical path O → X → O' (signed for virtual points)
+        // equals the vertex ray's.
+        for (n1, n2) in [(1.0f64, 1.0f64), (1.0, 1.5), (1.6, 1.2)] {
+            for f in [80.0f64, -60.0] {
+                for a in [300.0f64, 120.0, 37.0, 0.5, -45.0, -400.0, 1e9] {
+                    let r = n1 / n2;
+                    let rho_b = 1.0 / f - r / a;
+                    if rho_b.abs() < 1e-6 {
+                        continue;
+                    }
+                    let b = 1.0 / rho_b;
+                    let o = Vec3::new(3.0, -7.0, -a);
+                    let sa = a.signum();
+                    let sb = b.signum();
+                    let mut image = None;
+                    let mut opls = Vec::new();
+                    for &(x, y) in &[(0.0, 0.0), (10.0, 0.0), (-7.0, 9.0), (3.0, -12.0)] {
+                        let p = Vec3::new(x, y, 0.0);
+                        let k = ((p - o) * sa).normalized();
+                        let (kp, delta) = ideal_lens(p, k, f, n1, n2, 1.0 / a).unwrap();
+                        // Image point on the outgoing line at axial distance b.
+                        let q = p + kp * (b / kp.z);
+                        match image {
+                            None => image = Some(q),
+                            Some(i) => assert!(
+                                q.max_abs_diff(i) < 1e-9 * b.abs().max(1.0),
+                                "n=({n1},{n2}) f={f} a={a}: {q:?} vs {i:?}"
+                            ),
+                        }
+                        opls.push(sa * n1 * (p - o).norm() + delta + sb * n2 * (q - p).norm());
+                    }
+                    let scale = a.abs().max(b.abs()).max(1.0);
+                    for v in &opls {
+                        assert!(
+                            (v - opls[0]).abs() < 1e-13 * scale,
+                            "n=({n1},{n2}) f={f} a={a}: {opls:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sphere_term_forms_agree() {
+        // The far and near forms are the same function: compare against the
+        // direct definition where it is well conditioned.
+        let x = Vec3::new(4.0, -3.0, 0.0);
+        let t = Vec3::new(0.1, 0.2, 1.0);
+        for a in [1000.0f64, 50.0, 5.0, 2.0, 0.5, -0.5, -3.0, -80.0] {
+            let o = x - t * a;
+            let direct = a.signum() * (o.norm() - (x - o).norm());
+            assert!((sphere_term(x, t, 1.0 / a) - direct).abs() < 1e-12, "a={a}");
+        }
+        assert!((sphere_term(x, t, 0.0) + t.dot(x) / t.norm()).abs() < 1e-15);
+        assert!((sphere_term(x, t, f64::INFINITY) - 5.0).abs() < 1e-15);
+        assert_eq!(sphere_term(Vec3::ZERO, t, 0.3), 0.0);
     }
 }

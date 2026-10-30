@@ -18,7 +18,7 @@
 //! * transfer: `y_{j+1} = y_j + t_j ω_j / N_j`;
 //! * refraction: `ω_j = ω_{j−1} − y_j φ_j` with `φ_j = c_j (N_j − N_{j−1})` for
 //!   conics and aspheres (the polynomial has no paraxial power),
-//!   `φ_j = |N_j| / f` for an ideal lens, and `0` for planes, dummies,
+//!   `φ_j = |N_j| / f` for an ideal lens, and `0` for planes, dummies (any shape),
 //!   coordinate breaks and the image surface.
 //!
 //! Two basis rays span every paraxial ray: `A` (`y₁ = 1`, `u₀ = 0`) and `B`
@@ -35,7 +35,8 @@
 //!   1 in object space; `±∞` (object-space telecentric) when `y_A(stop) = 0`.
 //! * The marginal ray starts at the axial object point (parallel to the axis
 //!   at infinity) and is scaled by the aperture specification:
-//!   EPD → `r_EP`; image-space F/# → `r_EP = |EFL|/(2F)`; object NA →
+//!   EPD → `r_EP`; image-space F/# → `r_EP = f'/(2F)` with the rear focal
+//!   length `f' = |N'|·|EFL|` (core: F/# `= f'/EPD`); object NA →
 //!   `u₀ = tan(asin(NA/n₀))` (so a real ray to the pupil edge has exactly that
 //!   NA); paraxial working F/# → `|ω'_m| = 1/(2F_w)`; float by stop size →
 //!   `|y_m(stop)|` equals the stop's fixed semi-diameter.
@@ -45,7 +46,9 @@
 //!   image height uses its paraxial equivalent here).
 //! * Exit pupil position `z_XP = −y_c/u'_c` relative to the image surface;
 //!   diameter `2|y_m + u'_m z_XP|`.
-//! * Image-space F/# `= |EFL| / EPD`; paraxial working F/# `= 1/(2|ω'_m|)`;
+//! * Image-space F/# `= f' / EPD = |N'||EFL| / EPD` (equal to the working F/#
+//!   at infinity only when image space is air); paraxial working F/#
+//!   `= 1/(2|ω'_m|)`;
 //!   object NA `= n₀ sin(atan|u_m|)`; image NA `= |N'| sin(atan|u'_m|)`;
 //!   lateral magnification `m = ω_m(object)/ω'_m` (0 for an object at
 //!   infinity); Lagrange invariant `H = ω_c y_m − ω_m y_c` (at surface 1);
@@ -114,32 +117,14 @@ impl ParaxialModel {
         let mut nn = vec![0.0; n];
         let mut phi = vec![0.0; n];
         let mut t = vec![0.0; n];
-        let mut sign = 1.0;
         nn[0] = sys.n_object[wl];
         t[0] = sys.surfaces[0].thickness;
         for j in 1..n {
-            let s = &sys.surfaces[j];
-            let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
-            if !is_cb && s.interaction == Interaction::Reflect && j < n - 1 {
-                sign = -sign;
-            }
-            nn[j] = sign * s.n_after[wl];
-            t[j] = if j < n - 1 { s.thickness } else { 0.0 };
-            phi[j] = if j == n - 1 || is_cb {
-                0.0
+            (nn[j], phi[j]) = surface_step(sys, j, wl, nn[j - 1]);
+            t[j] = if j < n - 1 {
+                sys.surfaces[j].thickness
             } else {
-                match &s.shape {
-                    SurfaceShape::Paraxial { focal_length } => nn[j].abs() / focal_length,
-                    SurfaceShape::Conic { curvature, .. }
-                    | SurfaceShape::EvenAsphere { curvature, .. } => {
-                        if s.interaction == Interaction::Dummy {
-                            0.0
-                        } else {
-                            curvature * (nn[j] - nn[j - 1])
-                        }
-                    }
-                    _ => 0.0,
-                }
+                0.0
             };
         }
         ParaxialModel {
@@ -176,6 +161,59 @@ impl ParaxialModel {
     }
 }
 
+/// Signed reduced index `N_j` after surface `j` and its power `φ_j`, given
+/// `N_{j−1}` (module docs). Dummy interactions, coordinate breaks and the
+/// image surface have no power.
+#[inline]
+fn surface_step(sys: &ResolvedSystem, j: usize, wl: usize, n_prev: f64) -> (f64, f64) {
+    let n = sys.surfaces.len();
+    let s = &sys.surfaces[j];
+    let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
+    let mirror = !is_cb && s.interaction == Interaction::Reflect && j < n - 1;
+    let sign = if (n_prev < 0.0) != mirror { -1.0 } else { 1.0 };
+    let nj = sign * s.n_after[wl];
+    let phi = if j == n - 1 || is_cb || s.interaction == Interaction::Dummy {
+        0.0
+    } else {
+        match &s.shape {
+            SurfaceShape::Paraxial { focal_length } => nj.abs() / focal_length,
+            SurfaceShape::Conic { curvature, .. } | SurfaceShape::EvenAsphere { curvature, .. } => {
+                curvature * (nj - n_prev)
+            }
+            _ => 0.0,
+        }
+    };
+    (nj, phi)
+}
+
+/// Paraxial **object vergence** `1/a` at ideal-lens surface `i` for
+/// wavelength `wl`: `a` is the distance, measured against the propagation
+/// direction, from the lens to the paraxial image of the axial object point
+/// formed by surfaces `1..i` (`a > 0`: real object in front of the lens,
+/// `a < 0`: virtual, `1/a = 0`: collimated).
+///
+/// It is traced with the axial y–nu ray (`y₀ = 0`, `u₀ = 1` for a finite
+/// object, `y₁ = 1`, `u₀ = 0` at infinity): with `y_i` and the reduced slope
+/// `ω_{i−1}` before the lens, `1/a = ω_{i−1}/(y_i |N_{i−1}|)`. The value is a
+/// pure function of `(system, i, wl)`; GPU kernels receive it per
+/// (surface, wavelength) instead of recomputing it per ray.
+/// See [`crate::interact::ideal_lens`].
+pub fn ideal_lens_object_vergence(sys: &ResolvedSystem, i: usize, wl: usize) -> f64 {
+    let mut n_prev = sys.n_object[wl];
+    let (mut y, mut w) = if sys.object_at_infinity {
+        (1.0, 0.0)
+    } else {
+        (sys.surfaces[0].thickness, n_prev)
+    };
+    for j in 1..i {
+        let (nj, phi) = surface_step(sys, j, wl, n_prev);
+        w = (-y).mul_add(phi, w);
+        y = (sys.surfaces[j].thickness / nj).mul_add(w, y);
+        n_prev = nj;
+    }
+    w / (y * n_prev.abs())
+}
+
 /// First-order properties at one wavelength (module docs for definitions).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FirstOrder {
@@ -193,6 +231,7 @@ pub struct FirstOrder {
     /// Exit-pupil position relative to the image surface.
     pub exit_pupil_position: f64,
     pub exit_pupil_diameter: f64,
+    /// `f'/EPD` with the rear focal length `f' = |n'|·|EFL|`.
     pub image_f_number: f64,
     pub working_f_number: f64,
     pub object_na: f64,
@@ -302,6 +341,8 @@ pub fn first_order(sys: &ResolvedSystem, wl: usize) -> MkResult<FirstOrder> {
     } else {
         f64::INFINITY
     };
+    // Rear focal length f' = |N'|·|EFL| (image space after the last surface).
+    let f_rear = nn[last].abs() * efl.abs();
     let ffl = if wa != 0.0 {
         rb.nu[last] / wa
     } else {
@@ -352,7 +393,7 @@ pub fn first_order(sys: &ResolvedSystem, wl: usize) -> MkResult<FirstOrder> {
             if !efl.is_finite() || !e1.is_finite() {
                 return Err(bad("image-space F/# needs a finite EFL and entrance pupil"));
             }
-            efl.abs() / (2.0 * value) / e1.abs()
+            f_rear / (2.0 * value) / e1.abs()
         }
         ApertureSpec::ObjectSpaceNa { value } => {
             if at_inf {
@@ -459,7 +500,7 @@ pub fn first_order(sys: &ResolvedSystem, wl: usize) -> MkResult<FirstOrder> {
         exit_pupil_position: z_xp,
         exit_pupil_diameter: 2.0 * r_xp,
         image_f_number: if efl.is_finite() && r_ep.is_finite() {
-            efl.abs() / (2.0 * r_ep)
+            f_rear / (2.0 * r_ep)
         } else {
             f64::INFINITY
         },
@@ -556,6 +597,105 @@ mod tests {
             assert!((fo.stop_semi_diameter - 12.5).abs() < 1e-12);
             assert!((fo.working_f_number - 4.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn image_space_f_number_uses_rear_focal_length() {
+        // Ideal lens of image-space focal length f' = 100 mm with glass after
+        // it: EFL = f'/n', and F/4 means f'/EPD = 4, i.e. EPD = 25 mm.
+        let mut s = OpticalSystem::new_empty();
+        s.wavelengths = mono();
+        s.aperture = ApertureSpec::ImageSpaceFNumber { value: 4.0 };
+        s.surfaces = vec![
+            Surface::new(0, SurfaceShape::Plane, f64::INFINITY, MaterialRef::Air),
+            Surface::new(1, SurfaceShape::Plane, 10.0, MaterialRef::Air),
+            Surface::new(
+                2,
+                SurfaceShape::Paraxial {
+                    focal_length: 100.0,
+                },
+                100.0,
+                MaterialRef::glass("N-BK7"),
+            ),
+            Surface::new(3, SurfaceShape::Plane, 0.0, MaterialRef::glass("N-BK7")),
+        ];
+        s.stop = 1;
+        let sys = resolve(s);
+        let n_img = sys.surfaces[2].n_after[0];
+        assert!(n_img > 1.5);
+        let fo = first_order(&sys, 0).unwrap();
+        assert!((fo.efl - 100.0 / n_img).abs() < 1e-12);
+        assert!((fo.bfl - 100.0).abs() < 1e-12);
+        assert!((fo.entrance_pupil_diameter - 25.0).abs() < 1e-12);
+        assert!((fo.image_f_number - 4.0).abs() < 1e-12);
+        // Working F/# = 1/(2 n' u') = 4/n' at infinity.
+        assert!((fo.working_f_number - 4.0 / n_img).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dummy_ideal_lens_has_no_power() {
+        let mut s = OpticalSystem::new_empty();
+        s.wavelengths = mono();
+        s.aperture = ApertureSpec::EntrancePupilDiameter { value: 10.0 };
+        let mut lens = Surface::new(
+            2,
+            SurfaceShape::Paraxial { focal_length: 50.0 },
+            100.0,
+            MaterialRef::Air,
+        );
+        lens.interaction = Interaction::Dummy;
+        s.surfaces = vec![
+            Surface::new(0, SurfaceShape::Plane, 200.0, MaterialRef::Air),
+            Surface::new(1, SurfaceShape::Plane, 10.0, MaterialRef::Air),
+            lens,
+            Surface::new(3, SurfaceShape::Plane, 0.0, MaterialRef::Air),
+        ];
+        s.stop = 1;
+        let model = ParaxialModel::new(&resolve(s), 0);
+        assert!(model.power.iter().all(|p| *p == 0.0));
+    }
+
+    #[test]
+    fn ideal_lens_object_vergence_known_answers() {
+        // Object 150 mm before an f = 50 lens, then an f = 100 lens 100 mm
+        // behind: lens 1 sees a = 150; its image is at b = 75, i.e. 25 mm in
+        // front of lens 2 (a = 25). At infinity lens 1 sees ρ = 0.
+        let build = |t0: f64| {
+            let mut s = OpticalSystem::new_empty();
+            s.wavelengths = mono();
+            s.aperture = if t0.is_finite() {
+                ApertureSpec::ObjectSpaceNa { value: 0.05 }
+            } else {
+                ApertureSpec::EntrancePupilDiameter { value: 5.0 }
+            };
+            s.surfaces = vec![
+                Surface::new(0, SurfaceShape::Plane, t0, MaterialRef::Air),
+                Surface::new(
+                    1,
+                    SurfaceShape::Paraxial { focal_length: 50.0 },
+                    100.0,
+                    MaterialRef::Air,
+                ),
+                Surface::new(
+                    2,
+                    SurfaceShape::Paraxial {
+                        focal_length: 100.0,
+                    },
+                    100.0,
+                    MaterialRef::Air,
+                ),
+                Surface::new(3, SurfaceShape::Plane, 0.0, MaterialRef::Air),
+            ];
+            s.stop = 1;
+            resolve(s)
+        };
+        let sys = build(150.0);
+        assert!((ideal_lens_object_vergence(&sys, 1, 0) - 1.0 / 150.0).abs() < 1e-15);
+        assert!((ideal_lens_object_vergence(&sys, 2, 0) - 1.0 / 25.0).abs() < 1e-15);
+        let sys = build(f64::INFINITY);
+        assert_eq!(ideal_lens_object_vergence(&sys, 1, 0), 0.0);
+        // Collimated in, focus 50 behind lens 1 = 50 in front of lens 2.
+        assert!((ideal_lens_object_vergence(&sys, 2, 0) - 1.0 / 50.0).abs() < 1e-15);
     }
 
     #[test]

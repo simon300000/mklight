@@ -423,7 +423,25 @@ fn aim_failure_is_reported_not_silent() {
     s.aperture = ApertureSpec::FloatByStopSize;
     s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 11.9 };
     let t = tracer(s);
-    let r = t.trace(t.field(0), 1, 0.0, 3.0, &TraceOptions::unclipped());
+    let mut rec = Vec::new();
+    let ok = t.trace_with(
+        t.field(0),
+        1,
+        0.0,
+        0.5,
+        &TraceOptions::unclipped(),
+        Some(&mut rec),
+    );
+    assert!(ok.status.is_ok());
+    assert_eq!(rec.len(), t.system().num_surfaces());
+    let r = t.trace_with(
+        t.field(0),
+        1,
+        0.0,
+        3.0,
+        &TraceOptions::unclipped(),
+        Some(&mut rec),
+    );
     assert_eq!(
         r.status,
         TraceStatus::Failed {
@@ -431,4 +449,87 @@ fn aim_failure_is_reported_not_silent() {
             reason: FailReason::AimNotConverged
         }
     );
+    // No stale per-surface data from the previous ray; consistent surface.
+    assert!(rec.is_empty());
+    assert_eq!(Some(r.surface), r.status.surface());
+}
+
+#[test]
+fn unreachable_field_fails_alone() {
+    // One real image height no chief ray can reach: the tracer still builds,
+    // warns, and only that field's rays fail.
+    let mut s = samples::petzval_asphere();
+    assert_eq!(s.fields.kind, FieldKind::RealImageHeight);
+    let n_ok = s.fields.fields.len();
+    s.fields.fields.push(Field::new(0.0, 500.0));
+    let t = tracer(s);
+    assert!(t.warnings().iter().any(|w| w.contains("unusable")));
+    for (i, f) in t.fields().iter().enumerate() {
+        let r = t.trace(f, 0, 0.0, 0.7, &TraceOptions::default());
+        if i < n_ok {
+            assert!(f.is_valid());
+            assert!(r.status.is_ok(), "field {i}: {:?}", r.status);
+        } else {
+            assert!(!f.is_valid());
+            assert_eq!(
+                r.status,
+                TraceStatus::Failed {
+                    surface: 0,
+                    reason: FailReason::FieldUnreachable
+                }
+            );
+            assert!(t.opd_reference(f, 0).is_err());
+        }
+    }
+}
+
+#[test]
+fn non_finite_input_is_a_failure_not_a_miss() {
+    let t = tracer(samples::cooke_triplet());
+    let sys = t.system();
+    let good = t.generate(t.field(1), 0, 0.0, 0.5).unwrap().ray;
+    for bad in [
+        Ray::new(Vec3::new(good.pos.x, f64::NAN, good.pos.z), good.dir),
+        Ray::new(good.pos, Vec3::new(f64::NAN, good.dir.y, good.dir.z)),
+        Ray::new(good.pos, Vec3::new(0.0, f64::INFINITY, 1.0)),
+    ] {
+        let r = trace_ray(sys, &bad, 0, &TraceOptions::default(), None);
+        assert_eq!(
+            r.status,
+            TraceStatus::Failed {
+                surface: 0,
+                reason: FailReason::NonFinite
+            }
+        );
+    }
+}
+
+#[test]
+fn dummy_ideal_lens_is_a_pass_through() {
+    let mut s = samples::singlet();
+    let n = s.surfaces.len();
+    // Split the last gap: dummy ideal lens 5 mm after the last lens surface.
+    let gap = s.surfaces[n - 2].thickness;
+    s.surfaces[n - 2].thickness = 5.0;
+    let mut lens = surf(
+        77,
+        SurfaceShape::Paraxial { focal_length: 20.0 },
+        gap - 5.0,
+        MaterialRef::Air,
+    );
+    lens.interaction = Interaction::Dummy;
+    s.surfaces.insert(n - 1, lens);
+    let with = tracer(s);
+    let without = tracer(samples::singlet());
+    let fo_a = with.paraxial().primary();
+    let fo_b = without.paraxial().primary();
+    assert!((fo_a.efl - fo_b.efl).abs() < 1e-12);
+    for f in 0..with.fields().len() {
+        let a = with.trace(with.field(f), 1, 0.3, 0.8, &TraceOptions::default());
+        let b = without.trace(without.field(f), 1, 0.3, 0.8, &TraceOptions::default());
+        assert!(a.status.is_ok() && b.status.is_ok());
+        assert!(a.ray.pos.max_abs_diff(b.ray.pos) < 1e-12);
+        assert!(a.ray.dir.max_abs_diff(b.ray.dir) < 1e-14);
+        assert!((a.opl.value() - b.opl.value()).abs() < 1e-11);
+    }
 }

@@ -62,8 +62,20 @@
 //! sheet), `Clipped { surface }` (outside a fixed semi-diameter or explicit
 //! aperture; disabled by [`TraceOptions::clip`]), `TotalInternalReflection
 //! { surface }`, `Failed { surface, reason }` (asphere non-convergence, outside
-//! the sag domain, non-finite values, a degenerate ideal-lens ray, or a ray
-//! that real aiming could not generate).
+//! the sag domain, non-finite values including a non-finite input ray, a
+//! degenerate ideal-lens ray, a ray that real aiming could not generate, or
+//! any ray of a field that could not be resolved). An asphere that the ray
+//! does not cross is a `Miss`, like a conic (see [`surface`] for the exact
+//! classification GPU backends must reproduce).
+//!
+//! # Ideal lenses
+//!
+//! A `Paraxial` surface is free of ray aberrations at every conjugate and
+//! adds the optical path that makes it perfect in phase for the conjugate
+//! of the axial object point ([`interact::ideal_lens`],
+//! [`paraxial::ideal_lens_object_vergence`]), so wave analyses of
+//! finite-conjugate systems with ideal lenses are exact. With a `Dummy`
+//! interaction it is a pass-through, like any other dummy surface.
 
 pub mod batch;
 pub mod interact;
