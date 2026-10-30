@@ -265,6 +265,7 @@ int main(int argc, char **argv) {
     EXPECT(mk_job_take_result(eng, job, &json, &bufs, &nb), MK_ERR_NOT_FOUND);
     EXPECT(mk_job_status(eng, job, &state, NULL), MK_ERR_NOT_FOUND);
     EXPECT(mk_job_cancel(eng, 987654321), MK_ERR_NOT_FOUND);
+    EXPECT(mk_job_stop(eng, 987654321), MK_ERR_NOT_FOUND);
 
     /* ---- a long job: progress, stage, timeout, not-ready, cancel ---- */
     OK(mk_session_submit_analysis(
@@ -283,10 +284,26 @@ int main(int argc, char **argv) {
     mk_string_free(stage);
     EXPECT(mk_job_take_result(eng, job, &json, &bufs, &nb), MK_ERR_NOT_READY);
     CHECK(json == NULL && bufs == NULL && nb == 0);
+    EXPECT(mk_job_stop(eng, job), MK_ERR_UNSUPPORTED);
     OK(mk_job_cancel(eng, job));
     OK(mk_job_wait(eng, job, 30000, &state));
     CHECK(state == MK_JOB_CANCELLED);
     EXPECT(mk_job_take_result(eng, job, &json, &bufs, &nb), MK_ERR_CANCELLED);
+
+    /* ---- Stop retains an optimisation result (ABI 1.2). ---- */
+    OK(mk_session_submit_analysis(s, "optimize",
+        "{\"algorithm\":\"de\",\"max_iterations\":100000,\"hold_efl\":false}",
+        NULL, &job));
+    OK(mk_job_stop(eng, job));
+    OK(mk_job_wait(eng, job, 30000, &state));
+    CHECK(state == MK_JOB_DONE);
+    OK(mk_job_stop(eng, job)); /* finished: no-op */
+    OK(mk_job_take_result(eng, job, &json, &bufs, &nb));
+    CHECK(strstr(json, "\"stopped\":true") != NULL);
+    CHECK(strstr(json, "\"system_hash\":") != NULL);
+    CHECK(nb == 1 && strcmp(bufs[0].name, "merit_history") == 0);
+    mk_string_free(json);
+    mk_buffer_free(bufs, nb);
 
     /* ---- supersede by view key ---- */
     uint64_t slow = 0, fast = 0;
@@ -417,14 +434,14 @@ int main(int argc, char **argv) {
     mk_string_free(json);
 
     /* ---- callback: lifecycle and progress were delivered ---- */
-    /* 8 jobs finished. Events are delivered asynchronously by the event
+    /* 9 jobs finished. Events are delivered asynchronously by the event
      * thread, so give the last terminal events a moment to arrive. */
-    for (int i = 0; i < 500 && atomic_load(&g_terminal_events) < 8; i++) sleep_ms(10);
+    for (int i = 0; i < 500 && atomic_load(&g_terminal_events) < 9; i++) sleep_ms(10);
     OK(mk_engine_set_job_callback(eng, NULL, NULL));
     int events_after_clear = atomic_load(&g_events);
     CHECK(atomic_load(&user_count) == events_after_clear);
     CHECK(atomic_load(&g_progress_events) >= 1);
-    CHECK(atomic_load(&g_terminal_events) == 8);
+    CHECK(atomic_load(&g_terminal_events) == 9);
     OK(mk_session_submit_analysis(s, "validate", NULL, NULL, &job));
     OK(mk_job_wait(eng, job, 30000, &state));
     OK(mk_job_release(eng, job));

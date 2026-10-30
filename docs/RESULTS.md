@@ -49,7 +49,7 @@ Python `Result.envelope()` return:
   minor version.
 * Settings may be partial; missing keys take the schema defaults. Unknown
   top-level keys are rejected (`MK_ERR_INVALID_ARGUMENT`); values are
-  checked against the schema's `type`, `minimum`, `maximum` and `enum`
+  checked against the schema's `type`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` and `enum`
   before the job is queued. Nested objects (field selections, source specs,
   …) are validated when the analysis parses them.
 * Settings schemas of analyses implemented in a solver crate are derived
@@ -147,11 +147,14 @@ applies when they name none (`backend.requested` = `default:<id>`).
   and result assembly. Moving ray aiming and the reductions to the device
   is future work.
 * `MKLIGHT_DISABLE_GPU=1` makes every GPU backend unavailable.
-* Front ends spell `auto` differently: the engine (`Backend::parse("auto")`),
-  the FFI (`{"kind": "auto"}`) and the CLI (`--backend auto`) mean the
-  selection above, but the Python binding's string `"auto"` (its `backend`
-  default) means "the engine default" (docs/PYTHON.md); Python callers get
-  the selection with `backend={"kind": "auto"}`.
+* `auto` has the same meaning in Rust, FFI, CLI and Python. Python `None`
+  (or an omitted backend) uses the engine default.
+* `optimize` and `tolerance` also use the selected provider and its cached
+  qualification. Automatic merit evaluation uses the candidate-batch
+  crossover in `docs/OPTIMIZATION.md`; an explicitly requested GPU bypasses
+  that threshold. The envelope and `RunInfo` name the search backend; the
+  optimiser's start/final operand tables are recomputed on the CPU f64
+  reference. Per-candidate CPU fallbacks are counted in `result.backend.gpu_stats`.
 
 ## 6. Cross-solver conventions
 
@@ -179,15 +182,14 @@ applies when they name none (`backend.requested` = `default:<id>`).
   the ghost solver) are Monte-Carlo estimates. The partition
   needs `clip: {"mode": "clear_apertures", …}` in the ghost options (the
   stray scene always clips at clear apertures).
-* **Validation codes** (`validate`, `mk_session_validate_json`): `structure`
-  (core structural validation), `non_finite`, `aperture_value`,
-  `field_weight`, `wavelength_weight`, `mechanics`, `material`, `coating`,
-  `resolve`, `material_range` (warning), `stop_size_undefined`,
-  `stop_on_coordinate_break` (warning), `thickness_sign` (warning),
-  `zero_weights` (warning), `configuration`, `unused_coating` (info),
-  `paraxial` (the reference tracer cannot set the system up), `field`,
-  `chief_ray`, `marginal_ray` (warnings). A system with no error can be
-  traced by every ray-based analysis.
+* **Validation codes** (`validate`, `mk_session_validate_json`): structural
+  problems are rejected before a snapshot/session exists, with the core codes
+  of CONVENTIONS §13. The CLI's `validate` on such a file reports all core
+  issues with their JSON paths (`structural_only: true`). For valid snapshots,
+  material/coating resolution, material ranges, aperture definition, thickness
+  signs and zero weights are reported by the analysis. Engine-only tracer
+  checks are `paraxial` (setup error), `chief_ray` and `marginal_ray`
+  (reachability warnings, including a chief field that could not be prepared).
 * **Solves** change the model, so applying them is a session operation
   (`Session::apply_solves`, `mk_session_apply_solves`: a new snapshot plus
   the `solves` report); the `solves` analysis is its dry run.
@@ -227,6 +229,30 @@ applies when they name none (`backend.requested` = `default:<id>`).
   (CONVENTIONS §9), `[row][col][re, im]`; retardance in radians.
 * `solves`: `residual` in the condition's units (mm, slope, F/#, or
   dimensionless).
+
+* `optimize`: merit is Σ weight × residual² (default spot merit in mm²,
+  wavefront merit in waves²); custom operands can mix units through their
+  weights. Equal residuals are value − target; inequalities keep only the
+  violating side. Constraint violation is normalised and non-negative.
+  `variables[].change` is value − start in the parameter's model units
+  (curvature 1/mm, thickness/decenter mm, tilt degrees). `improvement` is
+  1 − final/start merit, so positive means improvement. History and the
+  `merit_history` buffer use the search evaluator; the final operand table
+  uses the CPU f64 reference and chooses the better of start and answer,
+  feasibility first. `stopped: true` is a retained early result from Stop;
+  Cancel/supersession discards it. The app applies `result.system` with
+  `mk_session_set_system_json` (`Session::set_system`) as an undoable document
+  edit, creating a snapshot with `result.system_hash`. Check the input
+  snapshot and library hashes before applying to a document edited meanwhile.
+* `tolerance`: `minus`/`plus` are positive perturbation magnitudes in each
+  parameter's model units; evaluate nominal − minus and nominal + plus.
+  Criterion values have the criterion merit's units; `change_minus` and
+  `change_plus` are trial − nominal (positive is degradation), `worst` is
+  the largest absolute change and `rss_change` is their root sum of squares.
+  Compensators report parameter values in model units. Yield is the fraction
+  with criterion ≤ threshold; a failed Monte-Carlo trial has criterion `inf`.
+  Stop retains completed sensitivity operands and Monte-Carlo trials with
+  `stopped: true`. Tolerancing does not replace the session's model.
 
 ## 8. Analysis reference
 
@@ -1366,6 +1392,219 @@ Category `wave`, result version 1, **not available**: provided by mklight-wave, 
 Settings: none.
 
 Result: an object (not documented field by field).
+
+### `optimize` — Optimize
+
+Category `optimization`, result version 1, **GPU path**.
+
+Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator settings, laid over the defaults (criterion, pupil sampling, fields, wavelengths, thickness boundaries). |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
+| `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
+| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
+| `hold_efl` | boolean | `true` |  | Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead. |
+| `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
+| `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
+| `operands` | array | `[]` |  | Operands appended to the merit (e.g. an EFL target). |
+| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
+| `seed` | integer | `0` |  | ≥ 0 |
+| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `algorithm` | string |  |  |
+| `backend` | object |  |  |
+| `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
+| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
+| `backend.gpu_stats` (optional) | object |  |  |
+| `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.device_seconds` | number | s |  |
+| `backend.gpu_stats.dispatches` | integer |  | ≥ 0 |
+| `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.rays` | integer |  | ≥ 0 |
+| `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
+| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
+| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.workload` | object |  |  |
+| `backend.workload.batch` | integer |  | ≥ 0 |
+| `backend.workload.gpu_faster` | boolean |  |  |
+| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `evaluations` | integer |  | ≥ 0 |
+| `failed_variables` | array<integer> |  |  |
+| `final` | object |  |  |
+| `final.feasible` | boolean |  | Violation within feasibility_tolerance. |
+| `final.merit` | nf |  |  |
+| `final.status` | object |  | EvalStatus. |
+| `final.violation` | nf |  |  |
+| `history` | array<object> |  | One record per reported iteration. |
+| `history[].best_merit` | nf |  |  |
+| `history[].evaluations` | integer |  | ≥ 0 |
+| `history[].iteration` | integer |  | ≥ 0 |
+| `history[].merit` | nf |  |  |
+| `history[].stage` | string |  |  |
+| `history[].violation` | nf |  |  |
+| `improved` | boolean |  | Better than the start, feasibility first. |
+| `improvement` | nf |  | 1 - final/start merit; null for zero start. |
+| `iterations` | integer |  | ≥ 0 |
+| `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands. |
+| `multipliers` | array<nf>? |  |  |
+| `operands` | array<object> |  | Start/final values on the CPU f64 reference; operand units in OPTIMIZATION.md. |
+| `operands[].comparison` | string |  | one of `"equal"`, `"less_than"`, `"greater_than"` |
+| `operands[].config` | integer |  | ≥ 0 |
+| `operands[].contribution` | nf | merit | weight * residual squared; null for constraints/disabled operands. |
+| `operands[].contribution_fraction` | nf |  |  |
+| `operands[].enabled` | boolean |  |  |
+| `operands[].error` | string? |  |  |
+| `operands[].field` | object |  | FieldSelector. |
+| `operands[].index` | integer |  | ≥ 0 |
+| `operands[].kind` | string |  | Operand name. |
+| `operands[].label` | string |  |  |
+| `operands[].residual` | nf | operand | Signed value - target for equal; one-sided violation otherwise. |
+| `operands[].role` | string |  | one of `"residual"`, `"constraint"` |
+| `operands[].start` | nf |  |  |
+| `operands[].target` | nf |  |  |
+| `operands[].value` | nf |  |  |
+| `operands[].wavelength` | object |  | WavelengthSelector. |
+| `operands[].weight` | nf |  |  |
+| `search` | object |  |  |
+| `search.merit` | nf |  |  |
+| `search.reference_merit` | nf |  |  |
+| `search.reference_violation` | nf |  |  |
+| `search.violation` | nf |  |  |
+| `start` | object |  |  |
+| `start.merit` | nf |  |  |
+| `start.status` | object |  | EvalStatus. |
+| `start.violation` | nf |  |  |
+| `status` | string |  | one of `"converged"`, `"finished"`, `"stopped"`, `"cancelled"` |
+| `stopped` | boolean |  | Stop requested; best-so-far result retained. |
+| `system` | object |  | Optimised OpticalSystem. Apply with Session::set_system / mk_session_set_system_json. |
+| `system_hash` | string |  | Hash of the optimised model, not the input snapshot. |
+| `termination` | string |  | Optimiser termination reason. |
+| `variables` | array<object> |  | Values in each parameter's model units. |
+| `variables[].at_bound` | boolean |  |  |
+| `variables[].change` | nf | parameter | value - start. |
+| `variables[].label` | string |  |  |
+| `variables[].lower` | nf |  |  |
+| `variables[].param` | object |  | ParamPath; stable surface id. |
+| `variables[].start` | nf |  |  |
+| `variables[].upper` | nf |  |  |
+| `variables[].value` | nf |  |  |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `merit_history` | f64 | [records, 4] | mixed | Columns: iteration, evaluations, merit, best merit (search evaluator). |
+
+### `tolerance` — Tolerance analysis
+
+Category `optimization`, result version 1, **GPU path**.
+
+Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo analysis, with compensators re-optimised for every trial.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"` |
+| `batch` | integer | `16` |  | ≥ 1 |
+| `compensator_iterations` | integer | `20` |  | ≥ 1 |
+| `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. |
+| `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  |  |
+| `gpu_batch` | integer | `512` |  | ≥ 1 |
+| `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
+| `seed` | integer | `0` |  | ≥ 0 |
+| `stop_key` | string\|null | `null` |  |  |
+| `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
+| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |
+| `trials` | integer | `100` |  | ≥ 1 |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `backend` | object |  |  |
+| `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
+| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
+| `backend.gpu_stats` (optional) | object |  |  |
+| `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.device_seconds` | number | s |  |
+| `backend.gpu_stats.dispatches` | integer |  | ≥ 0 |
+| `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.rays` | integer |  | ≥ 0 |
+| `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
+| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
+| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.workload` | object |  |  |
+| `backend.workload.batch` | integer |  | ≥ 0 |
+| `backend.workload.gpu_faster` | boolean |  |  |
+| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `compensators` | array<object> |  | Model parameter units. |
+| `criterion_spec` | object |  | Effective MeritFunctionSpec. |
+| `monte_carlo` | object? |  |  |
+| `monte_carlo.cancelled` | boolean |  | Statistics of completed trials after interruption. |
+| `monte_carlo.compensator_mean` | array<nf> |  |  |
+| `monte_carlo.compensator_std` | array<nf> |  |  |
+| `monte_carlo.criteria` | array<nf> |  | Criterion per trial; inf for failed trials. |
+| `monte_carlo.failures` | integer |  | ≥ 0 |
+| `monte_carlo.max` | nf |  |  |
+| `monte_carlo.mean` | nf |  |  |
+| `monte_carlo.min` | nf |  |  |
+| `monte_carlo.percentiles` | array<object> |  |  |
+| `monte_carlo.percentiles[].percentile` | number | % |  |
+| `monte_carlo.percentiles[].value` | nf |  |  |
+| `monte_carlo.seed` | integer |  | ≥ 0; Philox seed. |
+| `monte_carlo.std_dev` | nf |  |  |
+| `monte_carlo.threshold` | nf |  |  |
+| `monte_carlo.trials` | integer |  | ≥ 0; Completed trials. |
+| `monte_carlo.yield_fraction` | nf |  | Fraction at or below threshold; null without threshold. |
+| `sensitivity` | object? |  |  |
+| `sensitivity.cancelled` | boolean |  | Partial sensitivity after interruption. |
+| `sensitivity.evaluations` | integer |  | ≥ 0 |
+| `sensitivity.nominal` | object |  |  |
+| `sensitivity.nominal.compensators` | array<nf> |  | Parameter values. |
+| `sensitivity.nominal.criterion` | nf |  |  |
+| `sensitivity.nominal.ok` | boolean |  |  |
+| `sensitivity.operands` | array<object> |  | Completed operands in declaration order. |
+| `sensitivity.operands[].change_minus` | nf | criterion | criterion_minus - nominal. |
+| `sensitivity.operands[].change_plus` | nf | criterion | criterion_plus - nominal. |
+| `sensitivity.operands[].compensators_minus` | array<nf> |  |  |
+| `sensitivity.operands[].compensators_plus` | array<nf> |  |  |
+| `sensitivity.operands[].criterion_minus` | nf |  |  |
+| `sensitivity.operands[].criterion_plus` | nf |  |  |
+| `sensitivity.operands[].index` | integer |  | ≥ 0; Tolerance index. |
+| `sensitivity.operands[].label` | string |  |  |
+| `sensitivity.operands[].minus` | nf |  |  |
+| `sensitivity.operands[].ok` | boolean |  | Both limits evaluated successfully. |
+| `sensitivity.operands[].param` | object |  | ParamPath. |
+| `sensitivity.operands[].plus` | nf |  |  |
+| `sensitivity.operands[].worst` | nf | criterion | Largest absolute criterion change at either limit. |
+| `sensitivity.predicted_criterion` | nf | criterion | Nominal + rss_change. |
+| `sensitivity.ranking` | array<integer> |  | Worst first. |
+| `sensitivity.rss_change` | nf | criterion | Root sum of squared worst changes. |
+| `status` | string |  | one of `"complete"`, `"stopped"`, `"cancelled"` |
+| `stopped` | boolean |  | Stop requested; completed sensitivity operands/trials retained. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `monte_carlo_criteria` | f64 | [trials] | criterion | Per completed Monte-Carlo trial; inf for failures. Absent without Monte Carlo. |
 
 ### `rng_stream` — Random stream check
 

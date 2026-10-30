@@ -38,7 +38,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mklight_core::job::{Precision, RunTimer};
+use mklight_core::job::{CancelToken, Precision, RunTimer};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkResult, ResolvedSystem, RunInfo, Snapshot};
 
@@ -193,6 +193,8 @@ pub struct AnalysisInput<'a> {
     pub requested_backend: String,
     /// Why the preferred backend was not selected (`BackendReport`).
     pub selection_note: Option<String>,
+    /// Job-level stop that retains the best result (optimisation/tolerancing).
+    pub stop: CancelToken,
     resolver: Resolver<'a>,
     backend_used: RefCell<Option<BackendUse>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
@@ -224,11 +226,17 @@ impl<'a> AnalysisInput<'a> {
             device: None,
             requested_backend: Backend::CpuReference.id(),
             selection_note: None,
+            stop: CancelToken::new(),
             resolver,
             backend_used: RefCell::new(None),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
         }
+    }
+
+    pub fn with_stop_token(mut self, stop: CancelToken) -> Self {
+        self.stop = stop;
+        self
     }
 
     pub fn with_device(mut self, device: Option<DeviceHandle>) -> Self {

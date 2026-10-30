@@ -5,6 +5,8 @@
 //! * Each job gets its own `JobContext` (cancel token + progress). Jobs check
 //!   the token at bounded intervals; `cancel` sets it. A queued job that is
 //!   cancelled never starts.
+//! * `stop` signals a separate cooperative token supplied by the job. A
+//!   stopped job keeps its normal result; cancellation still discards it.
 //! * **Supersede**: a job submitted with a view key cancels the previous job
 //!   with the same key, so only the newest request for one analysis window
 //!   keeps running.
@@ -33,6 +35,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
+use mklight_core::job::CancelToken;
 use mklight_core::{JobContext, MkError};
 
 use crate::error::{EngineError, EngineResult};
@@ -100,6 +103,8 @@ pub struct JobSpec<T> {
     /// (the engine prefixes the session id).
     pub view_key: Option<String>,
     pub work: Work<T>,
+    /// Cooperative stop retaining the result, separate from cancellation.
+    pub stop: Option<CancelToken>,
 }
 
 impl<T> JobSpec<T> {
@@ -111,7 +116,12 @@ impl<T> JobSpec<T> {
             label: label.into(),
             view_key: None,
             work: Box::new(work),
+            stop: None,
         }
+    }
+    pub fn with_stop_token(mut self, token: CancelToken) -> Self {
+        self.stop = Some(token);
+        self
     }
     pub fn with_view_key(mut self, key: impl Into<String>) -> Self {
         self.view_key = Some(key.into());
@@ -157,6 +167,7 @@ struct Job<T> {
     label: String,
     view_key: Option<String>,
     ctx: JobContext,
+    stop: Option<CancelToken>,
     inner: Mutex<JobInner<T>>,
     done: Condvar,
 }
@@ -580,6 +591,7 @@ impl<T: Send + 'static> Scheduler<T> {
             label: spec.label,
             view_key: spec.view_key.clone(),
             ctx: JobContext::new(),
+            stop: spec.stop,
             inner: Mutex::new(JobInner {
                 state: JobState::Queued,
                 work: Some(spec.work),
@@ -634,6 +646,21 @@ impl<T: Send + 'static> Scheduler<T> {
         let mut v: Vec<JobStatus> = jobs.iter().map(|j| j.status()).collect();
         v.sort_by_key(|s| s.id);
         v
+    }
+
+    /// Stop cooperatively and keep the result. Finished jobs are unchanged;
+    /// jobs without a stop handler return Unsupported.
+    pub fn stop(&self, id: JobId) -> EngineResult<()> {
+        let job = self.get(id)?;
+        let inner = job.lock();
+        if !inner.state.is_terminal() {
+            let token = job
+                .stop
+                .as_ref()
+                .ok_or_else(|| MkError::Unsupported("this job does not support stop".into()))?;
+            token.cancel();
+        }
+        Ok(())
     }
 
     /// Request cancellation. Cancelling a finished job is a no-op.
@@ -795,6 +822,42 @@ mod tests {
         assert_eq!(st.stage, "summing");
         assert_eq!(s.take_result(id).unwrap(), 5050);
         assert_eq!(s.status(id), Err(EngineError::UnknownJob(id)));
+    }
+
+    #[test]
+    fn stop_keeps_result_but_cancel_after_stop_discards_it() {
+        let scheduler = Scheduler::<u32>::new(SchedulerConfig {
+            workers: 1,
+            ..Default::default()
+        });
+        for cancel in [false, true] {
+            let stop = CancelToken::new();
+            let token = stop.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let id = scheduler
+                .submit(
+                    JobSpec::new("partial", move |_: &JobContext| {
+                        rx.recv().unwrap();
+                        assert!(token.is_cancelled());
+                        Ok(42)
+                    })
+                    .with_stop_token(stop),
+                )
+                .unwrap();
+            scheduler.stop(id).unwrap();
+            if cancel {
+                scheduler.cancel(id).unwrap();
+            }
+            let _ = tx.send(());
+            let state = scheduler.wait(id, Some(Duration::from_secs(5))).unwrap();
+            if cancel {
+                assert_eq!(state, JobState::Cancelled);
+                assert!(scheduler.take_result(id).unwrap_err().is_cancelled());
+            } else {
+                assert_eq!(state, JobState::Done);
+                assert_eq!(scheduler.take_result(id).unwrap(), 42);
+            }
+        }
     }
 
     #[test]

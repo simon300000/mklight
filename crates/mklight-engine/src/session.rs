@@ -719,6 +719,8 @@ impl Session {
         let cache = self.resolved.clone();
         let generation = self.library_generation;
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
+        let stop = mklight_core::job::CancelToken::new();
+        let job_stop = stop.clone();
         let mut spec = JobSpec::new(label, move |ctx: &JobContext| {
             let input = AnalysisInput::with_resolver(
                 snap.clone(),
@@ -726,6 +728,7 @@ impl Session {
                 backend.info,
                 Box::new(|| resolve_cached(&cache, &snap, &lib, generation)),
             )
+            .with_stop_token(job_stop)
             .with_device(backend.device)
             .with_selection(backend.requested, backend.note)
             .with_library_hash(lib_hash);
@@ -737,6 +740,9 @@ impl Session {
                 ctx,
             )
         });
+        if matches!(req.analysis.as_str(), "optimize" | "tolerance") {
+            spec = spec.with_stop_token(stop);
+        }
         if let Some(k) = &req.view_key {
             spec = spec.with_view_key(format!("session-{}/{k}", self.id));
         }

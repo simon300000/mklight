@@ -10,7 +10,7 @@ use pyo3::types::{PyDict, PyList};
 use serde_json::Value;
 
 use mklight_core::RunInfo;
-use mklight_engine::{AnalysisResult, Buffer, Engine, EngineError, JobId, JobState};
+use mklight_engine::{AnalysisResult, BackendReport, Buffer, Engine, EngineError, JobId, JobState};
 
 use crate::array;
 use crate::convert::{ser_to_py, to_py};
@@ -21,6 +21,8 @@ use crate::wait::wait_job;
 /// `Array`s (and numpy arrays) handed to Python.
 pub struct ResultData {
     pub run_info: RunInfo,
+    pub backend: BackendReport,
+    pub result_version: u32,
     pub library_hash: String,
     pub json: Value,
     pub buffers: Vec<Arc<Buffer>>,
@@ -30,6 +32,8 @@ impl From<AnalysisResult> for ResultData {
     fn from(r: AnalysisResult) -> Self {
         ResultData {
             run_info: r.run_info,
+            backend: r.backend,
+            result_version: r.result_version,
             library_hash: r.library_hash,
             json: r.json,
             buffers: r.buffers.into_iter().map(Arc::new).collect(),
@@ -136,8 +140,8 @@ impl PyAnalysisResult {
         self.data.run_info.warnings.clone()
     }
 
-    /// The JSON envelope the C ABI returns (`run_info`, `library_hash`,
-    /// `result`, `buffers` descriptors).
+    /// The C ABI envelope: RunInfo, library hash, backend report, result
+    /// version, result JSON and buffer descriptors.
     fn envelope<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let descs: Vec<_> = self
             .data
@@ -151,6 +155,8 @@ impl PyAnalysisResult {
             &serde_json::json!({
                 "run_info": self.data.run_info,
                 "library_hash": self.data.library_hash,
+                "backend": self.data.backend,
+                "result_version": self.data.result_version,
                 "result": self.data.json,
                 "buffers": descs,
             }),
@@ -423,6 +429,15 @@ impl PyJob {
     /// True once the job has finished (done, failed or cancelled).
     fn done(&self) -> bool {
         self.state_value().is_terminal()
+    }
+
+    /// Stop optimize/tolerance, retaining the best-so-far result (stopped=True).
+    /// Other active jobs raise UnsupportedError; finished jobs are unchanged.
+    fn stop(&self) -> PyResult<()> {
+        if !matches!(*self.lock(), Slot::Pending) {
+            return Ok(());
+        }
+        self.engine.stop_job(self.id).map_err(engine_err)
     }
 
     /// Request cancellation. A queued job is cancelled at once; a running

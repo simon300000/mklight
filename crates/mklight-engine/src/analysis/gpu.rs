@@ -43,6 +43,8 @@ pub const GPU_ANALYSES: &[&str] = &[
     "geometric_mtf",
     "best_focus",
     "ray_grid",
+    "optimize",
+    "tolerance",
 ];
 
 /// Smallest ray grid (`fields × wavelengths × pupil`) that `auto` traces on

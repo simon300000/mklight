@@ -39,7 +39,7 @@ use mklight_engine::{
 // Versioning and status codes (mirrored in include/mklight.h)
 
 pub const MK_ABI_VERSION_MAJOR: u32 = 1;
-pub const MK_ABI_VERSION_MINOR: u32 = 1;
+pub const MK_ABI_VERSION_MINOR: u32 = 2;
 /// `(major << 16) | minor`. Major changes break compatibility; minor
 /// versions only add functions or JSON fields.
 pub const MK_ABI_VERSION: u32 = (MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR;
@@ -851,6 +851,17 @@ pub unsafe extern "C" fn mk_job_status_json(
         unsafe { out_ptr(out_json, "out_json") }?;
         let st = e.engine.job_status(job)?;
         unsafe { put_json(out_json, &st) }
+    })
+}
+
+/// Stop optimisation/tolerancing and retain the best-so-far result.
+/// Unsupported for other active jobs; no-op for finished jobs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_job_stop(engine: *const MKEngine, job: u64) -> MKStatus {
+    guard(|| {
+        let e = unsafe { engine_ref(engine) }?;
+        e.engine.stop_job(job)?;
+        Ok(())
     })
 }
 

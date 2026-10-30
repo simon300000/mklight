@@ -269,6 +269,27 @@ impl GpuTraceEvaluator {
         })
     }
 
+    /// Reuse a caller's qualification and packing radii for this backend and
+    /// system. The engine supplies its cached per-snapshot qualification.
+    pub fn with_qualification(
+        backend: Arc<dyn ComputeBackend>,
+        cpu: TraceEvaluator,
+        settings: GpuEvalSettings,
+        qualification: Qualification,
+        radius_hints: Vec<f64>,
+    ) -> Self {
+        GpuTraceEvaluator {
+            backend,
+            cpu,
+            settings,
+            state: Arc::new(RwLock::new(GpuState {
+                qualification,
+                radius_hints: Some(radius_hints),
+            })),
+            counters: Arc::default(),
+        }
+    }
+
     /// Qualify again, for `system` (e.g. the design an optimisation ended
     /// with). The evaluator (and its clones) use the GPU only while the
     /// latest qualification passed.

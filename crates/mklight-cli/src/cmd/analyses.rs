@@ -257,11 +257,23 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
     let started = Instant::now();
     let timeout = a.timeout.map(Duration::from_secs_f64);
     let mut cancelled_by: Option<CancelReason> = None;
+    let mut stopping = false;
     let mut last_shown: Option<(i64, String)> = None;
     let json_mode = ctx.global.json;
     loop {
         if cancelled_by.is_none() {
-            let reason = if signal::interrupted() {
+            let interrupts = signal::count();
+            if interrupts >= 1 && !stopping {
+                match engine.stop_job(job) {
+                    Ok(()) => stopping = true,
+                    Err(EngineError::Core(mklight_core::MkError::Unsupported(_))) => {
+                        cancelled_by = Some(CancelReason::Interrupt);
+                        engine.cancel_job(job)?;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let reason = if interrupts >= 2 {
                 Some(CancelReason::Interrupt)
             } else if timeout.is_some_and(|t| started.elapsed() >= t) {
                 Some(CancelReason::Timeout)

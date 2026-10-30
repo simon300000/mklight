@@ -16,7 +16,7 @@ total_internal_reflection, failed."""
 JSON: TypeAlias = Any
 """A JSON-compatible value (dict / list / str / int / float / bool / None)."""
 Backend: TypeAlias = str | dict[str, str] | None
-"""``"auto"`` / ``None`` (engine default), ``"cpu"``, ``"metal"``, or
+"""``"auto"`` (automatic selection), ``None`` (engine default), ``"cpu"``, ``"metal"``, or
 ``{"kind": "gpu", "name": "metal"}``."""
 Progress: TypeAlias = Callable[[float, str], object]
 """``progress(fraction, stage)``; fractions are monotone in [0, 1]."""
@@ -158,6 +158,9 @@ class Job:
     def stage(self) -> str: ...
     def status(self) -> dict[str, JSON] | None: ...
     def done(self) -> bool: ...
+    def stop(self) -> None:
+        """Stop optimize/tolerance and keep the best-so-far result (stopped=True)."""
+        ...
     def cancel(self) -> None: ...
     def wait(self, timeout: float | None = None) -> bool:
         """True once finished; False after ``timeout`` seconds (``None`` or

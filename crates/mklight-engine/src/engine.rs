@@ -267,6 +267,11 @@ impl Engine {
         self.inner.scheduler.statuses()
     }
 
+    /// Stop an optimisation/tolerance job, retaining its partial result.
+    pub fn stop_job(&self, id: JobId) -> EngineResult<()> {
+        self.inner.scheduler.stop(id)
+    }
+
     pub fn cancel_job(&self, id: JobId) -> EngineResult<()> {
         self.inner.scheduler.cancel(id)
     }

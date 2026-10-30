@@ -30,7 +30,7 @@ further linker flags are needed.
 ## Versioning
 
 * `mk_abi_version()` returns `(major << 16) | minor`; the header has
-  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.1). A front end must check that
+  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.2). A front end must check that
   the runtime major equals the compiled major. Minor releases only **add**
   functions and JSON fields, so JSON readers must ignore unknown keys.
   1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
@@ -39,6 +39,8 @@ further linker flags are needed.
   `mk_session_autosave`, `mk_session_get_param`, and the analysis fields
   `result_schema`, `result_version`, `gpu_path` and envelope fields
   `backend`, `result_version`.
+* 1.2 adds `mk_job_stop`: Stop retains the best-so-far optimisation or
+  tolerancing result, with `result.stopped: true`.
 * Each analysis' result shape has its own `result_version`
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
@@ -155,6 +157,12 @@ submit ──► QUEUED ──► RUNNING ──► DONE
   cancelled immediately; a running job stops at its next check (analyses
   check at bounded intervals). A job whose token was set ends `CANCELLED`
   even if it finished its work.
+* `mk_job_stop(engine, job)` requests cooperative Stop for `optimize` and
+  `tolerance`. A queued job still starts and returns its initial/best result;
+  a running job returns the best completed work as `DONE` with
+  `result.stopped: true`. Other active jobs return `MK_ERR_UNSUPPORTED`;
+  finished jobs are unchanged. Cancel, supersession and shutdown still
+  discard the result, including after a Stop request.
 * `mk_job_wait(engine, job, timeout_ms, &state)`: `timeout_ms < 0` waits
   forever. Returns `MK_OK` with a terminal state or `MK_ERR_TIMEOUT` with
   the current state.
@@ -217,7 +225,7 @@ stamped into project metadata on save.
 
 `settings_schema` is a JSON-Schema subset: `type` (name or list of
 `number|integer|string|boolean|array|object|null`), `default`, `minimum`,
-`maximum`, `enum`, `items`, `required`, plus descriptive `title`,
+`maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `enum`, `items`, `required`, plus descriptive `title`,
 `description` and `unit`. `result_schema` uses the same subset plus
 `anyOf`, `minItems`/`maxItems` and `additionalProperties`, and lists the
 result's typed buffers under `x-buffers` (`docs/RESULTS.md` §4). Submitted settings may be partial; missing keys
@@ -370,13 +378,11 @@ an automatic semi-diameter; a path the system does not have is
 
 * `mk_session_validate_json(session, &json)`: the `validate` report
   `{ok, errors, warnings, issues: [{severity, code, surface, message}]}` of
-  the current snapshot. Besides the core structural checks it rejects
-  non-finite numbers anywhere in the model, an aperture value ≤ 0, negative
-  field or wavelength weights, mechanical parts that reference missing
-  surfaces and systems the reference tracer cannot set up, and warns about
-  chief and marginal rays that do not reach the image (codes in
-  `docs/RESULTS.md` §6). An error-free system traces in every ray-based
-  analysis.
+  the current snapshot. Structural problems (non-finite values, aperture
+  values ≤ 0, negative weights, missing references, …) are already rejected
+  by core at session/snapshot creation (CONVENTIONS §13). The analysis checks
+  material resolution and tracer setup and warns about chief/marginal rays
+  that do not reach the image (`docs/RESULTS.md` §6).
 * `mk_session_apply_solves(session, settings, &report, &hash)`: solves the
   system (`docs/SOLVES.md`) and commits it as a new snapshot (marks the
   session dirty); `report` is the `solves` result. The `solves` analysis is
@@ -520,3 +526,24 @@ mk_engine_destroy(engine)
   what it used with `AnalysisInput::report_backend`.
 * Typed merit/variables/tolerances replace the opaque project sections
   through a schema migration (v1 → v2).
+
+### Stop smoke test (ABI 1.2)
+
+The compiled C smoke suite exercises this sequence as well as unsupported
+jobs, unknown IDs, ordinary cancellation and finished-job no-ops:
+
+```c
+uint64_t job;
+MKJobState state;
+char *json = NULL;
+MKBuffer *buffers = NULL;
+size_t count = 0;
+assert(mk_session_submit_analysis(session, "optimize",
+    "{\"algorithm\":\"de\",\"max_iterations\":100000}", NULL, &job) == MK_OK);
+assert(mk_job_stop(engine, job) == MK_OK);
+assert(mk_job_wait(engine, job, -1, &state) == MK_OK && state == MK_JOB_DONE);
+assert(mk_job_take_result(engine, job, &json, &buffers, &count) == MK_OK);
+assert(strstr(json, "\"stopped\":true") != NULL);
+mk_string_free(json);
+mk_buffer_free(buffers, count);
+```

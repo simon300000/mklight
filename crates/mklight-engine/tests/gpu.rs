@@ -375,3 +375,145 @@ fn cancelling_a_gpu_job_mid_run_stops_it() {
     // machine.
     assert!(latency < Duration::from_secs(5), "{latency:?}");
 }
+
+/// Merit jobs use the provider selected by the facade and share its
+/// snapshot qualification with ray-grid analyses.
+#[test]
+fn merit_jobs_share_provider_qualification_and_report_actual_backend() {
+    let provider = GpuProvider::emulation();
+    let handle = provider.device().unwrap();
+    let device = handle.downcast_ref::<GpuDevice>().unwrap();
+    let engine = engine_with(Some(provider));
+    let session = session(&engine, samples::cooke_triplet());
+    let backend = Some(Backend::Gpu("cpu_f32".into()));
+    let grid = run_on(&session, "ray_grid", json!({"rings": 2}), backend.clone());
+    assert_eq!(device.cached_qualifications(), 1);
+    for (name, settings) in [
+        ("optimize", json!({"max_iterations": 2})),
+        ("tolerance", json!({"mode": "monte_carlo", "trials": 3})),
+    ] {
+        let gpu = run_on(&session, name, settings.clone(), backend.clone());
+        assert_eq!(gpu.backend.requested, "gpu:cpu_f32");
+        assert_eq!(gpu.run_info.backend, "gpu:cpu_f32");
+        assert_eq!(gpu.backend.used, gpu.run_info.backend);
+        assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
+        assert_eq!(gpu.backend.qualification, grid.backend.qualification);
+        if name == "tolerance" {
+            assert_eq!(
+                gpu.json["backend"]["reported_on"],
+                gpu.json["backend"]["evaluated_on"]
+            );
+        }
+        assert!(
+            gpu.json["backend"]["gpu_stats"]["gpu_candidates"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(gpu.backend.fallback_reason.is_none());
+        let cached = device.cached_qualifications();
+        run_on(&session, name, settings.clone(), backend.clone());
+        assert_eq!(device.cached_qualifications(), cached);
+        let auto = run_on(&session, name, settings, Some(Backend::Auto));
+        assert_eq!(auto.run_info.backend, "cpu_reference");
+        assert!(auto.backend.fallback_reason.unwrap().contains("crossover"));
+        assert!(
+            !auto
+                .run_info
+                .warnings
+                .iter()
+                .any(|w| w.contains("not used"))
+        );
+    }
+}
+
+#[test]
+fn merit_jobs_reuse_failed_provider_qualification_and_fall_back() {
+    let mut qualification = XvalSettings::qualification();
+    qualification.budget.position_mm = 1e-15;
+    let provider = GpuProvider::emulation().with_qualification(qualification);
+    let handle = provider.device().unwrap();
+    let device = handle.downcast_ref::<GpuDevice>().unwrap();
+    let engine = engine_with(Some(provider));
+    let session = session(&engine, samples::singlet());
+    for (name, settings) in [
+        ("optimize", json!({"max_iterations": 2})),
+        ("tolerance", json!({"mode": "monte_carlo", "trials": 3})),
+    ] {
+        let cpu = run_on(
+            &session,
+            name,
+            settings.clone(),
+            Some(Backend::CpuReference),
+        );
+        let fallback = run_on(
+            &session,
+            name,
+            settings,
+            Some(Backend::Gpu("cpu_f32".into())),
+        );
+        assert_eq!(fallback.run_info.backend, "cpu_reference");
+        assert_eq!(fallback.backend.used, "cpu_reference");
+        assert_eq!(fallback.run_info.precision, Precision::F64Reference);
+        assert_eq!(
+            fallback.backend.qualification.as_ref().unwrap()["passed"],
+            false
+        );
+        assert!(fallback.backend.fallback_reason.is_some());
+        assert!(
+            fallback
+                .run_info
+                .warnings
+                .iter()
+                .any(|w| w.contains("gpu:cpu_f32"))
+        );
+        assert_eq!(device.cached_qualifications(), 1);
+        let key = if name == "optimize" {
+            "final"
+        } else {
+            "monte_carlo"
+        };
+        assert_eq!(fallback.json[key], cpu.json[key]);
+    }
+}
+
+#[test]
+fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
+    use mklight_optim::merit::operand::OperandKind;
+    use mklight_optim::merit::{MeritFunctionSpec, Operand};
+    let engine = engine_with(Some(GpuProvider::emulation()));
+    let session = session(&engine, samples::singlet());
+    let spec = MeritFunctionSpec {
+        operands: vec![Operand::new(OperandKind::Efl).target(100.0)],
+        ..Default::default()
+    };
+    let settings = json!({"merit": spec, "max_iterations": 2});
+    let cpu = run_on(
+        &session,
+        "optimize",
+        settings.clone(),
+        Some(Backend::CpuReference),
+    );
+    let gpu = run_on(
+        &session,
+        "optimize",
+        settings,
+        Some(Backend::Gpu("cpu_f32".into())),
+    );
+    assert_eq!(gpu.run_info.backend, "cpu_reference");
+    assert_eq!(gpu.run_info.precision, Precision::F64Reference);
+    assert_eq!(gpu.json["backend"]["precision"], "f64_reference");
+    assert_eq!(gpu.json["final"], cpu.json["final"]);
+    assert!(
+        gpu.backend
+            .fallback_reason
+            .unwrap()
+            .contains("no candidates")
+    );
+    assert!(
+        !gpu.run_info
+            .warnings
+            .iter()
+            .any(|w| w.contains("evaluated on"))
+    );
+}
