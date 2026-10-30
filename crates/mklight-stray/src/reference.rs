@@ -190,6 +190,15 @@ impl Acc {
     }
 }
 
+/// One grid row: per-wavelength flux accumulators, the geometric
+/// accumulator, and sample and pass counts.
+struct Row {
+    acc: Vec<Acc>,
+    geo: Acc,
+    samples: usize,
+    passed: usize,
+}
+
 /// The deterministic `Primary` reference of `source` on `sys` with an
 /// `n × n` grid (module docs). Rows run in parallel and are folded in
 /// order, so the result does not depend on the thread count.
@@ -218,9 +227,7 @@ pub fn primary_reference(
     let power = source.power();
     let cell = 4.0 / (n * n) as f64 / PI * power;
     let h = 2.0 / n as f64;
-    // One row: per-wavelength flux accumulators, geometric accumulator,
-    // sample and pass counts.
-    let rows: Vec<MkResult<(Vec<Acc>, Acc, usize, usize)>> = (0..n)
+    let rows: Vec<MkResult<Row>> = (0..n)
         .into_par_iter()
         .map(|iy| {
             ctx.check()?;
@@ -252,14 +259,24 @@ pub fn primary_reference(
                     geo.add(1.0, x, y);
                 }
             }
-            Ok((acc, geo, samples, passed))
+            Ok(Row {
+                acc,
+                geo,
+                samples,
+                passed,
+            })
         })
         .collect();
     let mut acc = vec![Acc::default(); nw];
     let mut geo = Acc::default();
     let (mut samples, mut passed) = (0, 0);
     for row in rows {
-        let (a, g, s, p) = row?;
+        let Row {
+            acc: a,
+            geo: g,
+            samples: s,
+            passed: p,
+        } = row?;
         for (x, y) in acc.iter_mut().zip(&a) {
             x.merge(y);
         }

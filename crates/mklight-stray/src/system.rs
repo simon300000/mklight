@@ -50,10 +50,12 @@
 //!   (surfaces, barrels, baffles). Any ray that can enter the lens through
 //!   its front opening crosses that disk.
 //!
-//! Each source comes with a *reference flux* ([`Beam::reference_flux`]):
-//! the flux through the entrance pupil (field sources, the margin
-//! excluded), or through the first interface's mechanical aperture
-//! (out-of-field sources), the usual normalisation of stray-light ratios.
+//! Each source comes with a *reference flux* ([`Beam::reference_flux`]),
+//! the usual normalisation of stray-light ratios: the flux through the
+//! entrance pupil for field sources (the margin excluded; for a finite
+//! object, the flux into the circular cone of half-angle `α_EP`, which off
+//! axis slightly exceeds the flux through the elliptical pupil), or through
+//! the first interface's mechanical aperture for out-of-field sources.
 
 use std::f64::consts::PI;
 use std::sync::Arc;

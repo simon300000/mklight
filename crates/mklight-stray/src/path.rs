@@ -453,6 +453,58 @@ mod tests {
     }
 
     #[test]
+    fn signatures_record_and_expand() {
+        let mut sig = Signature::default();
+        assert_eq!(sig.describe(|_| String::new()), "designed");
+        assert_eq!(
+            sig.expand_ghost(&SEQ, |_| false).unwrap(),
+            [
+                (1, SurfaceOp::Transmit),
+                (2, SurfaceOp::Transmit),
+                (3, SurfaceOp::Transmit)
+            ]
+        );
+        sig.push(EventKind::Reflect, 3);
+        sig.push(EventKind::Reflect, 1);
+        assert_eq!(sig.describe(|_| String::new()), "R3 R1");
+        // T1 T2 R3 T2 R1 T2 T3: the ghost solver's ordered signature.
+        use SurfaceOp::{Reflect as R, Transmit as T};
+        assert_eq!(
+            sig.expand_ghost(&SEQ, |_| false).unwrap(),
+            [(1, T), (2, T), (3, R), (2, T), (1, R), (2, T), (3, T)]
+        );
+        // A path that ends travelling backwards never reaches the detector.
+        let mut odd = Signature::default();
+        odd.push(EventKind::Reflect, 2);
+        assert!(odd.expand_ghost(&SEQ, |_| false).is_none());
+        // A designed mirror keeps its reflection.
+        assert_eq!(
+            Signature::default().expand_ghost(&SEQ, |s| s == 2).unwrap()[1],
+            (2, R)
+        );
+        // Mechanical events are not ghosts; labels name the primitive.
+        let mut m = sig;
+        m.push(EventKind::MechanicalScatter, 7);
+        assert!(m.expand_ghost(&SEQ, |_| false).is_none());
+        assert_eq!(m.describe(|p| format!("prim {p}")), "R3 R1 Ms[prim 7]");
+        // Overflow keeps the first events.
+        let mut long = Signature::default();
+        for k in 0..MAX_SIGNATURE_EVENTS + 2 {
+            long.push(EventKind::Tir, k);
+        }
+        assert_eq!(long.len(), MAX_SIGNATURE_EVENTS);
+        assert!(long.overflow() && long.describe(|_| String::new()).ends_with('…'));
+        assert!(long.expand_ghost(&SEQ, |_| false).is_none());
+        // Ordering is total and distinguishes kinds.
+        let mut a = Signature::default();
+        a.push(EventKind::Reflect, 3);
+        let mut b = Signature::default();
+        b.push(EventKind::Tir, 3);
+        assert_ne!(a, b);
+        assert_eq!(a.events().next(), Some((EventKind::Reflect, 3)));
+    }
+
+    #[test]
     fn masks() {
         assert!(ClassMask::STRAY_WITH_GHOST.contains(PathClass::Scatter));
         assert!(!ClassMask::STRAY_WITH_GHOST.contains(PathClass::Ghost));

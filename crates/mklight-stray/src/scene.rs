@@ -55,7 +55,10 @@
 //!
 //! The clear semi-diameter is the fixed semi-diameter, the aperture shape's
 //! bounding radius, or `SceneOptions::clear_semi_diameters` (the sequential
-//! tracer's automatic values; **integration point**). The mechanical
+//! tracer's automatic values, filled in by `crate::system::StraySystem`).
+//! Two surfaces of one element that intersect inside their clear apertures
+//! are reported (rays near the rim then meet the second surface first,
+//! which the sequential model ignores). The mechanical
 //! semi-diameter is `EdgeSpec::mechanical_semi_diameter`, or the clear value
 //! plus `default_edge_margin`. A mirror with a rectangular or elliptical
 //! aperture and no explicit mechanical semi-diameter ends at its aperture
