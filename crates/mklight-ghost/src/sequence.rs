@@ -46,8 +46,16 @@
 //! that is not [`InterfaceKind::Passive`], the image included) is summed
 //! over the intermediate passive surfaces, and a ray whose sum is negative at
 //! a physical surface is lost (`Virtual`). Passive surfaces can therefore
-//! sit on either side of the ray. The first segment of an object at infinity
-//! starts on an arbitrary reference plane and is not counted.
+//! sit on either side of the ray. For an object at infinity nothing is
+//! counted before the first physical interaction (the light comes from
+//! `z = −∞`; the start plane and any passive planes before the first
+//! element are reference planes, not positions).
+//!
+//! The rule applies to the primary path as well: a design whose real rays
+//! cross a physically impossible element (negative edge thickness, overlapping
+//! elements) loses those rays here although the reference tracer passes
+//! them. [`ghost_irradiance`](crate::ghost_irradiance) reports such primary
+//! losses as a `RunInfo` warning.
 //!
 //! # Radiometry
 //!
@@ -55,7 +63,9 @@
 //! Fresnel, thin film, ideal or tabulated) is evaluated once at the actual
 //! angle of incidence and wavelength; a pass multiplies the s and p weights
 //! by `T_s`, `T_p`, a reflection by `R_s`, `R_p` (a designed mirror uses the
-//! mirror form), and the sensor by its reflectance. s and p are carried as
+//! mirror form), a sensor reflection by the sensor reflectance `R_sensor`,
+//! and detection by `1 − R_sensor` (the absorbed fraction; 1 without a
+//! sensor reflectance). s and p are carried as
 //! two incoherent channels and averaged at the end, `w = ½(w_s + w_p)·τ`,
 //! with the bulk transmittance `τ = exp(−Σ α·t)` over all segments. This is
 //! exact for meridional rays of rotationally symmetric systems and neglects
@@ -230,8 +240,10 @@ impl GhostModel {
         let (mut ws, mut wp) = (1.0f64, 1.0f64);
         let mut absorb = 0.0f64;
         let mut opl = Compensated::ZERO;
-        // Signed distance travelled since the last physical interaction.
+        // Signed distance travelled since the last physical interaction;
+        // not counted before the first one for an object at infinity.
         let mut since_physical = 0.0f64;
+        let mut counting = !(from == 0 && sys.object_at_infinity);
         if let Some(r) = record.as_deref_mut() {
             r.clear();
         }
@@ -312,13 +324,12 @@ impl GhostModel {
                 }
             };
             let t = hit.t_transfer + hit.t_surface;
-            // Virtual-segment rule (module docs): the start plane of an
-            // object at infinity is a reference plane, not a position.
-            if !(k == 0 && from == 0 && sys.object_at_infinity) {
+            // Virtual-segment rule (module docs).
+            if counting {
                 since_physical += t;
             }
             if self.interface_kinds()[s] != InterfaceKind::Passive {
-                if self.settings().reject_virtual && since_physical < -VIRTUAL_TOL {
+                if counting && self.settings().reject_virtual && since_physical < -VIRTUAL_TOL {
                     let status = SequenceStatus::Virtual {
                         step: kk,
                         surface: ss,
@@ -326,6 +337,7 @@ impl GhostModel {
                     return done(status, ray, s, k, ws, wp, absorb, opl);
                 }
                 since_physical = 0.0;
+                counting = true;
             }
             opl.add_product(n_in, hit.t_transfer);
             opl.add_product(n_in, hit.t_surface);
@@ -392,8 +404,17 @@ impl GhostModel {
                     };
                     applied = [r, r];
                     ray.dir = reflect(dir_in, hit.normal).0;
+                } else if let Some(r) = self.settings().sensor_reflectance {
+                    // Detection: the sensor absorbs what it does not reflect.
+                    split = InterfaceRT {
+                        rs: r,
+                        rp: r,
+                        ts: 1.0 - r,
+                        tp: 1.0 - r,
+                    };
+                    applied = [1.0 - r, 1.0 - r];
                 }
-                // A pass at the image is detection: no interaction.
+                // Without a sensor reflectance detection absorbs everything.
             } else if is_cb || surf.interaction == Interaction::Dummy {
                 if st.action == Action::Reflect {
                     return done(

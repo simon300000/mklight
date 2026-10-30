@@ -193,3 +193,127 @@ fn ghost_focus_shift_in_converging_beam() {
     let zf = real_ghost_focus(&m, &GhostPath::new(vec![3, 2]), 0, 1.0).unwrap();
     assert!((zf - g.focus_from_sensor).abs() > 1e-3);
 }
+
+#[test]
+fn curved_sensor_reflection_paraxial_matches_real() {
+    // The sensor reflects about its own curved normal; the paraxial model
+    // must use the reflection power −2cN there too. The sensor sits δ in
+    // front of the primary focus so that the beam has a finite height on it.
+    let (n, d, delta, c) = (1.5, 10.0, 5.0, -0.02);
+    let mut sys = converging_plate(n, d);
+    sys.surfaces[3].thickness -= delta;
+    sys.surfaces[4].shape = SurfaceShape::sphere(1.0 / c);
+    let a = sys.surfaces[3].thickness;
+    let settings = mklight_ghost::GhostSettings {
+        sensor_reflectance: Some(0.1),
+        ..unclipped()
+    };
+    let m = model(sys, settings);
+    let rep = paraxial_ghosts(
+        &m,
+        &ParaxialGhostSettings {
+            paths: Some(vec![GhostPath::new(vec![4, 3]), GhostPath::new(vec![4, 2])]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // [4, 3] by vergences (air, unfolded): the beam arrives converging to
+    // δ behind the sensor (V = 1/δ); the concave sensor (radius 1/c < 0,
+    // seen from the plate) adds −2c: the reflected beam focuses
+    // 1/(1/δ − 2c) in front of the sensor, then travels a to the flat rear
+    // face and a back. The ghost diverges from that point, 2a − 1/(1/δ − 2c)
+    // in front of the sensor. (A flat sensor would give δ − 2a.)
+    let expect = 1.0 / (1.0 / delta - 2.0 * c) - 2.0 * a;
+    let g43 = rep
+        .ghosts
+        .iter()
+        .find(|g| g.path == GhostPath::new(vec![4, 3]))
+        .unwrap();
+    assert!(
+        (g43.focus_from_sensor - expect).abs() < 1e-9,
+        "{} vs {expect}",
+        g43.focus_from_sensor
+    );
+    assert!((g43.focus_from_sensor - (delta - 2.0 * a)).abs() > 0.5);
+    for g in &rep.ghosts {
+        let zp = g.focus_from_sensor;
+        let z1 = real_ghost_focus(&m, &g.path, 0, 0.02).unwrap();
+        let z2 = real_ghost_focus(&m, &g.path, 0, 0.01).unwrap();
+        // Converges quadratically in the aperture to the paraxial value.
+        assert!((z2 - zp).abs() < 1e-3, "{:?}: {z2} vs {zp}", g.path);
+        let ratio = (z1 - zp) / (z2 - zp);
+        assert!((ratio - 4.0).abs() < 0.1, "{:?}: {ratio}", g.path);
+    }
+}
+
+#[test]
+fn arbitrary_field_points() {
+    use mklight_ghost::FieldRef;
+    use mklight_trace::{FieldPoint, ObjectSource};
+    let (n, d) = (1.5, 10.0);
+    let sys = plate(n, d, 20.0, &[0.0, 5.0], None);
+    let m = model(sys.clone(), unclipped());
+    let base = IrradianceSettings {
+        paths: Some(vec![GhostPath::new(vec![3, 2])]),
+        pupil_samples: 16,
+        overfill: 1.0,
+        map_bins: [16, 16],
+        map_half_size: Some([20.0, 20.0]),
+        ..Default::default()
+    };
+    let ctx = JobContext::new();
+    // A point equal to system field 1 gives the same result.
+    let by_index = ghost_irradiance(
+        &m,
+        &IrradianceSettings {
+            fields: vec![1],
+            ..base.clone()
+        },
+        &ctx,
+    )
+    .unwrap();
+    let point = FieldPoint::system(&sys, 1);
+    let by_point = ghost_irradiance(
+        &m,
+        &IrradianceSettings {
+            points: vec![point],
+            ..base.clone()
+        },
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(
+        by_index.primary.fields[0].field,
+        FieldRef::System { index: 1 }
+    );
+    assert_eq!(by_point.primary.fields.len(), 1, "points only");
+    assert_eq!(by_point.primary.fields[0].field, FieldRef::Point { point });
+    assert_eq!(by_index.ghosts[0].flux, by_point.ghosts[0].flux);
+    assert_eq!(by_index.total_ghost_map, by_point.total_ghost_map);
+
+    // A source three times outside the field: the ghost is displaced
+    // laterally by exactly 2 d tan θ' for every ray, so the centroids are.
+    let far = FieldPoint::normalized(0.0, 3.0);
+    let res = ghost_irradiance(
+        &m,
+        &IrradianceSettings {
+            fields: vec![0],
+            points: vec![far],
+            ..base
+        },
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(res.primary.fields.len(), 2);
+    let ObjectSource::Direction { dir } = m.tracer().prepare_field(far).unwrap().source else {
+        panic!("object at infinity");
+    };
+    let sin_t = dir.x.hypot(dir.y) / dir.norm();
+    assert!(sin_t > 0.2, "≈ 15°: {sin_t}");
+    let st = sin_t / n;
+    let shift = 2.0 * d * st / (1.0 - st * st).sqrt();
+    let (p, g) = (&res.primary.fields[1], &res.ghosts[0].fields[1]);
+    assert_eq!(p.field, FieldRef::Point { point: far });
+    let dy = (g.centroid[1] - p.centroid[1]).abs();
+    assert!((dy - shift).abs() < 1e-10, "{dy} vs {shift}");
+}

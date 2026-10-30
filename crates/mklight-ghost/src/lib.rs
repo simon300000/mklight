@@ -47,7 +47,7 @@ pub mod sequence;
 pub mod signature;
 
 pub use irradiance::{
-    FieldIrradiance, GhostIrradiance, IrradianceMap, IrradianceSettings, PathIrradiance,
+    FieldIrradiance, FieldRef, GhostIrradiance, IrradianceMap, IrradianceSettings, PathIrradiance,
     ghost_irradiance,
 };
 pub use model::{Clip, ClipMode, GhostModel, GhostSettings};

@@ -36,7 +36,7 @@
 //! of that order whatever the search order. The output order is canonical
 //! (by order, then lexicographic) and deterministic.
 
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::BinaryHeap;
 
 use mklight_core::{MkError, MkResult};
 use serde::{Deserialize, Serialize};
@@ -402,13 +402,7 @@ pub fn enumerate(model: &GhostModel, settings: &EnumerationSettings) -> MkResult
             .cmp(&b.path.order())
             .then_with(|| a.path.cmp(&b.path))
     });
-    let coverage = GhostCoverage {
-        interfaces: model.interface_kinds().to_vec(),
-        paths: paths
-            .iter()
-            .map(|p| p.path.clone())
-            .collect::<BTreeSet<_>>(),
-    };
+    let coverage = model.coverage(paths.iter().map(|p| p.path.clone()));
     Ok(PathEnumeration {
         paths,
         truncated,

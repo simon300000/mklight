@@ -55,6 +55,9 @@
 //! one owner, and a ghost path the ghost run left out (higher order, below
 //! the reflectance threshold, outside the surface range) is still counted,
 //! by the stray solver.
+//!
+//! The rule assumes both solvers clip at identical apertures
+//! ([`GhostCoverage::apertures`], [`GhostCoverage::same_apertures`]).
 
 use std::collections::BTreeSet;
 
@@ -62,6 +65,7 @@ use mklight_core::materials::coating::ResolvedCoating;
 use mklight_core::{Interaction, ResolvedSystem, SurfaceShape};
 use serde::{Deserialize, Serialize};
 
+use crate::model::Clip;
 use crate::path::{Action, GhostPath};
 
 /// What a surface is to the partition rule (module docs).
@@ -248,15 +252,33 @@ pub fn classify(
 }
 
 /// The paths one ghost run traced, for the stray solver's exclusion.
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// Ownership by signature alone is only disjoint and complete if both
+/// solvers clip a ray at the same places: a ray the ghost run clipped must
+/// not survive in the stray solver with a covered signature (nobody would
+/// count it), and vice versa (both would). The record therefore carries the
+/// clipping apertures of the ghost run, which the stray solver must
+/// reproduce at the optical surfaces (check with
+/// [`GhostCoverage::same_apertures`]).
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct GhostCoverage {
     /// Interface classification of the system the run used.
     pub interfaces: Vec<InterfaceKind>,
+    /// Clipping of every surface in the ghost run (`Clip::Surface`: the
+    /// surface's own fixed aperture in the same snapshot).
+    #[serde(default)]
+    pub apertures: Vec<Clip>,
     /// Exactly the reflection sequences the ghost run counted.
     pub paths: BTreeSet<GhostPath>,
 }
 
 impl GhostCoverage {
+    /// Does a stray solver that clips with `apertures` (one per surface,
+    /// same snapshot) partition consistently with this ghost run?
+    pub fn same_apertures(&self, apertures: &[Clip]) -> bool {
+        self.apertures == apertures
+    }
+
     pub fn covers(&self, path: &GhostPath) -> bool {
         self.paths.contains(path)
     }
@@ -328,6 +350,7 @@ mod tests {
     fn partition_is_disjoint_and_complete() {
         let mut cov = GhostCoverage {
             interfaces: K.to_vec(),
+            apertures: vec![Clip::None; K.len()],
             paths: BTreeSet::new(),
         };
         cov.paths.insert(GhostPath::new(vec![3, 1]));

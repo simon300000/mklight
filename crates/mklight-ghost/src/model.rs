@@ -8,19 +8,28 @@
 //! Ghost light leaves the designed beam footprint, so the apertures that
 //! clip it matter much more than for the primary path, where `Auto`
 //! semi-diameters never clip. [`ClipMode::ClearApertures`] (the default)
-//! clips at every surface `1 … N−2`:
+//! clips at
 //!
-//! * fixed semi-diameters and explicit apertures as given;
+//! * fixed semi-diameters and explicit apertures as given (any surface);
 //! * the stop at `max(paraxial stop radius, traced height)` (the value
 //!   `fix_semi_diameters` freezes, so the primary beam is never vignetted);
-//! * other `Auto` surfaces at their traced clear semi-diameter plus
+//! * every other `Auto` surface that is physically present (not
+//!   [`InterfaceKind::Passive`]) at its traced clear semi-diameter plus
 //!   `margin_mm`.
 //!
-//! Coordinate breaks never clip. The image surface clips only with an
-//! explicit aperture; a sensor reflection happens only inside the sensor
-//! rectangle when the model has a [`Sensor`](mklight_core::Sensor).
-//! `FixedApertures` clips like the reference trace (fixed apertures only);
-//! `None` disables clipping.
+//! A passive surface (dummy, coordinate break, bare same-index plane) that
+//! is neither the stop nor has an explicit aperture never clips: inserting a
+//! reference plane leaves every ghost result unchanged (tested). The image
+//! surface clips only with an explicit aperture; a sensor reflection happens
+//! only inside the sensor rectangle when the model has a
+//! [`Sensor`](mklight_core::Sensor). `FixedApertures` clips at the fixed
+//! apertures only, plus an `Auto` stop at the same radius as above (the
+//! reference trace aims every ray inside the stop; an overfilled ghost grid
+//! must not let light around an unbounded stop). `None` disables clipping.
+//!
+//! The apertures used are part of the [`GhostCoverage`](crate::GhostCoverage)
+//! of a run: a stray-light solver combined with it must clip at the same
+//! apertures (CONVENTIONS §8).
 
 use std::sync::Arc;
 
@@ -31,7 +40,7 @@ use mklight_trace::{IntersectSettings, SemiDiameters, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
 use crate::path::{Action, Direction, GhostPath, Step};
-use crate::signature::{InterfaceKind, interface_kinds};
+use crate::signature::{GhostCoverage, InterfaceKind, interface_kinds};
 
 /// Which apertures clip ghost (and primary) rays (module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -106,6 +115,7 @@ impl GhostModel {
         let n = sys.num_surfaces();
         let kinds = interface_kinds(sys);
         let semi = tracer.semi_diameters(&SemiDiameterSettings::default());
+        let stop_radius = semi.values[sys.stop].max(semi.traced[sys.stop]) * (1.0 + 1e-12);
         let clip = (0..n)
             .map(|i| {
                 let s = &sys.surfaces[i];
@@ -114,24 +124,32 @@ impl GhostModel {
                 if i == 0 || is_cb {
                     return Clip::None;
                 }
+                if has_fixed {
+                    return match settings.clip {
+                        ClipMode::None => Clip::None,
+                        _ => Clip::Surface,
+                    };
+                }
+                let is_stop = i == sys.stop;
                 match settings.clip {
                     ClipMode::None => Clip::None,
-                    ClipMode::FixedApertures => Clip::Surface,
-                    ClipMode::ClearApertures { margin_mm } => {
-                        if has_fixed {
-                            Clip::Surface
-                        } else if i == n - 1 {
-                            Clip::None
-                        } else if i == sys.stop {
-                            Clip::Radius {
-                                radius: semi.values[i].max(semi.traced[i]) * (1.0 + 1e-12),
-                            }
-                        } else {
-                            Clip::Radius {
-                                radius: semi.values[i] + margin_mm,
-                            }
-                        }
+                    ClipMode::FixedApertures if is_stop => Clip::Radius {
+                        radius: stop_radius,
+                    },
+                    ClipMode::FixedApertures => Clip::None,
+                    ClipMode::ClearApertures { .. } if is_stop => Clip::Radius {
+                        radius: stop_radius,
+                    },
+                    // Physically absent surfaces (dummies, bare same-index
+                    // planes) and the image never clip on their own.
+                    ClipMode::ClearApertures { .. }
+                        if i == n - 1 || kinds[i] == InterfaceKind::Passive =>
+                    {
+                        Clip::None
                     }
+                    ClipMode::ClearApertures { margin_mm } => Clip::Radius {
+                        radius: semi.values[i] + margin_mm,
+                    },
                 }
             })
             .collect();
@@ -180,6 +198,10 @@ impl GhostModel {
     }
     pub fn clip(&self, surface: usize) -> Clip {
         self.clip[surface]
+    }
+    /// Clipping of every surface (module docs).
+    pub fn clips(&self) -> &[Clip] {
+        &self.clip
     }
     /// Clear semi-diameters of the underlying tracer.
     pub fn semi_diameters(&self) -> &SemiDiameters {
@@ -251,6 +273,16 @@ impl GhostModel {
         match direction {
             Direction::Forward => (a, b),
             Direction::Backward => (b, a),
+        }
+    }
+
+    /// The coverage record of a run that traced exactly `paths` with this
+    /// model (interface kinds and clipping apertures included).
+    pub fn coverage(&self, paths: impl IntoIterator<Item = GhostPath>) -> GhostCoverage {
+        GhostCoverage {
+            interfaces: self.kinds.clone(),
+            apertures: self.clip.clone(),
+            paths: paths.into_iter().collect(),
         }
     }
 

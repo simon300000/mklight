@@ -95,7 +95,10 @@ and radiometric units. Light reaching the detector is partitioned into disjoint
 | `Mechanical` | any path touching non-optical geometry without scattering (specular reflection off barrels etc.) | stray |
 
 The stray-light solver tags each Monte-Carlo path and, when run alongside the
-ghost solver, drops the purely specular optical-surface classes. The ghost
+ghost solver, drops the purely specular optical-surface classes. The precise rule
+(path signatures, ghosts the ghost run did not cover handed to stray, the
+`Irregular` class, identical apertures) is CONVENTIONS §8, which takes
+precedence over this table. The ghost
 solver uses the same coating reflectance `R(λ, θ, pol)` that the primary path
 uses for its transmittance `T`, so `T + R + A = 1` holds at every interface
 (tested).

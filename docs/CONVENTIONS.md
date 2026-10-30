@@ -164,3 +164,8 @@ to the CPU reference. It must never return silently degraded numbers.
   `Scatter`, `Mechanical`, `Irregular` → the stray solver. The reference
   implementation is `mklight_ghost::signature` (`PathSignature`, `classify`,
   `GhostCoverage::owner`); details in `docs/GHOST.md` §2.
+* Ownership assumes both solvers clip at identical apertures: the stray
+  solver must clip the optical surfaces exactly as the ghost run did
+  (`GhostCoverage::apertures`, checked with `same_apertures`), otherwise a
+  ray clipped by one solver and not the other is counted twice or not at
+  all.

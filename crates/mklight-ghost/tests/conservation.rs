@@ -390,8 +390,93 @@ fn sensor_reflection_weight() {
         .unwrap()
         .ray;
     let (res, _) = trace_rec(&m, &ray, &GhostPath::new(vec![4, 3]));
-    // Through the plate, sensor, back to the rear face (air side), sensor.
-    let expect = (1.0 - r) * (1.0 - r) * rs_sensor * r;
+    // Through the plate, sensor, back to the rear face (air side), sensor,
+    // which absorbs (detects) the fraction 1 − R_sensor.
+    let expect = (1.0 - r) * (1.0 - r) * rs_sensor * r * (1.0 - rs_sensor);
     assert!((res.weight() - expect).abs() < 1e-15);
     assert!((e.paths[2].reflectance_product - rs_sensor * r).abs() < 1e-15);
+}
+
+/// Every alternating reflection sequence over the reflectors `refl` whose
+/// normal-incidence reflectance product `r(·)` stays above `floor`, split
+/// into detected (even) and returned (odd) paths.
+fn all_paths(refl: &[u32], r: &dyn Fn(u32) -> f64, floor: f64) -> (Vec<GhostPath>, Vec<GhostPath>) {
+    fn go(
+        seq: &mut Vec<u32>,
+        prod: f64,
+        refl: &[u32],
+        r: &dyn Fn(u32) -> f64,
+        floor: f64,
+        even: &mut Vec<GhostPath>,
+        odd: &mut Vec<GhostPath>,
+    ) {
+        if seq.len().is_multiple_of(2) {
+            even.push(GhostPath::new(seq.clone()));
+        } else {
+            odd.push(GhostPath::new(seq.clone()));
+        }
+        for &k in refl {
+            // Forward after an even count: next reflector further on;
+            // backward: before the last one.
+            let ok = match seq.last() {
+                None => true,
+                Some(&l) if seq.len().is_multiple_of(2) => k > l,
+                Some(&l) => k < l,
+            };
+            let p = prod * r(k);
+            if ok && p > floor {
+                seq.push(k);
+                go(seq, p, refl, r, floor, even, odd);
+                seq.pop();
+            }
+        }
+    }
+    let (mut even, mut odd) = (Vec::new(), Vec::new());
+    go(&mut Vec::new(), 1.0, refl, r, floor, &mut even, &mut odd);
+    (even, odd)
+}
+
+#[test]
+fn sensor_reflectance_bookkeeping() {
+    // Lossless plate + reflecting sensor, normal incidence. Incoherent
+    // plate: R_p = 2R/(1 + R), T_p = (1 − R)/(1 + R). The sensor absorbs
+    // (1 − R_s) T_p/(1 − R_s R_p); the rest returns to object space.
+    let n = 1.5;
+    let r = r_normal(1.0, n);
+    let (rp, tp) = (2.0 * r / (1.0 + r), (1.0 - r) / (1.0 + r));
+    for rs in [0.0, 0.3, 1.0] {
+        let settings = GhostSettings {
+            sensor_reflectance: Some(rs),
+            ..unclipped()
+        };
+        let m = model(plate(n, 5.0, 10.0, &[0.0], None), settings);
+        let ray = m
+            .tracer()
+            .generate(m.tracer().field(0), 0, 0.0, 0.0)
+            .unwrap()
+            .ray;
+        let refl = |k: u32| if k == 4 { rs } else { r };
+        let (even, odd) = all_paths(&[2, 3, 4], &refl, 1e-18);
+        let sum = |paths: &[GhostPath]| -> f64 {
+            paths
+                .iter()
+                .map(|p| {
+                    let (res, _) = trace_rec(&m, &ray, p);
+                    assert!(res.status.is_ok(), "{p:?}: {:?}", res.status);
+                    res.weight()
+                })
+                .sum()
+        };
+        let (detected, returned) = (sum(&even), sum(&odd));
+        let expect = (1.0 - rs) * tp / (1.0 - rs * rp);
+        assert!(
+            (detected - expect).abs() < 1e-13,
+            "R_s = {rs}: {detected} vs {expect}"
+        );
+        // Truncation tail of the enumeration ≈ 1e-13.
+        assert!((detected + returned - 1.0).abs() < 1e-12, "R_s = {rs}");
+        if rs == 1.0 {
+            assert_eq!(detected, 0.0, "a perfect mirror sensor detects nothing");
+        }
+    }
 }

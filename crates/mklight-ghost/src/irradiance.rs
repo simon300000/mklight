@@ -2,7 +2,11 @@
 //!
 //! # Sampling
 //!
-//! For each selected field and wavelength, starting rays are generated once
+//! The fields are the selected system fields (with their weights and
+//! vignetting factors) followed by arbitrary normalised [`FieldPoint`]s
+//! (weight 1 each, e.g. a bright source outside the field of view), so an
+//! off-grid source needs no model edit (which would change the snapshot).
+//! For each field and wavelength, starting rays are generated once
 //! on a square grid of `n × n` cell centres over the aim plane of the
 //! reference tracer (the paraxial entrance-pupil plane, or object-space
 //! tangents for a telecentric object), covering a disc of `overfill` times
@@ -21,10 +25,10 @@
 //!
 //! # Maps and ratios
 //!
-//! Hits are binned into an `nx × ny` map over the sensor (the model's
+//! Hits are binned into an `nx × ny` map in the image surface's local `x`,
+//! `y`, over an explicit `map_half_size` if given, else the model's
 //! [`Sensor`](mklight_core::Sensor) rectangle, else the square of the image
-//! clear semi-diameter, else an explicit size), in the image surface's local
-//! `x`, `y`. Values are irradiance: flux per mm² of bin. The primary map is
+//! clear semi-diameter. Values are irradiance: flux per mm² of bin. The primary map is
 //! computed by the same code from the empty path. Per path and field:
 //! detected flux, peak irradiance, centroid and RMS radius; per path the
 //! ghost-to-signal ratios
@@ -35,6 +39,16 @@
 //!   ratio is meaningful for bins of about a pixel.
 //!
 //! The total ghost map is the sum of all path maps.
+//!
+//! With a sensor reflectance, detection counts the flux the sensor absorbs,
+//! `(1 − R_sensor)` × incident, for the primary and every ghost alike; the
+//! reflected part is the source of the `[image, j]` ghosts.
+//!
+//! The primary path obeys the virtual-segment rule of the sequence tracer
+//! like every ghost. Primary rays it loses (rays crossing a physically
+//! impossible element, which the reference tracer would pass) are counted
+//! and reported as a `RunInfo` warning with their flux, because the ratios
+//! are then normalised to a smaller signal than the sequential solver's.
 //!
 //! # Determinism, parallelism, cancellation
 //!
@@ -54,13 +68,14 @@
 use mklight_core::job::RunTimer;
 use mklight_core::math::KahanSum;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
-use mklight_trace::Ray;
+use mklight_trace::{FieldPoint, PreparedField, Ray};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::model::GhostModel;
 use crate::paraxial::run_info;
 use crate::path::{EnumerationSettings, GhostPath, Step, enumerate};
+use crate::sequence::SequenceStatus;
 use crate::signature::GhostCoverage;
 
 /// Rays per cancellation / progress block.
@@ -73,9 +88,14 @@ pub struct IrradianceSettings {
     /// Explicit paths instead of the enumeration.
     #[serde(default)]
     pub paths: Option<Vec<GhostPath>>,
-    /// System field indices; empty = all fields.
+    /// System field indices; empty = all system fields, unless `points` is
+    /// non-empty.
     #[serde(default)]
     pub fields: Vec<usize>,
+    /// Arbitrary normalised field points (weight 1 each), analysed after
+    /// the system fields (module docs).
+    #[serde(default)]
+    pub points: Vec<FieldPoint>,
     /// System wavelength indices; empty = all wavelengths.
     #[serde(default)]
     pub wavelengths: Vec<usize>,
@@ -85,7 +105,8 @@ pub struct IrradianceSettings {
     pub overfill: f64,
     /// Map bins `[nx, ny]`.
     pub map_bins: [usize; 2],
-    /// Map half-size `[x, y]` (mm); `None` = sensor or image clear aperture.
+    /// Map half-size `[x, y]` (mm); takes precedence; `None` = sensor
+    /// rectangle, else image clear aperture.
     #[serde(default)]
     pub map_half_size: Option<[f64; 2]>,
     /// Keep every path's map (memory: paths × bins).
@@ -99,6 +120,7 @@ impl Default for IrradianceSettings {
             enumeration: EnumerationSettings::default(),
             paths: None,
             fields: Vec::new(),
+            points: Vec::new(),
             wavelengths: Vec::new(),
             pupil_samples: 128,
             overfill: 1.5,
@@ -156,11 +178,20 @@ impl IrradianceMap {
     }
 }
 
+/// A field of an irradiance run.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FieldRef {
+    /// System field index.
+    System { index: usize },
+    /// An arbitrary normalised field point (`IrradianceSettings::points`).
+    Point { point: FieldPoint },
+}
+
 /// Statistics of one path at one field (all selected wavelengths).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldIrradiance {
-    /// System field index.
-    pub field: usize,
+    pub field: FieldRef,
     /// Detected flux, on or off the map.
     pub flux: f64,
     pub flux_on_map: f64,
@@ -178,10 +209,10 @@ pub struct PathIrradiance {
     pub path: GhostPath,
     pub label: String,
     pub fields: Vec<FieldIrradiance>,
-    /// Ghost flux on the map / primary flux on the map (0 for the primary
-    /// itself: see `flux`).
+    /// Ghost flux on the map / primary flux on the map (1 for the primary
+    /// itself).
     pub flux_ratio: f64,
-    /// Max over fields of ghost peak / primary peak.
+    /// Max over fields of ghost peak / primary peak (1 for the primary).
     pub peak_ratio: f64,
     /// Flux on the map, all fields.
     pub flux: f64,
@@ -213,6 +244,64 @@ struct StartRay {
     weight: f64,
 }
 
+/// One selected field: the system field or a prepared point, and its weight.
+struct SelectedField<'a> {
+    id: FieldRef,
+    field: std::borrow::Cow<'a, PreparedField>,
+    weight: f64,
+}
+
+/// The fields of a run (module docs); unpreparable points give a warning
+/// and no rays.
+fn select_fields<'a>(
+    model: &'a GhostModel,
+    settings: &IrradianceSettings,
+    warnings: &mut Vec<String>,
+) -> MkResult<Vec<SelectedField<'a>>> {
+    let tracer = model.tracer();
+    let osys = model.system().system();
+    let nf = osys.fields.fields.len();
+    let system: Vec<usize> = if settings.fields.is_empty() && settings.points.is_empty() {
+        (0..nf).collect()
+    } else {
+        settings.fields.clone()
+    };
+    if system.iter().any(|&f| f >= nf) {
+        return Err(MkError::InvalidModel("field index out of range".into()));
+    }
+    let mut out: Vec<SelectedField> = system
+        .into_iter()
+        .map(|f| SelectedField {
+            id: FieldRef::System { index: f },
+            field: std::borrow::Cow::Borrowed(tracer.field(f)),
+            weight: osys.fields.fields[f].weight,
+        })
+        .collect();
+    for p in &settings.points {
+        if !(p.hx.is_finite() && p.hy.is_finite()) {
+            return Err(MkError::InvalidModel("field point must be finite".into()));
+        }
+        let field = match tracer.prepare_field(*p) {
+            Ok(f) => f,
+            Err(e) => {
+                warnings.push(format!(
+                    "field point ({}, {}) could not be prepared: {e}",
+                    p.hx, p.hy
+                ));
+                let mut f = tracer.field(0).clone();
+                f.error = Some(e.to_string());
+                f
+            }
+        };
+        out.push(SelectedField {
+            id: FieldRef::Point { point: *p },
+            field: std::borrow::Cow::Owned(field),
+            weight: 1.0,
+        });
+    }
+    Ok(out)
+}
+
 fn ratio(a: f64, b: f64) -> f64 {
     if b > 0.0 {
         a / b
@@ -226,7 +315,7 @@ fn ratio(a: f64, b: f64) -> f64 {
 /// Starting rays per selected field (module docs).
 fn start_rays(
     model: &GhostModel,
-    fields: &[usize],
+    fields: &[SelectedField],
     wls: &[usize],
     settings: &IrradianceSettings,
 ) -> MkResult<Vec<Vec<StartRay>>> {
@@ -241,10 +330,7 @@ fn start_rays(
     } else {
         pupil.r_ep
     };
-    let fw: Vec<f64> = fields
-        .iter()
-        .map(|&f| osys.fields.fields[f].weight)
-        .collect();
+    let fw: Vec<f64> = fields.iter().map(|f| f.weight).collect();
     let ww: Vec<f64> = wls
         .iter()
         .map(|&w| {
@@ -264,8 +350,8 @@ fn start_rays(
     let h = 2.0 * k / n as f64;
     let cell = h * h / std::f64::consts::PI;
     let mut out = Vec::with_capacity(fields.len());
-    for (fi, &f) in fields.iter().enumerate() {
-        let field = tracer.field(f);
+    for (fi, sel) in fields.iter().enumerate() {
+        let field = sel.field.as_ref();
         let mut rays = Vec::new();
         if field.is_valid() {
             for (wi, &w) in wls.iter().enumerate() {
@@ -291,16 +377,28 @@ fn start_rays(
     Ok(out)
 }
 
+/// Per-path results: per-field maps and statistics, and the number and
+/// flux of rays lost to the virtual-segment rule.
+struct PathRun {
+    maps: Vec<IrradianceMap>,
+    stats: Vec<FieldIrradiance>,
+    virtual_rays: usize,
+    virtual_flux: f64,
+}
+
+/// Outcome of one ray: detected `(x, y, w)`, or lost as virtual with `w`.
+type RayOut = Result<Option<(f64, f64, f64)>, f64>;
+
 /// Trace one path for all start rays; per-field maps and statistics.
 fn run_path(
     model: &GhostModel,
     steps: &[Step],
     starts: &[Vec<StartRay>],
-    fields: &[usize],
+    fields: &[FieldRef],
     template: &IrradianceMap,
     ctx: &JobContext,
     progress: (f64, f64),
-) -> MkResult<(Vec<IrradianceMap>, Vec<FieldIrradiance>)> {
+) -> MkResult<PathRun> {
     let total: usize = starts.iter().map(Vec::len).sum();
     let offsets: Vec<usize> = starts
         .iter()
@@ -315,23 +413,37 @@ fn run_path(
         (f, i - offsets[f])
     };
     let mut hits: Vec<Option<(f64, f64, f64)>> = Vec::with_capacity(total);
+    let (mut virtual_rays, mut virtual_flux) = (0usize, KahanSum::default());
     let mut start = 0;
     while start < total {
         ctx.check()?;
         let end = (start + BLOCK).min(total);
-        let mut block: Vec<Option<(f64, f64, f64)>> = (start..end)
+        let block: Vec<RayOut> = (start..end)
             .into_par_iter()
             .with_min_len(64)
             .map(|i| {
                 let (f, j) = locate(i);
                 let s = &starts[f][j];
                 let r = model.trace_steps(&s.ray, s.wl, steps, None);
-                r.status
-                    .is_ok()
-                    .then(|| (r.ray.pos.x, r.ray.pos.y, s.weight * r.weight()))
+                match r.status {
+                    SequenceStatus::Ok => {
+                        Ok(Some((r.ray.pos.x, r.ray.pos.y, s.weight * r.weight())))
+                    }
+                    SequenceStatus::Virtual { .. } => Err(s.weight * r.weight()),
+                    _ => Ok(None),
+                }
             })
             .collect();
-        hits.append(&mut block);
+        for o in block {
+            hits.push(match o {
+                Ok(h) => h,
+                Err(w) => {
+                    virtual_rays += 1;
+                    virtual_flux.add(w);
+                    None
+                }
+            });
+        }
         start = end;
         let f = start as f64 / total as f64;
         ctx.report(
@@ -395,7 +507,12 @@ fn run_path(
         });
         maps.push(map);
     }
-    Ok((maps, stats))
+    Ok(PathRun {
+        maps,
+        stats,
+        virtual_rays,
+        virtual_flux: virtual_flux.value(),
+    })
 }
 
 fn sum_maps(maps: &[IrradianceMap], template: &IrradianceMap) -> IrradianceMap {
@@ -428,21 +545,17 @@ pub fn ghost_irradiance(
     if !(settings.overfill >= 1.0 && settings.overfill.is_finite()) {
         return Err(MkError::InvalidModel("overfill must be ≥ 1".into()));
     }
-    let fields: Vec<usize> = if settings.fields.is_empty() {
-        (0..osys.fields.fields.len()).collect()
-    } else {
-        settings.fields.clone()
-    };
+    let mut warnings = model.tracer().warnings().to_vec();
+    let selected = select_fields(model, settings, &mut warnings)?;
+    let fields: Vec<FieldRef> = selected.iter().map(|f| f.id).collect();
     let wls: Vec<usize> = if settings.wavelengths.is_empty() {
         (0..sys.wavelengths_um.len()).collect()
     } else {
         settings.wavelengths.clone()
     };
-    if fields.iter().any(|&f| f >= osys.fields.fields.len())
-        || wls.iter().any(|&w| w >= sys.wavelengths_um.len())
-    {
+    if wls.iter().any(|&w| w >= sys.wavelengths_um.len()) {
         return Err(MkError::InvalidModel(
-            "field or wavelength index out of range".into(),
+            "wavelength index out of range".into(),
         ));
     }
     let half = match settings.map_half_size {
@@ -461,14 +574,7 @@ pub fn ghost_irradiance(
     let template = IrradianceMap::new(settings.map_bins, half);
 
     let (paths, truncated, coverage) = match &settings.paths {
-        Some(p) => (
-            p.clone(),
-            false,
-            GhostCoverage {
-                interfaces: model.interface_kinds().to_vec(),
-                paths: p.iter().cloned().collect(),
-            },
-        ),
+        Some(p) => (p.clone(), false, model.coverage(p.iter().cloned())),
         None => {
             let e = enumerate(model, &settings.enumeration)?;
             (
@@ -489,11 +595,11 @@ pub fn ghost_irradiance(
 
     ctx.report(0.0, "preparing rays");
     ctx.check()?;
-    let starts = start_rays(model, &fields, &wls, settings)?;
+    let starts = start_rays(model, &selected, &wls, settings)?;
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
-    let (pmaps, pstats) = run_path(
+    let prun = run_path(
         model,
         &pstep,
         &starts,
@@ -502,6 +608,20 @@ pub fn ghost_irradiance(
         ctx,
         (0.0, 1.0 / n_jobs),
     )?;
+    let (pmaps, pstats) = (prun.maps, prun.stats);
+    if prun.virtual_rays > 0 {
+        // Flux the lost rays carried when rejected, relative to the signal
+        // they would have joined.
+        let detected: f64 = pstats.iter().map(|f| f.flux).sum();
+        warnings.push(format!(
+            "{} primary rays (≈{:.3e} of the primary signal) cross a physically \
+             impossible segment (negative edge thickness or overlapping \
+             elements) and are excluded from the signal, although the \
+             sequential trace passes them",
+            prun.virtual_rays,
+            prun.virtual_flux / (prun.virtual_flux + detected)
+        ));
+    }
     let primary_map = sum_maps(&pmaps, &template);
     let primary_flux = primary_map.flux();
     let primary = PathIrradiance {
@@ -519,7 +639,8 @@ pub fn ghost_irradiance(
     let mut ghosts = Vec::with_capacity(paths.len());
     for (k, (path, steps)) in paths.iter().zip(&path_steps).enumerate() {
         let span = ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs);
-        let (maps, stats) = run_path(model, steps, &starts, &fields, &template, ctx, span)?;
+        let PathRun { maps, stats, .. } =
+            run_path(model, steps, &starts, &fields, &template, ctx, span)?;
         let map = sum_maps(&maps, &template);
         for (acc, v) in total_acc.iter_mut().zip(&map.values) {
             acc.add(*v);
@@ -552,7 +673,6 @@ pub fn ghost_irradiance(
     ctx.report(1.0, "done");
     let total_flux_ratio = ratio(total.flux(), primary_flux);
     let total_peak_ratio = ratio(total.peak(), primary_map.peak());
-    let warnings = model.tracer().warnings().to_vec();
     Ok(GhostIrradiance {
         run: run_info(model, timer, "ghost.irradiance", settings, warnings),
         primary,

@@ -264,3 +264,28 @@ fn coverage_partitions_enumerated_paths() {
     let four = PathSignature::for_path(&GhostPath::new(vec![9, 3, 7, 1]), kinds).unwrap();
     assert_eq!(e.coverage.owner(&four, false, false), Owner::Stray);
 }
+
+#[test]
+fn irradiance_is_bit_identical_across_thread_counts() {
+    let m = model(samples::double_gauss(), GhostSettings::default());
+    let s = IrradianceSettings {
+        fields: vec![0, 2],
+        wavelengths: vec![1],
+        pupil_samples: 24,
+        map_bins: [16, 16],
+        keep_path_maps: true,
+        ..Default::default()
+    };
+    let run = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| ghost_irradiance(&m, &s, &JobContext::new()).unwrap())
+    };
+    let (a, b) = (run(1), run(5));
+    assert_eq!(a.primary, b.primary);
+    assert_eq!(a.ghosts, b.ghosts);
+    assert_eq!(a.total_ghost_map, b.total_ghost_map);
+    assert_eq!(a.total_flux_ratio.to_bits(), b.total_flux_ratio.to_bits());
+}

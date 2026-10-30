@@ -90,6 +90,15 @@ still counted, by the stray solver. The stray solver records signatures of
 its Monte-Carlo paths (at the same surfaces, with the same kinds) and calls
 `owner` with the coverage of the ghost run it is combined with.
 
+Ownership by signature is only disjoint and complete if both solvers clip
+a ray at the same places. If the stray solver's apertures were wider than
+the ghost run's, a ray the ghost run clipped would survive there with a
+covered signature and be dropped by both; if narrower, a ray the ghost run
+counted would also be counted by stray as `Mechanical` after hitting a
+mount. `GhostCoverage` therefore records the per-surface clipping of the
+ghost run (`apertures`, from `GhostModel::coverage`), and the stray solver
+must clip the optical surfaces identically (`GhostCoverage::same_apertures`).
+
 ## 3. The sequence tracer
 
 `GhostModel::trace_steps(start, wl, steps, record)` traces one ray along an
@@ -118,19 +127,39 @@ geometric length. An ideal lens crossed backward has the image-space focal
 length `f·n_before/n_after`, the exact inverse of the forward crossing.
 
 **Clipping** (`ClipMode`). Ghost light leaves the designed footprint, so
-apertures matter. `ClearApertures { margin_mm }` (default) clips every
-surface `1 … N−2` at its fixed aperture if it has one, the stop at
-`max(paraxial stop radius, traced height)` and every other `Auto` surface at
-its traced clear semi-diameter plus the margin. `FixedApertures` clips like
-the reference trace; `None` disables clipping. A sensor reflection only
-happens inside the `Sensor` rectangle when the model has one.
+apertures matter. `ClearApertures { margin_mm }` (default) clips any surface
+at its fixed aperture if it has one, the stop at
+`max(paraxial stop radius, traced height)`, and every other `Auto` surface
+that is physically present (not `Passive`, not the image) at its traced
+clear semi-diameter plus the margin. Dummies, coordinate breaks and bare
+same-index planes that are neither the stop nor have an explicit aperture
+never clip: they are not there physically, and inserting one leaves every
+ghost result (real and paraxial) unchanged (tested). `FixedApertures` clips
+at the fixed apertures plus an `Auto` stop at the radius above (the
+reference trace aims every ray inside the stop; without this an overfilled
+grid would let light around the stop and the primary flux exceed the
+entrance-pupil flux). `None` disables clipping. A sensor reflection only
+happens inside the `Sensor` rectangle when the model has one (tested).
 
 **Virtual segments.** With `reject_virtual` (default) the signed distance
 travelled since the last physical interaction (any non-passive surface) is
 summed over passive surfaces; a negative sum at a physical surface loses the
 ray (`Virtual`). Passive planes may sit "behind" the ray as in the
-sequential model; the first segment of an object at infinity starts on an
-arbitrary reference plane and is not counted.
+sequential model. For an object at infinity nothing is counted before the
+first physical interaction (light comes from `z = −∞`; the start plane and
+any passive planes before the first element, e.g. a stop plane at the
+vertex of a concave first surface, are reference planes). Tested: a
+concave first surface behind a stop plane and a stop plane listed after a
+lens but placed inside it are accepted and match the reference tracer;
+overlapping elements are rejected.
+
+The rule applies to the primary path too (it is the signal reference of
+the maps), so a design ray that crosses a physically impossible element
+(negative edge thickness, overlapping elements) is lost here although the
+reference tracer passes it. `ghost_irradiance` counts such primary rays and
+reports them, with their share of the signal, as a `RunInfo` warning. (The
+Double Gauss sample triggers it at full field: its last element has a
+negative edge thickness at the 14° marginal ray height.)
 
 **Radiometry.** At every interaction the shared coating code
 `ResolvedCoating::rt(λ, n_in, n_far, cos θ, mirror)` (bare Fresnel, thin film,
@@ -146,8 +175,12 @@ reflection at an interface come from one `rt` call at the same incidence,
 `T + R + A = 1` holds at every interface (tested, bare and absorbing
 coatings), and the sum over all orders of detected plus returned plus
 absorbed flux is 1 (tested with absorbing glass and coatings to 1e-14).
-Detection counts the flux incident on the sensor (the sensor's own
-reflectance is a separate ghost source, not a loss of signal).
+With a sensor reflectance `R_s` the sensor is an interface too: a sensor
+reflection multiplies by `R_s`, detection by the absorbed fraction `1 − R_s`,
+so the detected flux of all orders plus the flux returned to object space
+is 1 (tested for `R_s = 0, 0.3, 1`; a perfectly reflecting sensor detects
+nothing). Ratios to the primary are unaffected, since every detected path
+carries the same final factor.
 
 ## 4. Paraxial ghost analysis
 
@@ -156,7 +189,9 @@ reference paraxial model runs along the **unfolded** step list
 (`paraxial::trace_steps`): the signed reduced index `N = σn` starts at
 `+n_object` and flips at **every** reflection; pass at a conic
 `φ = c(N' − N)` (the same surface power in both directions), ideal lens
-`φ = n_after/f`; reflection `N' = −N`, `φ = −2cN` (flat sensor `φ = 0`);
+`φ = n_after/f`; reflection `N' = −N`, `φ = −2cN` (the sensor included,
+with its own curvature, as the real tracer reflects about the curved normal;
+tested against a vergence calculation with a defocused curved sensor);
 transfer `y' = y + Δz·ω/N` with `Δz = t_i` forward and `−t_{i−1}` backward.
 The empty path reproduces the reference first-order rays to 1e-12 (tested
 for every sample and wavelength).
@@ -185,6 +220,13 @@ in front of the primary).
 
 ## 5. Real-ray irradiance
 
+The fields are the selected system fields (`fields`, with their weights and
+vignetting factors; empty = all, unless points are given) followed by
+arbitrary normalised `FieldPoint`s (`points`, weight 1 each), so a bright
+source outside the field of view (the sun) is analysed without editing the
+model, which would change the snapshot. Per-field results carry a
+`FieldRef` (`System { index }` or `Point { point }`).
+
 `ghost_irradiance` traces, for each selected field and wavelength, a square
 grid of `pupil_samples²` cell centres over a disc of `overfill` entrance-pupil
 radii around the chief ray's aim point (ghost light may enter outside the
@@ -196,19 +238,20 @@ including the sensor's spectral response, `h` the cell size in pupil
 radii), so flux is relative to the flux entering the paraxial entrance
 pupil.
 
-Detected rays are binned into `map_bins` over the sensor (model `Sensor`
-rectangle, else the square of the image clear semi-diameter, else
-`map_half_size`), in the image's local x, y, as flux per mm². The primary
+Detected rays are binned into `map_bins` in the image's local x, y, as flux
+per mm², over an explicit `map_half_size` if given, else the model `Sensor`
+rectangle, else the square of the image clear semi-diameter. The primary
 image is computed by the same code from the empty path. Per path and field:
 flux (on and off the map), peak, centroid, RMS radius; per path:
 `flux_ratio` (ghost/primary flux on the map) and `peak_ratio` (maximum over
 fields of ghost peak/primary peak; meaningful for bins about a pixel and many
-rays per bin). Paths are ranked by `peak_ratio`; the total ghost map is the
+rays per bin); both are 1 for the primary itself. Paths are ranked by `peak_ratio`; the total ghost map is the
 sum of path maps.
 
 Rays are traced with rayon in blocks of 16384; results are collected in the
 fixed order (field, wavelength, pupil) and binned sequentially with
-compensated sums, so maps are bit-identical between runs and thread counts.
+compensated sums, so maps are bit-identical between runs and thread counts
+(tested with rayon pools of 1 and 5 threads).
 The `JobContext` is checked before every block; progress is monotone and
 ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
 and of the analysis, no seed: nothing is random).
@@ -226,8 +269,8 @@ by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
   ghost clip (`none | surface aperture | radius`), the interface kind, and
   per (surface, wavelength, incidence side) a coating table of
   `R_s, R_p, T_s, T_p` against `cos θ` (the TMM stays on the host;
-  bare Fresnel can be evaluated in-kernel); sensor reflectance and
-  rectangle.
+  bare Fresnel can be evaluated in-kernel); sensor reflectance (reflection
+  `× R_s`, detection `× (1 − R_s)`) and rectangle.
 * **Paths** as their reflection lists (≤ 8 × u16 plus a count). The kernel
   expands the steps itself from the alternation rule (`path::GhostPath::steps`),
   so no per-step arrays are needed.
@@ -255,3 +298,5 @@ by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
   equivalent and the on-axis beam for the spot size and vignetting.
 * Orders above 8 are not enumerated (they belong to the stray solver via
   the coverage rule).
+* The primary signal of the maps excludes design rays that cross a
+  physically impossible element (reported as a warning, §3).

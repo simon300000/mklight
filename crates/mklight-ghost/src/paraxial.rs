@@ -13,7 +13,8 @@
 //!   surface power `c(n_after − n_before)` in both directions); ideal lens
 //!   `φ = n_after/f` in both directions;
 //! * reflection (ghost or mirror): `N' = −N`, `φ = c(N' − N) = −2cN`
-//!   (ideal-lens mirror: `|N|/f`); the sensor is flat (`φ = 0`, `N' = −N`);
+//!   (ideal-lens mirror: `|N|/f`), the sensor included (with its own
+//!   curvature, as the real tracer reflects about the curved normal);
 //! * dummies, coordinate breaks and detection: `φ = 0`, `N' = N`;
 //! * refraction `ω' = ω − yφ`, transfer `y' = y + Δz·ω'/N'` with
 //!   `Δz = t_i` from `i` to `i + 1` and `Δz = −t_{i−1}` from `i` to `i − 1`.
@@ -80,7 +81,8 @@ fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64)
     if i == sys.image_index() {
         return match st.action {
             Action::Pass => (n_in, 0.0),
-            Action::Reflect => (-n_in, 0.0),
+            // The sensor reflects about its own (possibly curved) normal.
+            Action::Reflect => (-n_in, -2.0 * c * n_in),
         };
     }
     if matches!(s.shape, SurfaceShape::CoordinateBreak) || s.interaction == Interaction::Dummy {
@@ -166,8 +168,12 @@ pub fn axial_throughput(model: &GhostModel, steps: &[Step], wl: usize) -> (f64, 
         let passive =
             matches!(s.shape, SurfaceShape::CoordinateBreak) || s.interaction == Interaction::Dummy;
         if i == sys.image_index() {
-            if st.action == Action::Reflect {
-                r *= model.settings().sensor_reflectance.unwrap_or(0.0);
+            if let Some(rs) = model.settings().sensor_reflectance {
+                match st.action {
+                    Action::Reflect => r *= rs,
+                    // Detection: the absorbed fraction (as the real tracer).
+                    Action::Pass => t *= 1.0 - rs,
+                }
             }
             continue;
         }
@@ -317,10 +323,7 @@ pub fn paraxial_ghosts(
 
     let (paths, truncated, coverage) = match &settings.paths {
         Some(p) => {
-            let coverage = GhostCoverage {
-                interfaces: model.interface_kinds().to_vec(),
-                paths: p.iter().cloned().collect(),
-            };
+            let coverage = model.coverage(p.iter().cloned());
             (p.clone(), false, coverage)
         }
         None => {
