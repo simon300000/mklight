@@ -325,7 +325,6 @@ fn start_rays(
     fields: &[SelectedField],
     wls: &[usize],
     settings: &IrradianceSettings,
-    ctx: &JobContext,
 ) -> MkResult<Vec<Vec<StartRay>>> {
     let tracer = model.tracer();
     let sys = model.system();
@@ -366,7 +365,6 @@ fn start_rays(
                 let weight = fw[fi] / sf * ww[wi] / sw * cell;
                 let c = field.aims[w].chief;
                 for iy in 0..n {
-                    ctx.check()?;
                     let py = -k + h * (iy as f64 + 0.5);
                     for ix in 0..n {
                         let px = -k + h * (ix as f64 + 0.5);
@@ -452,13 +450,8 @@ impl CellTrace<'_> {
 
     fn region(&self, sample: RayOut) -> u8 {
         match sample {
-            Ok(Some((x, y, _))) => {
-                if self.map.bin_of(x, y).is_some() {
-                    0
-                } else {
-                    1
-                }
-            }
+            Ok(Some((x, y, _))) if self.map.bin_of(x, y).is_some() => 0,
+            Ok(Some(_)) => 1,
             Ok(None) => 2,
             Err(_) => 3,
         }
@@ -506,6 +499,7 @@ impl CellTrace<'_> {
 }
 
 /// Trace one path for all start rays; per-field maps and statistics.
+#[allow(clippy::too_many_arguments)]
 fn run_path(
     model: &GhostModel,
     steps: &[Step],
@@ -726,7 +720,7 @@ pub fn ghost_irradiance(
 
     ctx.report(0.0, "preparing rays");
     ctx.check()?;
-    let starts = start_rays(model, &selected, &wls, settings, ctx)?;
+    let starts = start_rays(model, &selected, &wls, settings)?;
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;

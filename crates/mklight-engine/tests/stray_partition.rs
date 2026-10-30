@@ -56,8 +56,8 @@ fn close(a: f64, b: f64, what: &str) {
     );
 }
 
-/// `detected = Primary + covered Ghost + stray_flux`, and the stray total
-/// is the mapped classes plus the uncovered ghosts.
+/// `detected = Primary + covered Ghost + stray_flux`, and the stray maps
+/// (uncovered ghosts included) integrate to the stray total.
 fn check_books(r: &AnalysisResult) {
     let p = &r.json["partition"];
     let detected = f(&r.json["energy"]["detected"]);
@@ -72,58 +72,27 @@ fn check_books(r: &AnalysisResult) {
         f(&p["ghost_class_flux_mc"]),
         "ghost class = covered + uncovered",
     );
-    if r.result_version == 2 {
-        // Version 2 tallies uncovered ghosts per path, including the maps.
-        assert!(p.get("mapped_stray_flux").is_none());
-        let d = &r.json["detector"];
-        let area = 4.0 * f(&d["half_x"]) * f(&d["half_y"])
-            / (d["nx"].as_u64().unwrap() * d["ny"].as_u64().unwrap()) as f64;
-        let values = |name: &str| match &r.buffers.iter().find(|b| b.name == name).unwrap().data {
-            mklight_engine::buffer::BufferData::F64(v) => v,
-            _ => panic!("expected f64 map"),
-        };
-        let total = values("total_irradiance");
-        let classes = values("class_irradiance");
-        close(
-            total.iter().sum::<f64>() * area,
-            f(&r.json["stray_flux"]),
-            "map integral",
-        );
-        for (i, &flux) in total.iter().enumerate() {
-            close(
-                classes.chunks(total.len()).map(|row| row[i]).sum(),
-                flux,
-                "map classes",
-            );
-        }
-        close(
-            f(&r.json["stray_std_error"]),
-            f(&r.json["energy"]["detected_owned_std_error"]),
-            "owned error",
-        );
-        for kind in ["covered", "uncovered"] {
-            close(
-                f(&p[format!("{kind}_ghost_std_error")]),
-                f(&r.json["energy"][format!("detected_{kind}_ghost_std_error")]),
-                "partition error",
-            );
-        }
-        return;
-    }
+    let d = &r.json["detector"];
+    let area = 4.0 * f(&d["half_x"]) * f(&d["half_y"])
+        / (d["nx"].as_u64().unwrap() * d["ny"].as_u64().unwrap()) as f64;
+    let values = |name: &str| match &r.buffers.iter().find(|b| b.name == name).unwrap().data {
+        mklight_engine::buffer::BufferData::F64(v) => v,
+        _ => panic!("expected f64 map"),
+    };
+    let total = values("total_irradiance");
+    let classes = values("class_irradiance");
     close(
-        f(&p["mapped_stray_flux"]) + f(&p["uncovered_ghost_flux"]),
+        total.iter().sum::<f64>() * area,
         f(&r.json["stray_flux"]),
-        "stray = mapped + uncovered",
+        "map integral",
     );
-    let mapped: f64 = ["scatter", "mechanical", "sneak"]
-        .iter()
-        .map(|c| class_flux(r, c))
-        .sum();
-    close(mapped, f(&p["mapped_stray_flux"]), "mapped classes");
-    assert!(
-        f(&r.json["stray_std_error"])
-            >= f(&p["mapped_stray_std_error"]) + f(&p["uncovered_ghost_std_error"]) - 1e-18
-    );
+    for (i, &flux) in total.iter().enumerate() {
+        close(
+            classes.chunks(total.len()).map(|row| row[i]).sum(),
+            flux,
+            "map classes",
+        );
+    }
 }
 
 #[test]
@@ -163,25 +132,9 @@ fn uncovered_ghost_paths_are_handed_back_to_the_stray_total() {
         "flux moved from the ghost run to the stray total",
     );
     assert!(f(&one.json["stray_flux"]) > 2.0 * f(&full.json["stray_flux"]));
-    // The same random streams: the maps (mapped classes) do not change.
-    assert_eq!(
-        one.json["partition"]["mapped_stray_flux"],
-        full.json["partition"]["mapped_stray_flux"]
-    );
-    if one.result_version == 1 {
-        assert!(
-            one.run_info
-                .warnings
-                .iter()
-                .any(|w| w.contains("outside the ghost run's coverage")),
-            "{:?}",
-            one.run_info.warnings
-        );
-    } else {
-        // Coverage changes maps in v2, but never transport or class totals.
-        assert_eq!(one.json["totals"], full.json["totals"]);
-        assert_ne!(one.buffers[2].data, full.buffers[2].data);
-    }
+    // The same random streams: coverage changes the maps, never transport.
+    assert_eq!(one.json["totals"], full.json["totals"]);
+    assert_ne!(one.buffers[2].data, full.buffers[2].data);
     // Handed-back ghosts appear among the reported signatures.
     assert!(
         one.json["top_signatures"]

@@ -248,15 +248,13 @@ radii), so flux is relative to the flux entering the paraxial entrance
 pupil.
 
 The grid is a base quadrature, not a binary area estimate at every cell
-centre. For each path, compare a cell's centre and four corners by survival
-and whether the detector hit is on the map. If they disagree, subdivide
-into four equal-area cells, recursively to four levels (1/16 of the base
-cell width). The circular source boundary is refined too, including cells
-whose centres are outside the source but whose area intersects it. Each
-leaf receives its own area weight. `rays_traced`/`rays_detected` count leaf
-samples, excluding corner probes; they no longer imply equal ray weights.
-Refinement order is fixed, and cancellation is also checked per source-grid
-row. The finite refinement is not a rigorous quadrature error bound: raise
+centre. For each path, a cell whose centre and four corners disagree on
+survival or on whether the detector hit is on the map is split into four
+equal-area cells, recursively to four levels (1/16 of the base cell width).
+The circular source boundary is refined too, including cells whose centres
+are outside the source but whose area intersects it. `rays_traced` /
+`rays_detected` count leaf samples (not corner probes), whose weights are
+their own cell areas. The refinement is not a rigorous error bound: raise
 `pupil_samples` to resolve features smaller than a base cell and to check
 convergence. Pixel interiors still use point binning.
 
@@ -321,8 +319,9 @@ cargo test --release -p mklight-stray --test partition high_reflectance_ghost_fl
 ## 6. GPU port: per-ray kernel interface
 
 The work is independent rays indexed `(path, field, wavelength, pupil)`;
-starting rays depend only on `(field, wavelength, pupil)`. The host schedules the boundary-refinement probes and leaf rays per path
-(§5); only base starting rays are shared across paths. The kernel the
+starting rays depend only on `(field, wavelength, pupil)`. The host
+schedules the boundary-refinement probes and leaf rays per path (§5); only
+base starting rays are shared across paths. The kernel the
 ghost solver needs from `mklight-gpu` (a `Job::GhostTrace`, added additively
 by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
 

@@ -187,6 +187,7 @@ pub struct ChunkTally {
     /// Detections owned although their class is not in `owned` (`Ghost`
     /// paths outside a ghost run's coverage, `StraySettings::covered_ghosts`).
     pub detected_uncovered: f64,
+    /// The other `Ghost`-class detections.
     pub detected_covered: f64,
     /// `Σ xᵢ²` per class, for the total and for the owned classes.
     pub detected_sq: [f64; NUM_CLASSES],
@@ -416,6 +417,9 @@ impl ChunkTally {
                 self.hits.push((p as u32, OWNED as u8, w));
                 self.hits.push((p as u32, UNCOVERED as u8, w));
             }
+        } else if class == PathClass::Ghost {
+            self.ray_covered += w;
+            self.detected_covered += w;
         }
         let m = [w, w * x, w * y, w * (x * x + y * y)];
         let slots = [c, OWNED];
@@ -429,10 +433,6 @@ impl ChunkTally {
             self.ray_sigs.push((c as u8, hist.signature, w));
         }
         if class == PathClass::Ghost {
-            if !owned || self.owned.contains(class) {
-                self.ray_covered += w;
-                self.detected_covered += w;
-            }
             self.ghost_by_order[(hist.stray_reflections as usize).min(MAX_GHOST_ORDER)] += w;
             *self
                 .ghost_by_pair
@@ -945,10 +945,13 @@ pub struct EnergyReport {
     /// stray solver even when `Ghost` is not in `owned_classes`.
     #[serde(default)]
     pub detected_uncovered_ghost: f64,
+    #[serde(default)]
     pub detected_uncovered_ghost_std_error: f64,
     /// Remaining Ghost-class flux; the explicit solver owns it when the
     /// Ghost class is excluded. Errors are accumulated per source ray.
+    #[serde(default)]
     pub detected_covered_ghost: f64,
+    #[serde(default)]
     pub detected_covered_ghost_std_error: f64,
     pub absorbed: f64,
     pub absorbed_by_sink: Vec<(Sink, f64)>,

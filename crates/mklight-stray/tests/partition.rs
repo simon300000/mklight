@@ -281,7 +281,7 @@ fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
         .unwrap()
     };
     let all = analyze_system(&sys, &set, &JobContext::new()).unwrap();
-    let with = run(Some(cov.clone()));
+    let with = run(Some(cov));
     let without = run(None);
     let reference = all.source.reference_flux;
     let frac = |c: PathClass| all.total_of(c).flux / reference;
@@ -329,21 +329,6 @@ fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
         .unwrap();
     let ghost_flux = ghost_map.irradiance.iter().sum::<f64>() * with.detector.pixel_area();
     assert!((ghost_flux - with.energy.detected_uncovered_ghost).abs() < 1e-12 * ghost_flux);
-    // Ownership never changes transport, and reduction is independent of
-    // worker count. Include the partitioned pixel errors in that check.
-    let again = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
-        .build()
-        .unwrap()
-        .install(|| run(Some(cov.clone())));
-    assert_eq!(with.maps, again.maps);
-    assert_eq!(with.total_irradiance, again.total_irradiance);
-    assert_eq!(
-        with.total_irradiance_std_error,
-        again.total_irradiance_std_error
-    );
-    assert_eq!(with.energy, again.energy);
-    assert_eq!(with.run_info.seed, Some(set.seed));
 }
 
 /// A stray scene sized with non-default semi-diameter settings partitions

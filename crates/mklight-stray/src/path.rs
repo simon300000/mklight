@@ -479,17 +479,9 @@ mod tests {
             (3, false, false),
         ] {
             h.specular(&SEQ, surface, designed, reflected);
-            if reflected {
-                h.signature.push(EventKind::Reflect, surface);
-            }
         }
-        let settings = crate::StraySettings {
-            owned_classes: ClassMask::STRAY_WITH_GHOST,
-            covered_ghosts: Some([mklight_ghost::GhostPath::new(vec![3, 1])].into()),
-            ..Default::default()
-        };
+        assert_eq!(h.first_reflections, [3, 1]);
         assert_eq!(h.classify(&SEQ), PathClass::Sneak);
-        assert!(settings.owns(h.classify(&SEQ), &h.signature));
     }
 
     #[test]

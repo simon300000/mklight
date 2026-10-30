@@ -436,24 +436,25 @@ fn analyze_system_impl(
     let area = det.spec.pixel_area();
     let reference = beam.reference_flux;
     let frac = |f: f64| (reference > 0.0).then(|| f / reference);
-    let partial_ghost = ss.covered_ghosts.is_some() && !owned.contains(PathClass::Ghost);
     let maps = PathClass::ALL
         .iter()
-        .filter(|c| owned.contains(**c) || (partial_ghost && **c == PathClass::Ghost))
-        .map(|c| {
-            let (irradiance, error) = if partial_ghost && *c == PathClass::Ghost {
+        .filter_map(|&c| {
+            let (irradiance, error) = if owned.contains(c) {
+                (&det.irradiance[c.index()], &det.flux_std_error[c.index()])
+            } else if c == PathClass::Ghost && ss.covered_ghosts.is_some() {
+                // Only the uncovered ghosts are owned.
                 (
                     &det.uncovered_ghost_irradiance,
                     &det.uncovered_ghost_flux_std_error,
                 )
             } else {
-                (&det.irradiance[c.index()], &det.flux_std_error[c.index()])
+                return None;
             };
-            ClassMap {
-                class: *c,
+            Some(ClassMap {
+                class: c,
                 irradiance: irradiance.clone(),
                 irradiance_std_error: error.iter().map(|e| e / area).collect(),
-            }
+            })
         })
         .collect();
     let e = &r.energy;

@@ -280,9 +280,8 @@ change) has expectation zero; `EnergyReport::mc_adjustment_std_error` is its
 error bar, so *Σ classes = emitted − absorbed − escaped* is tested within
 the Monte-Carlo error.
 
-`tests/partition.rs` checks class/coverage conservation, map integrals,
-seed and thread-count reproducibility, and the high-reflectance ghost
-cross-check. The tally's three-source-ray known-answer test checks covered,
+`tests/partition.rs` checks class/coverage conservation, map integrals
+and the high-reflectance ghost cross-check. The tally's three-source-ray known-answer test checks covered,
 uncovered and owned pixel/flux errors with correlated split children.
 
 ## Cross-validation (tests)
