@@ -1,0 +1,858 @@
+//! The non-sequential scene: placed primitives, what each one does to light,
+//! the media between them and the detector.
+//!
+//! [`Scene::from_system`] builds a scene from an `OpticalSystem` and its
+//! `ResolvedSystem`:
+//!
+//! * **Optical surfaces** become [`Interface`]s. Each is a sag patch out to
+//!   the surface's *mechanical* semi-diameter, placed by
+//!   `ResolvedSurface::frame`. Surfaces that do nothing optically (dummies,
+//!   coordinate breaks, and bare air-to-air planes) get no interface.
+//! * **Lens edges**: between consecutive interfaces whose gap medium differs
+//!   from the ambient (object-space) medium, an edge cylinder at
+//!   `max(MSD_front, MSD_back)` joins the two rims. A flat annulus closes the
+//!   step on the side with the smaller mechanical semi-diameter, so each
+//!   element is a closed solid.
+//! * **Aperture stops**: a passive surface with a clipping aperture (fixed
+//!   semi-diameter or aperture shape) becomes an opaque plate covering
+//!   everything outside the aperture.
+//! * **Mechanics**: `Barrel` (cylinder between two vertex planes, along the
+//!   `from` surface's axis) and `AnnularBaffle` from `OpticalSystem::mechanics`.
+//! * **Detector**: the image surface, bounded by the sensor rectangle or by
+//!   the image surface's clear semi-diameter.
+//!
+//! # Sides and media
+//!
+//! Every sag patch has a **Minus** side (local −z) and a **Plus** side
+//! (local +z, where its normal points). An interface stores the medium on
+//! each side. Designed (sequential) light arrives on the Minus side of a
+//! surface after an even number of mirrors and on the Plus side after an odd
+//! number (CONVENTIONS §2: light travels toward −z after an odd number of
+//! mirrors). The tracer reads the incident medium from the side a ray
+//! arrives on, never from state carried by the ray, so a ray that slips
+//! through a seam cannot keep the wrong index.
+//!
+//! # Semi-diameters
+//!
+//! The clear semi-diameter is the fixed semi-diameter, the aperture shape's
+//! bounding radius, or `SceneOptions::clear_semi_diameters` (the sequential
+//! tracer's automatic values; **integration point**). The mechanical
+//! semi-diameter is `EdgeSpec::mechanical_semi_diameter`, or the clear value
+//! plus `default_edge_margin`. Glass between the clear and the mechanical
+//! semi-diameter is treated as the same polished interface. Mounts are
+//! modelled with explicit baffles.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use mklight_core::error::{MkError, MkResult};
+use mklight_core::materials::coating::ResolvedCoating;
+use mklight_core::math::{Frame, Mat3, Vec3};
+use mklight_core::model::{ApertureShape, Interaction, MechanicalPart, ScatterModel, SurfaceShape};
+use mklight_core::resolved::ResolvedSystem;
+use mklight_core::snapshot::Snapshot;
+
+use crate::bsdf::Bsdf;
+use crate::geom::shapes::conic_domain_radius;
+use crate::geom::{Aabb, Bvh, Cylinder, Mask, Primitive, SagPatch, Shape};
+
+/// Index into `Scene::media`.
+pub type MediumId = u16;
+
+/// An optical medium at the system wavelengths.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Medium {
+    /// Refractive index per system wavelength.
+    pub n: Vec<f64>,
+    /// Internal absorption coefficient α (1/mm) per wavelength (Beer–Lambert
+    /// `τ = exp(−α L)`, CONVENTIONS §5).
+    pub alpha: Vec<f64>,
+}
+
+/// Side of a sag patch (local −z or +z).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    Minus,
+    Plus,
+}
+
+impl Side {
+    pub fn other(self) -> Side {
+        match self {
+            Side::Minus => Side::Plus,
+            Side::Plus => Side::Minus,
+        }
+    }
+    /// The side a ray with direction `d` arrives from, given the patch normal
+    /// `n` (which points to Plus).
+    #[inline]
+    pub fn arrival(d: Vec3, n: Vec3) -> Side {
+        if d.dot(n) < 0.0 {
+            Side::Plus
+        } else {
+            Side::Minus
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InterfaceKind {
+    /// Refracting surface (R/T/A from the coating).
+    Refract,
+    /// Mirror: reflective on the designed incident side, opaque on the back.
+    Mirror,
+    /// Ideal thin lens (`SurfaceShape::Paraxial`): after refraction, the
+    /// direction tangents change by `−(x, y)/f`, which images perfectly.
+    IdealLens { focal_length: f64 },
+}
+
+/// An optical surface.
+#[derive(Clone, Debug)]
+pub struct Interface {
+    /// Sequential surface index.
+    pub surface: usize,
+    pub kind: InterfaceKind,
+    pub medium_minus: MediumId,
+    pub medium_plus: MediumId,
+    /// Side on which designed light arrives.
+    pub incident_side: Side,
+    pub coating: Arc<ResolvedCoating>,
+    /// Surface roughness or contamination scatter (`Surface::scatter`).
+    pub scatter: Option<Arc<Bsdf>>,
+    /// The sequential model's clipping aperture. Hits outside it are flagged
+    /// (`history::OUTSIDE_CLIP`) because the sequential and ghost solvers
+    /// discard such rays.
+    pub clip: Option<ApertureShape>,
+}
+
+impl Interface {
+    pub fn medium(&self, side: Side) -> MediumId {
+        match side {
+            Side::Minus => self.medium_minus,
+            Side::Plus => self.medium_plus,
+        }
+    }
+}
+
+/// Kind of non-optical geometry (used to categorise absorbed flux).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpaqueKind {
+    LensEdge,
+    LensFlat,
+    StopPlate,
+    Barrel,
+    Baffle,
+    Generic,
+}
+
+/// Opaque geometry: a fraction `TIS` of the incident flux is scattered back
+/// into the incident hemisphere, `min(specular_reflectance, 1 − TIS)` is
+/// reflected specularly, and the rest is absorbed. Both sides behave alike.
+#[derive(Clone, Debug)]
+pub struct Opaque {
+    pub kind: OpaqueKind,
+    pub surface: Option<usize>,
+    pub finish: Option<Arc<Bsdf>>,
+    pub specular_reflectance: f64,
+}
+
+/// Which sides of the detector count light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accept {
+    Minus,
+    Plus,
+    Both,
+}
+
+impl Accept {
+    pub fn accepts(self, side: Side) -> bool {
+        matches!(
+            (self, side),
+            (Accept::Both, _) | (Accept::Minus, Side::Minus) | (Accept::Plus, Side::Plus)
+        )
+    }
+}
+
+/// The detector's tally grid in the detector primitive's local `(x, y)`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DetectorSpec {
+    /// Sequential index of the image surface (or `usize::MAX` for synthetic scenes).
+    pub surface: usize,
+    pub accept: Accept,
+    pub half_x: f64,
+    pub half_y: f64,
+    pub nx: u32,
+    pub ny: u32,
+}
+
+impl DetectorSpec {
+    /// Pixel index of a local point, or `None` outside the grid.
+    pub fn pixel(&self, x: f64, y: f64) -> Option<usize> {
+        let fx = (x + self.half_x) / (2.0 * self.half_x);
+        let fy = (y + self.half_y) / (2.0 * self.half_y);
+        if !(0.0..=1.0).contains(&fx) || !(0.0..=1.0).contains(&fy) {
+            return None;
+        }
+        let ix = ((fx * self.nx as f64) as u32).min(self.nx - 1);
+        let iy = ((fy * self.ny as f64) as u32).min(self.ny - 1);
+        Some((iy * self.nx + ix) as usize)
+    }
+    pub fn pixel_area(&self) -> f64 {
+        4.0 * self.half_x * self.half_y / (self.nx as f64 * self.ny as f64)
+    }
+}
+
+/// What a primitive does to light.
+#[derive(Clone, Debug)]
+pub enum Behavior {
+    Interface(Interface),
+    Opaque(Opaque),
+    /// Part of the detector (`Scene::detector`).
+    Detector,
+}
+
+/// Geometry recorded per sequential surface, for sources and reports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceGeom {
+    pub frame: Frame,
+    pub clear_semi_diameter: f64,
+    pub mechanical_semi_diameter: f64,
+}
+
+/// A finished scene.
+#[derive(Clone, Debug)]
+pub struct Scene {
+    pub wavelengths_um: Vec<f64>,
+    pub wavelength_weights: Vec<f64>,
+    pub media: Vec<Medium>,
+    /// Medium of the space outside all solids (sources emit into it).
+    pub ambient: MediumId,
+    behaviors: Vec<Behavior>,
+    labels: Vec<String>,
+    bvh: Bvh,
+    pub detector: DetectorSpec,
+    /// Surface indices of the interfaces in designed order, ending with the
+    /// detector's surface (empty for synthetic scenes).
+    pub sequence: Vec<usize>,
+    /// Per sequential surface (index), when it has geometry.
+    pub surfaces: Vec<Option<SurfaceGeom>>,
+    pub snapshot: Option<Snapshot>,
+    pub warnings: Vec<String>,
+    bounds: Aabb,
+}
+
+impl Scene {
+    pub fn primitives(&self) -> &[Primitive] {
+        self.bvh.primitives()
+    }
+    pub fn behavior(&self, prim: usize) -> &Behavior {
+        &self.behaviors[prim]
+    }
+    pub fn label(&self, prim: usize) -> &str {
+        &self.labels[prim]
+    }
+    /// CPU acceleration structure (the default `RayCaster`).
+    pub fn bvh(&self) -> &Bvh {
+        &self.bvh
+    }
+    pub fn num_wavelengths(&self) -> usize {
+        self.wavelengths_um.len()
+    }
+    /// Global bounding box of all geometry.
+    pub fn bounds(&self) -> Aabb {
+        self.bounds
+    }
+    /// Centre and radius of a sphere that contains all geometry.
+    pub fn bounding_sphere(&self) -> (Vec3, f64) {
+        let c = self.bounds.centroid();
+        (c, 0.5 * self.bounds.extent().norm())
+    }
+    /// Position of `surface` in `sequence`, if it is an interface or the detector.
+    pub fn sequence_position(&self, surface: usize) -> Option<usize> {
+        self.sequence.iter().position(|&s| s == surface)
+    }
+}
+
+/// Low-level scene construction, used by [`Scene::from_system`] and for
+/// synthetic test scenes.
+#[derive(Clone, Debug)]
+pub struct SceneBuilder {
+    wavelengths_um: Vec<f64>,
+    wavelength_weights: Vec<f64>,
+    media: Vec<Medium>,
+    ambient: MediumId,
+    prims: Vec<Primitive>,
+    behaviors: Vec<Behavior>,
+    labels: Vec<String>,
+    detector: Option<DetectorSpec>,
+    sequence: Vec<usize>,
+    surfaces: Vec<Option<SurfaceGeom>>,
+    snapshot: Option<Snapshot>,
+    warnings: Vec<String>,
+}
+
+impl SceneBuilder {
+    pub fn new(wavelengths_um: Vec<f64>, wavelength_weights: Vec<f64>) -> Self {
+        SceneBuilder {
+            wavelengths_um,
+            wavelength_weights,
+            media: Vec::new(),
+            ambient: 0,
+            prims: Vec::new(),
+            behaviors: Vec::new(),
+            labels: Vec::new(),
+            detector: None,
+            sequence: Vec::new(),
+            surfaces: Vec::new(),
+            snapshot: None,
+            warnings: Vec::new(),
+        }
+    }
+    pub fn add_medium(&mut self, n: Vec<f64>, alpha: Vec<f64>) -> MediumId {
+        self.media.push(Medium { n, alpha });
+        (self.media.len() - 1) as MediumId
+    }
+    pub fn set_ambient(&mut self, m: MediumId) {
+        self.ambient = m;
+    }
+    pub fn add(
+        &mut self,
+        frame: Frame,
+        shape: Shape,
+        behavior: Behavior,
+        label: impl Into<String>,
+    ) -> usize {
+        self.prims.push(Primitive::new(frame, shape));
+        self.behaviors.push(behavior);
+        self.labels.push(label.into());
+        self.prims.len() - 1
+    }
+    pub fn set_detector(&mut self, spec: DetectorSpec) {
+        self.detector = Some(spec);
+    }
+    pub fn set_sequence(&mut self, seq: Vec<usize>) {
+        self.sequence = seq;
+    }
+    pub fn warn(&mut self, w: impl Into<String>) {
+        self.warnings.push(w.into());
+    }
+
+    pub fn build(self) -> MkResult<Scene> {
+        let nw = self.wavelengths_um.len();
+        if nw == 0 || self.wavelength_weights.len() != nw {
+            return Err(MkError::InvalidModel(
+                "scene needs wavelengths with one weight each".into(),
+            ));
+        }
+        if self
+            .wavelength_weights
+            .iter()
+            .any(|w| w.is_nan() || *w < 0.0)
+            || self.wavelength_weights.iter().sum::<f64>() <= 0.0
+        {
+            return Err(MkError::InvalidModel(
+                "wavelength weights must be ≥ 0 with a positive sum".into(),
+            ));
+        }
+        for m in &self.media {
+            if m.n.len() != nw || m.alpha.len() != nw {
+                return Err(MkError::InvalidModel(
+                    "every medium needs one index and one α per wavelength".into(),
+                ));
+            }
+            if m.n.iter().any(|n| !(n.is_finite() && *n > 0.0))
+                || m.alpha.iter().any(|a| a.is_nan() || *a < 0.0)
+            {
+                return Err(MkError::InvalidModel("non-physical medium".into()));
+            }
+        }
+        if self.ambient as usize >= self.media.len() {
+            return Err(MkError::InvalidModel("ambient medium missing".into()));
+        }
+        for b in &self.behaviors {
+            if let Behavior::Interface(i) = b
+                && (i.medium_minus as usize >= self.media.len()
+                    || i.medium_plus as usize >= self.media.len())
+            {
+                return Err(MkError::InvalidModel(format!(
+                    "interface {} refers to a missing medium",
+                    i.surface
+                )));
+            }
+        }
+        let detector = self
+            .detector
+            .ok_or_else(|| MkError::InvalidModel("scene has no detector".into()))?;
+        if !(detector.half_x > 0.0 && detector.half_y > 0.0 && detector.nx > 0 && detector.ny > 0) {
+            return Err(MkError::InvalidModel(
+                "detector grid must be non-empty".into(),
+            ));
+        }
+        if !self
+            .behaviors
+            .iter()
+            .any(|b| matches!(b, Behavior::Detector))
+        {
+            return Err(MkError::InvalidModel(
+                "scene has no detector geometry".into(),
+            ));
+        }
+        let bounds = self
+            .prims
+            .iter()
+            .fold(Aabb::EMPTY, |a, p| a.union(&p.aabb()));
+        Ok(Scene {
+            wavelengths_um: self.wavelengths_um,
+            wavelength_weights: self.wavelength_weights,
+            media: self.media,
+            ambient: self.ambient,
+            behaviors: self.behaviors,
+            labels: self.labels,
+            bvh: Bvh::build(self.prims),
+            detector,
+            sequence: self.sequence,
+            surfaces: self.surfaces,
+            snapshot: self.snapshot,
+            warnings: self.warnings,
+            bounds,
+        })
+    }
+}
+
+/// Options for [`Scene::from_system`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SceneOptions {
+    /// Clear semi-diameters per surface index for surfaces with automatic
+    /// semi-diameters (normally the sequential tracer's values). `None`
+    /// entries, or a short list, mean "not supplied".
+    pub clear_semi_diameters: Vec<Option<f64>>,
+    /// Mechanical margin added to the clear semi-diameter when
+    /// `EdgeSpec::mechanical_semi_diameter` is not set (mm).
+    pub default_edge_margin: f64,
+    /// Finish of lens edges, flats and stop plates without an explicit
+    /// `EdgeSpec::edge_scatter`.
+    pub default_edge_finish: ScatterModel,
+    /// Specular reflectance of all opaque geometry (default 0: matte or black).
+    pub mechanical_specular_reflectance: f64,
+    /// Detector tally grid.
+    pub detector_pixels: (u32, u32),
+    /// Include `OpticalSystem::mechanics`.
+    pub include_mechanics: bool,
+}
+
+impl Default for SceneOptions {
+    fn default() -> Self {
+        SceneOptions {
+            clear_semi_diameters: Vec::new(),
+            default_edge_margin: 1.0,
+            default_edge_finish: ScatterModel::Lambertian { tis: 0.05 },
+            mechanical_specular_reflectance: 0.0,
+            detector_pixels: (128, 128),
+            include_mechanics: true,
+        }
+    }
+}
+
+fn translate(frame: &Frame, z: f64) -> Frame {
+    frame.compose(&Frame {
+        origin: Vec3::new(0.0, 0.0, z),
+        rot: Mat3::IDENTITY,
+    })
+}
+
+/// Largest radius a sag patch of `shape` may use.
+fn shape_radius_limit(shape: &SurfaceShape) -> f64 {
+    match shape {
+        SurfaceShape::Conic { curvature, conic } => conic_domain_radius(*curvature, *conic),
+        SurfaceShape::EvenAsphere {
+            curvature, conic, ..
+        } => conic_domain_radius(*curvature, *conic) * (1.0 - 1e-6),
+        _ => f64::INFINITY,
+    }
+}
+
+/// Shares one `Bsdf` (and its TIS table) between identical models.
+#[derive(Default)]
+struct BsdfCache(BTreeMap<String, Arc<Bsdf>>);
+
+impl BsdfCache {
+    fn get(&mut self, m: &ScatterModel, warnings: &mut Vec<String>) -> MkResult<Arc<Bsdf>> {
+        let key = serde_json::to_string(m)?;
+        if let Some(b) = self.0.get(&key) {
+            return Ok(b.clone());
+        }
+        let b = Arc::new(Bsdf::new(m)?);
+        if b.was_normalised() {
+            warnings.push(format!(
+                "scatter model {key} exceeded TIS = 1 and was normalised (scale {:.6})",
+                b.scale()
+            ));
+        }
+        self.0.insert(key, b.clone());
+        Ok(b)
+    }
+}
+
+impl Scene {
+    /// Builds the non-sequential scene for a resolved system (see the module
+    /// documentation).
+    pub fn from_system(rs: &ResolvedSystem, opts: &SceneOptions) -> MkResult<Scene> {
+        let sys = rs.system();
+        let n = rs.num_surfaces();
+        let image = n - 1;
+        let mut b = SceneBuilder::new(rs.wavelengths_um.clone(), rs.wavelength_weights.clone());
+        b.snapshot = Some(rs.snapshot.clone());
+        b.surfaces = vec![None; n];
+        let mut cache = BsdfCache::default();
+        let mut warnings = Vec::new();
+
+        // Medium id i = the space after surface i (0 = object space).
+        for s in &rs.surfaces {
+            b.add_medium(s.n_after.clone(), s.alpha_after.clone());
+        }
+        b.set_ambient(0);
+        let same_medium = |i: usize, j: usize| {
+            let (a, c) = (&rs.surfaces[i], &rs.surfaces[j]);
+            a.n_after
+                .iter()
+                .zip(&c.n_after)
+                .all(|(x, y)| (x - y).abs() <= 1e-12)
+                && a.alpha_after
+                    .iter()
+                    .zip(&c.alpha_after)
+                    .all(|(x, y)| (x - y).abs() <= 1e-15)
+        };
+
+        let clear_sd = |i: usize| -> Option<f64> {
+            let s = &rs.surfaces[i];
+            s.fixed_semi_diameter
+                .or_else(|| s.aperture.as_ref().map(|a| a.bounding_radius()))
+                .or_else(|| opts.clear_semi_diameters.get(i).copied().flatten())
+        };
+        let clip_of = |i: usize| -> Option<ApertureShape> {
+            let s = &rs.surfaces[i];
+            s.aperture.clone().or(s
+                .fixed_semi_diameter
+                .map(|r| ApertureShape::Circular { radius: r }))
+        };
+
+        // Classify surfaces and lay out interfaces.
+        let mut mirrors = 0usize;
+        struct Rim {
+            surface: usize,
+            msd: f64,
+            frame: Frame,
+            shape: SurfaceShape,
+        }
+        let mut rims: Vec<Rim> = Vec::new();
+        let mut stops: Vec<usize> = Vec::new();
+        let mut seq = Vec::new();
+        let mut image_side = Side::Minus;
+        for i in 1..n {
+            let rsurf = &rs.surfaces[i];
+            let incident = if mirrors.is_multiple_of(2) {
+                Side::Minus
+            } else {
+                Side::Plus
+            };
+            if i == image {
+                image_side = incident;
+                break;
+            }
+            let is_paraxial = matches!(rsurf.shape, SurfaceShape::Paraxial { .. });
+            let passive = rsurf.is_passive()
+                || (rsurf.interaction == Interaction::Refract
+                    && !is_paraxial
+                    && same_medium(i - 1, i)
+                    && matches!(rsurf.coating, ResolvedCoating::Bare));
+            if passive {
+                if !matches!(rsurf.shape, SurfaceShape::CoordinateBreak) && clip_of(i).is_some() {
+                    stops.push(i);
+                }
+                continue;
+            }
+            let ca = clear_sd(i).ok_or_else(|| {
+                MkError::InvalidModel(format!(
+                    "surface {i} has an automatic semi-diameter; supply SceneOptions::clear_semi_diameters"
+                ))
+            })?;
+            let edge = &sys.surfaces[i].edge;
+            let mut msd = edge
+                .mechanical_semi_diameter
+                .unwrap_or(ca + opts.default_edge_margin)
+                .max(ca);
+            let lim = shape_radius_limit(&rsurf.shape);
+            if msd > lim {
+                warnings.push(format!(
+                    "surface {i}: mechanical semi-diameter {msd} clamped to the sag domain {lim}"
+                ));
+                msd = lim;
+            }
+            let kind = match rsurf.shape {
+                SurfaceShape::Paraxial { focal_length } => {
+                    InterfaceKind::IdealLens { focal_length }
+                }
+                _ if rsurf.is_mirror() => InterfaceKind::Mirror,
+                _ => InterfaceKind::Refract,
+            };
+            let (before, after) = ((i - 1) as MediumId, i as MediumId);
+            let (minus, plus) = match incident {
+                Side::Minus => (before, after),
+                Side::Plus => (after, before),
+            };
+            let scatter = match &sys.surfaces[i].scatter {
+                Some(m) => Some(cache.get(m, &mut warnings)?),
+                None => None,
+            };
+            let patch = SagPatch::new(rsurf.shape.clone(), 0.0, msd, None)?;
+            b.add(
+                rsurf.frame,
+                Shape::Sag(patch),
+                Behavior::Interface(Interface {
+                    surface: i,
+                    kind,
+                    medium_minus: minus,
+                    medium_plus: plus,
+                    incident_side: incident,
+                    coating: Arc::new(rsurf.coating.clone()),
+                    scatter,
+                    clip: clip_of(i),
+                }),
+                format!("surface {i}"),
+            );
+            b.surfaces[i] = Some(SurfaceGeom {
+                frame: rsurf.frame,
+                clear_semi_diameter: ca.min(msd),
+                mechanical_semi_diameter: msd,
+            });
+            seq.push(i);
+            rims.push(Rim {
+                surface: i,
+                msd,
+                frame: rsurf.frame,
+                shape: rsurf.shape.clone(),
+            });
+            if rsurf.is_mirror() {
+                mirrors += 1;
+            }
+        }
+        seq.push(image);
+
+        // Lens edges and flats between consecutive interfaces in a solid gap.
+        let edge_finish = |i: usize, cache: &mut BsdfCache, w: &mut Vec<String>| {
+            let m = sys.surfaces[i]
+                .edge
+                .edge_scatter
+                .clone()
+                .unwrap_or_else(|| opts.default_edge_finish.clone());
+            cache.get(&m, w)
+        };
+        let opaque = |kind, surface, finish| {
+            Behavior::Opaque(Opaque {
+                kind,
+                surface: Some(surface),
+                finish: Some(finish),
+                specular_reflectance: opts.mechanical_specular_reflectance,
+            })
+        };
+        for w in rims.windows(2) {
+            let (a, c) = (&w[0], &w[1]);
+            if same_medium(a.surface, 0) {
+                continue;
+            }
+            let rel = c.frame.relative_to(&a.frame);
+            let axial =
+                rel.rot.is_identity() && rel.origin.x.abs() < 1e-12 && rel.origin.y.abs() < 1e-12;
+            if !axial {
+                warnings.push(format!(
+                    "edge between surfaces {} and {} is tilted or decentred; its edge cylinder follows surface {}'s axis (approximation)",
+                    a.surface, c.surface, a.surface
+                ));
+            }
+            let za = a.shape.sag(a.msd * a.msd).unwrap_or(0.0);
+            let zc = rel.origin.z + c.shape.sag(c.msd * c.msd).unwrap_or(0.0);
+            if (zc - za) * rel.origin.z < 0.0 {
+                warnings.push(format!(
+                    "negative edge thickness between surfaces {} and {}",
+                    a.surface, c.surface
+                ));
+            }
+            let re = a.msd.max(c.msd);
+            let fin = edge_finish(a.surface, &mut cache, &mut warnings)?;
+            if (zc - za).abs() > 1e-9 {
+                b.add(
+                    a.frame,
+                    Shape::Cylinder(Cylinder::new(re, za, zc)?),
+                    opaque(OpaqueKind::LensEdge, a.surface, fin.clone()),
+                    format!("edge {}–{}", a.surface, c.surface),
+                );
+            }
+            for (r, z, s) in [(a.msd, za, a.surface), (c.msd, zc, c.surface)] {
+                if r < re * (1.0 - 1e-12) {
+                    let fin = edge_finish(s, &mut cache, &mut warnings)?;
+                    b.add(
+                        translate(&a.frame, z),
+                        Shape::Sag(SagPatch::new(SurfaceShape::Plane, r, re, None)?),
+                        opaque(OpaqueKind::LensFlat, s, fin),
+                        format!("flat {s}"),
+                    );
+                }
+            }
+        }
+
+        // Mechanics.
+        let mut max_radius = rims.iter().map(|r| r.msd).fold(0.0, f64::max);
+        if opts.include_mechanics {
+            for (k, part) in sys.mechanics.iter().enumerate() {
+                let find = |id| {
+                    sys.surface_index(id).ok_or_else(|| {
+                        MkError::InvalidModel(format!(
+                            "mechanical part {k}: unknown surface id {}",
+                            id.0
+                        ))
+                    })
+                };
+                match part {
+                    MechanicalPart::Barrel {
+                        from,
+                        to,
+                        inner_radius,
+                        finish,
+                    } => {
+                        let (i, j) = (find(*from)?, find(*to)?);
+                        let fi = rs.surfaces[i].frame;
+                        let zt = rs.surfaces[j].frame.relative_to(&fi).origin.z;
+                        let fin = cache.get(finish, &mut warnings)?;
+                        b.add(
+                            fi,
+                            Shape::Cylinder(Cylinder::new(*inner_radius, 0.0, zt)?),
+                            opaque(OpaqueKind::Barrel, i, fin),
+                            format!("barrel {k}"),
+                        );
+                        max_radius = max_radius.max(*inner_radius);
+                    }
+                    MechanicalPart::AnnularBaffle {
+                        surface,
+                        z,
+                        inner_radius,
+                        outer_radius,
+                        finish,
+                    } => {
+                        let i = find(*surface)?;
+                        let fin = cache.get(finish, &mut warnings)?;
+                        b.add(
+                            translate(&rs.surfaces[i].frame, *z),
+                            Shape::Sag(SagPatch::new(
+                                SurfaceShape::Plane,
+                                *inner_radius,
+                                *outer_radius,
+                                None,
+                            )?),
+                            opaque(OpaqueKind::Baffle, i, fin),
+                            format!("baffle {k}"),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Aperture-stop plates.
+        for i in stops {
+            let rsurf = &rs.surfaces[i];
+            let clip = clip_of(i).expect("stop has a clip");
+            let r_clip = clip.bounding_radius();
+            let mut r_out = sys.surfaces[i].edge.mechanical_semi_diameter.unwrap_or(
+                (r_clip + opts.default_edge_margin).max(max_radius + opts.default_edge_margin),
+            );
+            r_out = r_out.min(shape_radius_limit(&rsurf.shape));
+            if r_out <= r_clip {
+                warnings.push(format!("stop plate at surface {i} has no area"));
+                continue;
+            }
+            let fin = edge_finish(i, &mut cache, &mut warnings)?;
+            b.add(
+                rsurf.frame,
+                Shape::Sag(SagPatch::new(
+                    rsurf.shape.clone(),
+                    0.0,
+                    r_out,
+                    Some(Mask::Outside(clip)),
+                )?),
+                opaque(OpaqueKind::StopPlate, i, fin),
+                format!("stop plate {i}"),
+            );
+            b.surfaces[i] = Some(SurfaceGeom {
+                frame: rsurf.frame,
+                clear_semi_diameter: r_clip,
+                mechanical_semi_diameter: r_out,
+            });
+        }
+
+        // Detector at the image surface.
+        let isurf = &rs.surfaces[image];
+        let (hx, hy, mask, r) = match &sys.sensor {
+            Some(s) => {
+                let (hx, hy) = (s.half_width(), s.half_height());
+                (
+                    hx,
+                    hy,
+                    Some(Mask::InsideRect {
+                        half_x: hx,
+                        half_y: hy,
+                    }),
+                    hx.hypot(hy),
+                )
+            }
+            None => {
+                let r = clear_sd(image).ok_or_else(|| {
+                    MkError::InvalidModel(
+                        "image surface needs a sensor, a fixed semi-diameter or a supplied clear semi-diameter".into(),
+                    )
+                })?;
+                (r, r, None, r)
+            }
+        };
+        let lim = shape_radius_limit(&isurf.shape);
+        if r > lim {
+            return Err(MkError::InvalidModel(
+                "detector extends beyond the image surface's sag domain".into(),
+            ));
+        }
+        let det_shape = match isurf.shape {
+            SurfaceShape::CoordinateBreak | SurfaceShape::Paraxial { .. } => SurfaceShape::Plane,
+            ref s => s.clone(),
+        };
+        b.add(
+            isurf.frame,
+            Shape::Sag(SagPatch::new(det_shape, 0.0, r, mask)?),
+            Behavior::Detector,
+            "detector",
+        );
+        b.surfaces[image] = Some(SurfaceGeom {
+            frame: isurf.frame,
+            clear_semi_diameter: r,
+            mechanical_semi_diameter: r,
+        });
+        b.set_detector(DetectorSpec {
+            surface: image,
+            accept: match image_side {
+                Side::Minus => Accept::Minus,
+                Side::Plus => Accept::Plus,
+            },
+            half_x: hx,
+            half_y: hy,
+            nx: opts.detector_pixels.0,
+            ny: opts.detector_pixels.1,
+        });
+        b.set_sequence(seq);
+        b.warnings.extend(rs.warnings.iter().cloned());
+        b.warnings.extend(warnings);
+        b.build()
+    }
+}
