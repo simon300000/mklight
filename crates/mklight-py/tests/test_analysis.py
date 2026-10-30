@@ -24,7 +24,7 @@ def test_every_runnable_registered_analysis(engine, achromat):
         if a["name"] == "glass_substitution":
             settings.update(
                 material_variables=[{"surface": 1, "candidates": {"nearest": 2}}],
-                budget={"max_combinations": 2}, local={"max_iterations": 2},
+                max_combinations=2, local_iterations=2,
             )
         r = achromat.run(a["name"], settings)
         assert r.analysis == a["name"]

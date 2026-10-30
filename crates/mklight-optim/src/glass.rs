@@ -1,7 +1,12 @@
-//! Catalogue candidates for discrete material variables. Distances use
-//! `(n_d, V_d / 100, ΔP_g,F)` with squared-distance weights `[1, 1, 100]`.
-//! Dispersion coefficients, rather than rounded catalogue indices, define
-//! these coordinates. Availability metadata is retained by the AGF reader.
+//! Catalogue candidates for discrete material variables (glass substitution).
+//!
+//! Glasses are compared at `(n_d, V_d / 100, ΔP_g,F)`, computed from each
+//! glass's dispersion formula at catalogue conditions (not its rounded
+//! catalogue n_d / V_d), with the squared distance
+//! `d² = Δn_d² + (ΔV_d / 100)² + 100 · Δ(ΔP_g,F)²` ([`DISTANCE_WEIGHTS`]):
+//! a change of 0.01 in index, 1 in Abbe number or 0.001 in partial-dispersion
+//! anomaly counts the same. Candidate sets and the search neighbourhoods
+//! both use this metric.
 
 use mklight_core::materials::{
     Glass, MaterialLibrary, agf::GlassStatus, builtin::BUILTIN_CATALOG_NAME, lines, normal_pgf,
@@ -9,6 +14,7 @@ use mklight_core::materials::{
 use mklight_core::{MaterialRef, MkError, MkResult, OpticalSystem, SurfaceId};
 use serde::{Deserialize, Serialize};
 
+/// Squared-distance weights on `(n_d, V_d / 100, ΔP_g,F)`.
 pub const DISTANCE_WEIGHTS: [f64; 3] = [1.0, 1.0, 100.0];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,9 +33,10 @@ pub struct CandidateSet {
     pub catalogs: Vec<String>,
     pub statuses: Vec<GlassStatus>,
     pub window: Option<GlassWindow>,
-    /// Applied after the window and quality filters; null means no limit.
+    /// Keep the K nearest after the window and quality filters (includes do
+    /// not count); null means no limit.
     pub nearest: Option<usize>,
-    /// Names or `catalog:name`. Includes bypass proximity limits only.
+    /// Names or `catalog:name`. Includes bypass the window and `nearest` only.
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub min_transmission: Option<f64>,
@@ -91,6 +98,7 @@ impl GlassChoice {
     }
 }
 
+/// `(n_d, V_d / 100, ΔP_g,F)` of a glass from its dispersion formula.
 pub fn coordinates(glass: &Glass) -> [f64; 3] {
     let n = |l| glass.catalog_index(l);
     let dfc = n(lines::F) - n(lines::C);
@@ -115,33 +123,6 @@ fn below(value: Option<f64>, limit: Option<f64>) -> bool {
 }
 
 impl CandidateSet {
-    fn validate(&self) -> MkResult<()> {
-        let nonnegative = |v: f64| v.is_finite() && v >= 0.0;
-        if self.nearest == Some(0)
-            || self.statuses.is_empty()
-            || self
-                .window
-                .as_ref()
-                .is_some_and(|w| !nonnegative(w.nd) || !nonnegative(w.vd))
-            || self
-                .min_transmission
-                .is_some_and(|t| !t.is_finite() || !(0.0..=1.0).contains(&t))
-            || [
-                self.max_relative_cost,
-                self.max_climate_class,
-                self.max_stain_class,
-            ]
-            .into_iter()
-            .flatten()
-            .any(|v| !nonnegative(v))
-        {
-            return Err(MkError::InvalidParam(
-                "invalid glass candidate limits".into(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Resolve a candidate set in nearest-first order. Missing optional quality
     /// data does not exclude a glass. Explicit exclusions and quality/status
     /// filters take precedence over includes. A glass must cover every system
@@ -152,7 +133,6 @@ impl CandidateSet {
         surface: SurfaceId,
         library: &MaterialLibrary,
     ) -> MkResult<Vec<GlassChoice>> {
-        self.validate()?;
         let index = system.surface_index(surface).ok_or_else(|| {
             MkError::InvalidParam(format!("unknown material surface {}", surface.0))
         })?;
@@ -173,17 +153,7 @@ impl CandidateSet {
                 ));
             }
         };
-        if origin.iter().any(|v| !v.is_finite()) {
-            return Err(MkError::InvalidParam(
-                "starting glass has no finite visible-line coordinates".into(),
-            ));
-        }
-        let fallback = MaterialLibrary::with_builtin();
-        let catalogs = if library.catalogs().is_empty() {
-            fallback.catalogs()
-        } else {
-            library.catalogs()
-        };
+        let catalogs = library.catalogs();
         for name in &self.catalogs {
             if !catalogs.iter().any(|c| c.name.eq_ignore_ascii_case(name)) {
                 return Err(MkError::UnknownMaterial(format!("catalogue {name}")));
@@ -285,11 +255,17 @@ impl CandidateSet {
                 .then(a.2.catalog.cmp(&b.2.catalog))
                 .then(a.2.name.cmp(&b.2.name))
         });
+        // The K nearest, plus the includes wherever they fall.
+        let mut nearest = 0;
         let result: Vec<_> = choices
             .into_iter()
-            .enumerate()
-            .filter(|(i, (_, include, _))| *include || self.nearest.is_none_or(|k| *i < k))
-            .map(|(_, (_, _, g))| g)
+            .filter(|(_, include, _)| {
+                *include || {
+                    nearest += 1;
+                    self.nearest.is_none_or(|k| nearest <= k)
+                }
+            })
+            .map(|(_, _, g)| g)
             .collect();
         if result.is_empty() {
             return Err(MkError::InvalidParam(format!(

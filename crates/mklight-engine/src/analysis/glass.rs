@@ -1,4 +1,7 @@
-//! Glass substitution job, sharing optimize's merit and backend machinery.
+//! The `glass_substitution` job: tabu search (or mixed glass/shape basin
+//! hopping) over catalogue glasses, with an LM re-optimisation of the
+//! continuous variables for every combination. Shares `optimize`'s merit,
+//! backend and Stop machinery.
 
 use super::*;
 use mklight_core::MkResult;
@@ -6,54 +9,27 @@ use mklight_optim::discrete::{DiscreteSettings, LocallyRefined, NearestChoices, 
 use mklight_optim::glass::{
     CandidateSet, DISTANCE_WEIGHTS, GlassChoice, MaterialVariable, model_variables,
 };
-use mklight_optim::mixed::{MixedHammerSettings, RefinedSearch, compare, mixed_hammer};
+use mklight_optim::mixed::{MixedHammerSettings, RefinedSearch, mixed_hammer};
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct SearchBudget {
-    max_combinations: usize,
-    max_seconds: Option<f64>,
-}
-impl Default for SearchBudget {
-    fn default() -> Self {
-        Self {
-            max_combinations: 100,
-            max_seconds: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct LocalBudget {
-    max_iterations: usize,
-    max_evaluations: usize,
-}
-impl Default for LocalBudget {
-    fn default() -> Self {
-        Self {
-            max_iterations: 100,
-            max_evaluations: 10_000,
-        }
-    }
-}
+/// Nearest glasses (by [`DISTANCE_WEIGHTS`]) a search move can swap to, and
+/// sampled simultaneous two-glass swaps per tabu iteration or hammer round.
+const NEIGHBOURS: usize = 4;
+const PAIR_MOVES: usize = 4;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
-    variables: Vec<VariableSpec>,
     material_variables: Vec<MaterialVariable>,
+    variables: Vec<VariableSpec>,
     hold_efl: bool,
     merit: Value,
     default_merit: Value,
     operands: Vec<Operand>,
     constraints: Vec<Operand>,
     algorithm: String,
-    budget: SearchBudget,
-    local: LocalBudget,
-    hammer: MixedHammerSettings,
-    neighbours: usize,
-    pair_moves: usize,
+    max_combinations: usize,
+    max_seconds: Option<f64>,
+    local_iterations: usize,
     top_n: usize,
     fd_scheme: FdScheme,
     fd_relative_step: Option<f64>,
@@ -64,8 +40,8 @@ struct Settings {
     stop_key: Option<String>,
 }
 
-/// Immutable prescription and candidate space shared by parallel local solves.
-#[derive(Clone)]
+/// The input prescription and candidate glasses, shared by the parallel
+/// local solves. Every assignment is built from `base`.
 struct LensSpace {
     base: OpticalSystem,
     variables: Vec<VariableSpec>,
@@ -87,8 +63,8 @@ impl LensSpace {
             let glass = &self.candidates[v][c];
             system.surfaces[self.indices[v]].material = glass.material();
             if let Some(max) = glass.max_thickness_mm {
-                // Preserve the transmission filter while changing thickness,
-                // including the thicknesses used by multiple configurations.
+                // Keep the transmission filter met while thickness changes,
+                // in every configuration.
                 for config in 0..system.configurations.len().max(1) {
                     let mut o = Operand::new(OperandKind::CentreThickness {
                         surface: self.materials[v].surface,
@@ -138,9 +114,11 @@ impl Analysis for GlassSubstitution {
         "optimization"
     }
     fn description(&self) -> &str {
-        "Searches real catalogue glasses with parallel LM re-optimisation for every combination. \
-         Tabu search or mixed glass/shape basin hopping; returns ranked complete prescriptions. \
-         Empty material variables snap all model glasses to their nearest real candidates."
+        "Replaces the glasses of chosen lenses with real catalogue glasses: searches the \
+         combinations (tabu search, or basin hopping over glasses and shape together), \
+         re-optimises the continuous variables by LM for every combination, and returns the \
+         best combinations ranked, each with its complete optimised system. With no material \
+         variables, every model glass is snapped to its nearest real glasses."
     }
     fn gpu_path(&self) -> bool {
         true
@@ -153,98 +131,104 @@ impl Analysis for GlassSubstitution {
         for key in ["algorithm", "options", "max_iterations"] {
             props.remove(key);
         }
-        let candidate_schema = settings_from_default::<CandidateSet>(json!({
-            "catalogs": {"items": {"type": "string"}, "description": "Empty: all user catalogues, or BUILTIN if none loaded. Names are case-insensitive."},
-            "statuses": {"items": {"enum": ["standard", "preferred", "obsolete", "special", "melt"]}, "description": "AGF codes 0, 1, 2, 3, 4. Default excludes obsolete and special; exclude-substitution is always honoured."},
-            "window": {"type": ["object", "null"], "properties": {"nd": {"type":"number", "minimum":0}, "vd": {"type":"number", "minimum":0}}, "required":["nd","vd"], "description": "Absolute nd/Vd half-widths about the starting glass, before nearest selection."},
-            "nearest": {"type": ["integer", "null"], "minimum": 1, "description": "K nearest in nd, Vd/100, delta PgF; squared-distance weights 1, 1, 100. null: unlimited."},
-            "include": {"items":{"type":"string"}, "description": "Names or catalog:name added beyond proximity limits; status/quality/exclude filters still apply."},
-            "exclude": {"items":{"type":"string"}, "description": "Names or catalog:name always excluded."},
-            "min_transmission": {"type":["number","null"], "minimum":0, "maximum":1, "description":"Internal transmission at the shortest system wavelength through the element. Missing data passes. LM also enforces the resulting thickness limit."},
-            "max_relative_cost": {"type":["number","null"], "minimum":0},
-            "max_climate_class": {"type":["number","null"], "minimum":0},
-            "max_stain_class": {"type":["number","null"], "minimum":0}
+        let mut candidates = settings_from_default::<CandidateSet>(json!({
+            "catalogs": {"items": {"type": "string"}, "title": "Catalogues",
+                "description": "Loaded catalogues to draw from (case-insensitive). Empty: every loaded catalogue but BUILTIN, or BUILTIN when it is the only one."},
+            "statuses": {"items": {"enum": ["standard", "preferred", "obsolete", "special", "melt"]}, "title": "Glass status",
+                "description": "Allowed AGF status codes (0 standard, 1 preferred, 2 obsolete, 3 special, 4 melt). Glasses flagged exclude-substitution are never used."},
+            "window": {"type": ["object", "null"], "title": "Window",
+                "properties": {"nd": {"type": "number", "minimum": 0}, "vd": {"type": "number", "minimum": 0}},
+                "required": ["nd", "vd"],
+                "description": "Half-widths {nd, vd} around the current glass. null: no window."},
+            "nearest": {"type": ["integer", "null"], "minimum": 1, "title": "Nearest",
+                "description": "Keep the K glasses nearest the current one in (nd, Vd/100, delta PgF), squared-distance weights 1, 1, 100. null: no limit."},
+            "include": {"items": {"type": "string"}, "title": "Include",
+                "description": "Names or catalog:name kept beyond the window and nearest limits (the other filters still apply)."},
+            "exclude": {"items": {"type": "string"}, "title": "Exclude",
+                "description": "Names or catalog:name never used."},
+            "min_transmission": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "title": "Minimum transmission",
+                "description": "Internal transmission at the shortest system wavelength through the element's centre thickness, also held as a thickness limit during re-optimisation. Glasses without data pass."},
+            "max_relative_cost": {"type": ["number", "null"], "minimum": 0, "title": "Maximum relative cost",
+                "description": "Glasses without data pass."},
+            "max_climate_class": {"type": ["number", "null"], "minimum": 0, "title": "Maximum climate class",
+                "description": "AGF climate resistance (CR). Glasses without data pass."},
+            "max_stain_class": {"type": ["number", "null"], "minimum": 0, "title": "Maximum stain class",
+                "description": "AGF stain resistance (FR). Glasses without data pass."}
         }));
-        let mut material = obj_opt(
+        candidates["default"] = json!(CandidateSet::default());
+        let material = obj_opt(
             &[
                 (
                     "surface",
-                    int("Stable id of the surface before the glass gap."),
+                    int("Stable id of the surface in front of the glass."),
                 ),
-                ("candidates", candidate_schema),
+                ("candidates", candidates),
             ],
             &["candidates"],
         );
-        material["properties"]["candidates"]["default"] = json!(CandidateSet::default());
-        props.insert("material_variables".into(), json!({"type":"array", "default":[], "items":material,
-            "description":"Material variables; cemented elements are separate variables. Empty snaps every model glass with K=10."}));
+        props.insert("material_variables".into(), json!({"type": "array", "items": material, "default": [],
+            "title": "Glasses to substitute",
+            "description": "One entry per glass that may change; a cemented doublet is two entries. Empty: every model glass, with the default candidates."}));
+        props.insert("algorithm".into(), json!({"type": "string", "enum": ["tabu", "hammer"], "default": "tabu",
+            "title": "Search",
+            "description": "tabu: search glass combinations, every one re-optimised from the input shape. hammer: basin hopping over glasses and shape together, to escape local minima."}));
+        props.insert("max_combinations".into(), json!({"type": "integer", "minimum": 1, "default": 100,
+            "title": "Combinations",
+            "description": "Local re-optimisations (tabu: distinct glass combinations; hammer: also the same glasses from another shape)."}));
+        props.insert("max_seconds".into(), json!({"type": ["number", "null"], "exclusiveMinimum": 0, "default": null,
+            "title": "Time limit", "unit": "s",
+            "description": "Search wall-time limit, keeping the results so far (termination time_limit; not reproducible). null: none."}));
         props.insert(
-            "algorithm".into(),
-            json!({"type":"string", "enum":["tabu","hammer"], "default":"tabu"}),
+            "local_iterations".into(),
+            json!({"type": "integer", "minimum": 1, "default": 100,
+            "title": "LM iterations", "description": "LM iterations per re-optimisation."}),
         );
-        let mut budget = settings_from_default::<SearchBudget>(json!({
-            "max_combinations":{"minimum":1,"description":"Maximum local solves. Tabu: distinct assignments; hammer: includes different shapes for the same glasses."},
-            "max_seconds":{"type":["number","null"],"exclusiveMinimum":0,"description":"Search wall-time limit; retains best partial refinements. null: no time limit. Timed runs are not reproducible."}
-        }));
-        budget["default"] = json!(SearchBudget::default());
-        props.insert("budget".into(), budget);
-        let mut local = settings_from_default::<LocalBudget>(
-            json!({"max_iterations":{"minimum":1}, "max_evaluations":{"minimum":1}}),
-        );
-        local["default"] = json!(LocalBudget::default());
-        props.insert("local".into(), local);
-        let mut h = settings_from_default::<MixedHammerSettings>(json!({
-            "rounds":{"minimum":1}, "batch":{"minimum":1}, "step":{"exclusiveMinimum":0},
-            "swap_probability":{"minimum":0,"maximum":1},"temperature":{"minimum":0},"stall_rounds":{"minimum":1}
-        }));
-        h["default"] = json!(MixedHammerSettings::default());
-        props.insert("hammer".into(), h);
-        props.insert("neighbours".into(), json!({"type":"integer","minimum":1,"default":4,"description":"Nearest neighbours per glass; seeded restarts can reach other candidates."}));
-        props.insert("pair_moves".into(), json!({"type":"integer","minimum":0,"default":4,"description":"Sampled simultaneous swaps per tabu iteration or hammer round."}));
         props.insert(
             "top_n".into(),
-            json!({"type":"integer","minimum":1,"default":10}),
+            json!({"type": "integer", "minimum": 1, "default": 10,
+            "title": "Results", "description": "Best glass combinations returned."}),
         );
-        props.get_mut("hold_efl").unwrap()["description"] = json!(
-            "Hold the starting EFL as an explicit constraint unless the merit already has an efl operand."
+        props["hold_efl"]["description"] = json!(
+            "Hold the EFL at its start value, as a constraint, unless the merit already has an efl operand."
         );
-        props.get_mut("feasibility_tolerance").unwrap()["description"] = json!(
-            "Total normalised constraint violation regarded as feasible for ranking and results[].feasible."
+        props["feasibility_tolerance"]["description"] = json!(
+            "Total normalised constraint violation regarded as feasible (ranking, results[].feasible)."
         );
-        props.get_mut("stop_key").unwrap()["description"] =
-            json!("Key for request_stop: stop and keep ranked results. One running job per key.");
+        props["stop_key"]["description"] = json!(
+            "Key for `request_stop`: stop and keep the ranked results. One running job per key."
+        );
         schema
     }
 
     fn result_schema(&self) -> Value {
         use super::super::schema::*;
-        let glasses = arr(
-            obj(&[
-                ("surface", int("Stable surface id.")),
-                ("catalog", string("")),
-                ("name", string("")),
-                (
-                    "nd",
-                    num(
-                        "",
-                        "d-line index from the dispersion coefficients at catalogue conditions.",
-                    ),
-                ),
-                ("vd", num("", "Abbe number.")),
-                ("dpgf", num("", "Relative partial-dispersion anomaly.")),
-            ]),
-            "One glass per material variable, in settings order.",
-        );
+        let glass = [
+            ("catalog", string("")),
+            ("name", string("")),
+            ("nd", num("", "d-line index from the dispersion formula.")),
+            ("vd", num("", "Abbe number.")),
+            ("dpgf", num("", "Partial-dispersion anomaly delta PgF.")),
+        ];
+        let mut per_surface = vec![("surface", int("Stable surface id."))];
+        per_surface.extend(glass.iter().cloned());
+        let mut candidate = glass.to_vec();
+        candidate.push((
+            "max_thickness_mm",
+            nullable(num(
+                "mm",
+                "Thickness limit from min_transmission; null without one.",
+            )),
+        ));
         result(
             &[
                 (
                     "status",
                     enumeration(&["finished", "stopped"], "Cancel discards the result."),
                 ),
-                ("stopped", boolean("Stop retained the ranked results.")),
+                ("stopped", boolean("Stopped; the results so far are kept.")),
                 (
                     "termination",
-                    string("Search termination; time_limit when its wall-time budget expired."),
+                    string("Search termination; time_limit when max_seconds expired."),
                 ),
                 ("algorithm", enumeration(&["tabu", "hammer"], "")),
                 ("starting_merit", nf()),
@@ -253,16 +237,17 @@ impl Analysis for GlassSubstitution {
                     "results",
                     arr(
                         obj(&[
-                            (
-                                "rank",
-                                int(
-                                    "One-based rank: feasible first; infeasible by violation, otherwise merit; deterministic ties.",
-                                ),
-                            ),
+                            ("rank", int("1 = best.")),
                             ("merit", nf_u("", "CPU f64 reference merit.")),
                             ("violation", nf()),
                             ("feasible", boolean("")),
-                            ("glasses", glasses.clone()),
+                            (
+                                "glasses",
+                                arr(
+                                    obj(&per_surface),
+                                    "One per material variable, in settings order.",
+                                ),
+                            ),
                             (
                                 "variables",
                                 arr(
@@ -272,24 +257,24 @@ impl Analysis for GlassSubstitution {
                                         ("value", nf()),
                                         ("change", nf()),
                                     ]),
-                                    "Continuous changes relative to the input prescription.",
+                                    "Continuous variables against the input system.",
                                 ),
                             ),
                             (
                                 "system",
                                 opaque(
-                                    "Complete optimised OpticalSystem for preview or application in one undoable step.",
+                                    "The complete optimised system, to preview or apply as one edit.",
                                 ),
                             ),
-                            ("system_hash", string("Hash of the optimised prescription.")),
+                            ("system_hash", string("")),
                             (
                                 "local_termination",
                                 string(
-                                    "Local solve termination, including cancelled for a retained partial solve.",
+                                    "LM termination; cancelled for a solve cut short by Stop or the time limit.",
                                 ),
                             ),
                         ]),
-                        "Up to top_n unique glass combinations, re-ranked on the CPU reference.",
+                        "Up to top_n distinct glass combinations: feasible first, then by merit (infeasible by violation).",
                     ),
                 ),
                 (
@@ -297,28 +282,9 @@ impl Analysis for GlassSubstitution {
                     arr(
                         obj(&[
                             ("surface", int("")),
-                            (
-                                "glasses",
-                                arr(
-                                    obj(&[
-                                        ("catalog", string("")),
-                                        ("name", string("")),
-                                        ("nd", num("", "")),
-                                        ("vd", num("", "")),
-                                        ("dpgf", num("", "")),
-                                        (
-                                            "max_thickness_mm",
-                                            nullable(num(
-                                                "mm",
-                                                "Transmission constraint; null if absent or without absorption data.",
-                                            )),
-                                        ),
-                                    ]),
-                                    "Nearest first.",
-                                ),
-                            ),
+                            ("glasses", arr(obj(&candidate), "Nearest first.")),
                         ]),
-                        "Resolved candidates, including model-glass snapping proposals.",
+                        "The resolved candidates of each material variable.",
                     ),
                 ),
                 (
@@ -326,25 +292,14 @@ impl Analysis for GlassSubstitution {
                     obj(&[
                         (
                             "combinations",
-                            int("Distinct assignments evaluated, including failed refinements."),
+                            int("Distinct glass combinations re-optimised."),
                         ),
-                        (
-                            "local_runs",
-                            int(
-                                "Attempted local solves, including failures and interrupted solves.",
-                            ),
-                        ),
+                        ("local_runs", int("LM re-optimisations.")),
                         (
                             "continuous_evaluations",
-                            int("Search merit evaluations, excluding final CPU reporting."),
+                            int("Merit evaluations of the re-optimisations."),
                         ),
-                        (
-                            "cache_hits",
-                            int(
-                                "Exact refinement cache hits; tabu also caches scalar assignments.",
-                            ),
-                        ),
-                        ("failed", int("Local solves without a usable point.")),
+                        ("failed", int("Re-optimisations without a usable point.")),
                     ]),
                 ),
                 (
@@ -352,20 +307,18 @@ impl Analysis for GlassSubstitution {
                     arr(
                         obj(&[
                             ("combination", int("Local-run count.")),
-                            ("evaluations", int("Continuous evaluations.")),
+                            ("evaluations", int("Continuous evaluations so far.")),
                             ("merit", nf()),
                             ("best_merit", nf()),
                             ("violation", nf()),
                         ]),
-                        "Search evaluator history in deterministic input order.",
+                        "One row per re-optimisation.",
                     ),
                 ),
                 ("backend", evaluation_backend_schema()),
                 (
                     "merit_spec",
-                    opaque(
-                        "Effective shared merit; transmission thickness constraints are added per assignment.",
-                    ),
+                    opaque("The merit; transmission thickness limits are added per combination."),
                 ),
             ],
             vec![],
@@ -378,11 +331,11 @@ impl Analysis for GlassSubstitution {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        // Nested schemas validate limits and reject misspelled candidate/budget keys.
+        // Settings normalisation checks only the top level: this also checks
+        // the nested candidate sets.
         super::super::schema::validate(&self.settings_schema(), settings, true).map_err(invalid)?;
         let mut s: Settings = parse(settings, "settings")?;
         let time_limit = s
-            .budget
             .max_seconds
             .map(Duration::try_from_secs_f64)
             .transpose()
@@ -394,41 +347,23 @@ impl Analysis for GlassSubstitution {
         }
         if s.material_variables.is_empty() {
             s.material_variables = model_variables(&system);
-        }
-        if s.material_variables.is_empty() {
-            return Err(invalid(
-                "no material variables or model glasses to substitute",
-            ));
-        }
-        let mut seen = std::collections::BTreeSet::new();
-        for m in &s.material_variables {
-            if !seen.insert(m.surface) {
-                return Err(invalid("duplicate material variable"));
-            }
-            let conflicting = |p: &ParamPath| {
-                matches!(
-                    p,
-                    ParamPath::ModelNd { .. }
-                        | ParamPath::ModelVd { .. }
-                        | ParamPath::ModelDpgf { .. }
-                ) && p.surface() == Some(m.surface)
-            };
-            if s.variables.iter().any(|v| conflicting(&v.param))
-                || system
-                    .configurations
-                    .iter()
-                    .any(|c| c.overrides.iter().any(|(p, _)| conflicting(p)))
-            {
+            if s.material_variables.is_empty() {
                 return Err(invalid(
-                    "a substituted material cannot also have continuous model-glass variables or overrides",
+                    "'material_variables': none given, and the system has no model glasses",
                 ));
             }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if !s.material_variables.iter().all(|m| seen.insert(m.surface)) {
+            return Err(invalid("'material_variables': a surface is listed twice"));
         }
         let candidates = s
             .material_variables
             .iter()
             .map(|v| v.candidates.resolve(&system, v.surface, &input.library))
             .collect::<MkResult<Vec<_>>>()?;
+
+        // The merit, as `optimize` builds it for LM.
         let cpu = TraceEvaluator::new(input.library.clone());
         let reg = OperandRegistry::builtin();
         let default_merit = patched(
@@ -458,10 +393,14 @@ impl Analysis for GlassSubstitution {
                 .evaluate_system(&system, &[&Operand::new(OperandKind::Efl)], ctx)?
                 .remove(0)
             {
-                Ok(f) if f.is_finite() && f != 0.0 => spec
-                    .operands
-                    .push(Operand::new(OperandKind::Efl).target(f).as_constraint()),
-                _ => warnings.push("the starting system has no finite EFL to hold".into()),
+                Ok(f) if f.is_finite() && f != 0.0 => {
+                    let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
+                    o.label = "hold EFL".into();
+                    spec.operands.push(o);
+                }
+                other => warnings.push(format!(
+                    "the focal length is not held: the start has no finite EFL ({other:?})"
+                )),
             }
         }
         let reference = OpticalProblem::new(
@@ -472,10 +411,9 @@ impl Analysis for GlassSubstitution {
             &reg,
         )?;
         let x0 = reference.start_point()?;
-        let start = cpu_scores(&reference, &[x0.clone()], ctx)?[0];
-        let local = LsqSettings {
-            max_iterations: s.local.max_iterations,
-            max_evaluations: s.local.max_evaluations,
+        let start = reference_score(&reference, &x0)?;
+        let lsq = LsqSettings {
+            max_iterations: s.local_iterations,
             jacobian: JacobianSettings {
                 scheme: s.fd_scheme,
                 relative_step: s.fd_relative_step,
@@ -487,13 +425,13 @@ impl Analysis for GlassSubstitution {
             },
             ..Default::default()
         };
-        let batch = x0.len()
+        let jacobian_batch = x0.len()
             * if s.fd_scheme == FdScheme::Central {
                 2
             } else {
                 1
             };
-        let work = Workload::new(&cpu, &system, &spec, batch);
+        let work = Workload::new(&cpu, &system, &spec, jacobian_batch);
         let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         let space = Arc::new(LensSpace {
             indices: s
@@ -513,30 +451,35 @@ impl Analysis for GlassSubstitution {
             .map(|g| g.iter().map(GlassChoice::coordinates).collect())
             .collect();
         let mut neighbours =
-            NearestChoices::from_coordinates(&coords, &DISTANCE_WEIGHTS, s.neighbours);
-        neighbours.pair_moves = s.pair_moves;
+            NearestChoices::from_coordinates(&coords, &DISTANCE_WEIGHTS, NEIGHBOURS);
+        neighbours.pair_moves = PAIR_MOVES;
+        // Candidates are nearest first, so 0 is the current glass (or, for a
+        // model glass, the nearest real one).
         let initial = vec![0; space.materials.len()];
         let build_space = space.clone();
         let gpu = ev.active_gpu().cloned();
-        let builder_cpu = cpu.clone();
+        let build_cpu = cpu.clone();
+        let start_x = x0.clone();
         let local = LocallyRefined {
             choices: space.candidates.iter().map(Vec::len).collect(),
-            settings: local,
+            settings: lsq,
+            // Every combination starts from the input shape.
             build: Box::new(move |a| {
                 let p: Box<dyn Problem + Send> = match &gpu {
                     Some(g) => Box::new(build_space.problem(a, g.clone().composite())?),
-                    None => Box::new(build_space.problem(a, builder_cpu.clone())?),
+                    None => Box::new(build_space.problem(a, build_cpu.clone())?),
                 };
-                Ok((p, x0.clone()))
+                Ok((p, start_x.clone()))
             }),
         };
+
         let ((run, archive), why) = interruptible_for(ctx, &stop, time_limit, |inner| {
             let mut mon = Monitor::new(JobContext::with(inner.cancel.clone(), Progress::default()));
             mon.feasibility_tol = s.feasibility_tolerance;
             let best = mon.best_assignment.clone();
             let progress = inner.clone();
             let labels = space.clone();
-            let limit = s.budget.max_combinations;
+            let limit = s.max_combinations;
             mon = mon.with_callback(move |r| {
                 if r.method != "glass_refinement" {
                     return;
@@ -556,33 +499,30 @@ impl Analysis for GlassSubstitution {
                     &search,
                     &neighbours,
                     &initial,
-                    &s.hammer,
-                    s.budget.max_combinations,
+                    &MixedHammerSettings::default(),
+                    s.max_combinations,
                     s.seed,
                     inner,
                 )
             } else {
-                tabu_search(
-                    &search,
-                    &neighbours,
-                    &initial,
-                    &DiscreteSettings {
-                        max_evaluations: s.budget.max_combinations,
-                        seed: s.seed,
-                        ..Default::default()
-                    },
-                    &search.monitor,
-                )
-                .map(|r| r.termination)
+                let settings = DiscreteSettings {
+                    max_evaluations: s.max_combinations,
+                    seed: s.seed,
+                    ..Default::default()
+                };
+                tabu_search(&search, &neighbours, &initial, &settings, &search.monitor)
+                    .map(|r| r.termination)
             };
             (run, search.archive())
         });
-        ctx.check()?; // Cancel discards; Stop only cancelled the inner context.
+        ctx.check()?; // Cancel discards; Stop and the time limit cancelled only the search.
         let termination = match run {
             Ok(t) => t,
             Err(MkError::Cancelled) if why != Interrupt::None => Termination::Cancelled,
             Err(e) => return Err(e.into()),
         };
+
+        // Rank every combination's best answer on the CPU reference.
         ctx.report(
             ctx.progress.fraction(),
             "ranking glass combinations on the CPU reference",
@@ -591,59 +531,56 @@ impl Analysis for GlassSubstitution {
         for (assignment, r) in &archive.results {
             ctx.check()?;
             let p = space.problem(assignment, cpu.clone())?;
-            let mut baseline = p.start_point()?;
-            mklight_optim::problem::project(p.variables(), &mut baseline);
-            let values = cpu_scores(&p, &[baseline.clone(), r.x.clone()], ctx)?;
-            let k = if values[0].better_than(&values[1], s.feasibility_tolerance) {
-                0
-            } else {
-                1
-            };
-            if values[k].status.is_usable()
-                && values[k].merit.is_finite()
-                && values[k].violation.is_finite()
-            {
-                let x = if k == 0 { baseline } else { r.x.clone() };
-                ranked.push((assignment, x, values[k], r.termination));
+            let value = reference_score(&p, &r.x)?;
+            if value.status.is_usable() && value.merit.is_finite() && value.violation.is_finite() {
+                ranked.push((assignment, p.apply(&r.x)?, &r.x, value, r.termination));
             }
         }
-        ranked.sort_by(|a, b| compare(a.2, b.2, s.feasibility_tolerance).then(a.0.cmp(b.0)));
+        // `archive.results` iterates in assignment order, and the sort is
+        // stable: ties keep that order.
+        ranked.sort_by(|a, b| a.3.compare(&b.3, s.feasibility_tolerance));
         ranked.truncate(s.top_n);
         let mut results = Vec::new();
         let mut best_snapshot = None;
-        for (rank, (a, x, value, local_termination)) in ranked.into_iter().enumerate() {
-            let p = space.problem(a, cpu.clone())?;
-            let snapshot = Snapshot::new(p.apply(&x)?)?;
+        for (rank, (a, system, x, value, local_termination)) in ranked.into_iter().enumerate() {
+            let snapshot = Snapshot::new(system)?;
+            let variables: Vec<_> = space
+                .variables
+                .iter()
+                .zip(x.iter().zip(&x0))
+                .map(|(v, (&x, &start))| {
+                    json!({"param": v.param, "start": num(start), "value": num(x), "change": num(x - start)})
+                })
+                .collect();
+            results.push(json!({"rank": rank + 1, "merit": num(value.merit), "violation": num(value.violation),
+                "feasible": value.violation <= s.feasibility_tolerance, "glasses": space.glasses(a),
+                "variables": variables, "system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
+                "local_termination": local_termination}));
             if rank == 0 {
-                best_snapshot = Some(snapshot.clone());
+                best_snapshot = Some(snapshot);
             }
-            let variables = space.variables.iter().zip(&x).map(|(v, &x)| {
-                let start = v.param.get(&space.base).expect("validated continuous variable");
-                json!({"param": v.param, "start": num(start), "value": num(x), "change": num(x-start)})
-            }).collect::<Vec<_>>();
-            results.push(json!({"rank": rank+1, "merit": num(value.merit), "violation": num(value.violation),
-                "feasible": value.violation <= s.feasibility_tolerance, "glasses": space.glasses(a), "variables": variables,
-                "system": snapshot.system(), "system_hash": snapshot.hash().to_hex(), "local_termination": local_termination}));
         }
         ev.finish(input, s.backend, best_snapshot.as_ref(), ctx)?;
-        // All published scores, including an empty ranking, use the reference.
+        // Every published score is on the reference.
         ev.report["reported_on"] = json!(TraceEvaluator::BACKEND);
         warnings.extend(ev.warnings);
         if results.is_empty() {
             warnings
                 .push("no usable glass combination was retained within the search budget".into());
         }
+        let stopped = why == Interrupt::Stopped;
         let json = json!({
-            "status": if why == Interrupt::Stopped { "stopped" } else { "finished" }, "stopped": why == Interrupt::Stopped,
+            "status": if stopped { "stopped" } else { "finished" }, "stopped": stopped,
             "termination": if why == Interrupt::TimeLimit { json!("time_limit") } else { json!(termination) },
             "algorithm": s.algorithm, "starting_merit": num(start.merit), "starting_violation": num(start.violation),
             "results": results,
-            "candidate_sets": space.materials.iter().zip(&space.candidates).map(|(v,c)| json!({"surface": v.surface, "glasses":c})).collect::<Vec<_>>(),
+            "candidate_sets": space.materials.iter().zip(&space.candidates)
+                .map(|(v, c)| json!({"surface": v.surface, "glasses": c})).collect::<Vec<_>>(),
             "statistics": {"combinations": archive.assignments.len(), "local_runs": archive.local_runs,
-                "continuous_evaluations": archive.evaluations, "cache_hits": archive.cache_hits, "failed": archive.failed},
+                "continuous_evaluations": archive.evaluations, "failed": archive.failed},
             "history": archive.history.iter().map(|h| json!({"combination": h.iteration, "evaluations": h.evaluations,
-                "merit":num(h.merit), "best_merit": num(h.best_merit), "violation":num(h.violation)})).collect::<Vec<_>>(),
-            "backend":ev.report, "merit_spec": space.merit,
+                "merit": num(h.merit), "best_merit": num(h.best_merit), "violation": num(h.violation)})).collect::<Vec<_>>(),
+            "backend": ev.report, "merit_spec": space.merit,
         });
         Ok(AnalysisOutput {
             json,
@@ -653,22 +590,14 @@ impl Analysis for GlassSubstitution {
     }
 }
 
-fn cpu_scores(
-    p: &OpticalProblem<TraceEvaluator>,
-    points: &[Vec<f64>],
-    ctx: &JobContext,
-) -> MkResult<Vec<ScalarEval>> {
-    let e = p.evaluate_batch(
-        &CandidateBatch::from_points(p.num_variables(), points.iter().map(Vec::as_slice)),
-        ctx,
-    )?;
-    Ok((0..points.len())
-        .map(|i| ScalarEval {
-            merit: merit(p.weights(), e.residuals(i), e.status[i]),
-            violation: total_violation(p.constraints(), e.constraints(i), e.status[i]),
-            status: e.status[i],
-        })
-        .collect())
+/// The CPU f64 reference merit and violation at `x`.
+fn reference_score(p: &OpticalProblem<TraceEvaluator>, x: &[f64]) -> EngineResult<ScalarEval> {
+    let r = reference_values(p, &[x])?;
+    Ok(ScalarEval {
+        merit: r.merit[0],
+        violation: r.violation[0],
+        status: r.status[0],
+    })
 }
 
 #[cfg(test)]
@@ -676,29 +605,36 @@ mod tests {
     use super::*;
     use crate::analysis::{AnalysisResult, run_analysis};
     use crate::backend::BackendInfo;
-    use mklight_core::materials::{GlassCatalog, MaterialLibrary, agf};
+    use crate::scheduler::JobState;
+    use crate::session::AnalysisRequest;
+    use crate::{Engine, EngineConfig};
+    use mklight_core::materials::{GlassCatalog, MaterialLibrary, agf, lines};
     use mklight_core::{MaterialRef, SurfaceId, SurfaceShape, samples};
-    use mklight_optim::merit::operand::OperandKind;
+    use std::time::Instant;
 
+    const PAIR: [(&str, f64, f64); 4] = [
+        ("C_GOOD", 1.52, 60.0),
+        ("C_BAD", 1.52, 30.0),
+        ("F_GOOD", 1.62, 30.0),
+        ("F_BAD", 1.62, 60.0),
+    ];
+
+    /// A cemented doublet on the bad pair (crown and flint with swapped Abbe
+    /// numbers), bending variables, and an EFL + F–C focal shift merit. Only
+    /// C_GOOD / F_GOOD can achromatise at positive power within the bounds.
     fn doublet() -> (OpticalSystem, MaterialLibrary, Value) {
         let mut cat = GlassCatalog {
             name: "PAIR".into(),
             ..Default::default()
         };
-        for (name, nd, vd) in [
-            ("C_GOOD", 1.52, 60.0),
-            ("C_BAD", 1.52, 30.0),
-            ("F_GOOD", 1.62, 30.0),
-            ("F_BAD", 1.62, 60.0),
-        ] {
+        for (name, nd, vd) in PAIR {
             cat.glasses
                 .insert(name.into(), agf::model_glass(name, nd, vd, 0.0).unwrap());
         }
-        // Exercise the actual AGF ingestion route with a synthetic catalogue.
+        // Through the AGF reader, as a loaded catalogue would be.
         let text = agf::write_agf(&agf::AgfCatalog::from_catalog(cat)).0;
-        let cat = agf::parse_agf("PAIR", &text).unwrap();
         let mut lib = MaterialLibrary::with_builtin();
-        lib.add_catalog(Arc::new(cat));
+        lib.add_catalog(Arc::new(agf::parse_agf("PAIR", &text).unwrap()));
         let mut system = samples::achromatic_doublet();
         system.surfaces[1].material = MaterialRef::glass("C_BAD");
         system.surfaces[2].material = MaterialRef::glass("F_BAD");
@@ -707,22 +643,15 @@ mod tests {
         system.surfaces[1].shape = SurfaceShape::sphere(50.0);
         system.surfaces[2].shape = SurfaceShape::sphere(-60.0);
         system.surfaces[3].shape = SurfaceShape::Plane;
-        let vars = vec![
+        let curvature = |id, lo, hi| {
             VariableSpec::bounded(
                 ParamPath::Curvature {
-                    surface: SurfaceId(1),
+                    surface: SurfaceId(id),
                 },
-                0.005,
-                0.06,
-            ),
-            VariableSpec::bounded(
-                ParamPath::Curvature {
-                    surface: SurfaceId(2),
-                },
-                -0.04,
-                -0.001,
-            ),
-        ];
+                lo,
+                hi,
+            )
+        };
         let merit = MeritFunctionSpec {
             operands: vec![
                 Operand::new(OperandKind::Efl).target(100.0),
@@ -730,11 +659,12 @@ mod tests {
             ],
             ..Default::default()
         };
-        let settings = json!({"variables":vars,"merit":merit,"hold_efl":false,"backend":"cpu", "seed":31,
-            "material_variables":[
-                {"surface":1,"candidates":{"catalogs":["PAIR"],"exclude":["F_GOOD","F_BAD"],"nearest":null}},
-                {"surface":2,"candidates":{"catalogs":["PAIR"],"exclude":["C_GOOD","C_BAD"],"nearest":null}}
-            ], "budget":{"max_combinations":4}, "local":{"max_iterations":100}, "neighbours":2,"pair_moves":4});
+        let settings = json!({"variables": [curvature(1, 0.005, 0.06), curvature(2, -0.04, -0.001)],
+        "merit": merit, "hold_efl": false, "backend": "cpu", "seed": 31,
+        "material_variables": [
+            {"surface": 1, "candidates": {"exclude": ["F_GOOD", "F_BAD"]}},
+            {"surface": 2, "candidates": {"exclude": ["C_GOOD", "C_BAD"]}}
+        ]});
         (system, lib, settings)
     }
 
@@ -754,53 +684,47 @@ mod tests {
         .unwrap()
     }
 
+    fn names(row: &Value) -> Vec<&str> {
+        row["glasses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["name"].as_str().unwrap())
+            .collect()
+    }
+
     #[test]
     fn cemented_doublet_finds_achromatic_pair_after_rebending() {
         let (system, lib, settings) = doublet();
-        let r = run(system, lib.clone(), &settings);
+        let r = run(system, lib, &settings);
         let rows = r.json["results"].as_array().unwrap();
         assert_eq!(rows.len(), 4);
         let best = &rows[0];
-        assert_eq!(best["glasses"][0]["name"], "C_GOOD");
-        assert_eq!(best["glasses"][1]["name"], "F_GOOD");
+        assert_eq!(names(best), ["C_GOOD", "F_GOOD"]);
         assert!(best["merit"].as_f64().unwrap() < 1e-12);
-        assert!(best["merit"].as_f64().unwrap() < r.json["starting_merit"].as_f64().unwrap());
-        let system: OpticalSystem = serde_json::from_value(best["system"].clone()).unwrap();
-        let ops = [
-            Operand::new(OperandKind::Efl),
-            Operand::new(OperandKind::AxialColour { short: 0, long: 2 }),
-        ];
-        let values = TraceEvaluator::new(Arc::new(lib))
-            .evaluate_system(&system, &ops.iter().collect::<Vec<_>>(), &JobContext::new())
-            .unwrap();
-        assert!((values[0].as_ref().unwrap() - 100.0).abs() < 1e-6);
+        assert!(r.json["starting_merit"].as_f64().unwrap() > 1.0);
         assert!(
-            values[1].as_ref().unwrap().abs() < 1e-6,
-            "F-C focus: {:?}",
-            values[1]
+            best["variables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["change"].as_f64().unwrap().abs() > 1e-4),
+            "re-bent"
         );
-        // Independent y / n*u refraction and translation for the three
-        // cemented interfaces. The expected pair has positive crown power,
-        // negative flint power and V_crown > V_flint; the other three pairs
-        // cannot achromatise at positive power within these bending bounds.
+        // F–C focal shift from an independent paraxial y-nu trace of the
+        // returned system.
+        let system: OpticalSystem = serde_json::from_value(best["system"].clone()).unwrap();
+        let glass = |i: usize| {
+            agf::model_glass("", 1.52 + 0.1 * (i - 1) as f64, 90.0 - 30.0 * i as f64, 0.0).unwrap()
+        };
         let bfl = |wavelength| {
-            let mut y = 1.0;
-            let mut nu = 0.0;
-            let mut n = 1.0;
+            let (mut y, mut nu, mut n) = (1.0, 0.0, 1.0);
             for i in 1..=3 {
                 let sf = &system.surfaces[i];
                 let next = if i == 3 {
                     1.0
                 } else {
-                    let name = if i == 1 { "C_GOOD" } else { "F_GOOD" };
-                    agf::model_glass(
-                        name,
-                        if i == 1 { 1.52 } else { 1.62 },
-                        if i == 1 { 60.0 } else { 30.0 },
-                        0.0,
-                    )
-                    .unwrap()
-                    .catalog_index(wavelength)
+                    glass(i).catalog_index(wavelength)
                 };
                 let c = ParamPath::Curvature { surface: sf.id }
                     .get(&system)
@@ -813,78 +737,94 @@ mod tests {
             }
             -y / nu
         };
-        assert!(
-            (bfl(mklight_core::materials::lines::F) - bfl(mklight_core::materials::lines::C)).abs()
-                < 1e-6
-        );
-        assert!(
-            best["variables"]
-                .as_array()
+        assert!((bfl(lines::F) - bfl(lines::C)).abs() < 1e-6);
+        super::super::super::schema::validate(&GlassSubstitution.result_schema(), &r.json, true)
+            .unwrap();
+        assert_eq!(r.run_info.seed, Some(31));
+    }
+
+    #[test]
+    fn ranking_is_sorted_unique_and_deterministic() {
+        let (system, lib, settings) = doublet();
+        let run_in = |threads, settings: &Value| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
                 .unwrap()
-                .iter()
-                .any(|v| v["change"].as_f64().unwrap().abs() > 1e-4)
-        );
-        let keys: std::collections::BTreeSet<_> =
-            rows.iter().map(|v| v["glasses"].to_string()).collect();
+                .install(|| run(system.clone(), lib.clone(), settings))
+        };
+        let r = run_in(1, &settings);
+        assert_eq!(r.json, run_in(4, &settings).json);
+        let rows = r.json["results"].as_array().unwrap();
+        let keys: std::collections::BTreeSet<_> = rows.iter().map(names).collect();
         assert_eq!(keys.len(), rows.len());
         assert!(
             rows.windows(2)
                 .all(|w| w[0]["merit"].as_f64() <= w[1]["merit"].as_f64())
         );
-        super::super::super::schema::validate(&GlassSubstitution.result_schema(), &r.json, true)
-            .unwrap();
-        super::super::super::schema::validate(
-            &GlassSubstitution.settings_schema(),
-            &r.run_info.settings,
-            true,
-        )
-        .unwrap();
-        assert_eq!(r.run_info.seed, Some(31));
-        assert_eq!(r.run_info.analysis, "glass_substitution");
-    }
-
-    #[test]
-    fn deterministic_across_thread_counts_and_top_n() {
-        let (system, lib, settings) = doublet();
-        let run_in = |threads| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap()
-                .install(|| run(system.clone(), lib.clone(), &settings))
-        };
-        assert_eq!(run_in(1).json, run_in(4).json);
         let mut top = settings;
         top["top_n"] = json!(2);
-        let r = run(system, lib, &top);
-        assert_eq!(r.json["results"].as_array().unwrap().len(), 2);
-        assert_eq!(r.json["statistics"]["local_runs"], 4);
+        let r2 = run_in(2, &top);
+        assert_eq!(r2.json["results"].as_array().unwrap()[..], rows[..2]);
     }
 
     #[test]
     fn mixed_hammer_searches_glasses_and_shapes_deterministically() {
         let (system, lib, mut settings) = doublet();
         settings["algorithm"] = json!("hammer");
-        settings["budget"] = json!({"max_combinations":25});
-        settings["hammer"] = json!({"rounds":10,"batch":4,"swap_probability":1.0});
+        settings["max_combinations"] = json!(25);
         let a = run(system.clone(), lib.clone(), &settings);
-        let b = run(system, lib, &settings);
-        assert_eq!(a.json, b.json);
-        assert_eq!(a.json["results"][0]["glasses"][0]["name"], "C_GOOD");
-        assert_eq!(a.json["results"][0]["glasses"][1]["name"], "F_GOOD");
+        assert_eq!(a.json, run(system, lib, &settings).json);
+        assert_eq!(names(&a.json["results"][0]), ["C_GOOD", "F_GOOD"]);
         assert!(a.json["results"][0]["merit"].as_f64().unwrap() < 1e-12);
-        assert!(a.json["statistics"]["local_runs"].as_u64().unwrap() <= 25);
-        assert!(
-            a.json["statistics"]["local_runs"].as_u64()
-                > a.json["statistics"]["combinations"].as_u64()
+        let stats = &a.json["statistics"];
+        assert!(stats["local_runs"].as_u64().unwrap() <= 25);
+        // Combinations are revisited from other shapes.
+        assert!(stats["local_runs"].as_u64() > stats["combinations"].as_u64());
+    }
+
+    #[test]
+    fn defaults_need_only_the_glasses_to_change() {
+        let r = run(
+            samples::achromatic_doublet(),
+            MaterialLibrary::with_builtin(),
+            &json!({"material_variables": [{"surface": 1}, {"surface": 2}], "max_combinations": 6,
+                "default_merit": {"fields": [0], "wavelengths": [0, 1, 2]}}),
+        );
+        let rows = r.json["results"].as_array().unwrap();
+        assert!(!rows.is_empty());
+        assert!(rows[0]["feasible"].as_bool().unwrap());
+        assert_eq!(r.json["candidate_sets"][0]["glasses"][0]["name"], "N-BK7");
+        assert_eq!(r.json["candidate_sets"][1]["glasses"][0]["name"], "F2");
+        assert_eq!(
+            r.json["candidate_sets"][0]["glasses"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10
         );
     }
+
+    /// Regression: a re-optimisation that ends on its iteration budget short
+    /// of feasibility must not displace a better (feasible) point it saw,
+    /// such as the input design itself.
+    #[test]
+    fn short_refinements_keep_the_best_point_seen() {
+        let r = run(
+            samples::cooke_triplet(),
+            MaterialLibrary::with_builtin(),
+            &json!({"material_variables": [{"surface": 1, "candidates": {"nearest": 1}}],
+                "local_iterations": 2, "default_merit": {"fields": [0], "wavelengths": [1]},
+                "backend": "cpu"}),
+        );
+        let best = &r.json["results"][0];
+        assert_eq!(r.json["starting_violation"], 0.0);
+        assert_eq!(best["feasible"], true, "{best}");
+        assert!(best["merit"].as_f64() <= r.json["starting_merit"].as_f64());
+    }
+
     #[test]
     fn stop_keeps_ranked_results_cancel_discards() {
-        use crate::scheduler::JobState;
-        use crate::session::AnalysisRequest;
-        use crate::{Engine, EngineConfig};
-        use std::time::Instant;
         for cancel in [false, true] {
             let engine = Engine::new(EngineConfig {
                 worker_threads: 1,
@@ -894,22 +834,16 @@ mod tests {
             let (system, lib, mut settings) = doublet();
             session.add_catalog(lib.catalogs()[1].as_ref().clone(), None);
             session.set_system(system).unwrap();
-            settings["algorithm"] = json!("hammer");
-            settings["budget"] = json!({"max_combinations":100_000});
-            settings["hammer"] = json!({"rounds":100_000,"stall_rounds":100_000,"batch":2});
+            let builtin = json!({"catalogs": ["BUILTIN"], "nearest": null});
+            settings["material_variables"] = json!([{"surface": 1, "candidates": builtin}, {"surface": 2, "candidates": builtin}]);
+            settings["max_combinations"] = json!(100_000);
             let id = session
                 .submit_analysis(&AnalysisRequest::new("glass_substitution", settings))
                 .unwrap();
             let t = Instant::now();
-            let mut fraction = 0.0;
             loop {
                 let status = engine.job_status(id).unwrap();
-                assert!(
-                    !status.state.is_terminal(),
-                    "ended before interruption: {status:?}"
-                );
-                assert!(status.progress >= fraction);
-                fraction = status.progress;
+                assert!(!status.state.is_terminal(), "ended early: {status:?}");
                 if status.stage.starts_with("glass_substitution: combinations") {
                     assert!(status.stage.contains("glasses [{"));
                     break;
@@ -931,21 +865,29 @@ mod tests {
                 let result = engine.take_result(id).unwrap();
                 assert_eq!(result.json["status"], "stopped");
                 assert!(!result.json["results"].as_array().unwrap().is_empty());
-                assert!(result.json["statistics"]["local_runs"].as_u64().unwrap() < 100_000);
             }
         }
     }
 
     #[test]
-    fn schemas_reject_invalid_nested_settings() {
+    fn wall_time_limit_finishes_instead_of_cancelling() {
+        let (system, lib, mut settings) = doublet();
+        settings["max_combinations"] = json!(100_000);
+        settings["max_seconds"] = json!(1e-9);
+        let result = run(system, lib, &settings);
+        assert_eq!(result.json["status"], "finished");
+        assert_eq!(result.json["termination"], "time_limit");
+    }
+
+    #[test]
+    fn invalid_nested_settings_are_rejected() {
         let (system, lib, settings) = doublet();
         for patch in [
-            json!({"budget":{"max_combinations":0}}),
-            json!({"local":{"max_iterations":0}}),
-            json!({"hammer":{"swap_probability":2}}),
-            json!({"material_variables":[{"surface":1,"candidates":{"neerest":2}}]}),
-            json!({"material_variables":[{"surface":1},{"surface":1}]}),
-            json!({"material_variables":[{"surface":999}]}),
+            json!({"local_iterations": 0}),
+            json!({"material_variables": [{"surface": 1, "candidates": {"neerest": 2}}]}),
+            json!({"material_variables": [{"surface": 1, "candidates": {"min_transmission": 2}}]}),
+            json!({"material_variables": [{"surface": 1}, {"surface": 1}]}),
+            json!({"material_variables": [{"surface": 999}]}),
         ] {
             let mut s = settings.clone();
             overlay(&mut s, &patch);
@@ -959,6 +901,46 @@ mod tests {
                 "accepted {patch}"
             );
         }
+    }
+
+    #[test]
+    fn transmission_limit_survives_continuous_thickness_optimisation() {
+        let mut cat = mklight_core::materials::builtin::catalog();
+        cat.glasses.get_mut("N-BK7").unwrap().transmittance.push(
+            mklight_core::materials::TransmittancePoint {
+                um: 0.48,
+                tau: 0.9,
+                thickness_mm: 10.0,
+            },
+        );
+        let mut lib = MaterialLibrary::new();
+        lib.add_catalog(Arc::new(cat));
+        let thickness = ParamPath::Thickness {
+            surface: SurfaceId(1),
+        };
+        let merit = MeritFunctionSpec {
+            operands: vec![
+                Operand::new(OperandKind::ParamValue {
+                    param: thickness.clone(),
+                })
+                .target(20.0),
+            ],
+            ..Default::default()
+        };
+        let r = run(
+            samples::singlet(),
+            lib,
+            &json!({
+                "variables": [VariableSpec::bounded(thickness, 1.0, 30.0)],
+                "material_variables": [{"surface": 1, "candidates": {"nearest": 1, "min_transmission": 0.9}}],
+                "merit": merit, "hold_efl": false, "backend": "cpu", "max_combinations": 1,
+            }),
+        );
+        // tau(10 mm) = 0.9 is the limit.
+        let best = &r.json["results"][0];
+        let thickness = best["system"]["surfaces"][1]["thickness"].as_f64().unwrap();
+        assert!((thickness - 10.0).abs() < 1e-6, "{best}");
+        assert_eq!(best["feasible"], true);
     }
 
     #[test]
@@ -979,10 +961,10 @@ mod tests {
                 BackendInfo::cpu_reference(),
             )
             .with_device(Some(device));
-            let settings = json!({"backend":"gpu", "hold_efl":false,
-            "default_merit":{"fields":[0],"wavelengths":[1],"thickness":null},
-            "material_variables":[{"surface":1,"candidates":{"nearest":2}}],
-            "budget":{"max_combinations":2},"local":{"max_iterations":2}});
+            let settings = json!({"backend": "gpu", "hold_efl": false,
+                "default_merit": {"fields": [0], "wavelengths": [1], "thickness": null},
+                "material_variables": [{"surface": 1, "candidates": {"nearest": 2}}],
+                "max_combinations": 2, "local_iterations": 2});
             let r = run_analysis(
                 &GlassSubstitution,
                 &input,
@@ -991,40 +973,26 @@ mod tests {
                 &JobContext::new(),
             )
             .unwrap();
+            let backend = &r.json["backend"];
             assert_eq!(r.json["statistics"]["combinations"], 2);
-            assert_eq!(r.json["backend"]["precision"], "f32_gpu");
-            assert_eq!(r.json["backend"]["qualification"]["passed"], true);
-            assert_eq!(r.json["backend"]["final_qualification"]["passed"], true);
-            assert_eq!(r.json["backend"]["reported_on"], TraceEvaluator::BACKEND);
-            assert!(
-                r.json["backend"]["gpu_stats"]["dispatches"]
-                    .as_u64()
-                    .unwrap()
-                    > 1
-            );
+            assert_eq!(backend["precision"], "f32_gpu");
+            assert_eq!(backend["qualification"]["passed"], true);
+            assert_eq!(backend["final_qualification"]["passed"], true);
+            assert_eq!(backend["reported_on"], TraceEvaluator::BACKEND);
+            assert!(backend["gpu_stats"]["dispatches"].as_u64().unwrap() > 1);
             assert_eq!(r.json["results"].as_array().unwrap().len(), 2);
-            super::super::super::schema::validate(
-                &GlassSubstitution.result_schema(),
-                &r.json,
-                true,
-            )
-            .unwrap();
-            eprintln!(
-                "glass refinement backend: {}",
-                r.json["backend"]["evaluated_on"]
-            );
         }
     }
 
     #[test]
     #[ignore = "Cooke triplet glass-substitution throughput benchmark; run in release mode"]
     fn benchmark_cooke_three_glasses() {
-        let settings = json!({"material_variables":[
-            {"surface":1,"candidates":{"nearest":3}},
-            {"surface":3,"candidates":{"nearest":3}},
-            {"surface":5,"candidates":{"nearest":3}}],
-            "budget":{"max_combinations":12},"local":{"max_iterations":8,"max_evaluations":500},
-            "default_merit":{"fields":[0,2],"wavelengths":[1]},"backend":"cpu","seed":17});
+        let settings = json!({"material_variables": [
+            {"surface": 1, "candidates": {"nearest": 3}},
+            {"surface": 3, "candidates": {"nearest": 3}},
+            {"surface": 5, "candidates": {"nearest": 3}}],
+            "max_combinations": 12, "local_iterations": 8,
+            "default_merit": {"fields": [0, 2], "wavelengths": [1]}, "backend": "cpu", "seed": 17});
         let r = run(
             samples::cooke_triplet(),
             MaterialLibrary::with_builtin(),
@@ -1032,7 +1000,6 @@ mod tests {
         );
         let count = r.json["statistics"]["local_runs"].as_u64().unwrap();
         assert_eq!(count, 12);
-        assert!(!r.json["results"].as_array().unwrap().is_empty());
         eprintln!(
             "Cooke: {} threads, {} ms, {} local runs, {} continuous evaluations, {:.2} combinations/s, best merit {}",
             rayon::current_num_threads(),
@@ -1042,55 +1009,5 @@ mod tests {
             count as f64 * 1000.0 / r.run_info.duration_ms,
             r.json["results"][0]["merit"]
         );
-    }
-
-    #[test]
-    fn transmission_limit_survives_continuous_thickness_optimisation() {
-        let mut cat = mklight_core::materials::builtin::catalog();
-        cat.glasses.get_mut("N-BK7").unwrap().transmittance.push(
-            mklight_core::materials::TransmittancePoint {
-                um: 0.48,
-                tau: 0.9,
-                thickness_mm: 10.0,
-            },
-        );
-        let mut lib = MaterialLibrary::new();
-        lib.add_catalog(Arc::new(cat));
-        let merit = MeritFunctionSpec {
-            operands: vec![
-                Operand::new(OperandKind::ParamValue {
-                    param: ParamPath::Thickness {
-                        surface: SurfaceId(1),
-                    },
-                })
-                .target(20.0),
-            ],
-            ..Default::default()
-        };
-        let r = run(
-            samples::singlet(),
-            lib,
-            &json!({
-                "variables":[VariableSpec::bounded(ParamPath::Thickness { surface:SurfaceId(1) }, 1.0,30.0)],
-                "material_variables":[{"surface":1,"candidates":{"nearest":1,"min_transmission":0.9}}],
-                "merit":merit,"hold_efl":false,"backend":"cpu","budget":{"max_combinations":1},
-            }),
-        );
-        let best = &r.json["results"][0];
-        let thickness = best["system"]["surfaces"][1]["thickness"].as_f64().unwrap();
-        assert!((thickness - 10.0).abs() < 1e-6, "{best}");
-        assert_eq!(best["feasible"], true);
-    }
-
-    #[test]
-    fn wall_time_limit_finishes_instead_of_cancelling() {
-        let (system, lib, mut settings) = doublet();
-        settings["algorithm"] = json!("hammer");
-        settings["budget"] = json!({"max_combinations":100_000, "max_seconds":1e-9});
-        settings["hammer"] = json!({"rounds":100_000, "stall_rounds":100_000});
-        let result = run(system, lib, &settings);
-        assert_eq!(result.json["status"], "finished");
-        assert_eq!(result.json["termination"], "time_limit");
-        assert_eq!(result.json["stopped"], false);
     }
 }

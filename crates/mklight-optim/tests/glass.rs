@@ -137,6 +137,17 @@ fn explicit_lists_override_proximity_but_not_exclusions() {
     assert_eq!(choices.len(), 2);
     assert_eq!(choices[0].name, "N-BK7");
     assert_eq!(choices[1].name, "F2");
+    // Regression: an include that is also among the nearest does not take
+    // one of the K places.
+    let own = CandidateSet {
+        nearest: Some(1),
+        include: vec!["N-BK7".into()],
+        ..Default::default()
+    }
+    .resolve(&sys, SurfaceId(1), &lib)
+    .unwrap();
+    assert_eq!(own.len(), 2);
+    assert_eq!(own[0].name, "N-BK7");
     let excluded = CandidateSet {
         exclude: vec!["F2".into()],
         ..opts

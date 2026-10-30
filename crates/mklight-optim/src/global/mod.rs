@@ -68,14 +68,7 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
     }
     /// Total order consistent with Deb's rule (for sorting).
     pub fn cmp(&self, a: &ScalarEval, b: &ScalarEval) -> Ordering {
-        let t = self.tol();
-        if a.better_than(b, t) {
-            Ordering::Less
-        } else if b.better_than(a, t) {
-            Ordering::Greater
-        } else {
-            Ordering::Equal
-        }
+        a.compare(b, self.tol())
     }
     pub fn record(&mut self, rec: IterationRecord) {
         self.mon.record(&mut self.history, rec);
