@@ -234,9 +234,10 @@ and selects the strongest `worst` N (default 1). `metric: "distance"`
 (default) returns the **minimum absolute axial focus distance** from the
 image across those paths, in mm; larger is better. Wavelength selection
 averages those distances with spectral weights. `metric: "peak"` instead
-returns the largest selected path's real-ray peak/primary peak ratio
-(smaller is better). The paraxial focus ranking is field independent; peak
-mode uses the solver's system fields.
+ranks at the primary wavelength and returns the largest selected path's
+real-ray peak/primary peak ratio over the selected spectrum (smaller is
+better). The paraxial focus ranking is field independent; peak mode uses
+the solver's system fields.
 
 `ghost_irradiance` accepts the same `pair` or `path`, or sums enumerated
 paths when neither is supplied. `max_reflections` (default 2) sets the

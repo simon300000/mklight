@@ -49,9 +49,11 @@ fn mtf_matches_wave_and_geometric_analyses() {
         ops.push(mtf(f, MtfMethod::Diffraction, MtfOrientation::Tangential));
         ops.push(mtf(f, MtfMethod::Diffraction, MtfOrientation::Sagittal));
     }
+    let merit_ctx = JobContext::new();
     let vals = ev
-        .evaluate_system(&s, &ops.iter().collect::<Vec<_>>(), &ctx)
+        .evaluate_system(&s, &ops.iter().collect::<Vec<_>>(), &merit_ctx)
         .unwrap();
+    assert_eq!(merit_ctx.progress.fraction(), 1.0);
     for i in 0..4 {
         assert!((vals[2 * i].as_ref().unwrap() - wave.fields[0].tangential[i]).abs() < 1e-12);
         assert!((vals[2 * i + 1].as_ref().unwrap() - wave.fields[0].sagittal[i]).abs() < 1e-12);
@@ -280,6 +282,7 @@ fn ghost_operands_match_explicit_solvers() {
         .clone()
         .unwrap();
     assert!((v - focus.ghosts[0].focus_from_sensor.abs()).abs() < 1e-12);
+    assert_eq!(ctx.progress.fraction(), 1.0);
     let mut settings = ev.solvers.ghost.clone();
     settings.paths = Some(vec![path.clone()]);
     settings.wavelengths = vec![s.wavelengths.primary];
@@ -367,16 +370,17 @@ fn worst_ghosts_and_selected_orders_match_solver() {
     // Peak focus mode uses real irradiance, rather than the paraxial estimate.
     let mut settings = ev.solvers.ghost.clone();
     settings.paths = Some(vec![mklight_ghost::GhostPath::new(vec![2, 1])]);
-    settings.wavelengths = vec![s.wavelengths.primary];
+    settings.wavelengths = (0..s.wavelengths.wavelengths.len()).collect();
     let reference =
         mklight_ghost::irradiance::ghost_irradiance(&model, &settings, &JobContext::new()).unwrap();
-    let op = Operand::new(OperandKind::GhostFocus {
+    let mut op = Operand::new(OperandKind::GhostFocus {
         pair: None,
         path: settings.paths.unwrap().pop(),
         worst: 1,
         metric: GhostFocusMetric::Peak,
         max_reflections: 2,
     });
+    op.wavelength = WavelengthSelector::All;
     let actual = ev.evaluate_system(&s, &[&op], &JobContext::new()).unwrap()[0]
         .clone()
         .unwrap();

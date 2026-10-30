@@ -184,11 +184,7 @@ impl MtfEvaluator {
                                 indices: wls.iter().map(|x| x.0).collect(),
                             };
                             let c = geometric_mtf_job(&local, &settings, &job)?;
-                            if *frequency == 0.0 {
-                                (1.0, 1.0)
-                            } else {
-                                (c.curves[0].modulation[1], c.curves[1].modulation[1])
-                            }
+                            (c.curves[0].modulation[1], c.curves[1].modulation[1])
                         }
                     };
                     if let Some(d) = detector {
@@ -212,6 +208,7 @@ impl MtfEvaluator {
                 Ok(sum / weight)
             })();
             out.push(operand_result(value)?);
+            sub.report(1.0, "MTF merit");
         }
         Ok(out)
     }

@@ -109,8 +109,12 @@ impl SolverEvaluator {
                         }
                         let model = model.as_ref().unwrap();
                         let paths = Self::path(s, pair, path)?;
+                        let ranking_wls = match metric {
+                            GhostFocusMetric::Distance => wls.clone(),
+                            GhostFocusMetric::Peak => vec![(tr.system().primary_wavelength, 1.0)],
+                        };
                         let mut value = 0.0;
-                        for (j, &(wl, weight)) in wls.iter().enumerate() {
+                        for (j, &(wl, weight)) in ranking_wls.iter().enumerate() {
                             sub.check()?;
                             let report = paraxial_ghosts(
                                 model,
@@ -141,13 +145,13 @@ impl SolverEvaluator {
                                     let mut settings = self.ghost.clone();
                                     settings.paths =
                                         Some(selected.iter().map(|g| g.path.clone()).collect());
-                                    settings.wavelengths = vec![wl];
+                                    settings.wavelengths = wls.iter().map(|w| w.0).collect();
                                     let r = ghost_irradiance(
                                         model,
                                         &settings,
                                         &sub.subrange(
-                                            0.1 + 0.9 * j as f64 / wls.len() as f64,
-                                            0.1 + 0.9 * (j + 1) as f64 / wls.len() as f64,
+                                            0.1 + 0.9 * j as f64 / ranking_wls.len() as f64,
+                                            0.1 + 0.9 * (j + 1) as f64 / ranking_wls.len() as f64,
                                         ),
                                     )?;
                                     r.ghosts.iter().map(|g| g.peak_ratio).fold(0.0, f64::max)
@@ -277,6 +281,7 @@ impl SolverEvaluator {
                 }
             })();
             out.push(operand_result(value)?);
+            sub.report(1.0, "ghost / stray merit");
         }
         Ok(out)
     }
