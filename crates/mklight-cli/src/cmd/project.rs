@@ -5,12 +5,15 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mklight_core::param::ParamPath;
-use mklight_core::{ApertureSpec, Interaction, OpticalSystem, SemiDiameter, SurfaceShape, samples};
+use mklight_core::{
+    ApertureSpec, Interaction, MkError, OpticalSystem, SemiDiameter, SurfaceShape, samples,
+};
 use mklight_engine::fsutil::atomic_write;
-use mklight_engine::{ParamEdit, Project, Session};
+use mklight_engine::{EngineError, ParamEdit, Project, Session};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer};
 
-use super::{Ctx, Report, open_warnings, run_sync, save, warning_lines};
+use super::trace::status_parts;
+use super::{Ctx, Report, check_utf8, open_warnings, run_sync, save, warning_lines};
 use crate::cli::{MigrateArgs, NewArgs, SetArgs, ShowArgs};
 use crate::error::{CliError, CliResult, Exit, open_error};
 use crate::output::{Align, Table, cell, fmt_f, fmt_g, key_values, num};
@@ -68,9 +71,126 @@ pub fn new(ctx: &Ctx, a: &NewArgs) -> CliResult<Report> {
 // ---------------------------------------------------------------------------
 // validate
 
+fn issue(severity: &str, code: &str, surface: Option<usize>, message: String) -> Value {
+    json!({"severity": severity, "code": code, "surface": surface, "message": message})
+}
+
+/// Checks `mklight` adds to the engine's `validate` analysis, so that a
+/// project reported valid can also be traced by `paraxial`, `trace` and the
+/// ray-based analyses:
+///
+/// * errors: an aperture value that is not > 0 (`aperture_value`), a
+///   negative field weight (`field_weight`), and a system that resolves but
+///   for which the reference tracer cannot build its paraxial model
+///   (`paraxial`, e.g. an F/# of 0 or an afocal system with an F/#
+///   aperture);
+/// * warnings: a field that cannot be resolved, a chief ray (primary
+///   wavelength, unclipped) that does not reach the image, and an axial
+///   marginal ray (field 0, pupil `(0, 1)`, clipped) that does not reach it
+///   (`field`, `chief_ray`, `marginal_ray`). Real-ray failures are warnings:
+///   a system in the middle of a redesign, or one vignetted on purpose, is
+///   still a valid model.
+///
+/// When the system does not resolve (unknown glass and similar) only the
+/// range checks run: the engine has already reported the cause.
+pub fn cli_checks(session: &Session) -> Vec<Value> {
+    let sys = session.system();
+    let mut out = Vec::new();
+    let aperture_value = match sys.aperture {
+        ApertureSpec::EntrancePupilDiameter { value }
+        | ApertureSpec::ImageSpaceFNumber { value }
+        | ApertureSpec::ObjectSpaceNa { value }
+        | ApertureSpec::ParaxialWorkingFNumber { value } => Some(value),
+        ApertureSpec::FloatByStopSize => None,
+    };
+    if let Some(v) = aperture_value
+        && !(v > 0.0 && v.is_finite())
+    {
+        out.push(issue(
+            "error",
+            "aperture_value",
+            None,
+            format!("the aperture value must be > 0 (is {v})"),
+        ));
+    }
+    for (k, f) in sys.fields.fields.iter().enumerate() {
+        if f.weight.is_nan() || f.weight < 0.0 {
+            out.push(issue(
+                "error",
+                "field_weight",
+                None,
+                format!("field {k}: weight must be ≥ 0 (is {})", f.weight),
+            ));
+        }
+    }
+    let Ok(resolved) = session.resolved() else {
+        return out;
+    };
+    let tracer = match SequentialTracer::new(resolved) {
+        Ok(t) => t,
+        Err(e) => {
+            out.push(issue(
+                "error",
+                "paraxial",
+                None,
+                format!("the reference tracer cannot set up the system: {e}"),
+            ));
+            return out;
+        }
+    };
+    let wl = tracer.system().primary_wavelength;
+    for (k, field) in tracer.fields().iter().enumerate() {
+        if let Some(e) = &field.error {
+            out.push(issue("warning", "field", None, format!("field {k}: {e}")));
+            continue;
+        }
+        let r = tracer.chief(field, wl);
+        if let Some(s) = r.status.surface() {
+            let (status, _, _) = status_parts(&r.status);
+            out.push(issue(
+                "warning",
+                "chief_ray",
+                Some(s),
+                format!("field {k}: the chief ray is stopped ({status}) at surface {s}"),
+            ));
+        }
+    }
+    if let Some(field) = tracer.fields().first().filter(|f| f.is_valid()) {
+        let r = tracer.trace(field, wl, 0.0, 1.0, &tracer.options());
+        if let Some(s) = r.status.surface() {
+            let (status, _, _) = status_parts(&r.status);
+            out.push(issue(
+                "warning",
+                "marginal_ray",
+                Some(s),
+                format!(
+                    "field 0: the marginal ray (pupil 0, 1) is stopped ({status}) at surface {s}"
+                ),
+            ));
+        }
+    }
+    out
+}
+
+/// The engine's `validate` report extended with [`cli_checks`]: `ok`,
+/// `errors`, `warnings` and `issues` (engine issues first).
+pub fn validation(session: &Session) -> CliResult<Value> {
+    let v = run_sync(session, "validate")?;
+    let mut issues = v["issues"].as_array().cloned().unwrap_or_default();
+    issues.extend(cli_checks(session));
+    let count = |sev: &str| issues.iter().filter(|i| i["severity"] == sev).count();
+    let (errors, warnings) = (count("error"), count("warning"));
+    Ok(json!({
+        "ok": errors == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "issues": issues,
+    }))
+}
+
 pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
     let session = ctx.open(path)?;
-    let v = run_sync(&session, "validate")?;
+    let v = validation(&session)?;
     let ok = v["ok"].as_bool().unwrap_or(false);
     let json = json!({
         "path": path_str(path),
@@ -117,7 +237,7 @@ pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
 // ---------------------------------------------------------------------------
 // show
 
-fn shape_type(s: &SurfaceShape) -> &'static str {
+pub(crate) fn shape_type(s: &SurfaceShape) -> &'static str {
     match s {
         SurfaceShape::Plane => "plane",
         SurfaceShape::Conic { conic, .. } if *conic == 0.0 => "sphere",
@@ -380,8 +500,8 @@ pub fn migrate(ctx: &Ctx, a: &MigrateArgs) -> CliResult<Report> {
     let path = &a.project;
     let bytes = std::fs::read(path)
         .map_err(|e| CliError::io(format!("cannot read {}: {e}", path.display())))?;
-    let text_in = String::from_utf8(bytes.clone())
-        .map_err(|e| CliError::model(format!("{}: not UTF-8 text: {e}", path.display())))?;
+    check_utf8(path, &bytes)?;
+    let text_in = String::from_utf8_lossy(&bytes);
     let (_, report) = Project::from_json_str(&text_in).map_err(|e| open_error(path, e))?;
     let mut json = json!({
         "path": path_str(path),
@@ -458,47 +578,96 @@ pub fn parse_value(s: &str) -> CliResult<f64> {
         .ok_or_else(|| CliError::usage(format!("invalid value '{s}' (a number, inf or -inf)")))
 }
 
-/// Error issues of the `validate` analysis, as comparable keys.
-fn error_issues(session: &Session) -> CliResult<BTreeSet<String>> {
-    let v = run_sync(session, "validate")?;
-    Ok(v["issues"]
+/// Issues of [`validation`] with a given severity, as comparable keys
+/// (`code[@surface]: message`). A `paraxial` failure is keyed by its code
+/// alone: its message changes with the system, and an edit to a system that
+/// already fails there must not count as a new error.
+fn issue_keys(v: &Value, severity: &str) -> BTreeSet<String> {
+    v["issues"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|i| i["severity"] == "error")
-        .map(|i| format!("{}: {}", cell(&i["code"]), cell(&i["message"])))
-        .collect())
+        .filter(|i| i["severity"] == severity)
+        .map(|i| {
+            if i["code"] == "paraxial" {
+                return "paraxial".to_string();
+            }
+            let at = i["surface"]
+                .as_u64()
+                .map_or(String::new(), |s| format!("@{s}"));
+            format!("{}{at}: {}", cell(&i["code"]), cell(&i["message"]))
+        })
+        .collect()
+}
+
+/// The reason of a parameter error without the error kind's prefix.
+fn param_reason(e: &MkError) -> String {
+    match e {
+        MkError::InvalidParam(m) | MkError::InvalidModel(m) => m.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Apply one `ParamPath` edit. The edit is applied through the session
-/// (structural validation, new snapshot) and checked with the `validate`
-/// analysis; it is rejected (exit 2, nothing written) if it introduces a
-/// validation error that the project did not already have. Saving is atomic.
+/// (structural validation, new snapshot) and checked with [`validation`]
+/// (the engine's `validate` analysis plus [`cli_checks`]); it is rejected
+/// (exit 2, nothing written) if it introduces an error that the project did
+/// not already have, for example a system the tracer can no longer set up.
+/// A path that does not address a parameter of this system is a usage error
+/// (1); a value the parameter cannot take is an invalid model (2). New
+/// warnings are reported but do not block the edit. Saving is atomic.
 pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
     let param: ParamPath = serde_json::from_str(&a.path)
         .map_err(|e| CliError::usage(format!("invalid parameter path '{}': {e}", a.path)))?;
     let value = parse_value(&a.value)?;
     let mut session = ctx.open(&a.project)?;
-    // No current value for some paths (an automatic semi-diameter); an
-    // invalid path is reported by `apply_edits` below.
+    // No current value for some paths (an automatic semi-diameter).
     let old = param.get(session.system()).ok();
+    // Does the path address a parameter of this system? Probe it on a copy
+    // with a value it accepts (its own, or 1 for an automatic
+    // semi-diameter), so a rejected value is not mistaken for a bad path.
+    param
+        .set(&mut session.system().clone(), old.unwrap_or(1.0))
+        .map_err(|e| {
+            CliError::usage(format!(
+                "invalid parameter path '{}' for this system: {}",
+                a.path,
+                param_reason(&e)
+            ))
+        })?;
     let before_hash = session.snapshot_hash();
-    let before = error_issues(&session)?;
+    let before = validation(&session)?;
     session
         .apply_edits(&[ParamEdit {
             path: param.clone(),
             value,
         }])
-        .map_err(|e| CliError::from(e).context("edit rejected"))?;
-    let after = error_issues(&session)?;
-    let new_errors: Vec<&String> = after.difference(&before).collect();
+        .map_err(|e| {
+            let why = match &e {
+                EngineError::Core(c) => param_reason(c),
+                other => other.to_string(),
+            };
+            CliError::model(format!(
+                "edit rejected, invalid value {} for {}: {why}",
+                a.value.trim(),
+                a.path
+            ))
+        })?;
+    let after = validation(&session)?;
+    let new_errors: Vec<String> = issue_keys(&after, "error")
+        .difference(&issue_keys(&before, "error"))
+        .cloned()
+        .collect();
     if !new_errors.is_empty() {
-        let list: Vec<&str> = new_errors.iter().map(|s| s.as_str()).collect();
         return Err(CliError::model(format!(
             "edit rejected, it makes the system invalid: {}",
-            list.join("; ")
+            new_errors.join("; ")
         )));
     }
+    let new_warnings: Vec<String> = issue_keys(&after, "warning")
+        .difference(&issue_keys(&before, "warning"))
+        .cloned()
+        .collect();
     let target = a.out.clone().unwrap_or_else(|| a.project.clone());
     let changed = session.snapshot_hash() != before_hash;
     let saved = !a.dry_run;
@@ -515,6 +684,7 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
         "saved_to": if saved { json!(path_str(&target)) } else { Value::Null },
         "snapshot_hash_before": before_hash,
         "snapshot_hash": session.snapshot_hash(),
+        "new_warnings": new_warnings,
     });
     let mut text = format!(
         "{}: {} -> {}\n",
@@ -527,6 +697,7 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
     } else {
         "dry run: nothing written\n".into()
     });
+    text.push_str(&warning_lines(&new_warnings));
     Ok(Report::ok(json, text))
 }
 

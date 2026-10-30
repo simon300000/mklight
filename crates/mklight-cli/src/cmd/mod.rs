@@ -62,14 +62,29 @@ impl Ctx {
     }
 
     /// Open a project file (migrating older schema versions in memory).
+    /// A file that cannot be read is an I/O error (4); one whose content is
+    /// not UTF-8 text is not a project (2), as in `migrate`.
     pub fn open(&self, path: &Path) -> CliResult<Session> {
         if !path.exists() {
             return Err(CliError::io(format!("{}: no such file", path.display())));
         }
+        let bytes = std::fs::read(path)
+            .map_err(|e| CliError::io(format!("cannot read {}: {e}", path.display())))?;
+        check_utf8(path, &bytes)?;
         self.engine
             .open_session(path)
             .map_err(|e| open_error(path, e))
     }
+}
+
+/// A project file must be UTF-8 text (exit 2 otherwise).
+pub fn check_utf8(path: &Path, bytes: &[u8]) -> CliResult<()> {
+    std::str::from_utf8(bytes).map(|_| ()).map_err(|e| {
+        CliError::new(
+            Exit::InvalidModel,
+            format!("{}: not UTF-8 text: {e}", path.display()),
+        )
+    })
 }
 
 /// Save a session (to its own path, or `to`), mapping failures to exit 4.

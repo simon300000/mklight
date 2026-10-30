@@ -42,8 +42,8 @@ wavelength and surface indices are **0-based** (surface 0 is the object).
 | code | kind | when |
 |---|---|---|
 | 0 | `ok` | success |
-| 1 | `usage` | bad command line; unknown analysis, sample, catalog or parameter path; invalid settings JSON or values; field/wavelength index out of range; file exists (`new` without `--force`) |
-| 2 | `invalid_model` | the project file cannot be parsed or migrated (including a newer `schema_version`); `validate` finds errors; materials or coatings do not resolve; an edit would make the system invalid |
+| 1 | `usage` | bad command line; unknown analysis, sample or catalog; a parameter path that does not address a parameter of the system; invalid settings JSON or values; field/wavelength index out of range; a pupil point outside the unit disk; file exists (`new` without `--force`) |
+| 2 | `invalid_model` | the project file cannot be parsed (including content that is not UTF-8) or migrated (including a newer `schema_version`); `validate` finds errors; materials or coatings do not resolve (also a glass named in analysis settings); `set` with a value the parameter cannot take, or an edit that would make the system invalid |
 | 3 | `analysis_failed` | the job failed; the analysis or requested backend is not available; a trace or numerical failure |
 | 4 | `io` | a file cannot be read or written (missing project, catalog or settings file) |
 | 130 | `cancelled` | the job was cancelled by Ctrl-C (SIGINT/SIGTERM) or `--timeout` |
@@ -72,9 +72,27 @@ an existing file unless `--force`.
 ### `mklight validate <project>`
 
 Opens the project (migrating older versions in memory) and runs the engine's
-`validate` analysis. JSON: `ok`, `errors`, `warnings`, `issues` (severity,
-code, surface, message), `open_warnings`, `migration`, `snapshot_hash`,
-`library_hash`. Exit 2 when `ok` is false (the report is still printed).
+`validate` analysis, followed by checks that make `validate` agree with the
+ray-based commands (a project reported valid can be traced):
+
+| code | severity | check |
+|---|---|---|
+| `aperture_value` | error | the aperture value (EPD, F/#, NA) is not > 0 |
+| `field_weight` | error | a field weight is negative |
+| `paraxial` | error | the system resolves, but the reference tracer cannot set it up (no finite marginal ray for the aperture specification, an afocal system with an F/# aperture, …); `paraxial`, `trace` and the ray-based analyses would fail with exit 2 |
+| `field` | warning | a field cannot be resolved (e.g. the aim does not converge) |
+| `chief_ray` | warning | a chief ray (primary wavelength, unclipped) does not reach the image |
+| `marginal_ray` | warning | the axial marginal ray (field 0, pupil `(0, 1)`, clipped) does not reach the image |
+
+Real-ray failures are warnings: a system in the middle of a redesign, or one
+vignetted on purpose, is still a valid model. When the system does not
+resolve (unknown glass) the engine's issue reports the cause and the tracer
+checks are skipped.
+
+JSON: `ok`, `errors`, `warnings`, `issues` (severity, code, surface,
+message; engine issues first), `open_warnings`, `migration`,
+`snapshot_hash`, `library_hash`. Exit 2 when `ok` is false (the report is
+still printed).
 
 ### `mklight show <project> [--no-semi-diameters]`
 
@@ -157,7 +175,8 @@ second Ctrl-C terminates immediately (also 130).
 
 Traces one real ray with the reference tracer: system field `i` (default 0,
 with its vignetting factors), system wavelength `j` (default: the primary),
-normalised pupil point `(px, py)` (default `0,0`; with ray aiming off on the
+normalised pupil point `(px, py)` on the unit disk (default `0,0`; exit 1
+for `|p| > 1`; with ray aiming off on the
 paraxial entrance pupil, with real aiming on the stop). Fixed apertures clip
 unless `--no-clip`.
 
@@ -166,9 +185,13 @@ JSON: `status` (`ok`, `miss`, `clipped`, `total_internal_reflection`,
 the image surface's local frame), `opl_mm`, `transmittance` (bulk
 absorption only), `chief_image_point`, `transverse_aberration` (ray − chief
 on the image surface, CONVENTIONS §4) and, with `--surfaces`, per-surface
-records: `point`, `dir` (after the interaction) and `normal` in the
-surface's local frame (surface 0: the starting frame), `aoi_deg`,
-cumulative `opl_mm` and `transmittance`, and `global_point`/`global_dir`.
+records: `type` (surface shape), `is_coordinate_break`, `point`, `dir`
+(after the interaction) and `normal` in the surface's local frame (surface
+0: the starting point in its frame), `aoi_deg`, cumulative `opl_mm` and
+`transmittance`, and `global_point`/`global_dir`. Surface 0 and coordinate
+breaks have no intersection: their `normal` and `aoi_deg` are `null` (`-`
+in the table), and a coordinate break's `point` is the incoming ray, at its
+previous point, re-expressed in the break's frame.
 
 ### `mklight paraxial <project> [--rays]`
 
@@ -194,23 +217,43 @@ mklight set lens.mklight '{"param":"semi_diameter","surface":2}' 9.5
 mklight set lens.mklight '{"param":"field_y","index":2}' 2.5
 ```
 
-The value is a number or `inf`/`-inf`. The edit goes through
-`Session::apply_edits` (structural validation, new snapshot), then the
-`validate` analysis runs; an edit that introduces a validation error the
+The value is a number or `inf`/`-inf`. A path that does not address a
+parameter of this system (no such surface, field or wavelength; a conic on
+a plane; the aperture value when the aperture floats by stop size) is a
+usage error (1). The edit goes through `Session::apply_edits` (structural
+validation, new snapshot); a value the parameter cannot take (a
+semi-diameter ≤ 0, a negative wavelength, an infinite gap after the object)
+is rejected with exit 2. Then the checks of `mklight validate` run (engine
+analysis and the tracer checks above); an edit that introduces an error the
 project did not already have is rejected with exit 2 and nothing is
-written. Otherwise the project is saved atomically (to `--out` if given).
+written. So `set` never turns a working project into one that `paraxial` or
+`trace` refuse (an F/# of 0, a negative field weight). An edit to a project
+that already fails a check is allowed when it adds no new error, so a
+broken file can be repaired step by step. New warnings (a real ray that no
+longer reaches the image, a wavelength outside a glass's data range, a gap
+sign opposite to the propagation direction) are reported but do not block
+the edit. Otherwise the project is saved atomically (to `--out` if given).
 JSON: `param`, `old` (`null` when the parameter had no value, e.g. an
 automatic semi-diameter), `new`, `changed`, `saved`, `saved_to`,
-`snapshot_hash_before`, `snapshot_hash`.
+`snapshot_hash_before`, `snapshot_hash`, `new_warnings`.
+
+`set` does not judge whether a valid, traceable value is sensible (a
+radius of 10⁻⁹ mm on a lens with an F/# aperture traces, because the
+pupil shrinks with the focal length).
 
 ## Tests
 
 `cargo test -p mklight-cli` runs unit tests (formatting, exit-code mapping,
 argument parsing) and integration tests that execute the built binary on
 the sample systems: every command, JSON parsed and checked against known
-answers (achromat EFL ≈ 100 mm at F/5, the axial marginal ray within 10 µm
-of the axis at the paraxial focus, chief-ray height against the paraxial
-image height, a user AGF glass with N-BK7 coefficients reproducing N-BK7's
-first-order data), exit codes, migration backups, atomic `set`, Ctrl-C and
+answers (paraxial EFL of every sample, the axial marginal ray of every
+sample near the axis at the paraxial focus with its image-space slope
+matching the working F/# (sine condition), achromat EFL ≈ 100 mm at F/5,
+chief-ray height against the paraxial image height, the Newtonian's folded
+image at global (0, −100, −400) for any pupil point, the relay's m = −1 and
+5 mm edge field imaged at −5 mm, coordinate breaks reported without AOI, a user AGF glass with N-BK7 coefficients reproducing N-BK7's
+first-order data), exit codes (including non-UTF-8 projects for every command), `validate` and
+`set` agreeing with `paraxial`/`trace` (F/# 0, negative field weight),
+migration backups, atomic `set`, Ctrl-C and
 `--timeout` cancellation with monotone progress, and byte-identical
 `--no-timing` output.

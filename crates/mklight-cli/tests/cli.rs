@@ -335,6 +335,78 @@ fn set_edits_validates_and_saves_atomically() {
     let e = json_run(&["set", s(&p), r#"{"param":"field_y","index":2}"#, "95"], 2);
     assert!(e["error"]["message"].as_str().unwrap().contains("90"));
     assert_eq!(std::fs::read(&p).unwrap(), before);
+    // A value the parameter cannot take: invalid model (2), not a bad path.
+    let e = json_run(
+        &[
+            "set",
+            s(&p),
+            r#"{"param":"semi_diameter","surface":1}"#,
+            "0",
+        ],
+        2,
+    );
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid value"),
+        "{e}"
+    );
+    // Edits the engine's structural checks accept but that break the
+    // system for every ray-based command (the tracer cannot set up an
+    // F/# of 0 or -3), or are out of range, are rejected and not saved.
+    for (path, value) in [
+        (r#"{"param":"aperture_value"}"#, "0"),
+        (r#"{"param":"aperture_value"}"#, "-3"),
+        (r#"{"param":"field_weight","index":0}"#, "-1"),
+    ] {
+        let e = json_run(&["set", s(&p), path, value], 2);
+        assert_eq!(e["error"]["kind"], "invalid_model", "{path} = {value}");
+        assert!(
+            e["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("makes the system invalid"),
+            "{e}"
+        );
+    }
+    let e = json_run(&["set", s(&p), r#"{"param":"aperture_value"}"#, "0"], 2);
+    let msg = e["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("aperture_value") && msg.contains("paraxial"),
+        "{msg}"
+    );
+    assert_eq!(std::fs::read(&p).unwrap(), before);
+    // An edit that keeps the model valid but stops real rays is saved, with
+    // the new warning reported.
+    let v = json_run(
+        &[
+            "set",
+            s(&p),
+            r#"{"param":"tilt_x","surface":1}"#,
+            "89",
+            "--dry-run",
+        ],
+        0,
+    );
+    let w = v["new_warnings"].as_array().unwrap();
+    assert!(
+        w.iter()
+            .any(|w| w.as_str().unwrap().starts_with("marginal_ray")),
+        "{v}"
+    );
+    let v = json_run(&["set", s(&p), path, "85", "--dry-run"], 0);
+    assert_eq!(v["new_warnings"], json!([]));
+    // A path that does not address a parameter of this system: usage.
+    assert_eq!(
+        code(&mklight([
+            "set",
+            s(&p),
+            r#"{"param":"conic","surface":4}"#,
+            "1"
+        ])),
+        1
+    );
     // Unknown surface, malformed path or value: usage.
     assert_eq!(
         code(&mklight([
@@ -546,7 +618,15 @@ fn chief_ray_matches_paraxial_image_height() {
     let y = f(&v["image"]["point"][1]);
     // 2° field of a thin doublet: distortion well below 0.1 %.
     assert!((y - h).abs() / h < 1e-3, "{y} vs {h}");
-    assert!(f(&v["transverse_aberration"][1]).abs() < 1e-12);
+    // Off-axis marginal ray: its transverse aberration is measured from the
+    // chief ray of a separate trace (coma and field curvature at full aperture: tens of µm).
+    let m = json_run(&["trace", s(&p), "--field", "2", "--pupil", "0,1"], 0);
+    let ey = f(&m["transverse_aberration"][1]);
+    assert!(
+        (ey - (f(&m["image"]["point"][1]) - y)).abs() < 1e-12,
+        "ray - chief of an independent chief trace"
+    );
+    assert!(ey.abs() > 1e-3 && ey.abs() < 0.2, "{ey}");
     // A negative pupil coordinate is accepted.
     let n = json_run(&["trace", s(&p), "--field", "2", "--pupil", "0,-1"], 0);
     assert_eq!(n["status"], "ok");
@@ -577,6 +657,217 @@ fn trace_reports_clipping_and_usage_errors() {
     assert_eq!(code(&mklight(["trace", s(&p), "--wavelength", "7"])), 1);
     assert_eq!(code(&mklight(["trace", s(&p), "--pupil", "1"])), 1);
     assert_eq!(code(&mklight(["trace", s(&p), "--pupil", "a,b"])), 1);
+    // The normalised pupil is the unit disk.
+    assert_eq!(code(&mklight(["trace", s(&p), "--pupil", "3,0"])), 1);
+    assert_eq!(code(&mklight(["trace", s(&p), "--pupil", "0.8,0.8"])), 1);
+}
+
+/// Known first-order answers of the samples (primary wavelength): EFL with
+/// tolerance, and the bound on the axial marginal ray's image height
+/// (spherical aberration at full aperture).
+const FIRST_ORDER: &[(&str, f64, f64, f64)] = &[
+    ("singlet", 100.0, 1.0, 0.2),
+    ("achromat", 100.0, 0.05, 0.01),
+    ("cooke_triplet", 50.0, 0.05, 0.05),
+    ("double_gauss", 50.0, 0.05, 0.05),
+    ("newtonian", 500.0, 1e-9, 1e-9),
+    ("petzval_asphere", 69.0, 0.5, 0.01),
+    ("relay", 55.5, 0.1, 0.01),
+];
+
+#[test]
+fn every_sample_has_first_order_data_and_traces() {
+    let d = TempDir::new("all-samples");
+    assert_eq!(FIRST_ORDER.len(), SAMPLES.len());
+    for &(name, efl, tol, sa) in FIRST_ORDER {
+        let p = sample(&d, name);
+        let par = json_run(&["paraxial", s(&p)], 0);
+        let fo = &par["wavelengths"][par["primary"].as_u64().unwrap() as usize];
+        assert!(
+            (f(&fo["efl"]) - efl).abs() < tol,
+            "{name}: EFL {}",
+            fo["efl"]
+        );
+        // The image surface is at the paraxial focus: the paraxial marginal
+        // ray ends near the axis.
+        let y = par["marginal_ray"]["y"].as_array().unwrap();
+        assert!(
+            f(y.last().unwrap()).abs() < 0.1,
+            "{name}: {}",
+            y.last().unwrap()
+        );
+        // Axial marginal ray (field 0 is on axis in every sample).
+        let v = json_run(&["trace", s(&p), "--pupil", "0,1", "--surfaces"], 0);
+        assert_eq!(v["status"], "ok", "{name}");
+        assert_eq!(v["field"]["hy"], 0.0);
+        let img = &v["image"]["point"];
+        assert!(f(&img[1]).abs() < sa, "{name}: marginal y {}", img[1]);
+        assert!(
+            f(&img[0]).abs() < 1e-12 && f(&img[2]).abs() < 1e-9,
+            "{name}"
+        );
+        // Sine condition (well corrected at the primary wavelength): the
+        // real image-space slope matches 1/(2 working F/#) within 2 %.
+        let m = -f(&v["image"]["dir"][1]);
+        let na = 1.0 / (2.0 * f(&fo["working_f_number"]));
+        assert!((m - na).abs() / na < 0.02, "{name}: sin u' {m} vs {na}");
+        assert_eq!(
+            v["surfaces"].as_array().unwrap().len(),
+            show_len(&p),
+            "{name}: one record per surface"
+        );
+        // Every other ray-based entry point runs on it too.
+        json_run(&["run", s(&p), "system_summary"], 0);
+        let edge = json_run(&["trace", s(&p), "--field", "2", "--pupil", "0,0"], 0);
+        assert_eq!(edge["status"], "ok", "{name}: edge chief ray");
+    }
+
+    // Newtonian: an f/5 paraboloid is free of spherical aberration on axis,
+    // and the 45° fold sends the image to global (0, -100, -400): 400 mm
+    // back along the axis to the flat, then 100 mm sideways.
+    let p = d.join("newtonian.mklight");
+    for pupil in ["0,0", "0,1", "-0.6,0.8"] {
+        let v = json_run(&["trace", s(&p), "--pupil", pupil, "--surfaces"], 0);
+        let g = &v["surfaces"].as_array().unwrap().last().unwrap()["global_point"];
+        for (k, want) in [0.0, -100.0, -400.0].iter().enumerate() {
+            assert!((f(&g[k]) - want).abs() < 1e-9, "pupil {pupil}: {g}");
+        }
+    }
+    // Relay: 1:1 imaging (m = -1, working F/# = 1/(2 NA)), the edge field
+    // (object height 5 mm) is imaged at -5 mm.
+    let p = d.join("relay.mklight");
+    let par = json_run(&["paraxial", s(&p)], 0);
+    let fo = &par["wavelengths"][1];
+    assert!((f(&fo["magnification"]) + 1.0).abs() < 1e-6);
+    assert!((f(&fo["object_na"]) - 0.08).abs() < 1e-12);
+    assert!((f(&fo["working_f_number"]) - 1.0 / (2.0 * 0.08)).abs() < 0.05);
+    let v = json_run(&["trace", s(&p), "--field", "2", "--pupil", "0,0"], 0);
+    assert!(
+        (f(&v["image"]["point"][1]) + 5.0).abs() < 1e-4,
+        "{}",
+        v["image"]
+    );
+}
+
+/// Number of surfaces of a project (from `show`).
+fn show_len(p: &Path) -> usize {
+    json_run(&["show", s(p), "--no-semi-diameters"], 0)["surfaces"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn coordinate_breaks_are_not_reported_as_hits() {
+    let d = TempDir::new("cb");
+    let p = sample(&d, "newtonian");
+    let v = json_run(&["trace", s(&p), "--pupil", "0,0", "--surfaces"], 0);
+    let r = v["surfaces"].as_array().unwrap();
+    let cbs: Vec<usize> = r
+        .iter()
+        .filter(|x| x["is_coordinate_break"] == true)
+        .map(|x| x["index"].as_u64().unwrap() as usize)
+        .collect();
+    assert_eq!(cbs, [2, 4]);
+    for x in r {
+        let i = x["index"].as_u64().unwrap();
+        if i == 0 || x["is_coordinate_break"] == true {
+            assert_eq!(x["aoi_deg"], Value::Null, "{x}");
+            assert_eq!(x["normal"], Value::Null, "{x}");
+        } else {
+            assert!(x["aoi_deg"].is_number() && x["normal"].is_array(), "{x}");
+        }
+    }
+    assert_eq!(r[2]["type"], "coordinate_break");
+    assert_eq!(r[3]["type"], "plane");
+    // The chief ray meets the fold flat at 45°, the primary at normal
+    // incidence.
+    assert!((f(&r[3]["aoi_deg"]) - 45.0).abs() < 1e-9);
+    assert!(f(&r[1]["aoi_deg"]).abs() < 1e-9);
+    let text = stdout(&mklight(["trace", s(&p), "--pupil", "0,1", "--surfaces"]));
+    let row = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("2 ") && l.contains("fold in"))
+        .unwrap();
+    assert!(row.split_whitespace().nth(9) == Some("-"), "{row}");
+    assert!(text.contains("coordinate breaks"), "{text}");
+}
+
+#[test]
+fn validate_agrees_with_the_ray_commands() {
+    let d = TempDir::new("validate-rays");
+    let p = sample(&d, "achromat");
+    let doc: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    // A file edited by hand to F/# 0: the engine's structural checks pass,
+    // but the tracer cannot set up the system, so validate fails like
+    // paraxial and trace do.
+    let mut bad = doc.clone();
+    bad["system"]["aperture"]["value"] = json!(0.0);
+    let b = d.join("f0.mklight");
+    std::fs::write(&b, bad.to_string()).unwrap();
+    let v = json_run(&["validate", s(&b)], 2);
+    assert_eq!(v["ok"], false);
+    let codes: Vec<&str> = v["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["code"].as_str().unwrap())
+        .collect();
+    assert!(
+        codes.contains(&"paraxial") && codes.contains(&"aperture_value"),
+        "{codes:?}"
+    );
+    assert_eq!(f(&v["errors"]), 2.0);
+    assert_eq!(code(&mklight(["paraxial", s(&b)])), 2);
+    assert_eq!(code(&mklight(["trace", s(&b), "--pupil", "0,1"])), 2);
+    // On a broken system, an edit that does not repair it is still allowed
+    // (no new error), and the repairing edit is too.
+    json_run(
+        &["set", s(&b), r#"{"param":"thickness","surface":3}"#, "90"],
+        0,
+    );
+    json_run(&["set", s(&b), r#"{"param":"aperture_value"}"#, "5"], 0);
+    assert_eq!(json_run(&["validate", s(&b)], 0)["ok"], true);
+    assert_eq!(code(&mklight(["paraxial", s(&b)])), 0);
+    // A negative field weight.
+    let mut bad = doc;
+    bad["system"]["fields"]["fields"][1]["weight"] = json!(-1.0);
+    let b = d.join("weight.mklight");
+    std::fs::write(&b, bad.to_string()).unwrap();
+    let v = json_run(&["validate", s(&b)], 2);
+    assert!(
+        v["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["code"] == "field_weight")
+    );
+}
+
+#[test]
+fn non_utf8_projects_are_invalid_models_for_every_command() {
+    let d = TempDir::new("utf8");
+    let b = d.join("bin.mklight");
+    std::fs::write(&b, [0xff, 0xfe, 0x00]).unwrap();
+    let cases: &[&[&str]] = &[
+        &["validate", s(&b)],
+        &["show", s(&b)],
+        &["paraxial", s(&b)],
+        &["trace", s(&b)],
+        &["migrate", s(&b)],
+        &["run", s(&b), "validate"],
+        &["set", s(&b), r#"{"param":"aperture_value"}"#, "4"],
+        &["catalogs", "list", "--project", s(&b)],
+    ];
+    for args in cases {
+        let e = json_run(args, 2);
+        assert_eq!(e["error"]["kind"], "invalid_model", "{args:?}");
+        assert!(
+            e["error"]["message"].as_str().unwrap().contains("UTF-8"),
+            "{args:?}: {e}"
+        );
+    }
+    assert_eq!(std::fs::read(&b).unwrap(), [0xff, 0xfe, 0x00]);
 }
 
 // ---------------------------------------------------------------------------

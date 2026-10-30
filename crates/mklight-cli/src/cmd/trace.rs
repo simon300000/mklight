@@ -12,6 +12,7 @@ use mklight_trace::{
     FirstOrder, ParaxialRayTable, Ray, SequentialTracer, SurfaceRecord, TraceOptions, TraceStatus,
 };
 
+use super::project::shape_type;
 use super::{Ctx, Report, warning_lines};
 use crate::cli::{ParaxialArgs, TraceArgs};
 use crate::error::{CliError, CliResult};
@@ -38,10 +39,18 @@ pub fn parse_pupil(s: &str) -> CliResult<[f64; 2]> {
     if !(px.is_finite() && py.is_finite()) {
         return Err(bad());
     }
+    // The normalised pupil is the unit disk (a little slack for decimal
+    // input such as 0.7071,0.7071).
+    if px.hypot(py) > 1.0 + 1e-6 {
+        return Err(CliError::usage(format!(
+            "invalid --pupil '{s}': the point lies outside the unit pupil (|p| = {} > 1)",
+            fmt_g(px.hypot(py), 6)
+        )));
+    }
     Ok([px, py])
 }
 
-fn status_parts(s: &TraceStatus) -> (&'static str, Option<usize>, Value) {
+pub(crate) fn status_parts(s: &TraceStatus) -> (&'static str, Option<usize>, Value) {
     match *s {
         TraceStatus::Ok => ("ok", None, Value::Null),
         TraceStatus::Miss { surface } => ("miss", Some(surface), Value::Null),
@@ -100,25 +109,27 @@ pub fn trace(ctx: &Ctx, a: &TraceArgs) -> CliResult<Report> {
         (Some((p, _)), Some(c)) => Some([p.x - c.x, p.y - c.y]),
         _ => None,
     };
-    let labels: Vec<String> = sys
-        .system()
-        .surfaces
-        .iter()
-        .map(|s| s.label.clone())
-        .collect();
+    let model = &sys.system().surfaces;
+    let label = |i: usize| model.get(i).map(|s| s.label.clone()).unwrap_or_default();
+    // Surface 0 (the starting point) and coordinate breaks have no
+    // intersection and no incidence: their AOI and normal are not reported.
+    let has_hit = |i: usize| i > 0 && model.get(i).is_some_and(|s| !s.is_coordinate_break());
 
     let surfaces: Vec<Value> = rec
         .iter()
         .enumerate()
         .map(|(i, s)| {
             let g = to_global(sys, i, &Ray::new(s.point, s.dir));
+            let hit = has_hit(i);
             json!({
                 "index": i,
-                "label": labels.get(i).cloned().unwrap_or_default(),
+                "label": label(i),
+                "type": model.get(i).map_or("", |s| shape_type(&s.shape)),
+                "is_coordinate_break": model.get(i).is_some_and(|s| s.is_coordinate_break()),
                 "point": v3(s.point),
                 "dir": v3(s.dir),
-                "normal": v3(s.normal),
-                "aoi_deg": num(aoi_deg(s.cos_incidence)),
+                "normal": if hit { v3(s.normal) } else { Value::Null },
+                "aoi_deg": if hit { num(aoi_deg(s.cos_incidence)) } else { Value::Null },
                 "opl_mm": num(s.opl),
                 "transmittance": num(s.transmittance),
                 "global_point": v3(g.pos),
@@ -217,24 +228,32 @@ pub fn trace(ctx: &Ctx, a: &TraceArgs) -> CliResult<Report> {
         for (i, s) in rec.iter().enumerate() {
             t.row(vec![
                 i.to_string(),
-                labels.get(i).cloned().unwrap_or_default(),
+                label(i),
                 fmt_f(s.point.x, 6),
                 fmt_f(s.point.y, 6),
                 fmt_f(s.point.z, 6),
                 fmt_f(s.dir.x, 8),
                 fmt_f(s.dir.y, 8),
                 fmt_f(s.dir.z, 8),
-                if i == 0 {
-                    "-".into()
-                } else {
+                if has_hit(i) {
                     fmt_f(aoi_deg(s.cos_incidence), 4)
+                } else {
+                    "-".into()
                 },
                 fmt_f(s.opl, 6),
             ]);
         }
         text.push('\n');
         text.push_str(&t.render());
-        text.push_str("(coordinates in each surface's local frame, mm)\n");
+        text.push_str(
+            "(coordinates in each surface's local frame, mm; surface 0: the start point)\n",
+        );
+        if model.iter().any(|s| s.is_coordinate_break()) {
+            text.push_str(
+                "(coordinate breaks, AOI '-': no intersection, the point is the incoming ray \
+                 re-expressed in the break's frame)\n",
+            );
+        }
     }
     text.push_str(&warning_lines(tracer.warnings()));
     Ok(Report::ok(json, text))
@@ -377,6 +396,10 @@ mod tests {
         assert!(parse_pupil("1").is_err());
         assert!(parse_pupil("a,b").is_err());
         assert!(parse_pupil("inf,0").is_err());
+        assert!(parse_pupil("3,0").is_err());
+        assert!(parse_pupil("0.8,0.7").is_err());
+        assert!(parse_pupil("0.7071068,0.7071068").is_ok());
+        assert!(parse_pupil("-1,0").is_ok());
     }
 
     #[test]

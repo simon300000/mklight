@@ -182,7 +182,7 @@ pub struct TraceArgs {
     /// System wavelength index (0-based); default: the primary wavelength.
     #[arg(long)]
     pub wavelength: Option<usize>,
-    /// Normalised pupil coordinates `px,py` on the unit disk.
+    /// Normalised pupil coordinates `px,py` on the unit disk (`|p| ≤ 1`).
     #[arg(long, default_value = "0,0", allow_hyphen_values = true)]
     pub pupil: String,
     /// Print per-surface ray data.
