@@ -98,6 +98,8 @@ counted would also be counted by stray as `Mechanical` after hitting a
 mount. `GhostCoverage` therefore records the per-surface clipping of the
 ghost run (`apertures`, from `GhostModel::coverage`), and the stray solver
 must clip the optical surfaces identically (`GhostCoverage::same_apertures`).
+Both build them with `model::clip_apertures`; the stray side checks a
+coverage record with `StraySystem::check_ghost_coverage` (`docs/STRAY.md`).
 
 ## 3. The sequence tracer
 
@@ -158,8 +160,9 @@ the maps), so a design ray that crosses a physically impossible element
 (negative edge thickness, overlapping elements) is lost here although the
 reference tracer passes it. `ghost_irradiance` counts such primary rays and
 reports them, with their share of the signal, as a `RunInfo` warning. (The
-Double Gauss sample triggers it at full field: its last element has a
-negative edge thickness at the 14° marginal ray height.)
+Double Gauss sample without its vignetting factors triggers it at full
+field: its last element has a negative edge thickness at the unvignetted
+14° marginal ray height.)
 
 **Radiometry.** At every interaction the shared coating code
 `ResolvedCoating::rt(λ, n_in, n_far, cos θ, mirror)` (bare Fresnel, thin film,

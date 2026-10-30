@@ -291,7 +291,10 @@ pub enum MismatchPolicy {
     Skip,
 }
 
+/// Reader options. In JSON every field is optional and unknown keys are
+/// rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgfOptions {
     pub nd_tolerance: f64,
     pub vd_tolerance: f64,
@@ -1606,6 +1609,14 @@ CD 1.5 0.01 0.001
         assert_eq!(c.catalog.glasses.keys().collect::<Vec<_>>(), vec!["OK"]);
         assert!(parse_agf("EMPTY", "CC nothing here\n").is_err());
         assert!(parse_agf_bytes("EMPTY", b"", &AgfOptions::default()).is_err());
+    }
+
+    #[test]
+    fn options_json_rejects_unknown_keys() {
+        let o: AgfOptions = serde_json::from_str(r#"{"mismatch": "skip"}"#).unwrap();
+        assert_eq!(o.mismatch, MismatchPolicy::Skip);
+        assert_eq!(o.nd_tolerance, AgfOptions::default().nd_tolerance);
+        assert!(serde_json::from_str::<AgfOptions>(r#"{"nd_tolerence": 1e-3}"#).is_err());
     }
 
     #[test]

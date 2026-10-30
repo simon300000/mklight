@@ -77,8 +77,8 @@ ray-based commands (a project reported valid can be traced):
 
 | code | severity | check |
 |---|---|---|
-| `aperture_value` | error | the aperture value (EPD, F/#, NA) is not > 0 |
-| `field_weight` | error | a field weight is negative |
+| `aperture_value` | error | the aperture value (EPD, F/#, NA) is not > 0 (the engine's structural validation now rejects this on load: exit 2 with `[invalid_aperture_value]`, CONVENTIONS §13) |
+| `field_weight` | error | a field weight is negative (likewise rejected on load: `[negative_weight]`) |
 | `paraxial` | error | the system resolves, but the reference tracer cannot set it up (no finite marginal ray for the aperture specification, an afocal system with an F/# aperture, …); `paraxial`, `trace` and the ray-based analyses would fail with exit 2 |
 | `field` | warning | a field cannot be resolved (e.g. the aim does not converge) |
 | `chief_ray` | warning | a chief ray (primary wavelength, unclipped) does not reach the image |

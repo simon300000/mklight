@@ -226,14 +226,17 @@ Coatings return complex amplitude coefficients next to the power ones
   `Scatter`, any non-optical geometry `Mechanical`.
 * Owners: `Primary` → sequential/wave solvers; `Ghost(k)` → the ghost solver
   if the path is in that run's coverage, else the stray solver;
-  `Scatter`, `Mechanical`, `Irregular` → the stray solver. The reference
+  `Scatter`, `Mechanical`, `Irregular` → the stray solver. The stray
+  solver reports `Irregular` paths, and specular paths outside a clipping
+  aperture, as its class `Sneak` (five classes in all, ARCHITECTURE
+  "Solvers and double counting"). The reference
   implementation is `mklight_ghost::signature` (`PathSignature`, `classify`,
   `GhostCoverage::owner`); details in `docs/GHOST.md` §2.
 * Ownership assumes both solvers clip at identical apertures: the stray
   solver must clip the optical surfaces exactly as the ghost run did
   (`GhostCoverage::apertures`, checked with `same_apertures`), otherwise a
   ray clipped by one solver and not the other is counted twice or not at
-  all.
+  all. Both build them with `mklight_ghost::clip_apertures`.
 
 ## 11. Non-finite numbers in results
 
@@ -264,3 +267,23 @@ fixed arrays.
   names the rejected backend and the reason (`docs/GPU.md` §5.2). A
   qualification passes only with the sampled errors within a third of the
   §7 budget; a cancelled qualification is an error, not a failure.
+
+## 13. Structural validation codes
+
+`OpticalSystem::validation_issues` reports each problem as
+`[code] path: message`, with `path` the JSON path of the value
+(`surfaces[3].shape.curvature`, `coatings["AR"].layers[0].extinction`).
+Numbers must be finite everywhere except the object thickness (and an
+override or pickup of it) and the image thickness. Codes:
+`non_finite`, `too_few_surfaces`, `stop_out_of_range`,
+`invalid_aperture_value` (≤ 0), `invalid_wavelengths`,
+`invalid_wavelength` (λ ≤ 0), `negative_weight` (field or wavelength),
+`no_fields`, `object_height_at_infinity`, `object_na_at_infinity`,
+`field_angle_too_large`, `invalid_environment`, `invalid_ray_aiming`,
+`duplicate_surface_id`, `infinite_thickness`, `invalid_focal_length`,
+`invalid_material`, `unknown_coating`, `invalid_semi_diameter`,
+`invalid_aperture`, `invalid_mechanical_semi_diameter`, `invalid_scatter`,
+`coordinate_break_at_end`, `image_mirror`, `invalid_coating`,
+`missing_surface` (mechanics, overrides, solves and pickups),
+`invalid_mechanics`, `invalid_sensor`, `invalid_configuration`,
+`invalid_solve`. Codes are stable; messages may change.

@@ -26,18 +26,22 @@ Units follow CONVENTIONS §1 (mm, µm, W, W/mm²). Rays carry unpolarised
 ## Connection to the sequential tracer
 
 `StraySystem::new(resolved, &SystemOptions)` (or `StraySystem::build` with
-a `JobContext`: cancellation before and after the sizing traces, after the
-scene build and per grid row of the obstruction check) builds a
+a `JobContext`: cancellation inside the sizing traces, after the scene
+build and per grid row of the obstruction check) builds a
 `mklight_trace::SequentialTracer`, computes the automatic clear
-semi-diameters with `SequentialTracer::semi_diameters` (the largest traced
-ray height over all system fields, wavelengths and the pupil rim), and
-builds the scene with them (`SceneOptions::clear_semi_diameters`):
+semi-diameters with `SequentialTracer::semi_diameters_with` (the largest
+traced ray height over all system fields, with their vignetting factors,
+wavelengths and the pupil rim), and builds the scene with them
+(`SceneOptions::clear_semi_diameters`). The radii of the stop and of the
+optical surfaces are those of `mklight_ghost::clip_apertures` (clear
+apertures, no margin), the ghost solver's own definition, so the two
+solvers clip identically (see "Partition"):
 
 | surface | clear semi-diameter used by the scene |
 |---|---|
 | fixed semi-diameter or explicit aperture | its own |
 | `Auto` | traced maximum |
-| `Auto` aperture stop | `max(paraxial stop radius, traced maximum)` (the freeze rule of `fix_semi_diameters`, so the stop plate never vignettes the design's own fields) |
+| `Auto` aperture stop | `max(paraxial stop radius, traced maximum) × (1 + 10⁻¹²)` (the freeze rule of `fix_semi_diameters`, so the stop plate never vignettes the design's own fields, with the ghost solver's guard factor) |
 | `Auto` image surface without a sensor | traced maximum `× (1 + detector_margin)` (default 5 %) |
 | value supplied in `SceneOptions::clear_semi_diameters` | the supplied value |
 
@@ -79,17 +83,20 @@ not the next designed surface is *obstructed*. The reference reports
 every system field (`StraySystem::obstruction`, 48 × 48 grid) and warns
 above 0.1 %; the analysis reports `primary_obstruction` for field sources
 and warns likewise. Measured: Newtonian 11.8 % (fold flat back and mount),
-sample Double Gauss at 14° 5.0 % (crossing surfaces of L1 and L6), the test
-fixture "Double Gauss in a barrel" at 10° 2.9 % (the front retaining ring
-clips the oblique beam); 0 for the other samples.
+the Double Gauss *without its vignetting factors* at 14° 5.0 % (crossing
+surfaces of L1 and L6), the test fixture "Double Gauss in a barrel" at 10°
+3.9 % (the front retaining ring clips the oblique beam); 0 for the samples
+(the Double Gauss sample included).
 
 The scene reports two surfaces of one element that **intersect inside their
 clear apertures** (negative edge thickness at the smaller clear radius).
 Rays near such a rim meet the second surface first, which the sequential
 model ignores, so the `Primary` class departs from the sequential answer
-there. The sample Double Gauss at its full ±14° field is such a case: its
-automatic clear apertures of L1 (18.6 mm) and L6 (13.9 mm) exceed the radii
-where the element surfaces cross. At ±10° it is physical.
+there. The Double Gauss sample without its vignetting factors is such a
+case: the unvignetted 14° beam sizes clear apertures of L1 (18.6 mm) and L6
+(13.9 mm) beyond the radii where the element surfaces cross. The sample
+itself vignettes its 10° and 14° fields (`vcy` = 0.15, 0.30) and is
+physical over its clear apertures (tested).
 
 ### Sources
 
@@ -166,7 +173,23 @@ detected = Primary (sequential) + Ghost (ghost solver) + stray total
 
 holds path by path, with the obstruction-checked `Primary` (above). An
 explicit ghost solver that ignores non-sequential geometry overcounts
-obstructed ghost paths in the same way. The exclusion changes only the
+obstructed ghost paths in the same way.
+
+This needs both solvers to clip at the same apertures (CONVENTIONS §10):
+the scene's clear apertures come from `mklight_ghost::clip_apertures`, and
+`StraySystem::ghost_apertures` reports the scene's clipping in the ghost
+solver's terms. `StraySystem::check_ghost_coverage(&coverage)` (or
+`ghost_coverage` in the analysis settings) refuses a ghost run whose
+`GhostCoverage` has different interface kinds or apertures, e.g. a
+`ClearApertures` margin or other semi-diameter settings.
+`tests/partition.rs` checks the sum on a singlet and a Cooke triplet
+coated with an ideal 5 % reflector (orders 2 and 4 in the ghost run,
+on-axis and off-axis fields): the stray `Ghost` class matches the ghost
+solver within |z| < 1.2, the remainder of the detected flux equals ghost
+solver + stray total within |z| < 1.2, and counting the `Ghost` class in
+both solvers is off by z < −30. The stray solver drops the whole `Ghost`
+class: ghost orders the ghost run did not trace are counted by neither
+solver, so the ghost run must cover every order that matters. The exclusion changes only the
 tallies, not the random
 streams, so a run with and without it differs by exactly the `Ghost` flux
 (tested).
@@ -230,8 +253,8 @@ z = (MC − reference)/SE_MC:
 
 | system, field | transmitted fraction MC / ref (z) | centroid y z | RMS radius MC / ref (z) |
 |---|---|---|---|
-| Double Gauss, 0° | 0.5675 / 0.5669 (+0.26) | −0.18 | 21.69 / 21.69 µm (−0.13) |
-| Double Gauss, 10° | 0.5620 / 0.5601 (+0.88) | −1.27 | 18.35 / 18.39 µm (−0.45) |
+| Double Gauss, 0° | 0.5336 / 0.5335 (+0.04) | −0.83 | 21.00 / 21.03 µm (−0.49) |
+| Double Gauss, 10° (vignetted by its apertures) | 0.4579 / 0.4569 (+0.47) | −1.65 | 15.26 / 15.26 µm (+0.10) |
 | Cooke triplet, 0° | 0.5857 / 0.5855 (+0.07) | −0.77 | 6.69 / 6.67 µm (+1.20) |
 | Cooke triplet, 20° | 0.6051 / 0.6042 (+0.42) | −0.35 | 26.12 / 25.91 µm (+1.46) |
 | Cooke triplet, Hy = −0.55 | 0.4946 / 0.4956 (−0.48) | −0.37 | 17.32 / 17.30 µm (+0.32) |
@@ -244,8 +267,8 @@ z = (MC − reference)/SE_MC:
 Fractions are of the emitted (overfilled) power. For the refracting
 systems nothing is obstructed and the reference equals the purely
 sequential model exactly (asserted). Against the purely sequential flux the
-Newtonian gives z = −54 and the Double Gauss at 14° z = −9.7 (obstruction
-checked: −0.68).
+Newtonian gives z = −54 and the unvignetted Double Gauss at 14° z = −9.7
+(obstruction checked: −0.68).
 
 The reference shares the source sampling with the Monte Carlo, so two
 checks are independent of it:
@@ -274,12 +297,14 @@ every branch split the second order matches `T²R²` to 1e-10
 `analysis::analyze(Arc<ResolvedSystem>, &StrayAnalysisSettings, &JobContext)`
 (or `analyze_system` on a built `StraySystem`).
 
-Settings (JSON, every field optional, unknown keys rejected except inside
+Settings (JSON, every field optional, unknown keys rejected, also inside
 `semi_diameters`): `source` (`field {hx, hy, margin,
 strength}`, `system_field {index, margin, strength}`, `out_of_field
 {angle_x_deg, angle_y_deg, margin, irradiance}`, `custom {spec,
 reference_flux}`), `rays`, `seed`, `classes` (bit mask, default all but
 `Primary`), `exclude_ghost_class`, `detector_pixels`, `top_signatures`,
+`ghost_coverage` (the coverage record of the ghost run combined with this
+one; the analysis fails unless the scene clips at its apertures),
 `scene` (`SceneOptions`), `semi_diameters`, `detector_margin`, `transport`
 (`mode`, `max_events`, `roulette_threshold`, `split_ceiling`,
 `scatter_reflection`, `scatter_transmission`, `chunk_rays`). Validation:

@@ -20,9 +20,10 @@
 //! nor ghosts that the ghost solver enumerates, so the partition stays
 //! disjoint and complete.
 //!
-//! `Sneak` is a fifth class beyond the four of ARCHITECTURE "Solvers and
-//! double counting" (which still lists four; the stray solver owns the fifth).
-//! With apertures built as geometry, an opaque non-clear zone and stop
+//! `Sneak` is the stray solver's own class (ARCHITECTURE "Solvers and
+//! double counting" lists all five); it holds the `Irregular` signatures of
+//! CONVENTIONS §10 and specular paths outside a clipping aperture. With
+//! apertures built as geometry, an opaque non-clear zone and stop
 //! plates, specular light outside the clipping apertures is rare by
 //! construction; `Sneak` mostly holds single stray reflections (for example
 //! the front-surface reflection of a Mangin mirror or a tilted window) and

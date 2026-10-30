@@ -84,25 +84,56 @@ GPU implementation details.**
 
 ## Solvers and double counting
 
-All four solvers use the same surfaces, materials, coatings, sign conventions
-and radiometric units. Light reaching the detector is partitioned into disjoint
-**path classes**:
+All solvers use the same surfaces, materials, coatings, sign conventions
+and radiometric units. Light reaching the detector is partitioned into five
+disjoint **path classes**. The stray solver assigns them from a path's
+history, first match wins in the order Scatter, Mechanical, Sneak (outside
+an aperture), Ghost, Primary, Sneak (any other):
 
 | class | definition | owned by |
 |---|---|---|
-| `Primary` | the designed sequential path, transmitted at every optical surface | sequential / wave |
-| `Ghost(k)` | purely specular paths through the optical surfaces with ≥2 reflections | ghost |
-| `Scatter` | any path with at least one scattering event | stray |
-| `Mechanical` | any path touching non-optical geometry without scattering (specular reflection off barrels etc.) | stray |
+| `Scatter` | at least one scattering (BSDF) event, on any surface | stray |
+| `Mechanical` | no scatter, but a specular interaction with non-optical geometry (lens edges and flats, mounts, stop plates, barrels, baffles) | stray |
+| `Sneak` | purely specular on optical surfaces, but crossing or reflecting off one outside its clipping aperture, or out of the sequential order with fewer than two ghost reflections (e.g. a single reflection off a tilted window); the `Irregular` signatures of CONVENTIONS §10 | stray |
+| `Ghost(k)` | purely specular, inside every clipping aperture, `k ≥ 2` reflections at refracting interfaces (or the sensor), in the sequential order the ghost reflections imply | ghost solver, for the paths its run covered; otherwise stray |
+| `Primary` | the designed path: the designed interaction (transmission, or reflection at a mirror) at every optical surface in order, inside every clipping aperture, not obstructed by other geometry | sequential / wave |
 
-The stray-light solver tags each Monte-Carlo path and, when run alongside the
-ghost solver, drops the purely specular optical-surface classes. The precise rule
-(path signatures, ghosts the ghost run did not cover handed to stray, the
-`Irregular` class, identical apertures) is CONVENTIONS §10, which takes
-precedence over this table. The ghost
-solver uses the same coating reflectance `R(λ, θ, pol)` that the primary path
-uses for its transmittance `T`, so `T + R + A = 1` holds at every interface
-(tested).
+The precise rule, with path signatures, is CONVENTIONS §10; the class
+tables of `docs/STRAY.md` and `docs/GHOST.md` §2 implement it. When the
+stray solver runs alongside the ghost solver it drops the `Ghost` class
+(`exclude_ghost_class`), so
+
+```text
+detected = Primary (sequential) + Ghost (ghost solver) + Scatter + Mechanical + Sneak (stray)
+```
+
+with nothing counted twice (tested on a coated singlet and Cooke triplet,
+`mklight-stray/tests/partition.rs`). This needs both solvers to clip at
+identical apertures: the stray scene takes its clear apertures from
+`mklight_ghost::clip_apertures`, the ghost solver's own definition, and
+`StraySystem::check_ghost_coverage` (or `ghost_coverage` in the stray
+analysis settings) refuses a ghost run that clipped differently. Two
+caveats: the stray solver drops the whole `Ghost` class, so ghost orders the
+ghost run did not trace (beyond its maximum order, or filtered out) are
+counted by neither solver, although CONVENTIONS §10 assigns them to the
+stray solver; and a purely sequential `Primary` overcounts light that
+non-sequential geometry obstructs (use the obstruction-checked reference,
+`docs/STRAY.md`). The ghost solver uses the same coating reflectance
+`R(λ, θ, pol)` that the primary path uses for its transmittance `T`, so
+`T + R + A = 1` holds at every interface (tested).
+
+## Structural validation
+
+`OpticalSystem::validation_issues` lists every structural problem of a
+model with a stable code and the JSON path of the value
+(CONVENTIONS §13); `validate` (and so every `Snapshot`) rejects the first.
+Model JSON (and settings objects such as `SemiDiameterSettings` and
+`AgfOptions`) rejects unknown keys, so a misspelt key is an error rather
+than a silently ignored setting. Deliberately permissive: the project
+envelope keeps unknown top-level keys (data added by a newer application at
+the same schema version survives a round trip), `RunInfo` and other result
+documents (output, read by front ends of other versions), and glass-catalog
+JSON (`Glass`, `GlassCatalog`: data that other tools may annotate).
 
 ## Precision on the GPU
 

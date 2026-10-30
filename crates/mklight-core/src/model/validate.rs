@@ -977,6 +977,41 @@ mod tests {
         );
     }
 
+    /// The macOS app's JSON fixtures (written by `examples/dump_fixtures`
+    /// before unknown keys were rejected) still load, and the engine's
+    /// verdicts recorded in `validation_cases.json` still hold.
+    #[test]
+    fn app_fixtures_still_load() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/macos/Tests/MKLightModelTests/Fixtures");
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+        for f in ["empty.json", "cooke_triplet.json", "kitchen_sink.json"] {
+            let s: OpticalSystem = serde_json::from_str(&read(f)).unwrap();
+            assert_eq!(s.validation_issues(), vec![], "{f}");
+        }
+        let v: Vec<OpticalSystem> = serde_json::from_str(&read("variants.json")).unwrap();
+        assert!(v.len() >= 4);
+        let p: Vec<ParamPath> = serde_json::from_str(&read("param_paths.json")).unwrap();
+        assert!(!p.is_empty());
+        #[derive(Deserialize)]
+        struct Case {
+            name: String,
+            system: OpticalSystem,
+            error: Option<String>,
+        }
+        let cases: Vec<Case> = serde_json::from_str(&read("validation_cases.json")).unwrap();
+        assert!(cases.len() >= 20);
+        for c in cases {
+            let now = c.system.validate();
+            assert_eq!(now.is_err(), c.error.is_some(), "{}: {now:?}", c.name);
+            if let (Err(e), Some(old)) = (now, c.error) {
+                // Same reason, now with a code and a path.
+                let why = old.rsplit(": ").next().unwrap();
+                assert!(e.to_string().ends_with(why), "{}: {e} vs {old}", c.name);
+            }
+        }
+    }
+
     #[test]
     fn unknown_keys_are_rejected_on_load() {
         let good = serde_json::to_value(samples::double_gauss()).unwrap();
