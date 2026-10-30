@@ -335,3 +335,132 @@ pub fn xval_systems() -> Vec<(String, OpticalSystem)> {
     v.push(("absorbing triplet".into(), absorbing_triplet()));
     v
 }
+
+/// Result of [`f64_path`].
+#[derive(Clone, Copy, Debug)]
+pub struct F64Path {
+    /// Final point and direction in the last surface's frame.
+    pub pos: mklight_core::Vec3,
+    pub dir: mklight_core::Vec3,
+    pub opl: f64,
+    /// Unpolarised interface factors (bare Fresnel, mirrors 1) times bulk
+    /// transmittance.
+    pub weight: f64,
+}
+
+/// An independent f64 implementation of a path program, for tests: the
+/// frames of `ResolvedSystem` (forward `to_next`, backward its inverse; for
+/// an object at infinity surface 0 → 1 is surface 1's frame), the reference
+/// intersection and interaction primitives of `mklight_trace`, and core
+/// Fresnel coefficients. `None` when the ray fails.
+pub fn f64_path(
+    sys: &ResolvedSystem,
+    start: u32,
+    pos: mklight_core::Vec3,
+    dir: mklight_core::Vec3,
+    wl: usize,
+    steps: &[crate::batch::PathStep],
+) -> Option<F64Path> {
+    use crate::batch::StepMode;
+    use mklight_core::materials::coating::fresnel;
+    use mklight_trace::interact::{reflect, refract};
+    use mklight_trace::surface::{IntersectSettings, intersect};
+    let frame = |j: usize| -> mklight_core::math::Frame {
+        match sys.surfaces[j].to_next {
+            Some(f) => f,
+            None => sys.surfaces[1].frame,
+        }
+    };
+    let n_of = |gap: usize| sys.surfaces[gap].n_after[wl];
+    let (mut p, mut d) = (pos, dir);
+    let (mut opl, mut weight) = (0.0f64, 1.0f64);
+    let mut cur = start as usize;
+    for st in steps {
+        let s = st.surface as usize;
+        if st.backward {
+            let f = frame(s);
+            p = f.to_global_point(p);
+            d = f.to_global_dir(d);
+        } else {
+            let f = frame(cur);
+            p = f.to_local_point(p);
+            d = f.to_local_dir(d);
+        }
+        let gap = if st.backward { s } else { s - 1 };
+        let n1 = n_of(gap);
+        let n2 = if st.backward {
+            n_of(s.saturating_sub(1))
+        } else {
+            n_of(s)
+        };
+        let surf = &sys.surfaces[s];
+        let hit = intersect(&surf.shape, p, d, &IntersectSettings::default()).ok()?;
+        let t = hit.t_transfer + hit.t_surface;
+        opl += n1 * t;
+        let alpha = if gap == 0 && sys.object_at_infinity {
+            0.0
+        } else {
+            surf_alpha(sys, gap, wl)
+        };
+        weight *= (-alpha * t).exp();
+        p = hit.point;
+        if !surf.passes_aperture(p.x, p.y)
+            && !matches!(surf.shape, SurfaceShape::CoordinateBreak)
+        {
+            return None;
+        }
+        let image = s == sys.image_index();
+        let cb = matches!(surf.shape, SurfaceShape::CoordinateBreak);
+        let mirror = surf.is_mirror();
+        let reflect_here = match st.mode {
+            StepMode::Reflect => true,
+            StepMode::Sequential => mirror,
+            StepMode::Transmit => false,
+        };
+        if cb || (!reflect_here && (image || surf.interaction == Interaction::Dummy)) {
+        } else if reflect_here {
+            let (k, c) = reflect(d, hit.normal);
+            d = k;
+            weight *= if mirror { 1.0 } else { fresnel(n1, n2, c).r_unpolarized() };
+        } else {
+            let (k, c) = refract(d, hit.normal, n1, n2)?;
+            d = k;
+            weight *= if mirror { 0.0 } else { fresnel(n1, n2, c).t_unpolarized() };
+        }
+        cur = s;
+    }
+    Some(F64Path {
+        pos: p,
+        dir: d,
+        opl,
+        weight,
+    })
+}
+
+fn surf_alpha(sys: &ResolvedSystem, gap: usize, wl: usize) -> f64 {
+    sys.surfaces[gap].alpha_after[wl]
+}
+
+/// A tilted, decentred N-BK7 plate (10 mm) in air with an image plane
+/// 20 mm behind it, for ghost-path tests.
+pub fn plate(tilted: bool) -> OpticalSystem {
+    let mut s = OpticalSystem::new_empty();
+    s.name = "plate".into();
+    s.aperture = ApertureSpec::EntrancePupilDiameter { value: 10.0 };
+    s.surfaces = vec![
+        surf(0, SurfaceShape::Plane, f64::INFINITY, MaterialRef::Air),
+        surf(1, SurfaceShape::Plane, 10.0, MaterialRef::glass("N-BK7")),
+        surf(2, SurfaceShape::sphere(-200.0), 20.0, MaterialRef::Air),
+        surf(3, SurfaceShape::Plane, 0.0, MaterialRef::Air),
+    ];
+    if tilted {
+        s.surfaces[1].placement = Some(Placement {
+            decenter_y: 0.4,
+            tilt_x: 7.0,
+            tilt_y: -3.0,
+            ..Default::default()
+        });
+    }
+    s.stop = 1;
+    s
+}
