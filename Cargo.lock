@@ -299,8 +299,8 @@ name = "mklight-stray"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "blake3",
  "mklight-core",
- "mklight-trace",
  "rayon",
  "serde",
  "serde_json",
