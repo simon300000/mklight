@@ -56,7 +56,7 @@ GPU implementation details.**
 | `mklight-engine` | Facade used by every front end: `Session` (project + undo-free immutable snapshots), the async job scheduler, analysis dispatch, backend selection, project file I/O. |
 | `mklight-ffi` | C ABI for native apps. Structured data crosses as versioned JSON; bulk data as typed binary buffers. |
 | `mklight-py` | Python bindings (pyo3/maturin). |
-| `mklight-cli` | Headless command line (`mklight analyze`, `mklight optimize`, `mklight validate`). |
+| `mklight-cli` | Headless command line `mklight` over the engine facade: projects (`new`, `validate`, `show`, `migrate`, `set`), catalogs, `analyses`/`run` over the analysis registry, reference `trace` and `paraxial`; JSON or tables, documented exit codes (`docs/CLI.md`). |
 
 ## Apps (`apps/`)
 
