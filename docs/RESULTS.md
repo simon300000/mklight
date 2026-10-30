@@ -109,7 +109,11 @@ applies when they name none (`backend.requested` = `default:<id>`).
 * `auto` uses the first available GPU backend whose capabilities list the
   analysis (those with `gpu_path: true`), else the CPU reference;
   `backend.fallback_reason` then says why (no GPU path, no device). This is
-  not a warning.
+  not a warning. `auto` also keeps ray grids smaller than
+  `AUTO_MIN_GPU_RAYS` (65 536 rays: fields × wavelengths × pupil points) on
+  the CPU reference, where the GPU's fixed costs outweigh the trace it
+  saves (reason "below the GPU threshold", no warning). An explicitly named
+  GPU backend is used for any grid size.
 * An explicit GPU backend that is unavailable or has no path for the
   analysis is an error, or with `allow_backend_fallback` the CPU reference
   plus a `run_info` warning.
@@ -128,8 +132,20 @@ applies when they name none (`backend.requested` = `default:<id>`).
   rays with the f64 reference, the GPU traces them (f32 with double-float
   geometry), and the reduction is the same code as on the CPU, so results
   agree within the CONVENTIONS §7 budget (tested on every sample system, on
-  the Metal device when present and on the CPU-f32 emulation everywhere).
-  GPU hit points are f32 values widened to f64 in the buffers.
+  the Metal device when present and on the CPU-f32 emulation everywhere:
+  hit positions and directions, spot statistics, MTF, encircled energy and
+  best focus). GPU hit points are f32 values widened to f64 in the buffers.
+* **Speed.** Only the trace runs on the device; the host generates (and,
+  with real ray aiming, aims) every ray with the f64 reference, in parallel
+  blocks of 65 536 rays with cancellation and progress between blocks, and
+  the reductions are the CPU's. Measured on Apple-silicon Metal with
+  double_gauss (best of 9, warm qualification cache): `ray_grid` at
+  98 829 rays 7.4 ms against 10.9 ms on the CPU, at 1 085 409 rays 67 ms
+  against 105 ms; at 11 349 rays the CPU is faster (1.3 ms against 2.7 ms),
+  hence the `auto` threshold. `spot_diagram` gains less (345 ms against
+  375 ms at 1 085 409 rays): its time goes mostly to the shared reduction
+  and result assembly. Moving ray aiming and the reductions to the device
+  is future work.
 * `MKLIGHT_DISABLE_GPU=1` makes every GPU backend unavailable.
 
 ## 6. Cross-solver conventions

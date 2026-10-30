@@ -21,6 +21,7 @@ use mklight_gpu::xval::XvalSettings;
 const POSITION_MM: f64 = 2e-5;
 const RMS_REL: f64 = 5e-3;
 const RMS_ABS_MM: f64 = 2e-5;
+const MTF_ABS: f64 = 2e-3;
 
 fn engine_with(p: Option<GpuProvider>) -> Engine {
     let e = Engine::new(EngineConfig {
@@ -105,10 +106,84 @@ fn cross_check(e: &Engine, backend: &str) {
                 assert!((x - y).abs() <= 2e-6, "{name}: direction {x} vs {y}");
             }
         }
-        // Energy analyses through the same path.
-        for a in ["encircled_energy", "geometric_mtf"] {
-            let g = run_on(&s, a, json!({"rings": 6}), Some(b.clone()));
+        // Energy analyses and best focus through the same path, against the
+        // reference: MTF ≤ 2e-3 absolute (CONVENTIONS §7), encircled-energy
+        // fractions to the same budget (or a few rays' weight, below), radii
+        // and merits to the RMS budget, the best defocus to 1e-4 mm.
+        let set = json!({"rings": 6});
+        let pair = |a: &str, set: &Value| {
+            let c = run_on(&s, a, set.clone(), None);
+            let g = run_on(&s, a, set.clone(), Some(b.clone()));
             assert_eq!(g.run_info.backend, backend, "{a}");
+            assert_eq!(c.run_info.backend, "cpu_reference", "{a}");
+            (c.json, g.json)
+        };
+        let radius_ok = |x: f64, y: f64| {
+            (x.is_nan() && y.is_nan()) || (x - y).abs() <= (RMS_REL * x.abs()).max(RMS_ABS_MM)
+        };
+        let (c, g) = pair("geometric_mtf", &set);
+        assert_eq!(c["frequencies"], g["frequencies"], "{name}");
+        let mut worst = 0.0f64;
+        for (cc, gc) in c["curves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(g["curves"].as_array().unwrap())
+        {
+            for (x, y) in cc["modulation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(gc["modulation"].as_array().unwrap())
+            {
+                worst = worst.max((num(x) - num(y)).abs());
+            }
+        }
+        assert!(worst <= MTF_ABS, "{name}: MTF differs by {worst}");
+        // Encircled energy is a step function of the radius: a ray within
+        // the position budget of a radius sample may cross it, and a ring of
+        // symmetric rays crosses together. Allow a few rays' weight.
+        let (c, g) = pair("encircled_energy", &json!({"rings": 24}));
+        // The radius axis ends at the largest GEO radius, itself within the
+        // RMS budget.
+        for (x, y) in c["radius"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(g["radius"].as_array().unwrap())
+        {
+            assert!(radius_ok(num(x), num(y)), "{name} radius: {x} vs {y}");
+        }
+        for (cf, gf) in c["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(g["fields"].as_array().unwrap())
+        {
+            assert_eq!(cf["rays_arrived"], gf["rays_arrived"], "{name}");
+            let step = MTF_ABS.max(8.0 / num(&cf["rays_arrived"]));
+            for key in ["encircled", "ensquared"] {
+                for (x, y) in cf[key]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .zip(gf[key].as_array().unwrap())
+                {
+                    let d = (num(x) - num(y)).abs();
+                    assert!(d <= step, "{name} {key}: {x} vs {y}");
+                }
+            }
+            for key in ["r50", "r80", "r90", "half_width80"] {
+                let (x, y) = (num(&cf[key]), num(&gf[key]));
+                assert!(radius_ok(x, y), "{name} {key}: {x} vs {y}");
+            }
+        }
+        let (c, g) = pair("best_focus", &set);
+        let (x, y) = (num(&c["defocus"]), num(&g["defocus"]));
+        assert!((x - y).abs() <= 1e-4, "{name} best defocus: {x} vs {y}");
+        for key in ["merit", "merit_at_zero"] {
+            let (x, y) = (num(&c[key]), num(&g[key]));
+            assert!(radius_ok(x, y), "{name} {key}: {x} vs {y}");
         }
     }
 }
@@ -145,9 +220,26 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     // `auto` takes the first available GPU in registration order: Metal
     // where it qualifies as a device, else the emulation.
     let s = session(&e, samples::singlet());
-    let r = run_on(&s, "spot_diagram", json!({"rings": 3}), Some(Backend::Auto));
+    // Large enough grids only (AUTO_MIN_GPU_RAYS); smaller ones stay on the
+    // reference, a deliberate choice reported without a warning.
+    let big = json!({"rings": 150});
+    let r = run_on(&s, "spot_diagram", big.clone(), Some(Backend::Auto));
     assert_eq!(r.backend.requested, "auto");
     assert_ne!(r.run_info.backend, "cpu_reference");
+    assert_eq!(r.run_info.precision, Precision::F32Gpu);
+    let r = run_on(&s, "spot_diagram", json!({"rings": 3}), Some(Backend::Auto));
+    assert_eq!(r.run_info.backend, "cpu_reference");
+    assert_eq!(r.run_info.precision, Precision::F64Reference);
+    let why = r.backend.fallback_reason.clone().unwrap();
+    assert!(why.contains("below the GPU threshold"), "{why}");
+    assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
+    // An explicit GPU request is honoured for any size.
+    let r = run_on(
+        &s,
+        "spot_diagram",
+        json!({"rings": 3}),
+        Some(Backend::Gpu("cpu_f32".into())),
+    );
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
     let r = run_on(&s, "seidel", Value::Null, Some(Backend::Auto));
     assert_eq!(r.run_info.backend, "cpu_reference");
@@ -160,9 +252,11 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
     // As the engine default.
     e.set_default_backend(Backend::Auto).unwrap();
-    let r = run_on(&s, "ray_grid", json!({"rings": 2}), None);
+    let r = run_on(&s, "ray_grid", big, None);
     assert_eq!(r.backend.requested, "default:auto");
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
+    let r = run_on(&s, "ray_grid", json!({"rings": 2}), None);
+    assert_eq!(r.run_info.precision, Precision::F64Reference);
     // An explicit GPU request for an analysis without a GPU path fails
     // (or falls back when allowed, with a warning).
     let mut req = AnalysisRequest::new("seidel", Value::Null);
@@ -224,4 +318,60 @@ fn cancelling_a_gpu_job_cancels_instead_of_falling_back() {
     ctx.cancel.cancel();
     let err = s.run_analysis(&req, &ctx).unwrap_err();
     assert!(err.is_cancelled(), "{err}");
+}
+
+/// Cancelling while the host generates a large grid's rays (after
+/// qualification; generation reports progress per block) stops the job
+/// promptly with `Cancelled`, never a CPU fallback result.
+#[test]
+fn cancelling_a_gpu_job_mid_run_stops_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    let e = engine_with(Some(GpuProvider::emulation()));
+    let s = session(&e, samples::double_gauss());
+    let mut req = AnalysisRequest::new("spot_diagram", json!({"rings": 400}));
+    req.backend = Some(Backend::Gpu("cpu_f32".into()));
+    let ctx = JobContext::new();
+    let (cancel, progress) = (ctx.cancel.clone(), ctx.progress.clone());
+    let fired = Arc::new(AtomicBool::new(false));
+    let cancelled_at = Arc::new(std::sync::Mutex::new(None::<Instant>));
+    let watcher = {
+        let (fired, at) = (fired.clone(), cancelled_at.clone());
+        std::thread::spawn(move || {
+            // Cancel once generation has reported progress twice (it reports
+            // per block, so a large grid's generation is observable).
+            let t0 = Instant::now();
+            let mut first = None;
+            while t0.elapsed() < Duration::from_secs(120) {
+                let f = progress.fraction();
+                if !progress.stage().contains("generating rays") {
+                    std::thread::sleep(Duration::from_micros(200));
+                    continue;
+                }
+                match first {
+                    None => first = Some(f),
+                    Some(f0) if f > f0 => {
+                        *at.lock().unwrap() = Some(Instant::now());
+                        cancel.cancel();
+                        fired.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    _ => {}
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        })
+    };
+    let err = s.run_analysis(&req, &ctx).unwrap_err();
+    let done = Instant::now();
+    watcher.join().unwrap();
+    assert!(err.is_cancelled(), "{err}");
+    assert!(
+        fired.load(Ordering::SeqCst),
+        "the cancel did not land mid-run"
+    );
+    let latency = done - cancelled_at.lock().unwrap().unwrap();
+    // One generation block (8192 rays) is milliseconds; allow for a loaded
+    // machine.
+    assert!(latency < Duration::from_secs(5), "{latency:?}");
 }

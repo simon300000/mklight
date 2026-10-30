@@ -329,6 +329,7 @@ dependencies = [
  "mklight-metal",
  "mklight-stray",
  "mklight-trace",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror",

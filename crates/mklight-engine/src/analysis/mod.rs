@@ -96,7 +96,8 @@ pub struct BackendReport {
     /// Why the requested (or automatically preferred) backend was not used:
     /// unavailable, no GPU path for the analysis, or failed precision
     /// qualification. In `run_info.warnings` too, except when an `auto` or
-    /// default preference met an analysis without a GPU path.
+    /// default preference met an analysis without a GPU path or a ray grid
+    /// below `analysis::gpu::AUTO_MIN_GPU_RAYS`.
     pub fallback_reason: Option<String>,
     /// The precision qualification of a GPU backend for this snapshot
     /// (`mklight_gpu::xval::Qualification`), when one ran.
@@ -110,9 +111,14 @@ pub struct BackendUse {
     pub id: String,
     pub precision: Precision,
     pub device: Option<String>,
-    /// Set when the selected GPU was not used; becomes a `RunInfo` warning.
+    /// Set when the selected GPU was not used; becomes a `RunInfo` warning
+    /// unless `deliberate`.
     pub fallback_reason: Option<String>,
     pub qualification: Option<Value>,
+    /// The fallback is a policy choice of `auto` (for example a grid too
+    /// small to gain from the GPU), not a problem: it is reported in
+    /// `BackendReport::fallback_reason` only, not as a warning.
+    pub deliberate: bool,
 }
 
 /// A finished analysis: result plus reproducibility metadata.
@@ -377,10 +383,12 @@ pub fn run_analysis(
         backend.device = u.device;
         backend.qualification = u.qualification;
         if let Some(r) = u.fallback_reason {
-            warnings.push(format!(
-                "backend '{}' not used ({r}); computed with the CPU f64 reference",
-                input.backend.id
-            ));
+            if !u.deliberate {
+                warnings.push(format!(
+                    "backend '{}' not used ({r}); computed with the CPU f64 reference",
+                    input.backend.id
+                ));
+            }
             backend.fallback_reason = Some(r);
         }
     }

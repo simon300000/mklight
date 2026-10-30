@@ -3,7 +3,8 @@
 //! The analyses in [`GPU_ANALYSES`] trace a `fields × wavelengths × pupil`
 //! grid plus one chief ray per (field, wavelength) and reduce the image
 //! hits. On a GPU backend the host generates and aims the rays with the f64
-//! reference (`SequentialTracer::generate`), the device traces them with the
+//! reference (`SequentialTracer::generate`, in parallel blocks with
+//! cancellation and progress between them), the device traces them with the
 //! sequential trace kernel (clipped; chief rays unclipped, as
 //! `SequentialTracer::chief`), and the hits are reduced by exactly the code
 //! the CPU path uses (`mklight_analysis::spot::FieldRays::from_image_rays`
@@ -25,10 +26,11 @@ use mklight_core::job::Precision;
 use mklight_core::{JobContext, MkError, MkResult, Vec3};
 use mklight_gpu::layout::MAX_WAVELENGTHS;
 use mklight_gpu::{
-    ComputeBackend, Job, JobOutput, PackOptions, PackedSystem, Radiometry, RayBatch, RecordMode,
-    TraceRequest, TraceResult,
+    ComputeBackend, Df32, Job, JobOutput, PackOptions, PackedSystem, Radiometry, RayBatch,
+    RecordMode, TraceRequest, TraceResult,
 };
 use mklight_trace::{SemiDiameterSettings, SequentialTracer};
+use rayon::prelude::*;
 
 use super::{AnalysisInput, BackendUse};
 use crate::error::EngineResult;
@@ -42,6 +44,19 @@ pub const GPU_ANALYSES: &[&str] = &[
     "best_focus",
     "ray_grid",
 ];
+
+/// Smallest ray grid (`fields × wavelengths × pupil`) that `auto` traces on
+/// a GPU; smaller grids run on the CPU reference (a deliberate fallback,
+/// reported in `BackendReport::fallback_reason` without a warning). An
+/// explicitly requested GPU backend is used for any size.
+///
+/// The GPU path moves only the trace to the device: the host still
+/// generates and aims every ray with the f64 reference (in parallel), and
+/// packing, upload and two dispatches cost about 1–2 ms. Measured on
+/// Apple-silicon Metal with double_gauss (`ray_grid`), the CPU reference is
+/// faster at 11 k rays and the GPU at 99 k (docs/RESULTS.md §5), so below
+/// this size `auto` would gain nothing by switching to f32 results.
+pub const AUTO_MIN_GPU_RAYS: usize = 1 << 16;
 
 /// Image hits of a ray grid, from any backend.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +104,75 @@ fn hit(r: &TraceResult, i: usize) -> Option<ImageHit> {
     })
 }
 
+/// Rays per parallel generation block (cancellation and progress between
+/// blocks).
+const GEN_BLOCK: usize = 1 << 16;
+
+/// Generate (and aim) the grid rays of one wavelength chunk with the f64
+/// reference, in parallel blocks, straight into the batch's double-float
+/// planes (as `RayBatch::push_f64`). Batch ray `i` is grid item `i`, `(field,
+/// grid wavelength, pupil)` in row-major order, so the batch, and hence the
+/// result, does not depend on the thread count. A ray that cannot be
+/// generated is traced as a placeholder (the axial ray) and flagged `false`
+/// in the returned mask; its result is ignored.
+fn generate_grid(
+    tracer: &SequentialTracer,
+    fields: &[usize],
+    grid_wls: &[(u32, usize, usize)],
+    pupil: &[[f64; 2]],
+    ctx: &JobContext,
+) -> MkResult<(RayBatch, Vec<bool>)> {
+    let (ng, np) = (grid_wls.len(), pupil.len());
+    let n = fields.len() * ng * np;
+    let mut b = RayBatch::with_capacity(n);
+    let mut ok = Vec::with_capacity(n);
+    let mut start = 0;
+    while start < n {
+        ctx.check()?;
+        let end = (start + GEN_BLOCK).min(n);
+        // Per ray: [x, y, z, l, m, n] as (hi, lo) pairs, and the packed
+        // wavelength.
+        let recs: Vec<(Option<[Df32; 6]>, u32)> = (start..end)
+            .into_par_iter()
+            .map(|i| {
+                let (fi, gi, pi) = (i / (ng * np), (i / np) % ng, i % np);
+                let (pw, wl, _) = grid_wls[gi];
+                let pp = pupil[pi];
+                let r = tracer
+                    .generate(tracer.field(fields[fi]), wl, pp[0], pp[1])
+                    .ok()
+                    .map(|g| {
+                        let (p, d) = (g.ray.pos, g.ray.dir);
+                        [p.x, p.y, p.z, d.x, d.y, d.z].map(Df32::from_f64)
+                    });
+                (r, pw)
+            })
+            .collect();
+        let axial = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0].map(Df32::from_f64);
+        let planes: [(&mut Vec<f32>, &mut Vec<f32>); 6] = [
+            (&mut b.x, &mut b.x_lo),
+            (&mut b.y, &mut b.y_lo),
+            (&mut b.z, &mut b.z_lo),
+            (&mut b.l, &mut b.l_lo),
+            (&mut b.m, &mut b.m_lo),
+            (&mut b.n, &mut b.n_lo),
+        ];
+        for (k, (hi, lo)) in planes.into_iter().enumerate() {
+            let v = |r: &(Option<[Df32; 6]>, u32)| r.0.as_ref().unwrap_or(&axial)[k];
+            hi.par_extend(recs.par_iter().map(|r| v(r).hi));
+            lo.par_extend(recs.par_iter().map(|r| v(r).lo));
+        }
+        b.wavelength.par_extend(recs.par_iter().map(|r| r.1));
+        ok.par_extend(recs.par_iter().map(|r| r.0.is_some()));
+        start = end;
+        ctx.report(start as f64 / n as f64, "generating rays");
+    }
+    b.opl_hi = vec![0.0; n];
+    b.opl_lo = vec![0.0; n];
+    ctx.check()?;
+    Ok((b, ok))
+}
+
 /// Trace a ray grid on `backend` (module docs). Wavelengths are packed in
 /// chunks of at most `MAX_WAVELENGTHS`, one upload each.
 pub fn trace_grid_gpu(
@@ -126,13 +210,10 @@ pub fn trace_grid_gpu(
         )?;
         // Rays (only the grid's wavelengths) and chiefs (all of the chunk),
         // with their slot in `out`.
-        let mut rays = RayBatch::with_capacity(nf * chunk.len() * np);
-        let mut ray_slot = Vec::new();
         let mut chiefs = RayBatch::with_capacity(nf * chunk.len());
         let mut chief_slot = Vec::new();
-        sub.report(0.05, "generating rays");
+        sub.report(0.0, "generating rays");
         for (fi, &f) in fields.iter().enumerate() {
-            sub.check()?;
             let field = tracer.field(f);
             for (pw, &wl) in chunk.iter().enumerate() {
                 if let Ok(g) = tracer.generate(field, wl, 0.0, 0.0) {
@@ -141,18 +222,20 @@ pub fn trace_grid_gpu(
                     let c = cw.iter().position(|&w| w == wl).unwrap_or(0);
                     chief_slot.push(fi * nc + c);
                 }
-                let Some(wi) = wls.iter().position(|&w| w == wl) else {
-                    continue;
-                };
-                for (pi, pp) in pupil.iter().enumerate() {
-                    if let Ok(g) = tracer.generate(field, wl, pp[0], pp[1]) {
-                        let (p, d) = (g.ray.pos, g.ray.dir);
-                        rays.push_f64([p.x, p.y, p.z], [d.x, d.y, d.z], pw as u32);
-                        ray_slot.push((fi * nw + wi) * np + pi);
-                    }
-                }
             }
         }
+        // The grid's wavelengths in this chunk: (packed index, system index,
+        // position in `wls`).
+        let grid_wls: Vec<(u32, usize, usize)> = chunk
+            .iter()
+            .enumerate()
+            .filter_map(|(pw, &wl)| {
+                let wi = wls.iter().position(|&w| w == wl)?;
+                Some((pw as u32, wl, wi))
+            })
+            .collect();
+        let (rays, generated) =
+            generate_grid(tracer, fields, &grid_wls, pupil, &sub.subrange(0.0, 0.3))?;
         let handle = backend.upload_system(&packed)?;
         let request = |b: RayBatch, clip: bool| {
             let mut r = TraceRequest::new(handle, b, 0, image);
@@ -185,8 +268,12 @@ pub fn trace_grid_gpu(
         let _ = backend.release_systems(handle);
         let (g, c) = traced?;
         if let Some(g) = g {
-            for (i, &slot) in ray_slot.iter().enumerate() {
-                out.rays[slot] = hit(&g, i);
+            // Batch ray i is item (field, grid wavelength, pupil) of the
+            // chunk's grid; its slot in `out` uses the position in `wls`.
+            let ng = grid_wls.len();
+            for (i, _) in generated.iter().enumerate().filter(|(_, ok)| **ok) {
+                let (fi, gi, pi) = (i / (ng * np), (i / np) % ng, i % np);
+                out.rays[(fi * nw + grid_wls[gi].2) * np + pi] = hit(&g, i);
             }
         }
         if let Some(c) = c {
@@ -280,7 +367,23 @@ pub fn try_gpu_grid(
         device: None,
         fallback_reason: Some(reason),
         qualification: q,
+        deliberate: false,
     };
+    let rays = fields.len() * wls.len() * pupil.len();
+    let auto = matches!(input.requested_backend.as_str(), "auto" | "default:auto");
+    if auto && rays < AUTO_MIN_GPU_RAYS {
+        input.report_backend(BackendUse {
+            deliberate: true,
+            ..cpu(
+                format!(
+                    "auto: a grid of {rays} rays is below the GPU threshold of \
+                     {AUTO_MIN_GPU_RAYS}; the CPU reference is as fast there"
+                ),
+                None,
+            )
+        });
+        return Ok(Traced::Cpu);
+    }
     let key = format!(
         "{}:{}",
         input.snapshot.hash().to_hex(),
@@ -312,6 +415,7 @@ pub fn try_gpu_grid(
                 device: Some(dev.device_name()),
                 fallback_reason: None,
                 qualification: qv,
+                deliberate: false,
             });
             Ok(Traced::Gpu(h))
         }
