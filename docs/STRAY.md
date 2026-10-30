@@ -171,13 +171,31 @@ maps then hold `Scatter + Mechanical + Sneak` plus the `Ghost` paths the
 ghost run did not trace (`EnergyReport::detected_uncovered_ghost`: orders
 above its `max_reflections`, paths it filtered out; a path whose signature
 overflowed is never covered, so a coverage with more reflections than a
-signature keeps is refused), and
+signature keeps is refused):
 
 ```text
 detected = Primary (sequential) + Ghost (ghost solver) + stray total
 ```
 
-holds path by path, with the obstruction-checked `Primary` (above). An
+The ownership decision is made at each detection, before accumulating a
+source ray's split children. `ChunkTally` adds uncovered ghosts to the owned
+pixel, flux and image-moment slots. Covered and uncovered ghost fluxes have
+separate per-source-ray second moments (`detected_covered_ghost_std_error`,
+`detected_uncovered_ghost_std_error`); their errors and the owned error retain
+all split-path covariance. No sum of signature errors is used.
+
+The analysis's `Ghost` map row contains **only uncovered ghosts** when
+coverage is supplied with exclusion. All map rows sum to `total_irradiance`,
+which integrates to `stray_flux`. The diagnostic `totals` still contains the
+whole Ghost class; its `included` flag means the whole class is selected,
+not that no subset can be owned. `classes` likewise describes whole-class
+selection. Strongest signatures follow per-path ownership.
+The engine adapter uses this same API; `stray_light` result version 2 removes
+`mapped_stray_flux`, `mapped_stray_std_error` and `ambiguous_ghost_flux`.
+A coverage longer than the stored signature is rejected at the boundary,
+rather than claiming ambiguous ownership.
+
+The identity holds path by path with the obstruction-checked `Primary`. An
 explicit ghost solver that ignores non-sequential geometry overcounts
 obstructed ghost paths in the same way.
 
@@ -251,6 +269,11 @@ holds to rounding. `mc_adjustment` (net Russian-roulette and reweighting
 change) has expectation zero; `EnergyReport::mc_adjustment_std_error` is its
 error bar, so *Σ classes = emitted − absorbed − escaped* is tested within
 the Monte-Carlo error.
+
+`tests/partition.rs` checks class/coverage conservation, map integrals,
+seed and thread-count reproducibility, and the high-reflectance ghost
+cross-check. The tally's three-source-ray known-answer test checks covered,
+uncovered and owned pixel/flux errors with correlated split children.
 
 ## Cross-validation (tests)
 

@@ -14,7 +14,11 @@
 //! can enter outside the entrance pupil (a reflection before the stop may
 //! still pass the stop afterwards), so the overfilled beam is traced and
 //! the model's apertures ([`ClipMode`](crate::ClipMode)) decide what
-//! survives, for the primary path exactly as for the ghosts.
+//! survives, for the primary path exactly as for the ghosts. Cells whose
+//! centre and corners disagree on survival or on-map detection are split
+//! into four children, up to four levels; each child carries one quarter
+//! of its parent's flux. This resolves clipping boundaries without giving
+//! every cell the weight of its centre's binary acceptance.
 //!
 //! Each ray carries the flux `w_f w_λ · h²/π`: the field and wavelength
 //! weights (normalised over the selection; wavelength weights include the
@@ -199,6 +203,8 @@ pub struct FieldIrradiance {
     pub peak: f64,
     pub centroid: [f64; 2],
     pub rms_radius: f64,
+    /// Quadrature leaf samples (including zero-weight misses, excluding
+    /// corner probes); refinement makes their cell areas unequal.
     pub rays_traced: usize,
     pub rays_detected: usize,
 }
@@ -239,7 +245,8 @@ pub struct GhostIrradiance {
 /// One prepared starting ray.
 #[derive(Clone, Copy, Debug)]
 struct StartRay {
-    ray: Ray,
+    ray: Option<Ray>,
+    pupil: [f64; 2],
     wl: usize,
     weight: f64,
 }
@@ -318,6 +325,7 @@ fn start_rays(
     fields: &[SelectedField],
     wls: &[usize],
     settings: &IrradianceSettings,
+    ctx: &JobContext,
 ) -> MkResult<Vec<Vec<StartRay>>> {
     let tracer = model.tracer();
     let sys = model.system();
@@ -358,16 +366,26 @@ fn start_rays(
                 let weight = fw[fi] / sf * ww[wi] / sw * cell;
                 let c = field.aims[w].chief;
                 for iy in 0..n {
+                    ctx.check()?;
                     let py = -k + h * (iy as f64 + 0.5);
                     for ix in 0..n {
                         let px = -k + h * (ix as f64 + 0.5);
-                        if px.mul_add(px, py * py) > k * k {
+                        if (px.abs() - h * 0.5).max(0.0).powi(2)
+                            + (py.abs() - h * 0.5).max(0.0).powi(2)
+                            > k * k
+                        {
                             continue;
                         }
                         let a = [px.mul_add(scale, c[0]), py.mul_add(scale, c[1])];
-                        if let Some(ray) = tracer.start_ray(&field.source, a) {
-                            rays.push(StartRay { ray, wl: w, weight });
-                        }
+                        let ray = (px.mul_add(px, py * py) <= k * k)
+                            .then(|| tracer.start_ray(&field.source, a))
+                            .flatten();
+                        rays.push(StartRay {
+                            ray,
+                            pupil: [px, py],
+                            wl: w,
+                            weight,
+                        });
                     }
                 }
             }
@@ -389,12 +407,111 @@ struct PathRun {
 /// Outcome of one ray: detected `(x, y, w)`, or lost as virtual with `w`.
 type RayOut = Result<Option<(f64, f64, f64)>, f64>;
 
+/// Resolve discontinuities at the pupil rim, clipping apertures and map
+/// boundary. A cell-centre grid can alias a small ghost footprint badly;
+/// refine cells whose centre and corners disagree, to 1/16 of a base cell.
+const BOUNDARY_DEPTH: u32 = 4;
+
+struct CellTrace<'a> {
+    model: &'a GhostModel,
+    steps: &'a [Step],
+    field: &'a PreparedField,
+    wl: usize,
+    overfill: f64,
+    map: &'a IrradianceMap,
+}
+
+impl CellTrace<'_> {
+    fn trace(&self, ray: Option<Ray>) -> RayOut {
+        let Some(ray) = ray else { return Ok(None) };
+        let r = self.model.trace_steps(&ray, self.wl, self.steps, None);
+        match r.status {
+            SequenceStatus::Ok => Ok(Some((r.ray.pos.x, r.ray.pos.y, r.weight()))),
+            SequenceStatus::Virtual { .. } => Err(r.weight()),
+            _ => Ok(None),
+        }
+    }
+
+    fn sample(&self, p: [f64; 2]) -> RayOut {
+        if p[0].mul_add(p[0], p[1] * p[1]) > self.overfill * self.overfill {
+            return Ok(None);
+        }
+        let tracer = self.model.tracer();
+        let pupil = tracer.pupil();
+        let scale = if pupil.telecentric {
+            pupil.u_marginal.abs()
+        } else {
+            pupil.r_ep
+        };
+        let c = self.field.aims[self.wl].chief;
+        self.trace(tracer.start_ray(
+            &self.field.source,
+            [p[0].mul_add(scale, c[0]), p[1].mul_add(scale, c[1])],
+        ))
+    }
+
+    fn region(&self, sample: RayOut) -> u8 {
+        match sample {
+            Ok(Some((x, y, _))) => {
+                if self.map.bin_of(x, y).is_some() {
+                    0
+                } else {
+                    1
+                }
+            }
+            Ok(None) => 2,
+            Err(_) => 3,
+        }
+    }
+
+    fn integrate(
+        &self,
+        p: [f64; 2],
+        half: f64,
+        weight: f64,
+        centre: RayOut,
+        depth: u32,
+        out: &mut Vec<RayOut>,
+    ) {
+        let region = self.region(centre);
+        if depth > 0
+            && [-1.0, 1.0].iter().any(|x| {
+                [-1.0, 1.0]
+                    .iter()
+                    .any(|y| self.region(self.sample([p[0] + x * half, p[1] + y * half])) != region)
+            })
+        {
+            let half = half * 0.5;
+            for y in [-1.0, 1.0] {
+                for x in [-1.0, 1.0] {
+                    let child = [p[0] + x * half, p[1] + y * half];
+                    self.integrate(
+                        child,
+                        half,
+                        weight * 0.25,
+                        self.sample(child),
+                        depth - 1,
+                        out,
+                    );
+                }
+            }
+        } else {
+            out.push(match centre {
+                Ok(Some((x, y, w))) => Ok(Some((x, y, weight * w))),
+                Ok(None) => Ok(None),
+                Err(w) => Err(weight * w),
+            });
+        }
+    }
+}
+
 /// Trace one path for all start rays; per-field maps and statistics.
 fn run_path(
     model: &GhostModel,
     steps: &[Step],
     starts: &[Vec<StartRay>],
-    fields: &[FieldRef],
+    fields: &[SelectedField],
+    settings: &IrradianceSettings,
     template: &IrradianceMap,
     ctx: &JobContext,
     progress: (f64, f64),
@@ -412,37 +529,51 @@ fn run_path(
         let f = offsets.partition_point(|&o| o <= i) - 1;
         (f, i - offsets[f])
     };
-    let mut hits: Vec<Option<(f64, f64, f64)>> = Vec::with_capacity(total);
+    let mut hits: Vec<Vec<Option<(f64, f64, f64)>>> = Vec::with_capacity(total);
     let (mut virtual_rays, mut virtual_flux) = (0usize, KahanSum::default());
     let mut start = 0;
     while start < total {
         ctx.check()?;
         let end = (start + BLOCK).min(total);
-        let block: Vec<RayOut> = (start..end)
+        let block: Vec<Vec<RayOut>> = (start..end)
             .into_par_iter()
             .with_min_len(64)
             .map(|i| {
                 let (f, j) = locate(i);
                 let s = &starts[f][j];
-                let r = model.trace_steps(&s.ray, s.wl, steps, None);
-                match r.status {
-                    SequenceStatus::Ok => {
-                        Ok(Some((r.ray.pos.x, r.ray.pos.y, s.weight * r.weight())))
-                    }
-                    SequenceStatus::Virtual { .. } => Err(s.weight * r.weight()),
-                    _ => Ok(None),
-                }
+                let cell = CellTrace {
+                    model,
+                    steps,
+                    field: &fields[f].field,
+                    wl: s.wl,
+                    overfill: settings.overfill,
+                    map: template,
+                };
+                let mut out = Vec::new();
+                cell.integrate(
+                    s.pupil,
+                    settings.overfill / settings.pupil_samples as f64,
+                    s.weight,
+                    cell.trace(s.ray),
+                    BOUNDARY_DEPTH,
+                    &mut out,
+                );
+                out
             })
             .collect();
-        for o in block {
-            hits.push(match o {
-                Ok(h) => h,
-                Err(w) => {
-                    virtual_rays += 1;
-                    virtual_flux.add(w);
-                    None
-                }
-            });
+        for cell in block {
+            hits.push(
+                cell.into_iter()
+                    .map(|o| match o {
+                        Ok(h) => h,
+                        Err(w) => {
+                            virtual_rays += 1;
+                            virtual_flux.add(w);
+                            None
+                        }
+                    })
+                    .collect(),
+            );
         }
         start = end;
         let f = start as f64 / total as f64;
@@ -454,7 +585,7 @@ fn run_path(
     let area = template.bin_area();
     let mut maps = Vec::with_capacity(fields.len());
     let mut stats = Vec::with_capacity(fields.len());
-    for (fi, &field) in fields.iter().enumerate() {
+    for (fi, field) in fields.iter().enumerate() {
         let lo = offsets[fi];
         let field_hits = &hits[lo..lo + starts[fi].len()];
         let mut bins = vec![KahanSum::default(); template.values.len()];
@@ -465,7 +596,7 @@ fn run_path(
             KahanSum::default(),
         );
         let mut detected = 0usize;
-        for &(x, y, w) in field_hits.iter().flatten() {
+        for &(x, y, w) in field_hits.iter().flatten().flatten() {
             detected += 1;
             sw.add(w);
             swx.add(w * x);
@@ -485,6 +616,7 @@ fn run_path(
         let m2: KahanSum = field_hits
             .iter()
             .flatten()
+            .flatten()
             .map(|&(x, y, w)| w * (x - cx).mul_add(x - cx, (y - cy) * (y - cy)))
             .collect();
         let mut map = template.clone();
@@ -492,7 +624,7 @@ fn run_path(
             *v = b.value() / area;
         }
         stats.push(FieldIrradiance {
-            field,
+            field: field.id,
             flux,
             flux_on_map: on.value(),
             peak: map.peak(),
@@ -502,7 +634,7 @@ fn run_path(
             } else {
                 0.0
             },
-            rays_traced: starts[fi].len(),
+            rays_traced: field_hits.iter().map(Vec::len).sum(),
             rays_detected: detected,
         });
         maps.push(map);
@@ -547,7 +679,6 @@ pub fn ghost_irradiance(
     }
     let mut warnings = model.tracer().warnings().to_vec();
     let selected = select_fields(model, settings, &mut warnings)?;
-    let fields: Vec<FieldRef> = selected.iter().map(|f| f.id).collect();
     let wls: Vec<usize> = if settings.wavelengths.is_empty() {
         (0..sys.wavelengths_um.len()).collect()
     } else {
@@ -595,7 +726,7 @@ pub fn ghost_irradiance(
 
     ctx.report(0.0, "preparing rays");
     ctx.check()?;
-    let starts = start_rays(model, &selected, &wls, settings)?;
+    let starts = start_rays(model, &selected, &wls, settings, ctx)?;
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
@@ -603,7 +734,8 @@ pub fn ghost_irradiance(
         model,
         &pstep,
         &starts,
-        &fields,
+        &selected,
+        settings,
         &template,
         ctx,
         (0.0, 1.0 / n_jobs),
@@ -639,8 +771,9 @@ pub fn ghost_irradiance(
     let mut ghosts = Vec::with_capacity(paths.len());
     for (k, (path, steps)) in paths.iter().zip(&path_steps).enumerate() {
         let span = ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs);
-        let PathRun { maps, stats, .. } =
-            run_path(model, steps, &starts, &fields, &template, ctx, span)?;
+        let PathRun { maps, stats, .. } = run_path(
+            model, steps, &starts, &selected, settings, &template, ctx, span,
+        )?;
         let map = sum_maps(&maps, &template);
         for (acc, v) in total_acc.iter_mut().zip(&map.values) {
             acc.add(*v);

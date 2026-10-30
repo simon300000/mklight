@@ -121,10 +121,12 @@ impl Sink {
 /// Highest ghost order tallied separately (higher orders are pooled here).
 pub const MAX_GHOST_ORDER: usize = 8;
 
-/// Class slots plus the owned slot.
-const SLOTS: usize = NUM_CLASSES + 1;
+/// Class slots plus the owned and uncovered-ghost slots.
+const SLOTS: usize = NUM_CLASSES + 2;
 /// Index of the owned slot.
 const OWNED: usize = NUM_CLASSES;
+/// Ghost detections outside the explicit run's coverage.
+const UNCOVERED: usize = NUM_CLASSES + 1;
 /// Unique entries of a symmetric 4 × 4 matrix, row-major upper triangle.
 const QN: usize = 10;
 
@@ -185,10 +187,13 @@ pub struct ChunkTally {
     /// Detections owned although their class is not in `owned` (`Ghost`
     /// paths outside a ghost run's coverage, `StraySettings::covered_ghosts`).
     pub detected_uncovered: f64,
+    pub detected_covered: f64,
     /// `Σ xᵢ²` per class, for the total and for the owned classes.
     pub detected_sq: [f64; NUM_CLASSES],
     pub total_sq: f64,
     pub owned_sq: f64,
+    pub uncovered_sq: f64,
+    pub covered_sq: f64,
     /// `(pixel, slot, xᵢ²)` per ray and pixel/slot it reached (slot
     /// `NUM_CLASSES` is the owned sum).
     pub hits_sq: Vec<(u32, u8, f64)>,
@@ -204,6 +209,7 @@ pub struct ChunkTally {
     /// Contributions of the ray in flight.
     ray_class: [f64; NUM_CLASSES],
     ray_uncovered: f64,
+    ray_covered: f64,
     ray_moments: [[f64; 4]; SLOTS],
     ray_adjustment: f64,
     ray_hits_start: usize,
@@ -235,9 +241,12 @@ impl ChunkTally {
             events: 0,
             owned,
             detected_uncovered: 0.0,
+            detected_covered: 0.0,
             detected_sq: [0.0; NUM_CLASSES],
             total_sq: 0.0,
             owned_sq: 0.0,
+            uncovered_sq: 0.0,
+            covered_sq: 0.0,
             hits_sq: Vec::new(),
             adjustment_sq: 0.0,
             moments: [[0.0; 4]; SLOTS],
@@ -246,6 +255,7 @@ impl ChunkTally {
             signatures: BTreeMap::new(),
             ray_class: [0.0; NUM_CLASSES],
             ray_uncovered: 0.0,
+            ray_covered: 0.0,
             ray_moments: [[0.0; 4]; SLOTS],
             ray_adjustment: 0.0,
             ray_hits_start: 0,
@@ -258,6 +268,7 @@ impl ChunkTally {
     pub fn begin_ray(&mut self) {
         self.ray_class = [0.0; NUM_CLASSES];
         self.ray_uncovered = 0.0;
+        self.ray_covered = 0.0;
         self.ray_moments = [[0.0; 4]; SLOTS];
         self.ray_adjustment = 0.0;
         self.ray_hits_start = self.hits.len();
@@ -280,6 +291,8 @@ impl ChunkTally {
         owned += self.ray_uncovered;
         self.total_sq += total * total;
         self.owned_sq += owned * owned;
+        self.uncovered_sq += self.ray_uncovered * self.ray_uncovered;
+        self.covered_sq += self.ray_covered * self.ray_covered;
         self.adjustment_sq += self.ray_adjustment * self.ray_adjustment;
         for k in 0..SLOTS {
             let m = self.ray_moments[k];
@@ -401,6 +414,7 @@ impl ChunkTally {
             self.detected_uncovered += w;
             if let Some(p) = pixel {
                 self.hits.push((p as u32, OWNED as u8, w));
+                self.hits.push((p as u32, UNCOVERED as u8, w));
             }
         }
         let m = [w, w * x, w * y, w * (x * x + y * y)];
@@ -415,6 +429,10 @@ impl ChunkTally {
             self.ray_sigs.push((c as u8, hist.signature, w));
         }
         if class == PathClass::Ghost {
+            if !owned || self.owned.contains(class) {
+                self.ray_covered += w;
+                self.detected_covered += w;
+            }
             self.ghost_by_order[(hist.stray_reflections as usize).min(MAX_GHOST_ORDER)] += w;
             *self
                 .ghost_by_pair
@@ -451,7 +469,10 @@ pub struct StrayTally {
     detected_sq: [KahanSum; NUM_CLASSES],
     total_sq: KahanSum,
     owned_sq: KahanSum,
+    uncovered_sq: KahanSum,
+    covered_sq: KahanSum,
     detected_uncovered: KahanSum,
+    detected_covered: KahanSum,
     adjustment_sq: KahanSum,
     moments: [[KahanSum; 4]; SLOTS],
     moments_q: [[KahanSum; QN]; SLOTS],
@@ -485,7 +506,10 @@ impl StrayTally {
             detected_sq: [z; NUM_CLASSES],
             total_sq: z,
             owned_sq: z,
+            uncovered_sq: z,
+            covered_sq: z,
             detected_uncovered: z,
+            detected_covered: z,
             adjustment_sq: z,
             moments: [[z; 4]; SLOTS],
             moments_q: [[z; QN]; SLOTS],
@@ -529,7 +553,10 @@ impl StrayTally {
         }
         self.total_sq.add(c.total_sq);
         self.owned_sq.add(c.owned_sq);
+        self.uncovered_sq.add(c.uncovered_sq);
+        self.covered_sq.add(c.covered_sq);
         self.detected_uncovered.add(c.detected_uncovered);
+        self.detected_covered.add(c.detected_covered);
         self.adjustment_sq.add(c.adjustment_sq);
         for k in 0..SLOTS {
             for (a, b) in self.moments[k].iter_mut().zip(&c.moments[k]) {
@@ -717,6 +744,10 @@ impl StrayTally {
             detected_owned: owned_flux,
             detected_owned_std_error: self.se(owned_flux, self.owned_sq.value()),
             detected_uncovered_ghost: uncovered,
+            detected_uncovered_ghost_std_error: self.se(uncovered, self.uncovered_sq.value()),
+            detected_covered_ghost: self.detected_covered.value(),
+            detected_covered_ghost_std_error: self
+                .se(self.detected_covered.value(), self.covered_sq.value()),
             absorbed,
             absorbed_by_sink,
             escaped,
@@ -756,6 +787,8 @@ impl StrayTally {
             })
             .collect();
         let mut flux = maps;
+        let uncovered_map = flux.pop().expect("uncovered slot");
+        let uncovered_err = errors.pop().expect("uncovered slot");
         let owned_map = flux.pop().expect("owned slot");
         let owned_err = errors.pop().expect("owned slot");
         let irr = |m: &[f64]| m.iter().map(|f| f / area).collect::<Vec<f64>>();
@@ -765,6 +798,8 @@ impl StrayTally {
             flux,
             flux_std_error: errors,
             owned_classes: owned,
+            uncovered_ghost_irradiance: irr(&uncovered_map),
+            uncovered_ghost_flux_std_error: uncovered_err,
             owned_irradiance: irr(&owned_map),
             owned_flux: owned_map,
             owned_flux_std_error: owned_err,
@@ -854,6 +889,10 @@ pub struct DetectorResult {
     pub owned_flux_std_error: Vec<f64>,
     /// W/mm².
     pub owned_irradiance: Vec<f64>,
+    /// Stray-owned subset of the Ghost class (W/mm²).
+    pub uncovered_ghost_irradiance: Vec<f64>,
+    /// Per-pixel standard error of the uncovered ghost flux (W).
+    pub uncovered_ghost_flux_std_error: Vec<f64>,
     /// Image moments per class (`PathClass::index`).
     pub moments: Vec<ImageMoments>,
     /// Image moments of the owned sum.
@@ -906,6 +945,11 @@ pub struct EnergyReport {
     /// stray solver even when `Ghost` is not in `owned_classes`.
     #[serde(default)]
     pub detected_uncovered_ghost: f64,
+    pub detected_uncovered_ghost_std_error: f64,
+    /// Remaining Ghost-class flux; the explicit solver owns it when the
+    /// Ghost class is excluded. Errors are accumulated per source ray.
+    pub detected_covered_ghost: f64,
+    pub detected_covered_ghost_std_error: f64,
     pub absorbed: f64,
     pub absorbed_by_sink: Vec<(Sink, f64)>,
     /// Left the scene from the ambient medium.
@@ -1027,5 +1071,75 @@ impl EnergyReport {
             self.relative_residual()
         );
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::Accept;
+
+    #[test]
+    fn partition_errors_keep_split_path_covariance() {
+        let mask = ClassMask::STRAY_WITH_GHOST;
+        let mut chunk = ChunkTally::new(1, mask);
+        // Three independent source rays, each split among covered ghosts,
+        // uncovered ghosts and sneak paths. The first ray has two hits in
+        // the same uncovered signature/pixel: square their sum, not each hit.
+        for (covered, uncovered, sneak) in [(1.0, 2.0, 1.0), (4.0, 1.0, 4.0), (2.0, 0.0, 0.0)] {
+            chunk.begin_ray();
+            chunk.rays += 1;
+            let hist = History::default();
+            chunk.detect(
+                PathClass::Ghost,
+                false,
+                Some(0),
+                covered,
+                0,
+                &hist,
+                0.0,
+                0.0,
+            );
+            for _ in 0..2 {
+                chunk.detect(
+                    PathClass::Ghost,
+                    true,
+                    Some(0),
+                    uncovered * 0.5,
+                    0,
+                    &hist,
+                    0.0,
+                    0.0,
+                );
+            }
+            chunk.detect(PathClass::Sneak, true, Some(0), sneak, 0, &hist, 0.0, 0.0);
+            chunk.end_ray();
+        }
+        let spec = DetectorSpec {
+            surface: 0,
+            accept: Accept::Both,
+            half_x: 0.5,
+            half_y: 0.5,
+            nx: 1,
+            ny: 1,
+        };
+        let mut tally = StrayTally::new(1, 1);
+        tally.add(&chunk);
+        let (map, energy, _) = tally.finish(&spec, mask);
+        // Owned contributions [3,5,0]: sum 8, SE sqrt(19).
+        // Uncovered [2,1,0]: sum 3, SE sqrt(3).
+        // Covered [1,4,2]: sum 7, SE sqrt(7).
+        let close = |a: f64, b: f64| assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        close(energy.detected_owned, 8.0);
+        close(map.owned_flux[0], 8.0);
+        close(map.owned_moments.flux, 8.0);
+        close(energy.detected_owned_std_error, 19.0f64.sqrt());
+        close(map.owned_flux_std_error[0], 19.0f64.sqrt());
+        close(energy.detected_uncovered_ghost, 3.0);
+        close(map.uncovered_ghost_irradiance[0], 3.0);
+        close(energy.detected_uncovered_ghost_std_error, 3.0f64.sqrt());
+        close(map.uncovered_ghost_flux_std_error[0], 3.0f64.sqrt());
+        close(energy.detected_covered_ghost, 7.0);
+        close(energy.detected_covered_ghost_std_error, 7.0f64.sqrt());
     }
 }
