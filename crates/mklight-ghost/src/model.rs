@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use mklight_core::math::Frame;
-use mklight_core::{MkError, MkResult, ResolvedSystem, SurfaceShape};
+use mklight_core::{JobContext, MkError, MkResult, ResolvedSystem, SurfaceShape};
 use mklight_trace::semidia::SemiDiameterSettings;
 use mklight_trace::{IntersectSettings, SemiDiameters, SequentialTracer};
 use serde::{Deserialize, Serialize};
@@ -93,7 +93,9 @@ pub enum Clip {
 /// interface kinds and the clear semi-diameters of the system. This is the
 /// single definition of the apertures a ghost run clips at:
 /// [`GhostModel::new`] uses it with `SequentialTracer::semi_diameters` at
-/// default settings, and a stray-light solver that is combined with a ghost
+/// default settings ([`GhostModel::sized`] and
+/// [`GhostModel::with_semi_diameters`] with others), and a stray-light
+/// solver that is combined with a ghost
 /// run builds its clear apertures from it, so both partition at identical
 /// apertures (CONVENTIONS §10, `GhostCoverage::same_apertures`).
 pub fn clip_apertures(
@@ -156,18 +158,63 @@ pub struct GhostModel {
     semi: SemiDiameters,
 }
 
+fn check_settings(settings: &GhostSettings) -> MkResult<()> {
+    if let Some(r) = settings.sensor_reflectance
+        && !(0.0..=1.0).contains(&r)
+    {
+        return Err(MkError::InvalidModel(
+            "sensor reflectance must lie in [0, 1]".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl GhostModel {
+    /// Sizes the clear apertures with the default
+    /// [`SemiDiameterSettings`] (module docs).
     pub fn new(tracer: Arc<SequentialTracer>, settings: GhostSettings) -> MkResult<Self> {
-        if let Some(r) = settings.sensor_reflectance
-            && !(0.0..=1.0).contains(&r)
-        {
-            return Err(MkError::InvalidModel(
-                "sensor reflectance must lie in [0, 1]".into(),
-            ));
-        }
+        Self::sized(
+            tracer,
+            settings,
+            &SemiDiameterSettings::default(),
+            &JobContext::new(),
+        )
+    }
+
+    /// As [`GhostModel::new`], sizing the clear apertures with `sizing`,
+    /// with cancellation and progress (`SequentialTracer::semi_diameters_with`).
+    pub fn sized(
+        tracer: Arc<SequentialTracer>,
+        settings: GhostSettings,
+        sizing: &SemiDiameterSettings,
+        ctx: &JobContext,
+    ) -> MkResult<Self> {
+        check_settings(&settings)?;
+        let semi = tracer.semi_diameters_with(sizing, ctx)?;
+        Self::with_semi_diameters(tracer, settings, semi)
+    }
+
+    /// With clear apertures sized elsewhere by the same tracer, e.g. a
+    /// stray-light scene's (`StraySystem::semi_diameters`). Both solvers
+    /// then clip at bit-identical radii whatever the sizing settings, which
+    /// partitioning requires (CONVENTIONS §10: the apertures are compared
+    /// exactly, so even a rounding difference of an independent sizing
+    /// fails `GhostCoverage::same_apertures`).
+    pub fn with_semi_diameters(
+        tracer: Arc<SequentialTracer>,
+        settings: GhostSettings,
+        semi: SemiDiameters,
+    ) -> MkResult<Self> {
+        check_settings(&settings)?;
         let sys = tracer.system();
+        let n = sys.num_surfaces();
+        if semi.values.len() != n || semi.traced.len() != n || semi.sources.len() != n {
+            return Err(MkError::InvalidParam(format!(
+                "semi-diameters for {} surfaces given for a system of {n}",
+                semi.values.len()
+            )));
+        }
         let kinds = interface_kinds(sys);
-        let semi = tracer.semi_diameters(&SemiDiameterSettings::default());
         let clip = clip_apertures(sys, &kinds, &semi, settings.clip);
         // Inverse transforms. With to_next = (o, R) (next frame in this
         // one: p_i = o + R p_{i+1}), the inverse in the same

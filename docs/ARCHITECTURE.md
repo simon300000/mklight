@@ -100,8 +100,9 @@ an aperture), Ghost, Primary, Sneak (any other):
 
 The precise rule, with path signatures, is CONVENTIONS §10; the class
 tables of `docs/STRAY.md` and `docs/GHOST.md` §2 implement it. When the
-stray solver runs alongside the ghost solver it drops the `Ghost` class
-(`exclude_ghost_class`), so
+stray solver runs alongside the ghost solver it drops the `Ghost` paths
+the ghost run covered (`exclude_ghost_class` with the run's
+`ghost_coverage`) and keeps the other ghost orders, so
 
 ```text
 detected = Primary (sequential) + Ghost (ghost solver) + Scatter + Mechanical + Sneak (stray)
@@ -112,13 +113,17 @@ with nothing counted twice (tested on a coated singlet and Cooke triplet,
 identical apertures: the stray scene takes its clear apertures from
 `mklight_ghost::clip_apertures`, the ghost solver's own definition, and
 `StraySystem::check_ghost_coverage` (or `ghost_coverage` in the stray
-analysis settings) refuses a ghost run that clipped differently. Two
-caveats: the stray solver drops the whole `Ghost` class, so ghost orders the
-ghost run did not trace (beyond its maximum order, or filtered out) are
-counted by neither solver, although CONVENTIONS §10 assigns them to the
-stray solver; and a purely sequential `Primary` overcounts light that
-non-sequential geometry obstructs (use the obstruction-checked reference,
-`docs/STRAY.md`). The ghost solver uses the same coating reflectance
+analysis settings) refuses a ghost run that clipped differently; the
+comparison is exact, so a ghost model built for a stray scene with
+non-default sizing settings takes the scene's semi-diameters
+(`GhostModel::with_semi_diameters`). Ghost orders the ghost run did not
+trace (beyond its `max_reflections`, or filtered out) stay in the stray
+total, as CONVENTIONS §10 assigns them (tested with a run to 2
+reflections on a Cooke triplet with 30 % reflectors); without the coverage
+record the stray solver can only drop the whole class, and those orders
+are counted by neither solver. A purely sequential `Primary` overcounts
+light that non-sequential geometry obstructs (use the obstruction-checked
+reference, `docs/STRAY.md`). The ghost solver uses the same coating reflectance
 `R(λ, θ, pol)` that the primary path uses for its transmittance `T`, so
 `T + R + A = 1` holds at every interface (tested).
 

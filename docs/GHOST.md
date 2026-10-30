@@ -100,6 +100,12 @@ ghost run (`apertures`, from `GhostModel::coverage`), and the stray solver
 must clip the optical surfaces identically (`GhostCoverage::same_apertures`).
 Both build them with `model::clip_apertures`; the stray side checks a
 coverage record with `StraySystem::check_ghost_coverage` (`docs/STRAY.md`).
+The radii are compared exactly, so both must come from one sizing:
+`GhostModel::new` sizes with the default `SemiDiameterSettings`,
+`GhostModel::sized` with given settings (cancellable), and
+`GhostModel::with_semi_diameters` takes a stray scene's
+(`StraySystem::semi_diameters`). Ghost paths outside the coverage stay
+with the stray solver (`StraySettings::covered_ghosts`).
 
 ## 3. The sequence tracer
 

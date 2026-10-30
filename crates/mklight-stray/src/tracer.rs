@@ -72,12 +72,16 @@ use mklight_core::error::{MkError, MkResult};
 use mklight_core::job::{JobContext, Precision, RunInfo, RunTimer};
 use mklight_core::math::Vec3;
 use mklight_core::rng::Philox;
+use mklight_ghost::GhostPath;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use crate::bsdf::Bsdf;
 use crate::geom::{Ray, RayCaster, onb, reflect, refract};
-use crate::path::{ClassMask, EventKind, History, flags};
+use crate::path::{
+    ClassMask, EventKind, History, MAX_SIGNATURE_EVENTS, PathClass, Signature, flags,
+};
 use crate::scene::{Behavior, InterfaceKind, MediumId, Scene, SceneOptions, Side};
 use crate::source::SourceSpec;
 use crate::tally::{ChunkTally, DetectorResult, EnergyReport, SignatureFlux, Sink, StrayTally};
@@ -135,6 +139,13 @@ pub struct StraySettings {
     pub start_medium: Option<MediumId>,
     /// Tally detected flux per path signature (`StrayResult::signatures`).
     pub signatures: bool,
+    /// Reflection sequences an explicit ghost run counted (its
+    /// `GhostCoverage::paths`). When set, a `Ghost`-class path whose
+    /// sequence is not among them counts in `detected_owned` even if `Ghost`
+    /// is not in `owned_classes`: the stray solver owns the ghost orders the
+    /// ghost run did not trace (CONVENTIONS §10, [`StraySettings::owns`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covered_ghosts: Option<BTreeSet<GhostPath>>,
 }
 
 impl Default for StraySettings {
@@ -152,6 +163,7 @@ impl Default for StraySettings {
             owned_classes: ClassMask::ALL,
             start_medium: None,
             signatures: true,
+            covered_ghosts: None,
         }
     }
 }
@@ -170,12 +182,49 @@ impl StraySettings {
                     floor_ok(rare_floor)
                 }
             };
-        if ok {
-            Ok(())
-        } else {
-            Err(MkError::InvalidModel("invalid stray-light settings".into()))
+        if !ok {
+            return Err(MkError::InvalidModel("invalid stray-light settings".into()));
         }
+        if let Some(p) = self
+            .covered_ghosts
+            .iter()
+            .flatten()
+            .find(|p| p.order() > MAX_SIGNATURE_EVENTS)
+        {
+            return Err(MkError::InvalidModel(format!(
+                "covered ghost path {:?} has more reflections than a path signature keeps ({MAX_SIGNATURE_EVENTS})",
+                p.reflections
+            )));
+        }
+        Ok(())
     }
+
+    /// Does a detected path of `class` with signature `sig` count in
+    /// `detected_owned`? Its class is in `owned_classes`, or it is a ghost
+    /// outside `covered_ghosts`.
+    pub fn owns(&self, class: PathClass, sig: &Signature) -> bool {
+        self.owned_classes.contains(class)
+            || (class == PathClass::Ghost
+                && self
+                    .covered_ghosts
+                    .as_ref()
+                    .is_some_and(|c| !covered(c, sig)))
+    }
+}
+
+/// Is the ghost path with signature `sig` (its reflections at refracting
+/// interfaces, in order) in `paths`? A signature that overflowed holds
+/// more reflections than any covered path (`StraySettings::validate`).
+pub fn covered(paths: &BTreeSet<GhostPath>, sig: &Signature) -> bool {
+    if sig.overflow() {
+        return false;
+    }
+    let reflections = sig
+        .events()
+        .filter(|(k, _)| matches!(k, EventKind::Reflect | EventKind::Tir))
+        .map(|(_, s)| s as u32)
+        .collect();
+    paths.contains(&GhostPath::new(reflections))
 }
 
 /// Output of a stray-light run.
@@ -417,6 +466,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                             let pix = scene.detector.pixel(hit.local.p.x, hit.local.p.y);
                             tally.detect(
                                 class,
+                                self.settings.owns(class, &s.hist.signature),
                                 pix,
                                 s.w,
                                 wl,
@@ -814,4 +864,48 @@ pub fn run_with<C: RayCaster>(
         warnings,
         signatures,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sig(reflections: &[usize]) -> Signature {
+        let mut s = Signature::default();
+        for &r in reflections {
+            s.push(EventKind::Reflect, r);
+        }
+        s
+    }
+
+    #[test]
+    fn uncovered_ghosts_are_owned() {
+        let paths: BTreeSet<GhostPath> = [GhostPath::new(vec![3, 1])].into();
+        assert!(covered(&paths, &sig(&[3, 1])));
+        assert!(!covered(&paths, &sig(&[3, 1, 3, 1])));
+        assert!(!covered(&paths, &sig(&[1, 3])));
+        // TIR is a reflection too.
+        let mut tir = Signature::default();
+        tir.push(EventKind::Reflect, 3);
+        tir.push(EventKind::Tir, 1);
+        assert!(covered(&paths, &tir));
+        // An overflowed signature is never covered.
+        assert!(!covered(&paths, &sig(&[3, 1, 3, 1, 3, 1, 3, 1])));
+
+        let mut s = StraySettings {
+            owned_classes: ClassMask::STRAY_WITH_GHOST,
+            ..Default::default()
+        };
+        // Without coverage, the mask alone decides.
+        assert!(!s.owns(PathClass::Ghost, &sig(&[5, 2, 5, 2])));
+        assert!(s.owns(PathClass::Sneak, &sig(&[5])));
+        s.covered_ghosts = Some(paths.clone());
+        assert!(!s.owns(PathClass::Ghost, &sig(&[3, 1])));
+        assert!(s.owns(PathClass::Ghost, &sig(&[5, 2, 5, 2])));
+        assert!(!s.owns(PathClass::Primary, &sig(&[])));
+        assert!(s.validate().is_ok());
+        // Coverage beyond what a signature keeps is refused.
+        s.covered_ghosts = Some([GhostPath::new(vec![1; MAX_SIGNATURE_EVENTS + 2])].into());
+        assert!(s.validate().is_err());
+    }
 }

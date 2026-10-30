@@ -23,18 +23,22 @@ use mklight_stray::{
 /// absorption, the same `R` for s and p), and a sensor that bounds the
 /// detector of both solvers.
 /// One wavelength keeps the test fast.
-fn coated(mut s: OpticalSystem, sensor_half: f64) -> OpticalSystem {
+fn coated(s: OpticalSystem, sensor_half: f64) -> OpticalSystem {
+    coated_with(s, sensor_half, 0.05)
+}
+
+fn coated_with(mut s: OpticalSystem, sensor_half: f64, r: f64) -> OpticalSystem {
     one_wavelength(&mut s);
     s.coatings.insert(
-        "R5".into(),
+        "R".into(),
         CoatingDef::Ideal {
-            reflectance: 0.05,
-            transmittance: 0.95,
+            reflectance: r,
+            transmittance: 1.0 - r,
         },
     );
     let image = s.surfaces.len() - 1;
     for surf in &mut s.surfaces[1..image] {
-        surf.coating = Some("R5".into());
+        surf.coating = Some("R".into());
     }
     let pixels = (2.0 * sensor_half / 0.01).round() as u32;
     s.sensor = Some(Sensor {
@@ -90,12 +94,21 @@ fn ghost_model(sys: &StraySystem, clip: ClipMode) -> GhostModel {
 /// Ghost solver totals relative to the entrance-pupil flux: (primary,
 /// ghosts of order 2 and 4), on the sensor, with default clipping.
 fn ghost_run(sys: &StraySystem, field: usize) -> (f64, f64, mklight_ghost::GhostCoverage) {
+    ghost_run_to(sys, field, 4)
+}
+
+/// As [`ghost_run`] with ghosts up to `max_reflections`.
+fn ghost_run_to(
+    sys: &StraySystem,
+    field: usize,
+    max_reflections: u32,
+) -> (f64, f64, mklight_ghost::GhostCoverage) {
     let model = ghost_model(sys, ClipMode::ClearApertures { margin_mm: 0.0 });
     let r = ghost_irradiance(
         &model,
         &IrradianceSettings {
             enumeration: EnumerationSettings {
-                max_reflections: 4,
+                max_reflections,
                 max_higher_order_paths: 100_000,
                 ..Default::default()
             },
@@ -145,11 +158,17 @@ fn check(name: &str, base: OpticalSystem, fields: &[usize]) {
             .unwrap()
             .flux
             / reference;
-        // The exclusion only removes Ghost from the tally (same streams).
+        // The exclusion only removes the covered ghosts from the tally
+        // (same streams); orders above 4 stay, and are negligible at 5 %.
         let owned = frac(PathClass::Scatter) + frac(PathClass::Mechanical) + frac(PathClass::Sneak);
+        let uncovered = excl.energy.detected_uncovered_ghost / reference;
         assert!(
-            (stray - owned).abs() <= 1e-12 * detected,
-            "{name}: {stray} vs {owned}"
+            (stray - owned - uncovered).abs() <= 1e-12 * detected,
+            "{name}: {stray} vs {owned} + {uncovered}"
+        );
+        assert!(
+            uncovered < 1e-2 * frac(PathClass::Ghost),
+            "{name}: {uncovered}"
         );
 
         // The Primary term: sequential (obstruction-checked) reference vs
@@ -229,4 +248,127 @@ fn coated_cooke_triplet_partition_does_not_double_count() {
         coated(mklight_core::samples::cooke_triplet(), 22.0),
         &[0, 1],
     );
+}
+
+/// Ghost orders the ghost run did not trace stay with the stray solver
+/// (CONVENTIONS §10): on the Cooke triplet with 30 % reflectors and a
+/// ghost run to 2 reflections, the 4th and higher orders are about a
+/// quarter of the ghost light. With the run's coverage the stray total keeps them and the
+/// partition closes; dropping the whole `Ghost` class (no coverage given)
+/// loses them.
+#[test]
+fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
+    let base = coated_with(mklight_core::samples::cooke_triplet(), 22.0, 0.3);
+    let set = settings(0, 11);
+    let sys = StraySystem::build(
+        Arc::new(resolve(base)),
+        &set.system_options(),
+        &JobContext::new(),
+    )
+    .unwrap();
+    let (_, g2, cov) = ghost_run_to(&sys, 0, 2);
+    assert!(cov.paths.iter().all(|p| p.order() == 2), "{:?}", cov.paths);
+    let run = |coverage: Option<mklight_ghost::GhostCoverage>| {
+        analyze_system(
+            &sys,
+            &StrayAnalysisSettings {
+                exclude_ghost_class: true,
+                ghost_coverage: coverage,
+                ..set.clone()
+            },
+            &JobContext::new(),
+        )
+        .unwrap()
+    };
+    let all = analyze_system(&sys, &set, &JobContext::new()).unwrap();
+    let with = run(Some(cov.clone()));
+    let without = run(None);
+    let reference = all.source.reference_flux;
+    let frac = |c: PathClass| all.total_of(c).flux / reference;
+    let se = |c: PathClass| all.total_of(c).std_error / reference;
+    let rest = PathClass::ALL.iter().map(|c| frac(*c)).sum::<f64>() - frac(PathClass::Primary);
+    let se_rest = [
+        PathClass::Ghost,
+        PathClass::Scatter,
+        PathClass::Mechanical,
+        PathClass::Sneak,
+    ]
+    .iter()
+    .map(|c| se(*c).powi(2))
+    .sum::<f64>()
+    .sqrt();
+    let uncovered = with.energy.detected_uncovered_ghost / reference;
+    let z_with = (rest - (g2 + with.stray_flux / reference)) / se_rest;
+    let z_without = (rest - (g2 + without.stray_flux / reference)) / se_rest;
+    // The uncovered part is the Ghost class minus what the ghost run traced.
+    let z_uncovered = (uncovered - (frac(PathClass::Ghost) - g2)) / se(PathClass::Ghost);
+    println!(
+        "Ghost class {:.4e}, ghost run (2 reflections) {g2:.4e}, uncovered {uncovered:.4e}: \
+         partition z = {z_with:+.2} with coverage, {z_without:+.1} without",
+        frac(PathClass::Ghost)
+    );
+    assert!(uncovered > 0.1 * frac(PathClass::Ghost), "{uncovered}");
+    assert!(z_uncovered.abs() < 4.0, "{z_uncovered}");
+    assert!(z_with.abs() < 4.0, "{z_with}");
+    assert!(z_without > 20.0, "{z_without}");
+    assert_eq!(without.energy.detected_uncovered_ghost, 0.0);
+    // The kept ghosts are in the stray maps' total as well as in the flux.
+    let map_total: f64 = with.total_irradiance.iter().sum::<f64>() * with.detector.pixel_area();
+    let owned_classes: f64 = with
+        .maps
+        .iter()
+        .flat_map(|m| m.irradiance.iter())
+        .sum::<f64>()
+        * with.detector.pixel_area();
+    assert!(map_total - owned_classes > 0.5 * with.energy.detected_uncovered_ghost);
+}
+
+/// A stray scene sized with non-default semi-diameter settings partitions
+/// with a ghost model that shares its sizing, not with one that sizes on
+/// its own at default settings (the apertures are compared exactly).
+#[test]
+fn ghost_model_shares_the_stray_sizing() {
+    use mklight_core::{CancelToken, MkError, Progress};
+    let mut opts = no_scatter_options();
+    opts.semi_diameters.azimuths = 8;
+    let sys = stray_system(mklight_core::samples::cooke_triplet(), &opts);
+    let tracer = Arc::new(sys.tracer().clone());
+    let none = std::iter::empty();
+    let default = ghost_model(&sys, ClipMode::ClearApertures { margin_mm: 0.0 });
+    assert!(
+        sys.check_ghost_coverage(&default.coverage(none.clone()))
+            .is_err()
+    );
+    let shared = GhostModel::with_semi_diameters(
+        tracer.clone(),
+        GhostSettings::default(),
+        sys.semi_diameters.clone(),
+    )
+    .unwrap();
+    sys.check_ghost_coverage(&shared.coverage(none.clone()))
+        .unwrap();
+    assert_eq!(shared.semi_diameters(), &sys.semi_diameters);
+    // Sizing with the same settings gives the same apertures, and can be
+    // cancelled.
+    let sized = GhostModel::sized(
+        tracer.clone(),
+        GhostSettings::default(),
+        &opts.semi_diameters,
+        &JobContext::new(),
+    )
+    .unwrap();
+    sys.check_ghost_coverage(&sized.coverage(none)).unwrap();
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let r = GhostModel::sized(
+        tracer.clone(),
+        GhostSettings::default(),
+        &opts.semi_diameters,
+        &JobContext::with(cancel, Progress::default()),
+    );
+    assert!(matches!(r, Err(MkError::Cancelled)));
+    // Semi-diameters of another system are refused.
+    let mut other = sys.semi_diameters.clone();
+    other.values.pop();
+    assert!(GhostModel::with_semi_diameters(tracer, GhostSettings::default(), other).is_err());
 }

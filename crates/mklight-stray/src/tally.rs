@@ -182,6 +182,9 @@ pub struct ChunkTally {
     pub events: u64,
     /// Classes whose summed per-ray contribution gets its own second moment.
     pub owned: ClassMask,
+    /// Detections owned although their class is not in `owned` (`Ghost`
+    /// paths outside a ghost run's coverage, `StraySettings::covered_ghosts`).
+    pub detected_uncovered: f64,
     /// `Σ xᵢ²` per class, for the total and for the owned classes.
     pub detected_sq: [f64; NUM_CLASSES],
     pub total_sq: f64,
@@ -200,6 +203,7 @@ pub struct ChunkTally {
     pub signatures: BTreeMap<(u8, Signature), SignatureAcc>,
     /// Contributions of the ray in flight.
     ray_class: [f64; NUM_CLASSES],
+    ray_uncovered: f64,
     ray_moments: [[f64; 4]; SLOTS],
     ray_adjustment: f64,
     ray_hits_start: usize,
@@ -230,6 +234,7 @@ impl ChunkTally {
             rays: 0,
             events: 0,
             owned,
+            detected_uncovered: 0.0,
             detected_sq: [0.0; NUM_CLASSES],
             total_sq: 0.0,
             owned_sq: 0.0,
@@ -240,6 +245,7 @@ impl ChunkTally {
             track_signatures: false,
             signatures: BTreeMap::new(),
             ray_class: [0.0; NUM_CLASSES],
+            ray_uncovered: 0.0,
             ray_moments: [[0.0; 4]; SLOTS],
             ray_adjustment: 0.0,
             ray_hits_start: 0,
@@ -251,6 +257,7 @@ impl ChunkTally {
     /// Starts the per-ray accumulation of a new source ray.
     pub fn begin_ray(&mut self) {
         self.ray_class = [0.0; NUM_CLASSES];
+        self.ray_uncovered = 0.0;
         self.ray_moments = [[0.0; 4]; SLOTS];
         self.ray_adjustment = 0.0;
         self.ray_hits_start = self.hits.len();
@@ -270,6 +277,7 @@ impl ChunkTally {
                 owned += v;
             }
         }
+        owned += self.ray_uncovered;
         self.total_sq += total * total;
         self.owned_sq += owned * owned;
         self.adjustment_sq += self.ray_adjustment * self.ray_adjustment;
@@ -314,7 +322,10 @@ impl ChunkTally {
         let owned_mask = self.owned;
         self.scratch.extend(
             hits.iter()
-                .filter(|h| owned_mask.contains(PathClass::ALL[h.1 as usize]))
+                .filter(|h| {
+                    (h.1 as usize) < NUM_CLASSES
+                        && owned_mask.contains(PathClass::ALL[h.1 as usize])
+                })
                 .map(|&(p, _, w)| (p, OWNED as u8, w)),
         );
         self.scratch
@@ -360,10 +371,13 @@ impl ChunkTally {
     }
 
     /// Books a detection of flux `w` at local detector point `(x, y)`.
+    /// `owned`: the detection counts in the owned sum (always when its
+    /// class is in the owned mask; also for an uncovered ghost path).
     #[allow(clippy::too_many_arguments)]
     pub fn detect(
         &mut self,
         class: PathClass,
+        owned: bool,
         pixel: Option<usize>,
         w: f64,
         wavelength: usize,
@@ -379,9 +393,19 @@ impl ChunkTally {
         if let Some(p) = pixel {
             self.hits.push((p as u32, c as u8, w));
         }
+        let owned = owned || self.owned.contains(class);
+        if owned && !self.owned.contains(class) {
+            // Owned outside the mask: booked to the owned slot directly
+            // (the mask's classes are copied there when the ray ends).
+            self.ray_uncovered += w;
+            self.detected_uncovered += w;
+            if let Some(p) = pixel {
+                self.hits.push((p as u32, OWNED as u8, w));
+            }
+        }
         let m = [w, w * x, w * y, w * (x * x + y * y)];
         let slots = [c, OWNED];
-        let n = if self.owned.contains(class) { 2 } else { 1 };
+        let n = if owned { 2 } else { 1 };
         for &k in &slots[..n] {
             for (a, b) in self.ray_moments[k].iter_mut().zip(m) {
                 *a += b;
@@ -427,6 +451,7 @@ pub struct StrayTally {
     detected_sq: [KahanSum; NUM_CLASSES],
     total_sq: KahanSum,
     owned_sq: KahanSum,
+    detected_uncovered: KahanSum,
     adjustment_sq: KahanSum,
     moments: [[KahanSum; 4]; SLOTS],
     moments_q: [[KahanSum; QN]; SLOTS],
@@ -460,6 +485,7 @@ impl StrayTally {
             detected_sq: [z; NUM_CLASSES],
             total_sq: z,
             owned_sq: z,
+            detected_uncovered: z,
             adjustment_sq: z,
             moments: [[z; 4]; SLOTS],
             moments_q: [[z; QN]; SLOTS],
@@ -491,7 +517,7 @@ impl StrayTally {
         }
         for &(p, k, w) in &c.hits {
             self.maps[k as usize][p as usize].add(w);
-            if c.owned.contains(PathClass::ALL[k as usize]) {
+            if (k as usize) < NUM_CLASSES && c.owned.contains(PathClass::ALL[k as usize]) {
                 self.maps[OWNED][p as usize].add(w);
             }
         }
@@ -503,6 +529,7 @@ impl StrayTally {
         }
         self.total_sq.add(c.total_sq);
         self.owned_sq.add(c.owned_sq);
+        self.detected_uncovered.add(c.detected_uncovered);
         self.adjustment_sq.add(c.adjustment_sq);
         for k in 0..SLOTS {
             for (a, b) in self.moments[k].iter_mut().zip(&c.moments[k]) {
@@ -648,10 +675,14 @@ impl StrayTally {
             -failed,
         ]
         .into_iter());
-        let owned_flux = sum(&mut PathClass::ALL
+        let mut owned_flux = sum(&mut PathClass::ALL
             .iter()
             .filter(|c| owned.contains(**c))
             .map(|c| detected_by_class[c.index()]));
+        let uncovered = self.detected_uncovered.value();
+        if uncovered != 0.0 {
+            owned_flux = sum(&mut [owned_flux, uncovered].into_iter());
+        }
         let report = EnergyReport {
             emitted,
             emitted_by_wavelength: self.emitted_by_wavelength.iter().map(v).collect(),
@@ -685,6 +716,7 @@ impl StrayTally {
             owned_classes: owned,
             detected_owned: owned_flux,
             detected_owned_std_error: self.se(owned_flux, self.owned_sq.value()),
+            detected_uncovered_ghost: uncovered,
             absorbed,
             absorbed_by_sink,
             escaped,
@@ -866,9 +898,14 @@ pub struct EnergyReport {
     /// `[wavelength][class]`.
     pub detected_by_wavelength: Vec<Vec<f64>>,
     pub owned_classes: ClassMask,
-    /// Detected flux in `owned_classes`.
+    /// Detected flux in `owned_classes`, plus `detected_uncovered_ghost`.
     pub detected_owned: f64,
     pub detected_owned_std_error: f64,
+    /// `Ghost`-class flux outside the coverage of the ghost run the stray
+    /// run is combined with (`StraySettings::covered_ghosts`): owned by the
+    /// stray solver even when `Ghost` is not in `owned_classes`.
+    #[serde(default)]
+    pub detected_uncovered_ghost: f64,
     pub absorbed: f64,
     pub absorbed_by_sink: Vec<(Sink, f64)>,
     /// Left the scene from the ambient medium.

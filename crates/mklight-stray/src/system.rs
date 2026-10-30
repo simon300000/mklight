@@ -391,7 +391,8 @@ impl StraySystem {
             return Err(MkError::InvalidModel(format!(
                 "the ghost run clips at different apertures than the stray scene \
                  (first at surface {j}: ghost {:?}, stray {:?}); use the default ghost clipping \
-                 (clear apertures, no margin) and the same semi-diameter settings",
+                 (clear apertures, no margin) and this scene's semi-diameters \
+                 (GhostModel::with_semi_diameters)",
                 coverage.apertures.get(j),
                 mine.get(j)
             )));

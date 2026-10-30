@@ -164,8 +164,14 @@ Ownership, precisely:
   comparison only.
 
 When both solvers run, set `StrayAnalysisSettings::exclude_ghost_class`
-(or use `ClassMask::STRAY_WITH_GHOST` as `StraySettings::owned_classes`):
-the stray total and maps then hold `Scatter + Mechanical + Sneak` only, and
+and pass the ghost run's `GhostCoverage` as `ghost_coverage` (or use
+`ClassMask::STRAY_WITH_GHOST` as `StraySettings::owned_classes` with the
+coverage's paths as `StraySettings::covered_ghosts`): the stray total and
+maps then hold `Scatter + Mechanical + Sneak` plus the `Ghost` paths the
+ghost run did not trace (`EnergyReport::detected_uncovered_ghost`: orders
+above its `max_reflections`, paths it filtered out; a path whose signature
+overflowed is never covered, so a coverage with more reflections than a
+signature keeps is refused), and
 
 ```text
 detected = Primary (sequential) + Ghost (ghost solver) + stray total
@@ -181,17 +187,24 @@ the scene's clear apertures come from `mklight_ghost::clip_apertures`, and
 solver's terms. `StraySystem::check_ghost_coverage(&coverage)` (or
 `ghost_coverage` in the analysis settings) refuses a ghost run whose
 `GhostCoverage` has different interface kinds or apertures, e.g. a
-`ClearApertures` margin or other semi-diameter settings.
+`ClearApertures` margin or other semi-diameter settings. The comparison
+is bit-exact (a ray at the rim must be clipped by both or neither), so
+two independent sizings must agree to the last bit; with non-default
+`semi_diameters`, build the ghost model from the scene's sizing,
+`GhostModel::with_semi_diameters(tracer, settings,
+system.semi_diameters.clone())` (`GhostModel::sized` sizes with given
+settings, cancellably).
 `tests/partition.rs` checks the sum on a singlet and a Cooke triplet
 coated with an ideal 5 % reflector (orders 2 and 4 in the ghost run,
 on-axis and off-axis fields): the stray `Ghost` class matches the ghost
 solver within |z| < 1.2, the remainder of the detected flux equals ghost
 solver + stray total within |z| < 1.2, and counting the `Ghost` class in
-both solvers is off by z < −30. The stray solver drops the whole `Ghost`
-class: ghost orders the ghost run did not trace are counted by neither
-solver, so the ghost run must cover every order that matters. The exclusion changes only the
-tallies, not the random
-streams, so a run with and without it differs by exactly the `Ghost` flux
+both solvers is off by z < −30. A ghost run to 2 reflections on the Cooke
+triplet with 30 % reflectors leaves a quarter of the ghost light to higher
+orders: with its coverage the stray total keeps them and the partition
+closes (|z| < 1), without it (the whole class dropped) it misses them by
+z ≈ 33. The exclusion changes only the tallies, not the random streams, so
+a run with and without it differs by exactly the covered `Ghost` flux
 (tested).
 
 ### Path signatures
@@ -304,7 +317,8 @@ strength}`, `system_field {index, margin, strength}`, `out_of_field
 reference_flux}`), `rays`, `seed`, `classes` (bit mask, default all but
 `Primary`), `exclude_ghost_class`, `detector_pixels`, `top_signatures`,
 `ghost_coverage` (the coverage record of the ghost run combined with this
-one; the analysis fails unless the scene clips at its apertures),
+one; the analysis fails unless the scene clips at its apertures, and with
+`exclude_ghost_class` the ghost paths outside it stay in the total),
 `scene` (`SceneOptions`), `semi_diameters`, `detector_margin`, `transport`
 (`mode`, `max_events`, `roulette_threshold`, `split_ceiling`,
 `scatter_reflection`, `scatter_transmission`, `chunk_rays`). Validation:

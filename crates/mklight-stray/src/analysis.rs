@@ -17,7 +17,12 @@
 //! removed from the total, so a front end can add ghost-solver and
 //! stray-solver irradiance without counting any path twice
 //! (`docs/STRAY.md`, "Partition"). Pass the ghost run's coverage record
-//! (`ghost_coverage`) to have the shared apertures checked.
+//! (`ghost_coverage`) as well: the shared apertures are then checked, and
+//! the `Ghost`-class paths the ghost run did not trace (higher orders than
+//! its `max_reflections`, paths it filtered out) stay in the stray total
+//! (`EnergyReport::detected_uncovered_ghost`), so that every ghost order is
+//! counted exactly once. Without it the whole class is removed and those
+//! orders are counted by neither solver.
 //!
 //! # Reproducibility
 //!
@@ -180,11 +185,12 @@ pub struct StrayAnalysisSettings {
     /// `Primary`).
     pub classes: ClassMask,
     /// Remove `Ghost` from `classes` because the explicit ghost solver owns
-    /// those paths.
+    /// those paths (those of `ghost_coverage` when given, module docs).
     pub exclude_ghost_class: bool,
     /// The coverage record of the ghost run this analysis is combined with.
     /// When given, the analysis fails unless the scene clips at exactly the
-    /// ghost run's apertures ([`StraySystem::check_ghost_coverage`]).
+    /// ghost run's apertures ([`StraySystem::check_ghost_coverage`]), and
+    /// with `exclude_ghost_class` the ghost paths outside it are kept.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ghost_coverage: Option<mklight_ghost::GhostCoverage>,
     /// Detector map size `(nx, ny)`.
@@ -257,6 +263,12 @@ impl StrayAnalysisSettings {
             owned_classes: self.effective_classes(),
             start_medium: None,
             signatures: self.top_signatures > 0,
+            // Ghost orders the ghost run did not trace stay with the stray
+            // solver (CONVENTIONS §10).
+            covered_ghosts: match (&self.ghost_coverage, self.exclude_ghost_class) {
+                (Some(c), true) => Some(c.paths.clone()),
+                _ => None,
+            },
         }
     }
 
@@ -419,7 +431,7 @@ pub fn analyze_system(
     let top_signatures = r
         .signatures
         .iter()
-        .filter(|s| owned.contains(s.class))
+        .filter(|s| ss.owns(s.class, &s.signature))
         .take(settings.top_signatures)
         .cloned()
         .collect();
