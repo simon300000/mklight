@@ -134,6 +134,11 @@ fn achromat(id0: u64, reversed: bool, t_after: f64) -> Vec<Surface> {
 /// N-SK16 / F2 / N-SK16 triplet of 50 mm focal length and 40° full field
 /// (originally F/5) with N-SK16 for SK16, opened here to F/4. The image is at
 /// the RMS best focus.
+///
+/// L3 is edged to a Ø17.2 mm mount ([`COOKE_L3_MECHANICAL_SD`]), 0.4–0.6 mm
+/// beyond its clear apertures (≈ 8.0 and 8.2 mm): its edge is 0.61 mm thick
+/// at the clear aperture, 0.35 mm at the mount, and would be negative at the
+/// default 1 mm mechanical margin of the stray-light scene.
 pub fn cooke_triplet() -> OpticalSystem {
     let mut sys = system("Cooke triplet f50 F/4", "SK16/F2/SK16 triplet, 40° field");
     sys.aperture = ApertureSpec::EntrancePupilDiameter { value: 12.5 };
@@ -148,10 +153,15 @@ pub fn cooke_triplet() -> OpticalSystem {
         s(6, "L3 rear", sph(-18.39533), COOKE_BFL, air()),
         image(7),
     ];
+    for j in [5, 6] {
+        sys.surfaces[j].edge.mechanical_semi_diameter = Some(COOKE_L3_MECHANICAL_SD);
+    }
     sys.stop = 4;
     sys
 }
 const COOKE_BFL: f64 = 42.252_162;
+/// Mechanical semi-diameter of the Cooke triplet's L3 (mm).
+pub const COOKE_L3_MECHANICAL_SD: f64 = 8.6;
 
 /// Six-element Double-Gauss camera lens, f ≈ 50 mm, F/2, ±14°.
 ///

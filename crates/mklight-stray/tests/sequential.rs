@@ -182,6 +182,35 @@ fn double_gauss_sample_is_physical() {
     }
 }
 
+/// No sample's stray scene, built with the default options (1 mm mechanical
+/// margin beyond automatic clear apertures), has a negative edge or
+/// surfaces crossing inside their clear apertures. The check can fail: the
+/// Cooke triplet's L3 has a negative edge without its explicit mount.
+#[test]
+fn sample_scenes_have_no_negative_edges() {
+    let bad = |sys: &mklight_stray::StraySystem| -> Vec<String> {
+        sys.scene
+            .warnings
+            .iter()
+            .filter(|w| w.contains("edge thickness") || w.contains("intersect inside"))
+            .cloned()
+            .collect()
+    };
+    for (name, s) in mklight_core::samples::all() {
+        let sys = stray_system(s, &mklight_stray::SystemOptions::default());
+        assert_eq!(bad(&sys), Vec::<String>::new(), "{name}");
+    }
+    let mut ck = mklight_core::samples::cooke_triplet();
+    for j in [5, 6] {
+        ck.surfaces[j].edge.mechanical_semi_diameter = None;
+    }
+    let sys = stray_system(ck, &mklight_stray::SystemOptions::default());
+    assert_eq!(
+        bad(&sys),
+        ["negative edge thickness between surfaces 5 and 6"]
+    );
+}
+
 /// Surfaces that intersect inside their clear apertures are reported. The
 /// Monte Carlo then (correctly) departs from the purely sequential model,
 /// which ignores the crossing; the reference's path check against the scene

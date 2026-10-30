@@ -109,13 +109,27 @@ fn min_separation(sys: &OpticalSystem, i: usize, ca: [f64; 2], r_max: f64) -> f6
         .fold(f64::INFINITY, |m, g| if g >= m { m } else { g })
 }
 
+/// Edge thickness of the element between surfaces `i` and `i + 1` at their
+/// mechanical rims, as the stray-light scene builds them: the explicit
+/// mechanical semi-diameter, else the clear one `ca` plus the scene's
+/// default 1 mm margin (`SceneOptions::default_edge_margin`).
+fn mechanical_edge(sys: &OpticalSystem, i: usize, ca: [f64; 2]) -> f64 {
+    let rim = |k: usize| {
+        let s = &sys.surfaces[i + k];
+        let m = s.edge.mechanical_semi_diameter.unwrap_or(ca[k] + 1.0);
+        s.shape.sag(m * m).unwrap_or(f64::NAN)
+    };
+    sys.surfaces[i].thickness + rim(1) - rim(0)
+}
+
 #[test]
 fn sample_elements_are_physical_over_their_clear_apertures() {
     // At the automatic clear semi-diameters (the full field, with the
     // fields' vignetting factors): every glass element has an edge
-    // thickness ≥ 0.5 mm out to the larger of its two clear apertures, and
-    // no two surfaces cross inside the smaller clear aperture of an air
-    // space. Mirrors, coordinate breaks and tilted surfaces are skipped.
+    // thickness ≥ 0.5 mm out to the larger of its two clear apertures and
+    // > 0.2 mm at its mechanical rims, and no two surfaces cross inside the
+    // smaller clear aperture of an air space. Mirrors, coordinate breaks
+    // and tilted surfaces are skipped.
     use mklight_core::{Interaction, MaterialRef};
     use mklight_trace::SemiDiameterSettings;
     for (name, sys) in samples::all() {
@@ -148,10 +162,26 @@ fn sample_elements_are_physical_over_their_clear_apertures() {
                 i + 1,
                 if glass { "glass" } else { "air" }
             );
+            if glass {
+                let edge = mechanical_edge(&sys, i, [c0, c1]);
+                assert!(
+                    edge > 0.2,
+                    "{name}: element {i}–{} has a {edge:.4} mm edge at its mechanical rim",
+                    i + 1
+                );
+            }
             checked += 1;
         }
         assert!(checked > 0 || name == "newtonian", "{name}");
     }
+    // The mechanical check can fail: the Cooke triplet's L3 at the default
+    // margin instead of its mount.
+    let mut ck = samples::cooke_triplet();
+    for j in [5, 6] {
+        ck.surfaces[j].edge.mechanical_semi_diameter = None;
+    }
+    let sd = tracer(ck.clone()).semi_diameters(&SemiDiameterSettings::default());
+    assert!(mechanical_edge(&ck, 5, [sd.values[5], sd.values[6]]) < 0.0);
     // The check can fail: the Double Gauss without its vignetting factors
     // needs clear apertures where L1 and L6 have negative edge thickness.
     let mut dg = samples::double_gauss();

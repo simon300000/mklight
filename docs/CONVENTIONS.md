@@ -282,8 +282,16 @@ override or pickup of it) and the image thickness. Codes:
 `field_angle_too_large`, `invalid_environment`, `invalid_ray_aiming`,
 `duplicate_surface_id`, `infinite_thickness`, `invalid_focal_length`,
 `invalid_material`, `unknown_coating`, `invalid_semi_diameter`,
-`invalid_aperture`, `invalid_mechanical_semi_diameter`, `invalid_scatter`,
+`invalid_aperture`, `invalid_mechanical_semi_diameter`, `invalid_scatter`
+(also a TIS outside `[0, 1]`), `invalid_vignetting` (a pupil compression
+`vcx`/`vcy` outside `[0, 1)`),
 `coordinate_break_at_end`, `image_mirror`, `invalid_coating`,
 `missing_surface` (mechanics, overrides, solves and pickups),
 `invalid_mechanics`, `invalid_sensor`, `invalid_configuration`,
-`invalid_solve`. Codes are stable; messages may change.
+`invalid_solve`. A configuration override is checked by the same rules on
+the configured system: an issue it causes is reported at
+`configurations[k].overrides[j]` with the underlying code
+(`invalid_aperture_value` for an F/# override of 0). Unit variants of
+tagged enums (`{"mode": "auto"}`, `{"type": "plane"}`, …) take no other
+keys, like every other object of the model. Codes are stable; messages
+may change.

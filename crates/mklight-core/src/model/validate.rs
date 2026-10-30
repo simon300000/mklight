@@ -11,6 +11,12 @@
 //! may hold are the thickness of the object (object at infinity) and of the
 //! image surface (it has no successor), and an override or pickup of the
 //! object thickness.
+//!
+//! Deliberately permissive: all field (or all wavelength) weights zero is
+//! a model in the middle of an edit, which the engine's `validate`
+//! analysis reports as the warning `zero_weights`; a `Barrel` whose `from`
+//! surface follows `to` describes the same cylinder between the two vertex
+//! planes (the stray scene orders the ends).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -75,18 +81,27 @@ impl Issues {
     }
 }
 
+/// A total integrated scatter: a fraction of the incident power, in `[0, 1]`.
+fn check_tis(out: &mut Issues, path: String, tis: f64) {
+    if out.finite(path.clone(), tis) && !(0.0..=1.0).contains(&tis) {
+        out.push(
+            "invalid_scatter",
+            path,
+            format!("a total integrated scatter must lie in [0, 1] (got {tis})"),
+        );
+    }
+}
+
 fn check_scatter(out: &mut Issues, path: &str, m: &ScatterModel) {
     match *m {
-        ScatterModel::Lambertian { tis } => {
-            out.non_negative("invalid_scatter", format!("{path}.tis"), tis)
-        }
+        ScatterModel::Lambertian { tis } => check_tis(out, format!("{path}.tis"), tis),
         ScatterModel::Abg { a, b, g } => {
             out.non_negative("invalid_scatter", format!("{path}.a"), a);
             out.non_negative("invalid_scatter", format!("{path}.b"), b);
             out.finite(format!("{path}.g"), g);
         }
         ScatterModel::Gaussian { tis, sigma_slope } => {
-            out.non_negative("invalid_scatter", format!("{path}.tis"), tis);
+            check_tis(out, format!("{path}.tis"), tis);
             out.positive(
                 "invalid_scatter",
                 format!("{path}.sigma_slope"),
@@ -239,7 +254,9 @@ fn solve_issue(e: &MkError) -> (String, &'static str, String) {
 
 impl OpticalSystem {
     /// Every structural problem of the model (module docs), in a fixed order.
-    /// Empty for a valid model.
+    /// Empty for a valid model. Each rule runs independently of the others,
+    /// except that the solve checks stop at their first problem and a model
+    /// with fewer than three surfaces reports only that.
     pub fn validation_issues(&self) -> Vec<ValidationIssue> {
         let mut out = Issues::default();
         let n = self.surfaces.len();
@@ -300,13 +317,20 @@ impl OpticalSystem {
             out.finite(format!("{p}.y"), f.y);
             out.non_negative("negative_weight", format!("{p}.weight"), f.weight);
             let v = &f.vignetting;
-            for (name, x) in [
-                ("vdx", v.vdx),
-                ("vdy", v.vdy),
-                ("vcx", v.vcx),
-                ("vcy", v.vcy),
-            ] {
-                out.finite(format!("{p}.vignetting.{name}"), x);
+            out.finite(format!("{p}.vignetting.vdx"), v.vdx);
+            out.finite(format!("{p}.vignetting.vdy"), v.vdy);
+            // `P' = vd + (1 − vc)·P` (CONVENTIONS §3): a compression of 1
+            // leaves no pupil, above 1 inverts it, below 0 samples beyond
+            // the unvignetted pupil.
+            for (name, x) in [("vcx", v.vcx), ("vcy", v.vcy)] {
+                let vp = format!("{p}.vignetting.{name}");
+                if out.finite(vp.clone(), x) && !(0.0..1.0).contains(&x) {
+                    out.push(
+                        "invalid_vignetting",
+                        vp,
+                        format!("a pupil compression must lie in [0, 1) (got {x})"),
+                    );
+                }
             }
         }
         let infinite_object = self.object_at_infinity();
@@ -551,39 +575,81 @@ impl OpticalSystem {
             }
         }
 
-        // Configurations: every path resolves, every value is a number the
-        // parameter can hold (±∞ only for the object distance).
-        for (k, c) in self.configurations.iter().enumerate() {
-            for (j, (path, v)) in c.overrides.iter().enumerate() {
-                let p = format!("configurations[{k}].overrides[{j}]");
-                if let Err(e) = path.get(self) {
-                    let code = if e.to_string().contains("no surface with id") {
-                        "missing_surface"
-                    } else {
-                        "invalid_configuration"
-                    };
-                    out.push(code, p, e.to_string());
-                    continue;
-                }
-                let object_distance = matches!(path, ParamPath::Thickness { surface }
-                    if self.surface_index(*surface) == Some(0));
-                if v.is_nan() || (v.is_infinite() && !object_distance) {
-                    out.push(
-                        "non_finite",
-                        p,
-                        format!("configuration {k}: {v} is not a finite number"),
-                    );
-                }
-            }
-        }
-
-        // Solves (structure, targets, sources, cycles). Checked on an
-        // otherwise valid model only: their rules assume one.
-        if out.0.is_empty()
-            && let Err(e) = crate::model::solve::validate_solves(self)
-        {
+        // Solves (structure, targets, sources, cycles): the first problem.
+        if let Err(e) = crate::model::solve::validate_solves(self) {
             let (path, code, msg) = solve_issue(&e);
             out.push(code, path, msg);
+        }
+
+        // Configurations: every path resolves, every value is a number the
+        // parameter can hold (±∞ only for the object distance), and the
+        // configured system obeys the same rules as the nominal one. Each
+        // override is applied alone to the nominal system and a new issue
+        // is reported at the override with the underlying code; issues that
+        // only the overrides of a configuration together cause are reported
+        // at the configuration.
+        if !self.configurations.is_empty() {
+            let mut nominal = self.clone();
+            nominal.configurations.clear();
+            let key = |i: &ValidationIssue| (i.code.clone(), i.path.clone());
+            let known: std::collections::BTreeSet<_> =
+                nominal.validation_issues().iter().map(key).collect();
+            for (k, c) in self.configurations.iter().enumerate() {
+                let mut seen = known.clone();
+                let mut all = Some(nominal.clone());
+                for (j, (path, v)) in c.overrides.iter().enumerate() {
+                    let p = format!("configurations[{k}].overrides[{j}]");
+                    if let Err(e) = path.get(self) {
+                        let code = if e.to_string().contains("no surface with id") {
+                            "missing_surface"
+                        } else {
+                            "invalid_configuration"
+                        };
+                        out.push(code, p, e.to_string());
+                        all = None;
+                        continue;
+                    }
+                    let object_distance = matches!(path, ParamPath::Thickness { surface }
+                        if self.surface_index(*surface) == Some(0));
+                    if v.is_nan() || (v.is_infinite() && !object_distance) {
+                        out.push(
+                            "non_finite",
+                            p,
+                            format!("configuration {k}: {v} is not a finite number"),
+                        );
+                        all = None;
+                        continue;
+                    }
+                    let mut one = nominal.clone();
+                    let applied = path.set(&mut one, *v).and_then(|_| match &mut all {
+                        Some(a) => path.set(a, *v),
+                        None => Ok(()),
+                    });
+                    if let Err(e) = applied {
+                        out.push("invalid_configuration", p, e.to_string());
+                        all = None;
+                        continue;
+                    }
+                    for i in one.validation_issues() {
+                        if seen.insert(key(&i)) {
+                            out.push(
+                                &i.code,
+                                p.clone(),
+                                format!("configuration {k} sets {}: {}", i.path, i.message),
+                            );
+                        }
+                    }
+                }
+                for i in all.map(|a| a.validation_issues()).unwrap_or_default() {
+                    if seen.insert(key(&i)) {
+                        out.push(
+                            &i.code,
+                            format!("configurations[{k}]"),
+                            format!("configuration {k}: {}: {}", i.path, i.message),
+                        );
+                    }
+                }
+            }
         }
         out.0
     }
@@ -795,14 +861,114 @@ mod tests {
                 "coatings[\"AR\"].layers[0].extinction".into()
             )]
         );
-        // The object distance alone may be infinite, also as an override.
+        // The object distance alone may be infinite, also as an override
+        // (a camera lens focused at infinity and at 2 m).
+        let object = ParamPath::Thickness {
+            surface: SurfaceId(0),
+        };
+        let mut s = samples::cooke_triplet();
+        s.configurations.push(override_of(object.clone(), 2000.0));
+        s.configurations.push(override_of(object.clone(), inf));
+        assert_eq!(issues(&s), vec![]);
+        // But the configured system must be valid: the relay's object
+        // heights and object-space NA need a finite object.
         let mut s = samples::finite_relay();
-        s.configurations.push(override_of(
-            ParamPath::Thickness {
-                surface: SurfaceId(0),
-            },
-            inf,
-        ));
+        s.configurations.push(override_of(object, inf));
+        let p = "configurations[0].overrides[0]";
+        assert_eq!(
+            issues(&s),
+            [
+                ("object_height_at_infinity".into(), p.into()),
+                ("object_na_at_infinity".into(), p.into())
+            ]
+        );
+    }
+
+    #[test]
+    fn configured_values_obey_the_nominal_rules() {
+        let cfg = |overrides: Vec<(ParamPath, f64)>| {
+            move |s: &mut OpticalSystem| {
+                s.configurations.push(Configuration {
+                    name: "c".into(),
+                    overrides,
+                })
+            }
+        };
+        let p = "configurations[0].overrides[0]";
+        rejects(
+            "invalid_aperture_value",
+            p,
+            cfg(vec![(ParamPath::ApertureValue, 0.0)]),
+        );
+        rejects(
+            "invalid_aperture_value",
+            p,
+            cfg(vec![(ParamPath::ApertureValue, -2.0)]),
+        );
+        rejects(
+            "negative_weight",
+            p,
+            cfg(vec![(ParamPath::FieldWeight { index: 0 }, -1.0)]),
+        );
+        rejects(
+            "negative_weight",
+            p,
+            cfg(vec![(ParamPath::WavelengthWeight { index: 0 }, -1.0)]),
+        );
+        rejects(
+            "invalid_wavelength",
+            p,
+            cfg(vec![(ParamPath::WavelengthUm { index: 0 }, -0.5)]),
+        );
+        // A value the parameter itself refuses (`ParamPath::set`).
+        rejects(
+            "invalid_configuration",
+            p,
+            cfg(vec![(
+                ParamPath::SemiDiameter {
+                    surface: SurfaceId(3),
+                },
+                -1.0,
+            )]),
+        );
+        rejects(
+            "field_angle_too_large",
+            "configurations[0].overrides[1]",
+            cfg(vec![
+                (ParamPath::FieldY { index: 0 }, 1.0),
+                (ParamPath::FieldY { index: 2 }, 95.0),
+            ]),
+        );
+        // The message names the configured value.
+        let mut s = samples::cooke_triplet();
+        cfg(vec![(ParamPath::ApertureValue, 0.0)])(&mut s);
+        let e = s.validation_issues()[0].message.clone();
+        assert!(e.contains("configuration 0 sets aperture.value"), "{e}");
+        // Each issue once per configuration, in every configuration.
+        let mut s = samples::cooke_triplet();
+        for _ in 0..2 {
+            cfg(vec![
+                (ParamPath::ApertureValue, 0.0),
+                (ParamPath::ApertureValue, -1.0),
+            ])(&mut s);
+        }
+        assert_eq!(
+            issues(&s),
+            [
+                ("invalid_aperture_value".into(), p.into()),
+                (
+                    "invalid_aperture_value".into(),
+                    "configurations[1].overrides[0]".into()
+                )
+            ]
+        );
+        // Valid overrides pass.
+        let mut s = samples::cooke_triplet();
+        cfg(vec![
+            (ParamPath::ApertureValue, 8.0),
+            (ParamPath::FieldWeight { index: 2 }, 0.0),
+            (ParamPath::WavelengthUm { index: 0 }, 0.45),
+        ])(&mut s);
         assert_eq!(issues(&s), vec![]);
     }
 
@@ -895,6 +1061,59 @@ mod tests {
                     sigma_slope: 0.0,
                 })
             },
+        );
+    }
+
+    #[test]
+    fn physical_ranges_of_scatter_and_vignetting() {
+        rejects("invalid_scatter", "surfaces[5].scatter.tis", |s| {
+            s.surfaces[5].scatter = Some(ScatterModel::Lambertian { tis: 5.0 })
+        });
+        rejects("invalid_scatter", "mechanics[0].finish.tis", |s| {
+            s.mechanics.push(MechanicalPart::Barrel {
+                from: SurfaceId(1),
+                to: SurfaceId(6),
+                inner_radius: 10.0,
+                finish: ScatterModel::Gaussian {
+                    tis: 1.5,
+                    sigma_slope: 0.1,
+                },
+            })
+        });
+        for v in [1.0, 1.5, -3.0] {
+            rejects(
+                "invalid_vignetting",
+                "fields.fields[2].vignetting.vcy",
+                |s| s.fields.fields[2].vignetting.vcy = v,
+            );
+        }
+        rejects(
+            "invalid_vignetting",
+            "fields.fields[1].vignetting.vcx",
+            |s| s.fields.fields[1].vignetting.vcx = -0.1,
+        );
+        // The bounds themselves are allowed.
+        let mut s = samples::cooke_triplet();
+        s.surfaces[5].scatter = Some(ScatterModel::Lambertian { tis: 1.0 });
+        s.fields.fields[2].vignetting.vcy = 0.99;
+        s.fields.fields[2].vignetting.vdy = -0.5;
+        assert_eq!(issues(&s), vec![]);
+    }
+
+    #[test]
+    fn solve_checks_run_beside_other_issues() {
+        let t = |id| ParamPath::Thickness {
+            surface: SurfaceId(id),
+        };
+        let mut s = samples::cooke_triplet();
+        s.solves.push(Solve::pickup(t(2), t(3), f64::NAN, 0.0));
+        s.fields.fields[1].weight = -1.0;
+        assert_eq!(
+            issues(&s),
+            [
+                ("negative_weight".into(), "fields.fields[1].weight".into()),
+                ("invalid_solve".into(), "solves[0]".into())
+            ]
         );
     }
 
