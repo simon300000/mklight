@@ -9,9 +9,9 @@
 //! | `Scatter` | at least one scattering event (BSDF sample) anywhere | stray |
 //! | `Mechanical` | touched non-optical geometry with a specular reflection, no scatter | stray |
 //! | `Sneak` | specular only, but crossed an optical surface outside its sequential clipping aperture | stray |
-//! | `Ghost` | specular only, inside the clipping apertures, ≥ 2 *stray reflections* | ghost |
+//! | `Ghost` | specular only, inside the clipping apertures, an even number ≥ 2 of *stray reflections* in their implied sequential order | ghost for covered paths, otherwise stray |
 //! | `Primary` | specular only, every interface met in designed order with the designed interaction, 0 stray reflections | sequential |
-//! | `Sneak` | anything else specular (out-of-sequence paths with fewer than 2 stray reflections) | stray |
+//! | `Sneak` | anything else specular (including out-of-sequence paths at any reflection order) | stray |
 //!
 //! A *stray reflection* is a specular reflection, including total internal
 //! reflection, at a refracting (or ideal-lens) interface. Mirror reflections
@@ -109,6 +109,10 @@ pub mod flags {
     pub const OUTSIDE_CLIP: u8 = 8;
     /// At least one total internal reflection.
     pub const TIR: u8 = 16;
+    /// Physical events departed from the sequence implied by reflections.
+    pub const IRREGULAR_SPECULAR: u8 = 32;
+    /// Walking backward through that sequence (designed mirrors do not flip it).
+    pub const BACKWARD: u8 = 64;
 }
 
 /// No surface recorded.
@@ -312,6 +316,9 @@ pub struct History {
     pub stray_reflections: u8,
     /// Position in `Scene::sequence` of the next designed surface.
     pub next_seq: u16,
+    /// Next surface in the specular walk, including ghost reversals. Signed
+    /// so a path leaving through the front cannot wrap back into the train.
+    next_specular: i32,
     /// Surfaces of the first two stray reflections (`NO_SURFACE` if none).
     pub first_reflections: [u16; 2],
     /// Number of scattering events (saturating).
@@ -326,6 +333,7 @@ impl Default for History {
             flags: 0,
             stray_reflections: 0,
             next_seq: 0,
+            next_specular: 0,
             first_reflections: [NO_SURFACE; 2],
             scatter_events: 0,
             signature: Signature::default(),
@@ -339,6 +347,14 @@ impl History {
         self.flags & f != 0
     }
 
+    pub(crate) fn expected_specular(&self, sequence: &[usize]) -> Option<usize> {
+        if self.has(flags::IRREGULAR_SPECULAR | flags::SCATTERED | flags::MECHANICAL) {
+            None
+        } else {
+            sequence.get(self.next_specular as usize).copied()
+        }
+    }
+
     /// Records a specular interaction with interface `surface`. `designed`
     /// says whether the side and the interaction match the sequential model.
     /// `stray_reflection` marks a reflection at a refracting surface.
@@ -349,6 +365,13 @@ impl History {
         designed: bool,
         stray_reflection: bool,
     ) {
+        if sequence.get(self.next_specular as usize) != Some(&surface) {
+            self.flags |= flags::IRREGULAR_SPECULAR;
+        }
+        if stray_reflection {
+            self.flags ^= flags::BACKWARD;
+        }
+        self.next_specular += if self.has(flags::BACKWARD) { -1 } else { 1 };
         let in_seq = !self.has(flags::OUT_OF_SEQUENCE)
             && designed
             && sequence.get(self.next_seq as usize) == Some(&surface);
@@ -387,7 +410,10 @@ impl History {
             PathClass::Mechanical
         } else if self.has(flags::OUTSIDE_CLIP) {
             PathClass::Sneak
-        } else if self.stray_reflections >= 2 {
+        } else if self.stray_reflections >= 2
+            && !self.has(flags::IRREGULAR_SPECULAR | flags::BACKWARD)
+            && self.next_specular == sequence.len() as i32 - 1
+        {
             PathClass::Ghost
         } else if self.stray_reflections == 0
             && !self.has(flags::OUT_OF_SEQUENCE)
@@ -436,6 +462,34 @@ mod tests {
         let mut h = History::default();
         h.specular(&SEQ, 1, false, true);
         assert_eq!(h.classify(&SEQ), PathClass::Sneak);
+    }
+
+    #[test]
+    fn covered_reflections_with_a_skipped_interface_stay_stray() {
+        let mut h = History::default();
+        // Same [3,1] reflections as the canonical ghost above, but missing
+        // the forward transmission through surface 2. Reflection lists
+        // alone cannot determine ownership (CONVENTIONS §10).
+        for (surface, designed, reflected) in [
+            (1, true, false),
+            (3, false, true),
+            (2, false, false),
+            (1, false, true),
+            (2, false, false),
+            (3, false, false),
+        ] {
+            h.specular(&SEQ, surface, designed, reflected);
+            if reflected {
+                h.signature.push(EventKind::Reflect, surface);
+            }
+        }
+        let settings = crate::StraySettings {
+            owned_classes: ClassMask::STRAY_WITH_GHOST,
+            covered_ghosts: Some([mklight_ghost::GhostPath::new(vec![3, 1])].into()),
+            ..Default::default()
+        };
+        assert_eq!(h.classify(&SEQ), PathClass::Sneak);
+        assert!(settings.owns(h.classify(&SEQ), &h.signature));
     }
 
     #[test]

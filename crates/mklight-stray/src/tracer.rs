@@ -506,8 +506,19 @@ impl<C: RayCaster> Tracer<'_, C> {
                     }
                     Behavior::Interface(i) => {
                         let mirror = i.kind == InterfaceKind::Mirror;
-                        let expected = scene.sequence.get(s.hist.next_seq as usize).copied();
-                        let (pass, designed) = i.pass_for(side, expected);
+                        let expected = s.hist.expected_specular(&scene.sequence);
+                        // A folded train can visit one physical interface
+                        // under two surface indices. On a ghost's backward
+                        // leg, use the reverse of the expected pass.
+                        let reverse_pass = (!mirror && s.hist.has(flags::BACKWARD))
+                            .then(|| {
+                                i.passes.iter().find(|p| {
+                                    Some(p.surface) == expected && p.incident_side != side
+                                })
+                            })
+                            .flatten();
+                        let (pass, designed) =
+                            reverse_pass.map_or_else(|| i.pass_for(side, expected), |p| (p, false));
                         if mirror && !designed {
                             tally.absorb(Sink::MirrorBack, s.w);
                             break;

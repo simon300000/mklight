@@ -129,9 +129,9 @@ history (`path::History::classify`, first match wins):
 | `Scatter` | at least one BSDF scattering event, on any surface | stray |
 | `Mechanical` | no scatter, but a specular reflection off non-optical geometry (edges, flats, mounts, stop plates, barrels, baffles) | stray |
 | `Sneak` | specular only, but crossed or reflected off an optical surface outside its sequential clipping aperture | stray |
-| `Ghost` | specular only, inside every clipping aperture, ≥ 2 *stray reflections* | explicit ghost solver (stray: comparison only) |
+| `Ghost` | specular only, inside every clipping aperture, an even number ≥ 2 of *stray reflections* in the sequential order they imply | explicit ghost solver for covered paths, otherwise stray |
 | `Primary` | specular only, every interface met in designed order with its designed interaction, 0 stray reflections | sequential tracer |
-| `Sneak` | every other specular path (out of sequence with < 2 stray reflections, e.g. one reflection off a tilted window) | stray |
+| `Sneak` | every other specular path (out of sequence at any reflection order, e.g. one reflection off a tilted window) | stray |
 
 A *stray reflection* is a specular reflection, including total internal
 reflection, at a refracting (or ideal-lens) interface. A mirror's
@@ -139,6 +139,16 @@ reflection is its designed interaction and does not count; its back side
 absorbs. A surface that the sequential model visits twice (double-pass
 elements) is one primitive with two passes, and the designed return pass
 stays `Primary`.
+
+`History` checks the actual optical-surface walk as it happens, reversing
+its expected order at each extra reflection. A skipped interface, an odd
+number of reflections, or detection before the walk reaches the image is
+`Sneak`, even if its reflection list matches a covered ghost. The list alone
+cannot prove coverage. For a folded train with two indices on one physical
+interface, a backward ghost leg selects the reverse of its expected pass;
+this keeps signatures canonical without changing the designed primary path.
+Tests cover a skipped interface with an otherwise covered reflection list
+and the exact even/odd reflection sums in a double-pass plate.
 
 Ownership, precisely:
 
