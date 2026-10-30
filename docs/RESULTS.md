@@ -1354,7 +1354,7 @@ Result (`result` in the envelope):
 
 ### `stray_light` — Stray light
 
-Category `stray`, result version 1.
+Category `stray`, result version 2.
 
 Non-sequential Monte-Carlo stray light: detector irradiance per path class (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, the strongest path signatures and an energy balance. With `ghost_partition` the ghost paths the explicit ghost run covers are left to it, with identical apertures; uncovered ghost paths stay in the stray total.
 
@@ -1386,32 +1386,29 @@ Result (`result` in the envelope):
 | `energy` | object |  | Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md). |
 | `map_classes` | array<string> |  | Class of each row of class_irradiance, in path-class order. |
 | `partition` | object? |  |  |
-| `partition.ambiguous_ghost_flux` | number | W | Part of uncovered_ghost_flux whose signature overflowed and may be covered (warned). |
 | `partition.apertures` | array<object> |  | The shared clipping per surface. |
 | `partition.covered_ghost_flux_mc` | number | W | Monte-Carlo flux of the ghost signatures the ghost run covers (its counterpart is the ghost solver's total). |
-| `partition.covered_ghost_std_error` | number | W | Upper bound: the sum of the signatures' standard errors. |
+| `partition.covered_ghost_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error. |
 | `partition.excluded_class` | string |  | Always `ghost`. |
 | `partition.ghost_class_flux_mc` | number | W | Monte-Carlo estimate of the excluded ghost class (comparison only). |
 | `partition.ghost_class_std_error` | number | W |  |
 | `partition.ghost_paths` | integer |  | ≥ 0; Paths in the ghost run's coverage. |
-| `partition.mapped_stray_flux` | number | W | Stray total of the maps (stray_flux without the handed-back ghosts). |
-| `partition.mapped_stray_std_error` | number | W | Exact. |
 | `partition.same_apertures` | boolean |  | GhostCoverage::same_apertures held (always true: a mismatch is an error). |
-| `partition.uncovered_ghost_flux` | number | W | Ghost-class flux outside the ghost run's coverage, handed back to stray_flux (CONVENTIONS §10); not in the maps. |
+| `partition.uncovered_ghost_flux` | number | W | Ghost-class flux outside the ghost run's coverage, included in stray_flux and the maps (CONVENTIONS §10). |
 | `partition.uncovered_ghost_signatures` | integer |  | ≥ 0; Number of handed-back ghost signatures. |
-| `partition.uncovered_ghost_std_error` | number | W | Upper bound: the sum of the signatures' standard errors. |
+| `partition.uncovered_ghost_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error. |
 | `primary_obstruction` | nf? |  |  |
 | `source` | object |  | Resolved source beam: spec, reference_flux, description. |
-| `stray_flux` | number | W | Stray total (under ghost_partition: mapped_stray_flux + uncovered_ghost_flux). |
+| `stray_flux` | number | W | Stray-owned flux, including uncovered ghost paths. |
 | `stray_fraction` | number? |  |  |
-| `stray_std_error` | number | W | Exact; under ghost_partition with uncovered ghosts the bound mapped + uncovered. |
+| `stray_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts. |
 | `top_signatures` | array<object> |  | Strongest (class, signature) pairs among the included classes. |
 | `totals` | array<object> |  | Every class, included or not. |
 | `totals[].class` | string |  | one of `"primary"`, `"ghost"`, `"scatter"`, `"mechanical"`, `"sneak"` |
 | `totals[].flux` | number | W |  |
 | `totals[].fraction` | number? |  |  |
 | `totals[].hits` | integer |  | ≥ 0; Detector hits. |
-| `totals[].included` | boolean |  | Part of the stray total. |
+| `totals[].included` | boolean |  | Whole class selected; uncovered ghosts may be included separately. |
 | `totals[].moments` | object |  | Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm). |
 | `totals[].std_error` | number | W | Monte-Carlo standard error. |
 | `warnings` | array<string> |  |  |
@@ -1420,7 +1417,7 @@ Buffers:
 
 | name | dtype | shape | unit | notes |
 |---|---|---|---|---|
-| `class_irradiance` | f64 | [C, ny, nx] | W/mm² | Irradiance per included class (rows of map_classes); row 0 at y = −half_y, x fastest. |
+| `class_irradiance` | f64 | [C, ny, nx] | W/mm² | Irradiance per owned class (rows of map_classes); under ghost_partition the Ghost row contains only uncovered paths. Row 0 at y = −half_y, x fastest. |
 | `class_irradiance_std_error` | f64 | [C, ny, nx] | W/mm² | Standard error per pixel. |
 | `total_irradiance` | f64 | [ny, nx] | W/mm² | Stray total. |
 | `total_irradiance_std_error` | f64 | [ny, nx] | W/mm² |  |
