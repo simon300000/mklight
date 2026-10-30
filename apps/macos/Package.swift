@@ -80,7 +80,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MKLightFFITests",
-            dependencies: ["MKLightModel", "MKLightEngine", "MKLightFFI"],
+            dependencies: ["MKLightModel", "MKLightEngine", "MKLightFFI", "MKLightUI"],
             swiftSettings: strict
         ),
         .testTarget(

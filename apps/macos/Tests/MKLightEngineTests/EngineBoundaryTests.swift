@@ -180,14 +180,19 @@ import Testing
         #expect(!generic.isCurrent(for: newLibrary, request: byName))
     }
 
-    /// Engines without by-name analyses fail such jobs cleanly.
+    /// The mock runs a few analyses by name in the engine's result format
+    /// and fails others cleanly.
     @Test func mockRejectsRequestsByName() async throws {
         let mock = MockEngine(simulatedLatency: .zero)
         let snap = try await mock.openSnapshot(SampleSystems.singlet())
         let job = mock.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap)
         await #expect(throws: EngineError.self) { try await job.result() }
         #expect(job.analysis == "system_summary" && job.request == nil)
-        #expect(await mock.analysisDescriptors().count == AnalysisKind.allCases.count)
+        let names = await mock.analysisDescriptors().filter(\.available).map(\.name)
+        #expect(["layout", "spot_diagram", "first_order", "optimize"].allSatisfy(names.contains))
+        #expect(await mock.analysisDescriptors().contains { $0.name == "psf" && !$0.available })
+        let spot = try await mock.submit(EngineAnalysisRequest(analysis: "spot_diagram"), on: snap).result()
+        #expect(spot.json["fields"]?.array?.isEmpty == false && spot.buffer(named: "points") != nil)
         await #expect(throws: EngineError.self) { try await mock.loadCatalog(at: URL(fileURLWithPath: "/x.agf")) }
     }
 }
