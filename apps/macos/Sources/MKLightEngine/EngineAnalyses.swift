@@ -214,12 +214,21 @@ public struct GlassInfo: Codable, Sendable, Hashable {
 // MARK: - Typed analyses on the engine
 
 extension AnalysisKind {
-    /// The engine's registry name of this analysis.
-    public var engineName: String {
-        switch self {
-        case .firstOrder: "paraxial"
-        default: rawValue
-        }
+    /// The engine's registry name of this analysis (its raw value).
+    public var engineName: String { rawValue }
+
+    /// Names earlier engine builds listed this analysis under (first-order
+    /// data was a `paraxial` placeholder before `first_order` existed).
+    public var legacyEngineNames: [String] { self == .firstOrder ? ["paraxial"] : [] }
+
+    /// The name to run this analysis as on an engine listing `descriptors`:
+    /// the first *available* of `engineName` and the legacy names, else the
+    /// first one listed (so its unavailability reason is shown), else
+    /// `engineName`.
+    public func engineName(in descriptors: [AnalysisDescriptor]) -> String {
+        let names = [engineName] + legacyEngineNames
+        let listed = names.compactMap { n in descriptors.first { $0.name == n } }
+        return (listed.first { $0.available } ?? listed.first)?.name ?? engineName
     }
 }
 

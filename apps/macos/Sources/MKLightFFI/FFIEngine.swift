@@ -1,6 +1,7 @@
 import Foundation
 import MKLightEngine
 import MKLightModel
+import Synchronization
 
 /// The Rust engine over its C ABI (`crates/mklight-ffi`, docs/FFI.md).
 ///
@@ -240,14 +241,16 @@ public struct FFIEngine: EngineClient {
 
     public func analysisDescriptors() async -> [AnalysisDescriptor] { core.descriptors }
 
-    /// A typed analysis runs as the engine analysis `kind.engineName` with
-    /// the settings its schema accepts (`AnalysisRequest.engineSettings`).
+    /// A typed analysis runs as the engine analysis
+    /// `kind.engineName(in: descriptors)` (`first_order`, or `paraxial` on
+    /// engines that predate it) with the settings its schema accepts
+    /// (`AnalysisRequest.engineSettings`).
     /// Its result decodes into the typed mirror when the JSON matches, and
     /// is shown generically otherwise. An analysis the engine lists as
     /// unavailable fails with `EngineError.unsupported` and its reason.
     public func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
         let problems = request.problems(for: snapshot.system)
-        let name = request.kind.engineName
+        let name = request.kind.engineName(in: core.descriptors)
         guard problems.isEmpty else {
             return AnalysisJob.run(request: request, snapshot: snapshot) { _ in throw EngineError.invalidSettings(problems) }
         }
@@ -305,32 +308,39 @@ public struct FFIEngine: EngineClient {
     /// taken (and its buffers wrapped) right away; `cancel()` →
     /// `mk_job_cancel`. Submission errors (unknown analysis, invalid
     /// settings, unavailable backend) fail the job at once.
+    ///
+    /// Nothing here blocks the caller (usually the main actor): encoding
+    /// the system, waiting for the session lock (held during e.g. a catalog
+    /// load) and the set-system-and-submit step all run in the job's task,
+    /// the C calls through `offMain`. A job cancelled before it reached the
+    /// engine is never submitted.
     private func start(
         _ wire: WireRequest, snapshot: ModelSnapshot, request: AnalysisRequest?, engineRequest: EngineAnalysisRequest?,
         decode: @escaping @Sendable (JSONValue, [ResultBuffer]) -> AnalysisResult
     ) -> AnalysisJob {
         let core = self.core, session = self.session
-        let systemJSON = Result { try encodeSystem(snapshot.system) }
         let requestJSON = wire.json
-        let submitted: Result<(UInt64, AsyncStream<JobEvent>), any Error> = Result {
-            let json = try systemJSON.get()
-            return try session.locked { s in
-                if try CABI.sessionSnapshotHash(s) != snapshot.hash.hex { _ = try CABI.sessionSetSystem(s, json: json) }
-                return try core.hub.submit { try CABI.submit(s, requestJSON: requestJSON) }
-            }
-        }
+        let submission = Submission()
         let (progress, continuation) = AsyncStream.makeStream(of: JobProgress.self, bufferingPolicy: .bufferingNewest(8))
         let reporter = JobReporter(continuation: continuation)
-        let jobID = (try? submitted.get())?.0
         let task = Task.detached(priority: .userInitiated) { () throws -> AnalysisOutput in
             defer { reporter.finish() }
+            reporter.report(0, stage: "Queued")
             let (id, events): (UInt64, AsyncStream<JobEvent>)
             do {
-                (id, events) = try submitted.get()
+                let json = try encodeSystem(snapshot.system)
+                (id, events) = try await offMain {
+                    try session.locked { s in
+                        if submission.isCancelled { throw EngineError.cancelled }
+                        if try CABI.sessionSnapshotHash(s) != snapshot.hash.hex { _ = try CABI.sessionSetSystem(s, json: json) }
+                        return try core.hub.submit { try CABI.submit(s, requestJSON: requestJSON) }
+                    }
+                }
             } catch let error as EngineError where error.code == .invalidArgument {
                 throw EngineError.invalidSettings([Self.message(of: error)])
             }
-            reporter.report(0, stage: "Queued")
+            // `cancel()` raced with the submission: cancel the engine job.
+            if !submission.record(id) { try? CABI.jobCancel(core.pointer, id) }
             // Safety net: should an event be missed, poll the job state.
             let poller = Task.detached {
                 while !Task.isCancelled {
@@ -368,7 +378,7 @@ public struct FFIEngine: EngineClient {
         }
         return AnalysisJob(
             request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: progress, task: task,
-            onCancel: { if let jobID { try? CABI.jobCancel(core.pointer, jobID) } })
+            onCancel: { if let id = submission.cancel() { try? CABI.jobCancel(core.pointer, id) } })
     }
 
     static func message(of error: EngineError) -> String {
@@ -377,6 +387,35 @@ public struct FFIEngine: EngineClient {
         case .unsupported(let m), .failed(let m), .engine(_, let m), .libraryUnavailable(let m): m
         case .invalidSettings(let m): m.joined(separator: "; ")
         case .cancelled: "cancelled"
+        }
+    }
+}
+
+/// The engine job id of an `AnalysisJob`, filled in once the job's task has
+/// submitted it, and whether `cancel()` came first.
+final class Submission: Sendable {
+    private enum State { case pending, submitted(UInt64), cancelled }
+    private let state = Mutex(State.pending)
+
+    var isCancelled: Bool { state.withLock { if case .cancelled = $0 { true } else { false } } }
+
+    /// Records the engine job id. `false` when the job was cancelled first
+    /// (the caller then cancels the engine job).
+    func record(_ id: UInt64) -> Bool {
+        state.withLock { s in
+            if case .cancelled = s { return false }
+            s = .submitted(id)
+            return true
+        }
+    }
+
+    /// Marks the job cancelled; returns the engine job id if it was
+    /// submitted already.
+    func cancel() -> UInt64? {
+        state.withLock { s in
+            defer { s = .cancelled }
+            if case .submitted(let id) = s { return id }
+            return nil
         }
     }
 }

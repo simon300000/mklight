@@ -51,7 +51,11 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(!e.info.isMock && !e.info.version.isEmpty)
         #expect(e.info.backends.contains("cpu_reference"))
         let names = await e.analysisDescriptors().map(\.name)
-        for n in ["validate", "system_summary", "glass_info", "rng_stream", "paraxial"] { #expect(names.contains(n)) }
+        for n in ["validate", "system_summary", "glass_info", "rng_stream"] { #expect(names.contains(n)) }
+        // First-order data: `first_order`, or the `paraxial` placeholder of
+        // engines that predate it.
+        let descriptors = await e.analysisDescriptors()
+        #expect(names.contains(AnalysisKind.firstOrder.engineName(in: descriptors)))
         let glass = try #require(await e.analysisDescriptors().first { $0.name == "glass_info" })
         #expect(glass.settingsFields.first?.name == "name" && glass.settingsFields.first?.required == true)
         #expect(glass.defaultSettings == .null, "a required setting means no defaults")
@@ -98,17 +102,55 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         let (efl, imageHeight) = try paraxialEFL(summary: summary, wavelength: achromat.wavelengths.primary)
         #expect(abs(efl - 100) < 0.01, "EFL \(efl)")
         #expect(abs(imageHeight) < 1e-6, "the sample's image is at the paraxial focus (y = \(imageHeight))")
-        // The engine's own first-order analysis, once it is available.
-        let paraxial = await e.analysisDescriptors().first { $0.name == "paraxial" }
-        if paraxial?.available == true {
+        // The engine's own first-order analysis, once it is available, must
+        // agree: it has to deliver a typed result with a numeric EFL.
+        let descriptors = await e.analysisDescriptors()
+        let name = AnalysisKind.firstOrder.engineName(in: descriptors)
+        if descriptors.first(where: { $0.name == name })?.available == true {
             let fo = try await e.submit(.firstOrder(FirstOrderSettings()), on: snap).result()
-            if case .firstOrder(let r) = fo.result, let engineEFL = r["efl"] {
-                #expect(abs(engineEFL - efl) < 1e-6 * efl)
+            guard case .firstOrder(let r) = fo.result else {
+                Issue.record("\(name) did not decode as first-order data: \(fo.result)")
+                return
             }
+            let engineEFL = try #require(r["efl"], "\(name) reports no 'efl' entry: \(r.entries.map(\.key))")
+            #expect(abs(engineEFL - efl) < 1e-6 * efl, "engine EFL \(engineEFL), y-nu trace \(efl)")
         } else {
             let job = e.submit(.firstOrder(FirstOrderSettings()), on: snap)
             await #expect(throws: EngineError.self) { try await job.result() }
         }
+    }
+
+    /// Submitting never blocks the caller (the main actor in the app):
+    /// while another thread holds the session lock, as a catalog load does,
+    /// `submit` returns at once and the job runs once the lock is free,
+    /// against its own snapshot. A job cancelled while waiting is never run.
+    @Test func submitDoesNotBlockTheCaller() async throws {
+        let e = try engine().newSession()
+        let achromat = try await e.openSnapshot(try sample("achromat"))
+        let singlet = try await e.openSnapshot(SampleSystems.singlet())  // the session holds the singlet now
+        await withCheckedContinuation { (held: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                try? e.session.locked { _ in
+                    held.resume()
+                    usleep(400_000)
+                }
+            }
+        }
+        let clock = ContinuousClock(), t0 = clock.now
+        let job = e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: achromat)
+        let doomed = e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: singlet)
+        let elapsed = clock.now - t0
+        doomed.cancel()
+        #expect(elapsed < .milliseconds(100), "submit waited \(elapsed) for the session lock")
+        let out = try await job.result()
+        #expect(out.runInfo.snapshotHash == achromat.hash)
+        guard case .generic(let g) = out.result, case .array(let rows)? = g.json["surfaces"] else {
+            Issue.record("no surface table")
+            return
+        }
+        #expect(rows.count == achromat.system.surfaces.count)
+        await #expect(throws: EngineError.cancelled) { try await doomed.result() }
+        #expect(clock.now - t0 >= .milliseconds(350), "the job waited for the lock")
     }
 
     @Test func analysisReportsProgressAndIsReproducible() async throws {

@@ -58,7 +58,7 @@ struct DocumentWindow: View {
             await analyses.loadEngineMetadata()
             // When the engine cannot run the selected analysis, start on the
             // Engine pane, which shows what it can.
-            if let d = analyses.descriptor(viewState.selectedAnalysis.engineName), !d.available {
+            if let d = analyses.descriptor(viewState.selectedAnalysis.engineName(in: analyses.descriptors)), !d.available {
                 viewState.showsEnginePane = true
             }
             analyses.setEngineRequest(viewState.engineRequest)

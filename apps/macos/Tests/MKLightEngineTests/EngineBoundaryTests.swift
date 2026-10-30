@@ -63,7 +63,23 @@ import Testing
         var big = s
         big.execution.seed = UInt64.max
         #expect(AnalysisRequest.spotDiagram(big).engineSettings(for: try descriptor())["seed"] == .unsigned(.max))
-        #expect(AnalysisKind.firstOrder.engineName == "paraxial" && AnalysisKind.mtf.engineName == "mtf")
+        #expect(AnalysisKind.firstOrder.engineName == "first_order" && AnalysisKind.mtf.engineName == "mtf")
+    }
+
+    /// First-order data runs as `first_order`, or as the `paraxial`
+    /// placeholder on engines that predate it; an available entry wins.
+    @Test func engineNameFollowsTheDescriptors() {
+        func d(_ name: String, _ available: Bool) -> AnalysisDescriptor {
+            AnalysisDescriptor(name: name, title: name, category: "geometric", available: available)
+        }
+        let fo = AnalysisKind.firstOrder
+        #expect(fo.engineName(in: [d("first_order", true), d("paraxial", false)]) == "first_order")
+        #expect(fo.engineName(in: [d("paraxial", false)]) == "paraxial", "older engine: show its reason")
+        #expect(fo.engineName(in: [d("paraxial", true)]) == "paraxial")
+        #expect(fo.engineName(in: [d("first_order", false), d("paraxial", true)]) == "paraxial")
+        #expect(fo.engineName(in: [d("first_order", false), d("paraxial", false)]) == "first_order")
+        #expect(fo.engineName(in: []) == "first_order")
+        #expect(AnalysisKind.mtf.engineName(in: [d("paraxial", true)]) == "mtf")
     }
 
     /// A result whose JSON does not match the typed mirror never fails: it
