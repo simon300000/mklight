@@ -385,6 +385,17 @@ fn normal_incidence_basis_is_irrelevant_and_continuous() {
             (k, a.ts_flux(), a.tp_flux())
         };
         let reference = interface_prt(k, ko, s0, cs, cp);
+        // Closed form: a(I − kkᵀ) + k'kᵀ with a = t̃ (transmission) or r_s
+        // (reflection, where p' = −p and r_p = −r_s).
+        let kv = [k.x, k.y, k.z];
+        let kov = [ko.x, ko.y, ko.z];
+        for i in 0..3 {
+            for j in 0..3 {
+                let id = if i == j { 1.0 } else { 0.0 };
+                let want = cs * (id - kv[i] * kv[j]) + C::new(kov[i] * kv[j], 0.0);
+                assert!((reference.m[i][j] - want).norm() < 1e-15, "{i}{j}");
+            }
+        }
         for j in 0..24 {
             let psi = 0.3 * j as f64;
             let s = s0 * psi.cos() + k.cross(s0) * psi.sin();
@@ -760,6 +771,20 @@ fn energy_is_conserved_along_real_rays() {
                             .max((rt.ts - st.power.ts).abs())
                             .max((rt.tp - st.power.tp).abs());
                         assert!(d < 1e-12, "{rt:?} {:?}", st.power);
+                        // Amplitudes reproduce the shared power coefficients…
+                        let ap = st.amplitudes.power();
+                        let d = (ap.rs - rt.rs)
+                            .abs()
+                            .max((ap.rp - rt.rp).abs())
+                            .max((ap.ts - rt.ts).abs())
+                            .max((ap.tp - rt.tp).abs());
+                        assert!(d < 1e-12, "{ap:?} {rt:?}");
+                        // …and the step's PRT matrix carries exactly the path
+                        // fraction of pure s and p light.
+                        let n2 = |v: [C; 3]| v.iter().map(|c| c.norm_sqr()).sum::<f64>();
+                        let p_in = st.k_in.cross(st.s);
+                        assert!((n2(st.prt.apply(st.s)) - ps).abs() < 1e-12);
+                        assert!((n2(st.prt.apply(p_in)) - pp).abs() < 1e-12);
                         if let ResolvedCoating::ThinFilm { layers, .. } = &s.coating
                             && !s.is_mirror()
                         {

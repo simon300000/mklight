@@ -615,7 +615,9 @@ pub struct InterfaceStep {
     /// Complex coefficients of the surface's coating (identity
     /// coefficients for an ideal lens).
     pub amplitudes: InterfaceAmplitudes,
-    /// Power coefficients `|r|²`, `|t̃|²` (equal to `ResolvedCoating::rt`).
+    /// Power coefficients from `ResolvedCoating::rt`, the code every solver
+    /// shares (equal to `|r|²`, `|t̃|²` of `amplitudes` to rounding); ideal
+    /// lenses are `InterfaceRT::TRANSPARENT`.
     pub power: InterfaceRT,
     /// Internal transmittance of the medium segment before this surface.
     pub segment_transmittance: f64,
@@ -729,7 +731,11 @@ pub fn interface_steps(
             k_out,
             s: sv,
             amplitudes,
-            power: amplitudes.power(),
+            power: if kind == StepKind::IdealLens {
+                InterfaceRT::TRANSPARENT
+            } else {
+                s.coating.rt(lambda, n1, n2, ci, mirror)
+            },
             segment_transmittance,
             prt,
             geometric,
