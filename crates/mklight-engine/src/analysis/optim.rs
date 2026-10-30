@@ -37,20 +37,21 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
-use mklight_optim::lsq::{LsqMethod, LsqSettings, least_squares};
+use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
+use mklight_optim::merit::gpu_eval::{gpu_beats_cpu, gpu_rays_per_candidate};
 use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
-    GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand, OperandEvaluator,
+    Comparison, GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand, OperandEvaluator,
     OperandRegistry, OperandRole, OperandValue, OpticalProblem, TraceEvaluator, VariableSpec,
 };
 use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
 };
 use mklight_optim::tolerance::{
-    Compensator, MonteCarloSettings, OpticalToleranceEvaluator, ToleranceOperand, ToleranceSpec,
-    monte_carlo, sensitivity,
+    Compensator, MonteCarloSettings, OpticalToleranceEvaluator, SENSITIVITY_BATCH,
+    ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -100,15 +101,39 @@ struct StopGuard {
 }
 
 impl StopGuard {
-    fn register(key: &str, token: CancelToken) -> StopGuard {
+    /// Register `token` under `key`; a key already held by a running job is
+    /// refused (the first job could otherwise no longer be stopped).
+    fn register(key: &str, token: CancelToken) -> EngineResult<StopGuard> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let mut g = stops().lock().unwrap_or_else(|e| e.into_inner());
+        if g.contains_key(key) {
+            return Err(invalid(format!(
+                "'stop_key': \"{key}\" is already used by a running job"
+            )));
+        }
         g.insert(key.to_string(), StopEntry { id, token });
-        StopGuard {
+        Ok(StopGuard {
             key: key.to_string(),
             id,
-        }
+        })
+    }
+}
+
+/// A job's stop request: its token, registered under the job's `stop_key`
+/// for the lifetime of the value.
+struct StopRequest {
+    token: CancelToken,
+    _guard: Option<StopGuard>,
+}
+
+impl StopRequest {
+    fn register(key: Option<&str>) -> EngineResult<StopRequest> {
+        let token = CancelToken::new();
+        let _guard = key
+            .map(|k| StopGuard::register(k, token.clone()))
+            .transpose()?;
+        Ok(StopRequest { token, _guard })
     }
 }
 
@@ -129,16 +154,15 @@ enum Interrupt {
     Cancelled,
 }
 
-/// Run `f` with a context that is cancelled when `ctx` is or when a stop is
-/// requested for `stop_key` (a watcher thread joins the two tokens), and
-/// say which happened.
+/// Run `f` with a context that is cancelled when `ctx` is or when `stop` is
+/// requested (a watcher thread joins the two tokens), and say which
+/// happened.
 fn interruptible<T>(
     ctx: &JobContext,
-    stop_key: Option<&str>,
+    stop: &StopRequest,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
-    let stop = CancelToken::new();
-    let _guard = stop_key.map(|k| StopGuard::register(k, stop.clone()));
+    let stop = &stop.token;
     let mut inner = ctx.subrange(0.0, 1.0);
     inner.cancel = CancelToken::new();
     let done = AtomicBool::new(false);
@@ -219,8 +243,9 @@ fn patched<T: Serialize + DeserializeOwned>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BackendChoice {
-    /// The GPU when the engine handed this analysis a GPU device, else the
-    /// CPU reference.
+    /// The engine's GPU device when the run's work is past the measured
+    /// GPU/CPU crossover ([`gpu_beats_cpu`]: rays per candidate and batch
+    /// size), else the CPU reference.
     Auto,
     Cpu,
     /// The engine's GPU device for this analysis; the CPU reference (with
@@ -254,15 +279,56 @@ fn device_backend(dev: &DeviceHandle) -> Option<Arc<dyn ComputeBackend>> {
     None
 }
 
+/// The work of a run, for `backend: "auto"`: rays the GPU evaluator would
+/// trace per candidate and the typical batch of candidates per evaluation.
+#[derive(Clone, Copy, Debug)]
+struct Workload {
+    rays_per_candidate: Option<usize>,
+    batch: usize,
+}
+
+impl Workload {
+    /// `rays` estimated on the start system (configuration 0) for the
+    /// operands of `spec`.
+    fn new(
+        cpu: &TraceEvaluator,
+        system: &OpticalSystem,
+        spec: &MeritFunctionSpec,
+        batch: usize,
+    ) -> Workload {
+        let ops: Vec<&Operand> = spec
+            .enabled()
+            .map(|(_, o)| o)
+            .filter(|o| o.config == 0)
+            .collect();
+        Workload {
+            rays_per_candidate: gpu_rays_per_candidate(cpu, system, &ops, true),
+            batch,
+        }
+    }
+    fn gpu_faster(&self) -> bool {
+        self.rays_per_candidate
+            .is_some_and(|r| gpu_beats_cpu(r, self.batch))
+    }
+    fn report(&self) -> Value {
+        json!({
+            "rays_per_candidate": self.rays_per_candidate,
+            "batch": self.batch,
+            "gpu_faster": self.gpu_faster(),
+        })
+    }
+}
+
 /// The GPU backend for a request, or why there is none.
 fn gpu_backend(
     choice: BackendChoice,
     input: &AnalysisInput<'_>,
+    work: &Workload,
 ) -> Result<Option<Arc<dyn ComputeBackend>>, String> {
     let engine = input.device.as_ref().and_then(device_backend);
     match choice {
         BackendChoice::Cpu => Ok(None),
-        BackendChoice::Auto => Ok(engine),
+        BackendChoice::Auto => Ok(engine.filter(|_| work.gpu_faster())),
         BackendChoice::GpuEmulation => Ok(Some(Arc::new(CpuF32Backend::new()))),
         BackendChoice::Gpu => engine
             .map(Some)
@@ -275,6 +341,7 @@ fn gpu_backend(
 struct Evaluation {
     cpu: TraceEvaluator,
     gpu: Option<GpuTraceEvaluator>,
+    work: Workload,
     /// `"backend"` block of the result.
     report: Value,
     warnings: Vec<String>,
@@ -286,11 +353,12 @@ impl Evaluation {
         input: &AnalysisInput<'_>,
         system: &OpticalSystem,
         batch: usize,
+        work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
         let cpu = TraceEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
-        let gpu = match gpu_backend(choice, input) {
+        let gpu = match gpu_backend(choice, input, &work) {
             Ok(Some(b)) => {
                 let settings = GpuEvalSettings {
                     batch: batch.max(1),
@@ -323,6 +391,7 @@ impl Evaluation {
         Ok(Evaluation {
             cpu,
             gpu,
+            work,
             report: Value::Null,
             warnings,
         })
@@ -341,6 +410,7 @@ impl Evaluation {
             "evaluated_on": TraceEvaluator::BACKEND,
             "precision": Precision::F64Reference,
             "reported_on": TraceEvaluator::BACKEND,
+            "workload": self.work.report(),
         });
         if let Some(g) = &self.gpu {
             let start = g.qualification();
@@ -368,27 +438,120 @@ impl Evaluation {
 }
 
 /// The merit function of a run: an explicit spec, or the default merit
-/// generated for the variables, plus extra operands and constraints.
+/// generated for the variables.
 fn build_merit(
     system: &OpticalSystem,
     merit_spec: &Value,
     default_merit: &DefaultMeritSpec,
     variables: &[VariableSpec],
-    operands: &[Operand],
-    constraints: &[Operand],
 ) -> EngineResult<MeritFunctionSpec> {
-    let mut spec = if merit_spec.is_null() {
+    Ok(if merit_spec.is_null() {
         default_merit.generate_for(system, variables)?
     } else {
         MeritFunctionSpec::from_value(merit_spec.clone())?
+    })
+}
+
+/// Relative EFL error at which the penalty that holds the focal length in
+/// the derivative-free methods costs as much as the start merit.
+const EFL_PENALTY_RELATIVE: f64 = 1e-4;
+
+/// The merit of `spec` at the start (CPU reference).
+fn start_merit(
+    system: &OpticalSystem,
+    variables: &[VariableSpec],
+    spec: &MeritFunctionSpec,
+    cpu: &TraceEvaluator,
+    reg: &OperandRegistry,
+) -> EngineResult<f64> {
+    let p = OpticalProblem::new(
+        system.clone(),
+        variables.to_vec(),
+        spec.clone(),
+        cpu.clone(),
+        reg,
+    )?;
+    let x0 = p.start_point()?;
+    Ok(reference_values(&p, &[&x0])?.merit[0])
+}
+
+/// Thickness boundaries of the generated default merit that the start
+/// violates and that no variable changes (for example the default 1 mm
+/// glass minimum on a fixed 0.99997 mm element) are relaxed to their start
+/// value: no search could meet them, and the run would be infeasible from
+/// the outset. A boundary counts as changed when moving any one variable by
+/// its scale changes its value. Returns a warning per relaxed boundary.
+fn relax_fixed_boundaries(
+    system: &OpticalSystem,
+    spec: &mut MeritFunctionSpec,
+    variables: &[VariableSpec],
+    cpu: &TraceEvaluator,
+    reg: &OperandRegistry,
+    ctx: &JobContext,
+) -> EngineResult<Vec<String>> {
+    let idx: Vec<usize> = spec
+        .enabled()
+        .filter(|(_, o)| {
+            o.comparison != Comparison::Equal
+                && matches!(
+                    o.kind,
+                    OperandKind::CentreThickness { .. } | OperandKind::EdgeThickness { .. }
+                )
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if idx.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sub = MeritFunctionSpec {
+        operands: idx
+            .iter()
+            .map(|&i| {
+                let mut o = spec.operands[i].clone();
+                o.role = OperandRole::Constraint;
+                o
+            })
+            .collect(),
+        ..spec.clone()
     };
-    spec.operands.extend(operands.iter().cloned());
-    spec.operands
-        .extend(constraints.iter().cloned().map(|mut o| {
-            o.role = OperandRole::Constraint;
-            o
-        }));
-    Ok(spec)
+    let p = OpticalProblem::new(system.clone(), variables.to_vec(), sub, cpu.clone(), reg)?;
+    let x0 = p.start_point()?;
+    let mut points = vec![x0.clone()];
+    for (j, v) in p.variables().iter().enumerate() {
+        let mut x = x0.clone();
+        x[j] += v.safe_scale();
+        points.push(x);
+    }
+    let batch = CandidateBatch::from_points(x0.len(), points.iter().map(Vec::as_slice));
+    let vals = p.operand_values(&batch, ctx)?;
+    let Some(start) = &vals[0] else {
+        return Ok(Vec::new());
+    };
+    let mut warnings = Vec::new();
+    for (k, &i) in idx.iter().enumerate() {
+        let Ok(v0) = start[k] else { continue };
+        let op = &mut spec.operands[i];
+        if op.residual(v0) == 0.0 {
+            continue;
+        }
+        let fixed = vals[1..]
+            .iter()
+            .all(|v| v.as_ref().is_some_and(|v| matches!(v[k], Ok(x) if x == v0)));
+        if fixed {
+            warnings.push(format!(
+                "{} {} {}: the start has {v0} and no variable changes it; relaxed to {v0}",
+                op.kind.name(),
+                match op.comparison {
+                    Comparison::LessThan => "≤",
+                    _ => "≥",
+                },
+                op.target
+            ));
+            op.target = v0;
+            op.label = format!("{} (relaxed to the start)", op.kind.name());
+        }
+    }
+    Ok(warnings)
 }
 
 /// The default variables: the curvature of every curved, optically active
@@ -554,6 +717,22 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
 // ---------------------------------------------------------------------------
 // optimize
 
+/// Iterations an augmented-Lagrangian inner solve may take at an infeasible
+/// point before the multipliers or the penalty are updated (the job's
+/// default for `AugLagSettings::max_inner_iterations`).
+const INNER_ITERATIONS: usize = 10;
+
+/// The job's initial spreads of the population methods around the start,
+/// in variable scales (`VariableSpec::scale`; 10 % of a curvature by
+/// default). The library defaults (DE 1.0, CMA-ES 0.3) suit a search of a
+/// box; around an existing design they sample candidates so much worse that
+/// the search ends at or near the start. Measured on the seven samples with
+/// the default merit and variables, 100 DE / 200 CMA-ES generations: DE
+/// improved 2 of 7 at 1.0 and 7 of 7 at 0.03, CMA-ES 6 of 7 at 0.3 (with the
+/// EFL penalty) and 7 of 7 at 0.05 (`docs/OPTIMIZATION.md`).
+const DE_INIT_SPREAD: f64 = 0.03;
+const CMA_ES_SIGMA0: f64 = 0.05;
+
 /// Optimiser of an `optimize` job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -567,6 +746,14 @@ enum Algorithm {
 }
 
 impl Algorithm {
+    /// Derivative-free methods ranking random or simplex trial points: an
+    /// equality hold is a penalty for them.
+    fn derivative_free(self) -> bool {
+        matches!(
+            self,
+            Algorithm::De | Algorithm::CmaEs | Algorithm::NelderMead
+        )
+    }
     fn name(self) -> &'static str {
         match self {
             Algorithm::Lm => "lm",
@@ -627,6 +814,13 @@ impl Algo {
             use_analytic: true,
         };
         let opts = &s.options;
+        // Augmented-Lagrangian rounds update the multipliers at least every
+        // `INNER_ITERATIONS` iterations while infeasible, so a run that ends
+        // on its iteration budget ends close to feasible.
+        let constraints = AugLagSettings {
+            max_inner_iterations: Some(INNER_ITERATIONS),
+            ..Default::default()
+        };
         Ok(match s.algorithm {
             Algorithm::Lm | Algorithm::Dogleg => {
                 let method = if s.algorithm == Algorithm::Lm {
@@ -639,6 +833,7 @@ impl Algo {
                         method,
                         jacobian,
                         max_iterations: iters,
+                        constraints,
                         ..Default::default()
                     },
                     opts,
@@ -651,6 +846,7 @@ impl Algo {
                 let mut d = patched(
                     &DeSettings {
                         max_generations: iters,
+                        init_spread: DE_INIT_SPREAD,
                         ..Default::default()
                     },
                     opts,
@@ -663,6 +859,7 @@ impl Algo {
                 let mut c = patched(
                     &CmaEsSettings {
                         max_generations: iters,
+                        sigma0: CMA_ES_SIGMA0,
                         ..Default::default()
                     },
                     opts,
@@ -683,19 +880,34 @@ impl Algo {
                 (Algo::NelderMead(n), n.max_iterations)
             }
             Algorithm::Hammer => {
-                let mut h = patched(
-                    &HammerSettings {
-                        rounds: iters,
-                        ..Default::default()
-                    },
-                    opts,
-                    "options",
-                )?;
+                let mut d = HammerSettings {
+                    rounds: iters,
+                    ..Default::default()
+                };
+                d.local.constraints.max_inner_iterations = Some(INNER_ITERATIONS);
+                let mut h = patched(&d, opts, "options")?;
                 h.seed = s.seed;
                 h.local.jacobian = jacobian;
                 (Algo::Hammer(h), h.rounds)
             }
         })
+    }
+
+    /// Typical candidates per evaluation batch with `n` variables: the FD
+    /// Jacobian, the population, the basin-hopping screen.
+    fn batch(&self, n: usize) -> usize {
+        match self {
+            Algo::Lsq(l) => match l.jacobian.scheme {
+                FdScheme::Forward => n,
+                FdScheme::Central => 2 * n,
+            },
+            Algo::De(d) if d.population > 0 => d.population,
+            Algo::De(_) => (10 * n).max(15),
+            Algo::CmaEs(c) if c.population > 0 => c.population.max(4),
+            Algo::CmaEs(_) => 4 + (3.0 * (n.max(1) as f64).ln()).floor() as usize,
+            Algo::NelderMead(_) => 1,
+            Algo::Hammer(h) => h.candidates_per_round.max(1),
+        }
     }
 
     fn run<P: Problem>(
@@ -804,7 +1016,18 @@ impl Analysis for Optimize {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: OptimizeSettings = parse(settings, "settings")?;
+        if let Some(h) = s.fd_relative_step
+            && !(h > 0.0 && h.is_finite())
+        {
+            return Err(invalid(format!(
+                "'fd_relative_step' must be positive (or null), got {h}"
+            )));
+        }
+        let stop = StopRequest::register(s.stop_key.as_deref())?;
         let system = input.snapshot.system().clone();
+        let cpu = TraceEvaluator::new(input.library.clone());
+        let reg = OperandRegistry::builtin();
+        let mut warnings = Vec::new();
         if s.variables.is_empty() {
             s.variables = auto_variables(&system);
             if s.variables.is_empty() {
@@ -818,49 +1041,84 @@ impl Analysis for Optimize {
             &s.default_merit,
             "default_merit",
         )?;
-        let mut spec = build_merit(
-            &system,
-            &s.merit,
-            &default_merit,
-            &s.variables,
-            &s.operands,
-            &s.constraints,
-        )?;
-        let mut held = Vec::new();
+        let mut spec = build_merit(&system, &s.merit, &default_merit, &s.variables)?;
+        if s.merit.is_null() {
+            warnings.extend(relax_fixed_boundaries(
+                &system,
+                &mut spec,
+                &s.variables,
+                &cpu,
+                &reg,
+                ctx,
+            )?);
+        }
+        spec.operands.extend(s.operands.iter().cloned());
+        spec.operands
+            .extend(s.constraints.iter().cloned().map(|mut o| {
+                o.role = OperandRole::Constraint;
+                o
+            }));
+        let global = s.algorithm.derivative_free();
+        if global
+            && spec.enabled().any(|(_, o)| {
+                o.role == OperandRole::Constraint && o.comparison == Comparison::Equal
+            })
+        {
+            warnings.push(format!(
+                "{} rarely samples a point that meets an equality constraint exactly; such \
+                 constraints are better held by lm, dogleg or hammer, or by a weighted operand",
+                s.algorithm.name()
+            ));
+        }
         if s.hold_efl && !has_efl(&spec) {
-            let ev = TraceEvaluator::new(input.library.clone());
-            match ev
+            match cpu
                 .evaluate_system(&system, &[&Operand::new(OperandKind::Efl)], ctx)?
                 .remove(0)
             {
-                Ok(f) if f.is_finite() => {
-                    let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
-                    o.label = "hold EFL".into();
+                Ok(f) if f.is_finite() && f != 0.0 => {
+                    let o = if global {
+                        // Penalty: the derivative-free methods' random trial
+                        // points never meet an equality exactly, so Deb's
+                        // rule would rank them by EFL error alone.
+                        let phi0 = start_merit(&system, &s.variables, &spec, &cpu, &reg)?;
+                        let w = if phi0 > 0.0 && phi0.is_finite() {
+                            phi0
+                        } else {
+                            1.0
+                        } / (EFL_PENALTY_RELATIVE * f).powi(2);
+                        let mut o = Operand::new(OperandKind::Efl).target(f).weight(w);
+                        o.label = "hold EFL (penalty)".into();
+                        o
+                    } else {
+                        let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
+                        o.label = "hold EFL".into();
+                        o
+                    };
                     spec.operands.push(o);
                 }
-                other => held.push(format!(
+                other => warnings.push(format!(
                     "the focal length is not held: the start has no finite EFL ({other:?})"
                 )),
             }
         }
         let (algo, max_iter) = Algo::new(&s)?;
-        let reg = OperandRegistry::builtin();
         let reference = OpticalProblem::new(
             system.clone(),
             s.variables.clone(),
             spec.clone(),
-            TraceEvaluator::new(input.library.clone()),
+            cpu.clone(),
             &reg,
         )?;
         let x0 = reference.start_point()?;
+        let work = Workload::new(&cpu, &system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, work, ctx)?;
         ctx.check()?;
 
         // The search.
         let history: Arc<Mutex<Vec<HistoryRow>>> = Arc::default();
         let method = s.algorithm.name();
-        let (run, why) = interruptible(ctx, s.stop_key.as_deref(), |inner| {
+        let (run, why) = interruptible(ctx, &stop, |inner| {
             let h = history.clone();
             let job = inner.clone();
             // The optimisers' own progress calls go to a detached bar; the
@@ -929,7 +1187,7 @@ impl Analysis for Optimize {
             violation: result.violation,
             status: EvalStatus::Ok,
         };
-        let (x, search) = match &best {
+        let (x_search, search) = match &best {
             Some(b)
                 if !result.merit.is_finite()
                     || (why != Interrupt::None
@@ -945,9 +1203,27 @@ impl Analysis for Optimize {
             _ => (result.x.clone(), (result.merit, result.violation)),
         };
 
-        // Reported numbers: CPU f64 reference.
+        // Reported numbers: CPU f64 reference. The result is never worse
+        // than the start (feasibility first, then merit): the global
+        // methods do not evaluate the start itself, and a GPU-driven search
+        // ranks on f32 values.
         ctx.report(1.0, "reference evaluation");
-        let refs = reference_values(&reference, &[&x0, &x])?;
+        let refs = reference_values(&reference, &[&x0, &x_search])?;
+        let scalar = |k: usize| ScalarEval {
+            merit: refs.merit[k],
+            violation: refs.violation[k],
+            status: refs.status[k],
+        };
+        let improved = scalar(1).better_than(&scalar(0), feas_tol);
+        let k = if improved { 1 } else { 0 };
+        let x = if improved { x_search } else { x0.clone() };
+        if !improved {
+            warnings.push(format!(
+                "{method} found no design better than the start (start merit {:.6e}, violation \
+                 {:.3e}; best found {:.6e}, violation {:.3e}); the result is the start design",
+                refs.merit[0], refs.violation[0], refs.merit[1], refs.violation[1]
+            ));
+        }
         let final_system = reference.apply(&x)?;
         ev.finish(s.backend, Some(&final_system));
         let hash = Snapshot::new(final_system.clone())?.hash().to_hex();
@@ -970,23 +1246,25 @@ impl Analysis for Optimize {
                 })
             })
             .collect();
-        let feasible = refs.violation[1] <= feas_tol;
+        let feasible = refs.violation[k] <= feas_tol;
         let json = json!({
             "status": interrupt_status(why, result.termination),
             "termination": result.termination,
             "algorithm": method,
             "iterations": result.iterations,
             "evaluations": result.evaluations,
+            "improved": improved,
             "start": {"merit": num(refs.merit[0]), "violation": num(refs.violation[0]),
                 "status": refs.status[0]},
-            "final": {"merit": num(refs.merit[1]), "violation": num(refs.violation[1]),
-                "status": refs.status[1], "feasible": feasible},
-            "search": {"merit": num(search.0), "violation": num(search.1)},
-            "improvement": num(if refs.merit[0] > 0.0 { 1.0 - refs.merit[1] / refs.merit[0] } else { f64::NAN }),
+            "final": {"merit": num(refs.merit[k]), "violation": num(refs.violation[k]),
+                "status": refs.status[k], "feasible": feasible},
+            "search": {"merit": num(search.0), "violation": num(search.1),
+                "reference_merit": num(refs.merit[1]), "reference_violation": num(refs.violation[1])},
+            "improvement": num(if refs.merit[0] > 0.0 { 1.0 - refs.merit[k] / refs.merit[0] } else { f64::NAN }),
             "multipliers": result.multipliers.as_ref().map(|m| m.iter().map(|v| num(*v)).collect::<Vec<_>>()),
             "failed_variables": result.failed_variables,
             "variables": variables,
-            "operands": operand_table(&spec, &refs.values[0], &refs.values[1], refs.merit[1]),
+            "operands": operand_table(&spec, &refs.values[0], &refs.values[k], refs.merit[k]),
             "history": history,
             "backend": ev.report,
             "merit_spec": spec,
@@ -1002,12 +1280,12 @@ impl Analysis for Optimize {
                 h.best_merit,
             ]);
         }
-        let mut warnings = ev.warnings;
-        warnings.extend(held);
+        let mut all_warnings = ev.warnings;
+        all_warnings.extend(warnings);
         if !feasible {
-            warnings.push(format!(
+            all_warnings.push(format!(
                 "the final design violates its constraints (total normalised violation {:.3e})",
-                refs.violation[1]
+                refs.violation[k]
             ));
         }
         Ok(AnalysisOutput {
@@ -1017,7 +1295,7 @@ impl Analysis for Optimize {
                 vec![history.len(), 4],
                 BufferData::F64(flat),
             )],
-            warnings,
+            warnings: all_warnings,
         })
     }
 }
@@ -1113,7 +1391,25 @@ impl Analysis for Tolerance {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: ToleranceSettings = parse(settings, "settings")?;
+        let stop = StopRequest::register(s.stop_key.as_deref())?;
         let system = input.snapshot.system().clone();
+        // Every parameter must exist on the nominal system (a missing one
+        // would fail every trial).
+        let params = s
+            .tolerances
+            .iter()
+            .map(|t| ("tolerances", &t.param))
+            .chain(s.compensators.iter().map(|c| ("compensators", &c.param)));
+        for (k, (what, p)) in params.enumerate() {
+            if let Err(e) = p.get(&system) {
+                let i = if what == "tolerances" {
+                    k
+                } else {
+                    k - s.tolerances.len()
+                };
+                return Err(invalid(format!("'{what}'[{i}]: {e}")));
+            }
+        }
         if s.tolerances.is_empty() {
             s.tolerances = auto_tolerances(&system);
             if s.tolerances.is_empty() {
@@ -1147,14 +1443,30 @@ impl Analysis for Tolerance {
             max_iterations: s.compensator_iterations,
             ..Default::default()
         };
-        ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, ctx)?;
-        ctx.check()?;
         let (do_sens, do_mc) = match s.mode {
             ToleranceMode::Sensitivity => (true, false),
             ToleranceMode::MonteCarlo => (false, true),
             ToleranceMode::Both => (true, true),
         };
+        // Candidates per evaluation: compensated trials run LM over the
+        // compensators (FD Jacobian batches); uncompensated ones go to the
+        // evaluator a Monte-Carlo batch (or sensitivity batch) at a time.
+        let batch = if !spec.compensators.is_empty() {
+            spec.compensators.len()
+        } else if do_mc {
+            mc.batch
+        } else {
+            SENSITIVITY_BATCH.min(2 * spec.operands.len() + 1)
+        };
+        let work = Workload::new(
+            &TraceEvaluator::new(input.library.clone()),
+            &system,
+            &criterion,
+            batch,
+        );
+        ctx.report(0.0, "qualifying the merit evaluator");
+        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, work, ctx)?;
+        ctx.check()?;
         let split = if do_sens && do_mc {
             0.2
         } else if do_sens {
@@ -1163,14 +1475,15 @@ impl Analysis for Tolerance {
             0.0
         };
 
-        let ((sens, mcr), why) = interruptible(ctx, s.stop_key.as_deref(), |inner| {
+        let ((sens, mcr), why) = interruptible(ctx, &stop, |inner| {
             let run = |e: &dyn ToleranceRunner| -> (Option<Result<_, MkError>>, Option<Result<_, MkError>>) {
                 let sens = do_sens.then(|| {
                     let mon = Monitor::new(inner.subrange(0.0, split));
                     mon.progress(0.0, "tolerance sensitivity");
                     e.sensitivity(&spec, &mon)
                 });
-                let cancelled = matches!(sens, Some(Err(MkError::Cancelled)));
+                let cancelled = matches!(sens, Some(Err(MkError::Cancelled)))
+                    || matches!(&sens, Some(Ok(r)) if r.cancelled);
                 let mcr = (do_mc && !cancelled).then(|| {
                     let mon = Monitor::new(inner.subrange(split, 1.0));
                     e.monte_carlo(&spec, &mc, &mon)
@@ -1246,6 +1559,7 @@ impl Analysis for Tolerance {
                 "rss_change": num(r.rss_change),
                 "predicted_criterion": num(r.nominal.criterion + r.rss_change),
                 "evaluations": r.evaluations,
+                "cancelled": r.cancelled,
             })
         });
         let mut buffers = Vec::new();
@@ -1706,11 +2020,7 @@ mod tests {
         if metal.is_none() {
             eprintln!("SKIP (Metal part): no GPU device");
         }
-        let mut cases = vec![
-            ("gpu_emulation", None),
-            ("gpu", Some(emulation.clone())),
-            ("auto", Some(emulation)),
-        ];
+        let mut cases = vec![("gpu_emulation", None), ("gpu", Some(emulation.clone()))];
         if let Some(m) = metal {
             cases.push(("gpu", Some(m)));
         }
@@ -1747,6 +2057,35 @@ mod tests {
             let (m0, m1) = (f(&r.json["start"]["merit"]), f(&r.json["final"]["merit"]));
             assert!(m1 < m0, "{backend}: {m0} -> {m1}");
         }
+        // `auto` with a device: the CPU reference below the measured
+        // crossover (the default merit's 38 rays per candidate, LM batches
+        // of 7), the GPU above it (12 × 24 pupil, every field and
+        // wavelength, DE populations of 16).
+        let auto = |s: Value| {
+            let reg = AnalysisRegistry::with_builtin();
+            let a = reg.get("optimize").unwrap();
+            let inp = input(samples::cooke_triplet()).with_device(Some(emulation.clone()));
+            run_analysis(a.as_ref(), &inp, &s, vec![], &JobContext::new()).unwrap()
+        };
+        let mut s = unconstrained_triplet();
+        s["max_iterations"] = json!(2);
+        s["backend"] = json!("auto");
+        let r = auto(s.clone());
+        let b = &r.json["backend"];
+        assert_eq!(b["precision"], json!("f64_reference"), "{b}");
+        assert_eq!(b["workload"]["gpu_faster"], json!(false));
+        assert_eq!(b["workload"]["batch"], json!(7));
+        s["algorithm"] = json!("de");
+        s["max_iterations"] = json!(1);
+        s["options"] = json!({"population": 16});
+        s["default_merit"] = json!({"sampling": {"rings": 12, "arms": 24}, "thickness": null});
+        let r = auto(s);
+        let b = &r.json["backend"];
+        assert_eq!(b["precision"], json!("f32_gpu"), "{b}");
+        assert_eq!(b["workload"]["batch"], json!(16));
+        assert!(b["workload"]["rays_per_candidate"].as_u64().unwrap() >= 2600);
+        assert!(b["gpu_stats"]["gpu_candidates"].as_u64().unwrap() >= 16);
+
         // `gpu` without a device: the CPU reference, and a warning that says
         // why.
         let mut s = unconstrained_triplet();
@@ -1762,6 +2101,228 @@ mod tests {
             "{:?}",
             r.run_info.warnings
         );
+    }
+
+    /// The EFL row of an operand table: (target, value).
+    fn efl_row(j: &Value) -> (f64, f64) {
+        let row = j["operands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["kind"] == json!("efl"))
+            .unwrap();
+        (f(&row["target"]), f(&row["value"]))
+    }
+
+    /// The global methods with the job's defaults (automatic variables, EFL
+    /// held, thickness boundaries) never return a design worse than the
+    /// start, and here improve it: the EFL hold is a penalty for them (their
+    /// trial points never meet an equality), and their spreads around the
+    /// start are small. Before, CMA-ES returned the singlet 16× worse and DE
+    /// spent 7070 evaluations on the triplet without moving.
+    #[test]
+    fn global_methods_never_return_a_worse_design() {
+        for (name, sys) in [
+            ("singlet", samples::singlet()),
+            ("cooke_triplet", samples::cooke_triplet()),
+        ] {
+            for algo in ["cma_es", "de", "nelder_mead"] {
+                let r = run(sys.clone(), "optimize", json!({ "algorithm": algo })).unwrap();
+                let j = &r.json;
+                let (m0, m1) = (f(&j["start"]["merit"]), f(&j["final"]["merit"]));
+                assert!(m1 < m0, "{name} {algo}: {m0} -> {m1}");
+                assert_eq!(j["improved"], json!(true));
+                assert_eq!(j["final"]["feasible"], json!(true), "{name} {algo}");
+                let (t, v) = efl_row(j);
+                assert!(((v - t) / t).abs() < 1e-4, "{name} {algo}: EFL {t} -> {v}");
+                let held = j["operands"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|o| o["kind"] == json!("efl"))
+                    .unwrap();
+                assert_eq!(held["role"], json!("residual"));
+                assert_eq!(held["label"], json!("hold EFL (penalty)"));
+            }
+        }
+        // A search that cannot improve (one generation of a wide population
+        // around a good design) returns the start, and says so.
+        let r = run(
+            samples::double_gauss(),
+            "optimize",
+            json!({"algorithm": "de", "max_iterations": 1,
+                "options": {"population": 6, "init_spread": 1.0}}),
+        )
+        .unwrap();
+        let j = &r.json;
+        assert_eq!(j["improved"], json!(false));
+        assert_eq!(j["final"]["merit"], j["start"]["merit"]);
+        assert_eq!(j["final"]["violation"], j["start"]["violation"]);
+        assert!(
+            j["variables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v["change"] == json!(0.0))
+        );
+        assert!(
+            r.run_info
+                .warnings
+                .iter()
+                .any(|w| w.contains("no design better than the start")),
+            "{:?}",
+            r.run_info.warnings
+        );
+        let back: OpticalSystem = serde_json::from_value(j["system"].clone()).unwrap();
+        assert_eq!(
+            Snapshot::new(back).unwrap().hash(),
+            Snapshot::new(samples::double_gauss()).unwrap().hash()
+        );
+    }
+
+    /// `optimize` with no settings ends feasible on the samples that used to
+    /// end infeasible: the triplet's fixed 0.99997 mm flint violated the
+    /// default 1 mm glass minimum (now relaxed to its start value, with a
+    /// warning), and the Petzval and relay EFL holds ran out of iterations
+    /// in the first augmented-Lagrangian round.
+    #[test]
+    fn defaults_end_feasible() {
+        let r = run(samples::cooke_triplet(), "optimize", json!({})).unwrap();
+        let j = &r.json;
+        assert_eq!(j["final"]["feasible"], json!(true), "{}", j["final"]);
+        assert!(f(&j["final"]["merit"]) < f(&j["start"]["merit"]));
+        let relaxed: Vec<&Value> = j["operands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["label"].as_str().unwrap().contains("relaxed"))
+            .collect();
+        assert_eq!(relaxed.len(), 1, "{relaxed:?}");
+        assert!((f(&relaxed[0]["target"]) - 0.99997).abs() < 1e-12);
+        assert!(
+            r.run_info.warnings.iter().any(|w| w.contains("relaxed")),
+            "{:?}",
+            r.run_info.warnings
+        );
+        constraints_hold(j, 1e-6);
+        for sys in [samples::petzval_asphere(), samples::finite_relay()] {
+            let r = run(sys, "optimize", json!({})).unwrap();
+            let j = &r.json;
+            assert_eq!(j["final"]["feasible"], json!(true), "{}", j["final"]);
+            assert!(f(&j["final"]["merit"]) < f(&j["start"]["merit"]));
+            let (t, v) = efl_row(j);
+            assert!((v - t).abs() < 1e-6, "EFL {t} -> {v}");
+        }
+    }
+
+    /// Bad input that used to pass silently: a zero FD step, a tolerance or
+    /// compensator on a surface that does not exist, a stop key in use.
+    #[test]
+    fn rejects_bad_input() {
+        let sys = samples::cooke_triplet();
+        for step in [0.0, -1e-3] {
+            assert!(matches!(
+                run(sys.clone(), "optimize", json!({"fd_relative_step": step})),
+                Err(EngineError::InvalidSettings(_))
+            ));
+        }
+        let missing = ParamPath::Thickness {
+            surface: SurfaceId(999),
+        };
+        for s in [
+            json!({"tolerances": [{"param": missing, "minus": 0.1, "plus": 0.1}], "trials": 2}),
+            json!({"compensators": [{"param": missing, "range": 1.0}], "trials": 2}),
+        ] {
+            match run(sys.clone(), "tolerance", s.clone()) {
+                Err(EngineError::InvalidSettings(m)) => assert!(m.contains("[0]"), "{m}"),
+                other => panic!(
+                    "accepted {s}: {:?}",
+                    other.map(|r| r.json["status"].clone())
+                ),
+            }
+        }
+        // A second job may not take a running job's stop key.
+        let held = StopRequest::register(Some("test-key-in-use")).unwrap();
+        for (name, s) in [
+            (
+                "optimize",
+                json!({"stop_key": "test-key-in-use", "max_iterations": 1}),
+            ),
+            (
+                "tolerance",
+                json!({"stop_key": "test-key-in-use", "trials": 1}),
+            ),
+        ] {
+            assert!(matches!(
+                run(sys.clone(), name, s),
+                Err(EngineError::InvalidSettings(_))
+            ));
+        }
+        assert!(request_stop("test-key-in-use"));
+        assert!(held.token.is_cancelled());
+        drop(held);
+        assert!(!request_stop("test-key-in-use"));
+    }
+
+    /// Stopping the tolerance job in the sensitivity phase keeps the
+    /// operands evaluated so far.
+    #[test]
+    fn stopped_sensitivity_keeps_completed_operands() {
+        let sys = samples::cooke_triplet();
+        let settings = prepare(
+            &Tolerance,
+            &json!({"mode": "sensitivity", "compensators": [{"param": ParamPath::Thickness { surface: SurfaceId(6) }, "range": 1.0}],
+                "compensator_iterations": 4, "stop_key": "test-stop-sensitivity"}),
+        )
+        .unwrap();
+        // Stop once the first sensitivity batch has been reported.
+        let ctx = JobContext::new();
+        let watch = {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let t = Instant::now();
+                while t.elapsed() < Duration::from_secs(600) {
+                    if ctx.progress.fraction() > 0.0 && request_stop("test-stop-sensitivity") {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+        // 30 tolerances: 61 trials, two sensitivity batches of 32 and 29.
+        let mut tol = Vec::new();
+        for id in [1u64, 2, 3, 4, 5, 6] {
+            for p in [
+                ParamPath::DecenterX {
+                    surface: SurfaceId(id),
+                },
+                ParamPath::DecenterY {
+                    surface: SurfaceId(id),
+                },
+                ParamPath::TiltX {
+                    surface: SurfaceId(id),
+                },
+                ParamPath::TiltY {
+                    surface: SurfaceId(id),
+                },
+                ParamPath::Curvature {
+                    surface: SurfaceId(id),
+                },
+            ] {
+                tol.push(json!({"param": p, "minus": 1e-3, "plus": 1e-3}));
+            }
+        }
+        let mut settings = settings;
+        settings["tolerances"] = json!(tol);
+        let out = Tolerance.run(&input(sys), &settings, &ctx).unwrap();
+        watch.join().unwrap();
+        let j = &out.json;
+        assert_eq!(j["status"], json!("stopped"));
+        let sens = &j["sensitivity"];
+        assert_eq!(sens["cancelled"], json!(true), "{sens}");
+        let n = sens["operands"].as_array().unwrap().len();
+        assert!(n > 0 && n < 30, "{n} of 30 operands");
+        assert_eq!(sens["ranking"].as_array().unwrap().len(), n);
     }
 
     /// With no variables / tolerances the jobs choose them: the curvatures of

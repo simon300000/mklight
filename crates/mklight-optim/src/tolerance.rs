@@ -290,9 +290,20 @@ pub struct SensitivityReport {
     /// criterion with every tolerance at its limit (statistical estimate).
     pub rss_change: f64,
     pub evaluations: usize,
+    /// True when cancelled: `operands`, `ranking` and `rss_change` cover the
+    /// operands whose both limits were evaluated.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
-/// Single-operand sensitivity analysis (one batch of `2n + 1` systems).
+/// Points per evaluation batch of [`sensitivity`] (the nominal first, then
+/// each operand's minus and plus limits). Cancelling between batches keeps
+/// the operands completed so far; the values do not depend on the batching.
+pub const SENSITIVITY_BATCH: usize = 32;
+
+/// Single-operand sensitivity analysis: `2n + 1` systems, evaluated in
+/// batches of [`SENSITIVITY_BATCH`]. Cancelled after the nominal, it returns
+/// the operands completed so far (`cancelled`); before, `Err(Cancelled)`.
 pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
     spec: &ToleranceSpec,
     evaluator: &E,
@@ -310,16 +321,33 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
         pts.push(p);
     }
     mon.progress(0.0, "tolerance sensitivity");
-    let out = evaluator.evaluate_batch(&pts, &mon.job)?;
-    if out.len() != pts.len() {
-        return Err(MkError::Numerical(
-            "tolerance evaluator returned the wrong count".into(),
-        ));
+    let mut out: Vec<TrialOutcome> = Vec::with_capacity(pts.len());
+    let mut cancelled = false;
+    for chunk in pts.chunks(SENSITIVITY_BATCH) {
+        if mon.cancelled() && !out.is_empty() {
+            cancelled = true;
+            break;
+        }
+        match evaluator.evaluate_batch(chunk, &mon.job) {
+            Ok(r) if r.len() == chunk.len() => out.extend(r),
+            Ok(_) => {
+                return Err(MkError::Numerical(
+                    "tolerance evaluator returned the wrong count".into(),
+                ));
+            }
+            Err(MkError::Cancelled) if !out.is_empty() => {
+                cancelled = true;
+                break;
+            }
+            Err(e) => return Err(e),
+        }
+        mon.progress(out.len() as f64 / pts.len() as f64, "tolerance sensitivity");
     }
     let nominal = out[0].clone();
-    let mut ops = Vec::with_capacity(n);
+    let done = (out.len() - 1) / 2;
+    let mut ops = Vec::with_capacity(done);
     let mut rss = 0.0;
-    for (i, o) in spec.operands.iter().enumerate() {
+    for (i, o) in spec.operands.iter().enumerate().take(done) {
         let (m, p) = (out[1 + 2 * i].clone(), out[2 + 2 * i].clone());
         let cm = m.criterion - nominal.criterion;
         let cp = p.criterion - nominal.criterion;
@@ -339,15 +367,18 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
             worst,
         });
     }
-    let mut ranking: Vec<usize> = (0..n).collect();
+    let mut ranking: Vec<usize> = (0..done).collect();
     ranking.sort_by(|&a, &b| ops[b].worst.total_cmp(&ops[a].worst).then(a.cmp(&b)));
-    mon.progress(1.0, "tolerance sensitivity");
+    if !cancelled {
+        mon.progress(1.0, "tolerance sensitivity");
+    }
     Ok(SensitivityReport {
         nominal,
         operands: ops,
         ranking,
         rss_change: rss.sqrt(),
-        evaluations: pts.len(),
+        evaluations: out.len(),
+        cancelled,
     })
 }
 
@@ -525,7 +556,13 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
         let Ok(sys) = self.spec.apply(self.nominal, deltas) else {
             return Ok(TrialOutcome::failed());
         };
-        let mon = Monitor::new(ctx.clone());
+        // The compensator solve shares the cancellation but not the
+        // progress bar: trials run in parallel, and their LM progress would
+        // move the caller's bar back and forth.
+        let mon = Monitor::new(JobContext::with(
+            ctx.cancel.clone(),
+            mklight_core::job::Progress::default(),
+        ));
         let vars: Vec<VariableSpec> = self
             .spec
             .compensators

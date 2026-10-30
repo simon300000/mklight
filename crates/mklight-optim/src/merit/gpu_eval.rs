@@ -180,6 +180,46 @@ pub fn gpu_fd_relative_step(kind: &OperandKind, scheme: FdScheme) -> f64 {
     }
 }
 
+/// Rays the GPU evaluator traces per candidate for `operands` on `system`:
+/// the planned chief, pupil, single and real rays of the operands it
+/// accelerates (with `wavefront` as [`GpuEvalSettings::wavefront`]).
+/// `None` when the system cannot be traced. Used with [`gpu_beats_cpu`] to
+/// decide whether the GPU path pays off.
+pub fn gpu_rays_per_candidate(
+    cpu: &TraceEvaluator,
+    system: &OpticalSystem,
+    operands: &[&Operand],
+    wavefront: bool,
+) -> Option<usize> {
+    let tr = cpu.tracer(system).ok()?;
+    let ops: Vec<&Operand> = operands
+        .iter()
+        .copied()
+        .filter(|o| gpu_supports(&o.kind, wavefront) && trace_supports(&o.kind))
+        .collect();
+    if ops.is_empty() {
+        return Some(0);
+    }
+    let p = prepare(cpu, &tr, &ops, cpu.settings().clip);
+    Some(p.frags.iter().map(|f| f.rays.len()).sum())
+}
+
+/// Does a batch of `batch` candidates tracing `rays_per_candidate` rays each
+/// run faster on the GPU evaluator than on the CPU reference? The measured
+/// crossover (`docs/OPTIMIZATION.md`, Throughput: Double Gauss, Apple M2
+/// Pro), taken conservatively between the measured points: at 171 rays the
+/// GPU never wins (0.3–0.9×), at 657 rays from 256 candidates, at 2601 rays
+/// from 16. The per-candidate host work, not the device, sets it.
+pub fn gpu_beats_cpu(rays_per_candidate: usize, batch: usize) -> bool {
+    if rays_per_candidate >= 2600 {
+        batch >= 16
+    } else if rays_per_candidate >= 650 {
+        batch >= 256
+    } else {
+        false
+    }
+}
+
 /// Operand evaluator tracing ray-based operands on a GPU backend (module
 /// docs). Cheap to clone (shared state).
 #[derive(Clone)]
@@ -371,6 +411,7 @@ impl GpuTraceEvaluator {
             })
             .collect();
         let mut fl = InFlight {
+            backend: self.backend.as_ref(),
             systems,
             hosts,
             prepared,
@@ -494,13 +535,19 @@ impl GpuTraceEvaluator {
             })
             .collect();
         // Many candidates' caches: free them in parallel.
-        fl.prepared.into_par_iter().for_each(drop);
+        std::mem::take(&mut fl.prepared)
+            .into_par_iter()
+            .for_each(drop);
         values
     }
 }
 
-/// A sub-batch whose traces have been submitted.
+/// A sub-batch whose traces have been submitted. Dropping it unfinished
+/// (cancellation, an error in another sub-batch) cancels its pending traces
+/// and releases its uploaded systems, so a long-lived device does not
+/// accumulate them.
 struct InFlight<'a> {
+    backend: &'a dyn ComputeBackend,
     systems: &'a [OpticalSystem],
     hosts: &'a [Host],
     prepared: Vec<Option<Prepared<'a>>>,
@@ -510,6 +557,17 @@ struct InFlight<'a> {
     pending: Vec<Pending<JobResult>>,
     /// Upload or submission failure (the sub-batch then runs on the CPU).
     error: Option<MkError>,
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        for p in self.pending.drain(..) {
+            p.cancel();
+        }
+        if let Some(h) = self.handle.take() {
+            let _ = self.backend.release_systems(h);
+        }
+    }
 }
 
 /// Concatenate ray fragments (each of one system, given by index) into one
@@ -668,6 +726,13 @@ enum Dest {
     Real(u32),
 }
 
+/// Largest local coordinate (mm) of a real-ray point read from the GPU. The
+/// f32 rounding of a coordinate `p` is up to `|p|·2⁻²⁴`, which reaches a
+/// third of the CONVENTIONS §7 position budget (the qualification margin)
+/// at about 112 mm; real-ray points farther from their surface's frame
+/// origin are recomputed on the CPU reference.
+pub const REAL_RAY_F32_LIMIT_MM: f64 = 100.0;
+
 /// A trace request: (clipped by fixed apertures, last surface).
 type RequestKey = (bool, u32);
 
@@ -790,8 +855,11 @@ fn prepare<'a>(
     }
     for (k, &key) in plan.real.iter().enumerate() {
         let (f, w, px, py, j) = key;
-        // Surface 0 is where rays start: left to the CPU path.
-        if j == 0 {
+        // Left to the CPU path (no cache entry): surface 0, where rays
+        // start, and passive surfaces (coordinate breaks, dummies), whose
+        // "hit" can lie far from the frame origin (a fold's coordinate
+        // break) and is outside what the qualification samples.
+        if j == 0 || tr.system().surfaces[j].is_passive() {
             continue;
         }
         match gen_(&c, f, w, f64::from_bits(px), f64::from_bits(py)) {
@@ -931,7 +999,17 @@ fn fill(p: &mut Prepared<'_>, outs: &[(&GpuTrace, usize)]) {
                         dir: r.ray.dir,
                         opl: r.opl.hi + r.opl.lo,
                     });
-                    c.real_rays.insert(key, hit);
+                    match hit {
+                        // Rounding the point to f32 alone would use more
+                        // than a third of the position budget: the CPU path
+                        // recomputes it.
+                        Ok(h) if h.point.max_abs_diff(Vec3::ZERO) > REAL_RAY_F32_LIMIT_MM => {
+                            c.real_rays.remove(&key);
+                        }
+                        hit => {
+                            c.real_rays.insert(key, hit);
+                        }
+                    }
                 }
             }
         }
