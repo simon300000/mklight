@@ -674,21 +674,26 @@ fn relax_fixed_boundaries(
     Ok(warnings)
 }
 
-/// Independent curvature coordinates of a surface (the scalar legacy path
-/// remains the y curvature for axis shapes).
-fn curvature_params(sys: &OpticalSystem, i: usize) -> Vec<ParamPath> {
+/// The curvature parameters of a surface, with labels: x and y for toroids
+/// and biconics, whose legacy curvature path is only the y curvature.
+fn curvature_params(sys: &OpticalSystem, i: usize) -> Vec<(ParamPath, String)> {
+    use mklight_core::SurfaceShape::{Biconic, Toroid};
+    use mklight_core::param::ShapeParameter::{CurvatureX, CurvatureY};
     let surface = sys.surfaces[i].id;
-    if matches!(
-        sys.surfaces[i].shape,
-        mklight_core::SurfaceShape::Toroid { .. } | mklight_core::SurfaceShape::Biconic { .. }
-    ) {
-        use mklight_core::param::ShapeParameter::{CurvatureX, CurvatureY};
-        [CurvatureX, CurvatureY]
-            .into_iter()
-            .map(|parameter| ParamPath::ShapeParam { surface, parameter })
-            .collect()
+    if matches!(sys.surfaces[i].shape, Toroid { .. } | Biconic { .. }) {
+        [(CurvatureX, "x"), (CurvatureY, "y")]
+            .map(|(parameter, axis)| {
+                (
+                    ParamPath::ShapeParam { surface, parameter },
+                    format!("curvature {axis} {}", surface.0),
+                )
+            })
+            .into()
     } else {
-        vec![ParamPath::Curvature { surface }]
+        vec![(
+            ParamPath::Curvature { surface },
+            format!("curvature {}", surface.0),
+        )]
     }
 }
 
@@ -700,8 +705,8 @@ fn auto_variables(sys: &OpticalSystem) -> Vec<VariableSpec> {
     let mut v: Vec<VariableSpec> = gaps
         .iter()
         .flat_map(|g| curvature_params(sys, g.from))
-        .filter(|p| p.get(sys).is_ok_and(|c| c != 0.0))
-        .map(VariableSpec::new)
+        .filter(|(p, _)| p.get(sys).is_ok_and(|c| c != 0.0))
+        .map(|(p, _)| VariableSpec::new(p))
         .collect();
     if n >= 3 {
         v.push(VariableSpec::new(ParamPath::Thickness {
@@ -727,15 +732,12 @@ fn auto_tolerances(sys: &OpticalSystem) -> Vec<ToleranceOperand> {
         o.label = format!("thickness {}", sys.surfaces[g.from].id.0);
         t.push(o);
     }
-    for p in gaps.iter().flat_map(|g| curvature_params(sys, g.from)) {
+    for (p, label) in gaps.iter().flat_map(|g| curvature_params(sys, g.from)) {
         if let Ok(c) = p.get(sys)
             && c != 0.0
         {
-            let mut o = ToleranceOperand::symmetric(p.clone(), 0.005 * c.abs());
-            o.label = match p {
-                ParamPath::Curvature { surface } => format!("curvature {}", surface.0),
-                _ => format!("{p:?}"),
-            };
+            let mut o = ToleranceOperand::symmetric(p, 0.005 * c.abs());
+            o.label = label;
             t.push(o);
         }
     }
@@ -2821,6 +2823,7 @@ mod tests {
         assert!((f(&ops[1]["plus"]) - 0.005 * c1.abs()).abs() < 1e-15);
         assert!(t.json["monte_carlo"].is_null());
     }
+
     #[test]
     fn axis_defaults_optimise_squeeze_and_tolerance_both_curvatures() {
         let sys = samples::biconic_element();
@@ -2846,8 +2849,8 @@ mod tests {
                 &JobContext::new(),
             )
             .unwrap();
-        assert!((values[0].clone().unwrap() - 1.4).abs() < 1e-6);
-        assert!((values[1].clone().unwrap() - fy).abs() < 1e-6);
+        assert!((values[0].as_ref().unwrap() - 1.4).abs() < 1e-6);
+        assert!((values[1].as_ref().unwrap() - fy).abs() < 1e-6);
         assert!(
             !r.json["operands"]
                 .as_array()

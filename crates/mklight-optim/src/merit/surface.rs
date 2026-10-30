@@ -4,22 +4,27 @@ use std::f64::consts::TAU;
 use mklight_core::math::KahanSum;
 use mklight_core::model::{ApertureShape, SemiDiameter, Surface};
 use mklight_core::surface_math::{self, SagDerivatives};
-use mklight_core::{OpticalSystem, SurfaceShape};
+use mklight_core::{OpticalSystem, SurfaceId, SurfaceShape};
 
 use super::operand::OperandKind;
 use super::{OperandError, OperandValue};
 
-pub(super) fn is_kind(k: &OperandKind) -> bool {
+/// The surface of a manufacturing metric operand (`None` for other kinds).
+fn metric_surface(k: &OperandKind) -> Option<SurfaceId> {
     use OperandKind::*;
-    matches!(
-        k,
-        DoeMinZonePeriod { .. }
-            | DoeMaxPhaseSlope { .. }
-            | DoeTotalPhase { .. }
-            | QMaxDeparture { .. }
-            | QMaxDepartureSlope { .. }
-            | FreeformMaxDeparture { .. }
-    )
+    match k {
+        DoeMinZonePeriod { surface }
+        | DoeMaxPhaseSlope { surface }
+        | DoeTotalPhase { surface }
+        | QMaxDeparture { surface }
+        | QMaxDepartureSlope { surface }
+        | FreeformMaxDeparture { surface } => Some(*surface),
+        _ => None,
+    }
+}
+
+pub(super) fn is_kind(k: &OperandKind) -> bool {
+    metric_surface(k).is_some()
 }
 
 fn invalid(why: &str) -> OperandError {
@@ -146,17 +151,9 @@ fn best_fit_sphere(nodes: &[Node]) -> (f64, f64) {
 
 pub(super) fn value(s: &OpticalSystem, k: &OperandKind) -> OperandValue {
     use OperandKind::*;
-    let (DoeMinZonePeriod { surface }
-    | DoeMaxPhaseSlope { surface }
-    | DoeTotalPhase { surface }
-    | QMaxDeparture { surface }
-    | QMaxDepartureSlope { surface }
-    | FreeformMaxDeparture { surface }) = k
-    else {
-        return Err(OperandError::Unsupported);
-    };
+    let surface = metric_surface(k).ok_or(OperandError::Unsupported)?;
     let sf = s
-        .surface_index(*surface)
+        .surface_index(surface)
         .map(|i| &s.surfaces[i])
         .ok_or_else(|| invalid("surface metric: unknown surface"))?;
     let nodes = nodes(sf)?;

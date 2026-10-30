@@ -21,7 +21,10 @@
 //! **Half pupil.** With `auto_symmetry` the bilateral half pupil is used only
 //! when the system is mirror-symmetric about the meridional plane in *every*
 //! emitted configuration and no variable can break that symmetry (x
-//! decenters, tilts about y or z, x field coordinates); use
+//! decenters, tilts about y or z, x field coordinates, XY or Zernike
+//! coefficients); a system that is not symmetric always gets the full pupil.
+//! Anamorphic and freeform systems sample a 3×3 x/y field grid
+//! (`docs/OPTIMIZATION.md`). Use
 //! [`DefaultMeritSpec::generate_for`] to pass the variables, and
 //! [`DefaultMeritSpec::generate_for_tolerancing`] for a tolerancing
 //! criterion (whose perturbations are the "variables"). Should a half-pupil
@@ -174,8 +177,9 @@ impl Default for DefaultMeritSpec {
     }
 }
 
-/// Is the system mirror-symmetric about the y–z plane (all fields on the y
-/// axis, no x decenters, no tilts about y or z, no x vignetting decenter)?
+/// Is the system mirror-symmetric about the y–z plane (core
+/// [`system_symmetry`] not `None`, all fields on the y axis, no x vignetting
+/// decenter)?
 pub fn is_meridionally_symmetric(s: &OpticalSystem) -> bool {
     system_symmetry(s) != Symmetry::None
         && s.fields
@@ -200,29 +204,17 @@ pub fn breaks_meridional_symmetry(p: &ParamPath) -> bool {
 }
 
 impl DefaultMeritSpec {
-    /// A 3×3 Cartesian grid inscribed in the normalised field disk covers
-    /// both axes for axis shapes, freeforms and nonrotational geometry.
-    fn uses_field_grid(&self, s: &OpticalSystem) -> MkResult<bool> {
-        if self.fields.is_some() {
-            return Ok(false);
-        }
-        for c in self.configs() {
-            let configured = s.with_configuration(c)?;
-            if system_symmetry(&configured) != Symmetry::Rotational
-                || configured.surfaces.iter().any(|sf| {
-                    matches!(
-                        sf.shape,
-                        mklight_core::SurfaceShape::Toroid { .. }
-                            | mklight_core::SurfaceShape::Biconic { .. }
-                            | mklight_core::SurfaceShape::XYPolynomial { .. }
-                            | mklight_core::SurfaceShape::ZernikeSag { .. }
-                    )
-                })
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+    /// Sample the 3×3 x/y field grid instead of the system fields? Yes for
+    /// anamorphic and freeform shape types, whatever their coefficients.
+    fn uses_field_grid(&self, s: &OpticalSystem) -> bool {
+        use mklight_core::SurfaceShape::*;
+        self.fields.is_none()
+            && s.surfaces.iter().any(|sf| {
+                matches!(
+                    sf.shape,
+                    Toroid { .. } | Biconic { .. } | XYPolynomial { .. } | ZernikeSag { .. }
+                )
+            })
     }
 
     /// The configurations this spec emits operands for.
@@ -234,18 +226,10 @@ impl DefaultMeritSpec {
         }
     }
 
-    /// May the half pupil be used for `s` with these variables?
-    pub fn half_pupil_allowed(
-        &self,
-        s: &OpticalSystem,
-        variables: &[VariableSpec],
-    ) -> MkResult<bool> {
-        if self.uses_field_grid(s)?
-            || !self.auto_symmetry
-            || variables
-                .iter()
-                .any(|v| breaks_meridional_symmetry(&v.param))
-        {
+    /// Are the system and the sampled fields mirror-symmetric about the
+    /// meridional plane in every emitted configuration?
+    fn meridional(&self, s: &OpticalSystem) -> MkResult<bool> {
+        if self.uses_field_grid(s) {
             return Ok(false);
         }
         for c in self.configs() {
@@ -254,6 +238,19 @@ impl DefaultMeritSpec {
             }
         }
         Ok(true)
+    }
+
+    /// May the half pupil be used for `s` with these variables?
+    pub fn half_pupil_allowed(
+        &self,
+        s: &OpticalSystem,
+        variables: &[VariableSpec],
+    ) -> MkResult<bool> {
+        Ok(self.auto_symmetry
+            && !variables
+                .iter()
+                .any(|v| breaks_meridional_symmetry(&v.param))
+            && self.meridional(s)?)
     }
 
     /// Generate for a system without optimisation variables.
@@ -307,13 +304,13 @@ impl DefaultMeritSpec {
         }
         let configs = self.configs();
         let mut sampling = self.sampling;
-        sampling.symmetry = if self.half_pupil_allowed(s, variables)? {
-            PupilSymmetry::Bilateral
-        } else {
-            PupilSymmetry::None
-        };
+        if self.half_pupil_allowed(s, variables)? {
+            sampling.symmetry = PupilSymmetry::Bilateral;
+        } else if !self.meridional(s)? {
+            sampling.symmetry = PupilSymmetry::None;
+        }
         let nodes = sampling.nodes();
-        let field_points: Vec<(FieldSelector, f64)> = if self.uses_field_grid(s)? {
+        let field_points: Vec<(FieldSelector, f64)> = if self.uses_field_grid(s) {
             let h = std::f64::consts::FRAC_1_SQRT_2;
             [-h, 0.0, h]
                 .into_iter()
@@ -384,11 +381,6 @@ impl DefaultMeritSpec {
             }
         }
         if let Some(target) = self.squeeze_target {
-            if !target.is_finite() {
-                return Err(MkError::InvalidParam(
-                    "squeeze target must be finite".into(),
-                ));
-            }
             for &c in &configs {
                 ops.push(
                     Operand::new(OperandKind::AnamorphicSqueeze)

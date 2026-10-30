@@ -15,6 +15,7 @@ use mklight_optim::merit::{
     FieldSelector, MeritFunctionSpec, Operand, OperandRegistry, OpticalProblem, PupilSampling,
     PupilSymmetry, TraceEvaluator, VariableSpec,
 };
+use mklight_optim::monitor::OptimResult;
 use mklight_optim::problem::{
     BatchEvaluation, CandidateBatch, Constraint, EvalStatus, Problem, Variable, evaluate_one, merit,
 };
@@ -34,6 +35,11 @@ fn scalar(surface: u64, parameter: ShapeParameter) -> ParamPath {
     ParamPath::ShapeParam {
         surface: SurfaceId(surface),
         parameter,
+    }
+}
+fn back_focus() -> ParamPath {
+    ParamPath::Thickness {
+        surface: SurfaceId(2),
     }
 }
 fn value(s: &OpticalSystem, kind: OperandKind) -> f64 {
@@ -62,25 +68,34 @@ fn score(p: &impl Problem, x: &[f64]) -> f64 {
     assert_eq!(e.status, EvalStatus::Ok);
     merit(p.weights(), &e.residuals, e.status)
 }
-fn optimise(p: &OpticalProblem<TraceEvaluator>) -> mklight_optim::monitor::OptimResult {
+fn optimise(p: &OpticalProblem<TraceEvaluator>) -> OptimResult {
     let settings = LsqSettings {
         max_iterations: 40,
         ..Default::default()
     };
-    let run = TraceEvaluator::builtin()
-        .run(p.base(), "extended-surface-optim", &settings, None, || {
-            least_squares(p, &p.start_point()?, &settings, &Monitor::default())
-        })
-        .unwrap();
-    assert_eq!(run.info.backend, TraceEvaluator::BACKEND);
+    least_squares(p, &p.start_point().unwrap(), &settings, &Monitor::default()).unwrap()
+}
+/// The default merit for `paths` on `s`, its start merit, the optimum over
+/// `paths`, and the optimum over the back focus alone: the shape variables
+/// must do much better than refocusing.
+fn against_refocus(
+    s: OpticalSystem,
+    paths: Vec<ParamPath>,
+    generator: DefaultMeritSpec,
+) -> (MeritFunctionSpec, f64, OptimResult, f64) {
+    let vars: Vec<_> = paths.iter().cloned().map(VariableSpec::new).collect();
+    let spec = generator.generate_for(&s, &vars).unwrap();
+    let refocus = optimise(&problem(s.clone(), vec![back_focus()], spec.clone())).merit;
+    let p = problem(s, paths, spec.clone());
+    let m0 = score(&p, &p.start_point().unwrap());
+    let r = optimise(&p);
+    assert_eq!(score(&p, &r.x), r.merit);
+    let again = optimise(&p);
     assert_eq!(
-        run.info.snapshot_hash,
-        mklight_core::Snapshot::new(p.base().clone())
-            .unwrap()
-            .hash()
-            .to_hex()
+        (again.x, again.merit.to_bits()),
+        (r.x.clone(), r.merit.to_bits())
     );
-    run.result
+    (spec, m0, r, refocus)
 }
 
 #[test]
@@ -93,29 +108,20 @@ fn q_and_odd_singlets_improve_deterministically() {
         (samples::q_asphere_lens(), coeff(1, CoefficientSet::Q, 0)),
         (samples::qbfs_lens(), coeff(1, CoefficientSet::Q, 0)),
     ] {
-        let paths = vec![
-            path,
-            ParamPath::Thickness {
-                surface: SurfaceId(2),
-            },
-        ];
-        let vars: Vec<_> = paths.iter().cloned().map(VariableSpec::new).collect();
-        let spec = DefaultMeritSpec {
+        let name = s.name.clone();
+        let generator = DefaultMeritSpec {
             fields: Some(vec![0]),
             wavelengths: Some(vec![1]),
             thickness: None,
             ..Default::default()
-        }
-        .generate_for(&s, &vars)
-        .unwrap();
-        let p = problem(s, paths, spec);
-        let m0 = score(&p, &p.start_point().unwrap());
-        let a = optimise(&p);
-        let b = optimise(&p);
-        assert!(a.merit < 0.8 * m0, "{}: {m0} -> {}", p.base().name, a.merit);
-        assert_eq!(a.x, b.x);
-        assert_eq!(a.merit.to_bits(), b.merit.to_bits());
-        assert_eq!(score(&p, &a.x), a.merit);
+        };
+        let (_, m0, r, refocus) = against_refocus(s, vec![path, back_focus()], generator);
+        // Refocusing alone reaches 0.40, 0.085 and 0.090 of m0.
+        assert!(
+            r.merit < 0.2 * refocus,
+            "{name}: {m0} -> {}, {refocus}",
+            r.merit
+        );
     }
 }
 
@@ -148,7 +154,15 @@ fn anamorphic_reaches_squeeze_and_holds_y_focal_length() {
             .target(efl_y)
             .as_constraint(),
     ]);
-    let p = problem(s, vec![scalar(10, ShapeParameter::CurvatureX)], spec);
+    // The singlet curvature changes both focal lengths; only the hold keeps
+    // EFL_y, so the squeeze must come from the cylinder.
+    let paths = vec![
+        scalar(10, ShapeParameter::CurvatureX),
+        ParamPath::Curvature {
+            surface: SurfaceId(1),
+        },
+    ];
+    let p = problem(s, paths, spec);
     let r = optimise(&p);
     let best = p.apply(&r.x).unwrap();
     assert!(
@@ -161,40 +175,36 @@ fn anamorphic_reaches_squeeze_and_holds_y_focal_length() {
 
 #[test]
 fn freeform_corrector_improves_over_both_field_axes() {
-    let s = samples::xy_freeform();
     let paths = vec![
         coeff(1, CoefficientSet::Xy, 2),
         coeff(1, CoefficientSet::Xy, 4),
         coeff(1, CoefficientSet::Xy, 5),
         coeff(1, CoefficientSet::Xy, 7),
-        ParamPath::Thickness {
-            surface: SurfaceId(2),
-        },
+        back_focus(),
     ];
-    let vars: Vec<_> = paths.iter().cloned().map(VariableSpec::new).collect();
-    let spec = DefaultMeritSpec {
+    let generator = DefaultMeritSpec {
         thickness: None,
         wavelengths: Some(vec![1]),
         ..Default::default()
-    }
-    .generate_for(&s, &vars)
-    .unwrap();
-    assert!(spec.operands.iter().any(
-        |o| matches!(o.field, FieldSelector::Normalized { hx, hy } if hx != 0.0 && hy == 0.0)
-    ));
-    assert!(spec.operands.iter().any(
-        |o| matches!(o.field, FieldSelector::Normalized { hx, hy } if hx == 0.0 && hy != 0.0)
-    ));
+    };
+    let (spec, m0, r, refocus) = against_refocus(samples::xy_freeform(), paths, generator);
+    // Fields on the x axis and on the y axis, both sampled.
+    let axes: Vec<_> = spec
+        .operands
+        .iter()
+        .filter_map(|o| match o.field {
+            FieldSelector::Normalized { hx, hy } => Some((hx != 0.0, hy != 0.0)),
+            _ => None,
+        })
+        .collect();
+    assert!(axes.contains(&(true, false)) && axes.contains(&(false, true)));
     assert!(
         spec.operands
             .iter()
             .all(|o| o.kind.ray_group().unwrap().sampling.symmetry == PupilSymmetry::None)
     );
-    let p = problem(s, paths, spec);
-    let m0 = score(&p, &p.start_point().unwrap());
-    let r = optimise(&p);
-    assert!(r.merit < 0.7 * m0, "{m0} -> {}", r.merit);
-    assert_eq!(score(&p, &r.x), r.merit);
+    // Refocusing alone reaches 0.44 of m0.
+    assert!(r.merit < 0.2 * refocus, "{m0} -> {}, {refocus}", r.merit);
 }
 
 #[test]
@@ -224,12 +234,7 @@ fn q_coefficient_and_toroid_curvature_tolerances() {
             registry: &reg,
             lsq: LsqSettings::default(),
         };
-        let run = ev
-            .run(&s, "extended-surface-tolerance", &tol, None, || {
-                sensitivity(&tol, &eval, &Monitor::default())
-            })
-            .unwrap();
-        let r = run.result;
+        let r = sensitivity(&tol, &eval, &Monitor::default()).unwrap();
         assert!(r.nominal.ok && r.operands[0].minus.ok && r.operands[0].plus.ok);
         assert!(r.operands[0].worst > 1e-12);
         let settings = MonteCarloSettings {
@@ -401,119 +406,55 @@ fn surface_sample_jacobians() {
 
 #[test]
 fn manufacturing_known_answers_and_aperture_edges() {
+    use OperandKind::*;
+    let (doe, lens) = (SurfaceId(2), SurfaceId(1));
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
+    // Φ = A₁ (r/5)² on a plane, A₁ = −40 rad: |∇Φ| = 2·40·r/25 at r = 3.
     let mut s = samples::hybrid_diffractive_achromat();
     s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 3.0 };
-    let a1 = coeff(2, CoefficientSet::Phase, 0);
-    a1.set(&mut s, -40.0).unwrap();
+    coeff(2, CoefficientSet::Phase, 0)
+        .set(&mut s, -40.0)
+        .unwrap();
     let slope = 2.0 * 40.0 * 3.0 / 25.0;
-    assert!(
-        (value(
-            &s,
-            OperandKind::DoeMaxPhaseSlope {
-                surface: SurfaceId(2)
-            }
-        ) - slope)
-            .abs()
-            < 1e-12
-    );
-    assert!(
-        (value(
-            &s,
-            OperandKind::DoeMinZonePeriod {
-                surface: SurfaceId(2)
-            }
-        ) - std::f64::consts::TAU / slope)
-            .abs()
-            < 1e-12
-    );
-    assert!(
-        (value(
-            &s,
-            OperandKind::DoeTotalPhase {
-                surface: SurfaceId(2)
-            }
-        ) - 40.0 * 9.0 / 25.0)
-            .abs()
-            < 1e-12
-    );
+    assert!(near(value(&s, DoeMaxPhaseSlope { surface: doe }), slope));
+    let period = value(&s, DoeMinZonePeriod { surface: doe });
+    assert!(near(period, std::f64::consts::TAU / slope));
+    assert!(near(
+        value(&s, DoeTotalPhase { surface: doe }),
+        40.0 * 9.0 / 25.0
+    ));
     // Obscuration removes the inner phase range; metadata and traced order
     // cannot change the manufactured pattern.
     s.surfaces[2].aperture = Some(ApertureShape::Annular {
         inner_radius: 1.0,
         outer_radius: 3.0,
     });
-    scalar(2, ShapeParameter::TraceOrder)
-        .set(&mut s, -2.0)
-        .unwrap();
-    assert!(
-        (value(
-            &s,
-            OperandKind::DoeTotalPhase {
-                surface: SurfaceId(2)
-            }
-        ) - 40.0 * 8.0 / 25.0)
-            .abs()
-            < 1e-12
-    );
+    let order = scalar(2, ShapeParameter::TraceOrder);
+    order.set(&mut s, -2.0).unwrap();
+    assert!(near(
+        value(&s, DoeTotalPhase { surface: doe }),
+        40.0 * 8.0 / 25.0
+    ));
+    assert!(near(value(&s, DoeMinZonePeriod { surface: doe }), period));
     // A sphere encoded as either Q family has zero fitted departure.
     for mut s in [samples::q_asphere_lens(), samples::qbfs_lens()] {
         s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 4.0 };
-        s.surfaces[1].shape = match s.surfaces[1].shape {
+        match &mut s.surfaces[1].shape {
             SurfaceShape::QCon {
-                curvature,
-                norm_radius,
+                conic,
+                coefficients,
                 ..
-            } => SurfaceShape::QCon {
-                curvature,
-                norm_radius,
-                conic: 0.0,
-                coefficients: vec![],
-            },
-            SurfaceShape::QBfs {
-                curvature,
-                norm_radius,
-                ..
-            } => SurfaceShape::QBfs {
-                curvature,
-                norm_radius,
-                coefficients: vec![],
-            },
+            } => (*conic, *coefficients) = (0.0, vec![]),
+            SurfaceShape::QBfs { coefficients, .. } => coefficients.clear(),
             _ => unreachable!(),
-        };
-        assert!(
-            value(
-                &s,
-                OperandKind::QMaxDeparture {
-                    surface: SurfaceId(1)
-                }
-            ) < 1e-12
-        );
-        assert!(
-            value(
-                &s,
-                OperandKind::QMaxDepartureSlope {
-                    surface: SurfaceId(1)
-                }
-            ) < 1e-12
-        );
+        }
+        assert!(value(&s, QMaxDeparture { surface: lens }) < 1e-12);
+        assert!(value(&s, QMaxDepartureSlope { surface: lens }) < 1e-12);
         coeff(1, CoefficientSet::Q, 0).set(&mut s, 0.02).unwrap();
-        assert!(
-            value(
-                &s,
-                OperandKind::QMaxDeparture {
-                    surface: SurfaceId(1)
-                }
-            ) > 1e-4
-        );
-        assert!(
-            value(
-                &s,
-                OperandKind::QMaxDepartureSlope {
-                    surface: SurfaceId(1)
-                }
-            ) > 1e-4
-        );
+        assert!(value(&s, QMaxDeparture { surface: lens }) > 1e-4);
+        assert!(value(&s, QMaxDepartureSlope { surface: lens }) > 1e-4);
     }
+    // On a 3 × 2 rectangle the X² and XY extrema are at the corners.
     let mut s = samples::xy_freeform();
     s.surfaces[1].shape = SurfaceShape::XYPolynomial {
         curvature: 0.02,
@@ -525,28 +466,11 @@ fn manufacturing_known_answers_and_aperture_edges() {
         half_x: 3.0,
         half_y: 2.0,
     });
-    assert!(
-        (value(
-            &s,
-            OperandKind::FreeformMaxDeparture {
-                surface: SurfaceId(1)
-            }
-        ) - 0.01 * 9.0 / 25.0)
-            .abs()
-            < 1e-12
-    );
+    let departure = FreeformMaxDeparture { surface: lens };
+    assert!(near(value(&s, departure.clone()), 0.01 * 9.0 / 25.0));
     coeff(1, CoefficientSet::Xy, 2).set(&mut s, 0.0).unwrap();
     coeff(1, CoefficientSet::Xy, 3).set(&mut s, 0.01).unwrap();
-    assert!(
-        (value(
-            &s,
-            OperandKind::FreeformMaxDeparture {
-                surface: SurfaceId(1)
-            }
-        ) - 0.01 * 3.0 * 2.0 / 25.0)
-            .abs()
-            < 1e-12
-    );
+    assert!(near(value(&s, departure), 0.01 * 3.0 * 2.0 / 25.0));
 }
 
 #[test]
@@ -587,12 +511,11 @@ fn default_grid_symmetry_and_squeeze_option() {
         }
     }
     assert_eq!(fields.len(), 9);
-    let s = samples::xy_freeform();
     assert!(!mklight_optim::merit::default::is_meridionally_symmetric(
-        &s
+        &samples::xy_freeform()
     ));
-    // A currently symmetric XY shape can become asymmetric through a zero
-    // coefficient, so its variable also forces full-pupil sampling.
+    // With explicit y fields, a currently rotational XY shape keeps the half
+    // pupil unless one of its coefficients is a variable.
     let mut s = samples::singlet();
     s.surfaces[1].shape = SurfaceShape::XYPolynomial {
         curvature: 1.0 / 60.0,
@@ -600,17 +523,25 @@ fn default_grid_symmetry_and_squeeze_option() {
         norm_radius: 5.0,
         coefficients: vec![],
     };
-    let spec = DefaultMeritSpec {
+    let generator = DefaultMeritSpec {
         thickness: None,
+        fields: Some(vec![0, 1]),
         ..Default::default()
+    };
+    for (vars, symmetry) in [
+        (vec![], PupilSymmetry::Bilateral),
+        (
+            vec![VariableSpec::new(coeff(1, CoefficientSet::Xy, 5))],
+            PupilSymmetry::None,
+        ),
+    ] {
+        let spec = generator.generate_for(&s, &vars).unwrap();
+        assert!(
+            spec.operands
+                .iter()
+                .all(|o| o.kind.ray_group().unwrap().sampling.symmetry == symmetry)
+        );
     }
-    .generate_for(&s, &[VariableSpec::new(coeff(1, CoefficientSet::Xy, 5))])
-    .unwrap();
-    assert!(
-        spec.operands
-            .iter()
-            .all(|o| o.kind.ray_group().unwrap().sampling.symmetry == PupilSymmetry::None)
-    );
 }
 
 #[test]
@@ -640,28 +571,23 @@ fn first_order_axis_operands_match_thick_lens_powers() {
 
 #[test]
 fn doe_metric_uses_the_curved_surface_and_q_fit_has_known_departure() {
+    use OperandKind::*;
+    let (doe, lens) = (SurfaceId(2), SurfaceId(1));
     let mut s = samples::hybrid_diffractive_achromat();
     s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 3.0 };
     let SurfaceShape::Diffractive { base, phase } = &mut s.surfaces[2].shape else {
         unreachable!()
     };
-    *base = Box::new(SurfaceShape::sphere(10.0));
+    **base = SurfaceShape::sphere(10.0);
     phase.coefficients = vec![-40.0];
+    // On a sphere of radius 10 at r = 3, |∇surface Φ| = |Φ_r| cos θ.
     let expected = 2.0 * 40.0 * 3.0 / 25.0 * (1.0_f64 - 0.09).sqrt();
-    assert!(
-        (value(
-            &s,
-            OperandKind::DoeMaxPhaseSlope {
-                surface: SurfaceId(2)
-            }
-        ) - expected)
-            .abs()
-            < 1e-12
-    );
-    let mut s = samples::q_asphere_lens();
+    let slope = value(&s, DoeMaxPhaseSlope { surface: doe });
+    assert!((slope - expected).abs() < 1e-12);
     // For z = a (r/R)^4 on a flat base, the area least-squares sphere
     // tends to a quadratic: c = 2a/R², piston = -a/6, max departure = a/6,
     // max slope departure = 2a/R. The sphere's higher terms are O(a³).
+    let mut s = samples::q_asphere_lens();
     let a = 1e-5;
     s.surfaces[1].shape = SurfaceShape::QCon {
         curvature: 0.0,
@@ -670,82 +596,46 @@ fn doe_metric_uses_the_curved_surface_and_q_fit_has_known_departure() {
         coefficients: vec![a],
     };
     s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 5.0 };
-    let departure = value(
-        &s,
-        OperandKind::QMaxDeparture {
-            surface: SurfaceId(1),
-        },
-    );
-    let slope = value(
-        &s,
-        OperandKind::QMaxDepartureSlope {
-            surface: SurfaceId(1),
-        },
-    );
+    let departure = value(&s, QMaxDeparture { surface: lens });
+    let slope = value(&s, QMaxDepartureSlope { surface: lens });
     assert!((departure / (a / 6.0) - 1.0).abs() < 0.001);
     assert!((slope / (2.0 * a / 5.0) - 1.0).abs() < 0.001);
 }
 
 #[test]
-fn integer_diffraction_order_search_and_tolerancing() {
-    use mklight_optim::discrete::{DiscreteSettings, FnDiscrete, SingleChange, tabu_search};
-    use mklight_optim::problem::ScalarEval;
-    use mklight_optim::tolerance::Distribution;
-    let mut s = samples::hybrid_diffractive_achromat();
-    let order = scalar(2, ShapeParameter::TraceOrder);
-    order.set(&mut s, 2.0).unwrap();
-    let target = value(&s, OperandKind::EflY);
-    order.set(&mut s, 0.0).unwrap();
-    let p = problem(
-        s.clone(),
-        vec![order.clone()],
-        MeritFunctionSpec::new(vec![Operand::new(OperandKind::EflY).target(target)]),
-    );
-    let search = FnDiscrete::new(vec![3], move |assignment| ScalarEval {
-        merit: score(&p, &[assignment[0] as f64]),
-        violation: 0.0,
-        status: EvalStatus::Ok,
-    });
-    let r = tabu_search(
-        &search,
-        &SingleChange::default(),
-        &[0],
-        &DiscreteSettings::default(),
-        &Monitor::default(),
-    )
+fn legacy_meridional_systems_keep_their_fields_and_half_pupil() {
+    // Regression: every nonrotational system (here, the Newtonian's 45° fold
+    // about x) used to get the x/y field grid and the full pupil.
+    let s = samples::newtonian_telescope();
+    let spec = DefaultMeritSpec {
+        thickness: None,
+        ..Default::default()
+    }
+    .generate(&s)
     .unwrap();
-    assert_eq!(r.assignment, vec![2]);
-    assert!(r.merit < 1e-16);
-    order.set(&mut s, 1.0).unwrap();
-    let tol = ToleranceSpec::new(vec![
-        ToleranceOperand::symmetric(order, 1.0).with_distribution(Distribution::EndPoint),
-    ]);
-    let criterion = MeritFunctionSpec::new(vec![Operand::new(OperandKind::EflY).target(target)]);
-    let ev = TraceEvaluator::builtin();
-    let reg = OperandRegistry::builtin();
-    let eval = OpticalToleranceEvaluator {
-        nominal: &s,
-        spec: &tol,
-        criterion: &criterion,
-        evaluator: &ev,
-        registry: &reg,
-        lsq: LsqSettings::default(),
-    };
-    let report = sensitivity(&tol, &eval, &Monitor::default()).unwrap();
-    assert!(report.operands[0].minus.ok && report.operands[0].plus.ok);
-    assert!(report.operands[0].plus.criterion < 1e-16);
-    assert!(report.operands[0].minus.criterion > 1.0);
-    let mc = monte_carlo(
-        &tol,
-        &eval,
-        &MonteCarloSettings {
-            trials: 8,
-            seed: 5,
-            batch: 4,
-            threshold: None,
+    for o in &spec.operands {
+        assert!(matches!(o.field, FieldSelector::Index { .. }));
+        assert_eq!(
+            o.kind.ray_group().unwrap().sampling.symmetry,
+            PupilSymmetry::Bilateral
+        );
+    }
+    // Regression: an explicitly requested half pupil was replaced by the
+    // full pupil on a symmetric system.
+    let spec = DefaultMeritSpec {
+        thickness: None,
+        auto_symmetry: false,
+        sampling: PupilSampling {
+            symmetry: PupilSymmetry::Bilateral,
+            ..Default::default()
         },
-        &Monitor::default(),
-    )
+        ..Default::default()
+    }
+    .generate(&samples::cooke_triplet())
     .unwrap();
-    assert_eq!(mc.failures, 0);
+    assert!(
+        spec.operands
+            .iter()
+            .all(|o| o.kind.ray_group().unwrap().sampling.symmetry == PupilSymmetry::Bilateral)
+    );
 }

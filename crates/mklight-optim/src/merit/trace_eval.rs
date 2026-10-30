@@ -248,7 +248,6 @@ impl TraceEvaluator {
         let mut memo = GroupMemo::default();
         let mut out = Vec::with_capacity(operands.len());
         for op in operands {
-            ctx.check()?;
             let v = if is_model_kind(&op.kind) {
                 if auto_sd && needs_semi_diameters(&op.kind) {
                     match &tracer {
@@ -624,6 +623,7 @@ pub(super) struct Candidate<'a> {
     refs: Mutex<BTreeMap<RefKey, Result<[f64; 3], OperandError>>>,
     /// Is the candidate mirror-symmetric about the meridional plane?
     symmetric: bool,
+    /// The x and y first-order sweeps, computed on first use.
     xy: OnceLock<Result<ParaxialXY, OperandError>>,
 }
 
@@ -640,22 +640,6 @@ impl<'a> Candidate<'a> {
         // rays or more (measured on the Double Gauss, docs/OPTIMIZATION.md).
         let rays: usize = plan.groups.values().map(|s| s.rings * s.arms).sum();
         let parallel = parallel && rays >= 256;
-        if operands.iter().any(|o| {
-            matches!(
-                o.kind,
-                OperandKind::EflX
-                    | OperandKind::EflY
-                    | OperandKind::BflX
-                    | OperandKind::BflY
-                    | OperandKind::AnamorphicSqueeze
-            )
-        }) {
-            let job = JobContext::with(ctx.cancel.clone(), Default::default());
-            let xy = ParaxialXY::new_job(tr.system(), &job)
-                .map_err(|e| OperandError::RayFailure(e.to_string()));
-            ctx.check()?;
-            let _ = c.xy.set(xy);
-        }
         c.prepare_points(&plan, parallel);
         ctx.check()?;
         c.trace_cpu(&plan, ctx, parallel)?;

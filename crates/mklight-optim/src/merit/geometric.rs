@@ -312,13 +312,7 @@ impl OperandEvaluator for ModelEvaluator {
             .iter()
             .map(|s| {
                 ctx.check()?;
-                operands
-                    .iter()
-                    .map(|op| {
-                        ctx.check()?;
-                        Ok(model_value(s, op))
-                    })
-                    .collect()
+                Ok(operands.iter().map(|op| model_value(s, op)).collect())
             })
             .collect()
     }

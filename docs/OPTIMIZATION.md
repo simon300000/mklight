@@ -203,8 +203,7 @@ lengths. Higher-order terms have only their local quadratic meaning.
 Manufacturing operands select a stable surface id. They sample its **clear
 aperture**, including both rims of an annulus and rectangular/elliptical
 boundaries: 64 equally spaced azimuths (plus explicit rectangular corner
-spokes for extrema) and 65 radial nodes uniformly spaced
-in r² on each spoke (endpoints included). Explicit apertures override the
+spokes for extrema) and 65 radial nodes uniformly spaced in r² on each spoke (endpoints included). Explicit apertures override the
 semi-diameter, as in tracing. Automatic semi-diameters are resolved once per
 candidate by `TraceEvaluator`; `ModelEvaluator` needs a fixed semi-diameter
 or an explicit aperture. Extrema are sampled estimates, so features narrower
@@ -219,9 +218,10 @@ still has positive slope magnitude, period and peak-to-valley phase.
 
 The Q sphere minimises area-weighted squared sag error, with curvature and
 axial piston free. The radial trapezoidal weights include the aperture's
-spoke areas; the additional corner spokes have zero fit weight. Curvature is fitted by a bounded 72-step golden-section search
-inside the real sphere domain. Both departure operands use that sphere,
-including for QCon with a nonspherical base; QBfs's stored sphere is a basis
+spoke areas; the additional corner spokes have zero fit weight. Curvature
+is fitted by a bounded 72-step golden-section search inside the real sphere
+domain. Both departure operands use that sphere, including for QCon with a
+nonspherical base; QBfs's stored sphere is a basis
 parameter and is not assumed to be the fitted sphere.
 
 ### Relative illumination
@@ -298,18 +298,21 @@ reference, so the evaluator knows which half pupil it belongs to. An
 asymmetric candidate is still evaluated exactly (see Conventions).
 
 Symmetry uses the core system classification, including shape coefficients,
-placements and apertures. `none` never uses a half pupil, even if the
-requested sampling explicitly says `bilateral`. XY and Zernike coefficient
+placements and apertures. A system that is not meridionally symmetric
+(class `none`, x fields, or the field grid below) never uses a half pupil,
+even if the requested sampling explicitly says `bilateral`; a symmetric one
+keeps a requested `bilateral`. XY and Zernike coefficient
 variables conservatively disable the shortcut, including coefficients that
 start at zero. This also applies to tolerance parameters and compensators.
 
-For nonrotational systems in any selected configuration, the default fields
-are a Cartesian **3×3 grid** with normalised x and y coordinates
+For systems with a toroid, biconic, XY or Zernike surface, the default
+fields are a Cartesian **3×3 grid** with normalised x and y coordinates
 `{-1/√2, 0, +1/√2}`. Its corners lie on the unit field disk; it includes
 both signs on both axes and all four quadrants, with equal field weights.
-The grid is also used for toroids, biconics, XY and Zernike surfaces whose
-current coefficients happen to be rotational, so they remain sampled
-appropriately as optimisation or tolerancing changes them.
+The grid is used even when the current coefficients happen to be
+rotational, so the system stays sampled appropriately as optimisation or
+tolerancing changes them. Other systems, including legacy meridional ones
+(folded or tilted in the y–z plane), keep their own fields.
 The maximum radial system field sets the physical scale as usual. An
 explicit `fields` index list keeps the caller's field points and weights.
 Grid merits use the full pupil because their fields have nonzero x.
@@ -354,12 +357,13 @@ curvatures, an air space and the back focus. An analytic thick-lens
 
 `ShapeCoefficient` and continuous `ShapeParam` paths work through the same
 variable and tolerance machinery as legacy paths, including missing trailing
-coefficients (read as zero, extended on write). `VariableSpec::to_variable`
-uses a surface-aware scale. For physical power-series and normalised XY or
-phase terms of degree d, its floor is `amplitude / (d · r^d)`, where r is the
-clear radius in the coefficient's coordinates (divided by the normalisation
-radius for XY and phase). The amplitude is 1e-3 mm of sag or 0.1 rad of phase.
-For automatic sizes, the normalisation radius, entrance-pupil radius, or
+coefficients (read as zero, extended on write). For `ShapeCoefficient`,
+`VariableSpec::to_variable` uses a surface-aware scale (`default_scale_for`;
+legacy paths keep `default_scale`). For odd and axis power series and
+normalised XY or phase terms of degree d, its floor is
+`amplitude / (d · r^d)`, where r is the clear radius in the coefficient's
+coordinates (divided by the normalisation radius for XY and phase). The
+amplitude is 1e-3 mm of sag or 0.1 rad of phase. For automatic sizes, the normalisation radius, entrance-pupil radius, or
 legacy 10 mm fallback supplies the radius. Q and Zernike bases contain lower
 powers too: their floor is 1e-3 mm divided by the maximum of unit-basis sag
 and clear-radius times unit-basis gradient, sampled with the core recurrence
@@ -374,14 +378,6 @@ clear radius smaller than the normalisation radius), normalisation radii,
 axis curvatures and conics. The per-entry tolerance is 1e-4 relative with a
 0.1 derivative magnitude floor, allowing 1e-5 absolute error in very weak
 cross-axis derivatives.
-
-Diffraction `design_order` and `trace_order` are **integer choices**, not
-continuous LM coordinates. Evaluate their integer assignments with the
-existing discrete search (the test uses `FnDiscrete` plus `OpticalProblem`);
-for Monte Carlo tolerances use integral limits with `end_point`
-distributions. Fractional order edits remain rejected by `ParamPath`.
-Design wavelength/order are manufacturing metadata and do not rescale the
-physical phase or change the trace.
 
 **Step size: chosen per operand and evaluator.** The default steps (`√ε`
 forward, `∛ε` central, relative to `max(|x|, scale)`) are tuned to relative
@@ -464,14 +460,14 @@ in parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
 
 | case | verification |
 |---|---|
-| odd, QCon and QBfs singlets | coefficient plus back-focus optimisation reduces on-axis merit by >20%; repeated runs give identical variables and merit; RunInfo identifies the start snapshot |
+| odd, QCon and QBfs singlets | coefficient plus back focus ends below 0.2× the refocus-only optimum (which is 0.40, 0.085, 0.090× the start merit); repeated runs give identical variables and merit |
 | hybrid refractive-diffractive singlet | starting with A₁ = 0, optimise A₁ to F–C focal shift <1e-6 mm; recover the independently constructed sample coefficient |
-| anamorphic cylindrical adapter | curvature_x reaches signed squeeze 1.7 within 1e-6 while EFL_y stays within 1e-8 mm |
-| XY corrector | quadratic/cubic coefficients plus focus reduce the full-pupil x/y field-grid merit by >30% |
+| anamorphic cylindrical adapter | over curvature_x and the singlet curvature, signed squeeze 1.7 within 1e-6 while the EFL_y constraint holds to 1e-8 mm |
+| XY corrector | quadratic/cubic coefficients plus focus end below 0.2× the refocus-only optimum of the full-pupil x/y field-grid merit |
 | Q coefficient and toroid curvature | finite, nonzero ranked sensitivities; seeded Monte Carlo repeats exactly |
 | manufacturing | analytic plane/curved DOE phase gradients, phase range, annular aperture, pure-sphere zero Q departure, small quartic's fitted sphere departure/slope, rectangular XY departure |
 | axis operands | EFL_x/y and BFL_x/y checked against independent thick-lens powers |
-| discrete order | integer order search reaches the known EFL target; endpoint sensitivity and Monte Carlo succeed |
+| default merit | anamorphic/freeform systems get the 3×3 grid and the full pupil (also with a requested half pupil); an XY coefficient variable disables the half pupil; legacy meridional systems such as the Newtonian keep their fields and half pupil |
 
 ## Throughput
 
