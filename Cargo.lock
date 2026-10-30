@@ -209,15 +209,8 @@ name = "mklight-engine"
 version = "0.1.0"
 dependencies = [
  "approx",
- "mklight-analysis",
+ "blake3",
  "mklight-core",
- "mklight-ghost",
- "mklight-gpu",
- "mklight-metal",
- "mklight-optim",
- "mklight-stray",
- "mklight-trace",
- "mklight-wave",
  "serde",
  "serde_json",
  "thiserror",
