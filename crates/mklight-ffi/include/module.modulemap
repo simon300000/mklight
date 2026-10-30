@@ -1,5 +1,10 @@
 module CMKLight {
     header "mklight.h"
     link "mklight_ffi"
+    link "objc"
+    link "iconv"
+    link framework "Metal"
+    link framework "Foundation"
+    link framework "CoreFoundation"
     export *
 }

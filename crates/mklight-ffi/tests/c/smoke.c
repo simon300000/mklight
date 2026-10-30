@@ -341,6 +341,62 @@ int main(int argc, char **argv) {
     EXPECT(mk_session_open(eng, path, &s3), MK_ERR_IO);
     CHECK(s3 == NULL);
 
+    /* ---- ABI 1.1: analysis info, synchronous runs, backends, validation,
+     *      solves, autosave, migration, parameter reads ---- */
+    CHECK((mk_abi_version() & 0xffff) >= 1);
+    OK(mk_engine_analysis_info(eng, "spot_diagram", &json));
+    CHECK(strstr(json, "\"result_schema\"") && strstr(json, "\"gpu_path\":true") &&
+          strstr(json, "\"x-buffers\""));
+    mk_string_free(json);
+    EXPECT(mk_engine_analysis_info(eng, "no_such_analysis", &json), MK_ERR_NOT_FOUND);
+    CHECK(json == NULL);
+    OK(mk_engine_set_default_backend(eng, "{\"kind\": \"auto\"}"));
+    EXPECT(mk_engine_set_default_backend(eng, "{\"kind\": \"gpu\", \"name\": \"nope\"}"),
+           MK_ERR_UNSUPPORTED);
+    EXPECT(mk_engine_set_default_backend(eng, "{\"kind\": 3}"), MK_ERR_INVALID_ARGUMENT);
+    OK(mk_session_run_analysis_json(s, "{\"analysis\": \"ray_grid\", \"settings\": {\"rings\": 2}}",
+                                    &json, &bufs, &nb));
+    CHECK(strstr(json, "\"requested\":\"default:auto\"") && strstr(json, "\"result_version\":1"));
+    CHECK(nb == 4 && strcmp(bufs[1].name, "points") == 0 && bufs[1].ndim == 4);
+    mk_buffer_free(bufs, nb);
+    mk_string_free(json);
+    OK(mk_engine_set_default_backend(eng, "{\"kind\": \"cpu_reference\"}"));
+    EXPECT(mk_session_run_analysis_json(s, "{\"analysis\": \"no_such_analysis\"}", &json, &bufs,
+                                        &nb),
+           MK_ERR_NOT_FOUND);
+    CHECK(json == NULL && bufs == NULL && nb == 0);
+    OK(mk_session_validate_json(s, &json));
+    CHECK(strstr(json, "\"ok\":true") && strstr(json, "\"issues\""));
+    mk_string_free(json);
+    {
+        char *report = NULL, *hs = NULL;
+        OK(mk_session_apply_solves(s, NULL, &report, &hs));
+        CHECK(strstr(report, "\"outcomes\":[]") && strlen(hs) == 64);
+        mk_string_free(report);
+        mk_string_free(hs);
+        EXPECT(mk_session_apply_solves(s, "{\"tolerance\": 5}", &report, NULL),
+               MK_ERR_INVALID_ARGUMENT);
+        CHECK(report == NULL);
+    }
+    OK(mk_session_get_param(s, "{\"param\": \"aperture_value\"}", &json));
+    CHECK(strstr(json, "\"value\":"));
+    mk_string_free(json);
+    EXPECT(mk_session_get_param(s, "{\"param\": \"thickness\", \"surface\": 999}", &json),
+           MK_ERR_INVALID_ARGUMENT);
+    {
+        char *written = NULL;
+        OK(mk_session_autosave(s, NULL, &written)); /* s was saved: autosave next to it */
+        CHECK(strstr(written, "smoke.mklight.autosave") != NULL);
+        MKSession *rec = NULL;
+        OK(mk_session_open(eng, written, &rec));
+        mk_session_destroy(rec);
+        mk_string_free(written);
+    }
+    snprintf(path, sizeof path, "%s/smoke.mklight", dir);
+    OK(mk_engine_migrate_project(eng, path, 1, 0, &json));
+    CHECK(strstr(json, "\"migrated\":false") && strstr(json, "\"to_version\":1"));
+    mk_string_free(json);
+
     /* ---- a job that fails (unknown glass is caught when resolving) ---- */
     char *bad_glass = replace(sys, "\"material\":{\"type\":\"air\"}",
                               "\"material\":{\"type\":\"catalog\",\"name\":\"NOPE-42\"}");

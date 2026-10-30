@@ -26,16 +26,20 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use mklight_core::{MkError, OpticalSystem};
+use mklight_core::param::ParamPath;
+use mklight_core::{JobContext, MkError, OpticalSystem};
 use mklight_engine::buffer::BufferData;
 use mklight_engine::session::{AnalysisRequest, ParamEdit, Session};
-use mklight_engine::{Buffer, Engine, EngineConfig, EngineError, JobEvent, JobState};
+use mklight_engine::backend::Backend;
+use mklight_engine::{
+    AnalysisResult, Buffer, Engine, EngineConfig, EngineError, JobEvent, JobState,
+};
 
 // ---------------------------------------------------------------------------
 // Versioning and status codes (mirrored in include/mklight.h)
 
 pub const MK_ABI_VERSION_MAJOR: u32 = 1;
-pub const MK_ABI_VERSION_MINOR: u32 = 0;
+pub const MK_ABI_VERSION_MINOR: u32 = 1;
 /// `(major << 16) | minor`. Major changes break compatibility; minor
 /// versions only add functions or JSON fields.
 pub const MK_ABI_VERSION: u32 = (MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR;
@@ -927,16 +931,213 @@ pub unsafe extern "C" fn mk_job_take_result(
             }
             Err(err) => return Err(FfiError::new(MK_ERR_JOB_FAILED, err.to_string())),
         };
-        let json = serde_json::to_string(&r.envelope())?;
-        let bufs: Vec<MKBuffer> = r.buffers.into_iter().map(export_buffer).collect();
-        *out_c = bufs.len();
-        *out_b = if bufs.is_empty() {
-            ptr::null_mut()
-        } else {
-            Box::into_raw(bufs.into_boxed_slice()) as *mut MKBuffer
-        };
-        unsafe { put_string(out_json, &json) };
+        unsafe { export_result(r, out_json, out_b, out_c) }
+    })
+}
+
+/// Hand a result to C: the envelope JSON and the buffer array.
+unsafe fn export_result(
+    r: AnalysisResult,
+    out_json: *mut *mut c_char,
+    out_b: &mut *mut MKBuffer,
+    out_c: &mut usize,
+) -> FfiResult<()> {
+    let json = serde_json::to_string(&r.envelope())?;
+    let bufs: Vec<MKBuffer> = r.buffers.into_iter().map(export_buffer).collect();
+    *out_c = bufs.len();
+    *out_b = if bufs.is_empty() {
+        ptr::null_mut()
+    } else {
+        Box::into_raw(bufs.into_boxed_slice()) as *mut MKBuffer
+    };
+    unsafe { put_string(out_json, &json) };
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ABI 1.1: analysis descriptions, synchronous runs, backends, validation,
+// solves, autosave, migration, parameter reads
+
+/// Description of one analysis (as one element of `mk_engine_list_analyses`:
+/// settings and result schemas included).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_engine_analysis_info(
+    engine: *const MKEngine,
+    name: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let e = unsafe { engine_ref(engine) }?;
+        let name = unsafe { in_str(name, "name") }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let a = e.engine.analysis(name)?;
+        unsafe { put_json(out_json, &a.info()) }
+    })
+}
+
+/// Make `backend_json` (`{"kind": "cpu_reference"}`, `{"kind": "auto"}`,
+/// `{"kind": "gpu", "name": "metal"}`) the default for requests that name
+/// no backend. An unavailable explicit backend is refused.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_engine_set_default_backend(
+    engine: *const MKEngine,
+    backend_json: *const c_char,
+) -> MKStatus {
+    guard(|| {
+        let e = unsafe { engine_ref(engine) }?;
+        let v = unsafe { in_json(backend_json, "backend_json") }?;
+        let b: Backend = serde_json::from_value(v)
+            .map_err(|err| FfiError::arg(format!("backend_json: {err}")))?;
+        e.engine.set_default_backend(b)?;
         Ok(())
+    })
+}
+
+/// Migrate a project file in place (`backup != 0` keeps the original as
+/// `<file>.v<N>.bak`; `dry_run != 0` writes nothing). `*out_json`
+/// (nullable) receives `{path, from_version, to_version, notes, migrated,
+/// backup, dry_run}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_engine_migrate_project(
+    engine: *const MKEngine,
+    path: *const c_char,
+    backup: i32,
+    dry_run: i32,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let e = unsafe { engine_ref(engine) }?;
+        let path = unsafe { in_str(path, "path") }?;
+        let r = e
+            .engine
+            .migrate_file(Path::new(path), backup != 0, dry_run != 0)?;
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// Run an analysis on the current snapshot in the calling thread (blocking;
+/// no job, no callback) and return the result like `mk_job_take_result`.
+/// `request_json` is an analysis request as for
+/// `mk_session_submit_analysis_json` (`view_key` is ignored). Errors of the
+/// run are returned directly (e.g. `MK_ERR_NOT_FOUND` for an unknown glass,
+/// `MK_ERR_COMPUTE` for a trace failure).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_run_analysis_json(
+    session: *const MKSession,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    out_buffers: *mut *mut MKBuffer,
+    out_count: *mut usize,
+) -> MKStatus {
+    unsafe {
+        clear_out(out_json);
+        clear_out(out_buffers);
+        if let Some(c) = out_count.as_mut() {
+            *c = 0;
+        }
+    }
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let text = unsafe { in_str(request_json, "request_json") }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let out_b = unsafe { out_ptr(out_buffers, "out_buffers") }?;
+        let out_c = unsafe { out_ptr(out_count, "out_count") }?;
+        let req: AnalysisRequest = serde_json::from_str(text)?;
+        let r = s.lock().run_analysis(&req, &JobContext::new())?;
+        unsafe { export_result(r, out_json, out_b, out_c) }
+    })
+}
+
+/// The `validate` report of the current snapshot (`{ok, errors, warnings,
+/// issues}`, docs/RESULTS.md), computed in the calling thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_validate_json(
+    session: *const MKSession,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let v = s.lock().validate()?;
+        unsafe { put_json(out_json, &v) }
+    })
+}
+
+/// Apply the system's solves and commit the solved system as a new
+/// snapshot (docs/SOLVES.md). `settings_json` (nullable): the `solves`
+/// settings (`configuration` must be null). `*out_report` (nullable): the
+/// solve report (the `solves` result shape); `*out_hash` (nullable): the
+/// new snapshot hash. On failure the session is unchanged.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_apply_solves(
+    session: *mut MKSession,
+    settings_json: *const c_char,
+    out_report: *mut *mut c_char,
+    out_hash: *mut *mut c_char,
+) -> MKStatus {
+    unsafe {
+        clear_out(out_report);
+        clear_out(out_hash);
+    }
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let settings = unsafe { in_json(settings_json, "settings_json") }?;
+        let (hash, report) = s.lock().apply_solves(&settings, &JobContext::new())?;
+        unsafe {
+            put_json(out_report, &report)?;
+            put_string(out_hash, &hash.to_hex());
+        }
+        Ok(())
+    })
+}
+
+/// Write the current project to `path`, or to `<project file>.autosave`
+/// when NULL, without changing the session (path, dirty flag). An untitled
+/// session needs a path. `*out_path` (nullable) receives the path written.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_autosave(
+    session: *const MKSession,
+    path: *const c_char,
+    out_path: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_path) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let path = unsafe { in_opt_str(path, "path") }?;
+        let written = s.lock().autosave(path.map(Path::new))?;
+        unsafe { put_string(out_path, &written.display().to_string()) };
+        Ok(())
+    })
+}
+
+/// Current value of a parameter: `{"value": number | "inf" | "-inf" |
+/// null}` (null: the parameter has no value, e.g. an automatic
+/// semi-diameter). `path_json` is a ParamPath as in
+/// `mk_session_apply_param_edit`; a path this system does not have is
+/// `MK_ERR_INVALID_ARGUMENT`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_get_param(
+    session: *const MKSession,
+    path_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let text = unsafe { in_str(path_json, "path_json") }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let p: ParamPath = serde_json::from_str(text)
+            .map_err(|e| FfiError::arg(format!("path_json: {e}")))?;
+        let v = s.lock().param_value(&p)?;
+        let value = match v {
+            None => Value::Null,
+            Some(x) if x.is_infinite() => Value::from(if x > 0.0 { "inf" } else { "-inf" }),
+            Some(x) => serde_json::json!(x),
+        };
+        unsafe { put_json(out_json, &serde_json::json!({ "value": value })) }
     })
 }
 
