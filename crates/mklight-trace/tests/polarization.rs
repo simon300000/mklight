@@ -151,14 +151,52 @@ fn rel(a: f64, b: f64) -> f64 {
     (a - b).abs() / b.abs().max(1e-300)
 }
 
+/// Largest elementwise difference; NaN if any element is NaN (a plain
+/// `f64::max` fold would drop it).
 fn jones_diff(a: &JonesMatrix, b: &JonesMatrix) -> f64 {
     let mut d = 0.0f64;
     for i in 0..2 {
         for j in 0..2 {
-            d = d.max((a.m[i][j] - b.m[i][j]).norm());
+            let x = (a.m[i][j] - b.m[i][j]).norm();
+            if x.is_nan() {
+                return f64::NAN;
+            }
+            d = d.max(x);
         }
     }
     d
+}
+
+/// Largest component difference of two power sets; NaN-propagating.
+fn rt_diff(
+    a: &mklight_core::materials::coating::InterfaceRT,
+    b: &mklight_core::materials::coating::InterfaceRT,
+) -> f64 {
+    let mut d = 0.0f64;
+    for (x, y) in [(a.rs, b.rs), (a.rp, b.rp), (a.ts, b.ts), (a.tp, b.tp)] {
+        let e = (x - y).abs();
+        if e.is_nan() {
+            return f64::NAN;
+        }
+        d = d.max(e);
+    }
+    d
+}
+
+#[test]
+fn comparison_helpers_see_nan() {
+    use mklight_core::materials::coating::InterfaceRT;
+    let mut a = JonesMatrix::IDENTITY;
+    a.m[0][0] = C::new(f64::NAN, 0.0);
+    assert!(jones_diff(&a, &JonesMatrix::IDENTITY).is_nan());
+    let x = InterfaceRT {
+        rp: f64::NAN,
+        ..InterfaceRT::TRANSPARENT
+    };
+    assert!(rt_diff(&x, &InterfaceRT::TRANSPARENT).is_nan());
+    let mut p = mklight_trace::PrtMatrix::IDENTITY;
+    p.m[1][2] = C::new(0.0, f64::NAN);
+    assert!(p.max_abs_diff(&mklight_trace::PrtMatrix::IDENTITY).is_nan());
 }
 
 fn rot2(a: f64) -> JonesMatrix {
@@ -765,20 +803,10 @@ fn energy_is_conserved_along_real_rays() {
                             st.cos_incidence,
                             s.is_mirror(),
                         );
-                        let d = (rt.rs - st.power.rs)
-                            .abs()
-                            .max((rt.rp - st.power.rp).abs())
-                            .max((rt.ts - st.power.ts).abs())
-                            .max((rt.tp - st.power.tp).abs());
-                        assert!(d < 1e-12, "{rt:?} {:?}", st.power);
+                        assert!(rt_diff(&rt, &st.power) < 1e-12, "{rt:?} {:?}", st.power);
                         // Amplitudes reproduce the shared power coefficients…
                         let ap = st.amplitudes.power();
-                        let d = (ap.rs - rt.rs)
-                            .abs()
-                            .max((ap.rp - rt.rp).abs())
-                            .max((ap.ts - rt.ts).abs())
-                            .max((ap.tp - rt.tp).abs());
-                        assert!(d < 1e-12, "{ap:?} {rt:?}");
+                        assert!(rt_diff(&ap, &rt) < 1e-12, "{ap:?} {rt:?}");
                         // …and the step's PRT matrix carries exactly the path
                         // fraction of pure s and p light.
                         let n2 = |v: [C; 3]| v.iter().map(|c| c.norm_sqr()).sum::<f64>();
@@ -794,12 +822,32 @@ fn energy_is_conserved_along_real_rays() {
                         }
                     }
                     for state in &states {
+                        // `path` comes from the propagated PRT coherency
+                        // matrix, `diverted`/`absorbed` from the s/p powers
+                        // and `rt`, so none of the checks below holds by
+                        // construction.
                         let b = ray.energy_budget(state);
-                        assert!(b.residual().abs() < 1e-13, "{b:?}");
+                        assert!(b.residual().abs() < 1e-12, "{b:?}");
+                        // `intensity` is a fraction of the input power S₀.
                         let th = ray.intensity(state);
-                        assert!((b.transmitted - th).abs() < 1e-13);
-                        for l in &b.surfaces {
+                        assert!((b.transmitted - th * state.stokes().s0).abs() < 1e-13);
+                        let (mut prev_path, mut prev_tau) = (b.input, ray.records[0].transmittance);
+                        for (l, st) in b.surfaces.iter().zip(&ray.steps) {
+                            assert_eq!(l.surface, st.surface);
                             assert!(l.absorbed > -1e-13 && l.diverted >= 0.0 && l.path >= 0.0);
+                            // Transverse field: the s and p powers add up.
+                            let ws_wp = l.incident_s + l.incident_p;
+                            assert!((ws_wp - l.incident).abs() < 1e-13, "{l:?}");
+                            // T + R + A = 1 per polarisation, applied to the
+                            // incident s / p powers, closes at every surface.
+                            let close = l.incident - l.path - l.diverted - l.absorbed;
+                            assert!(close.abs() < 1e-12, "{l:?}");
+                            // Only bulk absorption (Beer–Lambert from the
+                            // scalar trace) lies between interacting surfaces.
+                            let tau = ray.records[st.surface].transmittance;
+                            assert!(l.incident <= prev_path + 1e-15);
+                            assert!((l.incident - prev_path * tau / prev_tau).abs() < 1e-13);
+                            (prev_path, prev_tau) = (l.path, tau);
                         }
                     }
                     checked += 1;
@@ -850,16 +898,37 @@ fn lossless_plate_closes_with_all_reflected_orders() {
         // Primary path from polarisation tracing equals T₁T₂.
         let th = ray.intensity(&jones_state(x));
         assert!(rel(th, t1 * t2) < 1e-13, "{pol}");
+        // Reciprocity of the front-face stack: light inside the plate sees
+        // the same lossless coating from the glass side (reversed layer
+        // order, other incident medium) and must have T₁' = T₁, R₁' = R₁.
+        assert!(
+            (t1b - t1).abs() < 1e-14 && (r1b - r1).abs() < 1e-14,
+            "{pol}"
+        );
+        assert!((r1 + t1 - 1.0).abs() < 1e-14 && (r2 + t2 - 1.0).abs() < 1e-14);
+        // Incoherent multiple reflections, summed order by order: the k-th
+        // transmitted order is T₁(R₂R₁')ᵏT₂, the k-th reflected one
+        // (k ≥ 1) T₁R₂(R₁'R₂)^(k−1)T₁'.
+        let (mut t_sum, mut r_sum) = (0.0, r1);
+        let mut w = t1; // power entering the plate in the current order
+        for _ in 0..200 {
+            t_sum += w * t2;
+            r_sum += w * r2 * t1b;
+            w *= r2 * r1b;
+        }
         let geom = 1.0 / (1.0 - r2 * r1b);
         let t_tot = t1 * t2 * geom;
         let r_tot = r1 + t1 * t1b * r2 * geom;
         assert!(
-            (t_tot + r_tot - 1.0).abs() < 1e-14,
-            "{pol}: {t_tot} + {r_tot}"
+            rel(t_sum, t_tot) < 1e-14 && rel(r_sum, r_tot) < 1e-13,
+            "{pol}"
         );
-        // Lossless reciprocity of the coating.
-        assert!((r1b - r2).abs() < 1e-14 && (t1b - t2).abs() < 1e-14);
-        // Diattenuation of the plate equals (T_s − T_p)/(T_s + T_p) of the path.
+        assert!(
+            (t_sum + r_sum - 1.0).abs() < 1e-14,
+            "{pol}: {t_sum} + {r_sum}"
+        );
+        // The primary path misses exactly the light in the higher orders.
+        assert!(th < t_tot && t_tot - th < 2.0 * r1 * r2);
     }
     let p = ray.properties();
     let (ts, tp) = (st1.power.ts * st2.power.ts, st1.power.tp * st2.power.tp);
@@ -1049,7 +1118,8 @@ fn vector_pupil_fields_are_transverse_and_consistent() {
         // |E|² equals the polarised intensity (bulk absorption included).
         let ray = t.trace_polarized(&f, 0, s.pupil[0], s.pupil[1], &TraceOptions::unclipped());
         let i = mklight_trace::polarization::field_intensity(&field);
-        assert!(rel(i, ray.intensity(&jones_state(e))) < 1e-13);
+        // `intensity` is normalised by the input power |e|² = 0.74.
+        assert!(rel(i, ray.intensity(&jones_state(e)) * e.intensity()) < 1e-13);
         assert!(rel(s.jones.apply(&e).intensity(), i) < 1e-13);
     }
     // Cancellation.
@@ -1207,4 +1277,338 @@ fn serde_roundtrip_of_polarization_types() {
     };
     let s = serde_json::to_string(&m).unwrap();
     assert_eq!(serde_json::from_str::<RadiometryModel>(&s).unwrap(), m);
+}
+
+// ---------------------------------------------------------------------------
+// Review regressions.
+
+#[test]
+fn near_polarizer_retardance_accuracy_and_undefined_retarder() {
+    // J = R(θ) diag(1, ε e^{0.7i}) R(−θ): retardance 0.7 for every ε > 0.
+    // The retarder is ill-conditioned as ε → 0: rounding of J (≈ 1e-16)
+    // moves δ by about 1e-16/ε (PolarizationProperties::retardance docs).
+    let delta = 0.7;
+    for th in [0.0, 0.3, 1.1] {
+        for k in 1..=11 {
+            let eps = 10f64.powi(-k);
+            let d = JonesMatrix {
+                m: [
+                    [C::new(1.0, 0.0), C::new(0.0, 0.0)],
+                    [C::new(0.0, 0.0), C::from_polar(eps, delta)],
+                ],
+            };
+            let p = rot2(th).mul(&d).mul(&rot2(-th)).properties();
+            assert!(p.retarder_defined, "θ={th} ε={eps:e}");
+            let bound = 1e-16 / eps * 50.0 + 1e-14;
+            assert!(
+                (p.retardance - delta).abs() < bound,
+                "θ={th} ε={eps:e}: {} (bound {bound:e})",
+                p.retardance
+            );
+        }
+        // Beyond T_min/T_max = 1e-24 the retarder is flagged undefined
+        // (not silently reported as a zero retardance of a valid retarder).
+        let d = JonesMatrix {
+            m: [
+                [C::new(1.0, 0.0), C::new(0.0, 0.0)],
+                [C::new(0.0, 0.0), C::from_polar(1e-13, delta)],
+            ],
+        };
+        let p = rot2(th).mul(&d).mul(&rot2(-th)).properties();
+        assert!(!p.retarder_defined && p.retardance == 0.0, "{p:?}");
+        assert!((p.diattenuation - 1.0).abs() < 1e-15);
+    }
+    // A zero (blocked) Jones matrix has no retarder either.
+    let z = JonesMatrix::IDENTITY.scale(0.0).properties();
+    assert!(!z.retarder_defined && z.t_max == 0.0);
+    // Old serialised properties without the flag read as defined.
+    let mut v = serde_json::to_value(JonesMatrix::IDENTITY.properties()).unwrap();
+    v.as_object_mut().unwrap().remove("retarder_defined");
+    let p: mklight_trace::PolarizationProperties = serde_json::from_value(v).unwrap();
+    assert!(p.retarder_defined);
+}
+
+/// Cooke triplet whose stop-side surface 3 is clipped to 3 mm.
+fn vignetted_triplet() -> OpticalSystem {
+    let mut s = samples::cooke_triplet();
+    s.surfaces[3].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 3.0 };
+    s
+}
+
+#[test]
+fn vignetted_vector_pupil_samples_carry_no_light() {
+    let t = tracer(vignetted_triplet());
+    let opts = t.options();
+    assert!(opts.clip);
+    let f = t.field(0).clone();
+    let pts = [[0.0, 0.0], [0.0, 0.9], [0.0, -0.95], [0.9, 0.0], [0.2, 0.1]];
+    let vp = vector_pupil(&t, &f, 1, &pts, &opts, &JobContext::new()).unwrap();
+    let mut blocked = 0;
+    for s in &vp {
+        if s.status.is_ok() {
+            assert!(s.jones.t_unpolarized() > 0.5, "{s:?}");
+            assert!((s.dir.norm() - 1.0).abs() < 1e-14);
+            continue;
+        }
+        blocked += 1;
+        assert!(
+            matches!(s.status, mklight_trace::TraceStatus::Clipped { .. }),
+            "{:?}",
+            s.status
+        );
+        assert_eq!(s.jones, JonesMatrix::IDENTITY.scale(0.0));
+        assert_eq!(s.field_x, [[0.0; 2]; 3]);
+        assert_eq!(s.field_y, [[0.0; 2]; 3]);
+        assert_eq!(s.dir, Vec3::ZERO);
+        let e = s.field(&JonesVector::linear(0.3));
+        assert_eq!(mklight_trace::polarization::field_intensity(&e), 0.0);
+    }
+    assert!(blocked >= 2, "{vp:?}");
+    // The pupil map agrees: the same samples are blocked and zero.
+    let map = polarization_pupil_map(
+        &t,
+        &PolarizationMapSettings {
+            field: FieldPoint::normalized(0.0, 0.0),
+            wavelength: 1,
+            grid: 9,
+            state: PolarizationState::Unpolarized,
+            clip: true,
+        },
+        &JobContext::new(),
+    )
+    .unwrap();
+    let grid = mklight_trace::pupil::grid(9);
+    let vp = vector_pupil(&t, &f, 1, &grid, &opts, &JobContext::new()).unwrap();
+    assert!(map.samples.iter().any(|s| !s.status.is_ok()));
+    for (m, v) in map.samples.iter().zip(&vp) {
+        assert_eq!(m.status, v.status);
+        if !m.status.is_ok() {
+            assert_eq!(m.jones, v.jones);
+            assert_eq!(m.intensity, 0.0);
+        } else {
+            assert!(jones_diff(&m.jones, &v.jones) == 0.0);
+        }
+    }
+}
+
+#[test]
+fn intensity_is_normalized_and_states_are_validated() {
+    let t = tracer(coated_triplet());
+    let f = t.field(1).clone();
+    let opts = TraceOptions::unclipped();
+    let ray = t.trace_polarized(&f, 1, 0.3, -0.5, &opts);
+    assert!(ray.is_ok());
+    let unit = Stokes {
+        s0: 1.0,
+        s1: 0.3,
+        s2: -0.5,
+        s3: 0.4,
+    };
+    let twice = Stokes {
+        s0: 2.0,
+        s1: 0.6,
+        s2: -1.0,
+        s3: 0.8,
+    };
+    let (a, b) = (
+        PolarizationState::Stokes { s: unit },
+        PolarizationState::Stokes { s: twice },
+    );
+    // A power fraction: independent of the input power, and equal to the
+    // radiometry API's throughput.
+    let (ia, ib) = (ray.intensity(&a), ray.intensity(&b));
+    assert!(rel(ia, ib) < 1e-15 && ia > 0.5 && ia < 1.0);
+    let model = RadiometryModel::Polarized { state: b };
+    let th = mklight_trace::RayThroughput::of(&ray, &model);
+    assert!(rel(th.total, ib) < 1e-15);
+    let e = JonesVector::new(C::new(2.0, 1.0), C::new(-1.0, 0.5));
+    let en = JonesVector::new(e.x / e.intensity().sqrt(), e.y / e.intensity().sqrt());
+    assert!(
+        rel(
+            ray.intensity(&jones_state(e)),
+            ray.intensity(&jones_state(en))
+        ) < 1e-14
+    );
+
+    // Unphysical states are rejected by both jobs.
+    let bad = [
+        PolarizationState::Stokes {
+            s: Stokes {
+                s0: 1.0,
+                s1: 2.0,
+                s2: 0.0,
+                s3: 0.0,
+            },
+        },
+        PolarizationState::Stokes {
+            s: Stokes {
+                s0: f64::NAN,
+                ..Stokes::UNPOLARIZED
+            },
+        },
+        PolarizationState::Stokes {
+            s: Stokes {
+                s0: 0.0,
+                ..Stokes::UNPOLARIZED
+            },
+        },
+        PolarizationState::Stokes {
+            s: Stokes {
+                s3: f64::INFINITY,
+                ..Stokes::UNPOLARIZED
+            },
+        },
+        jones_state(JonesVector::new(C::new(0.0, 0.0), C::new(0.0, 0.0))),
+        jones_state(JonesVector::new(C::new(f64::NAN, 0.0), C::new(1.0, 0.0))),
+    ];
+    for state in bad {
+        assert!(state.validate().is_err(), "{state:?}");
+        let r = system_transmission(
+            &t,
+            &TransmissionSettings {
+                pupil: PupilSamples::Grid { n: 3 },
+                model: RadiometryModel::Polarized { state },
+                ..Default::default()
+            },
+            &JobContext::new(),
+        );
+        assert!(matches!(r, Err(MkError::InvalidModel(_))), "{state:?}");
+        let r = polarization_pupil_map(
+            &t,
+            &PolarizationMapSettings {
+                field: FieldPoint::normalized(0.0, 0.0),
+                wavelength: 0,
+                grid: 3,
+                state,
+                clip: true,
+            },
+            &JobContext::new(),
+        );
+        assert!(matches!(r, Err(MkError::InvalidModel(_))), "{state:?}");
+    }
+    // Fully polarised states (DOP = 1 up to rounding) are accepted.
+    for state in [
+        PolarizationState::Unpolarized,
+        a,
+        jones_state(e),
+        PolarizationState::Stokes { s: e.stokes() },
+    ] {
+        state.validate().unwrap();
+    }
+}
+
+#[test]
+fn empty_pupil_samplings_are_rejected() {
+    let t = tracer(singlet(MaterialRef::glass("N-BK7"), None));
+    assert!(mklight_trace::pupil::grid(2).is_empty());
+    for pupil in [
+        PupilSamples::Grid { n: 0 },
+        PupilSamples::Grid { n: 2 },
+        PupilSamples::Random { count: 0, seed: 1 },
+    ] {
+        let r = system_transmission(
+            &t,
+            &TransmissionSettings {
+                pupil,
+                ..Default::default()
+            },
+            &JobContext::new(),
+        );
+        assert!(matches!(r, Err(MkError::InvalidModel(_))), "{pupil:?}");
+    }
+    for grid in [0, 2] {
+        let r = polarization_pupil_map(
+            &t,
+            &PolarizationMapSettings {
+                field: FieldPoint::normalized(0.0, 0.0),
+                wavelength: 0,
+                grid,
+                state: PolarizationState::Unpolarized,
+                clip: true,
+            },
+            &JobContext::new(),
+        );
+        assert!(matches!(r, Err(MkError::InvalidModel(_))), "{grid}");
+    }
+    // n = 1 (the pupil centre) and n = 3 are valid.
+    for n in [1, 3] {
+        let r = system_transmission(
+            &t,
+            &TransmissionSettings {
+                pupil: PupilSamples::Grid { n },
+                ..Default::default()
+            },
+            &JobContext::new(),
+        )
+        .unwrap();
+        assert!(
+            r.points
+                .iter()
+                .all(|p| p.samples > 0 && p.transmission > 0.9)
+        );
+    }
+}
+
+#[test]
+fn unpolarized_fast_path_equals_prt_path() {
+    // The scalar model is evaluated from the surface records without PRT
+    // data; it must equal the value derived from the full polarised ray
+    // bit for bit (same factors, same order), for refracting surfaces,
+    // coated/metal mirrors, ideal lenses and blocked rays.
+    let mut newt = samples::newtonian_telescope();
+    newt.coatings.insert(
+        "AL".into(),
+        thin_film(vec![qw_layer(1.46)], Some((0.96, 6.69))),
+    );
+    newt.surfaces[1].coating = Some("AL".into());
+    let mut ideal = infinite_system(
+        20.0,
+        vec![
+            surf(1, SurfaceShape::Plane, 5.0, MaterialRef::Air),
+            surf(
+                2,
+                SurfaceShape::Paraxial { focal_length: 50.0 },
+                50.0,
+                MaterialRef::Air,
+            ),
+        ],
+        3,
+    );
+    ideal.fields = angle_fields(&[0.0, 10.0]);
+    let systems = [
+        (coated_triplet(), MaterialLibrary::with_builtin()),
+        (vignetted_triplet(), MaterialLibrary::with_builtin()),
+        (newt, MaterialLibrary::with_builtin()),
+        (ideal, MaterialLibrary::with_builtin()),
+        (
+            singlet(MaterialRef::glass("ABS-BK7"), None),
+            absorbing_library(),
+        ),
+    ];
+    let (mut checked, mut blocked) = (0, 0);
+    for (sys, lib) in systems {
+        let t = tracer_lib(sys, lib);
+        let opts = t.options();
+        for f in t.fields() {
+            for wl in 0..t.num_wavelengths() {
+                for p in mklight_trace::pupil::hexapolar(4) {
+                    let fast =
+                        t.throughput(f, wl, p[0], p[1], &opts, &RadiometryModel::Unpolarized);
+                    let ray = t.trace_polarized(f, wl, p[0], p[1], &opts);
+                    let full =
+                        mklight_trace::RayThroughput::of(&ray, &RadiometryModel::Unpolarized);
+                    assert_eq!(fast, full);
+                    if ray.is_ok() {
+                        let prod: f64 = ray.steps.iter().map(|s| s.path_unpolarized()).product();
+                        assert_eq!(fast.interfaces, prod);
+                        assert!(fast.total > 0.0 && fast.total <= 1.0);
+                    } else {
+                        blocked += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 300 && blocked > 0, "{checked} {blocked}");
 }

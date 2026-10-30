@@ -58,7 +58,10 @@
 
 use mklight_core::materials::coating::{Complex64, InterfaceAmplitudes, InterfaceRT};
 use mklight_core::math::Mat3;
-use mklight_core::{Interaction, JobContext, MkResult, ResolvedSystem, SurfaceShape, Vec3};
+use mklight_core::resolved::ResolvedSurface;
+use mklight_core::{
+    Interaction, JobContext, MkError, MkResult, ResolvedSystem, SurfaceShape, Vec3,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::batch::run_blocks;
@@ -161,12 +164,17 @@ impl PrtMatrix {
         Mat3 { m }
     }
 
-    /// Largest elementwise modulus of `self − o`.
+    /// Largest elementwise modulus of `self − o`; NaN if any element
+    /// difference is NaN (unlike a plain `f64::max` fold, which drops NaN).
     pub fn max_abs_diff(&self, o: &PrtMatrix) -> f64 {
         let mut d = 0.0f64;
         for i in 0..3 {
             for j in 0..3 {
-                d = d.max((self.m[i][j] - o.m[i][j]).norm());
+                let x = (self.m[i][j] - o.m[i][j]).norm();
+                if x.is_nan() {
+                    return f64::NAN;
+                }
+                d = d.max(x);
             }
         }
         d
@@ -300,6 +308,28 @@ impl PolarizationState {
             PolarizationState::Stokes { s } => *s,
         }
     }
+
+    /// Check that the state is physical: finite, `S₀ > 0` and degree of
+    /// polarisation `≤ 1` (to `1e-12` relative, for rounding in
+    /// user-supplied Stokes vectors). A Jones vector must be finite and
+    /// non-zero.
+    pub fn validate(&self) -> MkResult<()> {
+        let s = self.stokes();
+        let finite = [s.s0, s.s1, s.s2, s.s3].iter().all(|x| x.is_finite());
+        if !finite || s.s0.is_nan() || s.s0 <= 0.0 {
+            return Err(MkError::InvalidModel(format!(
+                "polarisation state must be finite with S0 > 0: {self:?}"
+            )));
+        }
+        let pol = (s.s1.hypot(s.s2)).hypot(s.s3);
+        if pol > s.s0 * (1.0 + 1e-12) {
+            return Err(MkError::InvalidModel(format!(
+                "polarisation state has degree of polarisation {} > 1: {self:?}",
+                pol / s.s0
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A 2×2 Jones matrix. Serialised as `[[[re, im], …], …]` (row-major).
@@ -405,13 +435,31 @@ pub struct PolarizationProperties {
     /// Unit Stokes vector `(S₁, S₂, S₃)` of the best-transmitted state
     /// (zero when `D = 0`).
     pub diattenuation_axis: [f64; 3],
-    /// Retardance `δ ∈ [0, π]` of the unitary polar factor (radians). Zero
-    /// when `J` is singular (a perfect polariser has no defined retarder).
+    /// Retardance `δ ∈ [0, π]` of the unitary polar factor (radians).
+    ///
+    /// The retarder of a nearly singular `J` is ill-conditioned: a relative
+    /// perturbation `ε` of `J` (rounding, `ε ≈ 1e-16`, plus any upstream
+    /// error) changes `δ` by up to about `ε·√(T_max/T_min)`. For
+    /// `T_min < 1e-24·T_max` (amplification above `1e12`) the retarder is
+    /// treated as undefined: `retarder_defined = false` and `δ = 0`.
     pub retardance: f64,
     /// Unit Stokes vector of the fast (leading-phase) eigenpolarisation of
     /// the retarder (zero when `δ = 0`).
     pub fast_axis: [f64; 3],
+    /// `false` when `J` is (numerically) singular, e.g. a perfect polariser
+    /// or a blocked ray: `retardance` and `fast_axis` are then
+    /// placeholders (zero) and must not enter retardance statistics.
+    #[serde(default = "default_true")]
+    pub retarder_defined: bool,
 }
+
+fn default_true() -> bool {
+    true
+}
+
+/// Below this `T_min/T_max` the retarder of a Jones matrix is undefined
+/// ([`PolarizationProperties::retardance`]).
+pub const RETARDER_MIN_CONTRAST: f64 = 1e-24;
 
 impl PolarizationProperties {
     /// From the polar decomposition `J = U H`, `H = √(J†J)`.
@@ -444,7 +492,8 @@ impl PolarizationProperties {
         } else {
             [0.0; 3]
         };
-        let (retardance, fast_axis) = if t_max > 0.0 && t_min > 1e-24 * t_max {
+        let retarder_defined = t_max > 0.0 && t_min > RETARDER_MIN_CONTRAST * t_max;
+        let (retardance, fast_axis) = if retarder_defined {
             retarder(j, t, m, dabs)
         } else {
             (0.0, [0.0; 3])
@@ -457,6 +506,7 @@ impl PolarizationProperties {
             diattenuation_axis,
             retardance,
             fast_axis,
+            retarder_defined,
         }
     }
 }
@@ -626,16 +676,80 @@ pub struct InterfaceStep {
     pub geometric: PrtMatrix,
 }
 
+impl StepKind {
+    /// The kind of an interacting surface; `None` for passive surfaces
+    /// (dummies, coordinate breaks), which do not interact.
+    pub fn of(s: &ResolvedSurface) -> Option<StepKind> {
+        if s.is_passive() {
+            return None;
+        }
+        let ideal = matches!(s.shape, SurfaceShape::Paraxial { .. });
+        let mirror = s.interaction == Interaction::Reflect;
+        Some(match (ideal, mirror) {
+            (true, false) => StepKind::IdealLens,
+            (true, true) => StepKind::IdealMirror,
+            (false, true) => StepKind::Reflect,
+            (false, false) => StepKind::Refract,
+        })
+    }
+
+    /// Fraction of s / p power that continues along the sequential path
+    /// for power coefficients `power`: `T` at a refracting surface, `R` at
+    /// a mirror, 1 at an ideal lens.
+    pub fn path_sp(self, power: &InterfaceRT) -> (f64, f64) {
+        match self {
+            StepKind::Refract => (power.ts, power.tp),
+            StepKind::Reflect | StepKind::IdealMirror => (power.rs, power.rp),
+            StepKind::IdealLens => (1.0, 1.0),
+        }
+    }
+}
+
+/// Power coefficients of interacting surface `i` (kind `kind`) for a ray
+/// arriving with incidence cosine `cos_i`: `ResolvedCoating::rt`, the code
+/// every solver shares, or `InterfaceRT::TRANSPARENT` for an ideal lens.
+fn step_power(
+    sys: &ResolvedSystem,
+    wl: usize,
+    i: usize,
+    kind: StepKind,
+    cos_i: f64,
+) -> InterfaceRT {
+    if kind == StepKind::IdealLens {
+        return InterfaceRT::TRANSPARENT;
+    }
+    let s = &sys.surfaces[i];
+    s.coating.rt(
+        sys.wavelengths_um[wl],
+        sys.n_before(i, wl),
+        s.n_after[wl],
+        cos_i,
+        s.interaction == Interaction::Reflect,
+    )
+}
+
+/// The scalar `Unpolarized` radiometry factor of a recorded ray: the
+/// product over interacting surfaces (in path order) of `½(X_s + X_p)`.
+/// Equal (bit for bit) to the product of
+/// [`InterfaceStep::path_unpolarized`] over [`interface_steps`], without
+/// building any amplitude or PRT data.
+pub fn unpolarized_path_product(sys: &ResolvedSystem, wl: usize, records: &[SurfaceRecord]) -> f64 {
+    let image = sys.image_index();
+    (1..records.len().min(image))
+        .filter_map(|i| StepKind::of(&sys.surfaces[i]).map(|k| (i, k)))
+        .map(|(i, k)| {
+            let (s, p) = k.path_sp(&step_power(sys, wl, i, k, records[i].cos_incidence));
+            0.5 * (s + p)
+        })
+        .product()
+}
+
 impl InterfaceStep {
     /// Fraction of the power of s / p light that continues along the
     /// sequential path: `T` at a refracting surface, `R` at a mirror,
     /// 1 at an ideal lens.
     pub fn path_sp(&self) -> (f64, f64) {
-        match self.kind {
-            StepKind::Refract => (self.power.ts, self.power.tp),
-            StepKind::Reflect | StepKind::IdealMirror => (self.power.rs, self.power.rp),
-            StepKind::IdealLens => (1.0, 1.0),
-        }
+        self.kind.path_sp(&self.power)
     }
     /// Fraction of s / p power that leaves the sequential path specularly
     /// (the reflected beam at a refracting surface; zero at mirrors, whose
@@ -673,9 +787,9 @@ pub fn interface_steps(
     let mut out = Vec::new();
     for i in 1..records.len().min(image) {
         let s = &sys.surfaces[i];
-        if s.is_passive() {
+        let Some(step_kind) = StepKind::of(s) else {
             continue;
-        }
+        };
         let (prev, rec) = (&records[i - 1], &records[i]);
         let rot = global_rot(sys, i);
         let k_in = global_rot(sys, i - 1).mul_vec(prev.dir);
@@ -690,8 +804,8 @@ pub fn interface_steps(
         } else {
             0.0
         };
-        let ideal = matches!(s.shape, SurfaceShape::Paraxial { .. });
-        let (kind, amplitudes, sv, prt, geometric) = if ideal && !mirror {
+        let ideal = matches!(step_kind, StepKind::IdealLens | StepKind::IdealMirror);
+        let (kind, amplitudes, sv, prt, geometric) = if step_kind == StepKind::IdealLens {
             let sv = s_vector(k_in, k_out);
             let g = rotation_prt(k_in, k_out);
             (
@@ -731,11 +845,7 @@ pub fn interface_steps(
             k_out,
             s: sv,
             amplitudes,
-            power: if kind == StepKind::IdealLens {
-                InterfaceRT::TRANSPARENT
-            } else {
-                s.coating.rt(lambda, n1, n2, ci, mirror)
-            },
+            power: step_power(sys, wl, i, kind, ci),
             segment_transmittance,
             prt,
             geometric,
@@ -851,9 +961,16 @@ impl PolarizedRay {
     }
 
     /// Transmitted power fraction for an input state (interfaces and bulk
-    /// absorption).
+    /// absorption): output power divided by the input power `S₀`, the same
+    /// normalisation as the radiometry API. Zero for `S₀ ≤ 0` (see
+    /// [`PolarizationState::validate`]).
     pub fn intensity(&self, state: &PolarizationState) -> f64 {
-        self.jones().intensity_of(state) * self.internal_transmittance
+        let s0 = state.stokes().s0;
+        if s0 > 0.0 {
+            self.jones().intensity_of(state) / s0 * self.internal_transmittance
+        } else {
+            0.0
+        }
     }
 
     /// Image-local 3-D field vectors (complex amplitudes, including
@@ -877,8 +994,12 @@ impl PolarizedRay {
 
     /// Power bookkeeping of the ray for an input state, surface by surface
     /// (see [`EnergyBudget`]). Propagates the 3×3 coherency matrix
-    /// `Φ → τ_seg P_i Φ P_i†`; at each interface the incident s and p powers
-    /// `sᵀΦs`, `pᵀΦp` split into path, diverted and absorbed parts.
+    /// `Φ → τ_seg P_i Φ P_i†`. At each interface `path` is the trace of the
+    /// propagated `Φ` (the PRT amplitudes), while `diverted` and `absorbed`
+    /// come from the incident s and p powers `sᵀΦs`, `pᵀΦp` and the shared
+    /// power coefficients (`R`, `A = 1 − R − T`). The budget therefore
+    /// closes ([`EnergyBudget::residual`]) only if the PRT matrices, the
+    /// power coefficients and the bulk factors agree.
     pub fn energy_budget(&self, state: &PolarizationState) -> EnergyBudget {
         let st = state.stokes();
         let c2 = st.coherency();
@@ -926,13 +1047,15 @@ impl PolarizedRay {
             }
             phi = p.mul(&phi).mul(&adj);
             let path = trace(&phi);
-            let diverted = ds * ws + dp * wp;
+            let (ps, pp) = stp.path_sp();
             surfaces.push(SurfaceLoss {
                 surface: i,
                 incident,
+                incident_s: ws,
+                incident_p: wp,
                 path,
-                diverted,
-                absorbed: incident - path - diverted,
+                diverted: ds * ws + dp * wp,
+                absorbed: (1.0 - ps - ds) * ws + (1.0 - pp - dp) * wp,
             });
         }
         EnergyBudget {
@@ -958,15 +1081,21 @@ fn scale_prt(p: &PrtMatrix, s: f64) -> PrtMatrix {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceLoss {
     pub surface: usize,
-    /// Power arriving at the surface.
+    /// Power arriving at the surface (`tr Φ`).
     pub incident: f64,
-    /// Power continuing along the sequential path.
+    /// Incident power in the s and p components (`sᵀΦs`, `pᵀΦp`); their
+    /// sum equals `incident` for a transverse field.
+    pub incident_s: f64,
+    pub incident_p: f64,
+    /// Power continuing along the sequential path (from the PRT matrix).
     pub path: f64,
     /// Power leaving the path specularly (reflection at a refracting
     /// surface: the ghost solver's share).
     pub diverted: f64,
     /// Power absorbed by the coating (and, at a mirror, transmitted
-    /// through it). `incident = path + diverted + absorbed`.
+    /// through it): `A_s·incident_s + A_p·incident_p` with
+    /// `A = 1 − R − T` from the power coefficients. Conservation means
+    /// `incident = path + diverted + absorbed`.
     pub absorbed: f64,
 }
 
@@ -981,7 +1110,10 @@ pub struct EnergyBudget {
 }
 
 impl EnergyBudget {
-    /// `input − (transmitted + losses)`: zero up to rounding.
+    /// `input − (transmitted + losses)`. Zero up to rounding when the PRT
+    /// amplitudes, the power coefficients and the bulk factors are
+    /// mutually consistent (it is not zero by construction:
+    /// [`PolarizedRay::energy_budget`]).
     pub fn residual(&self) -> f64 {
         let mut s = mklight_core::math::KahanSum::default();
         s.add(self.input);
@@ -1033,6 +1165,9 @@ impl SequentialTracer {
 pub struct VectorPupilSample {
     /// Requested (pre-vignetting) pupil coordinates.
     pub pupil: [f64; 2],
+    /// Ray status. When it is not OK (vignetted, missed, TIR, failed) the
+    /// sample carries no light: `jones`, `field_x`, `field_y` are zero and
+    /// `dir` is the zero vector.
     pub status: TraceStatus,
     /// Image-local unit direction of the ray at the image surface.
     pub dir: Vec3,
@@ -1048,6 +1183,16 @@ pub struct VectorPupilSample {
 
 impl VectorPupilSample {
     fn from_ray(pupil: [f64; 2], r: &PolarizedRay) -> Self {
+        if !r.is_ok() {
+            return VectorPupilSample {
+                pupil,
+                status: r.trace.status,
+                dir: Vec3::ZERO,
+                jones: JonesMatrix { m: [[ZERO; 2]; 2] },
+                field_x: [[0.0; 2]; 3],
+                field_y: [[0.0; 2]; 3],
+            };
+        }
         let [fx, fy] = r.image_fields();
         let pack = |v: CVec3| v.map(|c| [c.re, c.im]);
         VectorPupilSample {

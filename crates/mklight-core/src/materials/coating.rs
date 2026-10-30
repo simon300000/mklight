@@ -511,6 +511,20 @@ pub fn tmm_amplitudes(
     let s0 = n0.re * ((1.0 - ci) * (1.0 + ci)).sqrt();
     let y0c = n_cos(n0, s0);
     let ysc = n_cos(ns, s0);
+    if y0c.norm() == 0.0 {
+        // Grazing incidence (`cos θ₀` rounds to zero in `N₀ cos θ₀`): the
+        // p admittance `N₀²/(N₀ cos θ₀)` is infinite, so take the limit
+        // `ρ_s → −1`, `ρ_p → +1` (`r_s = r_p = −1`, as `fresnel_amplitudes`
+        // at `cos_i = 0`); nothing enters. [`tmm`] gives `R = 1`, `T = 0`.
+        return InterfaceAmplitudes {
+            rs: C::new(-1.0, 0.0),
+            rp: C::new(-1.0, 0.0),
+            ts: CZERO,
+            tp: CZERO,
+            flux_s: 0.0,
+            flux_p: 0.0,
+        };
+    }
     let one = C::new(1.0, 0.0);
     // Returns (ρ, τ, Re η₀·Re η_s/|η₀|²) for the tangential fields.
     let calc = |pol_p: bool| -> (C, C, f64) {
@@ -804,13 +818,16 @@ mod amplitude_tests {
         (a - b).norm() <= tol
     }
 
+    /// NaN-propagating comparison: every component must be finite and
+    /// within `tol` (`f64::max` would silently drop a NaN difference).
     fn assert_power_eq(a: InterfaceRT, b: InterfaceRT, tol: f64, what: &str) {
-        let d = (a.rs - b.rs)
-            .abs()
-            .max((a.rp - b.rp).abs())
-            .max((a.ts - b.ts).abs())
-            .max((a.tp - b.tp).abs());
-        assert!(d <= tol, "{what}: {a:?} vs {b:?} (diff {d:e})");
+        for (x, y) in [(a.rs, b.rs), (a.rp, b.rp), (a.ts, b.ts), (a.tp, b.tp)] {
+            let d = (x - y).abs();
+            assert!(
+                x.is_finite() && y.is_finite() && d <= tol,
+                "{what}: {a:?} vs {b:?} (diff {d:e})"
+            );
+        }
     }
 
     /// A random stack: 0–6 layers, some absorbing.
@@ -1085,10 +1102,61 @@ mod amplitude_tests {
                 }
             }
         }
+        // Grazing incidence, where `n₀ cos θ₀` rounds to zero: every
+        // coefficient stays finite and the powers still equal `rt`.
+        for def in &defs {
+            let c = ResolvedCoating::resolve(def.as_ref(), &lib, &env).unwrap();
+            for (n_in, n_out) in [(1.0, 1.52), (1.52, 1.0), (1.62, 1.52)] {
+                for ci in [0.0, 1e-300, 1e-200, 1e-160, 1e-12, 1e-9, 1e-8, 1e-7] {
+                    for mirror in [false, true] {
+                        let a = c.amplitudes(0.55, n_in, n_out, ci, mirror);
+                        let what = format!("{def:?} n=({n_in},{n_out}) c={ci:e} m={mirror}");
+                        for z in [a.rs, a.rp, a.ts, a.tp] {
+                            assert!(z.re.is_finite() && z.im.is_finite(), "{what}: {a:?}");
+                        }
+                        let p = c.rt(0.55, n_in, n_out, ci, mirror);
+                        assert_power_eq(a.power(), p, 1e-12, &what);
+                    }
+                }
+            }
+        }
         // Ideal coatings are non-polarising: r_p = −r_s, t_p = t_s at any angle.
         let c = ResolvedCoating::resolve(defs[1].as_ref(), &lib, &env).unwrap();
         let a = c.amplitudes(0.55, 1.0, 1.5, 0.6, false);
         assert!(a.rp == -a.rs && a.tp == a.ts);
         assert!(a.rs.re < 0.0 && a.ts.im == 0.0 && a.ts.re > 0.0);
+    }
+
+    #[test]
+    fn tmm_amplitudes_grazing_limit() {
+        // A MgF₂ layer on glass: at `cos_i = 0` the amplitudes are the
+        // grazing limit `r_s = r_p = −1` of `fresnel_amplitudes`, and they
+        // approach it continuously.
+        let stack = [(C::new(1.38, 0.0), 0.1)];
+        let (n0, ns) = (C::new(1.0, 0.0), C::new(1.52, 0.0));
+        let bare = fresnel_amplitudes(1.0, 1.52, 0.0);
+        assert!(close(bare.rs, C::new(-1.0, 0.0), 1e-15));
+        assert!(close(bare.rp, C::new(-1.0, 0.0), 1e-15));
+        for ci in [0.0, 1e-300, 1e-160, 1e-12] {
+            let a = tmm_amplitudes(n0, &stack, ns, ci, 0.55);
+            assert!(
+                close(a.rs, bare.rs, 1e-15) && close(a.rp, bare.rp, 1e-15),
+                "{a:?}"
+            );
+            assert!(a.ts == CZERO && a.tp == CZERO && a.flux_s == 0.0 && a.flux_p == 0.0);
+            assert_power_eq(a.power(), tmm(n0, &stack, ns, ci, 0.55), 1e-15, "grazing");
+        }
+        let near = tmm_amplitudes(n0, &stack, ns, 1e-6, 0.55);
+        assert!(
+            close(near.rs, bare.rs, 1e-4) && close(near.rp, bare.rp, 1e-4),
+            "{near:?}"
+        );
+        // The same limit for an empty stack and from the dense side.
+        let a = tmm_amplitudes(ns, &[], n0, 0.0, 0.55);
+        let b = fresnel_amplitudes(1.52, 1.0, 0.0);
+        assert!(
+            close(a.rs, b.rs, 1e-15) && close(a.rp, b.rp, 1e-15),
+            "{a:?} {b:?}"
+        );
     }
 }

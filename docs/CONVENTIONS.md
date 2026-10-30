@@ -168,7 +168,13 @@ Coatings return complex amplitude coefficients next to the power ones
   `r_p = −r_s` at normal incidence, `r_p = 0` at Brewster's angle, and a
   **perfect conductor** (`E_tangential = 0`) has `r_s = −1`, `r_p = +1`. The
   perfect conductor is the phase of every phase-free reflector (bare mirrors,
-  `Ideal` coatings, tabulated mirrors): it is non-retarding.
+  `Ideal` coatings, tabulated mirrors): it is non-retarding. A `Reflect`
+  surface therefore never gets a total-internal-reflection phase, even when
+  it models a prism face (TIR face, roof, rhomb): the surface has no outer
+  medium. Prism faces whose retardance matters need a coating that carries
+  the phase (e.g. a `ThinFilm` mirror) until such an option exists.
+* At grazing incidence (`cos θ₁ = 0`, or so small that `n₁ cos θ₁` rounds
+  to zero) every coefficient takes the limit `r_s = r_p = −1`, `t = 0`.
 * Beyond the critical angle `|r_s| = |r_p| = 1` with **positive** phases
   `φ_s = 2 atan(g/(n₁c₁))`, `φ_p = 2 atan(n₁g/(n₂²c₁))`,
   `g = √(n₁²sin²θ₁ − n₂²)`.

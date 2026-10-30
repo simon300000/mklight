@@ -14,7 +14,10 @@
 //!   after every interface. For a meridional ray of a coaxial system, whose
 //!   s/p planes coincide at every surface, the exact unpolarised value is
 //!   `½(Π T_s + Π T_p)`; the two differ only at second order in the
-//!   per-surface diattenuations (tested).
+//!   per-surface diattenuations (tested). It needs only the power
+//!   coefficients, so [`SequentialTracer::throughput`] evaluates it from the
+//!   surface records without building amplitude or PRT data
+//!   ([`unpolarized_path_product`]).
 //! * [`RadiometryModel::Polarized`]: polarisation ray tracing
 //!   ([`crate::polarization`]): `T_interfaces = |J e|²` for a pure input
 //!   state, or `½ S₀ tr(J†J) + m·S` for a Stokes state, normalised by `S₀`.
@@ -26,7 +29,9 @@
 //! [`system_transmission`] averages the per-ray throughput over the pupil
 //! for each (field, wavelength): equal weight per pupil sample, uniform in
 //! normalised pupil coordinates (a grid inside the unit disk, or seeded
-//! Philox points `r = √u₁`, `φ = 2πu₂`). Rays blocked by an aperture, missing
+//! Philox points `r = √u₁`, `φ = 2πu₂`; a sampling with no points, such as
+//! `Grid { n: 2 }` whose four nodes lie outside the disk, is rejected).
+//! Rays blocked by an aperture, missing
 //! a surface or totally internally reflected transmit nothing; rays that
 //! fail numerically are excluded and reported. Pupil-shape and projection
 //! effects (relative illumination) belong to the geometric analyses; this is
@@ -46,12 +51,13 @@ use std::f64::consts::PI;
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::math::KahanSum;
 use mklight_core::rng::Philox;
-use mklight_core::{JobContext, MkResult, RunInfo};
+use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::batch::run_blocks;
 use crate::polarization::{
     InterfaceStep, JonesMatrix, PolarizationProperties, PolarizationState, PolarizedRay,
+    unpolarized_path_product,
 };
 use crate::pupil;
 use crate::trace::{TraceOptions, TraceStatus};
@@ -89,16 +95,44 @@ pub struct RayThroughput {
 }
 
 impl RayThroughput {
+    fn blocked(status: TraceStatus) -> Self {
+        RayThroughput {
+            status,
+            interfaces: 0.0,
+            internal: 0.0,
+            total: 0.0,
+        }
+    }
+
+    /// `Unpolarized`-model throughput of a recorded ray (records as filled
+    /// by [`crate::trace_ray`]), from the power coefficients only. Equal to
+    /// `RayThroughput::of(&PolarizedRay::from_trace(..), &Unpolarized)`.
+    pub fn unpolarized(
+        sys: &mklight_core::ResolvedSystem,
+        wl: usize,
+        trace: &crate::trace::TraceResult,
+        records: &[crate::trace::SurfaceRecord],
+    ) -> Self {
+        if !trace.status.is_ok() {
+            return Self::blocked(trace.status);
+        }
+        let interfaces = unpolarized_path_product(sys, wl, records);
+        let internal = records
+            .last()
+            .map_or(trace.transmittance, |r| r.transmittance);
+        RayThroughput {
+            status: trace.status,
+            interfaces,
+            internal,
+            total: interfaces * internal,
+        }
+    }
+
     /// Throughput of a polarisation-traced ray under `model`.
     pub fn of(ray: &PolarizedRay, model: &RadiometryModel) -> Self {
         let status = ray.trace.status;
         if !status.is_ok() {
-            return RayThroughput {
-                status,
-                interfaces: 0.0,
-                internal: 0.0,
-                total: 0.0,
-            };
+            return Self::blocked(status);
         }
         let interfaces = match model {
             RadiometryModel::Unpolarized => unpolarized_interface_product(&ray.steps),
@@ -122,7 +156,9 @@ impl RayThroughput {
 }
 
 impl SequentialTracer {
-    /// Throughput of pupil point `(px, py)` under `model`.
+    /// Throughput of pupil point `(px, py)` under `model`. The
+    /// `Unpolarized` model uses the power coefficients only
+    /// ([`RayThroughput::unpolarized`]); `Polarized` traces with PRT.
     pub fn throughput(
         &self,
         field: &PreparedField,
@@ -132,7 +168,16 @@ impl SequentialTracer {
         opts: &TraceOptions,
         model: &RadiometryModel,
     ) -> RayThroughput {
-        RayThroughput::of(&self.trace_polarized(field, wl, px, py, opts), model)
+        match model {
+            RadiometryModel::Unpolarized => {
+                let mut rec = Vec::with_capacity(self.system().surfaces.len());
+                let r = self.trace_with(field, wl, px, py, opts, Some(&mut rec));
+                RayThroughput::unpolarized(self.system(), wl, &r, &rec)
+            }
+            RadiometryModel::Polarized { .. } => {
+                RayThroughput::of(&self.trace_polarized(field, wl, px, py, opts), model)
+            }
+        }
     }
 }
 
@@ -143,7 +188,9 @@ impl SequentialTracer {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PupilSamples {
-    /// `n × n` square grid inside the unit disk ([`pupil::grid`]).
+    /// `n × n` square grid inside the unit disk ([`pupil::grid`]); `n` must
+    /// be 1 (the pupil centre) or at least 3 (`n = 2` has no node inside
+    /// the disk).
     Grid { n: usize },
     /// `count` uniform points on the unit disk from Philox stream
     /// `(seed, 0)`: draws `2j`, `2j + 1` give `r = √u₁`, `φ = 2πu₂`.
@@ -271,6 +318,19 @@ fn resolve_wavelengths(tracer: &SequentialTracer, w: &[usize]) -> MkResult<Vec<u
     })
 }
 
+/// Pupil points of `samples`, rejecting samplings without any point (they
+/// would report zero transmission, indistinguishable from an opaque system).
+fn nonempty_points(samples: &PupilSamples) -> MkResult<Vec<[f64; 2]>> {
+    let pts = samples.points();
+    if pts.is_empty() {
+        return Err(MkError::InvalidModel(format!(
+            "pupil sampling {samples:?} has no points inside the unit disk \
+             (grid n must be 1 or at least 3, random count at least 1)"
+        )));
+    }
+    Ok(pts)
+}
+
 fn is_numerical_failure(s: &TraceStatus) -> bool {
     matches!(s, TraceStatus::Failed { .. })
 }
@@ -285,7 +345,10 @@ pub fn system_transmission(
     let timer = RunTimer::start();
     let (field_points, fields) = resolve_fields(tracer, &settings.fields)?;
     let wls = resolve_wavelengths(tracer, &settings.wavelengths)?;
-    let pts = settings.pupil.points();
+    if let RadiometryModel::Polarized { state } = &settings.model {
+        state.validate()?;
+    }
+    let pts = nonempty_points(&settings.pupil)?;
     let opts = TraceOptions {
         clip: settings.clip,
         ..tracer.options()
@@ -378,7 +441,7 @@ pub struct PolarizationMapSettings {
     pub field: FieldPoint,
     /// System wavelength index.
     pub wavelength: usize,
-    /// Pupil grid size (`n × n` inside the unit disk).
+    /// Pupil grid size (`n × n` inside the unit disk; 1 or at least 3).
     pub grid: usize,
     /// Input state for the `intensity` map.
     pub state: PolarizationState,
@@ -410,9 +473,15 @@ pub struct PolarizationPupilMap {
     /// Pupil-mean intensity over the samples reaching the image.
     pub mean_intensity: f64,
     pub max_diattenuation: f64,
+    /// Maximum and RMS proper retardance over the samples reaching the
+    /// image whose retarder is defined
+    /// ([`PolarizationProperties::retarder_defined`]).
     pub max_retardance: f64,
-    /// RMS proper retardance over the samples reaching the image.
     pub rms_retardance: f64,
+    /// Samples reaching the image whose retarder is undefined (nearly
+    /// singular Jones matrix), excluded from the retardance statistics.
+    #[serde(default)]
+    pub undefined_retarder: usize,
     pub run_info: RunInfo,
 }
 
@@ -425,8 +494,9 @@ pub fn polarization_pupil_map(
 ) -> MkResult<PolarizationPupilMap> {
     let timer = RunTimer::start();
     let wl = resolve_wavelengths(tracer, &[settings.wavelength])?[0];
+    settings.state.validate()?;
     let field = tracer.prepare_field(settings.field)?;
-    let pts = pupil::grid(settings.grid);
+    let pts = nonempty_points(&PupilSamples::Grid { n: settings.grid })?;
     let opts = TraceOptions {
         clip: settings.clip,
         ..tracer.options()
@@ -465,15 +535,28 @@ pub fn polarization_pupil_map(
     })?;
     let mut sum = KahanSum::default();
     let mut sum_r2 = KahanSum::default();
-    let (mut n, mut dmax, mut rmax) = (0usize, 0.0f64, 0.0f64);
+    let (mut n, mut nr, mut undefined) = (0usize, 0usize, 0usize);
+    let (mut dmax, mut rmax) = (0.0f64, 0.0f64);
     for s in samples.iter().filter(|s| s.status.is_ok()) {
         n += 1;
         sum.add(s.intensity);
-        sum_r2.add(s.properties.retardance * s.properties.retardance);
         dmax = dmax.max(s.properties.diattenuation);
-        rmax = rmax.max(s.properties.retardance);
+        if s.properties.retarder_defined {
+            nr += 1;
+            sum_r2.add(s.properties.retardance * s.properties.retardance);
+            rmax = rmax.max(s.properties.retardance);
+        } else {
+            undefined += 1;
+        }
     }
     let nf = n.max(1) as f64;
+    let mut warnings = tracer.warnings().to_vec();
+    if undefined > 0 {
+        warnings.push(format!(
+            "{undefined} pupil samples have a singular Jones matrix (no defined retarder) \
+             and are excluded from the retardance statistics"
+        ));
+    }
     let run_info = timer.finish(
         &tracer.system().snapshot,
         "polarization_pupil_map",
@@ -481,13 +564,14 @@ pub fn polarization_pupil_map(
         BACKEND,
         Precision::F64Reference,
         None,
-        tracer.warnings().to_vec(),
+        warnings,
     );
     Ok(PolarizationPupilMap {
         mean_intensity: sum.value() / nf,
         max_diattenuation: dmax,
         max_retardance: rmax,
-        rms_retardance: (sum_r2.value() / nf).sqrt(),
+        rms_retardance: (sum_r2.value() / nr.max(1) as f64).sqrt(),
+        undefined_retarder: undefined,
         samples,
         run_info,
     })

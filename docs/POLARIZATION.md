@@ -13,7 +13,12 @@ CONVENTIONS §8. Tests: `crates/mklight-trace/tests/polarization.rs` and the
 counterpart of `ResolvedCoating::rt` with the same arguments. It returns
 `InterfaceAmplitudes { rs, rp, ts, tp, flux_s, flux_p }`, and
 `amplitudes(..).power()` equals `rt(..)` to rounding (tested to 1e-12 for
-random angles, indices and stacks, absorbing and metal ones included).
+random angles, indices and stacks, absorbing and metal ones included, and
+down to grazing incidence: where `n₀ cos θ₀` rounds to zero, about
+`cos θ₀ < 1e-8`, `tmm_amplitudes` returns the grazing limit
+`r_s = r_p = −1`, `t = 0` instead of the `0/0` of the p admittance
+`N₀²/(N₀ cos θ₀)`, matching `fresnel_amplitudes` at `cos θ₀ = 0` and the
+`R = 1` of `tmm`).
 
 | coating | amplitudes |
 |---|---|
@@ -123,8 +128,17 @@ transmits the radial (p) state best.
   `U = e^{iα}(cos(δ/2) I − i sin(δ/2) a·σ)`, with `e^{2iα} = det U` and the
   sign chosen so that `cos(δ/2) ≥ 0`. Then the retardance is
   `δ = 2 atan2(|sin(δ/2) a|, cos(δ/2)) ∈ [0, π]`, which stays accurate for
-  small `δ`. The fast axis is `−a`. A singular `J` (perfect polariser,
-  `T_min ≤ 1e-24 T_max`) has no defined retarder and reports `δ = 0`.
+  small `δ`. The fast axis is `−a`.
+* **Accuracy near a polariser.** The retarder of a nearly singular `J` is
+  ill-conditioned in itself, not only through this algorithm: a relative
+  perturbation `ε` of `J` changes `δ` by up to about `ε·√(T_max/T_min)`.
+  With rounding alone (`ε ≈ 1e-16`) that is 1e-11 rad at `T_min/T_max = 1e-10`
+  and 1e-4 rad at `1e-24` (tested against
+  `R(θ) diag(1, ε e^{iδ}) R(−θ)`). Below `T_min/T_max = 1e-24`
+  (`RETARDER_MIN_CONTRAST`) the retarder is undefined:
+  `retarder_defined = false`, `δ = 0` and a zero fast axis as placeholders.
+  The pupil map excludes such samples from its retardance statistics,
+  counts them in `undefined_retarder` and adds a `RunInfo` warning.
 
 `PolarizedRay::properties()` uses the proper Jones matrix. The pupil map
 also reports the retardance of the pupil-basis Jones matrix
@@ -140,11 +154,21 @@ path in every medium). `RadiometryModel` selects `T_interfaces`:
 * `Unpolarized`: `Π ½(X_s + X_p)`, with `X = T` at refracting surfaces,
   `R` at mirrors and 1 at ideal lenses. This is the scalar model of the GPU
   `Radiometry::Unpolarized` mode. It re-depolarises the light after every
-  interface.
+  interface. It needs only `ResolvedCoating::rt`, so
+  `SequentialTracer::throughput` evaluates it straight from the surface
+  records (`unpolarized_path_product`, `RayThroughput::unpolarized`), with
+  no amplitude, PRT or basis computation. It shares the per-surface
+  classification and power call with `interface_steps`, and equals the
+  PRT-derived value bit for bit (tested).
 * `Polarized { state }`: PRT, `|J e|²`, or `½ S₀ tr(J†J) + m·S` for a
   Stokes state, divided by `S₀`. `PolarizationState::Unpolarized` gives the
   exact unpolarised throughput `½ tr(J†J)` (the average over any two
-  orthogonal states, tested).
+  orthogonal states, tested). `PolarizedRay::intensity(state)` is the same
+  fraction of the input power `S₀` (times `τ_internal`).
+
+The jobs validate the input state (`PolarizationState::validate`): it must be
+finite, with `S₀ > 0` and degree of polarisation `≤ 1` (to 1e-12), or they
+return `MkError::InvalidModel`.
 
 For a meridional ray of a coaxial lens, the exact value is
 `½(Π T_s + Π T_p)`. For two surfaces it differs from the incoherent model by
@@ -152,17 +176,26 @@ exactly `¼(T_s1 − T_p1)(T_s2 − T_p2)` (tested): second order in the
 diattenuations, about 1e-9 for an uncoated F/10 singlet.
 
 **Energy budget.** `PolarizedRay::energy_budget(state)` propagates the 3×3
-coherency matrix `Φ → τ_seg P_i Φ P_i†`. At each interface the incident s and
-p powers `sᵀΦs` and `pᵀΦp` split into `path` (continuing), `diverted`
-(specular reflection at a refracting surface, the ghost solver's share) and
-`absorbed` (coating absorption, plus transmission through a mirror). The
-budget satisfies `input = transmitted + Σ diverted + Σ absorbed + bulk`.
+coherency matrix `Φ → τ_seg P_i Φ P_i†`. At each interface, `path` (the power
+continuing) is the trace of the propagated `Φ`, so it comes from the PRT
+amplitudes. The incident s and p powers `sᵀΦs` and `pᵀΦp` are reported, and
+the shared power coefficients split them into `diverted` (specular
+reflection at a refracting surface, the ghost solver's share,
+`R_s w_s + R_p w_p`) and `absorbed` (coating absorption, plus transmission
+through a mirror, `A_s w_s + A_p w_p` with `A = 1 − R − T`). None of the
+terms is defined as a remainder. The residual of
+`input = transmitted + Σ diverted + Σ absorbed + bulk` is therefore zero
+only if the field stays transverse, the PRT amplitudes reproduce `rt`, and
+the bulk factors chain correctly.
 
 **System transmission.** `system_transmission(tracer, settings, ctx)`
 averages per-ray throughput over pupil samples for each (field, wavelength),
 with equal weight per sample (`PupilSamples::Grid { n }` inside the unit
-disk, or `Random { count, seed }`: Philox stream `(seed, 0)`, `r = √u₁`,
-`φ = 2πu₂`, the same points for every field and wavelength). Blocked rays
+disk, `n = 1` or `n ≥ 3`, or `Random { count, seed }`: Philox stream `(seed, 0)`, `r = √u₁`,
+`φ = 2πu₂`, the same points for every field and wavelength). A sampling
+with no points (`Grid` with `n = 0` or `n = 2`, whose four nodes lie outside
+the disk, or `count = 0`) is rejected with `MkError::InvalidModel`. Otherwise
+it would report zero transmission, which looks like an opaque system. Blocked rays
 (clipped, missed, TIR) count 0. Numerically failed rays are excluded and
 listed in `RunInfo::warnings`. Each point reports `transmission`,
 `mean_unvignetted` and `unvignetted_fraction`, and each field gets a
@@ -184,8 +217,8 @@ Both jobs take a `JobContext` (cancellation, monotone progress) and return a
 
 | test | checks |
 |---|---|
-| `energy_is_conserved_along_real_rays` | coated Cooke triplet (lossless and absorbing thin films, ideal and tabulated coatings), Double-Gauss, an absorbing-glass singlet and the aluminised Newtonian, at all fields, wavelengths and hexapolar pupil points: per-interface `T + R + A = 1` per polarisation, step powers equal `ResolvedCoating::rt`, lossless films have `A = 0`, the budget closes to 1e-13 for unpolarised, elliptical and partially polarised input |
-| `lossless_plate_closes_with_all_reflected_orders` | tilted AR-coated plate: the primary path is `T₁T₂` per polarisation; the incoherent sum over all multiply-reflected orders gives `T_tot + R_tot = 1`; inside-plate coefficients are reciprocal |
+| `energy_is_conserved_along_real_rays` | coated Cooke triplet (lossless and absorbing thin films, ideal and tabulated coatings), Double-Gauss, an absorbing-glass singlet and the aluminised Newtonian, at all fields, wavelengths and hexapolar pupil points: per-interface `T + R + A = 1` per polarisation, step powers equal `ResolvedCoating::rt` and the amplitudes (NaN-propagating comparisons), lossless films have `A = 0`. For unpolarised, elliptical and partially polarised input, at every surface: `w_s + w_p` equals the incident power (transverse field), the PRT path power plus the `rt`-based diverted and absorbed powers equals the incident power to 1e-12, and the incident power is the previous path power times the bulk factor. The whole budget closes to 1e-12 |
+| `lossless_plate_closes_with_all_reflected_orders` | tilted AR-coated plate: the primary path is `T₁T₂` per polarisation; the front stack seen from the glass side (reversed layers) is reciprocal, `T₁' = T₁` and `R₁' = R₁`; an explicit order-by-order sum of the multiply-reflected orders equals the closed form `T₁T₂/(1 − R₂R₁')` and gives `T_tot + R_tot = 1` |
 | `uncoated_singlet_normal_incidence_is_one_minus_r_squared` | `(1 − R)²·τ` for every model and state; isotropic Jones matrix; pupil average of an F/10 singlet within 2e-4 below `(1 − R)²` |
 | `quarter_wave_ar_reduces_losses_as_predicted` | `R = ((n_s − n₁²)/(n_s + n₁²))²` per face, budget `R`, `R(1 − R)`; predicted loss ratio |
 | `metal_fold_mirror_retardance` | 45° aluminium fold: proper retardance `|arg(r_p/(−r_s))|`, diattenuation and fast axis from the closed-form complex Fresnel equations; a bare mirror is non-polarising |
@@ -193,6 +226,11 @@ Both jobs take a `JobContext` (cancellation, monotone progress) and return a
 | `jones_pupil_is_rotationally_covariant` | `J(r, φ) = R(φ)J(r, 0)R(−φ)`, radial diattenuation axis, continuity through the pupil centre |
 | `normal_incidence_basis_is_irrelevant_and_continuous` | §2 |
 | `jones_properties_of_known_elements` | random homogeneous elements, quarter-wave plate, rotator, small retardance, perfect polariser |
+| `near_polarizer_retardance_accuracy_and_undefined_retarder` | the §4 error bound for `T_min/T_max` down to 1e-22; the undefined-retarder flag beyond it |
+| `vignetted_vector_pupil_samples_carry_no_light` | clipped rays give zero Jones matrices, fields and direction, consistent with the pupil map |
+| `intensity_is_normalized_and_states_are_validated` | `intensity` is independent of `S₀` and equals `RayThroughput`; unphysical states are rejected |
+| `empty_pupil_samplings_are_rejected`, `unpolarized_fast_path_equals_prt_path` | §5 |
+| `amplitude_tests` (core) | also grazing incidence `cos θ ∈ [0, 1e-7]` for every coating kind: finite amplitudes whose powers equal `rt` |
 
 ## 7. Interface for polarised wave optics
 
@@ -206,7 +244,7 @@ use mklight_trace::{vector_pupil, VectorPupilSample, JonesVector};
 let samples: Vec<VectorPupilSample> =
     vector_pupil(&tracer, &field, wl, &pupil_points, &opts, &ctx)?;
 for s in &samples {
-    if !s.status.is_ok() { continue; }      // obscured/vignetted: zero amplitude
+    if !s.status.is_ok() { continue; }      // obscured/vignetted: all zero
     let e_img = s.field(&JonesVector::linear(0.0)); // image-local complex 3-vector
     let jones = s.jones;                     // 2×2, double-pole bases, includes √τ
     let k = s.dir;                           // image-local unit direction
@@ -229,6 +267,10 @@ for s in &samples {
 * `jones` (2×2) is enough for low-NA scalar-per-component work and for Jones
   pupil displays. It maps object-space double-pole components to image-space
   double-pole components.
+* A sample whose ray did not reach the image (clipped, missed, TIR, failed)
+  carries no light: `jones`, `field_x` and `field_y` are zero and `dir` is
+  the zero vector. Skipping these samples and adding them as zeros give the
+  same result.
 * Uniform sampling of `pupil_points` is the caller's choice. Ray aiming and
   vignetting follow the tracer's settings, exactly as for OPD.
 
@@ -241,5 +283,16 @@ for s in &samples {
   optical activity.
 * `Ideal` and `Tabulated` coatings carry no measured phase (§1), and ideal
   lenses are lossless and non-polarising.
+* A bare `Reflect` surface is a perfect conductor (`r_s = −1`, `r_p = +1`)
+  at every angle. Prism faces modelled as mirrors (TIR faces, roof prisms,
+  Fresnel rhombs) therefore get **no TIR retardance**, although physical
+  total internal reflection adds the s/p phases of CONVENTIONS §8, which
+  `fresnel_amplitudes` already computes. The mirror surface does not know the
+  medium outside the glass: its `n_after` equals `n_before`. Roof-prism phase
+  errors, a common reason for a polarisation analysis, are therefore not
+  modelled yet. A later additive option (a coating kind or surface flag that
+  names the outer medium) could apply `fresnel_amplitudes(n_glass, n_outer, cos θ)`
+  at such faces. Meanwhile, a `ThinFilm` mirror coating carries an
+  angle-dependent phase.
 * The GPU has the scalar `Unpolarized` model only. A polarised GPU mode
   (Jones vector per ray) would be validated against `PolarizedRay`.
