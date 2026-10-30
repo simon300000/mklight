@@ -24,7 +24,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use mklight_analysis::{
-    curvature, energy, fans, illumination, layout, seidel, spot, system_data, util,
+    curvature, energy, fans, footprint_overlay, illumination, layout, seidel, spot, system_data,
+    util,
 };
 use mklight_core::JobContext;
 use mklight_trace::{Grid, SequentialTracer, TraceOptions, trace_grid_job};
@@ -505,7 +506,8 @@ fn all() -> Vec<Geo> {
             name: "footprint",
             title: "Surface footprint",
             description: "Hit points of a pupil pattern on one surface (local frame), with the \
-                          points the surface's aperture clips. Points in typed buffers.",
+                          points the surface's aperture clips, plus global hit points and convex \
+                          outlines on every surface for a 3-D overlay. Points in typed buffers.",
             settings: || {
                 settings_from_default::<illumination::FootprintSettings>(sampling_annotations(
                     json!({
@@ -1564,6 +1566,26 @@ fn footprint_schema() -> Value {
                     "One per (field, wavelength).",
                 ),
             ),
+            (
+                "overlays",
+                arr(
+                    obj(&[
+                        ("surface", int("")),
+                        ("field", int("")),
+                        ("wavelength", int("")),
+                        (
+                            "points",
+                            tuple(int(""), 2, "[offset, count] in `global_points`."),
+                        ),
+                        (
+                            "outline",
+                            tuple(int(""), 2, "[offset, count] in `global_outlines`."),
+                        ),
+                    ]),
+                    "One per (surface after the object, field, wavelength): the hits of rays \
+                     that pass that surface, whether or not a later surface clips them.",
+                ),
+            ),
         ],
         vec![
             buffer(
@@ -1580,6 +1602,21 @@ fn footprint_schema() -> Value {
                 "mm",
                 "Hit points of rays the aperture clips.",
             ),
+            buffer(
+                "global_points",
+                "f64",
+                &["P", "3"],
+                "mm",
+                "Global hit points (surface sag and placement included).",
+            ),
+            buffer(
+                "global_outlines",
+                "f64",
+                &["Q", "3"],
+                "mm",
+                "Convex hull of each overlay's hits in the surface's local x/y, counterclockwise \
+                 and unclosed, as global points; not a vignetting boundary of nonconvex beams.",
+            ),
         ],
     )
 }
@@ -1590,7 +1627,8 @@ fn run_footprint(
     s: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
-    let r = illumination::footprint_job(t, &parse(s)?, ctx)?;
+    let settings = parse(s)?;
+    let r = illumination::footprint_job(t, &settings, &ctx.subrange(0.0, 0.3))?;
     let (mut v, w) = crate_json(&r)?;
     let rays = v
         .as_object_mut()
@@ -1609,10 +1647,22 @@ fn run_footprint(
         }));
     }
     v["sets"] = Value::Array(sets);
+    let o = footprint_overlay::footprint_overlay_job(t, &settings, &ctx.subrange(0.3, 1.0))?;
+    v["overlays"] = serde_json::to_value(o.sets)?;
     let (n, m) = (pts.len() / 2, clipped.len() / 2);
     let buffers = vec![
         Buffer::new("points", vec![n, 2], BufferData::F64(pts)),
         Buffer::new("clipped", vec![m, 2], BufferData::F64(clipped)),
+        Buffer::new(
+            "global_points",
+            vec![o.points.len(), 3],
+            BufferData::F64(o.points.into_iter().flatten().collect()),
+        ),
+        Buffer::new(
+            "global_outlines",
+            vec![o.outlines.len(), 3],
+            BufferData::F64(o.outlines.into_iter().flatten().collect()),
+        ),
     ];
     Ok(output(v, buffers, w))
 }

@@ -62,6 +62,7 @@
 //! surface's local frame, with the rays clipped *at* that surface flagged.
 //! Rays lost before it are counted but not shown.
 
+use std::borrow::Cow;
 use std::f64::consts::PI;
 
 use mklight_core::job::RunTimer;
@@ -371,32 +372,41 @@ pub fn relative_illumination(
     relative_illumination_job(tracer, settings, &JobContext::new())
 }
 
-/// [`relative_illumination`] with cancellation and progress (per field).
-pub fn relative_illumination_job(
-    tracer: &SequentialTracer,
-    settings: &RelativeIlluminationSettings,
-    ctx: &JobContext,
-) -> MkResult<RelativeIlluminationResult> {
-    let timer = RunTimer::start();
-    check_count("field samples", settings.field_samples, 2, 10_001)?;
-    check_count("radial samples", settings.radial_samples, 1, 512)?;
-    check_count("azimuth samples", settings.azimuth_samples, 4, 4096)?;
-    let wl = wavelength_or_primary(tracer, settings.wavelength)?;
-    let owned;
-    let rt = if matches!(tracer.aiming(), RayAiming::Real { .. }) {
-        tracer
+/// The tracer itself when it already aims real rays, else a copy that does
+/// (module docs).
+pub fn real_aimed(tracer: &SequentialTracer) -> MkResult<Cow<'_, SequentialTracer>> {
+    Ok(if matches!(tracer.aiming(), RayAiming::Real { .. }) {
+        Cow::Borrowed(tracer)
     } else {
-        owned = SequentialTracer::with_settings(
+        Cow::Owned(SequentialTracer::with_settings(
             tracer.system_arc(),
             TracerSettings {
                 aiming: Some(RayAiming::Real { tolerance: 1e-12 }),
                 ..*tracer.settings()
             },
-        )?;
-        &owned
-    };
-    let (rx, rw) = gauss_legendre_01(settings.radial_samples);
-    let m = settings.azimuth_samples;
+        )?)
+    })
+}
+
+/// Per normalised field `[Hx, Hy]`: `[Ω_p, surviving share of the pupil
+/// area, image-space chief angle (°), cos⁴]` (NaN when the chief ray fails),
+/// plus the on-axis `Ω_p(0)`. Shared by the radial curve, the 2-D map and
+/// image simulation, so all three agree by construction.
+pub fn illumination_rows(
+    tracer: &SequentialTracer,
+    coordinates: &[[f64; 2]],
+    wl: usize,
+    radial_samples: usize,
+    azimuth_samples: usize,
+    warnings: &mut Vec<String>,
+    ctx: &JobContext,
+) -> MkResult<(Vec<[f64; 4]>, f64)> {
+    check_count("radial samples", radial_samples, 1, 512)?;
+    check_count("azimuth samples", azimuth_samples, 4, 4096)?;
+    let rt = real_aimed(tracer)?;
+    let rt = rt.as_ref();
+    let (rx, rw) = gauss_legendre_01(radial_samples);
+    let m = azimuth_samples;
     let dphi = 2.0 * PI / m as f64;
     let mut nodes = Vec::with_capacity(rx.len() * m);
     for (r, w) in rx.iter().zip(&rw) {
@@ -405,10 +415,6 @@ pub fn relative_illumination_job(
             nodes.push((r * c, r * s, w * r * dphi));
         }
     }
-    let sweep = field_sweep(tracer, settings.field_samples, settings.field_axes);
-    let mut rows = Vec::with_capacity(sweep.heights.len());
-    let mut warnings = Vec::new();
-    ctx.report(0.0, "relative illumination");
     // Scale of the object parameters `q` for the difference steps.
     let q_scale = rt
         .prepare_field(FieldPoint::normalized(0.0, 1.0))
@@ -418,7 +424,8 @@ pub fn relative_illumination_job(
         })
         .unwrap_or(0.0)
         .max(1e-3);
-    for (k, &[hx, hy]) in sweep.coordinates.iter().enumerate() {
+    let mut rows = Vec::with_capacity(coordinates.len());
+    for (k, &[hx, hy]) in coordinates.iter().enumerate() {
         ctx.check()?;
         let row = match rt.prepare_field(FieldPoint::normalized(hx, hy)) {
             Ok(f) if f.aims[wl].converged => match integrate_field(rt, &f, wl, &nodes, q_scale) {
@@ -446,12 +453,11 @@ pub fn relative_illumination_job(
         };
         rows.push(row);
         ctx.report(
-            (k + 1) as f64 / sweep.coordinates.len() as f64,
+            (k + 1) as f64 / coordinates.len() as f64,
             "relative illumination",
         );
     }
-    // A signed sweep with an even sample count has no on-axis sample.
-    let omega0 = match sweep.coordinates.iter().position(|p| *p == [0.0; 2]) {
+    let omega0 = match coordinates.iter().position(|p| *p == [0.0; 2]) {
         Some(k) => rows[k][0],
         None => {
             let on_axis = rt.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
@@ -463,6 +469,30 @@ pub fn relative_illumination_job(
             "on-axis beam has no projected solid angle".into(),
         ));
     }
+    Ok((rows, omega0))
+}
+
+/// [`relative_illumination`] with cancellation and progress (per field).
+pub fn relative_illumination_job(
+    tracer: &SequentialTracer,
+    settings: &RelativeIlluminationSettings,
+    ctx: &JobContext,
+) -> MkResult<RelativeIlluminationResult> {
+    let timer = RunTimer::start();
+    check_count("field samples", settings.field_samples, 2, 10_001)?;
+    let wl = wavelength_or_primary(tracer, settings.wavelength)?;
+    let sweep = field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let mut warnings = Vec::new();
+    ctx.report(0.0, "relative illumination");
+    let (rows, omega0) = illumination_rows(
+        tracer,
+        &sweep.coordinates,
+        wl,
+        settings.radial_samples,
+        settings.azimuth_samples,
+        &mut warnings,
+        ctx,
+    )?;
     let scale = field_scale(tracer);
     Ok(RelativeIlluminationResult {
         field_values: sweep.heights.iter().map(|h| h * scale).collect(),
