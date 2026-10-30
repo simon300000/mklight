@@ -69,6 +69,20 @@ impl Analysis for Geo {
     fn result_schema(&self) -> Value {
         (self.result)()
     }
+    fn result_version(&self) -> u32 {
+        if matches!(
+            self.name,
+            "seidel"
+                | "field_curvature_distortion"
+                | "relative_illumination"
+                | "lateral_colour"
+                | "longitudinal_aberration"
+        ) {
+            2
+        } else {
+            1
+        }
+    }
     fn gpu_path(&self) -> bool {
         self.gpu
     }
@@ -82,6 +96,17 @@ impl Analysis for Geo {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let tracer = SequentialTracer::new(input.resolved()?)?;
+        let selection = settings
+            .get("fields")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| EngineError::InvalidSettings(e.to_string()))?
+            .unwrap_or_default();
+        let tracer = if settings.get("fields").is_some() {
+            util::default_fields(&tracer, &selection)?
+        } else {
+            std::borrow::Cow::Borrowed(&tracer)
+        };
         (self.run)(input, &tracer, settings, ctx)
     }
 }
@@ -166,7 +191,7 @@ fn pattern_seed(s: &Value) -> Option<u64> {
 // --- settings annotations shared by several analyses
 
 fn a_fields() -> Value {
-    json!({"description": "Field selection: {\"type\": \"all\"}, {\"type\": \"index\", \"index\": i} or {\"type\": \"list\", \"indices\": [i, …]} (system field indices)."})
+    json!({"description": "Field selection: {\"type\": \"all\"}, {\"type\": \"index\", \"index\": i} or {\"type\": \"list\", \"indices\": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates)."})
 }
 fn a_wavelengths() -> Value {
     json!({"description": "Wavelength selection: {\"type\": \"all\"}, {\"type\": \"primary\"}, {\"type\": \"index\", \"index\": i} or {\"type\": \"list\", \"indices\": [i, …]} (system wavelength indices)."})
@@ -245,8 +270,8 @@ fn all() -> Vec<Geo> {
                 )
             },
             result: first_order_schema,
-            run: |_, t, s, _| {
-                let r = system_data::system_data(t, &parse(s)?)?;
+            run: |_, t, s, ctx| {
+                let r = system_data::system_data_job(t, &parse(s)?, ctx)?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
@@ -264,6 +289,8 @@ fn all() -> Vec<Geo> {
                     "rays_per_field": a_count(1, 10_000, "Rays per fan, evenly spaced across the pupil (1: the chief ray)."),
                     "fields": a_fields(), "wavelengths": a_wavelengths(),
                     "profile_samples": a_count(2, 100_000, "Points per surface profile."),
+                    "section": {"enum": ["yz", "xz"], "description": "Profile plane; yz by default. Section flags use its global plane."},
+                    "mesh_rings": a_count(0, 100, "Radial subdivisions of the optional 3-D surface mesh; 0 disables it. Angular subdivisions use ring_samples."),
                     "include_3d": {"description": "Also produce out-of-section geometry (sagittal profiles, rings, rims, sagittal fans)."},
                     "rings": a_count(1, 1000, "Concentric rings per surface in 3-D (the last one is the rim)."),
                     "ring_samples": a_count(3, 100_000, "Points per ring."),
@@ -336,7 +363,8 @@ fn all() -> Vec<Geo> {
                           (paraxial, f·tanθ, f·θ) versus field.",
             settings: || {
                 settings_from_default::<curvature::FieldCurvatureSettings>(json!({
-                    "field_samples": a_count(2, 10_000, "Field samples from the axis to the maximum field along +y."),
+                    "field_axes": {"enum": ["auto", "x", "y", "both"], "description": "Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone."},
+                    "field_samples": a_count(2, 10_000, "Samples per selected axis, signed where symmetry requires it."),
                     "wavelengths": a_wavelengths(),
                     "close_ray_step": {"minimum": 1e-9, "maximum": 0.5, "description": "Normalised pupil step of the close-ray cross-check."}
                 }))
@@ -395,13 +423,14 @@ fn all() -> Vec<Geo> {
                           primary paraxial focus, versus pupil zone, per wavelength.",
             settings: || {
                 settings_from_default::<seidel::LongitudinalSettings>(json!({
-                    "pupil_samples": a_count(2, 10_000, "Pupil zones from 0 to 1 (P_y)."),
+                    "axes": {"enum": ["auto", "x", "y", "both"], "description": "Auto traces y in rotational systems, both axes otherwise."},
+                    "pupil_samples": a_count(2, 10_000, "Pupil zones: 0 to 1 for rotational systems, -1 to 1 otherwise; selected x/y axes."),
                     "wavelengths": a_wavelengths()
                 }))
             },
             result: longitudinal_schema,
-            run: |_, t, s, _| {
-                let r = seidel::longitudinal_aberration(t, &parse(s)?)?;
+            run: |_, t, s, c| {
+                let r = seidel::longitudinal_aberration_job(t, &parse(s)?, c)?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
@@ -421,8 +450,8 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: chromatic_focal_shift_schema,
-            run: |_, t, s, _| {
-                let r = seidel::chromatic_focal_shift(t, &parse(s)?)?;
+            run: |_, t, s, c| {
+                let r = seidel::chromatic_focal_shift_job(t, &parse(s)?, c)?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
@@ -436,7 +465,8 @@ fn all() -> Vec<Geo> {
                           to the primary wavelength, and the short−long difference.",
             settings: || {
                 settings_from_default::<seidel::LateralColourSettings>(json!({
-                    "field_samples": a_count(2, 10_000, "Field samples from the axis to the maximum field along +y."),
+                    "field_axes": {"enum": ["auto", "x", "y", "both"], "description": "Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone."},
+                    "field_samples": a_count(2, 10_000, "Samples per selected axis, signed where symmetry requires it."),
                     "short_wavelength": {"type": ["integer", "null"], "minimum": 0, "description": "null = the shortest system wavelength."},
                     "long_wavelength": {"type": ["integer", "null"], "minimum": 0, "description": "null = the longest system wavelength."}
                 }))
@@ -458,7 +488,8 @@ fn all() -> Vec<Geo> {
                           image point (real ray aiming), with the vignetted fraction.",
             settings: || {
                 settings_from_default::<illumination::RelativeIlluminationSettings>(json!({
-                    "field_samples": a_count(2, 10_000, "Field samples from the axis to the maximum field along +y."),
+                    "field_axes": {"enum": ["auto", "x", "y", "both"], "description": "Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone."},
+                    "field_samples": a_count(2, 10_000, "Samples per selected axis, signed where symmetry requires it."),
                     "wavelength": a_opt_wl(),
                     "radial_samples": a_count(1, 1000, "Gauss–Legendre nodes in the pupil radius."),
                     "azimuth_samples": a_count(3, 10_000, "Trapezoidal nodes in the pupil azimuth.")
@@ -564,6 +595,72 @@ fn all() -> Vec<Geo> {
 // ---------------------------------------------------------------------------
 // first_order
 
+pub(super) fn paraxial_xy_schema() -> Value {
+    obj(&[
+        (
+            "symmetry",
+            enumeration(
+                &["rotational", "meridional", "none"],
+                "Geometry, placements and apertures; fields are sampling requests.",
+            ),
+        ),
+        ("primary_wavelength", int("System wavelength index.")),
+        (
+            "squeeze_definition",
+            string(
+                "Signed EFL_y / EFL_x; unit-index referenced. Mixed xy power gives diagonal projections, not principal focal lengths.",
+            ),
+        ),
+        (
+            "warnings",
+            arr(
+                string(""),
+                "Limitations of the nominal-vertex unfolded sweeps.",
+            ),
+        ),
+        (
+            "wavelengths",
+            arr(
+                obj(&[
+                    ("wavelength", int("System wavelength index.")),
+                    ("wavelength_um", num("µm", "")),
+                    ("efl_x", nf_u("mm", "X-axis effective focal length.")),
+                    (
+                        "efl_y",
+                        nf_u("mm", "Y-axis effective focal length (legacy EFL)."),
+                    ),
+                    (
+                        "bfl_x",
+                        nf_u("mm", "X-axis back focus from the last optical surface."),
+                    ),
+                    (
+                        "bfl_y",
+                        nf_u("mm", "Y-axis back focus from the last optical surface."),
+                    ),
+                    ("squeeze", nf_u("1", "Signed EFL_y / EFL_x.")),
+                    (
+                        "doe_power",
+                        arr(
+                            obj(&[
+                                ("surface", int("")),
+                                (
+                                    "power",
+                                    num(
+                                        "1/mm",
+                                        "Selected-order phase power, -m λ A1/(π r_norm²); λ in mm. Base refractive power excluded.",
+                                    ),
+                                ),
+                            ]),
+                            "One entry per DOE; zero for trace order zero.",
+                        ),
+                    ),
+                ]),
+                "Both first-order sweeps at every system wavelength.",
+            ),
+        ),
+    ])
+}
+
 fn first_order_schema() -> Value {
     let entry = obj(&[
         ("key", string("Stable key (e.g. `efl`, `bfl`, `epd`).")),
@@ -573,6 +670,7 @@ fn first_order_schema() -> Value {
     ]);
     result(
         &[
+            ("paraxial_xy", paraxial_xy_schema()),
             (
                 "entries",
                 arr(
@@ -621,6 +719,10 @@ fn layout_schema() -> Value {
         ("mechanical_semi_diameter", nf_u("mm", "")),
         ("is_mirror", boolean("")),
         ("is_stop", boolean("")),
+        (
+            "is_diffractive",
+            boolean("Base surface carries a DOE phase."),
+        ),
     ]);
     let element = obj(&[
         ("first_surface", int("")),
@@ -633,6 +735,21 @@ fn layout_schema() -> Value {
     ]);
     result(
         &[
+            (
+                "field_values",
+                arr(
+                    field_value(),
+                    "Field coordinates in system units, including analysis-local default fields.",
+                ),
+            ),
+            (
+                "section",
+                enumeration(&["yz", "xz"], "Selected 2-D section."),
+            ),
+            (
+                "mesh_triangle_count",
+                int("Triangle count T; zero when mesh_rings=0 or include_3d=false."),
+            ),
             (
                 "origin",
                 tuple(
@@ -669,6 +786,20 @@ fn layout_schema() -> Value {
             ("field_count", int("Number of system fields.")),
         ],
         vec![
+            buffer(
+                "surface_mesh",
+                "f32",
+                &["T", "3", "3"],
+                "mm",
+                "Triangle vertices x,y,z relative to origin, counterclockwise toward the positive local normal. Domain holes omitted.",
+            ),
+            buffer(
+                "mesh_surfaces",
+                "u32",
+                &["T"],
+                "",
+                "Surface index per mesh triangle.",
+            ),
             buffer(
                 "vertices",
                 "f32",
@@ -711,7 +842,7 @@ fn layout_schema() -> Value {
                 "u8",
                 &["P"],
                 "",
-                "Bit 0: in the meridional section (x = 0); bit 1: vignetted ray.",
+                "Bit 0: in the selected global section; bit 1: vignetted ray; bit 2: DOE surface.",
             ),
         ],
     )
@@ -746,6 +877,8 @@ fn run_layout(
         .collect();
     let json = json!({
         "origin": b.origin,
+        "section": scene.section,
+        "mesh_triangle_count": scene.meshes.iter().map(|m| m.triangles.len()).sum::<usize>(),
         "bounds": v["bounds"],
         "surfaces": v["surfaces"],
         "elements": elements,
@@ -754,8 +887,26 @@ fn run_layout(
         "kind_names": mklight_analysis::layout::PolylineKind::CODE_NAMES,
         "wavelengths_um": v["wavelengths_um"],
         "field_count": v["field_count"],
+        "field_values": v["field_values"],
     });
+    let mut mesh_vertices = Vec::new();
+    let mut mesh_surfaces = Vec::new();
+    for mesh in &scene.meshes {
+        for triangle in &mesh.triangles {
+            mesh_surfaces.push(mesh.surface as u32);
+            for point in triangle {
+                mesh_vertices.extend((0..3).map(|k| (point[k] - b.origin[k]) as f32));
+            }
+        }
+    }
+    let nt = mesh_surfaces.len();
     let buffers = vec![
+        Buffer::new(
+            "surface_mesh",
+            vec![nt, 3, 3],
+            BufferData::F32(mesh_vertices),
+        ),
+        Buffer::new("mesh_surfaces", vec![nt], BufferData::U32(mesh_surfaces)),
         Buffer::new("vertices", vec![nv, 3], BufferData::F32(b.vertices)),
         Buffer::new("vertices_f64", vec![nv, 3], BufferData::F64(b.vertices_f64)),
         Buffer::new("offsets", vec![np + 1], BufferData::U32(b.offsets)),
@@ -805,7 +956,10 @@ fn spot_schema() -> Value {
     ]);
     let field = obj_opt(
         &[
-            ("field", int("System field index.")),
+            (
+                "field",
+                int("Field index (system fields, then analysis-local defaults)."),
+            ),
             ("field_value", field_value()),
             (
                 "point_range",
@@ -992,7 +1146,10 @@ fn fan_schema(ray: bool) -> Value {
                 "fields",
                 arr(
                     obj(&[
-                        ("field", int("System field index.")),
+                        (
+                            "field",
+                            int("Field index (system fields, then analysis-local defaults)."),
+                        ),
                         ("field_value", field_value()),
                         (
                             "tangential",
@@ -1037,7 +1194,10 @@ fn field_curvature_schema() -> Value {
         ),
         (
             "distortion_percent",
-            nf_vec("%", "100 (y_real − y_paraxial)/y_paraxial."),
+            nf_vec(
+                "%",
+                "100 (h_real − h_paraxial)/h_paraxial along the sampled field axis.",
+            ),
         ),
         (
             "f_tan_theta_distortion_percent",
@@ -1052,6 +1212,13 @@ fn field_curvature_schema() -> Value {
     ]);
     result(
         &[
+            (
+                "field_coordinates",
+                arr(
+                    xy("Normalised [Hx, Hy]; paired with each scalar field sample."),
+                    "Axis sweeps, with signed fields where symmetry requires them.",
+                ),
+            ),
             ("field_values", nf_vec("", "Field samples in `field_unit`.")),
             (
                 "normalized_field",
@@ -1162,6 +1329,19 @@ fn seidel_schema() -> Value {
     result(
         &[
             (
+                "status",
+                enumeration(
+                    &["applicable", "not_applicable"],
+                    "Seidel requires rotational system symmetry.",
+                ),
+            ),
+            (
+                "reason",
+                nullable(string(
+                    "Explains non-applicability and suggests full real-ray analyses; coefficients are null and surfaces empty.",
+                )),
+            ),
+            (
                 "wavelength",
                 int("System wavelength index of the paraxial rays."),
             ),
@@ -1205,6 +1385,10 @@ fn longitudinal_schema() -> Value {
                 "curves",
                 arr(
                     obj(&[
+                        (
+                            "axis",
+                            enumeration(&["x", "y"], "Pupil axis of the zonal fan."),
+                        ),
                         ("wavelength", int("")),
                         ("wavelength_um", num("µm", "")),
                         ("paraxial_focus", nf_u("mm", "")),
@@ -1231,6 +1415,20 @@ fn longitudinal_schema() -> Value {
 fn chromatic_focal_shift_schema() -> Value {
     result(
         &[
+            (
+                "focal_shift_x",
+                nf_vec(
+                    "mm",
+                    "X-axis paraxial focus relative to the primary wavelength's x focus.",
+                ),
+            ),
+            (
+                "paraxial_focus_x",
+                nf_vec(
+                    "mm",
+                    "X-axis paraxial focus from the image surface; legacy arrays are the y sweep.",
+                ),
+            ),
             ("wavelengths_um", arr(num("µm", ""), "Sweep wavelengths.")),
             (
                 "paraxial_focus",
@@ -1250,6 +1448,13 @@ fn chromatic_focal_shift_schema() -> Value {
 fn lateral_colour_schema() -> Value {
     result(
         &[
+            (
+                "field_coordinates",
+                arr(
+                    xy("Normalised [Hx, Hy]; paired with each scalar field sample."),
+                    "Axis sweeps, with signed fields where symmetry requires them.",
+                ),
+            ),
             ("field_values", nf_vec("", "Field samples in `field_unit`.")),
             ("normalized_field", nf_vec("", "")),
             ("field_unit", string("")),
@@ -1282,6 +1487,13 @@ fn lateral_colour_schema() -> Value {
 fn relative_illumination_schema() -> Value {
     result(
         &[
+            (
+                "field_coordinates",
+                arr(
+                    xy("Normalised [Hx, Hy]; paired with each scalar field sample."),
+                    "Axis sweeps, with signed fields where symmetry requires them.",
+                ),
+            ),
             ("field_values", nf_vec("", "Field samples in `field_unit`.")),
             ("normalized_field", nf_vec("", "")),
             ("field_unit", string("")),
@@ -1317,6 +1529,13 @@ fn relative_illumination_schema() -> Value {
 fn footprint_schema() -> Value {
     result(
         &[
+            (
+                "field_values",
+                arr(
+                    field_value(),
+                    "Field coordinates in system units, including analysis-local default fields.",
+                ),
+            ),
             ("surface", int("")),
             (
                 "semi_diameter",
@@ -1483,7 +1702,10 @@ fn geometric_mtf_schema() -> Value {
                 "curves",
                 arr(
                     obj(&[
-                        ("field", int("System field index.")),
+                        (
+                            "field",
+                            int("Field index (system fields, then analysis-local defaults)."),
+                        ),
                         ("orientation", enumeration(&["tangential", "sagittal"], "")),
                         (
                             "modulation",
@@ -1530,6 +1752,13 @@ fn run_geometric_mtf(
 fn best_focus_schema() -> Value {
     result(
         &[
+            (
+                "field_values",
+                arr(
+                    field_value(),
+                    "Field coordinates in system units, including analysis-local default fields.",
+                ),
+            ),
             (
                 "defocus",
                 num(
@@ -1615,6 +1844,13 @@ impl Default for RayGridSettings {
 fn ray_grid_schema() -> Value {
     result(
         &[
+            (
+                "field_values",
+                arr(
+                    field_value(),
+                    "Field coordinates in system units, including analysis-local default fields.",
+                ),
+            ),
             ("fields", arr(int(""), "Selected system fields (axis F).")),
             ("wavelengths", wl_list()),
             (
@@ -1730,6 +1966,7 @@ fn run_ray_grid(
     let arrived = points.chunks(2).filter(|p| !p[0].is_nan()).count();
     let sys = t.system();
     let json = json!({
+        "field_values": fields.iter().map(|&f| { let p=t.field(f).point; let scale=sys.system().fields.max_radial(); [p.hx*scale,p.hy*scale] }).collect::<Vec<_>>(),
         "fields": fields,
         "wavelengths": wls,
         "wavelengths_um": wls.iter().map(|&w| sys.wavelengths_um[w]).collect::<Vec<_>>(),

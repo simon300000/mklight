@@ -392,7 +392,10 @@ fn extended_jobs_cancel_and_complete_with_run_info() {
     let c = JobContext::new();
     let r = longitudinal_aberration_job(&t, &Default::default(), &c).unwrap();
     assert_eq!(c.progress.fraction(), 1.0);
-    assert_eq!(r.run_info.snapshot_hash, t.system().snapshot.hash().to_hex());
+    assert_eq!(
+        r.run_info.snapshot_hash,
+        t.system().snapshot.hash().to_hex()
+    );
     assert!(r.pupil[0] < 0.0);
     assert!(
         r.curves
