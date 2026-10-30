@@ -97,6 +97,8 @@ const SAMPLES: &[&str] = &[
     "relay",
 ];
 
+const EXTENDED_SAMPLES: &[&str] = &["hybrid_doe", "anamorphic", "q_con", "q_bfs", "xy_freeform"];
+
 // ---------------------------------------------------------------------------
 // usage and info
 
@@ -189,6 +191,63 @@ fn show_reports_lens_data_of_the_achromat() {
     assert!((f(&r[1]["semi_diameter"]) - 10.0).abs() < 0.01);
     assert_eq!(v["system"]["aperture"]["type"], "image_space_f_number");
     assert_eq!(v["system"]["wavelengths"]["primary"], 1);
+}
+
+#[test]
+fn extended_samples_show_surface_parameters_and_anamorphic_first_order() {
+    let d = TempDir::new("extended-samples");
+    for name in EXTENDED_SAMPLES {
+        let p = sample(&d, name);
+        let shown = mklight(["show", s(&p)]);
+        assert_eq!(code(&shown), 0, "{}", stderr(&shown));
+        let text = stdout(&shown);
+        match *name {
+            "hybrid_doe" => assert!(
+                text.contains("diffractive")
+                    && text.contains("design wavelength")
+                    && text.contains("trace order"),
+                "{text}"
+            ),
+            "anamorphic" => {
+                assert!(text.contains("biconic") && text.contains("cx"), "{text}");
+                let paraxial = json_run(&["paraxial", s(&p)], 0);
+                assert!(paraxial["paraxial_xy"]["x"].is_array());
+                let report = stdout(&mklight(["paraxial", s(&p)]));
+                assert!(
+                    report.contains("Anamorphic first order") && report.contains("squeeze y/x"),
+                    "{report}"
+                );
+            }
+            "q_con" | "q_bfs" => assert!(
+                text.contains("normalisation radius") && text.contains("Q"),
+                "{text}"
+            ),
+            "xy_freeform" => assert!(
+                text.contains("normalisation radius") && text.contains("C(x²)"),
+                "{text}"
+            ),
+            _ => unreachable!(),
+        }
+        let show_json = json_run(&["show", s(&p)], 0);
+        assert!(
+            show_json["surfaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["type"]
+                    == if *name == "xy_freeform" {
+                        "xy_polynomial"
+                    } else if *name == "q_con" {
+                        "q_con"
+                    } else if *name == "q_bfs" {
+                        "q_bfs"
+                    } else if *name == "hybrid_doe" {
+                        "diffractive"
+                    } else {
+                        "biconic"
+                    })
+        );
+    }
 }
 
 #[test]

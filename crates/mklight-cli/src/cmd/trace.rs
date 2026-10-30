@@ -9,7 +9,8 @@ use mklight_core::{ResolvedSystem, Vec3};
 use mklight_engine::Session;
 use mklight_trace::trace::to_global;
 use mklight_trace::{
-    FirstOrder, ParaxialRayTable, Ray, SequentialTracer, SurfaceRecord, TraceOptions, TraceStatus,
+    FirstOrder, ParaxialRayTable, ParaxialXY, Ray, SequentialTracer, SurfaceRecord, TraceOptions,
+    TraceStatus,
 };
 
 use super::project::shape_type;
@@ -332,6 +333,7 @@ pub fn paraxial(ctx: &Ctx, a: &ParaxialArgs) -> CliResult<Report> {
     let session = ctx.open(&a.project)?;
     let tracer = tracer_for(&session)?;
     let p = tracer.paraxial();
+    let xy = ParaxialXY::new(tracer.system())?;
     let primary = p.primary();
     let json = json!({
         "path": a.project.display().to_string(),
@@ -340,6 +342,11 @@ pub fn paraxial(ctx: &Ctx, a: &ParaxialArgs) -> CliResult<Report> {
         "marginal_ray": ray_json(&primary.marginal),
         "chief_ray": ray_json(&primary.chief),
         "warnings": p.warnings,
+        "paraxial_xy": {
+            "x": xy.x.iter().map(first_order_json).collect::<Vec<_>>(),
+            "y": xy.y.iter().map(first_order_json).collect::<Vec<_>>(),
+            "squeeze": xy.squeeze,
+        },
     });
 
     let mut cols: Vec<(String, Align)> = vec![("quantity".into(), Align::Left)];
@@ -361,6 +368,30 @@ pub fn paraxial(ctx: &Ctx, a: &ParaxialArgs) -> CliResult<Report> {
     }
     let mut text = format!("{}  (* primary)\n", session.system().name);
     text.push_str(&t.render());
+    if xy.symmetry != mklight_core::surface_math::Symmetry::Rotational {
+        text.push_str("\nAnamorphic first order (x / y)\n");
+        let mut axes = Table::new(&[
+            ("quantity", Align::Left),
+            ("x", Align::Right),
+            ("y", Align::Right),
+            ("squeeze y/x", Align::Right),
+        ]);
+        let fx = &xy.x[xy.primary];
+        let fy = &xy.y[xy.primary];
+        for (key, label, unit) in QUANTITIES {
+            axes.row(vec![
+                format!("{label} ({unit})"),
+                fmt_g(quantity(fx, key), 8),
+                fmt_g(quantity(fy, key), 8),
+                if *key == "efl" {
+                    fmt_g(xy.squeeze[xy.primary], 8)
+                } else {
+                    String::new()
+                },
+            ]);
+        }
+        text.push_str(&axes.render());
+    }
     if a.rays {
         let mut r = Table::new(&[
             ("#", Align::Right),

@@ -229,6 +229,167 @@ pub(crate) fn shape_type(s: &SurfaceShape) -> &'static str {
     }
 }
 
+fn shape_parameters(shape: &SurfaceShape) -> Option<String> {
+    match shape {
+        SurfaceShape::OddAsphere { coefficients, .. } => Some(
+            coefficients
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("β{} r^{} {}", i + 1, i + 1, fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        SurfaceShape::QCon {
+            norm_radius,
+            coefficients,
+            ..
+        }
+        | SurfaceShape::QBfs {
+            norm_radius,
+            coefficients,
+            ..
+        } => Some(format!(
+            "{}; normalisation radius {} mm",
+            coefficients
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("Q{} {}", i, fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            fmt_g(*norm_radius, 8)
+        )),
+        SurfaceShape::Diffractive { phase, .. } => Some(format!(
+            "{}; normalisation radius {} mm; design order {}; design wavelength {} µm; trace order {}",
+            phase
+                .coefficients
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("A{} ρ^{} {}", i + 1, 2 * (i + 1), fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            fmt_g(phase.norm_radius, 8),
+            phase.design_order,
+            fmt_g(phase.design_wavelength_um, 8),
+            phase.trace_order
+        )),
+        SurfaceShape::Toroid {
+            curvature_x,
+            curvature_y,
+            conic_y,
+            y_asphere,
+        } => Some(format!(
+            "cx {} mm⁻¹, cy {} mm⁻¹, ky {}; {}",
+            fmt_g(*curvature_x, 8),
+            fmt_g(*curvature_y, 8),
+            fmt_g(*conic_y, 8),
+            y_asphere
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("A{} y^{} {}", 2 * i + 4, 2 * i + 4, fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        SurfaceShape::Biconic {
+            curvature_x,
+            curvature_y,
+            conic_x,
+            conic_y,
+            x_asphere,
+            y_asphere,
+        } => Some(format!(
+            "cx {} mm⁻¹, cy {} mm⁻¹, kx {}, ky {}; x: {}; y: {}",
+            fmt_g(*curvature_x, 8),
+            fmt_g(*curvature_y, 8),
+            fmt_g(*conic_x, 8),
+            fmt_g(*conic_y, 8),
+            x_asphere
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("A{} x^{} {}", 2 * i + 4, 2 * i + 4, fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            y_asphere
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("A{} y^{} {}", 2 * i + 4, 2 * i + 4, fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        SurfaceShape::XYPolynomial {
+            norm_radius,
+            coefficients,
+            ..
+        } => Some(format!(
+            "{}; normalisation radius {} mm",
+            coefficients
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("C({}) {}", xy_label(i), fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            fmt_g(*norm_radius, 8)
+        )),
+        SurfaceShape::ZernikeSag {
+            norm_radius,
+            coefficients,
+            ..
+        } => Some(format!(
+            "{}; normalisation radius {} mm",
+            coefficients
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("Z{} {}", i + 1, fmt_g(*v, 8)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            fmt_g(*norm_radius, 8)
+        )),
+        _ => None,
+    }
+}
+
+fn xy_label(index: usize) -> String {
+    let mut degree = 1;
+    let mut start = 0;
+    while index >= start + degree + 1 {
+        start += degree + 1;
+        degree += 1;
+    }
+    let y = index - start;
+    let x = degree - y;
+    let power = |n: usize| {
+        n.to_string()
+            .chars()
+            .map(|c| match c {
+                '0' => '⁰',
+                '1' => '¹',
+                '2' => '²',
+                '3' => '³',
+                '4' => '⁴',
+                '5' => '⁵',
+                '6' => '⁶',
+                '7' => '⁷',
+                '8' => '⁸',
+                '9' => '⁹',
+                _ => c,
+            })
+            .collect::<String>()
+    };
+    let mut term = String::new();
+    if x > 0 {
+        term.push('x');
+        if x > 1 {
+            term.push_str(&power(x));
+        }
+    }
+    if y > 0 {
+        term.push('y');
+        if y > 1 {
+            term.push_str(&power(y));
+        }
+    }
+    term
+}
+
 fn aperture_text(a: &ApertureSpec) -> String {
     match a {
         ApertureSpec::EntrancePupilDiameter { value } => {
@@ -457,6 +618,21 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
     ]);
     text.push('\n');
     text.push_str(&t.render());
+    let parameters: Vec<String> = sys
+        .surfaces
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            shape_parameters(&s.shape)
+                .map(|p| format!("surface {i} ({}): {p}\n", shape_type(&s.shape)))
+        })
+        .collect();
+    if !parameters.is_empty() {
+        text.push_str("\nSurface parameters\n");
+        for p in parameters {
+            text.push_str(&p);
+        }
+    }
     text.push_str(&warning_lines(&warnings));
     Ok(Report::ok(json, text))
 }

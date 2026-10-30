@@ -65,7 +65,9 @@ capabilities, and the number of registered/available analyses.
 
 Creates a project from a built-in sample (`mklight_core::samples`:
 `singlet`, `achromat`, `cooke_triplet`, `double_gauss`, `newtonian`,
-`petzval_asphere`, `relay`) or, without `--sample`, the minimal empty system.
+`petzval_asphere`, `relay`, `hybrid_doe`, `anamorphic`, `biconic`, `toroid`,
+`q_con`, `q_bfs`, `odd_asphere`, `xy_freeform`, `zernike_sag`) or, without
+`--sample`, the minimal empty system.
 Saved atomically through the session (metadata stamped). Refuses to replace
 an existing file unless `--force`.
 
@@ -112,6 +114,12 @@ ray aiming, environment) and the lens data table: index, label, type,
 radius (`inf` for a plane), thickness, material, `n_d` after the surface,
 semi-diameter, semi-diameter mode, conic, and notes (stop, mirror, ideal-lens
 focal length, asphere coefficients, decenter/tilt, coating).
+
+The type column uses the model surface type names. After the lens table, each
+non-legacy surface lists its coefficients with mathematical labels (such as
+`A4 r^4`, `C(x^2 y)`, `Z7`, or `Q2`), normalisation radius where applicable,
+and diffractive design order, design wavelength and trace order. `--json`
+continues to print the model report with each full surface shape in `surfaces`.
 
 Semi-diameter modes: `fixed` (user value, clips rays), `aperture` (explicit
 aperture, its bounding radius), `stop` (the stop, sized by the aperture
@@ -213,7 +221,10 @@ magnification, Lagrange invariant, total track, stop semi-diameter and
 paraxial image height. JSON adds `image_height_per_tan`,
 `image_height_per_object_height` and the primary-wavelength marginal and
 chief rays (`y`, `u`, `nu` per surface); `--rays` prints those as a table.
-Telecentric pupil positions are `"inf"`.
+Telecentric pupil positions are `"inf"`. Anamorphic systems also print the
+x-axis and y-axis first-order tables at the primary wavelength and signed
+squeeze (`EFL_y / EFL_x`); JSON includes both axes and squeeze at every
+wavelength in `paraxial_xy`.
 
 ### `mklight set <project> <param-path-json> <value> [--dry-run] [--out file]`
 
