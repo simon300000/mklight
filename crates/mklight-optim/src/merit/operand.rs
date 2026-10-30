@@ -380,7 +380,9 @@ pub enum OperandKind {
         #[serde(default)]
         group: Option<RayGroup>,
     },
-    /// Chief-ray angle of incidence on `surface` (default: image), degrees.
+    /// Chief-ray angle of incidence on `surface` (default: image), degrees,
+    /// unsigned. At the image this is the chief-ray angle (CRA); 0 means
+    /// image-space telecentric.
     ChiefRayAngle {
         #[serde(default)]
         surface: Option<SurfaceId>,
@@ -414,17 +416,24 @@ pub enum OperandKind {
         #[serde(default)]
         method: MtfMethod,
     },
-    /// Distortion at the selected field (percent).
+    /// Distortion of the real chief ray at the selected field and
+    /// wavelength against the paraxial image height scaled by the mapping,
+    /// `100 (h_real − h_ref)/h_ref` along the field direction (percent).
     Distortion {
         #[serde(default)]
         mapping: DistortionMapping,
     },
-    /// Lateral colour: chief-ray image height difference between two
-    /// wavelengths (indices into the system wavelengths), mm.
+    /// Lateral colour: chief-ray image height at `short` minus at `long`
+    /// (indices into the system wavelengths), measured along the field
+    /// direction (`+y` on axis), mm.
     LateralColour { short: usize, long: usize },
-    /// Axial colour: paraxial focus difference between two wavelengths, mm.
+    /// Axial colour (chromatic focal shift): paraxial image distance at
+    /// `short` minus at `long`, mm (negative when the short wavelength
+    /// focuses closer, as in an uncorrected positive lens).
     AxialColour { short: usize, long: usize },
-    /// Relative illumination at the selected field (0…1, vs on-axis).
+    /// Relative illumination at the selected field (0…1, vs on-axis): the
+    /// ratio of the image-space projected solid angles of the ray bundles
+    /// (geometric, uniform-radiance object, no coating losses).
     RelativeIllumination,
 
     // ---- ghosts and stray light ----

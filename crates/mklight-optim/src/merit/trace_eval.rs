@@ -186,9 +186,12 @@ impl TraceEvaluator {
         parallel: bool,
     ) -> MkResult<Vec<OperandValue>> {
         ctx.check()?;
-        let needs_tracer = operands
-            .iter()
-            .any(|o| !is_model_kind(&o.kind) || needs_semi_diameters(&o.kind));
+        let auto_sd = has_auto_semi_diameters(s);
+        let needs_tracer = operands.iter().any(|o| {
+            (!is_model_kind(&o.kind)
+                && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))
+                || (auto_sd && needs_semi_diameters(&o.kind))
+        });
         let tracer = if needs_tracer {
             Some(self.tracer(s))
         } else {
@@ -202,7 +205,7 @@ impl TraceEvaluator {
         let mut out = Vec::with_capacity(operands.len());
         for op in operands {
             let v = if is_model_kind(&op.kind) {
-                if needs_semi_diameters(&op.kind) && has_auto_semi_diameters(s) {
+                if auto_sd && needs_semi_diameters(&op.kind) {
                     match &tracer {
                         Some(Ok(tr)) => {
                             let sys = fixed_sd.get_or_insert_with(|| {
@@ -416,6 +419,9 @@ fn pmap<T: Sync, R: Send>(
         items.iter().map(f).collect()
     }
 }
+
+/// Weights, image `x` and image `y` of the surviving rays of a spot.
+type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>);
 
 /// Memo key of a group reference: (field, operand λ, sampling,
 /// polychromatic scope, wavefront (piston/tilt) rather than spot centroid).
@@ -874,7 +880,7 @@ impl<'a> Candidate<'a> {
         f: FieldKey,
         wls: &[(usize, f64)],
         s: &PupilSampling,
-    ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>), OperandError> {
+    ) -> Result<SpotRays, OperandError> {
         let (mut wt, mut xs, mut ys) = (Vec::new(), Vec::new(), Vec::new());
         for &(w, ww) in wls {
             let g = self.group(f, w, s)?;
