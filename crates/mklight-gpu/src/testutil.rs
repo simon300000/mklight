@@ -197,6 +197,140 @@ pub fn ideal_lenses() -> OpticalSystem {
     s
 }
 
+/// Four f = 100 mm ideal lenses 2f apart (an F/2 relay chain), object at
+/// infinity, fields to 15°: large ideal-lens phases (|X| sin θ up to
+/// ~13 mm per lens), which f32 alone cannot evaluate within the OPD budget.
+pub fn ideal_relay() -> OpticalSystem {
+    let mut s = OpticalSystem::new_empty();
+    s.name = "ideal relay".into();
+    s.aperture = ApertureSpec::EntrancePupilDiameter { value: 50.0 };
+    s.fields = angles(&[0.0, 10.0, 15.0]);
+    s.surfaces = vec![surf(
+        0,
+        SurfaceShape::Plane,
+        f64::INFINITY,
+        MaterialRef::Air,
+    )];
+    for k in 1..=4u64 {
+        let t = if k == 4 { 100.0 } else { 200.0 };
+        s.surfaces.push(surf(
+            k,
+            SurfaceShape::Paraxial {
+                focal_length: 100.0,
+            },
+            t,
+            MaterialRef::Air,
+        ));
+    }
+    s.surfaces
+        .push(surf(5, SurfaceShape::Plane, 0.0, MaterialRef::Air));
+    s.stop = 1;
+    s
+}
+
+/// One N-BK7 surface of the given shape, 30 mm in front of the image, with
+/// the object surface 5 mm before it; no apertures.
+pub fn one_surface(shape: SurfaceShape) -> OpticalSystem {
+    let mut s = plate(false);
+    s.name = "one surface".into();
+    s.surfaces[1].shape = shape;
+    s.surfaces[1].thickness = 30.0;
+    s.surfaces.remove(2);
+    s
+}
+
+/// Strong even aspheres whose polynomial fights the conic (molded-asphere
+/// style), where the conic seed is a poor Newton start and the reference
+/// needs up to ~40 steps for some rays (to be swept with [`sweep_rays`]).
+pub fn strong_aspheres() -> Vec<SurfaceShape> {
+    vec![
+        SurfaceShape::EvenAsphere {
+            curvature: 0.1,
+            conic: -3.0,
+            coefficients: vec![-5e-4, 1e-6],
+        },
+        SurfaceShape::EvenAsphere {
+            curvature: -0.05,
+            conic: -2.0,
+            coefficients: vec![2e-4, -1e-6, 1e-9],
+        },
+        SurfaceShape::EvenAsphere {
+            curvature: 0.0,
+            conic: 0.0,
+            coefficients: vec![1e-3, -2e-6, 1e-8],
+        },
+    ]
+}
+
+/// Meridional rays from `(0, y, −5)` at `y = −20 … 20` mm (0.5 mm steps)
+/// and angles −60° … 60° (2° steps): 4941 rays in the object surface's
+/// frame of [`one_surface`].
+pub fn sweep_rays() -> Vec<mklight_trace::Ray> {
+    let mut v = Vec::new();
+    for iy in 0..=80 {
+        for ia in 0..=60 {
+            let y = -20.0 + 0.5 * iy as f64;
+            let a = (-60.0 + 2.0 * ia as f64).to_radians();
+            v.push(mklight_trace::Ray::new(
+                mklight_core::Vec3::new(0.0, y, -5.0),
+                mklight_core::Vec3::new(0.0, a.sin(), a.cos()),
+            ));
+        }
+    }
+    v
+}
+
+/// Every two-reflection ghost program of a system (reflections at `j`,
+/// then at `i < j`, transmitting elsewhere, mirrors passed by their own
+/// reflection) that [`PathStep::validate_program`] accepts.
+///
+/// [`PathStep::validate_program`]: crate::batch::PathStep::validate_program
+pub fn ghost_programs(
+    rs: &ResolvedSystem,
+    surfaces: &[crate::layout::PackedSurface],
+) -> Vec<Vec<crate::batch::PathStep>> {
+    use crate::batch::{PathStep, StepMode::*};
+    let n = rs.surfaces.len() as u32;
+    let pass = |k: u32| {
+        if rs.surfaces[k as usize].is_mirror() {
+            Reflect
+        } else {
+            Transmit
+        }
+    };
+    let mut out = Vec::new();
+    for j in 2..n {
+        for i in 1..j {
+            if rs.surfaces[j as usize].is_mirror() || rs.surfaces[i as usize].is_mirror() {
+                continue;
+            }
+            let mut p: Vec<PathStep> = (1..j).map(|k| PathStep::forward(k, pass(k))).collect();
+            p.push(PathStep::forward(j, Reflect));
+            p.extend((i + 1..j).rev().map(|k| PathStep::backward(k, pass(k))));
+            p.push(PathStep::backward(i, Reflect));
+            p.extend((i + 1..n).map(|k| PathStep::forward(k, pass(k))));
+            if PathStep::validate_program(&p, 0, surfaces).is_ok() {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// The Newtonian sample's sensor ghost: the sequential path to the image,
+/// a reflection there, then back through the fold flat and the primary,
+/// each passed by its own reflection, out of the telescope.
+pub fn newtonian_sensor_ghost() -> Vec<crate::batch::PathStep> {
+    use crate::batch::{PathStep, StepMode::*};
+    let mut p = PathStep::sequential(0, 4);
+    p.push(PathStep::forward(5, Reflect));
+    p.push(PathStep::backward(4, Transmit));
+    p.push(PathStep::backward(3, Reflect));
+    p.push(PathStep::backward(2, Transmit));
+    p.push(PathStep::backward(1, Reflect));
+    p
+}
+
 /// A singlet followed by dummy planes carrying an annular (central
 /// obstruction), a rectangular and an elliptical aperture, plus a fixed
 /// semi-diameter: every aperture shape clips part of the beam.
@@ -331,6 +465,7 @@ pub fn xval_systems() -> Vec<(String, OpticalSystem)> {
     }
     v.push(("tilted triplet".into(), tilted_triplet()));
     v.push(("ideal lenses".into(), ideal_lenses()));
+    v.push(("ideal relay".into(), ideal_relay()));
     v.push(("apertures".into(), apertures()));
     v.push(("TIR block".into(), tir_block()));
     v.push(("asphere singlet".into(), asphere_heavy()));

@@ -704,3 +704,439 @@ fn qualification_and_fallback_recording() {
     assert!(!q.passed);
     assert!(q.reason.unwrap().contains("cannot run"));
 }
+
+/// The ideal lens is double-float: direction and phase against the f64
+/// reference (`mklight_trace::interact::ideal_lens`) over wide fields, fast
+/// lenses and both sphere-term forms (near and far conjugates, both signs).
+/// In f32 the phase was off by up to ~3e-6 mm.
+#[test]
+fn ideal_lens_is_double_float() {
+    use mklight_gpu::df::Df32;
+    use mklight_gpu::fenv::Ieee;
+    use mklight_gpu::fx::D;
+    use mklight_gpu::trace_kernel::ideal_lens;
+    let d = |x: f64| D::<Ieee>::from_df(Df32::from_f64(x));
+    let (mut worst_phase, mut worst_dir) = (0.0f64, 0.0f64);
+    for &f in &[50.0, -80.0, 100.0, 1000.0] {
+        for &verg in &[0.0, 1.0 / 150.0, -1.0 / 260.0, 1.0 / 3.0, -2.0] {
+            for &(n1, n2) in &[(1.0, 1.0), (1.0, 1.5168), (1.62, 1.0)] {
+                for k in 0..40 {
+                    let a = k as f64 * 0.37;
+                    let (x, y) = (25.0 * a.cos() * (k as f64 / 40.0), 18.0 * a.sin());
+                    let th = (k as f64 * 1.3) % 0.6 - 0.3;
+                    let dir = Vec3::new(th.sin() * a.sin(), th.sin() * a.cos(), th.cos())
+                        .normalized()
+                        * if k % 5 == 0 { -1.0 } else { 1.0 };
+                    let (want_d, want_p) = mklight_trace::interact::ideal_lens(
+                        Vec3::new(x, y, 0.0),
+                        dir,
+                        f,
+                        n1,
+                        n2,
+                        verg,
+                    )
+                    .unwrap();
+                    let (got_d, got_p) = ideal_lens(
+                        d(x),
+                        d(y),
+                        [d(dir.x), d(dir.y), d(dir.z)],
+                        d(1.0 / f),
+                        d(n1),
+                        d(n2),
+                        d(verg),
+                    )
+                    .unwrap();
+                    let gd = Vec3::new(
+                        got_d[0].0.to_f64(),
+                        got_d[1].0.to_f64(),
+                        got_d[2].0.to_f64(),
+                    );
+                    worst_dir = worst_dir.max((gd - want_d).norm());
+                    worst_phase = worst_phase.max((got_p.0.to_f64() - want_p).abs());
+                }
+            }
+        }
+    }
+    assert!(worst_phase < 1e-11, "phase {worst_phase:e} mm");
+    assert!(worst_dir < 1e-13, "direction {worst_dir:e}");
+}
+
+/// Fast ideal-lens relays at wide field meet the OPD budget (in f32 the
+/// phase alone gave 2e-2 waves for this chain), and a single ideal lens is
+/// exact in phase to far below it.
+#[test]
+fn ideal_relay_within_budget() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let s = XvalSettings::default();
+    let r = cross_validate(
+        &b,
+        &testutil::tracer(testutil::ideal_relay()),
+        &s,
+        &JobContext::new(),
+    )
+    .unwrap();
+    r.check(&s.budget).unwrap();
+    // What remains is the f32 rounding of the reported image point (≤ 1e-6
+    // mm at 27 mm) seen through the ray angles (NA 0.25): ≲ 1.5e-3 waves.
+    assert!(r.max_opd_waves < 2e-3, "{r:?}");
+    let r = cross_validate(
+        &b,
+        &testutil::tracer(testutil::ideal_lenses()),
+        &s,
+        &JobContext::new(),
+    )
+    .unwrap();
+    assert!(r.max_opd_waves < 1e-6, "{r:?}");
+}
+
+/// A ghost through a catadioptric system: the Newtonian's sensor ghost
+/// travels back by reflections at the fold flat and the primary (mirrors
+/// keep the direction through the sequence). Known answer: the on-axis
+/// paraboloid images perfectly onto the sensor, so the ghost leaves the
+/// primary antiparallel to the incoming beam at the mirrored pupil point.
+/// Also against the independent f64 path; with radiometry the weight is
+/// that path's (0 here: an uncoated air/air sensor plane reflects nothing,
+/// the mirrors reflect everything).
+#[test]
+fn catadioptric_ghost_through_mirrors() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let t = testutil::tracer(samples::newtonian_telescope());
+    let sys = t.system();
+    let h = b
+        .upload_system(&PackedSystem::pack_all(sys).unwrap())
+        .unwrap();
+    let prog = testutil::newtonian_sensor_ghost();
+    let mut rays = Vec::new();
+    for p in (PupilSampling::Grid { n: 15 }).points() {
+        rays.push((t.generate(t.field(0), 1, p[0], p[1]).unwrap().ray, 1u32));
+    }
+    let mut req = TraceRequest::path(h, batch(&rays), 0, prog.clone());
+    req.record = RecordMode::AllSurfaces;
+    let r = trace(&b, req);
+    let n = rays.len();
+    let opts = t.options();
+    for (i, (ray, w)) in rays.iter().enumerate() {
+        assert!(r.ray_status(i).is_ok(), "{:?}", r.ray_status(i));
+        assert_eq!((r.last_surface[i], r.steps[i]), (1, 9));
+        let (p, d) = v3(&r, i);
+        // Known answer from the incoming hit on the primary.
+        let (_, rec) = trace_ray_recorded(sys, ray, 1, &opts);
+        let hit = rec[1].point;
+        let mirrored = Vec3::new(-hit.x, -hit.y, hit.z);
+        assert!(
+            (p - mirrored).norm() < 2e-5,
+            "ray {i}: {p:?} vs {mirrored:?}"
+        );
+        assert!(
+            (d - Vec3::new(0.0, 0.0, -1.0)).norm() < 2e-6,
+            "ray {i}: {d:?}"
+        );
+        // Against the independent f64 path computation.
+        let want = f64_path(sys, 0, ray.pos, ray.dir, *w as usize, &prog).unwrap();
+        assert!((want.pos - mirrored).norm() < 1e-8, "f64 path ray {i}");
+        assert!((p - want.pos).norm() < 4e-6, "ray {i}");
+        assert!((d - want.dir).norm() < 1e-7, "ray {i}");
+        let want_opl = want.opl + (p - want.pos).dot(want.dir);
+        assert!((r.opl_f64(i) - want_opl).abs() < 1e-8, "ray {i}");
+        assert_eq!((r.weight[i] as f64, want.weight), (0.0, 0.0));
+        // Slot 5: reflected at the sensor, travelling back (−z). Slot 7:
+        // after the fold flat's reflection toward the primary, on the same
+        // side of the flat as the forward beam after it (slot 3).
+        let at = |slot: usize| (slot * n + i) * RECORD_FLOATS + 5;
+        assert!(r.recorded[at(5)] < 0.0);
+        assert!(r.recorded[at(7)] * r.recorded[at(3)] > 0.0);
+    }
+}
+
+/// A Reflect step at a mirror-type ideal lens is its own (powered)
+/// reflection: identical to the sequential step.
+#[test]
+fn ideal_mirror_reflect_step_is_sequential() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let mut s = samples::newtonian_telescope();
+    s.surfaces[1].shape = SurfaceShape::Paraxial {
+        focal_length: -500.0,
+    };
+    let t = testutil::tracer(s);
+    let sys = t.system();
+    let h = b
+        .upload_system(&PackedSystem::pack_all(sys).unwrap())
+        .unwrap();
+    let mut rays = Vec::new();
+    for p in (PupilSampling::Grid { n: 9 }).points() {
+        rays.push((t.generate(t.field(2), 1, p[0], p[1]).unwrap().ray, 1u32));
+    }
+    let seq = trace(&b, TraceRequest::new(h, batch(&rays), 0, 5));
+    let mut prog = PathStep::sequential(0, 5);
+    prog[0].mode = StepMode::Reflect;
+    let path = trace(&b, TraceRequest::path(h, batch(&rays), 0, prog));
+    assert_eq!(seq, path);
+    // And it agrees with the reference's ideal mirror.
+    for (i, (ray, _)) in rays.iter().enumerate() {
+        let r = trace_ray(sys, ray, 1, &t.options(), None);
+        assert!(r.status.is_ok());
+        assert!((v3(&seq, i).0 - r.ray.pos).norm() < 2e-5);
+    }
+}
+
+/// Strong aspheres where the conic seed is a poor start: with the default
+/// step cap (the reference's), every ray the reference traces in up to 20
+/// Newton steps has the reference's status and position. Longer searches
+/// wander between several roots of a line that crosses the surface more
+/// than once, and f32 and f64 may end on different ones: such rays stay
+/// rare. With a cap below the reference's, a capped search reports
+/// NOT_CONVERGED, never MISS.
+#[test]
+fn strong_aspheres_classify_like_the_reference() {
+    let b = CpuF32Backend::with_subnormals(false);
+    assert_eq!(
+        NewtonSettings::default().max_iterations,
+        IntersectSettings::default().max_iterations
+    );
+    let rays: Vec<_> = testutil::sweep_rays()
+        .into_iter()
+        .map(|r| (r, 1u32))
+        .collect();
+    for (k, shape) in testutil::strong_aspheres().into_iter().enumerate() {
+        let rs = testutil::resolve(testutil::one_surface(shape));
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
+        let opts = TraceOptions::unclipped().to_surface(1);
+        let needed = |r: &Ray| {
+            (0..=40).find(|&c| {
+                let o = TraceOptions {
+                    intersect: IntersectSettings {
+                        tolerance: 1e-12,
+                        max_iterations: c,
+                    },
+                    ..opts
+                };
+                trace_ray(&rs, r, 1, &o, None).status.is_ok()
+            })
+        };
+        let mut req = TraceRequest::new(h, batch(&rays), 0, 1);
+        req.apply_apertures = false;
+        let g = trace(&b, req.clone());
+        let (mut slow_ok, mut wandering) = (0, 0);
+        for (i, (ray, _)) in rays.iter().enumerate() {
+            let r = trace_ray(&rs, ray, 1, &opts, None);
+            if !r.status.is_ok() {
+                // Both fail (the failure class of a search that never
+                // converges may differ); a hit appears only on a long walk.
+                if g.ray_status(i).is_ok() {
+                    wandering += 1;
+                }
+                continue;
+            }
+            let need = needed(ray).unwrap();
+            let same = g.status[i] == MKL_RAY_OK && (v3(&g, i).0 - r.ray.pos).norm() < 2e-5;
+            if need <= 20 {
+                slow_ok += usize::from(need > 8);
+                assert!(
+                    same,
+                    "shape {k} ray {i} ({need} steps): {:?}",
+                    g.ray_status(i)
+                );
+            } else if !same {
+                wandering += 1;
+            }
+        }
+        assert!(wandering * 100 < rays.len(), "shape {k}: {wandering}");
+        // The cap of 8 used before would have failed these.
+        if k < 2 {
+            assert!(slow_ok > 50, "shape {k}: {slow_ok}");
+        }
+        // Capped below the reference: never a miss for a reference hit.
+        req.newton.max_iterations = 8;
+        let g8 = trace(&b, req);
+        let mut capped = 0;
+        for (i, (ray, _)) in rays.iter().enumerate() {
+            if trace_ray(&rs, ray, 1, &opts, None).status.is_ok() {
+                let st = g8.ray_status(i);
+                assert!(
+                    matches!(st, RayStatus::Ok | RayStatus::NotConverged { .. }),
+                    "shape {k} ray {i}: {st:?}"
+                );
+                capped += usize::from(!st.is_ok());
+            }
+        }
+        if k < 2 {
+            assert!(capped > 50, "shape {k}: {capped}");
+        }
+    }
+}
+
+/// Apertures are tested in double-float: at a 300 mm radius half an f32
+/// ulp of the size (1.5e-5 mm) exceeds the 1e-5 mm edge band, yet rays
+/// 2e-6 mm inside or outside every edge of every shape survive exactly as
+/// in the reference.
+#[test]
+fn large_apertures_clip_in_double_float() {
+    use mklight_core::model::ApertureShape;
+    let b = CpuF32Backend::with_subnormals(false);
+    // Sizes that are not f32 numbers: their f32 rounding is ~1e-5 mm off.
+    let (r0, r1) = (260.000_014_9, 300.000_014_9);
+    let shapes = [
+        ApertureShape::Circular { radius: r1 },
+        ApertureShape::Annular {
+            inner_radius: r0,
+            outer_radius: r1,
+        },
+        ApertureShape::Rectangular {
+            half_x: r0,
+            half_y: r1,
+        },
+        ApertureShape::Elliptical {
+            semi_x: r1,
+            semi_y: r0,
+        },
+    ];
+    for (k, ap) in shapes.into_iter().enumerate() {
+        let mut s = testutil::one_surface(SurfaceShape::Plane);
+        s.surfaces[1].aperture = Some(ap.clone());
+        let rs = testutil::resolve(s);
+        assert!((r1 as f32 as f64 - r1).abs() > 1e-5 && (r0 as f32 as f64 - r0).abs() > 1e-5);
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
+        let mut rays = Vec::new();
+        for j in 0..32 {
+            let a = j as f64 * std::f64::consts::TAU / 32.0;
+            let (c, sn) = (a.cos(), a.sin());
+            // Points just inside / outside the edges along this direction.
+            let edges: Vec<f64> = match ap.clone() {
+                ApertureShape::Circular { radius } => vec![radius],
+                ApertureShape::Annular {
+                    inner_radius,
+                    outer_radius,
+                } => vec![inner_radius, outer_radius],
+                ApertureShape::Rectangular { half_x, half_y } => {
+                    vec![(half_x / c.abs()).min(half_y / sn.abs())]
+                }
+                ApertureShape::Elliptical { semi_x, semi_y } => {
+                    vec![1.0 / ((c / semi_x).powi(2) + (sn / semi_y).powi(2)).sqrt()]
+                }
+            };
+            for e in edges {
+                for dr in [-2e-6, 2e-6] {
+                    let p = Vec3::new((e + dr) * c, (e + dr) * sn, -1.0);
+                    rays.push((Ray::new(p, Vec3::Z), 1u32));
+                }
+            }
+        }
+        let g = trace(&b, TraceRequest::new(h, batch(&rays), 0, 2));
+        let mut clipped = 0;
+        for (i, (ray, _)) in rays.iter().enumerate() {
+            let want = reference_status_word(
+                &trace_ray(&rs, ray, 1, &TraceOptions::default(), None).status,
+            );
+            assert_eq!(g.status[i], want, "shape {k} ray {i}");
+            clipped += usize::from(want != MKL_RAY_OK);
+        }
+        assert!(
+            clipped * 3 > rays.len() && clipped < rays.len(),
+            "shape {k}"
+        );
+    }
+}
+
+/// Qualification needs a margin: a small sample can miss the worst rays of
+/// a 64 × 64 grid. With an OPD budget the full grid exceeds but the sample
+/// meets, checking the sample against the bare budget would pass (silently
+/// degraded results); against the default third it is rejected, and the
+/// qualification reports how much of the budget it used. The sample's
+/// pupil fans find narrow zones a coarse pattern steps over: near-critical
+/// refraction in the TIR block, where the hexapolar pattern alone sees 1/50
+/// of the worst error.
+#[test]
+fn qualification_margin_rejects_marginal_systems() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let ctx = JobContext::new();
+    let worst = |t: &mklight_trace::SequentialTracer, s: &XvalSettings| {
+        cross_validate(&b, t, s, &ctx).unwrap().max_opd_waves
+    };
+    let mut lax = XvalSettings::qualification();
+    lax.margin = 1.0;
+    let tir = testutil::tracer(testutil::tir_block());
+    let full = worst(&tir, &XvalSettings::default());
+    assert!(
+        full < 2.0 * worst(&tir, &lax),
+        "fans reach the near-critical zone"
+    );
+    let mut hex_only = lax.clone();
+    hex_only.pupil_extra.clear();
+    assert!(full > 10.0 * worst(&tir, &hex_only));
+
+    let t = testutil::tracer(testutil::absorbing_triplet());
+    let full = cross_validate(&b, &t, &XvalSettings::default(), &ctx).unwrap();
+    let (e_full, e_q) = (full.max_opd_waves, worst(&t, &lax));
+    assert!(e_full > 1.2 * e_q, "full {e_full:e} sample {e_q:e}");
+    // A budget between the two.
+    let opd_budget = (e_q * e_full).sqrt();
+    let mut s = XvalSettings::default();
+    s.budget.opd_waves = opd_budget;
+    assert!(full.check(&s.budget).is_err());
+    lax.budget.opd_waves = opd_budget;
+    let q = qualify(&b, &t, Some(&lax), &ctx).unwrap();
+    assert!(q.passed, "without a margin the sample passes: {q:?}");
+    let mut strict = XvalSettings::qualification();
+    strict.budget.opd_waves = opd_budget;
+    let q = qualify(&b, &t, Some(&strict), &ctx).unwrap();
+    assert!(!q.passed);
+    assert!((q.margin - 1.0 / 3.0).abs() < 1e-15);
+    let frac = q.budget_fraction.unwrap();
+    assert!(frac > 1.0 / 3.0 && frac < 1.0, "{frac}");
+    assert!(q.reason.unwrap().contains("1/3 of the budget"));
+    // At the real budget both qualify, the fast ideal relay included.
+    assert!(qualify(&b, &t, None, &ctx).unwrap().passed);
+    let relay = testutil::tracer(testutil::ideal_relay());
+    let q = qualify(&b, &relay, None, &ctx).unwrap();
+    assert!(q.passed && q.budget_fraction.unwrap() < 1.0 / 3.0, "{q:?}");
+}
+
+/// Cancellation is not a verdict: `qualify` returns `Cancelled` instead of
+/// a failed qualification (which would trigger a CPU fallback).
+#[test]
+fn qualification_propagates_cancellation() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let t = testutil::tracer(samples::double_gauss());
+    let ctx = JobContext::new();
+    ctx.cancel.cancel();
+    assert_eq!(qualify(&b, &t, None, &ctx), Err(MkError::Cancelled));
+    assert_eq!(
+        cross_validate(&b, &t, &XvalSettings::qualification(), &ctx),
+        Err(MkError::Cancelled)
+    );
+}
+
+/// Systems with more than 16 wavelengths are validated (and qualified) in
+/// packed chunks, like the packer splits them.
+#[test]
+fn many_wavelengths_are_validated_in_chunks() {
+    use mklight_core::model::Wavelength;
+    let b = CpuF32Backend::with_subnormals(false);
+    let mut sys = samples::cooke_triplet();
+    sys.wavelengths.wavelengths = (0..21)
+        .map(|k| Wavelength {
+            um: 0.45 + 0.01 * k as f64,
+            weight: 1.0,
+        })
+        .collect();
+    sys.wavelengths.primary = 10;
+    let t = testutil::tracer(sys);
+    let ctx = JobContext::new();
+    let s = XvalSettings::qualification();
+    let r = cross_validate(&b, &t, &s, &ctx).unwrap();
+    let per = t.fields().len()
+        * (s.pupil.points().len()
+            + s.pupil_extra
+                .iter()
+                .map(|p| p.points().len())
+                .sum::<usize>());
+    assert_eq!(r.rays, 21 * per);
+    assert_eq!(r.compared, r.rays);
+    assert_eq!(ctx.progress.fraction(), 1.0);
+    let q = qualify(&b, &t, None, &ctx).unwrap();
+    assert!(q.passed, "{q:?}");
+}

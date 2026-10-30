@@ -377,9 +377,9 @@ impl PackedSystem {
                         }
                     };
                     p.aperture = t;
-                    for k in 0..2 {
+                    for (k, &v) in prm.iter().enumerate() {
                         (p.aperture_params[k], p.aperture_params_lo[k]) =
-                            split_checked(prm[k], &what("aperture"))?;
+                            split_checked(v, &what("aperture"))?;
                     }
                     bounding = bounding.or(Some(a.bounding_radius()));
                 }

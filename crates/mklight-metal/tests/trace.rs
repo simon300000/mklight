@@ -67,8 +67,11 @@ fn grid_rays(t: &SequentialTracer, n: usize) -> RayBatch {
     b
 }
 
+/// Bit identity of every plane. NaNs only need to be NaN on both sides:
+/// IEEE 754 leaves the sign and payload of a generated NaN open, and the
+/// GPU's differ from the CPU's (invalid inputs such as a zero direction
+/// produce them).
 fn assert_bitwise(a: &TraceResult, b: &TraceResult, what: &str) {
-    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     let planes: [(&[f32], &[f32], &str); 11] = [
         (&a.x, &b.x, "x"),
         (&a.y, &b.y, "y"),
@@ -83,9 +86,9 @@ fn assert_bitwise(a: &TraceResult, b: &TraceResult, what: &str) {
         (&a.recorded, &b.recorded, "records"),
     ];
     for (x, y, name) in planes {
-        let (bx, by) = (bits(x), bits(y));
-        assert_eq!(bx.len(), by.len(), "{what} {name}");
-        if let Some(i) = (0..bx.len()).find(|&i| bx[i] != by[i]) {
+        assert_eq!(x.len(), y.len(), "{what} {name}");
+        let same = |i: usize| x[i].to_bits() == y[i].to_bits() || (x[i].is_nan() && y[i].is_nan());
+        if let Some(i) = (0..x.len()).find(|&i| !same(i)) {
             panic!("{what}: {name}[{i}] GPU {} vs emulation {}", x[i], y[i]);
         }
     }
@@ -119,6 +122,166 @@ fn gpu_matches_emulation_bitwise() {
         assert_bitwise(&a, &b, &name);
         g.release_systems(hg).unwrap();
     }
+}
+
+/// `rays` with the double-float residual planes dropped (plain f32 input).
+fn f32_only(rays: &RayBatch) -> RayBatch {
+    let mut r = rays.clone();
+    for v in [
+        &mut r.x_lo,
+        &mut r.y_lo,
+        &mut r.z_lo,
+        &mut r.l_lo,
+        &mut r.m_lo,
+        &mut r.n_lo,
+    ] {
+        v.clear();
+    }
+    r
+}
+
+/// `rays` plus invalid inputs: NaN and infinite positions and directions,
+/// a zero direction, a huge offset and a ray travelling backward.
+fn with_invalid(rays: &RayBatch) -> RayBatch {
+    let mut r = rays.clone();
+    let bad: [([f64; 3], [f64; 3]); 6] = [
+        ([f64::NAN, 0.0, -1.0], [0.0, 0.0, 1.0]),
+        ([0.0, f64::INFINITY, -1.0], [0.0, 0.0, 1.0]),
+        ([0.0, 1.0, -1.0], [0.0, f64::NEG_INFINITY, 1.0]),
+        ([0.0, 1.0, -1.0], [0.0, 0.0, 0.0]),
+        ([1e30, -1e30, 0.0], [0.6, 0.0, 0.8]),
+        ([0.0, 2.0, -1.0], [0.0, 0.1, -0.99498743710662]),
+    ];
+    for (k, (p, d)) in bad.into_iter().enumerate() {
+        r.push_f64(p, d, (k % 3) as u32);
+    }
+    r
+}
+
+/// Bit identity beyond sequential grids: ghost path programs on every
+/// sample (two-reflection ghosts; the Newtonian's sensor ghost through
+/// both mirrors), plain-f32 inputs, invalid inputs, and the strong-asphere
+/// sweeps with clipping on and off at both Newton caps, all with records.
+#[test]
+fn gpu_matches_emulation_bitwise_paths_and_edge_cases() {
+    let g = gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let run_both =
+        |p: &PackedSystem, req: &dyn Fn(mklight_gpu::SystemHandle) -> TraceRequest, what: &str| {
+            let (hg, hc) = (g.upload_system(p).unwrap(), c.upload_system(p).unwrap());
+            let a = trace(g, req(hg));
+            let b = trace(&c, req(hc));
+            assert_bitwise(&a, &b, what);
+            g.release_systems(hg).unwrap();
+            a
+        };
+    let mut ghosts = 0;
+    for (name, sys) in samples::all() {
+        let t = testutil::tracer(sys);
+        let rs = t.system();
+        let p = PackedSystem::pack_all(rs).unwrap();
+        let rays = grid_rays(&t, 12);
+        let end = rs.image_index() as u32;
+        let mut programs = testutil::ghost_programs(rs, &p.surfaces);
+        if name == "newtonian" {
+            programs.push(testutil::newtonian_sensor_ghost());
+        }
+        for (k, prog) in programs.into_iter().enumerate() {
+            for clip in [true, false] {
+                let r = run_both(
+                    &p,
+                    &|h| {
+                        let mut r = TraceRequest::path(h, rays.clone(), 0, prog.clone());
+                        r.record = RecordMode::AllSurfaces;
+                        r.apply_apertures = clip;
+                        r
+                    },
+                    &format!("{name} ghost {k} clip {clip}"),
+                );
+                ghosts += r.status.iter().filter(|&&s| s == 0).count();
+            }
+        }
+        for (what, batch) in [
+            ("f32 input", f32_only(&rays)),
+            ("invalid input", with_invalid(&rays)),
+        ] {
+            for inputs in [batch.clone(), f32_only(&batch)] {
+                run_both(
+                    &p,
+                    &|h| {
+                        let mut r = TraceRequest::new(h, inputs.clone(), 0, end);
+                        r.record = RecordMode::AllSurfaces;
+                        r
+                    },
+                    &format!("{name} {what}"),
+                );
+            }
+        }
+    }
+    assert!(ghosts > 1000, "{ghosts} ghost rays completed");
+    let sweep = testutil::sweep_rays();
+    let mut batch = RayBatch::with_capacity(sweep.len());
+    for r in &sweep {
+        batch.push_f64([r.pos.x, r.pos.y, r.pos.z], [r.dir.x, r.dir.y, r.dir.z], 1);
+    }
+    for (k, shape) in testutil::strong_aspheres().into_iter().enumerate() {
+        let rs = testutil::resolve(testutil::one_surface(shape));
+        let p = PackedSystem::pack_all(&rs).unwrap();
+        for cap in [8, 40] {
+            for clip in [true, false] {
+                for inputs in [batch.clone(), f32_only(&batch)] {
+                    run_both(
+                        &p,
+                        &|h| {
+                            let mut r = TraceRequest::new(h, inputs.clone(), 0, 2);
+                            r.record = RecordMode::AllSurfaces;
+                            r.apply_apertures = clip;
+                            r.newton.max_iterations = cap;
+                            r
+                        },
+                        &format!("asphere {k} cap {cap} clip {clip}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The Newtonian's sensor ghost on the GPU: back through the fold flat and
+/// the primary by their reflections, leaving antiparallel to the incoming
+/// beam at the mirrored pupil point (the paraboloid images the axial point
+/// perfectly), and matching the independent f64 path.
+#[test]
+fn catadioptric_ghost_gpu() {
+    let g = gpu_or_skip!();
+    let t = testutil::tracer(samples::newtonian_telescope());
+    let sys = t.system();
+    let h = g
+        .upload_system(&PackedSystem::pack_all(sys).unwrap())
+        .unwrap();
+    let prog = testutil::newtonian_sensor_ghost();
+    let mut rays = RayBatch::with_capacity(0);
+    let mut input = Vec::new();
+    for p in (PupilSampling::Grid { n: 15 }).points() {
+        let r = t.generate(t.field(0), 1, p[0], p[1]).unwrap().ray;
+        rays.push_f64([r.pos.x, r.pos.y, r.pos.z], [r.dir.x, r.dir.y, r.dir.z], 1);
+        input.push(r);
+    }
+    let r = trace(g, TraceRequest::path(h, rays, 0, prog.clone()));
+    for (i, ray) in input.iter().enumerate() {
+        assert!(r.ray_status(i).is_ok());
+        let p = Vec3::new(r.x[i] as f64, r.y[i] as f64, r.z[i] as f64);
+        let d = Vec3::new(r.l[i] as f64, r.m[i] as f64, r.n[i] as f64);
+        let (_, rec) = mklight_trace::trace_ray_recorded(sys, ray, 1, &t.options());
+        let mirrored = Vec3::new(-rec[1].point.x, -rec[1].point.y, rec[1].point.z);
+        assert!((p - mirrored).norm() < 2e-5, "ray {i}");
+        assert!((d - Vec3::new(0.0, 0.0, -1.0)).norm() < 2e-6, "ray {i}");
+        let want = f64_path(sys, 0, ray.pos, ray.dir, 1, &prog).unwrap();
+        assert!((p - want.pos).norm() < 4e-6, "ray {i}");
+        let want_opl = want.opl + (p - want.pos).dot(want.dir);
+        assert!((r.opl_f64(i) - want_opl).abs() < 1e-8, "ray {i}");
+    }
+    g.release_systems(h).unwrap();
 }
 
 /// The cross-validation suite on the GPU: every sample (plain and
@@ -207,6 +370,7 @@ fn qualification_on_gpu() {
     for (name, sys) in samples::all() {
         let q = qualify(g, &testutil::tracer(sys), None, &ctx).unwrap();
         assert!(q.passed, "{name}: {q:?}");
+        assert!(q.budget_fraction.unwrap() < q.margin);
         assert!(q.kernel_build.contains("mklight-metal"));
     }
     let t = testutil::tracer(samples::double_gauss());

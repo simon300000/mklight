@@ -51,6 +51,12 @@ use crate::layout::{MAX_WAVELENGTHS, PackOptions, PackedSystem};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct XvalSettings {
     pub pupil: PupilSampling,
+    /// Further pupil samples traced in addition to `pupil` (per field and
+    /// wavelength). The qualification adds dense tangential and sagittal
+    /// fans: they cross narrow pupil zones (near-critical refraction, where
+    /// f32 errors peak) that a coarse 2-D pattern can step over.
+    #[serde(default)]
+    pub pupil_extra: Vec<PupilSampling>,
     /// Indices into the tracer's prepared fields; `None` = all.
     pub fields: Option<Vec<usize>>,
     /// System wavelength indices (at most 16); `None` = all.
@@ -82,6 +88,7 @@ impl Default for XvalSettings {
     fn default() -> Self {
         XvalSettings {
             pupil: PupilSampling::Grid { n: 64 },
+            pupil_extra: Vec::new(),
             fields: None,
             wavelengths: None,
             clip: true,
@@ -95,12 +102,13 @@ impl Default for XvalSettings {
 }
 
 impl XvalSettings {
-    /// The small sample [`qualify`] uses: 61 hexapolar pupil points per
-    /// field and wavelength (the rim ring included), every field, checked
-    /// against a third of the budget.
+    /// The small sample [`qualify`] uses, per field and wavelength: 61
+    /// hexapolar pupil points (the rim ring included) plus 65-point
+    /// tangential and sagittal fans, checked against a third of the budget.
     pub fn qualification() -> Self {
         XvalSettings {
             pupil: PupilSampling::Hexapolar { rings: 4 },
+            pupil_extra: vec![PupilSampling::FanY { n: 65 }, PupilSampling::FanX { n: 65 }],
             margin: QUALIFICATION_MARGIN,
             ..Default::default()
         }
@@ -424,7 +432,10 @@ fn cross_validate_chunk(
         .fields
         .clone()
         .unwrap_or_else(|| (0..tracer.fields().len()).collect());
-    let pupil = settings.pupil.points();
+    let mut pupil = settings.pupil.points();
+    for p in &settings.pupil_extra {
+        pupil.extend(p.points());
+    }
     ctx.report(0.0, "cross-validation: packing");
     let hints = tracer
         .semi_diameters(&SemiDiameterSettings::default())
