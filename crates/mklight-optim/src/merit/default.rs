@@ -21,7 +21,10 @@
 //! **Half pupil.** With `auto_symmetry` the bilateral half pupil is used only
 //! when the system is mirror-symmetric about the meridional plane in *every*
 //! emitted configuration and no variable can break that symmetry (x
-//! decenters, tilts about y or z, x field coordinates); use
+//! decenters, tilts about y or z, x field coordinates, XY or Zernike
+//! coefficients); a system that is not symmetric always gets the full pupil.
+//! Anamorphic and freeform systems sample a 3×3 x/y field grid
+//! (`docs/OPTIMIZATION.md`). Use
 //! [`DefaultMeritSpec::generate_for`] to pass the variables, and
 //! [`DefaultMeritSpec::generate_for_tolerancing`] for a tolerancing
 //! criterion (whose perturbations are the "variables"). Should a half-pupil
@@ -37,7 +40,8 @@
 use serde::{Deserialize, Serialize};
 
 use mklight_core::model::SemiDiameter;
-use mklight_core::param::ParamPath;
+use mklight_core::param::{CoefficientSet, ParamPath};
+use mklight_core::surface_math::{Symmetry, system_symmetry};
 use mklight_core::{MkError, MkResult, OpticalSystem};
 
 use super::geometric::optical_gaps;
@@ -45,7 +49,7 @@ use super::operand::{
     Axis, CentroidScope, OperandKind, RayGroup, SpotReference, WavefrontReference,
 };
 use super::quadrature::{PupilSampling, PupilSymmetry};
-use super::{MeritFunctionSpec, Operand, VariableSpec};
+use super::{FieldSelector, MeritFunctionSpec, Operand, VariableSpec};
 use crate::tolerance::ToleranceSpec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,6 +149,9 @@ pub struct DefaultMeritSpec {
     pub thickness: Option<ThicknessBoundaries>,
     #[serde(default = "one")]
     pub weight: f64,
+    /// Optional signed EFL_y/EFL_x equality target at the primary wavelength.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squeeze_target: Option<f64>,
 }
 
 fn yes() -> bool {
@@ -165,21 +172,20 @@ impl Default for DefaultMeritSpec {
             configs: Vec::new(),
             thickness: Some(ThicknessBoundaries::default()),
             weight: 1.0,
+            squeeze_target: None,
         }
     }
 }
 
-/// Is the system mirror-symmetric about the y–z plane (all fields on the y
-/// axis, no x decenters, no tilts about y or z, no x vignetting decenter)?
+/// Is the system mirror-symmetric about the y–z plane (core
+/// [`system_symmetry`] not `None`, all fields on the y axis, no x vignetting
+/// decenter)?
 pub fn is_meridionally_symmetric(s: &OpticalSystem) -> bool {
-    s.fields
-        .fields
-        .iter()
-        .all(|f| f.x == 0.0 && f.vignetting.vdx == 0.0)
-        && s.surfaces.iter().all(|sf| {
-            sf.placement
-                .is_none_or(|p| p.decenter_x == 0.0 && p.tilt_y == 0.0 && p.tilt_z == 0.0)
-        })
+    system_symmetry(s) != Symmetry::None
+        && s.fields
+            .fields
+            .iter()
+            .all(|f| f.x == 0.0 && f.vignetting.vdx == 0.0)
 }
 
 /// Can a variable on this parameter break meridional symmetry?
@@ -190,10 +196,27 @@ pub fn breaks_meridional_symmetry(p: &ParamPath) -> bool {
             | ParamPath::TiltY { .. }
             | ParamPath::TiltZ { .. }
             | ParamPath::FieldX { .. }
+            | ParamPath::ShapeCoefficient {
+                set: CoefficientSet::Xy | CoefficientSet::Zernike,
+                ..
+            }
     )
 }
 
 impl DefaultMeritSpec {
+    /// Sample the 3×3 x/y field grid instead of the system fields? Yes for
+    /// anamorphic and freeform shape types, whatever their coefficients.
+    fn uses_field_grid(&self, s: &OpticalSystem) -> bool {
+        use mklight_core::SurfaceShape::*;
+        self.fields.is_none()
+            && s.surfaces.iter().any(|sf| {
+                matches!(
+                    sf.shape,
+                    Toroid { .. } | Biconic { .. } | XYPolynomial { .. } | ZernikeSag { .. }
+                )
+            })
+    }
+
     /// The configurations this spec emits operands for.
     fn configs(&self) -> Vec<usize> {
         if self.configs.is_empty() {
@@ -203,17 +226,10 @@ impl DefaultMeritSpec {
         }
     }
 
-    /// May the half pupil be used for `s` with these variables?
-    pub fn half_pupil_allowed(
-        &self,
-        s: &OpticalSystem,
-        variables: &[VariableSpec],
-    ) -> MkResult<bool> {
-        if !self.auto_symmetry
-            || variables
-                .iter()
-                .any(|v| breaks_meridional_symmetry(&v.param))
-        {
+    /// Are the system and the sampled fields mirror-symmetric about the
+    /// meridional plane in every emitted configuration?
+    fn meridional(&self, s: &OpticalSystem) -> MkResult<bool> {
+        if self.uses_field_grid(s) {
             return Ok(false);
         }
         for c in self.configs() {
@@ -222,6 +238,19 @@ impl DefaultMeritSpec {
             }
         }
         Ok(true)
+    }
+
+    /// May the half pupil be used for `s` with these variables?
+    pub fn half_pupil_allowed(
+        &self,
+        s: &OpticalSystem,
+        variables: &[VariableSpec],
+    ) -> MkResult<bool> {
+        Ok(self.auto_symmetry
+            && !variables
+                .iter()
+                .any(|v| breaks_meridional_symmetry(&v.param))
+            && self.meridional(s)?)
     }
 
     /// Generate for a system without optimisation variables.
@@ -277,9 +306,27 @@ impl DefaultMeritSpec {
         let mut sampling = self.sampling;
         if self.half_pupil_allowed(s, variables)? {
             sampling.symmetry = PupilSymmetry::Bilateral;
+        } else if !self.meridional(s)? {
+            sampling.symmetry = PupilSymmetry::None;
         }
         let nodes = sampling.nodes();
-        let fw: f64 = fields.iter().map(|&f| s.fields.fields[f].weight).sum();
+        let field_points: Vec<(FieldSelector, f64)> = if self.uses_field_grid(s) {
+            let h = std::f64::consts::FRAC_1_SQRT_2;
+            [-h, 0.0, h]
+                .into_iter()
+                .flat_map(|hx| {
+                    [-h, 0.0, h]
+                        .into_iter()
+                        .map(move |hy| (FieldSelector::Normalized { hx, hy }, 1.0))
+                })
+                .collect()
+        } else {
+            fields
+                .iter()
+                .map(|&f| (FieldSelector::Index { index: f }, s.fields.fields[f].weight))
+                .collect()
+        };
+        let fw: f64 = field_points.iter().map(|(_, w)| w).sum();
         let ww: f64 = wls
             .iter()
             .map(|&w| s.wavelengths.wavelengths[w].weight)
@@ -292,12 +339,10 @@ impl DefaultMeritSpec {
         }
         let mut ops = Vec::new();
         for &c in &configs {
-            for &f in &fields {
+            for &(field, field_weight) in &field_points {
                 for &w in &wls {
-                    let base = self.weight
-                        * s.fields.fields[f].weight
-                        * s.wavelengths.wavelengths[w].weight
-                        / norm;
+                    let base =
+                        self.weight * field_weight * s.wavelengths.wavelengths[w].weight / norm;
                     for nd in &nodes {
                         let kinds: Vec<OperandKind> = match self.criterion {
                             DefaultCriterion::RmsSpot { reference, scope } => {
@@ -324,16 +369,25 @@ impl DefaultMeritSpec {
                             }
                         };
                         for k in kinds {
-                            ops.push(
-                                Operand::new(k)
-                                    .weight(base * nd.weight)
-                                    .at_field(f)
-                                    .at_wavelength(w)
-                                    .in_config(c),
-                            );
+                            let mut op = Operand::new(k)
+                                .weight(base * nd.weight)
+                                .at_wavelength(w)
+                                .in_config(c);
+                            op.field = field;
+                            ops.push(op);
                         }
                     }
                 }
+            }
+        }
+        if let Some(target) = self.squeeze_target {
+            for &c in &configs {
+                ops.push(
+                    Operand::new(OperandKind::AnamorphicSqueeze)
+                        .target(target)
+                        .as_constraint()
+                        .in_config(c),
+                );
             }
         }
         if let Some(tb) = &self.thickness {

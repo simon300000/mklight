@@ -271,6 +271,12 @@ pub enum OperandKind {
     // ---- first order (paraxial) ----
     /// Effective focal length (mm).
     Efl,
+    EflX,
+    EflY,
+    BflX,
+    BflY,
+    /// Signed EFL_y / EFL_x from the two unfolded first-order sweeps.
+    AnamorphicSqueeze,
     /// Back focal length: last surface vertex to paraxial focus (mm).
     Bfl,
     FNumber {
@@ -359,7 +365,9 @@ pub enum OperandKind {
         to: Option<SurfaceId>,
     },
     /// The current value of any model parameter.
-    ParamValue { param: ParamPath },
+    ParamValue {
+        param: ParamPath,
+    },
 
     // ---- real rays ----
     /// A real-ray quantity at `surface` (default: image) for pupil point
@@ -419,7 +427,9 @@ pub enum OperandKind {
         sampling: PupilSampling,
     },
     /// Spot centroid coordinate relative to the chief ray (mm).
-    SpotCentroid { axis: Axis },
+    SpotCentroid {
+        axis: Axis,
+    },
     /// RMS wavefront error over the pupil (waves).
     WavefrontRms {
         #[serde(default)]
@@ -445,11 +455,17 @@ pub enum OperandKind {
     /// Lateral colour: chief-ray image height at `short` minus at `long`
     /// (indices into the system wavelengths), measured along the field
     /// direction (`+y` on axis), mm.
-    LateralColour { short: usize, long: usize },
+    LateralColour {
+        short: usize,
+        long: usize,
+    },
     /// Axial colour (chromatic focal shift): paraxial image distance at
     /// `short` minus at `long`, mm (negative when the short wavelength
     /// focuses closer, as in an uncorrected positive lens).
-    AxialColour { short: usize, long: usize },
+    AxialColour {
+        short: usize,
+        long: usize,
+    },
     /// Relative illumination at the selected field (0…1, vs on-axis): the
     /// image irradiance at the chief ray for a uniform-radiance Lambertian
     /// object relative to the on-axis one, from energy conservation —
@@ -460,7 +476,9 @@ pub enum OperandKind {
     // ---- ghosts and stray light ----
     /// Distance of a two-reflection ghost's focus from the image surface
     /// (mm, absolute value). Large is good.
-    GhostFocus { pair: GhostPair },
+    GhostFocus {
+        pair: GhostPair,
+    },
     /// Ghost irradiance on the sensor; `pair = None` sums all two-reflection
     /// ghosts.
     GhostIrradiance {
@@ -482,6 +500,31 @@ pub enum OperandKind {
     },
 
     // ---- manufacturing ----
+    /// Minimum local order-1 groove period, 2π / max |∇surface Φ| (mm).
+    DoeMinZonePeriod {
+        surface: SurfaceId,
+    },
+    /// Maximum metric phase gradient (rad/mm), independent of trace order.
+    DoeMaxPhaseSlope {
+        surface: SurfaceId,
+    },
+    /// Peak-to-valley unwrapped order-1 phase over the clear aperture (rad).
+    DoeTotalPhase {
+        surface: SurfaceId,
+    },
+    /// Maximum absolute sag departure from the area least-squares sphere (mm).
+    QMaxDeparture {
+        surface: SurfaceId,
+    },
+    /// Maximum gradient magnitude relative to that fitted sphere (mm/mm).
+    QMaxDepartureSlope {
+        surface: SurfaceId,
+    },
+    /// Maximum absolute XY/Zernike sag departure from its base conic (mm).
+    FreeformMaxDeparture {
+        surface: SurfaceId,
+    },
+
     /// Sensitivity of the `criterion` operand to a perturbation `±delta` of
     /// `param`: `√((c(+δ) − c₀)² + (c(−δ) − c₀)²) / √2`, in the
     /// criterion's units.
@@ -493,7 +536,10 @@ pub enum OperandKind {
 
     // ---- composition and extension ----
     /// Arithmetic on other operands of the same spec, by index.
-    Combine { op: CombineOp, args: Vec<usize> },
+    Combine {
+        op: CombineOp,
+        args: Vec<usize>,
+    },
     /// A plug-in operand. `name` must be registered in the
     /// [`OperandRegistry`]; `params` is passed to its evaluator verbatim.
     Custom {
@@ -532,6 +578,17 @@ impl OperandKind {
         use OperandKind::*;
         match self {
             Efl => "efl",
+            EflX => "efl_x",
+            EflY => "efl_y",
+            BflX => "bfl_x",
+            BflY => "bfl_y",
+            AnamorphicSqueeze => "anamorphic_squeeze",
+            DoeMinZonePeriod { .. } => "doe_min_zone_period",
+            DoeMaxPhaseSlope { .. } => "doe_max_phase_slope",
+            DoeTotalPhase { .. } => "doe_total_phase",
+            QMaxDeparture { .. } => "q_max_departure",
+            QMaxDepartureSlope { .. } => "q_max_departure_slope",
+            FreeformMaxDeparture { .. } => "freeform_max_departure",
             Bfl => "bfl",
             FNumber { .. } => "f_number",
             Magnification => "magnification",
@@ -571,6 +628,11 @@ impl OperandKind {
         use OperandKind::*;
         match self {
             Efl
+            | EflX
+            | EflY
+            | BflX
+            | BflY
+            | AnamorphicSqueeze
             | Bfl
             | FNumber {
                 kind: FNumberKind::ParaxialImageSpace | FNumberKind::ParaxialWorking,
@@ -582,7 +644,13 @@ impl OperandKind {
             | ParaxialRay { .. }
             | PetzvalSum
             | AxialColour { .. } => Capability::Paraxial,
-            TotalTrack { .. }
+            DoeMinZonePeriod { .. }
+            | DoeMaxPhaseSlope { .. }
+            | DoeTotalPhase { .. }
+            | QMaxDeparture { .. }
+            | QMaxDepartureSlope { .. }
+            | FreeformMaxDeparture { .. }
+            | TotalTrack { .. }
             | CentreThickness { .. }
             | EdgeThickness { .. }
             | MinThickness { .. }
@@ -689,7 +757,13 @@ impl OperandKind {
         use OperandKind::*;
         !matches!(
             self,
-            TotalTrack { .. }
+            DoeMinZonePeriod { .. }
+                | DoeMaxPhaseSlope { .. }
+                | DoeTotalPhase { .. }
+                | QMaxDeparture { .. }
+                | QMaxDepartureSlope { .. }
+                | FreeformMaxDeparture { .. }
+                | TotalTrack { .. }
                 | CentreThickness { .. }
                 | EdgeThickness { .. }
                 | MinThickness { .. }
@@ -728,6 +802,41 @@ impl OperandRegistry {
         let s = |id: u64| SurfaceId(id);
         let t: Vec<(OperandKind, &str, &str)> = vec![
             (Efl, "Effective focal length", "mm"),
+            (EflX, "Effective focal length x", "mm"),
+            (EflY, "Effective focal length y", "mm"),
+            (BflX, "Back focal length x", "mm"),
+            (BflY, "Back focal length y", "mm"),
+            (AnamorphicSqueeze, "Signed EFL_y / EFL_x", ""),
+            (
+                DoeMinZonePeriod { surface: s(1) },
+                "Minimum DOE zone period",
+                "mm",
+            ),
+            (
+                DoeMaxPhaseSlope { surface: s(1) },
+                "Maximum DOE phase slope",
+                "rad/mm",
+            ),
+            (
+                DoeTotalPhase { surface: s(1) },
+                "DOE peak-to-valley phase",
+                "rad",
+            ),
+            (
+                QMaxDeparture { surface: s(1) },
+                "Maximum sag departure from fitted sphere",
+                "mm",
+            ),
+            (
+                QMaxDepartureSlope { surface: s(1) },
+                "Maximum slope departure from fitted sphere",
+                "",
+            ),
+            (
+                FreeformMaxDeparture { surface: s(1) },
+                "Maximum freeform departure from base conic",
+                "mm",
+            ),
             (Bfl, "Back focal length", "mm"),
             (
                 FNumber {

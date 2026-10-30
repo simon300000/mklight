@@ -149,6 +149,9 @@ uses the wavelength (`λ1` = one wavelength required).
 |---|---|---|---|---|---|
 | `efl` | P | effective focal length | mm | λ | `−1/ω'` of the y–nu trace (unit-index system power) |
 | `bfl` | P | back focal length, last surface to paraxial focus | mm | λ | signed along the local z |
+| `efl_x`, `efl_y` | P | axis-specific effective focal length from `ParaxialXY` | mm | λ | signed unit-index referenced focal lengths; `efl_y` equals legacy `efl` |
+| `bfl_x`, `bfl_y` | P | axis-specific back focal length from `ParaxialXY` | mm | λ | signed axial distance from the last optical surface; `bfl_y` equals legacy `bfl` |
+| `anamorphic_squeeze` | P | `EFL_y/EFL_x` from `ParaxialXY` | – | λ | signed; at `all` wavelengths averages the ratios, not the two focal lengths |
 | `f_number` | P/R | `paraxial_image_space`: `f'/EPD`; `paraxial_working`: `1/(2|ω'_m|)`; `real_working`: `1/(2 n' sin θ')` from the on-axis real marginal ray `(0, 1)` and the chief ray | – | λ | real: angle between the marginal and chief image-space directions |
 | `magnification` | P | paraxial lateral magnification | – | λ | 0 for an object at infinity |
 | `entrance_pupil_diameter` | P | | mm | λ | |
@@ -172,6 +175,12 @@ uses the wavelength (`λ1` = one wavelength required).
 | `distortion` | R | `100 (h_real − h_ref)/h_ref` of the real chief ray at λ along the field direction; `f_tan_theta`: `h_ref` = paraxial chief height (`h'/tan θ · tan θ`, or `h'/h · h` for finite objects), `f_theta`: `h'/tan θ · θ` | % | f1 λ1 | 0 on axis; `f_theta` needs an object at infinity |
 | `lateral_colour` | R | chief-ray image height at `short` minus at `long`, along the field direction | mm | f1 | `+y` on axis |
 | `relative_illumination` | R | image irradiance at the chief ray relative to on axis, Lambertian uniform-radiance object | – | f1 λ | energy conservation, vignetting included (below); geometric (no coating or bulk losses); the on-axis reference has no vignetting factors |
+| `doe_min_zone_period` | M | `2π / max |∇surface Φ|` on `surface` | mm | – | positive order-1 physical groove period; infinite for constant phase |
+| `doe_max_phase_slope` | M | `max |∇surface Φ|` on `surface` | rad/mm | – | nonnegative metric tangent gradient of the unwrapped phase lag |
+| `doe_total_phase` | M | `max Φ − min Φ` on `surface` | rad | – | nonnegative peak-to-valley unwrapped order-1 phase lag |
+| `q_max_departure` | M | maximum absolute QCon/QBfs sag departure from an area least-squares sphere | mm | – | nonnegative; sphere curvature and axial piston are fitted over the clear aperture |
+| `q_max_departure_slope` | M | maximum gradient magnitude of that departure | mm/mm | – | nonnegative; uses the same fitted sphere, whose piston has zero slope |
+| `freeform_max_departure` | M | maximum absolute XY/Zernike sag departure from its base conic | mm | – | nonnegative; includes piston and tilt when present |
 | `tolerance_sensitivity` | T | `√((c(+δ) − c₀)² + (c(−δ) − c₀)²)/√2` for the criterion operand | criterion | as criterion | supported when the criterion is |
 | `mtf` | X | MTF at a frequency | – | f λ | MTF evaluator (not here) |
 | `ghost_focus`, `ghost_irradiance` | X | ghost focus distance / irradiance | mm / rel. | | ghost evaluator (not here) |
@@ -183,6 +192,37 @@ uses the wavelength (`λ1` = one wavelength required).
 of the chief ray, which keeps the sign), and the exit-pupil position.
 **Paraxial distortion** comes from the same `distortion` operand: the real
 chief ray against the paraxial chief ray.
+
+### Extended-surface operands
+
+All extended sag and phase types in `SURFACES.md` are accepted by the CPU
+trace evaluator. Axis first order uses `ParaxialXY`: placements are ignored,
+and mixed xy power gives diagonal projections rather than principal focal
+lengths. Higher-order terms have only their local quadratic meaning.
+
+Manufacturing operands select a stable surface id. They sample its **clear
+aperture**, including both rims of an annulus and rectangular/elliptical
+boundaries: 64 equally spaced azimuths (plus explicit rectangular corner
+spokes for extrema) and 65 radial nodes uniformly spaced in r² on each spoke (endpoints included). Explicit apertures override the
+semi-diameter, as in tracing. Automatic semi-diameters are resolved once per
+candidate by `TraceEvaluator`; `ModelEvaluator` needs a fixed semi-diameter
+or an explicit aperture. Extrema are sampled estimates, so features narrower
+than this grid can be missed. A domain violation at any node is `Invalid`.
+
+DOE metrics use the physical order-1 structure, independent of selected
+trace order, design order and design wavelength. The slope is the metric
+surface gradient, not the planar gradient: on a radial base with slope z_r,
+`|∇surface Φ| = |Φ_r| / sqrt(1 + z_r²)`. The period therefore measures
+surface distance between successive 2π zones. A negative focusing phase
+still has positive slope magnitude, period and peak-to-valley phase.
+
+The Q sphere minimises area-weighted squared sag error, with curvature and
+axial piston free. The radial trapezoidal weights include the aperture's
+spoke areas; the additional corner spokes have zero fit weight. Curvature
+is fitted by a bounded 72-step golden-section search inside the real sphere
+domain. Both departure operands use that sphere, including for QCon with a
+nonspherical base; QBfs's stored sphere is a basis
+parameter and is not assumed to be the fitted sphere.
 
 ### Relative illumination
 
@@ -257,6 +297,34 @@ variables. Every ray operand carries its `RayGroup`, also with a `chief`
 reference, so the evaluator knows which half pupil it belongs to. An
 asymmetric candidate is still evaluated exactly (see Conventions).
 
+Symmetry uses the core system classification, including shape coefficients,
+placements and apertures. A system that is not meridionally symmetric
+(class `none`, x fields, or the field grid below) never uses a half pupil,
+even if the requested sampling explicitly says `bilateral`; a symmetric one
+keeps a requested `bilateral`. XY and Zernike coefficient
+variables conservatively disable the shortcut, including coefficients that
+start at zero. This also applies to tolerance parameters and compensators.
+
+For systems with a toroid, biconic, XY or Zernike surface, the default
+fields are a Cartesian **3×3 grid** with normalised x and y coordinates
+`{-1/√2, 0, +1/√2}`. Its corners lie on the unit field disk; it includes
+both signs on both axes and all four quadrants, with equal field weights.
+The grid is used even when the current coefficients happen to be
+rotational, so the system stays sampled appropriately as optimisation or
+tolerancing changes them. Other systems, including legacy meridional ones
+(folded or tilted in the y–z plane), keep their own fields.
+The maximum radial system field sets the physical scale as usual. An
+explicit `fields` index list keeps the caller's field points and weights.
+Grid merits use the full pupil because their fields have nonzero x.
+
+`squeeze_target: <number>` adds an `anamorphic_squeeze` equality constraint
+at the primary wavelength in every selected configuration (default: absent).
+For example, `{"thickness": null, "squeeze_target": 2.0}` generates the
+full-pupil grid merit and holds signed EFL_y/EFL_x = 2. The engine's optional
+EFL hold still holds EFL_y; an explicit `efl_y` operand replaces that hold.
+Automatic engine variables/tolerances address both x and y curvatures of
+biconics and toroids rather than only the legacy y curvature.
+
 Thickness boundaries go on every physical gap except the back focus.
 `ThicknessBoundaries::with_auto_semi_diameters()` (field
 `auto_semi_diameters`) also emits edge boundaries on gaps whose surfaces have
@@ -286,6 +354,30 @@ Richardson-extrapolated central differences. The checks cover ray
 aberrations, OPD, EFL, distortion and CRA on the Cooke triplet, over
 curvatures, an air space and the back focus. An analytic thick-lens
 `∂EFL/∂c` passes the same check, and a perturbed Jacobian is rejected.
+
+`ShapeCoefficient` and continuous `ShapeParam` paths work through the same
+variable and tolerance machinery as legacy paths, including missing trailing
+coefficients (read as zero, extended on write). For `ShapeCoefficient`,
+`VariableSpec::to_variable` uses a surface-aware scale (`default_scale_for`;
+legacy paths keep `default_scale`). For odd and axis power series and
+normalised XY or phase terms of degree d, its floor is
+`amplitude / (d · r^d)`, where r is the clear radius in the coefficient's
+coordinates (divided by the normalisation radius for XY and phase). The
+amplitude is 1e-3 mm of sag or 0.1 rad of phase. For automatic sizes, the normalisation radius, entrance-pupil radius, or
+legacy 10 mm fallback supplies the radius. Q and Zernike bases contain lower
+powers too: their floor is 1e-3 mm divided by the maximum of unit-basis sag
+and clear-radius times unit-basis gradient, sampled with the core recurrence
+at 65 radii × 32 azimuths. Thus polynomial order, basis normalisation and
+normalisation radius all enter the scale. The larger of this floor and
+`0.1 |coefficient|` is used; user `scale` and `fd_step` overrides still win.
+
+`tests/surfaces.rs` checks production central differences against
+`check_jacobian`'s Richardson stencil on all nine extended fixtures, with
+x/y real rays and multiple coefficient orders (including Q order 19 at a
+clear radius smaller than the normalisation radius), normalisation radii,
+axis curvatures and conics. The per-entry tolerance is 1e-4 relative with a
+0.1 derivative magnitude floor, allowing 1e-5 absolute error in very weak
+cross-axis derivatives.
 
 **Step size: chosen per operand and evaluator.** The default steps (`√ε`
 forward, `∛ε` central, relative to `max(|x|, scale)`) are tuned to relative
@@ -363,6 +455,19 @@ in parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
 | Cooke triplet | default spot merit (3 fields × 3 λ), 6 curvatures + back focus, EFL constraint, glass/air centre and auto-SD edge bounds | LM (40 iterations) lowers the merit by 35 %; seeded basin hopping is bit-reproducible and does not increase it; all constraints hold |
 | tolerancing | Cooke triplet, 9 tolerances, back-focus compensator | ranked sensitivities; the compensator removes > 50 % of an air-space error; Monte Carlo identical for a seed, different for another |
 | cancellation | Cooke triplet | LM and basin hopping return `Cancelled` with the best-so-far point (feasibility-ranked) |
+
+### Extended surfaces (`tests/surfaces.rs`)
+
+| case | verification |
+|---|---|
+| odd, QCon and QBfs singlets | coefficient plus back focus ends below 0.2× the refocus-only optimum (which is 0.40, 0.085, 0.090× the start merit); repeated runs give identical variables and merit |
+| hybrid refractive-diffractive singlet | starting with A₁ = 0, optimise A₁ to F–C focal shift <1e-6 mm; recover the independently constructed sample coefficient |
+| anamorphic cylindrical adapter | over curvature_x and the singlet curvature, signed squeeze 1.7 within 1e-6 while the EFL_y constraint holds to 1e-8 mm |
+| XY corrector | quadratic/cubic coefficients plus focus end below 0.2× the refocus-only optimum of the full-pupil x/y field-grid merit |
+| Q coefficient and toroid curvature | finite, nonzero ranked sensitivities; seeded Monte Carlo repeats exactly |
+| manufacturing | analytic plane/curved DOE phase gradients, phase range, annular aperture, pure-sphere zero Q departure, small quartic's fitted sphere departure/slope, rectangular XY departure |
+| axis operands | EFL_x/y and BFL_x/y checked against independent thick-lens powers |
+| default merit | anamorphic/freeform systems get the 3×3 grid and the full pupil (also with a requested half pupil); an XY coefficient variable disables the half pupil; legacy meridional systems such as the Newtonian keep their fields and half pupil |
 
 ## Throughput
 
@@ -795,6 +900,9 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 ## Known gaps
 
 * No analytic Jacobians (see Derivatives).
+* Manufacturing extrema use the documented finite aperture grid, without
+  certified bounds between nodes. Coupled freeform first order still needs a
+  4×4 model; the x/y operands expose the reference diagonal sweeps.
 * Relative illumination is geometric and ignores coating and bulk
   transmission. For its integration limits, see Relative illumination.
 * `spot_centroid` uses the default full-pupil sampling (3 rings × 6 arms).

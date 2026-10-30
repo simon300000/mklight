@@ -674,6 +674,29 @@ fn relax_fixed_boundaries(
     Ok(warnings)
 }
 
+/// The curvature parameters of a surface, with labels: x and y for toroids
+/// and biconics, whose legacy curvature path is only the y curvature.
+fn curvature_params(sys: &OpticalSystem, i: usize) -> Vec<(ParamPath, String)> {
+    use mklight_core::SurfaceShape::{Biconic, Toroid};
+    use mklight_core::param::ShapeParameter::{CurvatureX, CurvatureY};
+    let surface = sys.surfaces[i].id;
+    if matches!(sys.surfaces[i].shape, Toroid { .. } | Biconic { .. }) {
+        [(CurvatureX, "x"), (CurvatureY, "y")]
+            .map(|(parameter, axis)| {
+                (
+                    ParamPath::ShapeParam { surface, parameter },
+                    format!("curvature {axis} {}", surface.0),
+                )
+            })
+            .into()
+    } else {
+        vec![(
+            ParamPath::Curvature { surface },
+            format!("curvature {}", surface.0),
+        )]
+    }
+}
+
 /// The default variables: the curvature of every curved, optically active
 /// surface and the back focus (the thickness before the image).
 fn auto_variables(sys: &OpticalSystem) -> Vec<VariableSpec> {
@@ -681,11 +704,9 @@ fn auto_variables(sys: &OpticalSystem) -> Vec<VariableSpec> {
     let gaps = optical_gaps(sys);
     let mut v: Vec<VariableSpec> = gaps
         .iter()
-        .map(|g| ParamPath::Curvature {
-            surface: sys.surfaces[g.from].id,
-        })
-        .filter(|p| p.get(sys).is_ok_and(|c| c != 0.0))
-        .map(VariableSpec::new)
+        .flat_map(|g| curvature_params(sys, g.from))
+        .filter(|(p, _)| p.get(sys).is_ok_and(|c| c != 0.0))
+        .map(|(p, _)| VariableSpec::new(p))
         .collect();
     if n >= 3 {
         v.push(VariableSpec::new(ParamPath::Thickness {
@@ -711,25 +732,22 @@ fn auto_tolerances(sys: &OpticalSystem) -> Vec<ToleranceOperand> {
         o.label = format!("thickness {}", sys.surfaces[g.from].id.0);
         t.push(o);
     }
-    for g in &gaps {
-        let p = ParamPath::Curvature {
-            surface: sys.surfaces[g.from].id,
-        };
+    for (p, label) in gaps.iter().flat_map(|g| curvature_params(sys, g.from)) {
         if let Ok(c) = p.get(sys)
             && c != 0.0
         {
             let mut o = ToleranceOperand::symmetric(p, 0.005 * c.abs());
-            o.label = format!("curvature {}", sys.surfaces[g.from].id.0);
+            o.label = label;
             t.push(o);
         }
     }
     t
 }
 
-/// Does the spec contain an enabled `efl` operand?
+/// Does the spec already hold the legacy y EFL (or its explicit y alias)?
 fn has_efl(spec: &MeritFunctionSpec) -> bool {
     spec.enabled()
-        .any(|(_, o)| matches!(o.kind, OperandKind::Efl))
+        .any(|(_, o)| matches!(o.kind, OperandKind::Efl | OperandKind::EflY))
 }
 
 fn value_json(v: &OperandValue) -> (Value, Value) {
@@ -2804,5 +2822,55 @@ mod tests {
         .unwrap();
         assert!((f(&ops[1]["plus"]) - 0.005 * c1.abs()).abs() < 1e-15);
         assert!(t.json["monte_carlo"].is_null());
+    }
+
+    #[test]
+    fn axis_defaults_optimise_squeeze_and_tolerance_both_curvatures() {
+        let sys = samples::biconic_element();
+        let fy = efl(&sys);
+        let merit = MeritFunctionSpec::new(vec![
+            Operand::new(OperandKind::AnamorphicSqueeze).target(1.4),
+            Operand::new(OperandKind::EflY).target(fy).as_constraint(),
+        ]);
+        let r = run(
+            sys.clone(),
+            "optimize",
+            json!({"merit": merit, "backend": "cpu"}),
+        )
+        .unwrap();
+        let best: OpticalSystem = serde_json::from_value(r.json["system"].clone()).unwrap();
+        let values = TraceEvaluator::builtin()
+            .evaluate_system(
+                &best,
+                &[
+                    &Operand::new(OperandKind::AnamorphicSqueeze),
+                    &Operand::new(OperandKind::EflY),
+                ],
+                &JobContext::new(),
+            )
+            .unwrap();
+        assert!((values[0].as_ref().unwrap() - 1.4).abs() < 1e-6);
+        assert!((values[1].as_ref().unwrap() - fy).abs() < 1e-6);
+        assert!(
+            !r.json["operands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o["kind"] == "efl")
+        );
+        let r = run(
+            sys,
+            "tolerance",
+            json!({"mode": "sensitivity", "backend": "cpu"}),
+        )
+        .unwrap();
+        let rows = r.json["sensitivity"]["operands"].as_array().unwrap();
+        assert!(rows.iter().all(|o| o["ok"] == true));
+        for parameter in ["curvature_x", "curvature_y"] {
+            assert!(
+                rows.iter()
+                    .any(|o| o["param"]["parameter"] == parameter && f(&o["worst"]) > 0.0)
+            );
+        }
     }
 }
