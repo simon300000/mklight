@@ -205,7 +205,7 @@ extension WorkspaceLayout {
     public init(workspace: Workspace, window: WindowState) {
         panes = workspace.panes.map {
             Pane(
-                key: $0.id, analysis: $0.analysis, settings: $0.settings, autoUpdate: $0.autoUpdate,
+                key: $0.id, analysis: $0.analysis, settings: ImageSourceImport.persistable($0.settings), autoUpdate: $0.autoUpdate,
                 showsSettings: $0.showsSettings, width: window.paneWidths[$0.id])
         }
         editorFraction = window.editorFraction

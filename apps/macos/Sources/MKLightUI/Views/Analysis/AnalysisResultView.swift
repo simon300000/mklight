@@ -52,6 +52,11 @@ struct AnalysisResultView: View {
         case "polarization_pupil_map": return PolarizationView(output: o).map { AnyView($0) }
         case "system_transmission": return TransmissionView(output: o, context: c).map { AnyView($0) }
         case "best_focus": return BestFocusView(output: o, context: c).map { AnyView($0) }
+        case "pupil_aberration": return PupilAberrationView(output: o).map { AnyView($0) }
+        case "relative_illumination_map": return RelativeIlluminationMapView(output: o).map { AnyView($0) }
+        case "chief_ray_angle": return ChiefRayAngleView(output: o).map { AnyView($0) }
+        case "glass_map": return GlassMapView(output: o, context: c).map { AnyView($0) }
+        case "image_simulation": return ImageSimulationView(output: o).map { AnyView($0) }
         default: return nil
         }
     }
@@ -97,6 +102,8 @@ struct AnalysisResultView: View {
             return j["stray_fraction"]?.nf.map { [KeyNumber(label: "Stray fraction", value: Fmt.short($0))] } ?? []
         case "best_focus":
             return j["defocus"]?.nf.map { [KeyNumber(label: "Best defocus", value: Fmt.length($0))] } ?? []
+        case "pupil_aberration", "relative_illumination_map", "chief_ray_angle", "glass_map", "image_simulation":
+            return extendedKeyNumbers(analysis: analysis, output: output)
         case "validate":
             return [KeyNumber(label: "Errors", value: "\(j["errors"]?.int ?? 0)"), KeyNumber(label: "Warnings", value: "\(j["warnings"]?.int ?? 0)")]
         default:

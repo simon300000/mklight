@@ -83,7 +83,11 @@ struct SettingsBar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    enum Kind { case fieldSelection, wavelengthSelection, fieldIndex, wavelengthIndex, surfaceIndex, enumeration, boolean, number, hidden, advanced }
+    enum Kind {
+        case fieldSelection, wavelengthSelection, fieldIndex, wavelengthIndex, surfaceIndex, enumeration, boolean, number, hidden, advanced
+        // Array and object settings with compact controls (SettingsControls.swift).
+        case pair, sensorLimit, imageSource
+    }
 
     func kind(of f: SettingsField) -> Kind {
         let types = Set(f.types)
@@ -107,6 +111,7 @@ struct SettingsBar: View {
             }
         default: break
         }
+        if let k = arrayKind(of: f) { return k }
         if !f.enumValues.isEmpty { return .enumeration }
         if types.subtracting(["null"]) == ["boolean"] { return .boolean }
         if !types.subtracting(["null"]).isEmpty && types.subtracting(["null"]).isSubset(of: ["number", "integer"]) { return .number }
@@ -146,6 +151,8 @@ struct SettingsBar: View {
                 .help(f.description)
         case .number:
             SettingNumberField(field: f, label: label, value: value, set: { pane.set(f.name, $0) })
+        case .pair, .sensorLimit, .imageSource:
+            arrayControl(f, kind: kind(of: f))
         case .hidden, .advanced:
             EmptyView()
         }
