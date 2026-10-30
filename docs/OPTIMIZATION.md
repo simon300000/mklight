@@ -387,15 +387,25 @@ example:
 The default generator's `fields` and `wavelengths` select fields and the
 polychromatic spectral subset, using their model weights. Without
 `worst_field`, weights normalise over fields, configurations, frequencies
-and the two directions. With `worst_field`, each field's MTF is a zero-weight
-value operand and `combine:min` adds a lower-bound residual for each
-frequency/direction/configuration. Thus it penalises the largest field
-shortfall (minimax), giving a weakest field control without averaging it
-away. Field weights still select the participating positive-weight fields;
-they do not scale the minimum. This exact minimum has a kink when the
-weakest field changes. The Cooke focus-optimisation test checks improvement
-of the minimum across **all** emitted field/direction MTF values at 30
-cycles/mm, so a constant or missing evaluator cannot pass.
+and the two directions. With `worst_field`, each field/direction MTF is a
+zero-weight value operand and one `combine:min` over **every field and both
+directions** adds the lower-bound residual of each frequency/configuration,
+so least squares maximises the weakest value (minimax). Field weights
+select the participating positive-weight fields; they do not scale the
+minimum. The minimum has a kink where the weakest value changes.
+
+A separate minimum per direction would let least squares trade one
+direction's weakest field against the other's when the target is out of
+reach: on the Cooke triplet (30 cycles/mm, target 0.8, back focus variable)
+it shortens the back focus by 0.12 mm and drops the weakest MTF from 0.169 to
+0.050. The joint minimum reaches 0.174 from the nominal focus or from 0.1 mm
+of defocus; the field-weighted bounds settle at 0.063. The optimisation
+test checks both. These Cooke values are physical: on axis the
+polychromatic MTF at 30 cycles/mm is 0.69, but the 14° field's astigmatism
+holds it near 0.17 (T 0.169, S 0.180; geometric 0.184/0.174; a 128 grid
+gives 0.173/0.178). Far from focus (0.3 mm, about 4 waves at F/4) every
+field oscillates through zeros and the minimum is multimodal, so LM from
+there stops in a local maximum near 0.016.
 
 Symmetry uses the core system classification, including shape coefficients,
 placements and apertures. A system that is not meridionally symmetric

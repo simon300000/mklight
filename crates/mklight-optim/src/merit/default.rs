@@ -52,19 +52,12 @@ use super::quadrature::{PupilSampling, PupilSymmetry};
 use super::{FieldSelector, MeritFunctionSpec, Operand, VariableSpec};
 use crate::tolerance::ToleranceSpec;
 
+pub use super::mtf_default::MtfCriterion;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DefaultCriterion {
-    /// Polychromatic T/S lower bounds at fixed frequencies (cycles/mm).
-    Mtf {
-        frequencies: Vec<f64>,
-        target: f64,
-        #[serde(default)]
-        method: super::operand::MtfMethod,
-        /// Min over fields, separately for each frequency and orientation.
-        #[serde(default)]
-        worst_field: bool,
-    },
+    Mtf(MtfCriterion),
     RmsSpot {
         #[serde(default)]
         reference: SpotReference,
@@ -347,14 +340,8 @@ impl DefaultMeritSpec {
                 "default merit: no field/wavelength with positive weight".into(),
             ));
         }
-        if matches!(self.criterion, DefaultCriterion::Mtf { .. }) {
-            let ops = super::mtf_default::operands(
-                &self.criterion,
-                &field_points,
-                &wls,
-                &configs,
-                self.weight,
-            )?;
+        if let DefaultCriterion::Mtf(mtf) = &self.criterion {
+            let ops = mtf.operands(&field_points, &wls, &configs, self.weight)?;
             return self.finish(s, &configs, ops);
         }
         let mut ops = Vec::new();
@@ -390,7 +377,7 @@ impl DefaultMeritSpec {
                                     group,
                                 }]
                             }
-                            DefaultCriterion::Mtf { .. } => unreachable!(),
+                            DefaultCriterion::Mtf(_) => unreachable!(),
                         };
                         for k in kinds {
                             let mut op = Operand::new(k)

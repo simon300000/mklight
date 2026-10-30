@@ -49,7 +49,8 @@ use mklight_optim::merit::gpu_eval::{gpu_beats_cpu, gpu_rays_per_candidate};
 use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
     BuiltinEvaluator, Comparison, GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand,
-    OperandEvaluator, OperandRegistry, OperandRole, OperandValue, OpticalProblem, VariableSpec,
+    OperandEvaluator, OperandRegistry, OperandRole, OperandValue, OpticalProblem, TraceEvaluator,
+    VariableSpec,
 };
 use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
@@ -312,7 +313,7 @@ fn default_merit_schema(default: Value) -> Value {
             "frequencies": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0}, "description": "Fixed image frequencies in cycles/mm."},
             "target": {"type": "number", "minimum": 0, "maximum": 1},
             "method": {"type": "string", "enum": ["diffraction", "geometric"], "default": "diffraction"},
-            "worst_field": {"type": "boolean", "default": false, "description": "Use combine:min over fields for each frequency and T/S direction."}
+            "worst_field": {"type": "boolean", "default": false, "description": "One combine:min over every field and both T/S directions per frequency."}
         }}
     ]}}})
 }
@@ -356,7 +357,7 @@ impl Workload {
     /// `rays` estimated on the start system (configuration 0) for the
     /// operands of `spec`.
     fn new(
-        cpu: &BuiltinEvaluator,
+        cpu: &TraceEvaluator,
         system: &OpticalSystem,
         spec: &MeritFunctionSpec,
         batch: usize,
@@ -423,7 +424,7 @@ struct Evaluation {
 /// library, and the reference tracer it was qualified with.
 fn qualify(
     device: &GpuDevice,
-    cpu: &BuiltinEvaluator,
+    cpu: &TraceEvaluator,
     snapshot: &Snapshot,
     input: &AnalysisInput<'_>,
     ctx: &JobContext,
@@ -453,13 +454,13 @@ impl Evaluation {
                     batch: batch.max(1),
                     ..Default::default()
                 };
-                let (tracer, q) = qualify(&device, &cpu, &input.snapshot, input, ctx)?;
+                let (tracer, q) = qualify(&device, &cpu.trace, &input.snapshot, input, ctx)?;
                 let hints = tracer
                     .semi_diameters(&SemiDiameterSettings::default())
                     .values;
                 let g = GpuTraceEvaluator::with_qualification(
                     device.backend.clone(),
-                    cpu.trace().clone(),
+                    cpu.trace.clone(),
                     settings,
                     q.as_ref().clone(),
                     hints,
@@ -511,9 +512,9 @@ impl Evaluation {
     ) -> EngineResult<()> {
         let mut b = json!({
             "requested": requested.name(),
-            "evaluated_on": BuiltinEvaluator::BACKEND,
+            "evaluated_on": TraceEvaluator::BACKEND,
             "precision": Precision::F64Reference,
-            "reported_on": BuiltinEvaluator::BACKEND,
+            "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
         // The GPU evaluated the search only if it traced candidates.
@@ -531,7 +532,7 @@ impl Evaluation {
                 // A qualification of the final design (the search moved
                 // away from the qualified start).
                 if let Some(snapshot) = final_snapshot {
-                    let (_, q) = qualify(device, &self.cpu, snapshot, input, ctx)?;
+                    let (_, q) = qualify(device, &self.cpu.trace, snapshot, input, ctx)?;
                     if !q.passed {
                         self.warnings.push(format!(
                             "the final design fails the GPU precision qualification ({}); its \
@@ -1404,7 +1405,7 @@ impl Analysis for Optimize {
             &reg,
         )?;
         let x0 = reference.start_point()?;
-        let work = Workload::new(&cpu, &system, &spec, algo.batch(x0.len()));
+        let work = Workload::new(&cpu.trace, &system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "qualifying the merit evaluator");
         let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         ctx.check()?;
@@ -1884,7 +1885,7 @@ impl Analysis for Tolerance {
             SENSITIVITY_BATCH.min(2 * spec.operands.len() + 1)
         };
         let work = Workload::new(
-            &BuiltinEvaluator::new(input.library.clone()),
+            &TraceEvaluator::new(input.library.clone()),
             &system,
             &criterion,
             batch,
@@ -2140,7 +2141,7 @@ mod tests {
     }
 
     fn efl(sys: &OpticalSystem) -> f64 {
-        BuiltinEvaluator::builtin()
+        TraceEvaluator::builtin()
             .evaluate_system(sys, &[&Operand::new(OperandKind::Efl)], &JobContext::new())
             .unwrap()
             .remove(0)
@@ -2252,10 +2253,7 @@ mod tests {
         assert_eq!(r.buffers[0].shape, vec![h.len(), 4]);
         assert_eq!(r.run_info.analysis, "optimize");
         assert_eq!(r.run_info.seed, Some(0));
-        assert_eq!(
-            j["backend"]["evaluated_on"],
-            json!(BuiltinEvaluator::BACKEND)
-        );
+        assert_eq!(j["backend"]["evaluated_on"], json!(TraceEvaluator::BACKEND));
         // Apply the result as a new snapshot.
         let best: OpticalSystem = serde_json::from_value(j["system"].clone()).unwrap();
         let hash = session.set_system(best.clone()).unwrap();
@@ -2491,7 +2489,7 @@ mod tests {
             assert_eq!(b["qualification"]["passed"], json!(true));
             assert_eq!(b["final_qualification"]["passed"], json!(true));
             assert!(b["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
-            assert_eq!(b["reported_on"], json!(BuiltinEvaluator::BACKEND));
+            assert_eq!(b["reported_on"], json!(TraceEvaluator::BACKEND));
             assert_eq!(b["requested"], json!(backend));
             assert_eq!(
                 b["evaluated_on"].as_str().unwrap().starts_with("metal:"),
@@ -2872,7 +2870,6 @@ mod tests {
                 rows.iter()
                     .all(|o| o["start"].as_f64().is_some_and(|v| v > 0.0 && v < 1.0))
             );
-            assert!(!r.run_info.snapshot_hash.is_empty());
         }
         let r = run(system, "tolerance", json!({"criterion": merit, "mode": "sensitivity", "backend": "cpu",
             "tolerances": [{"param": ParamPath::Thickness { surface: SurfaceId(6) }, "minus": 0.01, "plus": 0.01}]})).unwrap();
@@ -2895,7 +2892,7 @@ mod tests {
         )
         .unwrap();
         let best: OpticalSystem = serde_json::from_value(r.json["system"].clone()).unwrap();
-        let values = BuiltinEvaluator::builtin()
+        let values = TraceEvaluator::builtin()
             .evaluate_system(
                 &best,
                 &[

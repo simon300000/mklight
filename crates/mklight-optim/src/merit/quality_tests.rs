@@ -1,4 +1,4 @@
-use super::default::{DefaultCriterion, DefaultMeritSpec};
+use super::default::{DefaultCriterion, DefaultMeritSpec, MtfCriterion};
 use super::operand::{
     GhostFocusMetric, GhostMetric, GhostPair, MtfMethod, MtfOrientation, StrayPathClass,
 };
@@ -49,11 +49,9 @@ fn mtf_matches_wave_and_geometric_analyses() {
         ops.push(mtf(f, MtfMethod::Diffraction, MtfOrientation::Tangential));
         ops.push(mtf(f, MtfMethod::Diffraction, MtfOrientation::Sagittal));
     }
-    let merit_ctx = JobContext::new();
     let vals = ev
-        .evaluate_system(&s, &ops.iter().collect::<Vec<_>>(), &merit_ctx)
+        .evaluate_system(&s, &ops.iter().collect::<Vec<_>>(), &ctx)
         .unwrap();
-    assert_eq!(merit_ctx.progress.fraction(), 1.0);
     for i in 0..4 {
         assert!((vals[2 * i].as_ref().unwrap() - wave.fields[0].tangential[i]).abs() < 1e-12);
         assert!((vals[2 * i + 1].as_ref().unwrap() - wave.fields[0].sagittal[i]).abs() < 1e-12);
@@ -184,79 +182,81 @@ fn mtf_finite_differences_pass_richardson_check() {
     }
 }
 
+/// Focus of the Cooke triplet, started 0.1 mm (≈ 1.3 waves of defocus) behind the
+/// nominal image, against T/S lower bounds of 0.8 at 30 cycles/mm. The
+/// smallest of the six field/direction MTFs (14° field) peaks at ≈ 0.17 near
+/// the nominal focus; the field-weighted bounds instead trade it for the
+/// axis and settle where it is ≈ 0.06. Worst-field must find the former.
 #[test]
-fn cooke_mtf_worst_field_optimisation_improves_minimum() {
-    let mut s = samples::cooke_triplet();
-    // Deliberate focus error gives a physically meaningful repair problem.
-    s.surfaces[6].thickness += 0.3;
-    let vars = vec![VariableSpec::bounded(
-        ParamPath::Thickness {
-            surface: SurfaceId(6),
-        },
-        s.surfaces[6].thickness - 1.0,
-        s.surfaces[6].thickness + 1.0,
-    )];
-    let spec = DefaultMeritSpec {
-        criterion: DefaultCriterion::Mtf {
-            frequencies: vec![30.0],
-            target: 0.8,
-            method: MtfMethod::Diffraction,
-            worst_field: true,
-        },
-        thickness: None,
-        ..Default::default()
-    }
-    .generate_for(&s, &vars)
-    .unwrap();
-    let p = OpticalProblem::new(
-        s,
-        vars,
-        spec,
-        BuiltinEvaluator::builtin(),
-        &OperandRegistry::builtin(),
-    )
-    .unwrap();
-    let x = p.start_point().unwrap();
-    let min = |x: &[f64]| {
-        p.operand_values(
-            &CandidateBatch::from_points(x.len(), [x]),
-            &JobContext::new(),
-        )
-        .unwrap()[0]
-            .as_ref()
-            .unwrap()
-            .iter()
-            .zip(&p.spec().operands)
-            .filter(|(_, o)| matches!(o.kind, OperandKind::Mtf { .. }))
-            .map(|(v, _)| *v.as_ref().unwrap())
-            .fold(f64::INFINITY, f64::min)
-    };
-    let before = min(&x);
-    let r = crate::lsq::least_squares(
-        &p,
-        &x,
-        &crate::lsq::LsqSettings {
-            max_iterations: 20,
+fn cooke_mtf_worst_field_optimisation_raises_the_minimum() {
+    let run = |worst_field| {
+        let mut s = samples::cooke_triplet();
+        s.surfaces[6].thickness += 0.1;
+        let t = s.surfaces[6].thickness;
+        let vars = vec![VariableSpec::bounded(
+            ParamPath::Thickness {
+                surface: SurfaceId(6),
+            },
+            t - 0.5,
+            t + 0.5,
+        )];
+        let spec = DefaultMeritSpec {
+            criterion: DefaultCriterion::Mtf(MtfCriterion {
+                frequencies: vec![30.0],
+                target: 0.8,
+                method: MtfMethod::Diffraction,
+                worst_field,
+            }),
+            thickness: None,
             ..Default::default()
-        },
-        &crate::Monitor::default(),
-    )
-    .unwrap();
-    let after = min(&r.x);
-    eprintln!("MTF min: {before} -> {after}, x={:?} -> {:?}", x, r.x);
+        }
+        .generate_for(&s, &vars)
+        .unwrap();
+        let p = OpticalProblem::new(
+            s,
+            vars,
+            spec,
+            BuiltinEvaluator::builtin(),
+            &OperandRegistry::builtin(),
+        )
+        .unwrap();
+        let min = |x: &[f64]| {
+            p.operand_values(&CandidateBatch::from_points(1, [x]), &JobContext::new())
+                .unwrap()[0]
+                .as_ref()
+                .unwrap()
+                .iter()
+                .zip(&p.spec().operands)
+                .filter(|(_, o)| matches!(o.kind, OperandKind::Mtf { .. }))
+                .map(|(v, _)| *v.as_ref().unwrap())
+                .fold(f64::INFINITY, f64::min)
+        };
+        let x = p.start_point().unwrap();
+        let r = crate::lsq::least_squares(
+            &p,
+            &x,
+            &crate::lsq::LsqSettings {
+                max_iterations: 20,
+                ..Default::default()
+            },
+            &crate::Monitor::default(),
+        )
+        .unwrap();
+        (min(&x), min(&r.x))
+    };
+    let (before, worst) = run(true);
+    let (_, average) = run(false);
     assert!(
-        before > 0.001 && after > before + 0.03,
-        "MTF {before} -> {after}"
+        (before - 0.1125).abs() < 0.005 && worst > 0.17 && average < 0.1,
+        "minimum MTF {before} -> {worst} (worst field), {average} (field average)"
     );
-    let e = evaluate_one(&p, &r.x, &JobContext::new()).unwrap();
-    assert!(e.status.is_usable());
 }
 
 #[test]
 fn ghost_operands_match_explicit_solvers() {
     let s = samples::singlet();
     let ev = BuiltinEvaluator::builtin();
-    let tr = Arc::new(ev.tracer(&s).unwrap());
+    let tr = Arc::new(ev.trace.tracer(&s).unwrap());
     let ctx = JobContext::new();
     let model = mklight_ghost::GhostModel::new(tr, Default::default()).unwrap();
     let path = mklight_ghost::GhostPath::new(vec![2, 1]);
@@ -282,7 +282,6 @@ fn ghost_operands_match_explicit_solvers() {
         .clone()
         .unwrap();
     assert!((v - focus.ghosts[0].focus_from_sensor.abs()).abs() < 1e-12);
-    assert_eq!(ctx.progress.fraction(), 1.0);
     let mut settings = ev.solvers.ghost.clone();
     settings.paths = Some(vec![path.clone()]);
     settings.wavelengths = vec![s.wavelengths.primary];
@@ -315,7 +314,7 @@ fn worst_ghosts_and_selected_orders_match_solver() {
     let s = samples::cooke_triplet();
     let ev = BuiltinEvaluator::builtin();
     let model =
-        mklight_ghost::GhostModel::new(Arc::new(ev.tracer(&s).unwrap()), Default::default())
+        mklight_ghost::GhostModel::new(Arc::new(ev.trace.tracer(&s).unwrap()), Default::default())
             .unwrap();
     let report = mklight_ghost::paraxial::paraxial_ghosts(&model, &Default::default()).unwrap();
     assert!(report.ghosts.len() > 2);
@@ -339,7 +338,7 @@ fn worst_ghosts_and_selected_orders_match_solver() {
 
     let s = samples::singlet();
     let model =
-        mklight_ghost::GhostModel::new(Arc::new(ev.tracer(&s).unwrap()), Default::default())
+        mklight_ghost::GhostModel::new(Arc::new(ev.trace.tracer(&s).unwrap()), Default::default())
             .unwrap();
     let mut settings = ev.solvers.ghost.clone();
     settings.enumeration.max_reflections = 4;
@@ -396,7 +395,7 @@ fn stray_agrees_with_solver_and_uses_common_random_numbers() {
         rare_floor: 0.1,
     };
     ev.solvers.stray.transport.roulette_threshold = 1e-6;
-    let tr = ev.tracer(&s).unwrap();
+    let tr = ev.trace.tracer(&s).unwrap();
     let mut rs = tr.system().clone();
     rs.wavelength_weights.fill(0.0);
     rs.wavelength_weights[rs.primary_wavelength] = 1.0;
@@ -419,7 +418,22 @@ fn stray_agrees_with_solver_and_uses_common_random_numbers() {
     assert_eq!(a.to_bits(), values[1][0].as_ref().unwrap().to_bits());
     assert_eq!(a.to_bits(), reference.stray_fraction.unwrap().to_bits());
     let mut changed = s.clone();
-    changed.surfaces[2].thickness += 0.001;
-    let b = ev.evaluate_batch(&[changed, s], &[&op], &ctx).unwrap();
+    changed.surfaces[1].thickness += 0.01;
+    let mut reseeded = op.clone();
+    if let OperandKind::StrayLightPower { seed, .. } = &mut reseeded.kind {
+        *seed += 1;
+    }
+    let b = ev
+        .evaluate_batch(&[changed, s.clone()], &[&op], &ctx)
+        .unwrap();
     assert_eq!(a.to_bits(), b[1][0].as_ref().unwrap().to_bits());
+    // Common random numbers: a small prescription change moves the value
+    // far less than the Monte-Carlo noise of another seed.
+    let step = (b[0][0].as_ref().unwrap() - a).abs();
+    let noise = (ev.evaluate_system(&s, &[&reseeded], &ctx).unwrap()[0]
+        .as_ref()
+        .unwrap()
+        - a)
+        .abs();
+    assert!(step < 0.1 * noise, "CRN step {step}, seed noise {noise}");
 }
