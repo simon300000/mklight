@@ -11,16 +11,24 @@
 //! error. One residual per ray keeps the least-squares structure that LM
 //! exploits.
 //!
-//! With a `Centroid` reference every ray operand carries the [`RayGroup`]
-//! (the full sampling, symmetry included) that defines its reference, so a
-//! tracer-backed evaluator computes the centroid / piston-tilt over the right
-//! — mirrored, for a half pupil — ray set (see [`super::reference`]).
+//! Every ray operand carries the [`RayGroup`] (the full sampling, symmetry
+//! included) it belongs to. With a `Centroid` reference the group defines the
+//! reference, so a tracer-backed evaluator computes the centroid /
+//! piston-tilt over the right — mirrored, for a half pupil — ray set (see
+//! [`super::reference`]); with either reference it tells the evaluator that
+//! the operand is part of a half pupil.
 //!
 //! **Half pupil.** With `auto_symmetry` the bilateral half pupil is used only
 //! when the system is mirror-symmetric about the meridional plane in *every*
 //! emitted configuration and no variable can break that symmetry (x
 //! decenters, tilts about y or z, x field coordinates); use
-//! [`DefaultMeritSpec::generate_for`] to pass the variables.
+//! [`DefaultMeritSpec::generate_for`] to pass the variables, and
+//! [`DefaultMeritSpec::generate_for_tolerancing`] for a tolerancing
+//! criterion (whose perturbations are the "variables"). Should a half-pupil
+//! merit still meet an asymmetric candidate, the tracer-backed evaluator
+//! traces the mirrored nodes too and reports pair values that keep `Σ w r²`
+//! equal to the full-pupil merit (see [`RayGroup`]), at twice the ray
+//! count.
 //!
 //! Thickness boundaries are placed on the physical gaps between optically
 //! active surfaces ([`optical_gaps`]), never on gaps bounded by a
@@ -38,6 +46,7 @@ use super::operand::{
 };
 use super::quadrature::{PupilSampling, PupilSymmetry};
 use super::{MeritFunctionSpec, Operand, VariableSpec};
+use crate::tolerance::ToleranceSpec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -220,6 +229,24 @@ impl DefaultMeritSpec {
         self.generate_for(s, &[])
     }
 
+    /// Generate a tolerancing criterion: the toleranced parameters and the
+    /// compensators count as variables, so a tolerance that can break the
+    /// meridional symmetry (x decenter, y or z tilt) selects the full pupil.
+    pub fn generate_for_tolerancing(
+        &self,
+        s: &OpticalSystem,
+        tolerances: &ToleranceSpec,
+    ) -> MkResult<MeritFunctionSpec> {
+        let vars: Vec<VariableSpec> = tolerances
+            .operands
+            .iter()
+            .map(|o| &o.param)
+            .chain(tolerances.compensators.iter().map(|c| &c.param))
+            .map(|p| VariableSpec::new(p.clone()))
+            .collect();
+        self.generate_for(s, &vars)
+    }
+
     /// Generate for a system that will be optimised over `variables` (which
     /// decide, with the configurations, whether the half pupil is valid).
     pub fn generate_for(
@@ -274,8 +301,7 @@ impl DefaultMeritSpec {
                     for nd in &nodes {
                         let kinds: Vec<OperandKind> = match self.criterion {
                             DefaultCriterion::RmsSpot { reference, scope } => {
-                                let group = (reference == SpotReference::Centroid)
-                                    .then_some(RayGroup { sampling, scope });
+                                let group = Some(RayGroup { sampling, scope });
                                 [Axis::X, Axis::Y]
                                     .into_iter()
                                     .map(|axis| OperandKind::RayAberration {
@@ -288,8 +314,7 @@ impl DefaultMeritSpec {
                                     .collect()
                             }
                             DefaultCriterion::Wavefront { reference } => {
-                                let group = (reference == WavefrontReference::Centroid)
-                                    .then_some(RayGroup::new(sampling));
+                                let group = Some(RayGroup::new(sampling));
                                 vec![OperandKind::WavefrontAberration {
                                     px: nd.px,
                                     py: nd.py,

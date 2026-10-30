@@ -1,7 +1,6 @@
 //! End-to-end optimisation and tolerancing on real lenses with the
 //! tracer-backed evaluator.
 
-use mklight_core::job::RunTimer;
 use mklight_core::model::{ApertureSpec, OpticalSystem, SurfaceShape};
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, SurfaceId, samples};
@@ -226,11 +225,12 @@ fn cooke_triplet_local_then_global() {
         },
         ..Default::default()
     };
-    let timer = RunTimer::start();
-    let g1 = hammer(&p, &r.x, &hs, &Monitor::default()).unwrap();
-    let info = TraceEvaluator::builtin()
-        .run_info(timer, p.base(), "optimise/hammer", &hs, Some(hs.seed))
+    let run = TraceEvaluator::builtin()
+        .run(p.base(), "optimise/hammer", &hs, Some(hs.seed), || {
+            hammer(&p, &r.x, &hs, &Monitor::default())
+        })
         .unwrap();
+    let (g1, info) = (run.result, run.info);
     let g2 = hammer(&p, &r.x, &hs, &Monitor::default()).unwrap();
     eprintln!(
         "triplet hammer: {} ({:?}, {} evals)",
@@ -266,12 +266,6 @@ fn cooke_triplet_local_then_global() {
 #[test]
 fn cooke_triplet_tolerancing() {
     let sys = samples::cooke_triplet();
-    let criterion = DefaultMeritSpec {
-        thickness: None,
-        ..Default::default()
-    }
-    .generate(&sys)
-    .unwrap();
     let t = |id| ParamPath::Thickness {
         surface: SurfaceId(id),
     };
@@ -303,6 +297,17 @@ fn cooke_triplet_tolerancing() {
         range: Some(1.0),
         scale: None,
     }];
+    // Every tolerance keeps the meridional symmetry: half pupil.
+    let criterion = DefaultMeritSpec {
+        thickness: None,
+        ..Default::default()
+    }
+    .generate_for_tolerancing(&sys, &spec)
+    .unwrap();
+    assert!(criterion.operands.iter().all(|o| {
+        o.kind.ray_group().unwrap().sampling.symmetry
+            == mklight_optim::merit::PupilSymmetry::Bilateral
+    }));
     let reg = OperandRegistry::builtin();
     let ev = TraceEvaluator::builtin();
     let lsq = LsqSettings {
@@ -317,7 +322,13 @@ fn cooke_triplet_tolerancing() {
         registry: &reg,
         lsq,
     };
-    let rep = sensitivity(&spec, &with, &Monitor::default()).unwrap();
+    let run = ev
+        .run(&sys, "tolerance/sensitivity", &spec, None, || {
+            sensitivity(&spec, &with, &Monitor::default())
+        })
+        .unwrap();
+    assert_eq!(run.info.analysis, "tolerance/sensitivity");
+    let rep = run.result;
     assert!(rep.nominal.ok);
     assert_eq!(rep.ranking.len(), spec.operands.len());
     for w in rep.ranking.windows(2) {

@@ -37,7 +37,7 @@ pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
 pub use operand::{CentroidScope, RayGroup};
 pub use problem::{OpticalProblem, VariableSpec};
 pub use quadrature::{PupilNode, PupilSampling, PupilSymmetry};
-pub use trace_eval::{TraceEvalSettings, TraceEvaluator};
+pub use trace_eval::{RunResult, TraceEvalSettings, TraceEvaluator};
 
 /// Current merit-file schema version. Bump when an existing serialised
 /// layout changes and add a migration step to `MeritFunctionSpec::migrate`.
@@ -348,7 +348,8 @@ impl MeritFunctionSpec {
     }
 
     /// Checks against a concrete system: field, wavelength and configuration
-    /// indices exist.
+    /// indices exist (also the colour wavelengths of a tolerance-sensitivity
+    /// criterion).
     pub fn validate_for(&self, s: &OpticalSystem) -> MkResult<()> {
         let nf = s.fields.fields.len();
         let nw = s.wavelengths.wavelengths.len();
@@ -370,8 +371,13 @@ impl MeritFunctionSpec {
             if op.config >= nc {
                 return bad(format!("configuration {} does not exist", op.config));
             }
+            // A tolerance sensitivity evaluates its criterion on this system.
+            let mut kind = &op.kind;
+            while let OperandKind::ToleranceSensitivity { criterion, .. } = kind {
+                kind = criterion;
+            }
             if let OperandKind::LateralColour { short, long }
-            | OperandKind::AxialColour { short, long } = op.kind
+            | OperandKind::AxialColour { short, long } = *kind
                 && (short >= nw || long >= nw)
             {
                 return bad("colour operand wavelength index out of range".into());

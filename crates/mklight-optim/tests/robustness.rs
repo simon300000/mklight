@@ -624,7 +624,9 @@ fn gaps_after_a_mirror_are_positive() {
         ],
     );
     assert_eq!(v[0], Ok(30.0));
-    let edge = -(-30.0 - sag(-200.0, 20.0) + sag(-80.0, 20.0));
+    // Measured at the larger rim (20 mm); M2 continues flat beyond its own
+    // 10 mm rim.
+    let edge = -(-30.0 - sag(-200.0, 20.0) + sag(-80.0, 10.0));
     assert!((v[1].clone().unwrap() - edge).abs() < 1e-12, "{v:?}");
     assert!(edge > 0.0);
 }
@@ -751,7 +753,8 @@ fn chief_reference_needs_no_group_and_centroid_requires_one() {
         group: None,
     })]);
     assert!(wf.validate(&reg).is_err());
-    // Chief-referenced default merit emits no groups.
+    // A chief-referenced default merit also tags its ray operands with the
+    // (half-pupil) sampling they belong to.
     let spec = DefaultMeritSpec {
         criterion: mklight_optim::merit::default::DefaultCriterion::RmsSpot {
             reference: SpotReference::Chief,
@@ -762,7 +765,13 @@ fn chief_reference_needs_no_group_and_centroid_requires_one() {
     }
     .generate(&axial_system())
     .unwrap();
-    assert!(ray_groups(&spec).is_empty());
+    let groups = ray_groups(&spec);
+    assert_eq!(groups.len(), spec.operands.len());
+    assert!(
+        groups
+            .iter()
+            .all(|g| g.sampling.symmetry == PupilSymmetry::Bilateral)
+    );
     spec.validate(&reg).unwrap();
 }
 

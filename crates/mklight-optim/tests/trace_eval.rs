@@ -209,9 +209,9 @@ fn ideal_lens_known_answers() {
     // Stop at the lens: the chief ray is undeviated, CRA = field angle.
     assert!((ok(&v[3]) - 20.0).abs() < 1e-9);
     assert!((ok(&v[8]) - 20.0).abs() < 1e-9);
-    // Natural vignetting: cos⁴θ for a small aperture at the lens.
+    // Natural vignetting: cos⁴θ for an aperture at an ideal lens.
     let cos4 = theta.cos().powi(4);
-    assert!((ok(&v[4]) - cos4).abs() < 2e-3 * cos4, "{:?} {cos4}", v[4]);
+    assert!((ok(&v[4]) - cos4).abs() < 1e-9 * cos4, "{:?} {cos4}", v[4]);
     assert!((ok(&v[9]) - 1.0).abs() < 1e-12);
     let r = epd / 2.0;
     let fw = (f * f + r * r).sqrt() / (2.0 * r);

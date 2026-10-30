@@ -74,6 +74,21 @@ pub enum CentroidScope {
 /// pupil stands for the mirrored full pupil (x centroid and x tilt are zero by
 /// symmetry, not the mean over `px ≥ 0`). Rays that fail are left out of the
 /// reference.
+///
+/// A group may also be attached to a `Chief`-referenced per-ray operand; it
+/// then only declares the sampling the operand belongs to.
+///
+/// **Half pupil on an asymmetric candidate.** The half pupil is exact only
+/// when the candidate is mirror-symmetric about the meridional plane (and the
+/// field is on the y axis). Otherwise an evaluator must trace the mirrored
+/// nodes `(−px, py)` as well (each node keeping half its weight), form the
+/// reference over that full set without symmetry assumptions, and report a
+/// per-ray operand at node `p` as the *pair value*
+/// `v = s·√((v(p)² + v(p̄)²)/2)`, where `v(p̄)` is the same operand at the
+/// mirrored node and `s` the sign of the part even under the mirror
+/// (`v(p) − v(p̄)` for x aberrations, `v(p) + v(p̄)` for y aberrations and
+/// OPD). Then `Σ w v²` over the half pupil equals the full-pupil sum exactly,
+/// and `v` reduces to the plain value as the candidate becomes symmetric.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RayGroup {
     pub sampling: PupilSampling,
@@ -961,6 +976,9 @@ impl OperandRegistry {
     /// e.g. `"efl"`, is rejected).
     pub fn knows(&self, kind: &OperandKind) -> bool {
         match (kind, self.get(kind.name())) {
+            (OperandKind::ToleranceSensitivity { criterion, .. }, Some(d)) => {
+                d.capability == Capability::Tolerance && self.knows(criterion)
+            }
             (OperandKind::Custom { .. }, Some(d)) => d.capability == Capability::Plugin,
             (OperandKind::Custom { .. }, None) => false,
             (_, d) => d.is_some_and(|d| d.capability != Capability::Plugin),

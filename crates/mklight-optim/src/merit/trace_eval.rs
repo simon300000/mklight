@@ -46,6 +46,7 @@
 //! [`CompositeEvaluator`](super::CompositeEvaluator).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::f64::consts::{PI, TAU};
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
@@ -55,7 +56,7 @@ use mklight_core::job::{Precision, RunTimer};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{
     JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo, SemiDiameter, Snapshot,
-    SurfaceId, Vec3,
+    SurfaceId, SurfaceShape, Vec3,
 };
 use mklight_trace::{
     ObjectSource, OpdReference, ParaxialModel, PreparedField, SemiDiameterSettings,
@@ -63,6 +64,7 @@ use mklight_trace::{
     trace::to_global,
 };
 
+use super::default::is_meridionally_symmetric;
 use super::geometric::{is_model_kind, model_value, needs_semi_diameters};
 use super::operand::{
     Axis, CentroidScope, DistortionMapping, FNumberKind, OperandKind, ParaxialQuantity,
@@ -84,8 +86,11 @@ pub struct TraceEvalSettings {
     pub clip: bool,
     /// Pupil-edge azimuths for automatic semi-diameters (edge thickness).
     pub semi_diameter_azimuths: usize,
-    /// Polar pupil grid of the relative-illumination operand.
+    /// Radial samples per azimuth of the relative-illumination pupil
+    /// integration (vignetting boundaries between samples are then located
+    /// by bisection).
     pub illumination_rings: usize,
+    /// Azimuths of the relative-illumination pupil integration.
     pub illumination_arms: usize,
 }
 
@@ -96,9 +101,17 @@ impl Default for TraceEvalSettings {
             clip: true,
             semi_diameter_azimuths: 16,
             illumination_rings: 12,
-            illumination_arms: 24,
+            illumination_arms: 32,
         }
     }
+}
+
+/// The result of an optimisation or tolerancing run with its [`RunInfo`]
+/// (from [`TraceEvaluator::run`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunResult<T> {
+    pub result: T,
+    pub info: RunInfo,
 }
 
 /// Operand evaluator backed by the CPU f64 reference tracer (module docs).
@@ -154,6 +167,26 @@ impl TraceEvaluator {
             seed,
             warnings,
         ))
+    }
+
+    /// Run `f` — an optimisation or tolerancing driver (`least_squares`,
+    /// `hammer`, `sensitivity`, `monte_carlo`, …) on a problem using this
+    /// evaluator, started from `start` — and return its result with the
+    /// [`RunInfo`] attached: the timer brackets `f`, and the snapshot hash,
+    /// `settings`, `seed`, backend and tracer warnings are recorded as in
+    /// [`Self::run_info`]. Prefer this to calling `run_info` by hand.
+    pub fn run<T>(
+        &self,
+        start: &OpticalSystem,
+        analysis: &str,
+        settings: &impl Serialize,
+        seed: Option<u64>,
+        f: impl FnOnce() -> MkResult<T>,
+    ) -> MkResult<RunResult<T>> {
+        let timer = RunTimer::start();
+        let result = f()?;
+        let info = self.run_info(timer, start, analysis, settings, seed)?;
+        Ok(RunResult { result, info })
     }
 
     /// Snapshot → `ResolvedSystem` → `SequentialTracer` for one system.
@@ -364,7 +397,12 @@ struct NodeRay {
 }
 
 struct GroupRays {
+    /// The sampling's nodes, followed by their mirrors `(−px, py)` when a
+    /// half pupil is traced in full (asymmetric candidate); weights then
+    /// halved.
     nodes: Vec<PupilNode>,
+    /// Symmetry of the traced node set (`None` once mirrored).
+    symmetry: PupilSymmetry,
     rays: Vec<NodeRay>,
     /// Node index by the bits of `(px, py)`.
     index: HashMap<(u64, u64), usize>,
@@ -389,6 +427,14 @@ fn axis_value(p: [f64; 2], axis: Axis) -> f64 {
     }
 }
 
+/// Transmitted radial intervals of one pupil azimuth and the surfaces that
+/// bound them (relative illumination).
+#[derive(Default)]
+struct Arm {
+    intervals: Vec<(f64, f64)>,
+    bounds: Vec<Option<usize>>,
+}
+
 /// Weighted mean of `f(item)` over `(item, weight)` pairs.
 fn weighted_mean<T>(
     items: &[(T, f64)],
@@ -406,6 +452,16 @@ fn weighted_mean<T>(
     Ok(s.value() / w)
 }
 
+/// Half-pupil pair value of a per-ray operand on an asymmetric candidate
+/// ([`RayGroup`] contract): `s·√((a² + b²)/2)` for the values `a` at the node
+/// and `b` at its mirror, `s` the sign of the mirror-even part (`a − b` for a
+/// quantity odd in `px`, else `a + b`).
+fn pair_value(a: f64, b: f64, odd: bool) -> f64 {
+    let even = if odd { a - b } else { a + b };
+    let m = (0.5 * (a * a + b * b)).sqrt();
+    if even < 0.0 { -m } else { m }
+}
+
 /// `items.map(f)` in order, on the rayon pool when `parallel`.
 fn pmap<T: Sync, R: Send>(
     items: &[T],
@@ -419,8 +475,9 @@ fn pmap<T: Sync, R: Send>(
     }
 }
 
-/// Weights, image `x` and image `y` of the surviving rays of a spot.
-type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>);
+/// Weights, image `x` and image `y` of the surviving rays of a spot, and the
+/// symmetry of the traced node set.
+type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>, PupilSymmetry);
 
 /// Memo key of a group reference: (field, operand λ, sampling,
 /// polychromatic scope, wavefront (piston/tilt) rather than spot centroid).
@@ -436,6 +493,8 @@ struct Candidate<'a> {
     /// Centroids `[cx, cy, 0]` and piston/tilts of ray groups, computed on
     /// first use (every ray operand of a group shares its reference).
     refs: Mutex<BTreeMap<RefKey, Result<[f64; 3], OperandError>>>,
+    /// Is the candidate mirror-symmetric about the meridional plane?
+    symmetric: bool,
 }
 
 impl<'a> Candidate<'a> {
@@ -458,6 +517,7 @@ impl<'a> Candidate<'a> {
             chiefs: BTreeMap::new(),
             groups: BTreeMap::new(),
             refs: Mutex::new(BTreeMap::new()),
+            symmetric: is_meridionally_symmetric(tr.system().system()),
         };
         let mut plan = Plan::default();
         for op in operands {
@@ -530,8 +590,27 @@ impl<'a> Candidate<'a> {
         Ok(c)
     }
 
+    /// Must the half-pupil `sampling` be traced in full at field `f`? (The
+    /// candidate, or the field point, is not mirror-symmetric.)
+    fn mirrored(&self, f: FieldKey, sampling: &PupilSampling) -> bool {
+        sampling.symmetry == PupilSymmetry::Bilateral
+            && (!self.symmetric || matches!(f, FieldKey::Point(hx, _) if f64::from_bits(hx) != 0.0))
+    }
+
     fn trace_group(&self, (f, w, _): GroupKey, sampling: &PupilSampling) -> GroupRays {
-        let nodes = sampling.nodes();
+        let mut nodes = sampling.nodes();
+        let mut symmetry = sampling.symmetry;
+        if self.mirrored(f, sampling) {
+            let mirrors: Vec<PupilNode> = nodes
+                .iter_mut()
+                .map(|n| {
+                    n.weight *= 0.5;
+                    PupilNode { px: -n.px, ..*n }
+                })
+                .collect();
+            nodes.extend(mirrors);
+            symmetry = PupilSymmetry::None;
+        }
         let reference = self.chiefs[&(f, w)].reference.as_ref().ok();
         let rays = match self.field(f) {
             Ok(field) => nodes
@@ -564,7 +643,12 @@ impl<'a> Candidate<'a> {
             .enumerate()
             .map(|(i, n)| ((n.px.to_bits(), n.py.to_bits()), i))
             .collect();
-        GroupRays { nodes, rays, index }
+        GroupRays {
+            nodes,
+            symmetry,
+            rays,
+            index,
+        }
     }
 
     // ----- selectors -----------------------------------------------------
@@ -753,9 +837,12 @@ impl<'a> Candidate<'a> {
                 }
             }
             LateralColour { short, long } => {
-                for &(f, _) in &fields {
-                    p.chiefs.insert((f, *short));
-                    p.chiefs.insert((f, *long));
+                // Out-of-range wavelengths are reported by `value`.
+                if *short < self.tr.num_wavelengths() && *long < self.tr.num_wavelengths() {
+                    for &(f, _) in &fields {
+                        p.chiefs.insert((f, *short));
+                        p.chiefs.insert((f, *long));
+                    }
                 }
             }
             RealRay { .. } | ChiefRayAngle { .. } => {
@@ -881,8 +968,10 @@ impl<'a> Candidate<'a> {
         s: &PupilSampling,
     ) -> Result<SpotRays, OperandError> {
         let (mut wt, mut xs, mut ys) = (Vec::new(), Vec::new(), Vec::new());
+        let mut symmetry = s.symmetry;
         for &(w, ww) in wls {
             let g = self.group(f, w, s)?;
+            symmetry = g.symmetry;
             for (n, r) in g.nodes.iter().zip(&g.rays) {
                 if let Some(p) = r.pos {
                     wt.push(n.weight * ww);
@@ -896,7 +985,7 @@ impl<'a> Candidate<'a> {
                 "no ray of the pupil sampling reached the image".into(),
             ));
         }
-        Ok((wt, xs, ys))
+        Ok((wt, xs, ys, symmetry))
     }
 
     /// Memoised reference of ray group `g` for an operand at wavelength
@@ -938,8 +1027,8 @@ impl<'a> Candidate<'a> {
         wls: &[(usize, f64)],
         s: &PupilSampling,
     ) -> Result<[f64; 2], OperandError> {
-        let (wt, xs, ys) = self.spot_rays(f, wls, s)?;
-        spot_centroid(&wt, &xs, &ys, s.symmetry)
+        let (wt, xs, ys, symmetry) = self.spot_rays(f, wls, s)?;
+        spot_centroid(&wt, &xs, &ys, symmetry)
             .ok_or_else(|| OperandError::RayFailure("spot centroid undefined".into()))
     }
 
@@ -951,8 +1040,10 @@ impl<'a> Candidate<'a> {
         s: &PupilSampling,
     ) -> Result<[f64; 3], OperandError> {
         let (mut px, mut py, mut wt, mut opd) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut symmetry = s.symmetry;
         for &(w, ww) in wls {
             let g = self.group(f, w, s)?;
+            symmetry = g.symmetry;
             for (n, r) in g.nodes.iter().zip(&g.rays) {
                 if let Some(o) = r.opd {
                     px.push(n.px);
@@ -962,7 +1053,7 @@ impl<'a> Candidate<'a> {
                 }
             }
         }
-        piston_tilt(&px, &py, &wt, &opd, s.symmetry)
+        piston_tilt(&px, &py, &wt, &opd, symmetry)
             .ok_or_else(|| OperandError::RayFailure("too few rays for piston and tilt".into()))
     }
 
@@ -978,6 +1069,18 @@ impl<'a> Candidate<'a> {
             Ok(([t[0] / r, t[1] / r], r, at_inf))
         } else {
             Ok(([0.0, 1.0], 0.0, at_inf))
+        }
+    }
+
+    /// Both wavelengths of a colour operand exist.
+    fn colour_pair(&self, short: usize, long: usize) -> Result<(), OperandError> {
+        let nw = self.tr.num_wavelengths();
+        if short < nw && long < nw {
+            Ok(())
+        } else {
+            Err(OperandError::Invalid(format!(
+                "colour wavelength index out of range ({short}, {long}; {nw} wavelengths)"
+            )))
         }
     }
 
@@ -1049,11 +1152,16 @@ impl<'a> Candidate<'a> {
             PetzvalSum => {
                 let wls = self.wavelengths(op.wavelength)?;
                 weighted_mean(&wls, |&w| {
-                    let m = ParaxialModel::new(self.tr.system(), w);
+                    let rs = self.tr.system();
+                    let m = ParaxialModel::new(rs, w);
                     let nn = &m.reduced_index;
                     let mut s = mklight_core::math::KahanSum::default();
                     for j in 1..nn.len() {
-                        if m.power[j] != 0.0 {
+                        // An ideal lens images a plane onto a plane without
+                        // aberration (a thin lens of infinite index, φ/n → 0),
+                        // so it adds no field curvature.
+                        let ideal = matches!(rs.surfaces[j].shape, SurfaceShape::Paraxial { .. });
+                        if m.power[j] != 0.0 && !ideal {
                             s.add(m.power[j] / (nn[j] * nn[j - 1]));
                         }
                     }
@@ -1061,12 +1169,7 @@ impl<'a> Candidate<'a> {
                 })
             }
             AxialColour { short, long } => {
-                let nw = self.tr.num_wavelengths();
-                if *short >= nw || *long >= nw {
-                    return Err(OperandError::Invalid(
-                        "wavelength index out of range".into(),
-                    ));
-                }
+                self.colour_pair(*short, *long)?;
                 Ok(px.at(*short).image_distance - px.at(*long).image_distance)
             }
             RealRay {
@@ -1085,7 +1188,6 @@ impl<'a> Candidate<'a> {
             } => {
                 let f = self.single_field(op.field)?;
                 let w = self.single_wavelength(op.wavelength)?;
-                let p = self.image_point(f, w, *ppx, *ppy, group.as_ref())?;
                 let r = match reference {
                     SpotReference::Chief => {
                         let c = self.chief(f, self.primary())?;
@@ -1099,7 +1201,18 @@ impl<'a> Candidate<'a> {
                         [c[0], c[1]]
                     }
                 };
-                Ok(axis_value(p, *axis) - axis_value(r, *axis))
+                let e = |px: f64| -> OperandValue {
+                    let p = self.image_point(f, w, px, *ppy, group.as_ref())?;
+                    Ok(axis_value(p, *axis) - axis_value(r, *axis))
+                };
+                let a = e(*ppx)?;
+                match group {
+                    Some(g) if self.mirrored(f, &g.sampling) => {
+                        let odd = *axis == Axis::X;
+                        Ok(pair_value(a, e(-*ppx)?, odd))
+                    }
+                    _ => Ok(a),
+                }
             }
             WavefrontAberration {
                 px: ppx,
@@ -1109,16 +1222,23 @@ impl<'a> Candidate<'a> {
             } => {
                 let f = self.single_field(op.field)?;
                 let w = self.single_wavelength(op.wavelength)?;
-                let v = self.opd(f, w, *ppx, *ppy, group.as_ref())?;
-                match reference {
-                    WavefrontReference::Chief => Ok(v),
+                let fit = match reference {
+                    WavefrontReference::Chief => [0.0; 3],
                     WavefrontReference::Centroid => {
                         let g = group.as_ref().ok_or_else(|| {
                             OperandError::Invalid("centroid reference needs a ray group".into())
                         })?;
-                        let c = self.group_reference(f, w, g, true)?;
-                        Ok(v - (c[0] + c[1] * ppx + c[2] * ppy))
+                        self.group_reference(f, w, g, true)?
                     }
+                };
+                let e = |px: f64| -> OperandValue {
+                    let v = self.opd(f, w, px, *ppy, group.as_ref())?;
+                    Ok(v - (fit[0] + fit[1] * px + fit[2] * ppy))
+                };
+                let a = e(*ppx)?;
+                match group {
+                    Some(g) if self.mirrored(f, &g.sampling) => Ok(pair_value(a, e(-*ppx)?, false)),
+                    _ => Ok(a),
                 }
             }
             ChiefRayAngle { surface } => {
@@ -1150,9 +1270,9 @@ impl<'a> Candidate<'a> {
                 let fields = self.fields(op.field)?;
                 let wls = self.wavelengths(op.wavelength)?;
                 let ms = weighted_mean(&fields, |&f| {
-                    let (wt, xs, ys) = self.spot_rays(f, &wls, sampling)?;
+                    let (wt, xs, ys, symmetry) = self.spot_rays(f, &wls, sampling)?;
                     let c = match reference {
-                        SpotReference::Centroid => spot_centroid(&wt, &xs, &ys, sampling.symmetry)
+                        SpotReference::Centroid => spot_centroid(&wt, &xs, &ys, symmetry)
                             .ok_or_else(|| {
                                 OperandError::RayFailure("spot centroid undefined".into())
                             })?,
@@ -1227,6 +1347,7 @@ impl<'a> Candidate<'a> {
                 Ok(100.0 * (real - reference) / reference)
             }
             LateralColour { short, long } => {
+                self.colour_pair(*short, *long)?;
                 let f = self.single_field(op.field)?;
                 let (u, _, _) = self.field_direction(f)?;
                 let a = self.chief(f, *short)?.ray.pos;
@@ -1237,13 +1358,13 @@ impl<'a> Candidate<'a> {
                 let f = self.single_field(op.field)?;
                 let wls = self.wavelengths(op.wavelength)?;
                 weighted_mean(&wls, |&w| {
-                    let axis = self.projected_solid_angle(ON_AXIS, w)?;
+                    let axis = self.irradiance(ON_AXIS, w)?;
                     if !(axis > 0.0) {
                         return Err(OperandError::RayFailure(
-                            "no unvignetted on-axis pupil".into(),
+                            "no on-axis ray reaches the image".into(),
                         ));
                     }
-                    Ok(self.projected_solid_angle(f, w)? / axis)
+                    Ok(self.irradiance(f, w)? / axis)
                 })
             }
             _ => Err(OperandError::Unsupported),
@@ -1349,52 +1470,243 @@ impl<'a> Candidate<'a> {
         Ok(1.0 / (2.0 * n * sin))
     }
 
-    /// Projected solid angle of the image-space ray bundle of field `f`
-    /// (area of the bundle in direction-cosine space), from a polar pupil
-    /// grid whose cells count only when all corners reach the image.
-    fn projected_solid_angle(&self, f: FieldKey, w: usize) -> Result<f64, OperandError> {
+    /// Irradiance (arbitrary but field-independent units) at the image of
+    /// field `f` for a uniform-radiance Lambertian object, from energy
+    /// conservation: `E = G · |dμ/dh| / |dA'/dh|`.
+    ///
+    /// * `G`: étendue of the transmitted beam per unit object measure — for
+    ///   an object at infinity the beam's cross-section perpendicular to its
+    ///   direction (mm²), for a finite object the projected solid angle of
+    ///   the transmitted cone about the object normal (the area of its
+    ///   direction cosines `(L, M)`) — integrated over the pupil region whose
+    ///   rays reach the image ([`Self::transmitted_etendue`]).
+    /// * `dμ/dh`: object measure (solid angle at infinity, object area
+    ///   otherwise) per unit normalised field area, and `dA'/dh` the image
+    ///   area per unit normalised field area of the chief ray's image point —
+    ///   both by central differences in `(hx, hy)` (step 1e-4).
+    ///
+    /// This holds for any (non-aplanatic, distorting, vignetting) lens; the
+    /// ratio to the on-axis value is the relative illumination.
+    fn irradiance(&self, f: FieldKey, w: usize) -> Result<f64, OperandError> {
         let field = self.field(f)?;
+        if !field.is_valid() {
+            return Err(OperandError::RayFailure(
+                field.error.clone().unwrap_or_default(),
+            ));
+        }
+        const DH: f64 = 1e-4;
+        let p = field.point;
+        let shifted = |dx: f64, dy: f64| -> Result<(ObjectSource, [f64; 2]), OperandError> {
+            let pf = self
+                .tr
+                .prepare_field(mklight_trace::FieldPoint {
+                    hx: p.hx + dx,
+                    hy: p.hy + dy,
+                    vignetting: p.vignetting,
+                })
+                .map_err(|e| OperandError::RayFailure(e.to_string()))?;
+            let c = self.tr.chief(&pf, w);
+            if !c.status.is_ok() {
+                return Err(status_error(&c));
+            }
+            Ok((pf.source, [c.ray.pos.x, c.ray.pos.y]))
+        };
+        let (sxp, ixp) = shifted(DH, 0.0)?;
+        let (sxm, ixm) = shifted(-DH, 0.0)?;
+        let (syp, iyp) = shifted(0.0, DH)?;
+        let (sym, iym) = shifted(0.0, -DH)?;
+        let d = |a: [f64; 2], b: [f64; 2]| [(a[0] - b[0]) / (2.0 * DH), (a[1] - b[1]) / (2.0 * DH)];
+        let (ix, iy) = (d(ixp, ixm), d(iyp, iym));
+        let image = (ix[0] * iy[1] - ix[1] * iy[0]).abs();
+        let vec = |s: &ObjectSource| match *s {
+            ObjectSource::Direction { dir } => dir,
+            ObjectSource::Point { point } => point,
+        };
+        let dv = |a: &ObjectSource, b: &ObjectSource| (vec(a) - vec(b)) * (0.5 / DH);
+        let (ox, oy) = (dv(&sxp, &sxm), dv(&syp, &sym));
+        let object = match field.source {
+            // Solid angle swept by the unit direction.
+            ObjectSource::Direction { dir } => dir.dot(ox.cross(oy)).abs(),
+            // Object area (projected on the object plane).
+            ObjectSource::Point { .. } => ox.cross(oy).z.abs(),
+        };
+        if !(image > 0.0 && image.is_finite() && object.is_finite()) {
+            return Err(OperandError::Invalid(
+                "field maps to no image area (afocal image space?)".into(),
+            ));
+        }
+        Ok(self.transmitted_etendue(field, w)? * object / image)
+    }
+
+    /// Étendue `G` of the rays of `field` that reach the image (see
+    /// [`Self::irradiance`]): `∬ |∂Q/∂(px, py)| dpx dpy` over the transmitted
+    /// part of the unit pupil, where `Q(px, py)` is the generated ray's
+    /// position across the beam (object at infinity) or its direction cosines
+    /// `(L, M)` (finite object).
+    ///
+    /// Polar integration. Along an azimuth the transmitted radial intervals
+    /// are found from `illumination_rings + 1` equally spaced samples, each
+    /// pass/block transition refined by bisection to 1e-7 of the pupil
+    /// radius, and `|∂Q/∂p| ρ` (central differences of `Q`) is integrated
+    /// over each interval by 6-point Gauss–Legendre. In azimuth,
+    /// `illumination_arms` equally spaced azimuths are scanned first. If the
+    /// surfaces bounding the intervals are the same on all of them, the
+    /// integrand is smooth and periodic and their trapezoidal sum is used
+    /// (spectrally accurate). Otherwise the azimuths where the bounding
+    /// surfaces change — corners of a vignetted pupil, tangents of a pupil
+    /// region that excludes the centre — are located by bisection, and each
+    /// smooth arc between them is integrated by Gauss–Legendre in a
+    /// cosine-mapped variable (which also absorbs the square-root behaviour at
+    /// a tangent). Vignetted boundaries are therefore located, not
+    /// approximated by grid cells; what can still be missed are transmitted
+    /// (or blocked) features narrower than the radial sample spacing, and
+    /// corners formed by one surface's own non-circular aperture.
+    fn transmitted_etendue(&self, field: &PreparedField, w: usize) -> Result<f64, OperandError> {
         let nr = self.ev.settings.illumination_rings.max(2);
-        let na = self.ev.settings.illumination_arms.max(6);
-        let dir = |px: f64, py: f64| -> Option<Vec3> {
-            let r = self.tr.trace(field, w, px, py, &self.opts);
-            r.status.is_ok().then_some(r.ray.dir)
-        };
-        let centre = dir(0.0, 0.0);
-        // rings[i][j] for ρ = (i + 1)/nr.
-        let rings: Vec<Vec<Option<Vec3>>> = (1..=nr)
-            .map(|i| {
-                let rho = i as f64 / nr as f64;
-                (0..na)
-                    .map(|j| {
-                        let t = std::f64::consts::TAU * j as f64 / na as f64;
-                        dir(rho * t.cos(), rho * t.sin())
-                    })
-                    .collect()
-            })
-            .collect();
-        let area = |pts: &[Option<Vec3>]| -> Option<f64> {
-            let mut a = 0.0;
-            for k in 0..pts.len() {
-                let (p, q) = (pts[k]?, pts[(k + 1) % pts.len()]?);
-                a += p.x * q.y - q.x * p.y;
+        let na = self.ev.settings.illumination_arms.max(8);
+        let (e1, e2) = match field.source {
+            ObjectSource::Direction { dir } => {
+                let a = if dir.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+                let e1 = (a - dir * a.dot(dir)).normalized();
+                (e1, dir.cross(e1))
             }
-            Some(0.5 * a.abs())
+            ObjectSource::Point { .. } => (Vec3::X, Vec3::Y),
         };
-        let mut s = mklight_core::math::KahanSum::default();
-        for j in 0..na {
-            let j1 = (j + 1) % na;
-            if let Some(a) = area(&[centre, rings[0][j], rings[0][j1]]) {
-                s.add(a);
+        let at_inf = matches!(field.source, ObjectSource::Direction { .. });
+        let q = |px: f64, py: f64| -> Result<[f64; 2], OperandError> {
+            let g = self
+                .tr
+                .generate(field, w, px, py)
+                .map_err(|_| OperandError::RayFailure("pupil ray cannot be aimed".into()))?;
+            let v = if at_inf { g.ray.pos } else { g.ray.dir };
+            Ok([v.dot(e1), v.dot(e2)])
+        };
+        const DP: f64 = 1e-5;
+        let jac = |px: f64, py: f64| -> Result<f64, OperandError> {
+            let (a, b) = (q(px + DP, py)?, q(px - DP, py)?);
+            let (c, d) = (q(px, py + DP)?, q(px, py - DP)?);
+            let qx = [a[0] - b[0], a[1] - b[1]];
+            let qy = [c[0] - d[0], c[1] - d[1]];
+            Ok((qx[0] * qy[1] - qx[1] * qy[0]).abs() / (4.0 * DP * DP))
+        };
+        let (gx, gw) = super::quadrature::gauss_legendre(6);
+        // `None` when the ray reaches the image, else the surface stopping it.
+        let blocked =
+            |px: f64, py: f64| self.tr.trace(field, w, px, py, &self.opts).status.surface();
+        let centre = blocked(0.0, 0.0);
+        // Transmitted radial intervals along azimuth θ, and the surfaces
+        // bounding them (a change of these is a kink of the integrand in θ).
+        let scan = |theta: f64| -> Arm {
+            let (sn, cs) = theta.sin_cos();
+            let at = |r: f64| blocked(r * cs, r * sn);
+            // Boundary between a passing radius and a blocked one; returns
+            // the radius and the blocking surface.
+            let edge = |mut good: f64, mut bad: f64, mut by: Option<usize>| {
+                while (bad - good).abs() > 1e-7 {
+                    let m = 0.5 * (good + bad);
+                    match at(m) {
+                        None => good = m,
+                        b => {
+                            bad = m;
+                            by = b;
+                        }
+                    }
+                }
+                (0.5 * (good + bad), by)
+            };
+            let mut arm = Arm::default();
+            let mut open = centre.is_none().then_some(0.0);
+            let mut prev = (0.0, centre);
+            for k in 1..=nr {
+                let r = k as f64 / nr as f64;
+                let b = at(r);
+                match (prev.1, b) {
+                    (Some(by), None) => {
+                        let (e, by) = edge(r, prev.0, Some(by));
+                        open = Some(e);
+                        arm.bounds.push(by);
+                    }
+                    (None, Some(by)) => {
+                        let (e, by) = edge(prev.0, r, Some(by));
+                        if let Some(a) = open.take() {
+                            arm.intervals.push((a, e));
+                        }
+                        arm.bounds.push(by);
+                    }
+                    _ => {}
+                }
+                prev = (r, b);
             }
-            for i in 0..nr - 1 {
-                if let Some(a) =
-                    area(&[rings[i][j], rings[i + 1][j], rings[i + 1][j1], rings[i][j1]])
-                {
-                    s.add(a);
+            if let Some(a) = open {
+                arm.intervals.push((a, 1.0));
+            }
+            arm
+        };
+        // ∫ |∂Q/∂p| ρ dρ over the transmitted intervals of azimuth θ.
+        let radial = |theta: f64, arm: &Arm| -> Result<f64, OperandError> {
+            let (sn, cs) = theta.sin_cos();
+            let mut sum = mklight_core::math::KahanSum::default();
+            for &(a, b) in &arm.intervals {
+                let (h, m) = (0.5 * (b - a), 0.5 * (b + a));
+                for (t, wt) in gx.iter().zip(&gw) {
+                    let r = m + h * t;
+                    sum.add(h * wt * r * jac(r * cs, r * sn)?);
                 }
             }
+            Ok(sum.value())
+        };
+        let dt = TAU / na as f64;
+        let coarse: Vec<Arm> = (0..na).map(|j| scan(dt * j as f64)).collect();
+        // Kinks: azimuths where the bounding surfaces change (corners of a
+        // vignetted pupil, tangents of a pupil not containing its centre),
+        // located by bisection to 1e-6 rad.
+        let mut kinks = Vec::new();
+        for j in 0..na {
+            let mut stack = vec![(
+                dt * j as f64,
+                coarse[j].bounds.clone(),
+                dt * (j + 1) as f64,
+                coarse[(j + 1) % na].bounds.clone(),
+            )];
+            while let Some((a, sa, b, sb)) = stack.pop() {
+                if sa == sb {
+                    continue;
+                }
+                let m = 0.5 * (a + b);
+                if b - a < 1e-6 {
+                    kinks.push(m);
+                    continue;
+                }
+                let sm = scan(m).bounds;
+                stack.push((m, sm.clone(), b, sb));
+                stack.push((a, sa, m, sm));
+            }
         }
-        Ok(s.value())
+        kinks.sort_by(f64::total_cmp);
+        let mut total = mklight_core::math::KahanSum::default();
+        if kinks.is_empty() {
+            // Smooth and periodic in θ: the trapezoidal rule converges
+            // spectrally.
+            for (j, arm) in coarse.iter().enumerate() {
+                total.add(dt * radial(dt * j as f64, arm)?);
+            }
+            return Ok(total.value());
+        }
+        // Piecewise smooth: Gauss–Legendre on each arc between kinks, in
+        // `u` with θ = a + L(1 − cos πu)/2, which also smooths the
+        // square-root behaviour at a tangent.
+        for (i, &a) in kinks.iter().enumerate() {
+            let b = kinks.get(i + 1).copied().unwrap_or(kinks[0] + TAU);
+            let len = b - a;
+            let n = (len / dt).ceil() as usize + 4;
+            let (ux, uw) = super::quadrature::gauss_legendre(n);
+            for (x, wt) in ux.iter().zip(&uw) {
+                let u = 0.5 * (x + 1.0);
+                let theta = a + 0.5 * len * (1.0 - (PI * u).cos());
+                let jw = 0.25 * wt * len * PI * (PI * u).sin();
+                total.add(jw * radial(theta, &scan(theta))?);
+            }
+        }
+        Ok(total.value())
     }
 }

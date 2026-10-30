@@ -15,10 +15,16 @@
 //! `(−1)^(number of mirrors before the gap)`, so a real gap is positive
 //! after a fold mirror too.
 //!
-//! Edge thickness at height `h` of the gap from surface `a` to surface `b` is
-//! `E = s · (Σ t − z_a(h) + z_b(h))` from the reference sag definition
-//! (`SurfaceShape::sag`). It needs coaxial surfaces (no decenters or tilts on
-//! `a..=b`); otherwise the operand is `Invalid`.
+//! Edge thickness at an explicit height `h` of the gap from surface `a` to
+//! surface `b` is `E = s · (Σ t − z_a(h) + z_b(h))` from the reference sag
+//! definition (`SurfaceShape::sag`). Without a height it is measured at the
+//! rim of the larger clear aperture, each surface's sag taken at its **own**
+//! semi-diameter: `E = s · (Σ t − z_a(h_a) + z_b(h_b))` — the smaller surface
+//! continues as a flat out to the larger rim, as a lens is edged. (With only
+//! one semi-diameter known, both sags are taken at it.) A steep surface is
+//! thus never evaluated beyond its own aperture, where its sag may not exist.
+//! Edge thickness needs coaxial surfaces (no decenters or tilts on `a..=b`);
+//! otherwise the operand is `Invalid`.
 
 use mklight_core::model::{Interaction, MaterialRef, SemiDiameter, SurfaceShape};
 use mklight_core::{JobContext, MkResult, OpticalSystem, SurfaceId};
@@ -156,11 +162,14 @@ pub fn gap_thickness(
             "edge thickness needs coaxial surfaces".into(),
         ));
     }
-    let h = match height {
-        Some(h) => h,
+    // Height at which each surface's sag is taken.
+    let (ha, hb) = match height {
+        Some(h) => (h, h),
         None => match (fixed_sd(sa.semi_diameter), fixed_sd(sb.semi_diameter)) {
-            (Some(x), Some(y)) => x.max(y),
-            (Some(x), None) | (None, Some(x)) => x,
+            // The rim of the larger aperture; the smaller surface continues
+            // as a flat beyond its own rim.
+            (Some(x), Some(y)) => (x, y),
+            (Some(x), None) | (None, Some(x)) => (x, x),
             (None, None) => {
                 return Err(OperandError::Invalid(
                     "edge thickness needs a fixed semi-diameter or explicit height".into(),
@@ -168,12 +177,12 @@ pub fn gap_thickness(
             }
         },
     };
-    let sag = |shape: &SurfaceShape| {
+    let sag = |shape: &SurfaceShape, h: f64| {
         shape
             .sag(h * h)
             .ok_or_else(|| OperandError::Invalid("height outside the surface's domain".into()))
     };
-    Ok(dir * (t - sag(&sa.shape)? + sag(&sb.shape)?))
+    Ok(dir * (t - sag(&sa.shape, ha)? + sag(&sb.shape, hb)?))
 }
 
 /// Value of one model-only operand (`Unsupported` for any other kind).
