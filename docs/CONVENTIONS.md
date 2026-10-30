@@ -95,8 +95,14 @@ document on purpose in the same change.
 
 * All stochastic methods (Monte-Carlo stray light, random pupil sampling,
   tolerancing, global optimisers) use the counter-based **Philox4x32-10**
-  generator, keyed by `(seed, stream, index)`. CPU and GPU produce identical
-  random streams.
+  generator, keyed by `(seed, stream, index)`. Draw `index` is lane
+  `index % 4` of the block with counter `(index / 4, stream)` and key `seed`.
+  CPU and GPU produce identical streams of **raw 32-bit words**, and identical
+  **f32 uniforms** through `rng::u32_to_unit_f32`. The f64 uniform
+  `rng::u32_to_unit_f64` is the CPU reference mapping. It differs from the f32
+  one by half an f32 ulp in the upper half of the range, so a cross-validation
+  that must sample identical points uses the same mapping on both sides
+  (the f32 one, or the f64 one applied on the host to the GPU's raw words).
 * Settings structs are serialisable. Each result carries a `RunInfo` with the
   engine version, snapshot hash, settings, backend, precision and seed.
 
