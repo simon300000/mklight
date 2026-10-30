@@ -162,9 +162,10 @@ impl Engine {
     }
 
     /// Pick the backend for one run of `analysis`. An explicit request is
-    /// honoured or fails (unless `allow_fallback`); the engine default is a
-    /// preference, so analyses it does not implement run on the CPU
-    /// reference, with a `RunInfo` warning saying so.
+    /// honoured or fails (unless `allow_fallback`); `auto` picks a GPU with
+    /// a path for the analysis, else the CPU reference; the engine default
+    /// is a preference, so analyses it does not implement run on the CPU
+    /// reference (with a `RunInfo` warning for an explicit GPU default).
     pub fn select_backend(
         &self,
         requested: Option<&Backend>,
@@ -174,7 +175,12 @@ impl Engine {
         let reg = read(&self.inner.backends);
         match requested {
             Some(b) => reg.select(b, Some(analysis), allow_fallback),
-            None => reg.select(&self.default_backend(), Some(analysis), true),
+            None => {
+                let d = self.default_backend();
+                let mut s = reg.select(&d, Some(analysis), true)?;
+                s.requested = format!("default:{}", d.id());
+                Ok(s)
+            }
         }
     }
 

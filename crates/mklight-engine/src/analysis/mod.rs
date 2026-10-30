@@ -3,27 +3,47 @@
 //! An `Analysis` turns an immutable snapshot (and, when it needs one, the
 //! `ResolvedSystem` built from it) plus a settings object into a JSON result
 //! and optional typed buffers. Analyses are looked up by name in an
-//! `AnalysisRegistry`; solver crates add theirs with `register` (see
-//! `builtin::PLANNED` for the names reserved for them).
+//! `AnalysisRegistry`. `register_all` registers every solver's analyses:
+//!
+//! | module | analyses |
+//! |---|---|
+//! | `builtin` | `validate`, `system_summary`, `glass_info`, `rng_stream`, placeholders for the wave-optics names (`builtin::PLANNED`) |
+//! | `geometric` | everything in `mklight-analysis` (first-order data, layout, spots, fans, field curvature, Seidel, illumination, energy, …) and `ray_grid` |
+//! | `ghost` | `ghost_paths`, `ghost_irradiance` (`mklight-ghost`) |
+//! | `stray` | `stray_light` (`mklight-stray`, partitioned against the ghost solver) |
+//! | `radiometry` | `system_transmission`, `polarization_pupil_map` (`mklight-trace`) |
+//! | `solves` | `solves` (dry run of `Session::apply_solves`) |
+//!
+//! Each analysis publishes a settings schema with defaults and a result
+//! schema (`schema`), documented in `docs/RESULTS.md`.
 //!
 //! `run_analysis` is the single execution path used both synchronously
 //! (CLI, Python, tests) and by the job scheduler: it normalises settings
 //! against the schema, runs the analysis and stamps the result with a
-//! `RunInfo`.
+//! `RunInfo` naming the backend that actually computed it.
 
 pub mod builtin;
+pub mod geometric;
+pub mod ghost;
+pub mod gpu;
+pub mod radiometry;
+pub mod schema;
+pub mod solves;
+pub mod stray;
+// HOOK (optimisation): `pub mod optim;` and its registration in
+// `register_all` belong to the optimisation work (src/analysis/optim.rs).
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mklight_core::job::RunTimer;
+use mklight_core::job::{Precision, RunTimer};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkResult, ResolvedSystem, RunInfo, Snapshot};
 
-use crate::backend::{BackendInfo, DeviceHandle};
+use crate::backend::{Backend, BackendInfo, DeviceHandle};
 use crate::buffer::{Buffer, BufferDesc};
 use crate::error::{EngineError, EngineResult};
 use crate::settings;
@@ -44,6 +64,13 @@ pub struct AnalysisInfo {
     pub settings_schema: Value,
     /// Settings with every default filled in (null if some are required).
     pub default_settings: Value,
+    /// JSON Schema of `result`, with the buffers under `x-buffers`
+    /// (`schema`, `docs/RESULTS.md`).
+    pub result_schema: Value,
+    /// Version of the result shape (bumped on incompatible changes).
+    pub result_version: u32,
+    /// The analysis can run on a GPU backend (`auto` selects one).
+    pub gpu_path: bool,
 }
 
 /// What an analysis returns.
@@ -55,10 +82,47 @@ pub struct AnalysisOutput {
     pub warnings: Vec<String>,
 }
 
+/// Which backend computed a result, and why (`AnalysisResult::backend`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BackendReport {
+    /// What was asked for: a backend id, `auto`, or `default:<id>` when the
+    /// request named none and the engine default applied.
+    pub requested: String,
+    /// The backend id that computed the result (= `run_info.backend`).
+    pub used: String,
+    pub precision: Precision,
+    /// GPU device name, when a GPU computed the result.
+    pub device: Option<String>,
+    /// Why the requested (or automatically preferred) backend was not used:
+    /// unavailable, no GPU path for the analysis, or failed precision
+    /// qualification. In `run_info.warnings` too, except when an `auto` or
+    /// default preference met an analysis without a GPU path.
+    pub fallback_reason: Option<String>,
+    /// The precision qualification of a GPU backend for this snapshot
+    /// (`mklight_gpu::xval::Qualification`), when one ran.
+    pub qualification: Option<Value>,
+}
+
+/// What an analysis tells the engine about the backend it actually used
+/// (`AnalysisInput::report_backend`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackendUse {
+    pub id: String,
+    pub precision: Precision,
+    pub device: Option<String>,
+    /// Set when the selected GPU was not used; becomes a `RunInfo` warning.
+    pub fallback_reason: Option<String>,
+    pub qualification: Option<Value>,
+}
+
 /// A finished analysis: result plus reproducibility metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnalysisResult {
     pub run_info: RunInfo,
+    /// Requested and used backend, fallback reason, GPU qualification.
+    pub backend: BackendReport,
+    /// Version of the result shape (`Analysis::result_version`).
+    pub result_version: u32,
     /// Content hash of the glass library the run resolved materials with
     /// (see `library_hash`). Together with `run_info.snapshot_hash` it
     /// identifies the inputs: a result is current only while both match the
@@ -70,8 +134,8 @@ pub struct AnalysisResult {
 
 impl AnalysisResult {
     /// The JSON envelope handed to front ends:
-    /// `{"run_info": …, "library_hash": …, "result": …,
-    /// "buffers": [{index, name, dtype, shape}]}`.
+    /// `{"run_info": …, "library_hash": …, "backend": …, "result_version": …,
+    /// "result": …, "buffers": [{index, name, dtype, shape}]}`.
     pub fn envelope(&self) -> Value {
         let descs: Vec<BufferDesc> = self
             .buffers
@@ -82,6 +146,8 @@ impl AnalysisResult {
         json!({
             "run_info": self.run_info,
             "library_hash": self.library_hash,
+            "backend": self.backend,
+            "result_version": self.result_version,
             "result": self.json,
             "buffers": descs,
         })
@@ -118,7 +184,12 @@ pub struct AnalysisInput<'a> {
     /// The selected backend's device (`None` on the CPU reference). GPU
     /// analyses downcast it to the compute interface they use.
     pub device: Option<DeviceHandle>,
+    /// What the request asked for (`BackendReport::requested`).
+    pub requested_backend: String,
+    /// Why the preferred backend was not selected (`BackendReport`).
+    pub selection_note: Option<String>,
     resolver: Resolver<'a>,
+    backend_used: RefCell<Option<BackendUse>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
     library_hash: OnceCell<String>,
 }
@@ -146,7 +217,10 @@ impl<'a> AnalysisInput<'a> {
             library,
             backend,
             device: None,
+            requested_backend: Backend::CpuReference.id(),
+            selection_note: None,
             resolver,
+            backend_used: RefCell::new(None),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
         }
@@ -155,6 +229,22 @@ impl<'a> AnalysisInput<'a> {
     pub fn with_device(mut self, device: Option<DeviceHandle>) -> Self {
         self.device = device;
         self
+    }
+
+    /// Record what was requested and why the preference was not selected
+    /// (see `SelectedBackend`).
+    pub fn with_selection(mut self, requested: impl Into<String>, note: Option<String>) -> Self {
+        self.requested_backend = requested.into();
+        self.selection_note = note;
+        self
+    }
+
+    /// Record the backend that actually computed the result, when it is not
+    /// the selected one (a GPU analysis that fell back to the CPU reference,
+    /// or one that ran on the GPU with device details). The last report
+    /// wins.
+    pub fn report_backend(&self, used: BackendUse) {
+        *self.backend_used.borrow_mut() = Some(used);
     }
 
     /// Supply the library hash when the caller already knows it (sessions
@@ -195,6 +285,21 @@ pub trait Analysis: Send + Sync {
     fn settings_schema(&self) -> Value {
         json!({"type": "object", "properties": {}})
     }
+    /// JSON Schema of the result (`schema`); the default documents nothing
+    /// beyond "an object".
+    fn result_schema(&self) -> Value {
+        json!({"type": "object", "additionalProperties": true, "x-buffers": []})
+    }
+    /// Version of the result shape: bump it when a field changes meaning
+    /// or disappears (adding fields keeps the version).
+    fn result_version(&self) -> u32 {
+        1
+    }
+    /// True when the analysis has a GPU implementation (it then reads
+    /// `AnalysisInput::device` and reports what it used).
+    fn gpu_path(&self) -> bool {
+        false
+    }
     /// `Err(reason)` when the analysis cannot run in this build.
     fn availability(&self) -> Result<(), String> {
         Ok(())
@@ -224,6 +329,9 @@ pub trait Analysis: Send + Sync {
             unavailable_reason: reason,
             default_settings: settings::defaults(&schema).unwrap_or(Value::Null),
             settings_schema: schema,
+            result_schema: self.result_schema(),
+            result_version: self.result_version(),
+            gpu_path: self.gpu_path(),
         }
     }
 }
@@ -254,7 +362,31 @@ pub fn run_analysis(
     ctx.check()?;
     let out = analysis.run(input, &settings, ctx)?;
     ctx.check()?;
+    let mut backend = BackendReport {
+        requested: input.requested_backend.clone(),
+        used: input.backend.id.clone(),
+        precision: input.backend.precision,
+        device: input.backend.capabilities.device_name.clone(),
+        fallback_reason: input.selection_note.clone(),
+        qualification: None,
+    };
     let mut warnings = extra_warnings;
+    if let Some(u) = input.backend_used.borrow_mut().take() {
+        backend.used = u.id;
+        backend.precision = u.precision;
+        backend.device = u.device;
+        backend.qualification = u.qualification;
+        if let Some(r) = u.fallback_reason {
+            warnings.push(format!(
+                "backend '{}' not used ({r}); computed with the CPU f64 reference",
+                input.backend.id
+            ));
+            backend.fallback_reason = Some(r);
+        }
+    }
+    if backend.used == Backend::CpuReference.id() {
+        backend.device = None;
+    }
     for w in input.resolved_warnings().into_iter().chain(out.warnings) {
         if !warnings.contains(&w) {
             warnings.push(w);
@@ -264,18 +396,33 @@ pub fn run_analysis(
         &input.snapshot,
         analysis.name(),
         &settings,
-        &input.backend.id,
-        input.backend.precision,
+        &backend.used,
+        backend.precision,
         analysis.seed(&settings),
         warnings,
     );
     ctx.report(1.0, "");
     Ok(AnalysisResult {
         run_info,
+        backend,
+        result_version: analysis.result_version(),
         library_hash: input.library_hash().to_string(),
         json: out.json,
         buffers: out.buffers,
     })
+}
+
+/// Register every analysis of this build. Wave-optics analyses are added
+/// here, one line each, when `mklight-wave` is wired in: each replaces the
+/// placeholder of the same name (e.g. `r.register(Arc::new(wave::Psf))`).
+pub fn register_all(r: &mut AnalysisRegistry) {
+    builtin::register_all(r);
+    geometric::register_all(r);
+    ghost::register_all(r);
+    stray::register_all(r);
+    radiometry::register_all(r);
+    solves::register_all(r);
+    // HOOK (optimisation): optim::register_all(r);
 }
 
 /// Analyses by name.
@@ -289,10 +436,11 @@ impl AnalysisRegistry {
         Self::default()
     }
 
-    /// Built-in analyses plus placeholders for the planned solver analyses.
+    /// Every registered analysis (`register_all`) plus placeholders for
+    /// the planned ones.
     pub fn with_builtin() -> Self {
         let mut r = Self::new();
-        builtin::register_all(&mut r);
+        register_all(&mut r);
         r
     }
 

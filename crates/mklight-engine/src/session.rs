@@ -571,6 +571,7 @@ impl Session {
             Box::new(move || resolve_cached(cache, snap, lib, generation)),
         )
         .with_device(backend.device)
+        .with_selection(backend.requested, backend.note)
         .with_library_hash(self.library_hash.clone());
         run_analysis(
             analysis.as_ref(),
@@ -608,6 +609,7 @@ impl Session {
                 Box::new(|| resolve_cached(&cache, &snap, &lib, generation)),
             )
             .with_device(backend.device)
+            .with_selection(backend.requested, backend.note)
             .with_library_hash(lib_hash);
             run_analysis(
                 analysis.as_ref(),
@@ -971,7 +973,7 @@ mod tests {
             Err(EngineError::UnknownAnalysis(_))
         ));
         assert!(matches!(
-            s.submit_analysis(&AnalysisRequest::new("spot_diagram", Value::Null)),
+            s.submit_analysis(&AnalysisRequest::new("psf", Value::Null)),
             Err(EngineError::AnalysisUnavailable { .. })
         ));
         assert!(matches!(

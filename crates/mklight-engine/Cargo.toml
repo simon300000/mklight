@@ -6,11 +6,17 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# The solver crates (mklight-trace, -analysis, -wave, -ghost, -stray, -optim,
-# -gpu, -metal) are added back as dependencies when their analyses and
-# backends are registered (see `analysis::builtin::PLANNED` and `backend`).
+# Solver crates whose analyses are registered (`analysis::register_all`)
+# and the GPU backends the engine selects (`gpu`). mklight-wave joins when
+# its analyses are registered (see `analysis::builtin::PLANNED`).
 [dependencies]
 mklight-core.workspace = true
+mklight-trace.workspace = true
+mklight-analysis.workspace = true
+mklight-ghost.workspace = true
+mklight-stray.workspace = true
+mklight-gpu.workspace = true
+mklight-metal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
