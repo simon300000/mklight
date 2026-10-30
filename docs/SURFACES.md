@@ -276,3 +276,28 @@ GPU packing, stray geometry, ghost paths, Seidel, Coddington, rotational
 layout and optical optimisation explicitly reject extended shapes until
 those solvers are implemented. CPU tracing and these mathematical APIs
 are the reference for that work. The app is unchanged.
+
+## 9. Reference samples and verification
+
+`samples::all()` includes the original designs and these CPU fixtures:
+
+| identifier | purpose |
+|---|---|
+| `hybrid_doe` | 3 mm N-BK7 plano-convex singlet with rear phase; F/C back focus equal including glass transfer |
+| `anamorphic` | finite-thickness Galilean cylindrical adapter in constant-index glass, followed by the N-BK7 singlet; EFL_y/EFL_x=2 |
+| `biconic`, `toroid` | unequal-axis elements with axis polynomial departures |
+| `q_con`, `q_bfs` | nonzero low-order Forbes departures on a singlet |
+| `odd_asphere` | nonzero r³ with a regular vertex (β₁=0) |
+| `xy_freeform` | unequal quadratic powers plus odd and mixed cubic terms |
+| `zernike_sag` | Fringe astigmatism and trefoil departures |
+
+The reference tests trace every sample field, wavelength and pupil with
+paraxial and real aiming. They check edge separation around the entire rim,
+known conic reductions, exact cylindrical line focus, narrow-fan first-order
+focal lengths, grating momentum (including a tilted tangent plane), reflective
+DOE signs, F/C correction, evanescence, constant design-wave OPL, and steep
+Q/freeform intersections. Core tests compare analytic gradients/Hessians to
+finite differences, Q functions to explicit polynomials, and every supported
+Zernike term to its independent factorial definition. Legacy-only solver
+cross-validation sets explicitly exclude extended shapes; engine tests check
+their unsupported-analysis errors and CPU fallback from GPU packing.

@@ -621,4 +621,95 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<ParamPath>(&json).unwrap(), p);
     }
+    #[test]
+    fn extended_paths_edit_the_geometry_and_phase_without_changing_metadata() {
+        use crate::samples;
+        let mut s = samples::hybrid_diffractive_achromat();
+        let id = s.surfaces[2].id;
+        let base = ParamPath::Curvature { surface: id };
+        base.set(&mut s, 0.01).unwrap();
+        assert_eq!(base.get(&s).unwrap(), 0.01);
+        let p = ParamPath::ShapeCoefficient {
+            surface: id,
+            set: CoefficientSet::Phase,
+            index: 3,
+        };
+        p.set(&mut s, -0.2).unwrap();
+        assert_eq!(p.get(&s).unwrap(), -0.2);
+        let order = ParamPath::ShapeParam {
+            surface: id,
+            parameter: ShapeParameter::TraceOrder,
+        };
+        assert!(
+            order
+                .set(&mut s, 0.5)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid_diffraction_order")
+        );
+        order.set(&mut s, -2.0).unwrap();
+        assert_eq!(order.get(&s).unwrap(), -2.0);
+        let design = ParamPath::ShapeParam {
+            surface: id,
+            parameter: ShapeParameter::DesignOrder,
+        };
+        assert_eq!(design.get(&s).unwrap(), 1.0);
+        assert!(design.set(&mut s, 0.0).is_err());
+        for path in [p, order, design] {
+            let json = serde_json::to_string(&path).unwrap();
+            assert_eq!(serde_json::from_str::<ParamPath>(&json).unwrap(), path);
+        }
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn all_new_coefficient_families_enforce_limits_before_resizing() {
+        use crate::samples;
+        use CoefficientSet::*;
+        for (mut s, set, max) in [
+            (samples::odd_asphere_element(), Odd, 20),
+            (samples::q_asphere_lens(), Q, 20),
+            (samples::biconic_element(), XAsphere, 10),
+            (samples::toroidal_element(), YAsphere, 10),
+            (samples::xy_freeform(), Xy, 65),
+            (samples::zernike_sag(), Zernike, 37),
+        ] {
+            let id = s.surfaces[1].id;
+            let p = ParamPath::ShapeCoefficient {
+                surface: id,
+                set,
+                index: max - 1,
+            };
+            p.set(&mut s, 1e-10).unwrap();
+            assert_eq!(p.get(&s).unwrap(), 1e-10);
+            s.validate().unwrap();
+            let p = ParamPath::ShapeCoefficient {
+                surface: id,
+                set,
+                index: usize::MAX,
+            };
+            assert!(
+                p.set(&mut s, 1.0)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("coefficient_count")
+            );
+            assert!(p.get(&s).is_err());
+        }
+        let mut s = samples::biconic_element();
+        let id = s.surfaces[1].id;
+        for parameter in [
+            ShapeParameter::CurvatureX,
+            ShapeParameter::CurvatureY,
+            ShapeParameter::ConicX,
+            ShapeParameter::ConicY,
+        ] {
+            let p = ParamPath::ShapeParam {
+                surface: id,
+                parameter,
+            };
+            p.set(&mut s, 0.125).unwrap();
+            assert_eq!(p.get(&s).unwrap(), 0.125);
+        }
+    }
 }

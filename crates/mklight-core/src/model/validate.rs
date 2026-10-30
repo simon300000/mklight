@@ -1476,4 +1476,55 @@ mod tests {
             .to_string();
         assert!(e.contains("tolerance") && e.contains("line"), "{e}");
     }
+    #[test]
+    fn extended_surface_boundary_codes_and_paths() {
+        let mut s = crate::samples::hybrid_diffractive_achromat();
+        if let SurfaceShape::Diffractive { base, phase } = &mut s.surfaces[2].shape {
+            **base = SurfaceShape::Paraxial { focal_length: 1.0 };
+            phase.norm_radius = 0.0;
+            phase.design_order = 0;
+            phase.design_wavelength_um = -0.5;
+            phase.coefficients = vec![f64::NAN; 11];
+        }
+        let issues = s.validation_issues();
+        for code in [
+            "invalid_diffractive_base",
+            "invalid_norm_radius",
+            "invalid_diffraction_order",
+            "invalid_design_wavelength",
+            "coefficient_count",
+            "non_finite",
+        ] {
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.code == code && i.path.starts_with("surfaces[2].shape")),
+                "{code}: {issues:?}"
+            );
+        }
+        for (name, mut sys) in crate::samples::all()
+            .into_iter()
+            .filter(|(_, s)| crate::samples::has_extended_surfaces(s))
+        {
+            let id = sys.surfaces[1].id;
+            if let Ok(v) = (crate::param::ParamPath::ShapeParam {
+                surface: id,
+                parameter: crate::param::ShapeParameter::NormRadius,
+            })
+            .get(&sys)
+            {
+                assert!(v > 0.0, "{name}");
+                let path = crate::param::ParamPath::ShapeParam {
+                    surface: id,
+                    parameter: crate::param::ShapeParameter::NormRadius,
+                };
+                assert!(
+                    path.set(&mut sys, -1.0)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("invalid_norm_radius")
+                );
+            }
+        }
+    }
 }

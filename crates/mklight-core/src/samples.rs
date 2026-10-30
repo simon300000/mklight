@@ -1,7 +1,8 @@
 //! Sample optical systems: shared test fixtures for every crate and the app.
 //!
-//! All samples use only glasses from the built-in catalog, validate, and trace
-//! every field at every wavelength without failures. Image distances were set
+//! Catalog glasses come from the built-in library; the cylindrical adapter
+//! also uses constant-index model glass. All samples validate and trace every
+//! field at every wavelength without failures. Image distances were set
 //! with the reference tracer's paraxial solve (and, where noted, refined to
 //! the best RMS focus), so each sample is well focused as delivered. The tests
 //! in `mklight-trace` check this.
@@ -62,6 +63,15 @@ pub fn all() -> Vec<(&'static str, OpticalSystem)> {
         ("newtonian", newtonian_telescope()),
         ("petzval_asphere", petzval_asphere()),
         ("relay", finite_relay()),
+        ("hybrid_doe", hybrid_diffractive_achromat()),
+        ("anamorphic", anamorphic_adapter()),
+        ("biconic", biconic_element()),
+        ("toroid", toroidal_element()),
+        ("q_con", q_asphere_lens()),
+        ("q_bfs", qbfs_lens()),
+        ("odd_asphere", odd_asphere_element()),
+        ("xy_freeform", xy_freeform()),
+        ("zernike_sag", zernike_sag()),
     ]
 }
 
@@ -330,6 +340,214 @@ pub fn finite_relay() -> OpticalSystem {
 }
 const RELAY_OBJECT_DISTANCE: f64 = 95.085_347_9;
 const RELAY_IMAGE_DISTANCE: f64 = 95.085_347_9;
+
+/// Extended-surface fixtures; legacy-only solvers can use this predicate in
+/// their cross-validation suites until their extended physics is implemented.
+pub fn has_extended_surfaces(system: &OpticalSystem) -> bool {
+    system.surfaces.iter().any(|s| !s.shape.is_legacy())
+}
+
+fn bk7_index(wavelength_um: f64) -> f64 {
+    crate::materials::MaterialLibrary::with_builtin()
+        .resolve(&glass("N-BK7"), &Default::default())
+        .expect("built-in glass")
+        .index(wavelength_um)
+}
+
+/// N-BK7 plano-convex singlet with a rear DOE: exactly equal paraxial F/C
+/// back focal lengths including the 3 mm glass transfer, not a thin-lens fit.
+pub fn hybrid_diffractive_achromat() -> OpticalSystem {
+    use crate::model::surface::DiffractivePhase;
+    let mut sys = system(
+        "Hybrid refractive-diffractive achromat",
+        "N-BK7 singlet, fixed-period DOE; F/C BFL corrected",
+    );
+    let (lf, lc, ld) = (0.4861327, 0.6562725, 0.5875618);
+    let c = 0.02;
+    let t = 3.0;
+    let r = 5.0;
+    let incident_vergence = |l: f64| {
+        let n = bk7_index(l);
+        let p = (n - 1.0) * c;
+        p / (1.0 - t * p / n)
+    };
+    let k = (incident_vergence(lc) - incident_vergence(lf)) / ((lf - lc) * 1e-3);
+    let bfl = 1.0 / (incident_vergence(ld) + k * ld * 1e-3);
+    sys.aperture = ApertureSpec::EntrancePupilDiameter { value: 4.0 };
+    sys.fields = fields(FieldKind::ObjectAngle, &[0.0, 0.5, 1.0]);
+    sys.surfaces = vec![
+        object_at_infinity(),
+        s(1, "singlet front", sph(1.0 / c), t, glass("N-BK7")),
+        s(
+            2,
+            "rear DOE",
+            SurfaceShape::Diffractive {
+                base: Box::new(SurfaceShape::Plane),
+                phase: DiffractivePhase {
+                    norm_radius: r,
+                    coefficients: vec![-std::f64::consts::PI * r * r * k],
+                    design_order: 1,
+                    design_wavelength_um: ld,
+                    trace_order: 1,
+                },
+            },
+            bfl,
+            air(),
+        ),
+        image(3),
+    ];
+    sys.stop = 1;
+    sys
+}
+
+fn cylinder(curvature_x: f64) -> SurfaceShape {
+    SurfaceShape::Biconic {
+        curvature_x,
+        curvature_y: 0.0,
+        conic_x: 0.0,
+        conic_y: 0.0,
+        x_asphere: vec![],
+        y_asphere: vec![],
+    }
+}
+
+/// Galilean cylindrical adapter, 2× beam expansion in x, in front of the
+/// singlet. Constant n=1.5 adapter glass makes its 2× squeeze achromatic;
+/// the imaging singlet retains its real N-BK7 dispersion.
+pub fn anamorphic_adapter() -> OpticalSystem {
+    let mut sys = singlet();
+    sys.name = "2x cylindrical adapter and singlet".into();
+    sys.notes = "Two finite-thickness cylindrical elements; EFL_y/EFL_x=2".into();
+    sys.aperture = ApertureSpec::EntrancePupilDiameter { value: 4.0 };
+    sys.fields = fields(FieldKind::ObjectAngle, &[0.0, 0.2, 0.4]);
+    let mut body = vec![
+        object_at_infinity(),
+        s(
+            10,
+            "negative cylinder",
+            cylinder(-0.02),
+            2.0,
+            MaterialRef::Constant { n: 1.5 },
+        ),
+        s(
+            11,
+            "adapter first rear",
+            SurfaceShape::Plane,
+            100.0 - 2.0 / 1.5,
+            air(),
+        ),
+        s(
+            12,
+            "positive cylinder",
+            cylinder(0.01),
+            2.0,
+            MaterialRef::Constant { n: 1.5 },
+        ),
+        s(13, "adapter second rear", SurfaceShape::Plane, 5.0, air()),
+    ];
+    body.extend(sys.surfaces.into_iter().skip(1));
+    sys.surfaces = body;
+    sys.stop = 1;
+    sys
+}
+
+fn extended_singlet(name: &str, shape: SurfaceShape) -> OpticalSystem {
+    let mut sys = singlet();
+    sys.name = name.into();
+    sys.notes = "CPU reference surface fixture, positive edge thickness".into();
+    sys.aperture = ApertureSpec::EntrancePupilDiameter { value: 4.0 };
+    sys.fields = fields(FieldKind::ObjectAngle, &[0.0, 0.5, 1.0]);
+    sys.surfaces[1].shape = shape;
+    // The y-axis d-line back focus from the two finite-thickness powers.
+    let n = bk7_index(0.5875618);
+    let p1 = (n - 1.0) * crate::surface_math::vertex_curvatures(&sys.surfaces[1].shape)[2];
+    let y = 1.0 - 5.0 * p1 / n;
+    let p2 = (1.0 - n) * sys.surfaces[2].shape.curvature();
+    sys.surfaces[2].thickness = y / (p1 + p2 * y);
+    sys
+}
+
+pub fn biconic_element() -> OpticalSystem {
+    extended_singlet(
+        "Biconic element",
+        SurfaceShape::Biconic {
+            curvature_x: 0.02,
+            curvature_y: 1.0 / 60.0,
+            conic_x: -0.5,
+            conic_y: 0.0,
+            x_asphere: vec![1e-6],
+            y_asphere: vec![-1e-6],
+        },
+    )
+}
+pub fn toroidal_element() -> OpticalSystem {
+    extended_singlet(
+        "Toroidal element",
+        SurfaceShape::Toroid {
+            curvature_x: 0.02,
+            curvature_y: 1.0 / 60.0,
+            conic_y: -0.5,
+            y_asphere: vec![1e-6],
+        },
+    )
+}
+pub fn q_asphere_lens() -> OpticalSystem {
+    extended_singlet(
+        "Q-conic asphere lens",
+        SurfaceShape::QCon {
+            curvature: 1.0 / 60.0,
+            conic: -0.4,
+            norm_radius: 5.0,
+            coefficients: vec![0.002, -0.0004, 0.0001],
+        },
+    )
+}
+pub fn qbfs_lens() -> OpticalSystem {
+    extended_singlet(
+        "Q-BFS asphere lens",
+        SurfaceShape::QBfs {
+            curvature: 1.0 / 60.0,
+            norm_radius: 5.0,
+            coefficients: vec![0.002, -0.0004, 0.0001],
+        },
+    )
+}
+pub fn odd_asphere_element() -> OpticalSystem {
+    // r¹=0 makes a regular first-order focus; the nonzero r³ is genuinely odd.
+    extended_singlet(
+        "Odd asphere element",
+        SurfaceShape::OddAsphere {
+            curvature: 1.0 / 60.0,
+            conic: 0.0,
+            coefficients: vec![0.0, 1e-5, -1e-6, 1e-7],
+        },
+    )
+}
+pub fn xy_freeform() -> OpticalSystem {
+    extended_singlet(
+        "XY freeform corrector",
+        SurfaceShape::XYPolynomial {
+            curvature: 1.0 / 60.0,
+            conic: 0.0,
+            norm_radius: 5.0,
+            coefficients: vec![
+                0.0, 0.0, 0.001, 0.0, -0.001, 0.0002, -0.0001, 0.0003, 0.0001,
+            ],
+        },
+    )
+}
+pub fn zernike_sag() -> OpticalSystem {
+    extended_singlet(
+        "Zernike sag element",
+        SurfaceShape::ZernikeSag {
+            curvature: 1.0 / 60.0,
+            conic: 0.0,
+            norm_radius: 5.0,
+            ordering: crate::model::surface::ZernikeOrdering::Fringe,
+            coefficients: vec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0002],
+        },
+    )
+}
 
 #[cfg(test)]
 mod tests {

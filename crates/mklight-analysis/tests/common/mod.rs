@@ -90,6 +90,8 @@ pub fn tracer(sys: OpticalSystem) -> SequentialTracer {
 pub fn samples() -> Vec<(&'static str, SequentialTracer)> {
     mklight_core::samples::all()
         .into_iter()
+        // Extended-surface Seidel, layout and Coddington are a later round.
+        .filter(|(_, s)| !mklight_core::samples::has_extended_surfaces(s))
         .map(|(n, s)| (n, tracer(s)))
         .collect()
 }

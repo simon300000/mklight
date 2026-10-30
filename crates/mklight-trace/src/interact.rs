@@ -55,6 +55,7 @@ pub fn refract(k: Vec3, normal: Vec3, n1: f64, n2: f64) -> Option<(Vec3, f64)> {
 /// in rad/mm; λ is in mm. The graph's surface gradient is its tangential
 /// projection. `reflected` selects the outgoing normal hemisphere.
 /// `None` is an evanescent order, distinct from ordinary TIR.
+#[allow(clippy::too_many_arguments)]
 pub fn diffract(
     k: Vec3,
     normal: Vec3,

@@ -25,7 +25,7 @@
 //!    medium before the surface is accumulated as a sum of exponents;
 //! 3. clip against the surface's fixed aperture (`ResolvedSurface::passes_aperture`),
 //!    unless [`TraceOptions::clip`] is false. Coordinate breaks never clip;
-//! 4. interact: refract (stable vector Snell, TIR detection), reflect, ideal
+//! 4. interact: refract (stable vector Snell, TIR detection), diffract, reflect, ideal
 //!    lens, or nothing (dummy of any shape, coordinate break, and the image
 //!    surface, where the direction is reported as incident). An ideal lens
 //!    takes its object vergence from

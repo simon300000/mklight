@@ -304,7 +304,10 @@ fn perturbed(sys: &OpticalSystem, n: usize) -> Vec<OpticalSystem> {
 /// finite-conjugate relay, with tilted and decentred copies and strongly
 /// perturbed candidates far from the qualified start.
 fn agreement(backend: Arc<dyn ComputeBackend>) {
-    for (name, sys) in samples::all() {
+    for (name, sys) in samples::all()
+        .into_iter()
+        .filter(|(_, s)| !samples::has_extended_surfaces(s))
+    {
         let gpu = gpu_eval(backend.clone(), &sys);
         assert!(gpu.is_active(), "{name}: {:?}", gpu.qualification().reason);
         let ops = operands(&sys);

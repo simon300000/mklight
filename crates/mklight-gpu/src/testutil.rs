@@ -458,7 +458,10 @@ pub fn absorbing_triplet() -> OpticalSystem {
 /// and the fixtures above.
 pub fn xval_systems() -> Vec<(String, OpticalSystem)> {
     let mut v = Vec::new();
-    for (name, sys) in samples::all() {
+    for (name, sys) in samples::all()
+        .into_iter()
+        .filter(|(_, s)| !samples::has_extended_surfaces(s))
+    {
         let vig = vignetted(&sys, 0.93);
         v.push((name.to_string(), sys));
         v.push((format!("{name} (vignetted)"), vig));

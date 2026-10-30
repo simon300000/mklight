@@ -3,7 +3,7 @@
 //! # Model
 //!
 //! The paraxial trace works on the **unfolded, rotationally symmetric
-//! equivalent** of the system: tilts, decenters and coordinate breaks are
+//! equivalent** of the system (the y section for anamorphic shapes): tilts, decenters and coordinate breaks are
 //! ignored (a warning is issued when any exist), thicknesses are used with
 //! their signs, and mirrors are handled with **signed reduced indices**
 //! `N_j = σ_j n_j`, where `σ` starts at `+1` in object space and flips at
@@ -17,7 +17,8 @@
 //!
 //! * transfer: `y_{j+1} = y_j + t_j ω_j / N_j`;
 //! * refraction: `ω_j = ω_{j−1} − y_j φ_j` with `φ_j = c_j (N_j − N_{j−1})` for
-//!   conics and aspheres (the polynomial has no paraxial power),
+//!   conics/even aspheres; extended shapes use their vertex Hessian and
+//!   add DOE power (SURFACES.md). The formal odd-asphere model omits r¹.
 //!   `φ_j = |N_j| / f` for an ideal lens, and `0` for planes, dummies (any shape),
 //!   coordinate breaks and the image surface.
 //!
@@ -310,7 +311,7 @@ pub struct Paraxial {
 
 impl Paraxial {
     pub fn new(sys: &ResolvedSystem) -> MkResult<Self> {
-        let mut warnings = Vec::new();
+        let mut warnings = extended_paraxial_warnings(sys);
         if sys
             .system()
             .surfaces
@@ -340,6 +341,32 @@ impl Paraxial {
     }
 }
 
+fn extended_paraxial_warnings(sys: &ResolvedSystem) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (i, s) in sys
+        .surfaces
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.shape.is_legacy())
+    {
+        let v = mklight_core::surface_math::evaluate(&s.shape, 0.0, 0.0).expect("validated vertex");
+        if v.sag != 0.0 || v.gradient != [0.0; 2] {
+            warnings.push(format!("surface {i}: piston or vertex tilt; first order is a nominal-vertex quadratic approximation"));
+        }
+        if mklight_core::surface_math::vertex_curvatures(&s.shape)[1] != 0.0 {
+            warnings.push(format!("surface {i}: mixed xy power; x/y are diagonal projections, not independent focal lengths"));
+        }
+        if let SurfaceShape::OddAsphere { coefficients, .. } = &s.shape
+            && coefficients.first().is_some_and(|a| *a != 0.0)
+        {
+            warnings.push(format!(
+                "surface {i}: cone vertex; formal quadratic first order omits the r term"
+            ));
+        }
+    }
+    warnings
+}
+
 /// Both unfolded first-order traces. `squeeze = EFL_y/EFL_x` (signed).
 /// x/y are independent only for zero mixed vertex curvature. General
 /// freeforms with xy power require a later coupled 4×4 first-order model;
@@ -360,19 +387,7 @@ impl ParaxialXY {
     pub fn new_job(sys: &ResolvedSystem, ctx: &mklight_core::JobContext) -> MkResult<Self> {
         use mklight_core::job::{Precision, RunTimer};
         let timer = RunTimer::start();
-        let mut warnings = Vec::new();
-        for (i, s) in sys.surfaces.iter().enumerate() {
-            if mklight_core::surface_math::vertex_curvatures(&s.shape)[1] != 0.0 {
-                warnings.push(format!("surface {i}: mixed xy power; x/y are diagonal projections, not independent focal lengths"));
-            }
-            if let SurfaceShape::OddAsphere { coefficients, .. } = &s.shape {
-                if coefficients.first().is_some_and(|a| *a != 0.0) {
-                    warnings.push(format!(
-                        "surface {i}: cone vertex; formal quadratic first order omits the r term"
-                    ));
-                }
-            }
-        }
+        let mut warnings = extended_paraxial_warnings(sys);
         if sys
             .system()
             .surfaces

@@ -23,6 +23,16 @@ fn small_irradiance() -> IrradianceSettings {
 #[test]
 fn all_samples_run() {
     for (name, sys) in samples::all() {
+        if samples::has_extended_surfaces(&sys) {
+            assert!(
+                matches!(
+                    mklight_ghost::GhostModel::from_system(resolve(sys), GhostSettings::default()),
+                    Err(mklight_core::MkError::Unsupported(_))
+                ),
+                "{name}"
+            );
+            continue;
+        }
         let m = model(sys, GhostSettings::default());
         let rep = paraxial_ghosts(&m, &ParaxialGhostSettings::default())
             .unwrap_or_else(|e| panic!("{name}: {e}"));

@@ -230,6 +230,11 @@ impl TraceEvaluator {
         parallel: bool,
     ) -> MkResult<Vec<OperandValue>> {
         ctx.check()?;
+        if s.surfaces.iter().any(|s| !s.shape.is_legacy()) {
+            return Err(mklight_core::MkError::Unsupported(
+                "extended surface shapes in merit evaluation".into(),
+            ));
+        }
         let auto_sd = has_auto_semi_diameters(s);
         let needs_tracer = operands.iter().any(|o| {
             (!is_model_kind(&o.kind) && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))

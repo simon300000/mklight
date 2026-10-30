@@ -196,7 +196,10 @@ fn sample_scenes_have_no_negative_edges() {
             .cloned()
             .collect()
     };
-    for (name, s) in mklight_core::samples::all() {
+    for (name, s) in mklight_core::samples::all()
+        .into_iter()
+        .filter(|(_, s)| !mklight_core::samples::has_extended_surfaces(s))
+    {
         let sys = stray_system(s, &mklight_stray::SystemOptions::default());
         assert_eq!(bad(&sys), Vec::<String>::new(), "{name}");
     }

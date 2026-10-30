@@ -288,7 +288,7 @@ pub fn zernike_term(ordering: ZernikeOrdering, j: usize) -> Option<(usize, i32)>
             } else {
                 2 * (k / 2) + 1
             } as i32;
-            Some((n, if j % 2 == 0 { m } else { -m }))
+            Some((n, if j.is_multiple_of(2) { m } else { -m }))
         }
     }
 }
@@ -466,6 +466,71 @@ pub fn phase(phase: &DiffractivePhase, x: f64, y: f64) -> Option<SagDerivatives>
     Some((polynomial(&phase.coefficients, s) * s).result())
 }
 
+/// Axial unit normal, including the finite limits at vertical domain rims.
+/// The Hessian may be undefined there even when this normal exists.
+pub fn normal(shape: &SurfaceShape, x: f64, y: f64) -> Option<crate::Vec3> {
+    use crate::Vec3;
+    use SurfaceShape::*;
+    let v = evaluate(shape, x, y)?;
+    if v.gradient.iter().all(|v| v.is_finite()) {
+        return Some(Vec3::new(-v.gradient[0], -v.gradient[1], 1.0).normalized());
+    }
+    // Multiply the normal by the vanishing square root before taking its
+    // limit. Finite polynomial slopes disappear under this rescaling.
+    let vector = match shape {
+        Conic { curvature: c, .. }
+        | EvenAsphere { curvature: c, .. }
+        | OddAsphere { curvature: c, .. }
+        | QCon { curvature: c, .. }
+        | QBfs { curvature: c, .. }
+        | XYPolynomial { curvature: c, .. }
+        | ZernikeSag { curvature: c, .. } => {
+            if 1.0 - (1.0 + shape.conic()) * c * c * (x * x + y * y) != 0.0 {
+                return None;
+            }
+            Vec3::new(-c * x, -c * y, 0.0)
+        }
+        Toroid {
+            curvature_x: cx,
+            curvature_y: cy,
+            conic_y: ky,
+            y_asphere,
+        } => {
+            let yy = Jet::variable(y, 1);
+            let zy = conic(*cy, *ky, yy * yy)? + even(y_asphere, yy * yy);
+            if zy.d[1].is_infinite() {
+                Vec3::new(0.0, -zy.d[1].signum(), 0.0)
+            } else {
+                let a = 1.0 - cx * zy.v;
+                if a * a - cx * cx * x * x != 0.0 {
+                    return None;
+                }
+                Vec3::new(-cx * x, -a * zy.d[1], 0.0)
+            }
+        }
+        Biconic {
+            curvature_x: cx,
+            curvature_y: cy,
+            conic_x: kx,
+            conic_y: ky,
+            ..
+        } => {
+            if 1.0 - (1.0 + kx) * cx * cx * x * x - (1.0 + ky) * cy * cy * y * y != 0.0 {
+                return None;
+            }
+            let numerator = cx * x * x + cy * y * y;
+            Vec3::new(
+                -numerator * (1.0 + kx) * cx * cx * x,
+                -numerator * (1.0 + ky) * cy * cy * y,
+                0.0,
+            )
+        }
+        Diffractive { base, .. } => return normal(base, x, y),
+        _ => return None,
+    };
+    (vector.norm2() > 0.0).then(|| vector.normalized())
+}
+
 /// Vertex quadratic coefficients for first order. The cone term is omitted
 /// by definition; this is a formal first-order model when β₁ ≠ 0.
 pub fn vertex_curvatures(shape: &SurfaceShape) -> [f64; 3] {
@@ -491,6 +556,27 @@ pub enum Symmetry {
     Rotational,
     Meridional,
     None,
+}
+
+fn xy_is_rotational(c: &[f64]) -> bool {
+    let coefficient = |m, n| c.get(xy_index(m, n)).copied().unwrap_or(0.0);
+    for d in 1usize..=10 {
+        let leading = coefficient(d, 0);
+        let mut binomial = 1.0;
+        for n in 0..=d {
+            let expected = if d.is_multiple_of(2) && n.is_multiple_of(2) {
+                let value = leading * binomial;
+                binomial *= ((d - n) / 2) as f64 / (n / 2 + 1) as f64;
+                value
+            } else {
+                0.0
+            };
+            if coefficient(d - n, n) != expected {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 pub fn shape_symmetry(shape: &SurfaceShape) -> Symmetry {
@@ -527,12 +613,12 @@ pub fn shape_symmetry(shape: &SurfaceShape) -> Symmetry {
             }
         }
         XYPolynomial { coefficients, .. } => {
-            if coefficients.iter().all(|a| *a == 0.0) {
+            if xy_is_rotational(coefficients) {
                 Symmetry::Rotational
             } else if coefficients
                 .iter()
                 .enumerate()
-                .all(|(j, a)| *a == 0.0 || xy_powers(j).0 % 2 == 0)
+                .all(|(j, a)| *a == 0.0 || xy_powers(j).0.is_multiple_of(2))
             {
                 Symmetry::Meridional
             } else {
@@ -545,9 +631,8 @@ pub fn shape_symmetry(shape: &SurfaceShape) -> Symmetry {
             ..
         } => {
             let mut symmetry = Symmetry::Rotational;
-            for (j, a) in coefficients.iter().enumerate().filter(|(_, a)| **a != 0.0) {
+            for (j, _) in coefficients.iter().enumerate().filter(|(_, a)| **a != 0.0) {
                 let (_, m) = zernike_term(*ordering, j + 1).expect("validated Zernike count");
-                let _ = a;
                 if m != 0 {
                     symmetry = symmetry.max(if (m > 0 && m % 2 == 0) || (m < 0 && m % 2 != 0) {
                         Symmetry::Meridional
@@ -808,5 +893,72 @@ mod tests {
             }
         }
         assert!(!in_domain(&SurfaceShape::sphere(2.0), 2.01, 0.0));
+    }
+    #[test]
+    fn all_zernike_terms_match_independent_factorial_definition() {
+        let factorial = |n: usize| (1..=n).fold(1.0, |a, k| a * k as f64);
+        for ordering in [ZernikeOrdering::Fringe, ZernikeOrdering::Standard] {
+            let count = if ordering == ZernikeOrdering::Fringe {
+                37
+            } else {
+                45
+            };
+            for j in 1..=count {
+                let (n, m) = zernike_term(ordering, j).unwrap();
+                let am = m.unsigned_abs() as usize;
+                for (rho, theta) in [(0.0, 0.0), (0.31, 0.43), (0.81, 1.72), (1.0, -0.37)] {
+                    let radial = (0..=(n - am) / 2)
+                        .map(|k| {
+                            (-1.0_f64).powi(k as i32) * factorial(n - k)
+                                / (factorial(k)
+                                    * factorial((n + am) / 2 - k)
+                                    * factorial((n - am) / 2 - k))
+                                * f64::powi(rho, (n - 2 * k) as i32)
+                        })
+                        .sum::<f64>();
+                    let angle = am as f64 * theta;
+                    let scale = if ordering == ZernikeOrdering::Fringe {
+                        1.0
+                    } else {
+                        ((n + 1) as f64 * if m == 0 { 1.0 } else { 2.0 }).sqrt()
+                    };
+                    let expected = radial * if m >= 0 { angle.cos() } else { angle.sin() } * scale;
+                    let x = Jet::variable(rho * theta.cos(), 0);
+                    let y = Jet::variable(rho * theta.sin(), 1);
+                    let mut coeff = vec![0.0; j];
+                    coeff[j - 1] = 1.0;
+                    close(
+                        zernike(&coeff, ordering, x, y, x * x + y * y).v,
+                        expected,
+                        3e-12,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn symmetry_recognizes_radial_xy_and_meridional_zernikes() {
+        let mut s = crate::samples::xy_freeform();
+        if let SurfaceShape::XYPolynomial { coefficients, .. } = &mut s.surfaces[1].shape {
+            *coefficients = vec![0.0; 14];
+            coefficients[9] = 0.001;
+            coefficients[11] = 0.002;
+            coefficients[13] = 0.001;
+        }
+        assert_eq!(system_symmetry(&s), Symmetry::Rotational);
+        s.surfaces[1].placement = Some(crate::Placement {
+            decenter_y: 0.1,
+            ..Default::default()
+        });
+        assert_eq!(system_symmetry(&s), Symmetry::Meridional);
+        s.surfaces[1].placement.as_mut().unwrap().decenter_x = 0.1;
+        assert_eq!(system_symmetry(&s), Symmetry::None);
+        let mut z = crate::samples::zernike_sag();
+        if let SurfaceShape::ZernikeSag { coefficients, .. } = &mut z.surfaces[1].shape {
+            *coefficients = vec![0.0; 8];
+            coefficients[7] = 0.001; // y coma, even in x
+        }
+        assert_eq!(system_symmetry(&z), Symmetry::Meridional);
     }
 }

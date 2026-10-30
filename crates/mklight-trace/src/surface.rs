@@ -137,12 +137,11 @@ pub fn intersect(
             conic,
             coefficients,
         } => intersect_even_asphere(*curvature, *conic, coefficients, p, d, settings),
-        SurfaceShape::Diffractive { base, phase } => {
+        SurfaceShape::Diffractive { base, .. } => {
             let hit = intersect(base, p, d, settings)?;
             if !mklight_core::surface_math::in_domain(shape, hit.point.x, hit.point.y) {
                 return Err(IntersectError::OutsideDomain);
             }
-            let _ = phase;
             Ok(hit)
         }
         SurfaceShape::CoordinateBreak => Ok(Hit {
@@ -332,10 +331,7 @@ pub fn surface_normal(shape: &SurfaceShape, p: Vec3) -> Option<Vec3> {
             coefficients,
         } => asphere_normal(*curvature, *conic, coefficients, p),
         SurfaceShape::Diffractive { base, .. } => surface_normal(base, p),
-        _ => {
-            let v = mklight_core::surface_math::evaluate(shape, p.x, p.y)?;
-            Some(Vec3::new(-v.gradient[0], -v.gradient[1], 1.0).normalized())
-        }
+        _ => mklight_core::surface_math::normal(shape, p.x, p.y),
     }
 }
 
@@ -515,7 +511,9 @@ fn intersect_sag(
             });
         };
         let g = pt.z - v.sag;
-        let gp = d.z - v.gradient[0] * d.x - v.gradient[1] * d.y;
+        let gp = d.z
+            - if d.x == 0.0 { 0.0 } else { v.gradient[0] * d.x }
+            - if d.y == 0.0 { 0.0 } else { v.gradient[1] * d.y };
         if g > 0.0 {
             positive = Some(t);
         } else if g < 0.0 {
@@ -555,10 +553,10 @@ fn intersect_sag(
             return Err(failure);
         }
         let mut next = t - g / gp;
-        if let Some((lo, hi)) = bracket {
-            if !next.is_finite() || next <= lo || next >= hi {
-                next = lo + 0.5 * (hi - lo);
-            }
+        if let Some((lo, hi)) = bracket
+            && (!next.is_finite() || next <= lo || next >= hi)
+        {
+            next = lo + 0.5 * (hi - lo);
         }
         let mut outside = false;
         let mut accepted = false;
