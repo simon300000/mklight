@@ -290,9 +290,20 @@ pub struct SensitivityReport {
     /// criterion with every tolerance at its limit (statistical estimate).
     pub rss_change: f64,
     pub evaluations: usize,
+    /// True when cancelled: `operands`, `ranking` and `rss_change` cover the
+    /// operands whose both limits were evaluated.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
-/// Single-operand sensitivity analysis (one batch of `2n + 1` systems).
+/// Points per evaluation batch of [`sensitivity`] (the nominal first, then
+/// each operand's minus and plus limits). Cancelling between batches keeps
+/// the operands completed so far; the values do not depend on the batching.
+pub const SENSITIVITY_BATCH: usize = 32;
+
+/// Single-operand sensitivity analysis: `2n + 1` systems, evaluated in
+/// batches of [`SENSITIVITY_BATCH`]. Cancelled after the nominal, it returns
+/// the operands completed so far (`cancelled`); before, `Err(Cancelled)`.
 pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
     spec: &ToleranceSpec,
     evaluator: &E,
@@ -310,16 +321,33 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
         pts.push(p);
     }
     mon.progress(0.0, "tolerance sensitivity");
-    let out = evaluator.evaluate_batch(&pts, &mon.job)?;
-    if out.len() != pts.len() {
-        return Err(MkError::Numerical(
-            "tolerance evaluator returned the wrong count".into(),
-        ));
+    let mut out: Vec<TrialOutcome> = Vec::with_capacity(pts.len());
+    let mut cancelled = false;
+    for chunk in pts.chunks(SENSITIVITY_BATCH) {
+        if mon.cancelled() && !out.is_empty() {
+            cancelled = true;
+            break;
+        }
+        match evaluator.evaluate_batch(chunk, &mon.job) {
+            Ok(r) if r.len() == chunk.len() => out.extend(r),
+            Ok(_) => {
+                return Err(MkError::Numerical(
+                    "tolerance evaluator returned the wrong count".into(),
+                ));
+            }
+            Err(MkError::Cancelled) if !out.is_empty() => {
+                cancelled = true;
+                break;
+            }
+            Err(e) => return Err(e),
+        }
+        mon.progress(out.len() as f64 / pts.len() as f64, "tolerance sensitivity");
     }
     let nominal = out[0].clone();
-    let mut ops = Vec::with_capacity(n);
+    let done = (out.len() - 1) / 2;
+    let mut ops = Vec::with_capacity(done);
     let mut rss = 0.0;
-    for (i, o) in spec.operands.iter().enumerate() {
+    for (i, o) in spec.operands.iter().enumerate().take(done) {
         let (m, p) = (out[1 + 2 * i].clone(), out[2 + 2 * i].clone());
         let cm = m.criterion - nominal.criterion;
         let cp = p.criterion - nominal.criterion;
@@ -339,15 +367,18 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
             worst,
         });
     }
-    let mut ranking: Vec<usize> = (0..n).collect();
+    let mut ranking: Vec<usize> = (0..done).collect();
     ranking.sort_by(|&a, &b| ops[b].worst.total_cmp(&ops[a].worst).then(a.cmp(&b)));
-    mon.progress(1.0, "tolerance sensitivity");
+    if !cancelled {
+        mon.progress(1.0, "tolerance sensitivity");
+    }
     Ok(SensitivityReport {
         nominal,
         operands: ops,
         ranking,
         rss_change: rss.sqrt(),
-        evaluations: pts.len(),
+        evaluations: out.len(),
+        cancelled,
     })
 }
 
@@ -501,6 +532,9 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     ) -> MkResult<Vec<Result<Vec<OperandValue>, crate::merit::BuildError>>> {
         (**self).evaluate_parametric(batch, operands, ctx)
     }
+    fn fd_relative_step(&self, kind: &OperandKind, scheme: crate::deriv::FdScheme) -> Option<f64> {
+        (**self).fd_relative_step(kind, scheme)
+    }
 }
 
 /// Model-level tolerance evaluator: perturb `nominal` by the spec, then
@@ -522,7 +556,13 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
         let Ok(sys) = self.spec.apply(self.nominal, deltas) else {
             return Ok(TrialOutcome::failed());
         };
-        let mon = Monitor::new(ctx.clone());
+        // The compensator solve shares the cancellation but not the
+        // progress bar: trials run in parallel, and their LM progress would
+        // move the caller's bar back and forth.
+        let mon = Monitor::new(JobContext::with(
+            ctx.cancel.clone(),
+            mklight_core::job::Progress::default(),
+        ));
         let vars: Vec<VariableSpec> = self
             .spec
             .compensators
@@ -580,6 +620,9 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
         perturbations: &[Vec<f64>],
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
+        if self.spec.compensators.is_empty() {
+            return self.uncompensated(perturbations, ctx);
+        }
         perturbations
             .par_iter()
             .map(|d| {
@@ -587,5 +630,45 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
                 self.one(d, ctx)
             })
             .collect()
+    }
+}
+
+impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
+    /// Without compensators every trial is one evaluation: all perturbed
+    /// systems go to the operand evaluator as one batch (one GPU dispatch
+    /// for a batched backend). Same outcomes as trial by trial.
+    fn uncompensated(
+        &self,
+        perturbations: &[Vec<f64>],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<TrialOutcome>> {
+        let systems: Vec<Option<OpticalSystem>> = perturbations
+            .iter()
+            .map(|d| self.spec.apply(self.nominal, d).ok())
+            .collect();
+        let p = OpticalProblem::new(
+            self.nominal.clone(),
+            Vec::new(),
+            self.criterion.clone(),
+            self.evaluator,
+            self.registry,
+        )?;
+        let e = p.to_evaluation(p.system_values(&systems, ctx)?);
+        let tol = Monitor::new(ctx.clone()).feasibility_tol;
+        Ok((0..systems.len())
+            .map(|k| {
+                let m = merit(p.weights(), e.residuals(k), e.status[k]);
+                let v = total_violation(p.constraints(), e.constraints(k), e.status[k]);
+                if systems[k].is_some() && m.is_finite() && v <= tol {
+                    TrialOutcome {
+                        criterion: m,
+                        compensators: Vec::new(),
+                        ok: true,
+                    }
+                } else {
+                    TrialOutcome::failed()
+                }
+            })
+            .collect())
     }
 }

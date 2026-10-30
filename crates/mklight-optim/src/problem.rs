@@ -332,6 +332,14 @@ pub trait Problem: Sync {
         None
     }
 
+    /// Relative finite-difference step `η` for `scheme` when
+    /// `JacobianSettings::relative_step` is not set: problems whose values
+    /// carry more than relative rounding noise (absolute OPD noise, f32 GPU
+    /// traces) say what they need. `None` = `√ε` / `∛ε` (see `deriv`).
+    fn fd_relative_step(&self, _scheme: crate::deriv::FdScheme) -> Option<f64> {
+        None
+    }
+
     fn num_variables(&self) -> usize {
         self.variables().len()
     }

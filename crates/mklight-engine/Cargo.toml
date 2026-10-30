@@ -17,6 +17,7 @@ mklight-ghost.workspace = true
 mklight-stray.workspace = true
 mklight-gpu.workspace = true
 mklight-metal.workspace = true
+mklight-optim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -25,3 +26,5 @@ rayon.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+# The optimize job on the Metal device (skipped without one).
+mklight-metal.workspace = true

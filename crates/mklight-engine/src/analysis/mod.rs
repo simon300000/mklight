@@ -26,12 +26,11 @@ pub mod builtin;
 pub mod geometric;
 pub mod ghost;
 pub mod gpu;
+pub mod optim;
 pub mod radiometry;
 pub mod schema;
 pub mod solves;
 pub mod stray;
-// HOOK (optimisation): `pub mod optim;` and its registration in
-// `register_all` belong to the optimisation work (src/analysis/optim.rs).
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -430,7 +429,7 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     stray::register_all(r);
     radiometry::register_all(r);
     solves::register_all(r);
-    // HOOK (optimisation): optim::register_all(r);
+    optim::register(r);
 }
 
 /// Analyses by name.

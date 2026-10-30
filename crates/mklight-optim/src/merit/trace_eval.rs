@@ -85,6 +85,7 @@ use super::reference::{piston_tilt, spot_centroid};
 use super::{
     FieldSelector, Operand, OperandError, OperandEvaluator, OperandValue, WavelengthSelector,
 };
+use crate::deriv::FdScheme;
 
 /// Settings of a [`TraceEvaluator`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -221,7 +222,7 @@ impl TraceEvaluator {
 
     /// [`evaluate_system`](Self::evaluate_system), tracing the candidate's
     /// ray groups in parallel or not (batches parallelise over candidates).
-    fn evaluate_one(
+    pub(super) fn evaluate_one(
         &self,
         s: &OpticalSystem,
         operands: &[&Operand],
@@ -244,6 +245,7 @@ impl TraceEvaluator {
             _ => None,
         };
         let mut fixed_sd: Option<OpticalSystem> = None;
+        let mut memo = GroupMemo::default();
         let mut out = Vec::with_capacity(operands.len());
         for op in operands {
             let v = if is_model_kind(&op.kind) {
@@ -274,7 +276,7 @@ impl TraceEvaluator {
                 self.sensitivity(s, op, param, *delta, criterion, ctx)?
             } else {
                 match (&tracer, &cand) {
-                    (_, Some(c)) => c.value(op),
+                    (_, Some(c)) => c.value_with(op, &mut memo),
                     (Some(Err(e)), _) => Err(e.clone()),
                     _ => Err(OperandError::Unsupported),
                 }
@@ -353,7 +355,33 @@ impl OperandEvaluator for TraceEvaluator {
             .map(|s| self.evaluate_one(s, operands, ctx, inner))
             .collect()
     }
+
+    /// Wavefront operands: path lengths of ~100 mm carry an absolute
+    /// rounding noise of ~1e-14 mm (~2e-11 waves), which the `√ε` / `∛ε`
+    /// defaults, tuned to relative noise, difference into ~1e-4 relative
+    /// Jacobian errors; [`WAVEFRONT_FD_RELATIVE_STEP_FORWARD`] /
+    /// [`WAVEFRONT_FD_RELATIVE_STEP_CENTRAL`] balance it against truncation.
+    fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
+        match kind {
+            OperandKind::ToleranceSensitivity { criterion, .. } => {
+                self.fd_relative_step(criterion, scheme)
+            }
+            OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. } => {
+                Some(match scheme {
+                    FdScheme::Forward => WAVEFRONT_FD_RELATIVE_STEP_FORWARD,
+                    FdScheme::Central => WAVEFRONT_FD_RELATIVE_STEP_CENTRAL,
+                })
+            }
+            _ => None,
+        }
+    }
 }
+
+/// Relative forward-difference step for wavefront operands on the f64
+/// reference (see [`TraceEvaluator`]'s `fd_relative_step`).
+pub const WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-6;
+/// Central-difference counterpart of [`WAVEFRONT_FD_RELATIVE_STEP_FORWARD`].
+pub const WAVEFRONT_FD_RELATIVE_STEP_CENTRAL: f64 = 1e-4;
 
 // ---------------------------------------------------------------------------
 // Per-candidate cache
@@ -361,7 +389,7 @@ impl OperandEvaluator for TraceEvaluator {
 
 /// A field: a system field by index or an arbitrary normalised point (bits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum FieldKey {
+pub(super) enum FieldKey {
     Index(usize),
     Point(u64, u64),
 }
@@ -370,7 +398,7 @@ const ON_AXIS: FieldKey = FieldKey::Point(0, 0);
 
 /// Bit-exact identity of a pupil sampling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct SamplingKey {
+pub(super) struct SamplingKey {
     rings: usize,
     arms: usize,
     bilateral: bool,
@@ -390,43 +418,71 @@ impl SamplingKey {
     }
 }
 
-type GroupKey = (FieldKey, usize, SamplingKey);
+pub(super) type GroupKey = (FieldKey, usize, SamplingKey);
+
+/// One pupil ray to the image: (field, λ, bits of `px`, bits of `py`).
+pub(super) type SingleKey = (FieldKey, usize, u64, u64);
+
+/// One real ray to surface `j`: (field, λ, bits of `px`, bits of `py`, `j`).
+pub(super) type RealKey = (FieldKey, usize, u64, u64, usize);
 
 /// Chief ray and OPD reference sphere of one (field, wavelength).
-struct ChiefData {
-    chief: Result<TraceResult, OperandError>,
-    reference: Result<OpdReference, OperandError>,
+pub(super) struct ChiefData {
+    pub(super) chief: Result<TraceResult, OperandError>,
+    pub(super) reference: Result<OpdReference, OperandError>,
 }
 
 /// One traced pupil node: image-surface `(x, y)` (local frame) and OPD
 /// (waves), `None` where the ray (or its OPD) failed.
 #[derive(Clone, Copy)]
-struct NodeRay {
-    pos: Option<[f64; 2]>,
-    opd: Option<f64>,
+pub(super) struct NodeRay {
+    pub(super) pos: Option<[f64; 2]>,
+    pub(super) opd: Option<f64>,
 }
 
-struct GroupRays {
+impl NodeRay {
+    pub(super) const FAILED: NodeRay = NodeRay {
+        pos: None,
+        opd: None,
+    };
+}
+
+/// A real ray's state on surface `j` (local frame), as in `SurfaceRecord`:
+/// the point, the direction after the interaction and the optical path from
+/// the start of the trace.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RealHit {
+    pub(super) point: Vec3,
+    pub(super) dir: Vec3,
+    pub(super) opl: f64,
+}
+
+pub(super) struct GroupRays {
     /// The sampling's nodes, followed by their mirrors `(−px, py)` when a
     /// half pupil is traced in full (asymmetric candidate); weights then
     /// halved.
     nodes: Vec<PupilNode>,
     /// Symmetry of the traced node set (`None` once mirrored).
     symmetry: PupilSymmetry,
-    rays: Vec<NodeRay>,
-    /// Node index by the bits of `(px, py)`.
+    pub(super) rays: Vec<NodeRay>,
+    /// Node index by the bits of `(px, py)` (only for more than 64 nodes).
     index: HashMap<(u64, u64), usize>,
 }
 
-/// What an operand needs traced before evaluation.
+/// What an operand needs traced before evaluation. `singles` (per-ray
+/// operands without a ray group) and `real` (real rays recorded on a
+/// surface) are traced on demand by the CPU path; an external tracer (the
+/// GPU evaluator) traces them up front.
 #[derive(Default)]
-struct Plan {
-    points: BTreeSet<FieldKey>,
-    chiefs: BTreeSet<(FieldKey, usize)>,
-    groups: BTreeMap<GroupKey, PupilSampling>,
+pub(super) struct Plan {
+    pub(super) points: BTreeSet<FieldKey>,
+    pub(super) chiefs: BTreeSet<(FieldKey, usize)>,
+    pub(super) groups: BTreeMap<GroupKey, PupilSampling>,
+    pub(super) singles: BTreeSet<SingleKey>,
+    pub(super) real: BTreeSet<RealKey>,
 }
 
-fn status_error(r: &TraceResult) -> OperandError {
+pub(super) fn status_error(r: &TraceResult) -> OperandError {
     OperandError::RayFailure(format!("{:?}", r.status))
 }
 
@@ -443,6 +499,64 @@ fn axis_value(p: [f64; 2], axis: Axis) -> f64 {
 struct Arm {
     intervals: Vec<(f64, f64)>,
     bounds: Vec<Option<usize>>,
+}
+
+/// Identity of what a per-ray operand of a ray group plans (its traces do not
+/// depend on the pupil point): kind, reference, selectors and group.
+type GroupPlanKey = (u8, u8, (u8, u64, u64), (u8, u64), SamplingKey, bool);
+
+fn group_plan_key(op: &Operand) -> Option<GroupPlanKey> {
+    let field = match op.field {
+        FieldSelector::All => (0, 0, 0),
+        FieldSelector::Index { index } => (1, index as u64, 0),
+        FieldSelector::Normalized { hx, hy } => (2, hx.to_bits(), hy.to_bits()),
+    };
+    let wl = match op.wavelength {
+        WavelengthSelector::Primary => (0, 0),
+        WavelengthSelector::All => (1, 0),
+        WavelengthSelector::Index { index } => (2, index as u64),
+    };
+    let (kind, reference, g) = match &op.kind {
+        OperandKind::RayAberration {
+            reference,
+            group: Some(g),
+            ..
+        } => (0, (*reference == SpotReference::Chief) as u8, g),
+        OperandKind::WavefrontAberration { group: Some(g), .. } => (1, 0, g),
+        _ => return None,
+    };
+    Some((
+        kind,
+        reference,
+        field,
+        wl,
+        SamplingKey::of(&g.sampling),
+        g.scope == CentroidScope::Polychromatic,
+    ))
+}
+
+/// The last ray group a per-ray operand was read from
+/// ([`Candidate::value_with`]).
+#[derive(Default)]
+pub(super) struct GroupMemo<'c> {
+    ctx: Option<GroupCtx<'c>>,
+}
+
+struct GroupCtx<'c> {
+    field: FieldSelector,
+    wavelength: WavelengthSelector,
+    group: RayGroup,
+    wavefront: bool,
+    chief_ref: bool,
+    rays: &'c GroupRays,
+    /// Spot reference `[x, y, 0]` or piston/tilt, or the error of every
+    /// operand of the group.
+    reference: Result<[f64; 3], OperandError>,
+    /// The OPD reference sphere exists (wavefront operands).
+    sphere: Result<(), OperandError>,
+    mirrored: bool,
+    /// Index after the last node read.
+    next: usize,
 }
 
 /// Weighted mean of `f(item)` over `(item, weight)` pairs.
@@ -493,13 +607,17 @@ type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>, PupilSymmetry);
 /// polychromatic scope, wavefront (piston/tilt) rather than spot centroid).
 type RefKey = (FieldKey, usize, SamplingKey, bool, bool);
 
-struct Candidate<'a> {
+pub(super) struct Candidate<'a> {
     ev: &'a TraceEvaluator,
-    tr: &'a SequentialTracer,
+    pub(super) tr: &'a SequentialTracer,
     opts: TraceOptions,
     points: BTreeMap<FieldKey, Result<PreparedField, OperandError>>,
-    chiefs: BTreeMap<(FieldKey, usize), ChiefData>,
-    groups: BTreeMap<GroupKey, GroupRays>,
+    pub(super) chiefs: BTreeMap<(FieldKey, usize), ChiefData>,
+    pub(super) groups: BTreeMap<GroupKey, GroupRays>,
+    /// Rays traced up front by an external tracer, consulted before tracing
+    /// on the CPU (empty on the CPU path).
+    pub(super) singles: BTreeMap<SingleKey, NodeRay>,
+    pub(super) real_rays: BTreeMap<RealKey, Result<RealHit, OperandError>>,
     /// Centroids `[cx, cy, 0]` and piston/tilts of ray groups, computed on
     /// first use (every ray operand of a group shares its reference).
     refs: Mutex<BTreeMap<RefKey, Result<[f64; 3], OperandError>>>,
@@ -515,40 +633,72 @@ impl<'a> Candidate<'a> {
         ctx: &JobContext,
         parallel: bool,
     ) -> MkResult<Self> {
+        let (mut c, plan) = Self::planned(ev, tr, operands);
+        // Parallel tracing inside one candidate only pays for a few hundred
+        // rays or more (measured on the Double Gauss, docs/OPTIMIZATION.md).
+        let rays: usize = plan.groups.values().map(|s| s.rings * s.arms).sum();
+        let parallel = parallel && rays >= 256;
+        c.prepare_points(&plan, parallel);
+        ctx.check()?;
+        c.trace_cpu(&plan, ctx, parallel)?;
+        Ok(c)
+    }
+
+    /// An empty candidate and the plan of what `operands` need traced.
+    pub(super) fn planned(
+        ev: &'a TraceEvaluator,
+        tr: &'a SequentialTracer,
+        operands: &[&Operand],
+    ) -> (Self, Plan) {
         let opts = TraceOptions {
             clip: ev.settings.clip,
             ..tr.options()
         };
-        let mut c = Candidate {
+        let c = Candidate {
             ev,
             tr,
             opts,
             points: BTreeMap::new(),
             chiefs: BTreeMap::new(),
             groups: BTreeMap::new(),
+            singles: BTreeMap::new(),
+            real_rays: BTreeMap::new(),
             refs: Mutex::new(BTreeMap::new()),
             symmetric: is_meridionally_symmetric(tr.system().system()),
         };
         let mut plan = Plan::default();
+        // The per-ray operands of one ray group (hundreds in a default
+        // merit) all plan the same traces: plan each group once.
+        let mut seen = std::collections::HashSet::new();
         for op in operands {
+            if let Some(k) = group_plan_key(op)
+                && !seen.insert(k)
+            {
+                continue;
+            }
             c.plan(op, &mut plan);
         }
         // Group (field, λ) pairs need their chief ray / reference sphere.
         for &(f, w, _) in plan.groups.keys() {
             plan.chiefs.insert((f, w));
         }
-        for &(f, _) in &plan.chiefs {
+        let fields: Vec<FieldKey> = (plan.chiefs.iter().map(|k| k.0))
+            .chain(plan.singles.iter().map(|k| k.0))
+            .chain(plan.real.iter().map(|k| k.0))
+            .collect();
+        for f in fields {
             if let FieldKey::Point(..) = f {
                 plan.points.insert(f);
             }
         }
-        // Parallel tracing inside one candidate only pays for a few hundred
-        // rays or more (measured on the Double Gauss, docs/OPTIMIZATION.md).
-        let rays: usize = plan.groups.values().map(|s| s.rings * s.arms).sum();
-        let parallel = parallel && rays >= 256;
-        // Stage 1: arbitrary field points.
+        (c, plan)
+    }
+
+    /// Stage 1: prepare the arbitrary field points of `plan`.
+    pub(super) fn prepare_points(&mut self, plan: &Plan, parallel: bool) {
+        let tr = self.tr;
         let points: Vec<FieldKey> = plan.points.iter().copied().collect();
-        c.points = pmap(&points, parallel, |&k| {
+        self.points = pmap(&points, parallel, |&k| {
             let FieldKey::Point(hx, hy) = k else {
                 unreachable!()
             };
@@ -560,10 +710,16 @@ impl<'a> Candidate<'a> {
         })
         .into_iter()
         .collect();
-        ctx.check()?;
+    }
+
+    /// Stages 2 and 3 on the CPU: chief rays, reference spheres and pupil
+    /// samplings of `plan`.
+    fn trace_cpu(&mut self, plan: &Plan, ctx: &JobContext, parallel: bool) -> MkResult<()> {
+        let tr = self.tr;
+        let c = &*self;
         // Stage 2: chief rays and reference spheres.
         let chiefs: Vec<(FieldKey, usize)> = plan.chiefs.iter().copied().collect();
-        c.chiefs = pmap(&chiefs, parallel, |&(f, w)| {
+        let chiefs = pmap(&chiefs, parallel, |&(f, w)| {
             let d = match c.field(f) {
                 Ok(field) => {
                     let chief = tr.chief(field, w);
@@ -588,16 +744,18 @@ impl<'a> Candidate<'a> {
         })
         .into_iter()
         .collect();
+        self.chiefs = chiefs;
         ctx.check()?;
         // Stage 3: pupil samplings.
+        let c = &*self;
         let groups: Vec<(GroupKey, PupilSampling)> =
             plan.groups.iter().map(|(k, s)| (*k, *s)).collect();
         let traced = pmap(&groups, parallel, |&(key, sampling)| {
             ctx.check()?;
             Ok((key, c.trace_group(key, &sampling)))
         });
-        c.groups = traced.into_iter().collect::<MkResult<_>>()?;
-        Ok(c)
+        self.groups = traced.into_iter().collect::<MkResult<_>>()?;
+        Ok(())
     }
 
     /// Must the half-pupil `sampling` be traced in full at field `f`? (The
@@ -607,7 +765,14 @@ impl<'a> Candidate<'a> {
             && (!self.symmetric || matches!(f, FieldKey::Point(hx, _) if f64::from_bits(hx) != 0.0))
     }
 
-    fn trace_group(&self, (f, w, _): GroupKey, sampling: &PupilSampling) -> GroupRays {
+    /// The nodes traced for `sampling` at field `f` and the symmetry of the
+    /// node set: the sampling's nodes, followed by their mirrors (half
+    /// weights each) when a half pupil must be traced in full.
+    pub(super) fn group_nodes(
+        &self,
+        f: FieldKey,
+        sampling: &PupilSampling,
+    ) -> (Vec<PupilNode>, PupilSymmetry) {
         let mut nodes = sampling.nodes();
         let mut symmetry = sampling.symmetry;
         if self.mirrored(f, sampling) {
@@ -621,6 +786,35 @@ impl<'a> Candidate<'a> {
             nodes.extend(mirrors);
             symmetry = PupilSymmetry::None;
         }
+        (nodes, symmetry)
+    }
+
+    /// A traced group from its nodes and their rays (same order).
+    pub(super) fn group_rays(
+        nodes: Vec<PupilNode>,
+        symmetry: PupilSymmetry,
+        rays: Vec<NodeRay>,
+    ) -> GroupRays {
+        // Small groups are scanned (`node_in`).
+        let index = if nodes.len() > 64 {
+            nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| ((n.px.to_bits(), n.py.to_bits()), i))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        GroupRays {
+            nodes,
+            symmetry,
+            rays,
+            index,
+        }
+    }
+
+    fn trace_group(&self, (f, w, _): GroupKey, sampling: &PupilSampling) -> GroupRays {
+        let (nodes, symmetry) = self.group_nodes(f, sampling);
         let reference = self.chiefs[&(f, w)].reference.as_ref().ok();
         let rays = match self.field(f) {
             Ok(field) => nodes
@@ -640,25 +834,9 @@ impl<'a> Candidate<'a> {
                     }
                 })
                 .collect(),
-            Err(_) => vec![
-                NodeRay {
-                    pos: None,
-                    opd: None
-                };
-                nodes.len()
-            ],
+            Err(_) => vec![NodeRay::FAILED; nodes.len()],
         };
-        let index = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| ((n.px.to_bits(), n.py.to_bits()), i))
-            .collect();
-        GroupRays {
-            nodes,
-            symmetry,
-            rays,
-            index,
-        }
+        Self::group_rays(nodes, symmetry, rays)
     }
 
     // ----- selectors -----------------------------------------------------
@@ -700,6 +878,8 @@ impl<'a> Candidate<'a> {
             WavelengthSelector::All => Err(OperandError::Invalid(
                 "operand needs a single wavelength".into(),
             )),
+            WavelengthSelector::Primary => Ok(self.primary()),
+            WavelengthSelector::Index { index } if index < self.tr.num_wavelengths() => Ok(index),
             s => Ok(self.wavelengths(s)?[0].0),
         }
     }
@@ -739,11 +919,14 @@ impl<'a> Candidate<'a> {
     fn single_field(&self, sel: FieldSelector) -> Result<FieldKey, OperandError> {
         match sel {
             FieldSelector::All => Err(OperandError::Invalid("operand needs a single field".into())),
+            FieldSelector::Index { index } if index < self.system().fields.fields.len() => {
+                Ok(FieldKey::Index(index))
+            }
             s => Ok(self.fields(s)?[0].0),
         }
     }
 
-    fn field(&self, k: FieldKey) -> Result<&PreparedField, OperandError> {
+    pub(super) fn field(&self, k: FieldKey) -> Result<&PreparedField, OperandError> {
         match k {
             FieldKey::Index(i) => self
                 .tr
@@ -782,13 +965,20 @@ impl<'a> Candidate<'a> {
             RayAberration {
                 reference,
                 group: g,
+                px,
+                py,
                 ..
             } => {
                 for &(f, _) in &fields {
-                    if let Some(g) = g {
-                        for &(w, _) in &wls {
-                            for (gw, _) in self.group_wavelengths(g, w) {
-                                group(f, gw, &g.sampling);
+                    for &(w, _) in &wls {
+                        match g {
+                            Some(g) => {
+                                for (gw, _) in self.group_wavelengths(g, w) {
+                                    group(f, gw, &g.sampling);
+                                }
+                            }
+                            None => {
+                                p.singles.insert((f, w, px.to_bits(), py.to_bits()));
                             }
                         }
                     }
@@ -798,12 +988,19 @@ impl<'a> Candidate<'a> {
                     p.points.insert(f);
                 }
             }
-            WavefrontAberration { group: g, .. } => {
+            WavefrontAberration {
+                group: g, px, py, ..
+            } => {
                 for &(f, _) in &fields {
                     for &(w, _) in &wls {
-                        if let Some(g) = g {
-                            for (gw, _) in self.group_wavelengths(g, w) {
-                                group(f, gw, &g.sampling);
+                        match g {
+                            Some(g) => {
+                                for (gw, _) in self.group_wavelengths(g, w) {
+                                    group(f, gw, &g.sampling);
+                                }
+                            }
+                            None => {
+                                p.singles.insert((f, w, px.to_bits(), py.to_bits()));
                             }
                         }
                         p.chiefs.insert((f, w));
@@ -855,7 +1052,27 @@ impl<'a> Candidate<'a> {
                     }
                 }
             }
-            RealRay { .. } | ChiefRayAngle { .. } => {
+            RealRay {
+                quantity,
+                surface,
+                px,
+                py,
+                ..
+            } => {
+                for &(f, _) in &fields {
+                    p.points.insert(f);
+                    // The incidence angle needs the surface normal: always
+                    // traced on demand.
+                    if *quantity != RayQuantity::IncidenceAngle
+                        && let Ok(j) = self.surface_index(*surface)
+                    {
+                        for &(w, _) in &wls {
+                            p.real.insert((f, w, px.to_bits(), py.to_bits(), j));
+                        }
+                    }
+                }
+            }
+            ChiefRayAngle { .. } => {
                 for &(f, _) in &fields {
                     p.points.insert(f);
                 }
@@ -920,9 +1137,150 @@ impl<'a> Candidate<'a> {
 
     /// Node `(px, py)` of a traced group, by bit-exact coordinates.
     fn node_in(g: &GroupRays, px: f64, py: f64) -> Option<&NodeRay> {
-        g.index
-            .get(&(px.to_bits(), py.to_bits()))
-            .map(|&i| &g.rays[i])
+        Self::node_index(g, px, py).map(|i| &g.rays[i])
+    }
+
+    /// Index of node `(px, py)` in a traced group (bit-exact).
+    fn node_index(g: &GroupRays, px: f64, py: f64) -> Option<usize> {
+        let (bx, by) = (px.to_bits(), py.to_bits());
+        // A scan beats hashing for the usual few dozen nodes.
+        if g.nodes.len() <= 64 {
+            return g
+                .nodes
+                .iter()
+                .position(|n| n.px.to_bits() == bx && n.py.to_bits() == by);
+        }
+        g.index.get(&(bx, by)).copied()
+    }
+
+    /// [`Self::value`], reading the per-ray operands of a ray group through
+    /// `memo`: consecutive operands of one group (the layout of a default
+    /// merit) resolve the group, its reference and the node position once.
+    /// Values are identical to `value`'s.
+    pub(super) fn value_with<'c>(&'c self, op: &Operand, memo: &mut GroupMemo<'c>) -> OperandValue {
+        use OperandKind::*;
+        let (wavefront, chief_ref, g, px, py, axis) = match &op.kind {
+            RayAberration {
+                axis,
+                px,
+                py,
+                reference,
+                group: Some(g),
+            } => (
+                false,
+                *reference == SpotReference::Chief,
+                g,
+                *px,
+                *py,
+                *axis,
+            ),
+            WavefrontAberration {
+                px,
+                py,
+                reference,
+                group: Some(g),
+            } => (
+                true,
+                *reference == WavefrontReference::Chief,
+                g,
+                *px,
+                *py,
+                Axis::Y,
+            ),
+            _ => return self.value(op),
+        };
+        let same = memo.ctx.as_ref().is_some_and(|c| {
+            c.wavefront == wavefront
+                && c.chief_ref == chief_ref
+                && c.field == op.field
+                && c.wavelength == op.wavelength
+                && c.group == *g
+        });
+        if !same {
+            memo.ctx = self.group_ctx(op, g, wavefront, chief_ref);
+        }
+        let Some(c) = memo.ctx.as_mut() else {
+            return self.value(op);
+        };
+        let r = match &c.reference {
+            Ok(r) => *r,
+            Err(e) => return Err(e.clone()),
+        };
+        if let Err(e) = &c.sphere {
+            return Err(e.clone());
+        }
+        // The node, by position after the previous one (the merit's order),
+        // else by search; not in the group: the general path.
+        let (bx, by) = (px.to_bits(), py.to_bits());
+        let nodes = &c.rays.nodes;
+        let hint = [c.next, c.next.wrapping_sub(1)].into_iter().find(|&i| {
+            i < nodes.len() && nodes[i].px.to_bits() == bx && nodes[i].py.to_bits() == by
+        });
+        let Some(i) = hint.or_else(|| Self::node_index(c.rays, px, py)) else {
+            return self.value(op);
+        };
+        c.next = i + 1;
+        let e = |n: &NodeRay, x: f64| -> OperandValue {
+            if wavefront {
+                let v = n
+                    .opd
+                    .ok_or_else(|| OperandError::RayFailure("ray or OPD failed".into()))?;
+                Ok(v - (r[0] + r[1] * x + r[2] * py))
+            } else {
+                let p = n
+                    .pos
+                    .ok_or_else(|| OperandError::RayFailure("ray failed".into()))?;
+                Ok(axis_value(p, axis) - axis_value([r[0], r[1]], axis))
+            }
+        };
+        let a = e(&c.rays.rays[i], px)?;
+        if !c.mirrored {
+            return Ok(a);
+        }
+        let Some(m) = Self::node_index(c.rays, -px, py) else {
+            return self.value(op);
+        };
+        let odd = !wavefront && axis == Axis::X;
+        Ok(pair_value(a, e(&c.rays.rays[m], -px)?, odd))
+    }
+
+    /// The memo entry of a group operand (`None`: not answerable from a
+    /// traced group, use the general path).
+    fn group_ctx(
+        &self,
+        op: &Operand,
+        g: &RayGroup,
+        wavefront: bool,
+        chief_ref: bool,
+    ) -> Option<GroupCtx<'_>> {
+        let f = self.single_field(op.field).ok()?;
+        let w = self.single_wavelength(op.wavelength).ok()?;
+        let rays = self.group(f, w, &g.sampling).ok()?;
+        let reference = match (wavefront, chief_ref) {
+            (true, true) => Ok([0.0; 3]),
+            (true, false) => self.group_reference(f, w, g, true),
+            (false, true) => self
+                .chief(f, self.primary())
+                .map(|c| [c.ray.pos.x, c.ray.pos.y, 0.0]),
+            (false, false) => self.group_reference(f, w, g, false),
+        };
+        let sphere = if wavefront {
+            self.reference(f, w).map(|_| ())
+        } else {
+            Ok(())
+        };
+        Some(GroupCtx {
+            field: op.field,
+            wavelength: op.wavelength,
+            group: *g,
+            wavefront,
+            chief_ref,
+            rays,
+            reference,
+            sphere,
+            mirrored: self.mirrored(f, &g.sampling),
+            next: 0,
+        })
     }
 
     /// Image `(x, y)` of pupil point `(px, py)`, reusing a group trace.
@@ -938,6 +1296,11 @@ impl<'a> Candidate<'a> {
             && let Ok(gr) = self.group(f, w, &g.sampling)
             && let Some(n) = Self::node_in(gr, px, py)
         {
+            return n
+                .pos
+                .ok_or_else(|| OperandError::RayFailure("ray failed".into()));
+        }
+        if let Some(n) = self.singles.get(&(f, w, px.to_bits(), py.to_bits())) {
             return n
                 .pos
                 .ok_or_else(|| OperandError::RayFailure("ray failed".into()));
@@ -960,6 +1323,11 @@ impl<'a> Candidate<'a> {
             && let Ok(gr) = self.group(f, w, &g.sampling)
             && let Some(n) = Self::node_in(gr, px, py)
         {
+            return n
+                .opd
+                .ok_or_else(|| OperandError::RayFailure("ray or OPD failed".into()));
+        }
+        if let Some(n) = self.singles.get(&(f, w, px.to_bits(), py.to_bits())) {
             return n
                 .opd
                 .ok_or_else(|| OperandError::RayFailure("ray or OPD failed".into()));
@@ -1106,7 +1474,7 @@ impl<'a> Candidate<'a> {
 
     // ----- values ----------------------------------------------------------
 
-    fn value(&self, op: &Operand) -> OperandValue {
+    pub(super) fn value(&self, op: &Operand) -> OperandValue {
         use OperandKind::*;
         let px = self.tr.paraxial();
         let fo_mean = |f: &dyn Fn(&mklight_trace::FirstOrder) -> f64| -> OperandValue {
@@ -1434,15 +1802,29 @@ impl<'a> Candidate<'a> {
         let f = self.single_field(op.field)?;
         let w = self.single_wavelength(op.wavelength)?;
         let j = self.surface_index(surface)?;
-        let mut rec = Vec::new();
-        let opts = TraceOptions {
-            last_surface: Some(j),
-            ..self.opts
+        let hit = match self.real_rays.get(&(f, w, ppx.to_bits(), ppy.to_bits(), j)) {
+            Some(h) if quantity != RayQuantity::IncidenceAngle => (h.clone()?, None),
+            _ => {
+                let mut rec = Vec::new();
+                let opts = TraceOptions {
+                    last_surface: Some(j),
+                    ..self.opts
+                };
+                self.ray(f, w, ppx, ppy, &opts, Some(&mut rec))?;
+                let r = rec
+                    .get(j)
+                    .ok_or_else(|| OperandError::Invalid("surface not reached".into()))?;
+                (
+                    RealHit {
+                        point: r.point,
+                        dir: r.dir,
+                        opl: r.opl,
+                    },
+                    Some(r.cos_incidence),
+                )
+            }
         };
-        self.ray(f, w, ppx, ppy, &opts, Some(&mut rec))?;
-        let r = rec
-            .get(j)
-            .ok_or_else(|| OperandError::Invalid("surface not reached".into()))?;
+        let (r, cos_incidence) = hit;
         let (p, d) = if global {
             let g = to_global(
                 self.tr.system(),
@@ -1462,7 +1844,11 @@ impl<'a> Candidate<'a> {
             RayQuantity::N => d.z,
             RayQuantity::AngleX => d.x.atan2(d.z.abs()).to_degrees(),
             RayQuantity::AngleY => d.y.atan2(d.z.abs()).to_degrees(),
-            RayQuantity::IncidenceAngle => r.cos_incidence.clamp(0.0, 1.0).acos().to_degrees(),
+            RayQuantity::IncidenceAngle => cos_incidence
+                .ok_or_else(|| OperandError::Invalid("incidence angle not traced".into()))?
+                .clamp(0.0, 1.0)
+                .acos()
+                .to_degrees(),
             RayQuantity::OpticalPath => r.opl,
         })
     }
@@ -1718,5 +2104,88 @@ impl<'a> Candidate<'a> {
             }
         }
         Ok(total.value())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::merit::default::{DefaultCriterion, DefaultMeritSpec};
+    use mklight_core::model::Placement;
+    use mklight_core::samples;
+
+    /// The memoised group path returns exactly what `value` returns, in the
+    /// merit's order and in any other, on symmetric and asymmetric
+    /// (mirrored half pupil) candidates, for every reference.
+    #[test]
+    fn memoised_group_values_equal_value() {
+        let ev = TraceEvaluator::builtin();
+        let base = samples::cooke_triplet();
+        let mut decentered = base.clone();
+        decentered.surfaces[3].placement = Some(Placement {
+            decenter_x: 0.05,
+            ..Default::default()
+        });
+        let mut ops = Vec::new();
+        for criterion in [
+            DefaultCriterion::default(),
+            DefaultCriterion::RmsSpot {
+                reference: SpotReference::Chief,
+                scope: CentroidScope::Polychromatic,
+            },
+            DefaultCriterion::Wavefront {
+                reference: WavefrontReference::Centroid,
+            },
+            DefaultCriterion::Wavefront {
+                reference: WavefrontReference::Chief,
+            },
+        ] {
+            let spec = DefaultMeritSpec {
+                criterion,
+                thickness: None,
+                ..Default::default()
+            };
+            ops.extend(spec.generate(&base).unwrap().operands);
+        }
+        // A pupil point outside the group: the general path.
+        let mut off = ops[0].clone();
+        if let OperandKind::RayAberration { px, .. } = &mut off.kind {
+            *px = 0.123;
+        }
+        ops.push(off);
+        let refs: Vec<&Operand> = ops.iter().collect();
+        let ctx = JobContext::new();
+        let mut mirrored = 0;
+        for sys in [&base, &decentered] {
+            let tr = ev.tracer(sys).unwrap();
+            let c = Candidate::build(&ev, &tr, &refs, &ctx, false).unwrap();
+            let slow: Vec<OperandValue> = refs.iter().map(|op| c.value(op)).collect();
+            let mut memo = GroupMemo::default();
+            let fast: Vec<OperandValue> =
+                refs.iter().map(|op| c.value_with(op, &mut memo)).collect();
+            let mut memo = GroupMemo::default();
+            let mut rev: Vec<OperandValue> = refs
+                .iter()
+                .rev()
+                .map(|op| c.value_with(op, &mut memo))
+                .collect();
+            rev.reverse();
+            for ((s, f), r) in slow.iter().zip(&fast).zip(&rev) {
+                let bits =
+                    |v: &OperandValue| v.as_ref().map(|x| x.to_bits()).map_err(|e| e.clone());
+                assert_eq!(bits(s), bits(f));
+                assert_eq!(bits(s), bits(r));
+                assert!(s.is_ok(), "{s:?}");
+            }
+            mirrored += c
+                .groups
+                .values()
+                .filter(|g| g.symmetry == PupilSymmetry::None)
+                .count();
+        }
+        assert!(
+            mirrored > 0,
+            "the decentered candidate traces mirrored half pupils"
+        );
     }
 }

@@ -20,6 +20,7 @@
 
 pub mod default;
 pub mod geometric;
+pub mod gpu_eval;
 pub mod operand;
 pub mod problem;
 pub mod quadrature;
@@ -31,8 +32,10 @@ use serde::{Deserialize, Serialize};
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 
+use crate::deriv::FdScheme;
 use crate::problem::CandidateBatch;
 
+pub use gpu_eval::{GpuEvalSettings, GpuEvalStats, GpuTraceEvaluator};
 pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
 pub use operand::{CentroidScope, RayGroup};
 pub use problem::{OpticalProblem, VariableSpec};
@@ -503,6 +506,13 @@ pub trait OperandEvaluator: Sync {
             .map(|b| b.map(|_| vals.next().expect("one row per built system")))
             .collect())
     }
+
+    /// Relative finite-difference step `η` (see `deriv`) this evaluator's
+    /// values of `kind` need for `scheme`, when the f64 defaults (`√ε`,
+    /// `∛ε`) would difference rounding noise. `None` = the defaults.
+    fn fd_relative_step(&self, _kind: &OperandKind, _scheme: FdScheme) -> Option<f64> {
+        None
+    }
 }
 
 /// Routes each operand to the first evaluator that supports it.
@@ -558,6 +568,10 @@ impl OperandEvaluator for CompositeEvaluator {
             }
         }
         Ok(out)
+    }
+    fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
+        self.route(kind)
+            .and_then(|e| self.evaluators[e].fd_relative_step(kind, scheme))
     }
     /// Routes the parametric batch to each sub-evaluator's own
     /// `evaluate_parametric`, so a packed-system backend keeps its fast path.

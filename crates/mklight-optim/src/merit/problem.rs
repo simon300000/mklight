@@ -412,6 +412,16 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
         let vals = self.operand_values(x, ctx)?;
         Ok(self.to_evaluation(vals))
     }
+    /// The largest step any enabled operand's evaluator asks for (a step
+    /// large enough for the noisiest operand costs the others only `O(h)`
+    /// truncation, far below their noise floor at these sizes).
+    fn fd_relative_step(&self, scheme: crate::deriv::FdScheme) -> Option<f64> {
+        self.spec
+            .enabled()
+            .filter(|(_, o)| !matches!(o.kind, OperandKind::Combine { .. }))
+            .filter_map(|(_, o)| self.evaluator.fd_relative_step(&o.kind, scheme))
+            .reduce(f64::max)
+    }
 }
 
 impl<E: OperandEvaluator> OpticalProblem<E> {

@@ -85,6 +85,14 @@ pub struct AugLagSettings {
     pub max_outer: usize,
     /// Max normalised violation regarded as feasible.
     pub tol: f64,
+    /// Iterations an inner solve may take while its point is infeasible
+    /// before the multipliers / penalty are updated (`None`: until the inner
+    /// solve converges). Inner solves in narrow valleys can converge slowly;
+    /// without a cap the first round may use the whole iteration budget at
+    /// `μ₀` and end infeasible. Rounds at a feasible point always run to
+    /// convergence.
+    #[serde(default)]
+    pub max_inner_iterations: Option<usize>,
 }
 
 impl Default for AugLagSettings {
@@ -95,6 +103,7 @@ impl Default for AugLagSettings {
             mu_max: 1e12,
             max_outer: 30,
             tol: 1e-9,
+            max_inner_iterations: None,
         }
     }
 }
@@ -582,6 +591,9 @@ struct InnerOut {
     x: Vec<f64>,
     e: Evaluation,
     termination: Termination,
+    /// Ended by `AugLagSettings::max_inner_iterations` (not converged, but
+    /// the run goes on with updated multipliers).
+    capped: bool,
 }
 
 /// One trust-region solve of the current augmented least-squares problem.
@@ -591,8 +603,10 @@ fn inner<P: Problem + ?Sized>(
     mut x: Vec<f64>,
     mut e: Evaluation,
     stage: &str,
+    cap: Option<usize>,
 ) -> MkResult<InnerOut> {
     let vars = c.p.variables();
+    let start_iteration = c.ctr.iterations;
     let n = vars.len();
     let s = c.s;
     let mut r = match aug.residual(&e) {
@@ -602,6 +616,7 @@ fn inner<P: Problem + ?Sized>(
                 x,
                 e,
                 termination: Termination::EvaluationFailure,
+                capped: false,
             });
         }
     };
@@ -609,7 +624,12 @@ fn inner<P: Problem + ?Sized>(
     let mut delta = 0.0;
     let mut first = true;
     fn out(x: Vec<f64>, e: Evaluation, termination: Termination) -> MkResult<InnerOut> {
-        Ok(InnerOut { x, e, termination })
+        Ok(InnerOut {
+            x,
+            e,
+            termination,
+            capped: false,
+        })
     }
     loop {
         if c.mon.cancelled() {
@@ -620,6 +640,17 @@ fn inner<P: Problem + ?Sized>(
         }
         if !c.budget_left() {
             return out(x, e, Termination::MaxEvaluations);
+        }
+        if let Some(cap) = cap
+            && c.ctr.iterations - start_iteration >= cap
+            && max_violation(c.p, &e.constraints) > s.constraints.tol
+        {
+            return Ok(InnerOut {
+                x,
+                e,
+                termination: Termination::MaxIterations,
+                capped: true,
+            });
         }
         let sc = scalar(c.p, &e);
         if sc.merit <= s.target_merit && sc.violation <= c.mon.feasibility_tol {
@@ -874,24 +905,38 @@ pub fn least_squares<P: Problem + ?Sized>(
     let al = settings.constraints;
     let mut aug = Aug::new(p, al.mu0);
     if aug.rows.is_empty() {
-        let o = inner(&mut c, &aug, x, e, "")?;
+        let o = inner(&mut c, &aug, x, e, "", None)?;
         return Ok(finish(&c, o.x, Some(o.e), o.termination, None));
     }
     let k = p.num_constraints();
     let mut eta = 1.0 / al.mu0.powf(0.1);
     let mut termination = Termination::MaxIterations;
-    for outer in 0..al.max_outer {
-        let o = inner(&mut c, &aug, x, e, &format!("al {outer}"))?;
+    // Rounds ended by the inner-iteration cap do not count against
+    // `max_outer` (each takes at least one iteration of the finite budget).
+    let mut outer = 0;
+    let mut round = 0;
+    while outer < al.max_outer {
+        let o = inner(
+            &mut c,
+            &aug,
+            x,
+            e,
+            &format!("al {round}"),
+            al.max_inner_iterations.map(|m| m.max(1)),
+        )?;
+        round += 1;
         x = o.x;
         e = o.e;
-        if matches!(
-            o.termination,
-            Termination::Cancelled
-                | Termination::MaxEvaluations
-                | Termination::MaxIterations
-                | Termination::EvaluationFailure
-                | Termination::DerivativeFailure
-        ) {
+        if !o.capped
+            && matches!(
+                o.termination,
+                Termination::Cancelled
+                    | Termination::MaxEvaluations
+                    | Termination::MaxIterations
+                    | Termination::EvaluationFailure
+                    | Termination::DerivativeFailure
+            )
+        {
             termination = o.termination;
             break;
         }
@@ -914,7 +959,10 @@ pub fn least_squares<P: Problem + ?Sized>(
             }
             eta = (1.0 / aug.mu.powf(0.1)).max(al.tol);
         }
-        if outer + 1 == al.max_outer {
+        if !o.capped {
+            outer += 1;
+        }
+        if outer == al.max_outer {
             termination = if viol <= al.tol {
                 Termination::MaxIterations
             } else {
