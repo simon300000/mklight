@@ -9,9 +9,10 @@
 //! * **Stopping and cancelling.** Cancelling through the job context stops
 //!   the optimiser, and `Analysis::run` returns the best point so far
 //!   (feasibility-ranked) with `"status": "cancelled"`. The scheduler,
-//!   however, discards cancelled results. `Engine::stop_job` uses a separate
-//!   token and retains the best point with `"stopped": true`. The legacy
-//!   `stop_key` / [`request_stop`] path remains supported.
+//!   however, discards the results of cancelled jobs (a superseded result is
+//!   stale). To stop a job *and keep* its best point, call
+//!   `Engine::stop_job` (or give it a `stop_key` and call [`request_stop`]):
+//!   the job then ends normally with `"status": "stopped"`.
 //! * **Reported numbers** (start and final merit, operand table) are always
 //!   computed with the CPU f64 reference, whatever evaluated the search; the
 //!   result says which backend evaluated it, with its precision
@@ -35,6 +36,7 @@ use std::time::Duration;
 use mklight_core::job::{CancelToken, Precision, Progress};
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem, Snapshot};
+use mklight_gpu::xval::Qualification;
 use mklight_optim::deriv::{FdScheme, JacobianSettings};
 use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
@@ -57,6 +59,7 @@ use mklight_optim::tolerance::{
     ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
+use mklight_trace::{SemiDiameterSettings, SequentialTracer};
 
 use super::BackendUse;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
@@ -70,16 +73,7 @@ pub fn register(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Tolerance));
 }
 
-// Shared result records; model/spec objects use their core/solver serde forms.
-fn evaluation_schema() -> Value {
-    use super::schema::*;
-    obj(&[
-        ("merit", nf()),
-        ("violation", nf()),
-        ("status", opaque("EvalStatus.")),
-    ])
-}
-
+// The `backend` record shared by both result schemas.
 fn evaluation_backend_schema() -> Value {
     use super::schema::*;
     obj_opt(
@@ -188,16 +182,15 @@ impl StopGuard {
     }
 }
 
-/// A job's stop request: its token, registered under the job's `stop_key`
-/// for the lifetime of the value.
+/// A job's stop request: the job's stop token (`AnalysisInput::stop`),
+/// also registered under its `stop_key` for the lifetime of the value.
 struct StopRequest {
     token: CancelToken,
     _guard: Option<StopGuard>,
 }
 
 impl StopRequest {
-    fn register(key: Option<&str>) -> EngineResult<StopRequest> {
-        let token = CancelToken::new();
+    fn register(key: Option<&str>, token: CancelToken) -> EngineResult<StopRequest> {
         let _guard = key
             .map(|k| StopGuard::register(k, token.clone()))
             .transpose()?;
@@ -228,7 +221,6 @@ enum Interrupt {
 fn interruptible<T>(
     ctx: &JobContext,
     stop: &StopRequest,
-    job_stop: &CancelToken,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
     let stop = &stop.token;
@@ -238,7 +230,7 @@ fn interruptible<T>(
     let out = std::thread::scope(|s| {
         s.spawn(|| {
             while !done.load(Ordering::Acquire) {
-                if ctx.cancel.is_cancelled() || stop.is_cancelled() || job_stop.is_cancelled() {
+                if ctx.cancel.is_cancelled() || stop.is_cancelled() {
                     inner.cancel.cancel();
                     break;
                 }
@@ -251,7 +243,7 @@ fn interruptible<T>(
     });
     let why = if ctx.cancel.is_cancelled() {
         Interrupt::Cancelled
-    } else if stop.is_cancelled() || job_stop.is_cancelled() {
+    } else if stop.is_cancelled() {
         Interrupt::Stopped
     } else {
         Interrupt::None
@@ -402,55 +394,61 @@ fn gpu_backend(
 /// GPU evaluator in front of it.
 struct Evaluation {
     cpu: TraceEvaluator,
-    gpu: Option<GpuTraceEvaluator>,
+    /// The GPU evaluator and the engine device behind it.
+    gpu: Option<(GpuTraceEvaluator, Arc<GpuDevice>)>,
     work: Workload,
-    device: Option<Arc<GpuDevice>>,
     fallback_reason: Option<String>,
     /// `"backend"` block of the result.
     report: Value,
     warnings: Vec<String>,
 }
 
+/// The device's qualification of `snapshot`, cached per snapshot and
+/// library, and the reference tracer it was qualified with.
+fn qualify(
+    device: &GpuDevice,
+    cpu: &TraceEvaluator,
+    snapshot: &Snapshot,
+    input: &AnalysisInput<'_>,
+    ctx: &JobContext,
+) -> EngineResult<(SequentialTracer, Arc<Qualification>)> {
+    let tracer = cpu
+        .tracer(snapshot.system())
+        .map_err(|e| invalid(format!("tracer: {e:?}")))?;
+    let key = format!("{}:{}", snapshot.hash().to_hex(), input.library_hash());
+    let q = device.qualify(&key, &tracer, ctx)?;
+    Ok((tracer, q))
+}
+
 impl Evaluation {
     fn new(
         choice: BackendChoice,
         input: &AnalysisInput<'_>,
-        system: &OpticalSystem,
         batch: usize,
         work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
         let cpu = TraceEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
-        let mut device = None;
         let mut fallback_reason = input.selection_note.clone();
         let gpu = match gpu_backend(choice, input, &work) {
-            Ok(Some(b)) => {
+            Ok(Some(device)) => {
                 let settings = GpuEvalSettings {
                     batch: batch.max(1),
                     ..Default::default()
                 };
-                let tracer = cpu
-                    .tracer(system)
-                    .map_err(|e| invalid(format!("tracer: {e:?}")))?;
-                let key = format!(
-                    "{}:{}",
-                    input.snapshot.hash().to_hex(),
-                    input.library_hash()
-                );
-                let q = b.qualify(&key, &tracer, ctx)?;
+                let (tracer, q) = qualify(&device, &cpu, &input.snapshot, input, ctx)?;
                 let hints = tracer
-                    .semi_diameters(&mklight_trace::SemiDiameterSettings::default())
+                    .semi_diameters(&SemiDiameterSettings::default())
                     .values;
                 let g = GpuTraceEvaluator::with_qualification(
-                    b.backend.clone(),
+                    device.backend.clone(),
                     cpu.clone(),
                     settings,
                     q.as_ref().clone(),
                     hints,
                 );
-                device = Some(b);
-                Some(g)
+                Some((g, device))
             }
             Ok(None) => {
                 if super::gpu::device(input).is_some() {
@@ -475,7 +473,6 @@ impl Evaluation {
             cpu,
             gpu,
             work,
-            device,
             fallback_reason,
             report: Value::Null,
             warnings,
@@ -483,17 +480,17 @@ impl Evaluation {
     }
 
     fn active_gpu(&self) -> Option<&GpuTraceEvaluator> {
-        self.gpu.as_ref().filter(|g| g.is_active())
+        self.gpu.as_ref().map(|(g, _)| g).filter(|g| g.is_active())
     }
 
     /// The `"backend"` block: who evaluated the search, its qualification
     /// (at the start and, after a GPU run, at the final design) and the GPU
-    /// work counters.
+    /// work counters. Reports the backend used to the engine.
     fn finish(
         &mut self,
         input: &AnalysisInput<'_>,
         requested: BackendChoice,
-        final_system: Option<&OpticalSystem>,
+        final_snapshot: Option<&Snapshot>,
         ctx: &JobContext,
     ) -> EngineResult<()> {
         let mut b = json!({
@@ -503,9 +500,12 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
-        if let Some(g) = &self.gpu {
-            let start = g.qualification();
-            if g.is_active() && g.stats().gpu_candidates > 0 {
+        // The GPU evaluated the search only if it traced candidates.
+        let active = self
+            .active_gpu()
+            .is_some_and(|g| g.stats().gpu_candidates > 0);
+        if let Some((g, device)) = &self.gpu {
+            if active {
                 self.warnings.push(format!(
                     "ray operands evaluated on {} (f32, precision-qualified)",
                     g.backend_id()
@@ -514,14 +514,8 @@ impl Evaluation {
                 b["precision"] = json!(Precision::F32Gpu);
                 // A qualification of the final design (the search moved
                 // away from the qualified start).
-                if let Some(system) = final_system {
-                    let snapshot = Snapshot::new(system.clone())?;
-                    let key = format!("{}:{}", snapshot.hash().to_hex(), input.library_hash());
-                    let tracer = self
-                        .cpu
-                        .tracer(system)
-                        .map_err(|e| invalid(format!("tracer: {e:?}")))?;
-                    let q = self.device.as_ref().unwrap().qualify(&key, &tracer, ctx)?;
+                if let Some(snapshot) = final_snapshot {
+                    let (_, q) = qualify(device, &self.cpu, snapshot, input, ctx)?;
                     if !q.passed {
                         self.warnings.push(format!(
                             "the final design fails the GPU precision qualification ({}); its \
@@ -535,41 +529,29 @@ impl Evaluation {
                     b["reported_on"] = json!(g.backend_id());
                 }
             }
-            b["qualification"] = serde_json::to_value(&start).unwrap_or(Value::Null);
+            b["qualification"] = serde_json::to_value(g.qualification()).unwrap_or(Value::Null);
             b["gpu_stats"] = serde_json::to_value(g.stats()).unwrap_or(Value::Null);
         }
-        let active = self
-            .active_gpu()
-            .is_some_and(|g| g.stats().gpu_candidates > 0);
-        let deliberate = !active && self.gpu.is_none();
-        let fallback = if active {
-            None
-        } else if let Some(g) = &self.gpu {
-            g.qualification()
+        let used = self.gpu.as_ref().filter(|_| active);
+        let fallback_reason = match &self.gpu {
+            _ if active => None,
+            Some((g, _)) => g
+                .qualification()
                 .reason
-                .or_else(|| Some("no candidates traced on the GPU".into()))
-        } else {
-            self.fallback_reason.clone()
+                .or_else(|| Some("no candidates traced on the GPU".into())),
+            None => self.fallback_reason.clone(),
         };
         input.report_backend(BackendUse {
-            id: if active {
-                self.device.as_ref().unwrap().id.clone()
-            } else {
-                "cpu_reference".into()
-            },
+            id: used.map_or("cpu_reference".into(), |(_, d)| d.id.clone()),
             precision: if active {
                 Precision::F32Gpu
             } else {
                 Precision::F64Reference
             },
-            device: self
-                .device
-                .as_ref()
-                .filter(|_| active)
-                .map(|d| d.device_name()),
-            fallback_reason: fallback,
+            device: used.map(|(_, d)| d.device_name()),
+            fallback_reason,
             qualification: b.get("qualification").cloned(),
-            deliberate,
+            deliberate: self.gpu.is_none(),
         });
         self.report = b;
         Ok(())
@@ -1154,12 +1136,16 @@ impl Analysis for Optimize {
 
     fn result_schema(&self) -> Value {
         use super::schema::*;
-        let mut final_value = evaluation_schema();
-        final_value["properties"]["feasible"] = boolean("Violation within feasibility_tolerance.");
-        final_value["required"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("feasible"));
+        let evaluation = [
+            ("merit", nf()),
+            ("violation", nf()),
+            ("status", opaque("EvalStatus.")),
+        ];
+        let mut final_value = evaluation.to_vec();
+        final_value.push((
+            "feasible",
+            boolean("Violation within feasibility_tolerance."),
+        ));
         result(
             &[
                 (
@@ -1178,8 +1164,8 @@ impl Analysis for Optimize {
                     "improved",
                     boolean("Better than the start, feasibility first."),
                 ),
-                ("start", evaluation_schema()),
-                ("final", final_value),
+                ("start", obj(&evaluation)),
+                ("final", obj(&final_value)),
                 (
                     "search",
                     obj(&[
@@ -1298,7 +1284,7 @@ impl Analysis for Optimize {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: OptimizeSettings = parse(settings, "settings")?;
-        let stop = StopRequest::register(s.stop_key.as_deref())?;
+        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
         let system = input.snapshot.system().clone();
         let cpu = TraceEvaluator::new(input.library.clone());
         let reg = OperandRegistry::builtin();
@@ -1387,13 +1373,13 @@ impl Analysis for Optimize {
         let x0 = reference.start_point()?;
         let work = Workload::new(&cpu, &system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         ctx.check()?;
 
         // The search.
         let history: Arc<Mutex<Vec<HistoryRow>>> = Arc::default();
         let method = s.algorithm.name();
-        let (run, why) = interruptible(ctx, &stop, &input.stop, |inner| {
+        let (run, why) = interruptible(ctx, &stop, |inner| {
             let h = history.clone();
             let job = inner.clone();
             // The optimisers' own progress calls go to a detached bar; the
@@ -1499,9 +1485,9 @@ impl Analysis for Optimize {
                 refs.merit[0], refs.violation[0], refs.merit[1], refs.violation[1]
             ));
         }
-        let final_system = reference.apply(&x)?;
+        let final_system = Snapshot::new(reference.apply(&x)?)?;
         ev.finish(input, s.backend, Some(&final_system), ctx)?;
-        let hash = Snapshot::new(final_system.clone())?.hash().to_hex();
+        let hash = final_system.hash().to_hex();
         let history = history.lock().map(|h| h.clone()).unwrap_or_default();
         let variables: Vec<Value> = s
             .variables
@@ -1544,7 +1530,7 @@ impl Analysis for Optimize {
             "history": history,
             "backend": ev.report,
             "merit_spec": spec,
-            "system": final_system,
+            "system": final_system.system(),
             "system_hash": hash,
         });
         let mut flat = Vec::with_capacity(history.len() * 4);
@@ -1797,7 +1783,7 @@ impl Analysis for Tolerance {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: ToleranceSettings = parse(settings, "settings")?;
-        let stop = StopRequest::register(s.stop_key.as_deref())?;
+        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
         let system = input.snapshot.system().clone();
         // Every parameter must exist on the nominal system (a missing one
         // would fail every trial).
@@ -1871,7 +1857,7 @@ impl Analysis for Tolerance {
             batch,
         );
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &system, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
         ctx.check()?;
         let split = if do_sens && do_mc {
             0.2
@@ -1881,7 +1867,7 @@ impl Analysis for Tolerance {
             0.0
         };
 
-        let ((sens, mcr), why) = interruptible(ctx, &stop, &input.stop, |inner| {
+        let ((sens, mcr), why) = interruptible(ctx, &stop, |inner| {
             let run = |e: &dyn ToleranceRunner| -> (Option<Result<_, MkError>>, Option<Result<_, MkError>>) {
                 let sens = do_sens.then(|| {
                     let mon = Monitor::new(inner.subrange(0.0, split));
@@ -2673,7 +2659,7 @@ mod tests {
             }
         }
         // A second job may not take a running job's stop key.
-        let held = StopRequest::register(Some("test-key-in-use")).unwrap();
+        let held = StopRequest::register(Some("test-key-in-use"), CancelToken::new()).unwrap();
         for (name, s) in [
             (
                 "optimize",

@@ -526,24 +526,3 @@ mk_engine_destroy(engine)
   what it used with `AnalysisInput::report_backend`.
 * Typed merit/variables/tolerances replace the opaque project sections
   through a schema migration (v1 → v2).
-
-### Stop smoke test (ABI 1.2)
-
-The compiled C smoke suite exercises this sequence as well as unsupported
-jobs, unknown IDs, ordinary cancellation and finished-job no-ops:
-
-```c
-uint64_t job;
-MKJobState state;
-char *json = NULL;
-MKBuffer *buffers = NULL;
-size_t count = 0;
-assert(mk_session_submit_analysis(session, "optimize",
-    "{\"algorithm\":\"de\",\"max_iterations\":100000}", NULL, &job) == MK_OK);
-assert(mk_job_stop(engine, job) == MK_OK);
-assert(mk_job_wait(engine, job, -1, &state) == MK_OK && state == MK_JOB_DONE);
-assert(mk_job_take_result(engine, job, &json, &buffers, &count) == MK_OK);
-assert(strstr(json, "\"stopped\":true") != NULL);
-mk_string_free(json);
-mk_buffer_free(buffers, count);
-```

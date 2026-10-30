@@ -262,18 +262,17 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
     let json_mode = ctx.global.json;
     loop {
         if cancelled_by.is_none() {
+            // The first interrupt stops a job that supports it; otherwise,
+            // and on the second, the job is cancelled.
             let interrupts = signal::count();
-            if interrupts >= 1 && !stopping {
-                match engine.stop_job(job) {
-                    Ok(()) => stopping = true,
-                    Err(EngineError::Core(mklight_core::MkError::Unsupported(_))) => {
-                        cancelled_by = Some(CancelReason::Interrupt);
-                        engine.cancel_job(job)?;
-                    }
+            if interrupts == 1 && !stopping {
+                stopping = match engine.stop_job(job) {
+                    Ok(()) => true,
+                    Err(EngineError::Core(mklight_core::MkError::Unsupported(_))) => false,
                     Err(e) => return Err(e.into()),
-                }
+                };
             }
-            let reason = if interrupts >= 2 {
+            let reason = if interrupts >= 2 || (interrupts == 1 && !stopping) {
                 Some(CancelReason::Interrupt)
             } else if timeout.is_some_and(|t| started.elapsed() >= t) {
                 Some(CancelReason::Timeout)
