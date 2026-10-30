@@ -61,7 +61,9 @@ impl VariableSpec {
             },
             lower: self.lower,
             upper: self.upper,
-            scale: self.scale.unwrap_or_else(|| default_scale(&self.param, v)),
+            scale: self
+                .scale
+                .unwrap_or_else(|| default_scale_for(system, &self.param, v)),
             fd_step: self.fd_step,
         })
     }
@@ -108,6 +110,112 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
         SemiDiameter { .. } => (0.05 * a).max(0.1),
         _ => (0.1 * a).max(1e-3),
     }
+}
+
+/// Surface-aware coefficient scales: a change of about 1 µm of sag (or
+/// 0.1 rad of phase) at the clear radius, divided by polynomial order to
+/// control slope changes too. The value-based scale remains a lower bound.
+pub fn default_scale_for(s: &OpticalSystem, p: &ParamPath, value: f64) -> f64 {
+    use mklight_core::model::{ApertureSpec, SemiDiameter, SurfaceShape};
+    use mklight_core::param::CoefficientSet;
+    use mklight_core::surface_math::{xy_powers, zernike_term};
+    let (surface, set, index) = match p {
+        ParamPath::ShapeCoefficient {
+            surface,
+            set,
+            index,
+        } => (*surface, Some(*set), *index),
+        ParamPath::Asphere { surface, index } => (*surface, None, *index),
+        _ => return default_scale(p, value),
+    };
+    let sf = &s.surfaces[s.surface_index(surface).expect("parameter already read")];
+    let norm = match &sf.shape {
+        SurfaceShape::QCon { norm_radius, .. }
+        | SurfaceShape::QBfs { norm_radius, .. }
+        | SurfaceShape::XYPolynomial { norm_radius, .. }
+        | SurfaceShape::ZernikeSag { norm_radius, .. } => Some(*norm_radius),
+        SurfaceShape::Diffractive { phase, .. } if set == Some(CoefficientSet::Phase) => {
+            Some(phase.norm_radius)
+        }
+        _ => None,
+    };
+    let radius = sf
+        .aperture
+        .as_ref()
+        .map(|a| a.bounding_radius())
+        .or_else(|| match sf.semi_diameter {
+            SemiDiameter::Fixed { value } => Some(value),
+            SemiDiameter::Auto => norm.or(match s.aperture {
+                ApertureSpec::EntrancePupilDiameter { value } => Some(value / 2.0),
+                _ => None,
+            }),
+        })
+        .unwrap_or(10.0);
+    let order = match set {
+        Some(CoefficientSet::Odd) => index + 1,
+        Some(CoefficientSet::Phase) => 2 * (index + 1),
+        Some(CoefficientSet::Q) => 2 * index + 4,
+        Some(CoefficientSet::Xy) => {
+            let (m, n) = xy_powers(index);
+            m + n
+        }
+        Some(CoefficientSet::Zernike) => {
+            let SurfaceShape::ZernikeSag { ordering, .. } = sf.shape else {
+                unreachable!()
+            };
+            zernike_term(ordering, index + 1).unwrap().0.max(1)
+        }
+        _ => 2 * index + 4,
+    };
+    // Q and Zernike bases contain lower powers too: treating their highest
+    // degree as a monomial gives enormous steps inside the normalising disk.
+    // Measure a unit basis and its slope instead, using the core recurrence.
+    if matches!(set, Some(CoefficientSet::Q | CoefficientSet::Zernike)) {
+        let mut coefficients = vec![0.0; index + 1];
+        coefficients[index] = 1.0;
+        let norm_radius = norm.unwrap();
+        let basis = match sf.shape {
+            SurfaceShape::QCon { .. } => SurfaceShape::QCon {
+                curvature: 0.0,
+                conic: 0.0,
+                norm_radius,
+                coefficients,
+            },
+            SurfaceShape::QBfs { .. } => SurfaceShape::QBfs {
+                curvature: 0.0,
+                norm_radius,
+                coefficients,
+            },
+            SurfaceShape::ZernikeSag { ordering, .. } => SurfaceShape::ZernikeSag {
+                curvature: 0.0,
+                conic: 0.0,
+                norm_radius,
+                coefficients,
+                ordering,
+            },
+            _ => unreachable!(),
+        };
+        let radius = radius.min(norm_radius);
+        let mut gain = 0.0_f64;
+        for j in 0..=64 {
+            let r = radius * j as f64 / 64.0;
+            for a in 0..32 {
+                let (sin, cos) = (std::f64::consts::TAU * a as f64 / 32.0).sin_cos();
+                let z = mklight_core::surface_math::evaluate(&basis, r * cos, r * sin).unwrap();
+                gain = gain
+                    .max(z.sag.abs())
+                    .max(radius * z.gradient[0].hypot(z.gradient[1]));
+            }
+        }
+        return (0.1 * value.abs()).max(1e-3 / gain);
+    }
+    let r = radius / norm.unwrap_or(1.0);
+    let amplitude = if set == Some(CoefficientSet::Phase) {
+        0.1
+    } else {
+        1e-3
+    };
+    (0.1 * value.abs()).max(amplitude / (order as f64 * r.powi(order as i32)))
 }
 
 /// A merit function + variables + evaluator, as a batched [`Problem`].

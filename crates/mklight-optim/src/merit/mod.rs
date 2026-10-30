@@ -25,6 +25,7 @@ pub mod operand;
 pub mod problem;
 pub mod quadrature;
 pub mod reference;
+mod surface;
 pub mod trace_eval;
 
 use serde::{Deserialize, Serialize};

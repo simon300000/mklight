@@ -57,7 +57,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::f64::consts::{PI, TAU};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -69,7 +69,7 @@ use mklight_core::{
     SurfaceId, SurfaceShape, Vec3,
 };
 use mklight_trace::{
-    ObjectSource, OpdReference, ParaxialModel, PreparedField, SemiDiameterSettings,
+    ObjectSource, OpdReference, ParaxialModel, ParaxialXY, PreparedField, SemiDiameterSettings,
     SequentialTracer, SurfaceRecord, TraceOptions, TraceResult, TracerSettings, fix_semi_diameters,
     trace::to_global,
 };
@@ -230,7 +230,6 @@ impl TraceEvaluator {
         parallel: bool,
     ) -> MkResult<Vec<OperandValue>> {
         ctx.check()?;
-        s.require_legacy_shapes("merit evaluation")?;
         let auto_sd = has_auto_semi_diameters(s);
         let needs_tracer = operands.iter().any(|o| {
             (!is_model_kind(&o.kind) && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))
@@ -249,6 +248,7 @@ impl TraceEvaluator {
         let mut memo = GroupMemo::default();
         let mut out = Vec::with_capacity(operands.len());
         for op in operands {
+            ctx.check()?;
             let v = if is_model_kind(&op.kind) {
                 if auto_sd && needs_semi_diameters(&op.kind) {
                     match &tracer {
@@ -624,6 +624,7 @@ pub(super) struct Candidate<'a> {
     refs: Mutex<BTreeMap<RefKey, Result<[f64; 3], OperandError>>>,
     /// Is the candidate mirror-symmetric about the meridional plane?
     symmetric: bool,
+    xy: OnceLock<Result<ParaxialXY, OperandError>>,
 }
 
 impl<'a> Candidate<'a> {
@@ -639,6 +640,22 @@ impl<'a> Candidate<'a> {
         // rays or more (measured on the Double Gauss, docs/OPTIMIZATION.md).
         let rays: usize = plan.groups.values().map(|s| s.rings * s.arms).sum();
         let parallel = parallel && rays >= 256;
+        if operands.iter().any(|o| {
+            matches!(
+                o.kind,
+                OperandKind::EflX
+                    | OperandKind::EflY
+                    | OperandKind::BflX
+                    | OperandKind::BflY
+                    | OperandKind::AnamorphicSqueeze
+            )
+        }) {
+            let job = JobContext::with(ctx.cancel.clone(), Default::default());
+            let xy = ParaxialXY::new_job(tr.system(), &job)
+                .map_err(|e| OperandError::RayFailure(e.to_string()));
+            ctx.check()?;
+            let _ = c.xy.set(xy);
+        }
         c.prepare_points(&plan, parallel);
         ctx.check()?;
         c.trace_cpu(&plan, ctx, parallel)?;
@@ -666,6 +683,7 @@ impl<'a> Candidate<'a> {
             real_rays: BTreeMap::new(),
             refs: Mutex::new(BTreeMap::new()),
             symmetric: is_meridionally_symmetric(tr.system().system()),
+            xy: OnceLock::new(),
         };
         let mut plan = Plan::default();
         // The per-ray operands of one ray group (hundreds in a default
@@ -1492,6 +1510,26 @@ impl<'a> Candidate<'a> {
         match &op.kind {
             Efl => fo_mean(&|fo| fo.efl),
             Bfl => fo_mean(&|fo| fo.bfl),
+            EflX | EflY | BflX | BflY | AnamorphicSqueeze => {
+                let xy = self
+                    .xy
+                    .get_or_init(|| {
+                        ParaxialXY::new(self.tr.system())
+                            .map_err(|e| OperandError::RayFailure(e.to_string()))
+                    })
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                let wls = self.wavelengths(op.wavelength)?;
+                weighted_mean(&wls, |&w| {
+                    Ok(match op.kind {
+                        EflX => xy.x[w].efl,
+                        EflY => xy.y[w].efl,
+                        BflX => xy.x[w].bfl,
+                        BflY => xy.y[w].bfl,
+                        _ => xy.squeeze[w],
+                    })
+                })
+            }
             FNumber {
                 kind: FNumberKind::ParaxialImageSpace,
             } => fo_mean(&|fo| fo.image_f_number),

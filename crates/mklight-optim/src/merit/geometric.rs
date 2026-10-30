@@ -188,6 +188,9 @@ pub fn gap_thickness(
 /// Value of one model-only operand (`Unsupported` for any other kind).
 pub fn model_value(s: &OpticalSystem, op: &Operand) -> OperandValue {
     use OperandKind::*;
+    if super::surface::is_kind(&op.kind) {
+        return super::surface::value(s, &op.kind);
+    }
     let n = s.surfaces.len();
     match &op.kind {
         TotalTrack { from, to } => {
@@ -268,20 +271,24 @@ pub fn model_value(s: &OpticalSystem, op: &Operand) -> OperandValue {
 /// Does [`model_value`] compute this kind?
 pub fn is_model_kind(kind: &OperandKind) -> bool {
     use OperandKind::*;
-    matches!(
-        kind,
-        TotalTrack { .. }
-            | CentreThickness { .. }
-            | EdgeThickness { .. }
-            | MinThickness { .. }
-            | MaxThickness { .. }
-            | ParamValue { .. }
-    )
+    super::surface::is_kind(kind)
+        || matches!(
+            kind,
+            TotalTrack { .. }
+                | CentreThickness { .. }
+                | EdgeThickness { .. }
+                | MinThickness { .. }
+                | MaxThickness { .. }
+                | ParamValue { .. }
+        )
 }
 
 /// Does this model operand measure an edge thickness at a height taken from
 /// the semi-diameters (so automatic semi-diameters need the tracer)?
 pub fn needs_semi_diameters(kind: &OperandKind) -> bool {
+    if super::surface::is_kind(kind) {
+        return true;
+    }
     match kind {
         OperandKind::EdgeThickness { height: None, .. } => true,
         OperandKind::MinThickness { measure, .. } | OperandKind::MaxThickness { measure, .. } => {
@@ -305,7 +312,13 @@ impl OperandEvaluator for ModelEvaluator {
             .iter()
             .map(|s| {
                 ctx.check()?;
-                Ok(operands.iter().map(|op| model_value(s, op)).collect())
+                operands
+                    .iter()
+                    .map(|op| {
+                        ctx.check()?;
+                        Ok(model_value(s, op))
+                    })
+                    .collect()
             })
             .collect()
     }
