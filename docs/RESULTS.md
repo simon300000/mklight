@@ -254,6 +254,62 @@ applies when they name none (`backend.requested` = `default:<id>`).
   Stop retains completed sensitivity operands and Monte-Carlo trials with
   `stopped: true`. Tolerancing does not replace the session's model.
 
+### Wave optics
+
+`wavefront_map`, `psf`, `mtf`, `diffraction_encircled_energy`,
+`line_spread`, `through_focus_mtf` and `mtf_vs_field` run the CPU f64 wave
+solver on the selected, solved `configuration` (default 0). Their RunInfo
+records the session snapshot hash, configuration, settings and solve/sampling
+warnings. These analyses have no GPU path.
+
+* **Wavefront.** OPD is `OPL_chief − OPL_ray` at the exit-pupil reference
+  sphere, in waves at the reported wavelength (µm); the chief ray has zero
+  OPD. Pupil coordinates are cell centres over `[-1, 1]`, `u` along image
+  x and `v` along image y. Maps are `[v, u]`, u fastest, with NaN outside
+  the clear pupil. Zernike coefficients are in waves, Fringe order Z1
+  onward by default; `standard` selects Noll order and RMS normalisation.
+  Coefficients fit the lattice rays with amplitude-squared weights, rather
+  than the resampled map. RMS removes piston; tilt-removed statistics also
+  remove best-fit tilt.
+* **PSF.** The default `strehl` normalisation sets the aberration-free peak
+  of the same pupil to 1; the peak intensity is the Strehl ratio.
+  `unit_energy` instead gives intensity in mm⁻² with whole-plane integral
+  1. `total_energy` is the whole-plane integral, so a finite window can
+  contain less. PSF buffers are `[image_y, image_x]`, x fastest. Spacing,
+  grid centres, peak and centroid coordinates are mm relative to the
+  common image-local `reference_mm`. Polychromatic PSFs use normalised
+  system wavelength weights and include lateral colour.
+* **Energy and line spread.** `diffraction_encircled_energy` gives fractions
+  of total PSF energy inside circles of `radius_mm`, and squares of that
+  half-width, plus an aberration-free encircled reference and r50/r80/r90
+  in mm. An unreachable radius is undefined. `line_spread.x` integrates
+  the unit-energy PSF over y, and `.y` over x, in mm⁻¹.
+* **MTF.** Frequencies and cutoffs are image-space cycles/mm; optical MTF
+  is normalised to 1 at zero frequency. Tangential is along the local
+  field direction (image y on axis), sagittal perpendicular (image x on
+  axis). `mtf_vs_field` also uses the sweep direction at its axial sample.
+  Through-focus shifts are mm, positive along image-space propagation;
+  the reference point shifts along the chief ray by δz/cosθ.
+* **Detector option.** All three MTF analyses accept `detector`: pixel
+  aperture sinc factors and Gaussian diffusion multiply the optical MTF.
+  `mtf` retains separate optical, detector and system curves. Its
+  `nyquist = [1/(2 pitch_x), 1/(2 pitch_y)]` and per-field directional
+  Nyquist values are markers in cycles/mm, not clipping thresholds. The
+  directional marker is `min(1/(2 pitch_x |e_x|), 1/(2 pitch_y |e_y|))`.
+  Field/focus sweeps return the product when a detector is supplied.
+* **Buffers.** Wave arrays, including sampled curve axes and Zernike
+  coefficients, travel as f64 buffers. Their JSON fields contain the
+  corresponding buffer names. Numeric suffixes identify the JSON group
+  position (not the system field index), with a second suffix for nested
+  curves or rim loops. Shapes and units are listed below. Unusable field
+  samples in MTF-versus-field buffers are NaN; unusable per-field pupils
+  are skipped with a warning.
+* **Sampling warnings.** `pupil_undersampled` (phase steps over half a
+  wave), `field_wraps` (image window wider than the alias-free field), and
+  `psf_truncated` (less than 95 % energy in the window) are retained in
+  RunInfo as the solver's descriptive warning text. Increase pupil
+  sampling or adjust the image window as described in `docs/WAVE.md`.
+
 ## 8. Analysis reference
 
 Generated from the registry (one section per analysis, by category):
@@ -1369,29 +1425,363 @@ Buffers:
 | `total_irradiance` | f64 | [ny, nx] | W/mm² | Stray total. |
 | `total_irradiance_std_error` | f64 | [ny, nx] | W/mm² |  |
 
+### `diffraction_encircled_energy` — Diffraction encircled energy
+
+Category `wave`, result version 1.
+
+Encircled and ensquared energy of the diffraction PSF, with the diffraction-limited reference.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `center` | object | `{"type":"centroid"}` |  | Tagged energy centre: {type: reference}, {type: centroid}, {type: peak}, or {type: point, x, y} in mm. |
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `max_radius_mm` | number\|null | `null` | mm | ≥ 0.0; Positive maximum radius; null uses the PSF window. |
+| `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
+| `padding` | number | `4.0` |  | ≥ 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `samples` | integer | `51` |  | ≥ 2 |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].center_mm` | [nf; 2] |  | Energy centre relative to the common reference, mm. |
+| `fields[].diffraction_limit` | string | 1 | Buffer name; aberration-free encircled energy. |
+| `fields[].encircled` | string | 1 | Buffer name; energy inside a circle of radius radius_mm. |
+| `fields[].ensquared` | string | 1 | Buffer name; energy inside a square of half-width radius_mm. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].r50_mm` | nf | mm | Radius enclosing 50 % of total energy. |
+| `fields[].r80_mm` | nf | mm | Radius enclosing 80 % of total energy. |
+| `fields[].r90_mm` | nf | mm | Radius enclosing 90 % of total energy. |
+| `radius_mm` | string | mm | Buffer name; radii / square half-widths. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `radius_mm` | f64 | [radii] | mm | Circle radii / square half-widths. |
+| `encircled_*` | f64 | [radii] | 1 | Encircled fraction of total PSF energy. |
+| `ensquared_*` | f64 | [radii] | 1 | Ensquared fraction of total PSF energy. |
+| `diffraction_limit_*` | f64 | [radii] | 1 | Aberration-free encircled energy. |
+
+### `line_spread` — Line spread function
+
+Category `wave`, result version 1.
+
+Diffraction line-spread functions along the image axes.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
+| `padding` | number | `4.0` |  | ≥ 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].positions_mm` | string | mm | Buffer name; positions relative to the common reference. |
+| `fields[].x` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over y. |
+| `fields[].y` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over x. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `positions_mm_*` | f64 | [positions] | mm | Coordinates relative to the common reference. |
+| `x_*` | f64 | [positions] | mm^-1 | Integral of PSF over y. |
+| `y_*` | f64 | [positions] | mm^-1 | Integral of PSF over x. |
+
 ### `mtf` — MTF
 
-Category `wave`, result version 1, **not available**: provided by mklight-wave, which is not wired into the engine yet.
+Category `wave`, result version 1.
 
-Settings: none.
+Diffraction MTF (FFT, pupil autocorrelation or from the Huygens PSF) vs frequency, tangential and sagittal, with the diffraction limit and an optional detector (pixel) MTF.
 
-Result: an object (not documented field by field).
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `frequency_samples` | integer | `41` |  | ≥ 2 |
+| `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
+| `max_frequency` | number\|null | `null` | cycles/mm | ≥ 0.0; Positive maximum image-space frequency; null uses the largest optical cutoff. |
+| `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].cutoff` | number | cycles/mm | Largest image-space cutoff over the selected wavelengths. |
+| `fields[].detector` | object? |  |  |
+| `fields[].detector.nyquist_sagittal` | nf | cycles/mm | Detector Nyquist marker along the sagittal direction. |
+| `fields[].detector.nyquist_tangential` | nf | cycles/mm | Detector Nyquist marker along the tangential direction. |
+| `fields[].detector.sagittal` | string | 1 | Buffer name; detector sagittal MTF. |
+| `fields[].detector.tangential` | string | 1 | Buffer name; detector tangential MTF. |
+| `fields[].diffraction_limit` | string | 1 | Buffer name; aberration-free MTF of the same pupil. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].sagittal` | string | 1 | Buffer name; optical sagittal MTF. |
+| `fields[].system_sagittal` | string? |  |  |
+| `fields[].system_tangential` | string? |  |  |
+| `fields[].tangential` | string | 1 | Buffer name; optical tangential MTF. |
+| `fields[].tangential_direction` | [nf; 2] |  | Tangential unit vector in image x/y; sagittal is perpendicular. |
+| `frequencies` | string | cycles/mm | Buffer name; image-space spatial frequencies. |
+| `nyquist` | [nf; 2]? |  |  |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `tangential_*` | f64 | [frequency_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `sagittal_*` | f64 | [frequency_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `diffraction_limit_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `detector_tangential_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `detector_sagittal_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `system_tangential_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `system_sagittal_*` | f64 | [frequency_samples] | 1 | MTF along the frequencies axis; detector/system buffers only when a detector is supplied. |
+| `frequencies` | f64 | [frequency_samples] | cycles/mm | Image-space spatial frequencies. |
+
+### `mtf_vs_field` — MTF vs field
+
+Category `wave`, result version 1.
+
+Diffraction MTF at fixed frequencies across the field.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
+| `direction` | [number; 2] | `[0.0,1.0]` |  | Nonzero direction in normalised field coordinates. |
+| `field_samples` | integer | `11` |  | 1 … 1001 |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
+| `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
+| `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `curves` | array<object> |  | One curve per frequency; includes the detector when supplied. |
+| `curves[].frequency` | number | cycles/mm | Image-space frequency. |
+| `curves[].sagittal` | string | 1 | Buffer name; MTF perpendicular to the local field direction. |
+| `curves[].tangential` | string | 1 | Buffer name; MTF along the local field direction. |
+| `field_values` | string | degrees or mm | Buffer name; specified [x, y] of each field sample. |
+| `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
+| `normalized_field` | string | 1 | Buffer name; normalised radial field from axis to edge. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `tangential_*` | f64 | [field_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `sagittal_*` | f64 | [field_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `normalized_field` | f64 | [field_samples] | 1 | Normalised radial field. |
+| `field_values` | f64 | [field_samples, 2] | degrees or mm | Specified field [x, y]. |
+| `frequencies` | f64 | [frequencies] | cycles/mm | Image-space frequencies. |
 
 ### `psf` — Point spread function
 
-Category `wave`, result version 1, **not available**: provided by mklight-wave, which is not wired into the engine yet.
+Category `wave`, result version 1.
 
-Settings: none.
+Diffraction PSF by FFT or Huygens integration, monochromatic or polychromatic, with the Strehl ratio.
 
-Result: an object (not documented field by field).
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `grid_size` | integer | `128` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
+| `normalization` | string | `"strehl"` |  | one of `"strehl"`, `"unit_energy"`; strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2. |
+| `padding` | number | `4.0` |  | ≥ 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `polychromatic` | boolean | `true` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spacing_mm` | number\|null | `null` | mm | ≥ 0.0; Positive explicit spacing; null uses padding. |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `psfs` | array<object> |  | One PSF per usable field (and wavelength when monochromatic). |
+| `psfs[].centroid_mm` | [nf; 2] |  | Centroid relative to reference_mm, mm. |
+| `psfs[].field` | integer |  | ≥ 0; System field index. |
+| `psfs[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `psfs[].peak_mm` | [nf; 2] |  | Peak relative to reference_mm, mm. |
+| `psfs[].psf` | object |  |  |
+| `psfs[].psf.center_mm` | [nf; 2] |  | Grid centre relative to reference_mm, mm; coordinate i is center + (i - floor(size/2)) × spacing. |
+| `psfs[].psf.data` | string | 1 or mm^-2 | Buffer name; Strehl-normalised intensity (ideal peak 1), or unit-energy density. |
+| `psfs[].psf.diffraction_peak` | number | 1 or mm^-2 | Aberration-free peak in the selected normalisation. |
+| `psfs[].psf.normalization` | string |  | one of `"strehl"`, `"unit_energy"` |
+| `psfs[].psf.size` | integer |  | ≥ 0; Image samples per axis. |
+| `psfs[].psf.spacing_mm` | number | mm | Image-plane sample spacing. |
+| `psfs[].psf.total_energy` | number | mm^2 or 1 | Integral over the infinite image plane in the selected normalisation. |
+| `psfs[].psf.warnings` | array<any> |  | Also carried as text in RunInfo warnings. |
+| `psfs[].psf.wavelength_um` | number? |  |  |
+| `psfs[].reference_mm` | [nf; 2] |  | Common image-local reference point, mm. |
+| `psfs[].strehl` | number | 1 | Peak / aberration-free peak for the same pupil and spectral weights. |
+| `psfs[].wavelength` | integer? |  |  |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `data_*` | f64 | [image_y, image_x] | 1 or mm^-2 | Strehl-normalised intensity (ideal peak 1), or unit-energy density; x fastest. |
+
+### `through_focus_mtf` — Through-focus MTF
+
+Category `wave`, result version 1.
+
+Diffraction MTF at fixed frequencies vs image-plane defocus.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `focus_range_mm` | number\|null | `null` | mm | ≥ 0.0; Positive half-range; null uses 4 wavelength × F/# squared. |
+| `focus_samples` | integer | `21` |  | 1 … 1001 |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
+| `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
+| `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `fields` | array<object> |  | Usable selected fields. |
+| `fields[].curves` | array<object> |  | One curve per frequency; includes the detector when supplied. |
+| `fields[].curves[].frequency` | number | cycles/mm | Image-space frequency. |
+| `fields[].curves[].sagittal` | string | 1 | Buffer name; MTF perpendicular to the local field direction. |
+| `fields[].curves[].tangential` | string | 1 | Buffer name; MTF along the local field direction. |
+| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `focus_mm` | string | mm | Buffer name; image-plane shift, positive along propagation. |
+| `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `tangential_*` | f64 | [focus_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `sagittal_*` | f64 | [focus_samples] | 1 | MTF, normalised to one at zero frequency; NaN for unusable field samples. |
+| `focus_mm` | f64 | [focus_samples] | mm | Image-plane shift; positive along propagation. |
+| `frequencies` | f64 | [frequencies] | cycles/mm | Image-space frequencies. |
 
 ### `wavefront_map` — Wavefront map
 
-Category `wave`, result version 1, **not available**: provided by mklight-wave, which is not wired into the engine yet.
+Category `wave`, result version 1.
 
-Settings: none.
+OPD on the exit-pupil reference sphere from the reference tracer, with RMS/PV, Strehl estimate and Zernike fit.
 
-Result: an object (not documented field by field).
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
+| `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
+| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
+| `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |
+| `zernike_terms` | integer | `37` |  | ≥ 1; Number of fitted terms; Fringe supports at most 37. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `maps` | array<object> |  | One map per usable field and wavelength. |
+| `maps[].amplitude` | string | 1 | Buffer name; relative field amplitude, zero outside the pupil. |
+| `maps[].coordinates` | string | 1 | Buffer name; cell centres over [-1, 1], shared by u and v. |
+| `maps[].exit_pupil` | object |  |  |
+| `maps[].exit_pupil.chief_direction` | [number; 3] |  | Chief direction, image-local. |
+| `maps[].exit_pupil.chief_point_mm` | [nf; 3] |  | Chief image point, image-local mm. |
+| `maps[].exit_pupil.clear_area` | number | 1 | Clear area in normalised pupil coordinates. |
+| `maps[].exit_pupil.effective_f_number` | number | 1 | Working F/# including the clear-area scale. |
+| `maps[].exit_pupil.exit_pupil_point_mm` | [nf; 3]? |  |  |
+| `maps[].exit_pupil.image_index` | number | 1 | Image-space refractive index. |
+| `maps[].exit_pupil.lattice_rays` | integer |  | ≥ 0 |
+| `maps[].exit_pupil.numerical_aperture` | number | 1 | Image index × sin_max. |
+| `maps[].exit_pupil.paraxial_position_mm` | nf | mm | Paraxial exit-pupil position from the image. |
+| `maps[].exit_pupil.paraxial_radius_mm` | nf | mm | Paraxial exit-pupil radius. |
+| `maps[].exit_pupil.propagation_sign` | number | 1 | Sign of propagation along image-local z. |
+| `maps[].exit_pupil.reference` | string |  | one of `"chief"`, `"centroid"` |
+| `maps[].exit_pupil.reference_point_mm` | [nf; 3] |  | Reference-sphere centre, image-local mm. |
+| `maps[].exit_pupil.reference_radius_mm` | nf | mm | Reference-sphere radius; infinity for telecentric beams. |
+| `maps[].exit_pupil.rim_points` | integer |  | ≥ 0 |
+| `maps[].exit_pupil.sin_max` | number | 1 | Pupil angular scale. |
+| `maps[].exit_pupil.surviving_rays` | integer |  | ≥ 0 |
+| `maps[].exit_pupil.telecentric` | boolean |  | Exit pupil at infinity. |
+| `maps[].exit_pupil.transmitted_fraction` | number | 1 | Surviving entrance-pupil area fraction. |
+| `maps[].exit_pupil.wavelength_um` | number | µm |  |
+| `maps[].field` | integer |  | ≥ 0; System field index. |
+| `maps[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `maps[].grid` | integer |  | ≥ 0; Samples per pupil axis. |
+| `maps[].opd_waves` | string | waves | Buffer name; OPL_chief minus OPL_ray at the reference sphere; NaN outside the pupil. |
+| `maps[].pv_waves` | number | waves | Peak-to-valley OPD. |
+| `maps[].pv_waves_tilt_removed` | number | waves | Peak-to-valley with best-fit tilt removed. |
+| `maps[].rim` | array<string> |  | Clear-aperture loops; empty when rim tracing is disabled. |
+| `maps[].rms_waves` | number | waves | Weighted RMS with piston removed. |
+| `maps[].rms_waves_tilt_removed` | number | waves | Weighted RMS with piston and best-fit tilt removed. |
+| `maps[].seidel` | object |  |  |
+| `maps[].seidel.astigmatism` | number | waves |  |
+| `maps[].seidel.astigmatism_angle_deg` | number | degrees | From +x toward +y. |
+| `maps[].seidel.coma` | number | waves |  |
+| `maps[].seidel.coma_angle_deg` | number | degrees | From +x toward +y. |
+| `maps[].seidel.focus` | number | waves |  |
+| `maps[].seidel.piston` | number | waves |  |
+| `maps[].seidel.spherical` | number | waves | Pupil-edge Seidel-equivalent term. |
+| `maps[].seidel.tilt` | number | waves |  |
+| `maps[].seidel.tilt_angle_deg` | number | degrees | From +x toward +y. |
+| `maps[].strehl_at_reference` | number | 1 | Sampled-pupil Strehl at the reference point. |
+| `maps[].strehl_marechal` | number | 1 | exp(-(2π RMS_tilt_removed)^2). |
+| `maps[].wavelength` | integer |  | ≥ 0; System wavelength index. |
+| `maps[].wavelength_um` | number | µm |  |
+| `maps[].zernike` | object |  |  |
+| `maps[].zernike.coefficients` | string | waves | Buffer name; Z1 onward, fitted to lattice rays with amplitude-squared weights. |
+| `maps[].zernike.ordering` | string |  | one of `"fringe"`, `"standard"`; Fringe by default. |
+| `maps[].zernike_condition` | number | 1 | Fit condition estimate. |
+| `maps[].zernike_residual_rms` | number | waves | Weighted fit residual RMS. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `coordinates_*` | f64 | [grid] | 1 | Cell-centred normalised pupil coordinates. |
+| `opd_waves_*` | f64 | [grid_v, grid_u] | waves | OPL_chief minus OPL_ray; NaN outside the clear pupil. u along image x, v along image y. |
+| `amplitude_*` | f64 | [grid_v, grid_u] | 1 | Relative field amplitude; zero outside the clear pupil. |
+| `coefficients_*` | f64 | [zernike_terms] | waves | Z1 onward in the reported ordering; Fringe by default. |
+| `rim_*` | f64 | [points, 2] | 1 | Clear-aperture loop vertices [u, v]. |
 
 ### `optimize` — Optimize
 

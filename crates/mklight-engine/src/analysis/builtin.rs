@@ -929,7 +929,9 @@ mod tests {
         sys: OpticalSystem,
         settings: Value,
     ) -> EngineResult<super::super::AnalysisResult> {
-        let reg = AnalysisRegistry::with_builtin();
+        // The placeholders again, over the solvers that replace them.
+        let mut reg = AnalysisRegistry::with_builtin();
+        register_all(&mut reg);
         let a = reg.get(name)?;
         let input = AnalysisInput::new(
             Snapshot::new(sys).unwrap(),
@@ -1127,7 +1129,8 @@ mod tests {
 
     #[test]
     fn placeholders_are_unavailable() {
-        let reg = AnalysisRegistry::with_builtin();
+        let mut reg = AnalysisRegistry::with_builtin();
+        register_all(&mut reg);
         let info = reg.list();
         let psf = info.iter().find(|i| i.name == "psf").unwrap();
         assert!(!psf.available && psf.unavailable_reason.is_some());

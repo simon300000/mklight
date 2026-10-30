@@ -104,8 +104,15 @@ pub(crate) fn parse<T: DeserializeOwned>(s: &Value) -> EngineResult<T> {
 /// or `run`), whose warnings are returned for the engine's `RunInfo`.
 pub(crate) fn crate_json<R: Serialize>(r: &R) -> EngineResult<(Value, Vec<String>)> {
     let mut v = serde_json::to_value(r)?;
+    let warnings = take_run_info(&mut v);
+    Ok((v, warnings))
+}
+
+/// Remove the embedded `RunInfo` of a solver result already in JSON
+/// ([`crate_json`]), returning its warnings.
+pub(crate) fn take_run_info(v: &mut Value) -> Vec<String> {
     let mut warnings = Vec::new();
-    if let Value::Object(m) = &mut v {
+    if let Value::Object(m) = v {
         for key in ["run_info", "run"] {
             if let Some(ri) = m.remove(key)
                 && let Some(w) = ri.get("warnings").and_then(Value::as_array)
@@ -114,7 +121,7 @@ pub(crate) fn crate_json<R: Serialize>(r: &R) -> EngineResult<(Value, Vec<String
             }
         }
     }
-    Ok((v, warnings))
+    warnings
 }
 
 pub(crate) fn output(json: Value, buffers: Vec<Buffer>, warnings: Vec<String>) -> AnalysisOutput {
@@ -136,7 +143,7 @@ fn pairs(v: &Value) -> Vec<f64> {
         .unwrap_or_default()
 }
 
-fn num_of(v: &Value) -> f64 {
+pub(crate) fn num_of(v: &Value) -> f64 {
     match v {
         Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
         Value::String(s) if s == "inf" => f64::INFINITY,
@@ -199,7 +206,7 @@ fn sampling_annotations(extra: Value) -> Value {
 
 // --- result fragments
 
-fn xy(description: &str) -> Value {
+pub(crate) fn xy(description: &str) -> Value {
     tuple(nf(), 2, description)
 }
 fn field_value() -> Value {

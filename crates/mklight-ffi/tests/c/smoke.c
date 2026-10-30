@@ -233,10 +233,26 @@ int main(int argc, char **argv) {
     mk_buffer_free(bufs, nb);
     mk_string_free(json);
 
+    /* ---- registered wave analysis exports typed MTF curves ---- */
+    json = run_job(eng, s, "mtf",
+                   "{\"pupil\":{\"grid\":16,\"rays\":17},\"frequency_samples\":9,"
+                   "\"fields\":{\"type\":\"index\",\"index\":0},"
+                   "\"wavelengths\":{\"type\":\"primary\"}}", &bufs, &nb);
+    CHECK(strstr(json, "\"analysis\":\"mtf\""));
+    CHECK(nb == 4);
+    for (size_t i = 0; i < nb; ++i) {
+        CHECK(bufs[i].dtype == MK_DTYPE_F64 && bufs[i].ndim == 1 && bufs[i].shape[0] == 9);
+        CHECK(fabs(((const double *)bufs[i].data)[0] -
+                   (strcmp(bufs[i].name, "frequencies") == 0 ? 0.0 : 1.0)) < 1e-12);
+    }
+    mk_buffer_free(bufs, nb);
+    mk_string_free(json);
+
     /* ---- submission errors are reported synchronously ---- */
     uint64_t job = 0;
     EXPECT(mk_session_submit_analysis(s, "no_such_analysis", NULL, NULL, &job), MK_ERR_NOT_FOUND);
-    EXPECT(mk_session_submit_analysis(s, "mtf", NULL, NULL, &job), MK_ERR_UNSUPPORTED);
+    EXPECT(mk_session_submit_analysis(s, "mtf", "{\"frequency_samples\":1}", NULL, &job),
+           MK_ERR_INVALID_ARGUMENT);
     EXPECT(mk_session_submit_analysis(s, "rng_stream", "{\"count\": 0}", NULL, &job),
            MK_ERR_INVALID_ARGUMENT);
     EXPECT(mk_session_submit_analysis(s, "rng_stream", "{\"bogus\": 1}", NULL, &job),
