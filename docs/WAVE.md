@@ -245,3 +245,66 @@ PSF inside its window (see `psf_truncated` above).
   spot extent would remove the need to tune them.
 * The default amplitude model is `transmission` (§3); `radiometric` is
   more faithful for PSF energy placement but not yet the default.
+
+## 8. Image simulation
+
+`image_simulation` (`image_simulation` module, registered by the engine)
+accepts built-in `grid`, `siemens_star`, `slanted_edge`, and `text_chart`
+patterns, `source:{kind:"buffer",width,height,channels:1|3,data:[…]}`
+(row-major interleaved, finite nonnegative linear-light samples), or
+`source:{kind:"path",path:"…"}` (PNG/JPEG/PNM, decoded from sRGB).
+Output dimensions are `size:[width,height]`; `monochrome` selects one
+channel, otherwise three. RGB source channels share the run's polychromatic
+energy PSF; there is no implicit colour matching or separate channel response.
+Monochrome conversion of RGB uses linear-light Rec. 709 luminance weights.
+The shared engine `spectrum` setting is documented in ANALYSIS §4.
+
+`optics` controls the square Cartesian PSF grid, normalised field extent,
+traced pupil settings, odd `psf_size`, optional `psf_spacing_mm` and pupil
+quadrature for illumination. At each field node:
+
+1. Trace real and first-order chief images (separate x/y first-order scales).
+2. Build pupils at all wavelengths, including lateral-colour offsets relative
+   to the primary chief, using radiometric amplitude by default.
+3. Form the unit-energy polychromatic PSF on a common physical grid. Default
+   spacing is half the smallest λF/# at the first grid node. PSF warnings
+   propagate; a sampled grid containing less than 95% energy warns
+   `psf_truncated`. Discrete kernels are normalised to conserve image flux.
+4. Integrate each wavelength's projected exit-pupil solid angle, including
+   geometric vignetting. Illumination is the weighted sum divided by its
+   weighted on-axis value (coating spectral throughput is not an extra factor).
+
+The source occupies the rectangular **first-order image plane** bounded by
+that grid. Output pixel edges span the same rectangle in the real image
+frame. The result provides `pixel_size_mm`, `origin_mm`, and all field nodes'
+normalised fields, ideal/real chief positions and RI. Coordinates increase
+with image x/y; row zero is the low-y edge. Every output pixel inverts the
+bilinearly interpolated chief mapping by Newton iteration, then resamples
+the ideal source with bilinear interpolation and applies RI. Unmapped pixels
+are black. Singular or folded field mappings need finer grids or a different
+imaging model; multiple images are not resolved.
+
+Each output tile uses a PSF bilinearly interpolated at its centre. Physical
+PSF samples are energy-conservingly deposited onto the output lattice.
+Haloed, zero-padded FFT convolution prevents wraparound; tiles run in
+parallel and assemble in fixed order. `tile_size` controls the piecewise
+constant PSF approximation: reduce it where aberrations vary quickly.
+The engine retains the last immutable PSF grid, keyed by derived snapshot,
+material library hash and every `optics` setting, across source/noise changes.
+The direct Rust API can reuse an `Arc<PsfGrid>` with identical optical inputs.
+
+The output lattice supplies detector sampling. Optional
+`detector_aperture_mm:[x,y]` integrates an active rectangular pixel aperture
+with 4×4 midpoint quadrature (limited to four output pixels per axis).
+Optional `full_well_electrons` adds Poisson shot noise; `read_noise_sigma`
+adds Gaussian read noise. Both use Philox indexed by output sample and
+`seed`, recorded in RunInfo, so scheduling does not change the image.
+Noise is not clipped: linear output can exceed one or become negative.
+This models scalar incoherent imaging, without Bayer mosaics, demosaicing,
+charge saturation or coherent scene propagation. A path input must remain
+available to reproduce a run; the image file is not embedded in the result.
+
+`image[height,width,channels]` is an f64 engine buffer. Tests cross-check
+FFT halo convolution against a direct spatial sum, an ideal lens against
+the Airy pattern and its blurred impulse image (including flux), distorted
+grid nodes against real chief traces, and shot-noise mean/variance.

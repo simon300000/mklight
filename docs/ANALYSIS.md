@@ -365,3 +365,111 @@ authoritative; these are the differences to align:
 * **New analyses without an app counterpart yet:** grid distortion, Seidel,
   longitudinal aberration, chromatic focal shift, lateral colour, relative
   illumination, footprint, encircled energy, best focus.
+
+## 4. Run-local spectra (engine)
+
+Every wavelength-dependent geometric, wave, radiometry, ghost and stray
+analysis accepts optional `spectrum`, as do optimisation and wavelength-based
+model/material reports through the same dispatcher. The engine applies it **once**, before
+material resolution or backend qualification, to a derived immutable snapshot.
+The session design is unchanged. `RunInfo.snapshot_hash` identifies that
+derived snapshot; `RunInfo.settings.spectrum` records the request. Wavelength
+indices in the result and in selections refer to the replacement list.
+Absent or null preserves the design wavelengths and existing defaults.
+
+Examples:
+
+```json
+{"spectrum":{"kind":"explicit","wavelengths":[{"um":0.55,"weight":1.0}]}}
+```
+
+```json
+{"spectrum":{"kind":"photopic","sampling":{"samples":9,"range_um":[0.38,0.78],"spacing":"equal_weight"}}}
+```
+
+Kinds are `explicit`, `photopic`, `scotopic`, `blackbody` (positive
+`temperature_k`), and `sensor` (`table:[[um,response],…]`, strictly increasing
+wavelengths and nonnegative responses). Presets and sensor responses accept
+`sampling` with defaults shown above. Ranges must lie inside a response
+(table ranges: photopic 0.360–0.830 µm, scotopic 0.380–0.780 µm).
+The blackbody uses energy radiance per unit wavelength, proportional to
+`λ^-5 / expm1(hc/(λkT))`, evaluated in log space and tabulated at 4097
+points over the requested range. It is not photon-count weighting.
+
+The primary is the sample nearest the energy-weighted mean wavelength;
+exact ties take the first sample. Explicit ordering and weights are preserved.
+For a continuous response, weights are **bin integrals**, in response·µm:
+
+* `uniform`: N nodes including range endpoints (N=1: midpoint), with
+  exact integrals over their clipped midpoint/Voronoi bins.
+* `equal_weight`: N equal-energy bins of the piecewise-linear response,
+  each represented by its energy centroid. Both total energy and its first
+  wavelength moment are preserved (up to floating-point rounding).
+
+The in-code 1 nm tables are CIE 018:2019 Tables 1 and 2:
+[CIE 1924 photopic V(λ), DOI 10.25039/CIE.DS.dktna2s3](https://doi.org/10.25039/CIE.DS.dktna2s3)
+and [CIE 1951 scotopic V′(λ), DOI 10.25039/CIE.DS.gr6w4b5g](https://doi.org/10.25039/CIE.DS.gr6w4b5g).
+The photopic integral over 360–830 nm is 106.8569 nm (test tolerance
+0.0002 nm). Ordinary material resolution emits the same formula-range
+warnings as a design using those wavelengths; extrapolation is not hidden.
+A wavelength-sweep analysis still evaluates its requested sweep, using the
+replacement spectrum to set its primary reference and default spectral range.
+
+## 5. Signed field maps and glass maps
+
+`pupil_aberration`, `relative_illumination_map`, and `chief_ray_angle` use
+`FieldMapSettings`: a full signed rectangular grid (`grid:[nx,ny]`,
+`extent:[Hx,Hy]`) or `mode:"x"` / `"y"` sweeps. There is no rotational
+symmetry shortcut. A one-sample axis is zero. Default wavelength is the
+run spectrum's primary; `wavelength` selects a different index. Results
+carry normalised field coordinates, real chief image x/y in mm, and a
+`values[ny,nx,columns]` f64 buffer. Column metadata specifies names, units
+and definitions. Undefined values use NaN in buffers.
+
+* **Pupil aberration.** Force paraxial launch (ray aiming off), then trace
+  the chief through the real surfaces to the stop. `stop_error_x/y` are
+  its actual local stop coordinates relative to the stop vertex, in mm.
+  With real aiming this error would be zero by construction; it must not
+  be measured from an aimed chief. Central pupil differences at ±1e-4
+  give `J = d(stop x,y)/d(entrance x,y)` in physical mm/mm.
+  `magnification_x/y` are the norms of J's columns;
+  `variation_x/y = magnification(H)/magnification(0) - 1`.
+  These describe the entrance-pupil-to-stop map, not exit-pupil size.
+  An entrance pupil at infinity has no finite physical magnification.
+* **Relative illumination map.** The same projected-solid-angle integral
+  as §2.4, evaluated independently at every x/y field. Reports RI,
+  projected solid angle (sr), and the clipped fraction of stop area.
+  Quadrature is checked for cancellation in blocks of 64 nodes.
+* **Chief ray angle.** The total incidence is against the actual image
+  sag normal (recorded by the tracer); signed x/y angles are
+  `atan2(d_x/y, abs(d_z))` relative to the image vertex frame.
+  `sensor_limit:[[image_radius_mm,max_angle_deg],…]` is linearly
+  interpolated with constant endpoint extrapolation. Margin = limit
+  minus incidence, negative when the sensor limit is exceeded. Both image
+  x/y heights are provided; grid mode supports asymmetric systems.
+
+`glass_map` reports every loaded catalogue's glasses in library order,
+then each model glass used in the design. Coordinates are catalogue n_d,
+V_d, and `(n_g-n_F)/(n_F-n_C)` from the dispersion formula; model values
+are computed at reference conditions. `surfaces` marks each surface's
+following medium, resolving unqualified catalogue names in library order.
+The aligned `coordinates[glasses,3]` buffer supports either map projection.
+Catalogue name, glass kind, availability and substitution exclusion are
+metadata. `MaterialLibrary` discards AGF-only availability data: unknown
+status/exclusion remain null. A caller retaining `AgfCatalog::meta` can
+supply `metadata:[{catalog,name,status,exclude_substitution},…]`; these
+settings are recorded in RunInfo. No availability is inferred from a name.
+
+The existing `footprint` result keeps its selected-surface local x/y
+buffers. Added `overlays` name every surface/field/wavelength and offset /
+count ranges in `global_points[N,3]` and `global_outlines[M,3]` (f64 mm).
+Every hit includes traced sag and the surface's global placement. Clouds
+include rays passing that surface even if lost downstream. Convex outlines
+are counterclockwise, unclosed, and retain traced sag at each hull vertex;
+they enclose the cloud and do not describe nonconvex clipping boundaries.
+
+Known-answer tests cover stop-plane ideal-lens pupil maps, CRA and sensor
+margin from geometric image height, 2-D disk view factors, catalogue/model
+spectral-line coordinates, and global transformed footprints. The engine's
+`tests/analyses.rs` runs all new entries through strict result and buffer
+schema validation.

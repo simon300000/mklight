@@ -331,6 +331,7 @@ Settings:
 | `configuration` | integer\|null | `null` |  | ≥ 0; Solve this configuration (dry run only); null = the base system. |
 | `max_iterations` | integer | `200` |  | 1 … 1000000; Upper bound on evaluations per solve and sweep. |
 | `max_sweeps` | integer | `50` |  | 1 … 100000; Upper bound on sweeps over all solves. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `tolerance` | number | `1e-12` |  | 0.0 … 1.0; Relative tolerance on each condition and on the change of every solved parameter between sweeps, in (0, 1). |
 
 Result (`result` in the envelope):
@@ -359,7 +360,11 @@ Category `model`, result version 1.
 
 Surface table with resolved refractive indices at every system wavelength and the global frame (vertex position and orientation) of every surface. Buffers: `n_after` [surfaces × wavelengths], `vertex_global` [surfaces × 3] (mm).
 
-Settings: none.
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 
 Result (`result` in the envelope):
 
@@ -436,7 +441,11 @@ Category `model`, result version 1.
 
 Checks that the system is complete and consistent: every number is finite, materials and coatings resolve, wavelengths lie inside glass data ranges, the aperture is defined and positive, weights are not negative, mechanical parts reference existing surfaces, thickness signs follow mirrors, configurations apply, the reference tracer can set the system up, and the chief and marginal rays reach the image.
 
-Settings: none.
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 
 Result (`result` in the envelope):
 
@@ -465,6 +474,7 @@ Settings:
 | `curve_samples` | integer | `0` |  | 0 … 100000 |
 | `name` | string | **required** |  |  |
 | `pressure_atm` | number\|null | `null` | atm | ≥ 0.0 |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `temperature_c` | number\|null | `null` | °C | null uses the system environment. |
 | `wavelengths_um` | array\|null | `null` | µm | null uses the system wavelengths. |
 
@@ -502,6 +512,41 @@ Buffers:
 |---|---|---|---|---|
 | `dispersion_curve` | f64 | [samples, 2] |  | (λ µm, n) over the glass's range. |
 
+### `glass_map` — Glass map
+
+Category `materials`, result version 1.
+
+Catalogue n_d / V_d and P_g,F / V_d, with design surface markers and optional retained AGF statuses.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `metadata` | array | `[]` |  | Optional retained AGF metadata [{catalog,name,status,exclude_substitution}]. MaterialLibrary does not retain AGF availability: unknown status remains null. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `coordinates` | string |  | Buffer name. |
+| `glasses` | array<object> |  | All loaded glasses in catalogue order, then model glasses in surface order. |
+| `glasses[].catalog` | string? |  |  |
+| `glasses[].exclude_substitution` | boolean? |  |  |
+| `glasses[].kind` | string |  | one of `"catalog"`, `"model"` |
+| `glasses[].name` | string |  |  |
+| `glasses[].nd` | nf | 1 | Catalogue d-line index; model computed at reference conditions. |
+| `glasses[].pgf` | nf | 1 | (n_g-n_F)/(n_F-n_C), computed from dispersion. |
+| `glasses[].status` | string\|object\|null |  | Retained AGF status, or null when unavailable. |
+| `glasses[].status.other` | integer |  | ≥ 0; Unrecognised AGF status code. |
+| `glasses[].surfaces` | array<integer> |  | Surface indices whose following medium is this glass. |
+| `glasses[].vd` | nf | 1 | Abbe number. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `coordinates` | f64 | [glasses, 3] | 1 | [n_d,V_d,P_g,F], aligned with glasses metadata. |
+
 ### `best_focus` — Best focus
 
 Category `geometric`, result version 1, **GPU path**.
@@ -519,6 +564,7 @@ Settings:
 | `reference` | string | `"centroid"` |  | one of `"chief"`, `"centroid"`; Reference point: the primary-wavelength chief ray or the polychromatic centroid. |
 | `rings` | integer | `8` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `through_focus_samples` | integer | `0` |  | 0 … 100000; Samples of the through-focus merit curve (0: none). |
 | `tolerance` | number | `1e-8` | mm | ≥ 0.0; Absolute tolerance on the defocus. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
@@ -541,6 +587,47 @@ Result (`result` in the envelope):
 | `through_focus_defocus` | array<number> |  | Empty unless requested. |
 | `through_focus_merit` | array<number> |  |  |
 
+### `chief_ray_angle` — Chief ray angle
+
+Category `geometric`, result version 1.
+
+Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `azimuth_samples` | integer | `16` |  | 4 … 4096 |
+| `extent` | array | `[1.0,1.0]` |  | Positive normalised field half-widths [x,y]. |
+| `grid` | array | `[5,5]` |  | [nx,ny], 1..101 samples per axis; one sample is on axis. |
+| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"` |
+| `radial_samples` | integer | `4` |  | 1 … 512 |
+| `sensor_limit` | array | `[]` |  | CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
+| `wavelength` | integer\|null | `null` |  | ≥ 0; Null selects the run spectrum's primary wavelength. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `columns` | array<object> |  | Ordered columns in values. |
+| `columns[].definition` | string |  |  |
+| `columns[].name` | string |  |  |
+| `columns[].unit` | string |  |  |
+| `field_coordinates` | string |  | Buffer name. |
+| `image_mm` | string |  | Buffer name. |
+| `shape` | [integer; 2] |  | [nx,ny] |
+| `values` | string |  | Buffer name. |
+| `wavelength` | integer |  | ≥ 0; Run spectrum index. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `field_coordinates` | f64 | [ny, nx, 2] | 1 | Normalised [Hx,Hy]. |
+| `image_mm` | f64 | [ny, nx, 2] | mm | Chief hit [x,y]; NaN for unusable fields. |
+| `values` | f64 | [ny, nx, columns] | column dependent | Diagnostics; NaN when undefined, including CRA margin without limit. |
+
 ### `chromatic_focal_shift` — Chromatic focal shift
 
 Category `geometric`, result version 1.
@@ -554,6 +641,7 @@ Settings:
 | `max_um` | number\|null | `null` | µm | ≥ 0.1; Sweep end; null = the longest system wavelength. |
 | `min_um` | number\|null | `null` | µm | ≥ 0.1; Sweep start; null = the shortest system wavelength. |
 | `samples` | integer | `41` |  | 2 … 100000; Wavelength samples of the sweep. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 
 Result (`result` in the envelope):
 
@@ -585,6 +673,7 @@ Settings:
 | `rings` | integer | `32` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `samples` | integer | `101` |  | 2 … 100001; Radius samples from 0 to max_radius. |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -617,6 +706,7 @@ Settings:
 | `close_ray_step` | number | `0.001` |  | 1e-9 … 0.5; Normalised pupil step of the close-ray cross-check. |
 | `field_axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone. |
 | `field_samples` | integer | `21` |  | 2 … 10000; Samples per selected axis, signed where symmetry requires it. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -651,6 +741,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | object | `{"type":"primary"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -693,7 +784,7 @@ Result (`result` in the envelope):
 
 Category `geometric`, result version 1.
 
-Hit points of a pupil pattern on one surface (local frame), with the points the surface's aperture clips. Points in typed buffers.
+Local selected-surface footprint plus global hits and convex outlines on every surface, per field and wavelength.
 
 Settings:
 
@@ -703,6 +794,7 @@ Settings:
 | `pattern` | string | `"square"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `rings` | integer | `8` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `surface` | integer | `1` |  | 1 … 100000; Surface index (1 … image). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
@@ -714,6 +806,12 @@ Result (`result` in the envelope):
 | `extent` | array<nf> | mm | [x_min, x_max, y_min, y_max] over all passing hits. |
 | `field_values` | array<[nf; 2]> |  | Field coordinates in system units, including analysis-local default fields. |
 | `max_radius` | nf | mm |  |
+| `overlays` | array<object> |  | All surfaces except the object; passing hits before downstream clipping. |
+| `overlays[].field` | integer |  | ≥ 0 |
+| `overlays[].outline` | [integer; 2] |  | [offset,count] in global_outlines; counterclockwise and unclosed in local x/y. |
+| `overlays[].points` | [integer; 2] |  | [offset,count] in global_points. |
+| `overlays[].surface` | integer |  | ≥ 0 |
+| `overlays[].wavelength` | integer |  | ≥ 0 |
 | `semi_diameter` | nf | mm | Clear semi-diameter (fixed, stop or traced). |
 | `sets` | array<object> |  | One per (field, wavelength). |
 | `sets[].clipped` | [integer; 2] |  | [offset, count] in `clipped`. |
@@ -730,6 +828,8 @@ Buffers:
 |---|---|---|---|---|
 | `points` | f64 | [N, 2] | mm | Hit points (local frame) of rays that pass. |
 | `clipped` | f64 | [M, 2] | mm | Hit points of rays the aperture clips. |
+| `global_points` | f64 | [N, 3] | mm | Global hit points, including surface sag and placement. |
+| `global_outlines` | f64 | [N, 3] | mm | Convex hull vertices per surface/field/wavelength; not a vignetting boundary for nonconvex pupils. |
 
 ### `geometric_mtf` — Geometric MTF
 
@@ -748,6 +848,7 @@ Settings:
 | `pattern` | string | `"square"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `rings` | integer | `32` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -775,6 +876,7 @@ Settings:
 |---|---|---|---|---|
 | `grid_size` | integer | `11` |  | 2 … 1001; Grid points per side. |
 | `half_width` | number | `0.7071067811865476` |  | 0.0 … 1.0; Half-width of the normalised field square. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary wavelength. |
 
 Result (`result` in the envelope):
@@ -808,6 +910,7 @@ Settings:
 | `field_samples` | integer | `21` |  | 2 … 10000; Samples per selected axis, signed where symmetry requires it. |
 | `long_wavelength` | integer\|null | `null` |  | ≥ 0; null = the longest system wavelength. |
 | `short_wavelength` | integer\|null | `null` |  | ≥ 0; null = the shortest system wavelength. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 
 Result (`result` in the envelope):
 
@@ -846,6 +949,7 @@ Settings:
 | `ring_samples` | integer | `64` |  | 3 … 100000; Points per ring. |
 | `rings` | integer | `3` |  | 1 … 1000; Concentric rings per surface in 3-D (the last one is the rim). |
 | `section` | string | `"yz"` |  | one of `"yz"`, `"xz"`; Profile plane; yz by default. Section flags use its global plane. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"primary"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -909,6 +1013,7 @@ Settings:
 |---|---|---|---|---|
 | `axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto traces y in rotational systems, both axes otherwise. |
 | `pupil_samples` | integer | `21` |  | 2 … 10000; Pupil zones: 0 to 1 for rotational systems, -1 to 1 otherwise; selected x/y axes. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -938,6 +1043,7 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `reference` | string | `"primary_chief"` |  | one of `"primary_chief"`, `"same_wavelength"`; Chief ray the aberrations are measured from: the primary wavelength's, or each wavelength's own. |
 | `samples` | integer | `41` |  | 2 … 100001; Pupil samples across each fan, from −1 to 1. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -958,6 +1064,47 @@ Result (`result` in the envelope):
 | `quantity` | string |  | one of `"transverse_aberration"`, `"opd"` |
 | `wavelengths_um` | array<number> |  | All system wavelengths (µm), indexed by system wavelength index. |
 
+### `pupil_aberration` — Pupil aberration
+
+Category `geometric`, result version 1.
+
+Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `azimuth_samples` | integer | `16` |  | 4 … 4096 |
+| `extent` | array | `[1.0,1.0]` |  | Positive normalised field half-widths [x,y]. |
+| `grid` | array | `[5,5]` |  | [nx,ny], 1..101 samples per axis; one sample is on axis. |
+| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"` |
+| `radial_samples` | integer | `4` |  | 1 … 512 |
+| `sensor_limit` | array | `[]` |  | CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
+| `wavelength` | integer\|null | `null` |  | ≥ 0; Null selects the run spectrum's primary wavelength. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `columns` | array<object> |  | Ordered columns in values. |
+| `columns[].definition` | string |  |  |
+| `columns[].name` | string |  |  |
+| `columns[].unit` | string |  |  |
+| `field_coordinates` | string |  | Buffer name. |
+| `image_mm` | string |  | Buffer name. |
+| `shape` | [integer; 2] |  | [nx,ny] |
+| `values` | string |  | Buffer name. |
+| `wavelength` | integer |  | ≥ 0; Run spectrum index. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `field_coordinates` | f64 | [ny, nx, 2] | 1 | Normalised [Hx,Hy]. |
+| `image_mm` | f64 | [ny, nx, 2] | mm | Chief hit [x,y]; NaN for unusable fields. |
+| `values` | f64 | [ny, nx, columns] | column dependent | Diagnostics; NaN when undefined, including CRA margin without limit. |
+
 ### `ray_fan` — Ray aberration fans
 
 Category `geometric`, result version 1.
@@ -971,6 +1118,7 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `reference` | string | `"primary_chief"` |  | one of `"primary_chief"`, `"same_wavelength"`; Chief ray the aberrations are measured from: the primary wavelength's, or each wavelength's own. |
 | `samples` | integer | `41` |  | 2 … 100001; Pupil samples across each fan, from −1 to 1. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -1007,6 +1155,7 @@ Settings:
 | `pattern` | string | `"hexapolar"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `rings` | integer | `6` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -1044,6 +1193,7 @@ Settings:
 | `field_axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone. |
 | `field_samples` | integer | `11` |  | 2 … 10000; Samples per selected axis, signed where symmetry requires it. |
 | `radial_samples` | integer | `12` |  | 1 … 1000; Gauss–Legendre nodes in the pupil radius. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary wavelength. |
 
 Result (`result` in the envelope):
@@ -1061,6 +1211,47 @@ Result (`result` in the envelope):
 | `vignetting_fraction` | array<nf> |  | Clipped share of the stop area. |
 | `wavelength` | integer |  | ≥ 0 |
 
+### `relative_illumination_map` — Relative illumination map
+
+Category `geometric`, result version 1.
+
+Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `azimuth_samples` | integer | `16` |  | 4 … 4096 |
+| `extent` | array | `[1.0,1.0]` |  | Positive normalised field half-widths [x,y]. |
+| `grid` | array | `[5,5]` |  | [nx,ny], 1..101 samples per axis; one sample is on axis. |
+| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"` |
+| `radial_samples` | integer | `4` |  | 1 … 512 |
+| `sensor_limit` | array | `[]` |  | CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
+| `wavelength` | integer\|null | `null` |  | ≥ 0; Null selects the run spectrum's primary wavelength. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `columns` | array<object> |  | Ordered columns in values. |
+| `columns[].definition` | string |  |  |
+| `columns[].name` | string |  |  |
+| `columns[].unit` | string |  |  |
+| `field_coordinates` | string |  | Buffer name. |
+| `image_mm` | string |  | Buffer name. |
+| `shape` | [integer; 2] |  | [nx,ny] |
+| `values` | string |  | Buffer name. |
+| `wavelength` | integer |  | ≥ 0; Run spectrum index. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `field_coordinates` | f64 | [ny, nx, 2] | 1 | Normalised [Hx,Hy]. |
+| `image_mm` | f64 | [ny, nx, 2] | mm | Chief hit [x,y]; NaN for unusable fields. |
+| `values` | f64 | [ny, nx, columns] | column dependent | Diagnostics; NaN when undefined, including CRA margin without limit. |
+
 ### `seidel` — Seidel aberration sums
 
 Category `geometric`, result version 2.
@@ -1073,6 +1264,7 @@ Settings:
 |---|---|---|---|---|
 | `long_wavelength` | integer\|null | `null` |  | ≥ 0; Long wavelength of δn; null = the longest system wavelength. |
 | `short_wavelength` | integer\|null | `null` |  | ≥ 0; Short wavelength of δn; null = the shortest system wavelength. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary wavelength. |
 
 Result (`result` in the envelope):
@@ -1142,6 +1334,7 @@ Settings:
 | `reference` | string | `"chief"` |  | one of `"chief"`, `"centroid"`; Reference point: the primary-wavelength chief ray or the polychromatic centroid. |
 | `rings` | integer | `6` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `through_focus` | object\|null | `null` |  | {"min": mm, "max": mm, "steps": n} or null. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
@@ -1216,6 +1409,7 @@ Settings:
 | `fields` | array | `[]` |  | Normalised field points [{"hx", "hy"}]; empty = the system fields (with their vignetting factors). |
 | `model` | object | `{"type":"unpolarized"}` |  | {"type": "unpolarized"} (product of s/p-averaged interface factors) or {"type": "polarized", "state": …} (polarisation ray tracing). |
 | `pupil` | object | `{"n":32,"type":"grid"}` |  | Pupil sampling: {"type": "grid", "n": n} (n×n grid inside the unit disk, n = 1 or ≥ 3) or {"type": "random", "count": n, "seed": s}. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | array<integer> | `[]` |  | System wavelength indices; empty = all. |
 
 Result (`result` in the envelope):
@@ -1249,6 +1443,7 @@ Settings:
 | `field` | integer | `0` |  | ≥ 0; System field index (with its vignetting factors). |
 | `grid` | integer | `33` |  | 1 … 2049; Pupil grid n (n×n inside the unit disk; 1 or ≥ 3). |
 | `point` | array\|null | `null` |  | Normalised field point [hx, hy] used instead of `field`. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `state` | object | `{"type":"unpolarized"}` |  | Input polarisation in the object-space double-pole basis: {"type": "unpolarized"}, {"type": "jones", "e": …} or {"type": "stokes", "s": {"s0", "s1", "s2", "s3"}} (CONVENTIONS §9). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary. |
 
@@ -1306,6 +1501,7 @@ Settings:
 | `pupil_samples` | integer | `48` |  | 2 … 4096; Grid cells across the overfilled pupil square. |
 | `reject_virtual` | boolean | `true` |  | Treat an intersection behind the ray as a lost ray. |
 | `sensor_reflectance` | number\|null | `null` |  | 0.0 … 1.0; Unpolarised, angle-independent reflectance of the sensor; null: the sensor does not reflect. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | array<integer> | `[]` |  | System wavelength indices; empty = all. |
 
 Result (`result` in the envelope):
@@ -1380,6 +1576,7 @@ Settings:
 | `reject_virtual` | boolean | `true` |  | Treat an intersection behind the ray as a lost ray. |
 | `sensor_reflectance` | number\|null | `null` |  | 0.0 … 1.0; Unpolarised, angle-independent reflectance of the sensor; null: the sensor does not reflect. |
 | `signal_diameter_mm` | number\|null | `null` | mm | ≥ 0.0; Signal spot diameter; null = automatic. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary. |
 
 Result (`result` in the envelope):
@@ -1428,6 +1625,7 @@ Settings:
 | `seed` | integer | `1` |  | ≥ 0; Philox seed; ray i uses stream (seed, i). |
 | `semi_diameters` | object | `{"azimuths":64,"clip":true}` |  | Sizing traces of the automatic clear semi-diameters. |
 | `source` | object | `{"index":0,"margin":0.1,"strength":1.0,"type":"system_field"}` |  | Source: {"type": "system_field", "index", "margin", "strength"}, {"type": "field", "hx", "hy", "margin", "strength"}, {"type": "out_of_field", "angle_x_deg", "angle_y_deg", "margin", "irradiance"} or {"type": "custom", "spec", "reference_flux"}. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `top_signatures` | integer | `20` |  | ≥ 0; Number of path signatures reported. |
 | `transport` | object | `{"chunk_rays":1024,"max_events":512,"mode":{"mode":"weighted","rare_floor":0.02},"roulette_threshold":0.001,"scatter_reflection":true,"scatter_transmission":true,"split_ceiling":2.0}` |  | Monte-Carlo transport controls (mode, max_events, roulette_threshold, split_ceiling, scatter_reflection, scatter_transmission, chunk_rays). |
 
@@ -1497,6 +1695,7 @@ Settings:
 | `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `samples` | integer | `51` |  | ≥ 2 |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1524,6 +1723,51 @@ Buffers:
 | `ensquared_*` | f64 | [radii] | 1 | Ensquared fraction of total PSF energy. |
 | `diffraction_limit_*` | f64 | [radii] | 1 | Aberration-free encircled energy. |
 
+### `image_simulation` — Image simulation
+
+Category `wave`, result version 1.
+
+Linear-light image through field-dependent polychromatic PSFs, chief-ray distortion, relative illumination and optional pixel aperture / shot / read noise. RGB channels share the selected energy spectrum.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `detector_aperture_mm` | array\|null | `null` | mm | Optional positive [x,y] active aperture, at most four output pixels; 4x4 quadrature. |
+| `full_well_electrons` | number\|null | `null` |  | ≤ 1000000000000.0; > 0.0 |
+| `monochrome` | boolean | `true` |  |  |
+| `optics` | object | `{"field_extent":1.0,"field_grid":3,"illumination_azimuth":16,"illumination_radial":4,"psf_size":33,"psf_spacing_mm":null,"pupil":{"amplitude":"radiometric","grid":32,"rays":33,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}}` |  |  |
+| `read_noise_sigma` | number | `0.0` |  | ≥ 0.0 |
+| `seed` | integer | `1` |  | ≥ 0 |
+| `size` | array | `[64,64]` |  | Output [width,height], 2..4096 each. |
+| `source` | object | `{"kind":"pattern","pattern":"grid"}` |  | {kind:pattern,pattern:grid\|siemens_star\|slanted_edge\|text_chart}, {kind:buffer,width,height,channels:1\|3,data:[linear samples]}, or {kind:path,path:...} (PNG/JPEG/PNM, sRGB decoded). |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
+| `tile_size` | integer | `32` |  | 4 … 512 |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `channels` | integer |  | ≥ 0; 1 or 3, interleaved linear light. |
+| `field_grid` | integer |  | ≥ 0; Square PSF grid side. |
+| `field_mapping` | array<object> |  | Row-major field nodes; mapping is bilinear between nodes. |
+| `field_mapping[].field` | [number; 2] |  | Normalised field. |
+| `field_mapping[].ideal_mm` | [number; 2] |  | First-order chief image. |
+| `field_mapping[].real_mm` | [number; 2] |  | Real primary chief image. |
+| `field_mapping[].relative_illumination` | nf | 1 | Spectrally weighted projected-solid-angle irradiance ratio. |
+| `image` | string |  | Image buffer name. |
+| `origin_mm` | [number; 2] |  | Lower-left pixel edge in the image frame. |
+| `pixel_size_mm` | [number; 2] |  | [x,y] output pitch. |
+| `psf_size` | integer |  | ≥ 0 |
+| `psf_spacing_mm` | number | mm |  |
+| `size` | [integer; 2] |  | [width,height]. |
+
+Buffers:
+
+| name | dtype | shape | unit | notes |
+|---|---|---|---|---|
+| `image` | f64 | [height, width, channels] | linear light | Unclamped output; read noise can be negative. Zero extension at source boundaries. |
+
 ### `line_spread` — Line spread function
 
 Category `wave`, result version 1.
@@ -1540,6 +1784,7 @@ Settings:
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1579,6 +1824,7 @@ Settings:
 | `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null uses the largest optical cutoff. |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1634,6 +1880,7 @@ Settings:
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1677,6 +1924,7 @@ Settings:
 | `polychromatic` | boolean | `true` |  |  |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spacing_mm` | number\|null | `null` | mm | > 0.0; Positive explicit spacing; null uses padding. |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1727,6 +1975,7 @@ Settings:
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
 Result (`result` in the envelope):
@@ -1765,6 +2014,7 @@ Settings:
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 | `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |
 | `zernike_terms` | integer | `37` |  | ≥ 1; Number of fitted terms; Fringe supports at most 37. |
@@ -1860,6 +2110,7 @@ Settings:
 | `operands` | array | `[]` |  | Operands appended to the merit (e.g. an EFL target). |
 | `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
 | `seed` | integer | `0` |  | ≥ 0 |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
 | `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
 
@@ -1971,6 +2222,7 @@ Settings:
 | `gpu_batch` | integer | `512` |  | ≥ 1 |
 | `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
 | `seed` | integer | `0` |  | ≥ 0 |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `stop_key` | string\|null | `null` |  |  |
 | `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
 | `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |

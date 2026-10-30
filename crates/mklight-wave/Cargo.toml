@@ -15,6 +15,7 @@ serde_json.workspace = true
 rayon.workspace = true
 rustfft.workspace = true
 num-complex.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "pnm"] }
 
 [dev-dependencies]
 approx.workspace = true

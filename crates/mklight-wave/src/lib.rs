@@ -32,6 +32,7 @@ pub mod analysis;
 pub mod detector;
 pub mod energy;
 mod fft;
+pub mod image_simulation;
 pub mod interp;
 mod linalg;
 pub mod mtf;

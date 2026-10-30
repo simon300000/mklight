@@ -23,6 +23,7 @@
 //! `RunInfo` naming the backend that actually computed it.
 
 pub mod builtin;
+pub mod extended;
 pub mod geometric;
 pub mod ghost;
 pub mod gpu;
@@ -30,6 +31,7 @@ pub mod optim;
 pub mod radiometry;
 pub mod schema;
 pub mod solves;
+pub mod spectrum;
 pub mod stray;
 pub mod wave;
 
@@ -332,7 +334,8 @@ pub trait Analysis: Send + Sync {
     ) -> EngineResult<AnalysisOutput>;
 
     fn info(&self) -> AnalysisInfo {
-        let schema = self.settings_schema();
+        let schema =
+            spectrum::settings_schema_for(self.settings_schema(), self.category(), self.name());
         let reason = self.availability().err();
         AnalysisInfo {
             name: self.name().to_string(),
@@ -359,7 +362,7 @@ pub fn prepare(analysis: &dyn Analysis, settings: &Value) -> EngineResult<Value>
             reason,
         });
     }
-    settings::normalize(&analysis.settings_schema(), settings)
+    settings::normalize(&spectrum::settings_schema(analysis), settings)
 }
 
 /// Run `analysis` and stamp the result. `extra_warnings` (for example a
@@ -374,7 +377,17 @@ pub fn run_analysis(
     let settings = prepare(analysis, settings)?;
     let timer = RunTimer::start();
     ctx.check()?;
-    let out = analysis.run(input, &settings, ctx)?;
+    let derived = spectrum::derived(input, &settings, ctx)?;
+    let input = derived.as_ref().unwrap_or(input);
+    let mut solver_settings = std::borrow::Cow::Borrowed(&settings);
+    if settings.get("spectrum").is_some() {
+        solver_settings
+            .to_mut()
+            .as_object_mut()
+            .unwrap()
+            .remove("spectrum");
+    }
+    let out = analysis.run(input, &solver_settings, ctx)?;
     ctx.check()?;
     let mut backend = BackendReport {
         requested: input.requested_backend.clone(),
@@ -434,6 +447,7 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     builtin::register_all(r);
     geometric::register_all(r);
     wave::register_all(r);
+    extended::register_all(r);
     ghost::register_all(r);
     stray::register_all(r);
     radiometry::register_all(r);
