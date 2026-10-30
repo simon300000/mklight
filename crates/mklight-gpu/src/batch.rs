@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::SystemHandle;
 use crate::consts::*;
 use crate::df::Df32;
-use crate::layout::{PackedSystemSet, TraceParams};
+use crate::layout::{PackedSurface, PackedSystemSet, TraceParams};
 use crate::trace_kernel::{DEFAULT_MAX_ITERATIONS, DEFAULT_TOL_ABS, DEFAULT_TOL_REL};
 
 /// Input rays (SoA; every vector has the same length). Construct with
@@ -204,9 +204,14 @@ pub enum StepMode {
     /// (forward steps only; the image surface never interacts).
     Sequential,
     /// Refraction into the medium on the far side (a pass for dummy surfaces
-    /// and the image; an ideal lens acts as a lens).
+    /// and the image; an ideal lens acts as a lens). Not allowed at mirrors:
+    /// the sequential model has no medium behind a mirror.
     Transmit,
-    /// Specular reflection (not allowed at coordinate breaks).
+    /// Specular reflection (not allowed at coordinate breaks). At a mirror
+    /// it is the mirror's own reflection (a mirror-type ideal lens keeps
+    /// its power) and the ray continues in the same direction through the
+    /// surface sequence; at any other surface it is a ghost reflection
+    /// and the direction reverses.
     Reflect,
 }
 
@@ -216,8 +221,10 @@ pub enum StepMode {
 /// A sequential trace from `s` to `e` is `(s+1, Sequential) … (e,
 /// Sequential)`; a ghost path reflecting at surfaces `j > i` is
 /// `… (j, Reflect), (j−1, Transmit, backward) … (i, Reflect), (i+1,
-/// Transmit) …`. The gap between surfaces `j` and `j + 1` always has the
-/// medium after surface `j`.
+/// Transmit) …`; a mirror on the way is passed with a `Reflect` step that
+/// keeps the direction (see [`PathStep::validate_program`]). The gap
+/// between surfaces `j` and `j + 1` always has the medium after surface
+/// `j`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PathStep {
     pub surface: u32,
@@ -279,19 +286,30 @@ impl PathStep {
             .collect()
     }
 
-    /// Check a program starting on surface `start` of a system with
-    /// `num_surfaces` surfaces whose coordinate breaks are flagged in
-    /// `is_coord_break`: 1 ≤ length ≤ `MKL_MAX_STEPS`; every step moves one
-    /// surface in its stated direction and stays in range; sequential steps
-    /// go forward; the direction is kept after a transmission and reversed
-    /// after a reflection; no reflection at a coordinate break.
+    /// Check a program starting on surface `start` of a system whose
+    /// packed surfaces are `surfaces`: 1 ≤ length ≤ `MKL_MAX_STEPS`; every
+    /// step moves one surface in its stated direction and stays in range;
+    /// sequential steps go forward; no reflection at a coordinate break and
+    /// no transmission through a mirror; and the direction of travel
+    /// through the surface sequence follows the physics of each step:
+    ///
+    /// * a transmission (and any step at a coordinate break) keeps it;
+    /// * a reflection at a refracting, dummy or image surface reverses it
+    ///   (a ghost reflection);
+    /// * a reflection at a mirror (`MKL_INTERACT_REFLECT`, including a
+    ///   mirror-type ideal lens) keeps it, in either direction: in the
+    ///   sequential model the gaps on both sides of a mirror are its
+    ///   reflecting side, so the light continues to the next surface of
+    ///   the sequence (forward, as in a sequential trace) or to the
+    ///   previous one (backward, a ghost travelling back through a
+    ///   catadioptric system).
     pub fn validate_program(
         steps: &[PathStep],
         start: u32,
-        num_surfaces: u32,
-        is_coord_break: impl Fn(u32) -> bool,
+        surfaces: &[PackedSurface],
     ) -> MkResult<()> {
         let bad = |m: String| Err(MkError::Backend(format!("path program: {m}")));
+        let num_surfaces = surfaces.len() as u32;
         if steps.is_empty() || steps.len() > MKL_MAX_STEPS as usize {
             return bad(format!("{} steps (1..={MKL_MAX_STEPS})", steps.len()));
         }
@@ -321,13 +339,22 @@ impl PathStep {
             {
                 return bad(format!("step {k}: direction does not follow the path"));
             }
-            if st.mode == StepMode::Reflect && is_coord_break(st.surface) {
+            let surf = &surfaces[st.surface as usize];
+            let cb = surf.shape == MKL_SHAPE_COORD_BREAK;
+            let mirror = !cb && surf.interaction == MKL_INTERACT_REFLECT;
+            if st.mode == StepMode::Reflect && cb {
                 return bad(format!("step {k}: reflection at a coordinate break"));
+            }
+            if st.mode == StepMode::Transmit && mirror {
+                return bad(format!(
+                    "step {k}: transmission through mirror surface {}",
+                    st.surface
+                ));
             }
             heading = Some(match st.mode {
                 StepMode::Sequential => false,
                 StepMode::Transmit => st.backward,
-                StepMode::Reflect => !st.backward,
+                StepMode::Reflect => st.backward != !mirror,
             });
             cur = st.surface;
         }
@@ -340,7 +367,9 @@ impl PathStep {
 /// at most `tolerance_abs + tolerance_rel·(|t| + |z| + |conic sag| +
 /// |polynomial|)` (the f32 resolution of the residual; the converged root is
 /// then refined once in double-float), classified as the reference does
-/// after `max_iterations` steps.
+/// after `max_iterations` steps (default 40, the reference's cap; only rays
+/// that need many steps pay for it). With a cap below the reference's, a
+/// search the cap stops is `NOT_CONVERGED`, never `MISS`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewtonSettings {
     pub max_iterations: u32,
@@ -568,10 +597,8 @@ impl PreparedTrace {
         }
         for (k, h) in set.headers.iter().enumerate().filter(|(k, _)| used[*k]) {
             let surf = &set.surfaces[h.surface_offset as usize..][..h.num_surfaces as usize];
-            PathStep::validate_program(&program, req.start_surface, h.num_surfaces, |i| {
-                surf[i as usize].shape == MKL_SHAPE_COORD_BREAK
-            })
-            .map_err(|e| MkError::Backend(format!("system {k}: {e}")))?;
+            PathStep::validate_program(&program, req.start_surface, surf)
+                .map_err(|e| MkError::Backend(format!("system {k}: {e}")))?;
             if req.radiometry != Radiometry::Off
                 && let Some(st) = program
                     .iter()
@@ -605,6 +632,11 @@ impl PreparedTrace {
         }
         if req.radiometry != Radiometry::Off {
             flags |= MKL_TRACE_RADIOMETRY;
+        }
+        if nw.max_iterations < mklight_trace::IntersectSettings::default().max_iterations {
+            // The reference would iterate on: a search stopped by the cap
+            // is not evidence of a miss.
+            flags |= MKL_TRACE_NEWTON_CAP_NOT_CONVERGED;
         }
         let record_slots = if req.record == RecordMode::AllSurfaces {
             flags |= MKL_TRACE_RECORD;

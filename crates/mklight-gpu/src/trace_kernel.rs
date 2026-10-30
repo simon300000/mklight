@@ -34,8 +34,8 @@
 //!    `max_iterations` steps). It gives the status and `t₁`.
 //! 4. **Double-float refinement**: one Newton step on the surface equation
 //!    evaluated in double-float at `X = Q + t₁D` on the exact line
-//!    (`c(x² + y² + κz²) − 2z` for conics, `z − sag(r²)` with the conic part
-//!    in double-float for aspheres), giving `t₁'` (hi + lo) and the hit `X`.
+//!    (`c(x² + y² + κz²) − 2z` for conics, `z − sag(r²)` in double-float,
+//!    packed coefficient residuals included, for aspheres), giving `t₁'` (hi + lo) and the hit `X`.
 //!    (Refining from the rounded `fl(Q)` instead would shift the ray
 //!    sideways by ½ ulp of |Q| and tilt the normal by `c` times that.)
 //! 5. **Unnormalised normal in double-float**, `G = (−cx, −cy, 1 − κcz)` or
@@ -49,11 +49,12 @@
 //!    with `b` from the f32 stable Snell / reflection law and then corrected
 //!    along `G` (Newton on `|D'|² = 1`; twice for refraction, whose f32 `b`
 //!    loses accuracy near grazing exit) — the tangential component, i.e.
-//!    Snell's law, is exact by construction. The ideal lens is evaluated in
-//!    f32 and its output direction renormalised in double-float. TIR is the
-//!    f32 test.
+//!    Snell's law, is exact by construction. The ideal lens (direction and
+//!    phase) is evaluated entirely in double-float. TIR is the f32 test.
+//!    Clipping compares the double-float point with the packed hi + lo
+//!    aperture sizes.
 //! 7. **Optical path** `Σ n·(t₀ + t₁')` with double-float `n`, plus the
-//!    ideal-lens phase; bulk absorption `Σ α·t` in f32.
+//!    double-float ideal-lens phase; bulk absorption `Σ α·t` in f32.
 //!
 //! The **reported state** is `X` and `D` rounded to f32; the rounding
 //! residual of `X` along `D` is moved into the reported optical path
@@ -71,7 +72,10 @@
 //! `Transmit` and `Reflect` steps force the interaction (ghost paths);
 //! coordinate breaks only change the frame. An ideal lens transmits with
 //! its packed object vergence going forward and with zero vergence going
-//! backward, and reflects as a plane mirror. Radiometry (unpolarised):
+//! backward; a mirror-type ideal lens reflects with its power, any other
+//! reflects as a plane mirror. Which steps may follow which is checked on
+//! the host (`PathStep::validate_program`): at a mirror a reflection keeps
+//! the direction of travel through the surface sequence. Radiometry (unpolarised):
 //! bulk absorption, bare Fresnel `T`/`R` on refracting surfaces, `R = 1`,
 //! `T = 0` on bare mirrors, constant `R`/`T` for ideal coatings; ideal
 //! lenses are lossless unless coated.
@@ -91,8 +95,11 @@ type DV<E> = [D<E>; 3];
 /// 1e-12).
 pub const SHEET_TOL: f32 = 9.536_743e-7;
 
-/// Default asphere Newton step cap of the GPU kernel.
-pub const DEFAULT_MAX_ITERATIONS: u32 = 8;
+/// Default asphere Newton step cap of the GPU kernel: the reference's
+/// (`mklight_trace::IntersectSettings`), so a search classifies the same
+/// way. Converging rays stop after a few steps; only rays the conic seed
+/// serves badly (strong aspheres cancelling the conic) need more.
+pub const DEFAULT_MAX_ITERATIONS: u32 = 40;
 /// Default absolute sag-residual tolerance (mm).
 pub const DEFAULT_TOL_ABS: f32 = 1e-9;
 /// Default relative sag-residual tolerance (2⁻²⁰).
@@ -323,6 +330,25 @@ pub fn asphere_poly<E: FpEnv>(s: &PackedSurface, r2: F<E>) -> (F<E>, F<E>) {
     (p * rho4, dp * rho2 * s.asphere_inv_norm2)
 }
 
+/// `mkl_asphere_poly_df`: `P(r²)` in double-float from the packed hi + lo
+/// coefficients (Horner in `ρ²`; the power-of-two normalisation is exact),
+/// for the refinement of a converged hit: the f32 polynomial alone is off
+/// by ~6e-8 × |P|, which a steep, deep asphere turns into position errors
+/// above the budget.
+#[inline(always)]
+fn asphere_poly_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> D<E> {
+    let n = (s.num_asphere as usize).min(MAX_ASPHERE);
+    if n == 0 {
+        return D::ZERO;
+    }
+    let rho2 = r2 * s.asphere_inv_norm2;
+    let mut p = D::new(s.asphere[n - 1], s.asphere_lo[n - 1]);
+    for j in (0..n - 1).rev() {
+        p = p * rho2 + D::new(s.asphere[j], s.asphere_lo[j]);
+    }
+    p * (rho2 * rho2)
+}
+
 /// `mkl_asphere_domain`: whether the asphere normal is defined at `p`
 /// (`1 − κc²r² ≥ 0`), as `mklight_trace::surface::asphere_normal`.
 #[inline(always)]
@@ -400,7 +426,8 @@ pub fn asphere_from<E: FpEnv>(
         }
         if it == p.max_iterations {
             let converging = g.abs() <= 0.5 * prev_abs_g;
-            return Err(if converging {
+            let cap_fails = p.flags & MKL_TRACE_NEWTON_CAP_NOT_CONVERGED != 0;
+            return Err(if converging || cap_fails {
                 NO_CONV
             } else {
                 breakdown(sign_changed)
@@ -507,8 +534,8 @@ fn intersect<E: FpEnv>(
         let r2 = x0[0] * x0[0] + x0[1] * x0[1];
         let w = (D::from_f(F::ONE) - r2 * (kcd * cd)).sqrt();
         let csag = (r2 * cd) / (w + F::ONE);
-        let (poly, dpoly) = asphere_poly(s, r2.hi());
-        let res = (x0[2] - csag) - poly;
+        let dpoly = asphere_poly(s, r2.hi()).1;
+        let res = (x0[2] - csag) - asphere_poly_df(s, r2);
         let (xh, wh) = (hi3(x0), w.hi());
         let slope_w = (2.0 * wh).fma(dpoly, c);
         let gp = df[2] - slope_w / wh.max(f(f32::MIN_POSITIVE)) * xh[0].fma(df[0], xh[1] * df[1]);
@@ -587,51 +614,71 @@ pub fn reflect<E: FpEnv>(k: V<E>, n: V<E>) -> (V<E>, F<E>) {
     )
 }
 
-/// `mkl_sphere_term` (`mklight_trace::interact::sphere_term`).
+/// `mkl_dnorm`: `|v|` of a double-float vector.
 #[inline(always)]
-fn sphere_term<E: FpEnv>(x: V<E>, t: V<E>, rho: F<E>) -> F<E> {
-    let tn = norm(t);
-    let xx = dot(x, x);
-    let tx = dot(t, x);
-    if rho.abs() * xx.sqrt() <= tn {
-        let den = norm([t[0] - x[0] * rho, t[1] - x[1] * rho, t[2] - x[2] * rho]) + tn;
-        rho.fma(xx, -2.0 * tx) / den
+fn dnorm<E: FpEnv>(v: DV<E>) -> D<E> {
+    ddot(v, v).sqrt()
+}
+
+/// `mkl_dabs`: `|x|` (by the sign of `hi`).
+#[inline(always)]
+fn dabs<E: FpEnv>(x: D<E>) -> D<E> {
+    if x.hi() < 0.0 { -x } else { x }
+}
+
+/// `mkl_sphere_term` (`mklight_trace::interact::sphere_term`) in
+/// double-float for `X = (x[0], x[1], 0)`: the same two cancellation-free
+/// forms, the branch chosen in f32 (either form is accurate on either side
+/// of the switch).
+#[inline(always)]
+fn sphere_term<E: FpEnv>(x: [D<E>; 2], t: DV<E>, rho: D<E>) -> D<E> {
+    let tn = dnorm(t);
+    let xx = x[1] * x[1] + x[0] * x[0];
+    let tx = t[1] * x[1] + t[0] * x[0];
+    if rho.hi().abs() * xx.hi().sqrt() <= tn.hi() {
+        let u = [t[0] - x[0] * rho, t[1] - x[1] * rho, t[2]];
+        let den = dnorm(u) + tn;
+        (rho * xx - tx * 2.0) / den
     } else {
-        let a = 1.0 / rho;
-        let o = [x[0] - t[0] * a, x[1] - t[1] * a, x[2] - t[2] * a];
-        F::ONE.copysign(a) * f::<E>(2.0).fma(dot(o, x), -xx) / (norm(o) + a.abs() * tn)
+        let a = D::from_f(F::ONE) / rho;
+        let o = [x[0] - t[0] * a, x[1] - t[1] * a, -(t[2] * a)];
+        let num = (o[1] * x[1] + o[0] * x[0]) * 2.0 - xx;
+        let q = num / (dnorm(o) + dabs(a) * tn);
+        if a.hi() < 0.0 { -q } else { q }
     }
 }
 
 /// `mkl_ideal_lens` (`mklight_trace::interact::ideal_lens`, with the power
-/// `φ = 1/f` instead of `f`): outgoing direction and added optical path.
+/// `φ = 1/f` instead of `f`) in double-float: outgoing unit direction and
+/// added optical path for the hit `(px, py, 0)`. Every input carries its
+/// residual (point, direction, packed `φ`, indices, vergence), so the
+/// direction and the phase `Δ` are good to ~2⁻⁴⁸ relative; in f32 alone
+/// `Δ` (O(|X| sin θ)) would be off by ~1e-6 mm per lens at wide field.
 #[inline(always)]
 pub fn ideal_lens<E: FpEnv>(
-    point: V<E>,
-    k: V<E>,
-    phi: F<E>,
-    n1: F<E>,
-    n2: F<E>,
-    vergence: F<E>,
-) -> Option<(V<E>, F<E>)> {
-    if k[2] == 0.0 {
+    px: D<E>,
+    py: D<E>,
+    k: DV<E>,
+    phi: D<E>,
+    n1: D<E>,
+    n2: D<E>,
+    vergence: D<E>,
+) -> Option<(DV<E>, D<E>)> {
+    if k[2].hi() == 0.0 {
         return None;
     }
-    let sz = F::ONE.copysign(k[2]);
-    let az = k[2].abs();
+    let sz = D::from_f(F::ONE.copysign(k[2].hi()));
+    let az = dabs(k[2]);
     let r = n1 / n2;
     let t = [k[0] / az, k[1] / az, sz];
-    let tx2 = r.fma(t[0], -point[0] * phi);
-    let ty2 = r.fma(t[1], -point[1] * phi);
-    let inv = 1.0 / tx2.fma(tx2, ty2.fma(ty2, F::ONE)).sqrt();
-    let out = [tx2 * inv, ty2 * inv, sz * inv];
+    let tx2 = r * t[0] - px * phi;
+    let ty2 = r * t[1] - py * phi;
     let t_out = [tx2, ty2, sz];
-    let x = [point[0], point[1], F::ZERO];
-    let rho_b = (-r).fma(vergence, phi);
-    let delta = n1.fma(
-        sphere_term(x, t, vergence),
-        -n2 * sphere_term(x, t_out, -rho_b),
-    );
+    let inv = D::from_f(F::ONE) / dnorm(t_out);
+    let out = [tx2 * inv, ty2 * inv, sz * inv];
+    let rho_b = phi - r * vergence;
+    let x = [px, py];
+    let delta = n1 * sphere_term(x, t, vergence) - n2 * sphere_term(x, t_out, -rho_b);
     Some((out, delta))
 }
 
@@ -663,22 +710,27 @@ pub fn fresnel<E: FpEnv>(n1: F<E>, n2: F<E>, cos_i: F<E>) -> (F<E>, F<E>) {
     (0.5 * (rs2 + rp2), 0.5 * ((1.0 - rs2) + (1.0 - rp2)))
 }
 
-/// `mkl_passes_aperture` (`mklight_core::ResolvedSurface::passes_aperture`).
+/// `mkl_passes_aperture` (`mklight_core::ResolvedSurface::passes_aperture`)
+/// in double-float, with the packed sizes' residuals: the sign of
+/// `r² − a²`, `|x| − a` or `u² + v² − 1` is exact to ~2⁻⁴⁸ relative, so an
+/// f32 rounding of a large aperture (half an ulp is 1.5e-5 mm at 256 mm)
+/// cannot change survival outside the CONVENTIONS §7 edge band.
 #[inline(always)]
-pub fn passes_aperture<E: FpEnv>(s: &PackedSurface, x: F<E>, y: F<E>) -> bool {
-    let a0 = f::<E>(s.aperture_params[0]);
-    let a1 = f::<E>(s.aperture_params[1]);
+pub fn passes_aperture<E: FpEnv>(s: &PackedSurface, x: D<E>, y: D<E>) -> bool {
+    let a0 = D::<E>::new(s.aperture_params[0], s.aperture_params_lo[0]);
+    let a1 = D::<E>::new(s.aperture_params[1], s.aperture_params_lo[1]);
+    let r2 = || x * x + y * y;
     match s.aperture {
-        MKL_APERTURE_CIRCULAR => x * x + y * y <= a0 * a0,
+        MKL_APERTURE_CIRCULAR => (r2() - a0 * a0).hi() <= 0.0,
         MKL_APERTURE_ANNULAR => {
-            let r2 = x * x + y * y;
-            r2 >= a0 * a0 && r2 <= a1 * a1
+            let r2 = r2();
+            (r2 - a0 * a0).hi() >= 0.0 && (r2 - a1 * a1).hi() <= 0.0
         }
-        MKL_APERTURE_RECTANGULAR => x.abs() <= a0 && y.abs() <= a1,
+        MKL_APERTURE_RECTANGULAR => (dabs(x) - a0).hi() <= 0.0 && (dabs(y) - a1).hi() <= 0.0,
         MKL_APERTURE_ELLIPTICAL => {
             let u = x / a0;
             let v = y / a1;
-            u * u + v * v <= 1.0
+            (u * u + v * v - F::ONE).hi() <= 0.0
         }
         _ => true,
     }
@@ -824,7 +876,7 @@ pub fn trace_ray<E: FpEnv>(
         }
         // 3. Clip.
         let is_cb = surf.shape == MKL_SHAPE_COORD_BREAK;
-        if clip && !is_cb && !passes_aperture(surf, pos[0].hi(), pos[1].hi()) {
+        if clip && !is_cb && !passes_aperture(surf, pos[0], pos[1]) {
             status = fail(MKL_RAY_VIGNETTED);
             break;
         }
@@ -857,7 +909,13 @@ pub fn trace_ray<E: FpEnv>(
                         Act::Refract
                     }
                 }
-                _ => Act::Reflect,
+                _ => {
+                    if paraxial && mirror {
+                        Act::Lens { reflect: true }
+                    } else {
+                        Act::Reflect
+                    }
+                }
             }
         };
         let coating = surf.coating;
@@ -913,20 +971,23 @@ pub fn trace_ray<E: FpEnv>(
                 }
             }
             Act::Lens { reflect: refl } => {
-                let mut kk = df;
+                let mut kk = dir;
                 if refl {
-                    kk = reflect(kk, hit.normal).0;
+                    // Reflection at the lens plane (normal +z): exact.
+                    kk[2] = -kk[2];
                 }
                 let n2 = if refl { n1 } else { n_other };
-                let verg = if back { F::ZERO } else { f(surf.vergence[w]) };
-                let point = [pos[0].hi(), pos[1].hi(), F::ZERO];
-                let Some((d2, delta)) =
-                    ideal_lens(point, kk, f(surf.paraxial_power), n1.hi(), n2.hi(), verg)
-                else {
+                let verg = if back {
+                    D::ZERO
+                } else {
+                    D::new(surf.vergence[w], surf.vergence_lo[w])
+                };
+                let phi = D::new(surf.paraxial_power, surf.paraxial_power_lo);
+                let Some((d2, delta)) = ideal_lens(pos[0], pos[1], kk, phi, n1, n2, verg) else {
                     status = fail(MKL_RAY_DEGENERATE);
                     break;
                 };
-                dir = renorm([D::from_f(d2[0]), D::from_f(d2[1]), D::from_f(d2[2])]);
+                dir = d2;
                 n_cur = n2;
                 opl = opl + delta;
                 if radiometry && coating == MKL_COATING_IDEAL {

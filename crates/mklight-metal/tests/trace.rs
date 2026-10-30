@@ -205,7 +205,7 @@ fn qualification_on_gpu() {
     let g = gpu_or_skip!();
     let ctx = JobContext::new();
     for (name, sys) in samples::all() {
-        let q = qualify(g, &testutil::tracer(sys), None, &ctx);
+        let q = qualify(g, &testutil::tracer(sys), None, &ctx).unwrap();
         assert!(q.passed, "{name}: {q:?}");
         assert!(q.kernel_build.contains("mklight-metal"));
     }
@@ -222,12 +222,12 @@ fn qualification_on_gpu() {
         duration_ms: 0.0,
         warnings: vec![],
     };
-    qualify(g, &t, None, &ctx).record(&mut info);
+    qualify(g, &t, None, &ctx).unwrap().record(&mut info);
     assert!(info.backend.starts_with("metal:"));
     assert_eq!(info.precision, Precision::F32Gpu);
     let mut strict = XvalSettings::qualification();
     strict.budget.opd_waves = 1e-9;
-    let q = qualify(g, &t, Some(&strict), &ctx);
+    let q = qualify(g, &t, Some(&strict), &ctx).unwrap();
     assert!(!q.passed);
     let mut info = info.clone();
     q.record(&mut info);

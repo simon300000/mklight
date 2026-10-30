@@ -40,7 +40,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{ComputeBackend, ErrorBudget, Job, JobOutput};
-use crate::batch::{NewtonSettings, Radiometry, RayBatch, RayStatus, TraceRequest, TraceResult};
+use crate::batch::{
+    NewtonSettings, RECORD_FLOATS, Radiometry, RayBatch, RayStatus, RecordMode, TraceRequest,
+    TraceResult,
+};
 use crate::consts::*;
 use crate::layout::{MAX_WAVELENGTHS, PackOptions, PackedSystem};
 
@@ -61,6 +64,17 @@ pub struct XvalSettings {
     /// Survival may differ for rays with `|1 − μ² sin² i| <` this at a
     /// refracting surface.
     pub tir_band: f64,
+    /// Fraction of `budget` (position, direction, OPD) the measured maxima
+    /// must stay within for [`qualify`] to pass: 1 checks the budget
+    /// itself; the qualification default, 1/3, leaves room for rays the
+    /// small sample does not contain (a 64 × 64 grid has measured up to
+    /// ~2× the maxima of the 61-point sample).
+    #[serde(default = "one")]
+    pub margin: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 impl Default for XvalSettings {
@@ -75,20 +89,38 @@ impl Default for XvalSettings {
             newton: NewtonSettings::default(),
             budget: ErrorBudget::CONVENTIONS,
             tir_band: 1e-5,
+            margin: 1.0,
         }
     }
 }
 
 impl XvalSettings {
     /// The small sample [`qualify`] uses: 61 hexapolar pupil points per
-    /// field and wavelength.
+    /// field and wavelength (the rim ring included), every field, checked
+    /// against a third of the budget.
     pub fn qualification() -> Self {
         XvalSettings {
             pupil: PupilSampling::Hexapolar { rings: 4 },
+            margin: QUALIFICATION_MARGIN,
             ..Default::default()
         }
     }
+
+    /// `budget` with its position, direction and OPD limits scaled by
+    /// `margin` (the survival bands are unchanged).
+    pub fn effective_budget(&self) -> ErrorBudget {
+        let m = self.margin;
+        ErrorBudget {
+            position_mm: self.budget.position_mm * m,
+            direction_cosine: self.budget.direction_cosine * m,
+            opd_waves: self.budget.opd_waves * m,
+            ..self.budget
+        }
+    }
 }
+
+/// Default [`XvalSettings::margin`] of [`qualify`].
+pub const QUALIFICATION_MARGIN: f64 = 1.0 / 3.0;
 
 /// Measured differences between a backend and the f64 reference.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -101,7 +133,10 @@ pub struct XvalReport {
     pub compared: usize,
     /// Of those, rays with an OPD on both sides.
     pub opd_compared: usize,
+    /// Largest position difference (mm) on any surface (per-surface
+    /// records, image included).
     pub max_position_mm: f64,
+    /// Largest direction difference on any surface.
     pub max_direction: f64,
     pub max_opd_waves: f64,
     pub max_transmittance_abs: f64,
@@ -116,6 +151,30 @@ pub struct XvalReport {
 }
 
 impl XvalReport {
+    /// The largest of the measured position, direction and OPD errors as a
+    /// fraction of `budget` (1 = at the limit).
+    pub fn budget_fraction(&self, budget: &ErrorBudget) -> f64 {
+        (self.max_position_mm / budget.position_mm)
+            .max(self.max_direction / budget.direction_cosine)
+            .max(self.max_opd_waves / budget.opd_waves)
+    }
+
+    /// Combine the reports of two disjoint samples (wavelength chunks).
+    fn merge(&mut self, o: XvalReport) {
+        self.rays += o.rays;
+        self.compared += o.compared;
+        self.opd_compared += o.opd_compared;
+        self.max_position_mm = self.max_position_mm.max(o.max_position_mm);
+        self.max_direction = self.max_direction.max(o.max_direction);
+        self.max_opd_waves = self.max_opd_waves.max(o.max_opd_waves);
+        self.max_transmittance_abs = self.max_transmittance_abs.max(o.max_transmittance_abs);
+        self.survival_mismatches += o.survival_mismatches;
+        self.band_mismatches += o.band_mismatches;
+        self.chief_mismatches += o.chief_mismatches;
+        self.notes.extend(o.notes);
+        self.notes.truncate(8);
+    }
+
     /// `Err(reason)` when any measured quantity exceeds `budget` or any ray
     /// changes its outcome outside the excused bands.
     pub fn check(&self, budget: &ErrorBudget) -> Result<(), String> {
@@ -320,8 +379,11 @@ fn run_trace(
 }
 
 /// Cross-validate `backend` against the reference for `tracer`'s system
-/// (module docs). Fails with the packer's or backend's error when the system
-/// cannot run on the backend at all.
+/// (module docs). Systems with more than `MKL_MAX_WAVELENGTHS` wavelengths
+/// are validated in packed chunks (as the packer splits them) and the
+/// reports merged. Fails with the packer's or backend's error when the
+/// system cannot run on the backend at all, and with `Cancelled` when `ctx`
+/// is cancelled.
 pub fn cross_validate(
     backend: &dyn ComputeBackend,
     tracer: &SequentialTracer,
@@ -333,11 +395,31 @@ pub fn cross_validate(
         .wavelengths
         .clone()
         .unwrap_or_else(|| (0..sys.wavelengths_um.len()).collect());
-    if wls.len() > MAX_WAVELENGTHS {
-        return Err(MkError::Unsupported(format!(
-            "cross-validation covers at most {MAX_WAVELENGTHS} wavelengths"
-        )));
+    let chunks: Vec<&[usize]> = wls.chunks(MAX_WAVELENGTHS).collect();
+    let k = chunks.len().max(1) as f64;
+    let mut report = XvalReport {
+        backend: backend.info().backend_id(),
+        ..Default::default()
+    };
+    for (i, c) in chunks.iter().enumerate() {
+        let sub = ctx.subrange(i as f64 / k, (i + 1) as f64 / k);
+        report.merge(cross_validate_chunk(backend, tracer, settings, c, &sub)?);
     }
+    ctx.report(1.0, "cross-validation");
+    Ok(report)
+}
+
+/// [`cross_validate`] for at most `MKL_MAX_WAVELENGTHS` wavelengths (one
+/// packed system).
+fn cross_validate_chunk(
+    backend: &dyn ComputeBackend,
+    tracer: &SequentialTracer,
+    settings: &XvalSettings,
+    wls: &[usize],
+    ctx: &JobContext,
+) -> MkResult<XvalReport> {
+    let sys = tracer.system();
+    let wls = wls.to_vec();
     let fields: Vec<usize> = settings
         .fields
         .clone()
@@ -391,9 +473,10 @@ pub fn cross_validate(
         }
         b
     };
-    let request = |rays: RayBatch, clip: bool| {
+    let request = |rays: RayBatch, clip: bool, record: RecordMode| {
         let mut r = TraceRequest::new(handle, rays, 0, image);
         r.apply_apertures = clip;
+        r.record = record;
         r.radiometry = settings.radiometry;
         r.newton = settings.newton;
         r
@@ -402,12 +485,12 @@ pub fn cross_validate(
     let traced = (|| {
         let g = run_trace(
             backend,
-            request(batch(&samples), settings.clip),
+            request(batch(&samples), settings.clip, RecordMode::AllSurfaces),
             &ctx.subrange(0.05, 0.5),
         )?;
         let c = run_trace(
             backend,
-            request(batch(&chiefs), false),
+            request(batch(&chiefs), false, RecordMode::Final),
             &ctx.subrange(0.5, 0.55),
         )?;
         Ok::<_, MkError>((g, c))
@@ -465,7 +548,8 @@ pub fn cross_validate(
         .par_iter()
         .enumerate()
         .fold(Acc::default, |mut a, (i, s)| {
-            let r = mklight_trace::trace_ray(sys, &s.ray, s.wl, &opts, None);
+            let mut rec = Vec::new();
+            let r = mklight_trace::trace_ray(sys, &s.ray, s.wl, &opts, Some(&mut rec));
             let want = reference_status_word(&r.status);
             let got = gpu.status[i];
             if want != got {
@@ -495,6 +579,30 @@ pub fn cross_validate(
             let dd = (g.ray.dir - r.ray.dir).norm();
             a.pos = a.pos.max(dp);
             a.dir = a.dir.max(dd);
+            // Every surface on the way (CONVENTIONS §7: position on any
+            // surface), from the per-surface records. A coordinate break
+            // records the previous hit in its own frame, which can be far
+            // from its vertex (400 mm in the Newtonian), where the f32
+            // record alone rounds by more than the budget: skipped.
+            let n = samples.len();
+            for (j, want) in rec.iter().enumerate().skip(1) {
+                if matches!(
+                    sys.surfaces[j].shape,
+                    mklight_core::SurfaceShape::CoordinateBreak
+                ) {
+                    continue;
+                }
+                let k = (j * n + i) * RECORD_FLOATS;
+                let v = |o: usize| {
+                    Vec3::new(
+                        gpu.recorded[k + o] as f64,
+                        gpu.recorded[k + o + 1] as f64,
+                        gpu.recorded[k + o + 2] as f64,
+                    )
+                };
+                a.pos = a.pos.max((v(0) - want.point).norm());
+                a.dir = a.dir.max((v(3) - want.dir).norm());
+            }
             a.trans = a.trans.max((g.transmittance - r.transmittance).abs());
             if let Some((Some(rr), Some(gr))) = refs.get(&(s.field, s.wl))
                 && let (Some(o_ref), Some(o_gpu)) = (rr.opd_waves(&r), gr.opd_waves(&g))
@@ -526,7 +634,7 @@ pub fn cross_validate(
     report.survival_mismatches = acc.surv;
     report.band_mismatches = acc.band;
     report.notes.extend(acc.notes.into_iter().take(4));
-    ctx.report(1.0, "cross-validation");
+    ctx.report(1.0, "cross-validation: chunk");
     Ok(report)
 }
 
@@ -539,7 +647,14 @@ pub struct Qualification {
     /// The candidate's `PrecisionDescriptor::kernel_build`.
     pub kernel_build: String,
     pub passed: bool,
+    /// The full budget (CONVENTIONS §7) the results must meet.
     pub budget: ErrorBudget,
+    /// Fraction of `budget` the sampled maxima had to stay within.
+    pub margin: f64,
+    /// The largest measured error as a fraction of `budget` (position,
+    /// direction or OPD; `None` when nothing was measured). Passing needs
+    /// at most `margin`.
+    pub budget_fraction: Option<f64>,
     /// The measurements (absent when the trace could not run at all).
     pub report: Option<XvalReport>,
     /// Why the backend is not used (`None` when it passed).
@@ -579,16 +694,22 @@ impl Qualification {
 }
 
 /// Precision qualification of `backend` for `tracer`'s system: a small
-/// cross-validation ([`XvalSettings::qualification`] unless given) checked
-/// against its budget. Never an error: a backend that cannot run the system
-/// (unsupported job, unpackable model, backend error) fails with that
-/// reason. Cancellation is reported as a failed qualification as well.
+/// cross-validation ([`XvalSettings::qualification`] unless given) whose
+/// maxima must stay within `margin` × the budget (a third by default), so
+/// that rays outside the sample, which can show up to about twice the
+/// sampled error, still meet the full budget. Systems with more than 16
+/// wavelengths are qualified chunk by chunk.
+///
+/// A backend that cannot run the system (unsupported job, unpackable
+/// model, backend error) fails with that reason. The only error is
+/// `MkError::Cancelled`: a cancelled qualification is not a verdict, and
+/// the caller should stop rather than fall back.
 pub fn qualify(
     backend: &dyn ComputeBackend,
     tracer: &SequentialTracer,
     settings: Option<&XvalSettings>,
     ctx: &JobContext,
-) -> Qualification {
+) -> MkResult<Qualification> {
     let default = XvalSettings::qualification();
     let settings = settings.unwrap_or(&default);
     let mut q = Qualification {
@@ -596,22 +717,40 @@ pub fn qualify(
         kernel_build: backend.precision().kernel_build.clone(),
         passed: false,
         budget: settings.budget,
+        margin: settings.margin,
+        budget_fraction: None,
         report: None,
         reason: None,
     };
+    ctx.check()?;
     if !backend.supports(crate::backend::JobKind::Trace) {
         q.reason = Some("backend does not support the trace kernel".into());
-        return q;
+        return Ok(q);
     }
     match cross_validate(backend, tracer, settings, ctx) {
         Ok(r) => {
-            match r.check(&settings.budget) {
+            q.budget_fraction = Some(r.budget_fraction(&settings.budget));
+            match r.check(&settings.effective_budget()) {
                 Ok(()) => q.passed = true,
-                Err(why) => q.reason = Some(format!("precision qualification failed: {why}")),
+                Err(why) => {
+                    q.reason = Some(format!(
+                        "precision qualification failed ({} of the budget required): {why}",
+                        fraction_label(settings.margin)
+                    ))
+                }
             }
             q.report = Some(r);
         }
+        Err(MkError::Cancelled) => return Err(MkError::Cancelled),
         Err(e) => q.reason = Some(format!("cannot run on this backend: {e}")),
     }
-    q
+    Ok(q)
+}
+
+fn fraction_label(m: f64) -> String {
+    if (m - 1.0 / 3.0).abs() < 1e-12 {
+        "1/3".into()
+    } else {
+        format!("{m}")
+    }
 }

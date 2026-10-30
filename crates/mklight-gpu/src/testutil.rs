@@ -354,8 +354,10 @@ pub struct F64Path {
 /// An independent f64 implementation of a path program, for tests: the
 /// frames of `ResolvedSystem` (forward `to_next`, backward its inverse; for
 /// an object at infinity surface 0 → 1 is surface 1's frame), the reference
-/// intersection and interaction primitives of `mklight_trace`, and core
-/// Fresnel coefficients. `None` when the ray fails.
+/// intersection and interaction primitives of `mklight_trace` (ideal lenses
+/// with the reference's object vergence going forward, zero going
+/// backward), and core Fresnel coefficients. Apertures always clip. `None`
+/// when the ray fails or a step transmits through a mirror.
 pub fn f64_path(
     sys: &ResolvedSystem,
     start: u32,
@@ -366,7 +368,7 @@ pub fn f64_path(
 ) -> Option<F64Path> {
     use crate::batch::StepMode;
     use mklight_core::materials::coating::fresnel;
-    use mklight_trace::interact::{reflect, refract};
+    use mklight_trace::interact::{ideal_lens, reflect, refract};
     use mklight_trace::surface::{IntersectSettings, intersect};
     let frame = |j: usize| -> mklight_core::math::Frame {
         match sys.surfaces[j].to_next {
@@ -416,9 +418,33 @@ pub fn f64_path(
         let reflect_here = match st.mode {
             StepMode::Reflect => true,
             StepMode::Sequential => mirror,
-            StepMode::Transmit => false,
+            StepMode::Transmit => {
+                if mirror {
+                    return None; // no medium behind a mirror
+                }
+                false
+            }
         };
-        if cb || (!reflect_here && (image || surf.interaction == Interaction::Dummy)) {
+        let passive = image || surf.interaction == Interaction::Dummy;
+        if cb || (!reflect_here && passive) {
+        } else if let SurfaceShape::Paraxial { focal_length } = surf.shape
+            && (mirror || !reflect_here)
+        {
+            // Ideal lens: transmitted, or reflected by a mirror-type lens.
+            let n_out = if reflect_here {
+                d = reflect(d, hit.normal).0;
+                n1
+            } else {
+                n2
+            };
+            let verg = if st.backward {
+                0.0
+            } else {
+                mklight_trace::paraxial::ideal_lens_object_vergence(sys, s, wl)
+            };
+            let (k, delta) = ideal_lens(p, d, focal_length, n1, n_out, verg)?;
+            d = k;
+            opl += delta;
         } else if reflect_here {
             let (k, c) = reflect(d, hit.normal);
             d = k;
@@ -430,11 +456,7 @@ pub fn f64_path(
         } else {
             let (k, c) = refract(d, hit.normal, n1, n2)?;
             d = k;
-            weight *= if mirror {
-                0.0
-            } else {
-                fresnel(n1, n2, c).t_unpolarized()
-            };
+            weight *= fresnel(n1, n2, c).t_unpolarized();
         }
         cur = s;
     }

@@ -457,23 +457,67 @@ fn trace_requests_are_validated() {
             PathStep::forward(1, Sequential),
             PathStep::backward(0, Sequential),
         ],
+        // A mirror's reflection keeps the direction through the sequence.
         vec![
             PathStep::forward(1, Reflect),
-            PathStep::forward(2, Transmit),
+            PathStep::backward(0, Transmit),
         ],
+        // There is no medium behind a mirror.
+        vec![PathStep::forward(1, Transmit)],
+        // The sensor ghost travels back through the fold flat by its
+        // reflection, never through it.
         vec![
-            PathStep::forward(1, Transmit),
+            PathStep::forward(1, Sequential),
+            PathStep::forward(2, Sequential),
+            PathStep::forward(3, Sequential),
+            PathStep::forward(4, Sequential),
+            PathStep::forward(5, Reflect),
+            PathStep::backward(4, Transmit),
+            PathStep::backward(3, Transmit),
+        ],
+        // A ghost reflection at a mirror would continue backward.
+        vec![
+            PathStep::forward(1, Sequential),
+            PathStep::forward(2, Sequential),
+            PathStep::forward(3, Reflect),
+            PathStep::backward(2, Transmit),
+        ],
+        // Reflection at a coordinate break.
+        vec![
+            PathStep::forward(1, Sequential),
             PathStep::forward(2, Reflect),
         ],
         vec![
-            PathStep::forward(1, Transmit),
+            PathStep::forward(1, Sequential),
             PathStep::forward(2, Transmit),
-            PathStep::forward(3, Transmit),
+            PathStep::forward(3, Sequential),
             PathStep::forward(4, Transmit),
             PathStep::forward(5, Transmit),
             PathStep::forward(6, Transmit),
         ],
     ];
+    let good_programs: Vec<Vec<PathStep>> = vec![
+        vec![
+            PathStep::forward(1, Reflect),
+            PathStep::forward(2, Transmit),
+        ],
+        vec![
+            PathStep::forward(1, Sequential),
+            PathStep::forward(2, Sequential),
+            PathStep::forward(3, Sequential),
+            PathStep::forward(4, Sequential),
+            PathStep::forward(5, Reflect),
+            PathStep::backward(4, Transmit),
+            PathStep::backward(3, Reflect),
+            PathStep::backward(2, Transmit),
+            PathStep::backward(1, Reflect),
+        ],
+    ];
+    for (k, p) in good_programs.into_iter().enumerate() {
+        let mut r = TraceRequest::path(h, batch(&ray), 0, p);
+        r.radiometry = Radiometry::Off;
+        assert!(submit(r).is_ok(), "good program {k}");
+    }
     for (k, p) in bad_programs.into_iter().enumerate() {
         let mut r = TraceRequest::path(h, batch(&ray), 0, p);
         r.radiometry = Radiometry::Off;
@@ -602,7 +646,7 @@ fn qualification_and_fallback_recording() {
     let b = CpuF32Backend::with_subnormals(false);
     let t = testutil::tracer(samples::double_gauss());
     let ctx = JobContext::new();
-    let q = qualify(&b, &t, None, &ctx);
+    let q = qualify(&b, &t, None, &ctx).unwrap();
     assert!(q.passed, "{q:?}");
     assert!(q.report.as_ref().unwrap().compared > 500);
     let mut info = RunInfo {
@@ -626,7 +670,7 @@ fn qualification_and_fallback_recording() {
     // A budget no f32 backend can meet: fails with the measured reason.
     let mut strict = XvalSettings::qualification();
     strict.budget.position_mm = 1e-12;
-    let q = qualify(&b, &t, Some(&strict), &ctx);
+    let q = qualify(&b, &t, Some(&strict), &ctx).unwrap();
     assert!(!q.passed);
     assert!(
         q.reason.as_ref().unwrap().contains("position error"),
@@ -656,7 +700,7 @@ fn qualification_and_fallback_recording() {
     );
     sys.surfaces[1].coating = Some("AR".into());
     sys.surfaces[1].interaction = Interaction::Refract;
-    let q = qualify(&b, &testutil::tracer(sys), None, &ctx);
+    let q = qualify(&b, &testutil::tracer(sys), None, &ctx).unwrap();
     assert!(!q.passed);
     assert!(q.reason.unwrap().contains("cannot run"));
 }

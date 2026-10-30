@@ -183,6 +183,18 @@ static inline float2 mkl_asphere_poly(constant MklPackedSurface& s, float r2) {
     return float2(p * rho4, dp * rho2 * s.asphere_inv_norm2);
 }
 
+// P(r^2) in double-float from the packed hi + lo coefficients.
+static inline float2 mkl_asphere_poly_df(constant MklPackedSurface& s, float2 r2) {
+    uint n = min(s.num_asphere, MKL_MAX_ASPHERE);
+    if (n == 0u) return float2(0.0f);
+    float2 rho2 = mkl_df_mul_f32(r2, s.asphere_inv_norm2);
+    float2 p = float2(s.asphere[n - 1u], s.asphere_lo[n - 1u]);
+    for (int j = int(n) - 2; j >= 0; --j) {
+        p = mkl_df_add(mkl_df_mul(p, rho2), float2(s.asphere[j], s.asphere_lo[j]));
+    }
+    return mkl_df_mul(p, mkl_df_mul(rho2, rho2));
+}
+
 static inline bool mkl_asphere_domain(constant MklPackedSurface& s, float3 p) {
     float c = s.curvature;
     float kap = 1.0f + s.conic;
@@ -237,7 +249,8 @@ static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, floa
         }
         if (it == p.max_iterations) {
             bool converging = fabs(g) <= 0.5f * prev_abs_g;
-            return converging ? MKL_RAY_NOT_CONVERGED : breakdown;
+            bool cap_fails = (p.flags & MKL_TRACE_NEWTON_CAP_NOT_CONVERGED) != 0u;
+            return (converging || cap_fails) ? MKL_RAY_NOT_CONVERGED : breakdown;
         }
         if (!gp_ok) return breakdown;
         t = t - g / gp;
@@ -312,7 +325,7 @@ static inline uint mkl_intersect(constant MklPackedSurface& s, MklDv p, MklDv d,
         float2 w = mkl_df_sqrt(mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul(r2, mkl_df_mul(kcd, cd))));
         float2 csag = mkl_df_div(mkl_df_mul(r2, cd), mkl_df_add_f32(w, 1.0f));
         float2 pp = mkl_asphere_poly(s, r2.x);
-        float2 res = mkl_df_add_f32(mkl_df_sub(x0.v[2], csag), -pp.x);
+        float2 res = mkl_df_sub(mkl_df_sub(x0.v[2], csag), mkl_asphere_poly_df(s, r2));
         float3 xh = mkl_hi3(x0);
         float wh = w.x;
         float slope_w = fma(2.0f * wh, pp.y, c);
@@ -375,34 +388,59 @@ static inline float3 mkl_reflect(float3 k, float3 n, thread float& cos_out) {
     return float3(fma(s, n.x, k.x), fma(s, n.y, k.y), fma(s, n.z, k.z));
 }
 
-static inline float mkl_sphere_term(float3 x, float3 t, float rho) {
-    float tn = mkl_norm3(t);
-    float xx = mkl_dot3(x, x);
-    float tx = mkl_dot3(t, x);
-    if (fabs(rho) * sqrt(xx) <= tn) {
-        float den = mkl_norm3(float3(t.x - x.x * rho, t.y - x.y * rho, t.z - x.z * rho)) + tn;
-        return fma(rho, xx, -2.0f * tx) / den;
+static inline float2 mkl_dnorm(MklDv v) { return mkl_df_sqrt(mkl_ddot(v, v)); }
+
+static inline float2 mkl_dabs(float2 x) { return x.x < 0.0f ? mkl_df_neg(x) : x; }
+
+// sphere_term in double-float for X = (x0, x1, 0).
+static inline float2 mkl_sphere_term(float2 x0, float2 x1, MklDv t, float2 rho) {
+    float2 tn = mkl_dnorm(t);
+    float2 xx = mkl_df_add(mkl_df_mul(x1, x1), mkl_df_mul(x0, x0));
+    float2 tx = mkl_df_add(mkl_df_mul(t.v[1], x1), mkl_df_mul(t.v[0], x0));
+    if (fabs(rho.x) * sqrt(xx.x) <= tn.x) {
+        MklDv u;
+        u.v[0] = mkl_df_sub(t.v[0], mkl_df_mul(x0, rho));
+        u.v[1] = mkl_df_sub(t.v[1], mkl_df_mul(x1, rho));
+        u.v[2] = t.v[2];
+        float2 den = mkl_df_add(mkl_dnorm(u), tn);
+        return mkl_df_div(mkl_df_sub(mkl_df_mul(rho, xx), mkl_df_mul_f32(tx, 2.0f)), den);
     }
-    float a = 1.0f / rho;
-    float3 o = float3(x.x - t.x * a, x.y - t.y * a, x.z - t.z * a);
-    return copysign(1.0f, a) * fma(2.0f, mkl_dot3(o, x), -xx) / (mkl_norm3(o) + fabs(a) * tn);
+    float2 a = mkl_df_div(float2(1.0f, 0.0f), rho);
+    MklDv o;
+    o.v[0] = mkl_df_sub(x0, mkl_df_mul(t.v[0], a));
+    o.v[1] = mkl_df_sub(x1, mkl_df_mul(t.v[1], a));
+    o.v[2] = mkl_df_neg(mkl_df_mul(t.v[2], a));
+    float2 num = mkl_df_sub(
+        mkl_df_mul_f32(mkl_df_add(mkl_df_mul(o.v[1], x1), mkl_df_mul(o.v[0], x0)), 2.0f), xx);
+    float2 q = mkl_df_div(num, mkl_df_add(mkl_dnorm(o), mkl_df_mul(mkl_dabs(a), tn)));
+    return a.x < 0.0f ? mkl_df_neg(q) : q;
 }
 
-static inline bool mkl_ideal_lens(float3 point, float3 k, float phi, float n1, float n2,
-                                  float vergence, thread float3& d_out, thread float& delta) {
-    if (k.z == 0.0f) return false;
-    float sz = copysign(1.0f, k.z);
-    float az = fabs(k.z);
-    float r = n1 / n2;
-    float3 t = float3(k.x / az, k.y / az, sz);
-    float tx2 = fma(r, t.x, -point.x * phi);
-    float ty2 = fma(r, t.y, -point.y * phi);
-    float inv = 1.0f / sqrt(fma(tx2, tx2, fma(ty2, ty2, 1.0f)));
-    d_out = float3(tx2 * inv, ty2 * inv, sz * inv);
-    float3 t_out = float3(tx2, ty2, sz);
-    float3 x = float3(point.x, point.y, 0.0f);
-    float rho_b = fma(-r, vergence, phi);
-    delta = fma(n1, mkl_sphere_term(x, t, vergence), -n2 * mkl_sphere_term(x, t_out, -rho_b));
+// The ideal lens in double-float: direction d_out and phase delta.
+static inline bool mkl_ideal_lens(float2 px, float2 py, MklDv k, float2 phi, float2 n1,
+                                  float2 n2, float2 vergence, thread MklDv& d_out,
+                                  thread float2& delta) {
+    if (k.v[2].x == 0.0f) return false;
+    float2 sz = float2(copysign(1.0f, k.v[2].x), 0.0f);
+    float2 az = mkl_dabs(k.v[2]);
+    float2 r = mkl_df_div(n1, n2);
+    MklDv t;
+    t.v[0] = mkl_df_div(k.v[0], az);
+    t.v[1] = mkl_df_div(k.v[1], az);
+    t.v[2] = sz;
+    float2 tx2 = mkl_df_sub(mkl_df_mul(r, t.v[0]), mkl_df_mul(px, phi));
+    float2 ty2 = mkl_df_sub(mkl_df_mul(r, t.v[1]), mkl_df_mul(py, phi));
+    MklDv t_out;
+    t_out.v[0] = tx2;
+    t_out.v[1] = ty2;
+    t_out.v[2] = sz;
+    float2 inv = mkl_df_div(float2(1.0f, 0.0f), mkl_dnorm(t_out));
+    d_out.v[0] = mkl_df_mul(tx2, inv);
+    d_out.v[1] = mkl_df_mul(ty2, inv);
+    d_out.v[2] = mkl_df_mul(sz, inv);
+    float2 rho_b = mkl_df_sub(phi, mkl_df_mul(r, vergence));
+    delta = mkl_df_sub(mkl_df_mul(n1, mkl_sphere_term(px, py, t, vergence)),
+                       mkl_df_mul(n2, mkl_sphere_term(px, py, t_out, mkl_df_neg(rho_b))));
     return true;
 }
 
@@ -422,20 +460,26 @@ static inline float2 mkl_fresnel(float n1, float n2, float cos_i) {
     return float2(0.5f * (rs2 + rp2), 0.5f * ((1.0f - rs2) + (1.0f - rp2)));
 }
 
-static inline bool mkl_passes_aperture(constant MklPackedSurface& s, float x, float y) {
-    float a0 = s.aperture_params[0];
-    float a1 = s.aperture_params[1];
+// Aperture test in double-float with the packed sizes' residuals.
+static inline bool mkl_passes_aperture(constant MklPackedSurface& s, float2 x, float2 y) {
+    float2 a0 = float2(s.aperture_params[0], s.aperture_params_lo[0]);
+    float2 a1 = float2(s.aperture_params[1], s.aperture_params_lo[1]);
     switch (s.aperture) {
-        case MKL_APERTURE_CIRCULAR: return x * x + y * y <= a0 * a0;
-        case MKL_APERTURE_ANNULAR: {
-            float r2 = x * x + y * y;
-            return r2 >= a0 * a0 && r2 <= a1 * a1;
+        case MKL_APERTURE_CIRCULAR: {
+            float2 r2 = mkl_df_add(mkl_df_mul(x, x), mkl_df_mul(y, y));
+            return mkl_df_sub(r2, mkl_df_mul(a0, a0)).x <= 0.0f;
         }
-        case MKL_APERTURE_RECTANGULAR: return fabs(x) <= a0 && fabs(y) <= a1;
+        case MKL_APERTURE_ANNULAR: {
+            float2 r2 = mkl_df_add(mkl_df_mul(x, x), mkl_df_mul(y, y));
+            return mkl_df_sub(r2, mkl_df_mul(a0, a0)).x >= 0.0f
+                && mkl_df_sub(r2, mkl_df_mul(a1, a1)).x <= 0.0f;
+        }
+        case MKL_APERTURE_RECTANGULAR:
+            return mkl_df_sub(mkl_dabs(x), a0).x <= 0.0f && mkl_df_sub(mkl_dabs(y), a1).x <= 0.0f;
         case MKL_APERTURE_ELLIPTICAL: {
-            float u = x / a0;
-            float v = y / a1;
-            return u * u + v * v <= 1.0f;
+            float2 u = mkl_df_div(x, a0);
+            float2 v = mkl_df_div(y, a1);
+            return mkl_df_add_f32(mkl_df_add(mkl_df_mul(u, u), mkl_df_mul(v, v)), -1.0f).x <= 0.0f;
         }
         default: return true;
     }
@@ -453,9 +497,14 @@ static inline MklState mkl_report(MklDv p, MklDv d, float2 opl, float2 n, float 
     return st;
 }
 
+// Element i of plane k of `stride` values, in 64-bit arithmetic: record
+// buffers (slots · stride · 9 floats) and input planes of large batches
+// exceed 2^32 elements.
+static inline ulong mkl_plane(uint k, uint stride, uint i) { return ulong(k) * ulong(stride) + ulong(i); }
+
 static inline void mkl_record(device float* rf, device uint* ru, uint slot, uint stride, uint i,
                               MklState st) {
-    device float* o = rf + (slot * stride + i) * MKL_TRACE_RECORD_FLOATS;
+    device float* o = rf + mkl_plane(slot, stride, i) * ulong(MKL_TRACE_RECORD_FLOATS);
     o[0] = st.pos.x;
     o[1] = st.pos.y;
     o[2] = st.pos.z;
@@ -465,7 +514,7 @@ static inline void mkl_record(device float* rf, device uint* ru, uint slot, uint
     o[6] = st.opl.x;
     o[7] = st.opl.y;
     o[8] = st.weight;
-    ru[slot * stride + i] = st.status;
+    ru[mkl_plane(slot, stride, i)] = st.status;
 }
 
 static inline float2 mkl_index(constant MklPackedSurface& s, uint w) {
@@ -488,8 +537,8 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
                       uint i [[thread_position_in_grid]]) {
     if (i >= prm.num_rays) return;
     const uint S = prm.stride;
-    const uint w = in_u[MKL_TRACE_INU_WAVELENGTH * S + i];
-    constant MklPackedHeader& h = headers[in_u[MKL_TRACE_INU_SYSTEM * S + i]];
+    const uint w = in_u[mkl_plane(MKL_TRACE_INU_WAVELENGTH, S, i)];
+    constant MklPackedHeader& h = headers[in_u[mkl_plane(MKL_TRACE_INU_SYSTEM, S, i)]];
     constant MklPackedSurface* s = surfaces + h.surface_offset;
     const bool clip = (prm.flags & MKL_TRACE_CLIP) != 0u;
     const bool radiometry = (prm.flags & MKL_TRACE_RADIOMETRY) != 0u;
@@ -498,14 +547,14 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
     const uint num_steps = prm.num_steps;
 
     MklDv pos, dir;
-    pos.v[0] = float2(in_f[MKL_TRACE_IN_X * S + i], in_f[MKL_TRACE_IN_X_LO * S + i]);
-    pos.v[1] = float2(in_f[MKL_TRACE_IN_Y * S + i], in_f[MKL_TRACE_IN_Y_LO * S + i]);
-    pos.v[2] = float2(in_f[MKL_TRACE_IN_Z * S + i], in_f[MKL_TRACE_IN_Z_LO * S + i]);
-    dir.v[0] = float2(in_f[MKL_TRACE_IN_L * S + i], in_f[MKL_TRACE_IN_L_LO * S + i]);
-    dir.v[1] = float2(in_f[MKL_TRACE_IN_M * S + i], in_f[MKL_TRACE_IN_M_LO * S + i]);
-    dir.v[2] = float2(in_f[MKL_TRACE_IN_N * S + i], in_f[MKL_TRACE_IN_N_LO * S + i]);
-    float2 opl = float2(in_f[MKL_TRACE_IN_OPL_HI * S + i], in_f[MKL_TRACE_IN_OPL_LO * S + i]);
-    const float w_in = in_f[MKL_TRACE_IN_WEIGHT * S + i];
+    pos.v[0] = float2(in_f[mkl_plane(MKL_TRACE_IN_X, S, i)], in_f[mkl_plane(MKL_TRACE_IN_X_LO, S, i)]);
+    pos.v[1] = float2(in_f[mkl_plane(MKL_TRACE_IN_Y, S, i)], in_f[mkl_plane(MKL_TRACE_IN_Y_LO, S, i)]);
+    pos.v[2] = float2(in_f[mkl_plane(MKL_TRACE_IN_Z, S, i)], in_f[mkl_plane(MKL_TRACE_IN_Z_LO, S, i)]);
+    dir.v[0] = float2(in_f[mkl_plane(MKL_TRACE_IN_L, S, i)], in_f[mkl_plane(MKL_TRACE_IN_L_LO, S, i)]);
+    dir.v[1] = float2(in_f[mkl_plane(MKL_TRACE_IN_M, S, i)], in_f[mkl_plane(MKL_TRACE_IN_M_LO, S, i)]);
+    dir.v[2] = float2(in_f[mkl_plane(MKL_TRACE_IN_N, S, i)], in_f[mkl_plane(MKL_TRACE_IN_N_LO, S, i)]);
+    float2 opl = float2(in_f[mkl_plane(MKL_TRACE_IN_OPL_HI, S, i)], in_f[mkl_plane(MKL_TRACE_IN_OPL_LO, S, i)]);
+    const float w_in = in_f[mkl_plane(MKL_TRACE_IN_WEIGHT, S, i)];
     float tw = 1.0f;
     float absorb = 0.0f;
     const uint start = prm.start_surface;
@@ -558,7 +607,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
         }
         // 3. Clip.
         const bool is_cb = surf.shape == MKL_SHAPE_COORD_BREAK;
-        if (clip && !is_cb && !mkl_passes_aperture(surf, pos.v[0].x, pos.v[1].x)) {
+        if (clip && !is_cb && !mkl_passes_aperture(surf, pos.v[0], pos.v[1])) {
             status = MKL_RAY_VIGNETTED | fail_s;
             break;
         }
@@ -574,7 +623,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
             } else if (mode == MKL_STEP_TRANSMIT) {
                 act = (is_image || dummy) ? 0u : paraxial ? 3u : 1u;
             } else {
-                act = 2u;
+                act = (paraxial && mirror) ? 4u : 2u;
             }
         }
         const uint coating = surf.coating;
@@ -615,27 +664,20 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
             }
         } else if (act >= 3u) {
             const bool refl = act == 4u;
-            float3 kk = dfv;
-            if (refl) {
-                float unused;
-                kk = mkl_reflect(kk, hit.normal, unused);
-            }
+            MklDv kk = dir;
+            if (refl) kk.v[2] = mkl_df_neg(kk.v[2]);
             const float2 n2 = refl ? n1 : n_other;
-            const float verg = back ? 0.0f : surf.vergence[w];
-            const float3 point = float3(pos.v[0].x, pos.v[1].x, 0.0f);
-            float3 d2;
-            float delta;
-            if (!mkl_ideal_lens(point, kk, surf.paraxial_power, n1.x, n2.x, verg, d2, delta)) {
+            const float2 verg = back ? float2(0.0f) : float2(surf.vergence[w], surf.vergence_lo[w]);
+            const float2 phi = float2(surf.paraxial_power, surf.paraxial_power_lo);
+            MklDv d2;
+            float2 delta;
+            if (!mkl_ideal_lens(pos.v[0], pos.v[1], kk, phi, n1, n2, verg, d2, delta)) {
                 status = MKL_RAY_DEGENERATE | fail_s;
                 break;
             }
-            MklDv dd;
-            dd.v[0] = float2(d2.x, 0.0f);
-            dd.v[1] = float2(d2.y, 0.0f);
-            dd.v[2] = float2(d2.z, 0.0f);
-            dir = mkl_renorm(dd);
+            dir = d2;
             n_cur = n2;
-            opl = mkl_df_add_f32(opl, delta);
+            opl = mkl_df_add(opl, delta);
             if (radiometry && coating == MKL_COATING_IDEAL) {
                 tw = tw * (refl ? surf.coating_r : surf.coating_t);
             }
@@ -653,17 +695,17 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
     if (record) {
         for (uint slot = done + 1u; slot <= num_steps; ++slot) mkl_record(rec_f, rec_u, slot, S, i, st);
     }
-    out_f[MKL_TRACE_OUT_X * S + i] = st.pos.x;
-    out_f[MKL_TRACE_OUT_Y * S + i] = st.pos.y;
-    out_f[MKL_TRACE_OUT_Z * S + i] = st.pos.z;
-    out_f[MKL_TRACE_OUT_L * S + i] = st.dir.x;
-    out_f[MKL_TRACE_OUT_M * S + i] = st.dir.y;
-    out_f[MKL_TRACE_OUT_N * S + i] = st.dir.z;
-    out_f[MKL_TRACE_OUT_OPL_HI * S + i] = st.opl.x;
-    out_f[MKL_TRACE_OUT_OPL_LO * S + i] = st.opl.y;
-    out_f[MKL_TRACE_OUT_WEIGHT * S + i] = st.weight;
-    out_f[MKL_TRACE_OUT_TRANSMITTANCE * S + i] = transmittance;
-    out_u[MKL_TRACE_OUTU_STATUS * S + i] = st.status;
-    out_u[MKL_TRACE_OUTU_LAST_SURFACE * S + i] = last;
-    out_u[MKL_TRACE_OUTU_STEPS * S + i] = done;
+    out_f[mkl_plane(MKL_TRACE_OUT_X, S, i)] = st.pos.x;
+    out_f[mkl_plane(MKL_TRACE_OUT_Y, S, i)] = st.pos.y;
+    out_f[mkl_plane(MKL_TRACE_OUT_Z, S, i)] = st.pos.z;
+    out_f[mkl_plane(MKL_TRACE_OUT_L, S, i)] = st.dir.x;
+    out_f[mkl_plane(MKL_TRACE_OUT_M, S, i)] = st.dir.y;
+    out_f[mkl_plane(MKL_TRACE_OUT_N, S, i)] = st.dir.z;
+    out_f[mkl_plane(MKL_TRACE_OUT_OPL_HI, S, i)] = st.opl.x;
+    out_f[mkl_plane(MKL_TRACE_OUT_OPL_LO, S, i)] = st.opl.y;
+    out_f[mkl_plane(MKL_TRACE_OUT_WEIGHT, S, i)] = st.weight;
+    out_f[mkl_plane(MKL_TRACE_OUT_TRANSMITTANCE, S, i)] = transmittance;
+    out_u[mkl_plane(MKL_TRACE_OUTU_STATUS, S, i)] = st.status;
+    out_u[mkl_plane(MKL_TRACE_OUTU_LAST_SURFACE, S, i)] = last;
+    out_u[mkl_plane(MKL_TRACE_OUTU_STEPS, S, i)] = done;
 }

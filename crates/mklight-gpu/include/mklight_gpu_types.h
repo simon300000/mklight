@@ -59,8 +59,11 @@
  * 3: surface record gained ideal-lens vergences, double-float transform
  *    parts (to_next_rot_lo, to_next_shift), double-float curvature, conic
  *    and indices (curvature_lo, conic_lo, n_after_lo), coating codes; trace kernel parameters, path steps and
- *    new ray status codes. */
-#define MKL_LAYOUT_VERSION 3u
+ *    new ray status codes.
+ * 4: double-float ideal lens (paraxial_power_lo in place of reserved2,
+ *    vergence_lo), apertures (aperture_params_lo) and asphere polynomial
+ *    (asphere_lo); trace flag MKL_TRACE_NEWTON_CAP_NOT_CONVERGED. */
+#define MKL_LAYOUT_VERSION 4u
 /* 'MKLP' little-endian; first word of every packed system header. */
 #define MKL_PACKED_MAGIC 0x504C4B4Du
 
@@ -117,7 +120,7 @@
  *   BARE   uncoated: Fresnel on refracting surfaces, R = 1 on mirrors
  *   IDEAL  constant R = coating_r, T = coating_t (T = 0 on mirrors)
  *   TABLE  thin-film stack or tabulated R(λ): not available on the GPU in
- *          layout v3; traces with radiometry through such a surface are
+ *          layout v4; traces with radiometry through such a surface are
  *          refused (geometry-only traces are unaffected). */
 #define MKL_COATING_BARE 0u
 #define MKL_COATING_IDEAL 1u
@@ -207,6 +210,11 @@ struct MklPackedHeader {
  * 1/a of the axial object point at this lens (mklight_trace::paraxial::
  * ideal_lens_object_vergence), which fixes the conjugate at which the ideal
  * lens is perfect in phase. Zero on every other surface.
+ *
+ * paraxial_power_lo, vergence_lo, aperture_params_lo and asphere_lo are the
+ * f32 residuals of those values (hi + lo equals the f64 value to ~2^-48):
+ * the trace kernel evaluates ideal lenses, aperture tests and the refined
+ * asphere sag in double-float.
  */
 struct MklPackedSurface {
     MKL_U32 shape;             /*   0  MKL_SHAPE_* */
@@ -235,13 +243,17 @@ struct MklPackedSurface {
     MKL_F32 to_next_rot_lo[9];        /* 368  f32 residual of to_next_rot */
     MKL_F32 to_next_shift[3];         /* 404  to_next_rot · to_next_origin (mm), hi part */
     MKL_F32 to_next_shift_lo[3];      /* 416  f32 residual of to_next_shift */
-    MKL_U32 reserved2;                /* 428  zero */
+    MKL_F32 paraxial_power_lo;        /* 428  f32 residual of paraxial_power */
     MKL_F32 n_after_lo[MKL_MAX_WAVELENGTHS];  /* 432  f32 residual of n_after */
-};                                    /* 496 bytes */
+    MKL_F32 vergence_lo[MKL_MAX_WAVELENGTHS]; /* 496  f32 residual of vergence */
+    MKL_F32 aperture_params_lo[4];            /* 560  f32 residual of aperture_params */
+    MKL_F32 asphere_lo[MKL_MAX_ASPHERE];      /* 576  f32 residual of asphere (normalised) */
+    MKL_U32 reserved3[2];                     /* 616  zero */
+};                                    /* 624 bytes */
 
 /* Size checks (sizes are also asserted in Rust). */
 #define MKL_PACKED_HEADER_SIZE 176u
-#define MKL_PACKED_SURFACE_SIZE 496u
+#define MKL_PACKED_SURFACE_SIZE 624u
 MKL_STATIC_ASSERT(sizeof(struct MklPackedHeader) == MKL_PACKED_HEADER_SIZE, "MklPackedHeader size");
 MKL_STATIC_ASSERT(sizeof(struct MklPackedSurface) == MKL_PACKED_SURFACE_SIZE, "MklPackedSurface size");
 
@@ -303,6 +315,8 @@ struct MklSagParams {
  * MKL_TRACE_RECORD) hold num_steps + 1 slots per ray: slot 0 is the input,
  * slot k + 1 the state after step k: rec_f[(slot*stride + ray)*9 + j] in the
  * MKL_TRACE_RECORD_FLOATS order and rec_u[slot*stride + ray] the status.
+ * Kernels form these indices in 64-bit arithmetic (they exceed 2^32 for
+ * large recorded batches).
  */
 #define MKL_STEP_SURFACE_MASK 0xFFFFu
 #define MKL_STEP_MODE_SHIFT 16u
@@ -317,6 +331,9 @@ struct MklSagParams {
 #define MKL_TRACE_CLIP (1u << 0)       /* apply apertures */
 #define MKL_TRACE_RADIOMETRY (1u << 1) /* unpolarised interface T/R and bulk absorption act on the weight */
 #define MKL_TRACE_RECORD (1u << 2)     /* write per-step records */
+/* An asphere search stopped by max_iterations is NOT_CONVERGED, never a MISS
+ * (set when the cap is below the reference's, which would iterate on). */
+#define MKL_TRACE_NEWTON_CAP_NOT_CONVERGED (1u << 3)
 
 /* Input planes. */
 #define MKL_TRACE_IN_X 0u

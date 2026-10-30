@@ -77,8 +77,12 @@ pub struct PackedSurface {
     pub to_next_rot_lo: [f32; 9],
     pub to_next_shift: [f32; 3],
     pub to_next_shift_lo: [f32; 3],
-    pub reserved2: u32,
+    pub paraxial_power_lo: f32,
     pub n_after_lo: [f32; MAX_WAVELENGTHS],
+    pub vergence_lo: [f32; MAX_WAVELENGTHS],
+    pub aperture_params_lo: [f32; 4],
+    pub asphere_lo: [f32; MAX_ASPHERE],
+    pub reserved3: [u32; 2],
 }
 
 /// Mirror of `struct MklPhiloxParams`.
@@ -189,8 +193,12 @@ pub fn surface_offsets() -> Vec<(&'static str, usize)> {
         ("to_next_rot_lo", o!(S, to_next_rot_lo)),
         ("to_next_shift", o!(S, to_next_shift)),
         ("to_next_shift_lo", o!(S, to_next_shift_lo)),
-        ("reserved2", o!(S, reserved2)),
+        ("paraxial_power_lo", o!(S, paraxial_power_lo)),
         ("n_after_lo", o!(S, n_after_lo)),
+        ("vergence_lo", o!(S, vergence_lo)),
+        ("aperture_params_lo", o!(S, aperture_params_lo)),
+        ("asphere_lo", o!(S, asphere_lo)),
+        ("reserved3", o!(S, reserved3)),
     ]
 }
 
@@ -228,6 +236,13 @@ fn f32_checked(x: f64, what: &str) -> MkResult<f32> {
         )));
     }
     Ok(v)
+}
+
+/// `x` as a double-float `(hi, lo)`: `hi = f32_checked(x)`, `lo` its
+/// residual (zero when subnormal).
+fn split_checked(x: f64, what: &str) -> MkResult<(f32, f32)> {
+    let hi = f32_checked(x, what)?;
+    Ok((hi, normal_or_zero((x - hi as f64) as f32)))
 }
 
 /// `v`, or a zero of the same sign if `v` is subnormal (what a flush-to-zero
@@ -362,14 +377,17 @@ impl PackedSystem {
                         }
                     };
                     p.aperture = t;
-                    p.aperture_params[0] = f32_checked(prm[0], &what("aperture"))?;
-                    p.aperture_params[1] = f32_checked(prm[1], &what("aperture"))?;
+                    for k in 0..2 {
+                        (p.aperture_params[k], p.aperture_params_lo[k]) =
+                            split_checked(prm[k], &what("aperture"))?;
+                    }
                     bounding = bounding.or(Some(a.bounding_radius()));
                 }
                 (None, Some(r)) => {
                     p.aperture = MKL_APERTURE_CIRCULAR;
                     p.flags |= MKL_SURF_APERTURE_FROM_SD;
-                    p.aperture_params[0] = f32_checked(r, &what("semi-diameter"))?;
+                    (p.aperture_params[0], p.aperture_params_lo[0]) =
+                        split_checked(r, &what("semi-diameter"))?;
                     bounding = bounding.or(Some(r));
                 }
                 (None, None) => p.aperture = MKL_APERTURE_NONE,
@@ -383,7 +401,8 @@ impl PackedSystem {
                     if *focal_length == 0.0 || focal_length.is_nan() {
                         return Err(MkError::InvalidModel(what("has zero focal length")));
                     }
-                    p.paraxial_power = f32_checked(1.0 / focal_length, &what("power"))?;
+                    (p.paraxial_power, p.paraxial_power_lo) =
+                        split_checked(1.0 / focal_length, &what("power"))?;
                 }
                 SurfaceShape::Conic { curvature, conic } => {
                     p.shape = MKL_SHAPE_CONIC;
@@ -429,7 +448,9 @@ impl PackedSystem {
                         p.num_asphere = used as u32;
                         p.asphere_inv_norm2 = 2f32.powi(-2 * e);
                         for (j, &a) in coeffs.iter().enumerate() {
-                            p.asphere[j] = (a * 2f64.powi(e * (2 * j as i32 + 4))) as f32;
+                            let v = a * 2f64.powi(e * (2 * j as i32 + 4));
+                            p.asphere[j] = v as f32;
+                            p.asphere_lo[j] = normal_or_zero((v - p.asphere[j] as f64) as f32);
                         }
                     }
                 }
@@ -517,7 +538,8 @@ impl PackedSystem {
                 p.alpha_after[k] = f32_checked(s.alpha_after[w], &what("absorption"))?;
                 if p.shape == MKL_SHAPE_PARAXIAL {
                     let v = mklight_trace::paraxial::ideal_lens_object_vergence(rs, i, w);
-                    p.vergence[k] = f32_checked(v, &what("ideal-lens object vergence"))?;
+                    (p.vergence[k], p.vergence_lo[k]) =
+                        split_checked(v, &what("ideal-lens object vergence"))?;
                 }
             }
             surfaces.push(p);
@@ -610,6 +632,7 @@ impl PackedSystem {
                 s.conic,
                 s.conic_lo,
                 s.paraxial_power,
+                s.paraxial_power_lo,
             ]
             .into_iter()
             .chain(s.asphere)
@@ -620,7 +643,10 @@ impl PackedSystem {
             .chain(s.to_next_rot_lo)
             .chain(s.to_next_shift)
             .chain(s.to_next_shift_lo)
-            .chain(s.n_after_lo);
+            .chain(s.n_after_lo)
+            .chain(s.vergence_lo)
+            .chain(s.aperture_params_lo)
+            .chain(s.asphere_lo);
             if floats.into_iter().any(|v| !v.is_finite()) {
                 return bad("non-finite parameter");
             }
