@@ -370,7 +370,7 @@ authoritative; these are the differences to align:
 
 Every wavelength-dependent geometric, wave, radiometry, ghost and stray
 analysis accepts optional `spectrum`, as do optimisation and wavelength-based
-model/material reports through the same dispatcher. The engine applies it **once**, before
+model/material reports through the same dispatcher (`run_analysis`). The engine applies it **once**, before
 material resolution or backend qualification, to a derived immutable snapshot.
 The session design is unchanged. `RunInfo.snapshot_hash` identifies that
 derived snapshot; `RunInfo.settings.spectrum` records the request. Wavelength
@@ -436,17 +436,22 @@ and definitions. Undefined values use NaN in buffers.
   `variation_x/y = magnification(H)/magnification(0) - 1`.
   These describe the entrance-pupil-to-stop map, not exit-pupil size.
   An entrance pupil at infinity has no finite physical magnification.
-* **Relative illumination map.** The same projected-solid-angle integral
-  as §2.4, evaluated independently at every x/y field. Reports RI,
-  projected solid angle (sr), and the clipped fraction of stop area.
-  Quadrature is checked for cancellation in blocks of 64 nodes.
-* **Chief ray angle.** The total incidence is against the actual image
-  sag normal (recorded by the tracer); signed x/y angles are
+* **Relative illumination map.** The projected-solid-angle integral of
+  §2.4, by the same routine and with the same default quadrature
+  (12 radial × 48 azimuthal nodes), at every x/y field, so on any field it
+  equals the radial curve. Reports RI, projected solid angle (sr), and the
+  clipped fraction of stop area. Only this map takes `radial_samples` and
+  `azimuth_samples`.
+* **Chief ray angle.** The real chief ray through the stop centre (real
+  aiming, as in §2.4, whatever the design's aiming), so it equals the
+  radial analysis's `chief_ray_angle_deg`. The total incidence is against
+  the actual image sag normal (recorded by the tracer); signed x/y angles are
   `atan2(d_x/y, abs(d_z))` relative to the image vertex frame.
   `sensor_limit:[[image_radius_mm,max_angle_deg],…]` is linearly
   interpolated with constant endpoint extrapolation. Margin = limit
-  minus incidence, negative when the sensor limit is exceeded. Both image
-  x/y heights are provided; grid mode supports asymmetric systems.
+  minus incidence, negative when the sensor limit is exceeded (NaN without
+  a limit). Only this map takes `sensor_limit`. Both image x/y heights are
+  provided; grid mode supports asymmetric systems.
 
 `glass_map` reports every loaded catalogue's glasses in library order,
 then each model glass used in the design. Coordinates are catalogue n_d,
@@ -469,7 +474,8 @@ are counterclockwise, unclosed, and retain traced sag at each hull vertex;
 they enclose the cloud and do not describe nonconvex clipping boundaries.
 
 Known-answer tests cover stop-plane ideal-lens pupil maps, CRA and sensor
-margin from geometric image height, 2-D disk view factors, catalogue/model
-spectral-line coordinates, and global transformed footprints. The engine's
-`tests/analyses.rs` runs all new entries through strict result and buffer
-schema validation.
+margin from geometric image height, 2-D disk view factors, the map against
+the radial curve and its chief-ray angle, catalogue/model spectral-line
+coordinates and markers, and global footprints against the local ones on
+the surface sag. The engine's `tests/analyses.rs` runs all new entries
+through strict result and buffer schema validation.

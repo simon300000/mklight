@@ -51,13 +51,15 @@ pub fn convex_hull(points: &[Vec3]) -> Vec<Vec3> {
     lower.extend(upper);
     lower
 }
+/// Every passing hit (records stop before a clipping surface) of the
+/// footprint's pupil pattern on every surface after the object, per field
+/// and wavelength, in the global frame, with its convex outline.
 pub fn footprint_overlay_job(
     t: &SequentialTracer,
     s: &FootprintSettings,
     ctx: &JobContext,
 ) -> MkResult<FootprintOverlay> {
     let timer = RunTimer::start();
-    ctx.check()?;
     let tracer = default_fields(t, &s.fields)?;
     let t = tracer.as_ref();
     let fields = s.fields.resolve(t.fields().len())?;
@@ -131,42 +133,31 @@ mod tests {
             .sum();
         assert!((area - 2.0).abs() < 1e-14);
     }
-}
-#[cfg(test)]
-mod global_tests {
-    use super::*;
+    /// On a centred system the global hits are the local footprint's points
+    /// lifted onto the surface sag at the vertex's global position.
     #[test]
-    fn tilted_surface_cloud_matches_recorded_trace() {
-        let mut sys = mklight_core::samples::cooke_triplet();
-        sys.surfaces[1].placement = Some(mklight_core::Placement {
-            tilt_y: 3.0,
-            ..Default::default()
-        });
-        let t = crate::tracer_for(sys).unwrap();
+    fn global_hits_are_the_local_footprint_on_the_sag() {
+        let t = crate::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
         let s = FootprintSettings {
-            rings: 2,
-            fields: crate::util::FieldSelection::Index { index: 0 },
-            wavelengths: crate::util::WavelengthSelection::Primary,
+            surface: 4,
+            rings: 3,
             ..Default::default()
         };
-        let r = footprint_overlay_job(&t, &s, &JobContext::new()).unwrap();
-        let pupil = pupil_points(s.pattern, s.rings, s.seed);
-        let mut records = Vec::new();
-        t.trace_with(
-            t.field(0),
-            t.system().primary_wavelength,
-            pupil[0][0],
-            pupil[0][1],
-            &t.options(),
-            Some(&mut records),
-        );
-        let set = &r.sets[0];
-        assert_eq!(set.surface, 1);
-        let p = t.system().surfaces[1]
-            .frame
-            .to_global_point(records[1].point);
-        assert_eq!(r.points[set.points[0]], [p.x, p.y, p.z]);
-        assert!(r.sets.iter().all(|s| s.surface > 0));
-        assert!(r.sets.iter().any(|s| s.surface == t.system().image_index()));
+        let ctx = JobContext::new();
+        let local = crate::illumination::footprint_job(&t, &s, &ctx).unwrap();
+        let o = footprint_overlay_job(&t, &s, &ctx).unwrap();
+        let surface = &t.system().surfaces[4];
+        let vertex = surface.frame.to_global_point(Vec3::ZERO);
+        let sets: Vec<_> = o.sets.iter().filter(|x| x.surface == 4).collect();
+        assert_eq!(sets.len(), local.rays.len());
+        for (set, rays) in sets.iter().zip(&local.rays) {
+            let hits = &o.points[set.points[0]..set.points[0] + set.points[1]];
+            assert_eq!(hits.len(), rays.points.len());
+            for (g, l) in hits.iter().zip(&rays.points) {
+                let sag = surface.shape.sag(l[0] * l[0] + l[1] * l[1]).unwrap();
+                assert!((g[0] - l[0]).abs() < 1e-12 && (g[1] - l[1]).abs() < 1e-12);
+                assert!((g[2] - vertex.z - sag).abs() < 1e-9);
+            }
+        }
     }
 }

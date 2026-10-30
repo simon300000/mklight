@@ -335,7 +335,7 @@ pub trait Analysis: Send + Sync {
 
     fn info(&self) -> AnalysisInfo {
         let schema =
-            spectrum::settings_schema_for(self.settings_schema(), self.category(), self.name());
+            spectrum::settings_schema(self.settings_schema(), self.category(), self.name());
         let reason = self.availability().err();
         AnalysisInfo {
             name: self.name().to_string(),
@@ -362,7 +362,12 @@ pub fn prepare(analysis: &dyn Analysis, settings: &Value) -> EngineResult<Value>
             reason,
         });
     }
-    settings::normalize(&spectrum::settings_schema(analysis), settings)
+    let schema = spectrum::settings_schema(
+        analysis.settings_schema(),
+        analysis.category(),
+        analysis.name(),
+    );
+    settings::normalize(&schema, settings)
 }
 
 /// Run `analysis` and stamp the result. `extra_warnings` (for example a
@@ -377,16 +382,18 @@ pub fn run_analysis(
     let settings = prepare(analysis, settings)?;
     let timer = RunTimer::start();
     ctx.check()?;
-    let derived = spectrum::derived(input, &settings, ctx)?;
+    // A run-local spectrum replaces the design's wavelengths; the solver
+    // sees the derived snapshot, RunInfo records the full settings.
+    let mut solver_settings = settings.clone();
+    let derived = match solver_settings
+        .as_object_mut()
+        .and_then(|o| o.remove("spectrum"))
+        .filter(|v| !v.is_null())
+    {
+        Some(v) => Some(spectrum::derived(input, v)?),
+        None => None,
+    };
     let input = derived.as_ref().unwrap_or(input);
-    let mut solver_settings = std::borrow::Cow::Borrowed(&settings);
-    if settings.get("spectrum").is_some() {
-        solver_settings
-            .to_mut()
-            .as_object_mut()
-            .unwrap()
-            .remove("spectrum");
-    }
     let out = analysis.run(input, &solver_settings, ctx)?;
     ctx.check()?;
     let mut backend = BackendReport {

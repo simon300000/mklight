@@ -1,20 +1,30 @@
-//! Space-varying incoherent image simulation. Each output tile uses a
-//! bilinearly interpolated, polychromatic PSF from a cached field grid.
-//! Inverse chief-ray mapping warps the source; projected solid angle models
-//! relative illumination. Linear FFT convolution uses halos (no wraparound).
+//! Space-varying incoherent image simulation (WAVE.md, image simulation).
+//!
+//! A square grid of normalised fields carries polychromatic PSFs, the
+//! paraxial and real image points of each PSF's reference, and the
+//! spectrally weighted relative illumination; between nodes all of them are
+//! bilinear in the field. Each output pixel is mapped back through the real
+//! mapping to its field, then through the paraxial mapping to the source,
+//! and scaled by the relative illumination. Each warped pixel then spreads
+//! with its own interpolated PSF, `out = Σ_k K_k ∗ (w_k · I)` with `w_k` the
+//! pixel's bilinear weight of node `k`. This is evaluated per tile by FFT
+//! linear convolution over a halo of the kernel radius, so tiles are exactly
+//! seamless.
 use crate::analysis::{field_pupils, wavelengths};
 use crate::fft::{Dir, fft2, next_fast_len};
 use crate::{AmplitudeModel, PolyPsfSettings, PsfNormalization, PsfTransform, PupilSettings};
 use mklight_analysis::curvature::{GridDistortionSettings, grid_distortion_job};
-use mklight_analysis::field_maps::illumination_samples;
-use mklight_core::job::RunTimer;
+use mklight_analysis::illumination::illumination_rows;
+use mklight_core::job::{Progress, RunTimer};
 use mklight_core::rng::Philox;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::{FieldPoint, SequentialTracer};
 use num_complex::Complex64;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,7 +48,8 @@ pub enum ImageSource {
         channels: usize,
         data: Vec<f64>,
     },
-    /// PNG/JPEG/PNM. RGB code values are converted from sRGB to linear light.
+    /// An 8- or 16-bit PNG file; code values are decoded as sRGB to linear
+    /// light and alpha is ignored.
     Path {
         path: String,
     },
@@ -105,15 +116,18 @@ impl Default for ImageGridSettings {
             },
             psf_size: 33,
             psf_spacing_mm: None,
-            illumination_radial: 4,
-            illumination_azimuth: 16,
+            illumination_radial: 12,
+            illumination_azimuth: 48,
         }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FieldMapping {
     pub field: [f64; 2],
+    /// Paraxial chief image point.
     pub ideal_mm: [f64; 2],
+    /// Real image point of the PSF reference (the primary chief ray unless
+    /// `pupil.reference` is the centroid): the PSF centre.
     pub real_mm: [f64; 2],
     pub relative_illumination: f64,
 }
@@ -150,11 +164,10 @@ pub fn build_psf_grid(
     s: &ImageGridSettings,
     ctx: &JobContext,
 ) -> MkResult<PsfGrid> {
-    ctx.check()?;
     if !(2..=33).contains(&s.field_grid)
         || !(s.field_extent > 0.0 && s.field_extent.is_finite())
         || !(3..=513).contains(&s.psf_size)
-        || s.psf_size % 2 == 0
+        || s.psf_size.is_multiple_of(2)
         || s.psf_spacing_mm
             .is_some_and(|x| !(x > 0.0 && x.is_finite()))
     {
@@ -169,45 +182,42 @@ pub fn build_psf_grid(
         },
         &ctx.subrange(0.0, 0.05),
     )?;
-    let mut coordinates: Vec<_> = d.points.iter().map(|p| p.field).collect();
-    coordinates.push([0.0, 0.0]);
+    let mut warnings = d.run_info.warnings;
+    if d.points
+        .iter()
+        .any(|p| p.real.iter().chain(&p.paraxial).any(|x| !x.is_finite()))
+    {
+        return Err(invalid("field grid contains an unusable chief ray"));
+    }
+    let coordinates: Vec<_> = d.points.iter().map(|p| p.field).collect();
     let wls = wavelengths(t, &Default::default())?;
+    // Irradiance Σ w_λ Ω_p,λ(H) relative to its on-axis value.
     let mut irradiance = vec![0.0; coordinates.len()];
+    let mut axial = 0.0;
     for (i, &(wl, weight)) in wls.iter().enumerate() {
-        let ri = illumination_samples(
+        let n = wls.len() as f64;
+        let (rows, omega0) = illumination_rows(
             t,
             &coordinates,
             wl,
             s.illumination_radial,
             s.illumination_azimuth,
-            &ctx.subrange(
-                0.05 + 0.15 * i as f64 / wls.len() as f64,
-                0.05 + 0.15 * (i + 1) as f64 / wls.len() as f64,
-            ),
+            &mut warnings,
+            &ctx.subrange(0.05 + 0.15 * i as f64 / n, 0.05 + 0.15 * (i + 1) as f64 / n),
         )?;
-        for (sum, row) in irradiance.iter_mut().zip(ri) {
-            *sum += weight * row[1];
+        for (sum, row) in irradiance.iter_mut().zip(rows) {
+            *sum += weight * row[0];
         }
+        axial += weight * omega0;
     }
-    let axial = *irradiance.last().unwrap();
     let mut kernels = Vec::new();
     let mut mapping = Vec::new();
-    let mut warnings = d.run_info.warnings;
     let mut spacing = s.psf_spacing_mm;
     for (i, p) in d.points.iter().enumerate() {
         ctx.check()?;
-        if p.real
-            .iter()
-            .chain(p.paraxial.iter())
-            .any(|x| !x.is_finite())
-        {
-            return Err(invalid("field grid contains an unusable chief ray"));
-        }
         let f = t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1]))?;
-        let sub = ctx.subrange(
-            0.2 + 0.8 * i as f64 / d.points.len() as f64,
-            0.2 + 0.8 * (i + 1) as f64 / d.points.len() as f64,
-        );
+        let n = d.points.len() as f64;
+        let sub = ctx.subrange(0.2 + 0.8 * i as f64 / n, 0.2 + 0.8 * (i + 1) as f64 / n);
         let pupils = field_pupils(
             t,
             &f,
@@ -216,7 +226,7 @@ pub fn build_psf_grid(
             &s.pupil,
             &sub.subrange(0.0, 0.7),
         )?;
-        warnings.extend(pupils.warnings.clone());
+        warnings.extend(pupils.warnings.iter().cloned());
         let dx = *spacing.get_or_insert_with(|| pupils.min_lambda_f() * 0.5);
         let ps = PolyPsfSettings {
             grid_size: s.psf_size,
@@ -239,7 +249,7 @@ pub fn build_psf_grid(
         mapping.push(FieldMapping {
             field: p.field,
             ideal_mm: p.paraxial,
-            real_mm: p.real,
+            real_mm: pupils.reference_mm,
             relative_illumination: irradiance[i] / axial,
         });
     }
@@ -285,38 +295,7 @@ fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
                 data: data.clone(),
             })
         }
-        ImageSource::Path { path } => {
-            let mut reader = image::ImageReader::open(path)
-                .map_err(|e| MkError::Io(e.to_string()))?
-                .with_guessed_format()
-                .map_err(|e| MkError::Io(e.to_string()))?;
-            let mut limits = image::Limits::default();
-            limits.max_image_width = Some(8192);
-            limits.max_image_height = Some(8192);
-            reader.limits(limits);
-            let img = reader
-                .decode()
-                .map_err(|e| invalid(&e.to_string()))?
-                .to_rgb32f();
-            let data = img
-                .as_raw()
-                .iter()
-                .map(|&x| {
-                    let x = x as f64;
-                    if x <= 0.04045 {
-                        x / 12.92
-                    } else {
-                        ((x + 0.055) / 1.055).powf(2.4)
-                    }
-                })
-                .collect();
-            Ok(Raster {
-                w: img.width() as usize,
-                h: img.height() as usize,
-                c: 3,
-                data,
-            })
-        }
+        ImageSource::Path { path } => read_png(path),
         ImageSource::Pattern { pattern } => {
             let [w, h] = s.size;
             let data = (0..h)
@@ -325,6 +304,58 @@ fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
             Ok(Raster { w, h, c: 1, data })
         }
     }
+}
+/// Decode an 8- or 16-bit grey or RGB PNG (alpha dropped, palettes and low
+/// bit depths expanded) from sRGB code values to linear light.
+fn read_png(path: &str) -> MkResult<Raster> {
+    let io = |e: std::io::Error| MkError::Io(format!("{path}: {e}"));
+    let bad = |e: png::DecodingError| invalid(&format!("{path}: {e}"));
+    let file = std::io::BufReader::new(std::fs::File::open(path).map_err(io)?);
+    let mut decoder = png::Decoder::new(file);
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().map_err(bad)?;
+    let mut buf = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .ok_or_else(|| invalid("PNG too large"))?
+    ];
+    let info = reader.next_frame(&mut buf).map_err(bad)?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    if w > 8192 || h > 8192 {
+        return Err(invalid("PNG larger than 8192 pixels"));
+    }
+    let (stored, c) = match info.color_type {
+        png::ColorType::Grayscale => (1, 1),
+        png::ColorType::GrayscaleAlpha => (2, 1),
+        png::ColorType::Rgb => (3, 3),
+        png::ColorType::Rgba => (4, 3),
+        png::ColorType::Indexed => return Err(invalid("unexpanded PNG palette")),
+    };
+    let code: Vec<f64> = match info.bit_depth {
+        png::BitDepth::Sixteen => buf[..info.buffer_size()]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&b| u16::from_be_bytes(b) as f64 / 65535.0)
+            .collect(),
+        _ => buf[..info.buffer_size()]
+            .iter()
+            .map(|&b| b as f64 / 255.0)
+            .collect(),
+    };
+    let data = code
+        .chunks_exact(stored)
+        .flat_map(|px| px[..c].iter())
+        .map(|&x| {
+            if x <= 0.04045 {
+                x / 12.92
+            } else {
+                ((x + 0.055) / 1.055).powf(2.4)
+            }
+        })
+        .collect();
+    Ok(Raster { w, h, c, data })
 }
 fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 {
     let (u, v) = ((x as f64 + 0.5) / w as f64, (y as f64 + 0.5) / h as f64);
@@ -391,165 +422,155 @@ fn raster_sample(r: &Raster, u: f64, v: f64, c: usize, mono: bool) -> f64 {
         + b * ((1.0 - a) * value(ix, (iy + 1).min(r.h - 1))
             + a * value((ix + 1).min(r.w - 1), (iy + 1).min(r.h - 1)))
 }
-/// Bilinear field-grid interpolation, clamped to the edge cell.
-fn weights(n: usize, uv: [f64; 2]) -> [(usize, f64); 4] {
+/// Grid cell `(ix, iy)` of field coordinates `uv` (0…1 across the grid)
+/// and the fractions `(a, b)` within it, clamped to the edge cells.
+fn cell(n: usize, uv: [f64; 2]) -> (usize, usize, f64, f64) {
     let x = uv[0].clamp(0.0, 1.0) * (n - 1) as f64;
     let y = uv[1].clamp(0.0, 1.0) * (n - 1) as f64;
     let ix = (x.floor() as usize).min(n - 2);
     let iy = (y.floor() as usize).min(n - 2);
-    let (a, b) = (x - ix as f64, y - iy as f64);
+    (ix, iy, x - ix as f64, y - iy as f64)
+}
+/// Bilinear weights of the four grid nodes around `uv`.
+fn weights(n: usize, uv: [f64; 2]) -> [(usize, f64); 4] {
+    let (ix, iy, a, b) = cell(n, uv);
+    let k = iy * n + ix;
     [
-        (iy * n + ix, (1.0 - a) * (1.0 - b)),
-        (iy * n + ix + 1, a * (1.0 - b)),
-        ((iy + 1) * n + ix, (1.0 - a) * b),
-        ((iy + 1) * n + ix + 1, a * b),
+        (k, (1.0 - a) * (1.0 - b)),
+        (k + 1, a * (1.0 - b)),
+        (k + n, (1.0 - a) * b),
+        (k + n + 1, a * b),
     ]
 }
 fn map(grid: &PsfGrid, uv: [f64; 2], real: bool) -> [f64; 2] {
     let mut out = [0.0; 2];
     for (k, w) in weights(grid.size, uv) {
-        let p = if real {
-            grid.mapping[k].real_mm
-        } else {
-            grid.mapping[k].ideal_mm
-        };
-        for j in 0..2 {
-            out[j] += w * p[j];
-        }
+        let m = &grid.mapping[k];
+        let p = if real { m.real_mm } else { m.ideal_mm };
+        out[0] += w * p[0];
+        out[1] += w * p[1];
     }
     out
 }
-/// Invert the interpolated chief-ray mapping. A singular mapping
-/// cannot image a unique source pixel and yields a black pixel.
+/// Invert the interpolated real mapping by Newton's method. `None` when the
+/// target lies outside the mapped field or the mapping is singular: no
+/// source pixel images there, and the pixel stays black.
 pub fn inverse_field(grid: &PsfGrid, target: [f64; 2]) -> Option<[f64; 2]> {
+    let n = grid.size;
     let lo = grid.mapping[0].ideal_mm;
-    let hi = grid.mapping.last()?.ideal_mm;
-    let mut uv = [
-        ((target[0] - lo[0]) / (hi[0] - lo[0])).clamp(0.0, 1.0),
-        ((target[1] - lo[1]) / (hi[1] - lo[1])).clamp(0.0, 1.0),
-    ];
+    let hi = grid.mapping[n * n - 1].ideal_mm;
+    let mut uv = [0, 1].map(|j| ((target[j] - lo[j]) / (hi[j] - lo[j])).clamp(0.0, 1.0));
     for _ in 0..16 {
         let p = map(grid, uv, true);
         let r = [p[0] - target[0], p[1] - target[1]];
         if r[0].hypot(r[1]) < 1e-9 {
-            return (uv.iter().all(|x| *x >= -1e-9 && *x <= 1.0 + 1e-9)).then_some(uv);
+            return Some(uv);
         }
-        let n = grid.size;
-        let scale = (n - 1) as f64;
-        let x = uv[0] * scale;
-        let y = uv[1] * scale;
-        let ix = (x.floor() as usize).min(n - 2);
-        let iy = (y.floor() as usize).min(n - 2);
-        let (a, b) = (x - ix as f64, y - iy as f64);
-        let q = [
-            iy * n + ix,
-            iy * n + ix + 1,
-            (iy + 1) * n + ix,
-            (iy + 1) * n + ix + 1,
-        ]
-        .map(|k| grid.mapping[k].real_mm);
-        let mut j = [[0.0; 2]; 2];
-        for axis in 0..2 {
-            j[axis][0] =
-                scale * ((1.0 - b) * (q[1][axis] - q[0][axis]) + b * (q[3][axis] - q[2][axis]));
-            j[axis][1] =
-                scale * ((1.0 - a) * (q[2][axis] - q[0][axis]) + a * (q[3][axis] - q[1][axis]));
-        }
-        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        let (ix, iy, a, b) = cell(n, uv);
+        let k = iy * n + ix;
+        let q = [k, k + 1, k + n, k + n + 1].map(|k| grid.mapping[k].real_mm);
+        let s = (n - 1) as f64;
+        // ∂p/∂u and ∂p/∂v of the bilinear cell.
+        let du = [0, 1].map(|j| s * ((1.0 - b) * (q[1][j] - q[0][j]) + b * (q[3][j] - q[2][j])));
+        let dv = [0, 1].map(|j| s * ((1.0 - a) * (q[2][j] - q[0][j]) + a * (q[3][j] - q[1][j])));
+        let det = du[0] * dv[1] - dv[0] * du[1];
         if det.abs() < 1e-20 {
             return None;
         }
-        uv[0] -= (j[1][1] * r[0] - j[0][1] * r[1]) / det;
-        uv[1] -= (-j[1][0] * r[0] + j[0][0] * r[1]) / det;
-        if uv.iter().any(|x| *x < -1e-9 || *x > 1.0 + 1e-9) {
+        uv[0] -= (dv[1] * r[0] - dv[0] * r[1]) / det;
+        uv[1] -= (du[0] * r[1] - du[1] * r[0]) / det;
+        if uv.iter().any(|x| !(-1e-9..=1.0 + 1e-9).contains(x)) {
             return None;
         }
         uv = uv.map(|x| x.clamp(0.0, 1.0));
     }
     None
 }
-/// Deposit a physical PSF and optional rectangular pixel aperture onto the
-/// output lattice, conserving discrete energy. Aperture uses 4x4 midpoint
-/// quadrature, adequate when its width is comparable to one output pixel.
+/// Half-width (output pixels) of a kernel that holds every node's PSF and
+/// the pixel aperture.
+fn kernel_radius(grid: &PsfGrid, pitch: [f64; 2], aperture: Option<[f64; 2]>) -> usize {
+    let radius = grid.psf_size as f64 * 0.5 * grid.spacing_mm
+        + aperture.map_or(0.0, |a| a[0].max(a[1]) * 0.5);
+    (radius / pitch[0].min(pitch[1])).ceil() as usize + 1
+}
+/// Deposit node `node`'s PSF, with the optional rectangular pixel aperture
+/// (4×4 midpoint quadrature, adequate up to a few output pixels), bilinearly
+/// onto a `(2r+1)²` output-lattice kernel, conserving discrete energy.
 fn kernel(
     grid: &PsfGrid,
-    uv: [f64; 2],
+    node: usize,
     pitch: [f64; 2],
     aperture: Option<[f64; 2]>,
-) -> (Vec<f64>, usize) {
-    let radius = grid.psf_size as f64 * 0.5 * grid.spacing_mm;
-    let ap = aperture.unwrap_or([0.0; 2]);
-    let r = ((radius + ap[0].max(ap[1]) * 0.5) / pitch[0].min(pitch[1])).ceil() as usize + 1;
+    r: usize,
+) -> Vec<f64> {
     let n = 2 * r + 1;
     let mut out = vec![0.0; n * n];
-    let count = if aperture.is_some() { 4 } else { 1 };
-    for (k, w) in weights(grid.size, uv) {
-        for y in 0..grid.psf_size {
-            for x in 0..grid.psf_size {
-                let value = grid.kernels[k][y * grid.psf_size + x] * w / (count * count) as f64;
-                for sy in 0..count {
-                    for sx in 0..count {
-                        let px = ((x as f64 - (grid.psf_size / 2) as f64) * grid.spacing_mm
-                            + ap[0] * ((sx as f64 + 0.5) / count as f64 - 0.5))
-                            / pitch[0]
-                            + r as f64;
-                        let py = ((y as f64 - (grid.psf_size / 2) as f64) * grid.spacing_mm
-                            + ap[1] * ((sy as f64 + 0.5) / count as f64 - 0.5))
-                            / pitch[1]
-                            + r as f64;
-                        let (ix, iy) = (px.floor() as usize, py.floor() as usize);
-                        let (a, b) = (px - ix as f64, py - iy as f64);
-                        for (dx, dy, v) in [
-                            (0, 0, (1.0 - a) * (1.0 - b)),
-                            (1, 0, a * (1.0 - b)),
-                            (0, 1, (1.0 - a) * b),
-                            (1, 1, a * b),
-                        ] {
-                            if ix + dx < n && iy + dy < n {
-                                out[(iy + dy) * n + ix + dx] += value * v;
-                            }
-                        }
-                    }
+    let (count, ap) = aperture.map_or((1, [0.0; 2]), |a| (4, a));
+    let m = grid.psf_size;
+    let half = (m / 2) as f64;
+    // Kernel coordinate of PSF sample `i`, aperture sub-sample `s`, axis `j`.
+    let at = |i: usize, s: usize, j: usize| {
+        ((i as f64 - half) * grid.spacing_mm + ap[j] * ((s as f64 + 0.5) / count as f64 - 0.5))
+            / pitch[j]
+            + r as f64
+    };
+    for y in 0..m {
+        for x in 0..m {
+            let v = grid.kernels[node][y * m + x] / (count * count) as f64;
+            for sy in 0..count {
+                for sx in 0..count {
+                    let (px, py) = (at(x, sx, 0), at(y, sy, 1));
+                    let (ix, iy) = (px.floor() as usize, py.floor() as usize);
+                    let (a, b) = (px - ix as f64, py - iy as f64);
+                    out[iy * n + ix] += v * (1.0 - a) * (1.0 - b);
+                    out[iy * n + ix + 1] += v * a * (1.0 - b);
+                    out[(iy + 1) * n + ix] += v * (1.0 - a) * b;
+                    out[(iy + 1) * n + ix + 1] += v * a * b;
                 }
             }
         }
     }
-    (out, n)
+    out
 }
-/// Linear convolution of one haloed tile; zero padding prevents cyclic wrap.
+/// Linear convolution of `w × h` planes with one `k × k` kernel (centred),
+/// zero padded so nothing wraps.
 fn convolve(
-    data: &[f64],
+    planes: &[Vec<f64>],
     w: usize,
     h: usize,
     kernel: &[f64],
     k: usize,
     ctx: &JobContext,
-) -> MkResult<Vec<f64>> {
+) -> MkResult<Vec<Vec<f64>>> {
     let n = next_fast_len(w.max(h) + k - 1);
-    let mut a = vec![Complex64::default(); n * n];
-    let mut b = a.clone();
-    for y in 0..h {
-        for x in 0..w {
-            a[y * n + x].re = data[y * w + x];
-        }
-    }
+    let mut b = vec![Complex64::default(); n * n];
     for y in 0..k {
         for x in 0..k {
             b[y * n + x].re = kernel[y * k + x];
         }
     }
-    fft2(&mut a, n, Dir::Forward, h, &ctx.subrange(0.0, 0.3))?;
-    fft2(&mut b, n, Dir::Forward, k, &ctx.subrange(0.3, 0.6))?;
-    for (x, y) in a.iter_mut().zip(b) {
-        *x *= y;
-    }
-    fft2(&mut a, n, Dir::Inverse, n, &ctx.subrange(0.6, 1.0))?;
-    Ok((0..h)
-        .flat_map(|y| {
-            let a = &a;
-            (0..w).map(move |x| a[(y + k / 2) * n + x + k / 2].re / (n * n) as f64)
+    fft2(&mut b, n, Dir::Forward, k, ctx)?;
+    planes
+        .iter()
+        .map(|data| {
+            let mut a = vec![Complex64::default(); n * n];
+            for y in 0..h {
+                for x in 0..w {
+                    a[y * n + x].re = data[y * w + x];
+                }
+            }
+            fft2(&mut a, n, Dir::Forward, h, ctx)?;
+            for (x, y) in a.iter_mut().zip(&b) {
+                *x *= y;
+            }
+            fft2(&mut a, n, Dir::Inverse, n, ctx)?;
+            let scale = 1.0 / (n * n) as f64;
+            Ok((0..h)
+                .flat_map(|y| (0..w).map(move |x| (y, x)))
+                .map(|(y, x)| a[(y + k / 2) * n + x + k / 2].re * scale)
+                .collect())
         })
-        .collect())
+        .collect()
 }
 fn normal(rng: &mut Philox) -> f64 {
     (-2.0 * rng.uniform().ln()).sqrt() * (std::f64::consts::TAU * rng.uniform()).cos()
@@ -602,7 +623,6 @@ pub fn image_simulation_job(
     ctx: &JobContext,
 ) -> MkResult<ImageSimulationResult> {
     let timer = RunTimer::start();
-    ctx.check()?;
     if s.size.iter().any(|n| !(2..=4096).contains(n))
         || !(4..=512).contains(&s.tile_size)
         || !(s.read_noise_sigma >= 0.0 && s.read_noise_sigma.is_finite())
@@ -644,72 +664,94 @@ pub fn image_simulation_job(
             "PSF exceeds 1024 output pixels; enlarge field or reduce PSF window",
         ));
     }
+    // Each pixel's field coordinates and relatively illuminated source value.
+    let mut uvs = vec![None; w * h];
     let mut warped = vec![0.0; w * h * c];
     warped
         .par_chunks_mut(w * c)
+        .zip(uvs.par_chunks_mut(w))
         .enumerate()
-        .try_for_each(|(y, row)| -> MkResult<()> {
+        .try_for_each(|(y, (row, uv_row))| -> MkResult<()> {
             ctx.check()?;
             for x in 0..w {
                 let target = [
                     lo[0] + (x as f64 + 0.5) * pitch[0],
                     lo[1] + (y as f64 + 0.5) * pitch[1],
                 ];
-                if let Some(uv) = inverse_field(&grid, target) {
-                    let ideal = map(&grid, uv, false);
-                    let src = [
-                        (ideal[0] - lo[0]) / (hi[0] - lo[0]),
-                        (ideal[1] - lo[1]) / (hi[1] - lo[1]),
-                    ];
-                    let ri: f64 = weights(grid.size, uv)
-                        .iter()
-                        .map(|&(k, v)| v * grid.mapping[k].relative_illumination)
-                        .sum();
-                    for ch in 0..c {
-                        row[x * c + ch] =
-                            raster_sample(&raster, src[0], src[1], ch, s.monochrome) * ri;
-                    }
+                let Some(uv) = inverse_field(&grid, target) else {
+                    continue;
+                };
+                uv_row[x] = Some(uv);
+                let ideal = map(&grid, uv, false);
+                let src = [0, 1].map(|j| (ideal[j] - lo[j]) / (hi[j] - lo[j]));
+                let ri: f64 = weights(grid.size, uv)
+                    .iter()
+                    .map(|&(k, v)| v * grid.mapping[k].relative_illumination)
+                    .sum();
+                for ch in 0..c {
+                    row[x * c + ch] = raster_sample(&raster, src[0], src[1], ch, s.monochrome) * ri;
                 }
             }
             Ok(())
         })?;
     ctx.report(0.72, "FFT tiles");
+    let r = kernel_radius(&grid, pitch, s.detector_aperture_mm);
     let tile = s.tile_size;
-    let nx = w.div_ceil(tile);
-    let ny = h.div_ceil(tile);
-    let tiles: Vec<_> = (0..nx * ny)
+    let (nx, ny) = (w.div_ceil(tile), h.div_ceil(tile));
+    // Tiles report their own progress; the FFTs only check cancellation.
+    let quiet = JobContext::with(ctx.cancel.clone(), Progress::default());
+    let finished = AtomicUsize::new(0);
+    let tiles = (0..nx * ny)
         .into_par_iter()
         .map(|i| -> MkResult<_> {
             ctx.check()?;
             let (x0, y0) = ((i % nx) * tile, (i / nx) * tile);
             let (tw, th) = (tile.min(w - x0), tile.min(h - y0));
-            let target = [
-                lo[0] + (x0 as f64 + tw as f64 * 0.5) * pitch[0],
-                lo[1] + (y0 as f64 + th as f64 * 0.5) * pitch[1],
-            ];
-            let uv = inverse_field(&grid, target).unwrap_or([0.5, 0.5]);
-            let (kernel, k) = kernel(&grid, uv, pitch, s.detector_aperture_mm);
-            let halo = k / 2;
-            let (hw, hh) = (tw + 2 * halo, th + 2 * halo);
-            let mut out = vec![0.0; tw * th * c];
-            for ch in 0..c {
-                let mut data = vec![0.0; hw * hh];
-                for y in 0..hh {
-                    for x in 0..hw {
-                        let sx = x0 as isize + x as isize - halo as isize;
-                        let sy = y0 as isize + y as isize - halo as isize;
-                        if sx >= 0 && sy >= 0 && sx < w as isize && sy < h as isize {
-                            data[y * hw + x] = warped[(sy as usize * w + sx as usize) * c + ch];
-                        }
-                    }
-                }
-                let blurred = convolve(&data, hw, hh, &kernel, k, &ctx.subrange(0.72, 0.97))?;
-                for y in 0..th {
-                    for x in 0..tw {
-                        out[(y * tw + x) * c + ch] = blurred[(y + halo) * hw + x + halo].max(0.0);
+            let (hw, hh) = (tw + 2 * r, th + 2 * r);
+            let sources: Vec<Option<usize>> = (0..hw * hh)
+                .map(|j| {
+                    let sx = (x0 + j % hw).checked_sub(r)?;
+                    let sy = (y0 + j / hw).checked_sub(r)?;
+                    (sx < w && sy < h).then_some(sy * w + sx)
+                })
+                .collect();
+            // Bilinear weight planes of the PSF nodes the haloed sources use.
+            let mut nodes: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+            for (j, p) in sources.iter().enumerate() {
+                let Some(uv) = p.and_then(|p| uvs[p]) else {
+                    continue;
+                };
+                for (node, wt) in weights(grid.size, uv) {
+                    if wt > 0.0 {
+                        nodes.entry(node).or_insert_with(|| vec![0.0; hw * hh])[j] = wt;
                     }
                 }
             }
+            let mut out = vec![0.0; tw * th * c];
+            for (node, wts) in nodes {
+                let planes: Vec<Vec<f64>> = (0..c)
+                    .map(|ch| {
+                        sources
+                            .iter()
+                            .zip(&wts)
+                            .map(|(p, wt)| p.map_or(0.0, |p| wt * warped[p * c + ch]))
+                            .collect()
+                    })
+                    .collect();
+                let kernel = kernel(&grid, node, pitch, s.detector_aperture_mm, r);
+                let blurred = convolve(&planes, hw, hh, &kernel, 2 * r + 1, &quiet)?;
+                for (ch, b) in blurred.iter().enumerate() {
+                    for y in 0..th {
+                        for x in 0..tw {
+                            out[(y * tw + x) * c + ch] += b[(y + r) * hw + x + r];
+                        }
+                    }
+                }
+            }
+            // FFT round-off can leave tiny negative values.
+            out.iter_mut().for_each(|v| *v = v.max(0.0));
+            let done = finished.fetch_add(1, Ordering::Relaxed) + 1;
+            ctx.report(0.72 + 0.25 * done as f64 / (nx * ny) as f64, "FFT tiles");
             Ok((x0, y0, tw, th, out))
         })
         .collect::<MkResult<Vec<_>>>()?;
@@ -720,11 +762,14 @@ pub fn image_simulation_job(
                 .copy_from_slice(&data[y * tw * c..(y + 1) * tw * c]);
         }
     }
+    let noisy = s.full_well_electrons.is_some() || s.read_noise_sigma > 0.0;
     image
         .par_chunks_mut(w * c)
         .enumerate()
+        .filter(|_| noisy)
         .try_for_each(|(y, row)| -> MkResult<()> {
             ctx.check()?;
+            // One counter-based stream per sample: independent of threads.
             for (i, v) in row.iter_mut().enumerate() {
                 let mut rng = Philox::new(s.seed, (y * w * c + i) as u64);
                 if let Some(well) = s.full_well_electrons {
@@ -792,7 +837,16 @@ mod tests {
         let (w, h, k) = (17, 13, 5);
         let data: Vec<_> = (0..w * h).map(|i| (i as f64 * 0.37).sin()).collect();
         let kernel: Vec<_> = (0..k * k).map(|i| 1.0 / (i + 1) as f64).collect();
-        let out = convolve(&data, w, h, &kernel, k, &JobContext::new()).unwrap();
+        let out = convolve(
+            std::slice::from_ref(&data),
+            w,
+            h,
+            &kernel,
+            k,
+            &JobContext::new(),
+        )
+        .unwrap();
+        let out = &out[0];
         for y in 0..h {
             for x in 0..w {
                 let mut expected = 0.0;
@@ -851,7 +905,8 @@ mod tests {
             ..Default::default()
         };
         let result = image_simulation_job(&t, &s, Some(grid.clone()), &JobContext::new()).unwrap();
-        let (k, ks) = kernel(&grid, [0.5, 0.5], result.pixel_size_mm, None);
+        let r = kernel_radius(&grid, result.pixel_size_mm, None);
+        let (k, ks) = (kernel(&grid, 4, result.pixel_size_mm, None, r), 2 * r + 1);
         for y in 0..ks {
             for x in 0..ks {
                 let image = result.image[(n / 2 + y - ks / 2) * n + n / 2 + x - ks / 2];
@@ -981,5 +1036,93 @@ mod tests {
         let mut a = Philox::new(5, 9);
         let mut b = Philox::new(5, 9);
         assert_eq!(normal(&mut a), normal(&mut b));
+    }
+    fn cooke_grid(
+        reference: crate::ReferencePoint,
+    ) -> (SequentialTracer, ImageGridSettings, Arc<PsfGrid>) {
+        let t = mklight_analysis::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
+        let s = ImageGridSettings {
+            pupil: PupilSettings {
+                grid: 32,
+                rays: 33,
+                reference,
+                ..Default::default()
+            },
+            psf_size: 33,
+            ..Default::default()
+        };
+        let grid = Arc::new(build_psf_grid(&t, &s, &JobContext::new()).unwrap());
+        (t, s, grid)
+    }
+    /// Each source pixel spreads with its own interpolated PSF, so the tile
+    /// size only partitions the work. Tile-constant PSFs used to leave 2%
+    /// steps at tile edges of a Siemens star on the Cooke triplet.
+    #[test]
+    fn tiles_are_seamless() {
+        let (t, optics, grid) = cooke_grid(Default::default());
+        let run = |tile_size| {
+            let s = ImageSimulationSettings {
+                source: ImageSource::Pattern {
+                    pattern: TestPattern::SiemensStar,
+                },
+                size: [96, 96],
+                optics: optics.clone(),
+                tile_size,
+                ..Default::default()
+            };
+            image_simulation_job(&t, &s, Some(grid.clone()), &JobContext::new())
+                .unwrap()
+                .image
+        };
+        let reference = run(128);
+        for tile in [4, 16, 40] {
+            let d = run(tile)
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
+            assert!(d < 1e-12, "tile {tile}: {d}");
+        }
+    }
+    /// PSFs are centred on their reference point (`FieldPupils`), so that is
+    /// where the mapping must put them. A centroid-referenced PSF used to be
+    /// placed at the chief ray, 1.5 µm off at the Cooke triplet's corner.
+    #[test]
+    fn psf_centre_is_its_reference_point() {
+        let (t, s, grid) = cooke_grid(crate::ReferencePoint::Centroid);
+        let m = &grid.mapping[8];
+        let f = t.prepare_field(FieldPoint::normalized(1.0, 1.0)).unwrap();
+        let wls = wavelengths(&t, &Default::default()).unwrap();
+        let pupils = field_pupils(&t, &f, "", &wls, &s.pupil, &JobContext::new()).unwrap();
+        assert_eq!(m.real_mm, pupils.reference_mm);
+        let chief = t.chief(&f, t.system().primary_wavelength).ray.pos;
+        assert!((m.real_mm[1] - chief.y).abs() > 1e-3);
+    }
+    #[test]
+    fn png_sources_decode_srgb_to_linear() {
+        let path = std::env::temp_dir().join(format!("mklight-im-{}.png", std::process::id()));
+        let decode = |color, depth, data: &[u8]| {
+            let mut e = png::Encoder::new(std::fs::File::create(&path).unwrap(), 2, 1);
+            e.set_color(color);
+            e.set_depth(depth);
+            e.write_header().unwrap().write_image_data(data).unwrap();
+            let r = read_png(path.to_str().unwrap()).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            r
+        };
+        let rgba = [0, 128, 255, 9, 255, 0, 10, 9];
+        let r = decode(png::ColorType::Rgba, png::BitDepth::Eight, &rgba);
+        assert_eq!((r.w, r.h, r.c), (2, 1, 3));
+        let expected = [0.0, 0.2158605, 1.0, 1.0, 0.0, 0.0030353];
+        for (v, e) in r.data.iter().zip(expected) {
+            assert!((v - e).abs() < 1e-6, "{v} {e}");
+        }
+        let r = decode(
+            png::ColorType::Grayscale,
+            png::BitDepth::Sixteen,
+            &[128, 0, 255, 255],
+        );
+        assert_eq!(r.c, 1);
+        assert!((r.data[0] - 0.2140482).abs() < 1e-6 && r.data[1] == 1.0);
     }
 }

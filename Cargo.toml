@@ -40,6 +40,7 @@ blake3 = "1"
 rayon = "1"
 rustfft = "6"
 num-complex = "0.4"
+png = "0.18"
 approx = "0.5"
 bytemuck = { version = "1.25", features = ["derive"] }
 

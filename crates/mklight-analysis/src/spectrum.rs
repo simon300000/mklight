@@ -1,9 +1,16 @@
-//! Run-local spectral quadrature. Wavelengths are µm, weights relative energy.
-//! Piecewise-linear responses are integrated exactly; equal-weight nodes are
-//! bin energy centroids, uniform nodes use integrated Voronoi-bin weights.
+//! Run-local spectra (ANALYSIS.md, custom spectrum): an explicit list, the
+//! CIE photopic or scotopic luminous efficiency, a blackbody or a sensor
+//! response, sampled into weighted wavelengths (µm, relative energy).
+//!
+//! A response is piecewise linear and integrated exactly over the sampling
+//! range. `equal_weight` splits the range into `N` bins of equal energy and
+//! places each node at its bin's energy centroid (equal weights); `uniform`
+//! spaces `N` nodes evenly over the range, endpoints included, each weighted
+//! by the energy of its Voronoi cell. The primary wavelength is the node
+//! nearest the energy-weighted mean wavelength.
 use mklight_core::math::KahanSum;
 use mklight_core::model::{Wavelength, WavelengthSet};
-use mklight_core::{JobContext, MkError, MkResult};
+use mklight_core::{MkError, MkResult};
 use serde::{Deserialize, Serialize};
 
 #[path = "spectral_tables.rs"]
@@ -65,19 +72,16 @@ fn invalid(s: &str) -> MkError {
 }
 
 impl Spectrum {
-    /// Primary = sample closest to the weighted mean wavelength; ties choose
-    /// the first input sample. Explicit weights and their ordering are kept.
+    /// The sampled wavelength set. The primary is the sample closest to the
+    /// energy-weighted mean wavelength (the first on ties). Explicit weights
+    /// and their order are kept; the design validation (`Snapshot::new`)
+    /// checks the wavelengths and weights themselves.
     pub fn wavelengths(&self) -> MkResult<WavelengthSet> {
-        self.wavelengths_job(&JobContext::new())
-    }
-
-    pub fn wavelengths_job(&self, ctx: &JobContext) -> MkResult<WavelengthSet> {
-        ctx.check()?;
         let wavelengths = match self {
             Self::Explicit { wavelengths } => wavelengths.clone(),
-            Self::Photopic { sampling } => sample(&tables::photopic(), sampling, ctx)?,
-            Self::Scotopic { sampling } => sample(&tables::scotopic(), sampling, ctx)?,
-            Self::Sensor { table, sampling } => sample(table, sampling, ctx)?,
+            Self::Photopic { sampling } => sample(&tables::photopic(), sampling)?,
+            Self::Scotopic { sampling } => sample(&tables::scotopic(), sampling)?,
+            Self::Sensor { table, sampling } => sample(table, sampling)?,
             Self::Blackbody {
                 temperature_k: t,
                 sampling,
@@ -86,9 +90,11 @@ impl Spectrum {
                 if !(*t > 0.0 && t.is_finite()) {
                     return Err(invalid("temperature must be positive"));
                 }
-                // Planck spectral radiance B_lambda; c2 = hc/k from exact SI
-                // h, c and k (BIPM SI Brochure, 9th ed., 2019). Log evaluation
-                // avoids overflow for cold emitters and short wavelengths.
+                // Planck spectral radiance B_λ ∝ λ⁻⁵/(exp(c₂/λT) − 1), with
+                // c₂ = hc/k from the exact SI h, c and k (BIPM SI Brochure,
+                // 9th ed., 2019), tabulated finely enough that its
+                // piecewise-linear integral is exact to ~1e-6. Logarithms
+                // avoid overflow for cold emitters and short wavelengths.
                 let [a, b] = sampling.range_um;
                 let logs: Vec<_> = (0..=4096)
                     .map(|i| {
@@ -100,38 +106,18 @@ impl Spectrum {
                     .collect();
                 let peak = logs.iter().map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
                 let table: Vec<_> = logs.iter().map(|&(l, v)| [l, (v - peak).exp()]).collect();
-                sample(&table, sampling, ctx)?
+                sample(&table, sampling)?
             }
         };
-        if wavelengths.is_empty()
-            || wavelengths.iter().any(|w| {
-                !(w.um > 0.0 && w.um.is_finite() && w.weight >= 0.0 && w.weight.is_finite())
-            })
-        {
-            return Err(invalid(
-                "need positive wavelengths and nonnegative finite weights",
-            ));
-        }
-        let total = wavelengths
-            .iter()
-            .map(|w| w.weight)
-            .collect::<KahanSum>()
-            .value();
-        if !(total > 0.0 && total.is_finite()) {
-            return Err(invalid("zero or overflowing energy"));
-        }
-        let mean = wavelengths
-            .iter()
-            .map(|w| w.um * (w.weight / total))
-            .collect::<KahanSum>()
-            .value();
+        let total: f64 = wavelengths.iter().map(|w| w.weight).sum();
+        let mean: f64 = wavelengths.iter().map(|w| w.um * w.weight / total).sum();
         let primary = (0..wavelengths.len())
             .min_by(|&a, &b| {
                 (wavelengths[a].um - mean)
                     .abs()
                     .total_cmp(&(wavelengths[b].um - mean).abs())
             })
-            .unwrap();
+            .unwrap_or(0);
         Ok(WavelengthSet {
             wavelengths,
             primary,
@@ -174,7 +160,7 @@ fn integral(table: &[[f64; 2]], a: f64, b: f64) -> (f64, f64) {
     }
     (energy.value(), moment.value())
 }
-fn sample(table: &[[f64; 2]], s: &SpectralSampling, ctx: &JobContext) -> MkResult<Vec<Wavelength>> {
+fn sample(table: &[[f64; 2]], s: &SpectralSampling) -> MkResult<Vec<Wavelength>> {
     validate_sampling(s)?;
     if table.len() < 2
         || table
@@ -198,29 +184,23 @@ fn sample(table: &[[f64; 2]], s: &SpectralSampling, ctx: &JobContext) -> MkResul
     let mut out = Vec::with_capacity(n);
     match s.spacing {
         Sampling::Uniform => {
+            // Nodes on [a, b] (the centre for one node), each weighted by
+            // the energy of its Voronoi cell.
+            let d = (b - a) / (n.max(2) - 1) as f64;
             for i in 0..n {
-                ctx.check()?;
                 let um = if n == 1 {
                     (a + b) * 0.5
                 } else {
-                    a + (b - a) * i as f64 / (n - 1) as f64
+                    a + d * i as f64
                 };
-                let d = if n == 1 {
-                    b - a
-                } else {
-                    (b - a) / (n - 1) as f64
-                };
-                let (e, _) = integral(table, (um - d * 0.5).max(a), (um + d * 0.5).min(b));
-                out.push(Wavelength {
-                    um,
-                    weight: if n == 1 { total } else { e },
-                });
+                let half = if n == 1 { (b - a) * 0.5 } else { d * 0.5 };
+                let (e, _) = integral(table, (um - half).max(a), (um + half).min(b));
+                out.push(Wavelength { um, weight: e });
             }
         }
         Sampling::EqualWeight => {
             let mut left = a;
             for i in 0..n {
-                ctx.check()?;
                 let target = total * (i + 1) as f64 / n as f64;
                 let mut remaining = target;
                 let mut right = b;
@@ -269,6 +249,8 @@ mod tests {
     fn cie_integral_and_peak() {
         let table = tables::photopic();
         assert_eq!(response(&table, 0.555), 1.0);
+        assert_eq!(response(&table, 0.510), 0.503);
+        assert_eq!(response(&table, 0.610), 0.503);
         assert!((integral(&table, 0.36, 0.83).0 - 0.1068569).abs() < 2e-7);
         for spacing in [Sampling::Uniform, Sampling::EqualWeight] {
             let s = SpectralSampling {
@@ -297,5 +279,33 @@ mod tests {
         .unwrap();
         assert!((ws.wavelengths[0].um - 0.5).abs() < 1e-14);
         assert!((ws.wavelengths[0].weight - 0.1).abs() < 1e-14);
+    }
+    /// Planck's law between nodes, and the Wien peak 2897.77 µm·K / T.
+    #[test]
+    fn blackbody_follows_planck_and_wien() {
+        for t in [3000.0, 5000.0] {
+            let s = SpectralSampling {
+                samples: 451,
+                range_um: [0.3, 1.2],
+                spacing: Sampling::Uniform,
+            };
+            let ws = Spectrum::Blackbody {
+                temperature_k: t,
+                sampling: s,
+            }
+            .wavelengths()
+            .unwrap()
+            .wavelengths;
+            let planck = |l: f64| l.powi(-5) / (14387.768775039337 / (l * t)).exp_m1();
+            let (a, b) = (&ws[50], &ws[300]);
+            let ratio = (a.weight / b.weight) / (planck(a.um) / planck(b.um));
+            // Cell integrals differ from point values by O(d²B″/24B).
+            assert!((ratio - 1.0).abs() < 1e-4, "{ratio}");
+            let peak = ws[1..450]
+                .iter()
+                .max_by(|a, b| a.weight.total_cmp(&b.weight))
+                .unwrap();
+            assert!((peak.um - 2897.771955 / t).abs() < 0.002, "{}", peak.um);
+        }
     }
 }

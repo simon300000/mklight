@@ -1,10 +1,11 @@
-//! Engine adapters for signed field maps, catalogue maps and image synthesis.
+//! Engine adapters for the 2-D field maps, the glass map and image
+//! simulation.
 use super::geometric::{crate_json, output, parse};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
 use crate::error::EngineResult;
-use mklight_analysis::{field_maps as fm, footprint_overlay as fp, glass_map as gm};
+use mklight_analysis::{field_maps as fm, glass_map as gm};
 use mklight_core::JobContext;
 use mklight_trace::SequentialTracer;
 use mklight_wave::image_simulation as im;
@@ -30,14 +31,24 @@ impl Analysis for FieldMap {
         "Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns."
     }
     fn settings_schema(&self) -> Value {
-        settings_from_default::<fm::FieldMapSettings>(json!({
+        let mut schema = settings_from_default::<fm::FieldMapSettings>(json!({
             "grid":{"description":"[nx,ny], 1..101 samples per axis; one sample is on axis."},
             "extent":{"description":"Positive normalised field half-widths [x,y]."},
-            "mode":{"enum":["grid","x","y"]},
+            "mode":{"enum":["grid","x","y"],"description":"grid: nx×ny map; x / y: sweep along one field axis."},
             "wavelength":{"type":["integer","null"],"minimum":0,"description":"Null selects the run spectrum's primary wavelength."},
             "radial_samples":{"minimum":1,"maximum":512},"azimuth_samples":{"minimum":4,"maximum":4096},
-            "sensor_limit":{"description":"CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit."}
-        }))
+            "sensor_limit":{"description":"Increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit."}
+        }));
+        // Each map publishes only the settings it reads.
+        let props = schema["properties"].as_object_mut().unwrap();
+        if !matches!(self.0, fm::FieldAnalysis::RelativeIllumination) {
+            props.remove("radial_samples");
+            props.remove("azimuth_samples");
+        }
+        if !matches!(self.0, fm::FieldAnalysis::ChiefRayAngle) {
+            props.remove("sensor_limit");
+        }
+        schema
     }
     fn result_schema(&self) -> Value {
         result(
@@ -229,7 +240,7 @@ impl Analysis for ImageSimulation {
     }
     fn settings_schema(&self) -> Value {
         settings_from_default::<im::ImageSimulationSettings>(json!({
-            "source":{"description":"{kind:pattern,pattern:grid|siemens_star|slanted_edge|text_chart}, {kind:buffer,width,height,channels:1|3,data:[linear samples]}, or {kind:path,path:...} (PNG/JPEG/PNM, sRGB decoded)."},
+            "source":{"description":"{kind:pattern,pattern:grid|siemens_star|slanted_edge|text_chart}, {kind:buffer,width,height,channels:1|3,data:[linear samples]}, or {kind:path,path:...} (8- or 16-bit grey or RGB PNG, sRGB decoded, alpha ignored)."},
             "size":{"description":"Output [width,height], 2..4096 each."},
             "optics":settings_from_default::<im::ImageGridSettings>(json!({
                 "field_grid":{"minimum":2,"maximum":33},"field_extent":{"exclusiveMinimum":0.0},
@@ -272,7 +283,11 @@ impl Analysis for ImageSimulation {
                             ),
                             (
                                 "real_mm",
-                                tuple(num("mm", ""), 2, "Real primary chief image."),
+                                tuple(
+                                    num("mm", ""),
+                                    2,
+                                    "Real image point of the PSF reference (primary chief by default): the PSF centre.",
+                                ),
                             ),
                             (
                                 "relative_illumination",
@@ -343,97 +358,6 @@ impl Analysis for ImageSimulation {
     }
 }
 
-/// Preserve the existing local footprint result and add every surface's
-/// global cloud and outline, rather than changing the old buffer meaning.
-struct Footprint3d(Arc<dyn Analysis>);
-impl Analysis for Footprint3d {
-    fn name(&self) -> &str {
-        "footprint"
-    }
-    fn title(&self) -> &str {
-        self.0.title()
-    }
-    fn category(&self) -> &str {
-        self.0.category()
-    }
-    fn description(&self) -> &str {
-        "Local selected-surface footprint plus global hits and convex outlines on every surface, per field and wavelength."
-    }
-    fn settings_schema(&self) -> Value {
-        self.0.settings_schema()
-    }
-    fn seed(&self, s: &Value) -> Option<u64> {
-        self.0.seed(s)
-    }
-    fn result_schema(&self) -> Value {
-        let mut schema = self.0.result_schema();
-        schema["properties"]["overlays"] = arr(
-            obj(&[
-                ("surface", int("")),
-                ("field", int("")),
-                ("wavelength", int("")),
-                (
-                    "points",
-                    tuple(int(""), 2, "[offset,count] in global_points."),
-                ),
-                (
-                    "outline",
-                    tuple(
-                        int(""),
-                        2,
-                        "[offset,count] in global_outlines; counterclockwise and unclosed in local x/y.",
-                    ),
-                ),
-            ]),
-            "All surfaces except the object; passing hits before downstream clipping.",
-        );
-        schema["required"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("overlays"));
-        for (name, desc) in [
-            (
-                "global_points",
-                "Global hit points, including surface sag and placement.",
-            ),
-            (
-                "global_outlines",
-                "Convex hull vertices per surface/field/wavelength; not a vignetting boundary for nonconvex pupils.",
-            ),
-        ] {
-            schema["x-buffers"].as_array_mut().unwrap().push(buffer(
-                name,
-                "f64",
-                &["N", "3"],
-                "mm",
-                desc,
-            ));
-        }
-        schema
-    }
-    fn run(
-        &self,
-        input: &AnalysisInput<'_>,
-        s: &Value,
-        ctx: &JobContext,
-    ) -> EngineResult<AnalysisOutput> {
-        let mut out = self.0.run(input, s, &ctx.subrange(0.0, 0.4))?;
-        let t = SequentialTracer::new(input.resolved()?)?;
-        let r = fp::footprint_overlay_job(&t, &parse(s)?, &ctx.subrange(0.4, 1.0))?;
-        out.json["overlays"] = serde_json::to_value(r.sets)?;
-        out.buffers.push(Buffer::new(
-            "global_points",
-            vec![r.points.len(), 3],
-            BufferData::F64(r.points.into_iter().flatten().collect()),
-        ));
-        out.buffers.push(Buffer::new(
-            "global_outlines",
-            vec![r.outlines.len(), 3],
-            BufferData::F64(r.outlines.into_iter().flatten().collect()),
-        ));
-        Ok(out)
-    }
-}
 pub fn register_all(r: &mut AnalysisRegistry) {
     for kind in [
         fm::FieldAnalysis::PupilAberration,
@@ -444,90 +368,4 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     }
     r.register(Arc::new(GlassMap));
     r.register(Arc::new(ImageSimulation::default()));
-    let footprint = r.get("footprint").unwrap();
-    r.register(Arc::new(Footprint3d(footprint)));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::project::Project;
-    use crate::{AnalysisRequest, Engine, EngineConfig};
-    use mklight_core::samples;
-    fn check(engine: &Engine, result: &super::super::AnalysisResult) {
-        let schema = engine
-            .analysis(&result.run_info.analysis)
-            .unwrap()
-            .result_schema();
-        validate(&schema, &result.json, true).unwrap();
-        let desc: Vec<_> = result
-            .buffers
-            .iter()
-            .map(|b| {
-                (
-                    b.name.clone(),
-                    serde_json::to_value(b.dtype())
-                        .unwrap()
-                        .as_str()
-                        .unwrap()
-                        .to_owned(),
-                    b.shape.len(),
-                )
-            })
-            .collect();
-        check_buffers(&schema, &desc).unwrap();
-    }
-    #[test]
-    fn asymmetric_maps_and_sweeps_keep_both_image_axes() {
-        let e = Engine::new(EngineConfig::default());
-        let session = e
-            .session_from_project(Project::new(samples::anamorphic_adapter()))
-            .unwrap();
-        for name in [
-            "pupil_aberration",
-            "relative_illumination_map",
-            "chief_ray_angle",
-        ] {
-            for mode in ["grid", "x", "y"] {
-                let r=session.run_analysis(&AnalysisRequest::new(name,json!({"grid":[3,3],"mode":mode,"spectrum":{"kind":"explicit","wavelengths":[{"um":0.55,"weight":1.0}]}})),&JobContext::new()).unwrap();
-                check(&e, &r);
-                let b = r.buffers.iter().find(|b| b.name == "image_mm").unwrap();
-                assert_eq!(
-                    b.shape,
-                    match mode {
-                        "x" => vec![1, 3, 2],
-                        "y" => vec![3, 1, 2],
-                        _ => vec![3, 3, 2],
-                    }
-                );
-            }
-        }
-    }
-    #[test]
-    fn cached_image_grid_preserves_noisy_rgb_results_and_library_identity() {
-        let e = Engine::new(EngineConfig::default());
-        let mut session = e
-            .session_from_project(Project::new(samples::cooke_triplet()))
-            .unwrap();
-        let settings = json!({"size":[16,16],"monochrome":false,"source":{"kind":"buffer","width":2,"height":2,"channels":3,"data":[1,0,0,0,1,0,0,0,1,1,1,1]},"optics":{"field_grid":2,"field_extent":0.25,"pupil":{"grid":16,"rays":17},"psf_size":17},"read_noise_sigma":0.01,"full_well_electrons":2000.0,"seed":12});
-        let run = |s: &crate::Session| {
-            s.run_analysis(
-                &AnalysisRequest::new("image_simulation", settings.clone()),
-                &JobContext::new(),
-            )
-            .unwrap()
-        };
-        let a = run(&session);
-        let b = run(&session);
-        assert_eq!(a.buffers, b.buffers);
-        check(&e, &a);
-        assert_eq!(a.run_info.seed, Some(12));
-        assert_eq!(a.buffers[0].shape, vec![16, 16, 3]);
-        let mut cat = mklight_core::materials::builtin::catalog();
-        cat.name = "OTHER".into();
-        session.add_catalog(cat, None);
-        let c = run(&session);
-        assert_ne!(a.library_hash, c.library_hash);
-        assert_eq!(a.buffers, c.buffers);
-    }
 }

@@ -2,11 +2,9 @@
 use super::*;
 use mklight_analysis::spectrum::{SpectralSampling, Spectrum};
 
-pub(super) fn settings_schema(a: &dyn Analysis) -> Value {
-    settings_schema_for(a.settings_schema(), a.category(), a.name())
-}
-
-pub(super) fn settings_schema_for(mut schema: Value, category: &str, name: &str) -> Value {
+/// `schema` with the optional `spectrum` setting when the analysis uses
+/// wavelengths.
+pub(super) fn settings_schema(mut schema: Value, category: &str, name: &str) -> Value {
     if matches!(
         category,
         "geometric" | "wave" | "ghost" | "stray" | "radiometry" | "polarization" | "optimization"
@@ -35,29 +33,28 @@ pub(super) fn settings_schema_for(mut schema: Value, category: &str, name: &str)
     schema
 }
 
+/// The input with the design's wavelengths replaced by `spectrum` (a
+/// derived snapshot, so caches and `RunInfo.snapshot_hash` see it).
 pub(super) fn derived<'a>(
     input: &AnalysisInput<'a>,
-    settings: &Value,
-    ctx: &JobContext,
-) -> EngineResult<Option<AnalysisInput<'a>>> {
-    let Some(value) = settings.get("spectrum").filter(|v| !v.is_null()) else {
-        return Ok(None);
-    };
-    let spectrum: Spectrum = serde_json::from_value(value.clone())
+    spectrum: Value,
+) -> EngineResult<AnalysisInput<'a>> {
+    let spectrum: Spectrum = serde_json::from_value(spectrum)
         .map_err(|e| EngineError::InvalidSettings(format!("spectrum: {e}")))?;
     let mut system = input.snapshot.system().clone();
-    system.wavelengths = spectrum.wavelengths_job(ctx)?;
-    let snapshot = Snapshot::new(system)?;
-    Ok(Some(
-        AnalysisInput::new(snapshot, input.library.clone(), input.backend.clone())
-            .with_device(input.device.clone())
-            .with_selection(
-                input.requested_backend.clone(),
-                input.selection_note.clone(),
-            )
-            .with_stop_token(input.stop.clone())
-            .with_library_hash(input.library_hash().to_string()),
-    ))
+    system.wavelengths = spectrum.wavelengths()?;
+    Ok(AnalysisInput::new(
+        Snapshot::new(system)?,
+        input.library.clone(),
+        input.backend.clone(),
+    )
+    .with_device(input.device.clone())
+    .with_selection(
+        input.requested_backend.clone(),
+        input.selection_note.clone(),
+    )
+    .with_stop_token(input.stop.clone())
+    .with_library_hash(input.library_hash().to_string()))
 }
 
 #[cfg(test)]

@@ -1,14 +1,22 @@
-//! Full signed Cartesian field maps, with no symmetry shortcuts.
-//! Pupil aberration measures the paraxially launched chief's real stop-height
-//! error. Its Jacobian is d(stop x,y)/d(entrance-pupil x,y), evaluated about
-//! that chief; column norms give the two pupil magnifications.
-use crate::util::{check_count, gauss_legendre_01, run_info, wavelength_or_primary};
+//! Signed Cartesian field maps (or x / y sweeps), with no symmetry shortcuts.
+//!
+//! * Pupil aberration: the chief ray launched without aiming, at the centre
+//!   of the paraxial entrance pupil, misses the stop centre by the stop-height
+//!   error (mm, stop frame). The pupil magnifications `m_x`, `m_y` are the
+//!   column norms of `∂(stop x, y)/∂(entrance-pupil x, y)` about that ray
+//!   (central differences); their variation is relative to the on-axis
+//!   value. An aberration-free pupil has zero error and no variation.
+//! * Relative illumination: the radial analysis's projected-solid-angle
+//!   integral (`illumination` module docs), on a 2-D grid of fields.
+//! * Chief-ray angle: the real chief ray (through the stop centre, whatever
+//!   the design's aiming) against the image-surface normal, its x / y
+//!   direction angles, and an optional sensor CRA limit with the margin.
+use crate::illumination::{illumination_rows, real_aimed};
+use crate::util::{check_count, run_info, wavelength_or_primary};
 use mklight_core::job::RunTimer;
 use mklight_core::model::RayAiming;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
-use mklight_trace::{
-    FieldPoint, ObjectSource, PreparedField, SequentialTracer, TraceOptions, TracerSettings,
-};
+use mklight_trace::{FieldPoint, PreparedField, SequentialTracer, TraceOptions, TracerSettings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -39,8 +47,8 @@ impl Default for FieldMapSettings {
             extent: [1.0, 1.0],
             mode: MapMode::Grid,
             wavelength: None,
-            radial_samples: 4,
-            azimuth_samples: 16,
+            radial_samples: 12,
+            azimuth_samples: 48,
             sensor_limit: Vec::new(),
         }
     }
@@ -145,82 +153,10 @@ impl FieldAnalysis {
             .collect()
     }
 }
-/// Spectrally monochromatic irradiance probe; this reuses the exact same
-/// projected-solid-angle quadrature as the radial analysis.
-pub fn illumination_samples(
-    t: &SequentialTracer,
-    coordinates: &[[f64; 2]],
-    wl: usize,
-    radial: usize,
-    azimuth: usize,
-    ctx: &JobContext,
-) -> MkResult<Vec<[f64; 3]>> {
-    check_count("radial samples", radial, 1, 512)?;
-    check_count("azimuth samples", azimuth, 4, 4096)?;
-    let rt = SequentialTracer::with_settings(
-        t.system_arc(),
-        TracerSettings {
-            aiming: Some(RayAiming::Real { tolerance: 1e-12 }),
-            ..*t.settings()
-        },
-    )?;
-    let (r, w) = gauss_legendre_01(radial);
-    let dp = std::f64::consts::TAU / azimuth as f64;
-    let nodes: Vec<_> = r
-        .iter()
-        .zip(&w)
-        .flat_map(|(&r, &w)| {
-            (0..azimuth).map(move |i| {
-                let (s, c) = (dp * i as f64).sin_cos();
-                (r * c, r * s, w * r * dp)
-            })
-        })
-        .collect();
-    let f = rt.prepare_field(FieldPoint::normalized(0.0, 1.0))?;
-    let scale = match f.source {
-        ObjectSource::Direction { dir } => dir.x.hypot(dir.y) / dir.z.abs(),
-        ObjectSource::Point { point } => point.x.hypot(point.y),
-    }
-    .max(1e-3);
-    let probe = |p: [f64; 2]| -> MkResult<[f64; 2]> {
-        let f = rt.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
-        let (mut omega, mut area, mut total) = (0.0, 0.0, 0.0);
-        for chunk in nodes.chunks(64) {
-            ctx.check()?;
-            let Some((r, _)) = crate::illumination::integrate_field(&rt, &f, wl, chunk, scale)
-            else {
-                return Ok([f64::NAN; 2]);
-            };
-            let weight: f64 = chunk.iter().map(|p| p.2).sum();
-            omega += r[0];
-            area += r[1] * weight;
-            total += weight;
-        }
-        Ok([omega, 1.0 - area / total])
-    };
-    let axial = probe([0.0, 0.0])?[0];
-    if !(axial > 0.0) {
-        return Err(MkError::Numerical(
-            "on-axis beam has no projected solid angle".into(),
-        ));
-    }
-    coordinates
-        .iter()
-        .enumerate()
-        .map(|(i, &p)| {
-            ctx.check()?;
-            let r = probe(p)?;
-            ctx.report(
-                (i + 1) as f64 / coordinates.len() as f64,
-                "illumination map",
-            );
-            Ok([r[0] / axial, r[0], r[1]])
-        })
-        .collect()
-}
+/// Un-aimed chief at the stop `[x, y]` and the stop/entrance-pupil
+/// magnifications `[m_x, m_y]` (module docs), from central differences.
 fn pupil(t: &SequentialTracer, f: &PreparedField, wl: usize) -> Option<[f64; 4]> {
-    let stop = t.system().system().stop;
-    let opts = TraceOptions::unclipped().to_surface(stop);
+    let opts = TraceOptions::unclipped().to_surface(t.system().system().stop);
     let hit = |x, y| {
         let r = t.trace(f, wl, x, y, &opts);
         r.status.is_ok().then_some(r.ray.pos)
@@ -236,6 +172,7 @@ fn pupil(t: &SequentialTracer, f: &PreparedField, wl: usize) -> Option<[f64; 4]>
         (ya.x - yb.x).hypot(ya.y - yb.y) / scale,
     ])
 }
+
 pub fn field_map_job(
     t: &SequentialTracer,
     kind: FieldAnalysis,
@@ -243,7 +180,6 @@ pub fn field_map_job(
     ctx: &JobContext,
 ) -> MkResult<FieldMapResult> {
     let timer = RunTimer::start();
-    ctx.check()?;
     for &n in &s.grid {
         check_count("field grid", n, 1, 101)?;
     }
@@ -254,7 +190,7 @@ pub fn field_map_job(
     }
     if s.sensor_limit
         .iter()
-        .any(|p| !(p[0] >= 0.0 && p[0].is_finite() && p[1] >= 0.0 && p[1] <= 90.0))
+        .any(|p| !(p[0] >= 0.0 && p[0].is_finite() && (0.0..=90.0).contains(&p[1])))
         || s.sensor_limit.windows(2).any(|w| w[0][0] >= w[1][0])
     {
         return Err(MkError::InvalidParam(
@@ -284,38 +220,17 @@ pub fn field_map_job(
             })
         })
         .collect();
-    let raw = SequentialTracer::with_settings(
-        t.system_arc(),
-        TracerSettings {
-            aiming: Some(RayAiming::Off),
-            ..*t.settings()
-        },
-    )?;
-    let axial = pupil(
-        &raw,
-        &raw.prepare_field(FieldPoint::normalized(0.0, 0.0))?,
-        wl,
-    );
-    let ri = if matches!(kind, FieldAnalysis::RelativeIllumination) {
-        illumination_samples(
-            t,
-            &coords,
-            wl,
-            s.radial_samples,
-            s.azimuth_samples,
-            &ctx.subrange(0.0, 0.9),
-        )?
-    } else {
-        Vec::new()
-    };
-    let mut images = Vec::new();
-    let mut values = Vec::new();
     let mut warnings = Vec::new();
-    for (i, &p) in coords.iter().enumerate() {
+    // The chief ray passes the stop centre (real aiming), as in the radial
+    // relative-illumination analysis, whatever the design's aiming.
+    let rt = real_aimed(t)?;
+    let mut images = Vec::with_capacity(coords.len());
+    let mut chiefs = Vec::with_capacity(coords.len());
+    for &p in &coords {
         ctx.check()?;
-        let f = t.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
+        let f = rt.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
         let mut records = Vec::new();
-        let c = t.trace_with(
+        let c = rt.trace_with(
             &f,
             wl,
             0.0,
@@ -323,60 +238,76 @@ pub fn field_map_job(
             &TraceOptions::unclipped(),
             Some(&mut records),
         );
-        let ok = c.status.is_ok();
-        images.push(if ok {
-            [c.ray.pos.x, c.ray.pos.y]
+        if c.status.is_ok() {
+            images.push([c.ray.pos.x, c.ray.pos.y]);
+            chiefs.push(Some((c.ray, records.last().unwrap().cos_incidence)));
         } else {
-            [f64::NAN; 2]
-        });
-        if !ok {
             warnings.push(format!("field ({},{}): chief ray failed", p[0], p[1]));
+            images.push([f64::NAN; 2]);
+            chiefs.push(None);
         }
-        match kind {
-            FieldAnalysis::RelativeIllumination => values.extend(ri[i]),
-            FieldAnalysis::PupilAberration => {
+    }
+    let values = match kind {
+        FieldAnalysis::RelativeIllumination => {
+            let (rows, omega0) = illumination_rows(
+                t,
+                &coords,
+                wl,
+                s.radial_samples,
+                s.azimuth_samples,
+                &mut warnings,
+                ctx,
+            )?;
+            rows.iter()
+                .flat_map(|r| [r[0] / omega0, r[0], 1.0 - r[1]])
+                .collect()
+        }
+        FieldAnalysis::PupilAberration => {
+            let raw = SequentialTracer::with_settings(
+                t.system_arc(),
+                TracerSettings {
+                    aiming: Some(RayAiming::Off),
+                    ..*t.settings()
+                },
+            )?;
+            let probe = |p: [f64; 2]| -> MkResult<_> {
                 let f = raw.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
-                match (pupil(&raw, &f, wl), axial) {
-                    (Some(v), Some(a)) => values.extend([
-                        v[0],
-                        v[1],
-                        v[2],
-                        v[3],
-                        v[2] / a[2] - 1.0,
-                        v[3] / a[3] - 1.0,
-                    ]),
-                    _ => values.extend([f64::NAN; 6]),
-                }
+                Ok(pupil(&raw, &f, wl))
+            };
+            let axial = probe([0.0; 2])?;
+            let mut values = Vec::with_capacity(6 * coords.len());
+            for &p in &coords {
+                ctx.check()?;
+                values.extend(match (probe(p)?, axial) {
+                    (Some(v), Some(a)) => {
+                        [v[0], v[1], v[2], v[3], v[2] / a[2] - 1.0, v[3] / a[3] - 1.0]
+                    }
+                    _ => [f64::NAN; 6],
+                });
             }
-            FieldAnalysis::ChiefRayAngle => {
-                if ok {
-                    let d = c.ray.dir;
-                    let angle = records
-                        .last()
-                        .unwrap()
-                        .cos_incidence
-                        .clamp(0.0, 1.0)
-                        .acos()
-                        .to_degrees();
-                    let radius = c.ray.pos.x.hypot(c.ray.pos.y);
-                    let limit = interpolate_limit(&s.sensor_limit, radius);
-                    values.extend([
+            values
+        }
+        FieldAnalysis::ChiefRayAngle => chiefs
+            .iter()
+            .zip(&images)
+            .flat_map(|(chief, p)| match chief {
+                Some((ray, cos_incidence)) => {
+                    let angle = cos_incidence.clamp(0.0, 1.0).acos().to_degrees();
+                    let limit = interpolate_limit(&s.sensor_limit, p[0].hypot(p[1]));
+                    let d = ray.dir;
+                    [
                         angle,
                         d.x.atan2(d.z.abs()).to_degrees(),
                         d.y.atan2(d.z.abs()).to_degrees(),
                         limit,
                         limit - angle,
-                    ]);
-                } else {
-                    values.extend([f64::NAN; 5]);
+                    ]
                 }
-            }
-        }
-        ctx.report(
-            0.9 + 0.1 * (i + 1) as f64 / coords.len() as f64,
-            kind.name(),
-        );
-    }
+                None => [f64::NAN; 5],
+            })
+            .collect(),
+    };
+    ctx.report(1.0, kind.name());
     Ok(FieldMapResult {
         shape,
         wavelength: wl,
@@ -387,19 +318,20 @@ pub fn field_map_job(
         run_info: run_info(timer, t, kind.name(), s, None, warnings),
     })
 }
+/// Linear interpolation, held constant outside the table; NaN when empty.
 fn interpolate_limit(table: &[[f64; 2]], r: f64) -> f64 {
-    if table.is_empty() {
+    let (Some(first), Some(last)) = (table.first(), table.last()) else {
         return f64::NAN;
+    };
+    if r <= first[0] {
+        return first[1];
     }
-    if r <= table[0][0] {
-        return table[0][1];
-    }
-    for p in table.windows(2) {
-        if r <= p[1][0] {
-            return p[0][1] + (p[1][1] - p[0][1]) * (r - p[0][0]) / (p[1][0] - p[0][0]);
-        }
-    }
-    table.last().unwrap()[1]
+    table
+        .windows(2)
+        .find(|p| r <= p[1][0])
+        .map_or(last[1], |p| {
+            p[0][1] + (p[1][1] - p[0][1]) * (r - p[0][0]) / (p[1][0] - p[0][0])
+        })
 }
 
 #[cfg(test)]
@@ -463,8 +395,6 @@ mod tests {
         let t = ideal();
         let s = FieldMapSettings {
             grid: [3, 3],
-            radial_samples: 12,
-            azimuth_samples: 48,
             ..Default::default()
         };
         let r = field_map_job(
@@ -500,5 +430,42 @@ mod tests {
             ),
             Err(MkError::Cancelled)
         ));
+    }
+    /// The map and the radial curve share one quadrature, and the CRA is the
+    /// real (stop-centred) chief ray even when the design does not aim rays:
+    /// the Cooke triplet's un-aimed chief misses the stop centre by 0.23 mm
+    /// at full field, which used to tilt the reported CRA by 0.33°.
+    #[test]
+    fn maps_match_the_radial_curve_and_real_chief() {
+        let t = crate::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
+        assert!(matches!(t.aiming(), RayAiming::Off));
+        let radial = crate::illumination::relative_illumination(
+            &t,
+            &crate::illumination::RelativeIlluminationSettings {
+                field_samples: 3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let s = FieldMapSettings {
+            grid: [5, 5],
+            ..Default::default()
+        };
+        let ri = field_map_job(
+            &t,
+            FieldAnalysis::RelativeIllumination,
+            &s,
+            &JobContext::new(),
+        )
+        .unwrap();
+        let cra = field_map_job(&t, FieldAnalysis::ChiefRayAngle, &s, &JobContext::new()).unwrap();
+        let node = |p: [f64; 2]| ri.field_coordinates.iter().position(|&q| q == p).unwrap();
+        for (k, &[_, h]) in radial.field_coordinates.iter().enumerate() {
+            for i in [node([0.0, h]), node([h, 0.0]), node([0.0, -h])] {
+                assert!((ri.values[3 * i] - radial.relative_illumination[k]).abs() < 1e-12);
+                assert!((cra.values[5 * i] - radial.chief_ray_angle_deg[k]).abs() < 1e-9);
+            }
+        }
+        assert!(radial.chief_ray_angle_deg[2] > 19.3);
     }
 }

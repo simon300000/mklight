@@ -491,3 +491,52 @@ fn extended_first_order_and_mesh_contracts() {
     assert_eq!(r.json["status"], "not_applicable");
     assert!(r.json["reason"].as_str().unwrap().contains("real-ray"));
 }
+
+/// The 2-D field maps keep both image axes on an anamorphic system, in all
+/// three modes, and publish only the settings each one reads.
+#[test]
+fn field_maps_on_an_anamorphic_system() {
+    let e = engine();
+    let s = session(&e, samples::anamorphic_adapter());
+    for name in [
+        "pupil_aberration",
+        "relative_illumination_map",
+        "chief_ray_angle",
+    ] {
+        let props = &e.analysis(name).unwrap().info().settings_schema["properties"];
+        assert_eq!(
+            props.get("sensor_limit").is_some(),
+            name == "chief_ray_angle"
+        );
+        assert_eq!(
+            props.get("radial_samples").is_some(),
+            name == "relative_illumination_map"
+        );
+        for (mode, shape) in [("grid", [3, 3]), ("x", [1, 3]), ("y", [3, 1])] {
+            let r = run(&s, name, json!({"grid": [3, 3], "mode": mode}));
+            check_schema(&e, &r);
+            let b = r.buffers.iter().find(|b| b.name == "image_mm").unwrap();
+            assert_eq!(b.shape, vec![shape[0], shape[1], 2], "{name} {mode}");
+        }
+    }
+}
+
+/// RGB with seeded shot and read noise; a second run (from the cached PSF
+/// grid) repeats it exactly.
+#[test]
+fn image_simulation_repeats_seeded_rgb_runs() {
+    let e = engine();
+    let s = session(&e, samples::cooke_triplet());
+    let settings = json!({"size": [16, 16], "monochrome": false,
+        "source": {"kind": "buffer", "width": 2, "height": 2, "channels": 3,
+                   "data": [1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1]},
+        "optics": {"field_grid": 2, "field_extent": 0.25, "pupil": {"grid": 16, "rays": 17},
+                   "psf_size": 17},
+        "read_noise_sigma": 0.01, "full_well_electrons": 2000.0, "seed": 12});
+    let a = run(&s, "image_simulation", settings.clone());
+    let b = run(&s, "image_simulation", settings);
+    check_schema(&e, &a);
+    assert_eq!(a.buffers, b.buffers);
+    assert_eq!(a.run_info.seed, Some(12));
+    assert_eq!(a.buffers[0].shape, vec![16, 16, 3]);
+}

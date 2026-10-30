@@ -597,12 +597,10 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `azimuth_samples` | integer | `16` |  | 4 … 4096 |
 | `extent` | array | `[1.0,1.0]` |  | Positive normalised field half-widths [x,y]. |
 | `grid` | array | `[5,5]` |  | [nx,ny], 1..101 samples per axis; one sample is on axis. |
-| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"` |
-| `radial_samples` | integer | `4` |  | 1 … 512 |
-| `sensor_limit` | array | `[]` |  | CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
+| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"`; grid: nx×ny map; x / y: sweep along one field axis. |
+| `sensor_limit` | array | `[]` |  | Increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; Null selects the run spectrum's primary wavelength. |
 
@@ -784,7 +782,7 @@ Result (`result` in the envelope):
 
 Category `geometric`, result version 1.
 
-Local selected-surface footprint plus global hits and convex outlines on every surface, per field and wavelength.
+Hit points of a pupil pattern on one surface (local frame), with the points the surface's aperture clips, plus global hit points and convex outlines on every surface for a 3-D overlay. Points in typed buffers.
 
 Settings:
 
@@ -806,10 +804,10 @@ Result (`result` in the envelope):
 | `extent` | array<nf> | mm | [x_min, x_max, y_min, y_max] over all passing hits. |
 | `field_values` | array<[nf; 2]> |  | Field coordinates in system units, including analysis-local default fields. |
 | `max_radius` | nf | mm |  |
-| `overlays` | array<object> |  | All surfaces except the object; passing hits before downstream clipping. |
+| `overlays` | array<object> |  | One per (surface after the object, field, wavelength): the hits of rays that pass that surface, whether or not a later surface clips them. |
 | `overlays[].field` | integer |  | ≥ 0 |
-| `overlays[].outline` | [integer; 2] |  | [offset,count] in global_outlines; counterclockwise and unclosed in local x/y. |
-| `overlays[].points` | [integer; 2] |  | [offset,count] in global_points. |
+| `overlays[].outline` | [integer; 2] |  | [offset, count] in `global_outlines`. |
+| `overlays[].points` | [integer; 2] |  | [offset, count] in `global_points`. |
 | `overlays[].surface` | integer |  | ≥ 0 |
 | `overlays[].wavelength` | integer |  | ≥ 0 |
 | `semi_diameter` | nf | mm | Clear semi-diameter (fixed, stop or traced). |
@@ -828,8 +826,8 @@ Buffers:
 |---|---|---|---|---|
 | `points` | f64 | [N, 2] | mm | Hit points (local frame) of rays that pass. |
 | `clipped` | f64 | [M, 2] | mm | Hit points of rays the aperture clips. |
-| `global_points` | f64 | [N, 3] | mm | Global hit points, including surface sag and placement. |
-| `global_outlines` | f64 | [N, 3] | mm | Convex hull vertices per surface/field/wavelength; not a vignetting boundary for nonconvex pupils. |
+| `global_points` | f64 | [P, 3] | mm | Global hit points (surface sag and placement included). |
+| `global_outlines` | f64 | [Q, 3] | mm | Convex hull of each overlay's hits in the surface's local x/y, counterclockwise and unclosed, as global points; not a vignetting boundary of nonconvex beams. |
 
 ### `geometric_mtf` — Geometric MTF
 
@@ -1074,12 +1072,9 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `azimuth_samples` | integer | `16` |  | 4 … 4096 |
 | `extent` | array | `[1.0,1.0]` |  | Positive normalised field half-widths [x,y]. |
 | `grid` | array | `[5,5]` |  | [nx,ny], 1..101 samples per axis; one sample is on axis. |
-| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"` |
-| `radial_samples` | integer | `4` |  | 1 … 512 |
-| `sensor_limit` | array | `[]` |  | CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
+| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"`; grid: nx×ny map; x / y: sweep along one field axis. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; Null selects the run spectrum's primary wavelength. |
 
@@ -1221,12 +1216,11 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `azimuth_samples` | integer | `16` |  | 4 … 4096 |
+| `azimuth_samples` | integer | `48` |  | 4 … 4096 |
 | `extent` | array | `[1.0,1.0]` |  | Positive normalised field half-widths [x,y]. |
 | `grid` | array | `[5,5]` |  | [nx,ny], 1..101 samples per axis; one sample is on axis. |
-| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"` |
-| `radial_samples` | integer | `4` |  | 1 … 512 |
-| `sensor_limit` | array | `[]` |  | CRA only: increasing [image radius mm, maximum incidence degrees], linearly interpolated, held at endpoints. Empty means no limit. |
+| `mode` | string | `"grid"` |  | one of `"grid"`, `"x"`, `"y"`; grid: nx×ny map; x / y: sweep along one field axis. |
+| `radial_samples` | integer | `12` |  | 1 … 512 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; Null selects the run spectrum's primary wavelength. |
 
@@ -1736,11 +1730,11 @@ Settings:
 | `detector_aperture_mm` | array\|null | `null` | mm | Optional positive [x,y] active aperture, at most four output pixels; 4x4 quadrature. |
 | `full_well_electrons` | number\|null | `null` |  | ≤ 1000000000000.0; > 0.0 |
 | `monochrome` | boolean | `true` |  |  |
-| `optics` | object | `{"field_extent":1.0,"field_grid":3,"illumination_azimuth":16,"illumination_radial":4,"psf_size":33,"psf_spacing_mm":null,"pupil":{"amplitude":"radiometric","grid":32,"rays":33,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}}` |  |  |
+| `optics` | object | `{"field_extent":1.0,"field_grid":3,"illumination_azimuth":48,"illumination_radial":12,"psf_size":33,"psf_spacing_mm":null,"pupil":{"amplitude":"radiometric","grid":32,"rays":33,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}}` |  |  |
 | `read_noise_sigma` | number | `0.0` |  | ≥ 0.0 |
 | `seed` | integer | `1` |  | ≥ 0 |
 | `size` | array | `[64,64]` |  | Output [width,height], 2..4096 each. |
-| `source` | object | `{"kind":"pattern","pattern":"grid"}` |  | {kind:pattern,pattern:grid\|siemens_star\|slanted_edge\|text_chart}, {kind:buffer,width,height,channels:1\|3,data:[linear samples]}, or {kind:path,path:...} (PNG/JPEG/PNM, sRGB decoded). |
+| `source` | object | `{"kind":"pattern","pattern":"grid"}` |  | {kind:pattern,pattern:grid\|siemens_star\|slanted_edge\|text_chart}, {kind:buffer,width,height,channels:1\|3,data:[linear samples]}, or {kind:path,path:...} (8- or 16-bit grey or RGB PNG, sRGB decoded, alpha ignored). |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `tile_size` | integer | `32` |  | 4 … 512 |
 
@@ -1753,7 +1747,7 @@ Result (`result` in the envelope):
 | `field_mapping` | array<object> |  | Row-major field nodes; mapping is bilinear between nodes. |
 | `field_mapping[].field` | [number; 2] |  | Normalised field. |
 | `field_mapping[].ideal_mm` | [number; 2] |  | First-order chief image. |
-| `field_mapping[].real_mm` | [number; 2] |  | Real primary chief image. |
+| `field_mapping[].real_mm` | [number; 2] |  | Real image point of the PSF reference (primary chief by default): the PSF centre. |
 | `field_mapping[].relative_illumination` | nf | 1 | Spectrally weighted projected-solid-angle irradiance ratio. |
 | `image` | string |  | Image buffer name. |
 | `origin_mm` | [number; 2] |  | Lower-left pixel edge in the image frame. |

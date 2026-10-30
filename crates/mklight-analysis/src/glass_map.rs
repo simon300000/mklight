@@ -83,22 +83,19 @@ pub fn glass_map_job(
         ctx.check()?;
         match &surface.material {
             MaterialRef::Catalog { catalog, name } => {
+                // The entry the design resolves to: the first loaded
+                // catalogue (optionally the named one) holding the glass.
                 let g = library.find_glass(catalog.as_deref(), name)?;
-                let c = library
-                    .catalogs()
-                    .iter()
-                    .find(|c| {
-                        catalog
-                            .as_ref()
-                            .is_none_or(|n| n.eq_ignore_ascii_case(&c.name))
-                            && c.glasses
-                                .values()
-                                .any(|v| v.name.eq_ignore_ascii_case(&g.name))
-                    })
-                    .unwrap();
-                glasses
+                glasses[..count]
                     .iter_mut()
-                    .find(|v| v.catalog.as_deref() == Some(&c.name) && v.name == g.name)
+                    .find(|v| {
+                        v.name == g.name
+                            && catalog.as_deref().is_none_or(|c| {
+                                v.catalog
+                                    .as_deref()
+                                    .is_some_and(|v| v.eq_ignore_ascii_case(c))
+                            })
+                    })
                     .unwrap()
                     .surfaces
                     .push(i);
@@ -180,5 +177,46 @@ mod tests {
         assert!((model.nd - 1.6).abs() < 1e-12);
         assert!((model.vd - 40.0).abs() < 1e-9);
         assert!((model.pgf - mklight_core::materials::normal_pgf(40.0) - 0.01).abs() < 1e-10);
+    }
+    /// A glass in two catalogues is marked where the design resolves it: the
+    /// named catalogue, else the first loaded one.
+    #[test]
+    fn duplicate_glasses_are_marked_in_the_resolving_catalogue() {
+        let mut lib = MaterialLibrary::with_builtin();
+        let mut other = (*lib.catalogs()[0]).clone();
+        other.name = "OTHER".into();
+        lib.add_catalog(std::sync::Arc::new(other));
+        let mut sys = mklight_core::samples::cooke_triplet();
+        sys.surfaces[1].material = MaterialRef::Catalog {
+            catalog: Some("other".into()),
+            name: "n-sk16".into(),
+        };
+        let r = glass_map_job(
+            &Snapshot::new(sys).unwrap(),
+            &lib,
+            &Default::default(),
+            &JobContext::new(),
+        )
+        .unwrap();
+        let marks: Vec<_> = r
+            .glasses
+            .iter()
+            .filter(|g| !g.surfaces.is_empty())
+            .map(|g| {
+                (
+                    g.catalog.as_deref().unwrap(),
+                    g.name.as_str(),
+                    g.surfaces.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("BUILTIN", "F2", vec![3]),
+                ("BUILTIN", "N-SK16", vec![5]),
+                ("OTHER", "N-SK16", vec![1]),
+            ]
+        );
     }
 }

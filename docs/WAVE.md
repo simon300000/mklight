@@ -252,7 +252,8 @@ PSF inside its window (see `psf_truncated` above).
 accepts built-in `grid`, `siemens_star`, `slanted_edge`, and `text_chart`
 patterns, `source:{kind:"buffer",width,height,channels:1|3,data:[…]}`
 (row-major interleaved, finite nonnegative linear-light samples), or
-`source:{kind:"path",path:"…"}` (PNG/JPEG/PNM, decoded from sRGB).
+`source:{kind:"path",path:"…"}` (an 8- or 16-bit grey or RGB PNG, alpha
+ignored, decoded from sRGB; other formats come as a buffer).
 Output dimensions are `size:[width,height]`; `monochrome` selects one
 channel, otherwise three. RGB source channels share the run's polychromatic
 energy PSF; there is no implicit colour matching or separate channel response.
@@ -263,7 +264,9 @@ The shared engine `spectrum` setting is documented in ANALYSIS §4.
 traced pupil settings, odd `psf_size`, optional `psf_spacing_mm` and pupil
 quadrature for illumination. At each field node:
 
-1. Trace real and first-order chief images (separate x/y first-order scales).
+1. Trace the first-order chief image (separate x/y first-order scales); the
+   real image point is the PSF reference (`pupil.reference`: the primary
+   chief ray by default), where the PSF centre belongs.
 2. Build pupils at all wavelengths, including lateral-colour offsets relative
    to the primary chief, using radiometric amplitude by default.
 3. Form the unit-energy polychromatic PSF on a common physical grid. Default
@@ -271,7 +274,8 @@ quadrature for illumination. At each field node:
    propagate; a sampled grid containing less than 95% energy warns
    `psf_truncated`. Discrete kernels are normalised to conserve image flux.
 4. Integrate each wavelength's projected exit-pupil solid angle, including
-   geometric vignetting. Illumination is the weighted sum divided by its
+   geometric vignetting, with the relative-illumination routine of
+   ANALYSIS §2.4 (default 12 × 48 pupil nodes). Illumination is the weighted sum divided by its
    weighted on-axis value (coating spectral throughput is not an extra factor).
 
 The source occupies the rectangular **first-order image plane** bounded by
@@ -284,11 +288,17 @@ the ideal source with bilinear interpolation and applies RI. Unmapped pixels
 are black. Singular or folded field mappings need finer grids or a different
 imaging model; multiple images are not resolved.
 
-Each output tile uses a PSF bilinearly interpolated at its centre. Physical
-PSF samples are energy-conservingly deposited onto the output lattice.
-Haloed, zero-padded FFT convolution prevents wraparound; tiles run in
-parallel and assemble in fixed order. `tile_size` controls the piecewise
-constant PSF approximation: reduce it where aberrations vary quickly.
+Each warped pixel spreads with the PSF bilinearly interpolated at its own
+field: `out = Σ_k K_k ∗ (w_k · I)`, with `w_k` the pixel's bilinear weight
+of grid node `k` and `K_k` that node's PSF, energy-conservingly deposited
+onto the output lattice. Each tile convolves the weighted planes of the
+nodes its haloed sources use (zero-padded FFT, halo = kernel radius, so
+nothing wraps); tiles run in parallel and assemble in fixed order. The
+result does not depend on `tile_size`, which only partitions the work.
+Between nodes the PSF, distortion and RI are bilinear in the field: use a
+finer `field_grid` where they vary quickly (with the default 3 nodes per
+axis the Cooke triplet's RI at half field, midway between nodes, is 2.5%
+low).
 The engine retains the last immutable PSF grid, keyed by derived snapshot,
 material library hash and every `optics` setting, across source/noise changes.
 The direct Rust API can reuse an `Arc<PsfGrid>` with identical optical inputs.
@@ -307,4 +317,6 @@ available to reproduce a run; the image file is not embedded in the result.
 `image[height,width,channels]` is an f64 engine buffer. Tests cross-check
 FFT halo convolution against a direct spatial sum, an ideal lens against
 the Airy pattern and its blurred impulse image (including flux), distorted
-grid nodes against real chief traces, and shot-noise mean/variance.
+grid nodes against real chief traces, tile-size independence, the PSF
+centre at its reference point, PNG sRGB decoding, and shot-noise
+mean/variance.
