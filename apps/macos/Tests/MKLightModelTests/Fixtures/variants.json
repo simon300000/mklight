@@ -1,0 +1,510 @@
+[
+  {
+    "name": "image F/#",
+    "notes": "",
+    "aperture": {
+      "type": "image_space_f_number",
+      "value": 2.8
+    },
+    "fields": {
+      "kind": "paraxial_image_height",
+      "fields": [
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "weight": 1.0,
+          "vignetting": {
+            "vdx": 0.0,
+            "vdy": 0.0,
+            "vcx": 0.0,
+            "vcy": 0.0
+          }
+        },
+        {
+          "x": 0.0,
+          "y": 21.6,
+          "weight": 1.0,
+          "vignetting": {
+            "vdx": 0.0,
+            "vdy": 0.0,
+            "vcx": 0.0,
+            "vcy": 0.0
+          }
+        }
+      ]
+    },
+    "wavelengths": {
+      "wavelengths": [
+        {
+          "um": 0.4861327,
+          "weight": 1.0
+        },
+        {
+          "um": 0.5875618,
+          "weight": 1.0
+        },
+        {
+          "um": 0.6562725,
+          "weight": 1.0
+        }
+      ],
+      "primary": 1
+    },
+    "surfaces": [
+      {
+        "id": 0,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": "inf",
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 1,
+        "label": "STOP",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 10.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 2,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 0.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      }
+    ],
+    "stop": 1,
+    "ray_aiming": {
+      "mode": "off"
+    },
+    "environment": {
+      "temperature_c": 20.0,
+      "pressure_atm": 1.0
+    },
+    "coatings": {},
+    "mechanics": [],
+    "sensor": null,
+    "configurations": []
+  },
+  {
+    "name": "working F/#",
+    "notes": "",
+    "aperture": {
+      "type": "paraxial_working_f_number",
+      "value": 4.0
+    },
+    "fields": {
+      "kind": "real_image_height",
+      "fields": [
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "weight": 1.0,
+          "vignetting": {
+            "vdx": 0.0,
+            "vdy": 0.0,
+            "vcx": 0.0,
+            "vcy": 0.0
+          }
+        }
+      ]
+    },
+    "wavelengths": {
+      "wavelengths": [
+        {
+          "um": 0.4861327,
+          "weight": 1.0
+        },
+        {
+          "um": 0.5875618,
+          "weight": 1.0
+        },
+        {
+          "um": 0.6562725,
+          "weight": 1.0
+        }
+      ],
+      "primary": 1
+    },
+    "surfaces": [
+      {
+        "id": 0,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": "inf",
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 1,
+        "label": "STOP",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 10.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 2,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 0.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      }
+    ],
+    "stop": 1,
+    "ray_aiming": {
+      "mode": "real",
+      "tolerance": 1e-10
+    },
+    "environment": {
+      "temperature_c": 20.0,
+      "pressure_atm": 1.0
+    },
+    "coatings": {},
+    "mechanics": [],
+    "sensor": null,
+    "configurations": []
+  },
+  {
+    "name": "float by stop",
+    "notes": "",
+    "aperture": {
+      "type": "float_by_stop_size"
+    },
+    "fields": {
+      "kind": "object_angle",
+      "fields": [
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "weight": 1.0,
+          "vignetting": {
+            "vdx": 0.0,
+            "vdy": 0.0,
+            "vcx": 0.0,
+            "vcy": 0.0
+          }
+        }
+      ]
+    },
+    "wavelengths": {
+      "wavelengths": [
+        {
+          "um": 0.4861327,
+          "weight": 1.0
+        },
+        {
+          "um": 0.5875618,
+          "weight": 1.0
+        },
+        {
+          "um": 0.6562725,
+          "weight": 1.0
+        }
+      ],
+      "primary": 1
+    },
+    "surfaces": [
+      {
+        "id": 0,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": "inf",
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 1,
+        "label": "STOP",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 10.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "fixed",
+          "value": 3.0
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 2,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 0.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      }
+    ],
+    "stop": 1,
+    "ray_aiming": {
+      "mode": "off"
+    },
+    "environment": {
+      "temperature_c": 20.0,
+      "pressure_atm": 1.0
+    },
+    "coatings": {},
+    "mechanics": [],
+    "sensor": null,
+    "configurations": []
+  },
+  {
+    "name": "negative infinite object",
+    "notes": "",
+    "aperture": {
+      "type": "entrance_pupil_diameter",
+      "value": 10.0
+    },
+    "fields": {
+      "kind": "object_angle",
+      "fields": [
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "weight": 1.0,
+          "vignetting": {
+            "vdx": 0.0,
+            "vdy": 0.0,
+            "vcx": 0.0,
+            "vcy": 0.0
+          }
+        }
+      ]
+    },
+    "wavelengths": {
+      "wavelengths": [
+        {
+          "um": 0.4861327,
+          "weight": 1.0
+        },
+        {
+          "um": 0.5875618,
+          "weight": 1.0
+        },
+        {
+          "um": 0.6562725,
+          "weight": 1.0
+        }
+      ],
+      "primary": 1
+    },
+    "surfaces": [
+      {
+        "id": 0,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": "-inf",
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 1,
+        "label": "STOP",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 10.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 2,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": "inf",
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      }
+    ],
+    "stop": 1,
+    "ray_aiming": {
+      "mode": "off"
+    },
+    "environment": {
+      "temperature_c": 20.0,
+      "pressure_atm": 1.0
+    },
+    "coatings": {},
+    "mechanics": [],
+    "sensor": null,
+    "configurations": []
+  }
+]

@@ -1,0 +1,317 @@
+import Foundation
+
+/// Stable identity of a surface, independent of its index. The UI keys
+/// selection and view state on it so they survive inserts and deletes.
+public struct SurfaceID: RawRepresentable, Codable, Sendable, Hashable, Comparable, CustomStringConvertible {
+    public var rawValue: UInt64
+    public init(rawValue: UInt64) { self.rawValue = rawValue }
+    public init(_ v: UInt64) { rawValue = v }
+    public init(from decoder: any Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(UInt64.self)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
+    }
+    public static func < (a: SurfaceID, b: SurfaceID) -> Bool { a.rawValue < b.rawValue }
+    public var description: String { "#\(rawValue)" }
+}
+
+/// Surface shape in its local frame (CONVENTIONS §2). Curvature `c = 1/R` is
+/// stored, never the radius.
+public enum SurfaceShape: Codable, Sendable, Hashable {
+    /// Flat surface `z = 0`.
+    case plane
+    /// Sphere or conic: `z = c r² / (1 + √(1 − (1+k) c² r²))`.
+    case conic(curvature: Double, conic: Double)
+    /// Conic plus `Σ a_i r^(2i+4)`; `coefficients[0]` is A4.
+    case evenAsphere(curvature: Double, conic: Double, coefficients: [Double])
+    /// Ideal thin lens of the given focal length (mm).
+    case paraxial(focalLength: Double)
+    /// Changes the frame only (uses the surface's `placement`).
+    case coordinateBreak
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        switch try c.value("type", as: String.self) {
+        case "plane": self = .plane
+        case "conic":
+            self = .conic(curvature: try c.value("curvature"), conic: try c.value("conic", default: 0))
+        case "even_asphere":
+            self = .evenAsphere(
+                curvature: try c.value("curvature"), conic: try c.value("conic", default: 0),
+                coefficients: try c.value("coefficients"))
+        case "paraxial": self = .paraxial(focalLength: try c.value("focal_length"))
+        case "coordinate_break": self = .coordinateBreak
+        case let t:
+            throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown surface shape '\(t)'")
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        switch self {
+        case .plane: try c.put("plane", "type")
+        case .conic(let cv, let k):
+            try c.put("conic", "type")
+            try c.put(cv, "curvature")
+            try c.put(k, "conic")
+        case .evenAsphere(let cv, let k, let a):
+            try c.put("even_asphere", "type")
+            try c.put(cv, "curvature")
+            try c.put(k, "conic")
+            try c.put(a, "coefficients")
+        case .paraxial(let f):
+            try c.put("paraxial", "type")
+            try c.put(f, "focal_length")
+        case .coordinateBreak: try c.put("coordinate_break", "type")
+        }
+    }
+}
+
+/// What the surface does to light.
+public enum Interaction: String, Codable, Sendable, Hashable, CaseIterable {
+    case refract
+    /// Specular mirror; the medium after is the medium before.
+    case reflect
+    /// No interaction (dummy/reference surface).
+    case dummy
+}
+
+/// Clear-aperture size.
+public enum SemiDiameter: Codable, Sendable, Hashable {
+    /// Computed by the tracer from the largest ray height; does not clip.
+    case auto
+    /// User-fixed radius (mm) that clips rays.
+    case fixed(Double)
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        switch try c.value("mode", as: String.self) {
+        case "auto": self = .auto
+        case "fixed": self = .fixed(try c.value("value"))
+        case let m:
+            throw DecodingError.dataCorruptedError(forKey: AnyKey("mode"), in: c, debugDescription: "unknown semi-diameter mode '\(m)'")
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        switch self {
+        case .auto: try c.put("auto", "mode")
+        case .fixed(let v):
+            try c.put("fixed", "mode")
+            try c.put(v, "value")
+        }
+    }
+
+    public var fixedValue: Double? {
+        if case .fixed(let v) = self { return v }
+        return nil
+    }
+}
+
+/// Explicit clipping aperture; overrides the circular semi-diameter.
+public enum ApertureShape: Codable, Sendable, Hashable {
+    case circular(radius: Double)
+    case annular(innerRadius: Double, outerRadius: Double)
+    case rectangular(halfX: Double, halfY: Double)
+    case elliptical(semiX: Double, semiY: Double)
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        switch try c.value("type", as: String.self) {
+        case "circular": self = .circular(radius: try c.value("radius"))
+        case "annular": self = .annular(innerRadius: try c.value("inner_radius"), outerRadius: try c.value("outer_radius"))
+        case "rectangular": self = .rectangular(halfX: try c.value("half_x"), halfY: try c.value("half_y"))
+        case "elliptical": self = .elliptical(semiX: try c.value("semi_x"), semiY: try c.value("semi_y"))
+        case let t:
+            throw DecodingError.dataCorruptedError(forKey: AnyKey("type"), in: c, debugDescription: "unknown aperture '\(t)'")
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        switch self {
+        case .circular(let r):
+            try c.put("circular", "type")
+            try c.put(r, "radius")
+        case .annular(let a, let b):
+            try c.put("annular", "type")
+            try c.put(a, "inner_radius")
+            try c.put(b, "outer_radius")
+        case .rectangular(let x, let y):
+            try c.put("rectangular", "type")
+            try c.put(x, "half_x")
+            try c.put(y, "half_y")
+        case .elliptical(let x, let y):
+            try c.put("elliptical", "type")
+            try c.put(x, "semi_x")
+            try c.put(y, "semi_y")
+        }
+    }
+
+    /// Radius of the smallest enclosing circle.
+    public var boundingRadius: Double {
+        switch self {
+        case .circular(let r): r
+        case .annular(_, let r): r
+        case .rectangular(let x, let y): hypot(x, y)
+        case .elliptical(let x, let y): max(x, y)
+        }
+    }
+}
+
+public enum TransformOrder: String, Codable, Sendable, Hashable, CaseIterable {
+    case decenterThenTilt = "decenter_then_tilt"
+    case tiltThenDecenter = "tilt_then_decenter"
+}
+
+/// Rigid placement change applied before the surface (CONVENTIONS §2):
+/// decenters in mm, tilts in degrees about x, then y, then z.
+public struct Placement: Codable, Sendable, Hashable {
+    public var decenterX = 0.0
+    public var decenterY = 0.0
+    public var tiltX = 0.0
+    public var tiltY = 0.0
+    public var tiltZ = 0.0
+    public var order = TransformOrder.decenterThenTilt
+    /// Return to the pre-placement frame after the surface.
+    public var restoreAfter = false
+
+    public init(
+        decenterX: Double = 0, decenterY: Double = 0, tiltX: Double = 0, tiltY: Double = 0, tiltZ: Double = 0,
+        order: TransformOrder = .decenterThenTilt, restoreAfter: Bool = false
+    ) {
+        self.decenterX = decenterX
+        self.decenterY = decenterY
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.tiltZ = tiltZ
+        self.order = order
+        self.restoreAfter = restoreAfter
+    }
+
+    public var isIdentity: Bool {
+        decenterX == 0 && decenterY == 0 && tiltX == 0 && tiltY == 0 && tiltZ == 0
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        decenterX = try c.value("decenter_x", default: 0)
+        decenterY = try c.value("decenter_y", default: 0)
+        tiltX = try c.value("tilt_x", default: 0)
+        tiltY = try c.value("tilt_y", default: 0)
+        tiltZ = try c.value("tilt_z", default: 0)
+        order = try c.value("order", default: .decenterThenTilt)
+        restoreAfter = try c.value("restore_after", default: false)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.put(decenterX, "decenter_x")
+        try c.put(decenterY, "decenter_y")
+        try c.put(tiltX, "tilt_x")
+        try c.put(tiltY, "tilt_y")
+        try c.put(tiltZ, "tilt_z")
+        try c.put(order, "order")
+        try c.put(restoreAfter, "restore_after")
+    }
+}
+
+/// Mechanical description of a lens edge (stray-light geometry).
+public struct EdgeSpec: Codable, Sendable, Hashable {
+    /// `nil` means the clear aperture plus the default edge margin.
+    public var mechanicalSemiDiameter: Double?
+    public var edgeScatter: ScatterModel?
+
+    public init(mechanicalSemiDiameter: Double? = nil, edgeScatter: ScatterModel? = nil) {
+        self.mechanicalSemiDiameter = mechanicalSemiDiameter
+        self.edgeScatter = edgeScatter
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        mechanicalSemiDiameter = try c.optional("mechanical_semi_diameter")
+        edgeScatter = try c.optional("edge_scatter")
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.putOptional(mechanicalSemiDiameter, "mechanical_semi_diameter")
+        try c.putOptional(edgeScatter, "edge_scatter")
+    }
+}
+
+/// One surface of the sequential train.
+public struct Surface: Codable, Sendable, Hashable, Identifiable {
+    public var id: SurfaceID
+    public var label: String
+    public var shape: SurfaceShape
+    /// Distance to the next vertex (CONVENTIONS §2); may be `±∞` for the object.
+    public var thickness: Double
+    /// Medium after this surface.
+    public var material: MaterialRef
+    public var interaction: Interaction
+    public var semiDiameter: SemiDiameter
+    public var aperture: ApertureShape?
+    public var placement: Placement?
+    /// Name of a coating in `OpticalSystem.coatings`; `nil` is a bare interface.
+    public var coating: String?
+    public var scatter: ScatterModel?
+    public var edge: EdgeSpec
+
+    public init(
+        id: SurfaceID, label: String = "", shape: SurfaceShape = .plane, thickness: Double = 0,
+        material: MaterialRef = .air, interaction: Interaction = .refract, semiDiameter: SemiDiameter = .auto,
+        aperture: ApertureShape? = nil, placement: Placement? = nil, coating: String? = nil,
+        scatter: ScatterModel? = nil, edge: EdgeSpec = EdgeSpec()
+    ) {
+        self.id = id
+        self.label = label
+        self.shape = shape
+        self.thickness = thickness
+        self.material = material
+        self.interaction = interaction
+        self.semiDiameter = semiDiameter
+        self.aperture = aperture
+        self.placement = placement
+        self.coating = coating
+        self.scatter = scatter
+        self.edge = edge
+    }
+
+    public var isCoordinateBreak: Bool { shape == .coordinateBreak }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        id = try c.value("id")
+        label = try c.value("label", default: "")
+        shape = try c.value("shape")
+        thickness = try c.extendedDouble("thickness")
+        material = try c.value("material")
+        interaction = try c.value("interaction", default: .refract)
+        semiDiameter = try c.value("semi_diameter", default: .auto)
+        aperture = try c.optional("aperture")
+        placement = try c.optional("placement")
+        coating = try c.optional("coating")
+        scatter = try c.optional("scatter")
+        edge = try c.value("edge", default: EdgeSpec())
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.put(id, "id")
+        try c.put(label, "label")
+        try c.put(shape, "shape")
+        try c.putExtendedDouble(thickness, "thickness")
+        try c.put(material, "material")
+        try c.put(interaction, "interaction")
+        try c.put(semiDiameter, "semi_diameter")
+        try c.putOptional(aperture, "aperture")
+        try c.putOptional(placement, "placement")
+        try c.putOptional(coating, "coating")
+        try c.putOptional(scatter, "scatter")
+        try c.put(edge, "edge")
+    }
+}
