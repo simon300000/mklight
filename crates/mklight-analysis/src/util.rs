@@ -8,7 +8,7 @@ use mklight_core::job::{Precision, RunTimer};
 use mklight_core::math::KahanSum;
 use mklight_core::rng::Philox;
 use mklight_core::{FieldKind, MkError, MkResult, RunInfo};
-use mklight_trace::SequentialTracer;
+use mklight_trace::{ObjectSource, PreparedField, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
 /// Backend identifier recorded in `RunInfo` by every analysis of this crate
@@ -120,7 +120,7 @@ fn resolve_list(list: &[usize], count: usize, what: &str) -> MkResult<Vec<usize>
 }
 
 /// A wavelength index, or the primary wavelength when `None`.
-pub(crate) fn wavelength_or_primary(tracer: &SequentialTracer, w: Option<usize>) -> MkResult<usize> {
+pub fn wavelength_or_primary(tracer: &SequentialTracer, w: Option<usize>) -> MkResult<usize> {
     let sys = tracer.system();
     let w = w.unwrap_or(sys.primary_wavelength);
     if w >= sys.wavelengths_um.len() {
@@ -143,6 +143,34 @@ pub fn field_unit(kind: FieldKind) -> &'static str {
 pub(crate) fn field_value(tracer: &SequentialTracer, i: usize) -> [f64; 2] {
     let f = &tracer.system().system().fields.fields[i];
     [f.x, f.y]
+}
+
+/// Physical field value (system field units) of normalised field `h`.
+pub(crate) fn field_scale(tracer: &SequentialTracer) -> f64 {
+    tracer.system().system().fields.max_radial()
+}
+
+/// The paraxial image point `(x, y)` (image local frame) of a prepared field
+/// at wavelength `wl`: the paraxial chief-ray height per unit `tan θ` (object
+/// at infinity) or per unit object height (finite object), applied to the
+/// field's object source. `None` when the paraxial chief ray is undefined
+/// (e.g. an object-space telecentric system with an angle source).
+pub(crate) fn paraxial_image_point(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+    wl: usize,
+) -> Option<[f64; 2]> {
+    let fo = tracer.paraxial().at(wl);
+    match field.source {
+        ObjectSource::Direction { dir } => {
+            let k = fo.image_height_per_tan?;
+            (dir.z != 0.0).then(|| [k * dir.x / dir.z, k * dir.y / dir.z])
+        }
+        ObjectSource::Point { point } => {
+            let k = fo.image_height_per_object_height?;
+            Some([k * point.x, k * point.y])
+        }
+    }
 }
 
 pub(crate) fn check_count(name: &str, v: usize, lo: usize, hi: usize) -> MkResult<()> {
