@@ -1,0 +1,471 @@
+{
+  "name": "Kitchen sink",
+  "notes": "Covers every model variant; not a sensible lens.",
+  "aperture": {
+    "type": "object_space_na",
+    "value": 0.05
+  },
+  "fields": {
+    "kind": "object_height",
+    "fields": [
+      {
+        "x": 0.0,
+        "y": 0.0,
+        "weight": 1.0,
+        "vignetting": {
+          "vdx": 0.0,
+          "vdy": 0.0,
+          "vcx": 0.0,
+          "vcy": 0.0
+        }
+      },
+      {
+        "x": 1.5,
+        "y": -2.25,
+        "weight": 0.5,
+        "vignetting": {
+          "vdx": 0.0,
+          "vdy": 0.1,
+          "vcx": 0.05,
+          "vcy": 0.2
+        }
+      }
+    ]
+  },
+  "wavelengths": {
+    "wavelengths": [
+      {
+        "um": 0.546074,
+        "weight": 2.0
+      },
+      {
+        "um": 1.064,
+        "weight": 0.25
+      }
+    ],
+    "primary": 0
+  },
+  "surfaces": [
+    {
+      "id": 0,
+      "label": "OBJECT",
+      "shape": {
+        "type": "plane"
+      },
+      "thickness": 120.0,
+      "material": {
+        "type": "air"
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": null,
+      "placement": null,
+      "coating": null,
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 10,
+      "label": "",
+      "shape": {
+        "type": "conic",
+        "curvature": 0.02,
+        "conic": -0.5
+      },
+      "thickness": 4.0,
+      "material": {
+        "type": "catalog",
+        "catalog": "BUILTIN",
+        "name": "N-BK7"
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "fixed",
+        "value": 12.5
+      },
+      "aperture": null,
+      "placement": null,
+      "coating": "V-coat",
+      "scatter": {
+        "type": "lambertian",
+        "tis": 0.0001
+      },
+      "edge": {
+        "mechanical_semi_diameter": 14.0,
+        "edge_scatter": {
+          "type": "gaussian",
+          "tis": 0.02,
+          "sigma_slope": 0.1
+        }
+      }
+    },
+    {
+      "id": 11,
+      "label": "",
+      "shape": {
+        "type": "even_asphere",
+        "curvature": -0.01,
+        "conic": 0.0,
+        "coefficients": [
+          0.000015,
+          -2e-8,
+          3.25e-11
+        ]
+      },
+      "thickness": 2.5,
+      "material": {
+        "type": "model",
+        "nd": 1.6,
+        "vd": 40.0,
+        "dpgf": 0.002
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": {
+        "type": "annular",
+        "inner_radius": 1.0,
+        "outer_radius": 11.0
+      },
+      "placement": null,
+      "coating": "Ideal",
+      "scatter": {
+        "type": "abg",
+        "a": 0.00001,
+        "b": 0.001,
+        "g": 2.0
+      },
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 12,
+      "label": "STOP",
+      "shape": {
+        "type": "plane"
+      },
+      "thickness": 3.0,
+      "material": {
+        "type": "constant",
+        "n": 1.5
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": {
+        "type": "circular",
+        "radius": 5.0
+      },
+      "placement": null,
+      "coating": null,
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 13,
+      "label": "",
+      "shape": {
+        "type": "paraxial",
+        "focal_length": 80.0
+      },
+      "thickness": 5.0,
+      "material": {
+        "type": "vacuum"
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": {
+        "type": "rectangular",
+        "half_x": 6.0,
+        "half_y": 4.0
+      },
+      "placement": null,
+      "coating": null,
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 14,
+      "label": "",
+      "shape": {
+        "type": "coordinate_break"
+      },
+      "thickness": 0.0,
+      "material": {
+        "type": "air"
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": null,
+      "placement": {
+        "decenter_x": 0.1,
+        "decenter_y": -0.2,
+        "tilt_x": 1.5,
+        "tilt_y": 0.0,
+        "tilt_z": -45.0,
+        "order": "tilt_then_decenter",
+        "restore_after": false
+      },
+      "coating": null,
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 15,
+      "label": "",
+      "shape": {
+        "type": "conic",
+        "curvature": -0.005,
+        "conic": 0.0
+      },
+      "thickness": -30.0,
+      "material": {
+        "type": "catalog",
+        "catalog": null,
+        "name": "MIRROR-IGNORED"
+      },
+      "interaction": "reflect",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": {
+        "type": "elliptical",
+        "semi_x": 15.0,
+        "semi_y": 10.0
+      },
+      "placement": {
+        "decenter_x": 0.0,
+        "decenter_y": 0.0,
+        "tilt_x": 2.0,
+        "tilt_y": 0.0,
+        "tilt_z": 0.0,
+        "order": "decenter_then_tilt",
+        "restore_after": true
+      },
+      "coating": "Silver",
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 16,
+      "label": "reference",
+      "shape": {
+        "type": "plane"
+      },
+      "thickness": -10.0,
+      "material": {
+        "type": "air"
+      },
+      "interaction": "dummy",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": null,
+      "placement": null,
+      "coating": null,
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    },
+    {
+      "id": 17,
+      "label": "IMAGE",
+      "shape": {
+        "type": "conic",
+        "curvature": -0.002,
+        "conic": 0.0
+      },
+      "thickness": 0.0,
+      "material": {
+        "type": "air"
+      },
+      "interaction": "refract",
+      "semi_diameter": {
+        "mode": "auto"
+      },
+      "aperture": null,
+      "placement": null,
+      "coating": null,
+      "scatter": null,
+      "edge": {
+        "mechanical_semi_diameter": null,
+        "edge_scatter": null
+      }
+    }
+  ],
+  "stop": 3,
+  "ray_aiming": {
+    "mode": "real",
+    "tolerance": 1e-9
+  },
+  "environment": {
+    "temperature_c": 35.5,
+    "pressure_atm": 0.75
+  },
+  "coatings": {
+    "Ideal": {
+      "type": "ideal",
+      "reflectance": 0.01,
+      "transmittance": 0.98
+    },
+    "Measured": {
+      "type": "tabulated",
+      "reflectance": [
+        [
+          0.4,
+          0.012
+        ],
+        [
+          0.55,
+          0.004
+        ],
+        [
+          0.7,
+          0.009
+        ]
+      ]
+    },
+    "Silver": {
+      "type": "thin_film",
+      "reference_wavelength_um": 0.55,
+      "layers": [
+        {
+          "material": {
+            "type": "constant",
+            "n": 1.38
+          },
+          "thickness_um": 0.1,
+          "quarter_waves": null,
+          "extinction": 0.0
+        }
+      ],
+      "mirror_substrate": [
+        0.12,
+        3.4
+      ]
+    },
+    "V-coat": {
+      "type": "thin_film",
+      "reference_wavelength_um": 0.55,
+      "layers": [
+        {
+          "material": {
+            "type": "constant",
+            "n": 2.1
+          },
+          "thickness_um": 0.0,
+          "quarter_waves": 1.0,
+          "extinction": 0.0
+        },
+        {
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "MGF2"
+          },
+          "thickness_um": 0.0996,
+          "quarter_waves": null,
+          "extinction": 0.0001
+        }
+      ],
+      "mirror_substrate": null
+    }
+  },
+  "mechanics": [
+    {
+      "type": "barrel",
+      "from": 10,
+      "to": 13,
+      "inner_radius": 15.0,
+      "finish": {
+        "type": "lambertian",
+        "tis": 0.05
+      }
+    },
+    {
+      "type": "annular_baffle",
+      "surface": 12,
+      "z": -0.5,
+      "inner_radius": 5.5,
+      "outer_radius": 16.0,
+      "finish": {
+        "type": "abg",
+        "a": 0.01,
+        "b": 0.001,
+        "g": 1.5
+      }
+    }
+  ],
+  "sensor": {
+    "pixels_x": 4000,
+    "pixels_y": 3000,
+    "pitch_x": 0.00376,
+    "pitch_y": 0.00376,
+    "max_cra_deg": 30.0,
+    "spectral_response": [
+      [
+        0.45,
+        0.6
+      ],
+      [
+        0.55,
+        1.0
+      ],
+      [
+        0.65,
+        0.7
+      ]
+    ]
+  },
+  "configurations": [
+    {
+      "name": "near focus",
+      "overrides": [
+        [
+          {
+            "param": "thickness",
+            "surface": 0
+          },
+          80.0
+        ],
+        [
+          {
+            "param": "aperture_value"
+          },
+          0.04
+        ]
+      ]
+    },
+    {
+      "name": "",
+      "overrides": []
+    }
+  ]
+}

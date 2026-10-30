@@ -1,0 +1,439 @@
+//! Writes JSON fixtures of the model's serde representation for the macOS
+//! app's Codable mirror (`apps/macos/Tests/MKLightModelTests/Fixtures`).
+//!
+//! Run with `cargo run -p mklight-core --example dump_fixtures [out_dir]`.
+//! The fixtures cover every enum variant of the model, `ParamPath` and
+//! `RunInfo`, so a Swift decode → encode round trip that compares equal to
+//! these files proves the two representations agree.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use mklight_core::job::Precision;
+use mklight_core::param::ParamPath;
+use mklight_core::*;
+use serde::Serialize;
+
+fn cooke_triplet() -> OpticalSystem {
+    let mut s = OpticalSystem::new_empty();
+    s.name = "Cooke triplet".into();
+    s.notes =
+        "Classic three-element anastigmat, EFL ≈ 47.1 mm, F/4.7, image at the paraxial focus."
+            .into();
+    s.aperture = ApertureSpec::EntrancePupilDiameter { value: 10.0 };
+    s.fields = FieldSet {
+        kind: FieldKind::ObjectAngle,
+        fields: vec![
+            Field::new(0.0, 0.0),
+            Field::new(0.0, 14.0),
+            Field::new(0.0, 20.0),
+        ],
+    };
+    let glass = |r: f64, t: f64, g: &str| (SurfaceShape::sphere(r), t, MaterialRef::glass(g));
+    let air = |r: f64, t: f64| (SurfaceShape::sphere(r), t, MaterialRef::Air);
+    let rows = [
+        (SurfaceShape::Plane, f64::INFINITY, MaterialRef::Air),
+        glass(22.01359, 3.25896, "N-SK16"),
+        air(-435.76044, 6.00755),
+        glass(-22.21328, 0.99997, "F2"),
+        air(20.29192, 4.75041),
+        (SurfaceShape::Plane, 2.0, MaterialRef::Air),
+        glass(79.68360, 2.95208, "N-SK16"),
+        air(-18.39533, 41.36144),
+        (SurfaceShape::Plane, 0.0, MaterialRef::Air),
+    ];
+    s.surfaces = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (shape, t, m))| Surface::new(i as u64, shape, t, m))
+        .collect();
+    s.stop = 5;
+    s.surfaces[5].label = "STOP".into();
+    s.coatings.insert(
+        "AR".into(),
+        CoatingDef::Ideal {
+            reflectance: 0.005,
+            transmittance: 0.995,
+        },
+    );
+    for i in 1..=7 {
+        if i != 5 {
+            s.surfaces[i].coating = Some("AR".into());
+        }
+    }
+    s
+}
+
+/// Every enum variant of the model in one (valid) system.
+fn kitchen_sink() -> OpticalSystem {
+    let mut s = OpticalSystem::new_empty();
+    s.name = "Kitchen sink".into();
+    s.notes = "Covers every model variant; not a sensible lens.".into();
+    s.aperture = ApertureSpec::ObjectSpaceNa { value: 0.05 };
+    s.fields = FieldSet {
+        kind: FieldKind::ObjectHeight,
+        fields: vec![
+            Field::new(0.0, 0.0),
+            Field {
+                x: 1.5,
+                y: -2.25,
+                weight: 0.5,
+                vignetting: Vignetting {
+                    vdx: 0.0,
+                    vdy: 0.1,
+                    vcx: 0.05,
+                    vcy: 0.2,
+                },
+            },
+        ],
+    };
+    s.wavelengths = WavelengthSet {
+        wavelengths: vec![
+            Wavelength {
+                um: 0.5460740,
+                weight: 2.0,
+            },
+            Wavelength {
+                um: 1.064,
+                weight: 0.25,
+            },
+        ],
+        primary: 0,
+    };
+    s.ray_aiming = RayAiming::Real { tolerance: 1e-9 };
+    s.environment = Environment {
+        temperature_c: 35.5,
+        pressure_atm: 0.75,
+    };
+
+    let mut obj = Surface::new(0, SurfaceShape::Plane, 120.0, MaterialRef::Air);
+    obj.label = "OBJECT".into();
+
+    let mut s1 = Surface::new(
+        10,
+        SurfaceShape::Conic {
+            curvature: 0.02,
+            conic: -0.5,
+        },
+        4.0,
+        MaterialRef::Catalog {
+            catalog: Some("BUILTIN".into()),
+            name: "N-BK7".into(),
+        },
+    );
+    s1.semi_diameter = SemiDiameter::Fixed { value: 12.5 };
+    s1.coating = Some("V-coat".into());
+    s1.scatter = Some(ScatterModel::Lambertian { tis: 1e-4 });
+    s1.edge = EdgeSpec {
+        mechanical_semi_diameter: Some(14.0),
+        edge_scatter: Some(ScatterModel::Gaussian {
+            tis: 0.02,
+            sigma_slope: 0.1,
+        }),
+    };
+
+    let mut s2 = Surface::new(
+        11,
+        SurfaceShape::EvenAsphere {
+            curvature: -0.01,
+            conic: 0.0,
+            coefficients: vec![1.5e-5, -2.0e-8, 3.25e-11],
+        },
+        2.5,
+        MaterialRef::Model {
+            nd: 1.6,
+            vd: 40.0,
+            dpgf: 0.002,
+        },
+    );
+    s2.aperture = Some(ApertureShape::Annular {
+        inner_radius: 1.0,
+        outer_radius: 11.0,
+    });
+    s2.coating = Some("Ideal".into());
+    s2.scatter = Some(ScatterModel::Abg {
+        a: 1e-5,
+        b: 1e-3,
+        g: 2.0,
+    });
+
+    let mut s3 = Surface::new(
+        12,
+        SurfaceShape::Plane,
+        3.0,
+        MaterialRef::Constant { n: 1.5 },
+    );
+    s3.label = "STOP".into();
+    s3.aperture = Some(ApertureShape::Circular { radius: 5.0 });
+
+    let mut s4 = Surface::new(
+        13,
+        SurfaceShape::Paraxial { focal_length: 80.0 },
+        5.0,
+        MaterialRef::Vacuum,
+    );
+    s4.aperture = Some(ApertureShape::Rectangular {
+        half_x: 6.0,
+        half_y: 4.0,
+    });
+
+    let mut cb = Surface::new(14, SurfaceShape::CoordinateBreak, 0.0, MaterialRef::Air);
+    cb.placement = Some(Placement {
+        decenter_x: 0.1,
+        decenter_y: -0.2,
+        tilt_x: 1.5,
+        tilt_y: 0.0,
+        tilt_z: -45.0,
+        order: TransformOrder::TiltThenDecenter,
+        restore_after: false,
+    });
+
+    let mut m = Surface::new(
+        15,
+        SurfaceShape::sphere(-200.0),
+        -30.0,
+        MaterialRef::glass("MIRROR-IGNORED"),
+    );
+    m.interaction = Interaction::Reflect;
+    m.coating = Some("Silver".into());
+    m.aperture = Some(ApertureShape::Elliptical {
+        semi_x: 15.0,
+        semi_y: 10.0,
+    });
+    m.placement = Some(Placement {
+        tilt_x: 2.0,
+        restore_after: true,
+        ..Default::default()
+    });
+
+    let mut d = Surface::new(16, SurfaceShape::Plane, -10.0, MaterialRef::Air);
+    d.interaction = Interaction::Dummy;
+    d.label = "reference".into();
+
+    let mut img = Surface::new(17, SurfaceShape::sphere(-500.0), 0.0, MaterialRef::Air);
+    img.label = "IMAGE".into();
+
+    s.surfaces = vec![obj, s1, s2, s3, s4, cb, m, d, img];
+    s.stop = 3;
+
+    s.coatings.insert(
+        "V-coat".into(),
+        CoatingDef::ThinFilm {
+            reference_wavelength_um: 0.55,
+            layers: vec![
+                Layer {
+                    material: MaterialRef::Constant { n: 2.1 },
+                    thickness_um: 0.0,
+                    quarter_waves: Some(1.0),
+                    extinction: 0.0,
+                },
+                Layer {
+                    material: MaterialRef::glass("MGF2"),
+                    thickness_um: 0.0996,
+                    quarter_waves: None,
+                    extinction: 1e-4,
+                },
+            ],
+            mirror_substrate: None,
+        },
+    );
+    s.coatings.insert(
+        "Silver".into(),
+        CoatingDef::ThinFilm {
+            reference_wavelength_um: 0.55,
+            layers: vec![Layer {
+                material: MaterialRef::Constant { n: 1.38 },
+                thickness_um: 0.1,
+                quarter_waves: None,
+                extinction: 0.0,
+            }],
+            mirror_substrate: Some((0.12, 3.4)),
+        },
+    );
+    s.coatings.insert(
+        "Ideal".into(),
+        CoatingDef::Ideal {
+            reflectance: 0.01,
+            transmittance: 0.98,
+        },
+    );
+    s.coatings.insert(
+        "Measured".into(),
+        CoatingDef::Tabulated {
+            reflectance: vec![(0.4, 0.012), (0.55, 0.004), (0.7, 0.009)],
+        },
+    );
+
+    s.mechanics = vec![
+        MechanicalPart::Barrel {
+            from: SurfaceId(10),
+            to: SurfaceId(13),
+            inner_radius: 15.0,
+            finish: ScatterModel::Lambertian { tis: 0.05 },
+        },
+        MechanicalPart::AnnularBaffle {
+            surface: SurfaceId(12),
+            z: -0.5,
+            inner_radius: 5.5,
+            outer_radius: 16.0,
+            finish: ScatterModel::Abg {
+                a: 0.01,
+                b: 0.001,
+                g: 1.5,
+            },
+        },
+    ];
+    s.sensor = Some(Sensor {
+        pixels_x: 4000,
+        pixels_y: 3000,
+        pitch_x: 0.00376,
+        pitch_y: 0.00376,
+        max_cra_deg: Some(30.0),
+        spectral_response: vec![(0.45, 0.6), (0.55, 1.0), (0.65, 0.7)],
+    });
+    s.configurations = vec![
+        Configuration {
+            name: "near focus".into(),
+            overrides: vec![
+                (
+                    ParamPath::Thickness {
+                        surface: SurfaceId(0),
+                    },
+                    80.0,
+                ),
+                (ParamPath::ApertureValue, 0.04),
+            ],
+        },
+        Configuration::default(),
+    ];
+    s
+}
+
+/// Each aperture spec, field kind and ray-aiming mode, plus `±∞` thicknesses.
+fn variants() -> Vec<OpticalSystem> {
+    let base = OpticalSystem::new_empty;
+    let mut out = Vec::new();
+
+    let mut a = base();
+    a.name = "image F/#".into();
+    a.aperture = ApertureSpec::ImageSpaceFNumber { value: 2.8 };
+    a.fields.kind = FieldKind::ParaxialImageHeight;
+    a.fields.fields.push(Field::new(0.0, 21.6));
+    out.push(a);
+
+    let mut b = base();
+    b.name = "working F/#".into();
+    b.aperture = ApertureSpec::ParaxialWorkingFNumber { value: 4.0 };
+    b.fields.kind = FieldKind::RealImageHeight;
+    b.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+    out.push(b);
+
+    let mut c = base();
+    c.name = "float by stop".into();
+    c.aperture = ApertureSpec::FloatByStopSize;
+    c.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 3.0 };
+    out.push(c);
+
+    let mut d = base();
+    d.name = "negative infinite object".into();
+    d.surfaces[0].thickness = f64::NEG_INFINITY;
+    d.surfaces[2].thickness = f64::INFINITY;
+    out.push(d);
+    out
+}
+
+fn all_param_paths() -> Vec<ParamPath> {
+    let surface = SurfaceId(7);
+    vec![
+        ParamPath::Curvature { surface },
+        ParamPath::Thickness { surface },
+        ParamPath::Conic { surface },
+        ParamPath::Asphere { surface, index: 2 },
+        ParamPath::ParaxialFocalLength { surface },
+        ParamPath::ModelNd { surface },
+        ParamPath::ModelVd { surface },
+        ParamPath::ModelDpgf { surface },
+        ParamPath::DecenterX { surface },
+        ParamPath::DecenterY { surface },
+        ParamPath::TiltX { surface },
+        ParamPath::TiltY { surface },
+        ParamPath::TiltZ { surface },
+        ParamPath::SemiDiameter { surface },
+        ParamPath::ApertureValue,
+        ParamPath::FieldX { index: 1 },
+        ParamPath::FieldY { index: 1 },
+        ParamPath::FieldWeight { index: 1 },
+        ParamPath::WavelengthUm { index: 0 },
+        ParamPath::WavelengthWeight { index: 0 },
+        ParamPath::TemperatureC,
+        ParamPath::PressureAtm,
+    ]
+}
+
+fn run_info(snapshot: &Snapshot) -> RunInfo {
+    RunInfo {
+        engine_version: ENGINE_VERSION.to_string(),
+        snapshot_hash: snapshot.hash().to_hex(),
+        analysis: "spot_diagram".into(),
+        settings: serde_json::json!({
+            "pattern": "hexapolar",
+            "rings": 6,
+            "seed": 42,
+            "fields": {"type": "all"},
+        }),
+        backend: "metal".into(),
+        precision: Precision::F32Gpu,
+        seed: Some(42),
+        started_unix_ms: 1_767_225_600_000,
+        duration_ms: 12.5,
+        warnings: vec!["example warning".into()],
+    }
+}
+
+fn write<T: Serialize>(dir: &std::path::Path, name: &str, value: &T) {
+    let mut json = serde_json::to_string_pretty(value).expect("serialise fixture");
+    json.push('\n');
+    let path = dir.join(name);
+    std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    println!("wrote {}", path.display());
+}
+
+fn main() {
+    let dir = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../apps/macos/Tests/MKLightModelTests/Fixtures")
+        });
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+
+    // Fixtures meant to be valid models must pass validation.
+    let cooke = Snapshot::new(cooke_triplet()).expect("cooke triplet is valid");
+    Snapshot::new(kitchen_sink()).expect("kitchen sink is valid");
+    Snapshot::new(OpticalSystem::new_empty()).expect("empty system is valid");
+
+    write(&dir, "empty.json", &OpticalSystem::new_empty());
+    write(&dir, "cooke_triplet.json", cooke.system());
+    write(&dir, "kitchen_sink.json", &kitchen_sink());
+    write(&dir, "variants.json", &variants());
+    write(&dir, "param_paths.json", &all_param_paths());
+    write(&dir, "run_info.json", &run_info(&cooke));
+
+    // Snapshot hashes of the valid fixtures, so a front end can check that its
+    // engine binding reproduces the engine's content hashes.
+    let mut hashes = BTreeMap::new();
+    hashes.insert("cooke_triplet.json", cooke.hash().to_hex());
+    hashes.insert(
+        "empty.json",
+        Snapshot::new(OpticalSystem::new_empty())
+            .unwrap()
+            .hash()
+            .to_hex(),
+    );
+    hashes.insert(
+        "kitchen_sink.json",
+        Snapshot::new(kitchen_sink()).unwrap().hash().to_hex(),
+    );
+    write(&dir, "snapshot_hashes.json", &hashes);
+}

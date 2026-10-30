@@ -1,0 +1,88 @@
+[
+  {
+    "param": "curvature",
+    "surface": 7
+  },
+  {
+    "param": "thickness",
+    "surface": 7
+  },
+  {
+    "param": "conic",
+    "surface": 7
+  },
+  {
+    "param": "asphere",
+    "surface": 7,
+    "index": 2
+  },
+  {
+    "param": "paraxial_focal_length",
+    "surface": 7
+  },
+  {
+    "param": "model_nd",
+    "surface": 7
+  },
+  {
+    "param": "model_vd",
+    "surface": 7
+  },
+  {
+    "param": "model_dpgf",
+    "surface": 7
+  },
+  {
+    "param": "decenter_x",
+    "surface": 7
+  },
+  {
+    "param": "decenter_y",
+    "surface": 7
+  },
+  {
+    "param": "tilt_x",
+    "surface": 7
+  },
+  {
+    "param": "tilt_y",
+    "surface": 7
+  },
+  {
+    "param": "tilt_z",
+    "surface": 7
+  },
+  {
+    "param": "semi_diameter",
+    "surface": 7
+  },
+  {
+    "param": "aperture_value"
+  },
+  {
+    "param": "field_x",
+    "index": 1
+  },
+  {
+    "param": "field_y",
+    "index": 1
+  },
+  {
+    "param": "field_weight",
+    "index": 1
+  },
+  {
+    "param": "wavelength_um",
+    "index": 0
+  },
+  {
+    "param": "wavelength_weight",
+    "index": 0
+  },
+  {
+    "param": "temperature_c"
+  },
+  {
+    "param": "pressure_atm"
+  }
+]
