@@ -619,8 +619,17 @@ fn packed_double_float_parameters() {
             assert!((n - s.n_after[w]).abs() < 1e-14);
             if matches!(s.shape, SurfaceShape::Paraxial { .. }) {
                 let v = mklight_trace::paraxial::ideal_lens_object_vergence(&rs, i, w);
-                assert_eq!(p.surfaces[i].vergence[w], v as f32);
+                let ps = &p.surfaces[i];
+                assert_eq!(ps.vergence[w], v as f32);
+                assert!(
+                    (ps.vergence[w] as f64 + ps.vergence_lo[w] as f64 - v).abs() < 1e-14 * v.abs()
+                );
                 assert!(v != 0.0);
+                let SurfaceShape::Paraxial { focal_length } = s.shape else {
+                    unreachable!()
+                };
+                let phi = ps.paraxial_power as f64 + ps.paraxial_power_lo as f64;
+                assert!((phi * focal_length - 1.0).abs() < 1e-14);
             }
         }
     }
@@ -636,6 +645,48 @@ fn packed_double_float_parameters() {
     assert!((s1.curvature as f64 + s1.curvature_lo as f64 - curvature).abs() < 1e-15);
     assert!((s1.conic as f64 + s1.conic_lo as f64 - conic).abs() < 1e-15);
     assert_ne!(s1.curvature_lo, 0.0, "1/3 is not an f32");
+    // Asphere coefficients, normalised by R = 2^e: hi + lo = A·R^(2j+4).
+    let SurfaceShape::EvenAsphere { coefficients, .. } = &rs.surfaces[2].shape else {
+        panic!()
+    };
+    let s2 = &p.surfaces[2];
+    let r2 = 1.0 / s2.asphere_inv_norm2 as f64;
+    for (j, a) in coefficients.iter().enumerate() {
+        let want = a * r2.powi(j as i32 + 2);
+        let got = s2.asphere[j] as f64 + s2.asphere_lo[j] as f64;
+        assert!((got - want).abs() <= 1e-14 * want.abs(), "A{}", 2 * j + 4);
+    }
+    assert!(s2.asphere_lo.iter().any(|&l| l != 0.0));
+    // Aperture sizes.
+    let rs = testutil::resolve(testutil::apertures());
+    let p = PackedSystem::pack_all(&rs).unwrap();
+    let mut checked = 0;
+    for (i, s) in rs.surfaces.iter().enumerate() {
+        let ps = &p.surfaces[i];
+        let sizes: Vec<f64> = match (&s.aperture, s.fixed_semi_diameter) {
+            (
+                Some(mklight_core::model::ApertureShape::Annular {
+                    inner_radius,
+                    outer_radius,
+                }),
+                _,
+            ) => vec![*inner_radius, *outer_radius],
+            (Some(mklight_core::model::ApertureShape::Elliptical { semi_x, semi_y }), _) => {
+                vec![*semi_x, *semi_y]
+            }
+            (Some(mklight_core::model::ApertureShape::Rectangular { half_x, half_y }), _) => {
+                vec![*half_x, *half_y]
+            }
+            (None, Some(r)) => vec![r],
+            _ => continue,
+        };
+        for (k, v) in sizes.into_iter().enumerate() {
+            let got = ps.aperture_params[k] as f64 + ps.aperture_params_lo[k] as f64;
+            assert!((got - v).abs() < 1e-13, "surface {i}");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 7);
 }
 
 /// Precision qualification passes on a sample, records the backend in

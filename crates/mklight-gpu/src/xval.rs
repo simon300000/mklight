@@ -7,8 +7,10 @@
 //! `mklight_trace::trace_ray`, and compares, per ray that both traces
 //! complete:
 //!
-//! * image-surface position (Euclidean distance, mm) and direction cosines
-//!   (Euclidean distance of the unit vectors);
+//! * position (Euclidean distance, mm) and direction cosines (Euclidean
+//!   distance of the unit vectors) on every surface, from per-surface
+//!   records (coordinate breaks, which only re-express the previous hit,
+//!   are skipped), and at the image;
 //! * OPD in waves: the backend's OPD is formed on the CPU from the returned
 //!   OPLs with the same reference sphere as `mklight_trace::opd` (centre and
 //!   OPL from the backend's own chief ray, exit pupil from the paraxial
@@ -21,8 +23,10 @@
 //!   such rays are counted separately.
 //!
 //! [`qualify`] runs a small cross-validation for one system and returns a
-//! [`Qualification`] (pass/fail, measured errors, reason). A caller that
-//! gets a failure runs the CPU reference instead and records the decision
+//! [`Qualification`] (pass/fail, measured errors, reason); the sampled
+//! maxima must stay within a margin (a third) of the budget, because rays
+//! outside the sample can be worse. A caller that gets a failure runs the
+//! CPU reference instead and records the decision
 //! with [`Qualification::record`], which writes the backend, precision and
 //! fallback reason into the result's `RunInfo` (CONVENTIONS §7: never
 //! silently degraded numbers).

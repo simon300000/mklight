@@ -157,6 +157,13 @@ to the CPU reference. It must never return silently degraded numbers.
   `j` and `j + 1` is the medium after surface `j`, in both travel
   directions; a backward step uses the inverse of surface `j`'s
   `to_next` transform. Sequential steps reproduce `mklight_trace`.
+* Direction of travel through the surface sequence in a path program: a
+  transmission keeps it, a ghost reflection at a refracting surface
+  reverses it, and a reflection at a mirror keeps it (forward or
+  backward), because both gaps next to a sequential mirror lie on its
+  reflecting side. Transmission through a mirror does not exist.
 * A backend that fails precision qualification for a system is not used
   for it: the result is computed by the CPU f64 reference and its `RunInfo`
-  names the rejected backend and the reason (`docs/GPU.md` §5.2).
+  names the rejected backend and the reason (`docs/GPU.md` §5.2). A
+  qualification passes only with the sampled errors within a third of the
+  §7 budget; a cancelled qualification is an error, not a failure.
