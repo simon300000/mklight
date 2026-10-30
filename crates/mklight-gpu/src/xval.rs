@@ -238,6 +238,7 @@ pub fn reference_status_word(st: &TraceStatus) -> u32 {
                 FailReason::NoConvergence => MKL_RAY_NOT_CONVERGED,
                 FailReason::OutsideDomain => MKL_RAY_OUTSIDE_DOMAIN,
                 FailReason::Degenerate => MKL_RAY_DEGENERATE,
+                FailReason::EvanescentOrder => MKL_RAY_EVANESCENT,
                 _ => MKL_RAY_NONFINITE,
             },
             surface,

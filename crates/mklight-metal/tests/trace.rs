@@ -370,10 +370,7 @@ fn plate_two_reflection_path_gpu() {
 fn qualification_on_gpu() {
     let g = gpu_or_skip!();
     let ctx = JobContext::new();
-    for (name, sys) in samples::all()
-        .into_iter()
-        .filter(|(_, s)| !samples::has_extended_surfaces(s))
-    {
+    for (name, sys) in samples::all().into_iter() {
         let q = qualify(g, &testutil::tracer(sys), None, &ctx).unwrap();
         assert!(q.passed, "{name}: {q:?}");
         assert!(q.budget_fraction.unwrap() < q.margin);
@@ -509,4 +506,202 @@ fn benchmark_double_gauss_1e6() {
         rs / cpu_best,
         cpu_best / gpu_best
     );
+}
+
+#[test]
+fn extended_full_capacity_and_steep_rays_bitwise() {
+    use mklight_core::model::Interaction;
+    use mklight_gpu::consts::MKL_RAY_EVANESCENT;
+    let g = gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let rays = testutil::steep_random_rays();
+    let mut b = RayBatch::with_capacity(rays.len());
+    for (i, r) in rays.iter().enumerate() {
+        b.push_f64(
+            [r.pos.x, r.pos.y, r.pos.z],
+            [r.dir.x, r.dir.y, r.dir.z],
+            (i % 3) as u32,
+        );
+    }
+    for x in [-1e-30, 0.0, 1e-30, 1e-10] {
+        b.push_f64([x, 0.0, -5.0], [0.0, 0.0, 1.0], 1);
+    }
+    let mut systems: Vec<_> = testutil::extended_shapes()
+        .into_iter()
+        .map(|(n, s)| (n.to_string(), testutil::one_surface(s)))
+        .collect();
+    systems.push((
+        "odd cone".into(),
+        testutil::one_surface(mklight_core::SurfaceShape::OddAsphere {
+            curvature: 0.0,
+            conic: 0.0,
+            coefficients: vec![0.01],
+        }),
+    ));
+    let doe = systems
+        .iter()
+        .find(|(n, _)| n == "doe10")
+        .unwrap()
+        .1
+        .clone();
+    for interaction in [
+        Interaction::Refract,
+        Interaction::Reflect,
+        Interaction::Dummy,
+    ] {
+        for order in [-2, 0, 3, 10000] {
+            let mut sys = doe.clone();
+            sys.surfaces[1].interaction = interaction;
+            if let mklight_core::SurfaceShape::Diffractive { phase, .. } =
+                &mut sys.surfaces[1].shape
+            {
+                phase.trace_order = order;
+            }
+            systems.push((format!("DOE {interaction:?} order {order}"), sys));
+        }
+    }
+    let packed: Vec<_> = systems
+        .iter()
+        .map(|(_, s)| PackedSystem::pack_all(&testutil::resolve(s.clone())).unwrap())
+        .collect();
+    // One upload exercises rebasing of every surface's pool offset.
+    let (hg, hc) = (
+        g.upload_systems(&packed).unwrap(),
+        c.upload_systems(&packed).unwrap(),
+    );
+    let mut evanescent = 0;
+    for (k, (name, _)) in systems.iter().enumerate() {
+        let mut rays = b.clone();
+        rays.system = vec![k as u32; rays.len()];
+        let req = |h| {
+            let mut r = TraceRequest::new(h, rays.clone(), 0, 1);
+            r.record = RecordMode::AllSurfaces;
+            r.apply_apertures = false;
+            r
+        };
+        let a = trace(g, req(hg));
+        let b = trace(&c, req(hc));
+        assert_bitwise(&a, &b, name);
+        evanescent += a
+            .status
+            .iter()
+            .filter(|s| **s & 255 == MKL_RAY_EVANESCENT)
+            .count();
+        if systems[k].1.surfaces[1].interaction == Interaction::Dummy {
+            let forced = |h| {
+                let mut r = TraceRequest::path(
+                    h,
+                    rays.clone(),
+                    0,
+                    vec![PathStep::forward(1, StepMode::Reflect)],
+                );
+                r.record = RecordMode::AllSurfaces;
+                r.apply_apertures = false;
+                r
+            };
+            let a = trace(g, forced(hg));
+            let b = trace(&c, forced(hc));
+            assert_bitwise(&a, &b, &format!("{name}, forced reflection"));
+            assert!(a.status.iter().all(|s| s & 255 != MKL_RAY_EVANESCENT));
+        }
+        let r2: Vec<f32> = (0..=64).map(|j| j as f32 * 160.0 / 64.0).collect();
+        let probe = |backend: &dyn ComputeBackend, h| match backend
+            .run(
+                Job::SagProbe {
+                    systems: h,
+                    system: k as u32,
+                    surface: 1,
+                    r2: r2.clone(),
+                },
+                &JobContext::new(),
+            )
+            .unwrap()
+            .output
+        {
+            JobOutput::F32(v) => v,
+            _ => panic!(),
+        };
+        let (a, b) = (probe(g, hg), probe(&c, hc));
+        for (i, (a, b)) in a.iter().zip(b).enumerate() {
+            assert!(
+                a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
+                "{name} sag {i}: {a} {b}"
+            );
+        }
+    }
+    assert!(evanescent > 1000);
+    g.release_systems(hg).unwrap();
+    c.release_systems(hc).unwrap();
+}
+
+/// Same rays, one refracting surface and full coefficient capacities; best
+/// of ten interleaved dispatches. Device time excludes upload/readback; wall
+/// includes the host ray planes and output unpacking (GPU.md §5.3).
+#[test]
+#[ignore = "benchmark"]
+fn benchmark_extended_shapes() {
+    let g = gpu_or_skip!();
+    eprintln!(
+        "device {} build {}",
+        g.info().name,
+        g.precision().kernel_build
+    );
+    let n = 1 << 18;
+    let mut rays = RayBatch::with_capacity(n);
+    for i in 0..n {
+        let a = i as f64 * 2.399963229728653;
+        let r = 8.0 * ((i % 4096) as f64 / 4096.0).sqrt();
+        rays.push_f64([r * a.cos(), r * a.sin(), -5.0], [0.0, 0.0, 1.0], 1);
+    }
+    let mut shapes = vec![(
+        "even10",
+        mklight_core::SurfaceShape::EvenAsphere {
+            curvature: 0.04,
+            conic: -0.4,
+            coefficients: (0..10).map(|j| 0.01 / 16f64.powi(2 * j + 4)).collect(),
+        },
+    )];
+    shapes.extend(testutil::extended_shapes());
+    let reqs: Vec<_> = shapes
+        .iter()
+        .map(|(_, shape)| {
+            let rs = testutil::resolve(testutil::one_surface(shape.clone()));
+            let h = g
+                .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+                .unwrap();
+            let mut req = TraceRequest::new(h, rays.clone(), 0, 1);
+            req.apply_apertures = false;
+            req.radiometry = Radiometry::Off;
+            req
+        })
+        .collect();
+    // Rounds interleave the shapes, so GPU clock ramps and machine load
+    // affect them alike; the first round is a warm-up.
+    let mut best = vec![(f64::INFINITY, f64::INFINITY); shapes.len()];
+    for round in 0..11 {
+        for ((name, _), (req, best)) in shapes.iter().zip(reqs.iter().zip(&mut best)) {
+            let r = g
+                .run(Job::Trace(Box::new(req.clone())), &JobContext::new())
+                .unwrap();
+            let JobOutput::Trace(t) = r.output else {
+                panic!()
+            };
+            assert!(t.status.iter().all(|s| *s == 0), "{name}");
+            if round > 0 {
+                best.0 = best.0.min(r.stats.device_seconds);
+                best.1 = best.1.min(r.stats.wall_seconds);
+            }
+        }
+    }
+    for ((name, _), (device, wall)) in shapes.iter().zip(&best) {
+        eprintln!(
+            "| {name} | {:.1} | {:.1} | {:.3} |",
+            n as f64 / device / 1e6,
+            n as f64 / wall / 1e6,
+            best[0].0 / device
+        );
+    }
+    for req in reqs {
+        g.release_systems(req.systems).unwrap();
+    }
 }

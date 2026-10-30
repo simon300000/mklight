@@ -96,7 +96,9 @@ curvature, conic, indices and transforms, and coating codes; the trace
 kernel's parameter block, path-step words, ray planes and status codes were
 added; now 4: residuals of the ideal-lens power and vergences, the aperture
 sizes and the asphere coefficients, and the trace flag
-`MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`); the header carries a magic word and
+`MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`; now **5**: the coefficient-pool
+indices in the former final padding words, extended shape codes, and
+`MKL_RAY_EVANESCENT`); the header carries a magic word and
 the version, and backends validate both on upload.
 
 **Representability.** The packer rounds each model value once to f32 and
@@ -132,7 +134,7 @@ Systems with more than 16 wavelengths are packed in chunks
 
 | field | meaning / units |
 |---|---|
-| `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK}` |
+| `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK, ODD_ASPHERE, Q_CON, Q_BFS, DIFFRACTIVE, TOROID, BICONIC, XY, ZERNIKE}` |
 | `interaction` | `MKL_INTERACT_{REFRACT, REFLECT, DUMMY}` |
 | `aperture`, `aperture_params[4]` (+`_lo`) | `MKL_APERTURE_*`; mm. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
 | `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE` |
@@ -144,6 +146,7 @@ Systems with more than 16 wavelengths are packed in chunks
 | `coating`, `coating_r`, `coating_t` | `MKL_COATING_{BARE, IDEAL, TABLE}`; an ideal coating's R and T |
 | `to_next_rot[9]` (+`_lo`), `to_next_origin[3]` (+`_lo`), `to_next_shift[3]` (+`_lo`) | transform into the next local frame (below) |
 | `n_after[16]` (+`_lo`), `alpha_after[16]` | index after the surface, internal absorption (1/mm), per packed wavelength |
+| `coefficient_offset`, `coefficient_count` | first pair and number of pairs in the shared coefficient pool (0 count for legacy shapes) |
 
 **Aspheres.** The sag is `conic(r²) + ρ⁴ Σⱼ asphere[j] ρ²ʲ` with
 `ρ² = r²·asphere_inv_norm2`. The packer stores `asphere[j] = A₂ⱼ₊₄ R²ʲ⁺⁴`
@@ -152,6 +155,37 @@ of two, the normalisation is exact (it changes only exponents), yet it keeps
 A22-scale coefficients (~1e-35) out of the f32 subnormal range and keeps
 Horner intermediates O(sag). Terms beyond A22, or coefficient sets that no
 exponent can make representable, are rejected.
+
+**Extended shapes (v5).** The surface record stays **624 bytes**; bytes
+616 and 620 now index a separate coefficient buffer. An entry is two
+4-byte scalars `(hi, lo)`, addressed in pairs, without vector alignment.
+`PackedSystemSet` concatenates pools and rebases each surface offset.
+Upload validates what the kernels index or branch on without checks: the
+range, integral counts within the shape's capacity that add up to
+`coefficient_count`, the DOE base and Zernike ordering codes, a positive
+radius, and every pool value finite and normal. The C and Metal layout
+probes check the new offsets as well as the unchanged record size.
+
+The ten-pair prefix is defined by `MKL_COEFF_*` in the header: radius,
+x curvature/conic, two coefficient counts, base-shape/Zernike-ordering
+code, exact-conic flag, trace order, design order and design wavelength.
+It is followed by coefficients A then B (x then y for axis series). A DOE
+inserts sixteen double-float `m λ_mm/(2π)` values before its phase
+coefficients; the base uses the existing conic/even-asphere fields.
+Precomputing these wavelength factors preserves the model wavelength and
+signed i32 order without rounding them to a single f32. Design order and
+wavelength remain metadata and never rescale the traced phase. Trailing
+zero coefficients are dropped (they would only cost per-ray work), so a
+QBfs without terms is recognised by its zero count.
+
+Capacities are odd 20, Q 20, XY 65 (degree 10), Zernike 37 Fringe or 45
+Standard, phase 10, and 10 per toroid/biconic axis. Odd and axis power
+series are normalized with an exact power-of-two radius chosen near the
+aperture, as for even aspheres. Q, XY, Zernike and phase retain their model
+normalization radius as hi + lo. QBfs uses the Forbes triangular conversion
+once in the packer, storing auxiliary-basis coefficients as hi + lo; the
+kernel evaluates the differentiated auxiliary Clenshaw recurrence directly.
+No conversion to monomials is involved.
 
 **Transforms** (CONVENTIONS §7.1). `to_next_origin` is the next vertex in this
 surface's local frame and `to_next_rot` maps this frame's axes to the next
@@ -374,6 +408,37 @@ pay for more (an asphere whose polynomial cancels the conic needs up to
 `MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`: a search the cap stops is then
 `NOT_CONVERGED`, never `MISS`, since the reference would iterate on.
 
+**Extended sag paths.** `surface_math.rs` and `surface_math.h` carry the
+same first-order Cartesian jets in f32 and double-float. Horner evaluates
+odd/axis/XY/phase polynomials, differentiated Clenshaw evaluates Q, and
+Jacobi plus complex Cartesian powers evaluates Zernike without polar
+singularities. Toroid and biconic formulas keep their cylinder limits
+without dividing by curvature. The odd cone has the reference's axial
+normal at the vertex. A nonzero cone radius whose square underflows uses
+a scaled hypot and unit radial gradient; it must not select the vertex
+normal (tested at radii ±1e-30 mm). An exact-conic departure retains the closed-form
+intersection and checks its finite normalization domain afterward.
+
+General sag intersections use the reference's y-curvature/conic seed,
+positive/negative crossing bracket, Newton step and twenty-step residual
+backtracking, with the same Miss/NoConvergence/OutsideDomain decisions.
+The f32 convergence tolerance is `abs + rel*(|t|+|z|+|sag|)`; two Newton
+refinements on the double-float line and a fresh double-float gradient
+produce the carried point and normal. Normalization-domain comparisons in
+the refinement use hi + lo and the reference's radial margin. A DOE first
+intersects its base using the legacy path, then checks the phase domain.
+
+DOE interaction projects the phase gradient onto the actual base tangent
+plane. The selected order adds `m λ ∇surfaceΦ/(2π)` to tangential momentum
+and `m λ Φ/(2π)` to double-float OPL before writing the surface record.
+Transmission preserves the incident normal hemisphere, reflection reverses
+it and uses the incident index. A negative outgoing normal-momentum square
+returns `EVANESCENT`, distinct from TIR. Zero order takes ordinary
+refraction/reflection; dummy and image surfaces have no phase interaction.
+Unlike TIR, whose f32 decision also supplies the refraction coefficient,
+the whole diffraction (normal, phase gradient, tangential momentum, the
+propagating-order test and the phase) is one double-float computation.
+
 **Reported state.** The output point and direction are the double-float
 ones rounded to f32. The rounding residual of the point along the
 direction is moved into the reported optical path (`OPL − n·(δ·D)`), so
@@ -403,6 +468,7 @@ repeats its final state).
 | `TIR` | `TotalInternalReflection` |
 | `NOT_CONVERGED` | `Failed { NoConvergence }` |
 | `OUTSIDE_DOMAIN` | `Failed { OutsideDomain }` |
+| `EVANESCENT` | `Failed { EvanescentOrder }` |
 | `DEGENERATE` | `Failed { Degenerate }` |
 | `NONFINITE` | `Failed { NonFinite }` (at the start surface for non-finite input) |
 
@@ -610,6 +676,112 @@ relay (27 mm, NA 0.25, ideal lenses now exact in phase: the NA 0.05
 near-critical refraction of the TIR block 6.5e-4. Survival agreed for
 every ray, vignetted ones included. Bulk transmittance agrees to ≤ 4e-8.
 
+### 5.1.1 Extended-surface qualification (layout v5)
+
+Measured on Apple M2 Pro with the strict offline compiler flags, 2026-10-31.
+Each sample and its 0.93× aperture variant has 27,864 rays (64 × 64 pupil,
+all fields and wavelengths). GPU and matching FTZ emulation are bit-identical
+in every output plane and every surface record. Maxima below include both
+aperture variants; no survival mismatch or tolerance-band exception occurred.
+All nine samples also pass the default one-third-budget qualification.
+
+| sample | position (mm) | direction | OPD (waves) |
+|---|---:|---:|---:|
+| hybrid_doe | 8.2e-8 | 3.0e-8 | 1.4e-6 |
+| anamorphic | 1.6e-7 | 3.0e-8 | 9.3e-7 |
+| biconic | 8.4e-8 | 3.0e-8 | 1.9e-6 |
+| toroid | 8.3e-8 | 3.0e-8 | 1.9e-6 |
+| q_con | 8.4e-8 | 3.0e-8 | 1.9e-6 |
+| q_bfs | 8.3e-8 | 3.0e-8 | 2.0e-6 |
+| odd_asphere | 8.4e-8 | 3.0e-8 | 1.5e-6 |
+| xy_freeform | 8.4e-8 | 3.0e-8 | 2.4e-6 |
+| zernike_sag | 8.3e-8 | 3.0e-8 | 2.4e-6 |
+
+`surface_math::tests::full_capacity_sags_and_gradients_match_f64` checks
+all coefficient capacities, both Zernike orderings, negative curvature and
+both cylinder orientations in IEEE and FTZ environments against the core's
+independent f64 jets (absolute sag/gradient error < 2e-10). Device tests
+also upload these systems together, exercising rebased pool offsets and
+positive-y sag probes. DOE tests cover orders −2, 0, 1, 3 and 10,000,
+transmission, reflection, dummy pass-through, curved bases and evanescence;
+forced reflection at dummy/image DOEs also preserves specular direction and
+geometric OPL without adding phase;
+OPL is compared at the same reported point, within 1e-8 mm. The hybrid's
+OPD test includes the phase jump. Design order 2 and design wavelength
+0.55 µm are deliberately different from the selected order/wavelengths.
+
+**Steep random rays.** `extended_steep_rays_classify_and_match_f64` uses
+Philox seed `0x4d4b4c5355524635`, stream 0, 8,192 rays per full-capacity
+fixture: x/y uniform in [−14,14] mm, polar angle in [−80°,80°], random
+azimuth, no aperture clipping. The same set, plus DOE order/interaction
+variants, is bit-identical between Metal and FTZ emulation. Against f64:
+
+| fixture | equal statuses / 8192 | agreement | common hits |
+|---|---:|---:|---:|
+| odd, 20 terms | 8113 | 99.036% | 7238 |
+| QCon, 20 terms | 8192 | 100% | 3341 |
+| QBfs, 20 terms | 8192 | 100% | 3330 |
+| toroid, 10 y terms | 8183 | 99.890% | 7349 |
+| biconic, 10 terms per axis | 8169 | 99.719% | 5926 |
+| XY, 65 terms | 8192 | 100% | 3325 |
+| DOE, 10 phase terms on even-asphere base | 8166 | 99.683% | 3336 |
+| Fringe, 37 terms | 8192 | 100% | 3327 |
+| Standard, 45 terms | 8192 | 100% | 3327 |
+| x cylinder | 8191 | 99.988% | 6133 |
+| y cylinder | 8192 | 100% | 8151 |
+
+Every common hit meets the full budget: maximum position 1.86e-6 mm,
+direction 5.08e-8, same-point OPL 3.90e-12 mm, including DOE phase.
+The test requires >99% status agreement for each fixture and no common-hit
+geometry/OPL outlier; it does not hide failures in an aperture/TIR band.
+
+Residual classification differences, as `(f64 → f32, count)`:
+
+* Odd: OK→Miss 44, OK→NoConvergence 9, Miss→OK 26.
+* Toroid: OK→Miss 4, Miss→OK 5.
+* Biconic: OK→Miss 9, Miss→OK 8, OutsideDomain→OK 5,
+  OutsideDomain→Miss 1.
+* DOE base (the even-asphere path, §5 strong aspheres): Miss→NoConvergence
+  12, Miss→OutsideDomain 1, NoConvergence→Miss 10,
+  NoConvergence→OutsideDomain 1, OutsideDomain→NoConvergence 2. Both
+  implementations fail all 26.
+* x cylinder: OutsideDomain→Miss 1; both fail.
+
+These are rays whose **reference classification is itself
+ill-conditioned**, not a divergence of the seed or domain logic. The f32
+and f64 conic seeds (from the same start) agree on every differing odd,
+toroid, biconic and cylinder ray. For all but six of them the seed
+misses, so the search starts at the closest approach and Newton walks
+towards an extremum of the residual `g(t)` along a line that does not
+cross the surface nearby; there `g′` falls to ~10⁻⁴ and the step `g/g′`
+amplifies a relative perturbation of the iterate by ~10⁸, so where the
+walk lands (a far root, a backtracking failure, the domain edge) is
+decided by the last bits. Measured:
+
+| fixture | f64 status changes under ±5e-7 mm / ±5e-8 input perturbations | f32 differences | of which such rays | f64 Newton from the f32-rounded start gives the f32 status |
+|---|---:|---:|---:|---:|
+| odd | 276 / 8192 | 79 | 63 | 33 |
+| toroid | 24 / 8192 | 9 | 8 | 5 |
+| biconic | 100 / 8192 | 23 | 15 | 12 |
+| DOE base | 80 / 8192 | 26 | 23 | — |
+| QCon, QBfs, XY, Zernike, cylinders | 0 / 8192 | 0 or 1 | — | — |
+
+The perturbations (each input coordinate and direction cosine moved by
+about the f32 rounding of the ray, twelve variants per ray) flip the f64
+reference's own status for most differing rays; under ±1e-12 mm they
+flip none of them, so the reference is deterministic but ill-conditioned
+there. Running the reference algorithm in f64 from the f32-rounded
+closest-approach point and direction already reproduces the f32 status
+for 50 of the 111 odd, toroid and biconic differences. The rest are the
+same walk decided by the f32 rounding of `g′` itself: the x-cylinder ray
+stalls at an extremum (`g = −2.87 mm`) where the f32 `g′` rounds to
+exactly zero (a `Miss`) while the f64 `g′ = −8e-8` steps out of the
+domain (`OutsideDomain`). The f32-only hits are genuine roots (residual
+≤ 2.7e-5 mm at the rounded output point, mostly gradient-amplified
+coordinate rounding). No f32 search can reproduce these decisions;
+qualification remains mandatory for steep systems, and the sample passes
+above do not claim exhaustive qualification of every ray.
+
 ### 5.2 Precision qualification and CPU fallback
 
 `xval::qualify(backend, tracer, settings, ctx)` runs a small
@@ -670,6 +842,40 @@ with host-side packing and unpacking of ~110 MB of planes, ~2.5×. (The
 double-float aperture tests of layout v4 cost ~5 % of device time.) Chained
 device-resident jobs (trace → reduce without readback) are the next
 optimisation (§8).
+
+### 5.4 Extended-shape throughput
+
+Ignored test: `source ~/.cargo/env && cargo test --release -p mklight-metal
+--test trace benchmark_extended_shapes -- --ignored --nocapture`.
+Apple M2 Pro, strict offline flags, 262,144 axial input rays over an
+8 mm radius disk, one refracting surface, radiometry off, no records, all
+rays successful. One warm-up round, then the best of ten rounds that
+interleave the shapes, so GPU clock ramps and machine load affect them
+alike (device rates run to run within ~3 %). Wall includes ray-plane upload and result
+unpacking, excludes system upload and request cloning. Columns are
+millions of **rays/s** (one surface). Each fixture uses its full
+coefficient capacity. The DOE base has two even-asphere terms, so its
+relative rate is not a standalone phase cost.
+
+| shape | device M rays/s | wall M rays/s | device / even10 |
+|---|---:|---:|---:|
+| even, 10 terms | 246 | 57 | 1.000 |
+| odd, 20 terms | 104 | 44 | 0.425 |
+| QCon, 20 terms | 37 | 25 | 0.150 |
+| QBfs, 20 terms | 77 | 38 | 0.313 |
+| toroid, 10 y terms | 99 | 43 | 0.403 |
+| biconic, 10 terms per axis | 94 | 42 | 0.384 |
+| XY, 65 terms | 34 | 23 | 0.138 |
+| DOE, 10 phase terms | 220 | 57 | 0.894 |
+| Fringe, 37 terms | 10.3 | 8.8 | 0.042 |
+| Standard, 45 terms | 7.0 | 6.3 | 0.028 |
+| x cylinder | 122 | 46 | 0.495 |
+| y cylinder | 121 | 46 | 0.492 |
+
+The high-order Zernike path evaluates a differentiated Jacobi recurrence
+and Cartesian angular powers for each populated term at every Newton
+sample/refinement. It is the largest cost here; these measurements use all
+terms, while the sample designs have sparse, shorter coefficient lists.
 
 ## 6. Metal backend notes
 
@@ -754,10 +960,13 @@ optimisation (§8).
   (§5.1); a consumer needing more could be given residual output planes.
 * Asphere searches that wander far from the conic seed (> 20 Newton steps)
   can settle on another root than the reference, and the failure class of
-  never-converging searches can differ (§5: strong aspheres). Designed
-  systems do not reach this.
+  never-converging searches can differ (§5: strong aspheres). Steep
+  extended-surface searches that walk across an extremum of the residual
+  have a classification that f32-sized input changes already flip in the
+  f64 reference (§5.1.1); none of the sample grids shows this.
 * Systems are limited by the packer: 16 wavelengths per packed chunk,
-  asphere terms up to A22, model values representable as normal f32.
+  even-asphere terms up to A22, the extended capacities in §2.2, and model
+  values representable as normal f32 after coefficient normalization.
 * Job inputs and outputs are host arrays; device-resident buffers chained
   between jobs (e.g. trace → reduce without a readback) are a later
   optimisation that does not change the interface's semantics.
