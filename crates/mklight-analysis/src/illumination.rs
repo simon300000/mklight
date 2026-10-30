@@ -296,7 +296,7 @@ impl Probe<'_> {
 /// One field's integrals: `(Ω_p, surviving share of the pupil area, chief
 /// angle, cos⁴)` and the number of failed pupil nodes. `None` when the
 /// chief ray fails.
-fn integrate_field(
+pub(crate) fn integrate_field(
     rt: &SequentialTracer,
     field: &PreparedField,
     wl: usize,
