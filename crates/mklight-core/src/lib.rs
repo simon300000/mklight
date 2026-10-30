@@ -11,6 +11,7 @@ pub mod model;
 pub mod param;
 pub mod resolved;
 pub mod rng;
+pub mod samples;
 pub mod serde_util;
 pub mod snapshot;
 
