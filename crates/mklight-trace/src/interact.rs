@@ -50,6 +50,29 @@ pub fn refract(k: Vec3, normal: Vec3, n1: f64, n2: f64) -> Option<(Vec3, f64)> {
     Some((out, cos_i))
 }
 
+/// Fixed-period diffraction `n₂ k₂∥ = n₁ k₁∥ + g∥` (SURFACES §3), where
+/// `g = m λ (Φ_x, Φ_y, 0)/(2π)` (λ and the phase gradient in mm units) and
+/// `g∥` is its projection on the tangent plane. `reflected` selects the
+/// outgoing normal hemisphere. `None` is an evanescent order, not TIR.
+pub fn diffract(
+    k: Vec3,
+    normal: Vec3,
+    n1: f64,
+    n2: f64,
+    g: [f64; 2],
+    reflected: bool,
+) -> Option<Vec3> {
+    let kn = k.dot(normal);
+    let g = Vec3::new(g[0], g[1], 0.0);
+    let tangent = ((k - normal * kn) * n1 + g - normal * g.dot(normal)) * (1.0 / n2);
+    let disc = 1.0 - tangent.dot(tangent);
+    if disc < 0.0 {
+        return None;
+    }
+    let sign = if (kn < 0.0) != reflected { -1.0 } else { 1.0 };
+    Some(tangent + normal * (sign * disc.sqrt()))
+}
+
 /// Specular reflection `k' = k − 2(k·n)n`. Returns `(k', cos i)`.
 #[inline]
 pub fn reflect(k: Vec3, normal: Vec3) -> (Vec3, f64) {

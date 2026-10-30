@@ -60,9 +60,22 @@ fn num(v: &Value) -> f64 {
 fn cross_check(e: &Engine, backend: &str) {
     let b = Backend::parse(backend);
     for (name, sys) in samples::all() {
+        let extended = samples::has_extended_surfaces(&sys);
         let s = session(e, sys);
         let cpu = run_on(&s, "spot_diagram", Value::Null, None);
         let gpu = run_on(&s, "spot_diagram", Value::Null, Some(b.clone()));
+        if extended {
+            assert_eq!(gpu.run_info.backend, "cpu_reference", "{name}");
+            assert!(
+                gpu.backend
+                    .fallback_reason
+                    .as_ref()
+                    .is_some_and(|r| r.contains("extended surface")),
+                "{name}: {:?}",
+                gpu.backend
+            );
+            continue;
+        }
         assert_eq!(gpu.run_info.backend, backend, "{name}: {:?}", gpu.backend);
         assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
         assert_eq!(gpu.backend.used, backend);

@@ -142,6 +142,11 @@ impl SagPatch {
                     }
                 }
             }
+            _ => {
+                return Err(MkError::Unsupported(
+                    "extended surface shape in stray geometry".into(),
+                ));
+            }
         };
         let mut r_outer = r_outer;
         match kind {

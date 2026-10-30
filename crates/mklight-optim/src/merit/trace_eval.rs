@@ -230,6 +230,7 @@ impl TraceEvaluator {
         parallel: bool,
     ) -> MkResult<Vec<OperandValue>> {
         ctx.check()?;
+        s.require_legacy_shapes("merit evaluation")?;
         let auto_sd = has_auto_semi_diameters(s);
         let needs_tracer = operands.iter().any(|o| {
             (!is_model_kind(&o.kind) && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))

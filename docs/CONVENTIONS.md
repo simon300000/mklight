@@ -321,3 +321,23 @@ may change.
 * When light reaches the image toward local `−z`, wave optics works in the
   image frame mirrored in `z`, so maps, PSFs and MTF directions are in the
   image surface's `x`, `y`. Details: `docs/WAVE.md`.
+
+## 16. Extended surfaces and diffractive phase
+
+* `docs/SURFACES.md` defines the additional surface bases, coefficient
+  ordering, domains, vertex exceptions and structural limits. Sag and its
+  first two derivatives live in core; tracing uses the same definitions.
+* Normalisation radii and sag coefficients are in mm; physical power-series
+  coefficients carry the corresponding inverse powers of mm. Zernike sag
+  amplitudes are mm, distinct from Zernike wavefront amplitudes in waves.
+* DOE Φ is an order-1 phase **lag**, `exp(−imΦ)` in §9's time convention.
+  A fixed structure adds `mλΦ/(2π)` to OPL and `mλ∇ₛΦ/(2π)` to tangential
+  index-weighted direction. λ is converted from µm to mm. Selected order
+  controls tracing; design wavelength/order do not rescale the structure.
+* The existing first-order report remains the y sweep. `ParaxialXY` adds x,
+  with signed squeeze `EFL_y/EFL_x`; mixed xy power requires a coupled model
+  and is explicitly warned about. An odd r term has an axial normal by
+  convention at its vertex but no Hessian there.
+* Additional §13 codes: `invalid_norm_radius`, `coefficient_count`,
+  `invalid_design_wavelength`, `invalid_diffraction_order`,
+  `invalid_diffractive_base`. The corresponding limits are in SURFACES §7.

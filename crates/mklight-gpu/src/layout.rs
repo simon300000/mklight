@@ -454,6 +454,11 @@ impl PackedSystem {
                         }
                     }
                 }
+                _ => {
+                    return Err(MkError::Unsupported(what(
+                        "extended surface shape in GPU packer",
+                    )));
+                }
             }
 
             // The transform into the next frame. For an object at infinity,

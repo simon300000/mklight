@@ -176,7 +176,10 @@ fn gpu_matches_emulation_bitwise_paths_and_edge_cases() {
             a
         };
     let mut ghosts = 0;
-    for (name, sys) in samples::all() {
+    for (name, sys) in samples::all()
+        .into_iter()
+        .filter(|(_, s)| !samples::has_extended_surfaces(s))
+    {
         let t = testutil::tracer(sys);
         let rs = t.system();
         let p = PackedSystem::pack_all(rs).unwrap();
@@ -367,7 +370,10 @@ fn plate_two_reflection_path_gpu() {
 fn qualification_on_gpu() {
     let g = gpu_or_skip!();
     let ctx = JobContext::new();
-    for (name, sys) in samples::all() {
+    for (name, sys) in samples::all()
+        .into_iter()
+        .filter(|(_, s)| !samples::has_extended_surfaces(s))
+    {
         let q = qualify(g, &testutil::tracer(sys), None, &ctx).unwrap();
         assert!(q.passed, "{name}: {q:?}");
         assert!(q.budget_fraction.unwrap() < q.margin);

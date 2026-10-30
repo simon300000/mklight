@@ -160,8 +160,19 @@ fn geometric_analyses_on_every_sample() {
         "validate",
     ];
     for (sample, sys) in samples::all() {
+        let extended = samples::has_extended_surfaces(&sys);
         let s = session(&e, sys);
         for n in names {
+            if extended && matches!(n, "layout" | "seidel" | "field_curvature_distortion") {
+                let error = s
+                    .run_analysis(&AnalysisRequest::new(n, Value::Null), &JobContext::new())
+                    .unwrap_err();
+                assert!(
+                    error.to_string().contains("unsupported"),
+                    "{sample}/{n}: {error}"
+                );
+                continue;
+            }
             let r = s
                 .run_analysis(&AnalysisRequest::new(n, Value::Null), &JobContext::new())
                 .unwrap_or_else(|err| panic!("{sample}/{n}: {err}"));

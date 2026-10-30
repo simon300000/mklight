@@ -81,7 +81,10 @@ fn singlet_ghost_focus_matches_mirror_equivalent() {
 
 #[test]
 fn primary_step_trace_reproduces_reference_first_order() {
-    for (name, sys) in samples::all() {
+    for (name, sys) in samples::all()
+        .into_iter()
+        .filter(|(_, s)| !samples::has_extended_surfaces(s))
+    {
         let m = model(sys, GhostSettings::default());
         let rs = m.system();
         let steps = m.check_path(&GhostPath::primary()).unwrap();

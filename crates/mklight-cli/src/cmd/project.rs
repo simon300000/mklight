@@ -224,12 +224,8 @@ pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
 
 pub(crate) fn shape_type(s: &SurfaceShape) -> &'static str {
     match s {
-        SurfaceShape::Plane => "plane",
         SurfaceShape::Conic { conic, .. } if *conic == 0.0 => "sphere",
-        SurfaceShape::Conic { .. } => "conic",
-        SurfaceShape::EvenAsphere { .. } => "even_asphere",
-        SurfaceShape::Paraxial { .. } => "paraxial",
-        SurfaceShape::CoordinateBreak => "coordinate_break",
+        s => s.type_name(),
     }
 }
 
