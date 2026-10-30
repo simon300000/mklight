@@ -223,9 +223,8 @@ enum BackendChoice {
     /// CPU reference.
     Auto,
     Cpu,
-    /// The engine's GPU device, else the platform's default GPU (Metal);
-    /// the CPU reference (with a warning) when there is none or it fails
-    /// qualification.
+    /// The engine's GPU device for this analysis; the CPU reference (with
+    /// a warning) when there is none or it fails qualification.
     Gpu,
     /// The CPU-f32 emulation of the GPU kernels (validation and tests).
     GpuEmulation,
@@ -242,38 +241,17 @@ impl BackendChoice {
     }
 }
 
-/// The compute interface behind an engine device handle.
+/// The compute interface behind an engine device handle: an
+/// `Arc<dyn ComputeBackend>` (the engine's form, `docs/GPU.md` §1) or the
+/// CPU-f32 emulation backend itself.
 fn device_backend(dev: &DeviceHandle) -> Option<Arc<dyn ComputeBackend>> {
     if let Some(b) = dev.downcast_ref::<Arc<dyn ComputeBackend>>() {
         return Some(b.clone());
-    }
-    #[cfg(target_os = "macos")]
-    if let Ok(b) = dev.clone().downcast::<mklight_metal::MetalBackend>() {
-        return Some(b);
     }
     if let Ok(b) = dev.clone().downcast::<CpuF32Backend>() {
         return Some(b);
     }
     None
-}
-
-/// The platform's default GPU backend, created once.
-fn default_gpu() -> Option<Arc<dyn ComputeBackend>> {
-    static B: OnceLock<Option<Arc<dyn ComputeBackend>>> = OnceLock::new();
-    B.get_or_init(|| {
-        #[cfg(target_os = "macos")]
-        {
-            mklight_metal::MetalBackend::new()
-                .ok()
-                .flatten()
-                .map(|b| Arc::new(b) as Arc<dyn ComputeBackend>)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            None
-        }
-    })
-    .clone()
 }
 
 /// The GPU backend for a request, or why there is none.
@@ -287,9 +265,8 @@ fn gpu_backend(
         BackendChoice::Auto => Ok(engine),
         BackendChoice::GpuEmulation => Ok(Some(Arc::new(CpuF32Backend::new()))),
         BackendChoice::Gpu => engine
-            .or_else(default_gpu)
             .map(Some)
-            .ok_or_else(|| "no GPU device on this machine".to_string()),
+            .ok_or_else(|| "the engine selected no GPU device for this analysis".to_string()),
     }
 }
 
@@ -1718,17 +1695,36 @@ mod tests {
     /// the CPU reference, qualification in the result.
     #[test]
     fn optimize_on_gpu_backends() {
-        let mut backends = vec!["gpu_emulation"];
-        if default_gpu().is_some() {
-            backends.push("gpu");
-        } else {
+        // The engine hands GPU analyses their device as an
+        // `Arc<dyn ComputeBackend>` inside the `DeviceHandle`.
+        let handle = |b: Arc<dyn ComputeBackend>| -> DeviceHandle { Arc::new(b) };
+        let emulation = handle(Arc::new(CpuF32Backend::new()));
+        let metal = mklight_metal::MetalBackend::new()
+            .ok()
+            .flatten()
+            .map(|m| handle(Arc::new(m)));
+        if metal.is_none() {
             eprintln!("SKIP (Metal part): no GPU device");
         }
-        for backend in backends {
+        let mut cases = vec![
+            ("gpu_emulation", None),
+            ("gpu", Some(emulation.clone())),
+            ("auto", Some(emulation)),
+        ];
+        if let Some(m) = metal {
+            cases.push(("gpu", Some(m)));
+        }
+        for (backend, device) in cases {
             let mut s = unconstrained_triplet();
             s["max_iterations"] = json!(4);
             s["backend"] = json!(backend);
-            let r = run(samples::cooke_triplet(), "optimize", s).unwrap();
+            let reg = AnalysisRegistry::with_builtin();
+            let a = reg.get("optimize").unwrap();
+            let is_metal = device.as_ref().is_some_and(|d| {
+                device_backend(d).is_some_and(|b| b.info().backend_id().starts_with("metal:"))
+            });
+            let inp = input(samples::cooke_triplet()).with_device(device);
+            let r = run_analysis(a.as_ref(), &inp, &s, vec![], &JobContext::new()).unwrap();
             let b = &r.json["backend"];
             assert_eq!(b["precision"], json!("f32_gpu"), "{backend}: {b}");
             assert_eq!(b["qualification"]["passed"], json!(true));
@@ -1736,9 +1732,10 @@ mod tests {
             assert!(b["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
             assert_eq!(b["reported_on"], json!(TraceEvaluator::BACKEND));
             assert_eq!(b["requested"], json!(backend));
-            if backend == "gpu" {
-                assert!(b["evaluated_on"].as_str().unwrap().starts_with("metal:"));
-            }
+            assert_eq!(
+                b["evaluated_on"].as_str().unwrap().starts_with("metal:"),
+                is_metal
+            );
             assert!(
                 r.run_info
                     .warnings
@@ -1750,6 +1747,21 @@ mod tests {
             let (m0, m1) = (f(&r.json["start"]["merit"]), f(&r.json["final"]["merit"]));
             assert!(m1 < m0, "{backend}: {m0} -> {m1}");
         }
+        // `gpu` without a device: the CPU reference, and a warning that says
+        // why.
+        let mut s = unconstrained_triplet();
+        s["max_iterations"] = json!(1);
+        s["backend"] = json!("gpu");
+        let r = run(samples::cooke_triplet(), "optimize", s).unwrap();
+        assert_eq!(r.json["backend"]["precision"], json!("f64_reference"));
+        assert!(
+            r.run_info
+                .warnings
+                .iter()
+                .any(|w| w.contains("GPU not used")),
+            "{:?}",
+            r.run_info.warnings
+        );
     }
 
     /// With no variables / tolerances the jobs choose them: the curvatures of

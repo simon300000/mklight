@@ -12,10 +12,9 @@ rust-version.workspace = true
 [dependencies]
 mklight-core.workspace = true
 # Optimisation and tolerancing jobs (`analysis::optim`), with GPU-batched
-# merit evaluation on a `mklight-gpu` backend (Metal on macOS).
+# merit evaluation on the `mklight-gpu` device the engine selects.
 mklight-optim.workspace = true
 mklight-gpu.workspace = true
-mklight-metal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -23,3 +22,5 @@ blake3.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+# The optimize job on the Metal device (skipped without one).
+mklight-metal.workspace = true

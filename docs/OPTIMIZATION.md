@@ -543,7 +543,7 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
 | `fd_relative_step` | number or null, `null` | `null`: chosen per operand and evaluator (Derivatives) |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation: `auto` uses the GPU when the engine selected a GPU backend for the analysis (its device handle: `Arc<dyn ComputeBackend>`, `MetalBackend` or `CpuF32Backend`), else the CPU reference; `gpu` uses that device or the platform's default GPU (Metal), falling back to the CPU reference with a warning; `gpu_emulation` is the CPU-f32 emulation (validation, tests) |
+| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation: `auto` and `gpu` use the GPU device the engine selected for the analysis (`AnalysisInput::device` holding an `Arc<dyn ComputeBackend>`, or a `CpuF32Backend`); without one, `auto` uses the CPU reference and `gpu` does too, with a warning. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` is the CPU-f32 emulation (validation, tests) |
 | `gpu_batch` | integer, `512` | candidates per GPU dispatch (`GpuEvalSettings::batch`) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
 | `stop_key` | string or null, `null` | key for `request_stop` |
