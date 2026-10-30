@@ -7,6 +7,7 @@ use mklight_core::{MkResult, OpticalSystem, ResolvedSystem, Snapshot};
 use mklight_trace::SequentialTracer;
 
 pub mod curvature;
+pub mod energy;
 pub mod fans;
 pub mod illumination;
 pub mod seidel;
