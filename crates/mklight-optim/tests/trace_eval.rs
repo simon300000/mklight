@@ -386,6 +386,31 @@ fn real_ray_operands_match_the_tracer() {
     assert!(ok(&v[0]).abs() > 1e-4);
     assert!(ok(&v[1]).abs() < 1e-14, "symmetric spot: {:?}", v[1]);
     assert_eq!(ok(&v[2]), 0.0);
+
+    // An arbitrary normalised field point at the edge field's coordinates
+    // reproduces the system field (no vignetting factors on either).
+    let ray = |field| {
+        let mut o = Operand::new(OperandKind::RealRay {
+            quantity: RayQuantity::Y,
+            surface: None,
+            px: 0.2,
+            py: 0.9,
+            global: false,
+        });
+        o.field = field;
+        o
+    };
+    use mklight_optim::merit::FieldSelector;
+    let v = eval(
+        &sys,
+        &[
+            ray(FieldSelector::Index { index: 2 }),
+            ray(FieldSelector::Normalized { hx: 0.0, hy: 1.0 }),
+            ray(FieldSelector::Normalized { hx: 0.0, hy: 0.5 }),
+        ],
+    );
+    assert_eq!(ok(&v[0]).to_bits(), ok(&v[1]).to_bits());
+    assert!(ok(&v[2]) > 0.0 && ok(&v[2]) < ok(&v[0]));
 }
 
 /// Full-pupil sampling whose nodes are the mirrored bilateral half pupil.
