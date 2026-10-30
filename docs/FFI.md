@@ -14,19 +14,33 @@ compiled, linked against the static library and run by `cargo test -p mklight-ff
 cargo build -p mklight-ffi --release   # → target/release/libmklight_ffi.a
 ```
 
-Link `libmklight_ffi.a` plus the native libraries the Rust standard library
-needs (`rustc --print native-static-libs`): nothing extra on macOS (`-lSystem`
-is implicit), `-lpthread -ldl -lm` on Linux.
+Link `libmklight_ffi.a` plus the native libraries it needs
+(`cargo rustc -p mklight-ffi --lib --crate-type staticlib -- --print
+native-static-libs` lists them): on macOS the library contains the Metal
+backend, so link `-framework Metal -framework Foundation -framework
+CoreFoundation -lobjc -liconv` (`-lSystem` is implicit); on Linux
+`-lpthread -ldl -lm`.
 
 Swift: add `crates/mklight-ffi/include` to the import search paths (it holds
-the module map), link the static library, then `import CMKLight`.
+the module map), make the static library findable (`-L<dir>`), then
+`import CMKLight`. The module map autolinks `mklight_ffi` and the Metal,
+Foundation and CoreFoundation frameworks plus `objc` and `iconv`, so no
+further linker flags are needed.
 
 ## Versioning
 
 * `mk_abi_version()` returns `(major << 16) | minor`; the header has
-  `MK_ABI_VERSION_MAJOR/MINOR`. A front end must check that the runtime major
-  equals the compiled major. Minor releases only **add** functions and JSON
-  fields, so JSON readers must ignore unknown keys.
+  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.1). A front end must check that
+  the runtime major equals the compiled major. Minor releases only **add**
+  functions and JSON fields, so JSON readers must ignore unknown keys.
+  1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
+  `mk_engine_migrate_project`, `mk_session_run_analysis_json`,
+  `mk_session_validate_json`, `mk_session_apply_solves`,
+  `mk_session_autosave`, `mk_session_get_param`, and the analysis fields
+  `result_schema`, `result_version`, `gpu_path` and envelope fields
+  `backend`, `result_version`.
+* Each analysis' result shape has its own `result_version`
+  (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
   `RunInfo` and project file.
 * Project files carry `schema_version` (currently 1). Older files are
@@ -192,13 +206,21 @@ stamped into project metadata on save.
 [{ "name": "glass_info", "title": "Glass data", "category": "materials",
    "description": "…", "available": true, "unavailable_reason": null,
    "settings_schema": { "type": "object", "properties": { … }, "required": ["name"] },
-   "default_settings": null }]
+   "default_settings": null,
+   "result_schema": { "type": "object", "properties": { … }, "required": [ … ],
+                      "x-buffers": [ {"name": "dispersion_curve", "dtype": "f64",
+                                      "shape": ["samples", "2"], "unit": "", "description": "…"} ] },
+   "result_version": 1, "gpu_path": false }]
 ```
+
+`mk_engine_analysis_info(engine, name, &json)` returns one such object.
 
 `settings_schema` is a JSON-Schema subset: `type` (name or list of
 `number|integer|string|boolean|array|object|null`), `default`, `minimum`,
 `maximum`, `enum`, `items`, `required`, plus descriptive `title`,
-`description` and `unit`. Submitted settings may be partial; missing keys
+`description` and `unit`. `result_schema` uses the same subset plus
+`anyOf`, `minItems`/`maxItems` and `additionalProperties`, and lists the
+result's typed buffers under `x-buffers` (`docs/RESULTS.md` §4). Submitted settings may be partial; missing keys
 take their defaults, unknown keys are rejected. The complete, normalised
 settings are recorded in `run_info.settings`. `default_settings` is `null`
 when some setting is required.
@@ -214,20 +236,33 @@ when some setting is required.
                      "max_rays_per_dispatch": null } }]
 ```
 
-A backend is requested as `{"kind": "cpu_reference"}` or
-`{"kind": "gpu", "name": "metal"}`. On macOS a Metal entry is listed with
-`available: false` until the Metal backend is wired in. Requesting an
-unavailable backend fails with `MK_ERR_UNSUPPORTED` unless the request sets
-`allow_backend_fallback`, in which case the job runs on the CPU reference
-and `run_info.warnings` says so.
+A backend is requested as `{"kind": "cpu_reference"}`,
+`{"kind": "gpu", "name": "metal"}` or `{"kind": "auto"}`. On macOS the
+Metal backend (`gpu:metal`) is listed; it is opened on first use and is
+`available` when the machine has a Metal device that passes the numerics
+probe (`reason` says why not; `MKLIGHT_DISABLE_GPU=1` disables every GPU
+backend). Its `capabilities.analyses` lists the analyses with a GPU path
+(`gpu_path: true`). Requesting an unavailable backend fails with
+`MK_ERR_UNSUPPORTED` unless the request sets `allow_backend_fallback`, in
+which case the job runs on the CPU reference and `run_info.warnings` says
+so.
 
 Selection is per analysis: a GPU backend runs only the analyses listed in
 its `capabilities.analyses` (the CPU reference runs all). Requesting it
 explicitly for any other analysis is handled like an unavailable backend
-(error, or fallback with a warning). When the request names no backend,
-the engine default applies as a preference: analyses the default backend
-does not implement run on the CPU reference, and `run_info.warnings` notes
-it.
+(error, or fallback with a warning). `auto` takes the first available GPU
+backend that implements the analysis, else the CPU reference (no warning;
+the result's `backend.fallback_reason` says why). When the request names no
+backend, the engine default (`default_backend` in the configuration, or
+`mk_engine_set_default_backend`) applies as a preference: analyses the
+default backend does not implement run on the CPU reference, with a
+`run_info.warnings` note for an explicit GPU default.
+
+A selected GPU first qualifies its precision for the snapshot
+(docs/GPU.md §5.2, cached per snapshot and library). If it fails, the CPU
+reference computes the result: `run_info.backend` is `cpu_reference`, a
+warning names the rejected backend and the reason, and the envelope's
+`backend` object carries the qualification (`docs/RESULTS.md` §5).
 
 ### Analysis request (`mk_session_submit_analysis_json`)
 
@@ -235,6 +270,13 @@ it.
 { "analysis": "rng_stream", "settings": {"seed": 1}, "view_key": "win-3",
   "backend": {"kind": "gpu", "name": "metal"}, "allow_backend_fallback": true }
 ```
+
+`mk_session_run_analysis_json(session, request, &json, &buffers, &count)`
+runs the same request in the calling thread (blocking, no job, no
+callback; `view_key` is ignored) and returns the result like
+`mk_job_take_result`; errors of the run are returned directly. Use it for
+quick, small analyses (validation, first-order data); interactive windows
+should submit jobs.
 
 ### Job status (`mk_job_status_json`)
 
@@ -256,9 +298,16 @@ through `mk_job_status`).
                 "seed": null, "started_unix_ms": 1761840000000,
                 "duration_ms": 0.31, "warnings": [] },
   "library_hash": "<64 hex>",
-  "result": { … analysis specific … },
+  "backend": { "requested": "default:cpu_reference", "used": "cpu_reference",
+               "precision": "f64_reference", "device": null,
+               "fallback_reason": null, "qualification": null },
+  "result_version": 1,
+  "result": { … analysis specific (docs/RESULTS.md) … },
   "buffers": [ {"index": 0, "name": "n_after", "dtype": "f64", "shape": [4, 3]} ] }
 ```
+
+`run_info.backend` names the backend that computed the result; `backend`
+adds what was requested and why another backend was used, if one was.
 
 A result's inputs are identified by the pair (`run_info.snapshot_hash`,
 `library_hash`): the system and the glass data it was computed with.
@@ -308,6 +357,35 @@ atomically (all or none):
 `pressure_atm`. Both edit functions return the new snapshot hash
 (unchanged when the values were already set).
 
+`mk_session_get_param(session, path_json, &json)` reads one parameter:
+`{"value": number | "inf" | "-inf" | null}` (`null`: it has no value, e.g.
+an automatic semi-diameter; a path the system does not have is
+`MK_ERR_INVALID_ARGUMENT`).
+
+### Validation, solves, autosave, migration
+
+* `mk_session_validate_json(session, &json)`: the `validate` report
+  `{ok, errors, warnings, issues: [{severity, code, surface, message}]}` of
+  the current snapshot. Besides the core structural checks it rejects
+  non-finite numbers anywhere in the model, an aperture value ≤ 0, negative
+  field or wavelength weights, mechanical parts that reference missing
+  surfaces and systems the reference tracer cannot set up, and warns about
+  chief and marginal rays that do not reach the image (codes in
+  `docs/RESULTS.md` §6). An error-free system traces in every ray-based
+  analysis.
+* `mk_session_apply_solves(session, settings, &report, &hash)`: solves the
+  system (`docs/SOLVES.md`) and commits it as a new snapshot (marks the
+  session dirty); `report` is the `solves` result. The `solves` analysis is
+  the dry run (and can solve one configuration).
+* `mk_session_autosave(session, path, &written)`: writes the project to
+  `path` or `<project file>.autosave` without touching the session (path,
+  dirty flag). Recover by opening the autosave file.
+* `mk_engine_migrate_project(engine, path, backup, dry_run, &json)`:
+  migrates a project file in place to the current schema version (keeping
+  `<file>.v<N>.bak` unless `backup` is 0); `json` is `{path, from_version,
+  to_version, notes, migrated, backup, dry_run}`. Opening a file migrates it
+  in memory only.
+
 `mk_session_set_project_section_json(session, section, json)` replaces
 `views` (array of `{key, analysis, settings, ui}`), `merit`, `variables`,
 `tolerances` (opaque until the optimiser defines them) or `metadata`.
@@ -329,20 +407,26 @@ absolute path and by path relative to the project file). A catalog that
 cannot be found on open is reported in `open_warnings`; the reference is
 kept.
 
-## Built-in analyses
+## Analyses
 
-| name | settings | result | buffers |
-|---|---|---|---|
-| `validate` | none | `{ok, errors, warnings, issues: [{severity, code, surface, message}]}`; codes: `structure`, `material`, `coating`, `resolve`, `material_range`, `stop_size_undefined`, `stop_on_coordinate_break`, `thickness_sign`, `zero_weights`, `configuration`, `unused_coating` | — |
-| `system_summary` | none | surface table (`index, id, label, type, is_stop, curvature, radius, conic, shape, thickness, material, material_ref, interaction, semi_diameter, aperture, coating, n_after[w], nd_after, vd_after, alpha_after_per_mm, frame{origin, rot}, to_next_is_axial`), system wavelengths, aperture, fields, `n_object`, `first_to_image_distance`, warnings | `n_after` f64 [surfaces × wavelengths]; `vertex_global` f64 [surfaces × 3] (NaN for an object at infinity) |
-| `glass_info` | `name` (required), `catalog`, `wavelengths_um` (default: system), `temperature_c`, `pressure_atm` (default: system environment), `curve_samples` | catalog data, computed `nd`, `ne`, `vd`, `pgf`, dispersion formula, and `indices: [{wavelength_um, n, n_catalog, absorption_per_mm, in_range}]` (n relative to air at the chosen environment) | `dispersion_curve` f64 [samples × 2] = (λ µm, n) |
-| `rng_stream` (diagnostic) | `seed`, `stream`, `count`, `chunk`, `delay_ms` | `{count, mean, variance, min, max, first}` of a Philox4x32-10 uniform stream | `uniform` f64 [count] |
+Every analysis, its settings (with defaults) and its result (fields, units,
+signs, buffer names, dtypes and shapes) is documented in
+**`docs/RESULTS.md`**, whose reference section is generated from the same
+schemas `mk_engine_list_analyses` returns. Registered today:
 
-Names reserved for analyses of later phases are listed with
-`available: false`: `paraxial`, `layout`, `spot_diagram`, `ray_fan`,
-`opd_fan`, `field_curvature_distortion`, `seidel`, `wavefront_map`, `psf`,
-`mtf`, `ghost_paths`, `stray_light`. Submitting one returns
-`MK_ERR_UNSUPPORTED`.
+| category | analyses |
+|---|---|
+| model | `validate`, `system_summary`, `solves` (dry run of `mk_session_apply_solves`) |
+| materials | `glass_info` |
+| geometric | `first_order`, `layout`, `spot_diagram`, `ray_fan`, `opd_fan`, `field_curvature_distortion`, `grid_distortion`, `seidel`, `longitudinal_aberration`, `chromatic_focal_shift`, `lateral_colour`, `relative_illumination`, `footprint`, `encircled_energy`, `geometric_mtf`, `best_focus`, `ray_grid` |
+| radiometry / polarization | `system_transmission`, `polarization_pupil_map` |
+| ghost | `ghost_paths`, `ghost_irradiance` |
+| stray | `stray_light` (with `ghost_partition` for the ghost/stray partition) |
+| diagnostic | `rng_stream` |
+
+The wave-optics names `wavefront_map`, `psf` and `mtf` are reserved and
+listed with `available: false` until `mklight-wave` registers them;
+submitting one returns `MK_ERR_UNSUPPORTED`.
 
 ## Project file (`.mklight`)
 
@@ -409,11 +493,21 @@ mk_engine_destroy(engine)
 
 ## Integration points for later phases
 
-* Solver crates register analyses with `Engine::register_analysis` (or in
-  `analysis::builtin::register_all`), replacing the placeholders of the same
-  name. They receive the snapshot, the cached `ResolvedSystem`, the selected
-  backend and a `JobContext`.
-* GPU backends implement `backend::BackendProvider` and are registered with
-  `Engine::register_backend`; analyses read `AnalysisInput::backend`.
+* **Wave optics.** `mklight-wave` analyses are registered in
+  `mklight_engine::analysis::register_all`, one `r.register(Arc::new(…))`
+  line each, replacing the placeholders of the same name; each implements
+  `Analysis` (`settings_schema`, `result_schema`, `run`) and is documented
+  automatically in `docs/RESULTS.md` (regenerate with
+  `MKLIGHT_UPDATE_RESULTS_DOC=1 cargo test -p mklight-engine --test results_doc`).
+* **Optimisation.** `analysis/optim.rs` hooks in at the marked lines of
+  `analysis/mod.rs` (`pub mod optim;` and its registration).
+* Solver crates can also register at run time with
+  `Engine::register_analysis`. Analyses receive the snapshot, the cached
+  `ResolvedSystem`, the selected backend and device and a `JobContext`.
+* GPU backends implement `mklight_gpu::ComputeBackend` and are offered to
+  the engine as a `gpu::GpuProvider` (`Engine::register_backend`); an
+  analysis with a GPU path declares `gpu_path()`, is listed in
+  `analysis::gpu::GPU_ANALYSES`, reads `AnalysisInput::device` and reports
+  what it used with `AnalysisInput::report_backend`.
 * Typed merit/variables/tolerances replace the opaque project sections
   through a schema migration (v1 → v2).

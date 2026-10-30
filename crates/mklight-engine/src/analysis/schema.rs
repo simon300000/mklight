@@ -348,6 +348,210 @@ pub fn check_buffers(schema: &Value, buffers: &[(String, String, usize)]) -> Res
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Markdown reference (docs/RESULTS.md)
+
+/// Short type label of a schema: `integer`, `number|null`, `nf` (see
+/// [`nf`]), `array<…>`, `[T; n]`, `object`, `T?` for `T` or null.
+pub fn type_label(s: &Value) -> String {
+    if s == &nf() || s.get("anyOf").is_some_and(|a| a.get(0) == Some(&nf()["anyOf"][0])) {
+        return "nf".into();
+    }
+    if let Some(alts) = s.get("anyOf").and_then(Value::as_array) {
+        let labels: Vec<String> = alts.iter().map(type_label).collect();
+        if labels.len() == 2 && labels[1] == "null" {
+            return format!("{}?", labels[0]);
+        }
+        return labels.join("|");
+    }
+    let base = match s.get("type") {
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Array(ts)) => ts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("|"),
+        _ if s.get("enum").is_some() => "string".into(),
+        _ => "any".into(),
+    };
+    if base == "array"
+        && let Some(items) = s.get("items")
+    {
+        let it = type_label(items);
+        return match (s.get("minItems"), s.get("maxItems")) {
+            (Some(a), Some(b)) if a == b => format!("[{it}; {a}]"),
+            _ => format!("array<{it}>"),
+        };
+    }
+    base
+}
+
+fn cell(s: &str) -> String {
+    s.replace('|', "\\|").replace('\n', " ")
+}
+
+fn notes(s: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(e) = s.get("enum").and_then(Value::as_array) {
+        let v: Vec<String> = e.iter().map(|x| format!("`{x}`")).collect();
+        parts.push(format!("one of {}", v.join(", ")));
+    }
+    match (s.get("minimum"), s.get("maximum")) {
+        (Some(a), Some(b)) => parts.push(format!("{a} … {b}")),
+        (Some(a), None) => parts.push(format!("≥ {a}")),
+        (None, Some(b)) => parts.push(format!("≤ {b}")),
+        _ => {}
+    }
+    if let Some(d) = s.get("description").and_then(Value::as_str) {
+        parts.push(d.to_string());
+    }
+    cell(&parts.join("; "))
+}
+
+fn unit(s: &Value) -> String {
+    s.get("unit")
+        .and_then(Value::as_str)
+        .map_or(String::new(), String::from)
+}
+
+/// Rows `path | type | unit | description` of a result schema, nested
+/// objects and arrays of objects flattened (`fields[].rms_radius`).
+fn result_rows(path: &str, s: &Value, required: bool, out: &mut Vec<String>) {
+    let inner = s
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().find(|x| x.get("properties").is_some()))
+        .unwrap_or(s);
+    if !path.is_empty() {
+        let opt = if required { "" } else { " (optional)" };
+        out.push(format!(
+            "| `{path}`{opt} | {} | {} | {} |",
+            cell(&type_label(s)),
+            cell(&unit(s)),
+            notes(s)
+        ));
+    }
+    let props = inner.get("properties").and_then(Value::as_object);
+    let item_props = inner
+        .get("items")
+        .and_then(|i| i.get("properties").map(|_| i));
+    if let Some(p) = props {
+        let req: Vec<&str> = inner
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        for (k, v) in p {
+            let sub = if path.is_empty() {
+                k.clone()
+            } else {
+                format!("{path}.{k}")
+            };
+            result_rows(&sub, v, req.contains(&k.as_str()), out);
+        }
+    } else if let Some(items) = item_props {
+        result_rows_items(&format!("{path}[]"), items, out);
+    }
+}
+
+fn result_rows_items(path: &str, items: &Value, out: &mut Vec<String>) {
+    let req: Vec<&str> = items
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if let Some(p) = items.get("properties").and_then(Value::as_object) {
+        for (k, v) in p {
+            result_rows(&format!("{path}.{k}"), v, req.contains(&k.as_str()), out);
+        }
+    }
+}
+
+/// The reference section of one analysis for docs/RESULTS.md: metadata,
+/// settings (with defaults), result fields and buffers.
+pub fn render_markdown(info: &super::AnalysisInfo) -> String {
+    let mut o = String::new();
+    o.push_str(&format!("### `{}` — {}\n\n", info.name, info.title));
+    o.push_str(&format!(
+        "Category `{}`, result version {}{}{}.\n\n",
+        info.category,
+        info.result_version,
+        if info.gpu_path { ", **GPU path**" } else { "" },
+        if info.available {
+            String::new()
+        } else {
+            format!(
+                ", **not available**: {}",
+                info.unavailable_reason.clone().unwrap_or_default()
+            )
+        }
+    ));
+    if !info.description.is_empty() {
+        o.push_str(&format!("{}\n\n", info.description.replace("  ", " ")));
+    }
+    let props = info.settings_schema["properties"].as_object();
+    match props {
+        Some(p) if !p.is_empty() => {
+            let req: Vec<&str> = info.settings_schema["required"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            o.push_str("Settings:\n\n| key | type | default | unit | notes |\n|---|---|---|---|---|\n");
+            for (k, s) in p {
+                let default = match s.get("default") {
+                    Some(d) => format!("`{d}`"),
+                    None if req.contains(&k.as_str()) => "**required**".into(),
+                    None => String::new(),
+                };
+                o.push_str(&format!(
+                    "| `{k}` | {} | {} | {} | {} |\n",
+                    cell(&type_label(s)),
+                    cell(&default),
+                    cell(&unit(s)),
+                    notes(s)
+                ));
+            }
+            o.push('\n');
+        }
+        _ => o.push_str("Settings: none.\n\n"),
+    }
+    let mut rows = Vec::new();
+    result_rows("", &info.result_schema, true, &mut rows);
+    if rows.is_empty() {
+        o.push_str("Result: an object (not documented field by field).\n\n");
+    } else {
+        o.push_str("Result (`result` in the envelope):\n\n| field | type | unit | notes |\n|---|---|---|---|\n");
+        for r in rows {
+            o.push_str(&r);
+            o.push('\n');
+        }
+        o.push('\n');
+    }
+    let bufs = info.result_schema["x-buffers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if !bufs.is_empty() {
+        o.push_str("Buffers:\n\n| name | dtype | shape | unit | notes |\n|---|---|---|---|---|\n");
+        for b in bufs {
+            let shape: Vec<String> = b["shape"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                .unwrap_or_default();
+            o.push_str(&format!(
+                "| `{}` | {} | [{}] | {} | {} |\n",
+                b["name"].as_str().unwrap_or(""),
+                b["dtype"].as_str().unwrap_or(""),
+                shape.join(", "),
+                cell(b["unit"].as_str().unwrap_or("")),
+                cell(b["description"].as_str().unwrap_or(""))
+            ));
+        }
+        o.push('\n');
+    }
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
