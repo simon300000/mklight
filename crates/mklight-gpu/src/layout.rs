@@ -78,6 +78,7 @@ pub struct PackedSurface {
     pub to_next_shift: [f32; 3],
     pub to_next_shift_lo: [f32; 3],
     pub reserved2: u32,
+    pub n_after_lo: [f32; MAX_WAVELENGTHS],
 }
 
 /// Mirror of `struct MklPhiloxParams`.
@@ -189,6 +190,7 @@ pub fn surface_offsets() -> Vec<(&'static str, usize)> {
         ("to_next_shift", o!(S, to_next_shift)),
         ("to_next_shift_lo", o!(S, to_next_shift_lo)),
         ("reserved2", o!(S, reserved2)),
+        ("n_after_lo", o!(S, n_after_lo)),
     ]
 }
 
@@ -507,6 +509,7 @@ impl PackedSystem {
             }
             for (k, &w) in wls.iter().enumerate() {
                 p.n_after[k] = f32_checked(s.n_after[w], &what("index"))?;
+                p.n_after_lo[k] = normal_or_zero((s.n_after[w] - p.n_after[k] as f64) as f32);
                 p.alpha_after[k] = f32_checked(s.alpha_after[w], &what("absorption"))?;
                 if p.shape == MKL_SHAPE_PARAXIAL {
                     let v = mklight_trace::paraxial::ideal_lens_object_vergence(rs, i, w);
@@ -606,7 +609,8 @@ impl PackedSystem {
                 .chain(s.to_next_origin_lo)
                 .chain(s.to_next_rot_lo)
                 .chain(s.to_next_shift)
-                .chain(s.to_next_shift_lo);
+                .chain(s.to_next_shift_lo)
+                .chain(s.n_after_lo);
             if floats.into_iter().any(|v| !v.is_finite()) {
                 return bad("non-finite parameter");
             }

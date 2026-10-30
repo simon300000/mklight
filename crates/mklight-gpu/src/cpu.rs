@@ -9,9 +9,9 @@
 //! Comparing *reference f64 ↔ CPU-f32* isolates precision error; comparing
 //! *CPU-f32 ↔ GPU* isolates backend/compiler error.
 //!
-//! Kernels available now: Philox (stream and raw blocks), double-float
-//! operations, compensated reduction and the packed-sag probe. The
-//! sequential trace kernel is added together with its GPU port.
+//! Kernels: Philox (stream and raw blocks), double-float operations,
+//! compensated reduction, the packed-sag probe and the sequential / path
+//! trace kernel ([`crate::trace_kernel`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,12 +24,15 @@ use mklight_core::{JobContext, MkError, MkResult};
 use rayon::prelude::*;
 
 use crate::backend::*;
+use crate::batch::{PreparedTrace, TraceRequest, TraceResult};
+use crate::consts::*;
 use crate::df::Df32;
 use crate::fenv::{FpEnv, Ftz, Ieee};
 use crate::fmath::{packed_sag_in, u32_to_unit_f32};
 use crate::layout::{PackedSystem, PackedSystemSet};
 use crate::pending::{JobControl, Pending, pending, spawn_job};
 use crate::reduce;
+use crate::trace_kernel::{KRayIn, KRayOut, KState, trace_ray};
 
 /// Work items between cancellation checks / progress reports.
 const CHUNK: usize = 1 << 16;
@@ -238,10 +241,9 @@ impl Inner {
                     packed_sag_in::<E>(&s, r2[i])
                 })?)
             }
-            Job::Trace(_) => {
-                return Err(MkError::Unsupported(
-                    "cpu-f32: sequential trace kernel not implemented yet".into(),
-                ));
+            Job::Trace(req) => {
+                let set = self.lookup(req.systems)?;
+                JobOutput::Trace(Box::new(trace_job::<E>(&req, &set, ctl, &mut stats)?))
             }
         };
         ctl.report(1.0, "");
@@ -257,8 +259,8 @@ impl ComputeBackend for CpuF32Backend {
     fn precision(&self) -> &PrecisionDescriptor {
         &self.inner.precision
     }
-    fn supports(&self, kind: JobKind) -> bool {
-        kind != JobKind::Trace
+    fn supports(&self, _kind: JobKind) -> bool {
+        true
     }
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle> {
         let set = PackedSystemSet::new(systems)?;
@@ -289,8 +291,14 @@ impl ComputeBackend for CpuF32Backend {
             )));
         }
         // Resolve handles now so a released handle fails at submission.
-        if let Job::SagProbe { systems, .. } = &job {
-            self.inner.lookup(*systems)?;
+        match &job {
+            Job::SagProbe { systems, .. } => {
+                self.inner.lookup(*systems)?;
+            }
+            Job::Trace(req) => {
+                PreparedTrace::new(req, &*self.inner.lookup(req.systems)?)?;
+            }
+            _ => {}
         }
         let (p, c, ctl) = pending(ctx);
         // The emulation is CPU-bound and parallel inside; run it on its own
@@ -307,6 +315,69 @@ impl ComputeBackend for CpuF32Backend {
         })?;
         Ok(p)
     }
+}
+
+/// Run the trace kernel specification over every ray of `req`.
+fn trace_job<E: FpEnv>(
+    req: &TraceRequest,
+    set: &PackedSystemSet,
+    ctl: &JobControl,
+    stats: &mut JobStats,
+) -> MkResult<TraceResult> {
+    let prep = PreparedTrace::new(req, set)?;
+    let rays = &req.rays;
+    let n = rays.len();
+    let slots = prep.record_slots;
+    let outs: Vec<(KRayOut, Vec<KState>)> = chunked(n, ctl, "trace", stats, |i| {
+        let lo = |v: &Vec<f32>| v.get(i).copied().unwrap_or(0.0);
+        let ray = KRayIn {
+            pos: [rays.x[i], rays.y[i], rays.z[i]],
+            pos_lo: [lo(&rays.x_lo), lo(&rays.y_lo), lo(&rays.z_lo)],
+            dir: [rays.l[i], rays.m[i], rays.n[i]],
+            dir_lo: [lo(&rays.l_lo), lo(&rays.m_lo), lo(&rays.n_lo)],
+            opl: Df32::new(rays.opl_hi[i], rays.opl_lo[i]),
+            weight: rays.weight.get(i).copied().unwrap_or(1.0),
+            wavelength: rays.wavelength[i],
+        };
+        let h = &set.headers[rays.system.get(i).copied().unwrap_or(0) as usize];
+        let surf = &set.surfaces[h.surface_offset as usize..][..h.num_surfaces as usize];
+        let mut rec = vec![KState::default(); slots];
+        let r = (slots > 0).then_some(rec.as_mut_slice());
+        (trace_ray::<E>(h, surf, &prep.steps, &prep.params, &ray, r), rec)
+    })?;
+    let mut res = TraceResult::default();
+    for (o, _) in &outs {
+        let s = &o.state;
+        res.x.push(s.pos[0]);
+        res.y.push(s.pos[1]);
+        res.z.push(s.pos[2]);
+        res.l.push(s.dir[0]);
+        res.m.push(s.dir[1]);
+        res.n.push(s.dir[2]);
+        res.opl_hi.push(s.opl.hi);
+        res.opl_lo.push(s.opl.lo);
+        res.weight.push(s.weight);
+        res.transmittance.push(o.transmittance);
+        res.status.push(s.status);
+        res.last_surface.push(o.last_surface);
+        res.steps.push(o.steps);
+    }
+    if slots > 0 {
+        let k = MKL_TRACE_RECORD_FLOATS as usize;
+        res.recorded = vec![0.0; slots * n * k];
+        res.recorded_status = vec![0; slots * n];
+        for (i, (_, rec)) in outs.iter().enumerate() {
+            for (slot, st) in rec.iter().enumerate() {
+                let base = (slot * n + i) * k;
+                res.recorded[base..base + k].copy_from_slice(&[
+                    st.pos[0], st.pos[1], st.pos[2], st.dir[0], st.dir[1], st.dir[2], st.opl.hi,
+                    st.opl.lo, st.weight,
+                ]);
+                res.recorded_status[slot * n + i] = st.status;
+            }
+        }
+    }
+    Ok(res)
 }
 
 /// Convenience: run a job and return its output, for tests and tools.
@@ -420,18 +491,13 @@ mod tests {
         assert!((s[1] as f64 - rs.surfaces[1].shape.sag(100.0).unwrap()).abs() < 1e-6);
         a.release_systems(h).unwrap();
         assert!(a.submit(probe(h), &JobContext::new()).is_err());
-        assert!(matches!(
+        assert!(
             a.submit(
-                Job::Trace(Box::new(crate::batch::TraceRequest::new(
-                    h,
-                    Default::default(),
-                    0,
-                    3
-                ))),
+                Job::Trace(Box::new(TraceRequest::new(h, Default::default(), 0, 3))),
                 &JobContext::new()
-            ),
-            Err(MkError::Unsupported(_))
-        ));
+            )
+            .is_err()
+        );
     }
 
     /// A handle whose count was forged cannot make the worker index past the

@@ -112,6 +112,7 @@ kernel void mkl_layout_probe(device uint* out [[buffer(0)]],
     out[k++] = MKL_OFF(MklPackedSurface, to_next_shift);
     out[k++] = MKL_OFF(MklPackedSurface, to_next_shift_lo);
     out[k++] = MKL_OFF(MklPackedSurface, reserved2);
+    out[k++] = MKL_OFF(MklPackedSurface, n_after_lo);
 }
 
 // Sag of one packed surface (absolute index into the surface array) at the

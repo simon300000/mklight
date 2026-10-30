@@ -113,6 +113,59 @@ pub fn hypot3_in<E: FpEnv>(x: f32, y: f32, z: f32) -> f32 {
     E::mul(E::sqrt(dot3_in::<E>(v, v)), inv)
 }
 
+/// `log2(e)`, `ln 2` split for Cody–Waite reduction (`LN2_HI` has 8 trailing
+/// zero bits, so `k·LN2_HI` is exact for |k| < 256).
+const LOG2E: f32 = std::f32::consts::LOG2_E;
+const LN2_HI: f32 = f32::from_bits(0x3F31_7200);
+const LN2_LO: f32 = f32::from_bits(0x35BF_BE8E);
+/// `1/n!`, n = 7 … 2, for the Taylor polynomial of `e^r` on |r| ≤ ln2/2
+/// (truncation error < 6e-9 relative, below the f32 rounding).
+const EXP_C: [f32; 6] = [
+    1.0 / 5040.0,
+    1.0 / 720.0,
+    1.0 / 120.0,
+    1.0 / 24.0,
+    1.0 / 6.0,
+    0.5,
+];
+
+/// `e^x` in f32 (a few ulp), specified here so that every backend and the
+/// emulation agree bit for bit (platform `exp` implementations differ):
+/// `k = rint(x·log2 e)`, `r = x − k ln2` (Cody–Waite with fma), a degree-7
+/// Taylor polynomial by Horner, then `·2^(k/2)·2^(k − k/2)` (two exact
+/// power-of-two factors, so no intermediate overflows). `+inf` above
+/// 88.72284, `0` below −103.97208, NaN propagates.
+#[inline]
+pub fn exp(x: f32) -> f32 {
+    exp_in::<Ieee>(x)
+}
+
+/// [`exp`] in environment `E`.
+#[inline]
+pub fn exp_in<E: FpEnv>(x: f32) -> f32 {
+    if x.is_nan() {
+        return x;
+    }
+    if E::gt(x, 88.722_84) {
+        return f32::INFINITY;
+    }
+    if E::lt(x, -103.972_08) {
+        return 0.0;
+    }
+    let kf = E::mul(x, LOG2E).round_ties_even();
+    let k = kf as i32;
+    let r = E::fma(-kf, LN2_HI, x);
+    let r = E::fma(-kf, LN2_LO, r);
+    let mut p = EXP_C[0];
+    for c in &EXP_C[1..] {
+        p = E::fma(p, r, *c);
+    }
+    p = E::fma(p, r, 1.0);
+    p = E::fma(p, r, 1.0);
+    let k1 = k / 2;
+    E::mul(E::mul(p, pow2(k1)), pow2(k - k1))
+}
+
 /// Cancellation-free conic sag `c r² / (1 + √(1 − (1+k) c² r²))` in f32.
 /// Returns NaN outside the conic's domain (the f64 definition returns `None`).
 #[inline]
@@ -200,6 +253,28 @@ mod tests {
         assert_eq!(hypot2(3.0 * t, 4.0 * t), 5.0 * t);
         assert_eq!(hypot2_in::<crate::fenv::Ftz>(3.0 * t, 4.0 * t), 0.0);
         assert_eq!(hypot2_in::<crate::fenv::Ftz>(1e-39, 1e-39).to_bits(), 0);
+    }
+
+    #[test]
+    fn exp_is_accurate() {
+        let mut worst = 0.0f64;
+        for i in 0..=200_000 {
+            let x = -103.0 + 191.7 * i as f64 / 200_000.0;
+            let got = exp(x as f32) as f64;
+            let want = (x as f32 as f64).exp();
+            if want < f32::MIN_POSITIVE as f64 {
+                continue;
+            }
+            let ulp = (want as f32).abs() as f64 * 2f64.powi(-23);
+            worst = worst.max((got - want).abs() / ulp);
+        }
+        assert!(worst < 4.0, "worst {worst} ulp");
+        assert_eq!(exp(0.0), 1.0);
+        assert_eq!(exp(-200.0), 0.0);
+        assert_eq!(exp(100.0), f32::INFINITY);
+        assert!(exp(f32::NAN).is_nan());
+        assert_eq!(exp_in::<crate::fenv::Ftz>(-100.0), 0.0);
+        assert!(exp(-100.0) > 0.0);
     }
 
     #[test]

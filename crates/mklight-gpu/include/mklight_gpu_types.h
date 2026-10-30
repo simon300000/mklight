@@ -57,8 +57,9 @@
 /* ------------------------------------------------------------------------ */
 /* Layout version: bump on any change to a struct or enum below.
  * 3: surface record gained ideal-lens vergences, double-float transform
- *    parts (to_next_rot_lo, to_next_shift), coating codes; trace kernel
- *    parameters, path steps and new ray status codes. */
+ *    parts (to_next_rot_lo, to_next_shift), double-float indices
+ *    (n_after_lo), coating codes; trace kernel parameters, path steps and
+ *    new ray status codes. */
 #define MKL_LAYOUT_VERSION 3u
 /* 'MKLP' little-endian; first word of every packed system header. */
 #define MKL_PACKED_MAGIC 0x504C4B4Du
@@ -235,11 +236,12 @@ struct MklPackedSurface {
     MKL_F32 to_next_shift[3];         /* 404  to_next_rot · to_next_origin (mm), hi part */
     MKL_F32 to_next_shift_lo[3];      /* 416  f32 residual of to_next_shift */
     MKL_U32 reserved2;                /* 428  zero */
-};                                    /* 432 bytes */
+    MKL_F32 n_after_lo[MKL_MAX_WAVELENGTHS];  /* 432  f32 residual of n_after */
+};                                    /* 496 bytes */
 
 /* Size checks (sizes are also asserted in Rust). */
 #define MKL_PACKED_HEADER_SIZE 176u
-#define MKL_PACKED_SURFACE_SIZE 432u
+#define MKL_PACKED_SURFACE_SIZE 496u
 MKL_STATIC_ASSERT(sizeof(struct MklPackedHeader) == MKL_PACKED_HEADER_SIZE, "MklPackedHeader size");
 MKL_STATIC_ASSERT(sizeof(struct MklPackedSurface) == MKL_PACKED_SURFACE_SIZE, "MklPackedSurface size");
 
@@ -326,7 +328,13 @@ struct MklSagParams {
 #define MKL_TRACE_IN_OPL_HI 6u
 #define MKL_TRACE_IN_OPL_LO 7u
 #define MKL_TRACE_IN_WEIGHT 8u
-#define MKL_TRACE_IN_FLOATS 9u
+#define MKL_TRACE_IN_X_LO 9u  /* double-float residuals of the position ... */
+#define MKL_TRACE_IN_Y_LO 10u
+#define MKL_TRACE_IN_Z_LO 11u
+#define MKL_TRACE_IN_L_LO 12u /* ... and of the direction (0 for f32 input) */
+#define MKL_TRACE_IN_M_LO 13u
+#define MKL_TRACE_IN_N_LO 14u
+#define MKL_TRACE_IN_FLOATS 15u
 #define MKL_TRACE_INU_WAVELENGTH 0u
 #define MKL_TRACE_INU_SYSTEM 1u
 #define MKL_TRACE_IN_UINTS 2u
