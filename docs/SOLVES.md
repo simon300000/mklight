@@ -44,7 +44,10 @@ wavelength**:
   solves cannot be satisfied there (except trivially).
 * Heights `y` are in mm on the **vertex plane** of a surface. The paraxial
   angle is the **slope** `u = dy/dz` (dimensionless, *not* degrees) after a
-  surface, with `z` the local axis. After an odd number of mirrors light
+  surface, with `z` the local axis. This is why the angle kinds have a
+  `slope` field rather than an `angle`: UI and FFI must label it "slope"
+  (or "paraxial angle u"), never show it in degrees, and not convert it with
+  `tan`/`atan` (CONVENTIONS §8). After an odd number of mirrors light
   travels toward `−z`, so a beam converging toward the axis there has
   `u > 0`: a concave mirror at `y = 10` that focuses 200 mm in front of
   itself has `u = (0 − 10)/(−200) = +0.05`.
@@ -81,10 +84,11 @@ Details:
 * **Angles and power.** With `ω = N·u` the reduced slope, refraction is
   `ω_j = ω_{j−1} − y_j φ_j`. For a conic or asphere `φ_j = c_j (N_j − N_{j−1})`
   (so a mirror has `N_j = −N_{j−1}`), for an ideal lens `φ_j = |N_j|/f`. A
-  surface where the ray has zero height cannot bend it (error). Note that
-  with an image-space or working F/# aperture the image-space marginal
-  slope is fixed by the aperture, so a marginal-angle solve on the last
-  surface cannot change it; such a solve fails with "no sign change".
+  surface where the ray has zero height cannot bend it (error). With a
+  working F/# aperture, or an image-space F/# aperture and an object at
+  infinity, the image-space reduced marginal slope is fixed by the aperture
+  (`ω' = ∓1/(2F)`), so a marginal-angle solve on a surface with no power
+  behind it can never succeed; validation rejects it.
 * **F/#.** With `A` the unit axial ray (`y₁ = 1`, `u₀ = 0`),
   `EFL = −1/ω'_A`, and `ω'_A` is affine in `φ_j` with slope
   `−y_{A,j}·∂ω'/∂ω_j` (a tangent y–nu trace from `j`). The solve keeps the
@@ -109,7 +113,8 @@ Details:
   `surface` relative to vertex `j`: `Σ_{i=j}^{r−1} t_i` when `r > j`, and
   `−Σ_{i=r}^{j−1} t_i` when `r < j`. Because thicknesses are signed and frames
   do not flip at mirrors, this is the position along the local `z` axis of
-  `j` (on the unfolded axis when there are tilts). `c_j = 1/d`; the residual
+  `j` (on the unfolded axis when there are tilts; the report then warns,
+  see below). `c_j = 1/d`; the residual
   reported is `c_j·d − 1`. Example: a mirror 150 mm behind a finite object,
   solved to have its centre of curvature on the object, gets `R = −150` and
   images the object onto itself at `m = −1`.
@@ -123,6 +128,13 @@ Details:
   and wavelengths). Automatic semi-diameters depend on the thickness being
   solved, so that case is iterated to a self-consistent value. A radius
   outside a conic's domain is an error.
+* **Tilts.** Position and centre-of-curvature solves add up thicknesses
+  along the unfolded axis. When a non-identity placement (tilt, decenter,
+  coordinate break) lies on a surface after the first of the two surfaces
+  involved, up to and including the second, the report warns that the
+  distance is that of the unfolded, rotationally symmetric equivalent
+  (across a fold mirror, "centre of curvature on vertex r" is then not a
+  physical statement).
 * **Planes and shapes.** A plane has curvature 0. A curvature solve on a
   `plane` is allowed and **turns it into a sphere** (`conic` with `conic = 0`),
   as `ParamPath::set` does. Ideal lenses (`paraxial`) have no curvature: use
@@ -143,7 +155,18 @@ Details:
   on a curvature, a ray solve on the object or image thickness, an F/# solve
   on a thickness;
 * power solves on surfaces without power (object, image, dummy, coordinate
-  break) and F/# solves with an F/#-specified aperture;
+  break), and **curvature** targets of power solves (F/#, marginal or chief
+  angle) on a refracting surface between equal media (the same
+  `MaterialRef` before and after, e.g. an air–air plane stop: `φ = c·(N' − N)
+  = 0`; mirrors keep the medium before them). Ideal lenses and mirrors
+  always have power;
+* F/# solves with an F/#-specified aperture, and marginal-angle solves on a
+  surface with no possible power behind it (structurally: no curved,
+  ideal-lens or curvature-solved surface that refracts or reflects) when
+  the aperture fixes the image-space marginal slope (working F/#, or
+  image-space F/# with an object at infinity);
+* a pickup whose source is not set by a solve and is not finite (e.g. the
+  thickness of an object at infinity);
 * `position` with `from` not before `to`, the target outside `[from, to)`,
   or `from` the object at infinity; `center_of_curvature` on the surface's
   own vertex or involving an object at infinity; `edge_thickness` next to a
@@ -205,11 +228,34 @@ number of sweeps and the last change; failure to converge within
 
 **Convergence criteria** (`SolveSettings`, default `tolerance = 1e-12`,
 `max_sweeps = 50`, `max_iterations = 200`, `closed_form = true`): a
-condition holds when `|measured − goal| ≤ tolerance · scale`, with scale the
-largest height of the ray (heights), the largest slope (angles), the goal (pickups), the F/#
-itself, the sum of absolute thicknesses (position), 1 (centre of curvature),
-or `max(|value|, |t|, 1 mm)` (edge thickness). `closed_form = false` uses
-root finding alone, a cross-check of the closed forms in the tests.
+condition holds when `|measured − goal| ≤ tolerance · scale`, with scale
+
+| condition | scale |
+|---|---|
+| ray height | `max(|goal|, min(max_j |y_j|, RAY_CAP·L))` |
+| ray slope | `max(|goal|, min(max_j |u_j|, RAY_CAP))` |
+| F/# | the F/# itself |
+| pickup | `max(|goal|, floor)` (floor 1 mm, 1e-6/mm for curvatures) |
+| position | `max(|distance|, min(Σ|t|, RAY_CAP·L), 1 mm)` |
+| centre of curvature | 1 (the residual is `c·d − 1`) |
+| edge thickness | `max(|value|, min(|t|, RAY_CAP·L), 1 mm)` |
+
+`L = mklight_trace::solves::length_scale(input)` is a ray-independent size
+of the **input** system: the largest of 1 mm, the sum of its finite
+|thicknesses|, an entrance-pupil-diameter aperture, the largest height-type
+field and the largest fixed, mechanical or aperture radius. `RAY_CAP = 1e3`.
+The ray's own height or slope is the right floating-point scale for an
+ordinary ray, but it must not set the tolerance when the ray's scaling blows
+up: e.g. a chief-ray height 0 on the image with image-height fields is
+impossible (the chief ray is always rescaled to the maximum image height),
+yet the closed form drives the unit chief ray's image height to ~0 and the
+rescaled ray to ~1e17 mm, which would make a 6 mm residual look converged.
+The cap turns this into an error (and the error message names the
+degenerate scaling). After the sweeps, **every condition is re-checked on
+the returned system** with `10 · tolerance` (a later solve of the last sweep
+may move an earlier one's parameters by up to `tolerance`); a failure is an
+error. `closed_form = false` uses root finding alone, a cross-check of the
+closed forms in the tests.
 
 **Report** (`SolveReport`): per solve (declaration order) the previous and
 new value, final residual measured on the returned system, method
@@ -218,14 +264,29 @@ count; the evaluation order, sweeps, last change, `solved_params`, warnings
 and a `RunInfo` (input snapshot hash, settings, `cpu-f64`).
 
 **Jobs.** Deterministic (fixed order, no randomness, no threads apart from
-the deterministic semi-diameter trace). Cancellation is checked before each
-solve; progress is monotone and reaches 1 on success.
+the deterministic semi-diameter trace). Cancellation is checked before
+**every evaluation** of a candidate system (fixed-point steps, bracket
+expansion and every Brent step), so latency is one evaluation (a paraxial
+trace, or one semi-diameter trace for an edge-thickness solve on automatic
+semi-diameters); a cancelled run returns `MkError::Cancelled`, never a
+numerical error. Progress is reported after each solve, is strictly
+increasing (sweep `s` covers `[1 − 1/s, 1 − 1/(s+1)]`) and reaches 1 on
+success.
 
 **Configurations.** Solves are applied per configuration **after** its
-overrides (`apply_solves_configuration`). An override of a solve-controlled
-parameter is overwritten by the solve and reported as a warning. The
-returned system is the solved configuration: its base values are those of
-configuration `k`, and its `configurations` list is kept unchanged.
+overrides (`apply_solves_configuration`); solves must always run after
+overrides, never before. An override of a solve-controlled parameter is
+overwritten by the solve and reported as a warning. The returned system is
+the solved configuration **flattened**: its base values are those of
+configuration `k` and its `configurations` list is **empty**, because
+re-applying any configuration's overrides to a solved system would
+overwrite solved values (or change what they depend on) without solving
+again. `SolveReport::configuration` (and the `RunInfo` settings) record `k`.
+`apply_solves`/`apply_solves_with` solve the system as given and keep its
+`configurations` (so the result can be stored back losslessly), but
+`with_configuration(k)` on that result is **not** a solved system: solve
+each configuration with `apply_solves_configuration` (or
+`apply_solves_all`).
 
 ## 6. JSON
 
@@ -279,6 +340,12 @@ and their order; cycle detection; edge thickness against sags from the
 circle equation (explicit radius, fixed and automatic semi-diameters);
 total track kept by a position solve; centre-of-curvature solves including
 a mirror imaging its centre onto itself; per-configuration solving and the
-override warning; serde round trips and the JSON above; validation errors;
-clear failures for impossible conditions; determinism, cancellation and
-progress; idempotence (solving a solved system changes nothing).
+override warning, flattened per-configuration results; serde round trips
+and the JSON above; validation errors, including solves that can never
+succeed (air–air curvature, infinite pickup source, marginal angle under an
+F/# aperture on every such sample); clear failures for impossible
+conditions, including a chief-ray height whose ray scaling blows up
+(regression for a tolerance that grew with the ray); unfolded-distance
+warnings across tilts; determinism, cancellation inside one solve,
+strictly increasing progress (also sampled from another thread); and
+idempotence (solving a solved system changes nothing).

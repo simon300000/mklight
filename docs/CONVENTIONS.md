@@ -145,3 +145,11 @@ designs they cover):
 
 If a backend can't meet the budget for a design, it must say so and fall back
 to the CPU reference. It must never return silently degraded numbers.
+
+## 8. Paraxial slopes in solves
+
+Ray-angle solves (`marginal_ray_angle`, `chief_ray_angle`, `docs/SOLVES.md`)
+take the paraxial **slope** `u = dy/dz` after a surface: dimensionless, not
+an angle in degrees, and not `tan` of a real-ray angle. The JSON field is
+`slope`. UI and FFI must label it as a slope (or "paraxial angle u") and pass
+it through unconverted; §1's "angles in degrees" does not apply to it.

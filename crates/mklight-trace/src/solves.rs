@@ -33,10 +33,19 @@
 //!    (a fixed point of the coupled set); the report says how many sweeps
 //!    were needed.
 //!
+//! A condition holds when `|measured − goal| ≤ tolerance · scale`. The scale
+//! of a ray condition is the ray's largest height or slope, **capped** by the
+//! input system's size ([`length_scale`], [`RAY_CAP`]): a ray whose scaling
+//! blows up (e.g. a chief ray rescaled to an image height that its unit ray
+//! almost cannot reach) must not loosen its own tolerance. Every condition is
+//! re-checked on the returned system.
+//!
 //! Everything is deterministic: fixed order, no randomness, no threads.
+//! Cancellation is checked before every evaluation of a candidate system.
 //! Multi-configuration systems are solved per configuration *after* its
 //! overrides ([`apply_solves_configuration`]); an override of a
-//! solve-controlled parameter is overwritten and reported as a warning.
+//! solve-controlled parameter is overwritten and reported as a warning, and
+//! the returned system has no configurations left to re-apply.
 
 use std::cell::OnceCell;
 use std::sync::Arc;
@@ -46,8 +55,8 @@ use mklight_core::materials::MaterialLibrary;
 use mklight_core::model::Solve;
 use mklight_core::param::ParamPath;
 use mklight_core::{
-    JobContext, MkError, MkResult, OpticalSystem, ResolvedSystem, RunInfo, SemiDiameter, Snapshot,
-    SolveKind,
+    ApertureSpec, FieldKind, JobContext, MkError, MkResult, OpticalSystem, ResolvedSystem, RunInfo,
+    SemiDiameter, Snapshot, SolveKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -130,7 +139,62 @@ pub struct SolveReport {
     /// Parameters controlled by solves (exclude them from optimisation).
     pub solved_params: Vec<ParamPath>,
     pub warnings: Vec<String>,
+    /// The configuration that was solved ([`apply_solves_configuration`]);
+    /// `None` for the system as given ([`apply_solves_with`]).
+    #[serde(default)]
+    pub configuration: Option<usize>,
     pub run_info: RunInfo,
+}
+
+/// Settings as recorded in `RunInfo` (with the configuration, if any).
+#[derive(Serialize)]
+struct Recorded<'a> {
+    #[serde(flatten)]
+    settings: &'a SolveSettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configuration: Option<usize>,
+}
+
+/// Ray heights beyond `RAY_CAP ×` the system's [`length_scale`], and ray
+/// slopes beyond `RAY_CAP`, no longer widen a ray condition's tolerance.
+pub const RAY_CAP: f64 = 1e3;
+
+/// The final check of every condition on the returned system allows this
+/// factor on the tolerance: a later solve of the last sweep may move an
+/// earlier one's parameters by up to `tolerance` (relative).
+const FINAL_SLACK: f64 = 10.0;
+
+/// Physical length scale of a system (mm), independent of any paraxial ray:
+/// the largest of 1 mm, the sum of the finite |thicknesses| (including a
+/// finite object distance), an entrance-pupil diameter aperture, the largest
+/// height-type field, and the largest fixed, mechanical or aperture radius.
+pub fn length_scale(sys: &OpticalSystem) -> f64 {
+    let track = sum(sys
+        .surfaces
+        .iter()
+        .map(|s| s.thickness.abs())
+        .filter(|t| t.is_finite()));
+    let aperture = match sys.aperture {
+        ApertureSpec::EntrancePupilDiameter { value } => value,
+        _ => 0.0,
+    };
+    let field = match sys.fields.kind {
+        FieldKind::ObjectAngle => 0.0,
+        _ => sys.fields.max_radial(),
+    };
+    let radius = sys.surfaces.iter().fold(0.0f64, |r, s| {
+        let fixed = match s.semi_diameter {
+            SemiDiameter::Fixed { value } => value,
+            SemiDiameter::Auto => 0.0,
+        };
+        let mech = s.edge.mechanical_semi_diameter.unwrap_or(0.0);
+        let ap = s.aperture.as_ref().map_or(0.0, |a| a.bounding_radius());
+        r.max(fixed).max(mech).max(ap)
+    });
+    [track, aperture, field, radius]
+        .into_iter()
+        .filter(|v| v.is_finite())
+        .fold(1.0, f64::max)
 }
 
 /// Parameters controlled by solves, sorted (= `OpticalSystem::solved_params`).
@@ -146,7 +210,11 @@ pub fn apply_solves(
     apply_solves_with(sys, lib, &SolveSettings::default(), &JobContext::new())
 }
 
-/// Solve configuration `k` (its overrides first, then the solves).
+/// Solve configuration `k` (its overrides first, then the solves). The
+/// returned system *is* the solved configuration: its base values are those
+/// of configuration `k` and its `configurations` list is empty, because
+/// re-applying any configuration's overrides would overwrite solved values
+/// (or change what they depend on). `report.configuration` is `Some(k)`.
 pub fn apply_solves_configuration(
     sys: &OpticalSystem,
     lib: &MaterialLibrary,
@@ -154,7 +222,8 @@ pub fn apply_solves_configuration(
     settings: &SolveSettings,
     ctx: &JobContext,
 ) -> MkResult<(OpticalSystem, SolveReport)> {
-    let cfg = sys.with_configuration(k)?;
+    let mut cfg = sys.with_configuration(k)?;
+    cfg.configurations.clear();
     let mut warnings = Vec::new();
     if let Some(c) = sys.configurations.get(k) {
         let solved = sys.solved_params();
@@ -166,7 +235,7 @@ pub fn apply_solves_configuration(
             }
         }
     }
-    let (out, mut report) = apply_solves_with(&cfg, lib, settings, ctx)?;
+    let (out, mut report) = solve_system(&cfg, lib, settings, ctx, Some(k))?;
     warnings.append(&mut report.warnings);
     report.run_info.warnings = warnings.clone();
     report.warnings = warnings;
@@ -189,13 +258,28 @@ pub fn apply_solves_all(
         .collect()
 }
 
-/// Solve `sys` (module docs). Cancellable between solves; progress is
-/// monotone and reaches 1 on success.
+/// Solve `sys` (module docs). Cancellable before every evaluation; progress
+/// is monotone and reaches 1 on success.
+///
+/// The returned system keeps `sys.configurations` unchanged (so it can be
+/// stored back losslessly), but it is solved for the base values only:
+/// `with_configuration(k)` on it is **not** a solved system. Solve a
+/// configuration with [`apply_solves_configuration`].
 pub fn apply_solves_with(
     sys: &OpticalSystem,
     lib: &MaterialLibrary,
     settings: &SolveSettings,
     ctx: &JobContext,
+) -> MkResult<(OpticalSystem, SolveReport)> {
+    solve_system(sys, lib, settings, ctx, None)
+}
+
+fn solve_system(
+    sys: &OpticalSystem,
+    lib: &MaterialLibrary,
+    settings: &SolveSettings,
+    ctx: &JobContext,
+    configuration: Option<usize>,
 ) -> MkResult<(OpticalSystem, SolveReport)> {
     let timer = RunTimer::start();
     let input = Snapshot::new(sys.clone())?;
@@ -204,7 +288,11 @@ pub fn apply_solves_with(
             "solve settings: tolerance must be in (0, 1) and max_sweeps ≥ 1".into(),
         ));
     }
-    let lib = Arc::new(lib.clone());
+    let env = Env {
+        lib: Arc::new(lib.clone()),
+        length: length_scale(sys),
+        job: ctx,
+    };
     let order = sys.solve_order()?;
     let mut warnings = Vec::new();
     if sys.solves.iter().any(|s| s.kind.is_paraxial())
@@ -219,6 +307,30 @@ pub fn apply_solves_with(
                 .into(),
         );
     }
+    for (k, s) in sys.solves.iter().enumerate() {
+        let range = match s.kind {
+            SolveKind::Position { from, to, .. } => {
+                sys.surface_index(from).zip(sys.surface_index(to))
+            }
+            SolveKind::CenterOfCurvature { surface } => s
+                .target
+                .surface()
+                .and_then(|id| sys.surface_index(id))
+                .zip(sys.surface_index(surface))
+                .map(|(a, b)| (a.min(b), a.max(b))),
+            _ => None,
+        };
+        if let Some((lo, hi)) = range
+            && placed_between(sys, lo, hi)
+        {
+            warnings.push(format!(
+                "solve {k} ({} on {:?}): tilts or decenters lie between surfaces {lo} and {hi}; \
+                 the axial distance is that of the unfolded, rotationally symmetric equivalent",
+                s.kind.name(),
+                s.target
+            ));
+        }
+    }
 
     let deps: Vec<Vec<usize>> = (0..sys.solves.len())
         .map(|k| dependents(sys, &order, k))
@@ -227,16 +339,14 @@ pub fn apply_solves_with(
     let mut stats: Vec<(SolveMethod, usize)> = vec![(SolveMethod::Unchanged, 0); sys.solves.len()];
     let mut sweeps = 0;
     let mut max_change = f64::INFINITY;
-    let m = order.len().max(1) as f64;
     while sweeps < settings.max_sweeps {
         sweeps += 1;
         max_change = 0.0;
-        let (lo, hi) = (1.0 - 1.0 / sweeps as f64, 1.0 - 1.0 / (sweeps + 1) as f64);
         for (done, &k) in order.iter().enumerate() {
             ctx.check()?;
             let solve = &sys.solves[k];
             let before = solve.target.get(&cur).ok();
-            let (method, evals) = run_solve(k, &sys.solves, &deps[k], &mut cur, &lib, settings)?;
+            let (method, evals) = run_solve(k, &sys.solves, &deps[k], &mut cur, &env, settings)?;
             let after = solve.target.get(&cur)?;
             stats[k].0 = stats[k].0.max(method);
             stats[k].1 += evals;
@@ -248,7 +358,7 @@ pub fn apply_solves_with(
                 None => f64::INFINITY,
             };
             max_change = max_change.max(change);
-            ctx.report(lo + (hi - lo) * (done + 1) as f64 / m, "solves");
+            ctx.report(sweep_progress(sweeps, done + 1, order.len()), "solves");
         }
         if max_change <= settings.tolerance {
             break;
@@ -261,11 +371,24 @@ pub fn apply_solves_with(
     }
     cur.validate()?;
 
-    // Final residuals, all measured on the solved system.
-    let eval = Eval::new(&cur, &lib);
+    // Final residuals, all measured (and checked) on the solved system.
+    let eval = Eval::new(&cur, &env);
     let mut outcomes = Vec::with_capacity(sys.solves.len());
     for (k, s) in sys.solves.iter().enumerate() {
         let m = measure(s, &eval).map_err(|e| solve_error(k, s, &e))?;
+        if !m.converged(FINAL_SLACK * settings.tolerance) {
+            return Err(solve_error(
+                k,
+                s,
+                &format!(
+                    "the condition does not hold in the solved system (residual {:.3e}, \
+                     tolerance {:.3e}){}",
+                    m.residual(),
+                    FINAL_SLACK * settings.tolerance * m.scale,
+                    m.degenerate_note(env.length)
+                ),
+            ));
+        }
         outcomes.push(SolveOutcome {
             index: k,
             kind: s.kind.name().into(),
@@ -281,7 +404,10 @@ pub fn apply_solves_with(
     let run_info = timer.finish(
         &input,
         "solves",
-        settings,
+        &Recorded {
+            settings,
+            configuration,
+        },
         "cpu-f64",
         Precision::F64Reference,
         None,
@@ -296,6 +422,7 @@ pub fn apply_solves_with(
             max_change,
             solved_params: sys.solved_params(),
             warnings,
+            configuration,
             run_info,
         },
     ))
@@ -307,6 +434,23 @@ fn solve_error(k: usize, s: &Solve, why: &str) -> MkError {
         s.kind.name(),
         s.target
     ))
+}
+
+/// Progress after `done` of `n` solves of sweep `sweep` (1-based): sweep `s`
+/// covers `[1 − 1/s, 1 − 1/(s+1)]`, so the sequence is strictly increasing
+/// and stays below 1 however many sweeps are needed.
+fn sweep_progress(sweep: usize, done: usize, n: usize) -> f64 {
+    let (lo, hi) = (1.0 - 1.0 / sweep as f64, 1.0 - 1.0 / (sweep + 1) as f64);
+    lo + (hi - lo) * done as f64 / n.max(1) as f64
+}
+
+/// Do tilts or decenters change the geometry between surfaces `lo` and `hi`?
+/// A placement applies before its surface, so the one on `lo` moves both
+/// ends rigidly and does not count.
+fn placed_between(sys: &OpticalSystem, lo: usize, hi: usize) -> bool {
+    sys.surfaces[lo + 1..=hi]
+        .iter()
+        .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
 }
 
 /// Scale below which a parameter change is measured absolutely
@@ -330,19 +474,27 @@ struct Para {
     fo: FirstOrder,
 }
 
+/// Fixed for one solve of a whole system.
+struct Env<'a> {
+    lib: Arc<MaterialLibrary>,
+    /// [`length_scale`] of the input system (mm).
+    length: f64,
+    job: &'a JobContext,
+}
+
 /// Lazily evaluated paraxial data and semi-diameters of one system.
 struct Eval<'a> {
     sys: &'a OpticalSystem,
-    lib: &'a Arc<MaterialLibrary>,
+    env: &'a Env<'a>,
     para: OnceCell<Result<Para, String>>,
     sd: OnceCell<Result<Vec<f64>, String>>,
 }
 
 impl<'a> Eval<'a> {
-    fn new(sys: &'a OpticalSystem, lib: &'a Arc<MaterialLibrary>) -> Self {
+    fn new(sys: &'a OpticalSystem, env: &'a Env<'a>) -> Self {
         Eval {
             sys,
-            lib,
+            env,
             para: OnceCell::new(),
             sd: OnceCell::new(),
         }
@@ -352,7 +504,7 @@ impl<'a> Eval<'a> {
             .get_or_init(|| {
                 let snap = Snapshot::new(self.sys.clone()).map_err(|e| e.to_string())?;
                 let resolved =
-                    ResolvedSystem::new(&snap, self.lib.clone()).map_err(|e| e.to_string())?;
+                    ResolvedSystem::new(&snap, self.env.lib.clone()).map_err(|e| e.to_string())?;
                 let wl = resolved.primary_wavelength;
                 let fo = first_order(&resolved, wl).map_err(|e| e.to_string())?;
                 let model = ParaxialModel::new(&resolved, wl);
@@ -388,7 +540,11 @@ impl<'a> Eval<'a> {
 struct Measure {
     measured: f64,
     goal: f64,
+    /// Convergence scale (capped, see the module docs).
     scale: f64,
+    /// The ray's own (uncapped) height or slope scale; 0 for conditions
+    /// without a ray.
+    ray_scale: f64,
     update: Result<f64, String>,
 }
 
@@ -399,6 +555,28 @@ impl Measure {
     fn converged(&self, tol: f64) -> bool {
         let r = self.residual();
         r.is_finite() && r.abs() <= tol * self.scale
+    }
+    /// Explanation appended to a failure when the ray scaling is degenerate.
+    fn degenerate_note(&self, length: f64) -> String {
+        if self.ray_scale > self.scale {
+            format!(
+                "; the paraxial ray is scaled to {:.3e}, far beyond the system's size \
+                 ({length:.3e} mm): the condition is met, if at all, only by a degenerate ray \
+                 scaling",
+                self.ray_scale
+            )
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// A paraxial ray table must be finite to be measured.
+fn finite_ray(ray: &ParaxialRayTable) -> Result<(), String> {
+    if ray.y.iter().chain(&ray.u).all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err("the paraxial ray is not finite".into())
     }
 }
 
@@ -471,12 +649,15 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
             } else {
                 &p.fo.chief
             };
+            finite_ray(ray)?;
             let j = idx(sys, tgt)?;
             let u = ray.u[j];
+            let ray_scale = max_abs(&ray.y[1..]);
             Ok(Measure {
                 measured: ray.y[j + 1],
                 goal: *height,
-                scale: height.abs().max(max_abs(&ray.y[1..])),
+                scale: height.abs().max(ray_scale.min(RAY_CAP * ev.env.length)),
+                ray_scale,
                 update: if u != 0.0 {
                     Ok((height - ray.y[j]) / u)
                 } else {
@@ -494,6 +675,7 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
             } else {
                 &p.fo.chief
             };
+            finite_ray(ray)?;
             let k = idx(sys, tgt)?;
             let nn = &p.model.reduced_index;
             let y = ray.y[k];
@@ -506,10 +688,12 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
                     "the ray has zero height on surface {k}, so its power cannot bend it"
                 ))
             };
+            let ray_scale = max_abs(&ray.u);
             Ok(Measure {
                 measured: ray.u[k],
                 goal: *slope,
-                scale: slope.abs().max(max_abs(&ray.u)),
+                scale: slope.abs().max(ray_scale.min(RAY_CAP)),
+                ray_scale,
                 update,
             })
         }
@@ -550,6 +734,7 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
                 measured: p.fo.image_f_number,
                 goal: *value,
                 scale: *value,
+                ray_scale: 0.0,
                 update,
             })
         }
@@ -564,6 +749,7 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
                 measured: tgt.get(sys).unwrap_or(f64::NAN),
                 goal,
                 scale: goal.abs().max(change_floor(tgt)),
+                ray_scale: 0.0,
                 update: Ok(goal),
             })
         }
@@ -576,7 +762,11 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
             Ok(Measure {
                 measured: sum((a..b).map(t)),
                 goal: *distance,
-                scale: distance.abs().max(sum((a..b).map(|i| t(i).abs()))).max(1.0),
+                scale: distance
+                    .abs()
+                    .max(sum((a..b).map(|i| t(i).abs())).min(RAY_CAP * ev.env.length))
+                    .max(1.0),
+                ray_scale: 0.0,
                 update: Ok(distance - others),
             })
         }
@@ -595,6 +785,7 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
                 measured: c * d,
                 goal: 1.0,
                 scale: 1.0,
+                ray_scale: 0.0,
                 update: if d != 0.0 && d.is_finite() {
                     Ok(1.0 / d)
                 } else {
@@ -618,7 +809,11 @@ fn measure(s: &Solve, ev: &Eval) -> Result<Measure, String> {
             Ok(Measure {
                 measured: sum([t, s1, -s0]),
                 goal: *value,
-                scale: value.abs().max(t.abs()).max(1.0),
+                scale: value
+                    .abs()
+                    .max(t.abs().min(RAY_CAP * ev.env.length))
+                    .max(1.0),
+                ray_scale: 0.0,
                 update: Ok(sum([*value, -s1, s0])),
             })
         }
@@ -702,10 +897,10 @@ fn apply_dependents(
     sys: &mut OpticalSystem,
     solves: &[Solve],
     deps: &[usize],
-    lib: &Arc<MaterialLibrary>,
+    env: &Env,
 ) -> Result<(), String> {
     for &j in deps {
-        let x = measure(&solves[j], &Eval::new(sys, lib))?.update?;
+        let x = measure(&solves[j], &Eval::new(sys, env))?.update?;
         solves[j].target.set(sys, x).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -729,31 +924,48 @@ fn dependents(sys: &OpticalSystem, order: &[usize], k: usize) -> Vec<usize> {
 /// Solve `solves[k]` on `cur` in place, keeping its dependents `deps`
 /// consistent with every trial value (so a solve and the pickups of its
 /// target are solved as one 1-D problem). Returns the method and the number
-/// of evaluations.
+/// of evaluations. Cancellation is checked before every evaluation.
 fn run_solve(
     k: usize,
     solves: &[Solve],
     deps: &[usize],
     cur: &mut OpticalSystem,
-    lib: &Arc<MaterialLibrary>,
+    env: &Env,
     settings: &SolveSettings,
 ) -> MkResult<(SolveMethod, usize)> {
     let s = &solves[k];
     let tol = settings.tolerance;
-    let err = |why: &str| solve_error(k, s, why);
+    let job = env.job;
+    // A failure caused by cancellation is reported as `Cancelled`.
+    let err = |why: &str| match job.check() {
+        Err(e) => e,
+        Ok(()) => solve_error(k, s, why),
+    };
     let max_fixed_point = settings.max_iterations.min(60);
     let mut evals = 0usize;
     let mut updates = 0usize;
     let mut why_not = String::from("closed forms disabled");
-    apply_dependents(cur, solves, deps, lib).map_err(|e| err(&e))?;
+    apply_dependents(cur, solves, deps, env).map_err(|e| err(&e))?;
 
     if settings.closed_form {
         why_not = "fixed-point iteration did not converge".into();
         let mut last_res = f64::INFINITY;
         let mut slow = 0;
+        // The system before the latest update, to fall back on when the
+        // update produced a system that cannot be evaluated.
+        let mut before: Option<OpticalSystem> = None;
         while evals < max_fixed_point {
-            let m = measure(s, &Eval::new(cur, lib)).map_err(|e| err(&e))?;
+            job.check()?;
             evals += 1;
+            let m = match (measure(s, &Eval::new(cur, env)), before.take()) {
+                (Ok(m), _) => m,
+                (Err(e), None) => return Err(err(&e)),
+                (Err(e), Some(prev)) => {
+                    *cur = prev;
+                    why_not = format!("a closed-form step gave an invalid system ({e})");
+                    break;
+                }
+            };
             if m.converged(tol) {
                 let method = match updates {
                     0 => SolveMethod::Unchanged,
@@ -769,7 +981,10 @@ fn run_solve(
             if r.is_nan() || r > 0.9 * last_res {
                 slow += 1;
                 if slow >= 3 {
-                    why_not = format!("fixed-point iteration stalled at residual {r:.3e}");
+                    why_not = format!(
+                        "fixed-point iteration stalled at residual {r:.3e}{}",
+                        m.degenerate_note(env.length)
+                    );
                     break;
                 }
             }
@@ -785,8 +1000,9 @@ fn run_solve(
                     break;
                 }
             };
+            before = Some(cur.clone());
             s.target.set(cur, x).map_err(|e| err(&e.to_string()))?;
-            apply_dependents(cur, solves, deps, lib).map_err(|e| err(&e))?;
+            apply_dependents(cur, solves, deps, env).map_err(|e| err(&e))?;
             updates += 1;
         }
     }
@@ -803,13 +1019,18 @@ fn run_solve(
             return None;
         }
         let mut sys = with_param(&base, &s.target, x)?;
-        apply_dependents(&mut sys, solves, deps, lib).ok()?;
+        apply_dependents(&mut sys, solves, deps, env).ok()?;
         Some(sys)
     };
+    // `None` for an invalid system or after cancellation (`err` then turns
+    // the failure into `Cancelled`).
     let mut eval = |v: f64| -> Option<(f64, f64)> {
+        if job.cancel.is_cancelled() {
+            return None;
+        }
         evals_rf += 1;
         let sys = trial(v)?;
-        let m = measure(s, &Eval::new(&sys, lib)).ok()?;
+        let m = measure(s, &Eval::new(&sys, env)).ok()?;
         let r = m.residual();
         r.is_finite().then_some((r, tol * m.scale))
     };
@@ -837,6 +1058,7 @@ fn run_solve(
                 *prev = (v, f);
             }
         }
+        job.check()?;
     }
     let Some((a, fa, b, fb)) = bracket else {
         return Err(err(&format!(
@@ -859,10 +1081,11 @@ fn run_solve(
     );
     let (v, fv) = res.map_err(|e| err(&format!("{why_not}; root finding: {e}")))?;
     let sys_v = trial(v).ok_or_else(|| err("root finding produced an invalid value"))?;
-    let m = measure(s, &Eval::new(&sys_v, lib)).map_err(|e| err(&e))?;
+    let m = measure(s, &Eval::new(&sys_v, env)).map_err(|e| err(&e))?;
     if !m.converged(tol) {
         return Err(err(&format!(
-            "{why_not}; root finding ended on a discontinuity (residual {fv:.3e})"
+            "{why_not}; root finding ended on a discontinuity (residual {fv:.3e}){}",
+            m.degenerate_note(env.length)
         )));
     }
     *cur = sys_v;
@@ -945,6 +1168,79 @@ pub fn brent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mklight_core::{CancelToken, Progress, samples};
+
+    #[test]
+    fn progress_is_strictly_increasing_and_below_one() {
+        for n in [1, 2, 7] {
+            let mut last = 0.0;
+            for sweep in 1..=60 {
+                for done in 1..=n {
+                    let p = sweep_progress(sweep, done, n);
+                    assert!(p > last && p < 1.0, "{sweep} {done} {n}: {p} after {last}");
+                    last = p;
+                }
+            }
+        }
+    }
+
+    /// Cancellation is seen inside one solve (both in the fixed point and in
+    /// root finding), not only between solves.
+    #[test]
+    fn cancellation_inside_a_solve() {
+        let mut sys = samples::double_gauss();
+        let last = sys.surfaces[sys.image_index() - 1].id;
+        sys.solves = vec![Solve::marginal_ray_height(last, 0.0)];
+        let j = sys.image_index() - 1;
+        sys.surfaces[j].thickness += 3.0;
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let job = JobContext::with(cancel, Progress::default());
+        let env = Env {
+            lib: Arc::new(MaterialLibrary::with_builtin()),
+            length: length_scale(&sys),
+            job: &job,
+        };
+        for closed_form in [true, false] {
+            let settings = SolveSettings {
+                closed_form,
+                ..SolveSettings::default()
+            };
+            let mut cur = sys.clone();
+            let r = run_solve(0, &sys.solves, &[], &mut cur, &env, &settings);
+            assert!(matches!(r, Err(MkError::Cancelled)), "{r:?}");
+        }
+        // The same solve completes without cancellation.
+        let job = JobContext::new();
+        let env = Env { job: &job, ..env };
+        let mut cur = sys.clone();
+        let (method, _) = run_solve(
+            0,
+            &sys.solves,
+            &[],
+            &mut cur,
+            &env,
+            &SolveSettings {
+                closed_form: false,
+                ..SolveSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(method, SolveMethod::RootFinding);
+    }
+
+    #[test]
+    fn length_scale_ignores_rays_and_infinities() {
+        let sys = samples::double_gauss();
+        let track: f64 = sys.surfaces[1..].iter().map(|s| s.thickness.abs()).sum();
+        assert!((length_scale(&sys) - track).abs() < 1e-12);
+        let mut tiny = OpticalSystem::new_empty();
+        tiny.surfaces.clear();
+        tiny.aperture = ApertureSpec::ImageSpaceFNumber { value: 2.0 };
+        assert_eq!(length_scale(&tiny), 1.0);
+        tiny.aperture = ApertureSpec::EntrancePupilDiameter { value: 25.0 };
+        assert_eq!(length_scale(&tiny), 25.0);
+    }
 
     #[test]
     fn brent_known_roots() {

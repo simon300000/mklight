@@ -408,17 +408,19 @@ fn curvature_pickup_with_scale_minus_one_makes_a_symmetric_lens() {
     let (out, report) = solve(&sys);
     assert_eq!(c(2).get(&out).unwrap(), -1.0 / 60.0);
     assert_eq!(report.outcomes[0].method, SolveMethod::ClosedForm);
-    // Symmetric: the reversed lens has the same EFL.
-    let mut rev = out.clone();
-    rev.surfaces[1].shape = SurfaceShape::Conic {
-        curvature: -c(2).get(&out).unwrap(),
-        conic: 0.0,
-    };
-    rev.surfaces[2].shape = SurfaceShape::Conic {
-        curvature: -c(1).get(&out).unwrap(),
-        conic: 0.0,
-    };
-    assert!(rel(first_order(&rev).efl, first_order(&out).efl) < 1e-15);
+    // Symmetric in air: the principal planes are equidistant from the
+    // vertices, so the front focal point lies as far in front of surface 1
+    // as the rear one lies behind surface 2 (FFL = −BFL). The unsolved,
+    // asymmetric singlet fails this check by far.
+    let fo = first_order(&out);
+    assert!(
+        (fo.ffl + fo.bfl).abs() < 1e-12 * fo.efl,
+        "{} {}",
+        fo.ffl,
+        fo.bfl
+    );
+    let fo0 = first_order(&sys);
+    assert!((fo0.ffl + fo0.bfl).abs() > 1.0, "{} {}", fo0.ffl, fo0.bfl);
 
     // Coupled: F/# by c₁ with c₂ = −c₁ (an equi-convex lens of given F/#).
     // The pickup reads the F/# target, so the two are solved as one problem.
@@ -761,6 +763,22 @@ fn solves_apply_per_configuration_after_overrides() {
     }
     assert!(all[1].0.surfaces[2].thickness > all[0].0.surfaces[2].thickness);
     assert!(all[2].1.warnings[0].contains("solve wins"));
+    // Each result is its configuration, flattened: re-applying a
+    // configuration cannot silently undo the solve (configuration 2 would
+    // reset the solved focus to 50 mm).
+    for (k, (out, report)) in all.iter().enumerate() {
+        assert!(out.configurations.is_empty());
+        assert_eq!(report.configuration, Some(k));
+        assert_eq!(report.run_info.settings["configuration"], k);
+        assert_eq!(out.with_configuration(0).unwrap(), *out);
+        assert!(out.with_configuration(2).is_err());
+    }
+    assert!((all[2].0.surfaces[2].thickness - 50.0).abs() > 1.0);
+    // The base solve keeps the configurations (lossless) and says so.
+    let (base, report) = solve(&sys);
+    assert_eq!(base.configurations, sys.configurations);
+    assert_eq!(report.configuration, None);
+    assert!(report.run_info.settings.get("configuration").is_none());
     // One configuration on its own gives the same result.
     let (one, _) = apply_solves_configuration(
         &sys,
@@ -888,10 +906,13 @@ fn deterministic_cancellable_with_monotone_progress_and_run_info() {
     let mut sys = samples::double_gauss();
     sys.solves = vec![
         Solve::marginal_ray_height(last_thickness_id(&sys), 0.0),
-        Solve::pickup(c(10), c(1), 1.0, 0.0),
-        Solve::new(c(11), SolveKind::MarginalRayAngle { slope: -0.24 }),
+        Solve::pickup(c(1), c(10), 0.3, 0.0),
+        Solve::new(c(10), SolveKind::MarginalRayAngle { slope: -0.15 }),
     ];
     let (a, ra) = solve(&sys);
+    let fo = first_order(&a);
+    assert!((fo.marginal.u[10] + 0.15).abs() < 1e-12);
+    assert!(fo.marginal.y[a.image_index()].abs() < 1e-11);
     let (b, rb) = solve(&sys);
     assert_eq!(a, b);
     assert_eq!(ra.outcomes, rb.outcomes);
@@ -901,9 +922,32 @@ fn deterministic_cancellable_with_monotone_progress_and_run_info() {
     );
     assert_eq!(ra.run_info.analysis, "solves");
 
+    // Progress, sampled from another thread while the coupled set runs, never decreases and ends at 1. (The solver's own
+    // sequence of reports is unit-tested in `solves::tests`.)
     let progress = Progress::default();
     let ctx = JobContext::with(CancelToken::new(), progress.clone());
-    apply_solves_with(&sys, &lib(), &SolveSettings::default(), &ctx).unwrap();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (result, samples) = std::thread::scope(|scope| {
+        let poll = scope.spawn(|| {
+            // Distinct values only (bounded memory however long it runs).
+            let mut v = vec![progress.fraction()];
+            while !done.load(std::sync::atomic::Ordering::Acquire) {
+                let f = progress.fraction();
+                if f != *v.last().unwrap() {
+                    v.push(f);
+                }
+                std::thread::yield_now();
+            }
+            v.push(progress.fraction());
+            v
+        });
+        let result = apply_solves_with(&sys, &lib(), &SolveSettings::default(), &ctx);
+        done.store(true, std::sync::atomic::Ordering::Release);
+        (result, poll.join().unwrap())
+    });
+    result.unwrap();
+    assert!(samples.windows(2).all(|w| w[0] <= w[1]), "{samples:?}");
+    assert_eq!(*samples.last().unwrap(), 1.0);
     assert_eq!(progress.fraction(), 1.0);
 
     let cancel = CancelToken::new();
@@ -1019,6 +1063,106 @@ fn nonsensical_targets_are_rejected() {
 }
 
 #[test]
+fn solves_that_can_never_succeed_fail_validation() {
+    // An air–air plane stop has no power.
+    let mut sys = infinite_system(
+        10.0,
+        vec![
+            surf(1, SurfaceShape::Plane, 10.0, MaterialRef::Air),
+            surf(
+                2,
+                SurfaceShape::sphere(60.0),
+                5.0,
+                MaterialRef::glass("N-BK7"),
+            ),
+            surf(3, SurfaceShape::sphere(-350.0), 90.0, MaterialRef::Air),
+        ],
+        4,
+    );
+    sys.solves = vec![Solve::f_number(id(1), 4.0)];
+    invalid(&sys, "equal media");
+    // A pickup of the infinite object distance.
+    let mut sys = singlet();
+    sys.solves = vec![Solve::pickup(t(1), t(0), 1.0, 0.0)];
+    invalid(&sys, "not finite");
+    // A marginal-angle solve on the last powered surface under an
+    // image-space F/# aperture, on every sample that has one.
+    let mut n = 0;
+    for (_, base) in samples::all() {
+        if !matches!(base.aperture, ApertureSpec::ImageSpaceFNumber { .. })
+            || !base.object_at_infinity()
+        {
+            continue;
+        }
+        let last = base.surfaces[base.image_index() - 1].id;
+        let mut sys = base.clone();
+        sys.solves = vec![Solve::new(
+            ParamPath::Curvature { surface: last },
+            SolveKind::MarginalRayAngle { slope: -0.1 },
+        )];
+        invalid(&sys, "fixes the image-space marginal slope");
+        n += 1;
+    }
+    assert!(n >= 3, "{n}");
+}
+
+#[test]
+fn distances_across_tilts_warn_about_the_unfolded_equivalent() {
+    // The Newtonian's fold flat (surface 3) lies between two 45° coordinate
+    // breaks: "centre of curvature on the primary's vertex" is an unfolded
+    // distance (−400 mm, so R = 400 mm), and the report says so.
+    let base = samples::newtonian_telescope();
+    let mut sys = base.clone();
+    sys.solves = vec![Solve::new(
+        c(3),
+        SolveKind::CenterOfCurvature { surface: id(1) },
+    )];
+    let (out, report) = solve(&sys);
+    assert!(rel(c(3).get(&out).unwrap(), 1.0 / 400.0) < 1e-15);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("solve 0 (center_of_curvature"));
+    assert!(report.warnings[0].contains("unfolded"));
+    assert_eq!(report.run_info.warnings, report.warnings);
+    // So does a position solve across the fold...
+    let mut sys = base.clone();
+    sys.solves = vec![Solve::new(
+        t(4),
+        SolveKind::Position {
+            from: id(1),
+            to: id(5),
+            distance: -500.0,
+        },
+    )];
+    let (_, report) = solve(&sys);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("solve 0 (position"))
+    );
+    // ...but not one that starts at a tilted frame (the placement on
+    // surface 2 moves both ends of 2 → 3 rigidly), nor an untilted system.
+    let mut sys = base.clone();
+    sys.solves = vec![Solve::new(
+        t(2),
+        SolveKind::Position {
+            from: id(2),
+            to: id(3),
+            distance: 0.0,
+        },
+    )];
+    let (_, report) = solve(&sys);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let mut sys = singlet();
+    sys.solves = vec![Solve::new(
+        c(2),
+        SolveKind::CenterOfCurvature { surface: id(1) },
+    )];
+    let (_, report) = solve(&sys);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[test]
 fn curvature_solve_on_a_plane_turns_it_into_a_sphere() {
     // Documented behaviour: a plane has curvature 0, and solving it makes
     // it a sphere (conic 0).
@@ -1058,16 +1202,61 @@ fn impossible_conditions_fail_with_a_clear_error() {
     assert!(e.contains("parallel"), "{e}");
 
     // With an image-space F/# aperture the image-space marginal slope is
-    // fixed at −1/(2F): a marginal-angle solve can only fail.
+    // fixed at −1/(2F): a marginal-angle solve on the last powered surface
+    // can never succeed, and validation says so.
     let mut sys = singlet();
     sys.aperture = ApertureSpec::ImageSpaceFNumber { value: 5.0 };
     sys.solves = vec![Solve::new(
         c(2),
         SolveKind::MarginalRayAngle { slope: -0.2 },
     )];
-    let e = apply_solves(&sys, &lib()).unwrap_err().to_string();
-    assert!(e.contains("marginal_ray_angle"), "{e}");
-    assert!(e.contains("no sign change"), "{e}");
+    invalid(&sys, "fixes the image-space marginal slope");
+}
+
+/// Regression: a condition that can only be "met" by blowing up the ray
+/// scaling must fail. With image-height fields the chief ray is rescaled so
+/// that its image height is the maximum field (6 mm), so chief height 0 on
+/// the image is impossible. The closed form puts the image on a pupil image,
+/// where the unit chief ray has (almost) zero image height and the rescaled
+/// ray reaches ~1e17 mm; a tolerance relative to that ray used to accept the
+/// 6 mm residual. The same for a marginal-angle solve whose ray blows up
+/// as the system turns afocal.
+#[test]
+fn a_ray_whose_scaling_blows_up_does_not_loosen_its_tolerance() {
+    let mut sys = samples::petzval_asphere();
+    assert_eq!(sys.fields.kind, FieldKind::RealImageHeight);
+    sys.solves = vec![Solve::new(
+        ParamPath::Thickness {
+            surface: last_thickness_id(&sys),
+        },
+        SolveKind::ChiefRayHeight { height: 0.0 },
+    )];
+    sys.validate().unwrap();
+    for settings in [SolveSettings::default(), root_finding_only()] {
+        let e = apply_solves_with(&sys, &lib(), &settings, &JobContext::new())
+            .expect_err("chief height 0 on the image cannot be met")
+            .to_string();
+        assert!(e.contains("solve 0 (chief_ray_height"), "{e}");
+    }
+    // The achievable goal (the image height itself) still solves.
+    let max_field = sys.fields.max_radial();
+    sys.solves[0].kind = SolveKind::ChiefRayHeight { height: max_field };
+    let (_, report) = solve(&sys);
+    assert_eq!(report.outcomes[0].method, SolveMethod::Unchanged);
+
+    // A marginal slope of −0.24 after the last surface of an F/2 lens with
+    // an EPD aperture is reachable; the residual must be tiny in absolute
+    // terms, not relative to a blown-up ray.
+    let mut sys = samples::double_gauss();
+    let epd = first_order(&sys).entrance_pupil_diameter;
+    sys.aperture = ApertureSpec::EntrancePupilDiameter { value: epd };
+    sys.solves = vec![Solve::new(
+        c(11),
+        SolveKind::MarginalRayAngle { slope: -0.24 },
+    )];
+    let (out, report) = solve(&sys);
+    assert!(report.outcomes[0].residual.abs() < 1e-12);
+    assert!((first_order(&out).marginal.u[11] + 0.24).abs() < 1e-12);
 }
 
 #[test]

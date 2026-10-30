@@ -19,7 +19,9 @@ use std::collections::BinaryHeap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MkError, MkResult};
-use crate::model::{ApertureSpec, Interaction, OpticalSystem, SurfaceId, SurfaceShape};
+use crate::model::{
+    ApertureSpec, Interaction, MaterialRef, OpticalSystem, SurfaceId, SurfaceShape,
+};
 use crate::param::ParamPath;
 
 /// One solve: `target` is set by the rule `kind`.
@@ -45,7 +47,8 @@ pub enum SolveKind {
     /// thickness puts the image surface at the paraxial focus.
     MarginalRayHeight { height: f64 },
     /// On `Curvature` (or `ParaxialFocalLength`) of surface `k`: the paraxial
-    /// marginal-ray slope after surface `k` is `slope` (`u = dy/dz`).
+    /// marginal-ray slope after surface `k` is `slope` (`u = dy/dz`,
+    /// dimensionless: not an angle in degrees, CONVENTIONS §8).
     MarginalRayAngle { slope: f64 },
     /// As [`SolveKind::MarginalRayHeight`] for the paraxial chief ray.
     ChiefRayHeight { height: f64 },
@@ -292,6 +295,38 @@ fn check_settable(sys: &OpticalSystem, p: &ParamPath) -> MkResult<()> {
     }
 }
 
+/// The medium after surface `m` as the resolver sees it: mirrors, dummies and
+/// coordinate breaks keep the medium before them.
+fn medium_after(sys: &OpticalSystem, mut m: usize) -> &MaterialRef {
+    while m > 0 {
+        let s = &sys.surfaces[m];
+        if s.interaction == Interaction::Refract && !s.is_coordinate_break() {
+            break;
+        }
+        m -= 1;
+    }
+    &sys.surfaces[m].material
+}
+
+/// Can surface `m` have paraxial power (structurally, without resolving
+/// materials)? Conservative: any curved or ideal-lens surface that refracts
+/// or reflects, and any surface whose curvature or focal length a solve
+/// sets.
+fn may_have_power(sys: &OpticalSystem, m: usize) -> bool {
+    let s = &sys.surfaces[m];
+    if s.interaction == Interaction::Dummy || s.is_coordinate_break() {
+        return false;
+    }
+    let solved = sys.solves.iter().any(|o| {
+        matches!(
+            o.target,
+            ParamPath::Curvature { surface } | ParamPath::ParaxialFocalLength { surface }
+                if surface == s.id
+        )
+    });
+    solved || matches!(s.shape, SurfaceShape::Paraxial { .. }) || s.shape.curvature() != 0.0
+}
+
 /// Structural checks of `sys.solves` (called by `OpticalSystem::validate`).
 pub(crate) fn validate_solves(sys: &OpticalSystem) -> MkResult<()> {
     let n = sys.surfaces.len();
@@ -340,14 +375,42 @@ pub(crate) fn validate_solves(sys: &OpticalSystem) -> MkResult<()> {
                     "surface {j} is a dummy or coordinate break and has no power"
                 )));
             }
+            // A refracting curvature between equal media has no power
+            // (`φ = c·(N' − N)`); an ideal lens and a mirror always do.
+            if matches!(s.target, ParamPath::Curvature { .. })
+                && surf.interaction == Interaction::Refract
+                && medium_after(sys, j - 1) == &surf.material
+            {
+                return Err(err(format!(
+                    "surface {j} separates equal media ({:?}): its curvature has no paraxial power",
+                    surf.material
+                )));
+            }
             Ok(j)
         };
         match &s.kind {
             SolveKind::MarginalRayHeight { .. } | SolveKind::ChiefRayHeight { .. } => {
                 inner_thickness()?;
             }
-            SolveKind::MarginalRayAngle { .. } | SolveKind::ChiefRayAngle { .. } => {
+            SolveKind::ChiefRayAngle { .. } => {
                 powered()?;
+            }
+            SolveKind::MarginalRayAngle { .. } => {
+                let j = powered()?;
+                // A working F/#, or an image-space F/# at infinity, fixes the
+                // image-space reduced slope `ω' = ∓1/(2F)`; with no power
+                // behind surface `j`, `ω_j = ω'` cannot change.
+                let fixes_slope = match sys.aperture {
+                    ApertureSpec::ParaxialWorkingFNumber { .. } => true,
+                    ApertureSpec::ImageSpaceFNumber { .. } => sys.object_at_infinity(),
+                    _ => false,
+                };
+                if fixes_slope && !(j + 1..n - 1).any(|m| may_have_power(sys, m)) {
+                    return Err(err(format!(
+                        "the aperture is specified as an F/#, which fixes the image-space \
+                         marginal slope, and no surface after surface {j} has power"
+                    )));
+                }
             }
             SolveKind::FNumber { value } => {
                 powered()?;
@@ -369,15 +432,14 @@ pub(crate) fn validate_solves(sys: &OpticalSystem) -> MkResult<()> {
                     return Err(err("a parameter cannot pick up itself".into()));
                 }
                 let is_target = sys.solves.iter().any(|o| o.target == *source);
-                check_settable(sys, source)
-                    .and_then(|_| {
-                        if is_target {
-                            Ok(())
-                        } else {
-                            source.get(sys).map(|_| ())
-                        }
-                    })
-                    .map_err(|e| err(format!("source: {e}")))?;
+                check_settable(sys, source).map_err(|e| err(format!("source: {e}")))?;
+                if !is_target {
+                    let v = source.get(sys).map_err(|e| err(format!("source: {e}")))?;
+                    // E.g. the thickness of an object at infinity.
+                    if !v.is_finite() {
+                        return Err(err(format!("source: {source:?} is not finite ({v})")));
+                    }
+                }
             }
             SolveKind::Position { from, to, .. } => {
                 let (a, b) = (index(*from)?, index(*to)?);
@@ -437,7 +499,7 @@ pub(crate) fn validate_solves(sys: &OpticalSystem) -> MkResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MaterialRef, Surface};
+    use crate::model::Surface;
 
     fn lens() -> OpticalSystem {
         let mut s = OpticalSystem::new_empty();
@@ -496,6 +558,83 @@ mod tests {
         assert!(s.validate().unwrap_err().to_string().contains("already"));
         s.solves = vec![Solve::pickup(c(1), c(1), 1.0, 0.0)];
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn solves_that_can_never_succeed_are_rejected() {
+        let check = |s: &OpticalSystem, needle: &str| {
+            let e = s.validate().expect_err(needle).to_string();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+        };
+        // (a) An air–air plane stop has no power, whatever its curvature.
+        let mut s = lens();
+        s.surfaces.insert(
+            1,
+            Surface::new(9, SurfaceShape::Plane, 10.0, MaterialRef::Air),
+        );
+        s.solves = vec![Solve::f_number(SurfaceId(9), 4.0)];
+        check(&s, "equal media");
+        s.solves = vec![Solve::new(c(9), SolveKind::ChiefRayAngle { slope: 0.0 })];
+        check(&s, "equal media");
+        // A mirror keeps the medium before it (air), so the glass-to-air
+        // surface after a mirrored surface 1 is air–air too.
+        let mut m = s.clone();
+        m.surfaces[2].interaction = Interaction::Reflect;
+        m.solves = vec![Solve::f_number(SurfaceId(2), 4.0)];
+        check(&m, "surface 3 separates equal media");
+        // A mirror itself has power, and so has an ideal lens.
+        s.surfaces[1].interaction = Interaction::Reflect;
+        s.validate().unwrap();
+        s.surfaces[1].interaction = Interaction::Refract;
+        s.surfaces[1].shape = SurfaceShape::Paraxial { focal_length: 50.0 };
+        s.solves = vec![Solve::new(
+            ParamPath::ParaxialFocalLength {
+                surface: SurfaceId(9),
+            },
+            SolveKind::FNumber { value: 4.0 },
+        )];
+        s.validate().unwrap();
+        // The glass surfaces of the lens are fine.
+        let mut s = lens();
+        s.solves = vec![Solve::f_number(SurfaceId(2), 4.0)];
+        s.validate().unwrap();
+
+        // (b) A pickup from the infinite object distance.
+        let mut s = lens();
+        s.solves = vec![Solve::pickup(t(1), t(0), 1.0, 0.0)];
+        check(&s, "not finite");
+        // A finite object distance is a valid source.
+        s.surfaces[0].thickness = 200.0;
+        s.validate().unwrap();
+
+        // (c) An F/# aperture fixes the image-space marginal slope: a
+        // marginal-angle solve on the last powered surface cannot change it.
+        let angle = |id: u64| Solve::new(c(id), SolveKind::MarginalRayAngle { slope: -0.1 });
+        for aperture in [
+            ApertureSpec::ImageSpaceFNumber { value: 4.0 },
+            ApertureSpec::ParaxialWorkingFNumber { value: 4.0 },
+        ] {
+            let mut s = lens();
+            s.aperture = aperture;
+            s.solves = vec![angle(2)];
+            check(&s, "fixes the image-space marginal slope");
+            // On surface 1 the power of surface 2 still bends the ray.
+            s.solves = vec![angle(1)];
+            s.validate().unwrap();
+            // A plane last surface has no power, so surface 1 is the last
+            // powered one...
+            s.surfaces[2].shape = SurfaceShape::Plane;
+            check(&s, "no surface after surface 1 has power");
+            // ...unless a solve gives it a curvature.
+            s.solves.push(Solve::pickup(c(2), c(1), -1.0, 0.0));
+            s.validate().unwrap();
+        }
+        // With a finite object an image-space F/# does not fix the slope.
+        let mut s = lens();
+        s.surfaces[0].thickness = 200.0;
+        s.aperture = ApertureSpec::ImageSpaceFNumber { value: 4.0 };
+        s.solves = vec![angle(2)];
+        s.validate().unwrap();
     }
 
     #[test]

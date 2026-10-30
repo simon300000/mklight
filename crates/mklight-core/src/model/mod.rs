@@ -226,6 +226,12 @@ impl OpticalSystem {
 
     /// Apply configuration `k`'s overrides. Configuration `0` and an empty
     /// configuration list both mean "base system".
+    ///
+    /// Solves are not applied: solves run *after* overrides
+    /// (`mklight_trace::solves::apply_solves_configuration`). Never re-apply a
+    /// configuration to an already solved system: its overrides would
+    /// overwrite solved values, or change what they depend on, without
+    /// solving again (`docs/SOLVES.md` §5).
     pub fn with_configuration(&self, k: usize) -> MkResult<OpticalSystem> {
         let mut s = self.clone();
         if let Some(cfg) = self.configurations.get(k) {
