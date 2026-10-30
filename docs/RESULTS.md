@@ -140,11 +140,22 @@ applies when they name none (`backend.requested` = `default:<id>`).
   `clip`, `reject_virtual`, `enumeration`, `paths`). The stray run then
   clips the optical surfaces at the ghost run's apertures (checked with
   `GhostCoverage::same_apertures`; a mismatch is an error) and leaves the
-  `ghost` class out of its total and maps, so
-  `detected = Primary (sequential) + Ghost (ghost solver) + stray total`.
+  ghost paths **in the ghost run's coverage** out of its total, so
+  `detected = Primary (sequential) + Ghost (ghost run) + stray_flux`
+  path by path. Ghost-class paths the ghost run does not cover (a subset of
+  explicit `paths`, orders above `max_reflections`, paths pruned by
+  `min_reflectance_product` or `max_higher_order_paths`, irregular
+  reflection sequences) belong to the stray solver (CONVENTIONS §10): they
+  are added to `stray_flux` as `partition.uncovered_ghost_flux`, with a
+  `run_info` warning. The stray tally splits by class, not by signature, so
+  the maps hold only `partition.mapped_stray_flux` (scatter, mechanical,
+  sneak; exact standard error), not the handed-back ghosts; and the
+  handed-back flux's standard error is the bound `Σ SEₖ` over its
+  signatures, so `stray_std_error` is then an upper bound.
   `result.partition.apertures` equals the ghost result's
-  `coverage.apertures`, and `partition.ghost_class_flux_mc` is the
-  Monte-Carlo estimate of the excluded class, for comparison. The partition
+  `coverage.apertures`; `partition.ghost_class_flux_mc` (the whole class)
+  and `partition.covered_ghost_flux_mc` (the covered part, to compare with
+  the ghost solver) are Monte-Carlo estimates. The partition
   needs `clip: {"mode": "clear_apertures", …}` in the ghost options (the
   stray scene always clips at clear apertures).
 * **Validation codes** (`validate`, `mk_session_validate_json`): `structure`
@@ -1242,7 +1253,7 @@ Result (`result` in the envelope):
 
 Category `stray`, result version 1.
 
-Non-sequential Monte-Carlo stray light: detector irradiance per path class (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, the strongest path signatures and an energy balance. With `ghost_partition` the ghost class is left to the explicit ghost solver, with identical apertures.
+Non-sequential Monte-Carlo stray light: detector irradiance per path class (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, the strongest path signatures and an energy balance. With `ghost_partition` the ghost paths the explicit ghost run covers are left to it, with identical apertures; uncovered ghost paths stay in the stray total.
 
 Settings:
 
@@ -1272,17 +1283,25 @@ Result (`result` in the envelope):
 | `energy` | object |  | Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md). |
 | `map_classes` | array<string> |  | Class of each row of class_irradiance, in path-class order. |
 | `partition` | object? |  |  |
+| `partition.ambiguous_ghost_flux` | number | W | Part of uncovered_ghost_flux whose signature overflowed and may be covered (warned). |
 | `partition.apertures` | array<object> |  | The shared clipping per surface. |
+| `partition.covered_ghost_flux_mc` | number | W | Monte-Carlo flux of the ghost signatures the ghost run covers (its counterpart is the ghost solver's total). |
+| `partition.covered_ghost_std_error` | number | W | Upper bound: the sum of the signatures' standard errors. |
 | `partition.excluded_class` | string |  | Always `ghost`. |
 | `partition.ghost_class_flux_mc` | number | W | Monte-Carlo estimate of the excluded ghost class (comparison only). |
 | `partition.ghost_class_std_error` | number | W |  |
 | `partition.ghost_paths` | integer |  | ≥ 0; Paths in the ghost run's coverage. |
+| `partition.mapped_stray_flux` | number | W | Stray total of the maps (stray_flux without the handed-back ghosts). |
+| `partition.mapped_stray_std_error` | number | W | Exact. |
 | `partition.same_apertures` | boolean |  | GhostCoverage::same_apertures held (always true: a mismatch is an error). |
+| `partition.uncovered_ghost_flux` | number | W | Ghost-class flux outside the ghost run's coverage, handed back to stray_flux (CONVENTIONS §10); not in the maps. |
+| `partition.uncovered_ghost_signatures` | integer |  | ≥ 0; Number of handed-back ghost signatures. |
+| `partition.uncovered_ghost_std_error` | number | W | Upper bound: the sum of the signatures' standard errors. |
 | `primary_obstruction` | nf? |  |  |
 | `source` | object |  | Resolved source beam: spec, reference_flux, description. |
-| `stray_flux` | number | W | Stray total. |
+| `stray_flux` | number | W | Stray total (under ghost_partition: mapped_stray_flux + uncovered_ghost_flux). |
 | `stray_fraction` | number? |  |  |
-| `stray_std_error` | number | W |  |
+| `stray_std_error` | number | W | Exact; under ghost_partition with uncovered ghosts the bound mapped + uncovered. |
 | `top_signatures` | array<object> |  | Strongest (class, signature) pairs among the included classes. |
 | `totals` | array<object> |  | Every class, included or not. |
 | `totals[].class` | string |  | one of `"primary"`, `"ghost"`, `"scatter"`, `"mechanical"`, `"sneak"` |

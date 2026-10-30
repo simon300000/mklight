@@ -14,21 +14,38 @@
 //! 2. hands the ghost run's clipping radii to the stray scene as its clear
 //!    semi-diameters, so both solvers clip the optical surfaces identically;
 //! 3. sets `exclude_ghost_class`, so `Ghost` paths leave the stray total and
-//!    maps (detected = Primary + Ghost (ghost solver) + stray total);
+//!    maps;
 //! 4. after the run, rebuilds the stray scene's clipping per surface and
 //!    checks it with `GhostCoverage::same_apertures`; a mismatch (for
 //!    example a ghost run without clear-aperture clipping, which the stray
 //!    scene cannot reproduce) is an error, never a silently inconsistent
-//!    partition.
+//!    partition;
+//! 5. hands back to the stray total every `Ghost`-class path signature the
+//!    ghost run does **not** cover (explicit `paths`, orders above
+//!    `max_reflections`, paths pruned by `min_reflectance_product` or the
+//!    higher-order cap, irregular reflection sequences): CONVENTIONS §10
+//!    makes the stray solver their owner. So, path by path,
+//!    `detected = Primary + Ghost (ghost run's coverage) + stray_flux`.
+//!
+//! The stray tally partitions by class, not by signature, so the handed-back
+//! ghosts are in `stray_flux` but **not** in the maps (which hold
+//! `partition.mapped_stray_flux`, with its exact standard error), and their
+//! standard error is the triangle-inequality bound `Σ SEₖ` over signatures
+//! (per-ray contributions of different signatures are correlated under
+//! splitting); `stray_std_error` is then `SE(mapped) + SE(uncovered)`, an
+//! upper bound. A warning says how much flux this concerns.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 use mklight_core::{JobContext, MkError, ResolvedSystem, SurfaceShape};
-use mklight_ghost::{Clip, ClipMode, EnumerationSettings, GhostPath, InterfaceKind, enumerate};
-use mklight_stray::PathClass;
-use mklight_stray::analysis::{StrayAnalysisSettings, analyze};
+use mklight_ghost::{
+    Clip, ClipMode, EnumerationSettings, GhostCoverage, GhostPath, InterfaceKind, enumerate,
+};
+use mklight_stray::analysis::{StrayAnalysisSettings, analyze_with_signatures};
+use mklight_stray::path::MAX_SIGNATURE_EVENTS;
+use mklight_stray::{EventKind, PathClass, SignatureFlux};
 
 use super::geometric::{crate_json, output, parse};
 use super::ghost::GhostModelOptions;
@@ -102,6 +119,66 @@ pub fn stray_clips(
         .collect()
 }
 
+/// Who owns a stray `Ghost`-class signature under a partition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GhostSignatureOwner {
+    /// In the ghost run's coverage.
+    Ghost,
+    /// Outside it: the stray solver's (CONVENTIONS §10).
+    Stray,
+    /// The signature overflowed (more than `MAX_SIGNATURE_EVENTS`
+    /// reflections) and its kept prefix matches a covered path of higher
+    /// order: it may or may not be covered. Counted by the stray solver,
+    /// with a warning.
+    Ambiguous,
+}
+
+/// The owner of a `Ghost`-class stray signature: its recorded events are
+/// the ordered stray reflections (`Reflect` / `Tir` at sequential surface
+/// indices), i.e. the ghost solver's `GhostPath` (module docs).
+pub fn ghost_signature_owner(sf: &SignatureFlux, coverage: &GhostCoverage) -> GhostSignatureOwner {
+    let refl: Option<Vec<u32>> = sf
+        .events
+        .iter()
+        .map(|&(k, s)| matches!(k, EventKind::Reflect | EventKind::Tir).then_some(s as u32))
+        .collect();
+    let Some(refl) = refl else {
+        return GhostSignatureOwner::Stray;
+    };
+    if sf.overflow {
+        let maybe = coverage
+            .paths
+            .iter()
+            .any(|p| p.order() > MAX_SIGNATURE_EVENTS && p.reflections[..refl.len()] == refl[..]);
+        return if maybe {
+            GhostSignatureOwner::Ambiguous
+        } else {
+            GhostSignatureOwner::Stray
+        };
+    }
+    if coverage.covers(&GhostPath::new(refl)) {
+        GhostSignatureOwner::Ghost
+    } else {
+        GhostSignatureOwner::Stray
+    }
+}
+
+/// Flux and standard-error bound (`Σ SEₖ`) of a set of signatures.
+#[derive(Clone, Copy, Debug, Default)]
+struct SigSum {
+    flux: f64,
+    std_error: f64,
+    count: usize,
+}
+
+impl SigSum {
+    fn add(&mut self, s: &SignatureFlux) {
+        self.flux += s.flux;
+        self.std_error += s.std_error;
+        self.count += 1;
+    }
+}
+
 pub struct StrayLight;
 
 impl Analysis for StrayLight {
@@ -118,7 +195,8 @@ impl Analysis for StrayLight {
         "Non-sequential Monte-Carlo stray light: detector irradiance per path class \
          (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, \
          the strongest path signatures and an energy balance. With `ghost_partition` the \
-         ghost class is left to the explicit ghost solver, with identical apertures."
+         ghost paths the explicit ghost run covers are left to it, with identical apertures; \
+         uncovered ghost paths stay in the stray total."
     }
     fn settings_schema(&self) -> Value {
         let mut s = settings_from_default::<EngineStraySettings>(json!({
@@ -182,6 +260,53 @@ impl Analysis for StrayLight {
                 ),
             ),
             ("ghost_class_std_error", num("W", "")),
+            (
+                "covered_ghost_flux_mc",
+                num(
+                    "W",
+                    "Monte-Carlo flux of the ghost signatures the ghost run covers (its counterpart is the ghost solver's total).",
+                ),
+            ),
+            (
+                "covered_ghost_std_error",
+                num(
+                    "W",
+                    "Upper bound: the sum of the signatures' standard errors.",
+                ),
+            ),
+            (
+                "uncovered_ghost_flux",
+                num(
+                    "W",
+                    "Ghost-class flux outside the ghost run's coverage, handed back to stray_flux (CONVENTIONS §10); not in the maps.",
+                ),
+            ),
+            (
+                "uncovered_ghost_std_error",
+                num(
+                    "W",
+                    "Upper bound: the sum of the signatures' standard errors.",
+                ),
+            ),
+            (
+                "uncovered_ghost_signatures",
+                int("Number of handed-back ghost signatures."),
+            ),
+            (
+                "ambiguous_ghost_flux",
+                num(
+                    "W",
+                    "Part of uncovered_ghost_flux whose signature overflowed and may be covered (warned).",
+                ),
+            ),
+            (
+                "mapped_stray_flux",
+                num(
+                    "W",
+                    "Stray total of the maps (stray_flux without the handed-back ghosts).",
+                ),
+            ),
+            ("mapped_stray_std_error", num("W", "Exact.")),
         ]);
         result(
             &[
@@ -202,8 +327,20 @@ impl Analysis for StrayLight {
                         "Class of each row of class_irradiance, in path-class order.",
                     ),
                 ),
-                ("stray_flux", num("W", "Stray total.")),
-                ("stray_std_error", num("W", "")),
+                (
+                    "stray_flux",
+                    num(
+                        "W",
+                        "Stray total (under ghost_partition: mapped_stray_flux + uncovered_ghost_flux).",
+                    ),
+                ),
+                (
+                    "stray_std_error",
+                    num(
+                        "W",
+                        "Exact; under ghost_partition with uncovered ghosts the bound mapped + uncovered.",
+                    ),
+                ),
                 (
                     "stray_fraction",
                     nullable(num("", "stray_flux / reference_flux.")),
@@ -314,7 +451,7 @@ impl Analysis for StrayLight {
             ss.exclude_ghost_class = true;
             Some((model.interface_kinds().to_vec(), coverage))
         };
-        let r = analyze(rs.clone(), &ss, ctx)?;
+        let (mut r, sigs) = analyze_with_signatures(rs.clone(), &ss, ctx)?;
         let partition_json = match partition {
             None => Value::Null,
             Some((kinds, coverage)) => {
@@ -334,7 +471,65 @@ impl Analysis for StrayLight {
                         differ.join(", ")
                     ))));
                 }
-                let g = r.total_of(PathClass::Ghost);
+                let g = *r.total_of(PathClass::Ghost);
+                let (mut covered, mut uncovered, mut ambiguous) =
+                    (SigSum::default(), SigSum::default(), SigSum::default());
+                let mut handed_back = Vec::new();
+                for sf in sigs.iter().filter(|s| s.class == PathClass::Ghost) {
+                    match ghost_signature_owner(sf, &coverage) {
+                        GhostSignatureOwner::Ghost => covered.add(sf),
+                        o => {
+                            uncovered.add(sf);
+                            if o == GhostSignatureOwner::Ambiguous {
+                                ambiguous.add(sf);
+                            }
+                            handed_back.push(sf.clone());
+                        }
+                    }
+                }
+                let (mapped, mapped_se) = (r.stray_flux, r.stray_std_error);
+                if uncovered.count > 0 {
+                    r.stray_flux = mapped + uncovered.flux;
+                    r.stray_std_error = mapped_se + uncovered.std_error;
+                    let reference = r.source.reference_flux;
+                    r.stray_fraction = (reference > 0.0).then(|| r.stray_flux / reference);
+                    // The reported signatures follow the stray total.
+                    if ss.top_signatures > 0 {
+                        let mut top = std::mem::take(&mut r.top_signatures);
+                        top.extend(handed_back);
+                        top.sort_by(|a, b| {
+                            b.flux
+                                .total_cmp(&a.flux)
+                                .then(a.class.cmp(&b.class))
+                                .then(a.signature.cmp(&b.signature))
+                        });
+                        top.truncate(ss.top_signatures);
+                        r.top_signatures = top;
+                    }
+                    let share = if r.stray_flux > 0.0 {
+                        format!(
+                            " ({:.3} % of stray_flux)",
+                            100.0 * uncovered.flux / r.stray_flux
+                        )
+                    } else {
+                        String::new()
+                    };
+                    warnings.push(format!(
+                        "ghost_partition: {} ghost-class path signatures outside the ghost run's \
+                         coverage ({:.6e} W{share}: explicit paths, orders above max_reflections, \
+                         pruned or irregular paths) belong to the stray solver; they are in \
+                         stray_flux but not in the stray maps",
+                        uncovered.count, uncovered.flux
+                    ));
+                }
+                if ambiguous.count > 0 {
+                    warnings.push(format!(
+                        "ghost_partition: {} ghost signatures ({:.6e} W) have more than {} \
+                         reflections and may be in the ghost run's coverage; they are counted \
+                         by the stray solver",
+                        ambiguous.count, ambiguous.flux, MAX_SIGNATURE_EVENTS
+                    ));
+                }
                 json!({
                     "excluded_class": "ghost",
                     "same_apertures": true,
@@ -342,6 +537,14 @@ impl Analysis for StrayLight {
                     "ghost_paths": coverage.paths.len(),
                     "ghost_class_flux_mc": g.flux,
                     "ghost_class_std_error": g.std_error,
+                    "covered_ghost_flux_mc": covered.flux,
+                    "covered_ghost_std_error": covered.std_error,
+                    "uncovered_ghost_flux": uncovered.flux,
+                    "uncovered_ghost_std_error": uncovered.std_error,
+                    "uncovered_ghost_signatures": uncovered.count,
+                    "ambiguous_ghost_flux": ambiguous.flux,
+                    "mapped_stray_flux": mapped,
+                    "mapped_stray_std_error": mapped_se,
                 })
             }
         };

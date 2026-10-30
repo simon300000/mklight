@@ -59,7 +59,7 @@ pub mod tracer;
 
 pub use analysis::{
     ClassMap, ClassTotal, StrayAnalysisResult, StrayAnalysisSettings, StraySource,
-    TransportOptions, analyze, analyze_system,
+    TransportOptions, analyze, analyze_system, analyze_with_signatures,
 };
 pub use reference::{PrimaryReference, primary_reference};
 pub use system::{Beam, DetectorShape, StraySystem, SystemOptions};
