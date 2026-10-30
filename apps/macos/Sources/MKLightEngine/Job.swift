@@ -20,7 +20,10 @@ public struct JobProgress: Sendable, Hashable {
 /// interest in a result without killing a job another view still needs.
 public final class AnalysisJob: Sendable, Identifiable {
     public let id = UUID()
-    public let request: AnalysisRequest
+    /// The typed request, for jobs started with `submit(_: AnalysisRequest, …)`.
+    public let request: AnalysisRequest?
+    /// The request by name, for jobs started with `submit(_: EngineAnalysisRequest, …)`.
+    public let engineRequest: EngineAnalysisRequest?
     public let snapshotHash: SnapshotHash
     /// Progress updates. The stream finishes when the job ends. It has a single
     /// consumer (iterate it from one task).
@@ -29,15 +32,20 @@ public final class AnalysisJob: Sendable, Identifiable {
     private let onCancel: @Sendable () -> Void
 
     public init(
-        request: AnalysisRequest, snapshotHash: SnapshotHash, progress: AsyncStream<JobProgress>,
-        task: Task<AnalysisOutput, any Error>, onCancel: @escaping @Sendable () -> Void = {}
+        request: AnalysisRequest?, engineRequest: EngineAnalysisRequest? = nil, snapshotHash: SnapshotHash,
+        progress: AsyncStream<JobProgress>, task: Task<AnalysisOutput, any Error>,
+        onCancel: @escaping @Sendable () -> Void = {}
     ) {
         self.request = request
+        self.engineRequest = engineRequest
         self.snapshotHash = snapshotHash
         self.progress = progress
         self.task = task
         self.onCancel = onCancel
     }
+
+    /// The analysis name (typed kind or engine name).
+    public var analysis: String { request?.kind.rawValue ?? engineRequest?.analysis ?? "" }
 
     /// Waits for the result. Throws `EngineError.cancelled` if the job was
     /// cancelled.
@@ -63,6 +71,23 @@ public final class AnalysisJob: Sendable, Identifiable {
         onCancel: @escaping @Sendable () -> Void = {},
         operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
     ) -> AnalysisJob {
+        make(request: request, engineRequest: nil, snapshot: snapshot, priority: priority, onCancel: onCancel, operation)
+    }
+
+    /// As `run(request:…)`, for a request by name.
+    public static func run(
+        engineRequest: EngineAnalysisRequest, snapshot: ModelSnapshot, priority: TaskPriority = .userInitiated,
+        onCancel: @escaping @Sendable () -> Void = {},
+        operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
+    ) -> AnalysisJob {
+        make(request: nil, engineRequest: engineRequest, snapshot: snapshot, priority: priority, onCancel: onCancel, operation)
+    }
+
+    private static func make(
+        request: AnalysisRequest?, engineRequest: EngineAnalysisRequest?, snapshot: ModelSnapshot,
+        priority: TaskPriority, onCancel: @escaping @Sendable () -> Void,
+        _ operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
+    ) -> AnalysisJob {
         let (stream, continuation) = AsyncStream.makeStream(of: JobProgress.self, bufferingPolicy: .bufferingNewest(8))
         let reporter = JobReporter(continuation: continuation)
         let task = Task.detached(priority: priority) {
@@ -74,7 +99,8 @@ public final class AnalysisJob: Sendable, Identifiable {
             return out
         }
         return AnalysisJob(
-            request: request, snapshotHash: snapshot.hash, progress: stream, task: task, onCancel: onCancel)
+            request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: stream, task: task,
+            onCancel: onCancel)
     }
 }
 
@@ -83,7 +109,7 @@ public final class JobReporter: Sendable {
     private let state = Mutex(JobProgress(fraction: 0, stage: ""))
     private let continuation: AsyncStream<JobProgress>.Continuation
 
-    init(continuation: AsyncStream<JobProgress>.Continuation) {
+    public init(continuation: AsyncStream<JobProgress>.Continuation) {
         self.continuation = continuation
     }
 
@@ -105,5 +131,5 @@ public final class JobReporter: Sendable {
     /// Throws `CancellationError` once the job has been cancelled.
     public func checkCancelled() throws { try Task.checkCancellation() }
 
-    func finish() { continuation.finish() }
+    public func finish() { continuation.finish() }
 }

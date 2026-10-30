@@ -55,6 +55,7 @@ struct AnalysisArea: View {
         case .mtf(let r): MTFView(result: r, fieldUnit: system.fields.kind.unit)
         case .psf(let r): PSFView(result: r, logScale: viewState.psfLogScale)
         case .firstOrder(let r): FirstOrderView(result: r)
+        case .generic(let g): GenericResultView(result: g)
         case .layout, nil:
             if case .failed(let msg) = analyses.slot(kind).phase {
                 ContentUnavailableView("Analysis Failed", systemImage: "exclamationmark.triangle", description: Text(msg))

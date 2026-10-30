@@ -23,23 +23,33 @@ public struct ModelSnapshot: Sendable, Hashable {
     public let hash: SnapshotHash
     /// Non-fatal problems the engine found while validating.
     public let warnings: [String]
+    /// Hash of the glass library the snapshot was taken with (the engine's
+    /// `library_hash`; `nil` for engines without user catalogs). A result is
+    /// current only while both hashes match (docs/FFI.md, result envelope).
+    public let libraryHash: String?
 
     /// Engine implementations create snapshots; front ends receive them from
     /// `EngineClient.openSnapshot`.
-    public init(system: OpticalSystem, hash: SnapshotHash, warnings: [String] = []) {
+    public init(system: OpticalSystem, hash: SnapshotHash, warnings: [String] = [], libraryHash: String? = nil) {
         self.system = system
         self.hash = hash
         self.warnings = warnings
+        self.libraryHash = libraryHash
     }
 
-    public static func == (a: ModelSnapshot, b: ModelSnapshot) -> Bool { a.hash == b.hash }
-    public func hash(into h: inout Hasher) { h.combine(hash) }
+    public static func == (a: ModelSnapshot, b: ModelSnapshot) -> Bool {
+        a.hash == b.hash && a.libraryHash == b.libraryHash
+    }
+    public func hash(into h: inout Hasher) {
+        h.combine(hash)
+        h.combine(libraryHash)
+    }
 }
 
 public struct EngineInfo: Sendable, Hashable {
     public var name: String
     public var version: String
-    /// Compute backends available, e.g. `["cpu-f64", "metal"]`.
+    /// Compute backends available, e.g. `["cpu_reference", "metal"]`.
     public var backends: [String]
     /// True for engines that return synthetic data (`MockEngine`). Front ends
     /// must label such results.
@@ -53,6 +63,41 @@ public struct EngineInfo: Sendable, Hashable {
     }
 }
 
+/// Status codes of the engine's C ABI (`MKStatus`, docs/FFI.md).
+public enum EngineErrorCode: Int32, Sendable, Hashable, CaseIterable, CustomStringConvertible {
+    case invalidArgument = 1
+    case parse = 2
+    case invalidModel = 3
+    case notFound = 4
+    case io = 5
+    case unsupported = 6
+    case cancelled = 7
+    case timeout = 8
+    case notReady = 9
+    case jobFailed = 10
+    case compute = 11
+    case panic = 12
+    case `internal` = 13
+
+    public var description: String {
+        switch self {
+        case .invalidArgument: "invalid argument"
+        case .parse: "parse error"
+        case .invalidModel: "invalid model"
+        case .notFound: "not found"
+        case .io: "I/O error"
+        case .unsupported: "unsupported"
+        case .cancelled: "cancelled"
+        case .timeout: "timeout"
+        case .notReady: "not ready"
+        case .jobFailed: "job failed"
+        case .compute: "computation failed"
+        case .panic: "internal panic"
+        case .internal: "internal error"
+        }
+    }
+}
+
 public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     case cancelled
     case invalidModel([String])
@@ -61,6 +106,11 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     case invalidSettings([String])
     case unsupported(String)
     case failed(String)
+    /// Any other engine status, with the engine's message.
+    case engine(EngineErrorCode, String)
+    /// The engine library is not linked into this build, or its ABI major
+    /// version differs from the one the app was compiled against.
+    case libraryUnavailable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -69,6 +119,35 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
         case .invalidSettings(let issues): "Invalid analysis settings: " + issues.joined(separator: "; ")
         case .unsupported(let s): "Unsupported: \(s)"
         case .failed(let s): s
+        case .engine(let code, let s): s.isEmpty ? "Engine error: \(code)" : s
+        case .libraryUnavailable(let s): "Engine library unavailable: \(s)"
+        }
+    }
+
+    /// The engine status code this error corresponds to (`nil` for errors
+    /// raised by the front end itself).
+    public var code: EngineErrorCode? {
+        switch self {
+        case .cancelled: .cancelled
+        case .invalidModel: .invalidModel
+        case .invalidSettings: .invalidArgument
+        case .unsupported: .unsupported
+        case .failed: .jobFailed
+        case .engine(let c, _): c
+        case .libraryUnavailable: nil
+        }
+    }
+
+    /// Maps an engine status and message to the most specific case:
+    /// cancellation, invalid model and unsupported get their own cases, a
+    /// failed job keeps its message, everything else keeps its code.
+    public static func from(code: EngineErrorCode, message: String) -> EngineError {
+        switch code {
+        case .cancelled: .cancelled
+        case .invalidModel: .invalidModel([message])
+        case .unsupported: .unsupported(message)
+        case .jobFailed: .failed(message)
+        default: .engine(code, message)
         }
     }
 }
@@ -76,10 +155,13 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
 /// The boundary between front ends and the optical engine.
 ///
 /// Every computation goes through this protocol; the UI never computes optics
-/// itself. Implementations: `MockEngine` (synthetic data, for UI work) and,
-/// later, the Rust engine over its C ABI. All values crossing the boundary are
-/// `Sendable` value types with the engine's JSON representation, so an FFI
-/// implementation only has to move JSON (and bulk buffers) across.
+/// itself. Implementations: `MockEngine` (synthetic data, for UI work) and
+/// `FFIEngine` (the Rust engine over its C ABI, module `MKLightFFI`). All
+/// values crossing the boundary are `Sendable` value types with the engine's
+/// JSON representation.
+///
+/// The requirements after `materialNames()` have default implementations
+/// (in an extension) for engines without those capabilities.
 public protocol EngineClient: Sendable {
     var info: EngineInfo { get }
 
@@ -99,4 +181,54 @@ public protocol EngineClient: Sendable {
     /// Names of the glasses the engine can resolve (for completion and
     /// validation in editors).
     func materialNames() async -> [String]
+
+    /// An engine for one document: same engine, its own session state (user
+    /// glass catalogs, library hash). Engines without per-document state
+    /// return themselves.
+    func makeDocumentEngine() -> any EngineClient
+
+    /// Every analysis the engine knows, with its settings schema. Analyses
+    /// of later phases are listed with `available == false`.
+    func analysisDescriptors() async -> [AnalysisDescriptor]
+
+    /// Starts any engine analysis by name, with JSON settings. Unknown
+    /// analyses and invalid settings fail the job at once.
+    func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob
+
+    /// Applies parameter edits atomically (all or none) and returns the
+    /// snapshot of the edited system.
+    func applyParamEdits(_ edits: [ParamEdit], to snapshot: ModelSnapshot) async throws -> ModelSnapshot
+
+    /// Glass catalogs of this (document) engine, built-in first.
+    func catalogs() async -> [CatalogInfo]
+
+    /// Loads a user glass catalog (AGF text, or JSON when the file ends in
+    /// `.json`), replacing one of the same name. Changes the library hash.
+    func loadCatalog(at url: URL) async throws -> CatalogInfo
+}
+
+extension EngineClient {
+    public func makeDocumentEngine() -> any EngineClient { self }
+
+    /// The analyses of `AnalysisKind`, all available, without schemas.
+    public func analysisDescriptors() async -> [AnalysisDescriptor] {
+        AnalysisKind.allCases.map {
+            AnalysisDescriptor(name: $0.engineName, title: $0.title, category: "analysis", available: true)
+        }
+    }
+
+    public func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
+        let message = "\(info.name) cannot run '\(request.analysis)' by name"
+        return AnalysisJob.run(engineRequest: request, snapshot: snapshot) { _ in throw EngineError.unsupported(message) }
+    }
+
+    public func applyParamEdits(_ edits: [ParamEdit], to snapshot: ModelSnapshot) async throws -> ModelSnapshot {
+        throw EngineError.unsupported("\(info.name) does not apply parameter edits")
+    }
+
+    public func catalogs() async -> [CatalogInfo] { [] }
+
+    public func loadCatalog(at url: URL) async throws -> CatalogInfo {
+        throw EngineError.unsupported("\(info.name) cannot load glass catalogs")
+    }
 }

@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# Builds the MKLight macOS app bundle.
+# Builds the Rust engine library and the MKLight macOS app bundle.
 #
-#   scripts/build-macos.sh [--debug] [--open]
+#   scripts/build-macos.sh [--debug] [--open] [--universal] [--engine-only] [--no-engine]
+#
+#   --debug        debug Swift build (the engine library is always release)
+#   --open         open the app when done
+#   --universal    engine library for arm64 + x86_64 (needs the rustup target
+#                  x86_64-apple-darwin); default arm64 only
+#   --engine-only  only build the engine library into apps/macos/Frameworks,
+#                  so that plain `swift build` / `swift test` link it
+#   --no-engine    remove the engine library from apps/macos/Frameworks (the
+#                  package then builds without it; debug builds of the app
+#                  fall back to MockEngine, the FFI tests are skipped)
 #
 # Output: build/macos/MKLight.app (ad-hoc signed).
 #
 # Steps:
-#   1. (hook) build the Rust engine static library for the C ABI;
+#   1. build the Rust engine static library (crates/mklight-ffi, release) and
+#      copy it to apps/macos/Frameworks/libmklight_ffi.a, where Package.swift
+#      finds it (C module CMKLight over crates/mklight-ffi/include/mklight.h);
 #   2. build the Swift package (apps/macos) in release;
 #   3. assemble MKLight.app: executable, Info.plist with the .mklight document
 #      type, SwiftPM resource bundles, precompiled viewport shaders when the
@@ -19,12 +31,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="$ROOT/apps/macos"
 OUT="$ROOT/build/macos"
 APP="$OUT/MKLight.app"
+LIB_DIR="$PKG/Frameworks"
+LIB="$LIB_DIR/libmklight_ffi.a"
 CONFIG=release
 OPEN_APP=0
+UNIVERSAL=0
+ENGINE_ONLY=0
+NO_ENGINE=0
 for arg in "$@"; do
   case "$arg" in
     --debug) CONFIG=debug ;;
     --open) OPEN_APP=1 ;;
+    --universal) UNIVERSAL=1 ;;
+    --engine-only) ENGINE_ONLY=1 ;;
+    --no-engine) NO_ENGINE=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -32,25 +52,62 @@ done
 VERSION="0.1.0"
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 
+# SwiftPM caches the evaluated Package.swift by its contents, so it does not
+# notice the engine library appearing or disappearing. Clear that cache
+# whenever the library's presence changes.
+refresh_manifest_cache() {
+  echo "    engine library presence changed: clearing the SwiftPM manifest cache"
+  swift package --package-path "$PKG" purge-cache >/dev/null
+}
+
 # ---------------------------------------------------------------------------
-# 1. Rust engine (HOOK — not active yet).
-#
-# When crates/mklight-ffi exists, build its static library here and link it
-# into the Swift package, e.g.:
-#
-#   (cd "$ROOT" && cargo build --release -p mklight-ffi --target aarch64-apple-darwin)
-#   FFI_LIB="$ROOT/target/aarch64-apple-darwin/release/libmklight_ffi.a"
-#   FFI_HEADER_DIR="$ROOT/crates/mklight-ffi/include"   # cbindgen output
-#
-# and expose them to SwiftPM through a system-library / binary target
-# (module map over mklight.h) plus linker flags such as
-#   -Xlinker "$FFI_LIB" -Xlinker -framework -Xlinker Metal
-# The Swift side then gets an `FFIEngine: EngineClient` in a new MKLightFFI
-# target, and Sources/MKLight/main.swift switches from MockEngine to it.
-# Set MKLIGHT_WITH_FFI=1 once that exists.
-if [[ "${MKLIGHT_WITH_FFI:-0}" == "1" ]]; then
-  echo "error: MKLIGHT_WITH_FFI=1 but the Rust FFI hook is not implemented yet" >&2
-  exit 1
+# 1. Rust engine library.
+if [[ "$NO_ENGINE" == "1" ]]; then
+  if [[ -e "$LIB" ]]; then
+    rm -f "$LIB"
+    refresh_manifest_cache
+  fi
+  echo "==> engine library removed; the package builds without it"
+  [[ "$ENGINE_ONLY" == "1" ]] && exit 0
+else
+  if ! command -v cargo >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
+  fi
+  command -v cargo >/dev/null 2>&1 || { echo "error: cargo not found (install Rust via rustup)" >&2; exit 1; }
+  TARGETS=(aarch64-apple-darwin)
+  [[ "$UNIVERSAL" == "1" ]] && TARGETS+=(x86_64-apple-darwin)
+  LIBS=()
+  for t in "${TARGETS[@]}"; do
+    if ! rustup target list --installed 2>/dev/null | grep -qx "$t"; then
+      echo "error: Rust target $t is not installed (rustup target add $t)" >&2
+      exit 1
+    fi
+    echo "==> cargo build --release -p mklight-ffi --target $t"
+    (cd "$ROOT" && MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release -p mklight-ffi --target "$t")
+    LIBS+=("$ROOT/target/$t/release/libmklight_ffi.a")
+  done
+  mkdir -p "$LIB_DIR"
+  HAD_LIB=0
+  [[ -e "$LIB" ]] && HAD_LIB=1
+  TMP_LIB="$LIB_DIR/.libmklight_ffi.a.tmp"
+  if [[ "${#LIBS[@]}" -gt 1 ]]; then
+    lipo -create "${LIBS[@]}" -output "$TMP_LIB"
+  else
+    cp "${LIBS[0]}" "$TMP_LIB"
+  fi
+  # Replace only when changed, so SwiftPM does not relink needlessly.
+  if [[ "$HAD_LIB" == "1" ]] && cmp -s "$TMP_LIB" "$LIB"; then
+    rm -f "$TMP_LIB"
+  else
+    mv -f "$TMP_LIB" "$LIB"
+  fi
+  [[ "$HAD_LIB" == "0" ]] && refresh_manifest_cache
+  echo "    $LIB ($(lipo -archs "$LIB"))"
+  if [[ "$ENGINE_ONLY" == "1" ]]; then
+    echo "==> engine library ready: swift build / swift test in apps/macos now link it"
+    exit 0
+  fi
 fi
 
 # ---------------------------------------------------------------------------
