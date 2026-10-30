@@ -13,7 +13,14 @@ path = "src/main.rs"
 [dependencies]
 mklight-core.workspace = true
 mklight-engine.workspace = true
+mklight-trace.workspace = true
+mklight-ffi = { path = "../mklight-ffi" }
 serde.workspace = true
 serde_json.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 approx.workspace = true
