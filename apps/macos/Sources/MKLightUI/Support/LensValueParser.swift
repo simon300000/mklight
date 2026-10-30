@@ -29,9 +29,27 @@ public enum LensValueParser {
         return v
     }
 
+    /// Length units accepted after a number, with their size in mm.
+    static let lengthUnits: [(String, Double)] = [
+        ("mm", 1), ("cm", 10), ("µm", 1e-3), ("um", 1e-3), ("nm", 1e-6), ("in", 25.4), ("\"", 25.4), ("m", 1000),
+    ]
+
+    /// A length in mm: a number, optionally followed by a unit (`mm`, `cm`,
+    /// `m`, `µm`, `nm`, `in` or `"`), converted to mm. `∞` is accepted.
+    public static func length(_ text: String) -> Double? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let v = number(t) { return v }
+        for (unit, mm) in lengthUnits where t.lowercased().hasSuffix(unit) {
+            guard let v = number(String(t.dropLast(unit.count))) else { continue }
+            return v * mm
+        }
+        return nil
+    }
+
     /// Radius text → curvature. `∞`, `inf` and `0` mean a plane (c = 0).
+    /// Units are accepted (`1 in`, `250 mm`).
     public static func curvature(fromRadiusText text: String) -> Result<Double, Failure> {
-        guard let r = number(text) else { return .failure(.notANumber(text)) }
+        guard let r = length(text) else { return .failure(.notANumber(text)) }
         let c = RadiusDisplay.curvature(fromRadius: r)
         return c.isFinite ? .success(c) : .failure(.mustBeFinite)
     }
@@ -39,13 +57,13 @@ public enum LensValueParser {
     /// A radius whose curvature `1/R` is finite (a subnormal radius such as
     /// `1e-320` would give `c = ∞`). `∞`, `inf` and `0` mean a plane.
     public static func radius(_ text: String) -> Result<Double, Failure> {
-        guard let r = number(text) else { return .failure(.notANumber(text)) }
+        guard let r = length(text) else { return .failure(.notANumber(text)) }
         return RadiusDisplay.curvature(fromRadius: r).isFinite ? .success(r) : .failure(.mustBeFinite)
     }
 
     /// Thickness; only the object surface may be infinite.
     public static func thickness(_ text: String, allowInfinite: Bool) -> Result<Double, Failure> {
-        guard let t = number(text) else { return .failure(.notANumber(text)) }
+        guard let t = length(text) else { return .failure(.notANumber(text)) }
         if t.isInfinite && !allowInfinite { return .failure(.mustBeFinite) }
         return .success(t)
     }
@@ -66,7 +84,14 @@ public enum LensValueParser {
     public static func semiDiameter(_ text: String) -> Result<SemiDiameter, Failure> {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased()
         if t.isEmpty || t == "auto" || t == "a" || t.hasPrefix("auto ") { return .success(.auto) }
-        return positive(text).map { .fixed($0) }
+        return positiveLength(text).map { .fixed($0) }
+    }
+
+    /// A positive, finite length in mm (units accepted).
+    public static func positiveLength(_ text: String) -> Result<Double, Failure> {
+        guard let v = length(text) else { return .failure(.notANumber(text)) }
+        guard v.isFinite else { return .failure(.mustBeFinite) }
+        return v > 0 ? .success(v) : .failure(.mustBePositive)
     }
 
     /// A material edit: the new medium (`nil` keeps the current one) and the

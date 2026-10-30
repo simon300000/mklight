@@ -245,7 +245,7 @@ private struct ApertureSection: View {
                 Text("Fixed").tag(false)
             }
             if case .fixed(let v) = surface.semiDiameter {
-                NumberField(title: "Value", value: v, unit: "mm", parse: LensValueParser.positive, variable: variable(.semiDiameter(surface: surface.id))) { nv in
+                NumberField(title: "Value", value: v, unit: "mm", parse: LensValueParser.positiveLength, variable: variable(.semiDiameter(surface: surface.id))) { nv in
                     edit("Change Semi-Diameter") { $0.semiDiameter = .fixed(nv) }
                 }
             } else if let autoValue {
@@ -260,16 +260,16 @@ private struct ApertureSection: View {
             }
             switch surface.aperture {
             case .circular(let r)?:
-                NumberField(title: "Radius", value: r, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.circular(radius: v)) }
+                NumberField(title: "Radius", value: r, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.circular(radius: v)) }
             case .annular(let a, let b)?:
-                NumberField(title: "Inner radius", value: a, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.annular(innerRadius: v, outerRadius: b)) }
-                NumberField(title: "Outer radius", value: b, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.annular(innerRadius: a, outerRadius: v)) }
+                NumberField(title: "Inner radius", value: a, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.annular(innerRadius: v, outerRadius: b)) }
+                NumberField(title: "Outer radius", value: b, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.annular(innerRadius: a, outerRadius: v)) }
             case .rectangular(let x, let y)?:
-                NumberField(title: "Half width x", value: x, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.rectangular(halfX: v, halfY: y)) }
-                NumberField(title: "Half width y", value: y, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.rectangular(halfX: x, halfY: v)) }
+                NumberField(title: "Half width x", value: x, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.rectangular(halfX: v, halfY: y)) }
+                NumberField(title: "Half width y", value: y, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.rectangular(halfX: x, halfY: v)) }
             case .elliptical(let x, let y)?:
-                NumberField(title: "Semi-axis x", value: x, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.elliptical(semiX: v, semiY: y)) }
-                NumberField(title: "Semi-axis y", value: y, unit: "mm", parse: LensValueParser.positive) { v in setAperture(.elliptical(semiX: x, semiY: v)) }
+                NumberField(title: "Semi-axis x", value: x, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.elliptical(semiX: v, semiY: y)) }
+                NumberField(title: "Semi-axis y", value: y, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.elliptical(semiX: x, semiY: v)) }
             case nil:
                 EmptyView()
             }

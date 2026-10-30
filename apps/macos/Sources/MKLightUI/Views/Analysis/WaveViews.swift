@@ -63,38 +63,42 @@ struct WavefrontView: View {
     var body: some View {
         let m = maps[min(selected, maps.count - 1)]
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack {
-                ItemPicker(titles: maps.map(\.title), selection: $selected)
-                Spacer()
-                Text(String(format: "RMS %.4f λ   P-V %.4f λ   Strehl %.3f", m.rms, m.pv, m.strehl))
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
+            ItemPicker(titles: maps.map(\.title), selection: $selected)
+            Text(String(format: "RMS %.4f λ   P-V %.4f λ   Strehl %.3f", m.rms, m.pv, m.strehl))
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             GeometryReader { geo in
-                let tableWidth: CGFloat = m.zernike.isEmpty ? 0 : min(200, geo.size.width * 0.38)
-                let side = max(min(geo.size.height, geo.size.width - tableWidth - 70), 60)
-                HStack(alignment: .top, spacing: Space.l) {
-                    HStack(alignment: .center, spacing: Space.s) {
-                        ZStack {
-                            HeatMapImage(grid: m.grid, scale: .diverging)
-                            Canvas { ctx, size in
-                                for loop in m.rim where loop.count > 2 {
-                                    var p = Path()
-                                    for (k, q) in loop.enumerated() {
-                                        let pt = CGPoint(x: (q.0 + 1) / 2 * size.width, y: (1 - q.1) / 2 * size.height)
-                                        if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-                                    }
-                                    p.closeSubpath()
-                                    ctx.stroke(p, with: .color(.secondary), lineWidth: 0.8)
+                let wide = geo.size.width >= 500 && !m.zernike.isEmpty
+                let tableWidth: CGFloat = wide ? 200 : 0
+                let side = max(min(wide ? geo.size.height : geo.size.height * 0.55, geo.size.width - tableWidth - 70), 60)
+                let map = HStack(alignment: .center, spacing: Space.s) {
+                    ZStack {
+                        HeatMapImage(grid: m.grid, scale: .diverging)
+                        Canvas { ctx, size in
+                            for loop in m.rim where loop.count > 2 {
+                                var p = Path()
+                                for (k, q) in loop.enumerated() {
+                                    let pt = CGPoint(x: (q.0 + 1) / 2 * size.width, y: (1 - q.1) / 2 * size.height)
+                                    if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
                                 }
+                                p.closeSubpath()
+                                ctx.stroke(p, with: .color(.secondary), lineWidth: 0.8)
                             }
                         }
-                        .frame(width: side, height: side)
-                        .accessibilityLabel(String(format: "Wavefront map, RMS %.3f waves, peak to valley %.3f waves", m.rms, m.pv))
-                        ColorBar(scale: .diverging, range: m.grid.range, unit: "waves").frame(height: min(side, 240))
                     }
-                    Spacer(minLength: 0)
-                    if !m.zernike.isEmpty {
+                    .frame(width: side, height: side)
+                    .accessibilityLabel(String(format: "Wavefront map, RMS %.3f waves, peak to valley %.3f waves", m.rms, m.pv))
+                    ColorBar(scale: .diverging, range: m.grid.range, unit: "waves").frame(height: min(side, 240))
+                }
+                if wide {
+                    HStack(alignment: .top, spacing: Space.l) {
+                        map
+                        Spacer(minLength: 0)
                         ZernikeTable(coefficients: m.zernike, ordering: m.ordering).frame(width: tableWidth)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: Space.m) {
+                        map
+                        if !m.zernike.isEmpty { ZernikeTable(coefficients: m.zernike, ordering: m.ordering) }
                     }
                 }
             }
@@ -121,8 +125,8 @@ struct ZernikeTable: View {
                         GridRow {
                             Text("Z\(k + 1)").foregroundStyle(.secondary)
                             Text(ordering == "fringe" && k < Self.fringeNames.count ? Self.fringeNames[k] : "")
-                                .foregroundStyle(.secondary).lineLimit(1)
-                            Text(String(format: "%+.4f", coefficients[k])).numeric().gridColumnAlignment(.trailing)
+                                .foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                            Text(String(format: "%+.4f", coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
                                 .foregroundStyle(abs(coefficients[k]) >= 0.05 ? .primary : .secondary)
                         }
                     }

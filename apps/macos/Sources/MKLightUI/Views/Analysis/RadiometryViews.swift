@@ -21,7 +21,7 @@ struct GhostPathsView: View {
     let ghosts: [Ghost]
     let truncated: Bool
 
-    static func sci(_ v: Double) -> String { v.isFinite ? String(format: "%.2e", v) : "—" }
+    static func sci(_ v: Double) -> String { v.isFinite ? String(format: "%.1e", v) : "—" }
     let context: AnalysisContext
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
@@ -43,8 +43,8 @@ struct GhostPathsView: View {
             ContentUnavailableView("No Ghost Paths", systemImage: "checkmark.circle", description: Text("The enumeration found no ghost reaching the sensor."))
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                ScrollView {
-                    Grid(alignment: .trailing, horizontalSpacing: Space.l, verticalSpacing: 3) {
+                ScrollView([.vertical, .horizontal]) {
+                    Grid(alignment: .trailing, horizontalSpacing: Space.m, verticalSpacing: 3) {
                         GridRow {
                             Text("Ghost").gridColumnAlignment(.leading)
                             Text("Rel. irradiance")
@@ -71,6 +71,7 @@ struct GhostPathsView: View {
                             }
                             .font(.callout.monospacedDigit())
                             .lineLimit(1)
+                            .fixedSize()
                             .contentShape(Rectangle())
                             .onTapGesture { if let s = g.path.first { context.selectSurface(s) } }
                         }

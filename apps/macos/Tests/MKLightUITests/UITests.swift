@@ -18,6 +18,16 @@ import simd
         #expect(LensValueParser.number("12mm") == nil)
     }
 
+    @Test func lengthsAcceptUnits() {
+        #expect(LensValueParser.length("25.4") == 25.4)
+        #expect(LensValueParser.length("1 in") == 25.4 && LensValueParser.length("2cm") == 20)
+        #expect(LensValueParser.length("500 µm") == 0.5 && LensValueParser.length("0.1 m") == 100)
+        #expect(LensValueParser.length("∞") == .infinity && LensValueParser.length("12 furlongs") == nil)
+        #expect(LensValueParser.curvature(fromRadiusText: "100 mm") == .success(0.01))
+        #expect(LensValueParser.thickness("3 mm", allowInfinite: false) == .success(3))
+        #expect(LensValueParser.semiDiameter("5 mm") == .success(.fixed(5)))
+    }
+
     @Test func radiusToCurvature() {
         #expect(LensValueParser.curvature(fromRadiusText: "50") == .success(0.02))
         #expect(LensValueParser.curvature(fromRadiusText: "1e-320") == .failure(.mustBeFinite), "subnormal radius → c = ∞")
