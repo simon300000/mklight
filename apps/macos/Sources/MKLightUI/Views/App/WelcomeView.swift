@@ -1,10 +1,12 @@
 import MKLightEngine
 import MKLightModel
+import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
 /// The welcome window: start a new design, open one, or start from one of
-/// the engine's sample designs.
+/// the engine's sample designs, each shown with a thumbnail of its layout
+/// as the engine draws it.
 struct WelcomeView: View {
     static let windowID = "welcome"
     let engine: any EngineClient
@@ -13,59 +15,26 @@ struct WelcomeView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var importing = false
     @State private var error: String?
+    @State private var thumbnails = SampleThumbnails()
+
+    private var classic: [SampleSystems.Entry] { SampleSystems.bundled.filter { $0.system.surfaces.allSatisfy(\.shape.isLegacy) } }
+    private var extended: [SampleSystems.Entry] { SampleSystems.bundled.filter { !$0.system.surfaces.allSatisfy(\.shape.isLegacy) } }
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: Space.l) {
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 52, weight: .light))
-                    .foregroundStyle(.tint)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    Text("MKLight").font(.largeTitle.weight(.semibold))
-                    Text("Sequential optical design").font(.title3).foregroundStyle(.secondary)
+            sidebar
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    section("Sample Designs", classic)
+                    if !extended.isEmpty { section("Surface Types", extended) }
                 }
-                Spacer().frame(height: Space.l)
-                Button {
-                    newDocument { ProjectDocument() }
-                    dismissWindow(id: Self.windowID)
-                } label: {
-                    Label("New Design", systemImage: "doc.badge.plus").frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Button {
-                    importing = true
-                } label: {
-                    Label("Open…", systemImage: "folder").frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Spacer()
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                Text(engineLine).font(.caption).foregroundStyle(.secondary)
+                .padding(Space.xl)
             }
-            .buttonStyle(.borderless)
-            .controlSize(.large)
-            .padding(Space.xxl)
-            .frame(width: 260)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Sample Designs").font(.headline).padding([.horizontal, .top], Space.xl).padding(.bottom, Space.m)
-                List(SampleSystems.bundled) { e in
-                    Button {
-                        newDocument { ProjectDocument(system: e.system) }
-                        dismissWindow(id: Self.windowID)
-                    } label: {
-                        SampleRow(entry: e)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
-            }
-            .frame(width: 400)
-            .background(.background.secondary)
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .background(.background)
         }
-        .frame(height: 440)
+        .frame(width: 960, height: 620)
+        .task { await thumbnails.load(SampleSystems.bundled, engine: engine.makeDocumentEngine()) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.mklightProject, .json]) { result in
             switch result {
             case .success(let url):
@@ -82,44 +51,245 @@ struct WelcomeView: View {
         }
     }
 
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: Space.l) {
+            Spacer().frame(height: Space.xl)
+            Image(systemName: "camera.aperture")
+                .font(.system(size: 56, weight: .regular))
+                .foregroundStyle(.tint)
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text("MKLight").font(.largeTitle.weight(.bold))
+                Text("Sequential optical design").font(.title3).foregroundStyle(.secondary)
+            }
+            Spacer().frame(height: Space.m)
+            GlassEffectContainer(spacing: Space.m) {
+                VStack(alignment: .leading, spacing: Space.m) {
+                    Button {
+                        newDocument { ProjectDocument() }
+                        dismissWindow(id: Self.windowID)
+                    } label: {
+                        Label("New Design", systemImage: "plus").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .keyboardShortcut(.defaultAction)
+                    Button {
+                        importing = true
+                    } label: {
+                        Label("Open…", systemImage: "folder").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                    .keyboardShortcut("o")
+                }
+                .controlSize(.extraLarge)
+            }
+            Spacer()
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            Label(engineLine, systemImage: engine.info.isMock ? "exclamationmark.triangle.fill" : "cpu")
+                .font(.caption)
+                .foregroundStyle(engine.info.isMock ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+        }
+        .padding(Space.xxl)
+        .frame(width: 280)
+        .frame(maxHeight: .infinity)
+        .background(.background.secondary)
+    }
+
+    private func section(_ title: String, _ entries: [SampleSystems.Entry]) -> some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            Text(title).font(.title3.weight(.semibold))
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: Space.l)], spacing: Space.l) {
+                ForEach(entries) { e in
+                    Button {
+                        newDocument { ProjectDocument(system: e.system) }
+                        dismissWindow(id: Self.windowID)
+                    } label: {
+                        SampleCard(entry: e, thumbnail: thumbnails.items[e.id])
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     private var engineLine: String {
         engine.info.isMock ? "Mock engine — synthetic data" : "\(engine.info.name) \(engine.info.version)"
     }
 }
 
-private struct SampleRow: View {
+/// A sample design: thumbnail, name and a line of facts.
+private struct SampleCard: View {
     let entry: SampleSystems.Entry
+    let thumbnail: SampleThumbnails.Item?
+    @State private var hover = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let s = entry.system
-        HStack(spacing: Space.l) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(.secondary)
-                .frame(width: 32)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(s.name).font(.body.weight(.medium))
-                Text(detail(s)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        VStack(alignment: .leading, spacing: Space.s) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.fill.quinary)
+                switch thumbnail {
+                case .scene(let scene)?:
+                    LayoutThumbnail(scene: scene).padding(Space.m)
+                case .schematic?:
+                    SchematicThumbnail(system: s)
+                        .padding(Space.m)
+                        .overlay(alignment: .bottomTrailing) {
+                            Text("Schematic").font(.caption2).foregroundStyle(.tertiary).padding(Space.s)
+                        }
+                case nil:
+                    ProgressView().controlSize(.small)
+                }
             }
-            Spacer()
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(hover ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator), lineWidth: hover ? 2 : 0.5))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(s.name).font(.body.weight(.semibold)).lineLimit(1)
+                Text(detail(s)).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
+            }
+            .padding(.horizontal, 2)
         }
-        .padding(.vertical, Space.xs)
         .contentShape(Rectangle())
-    }
-
-    private var symbol: String {
-        switch entry.id {
-        case "newtonian": "scope"
-        case "relay": "arrow.left.and.right.circle"
-        case "singlet": "circle"
-        default: "camera.aperture"
-        }
+        .scaleEffect(hover && !reduceMotion ? 1.02 : 1)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: hover)
+        .onHover { hover = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(s.name). \(detail(s))")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Creates a new design from this sample")
     }
 
     private func detail(_ s: OpticalSystem) -> String {
         let n = s.surfaces.count - 2
-        let notes = s.notes.isEmpty ? "" : " · " + s.notes
-        return "\(n) surfaces\(notes)"
+        let kinds = Set(s.surfaces.map(\.shape.kind)).filter { !$0.isLegacy }.map { SurfaceTypes.descriptor(for: $0).title }.sorted()
+        let notes = !kinds.isEmpty ? kinds.joined(separator: ", ") : s.notes
+        return "\(n) surfaces" + (notes.isEmpty ? "" : " · " + notes)
+    }
+}
+
+/// The samples' layouts, computed once by the engine on its own session.
+/// Designs whose shapes the engine's layout does not draw yet get a
+/// schematic drawn from the model's sags.
+@MainActor
+@Observable
+final class SampleThumbnails {
+    enum Item {
+        case scene(LayoutScene)
+        case schematic
+    }
+    var items: [String: Item] = [:]
+
+    func load(_ entries: [SampleSystems.Entry], engine: any EngineClient) async {
+        for e in entries where items[e.id] == nil {
+            items[e.id] = await Self.scene(e.system, engine: engine).map(Item.scene) ?? .schematic
+        }
+    }
+
+    nonisolated static func scene(_ system: OpticalSystem, engine: any EngineClient) async -> LayoutScene? {
+        guard let snapshot = try? await engine.openSnapshot(system) else { return nil }
+        let job = engine.submit(EngineAnalysisRequest(analysis: "layout", settings: ["rays_per_field": .integer(5)]), on: snapshot)
+        guard let output = try? await job.result() else { return nil }
+        return EngineLayout.scene(from: output)
+    }
+}
+
+/// The meridional section of an engine layout scene, fitted: glass fills,
+/// surface profiles and edges, rays coloured by field.
+struct LayoutThumbnail: View {
+    let scene: LayoutScene
+
+    var body: some View {
+        Canvas { ctx, size in
+            let lines = scene.polylines.filter(\.inSection)
+            let pts = lines.flatMap(\.points)
+            guard let zMin = pts.map(\.z).min(), let zMax = pts.map(\.z).max(),
+                let yMin = pts.map(\.y).min(), let yMax = pts.map(\.y).max()
+            else { return }
+            let scale = min(size.width / max(zMax - zMin, 1e-9), size.height / max(yMax - yMin, 1e-9))
+            let ox = (size.width - (zMax - zMin) * scale) / 2, oy = (size.height - (yMax - yMin) * scale) / 2
+            func p(_ q: Point3) -> CGPoint { CGPoint(x: ox + (q.z - zMin) * scale, y: size.height - oy - (q.y - yMin) * scale) }
+            for e in scene.elements where e.front.count > 1 {
+                var path = Path()
+                path.move(to: p(e.front[0]))
+                for q in e.front.dropFirst() { path.addLine(to: p(q)) }
+                for q in e.back.reversed() { path.addLine(to: p(q)) }
+                path.closeSubpath()
+                ctx.fill(path, with: .color(.accentColor.opacity(0.14)))
+            }
+            for l in lines where l.points.count > 1 {
+                var path = Path()
+                path.move(to: p(l.points[0]))
+                for q in l.points.dropFirst() { path.addLine(to: p(q)) }
+                switch l.kind {
+                case .ray:
+                    ctx.stroke(path, with: .color(Palette.fieldColor(l.field ?? 0).opacity(0.75)), lineWidth: 0.6)
+                case .axis:
+                    ctx.stroke(path, with: .color(.secondary.opacity(0.4)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                case .stop, .imagePlane:
+                    ctx.stroke(path, with: .color(.secondary), lineWidth: 1)
+                default:
+                    ctx.stroke(path, with: .color(.primary.opacity(0.85)), lineWidth: 1)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A schematic section drawn from the model when the engine's layout does
+/// not support a design's surfaces yet: profiles from `ShapeSag` at the
+/// fixed semi-diameters (or a height from the entrance pupil).
+struct SchematicThumbnail: View {
+    let system: OpticalSystem
+
+    var body: some View {
+        Canvas { ctx, size in
+            let s = system
+            guard s.surfaces.count > 2 else { return }
+            let epd = s.aperture.kind == .entrancePupilDiameter ? (s.aperture.value ?? 10) : 10
+            var z = 0.0
+            var profiles: [(z: Double, h: Double, pts: [(Double, Double)], glass: Bool)] = []
+            for i in 1..<s.surfaces.count {
+                let sf = s.surfaces[i]
+                let h = sf.semiDiameter.fixedValue ?? sf.aperture?.boundingRadius ?? epd * 0.6
+                let pts = (0...24).compactMap { k -> (Double, Double)? in
+                    let y = -h + 2 * h * Double(k) / 24
+                    return ShapeSag.sag(sf.shape, x: 0, y: y).map { (z + $0, y) }
+                }
+                profiles.append((z, h, pts, !sf.material.isAir && sf.interaction == .refract && i < s.imageIndex))
+                if sf.thickness.isFinite { z += sf.thickness }
+            }
+            let all = profiles.flatMap(\.pts)
+            guard let zMin = all.map(\.0).min(), let zMax = all.map(\.0).max(), let hMax = profiles.map(\.h).max() else { return }
+            let scale = min(size.width / max(zMax - zMin, 1e-9), size.height / max(2 * hMax, 1e-9))
+            let ox = (size.width - (zMax - zMin) * scale) / 2
+            func p(_ q: (Double, Double)) -> CGPoint { CGPoint(x: ox + (q.0 - zMin) * scale, y: size.height / 2 - q.1 * scale) }
+            for k in profiles.indices.dropLast() where profiles[k].glass {
+                let a = profiles[k].pts, b = profiles[k + 1].pts
+                guard a.count > 1, b.count > 1 else { continue }
+                var path = Path()
+                path.move(to: p(a[0]))
+                for q in a.dropFirst() { path.addLine(to: p(q)) }
+                for q in b.reversed() { path.addLine(to: p(q)) }
+                path.closeSubpath()
+                ctx.fill(path, with: .color(.accentColor.opacity(0.14)))
+                ctx.stroke(path, with: .color(.primary.opacity(0.85)), lineWidth: 1)
+            }
+            var axis = Path()
+            axis.move(to: CGPoint(x: 0, y: size.height / 2))
+            axis.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+            ctx.stroke(axis, with: .color(.secondary.opacity(0.4)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+            if let last = profiles.last, let a = last.pts.first, let b = last.pts.last {
+                var img = Path()
+                img.move(to: p(a))
+                img.addLine(to: p(b))
+                ctx.stroke(img, with: .color(.secondary), lineWidth: 1)
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

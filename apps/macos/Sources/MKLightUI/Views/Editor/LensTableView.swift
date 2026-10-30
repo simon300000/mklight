@@ -43,7 +43,9 @@ struct LensTableView: View {
             Table(rows, selection: $window.selection) {
                 TableColumn("Surf") { row in SurfaceLabel(row: row, issues: issues[row.index] ?? []) }
                     .width(min: 40, ideal: 46, max: 64)
-                TableColumn("Type") { row in TypeMenu(row: row, editor: editor) }
+                TableColumn("Type") { row in
+                    TypeCell(row: row, shape: system.surfaces[row.index].shape, editor: editor)
+                }
                     .width(min: 90, ideal: 112, max: 150)
                 column(.comment, rows: rows).width(min: 70, ideal: 120)
                 column(.radius, rows: rows).width(min: 80, ideal: 104, max: 160)
@@ -53,6 +55,7 @@ struct LensTableView: View {
                 column(.conic, rows: rows).width(min: 64, ideal: 88, max: 140)
             }
             .tableStyle(.inset)
+            .scrollEdgeEffectStyle(.hard, for: .top)
             .contextMenu(forSelectionType: SurfaceID.self) { ids in
                 contextMenu(ids.first)
             } primaryAction: { ids in
@@ -80,28 +83,31 @@ struct LensTableView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             if !design.variables.isEmpty {
-                Text("\(design.variables.count) variable\(design.variables.count == 1 ? "" : "s")")
-                    .font(.caption).foregroundStyle(.secondary)
+                Label("\(design.variables.count) variable\(design.variables.count == 1 ? "" : "s")", systemImage: "v.square")
+                    .font(.caption).foregroundStyle(.tint)
             }
-            ControlGroup {
-                Button("Insert Surface", systemImage: "plus") {
-                    let i = window.selection.flatMap { system.surfaceIndex(of: $0) } ?? system.imageIndex
-                    if let id = editor.insert(at: max(i, 1)) { window.selection = id }
+            GlassEffectContainer(spacing: Space.s) {
+                HStack(spacing: Space.xs) {
+                    Button("Insert Surface", systemImage: "plus") {
+                        let i = window.selection.flatMap { system.surfaceIndex(of: $0) } ?? system.imageIndex
+                        if let id = editor.insert(at: max(i, 1)) { window.selection = id }
+                    }
+                    .help("Insert a surface before the selection (⇧⌘I)")
+                    Button("Delete Surface", systemImage: "minus") {
+                        if let id = window.selection { window.selection = editor.delete(id) }
+                    }
+                    .help("Delete the selected surface (⌘⌫)")
+                    .disabled(!canDelete)
                 }
-                .help("Insert a surface before the selection (⇧⌘I)")
-                Button("Delete Surface", systemImage: "minus") {
-                    if let id = window.selection { window.selection = editor.delete(id) }
-                }
-                .help("Delete the selected surface (⌘⌫)")
-                .disabled(!canDelete)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .controlSize(.small)
             }
-            .controlSize(.small)
-            .fixedSize()
-            .labelStyle(.iconOnly)
         }
         .padding(.horizontal, Space.l)
-        .frame(height: 30)
-        .background(.bar)
+        .padding(.vertical, Space.xs)
+        .frame(minHeight: 36)
     }
 
     private var canDelete: Bool {
@@ -196,30 +202,20 @@ private struct SurfaceLabel: View {
     }
 }
 
-/// The surface type, changeable from a menu.
-private struct TypeMenu: View {
+/// The surface type, changeable from the grouped type menu.
+private struct TypeCell: View {
     let row: LensRow
+    let shape: SurfaceShape
     let editor: LensEditor
 
     var body: some View {
         if row.role == .object || row.role == .image {
             Text(row.typeTitle).foregroundStyle(.secondary)
         } else {
-            Menu {
-                ForEach(SurfaceTypes.all) { t in
-                    Button {
-                        editor.setKind(t.kind, row.id)
-                    } label: {
-                        Label(t.title, systemImage: t.symbol)
-                    }
-                }
-            } label: {
-                Text(row.typeTitle)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.visible)
-            .accessibilityLabel("Surface type")
-            .accessibilityValue(row.typeTitle)
+            TypeMenu(shape: shape, compact: true) { editor.setType($0, row.id) }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.visible)
+                .labelStyle(.titleAndIcon)
         }
     }
 }
