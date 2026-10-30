@@ -82,6 +82,30 @@ pub fn unpolarized_interface_product(steps: &[InterfaceStep]) -> f64 {
     steps.iter().map(InterfaceStep::path_unpolarized).product()
 }
 
+/// Scalar DOE factor of the selected sequential orders, excluding passive/image surfaces.
+pub fn diffraction_product(sys: &mklight_core::ResolvedSystem, wl: usize) -> f64 {
+    (1..sys.image_index())
+        .filter_map(|i| {
+            let s = &sys.surfaces[i];
+            if s.is_passive() {
+                return None;
+            }
+            if let mklight_core::SurfaceShape::Diffractive { phase, .. } = &s.shape {
+                Some(mklight_core::materials::diffraction::order_efficiency(
+                    sys,
+                    i,
+                    wl,
+                    phase.trace_order,
+                    s.is_mirror(),
+                    false,
+                ))
+            } else {
+                None
+            }
+        })
+        .product()
+}
+
 /// Throughput of one ray.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RayThroughput {
@@ -116,7 +140,7 @@ impl RayThroughput {
         if !trace.status.is_ok() {
             return Self::blocked(trace.status);
         }
-        let interfaces = unpolarized_path_product(sys, wl, records);
+        let interfaces = unpolarized_path_product(sys, wl, records) * diffraction_product(sys, wl);
         let internal = records
             .last()
             .map_or(trace.transmittance, |r| r.transmittance);
@@ -175,7 +199,12 @@ impl SequentialTracer {
                 RayThroughput::unpolarized(self.system(), wl, &r, &rec)
             }
             RadiometryModel::Polarized { .. } => {
-                RayThroughput::of(&self.trace_polarized(field, wl, px, py, opts), model)
+                let mut r =
+                    RayThroughput::of(&self.trace_polarized(field, wl, px, py, opts), model);
+                let eta = diffraction_product(self.system(), wl);
+                r.interfaces *= eta;
+                r.total *= eta;
+                r
             }
         }
     }
@@ -518,8 +547,9 @@ pub fn polarization_pupil_map(
                 retardance_jones: 0.0,
             };
         }
-        let jones = r.jones_amplitude();
-        let a = r.internal_transmittance.max(0.0).sqrt();
+        let eta = diffraction_product(tracer.system(), wl);
+        let jones = r.jones_amplitude().scale(eta.sqrt());
+        let a = (r.internal_transmittance.max(0.0) * eta).sqrt();
         PupilPolarization {
             pupil: p,
             status: r.trace.status,
@@ -575,4 +605,53 @@ pub fn polarization_pupil_map(
         samples,
         run_info,
     })
+}
+
+#[cfg(test)]
+mod diffraction_tests {
+    use super::*;
+    use mklight_core::materials::{MaterialLibrary, diffraction::DiffractionEfficiency};
+    use mklight_core::{ResolvedSystem, Snapshot};
+    use std::sync::Arc;
+    #[test]
+    fn system_transmission_includes_selected_order_for_both_models() {
+        let mut sys = mklight_core::samples::hybrid_diffractive_achromat();
+        sys.wavelengths.wavelengths[0].um = 0.5875618;
+        let calculate = |s| {
+            let snapshot = Snapshot::new(s).unwrap();
+            let resolved =
+                ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+            let tracer = SequentialTracer::new(Arc::new(resolved)).unwrap();
+            [
+                RadiometryModel::Unpolarized,
+                RadiometryModel::Polarized {
+                    state: PolarizationState::Unpolarized,
+                },
+            ]
+            .map(|model| {
+                system_transmission(
+                    &tracer,
+                    &TransmissionSettings {
+                        fields: vec![FieldPoint::normalized(0.0, 0.0)],
+                        wavelengths: vec![0],
+                        model,
+                        pupil: PupilSamples::Grid { n: 1 },
+                        ..Default::default()
+                    },
+                    &JobContext::new(),
+                )
+                .unwrap()
+                .points[0]
+                    .transmission
+            })
+        };
+        let ideal = calculate(sys.clone());
+        sys.surfaces[2].diffraction_efficiency = DiffractionEfficiency::Multilevel {
+            levels: 2.try_into().unwrap(),
+        };
+        let binary = calculate(sys);
+        for i in 0..2 {
+            assert!((binary[i] / ideal[i] - 4.0 / PI.powi(2)).abs() < 1e-14);
+        }
+    }
 }

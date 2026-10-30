@@ -77,7 +77,7 @@
 
 use mklight_core::materials::coating::InterfaceRT;
 use mklight_core::{Interaction, SurfaceShape, Vec3};
-use mklight_trace::interact::{ideal_lens, reflect, refract};
+use mklight_trace::interact::{diffract, ideal_lens, reflect, refract};
 use mklight_trace::surface::{IntersectError, intersect};
 use mklight_trace::trace::transfer_into;
 use mklight_trace::{Compensated, Ray};
@@ -492,6 +492,10 @@ impl GhostModel {
                         applied = [split.ts, split.tp];
                         n_out = n_far;
                     }
+                    (Action::Pass, SurfaceShape::Diffractive { .. }) => {
+                        applied = [split.ts, split.tp];
+                        n_out = n_far;
+                    }
                     (Action::Pass, _) => match refract(dir_in, hit.normal, n_in, n_far) {
                         Some((d, _)) => {
                             ray.dir = d;
@@ -522,6 +526,46 @@ impl GhostModel {
                         ray.dir = reflect(dir_in, hit.normal).0;
                         applied = [split.rs, split.rp];
                     }
+                }
+            }
+            if s != image && !surf.is_passive() {
+                if let SurfaceShape::Diffractive { phase, .. } = &surf.shape {
+                    let order = st.order.unwrap_or(phase.trace_order);
+                    let reflected = surf.is_mirror() || st.action == Action::Reflect;
+                    let v =
+                        mklight_core::surface_math::phase(phase, hit.point.x, hit.point.y).unwrap();
+                    let scale = order as f64 * lambda * 1e-3 / std::f64::consts::TAU;
+                    let Some(d) = diffract(
+                        dir_in,
+                        hit.normal,
+                        n_in,
+                        n_out,
+                        [scale * v.gradient[0], scale * v.gradient[1]],
+                        reflected,
+                    ) else {
+                        return done(
+                            fail(SequenceFail::Degenerate),
+                            ray,
+                            s,
+                            k,
+                            ws,
+                            wp,
+                            absorb,
+                            opl,
+                        );
+                    };
+                    ray.dir = d;
+                    opl.add(scale * v.sag);
+                    let eta = mklight_core::materials::diffraction::order_efficiency(
+                        sys,
+                        s,
+                        wl,
+                        order,
+                        reflected,
+                        st.direction == Direction::Backward,
+                    );
+                    applied[0] *= eta;
+                    applied[1] *= eta;
                 }
             }
             ws *= applied[0];

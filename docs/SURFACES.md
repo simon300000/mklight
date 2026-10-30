@@ -103,9 +103,8 @@ or `even_asphere`, and `phase`:
 
 `Φ(x,y)=Σ A_i [(x²+y²)/r_norm²]^i`, i=1 onward. Coefficients describe
 **order +1** and remain fixed as wavelength or selected order changes.
-Design order and wavelength are metadata for the physical design and future
-efficiency calculations; neither rescales the trace phase or groove period.
-There is no diffraction efficiency calculation in this round.
+Design order and wavelength set the relief depth for scalar efficiency;
+neither rescales the trace phase or groove period.
 
 The time convention is `exp[i(ωt−k·r)]` (CONVENTIONS §9). Here Φ denotes a
 **phase lag**: an order-m screen multiplies the field by `exp(−imΦ)`.
@@ -141,6 +140,70 @@ d/F/C Abbe number is `λ_d/(λ_F−λ_C)≈−3.453`, opposite to ordinary glass
 A perfect converging phase at λ₀ and order m is
 `Φ=−2π[√(f²+r²)−f]/(mλ₀)`; its polynomial expansion is tested to a
 controlled truncation error against constant total OPL at the focus.
+
+### 3.1 Scalar diffraction efficiency
+
+Every `Surface` has `diffraction_efficiency`: `{"type":"ideal"}` (default,
+unit efficiency in `trace_order`), `{"type":"kinoform"}`, or
+`{"type":"multilevel","levels":N}` (1–255; N=1 is an unetched screen).
+This is a thin-element, scalar, locally periodic, normal-incidence relief
+model. It omits vector/resonance effects, shadowing and fabrication errors.
+It is an incoherent power partition, not a coherent wave-imaging model.
+Coating R/T and bulk absorption remain separate factors.
+
+Let u run from 0 to 1 over one order-1 structure period. A continuous
+manufactured ramp has complex factor `exp(−i2πbu)`, b=αm₀. Its Fourier
+coefficient in the trace convention is
+
+```
+c_m = ∫₀¹ exp[−i2π(b−m)u] du
+η_m = |c_m|² = sinc²(m−αm₀),     sinc(x)=sin(πx)/(πx).
+```
+
+For a relief separating two media, define the manufactured depth using
+`D₀=|n_after(λ₀)−n_before(λ₀)|`. At λ, `D=|n_after(λ)−n_before(λ)|`, so
+`α=(λ₀/λ)D/D₀`. Both materials are evaluated at their actual environment,
+including λ₀ even when it is absent from the wavelength list. For a glass
+in air this is `(λ₀/λ)[n(λ)−1]/[n(λ₀)−1]`. Reversing transmission leaves
+the ratio unchanged. For a designed reflecting relief use `D₀=2n_inc(λ₀)`
+and `D=2n_inc(λ)`: the relief changes a round-trip optical path. A Fresnel
+reflection at a *transmitting* DOE uses `D=2n_inc(λ)` over the original
+transmission depth D₀; it generally blazes into a different order. A
+same-medium mathematical phase screen has no material depth; its defined
+limit is α=λ₀/λ. This convention needs no extra fictitious substrate.
+
+For N equal-width steps with heights proportional to j/N, integrate each
+cell before summing:
+
+```
+c_m = exp(iπm/N) sinc(m/N) (1/N) Σ[j=0..N−1] exp[−i2π(b−m)j/N]
+η_m = sinc²(m/N) |sin[π(b−m)] / {N sin[π(b−m)/N]}|².
+```
+
+The removable singularity is evaluated with reduced-argument sinc ratios.
+At λ₀ for m₀=1, `η₁=sinc²(1/N)`: binary 0.4052847346, four-level
+0.8105694691, eight-level 0.9496412036. A continuous kinoform has η_m₀=1
+at λ₀; a multilevel ramp retains its quantisation loss in other orders.
+Parseval gives `Σ[m∈Z]η_m=1` for either unit-modulus phase ramp. Any finite
+order window sums to at most one; its omitted tail must not be normalised
+away or called material absorption. The MC samples integer orders with a
+rounded-Cauchy rejection envelope, including negative orders and zero,
+without a finite order window. Non-propagating orders terminate in the
+explicit `diffraction` energy sink: this scalar approximation does not
+redistribute their power into propagating modes.
+
+Derivation and scalar-design background: [Mait, JOSA A 12, 2145–2158
+(1995)](https://doi.org/10.1364/JOSAA.12.002145). Quantisation and material
+scaling: [Considering Grayscale Process and Material Properties for Robust
+Multilevel Diffractive Flat Optics, Photonics 11, 1200
+(2024)](https://doi.org/10.3390/photonics11121200).
+
+`materials::diffraction` is shared by primary radiometry, explicit ghosts
+and non-sequential transport. System transmission multiplies the selected
+order's η at every DOE (also for polarised transmission and Jones pupil
+maps). Ghost/stray order ownership is CONVENTIONS §10 and GHOST §2.1.
+Ghost paths and stray geometry now support the extended surfaces; their
+entries in §8's earlier guard list are superseded by this implementation.
 
 ## 4. Toroid and biconic
 

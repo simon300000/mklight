@@ -224,7 +224,19 @@ pub fn covered(paths: &BTreeSet<GhostPath>, sig: &Signature) -> bool {
         .filter(|(k, _)| matches!(k, EventKind::Reflect | EventKind::Tir))
         .map(|(_, s)| s as u32)
         .collect();
-    paths.contains(&GhostPath::new(reflections))
+    let mut path = GhostPath::new(reflections);
+    path.diffraction = sig
+        .diffraction()
+        .iter()
+        .filter(|e| !e.selected)
+        .map(|e| mklight_ghost::path::DiffractionOrder {
+            surface: e.surface,
+            visit: e.visit,
+            order: e.order,
+        })
+        .collect();
+    path.diffraction.sort();
+    paths.contains(&path)
 }
 
 /// Output of a stray-light run.
@@ -256,6 +268,11 @@ struct State {
 }
 
 /// Everything needed to turn a chosen branch into a new ray.
+enum ApplyFailure {
+    Scatter,
+    Evanescent,
+}
+
 struct Event<'a> {
     p: Vec3,
     /// Unit normal pointing back into the incident half-space.
@@ -271,6 +288,7 @@ struct Event<'a> {
     bsdf: Option<&'a Bsdf>,
     mechanical: bool,
     tir: bool,
+    wl: usize,
 }
 
 /// `|β₀|` of a specular direction about the outgoing-side normal.
@@ -340,14 +358,75 @@ impl<C: RayCaster> Tracer<'_, C> {
         br: usize,
         ev: &Event,
         rng: &mut Philox,
-    ) -> Option<State> {
+    ) -> Result<State, ApplyFailure> {
         let eps = 1e-9 * (1.0 + ev.p.norm());
+        let (mut refl, mut trans) = (ev.refl, ev.trans);
+        let reflected = matches!(br, SPEC_R | SCAT_R);
+        if let Behavior::Interface(i) = self.scene.behavior(ev.prim) {
+            if let Some(doe) = &i.diffraction {
+                let prim = &self.scene.primitives()[ev.prim];
+                let p = prim.frame.to_local_point(ev.p);
+                let normal = prim.frame.to_local_dir(ev.n_inc);
+                let d = prim.frame.to_local_dir(s.ray.dir);
+                let side = Side::arrival(d, if normal.z < 0.0 { -normal } else { normal });
+                let blaze = if !reflected {
+                    doe.transmitted_blaze[ev.wl]
+                } else if side == Side::Minus {
+                    doe.reflected_blaze_minus[ev.wl]
+                } else {
+                    doe.reflected_blaze_plus[ev.wl]
+                };
+                let order = doe.efficiency.sample(doe.phase.trace_order, blaze, rng);
+                let v = mklight_core::surface_math::phase(&doe.phase, p.x, p.y).unwrap();
+                let scale =
+                    order as f64 * self.scene.wavelengths_um[ev.wl] * 1e-3 / std::f64::consts::TAU;
+                let n1 = self.scene.media[ev.m_in as usize].n[ev.wl];
+                let n2 =
+                    self.scene.media[if reflected { ev.m_in } else { ev.m_out } as usize].n[ev.wl];
+                let out = mklight_trace::interact::diffract(
+                    d,
+                    normal,
+                    n1,
+                    n2,
+                    [scale * v.gradient[0], scale * v.gradient[1]],
+                    reflected,
+                )
+                .ok_or(ApplyFailure::Evanescent)?;
+                let out = prim.frame.to_global_dir(out);
+                if reflected {
+                    refl = out;
+                } else {
+                    trans = Some(out);
+                }
+                if let Some((surface, ..)) = ev.surface {
+                    s.hist
+                        .signature
+                        .diffract(surface, order, doe.phase.trace_order, reflected);
+                    if order != doe.phase.trace_order {
+                        s.hist.flags |= flags::DIFFRACTED;
+                    }
+                }
+            }
+        }
         let (dir, out_sign) = match br {
-            SPEC_R => (ev.refl, 1.0),
-            SPEC_T => (ev.trans?, -1.0),
-            SCAT_R => (scatter_dir(ev.bsdf?, ev.refl, ev.n_inc, rng)?, 1.0),
-            SCAT_T => (scatter_dir(ev.bsdf?, ev.trans?, -ev.n_inc, rng)?, -1.0),
-            _ => return None,
+            SPEC_R => (refl, 1.0),
+            SPEC_T => (trans.ok_or(ApplyFailure::Scatter)?, -1.0),
+            SCAT_R => (
+                scatter_dir(ev.bsdf.ok_or(ApplyFailure::Scatter)?, refl, ev.n_inc, rng)
+                    .ok_or(ApplyFailure::Scatter)?,
+                1.0,
+            ),
+            SCAT_T => (
+                scatter_dir(
+                    ev.bsdf.ok_or(ApplyFailure::Scatter)?,
+                    trans.ok_or(ApplyFailure::Scatter)?,
+                    -ev.n_inc,
+                    rng,
+                )
+                .ok_or(ApplyFailure::Scatter)?,
+                -1.0,
+            ),
+            _ => return Err(ApplyFailure::Scatter),
         };
         match br {
             SPEC_R | SPEC_T => {
@@ -399,7 +478,7 @@ impl<C: RayCaster> Tracer<'_, C> {
             origin: ev.p + ev.n_inc * (eps * out_sign),
             dir,
         };
-        Some(s)
+        Ok(s)
     }
 
     fn trace_ray(&self, index: u64, tally: &mut ChunkTally, stack: &mut Vec<State>) {
@@ -490,6 +569,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                             (1.0 - spec - tis).max(0.0),
                             Sink::of(o.kind),
                             Event {
+                                wl,
                                 p,
                                 n_inc,
                                 refl,
@@ -540,7 +620,9 @@ impl<C: RayCaster> Tracer<'_, C> {
                         let mut t = if mirror { 0.0 } else { rt.t_unpolarized() };
                         let mut trans = None;
                         let mut tir = false;
-                        if !mirror {
+                        if i.diffraction.is_some() && !mirror {
+                            trans = Some(d);
+                        } else if !mirror {
                             match refract(d, -n_inc, n1 / n2) {
                                 Some(td) => {
                                     trans = Some(match i.kind {
@@ -583,6 +665,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                             (1.0 - r - t).max(0.0),
                             Sink::Coating,
                             Event {
+                                wl,
                                 p,
                                 n_inc,
                                 refl,
@@ -674,9 +757,12 @@ impl<C: RayCaster> Tracer<'_, C> {
                                     let mut c = s;
                                     c.splits += 1;
                                     match self.apply(c, w, j, &ev, &mut rng) {
-                                        Some(c) if first.is_none() => first = Some(c),
-                                        Some(c) => children[j] = Some(c),
-                                        None => tally.sampling_failed += w,
+                                        Ok(c) if first.is_none() => first = Some(c),
+                                        Ok(c) => children[j] = Some(c),
+                                        Err(ApplyFailure::Scatter) => tally.sampling_failed += w,
+                                        Err(ApplyFailure::Evanescent) => {
+                                            tally.absorb(Sink::Diffraction, w)
+                                        }
                                     }
                                 }
                             }
@@ -697,9 +783,12 @@ impl<C: RayCaster> Tracer<'_, C> {
                 };
                 let (j, w) = next;
                 match self.apply(s, w, j, &ev, &mut rng) {
-                    Some(ns) => s = ns,
-                    None => {
-                        tally.sampling_failed += w;
+                    Ok(ns) => s = ns,
+                    Err(loss) => {
+                        match loss {
+                            ApplyFailure::Scatter => tally.sampling_failed += w,
+                            ApplyFailure::Evanescent => tally.absorb(Sink::Diffraction, w),
+                        }
                         break;
                     }
                 }
@@ -777,6 +866,36 @@ pub fn run_with<C: RayCaster>(
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
     settings.validate()?;
+    if let Some(paths) = &settings.covered_ghosts {
+        let does: BTreeSet<_> = scene
+            .primitives()
+            .iter()
+            .enumerate()
+            .filter_map(|(k, _)| {
+                if let Behavior::Interface(i) = scene.behavior(k) {
+                    if i.diffraction.is_some() {
+                        return Some(i.passes.iter().map(|p| p.surface).collect::<Vec<_>>());
+                    }
+                }
+                None
+            })
+            .flatten()
+            .collect();
+        if let Some(&image) = scene.sequence.last() {
+            for path in paths {
+                let visits = path
+                    .steps(image + 1)?
+                    .iter()
+                    .filter(|st| does.contains(&(st.surface as usize)))
+                    .count();
+                if visits > MAX_SIGNATURE_EVENTS {
+                    return Err(MkError::InvalidModel(format!(
+                        "covered path has {visits} DOE visits; signatures keep at most {MAX_SIGNATURE_EVENTS}"
+                    )));
+                }
+            }
+        }
+    }
     source.validate()?;
     if settings
         .start_medium

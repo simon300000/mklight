@@ -83,18 +83,72 @@ pub struct Step {
     pub surface: u32,
     pub direction: Direction,
     pub action: Action,
+    /// Override the selected DOE order on this visit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
 }
 
 /// An ordered list of extra reflections (module docs). Empty = primary path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(from = "PathWire", into = "PathWire")]
 pub struct GhostPath {
     pub reflections: Vec<u32>,
+    pub diffraction: Vec<DiffractionOrder>,
+}
+
+/// A non-selected order on a zero-based visit to a particular DOE surface.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+pub struct DiffractionOrder {
+    pub surface: u32,
+    pub visit: u32,
+    pub order: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum PathWire {
+    Reflections(Vec<u32>),
+    Orders {
+        reflections: Vec<u32>,
+        diffraction: Vec<DiffractionOrder>,
+    },
+}
+impl From<PathWire> for GhostPath {
+    fn from(p: PathWire) -> Self {
+        match p {
+            PathWire::Reflections(r) => Self::new(r),
+            PathWire::Orders {
+                reflections,
+                diffraction,
+            } => Self {
+                reflections,
+                diffraction,
+            },
+        }
+    }
+}
+impl From<GhostPath> for PathWire {
+    fn from(p: GhostPath) -> Self {
+        if p.diffraction.is_empty() {
+            Self::Reflections(p.reflections)
+        } else {
+            Self::Orders {
+                reflections: p.reflections,
+                diffraction: p.diffraction,
+            }
+        }
+    }
 }
 
 impl GhostPath {
     pub fn new(reflections: Vec<u32>) -> Self {
-        GhostPath { reflections }
+        GhostPath {
+            reflections,
+            diffraction: Vec::new(),
+        }
     }
     /// The primary (zero-reflection) path.
     pub fn primary() -> Self {
@@ -105,7 +159,7 @@ impl GhostPath {
         self.reflections.len()
     }
     pub fn is_primary(&self) -> bool {
-        self.reflections.is_empty()
+        self.reflections.is_empty() && self.diffraction.is_empty()
     }
     /// An even number of reflections ends at the image.
     pub fn ends_at_image(&self) -> bool {
@@ -114,7 +168,7 @@ impl GhostPath {
 
     /// A short label, e.g. `"R11·R3"`; the image surface is `IMG`.
     pub fn label(&self, image: usize) -> String {
-        if self.reflections.is_empty() {
+        if self.reflections.is_empty() && self.diffraction.is_empty() {
             return "primary".into();
         }
         self.reflections
@@ -126,6 +180,11 @@ impl GhostPath {
                     format!("R{r}")
                 }
             })
+            .chain(
+                self.diffraction
+                    .iter()
+                    .map(|o| format!("D{}[{}]={}", o.surface, o.visit, o.order)),
+            )
             .collect::<Vec<_>>()
             .join("·")
     }
@@ -168,6 +227,7 @@ impl GhostPath {
                 surface: s as u32,
                 direction: d,
                 action: a,
+                order: None,
             })
         };
         let (mut pos, mut fwd) = (0usize, true);
@@ -196,6 +256,32 @@ impl GhostPath {
                 push(&mut out, s, Direction::Backward, Action::Pass);
             }
         }
+        if self
+            .diffraction
+            .windows(2)
+            .any(|w| (w[0].surface, w[0].visit) >= (w[1].surface, w[1].visit))
+        {
+            return Err(MkError::InvalidModel(
+                "diffraction overrides must be unique and sorted by (surface, visit)".into(),
+            ));
+        }
+        let mut visits = std::collections::BTreeMap::new();
+        for st in &mut out {
+            let visit = visits.entry(st.surface).or_insert(0u32);
+            st.order = self
+                .diffraction
+                .iter()
+                .find(|o| o.surface == st.surface && o.visit == *visit)
+                .map(|o| o.order);
+            *visit += 1;
+        }
+        for o in &self.diffraction {
+            if o.visit >= visits.get(&o.surface).copied().unwrap_or(0) {
+                return Err(MkError::InvalidModel(
+                    "diffraction visit is outside the path".into(),
+                ));
+            }
+        }
         Ok(out)
     }
 }
@@ -217,6 +303,14 @@ pub struct EnumerationSettings {
     /// Surfaces that may not reflect.
     #[serde(default)]
     pub exclude_surfaces: Vec<u32>,
+    /// Additional orders to enumerate at every DOE visit (Cartesian product).
+    #[serde(default)]
+    pub diffraction_orders: Vec<i32>,
+    #[serde(default = "default_diffraction_budget")]
+    pub max_diffraction_paths: usize,
+}
+fn default_diffraction_budget() -> usize {
+    10000
 }
 
 impl Default for EnumerationSettings {
@@ -227,6 +321,8 @@ impl Default for EnumerationSettings {
             min_reflectance_product: 0.0,
             surface_range: None,
             exclude_surfaces: Vec::new(),
+            diffraction_orders: Vec::new(),
+            max_diffraction_paths: default_diffraction_budget(),
         }
     }
 }
@@ -402,6 +498,66 @@ pub fn enumerate(model: &GhostModel, settings: &EnumerationSettings) -> MkResult
             .cmp(&b.path.order())
             .then_with(|| a.path.cmp(&b.path))
     });
+    if !settings.diffraction_orders.is_empty() {
+        let bases = std::iter::once(GhostPath::primary())
+            .chain(paths.iter().map(|p| p.path.clone()))
+            .collect::<Vec<_>>();
+        let mut extra = Vec::new();
+        for base in bases {
+            let mut variants = vec![base.clone()];
+            let mut visits = std::collections::BTreeMap::new();
+            for st in base.steps(n)? {
+                let visit = visits.entry(st.surface).or_insert(0u32);
+                if let mklight_core::SurfaceShape::Diffractive { phase, .. } =
+                    &sys.surfaces[st.surface as usize].shape
+                {
+                    let original = variants.clone();
+                    let orders: std::collections::BTreeSet<_> = settings
+                        .diffraction_orders
+                        .iter()
+                        .copied()
+                        .filter(|&m| m != phase.trace_order)
+                        .collect();
+                    for order in orders {
+                        for p in &original {
+                            if extra.len() + variants.len() > settings.max_diffraction_paths {
+                                return Err(MkError::InvalidModel("diffraction path budget exceeded; narrow orders or reflection coverage".into()));
+                            }
+                            let mut p = p.clone();
+                            p.diffraction.push(DiffractionOrder {
+                                surface: st.surface,
+                                visit: *visit,
+                                order,
+                            });
+                            p.diffraction.sort();
+                            variants.push(p);
+                        }
+                    }
+                }
+                *visit += 1;
+            }
+            for p in variants.into_iter().skip(1) {
+                let reflectance_product = p
+                    .reflections
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &s)| {
+                        if k % 2 == 0 {
+                            r_fwd[s as usize]
+                        } else {
+                            r_bwd[s as usize]
+                        }
+                    })
+                    .product();
+                extra.push(EnumeratedPath {
+                    path: p,
+                    reflectance_product,
+                });
+            }
+        }
+        paths.extend(extra);
+        paths.sort_by(|a, b| a.path.cmp(&b.path));
+    }
     let coverage = model.coverage(paths.iter().map(|p| p.path.clone()));
     Ok(PathEnumeration {
         paths,

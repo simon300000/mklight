@@ -238,6 +238,32 @@ Coatings return complex amplitude coefficients next to the power ones
   ray clipped by one solver and not the other is counted twice or not at
   all. Both build them with `mklight_ghost::clip_apertures`.
 
+### 10.1 Diffractive orders
+
+A DOE physical event also carries its signed diffraction order. The designed
+sequential interaction uses `trace_order` (which need not equal the blaze
+`design_order`); every other order is a **diffraction ghost** if the optical
+walk is sequentially consistent and inside its clipping apertures. It may
+have zero extra reflections (`Ghost(0)`), or also carry reflection ghosts.
+Scatter, Mechanical and aperture/sequence violations still take precedence.
+
+`GhostPath` preserves reflection-array JSON for existing paths. Order-changing
+paths use `{reflections:[…], diffraction:[{surface,visit,order},…]}`, where
+visit is the zero-based encounter with that surface, including its reflected
+visits. Overrides are unique and sorted by (surface,visit); omitted visits
+use the selected order. `Step.order` / `PathEvent.order` are overrides;
+combined with the immutable snapshot they specify the complete ordered
+(surface, interaction, order) signature. Stray signatures publish every DOE
+visit, including selected orders, with its physical interaction.
+
+Coverage matches both reflection sequence and exact order overrides. Covered
+specular diffraction ghosts belong to the explicit ghost run, uncovered ones
+to stray, while selected-order Primary belongs to sequential/wave. A ghost
+run with no diffraction orders covers only selected-order reflection paths.
+Thus a covered reflection sequence never excludes its other DOE orders.
+As with reflection-signature overflow, combined runs reject coverage with
+more DOE visits than the compact stray signature can record.
+
 ## 11. Non-finite numbers in results
 
 Result JSON follows §2 for infinities (`"inf"` / `"-inf"`) and writes NaN,

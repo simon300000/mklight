@@ -52,7 +52,7 @@ use mklight_core::{Interaction, MkError, MkResult, RunInfo, SurfaceShape};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{GhostModel, GhostSettings};
-use crate::path::{Action, EnumerationSettings, GhostPath, Step, enumerate};
+use crate::path::{Action, Direction, EnumerationSettings, GhostPath, Step, enumerate};
 use crate::signature::GhostCoverage;
 
 /// One y–nu ray along a step list: values at each step after its
@@ -77,7 +77,16 @@ fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64)
     let sys = model.system();
     let i = st.surface as usize;
     let s = &sys.surfaces[i];
-    let c = s.shape.curvature();
+    let c = mklight_core::surface_math::vertex_curvatures(&s.shape)[2];
+    let doe_power = if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
+        -(st.order.unwrap_or(phase.trace_order) as f64)
+            * sys.wavelengths_um[wl]
+            * 1e-3
+            * phase.coefficients.first().copied().unwrap_or(0.0)
+            / (std::f64::consts::PI * phase.norm_radius.powi(2))
+    } else {
+        0.0
+    };
     if i == sys.image_index() {
         return match st.action {
             Action::Pass => (n_in, 0.0),
@@ -98,7 +107,7 @@ fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64)
             Some(f) => n_in.abs() / f,
             None => c * (n_out - n_in),
         };
-        return (n_out, phi);
+        return (n_out, phi + doe_power);
     }
     let (_, n_far) = model.media(i, st.direction, wl);
     let n_out = n_far.copysign(n_in);
@@ -106,7 +115,7 @@ fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64)
         Some(f) => s.n_after[wl] / f,
         None => c * (n_out - n_in),
     };
-    (n_out, phi)
+    (n_out, phi + doe_power)
 }
 
 /// Axial distance from step surface `from` to the next step's surface.
@@ -181,6 +190,16 @@ pub fn axial_throughput(model: &GhostModel, steps: &[Step], wl: usize) -> (f64, 
             continue;
         }
         let (n_in, n_far) = model.media(i, st.direction, wl);
+        if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
+            t *= mklight_core::materials::diffraction::order_efficiency(
+                sys,
+                i,
+                wl,
+                st.order.unwrap_or(phase.trace_order),
+                s.is_mirror() || st.action == Action::Reflect,
+                st.direction == Direction::Backward,
+            );
+        }
         if s.interaction == Interaction::Reflect {
             t *= s.coating.rt(lambda, n_in, n_in, 1.0, true).r_unpolarized();
         } else {

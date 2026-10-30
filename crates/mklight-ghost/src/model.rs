@@ -207,7 +207,6 @@ impl GhostModel {
     ) -> MkResult<Self> {
         check_settings(&settings)?;
         let sys = tracer.system();
-        sys.system().require_legacy_shapes("ghost paths")?;
         let n = sys.num_surfaces();
         if semi.values.len() != n || semi.traced.len() != n || semi.sources.len() != n {
             return Err(MkError::InvalidParam(format!(
@@ -355,6 +354,16 @@ impl GhostModel {
     pub fn check_path(&self, path: &GhostPath) -> MkResult<Vec<Step>> {
         let steps = path.steps(self.system().num_surfaces())?;
         for st in &steps {
+            if let Some(order) = st.order {
+                match &self.system().surfaces[st.surface as usize].shape {
+                    SurfaceShape::Diffractive { phase, .. } if order != phase.trace_order => {}
+                    _ => {
+                        return Err(MkError::InvalidModel(
+                            "order override must name a non-selected DOE order".into(),
+                        ));
+                    }
+                }
+            }
             if st.action == Action::Reflect && !self.is_reflector(st.surface as usize) {
                 return Err(MkError::InvalidModel(format!(
                     "ghost path {:?}: surface {} cannot reflect ({:?})",

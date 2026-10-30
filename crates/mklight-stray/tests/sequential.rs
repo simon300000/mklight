@@ -46,14 +46,25 @@ fn check_primary(
     rays: u64,
     seed: u64,
 ) -> (PrimaryReference, f64, f64) {
+    check_primary_grid(name, sys, beam, rays, seed, 360)
+}
+
+fn check_primary_grid(
+    name: &str,
+    sys: &StraySystem,
+    beam: &Beam,
+    rays: u64,
+    seed: u64,
+    grid: usize,
+) -> (PrimaryReference, f64, f64) {
     let ctx = JobContext::new();
     let r = mklight_stray::run(&sys.scene, &beam.spec, &transport(rays, seed), &ctx).unwrap();
     assert!(r.energy.is_balanced(), "{}", r.energy.summary());
     let e = &r.energy;
     assert_eq!(e.detected_in(PathClass::Scatter), 0.0);
     assert_eq!(e.detected_in(PathClass::Mechanical), 0.0);
-    let reference = primary_reference(sys, &beam.spec, 360, &ctx).unwrap();
-    let coarse = primary_reference(sys, &beam.spec, 250, &ctx).unwrap();
+    let reference = primary_reference(sys, &beam.spec, grid, &ctx).unwrap();
+    let coarse = primary_reference(sys, &beam.spec, grid * 25 / 36, &ctx).unwrap();
 
     let mc = e.detected_in(PathClass::Primary);
     let se = e.std_error_in(PathClass::Primary);
@@ -587,5 +598,18 @@ fn reference_spot_matches_the_sequential_tracer() {
                 "{name} field {k}: RMS {g} vs {rms}"
             );
         }
+    }
+}
+
+#[test]
+fn extended_surface_primary_matches_sequential() {
+    for (name, mut s) in mklight_core::samples::all().into_iter().skip(7) {
+        if name == "hybrid_doe" {
+            s.surfaces[2].diffraction_efficiency =
+                mklight_core::materials::diffraction::DiffractionEfficiency::Kinoform;
+        }
+        let sys = stray_system(s, &no_scatter_options());
+        let beam = sys.system_field_source(1, 0.1, 1.0).unwrap();
+        check_primary_grid(name, &sys, &beam, 30_000, 191, 180);
     }
 }

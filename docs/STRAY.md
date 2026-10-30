@@ -395,3 +395,47 @@ Silicon): on-axis field 1.4·10⁶ rays/s (1.5·10⁷ events/s), sun at 20°
   decentred (warned).
 * GPU (hardware ray tracing) casters are not implemented yet; the CPU BVH
   is the reference `RayCaster`.
+
+## Extended sag geometry and DOE transport
+
+`geom::SagPatch` intersects odd asphere, QCon, QBfs, toroid, biconic,
+XY-polynomial, Zernike sag and DOE bases through the core Cartesian
+`surface_math::evaluate`. The implicit residual is `F=z−sag(x,y)` and its
+ray derivative is `d_z−sag_x d_x−sag_y d_y`. The existing finite-cell scan
+brackets sign changes and searches derivative sign changes for grazing root
+pairs; safeguarded Newton/bisection refines the nearest valid positive root.
+Normals are the core `normal`, toward local +z. Cartesian sag/gradient
+sampling extends the radial z bounds for freeforms. These sampled bounds
+and the finite scan are numerical bounds, not interval proofs for arbitrarily
+oscillatory prescriptions. Closed-form plane/conic intersections retain their
+stable roots, including vertical conic rims.
+
+A DOE is a physical interface even when its two indices match. After choosing
+the coating's R/T/scatter channel, transport draws an integer order from the
+shared scalar efficiency spectrum (SURFACES §3.1), then evaluates the same
+reference `diffract` equation in the primitive's local frame. A scattered
+channel samples its BSDF about that order's deflected direction. The power
+of a selected order is encoded by its sampling probability, with no second
+η multiplier. Coating absorption remains `1−R−T`; an evanescent order ends
+in the separately reported `diffraction` sink, preserving the per-ray ledger.
+
+DOE histories retain `(surface,visit,reflected,order,selected)` in encounter
+order. A non-selected order changes a regular optical path from Primary to
+Ghost, including zero-reflection ghosts; it does not by itself mean scatter.
+Scatter, Mechanical and Sneak take precedence as before. When combined with
+an explicit ghost run, `covered` compares both reflections and non-selected
+order overrides. Selected-order reflection coverage cannot exclude an
+uncovered diffraction path. Compact-signature overflow stays uncovered;
+coverage with more than six DOE visits is rejected at transport input to
+avoid claiming an exclusion the signature cannot express. Thus
+
+```
+MC detected = sequential Primary + explicit covered Ghost
+              + stray (Scatter + Mechanical + Sneak + uncovered Ghost)
+```
+
+within MC and deterministic pupil-quadrature error. The hybrid DOE test in
+`tests/partition.rs` checks this identity and nonzero uncovered-order flux.
+`tests/sequential.rs` compares Primary transmission, spot centroid and RMS
+with the obstruction-checked sequential reference on all extended samples,
+reporting z scores and checking quadrature convergence.

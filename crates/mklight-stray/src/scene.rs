@@ -158,9 +158,20 @@ pub struct Pass {
     pub clip: Option<ApertureShape>,
 }
 
+/// Scalar relief spectrum precomputed from the resolved media.
+#[derive(Clone, Debug)]
+pub struct DiffractiveInterface {
+    pub phase: mklight_core::model::surface::DiffractivePhase,
+    pub efficiency: mklight_core::materials::diffraction::DiffractionEfficiency,
+    pub transmitted_blaze: Vec<f64>,
+    pub reflected_blaze_minus: Vec<f64>,
+    pub reflected_blaze_plus: Vec<f64>,
+}
+
 /// An optical surface.
 #[derive(Clone, Debug)]
 pub struct Interface {
+    pub diffraction: Option<Arc<DiffractiveInterface>>,
     /// The sequential passes through this surface, in sequence order (one for
     /// an ordinary surface; two or more for a surface the sequential model
     /// repeats, such as the front face of a Mangin mirror).
@@ -185,6 +196,7 @@ impl Interface {
         coating: Arc<ResolvedCoating>,
     ) -> Interface {
         Interface {
+            diffraction: None,
             passes: vec![Pass {
                 surface,
                 incident_side,
@@ -778,6 +790,7 @@ impl Scene {
             let passive = rsurf.is_passive()
                 || (rsurf.interaction == Interaction::Refract
                     && !is_paraxial
+                    && !matches!(rsurf.shape, SurfaceShape::Diffractive { .. })
                     && same_medium(i - 1, i)
                     && matches!(rsurf.coating, ResolvedCoating::Bare));
             if passive {
@@ -918,6 +931,27 @@ impl Scene {
                     patch_mask,
                 )?),
                 Behavior::Interface(Interface {
+                    diffraction: if let SurfaceShape::Diffractive { phase, .. } = &rsurf.shape {
+                        let blaze = |reflected, backward| {
+                            rs.wavelengths_um
+                                .iter()
+                                .map(|&l| {
+                                    mklight_core::materials::diffraction::blaze(
+                                        rs, i, l, reflected, backward,
+                                    )
+                                })
+                                .collect()
+                        };
+                        Some(Arc::new(DiffractiveInterface {
+                            phase: phase.clone(),
+                            efficiency: sys.surfaces[i].diffraction_efficiency,
+                            transmitted_blaze: blaze(false, false),
+                            reflected_blaze_minus: blaze(true, incident != Side::Minus),
+                            reflected_blaze_plus: blaze(true, incident != Side::Plus),
+                        }))
+                    } else {
+                        None
+                    },
                     passes: vec![pass],
                     kind,
                     medium_minus: media.0 as MediumId,

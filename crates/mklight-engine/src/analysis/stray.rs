@@ -222,7 +222,7 @@ impl Analysis for StrayLight {
                     "top_signatures",
                     arr(
                         opaque("{class, events, overflow, label, flux, std_error, hits}"),
-                        "Strongest (class, signature) pairs among the included classes.",
+                        "Strongest (class, signature) pairs, including ordered DOE (surface, visit, interaction, order) events.",
                     ),
                 ),
                 (

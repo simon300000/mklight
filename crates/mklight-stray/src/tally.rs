@@ -87,9 +87,11 @@ pub enum Sink {
     Generic = 9,
     /// Non-clear (mount) zones of optical surfaces.
     Mount = 10,
+    /// Scalar order power that has no propagating grating solution.
+    Diffraction = 11,
 }
 
-pub const NUM_SINKS: usize = 11;
+pub const NUM_SINKS: usize = 12;
 
 impl Sink {
     pub const ALL: [Sink; NUM_SINKS] = [
@@ -104,6 +106,7 @@ impl Sink {
         Sink::Baffle,
         Sink::Generic,
         Sink::Mount,
+        Sink::Diffraction,
     ];
     pub fn of(kind: OpaqueKind) -> Sink {
         match kind {
@@ -815,6 +818,7 @@ impl StrayTally {
             .map(|((c, sig), acc)| SignatureFlux {
                 class: PathClass::ALL[*c as usize],
                 events: sig.events().collect(),
+                diffraction: sig.diffraction().to_vec(),
                 overflow: sig.overflow(),
                 label: String::new(),
                 flux: acc.flux.value(),
@@ -854,6 +858,7 @@ pub struct SignatureFlux {
     pub class: PathClass,
     /// Ordered non-designed events (`path::Signature`).
     pub events: Vec<(EventKind, usize)>,
+    pub diffraction: Vec<crate::path::DiffractionEvent>,
     /// More events happened than were kept.
     pub overflow: bool,
     /// Human-readable form (`Signature::describe`).

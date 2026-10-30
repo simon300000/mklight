@@ -239,6 +239,7 @@ fn reversed(rec: &[StepRecord]) -> Vec<Step> {
         .rev()
         .skip(1)
         .map(|r| Step {
+            order: None,
             surface: r.step.surface,
             direction: r.step.direction.reversed(),
             action: Action::Pass,
@@ -350,6 +351,7 @@ fn ghost_backward_segment_is_reversible() {
         .iter()
         .rev()
         .map(|x| Step {
+            order: None,
             surface: x.step.surface,
             direction: Direction::Forward,
             action: Action::Pass,

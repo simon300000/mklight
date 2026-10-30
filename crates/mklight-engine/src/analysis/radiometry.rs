@@ -54,7 +54,7 @@ impl Analysis for SystemTransmission {
         "radiometry"
     }
     fn description(&self) -> &str {
-        "Pupil-averaged primary-path transmission (coatings, Fresnel losses, bulk \
+        "Pupil-averaged primary-path transmission (selected DOE efficiency, coatings, Fresnel losses, bulk \
          absorption, vignetting) per field and wavelength, and the spectrally weighted \
          polychromatic transmission per field; unpolarised or by polarisation ray tracing."
     }

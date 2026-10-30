@@ -29,6 +29,7 @@ use mklight_core::math::Vec3;
 use mklight_core::model::{ApertureShape, SurfaceShape};
 
 use super::Aabb;
+use mklight_core::surface_math;
 
 /// Extra in-plane clipping of a sag patch.
 #[derive(Clone, Debug, PartialEq)]
@@ -142,11 +143,10 @@ impl SagPatch {
                     }
                 }
             }
-            _ => {
-                return Err(MkError::Unsupported(
-                    "extended surface shape in stray geometry".into(),
-                ));
-            }
+            _ => Kind::General {
+                c: shape.curvature(),
+                k: shape.conic(),
+            },
         };
         let mut r_outer = r_outer;
         match kind {
@@ -208,25 +208,6 @@ impl SagPatch {
         }
     }
 
-    /// `dS/d(r²)`.
-    fn dsag_du(&self, u: f64) -> f64 {
-        match (&self.kind, &self.shape) {
-            (Kind::Plane, _) => 0.0,
-            (Kind::Conic { c, k }, _) => {
-                let s = (1.0 - (1.0 + k) * c * c * u).max(0.0).sqrt();
-                c / (2.0 * s)
-            }
-            (Kind::General { c, k }, SurfaceShape::EvenAsphere { coefficients, .. }) => {
-                let s = (1.0 - (1.0 + k) * c * c * u).max(0.0).sqrt();
-                c / (2.0 * s) + poly_du(coefficients, u)
-            }
-            (Kind::General { c, k }, _) => {
-                let s = (1.0 - (1.0 + k) * c * c * u).max(0.0).sqrt();
-                c / (2.0 * s)
-            }
-        }
-    }
-
     fn compute_z_bounds(&mut self) {
         let (u0, u1) = (self.r_inner * self.r_inner, self.r_outer * self.r_outer);
         match self.kind {
@@ -252,6 +233,22 @@ impl SagPatch {
                 // Between samples the sag can move by at most about one step.
                 self.z_lo = lo - 2.0 * step;
                 self.z_hi = hi + 2.0 * step;
+                // Freeforms need both coordinates. Gradient padding covers a
+                // sampling cell rather than only the positive-y meridian.
+                let h = self.r_outer / 64.0;
+                for ix in -64..=64 {
+                    for iy in -64..=64 {
+                        let (x, y) = (ix as f64 * h, iy as f64 * h);
+                        if x * x + y * y > u1 {
+                            continue;
+                        }
+                        if let Some(v) = surface_math::evaluate(&self.shape, x, y) {
+                            let pad = 2.0 * h * (v.gradient[0].abs() + v.gradient[1].abs());
+                            self.z_lo = self.z_lo.min(v.sag - pad);
+                            self.z_hi = self.z_hi.max(v.sag + pad);
+                        }
+                    }
+                }
             }
         }
     }
@@ -286,10 +283,11 @@ impl SagPatch {
                 let g = c + 2.0 * s * poly_du(coefficients, u);
                 Vec3::new(-p.x * g, -p.y * g, s).normalized()
             }
-            _ => {
-                let g = 2.0 * self.dsag_du(p.x * p.x + p.y * p.y);
-                Vec3::new(-p.x * g, -p.y * g, 1.0).normalized()
-            }
+            _ => surface_math::normal(&self.shape, p.x, p.y).unwrap_or(Vec3::new(
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+            )),
         }
     }
 
@@ -414,11 +412,13 @@ impl SagPatch {
         let len = tb - ta;
         let f = |t: f64| {
             let (x, y) = (o2.x + t * d.x, o2.y + t * d.y);
-            o2.z + t * d.z - self.sag(x * x + y * y)
+            o2.z + t * d.z - surface_math::evaluate(&self.shape, x, y).map_or(f64::NAN, |v| v.sag)
         };
         let df = |t: f64| {
             let (x, y) = (o2.x + t * d.x, o2.y + t * d.y);
-            d.z - 2.0 * self.dsag_du(x * x + y * y) * (x * d.x + y * d.y)
+            surface_math::evaluate(&self.shape, x, y).map_or(f64::NAN, |v| {
+                d.z - v.gradient[0] * d.x - v.gradient[1] * d.y
+            })
         };
         let n = ((len * 64.0 / self.r_outer).ceil() as usize).clamp(8, 512);
         let h = len / n as f64;
@@ -931,5 +931,32 @@ mod tests {
             c.intersect(Vec3::new(0.0, 0.0, 5.0), Vec3::Z, 0.0, 100.0)
                 .is_none()
         );
+    }
+    #[test]
+    fn extended_surfaces_hit_known_points_from_both_sides() {
+        for (name, sys) in mklight_core::samples::all().into_iter().skip(7) {
+            for surf in sys.surfaces.iter().filter(|s| !s.shape.is_legacy()) {
+                let patch = SagPatch::new(surf.shape.clone(), 0.0, 1.5, None).unwrap();
+                for (x, y) in [(0.0, 0.0), (0.7, -0.4), (-0.8, 0.6)] {
+                    let v = surface_math::evaluate(&surf.shape, x, y).unwrap();
+                    let p = Vec3::new(x, y, v.sag);
+                    let n = surface_math::normal(&surf.shape, x, y).unwrap();
+                    for sign in [-1.0, 1.0] {
+                        let d = Vec3::new(0.1, -0.07, sign).normalized();
+                        let h = patch.intersect(p - d * 2.0, d, 0.0, 4.0).unwrap();
+                        assert!(h.p.max_abs_diff(p) < 1e-11, "{name}: {h:?} vs {p:?}");
+                        assert!(h.n.max_abs_diff(n) < 1e-11);
+                        let eps = 1e-6;
+                        let vx = surface_math::evaluate(&surf.shape, x + eps, y).unwrap().sag;
+                        let vy = surface_math::evaluate(&surf.shape, x, y + eps).unwrap().sag;
+                        // An independent finite-difference tangent check at smooth points.
+                        if x != 0.0 {
+                            assert!(h.n.dot(Vec3::new(1.0, 0.0, (vx - v.sag) / eps)).abs() < 1e-5);
+                            assert!(h.n.dot(Vec3::new(0.0, 1.0, (vy - v.sag) / eps)).abs() < 1e-5);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

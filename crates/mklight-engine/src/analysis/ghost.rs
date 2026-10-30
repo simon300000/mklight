@@ -83,12 +83,23 @@ impl GhostModelOptions {
 }
 
 fn enumeration_annotation() -> Value {
-    json!({"description": "Path enumeration: {\"max_reflections\": 2|4|6|8, \"max_higher_order_paths\": n, \"min_reflectance_product\": r, \"surface_range\": [first, last] | null, \"exclude_surfaces\": [i, …]}."})
+    json!({"description": "Path enumeration: {\"max_reflections\": 2|4|6|8, \"max_higher_order_paths\": n, \"min_reflectance_product\": r, \"surface_range\": [first, last] | null, \"exclude_surfaces\": [i, …], \"diffraction_orders\": [m, …], \"max_diffraction_paths\": n}."})
 }
 
+fn path_schema() -> Value {
+    json!({"oneOf": [
+        {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        {"type": "object", "required": ["reflections", "diffraction"], "properties": {
+            "reflections": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+            "diffraction": {"type": "array", "items": {"type": "object", "required": ["surface", "visit", "order"], "properties": {
+                "surface": {"type": "integer", "minimum": 1}, "visit": {"type": "integer", "minimum": 0}, "order": {"type": "integer"}
+            }}}
+        }}
+    ]})
+}
 fn paths_annotation() -> Value {
-    json!({"type": ["array", "null"], "items": {"type": "array"},
-           "description": "Explicit ghost paths (each an ordered list of reflecting surface indices) instead of the enumeration."})
+    json!({"type": ["array", "null"], "items": path_schema(),
+           "description": "Explicit paths: reflection arrays, or {reflections, diffraction: [{surface, visit, order}]} with non-selected DOE orders, sorted by (surface, visit)."})
 }
 
 fn merge(mut a: serde_json::Map<String, Value>, b: Value) -> Value {
@@ -119,7 +130,7 @@ fn coverage_schema() -> Value {
         (
             "paths",
             arr(
-                arr(int(""), ""),
+                path_schema(),
                 "The exact set of ghost paths this run counted.",
             ),
         ),
@@ -187,7 +198,7 @@ impl Analysis for GhostPaths {
     }
     fn result_schema(&self) -> Value {
         let ghost = obj(&[
-            ("path", arr(int(""), "Reflecting surfaces, in order.")),
+            ("path", path_schema()),
             ("label", string("e.g. `R11·R9`.")),
             (
                 "reflectance_product",
@@ -401,10 +412,7 @@ impl Analysis for GhostIrradiance {
             ("rays_detected", int("")),
         ]);
         let path = obj(&[
-            (
-                "path",
-                arr(int(""), "Reflecting surfaces (empty: the primary)."),
-            ),
+            ("path", path_schema()),
             ("label", string("")),
             ("fields", arr(field, "")),
             (

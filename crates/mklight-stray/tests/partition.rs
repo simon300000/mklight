@@ -486,3 +486,82 @@ fn high_reflectance_ghost_flux_has_no_sampling_bias() {
 fn high_reflectance_ghost_flux_large_run() {
     high_reflectance(2_000_000, &[7, 8, 9, 10]);
 }
+
+#[test]
+fn hybrid_doe_orders_partition_without_double_counting() {
+    use mklight_core::materials::diffraction::DiffractionEfficiency;
+    let mut s = coated_with(
+        mklight_core::samples::hybrid_diffractive_achromat(),
+        10.0,
+        0.1,
+    );
+    s.surfaces[2].diffraction_efficiency = DiffractionEfficiency::Multilevel {
+        levels: 4.try_into().unwrap(),
+    };
+    let mut set = settings(0, 271);
+    set.rays = 100_000;
+    let sys = StraySystem::build(
+        Arc::new(resolve(s)),
+        &set.system_options(),
+        &JobContext::new(),
+    )
+    .unwrap();
+    let model = ghost_model(&sys, ClipMode::ClearApertures { margin_mm: 0.0 });
+    let explicit = ghost_irradiance(
+        &model,
+        &IrradianceSettings {
+            enumeration: EnumerationSettings {
+                diffraction_orders: vec![-1, 0, 2, 3],
+                ..Default::default()
+            },
+            fields: vec![0],
+            pupil_samples: 160,
+            overfill: 1.3,
+            map_bins: [8, 8],
+            ..Default::default()
+        },
+        &JobContext::new(),
+    )
+    .unwrap();
+    assert!(
+        explicit
+            .ghosts
+            .iter()
+            .any(|p| p.path.reflections.is_empty() && !p.path.diffraction.is_empty())
+    );
+    sys.check_ghost_coverage(&explicit.coverage).unwrap();
+    let all = analyze_system(&sys, &set, &JobContext::new()).unwrap();
+    let excl = analyze_system(
+        &sys,
+        &StrayAnalysisSettings {
+            exclude_ghost_class: true,
+            ghost_coverage: Some(explicit.coverage.clone()),
+            ..set
+        },
+        &JobContext::new(),
+    )
+    .unwrap();
+    assert!(all.energy.is_balanced(), "{}", all.energy.summary());
+    assert!(excl.energy.detected_covered_ghost > 0.0);
+    assert!(excl.energy.detected_uncovered_ghost > 0.0);
+    let reference = all.source.reference_flux;
+    let ghost: f64 = explicit
+        .ghosts
+        .iter()
+        .map(|p| p.fields[0].flux_on_map)
+        .sum::<f64>()
+        * reference;
+    let primary = explicit.primary.fields[0].flux_on_map * reference;
+    let p = all.total_of(PathClass::Primary);
+    let z_primary = (p.flux - primary) / p.std_error;
+    let z_ghost =
+        (excl.energy.detected_covered_ghost - ghost) / excl.energy.detected_covered_ghost_std_error;
+    let z_sum = (primary + ghost + excl.stray_flux - all.energy.detected)
+        / (p.std_error.powi(2) + excl.energy.detected_covered_ghost_std_error.powi(2)).sqrt();
+    println!(
+        "hybrid DOE: primary z={z_primary:+.3}, covered orders z={z_ghost:+.3}, partition z={z_sum:+.3}, uncovered={:.6e}",
+        excl.energy.detected_uncovered_ghost
+    );
+    assert!(z_primary.abs() < 4.0 && z_ghost.abs() < 4.0 && z_sum.abs() < 4.0);
+    assert!(all.top_signatures.iter().any(|p| !p.diffraction.is_empty()));
+}
