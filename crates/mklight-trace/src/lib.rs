@@ -107,7 +107,9 @@ pub use radiometry::{
     PolarizationMapSettings, PolarizationPupilMap, PupilSamples, RadiometryModel, RayThroughput,
     TransmissionResult, TransmissionSettings, polarization_pupil_map, system_transmission,
 };
-pub use semidia::{SemiDiameterSettings, SemiDiameterSource, SemiDiameters, fix_semi_diameters};
+pub use semidia::{
+    CANCEL_CHUNK, SemiDiameterSettings, SemiDiameterSource, SemiDiameters, fix_semi_diameters,
+};
 pub use solves::{
     SolveMethod, SolveOutcome, SolveReport, SolveSettings, apply_solves, apply_solves_all,
     apply_solves_configuration, apply_solves_with, solved_params,

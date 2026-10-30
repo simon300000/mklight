@@ -959,6 +959,53 @@ fn deterministic_cancellable_with_monotone_progress_and_run_info() {
     ));
 }
 
+#[test]
+fn a_solve_cancelled_while_sizing_apertures_returns_cancelled() {
+    // An edge-thickness solve at the automatic semi-diameters sizes the
+    // apertures at every evaluation (here 200 fields, so sizing dominates
+    // the run, and its own cancellation checks fire inside it). Cancelled at
+    // any point, the solve returns Cancelled, never a solve error made of
+    // the cancelled sizing; a cancel that comes too late leaves the result
+    // intact. (`semi_diameters_cancel_within_a_task` in geometry.rs shows
+    // that the sizing itself stops mid-run.)
+    let mut sys = singlet();
+    sys.fields = angle_fields(&(0..200).map(|k| k as f64 * 0.025).collect::<Vec<_>>());
+    sys.solves = vec![Solve::new(
+        t(1),
+        SolveKind::EdgeThickness {
+            value: 1.0,
+            radius: None,
+        },
+    )];
+    let settings = SolveSettings::default();
+    let start = std::time::Instant::now();
+    let (want, report) = apply_solves_with(&sys, &lib(), &settings, &JobContext::new()).unwrap();
+    let full = start.elapsed();
+    assert!(report.outcomes[0].evaluations >= 2, "{report:?}");
+    let mut cancelled = 0;
+    for k in 0..12 {
+        let frac = k as f64 / 10.0;
+        let cancel = CancelToken::new();
+        let ctx = JobContext::with(cancel.clone(), Progress::default());
+        let t0 = std::time::Instant::now();
+        let r = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while t0.elapsed() < full.mul_f64(frac) {
+                    std::thread::yield_now();
+                }
+                cancel.cancel();
+            });
+            apply_solves_with(&sys, &lib(), &settings, &ctx)
+        });
+        match r {
+            Err(MkError::Cancelled) => cancelled += 1,
+            Ok((got, _)) => assert_eq!(got, want, "at {frac}"),
+            Err(e) => panic!("at {frac}: {e}"),
+        }
+    }
+    assert!(cancelled >= 1);
+}
+
 // ---------------------------------------------------------------------------
 // Validation and failures.
 

@@ -440,6 +440,61 @@ fn semi_diameters_with_job_context() {
     assert!(serde_json::from_str::<SemiDiameterSettings>(r#"{"azimuth": 8}"#).is_err());
 }
 
+/// Runs `semi_diameters_with` on `sys` and cancels it from another thread
+/// as soon as it reports any progress; returns the result and the final
+/// progress fraction.
+fn cancel_sizing_once_started(
+    sys: mklight_core::OpticalSystem,
+    azimuths: usize,
+) -> (mklight_core::MkResult<mklight_trace::SemiDiameters>, f64) {
+    use mklight_core::{CancelToken, JobContext, Progress};
+    let t = tracer(sys);
+    let settings = SemiDiameterSettings {
+        azimuths,
+        ..Default::default()
+    };
+    let cancel = CancelToken::new();
+    let progress = Progress::default();
+    let ctx = JobContext::with(cancel.clone(), progress.clone());
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while progress.fraction() == 0.0 && !done.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            cancel.cancel();
+        });
+        let r = t.semi_diameters_with(&settings, &ctx);
+        done.store(true, std::sync::atomic::Ordering::Release);
+        r
+    });
+    (result, progress.fraction())
+}
+
+#[test]
+fn semi_diameters_cancel_within_a_task() {
+    use mklight_core::{FieldSet, MkError};
+    // One (field, wavelength) task of 200 000 rays: only the checks inside
+    // the pupil loop can stop it. Progress is reported every
+    // `CANCEL_CHUNK` rays, so the cancel arrives after the first chunk and
+    // the run stops within a few more.
+    let mut one = samples::cooke_triplet();
+    one.fields = FieldSet {
+        kind: one.fields.kind,
+        fields: vec![one.fields.fields[2]],
+    };
+    one.wavelengths.wavelengths.truncate(1);
+    one.wavelengths.primary = 0;
+    let (r, f) = cancel_sizing_once_started(one, 200_000);
+    assert_eq!(r, Err(MkError::Cancelled));
+    assert!(f > 0.0 && f < 0.05, "stopped at {f}");
+    // The Double Gauss's 9 tasks run in parallel; a cancel during the run
+    // stops all of them, not only the tasks that have not started.
+    let (r, f) = cancel_sizing_once_started(samples::double_gauss(), 20_000);
+    assert_eq!(r, Err(MkError::Cancelled));
+    assert!(f > 0.0 && f < 0.5, "stopped at {f}");
+}
+
 #[test]
 fn aim_failure_is_reported_not_silent() {
     // A pupil point far outside the stop cannot be reached by aiming at a stop

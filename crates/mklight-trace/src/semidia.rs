@@ -19,8 +19,9 @@
 //!
 //! [`SequentialTracer::semi_diameters_with`] is the cancellable variant for
 //! jobs and solvers: it checks the [`JobContext`] before every (field,
-//! wavelength) task and reports monotone progress over them. The result does
-//! not depend on the thread count (maxima and counts are exact reductions).
+//! wavelength) task and every [`CANCEL_CHUNK`] rays within one, and reports
+//! monotone progress over the traced rays. The result does not depend on
+//! the thread count (maxima and counts are exact reductions).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -31,6 +32,10 @@ use serde::{Deserialize, Serialize};
 use crate::pupil::ring;
 use crate::trace::{SurfaceRecord, TraceOptions};
 use crate::tracer::SequentialTracer;
+
+/// Rays traced between two cancellation checks (and progress reports) of
+/// [`SequentialTracer::semi_diameters_with`].
+pub const CANCEL_CHUNK: usize = 64;
 
 /// Settings of [`SequentialTracer::semi_diameters`]. In JSON every field is
 /// optional (defaults below) and unknown keys are rejected, so a misspelt
@@ -86,7 +91,8 @@ impl SequentialTracer {
     }
 
     /// As [`SequentialTracer::semi_diameters`], with cancellation (checked
-    /// before every (field, wavelength) task) and monotone progress.
+    /// before every (field, wavelength) task and every [`CANCEL_CHUNK`] rays)
+    /// and monotone progress (the fraction of rays traced).
     pub fn semi_diameters_with(
         &self,
         settings: &SemiDiameterSettings,
@@ -108,7 +114,11 @@ impl SequentialTracer {
             .flat_map(|f| (0..nw).map(move |w| (f, w)))
             .collect();
         let done = AtomicUsize::new(0);
-        let total = tasks.len().max(1);
+        let total = (tasks.len() * pupil.len()).max(1);
+        let advance = |rays: usize| {
+            let k = done.fetch_add(rays, Ordering::Relaxed) + rays;
+            ctx.report(k as f64 / total as f64, STAGE);
+        };
         let (maxes, failed) = tasks
             .par_iter()
             .map(|&(f, w)| -> MkResult<(Vec<f64>, usize)> {
@@ -117,7 +127,11 @@ impl SequentialTracer {
                 let mut m = vec![0.0f64; n];
                 let mut failed = 0usize;
                 let mut rec: Vec<SurfaceRecord> = Vec::with_capacity(n);
-                for p in &pupil {
+                for (i, p) in pupil.iter().enumerate() {
+                    if i > 0 && i % CANCEL_CHUNK == 0 {
+                        ctx.check()?;
+                        advance(CANCEL_CHUNK);
+                    }
                     let r = self.trace_with(field, w, p[0], p[1], &opts, Some(&mut rec));
                     if !r.status.is_ok() {
                         failed += 1;
@@ -126,8 +140,7 @@ impl SequentialTracer {
                         m[j] = m[j].max(s.point.x.hypot(s.point.y));
                     }
                 }
-                let k = done.fetch_add(1, Ordering::Relaxed) + 1;
-                ctx.report(k as f64 / total as f64, STAGE);
+                advance(pupil.len() - (pupil.len() - 1) / CANCEL_CHUNK * CANCEL_CHUNK);
                 Ok((m, failed))
             })
             .try_reduce(
