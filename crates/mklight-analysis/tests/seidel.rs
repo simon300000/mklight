@@ -51,9 +51,14 @@ fn spherical_mirror_closed_forms() {
     assert!((s.lagrange_invariant - h).abs() < 1e-15);
     // W040 = y⁴/(4R³): twice the sphere–paraboloid sag difference.
     assert!((s.wavefront_mm.w040 - y.powi(4) / (4.0 * r.powi(3))).abs() < 1e-15);
-    // Petzval radius of a mirror: R/2, concave towards the mirror (+z).
+    // Petzval sum of a mirror with signed reduced indices: φ/(n n') with
+    // φ = c(n' − n) = 2/R, n n' = −1, so P = −2/R.
+    assert!((s.petzval_sum + 2.0 / r).abs() < 1e-15, "{}", s.petzval_sum);
+    // Petzval radius −1/(n'_k P) with n'_k = −1: −R/2. Image space runs
+    // towards local −z, and the Petzval surface (the sphere of radius R/2
+    // about the centre of curvature) bends back towards −z.
     assert!(
-        (s.petzval_radius - 0.5 * r).abs() < 1e-9,
+        (s.petzval_radius + 0.5 * r).abs() < 1e-9,
         "{}",
         s.petzval_radius
     );
@@ -89,7 +94,10 @@ fn thin_plano_convex_lens_matches_thin_lens_theory() {
     let n = tr.system().surfaces[1].n_after[0];
     let k = 1.0 / tr.paraxial().primary().efl;
     let y: f64 = 5.0;
-    let h = s.lagrange_invariant;
+    // Independent Lagrange invariant: ȳ = 0 at the stop, so H = ū y with the
+    // chief ray of the +y field rising (ū = tan 5° > 0).
+    let h = 5f64.to_radians().tan() * y;
+    assert!((s.lagrange_invariant - h).abs() < 1e-12 * h);
     let (b, c) = (1.0, -1.0);
     let s1 = y.powi(4) * k.powi(3) / 4.0
         * ((n / (n - 1.0)).powi(2)
@@ -97,14 +105,18 @@ fn thin_plano_convex_lens_matches_thin_lens_theory() {
                 * (b + 2.0 * (n * n - 1.0) / (n + 2.0) * c).powi(2)
             - n / (n + 2.0) * c * c);
     let s2 = y * y * k * k * h / 2.0 * ((n + 1.0) / (n * (n - 1.0)) * b + (2.0 * n + 1.0) / n * c);
+    // Sign of coma in this crate's convention, derived surface by surface
+    // from S_II = −A Ā y Δ(u/n) with ȳ = 0 (so Ā = ū at both surfaces),
+    // A₁ = yc₁, Δ₁(u/n) = −yK/n², A₂ = −yK, Δ₂(u/n) = −yK(1 − 1/n²):
+    // S_II = −H y² K² (n² − n − 1)/(n(n − 1)), which is the thin-lens form
+    // above with shape factor B = +1 and conjugate factor C = −1.
+    let s2_signed = -h * y * y * k * k * (n * n - n - 1.0) / (n * (n - 1.0));
     let rel = |a: f64, e: f64| (a - e).abs() / e.abs();
+    assert!(rel(s2, s2_signed) < 1e-12);
     assert!(rel(s.sums.s1, s1) < 1e-4, "{} {}", s.sums.s1, s1);
-    assert!(
-        rel(s.sums.s2.abs(), s2.abs()) < 1e-4,
-        "{} {}",
-        s.sums.s2,
-        s2
-    );
+    // n ≈ 1.517 < φ (golden ratio): n² − n − 1 < 0, so S_II > 0 here.
+    assert!(s.sums.s2 > 0.0);
+    assert!(rel(s.sums.s2, s2_signed) < 1e-4, "{} {}", s.sums.s2, s2);
     assert!(rel(s.sums.s3, h * h * k) < 1e-4);
     assert!(rel(s.sums.s4, h * h * k / n) < 1e-4);
     assert!(s.sums.s5.abs() < 1e-4 * s.sums.s3.abs());
@@ -113,21 +125,113 @@ fn thin_plano_convex_lens_matches_thin_lens_theory() {
 }
 
 #[test]
-fn petzval_sum_matches_paraxial_powers_on_every_sample() {
+fn petzval_sum_of_separated_lenses_is_sum_of_k_over_n() {
+    // Two thick lenses of different glasses, separated: P = Σ K_i/n_i
+    // exactly (each lens contributes (n−1)(c₁ − c₂)/n whatever its
+    // thickness), independent of spacing, stop position and bending.
+    let (r1, r2, r3, r4) = (40.0, -120.0, -35.0, 80.0);
+    let sys = infinite_system(
+        10.0,
+        vec![
+            surf(
+                1,
+                SurfaceShape::sphere(r1),
+                4.0,
+                MaterialRef::glass("N-BK7"),
+            ),
+            surf(2, SurfaceShape::sphere(r2), 7.0, MaterialRef::Air),
+            surf(3, SurfaceShape::sphere(r3), 2.0, MaterialRef::glass("F2")),
+            surf(4, SurfaceShape::sphere(r4), 60.0, MaterialRef::Air),
+        ],
+        3,
+        &[0.0, 4.0],
+    );
+    let t = tracer(sys);
+    let s = seidel(&t, &SeidelSettings::default()).unwrap();
+    let n1 = t.system().surfaces[1].n_after[0];
+    let n2 = t.system().surfaces[3].n_after[0];
+    assert!(n1 < 1.6 && n2 > 1.6);
+    let k1 = (n1 - 1.0) * (1.0 / r1 - 1.0 / r2);
+    let k2 = (n2 - 1.0) * (1.0 / r3 - 1.0 / r4);
+    let p = k1 / n1 + k2 / n2;
+    assert!((s.petzval_sum - p).abs() < 1e-14, "{} {p}", s.petzval_sum);
+    // Refractive image space (n'_k = +1): R_p = −1/P.
+    assert!((s.petzval_radius + 1.0 / p).abs() < 1e-9 / p.abs());
+}
+
+#[test]
+fn petzval_radius_is_the_focal_surface_of_a_concentric_mirror() {
+    // Stop at the centre of curvature: S_III = 0, so the Petzval surface is
+    // the focal surface. Its sag h²/(2R_p) at the paraxial image height must
+    // equal the Coddington and close-ray axial focus shifts at a small field.
+    use mklight_analysis::curvature::{FieldCurvatureSettings, field_curvature};
+    let (r, th) = (200.0, 1.0f64);
+    let t = tracer(concentric_mirror(r, 2.0, &[0.0, th]));
+    let s = seidel(&t, &SeidelSettings::default()).unwrap();
+    assert!(s.sums.s3.abs() < 1e-14);
+    assert!(s.petzval_radius < 0.0);
+    let fc = field_curvature(
+        &t,
+        &FieldCurvatureSettings {
+            field_samples: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = &fc.curves[0];
+    let h = c.paraxial_height[1];
+    let sag = h * h / (2.0 * s.petzval_radius);
+    for dz in [
+        c.tangential[1],
+        c.sagittal[1],
+        c.tangential_close_rays[1],
+        c.sagittal_close_rays[1],
+    ] {
+        // Third order: relative error O(θ²).
+        assert!((dz - sag).abs() < 1e-3 * sag.abs(), "{dz} vs {sag}");
+    }
+    // The report table agrees.
+    let rep = mklight_analysis::system_data::system_data(&t, &Default::default()).unwrap();
+    let p = rep.tables[0].get("petzval_radius").unwrap();
+    assert!((p - s.petzval_radius).abs() < 1e-9 * p.abs());
+}
+
+#[test]
+fn petzval_radius_matches_third_order_foci_of_a_refractive_lens() {
+    // Third order: Δz_s ∝ S_III + S_IV, Δz_t ∝ 3S_III + S_IV, so the Petzval
+    // shift is (3Δz_s − Δz_t)/2 = h²/(2R_p).
+    use mklight_analysis::curvature::{FieldCurvatureSettings, field_curvature};
+    let t = small(samples::singlet(), 0.25, 1.0);
+    let s = seidel(&t, &SeidelSettings::default()).unwrap();
+    let fc = field_curvature(
+        &t,
+        &FieldCurvatureSettings {
+            field_samples: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = &fc.curves[0];
+    let h = c.paraxial_height[1];
+    let dzp = 0.5 * (3.0 * c.sagittal[1] - c.tangential[1]);
+    let sag = h * h / (2.0 * s.petzval_radius);
+    assert!(
+        sag < 0.0,
+        "positive lens: Petzval surface curves towards the lens"
+    );
+    assert!((dzp - sag).abs() < 2e-3 * sag.abs(), "{dzp} vs {sag}");
+}
+
+#[test]
+fn s4_and_s5_are_consistent_on_every_sample() {
     for (name, t) in samples() {
         let s = seidel(&t, &SeidelSettings::default()).unwrap();
         let m = ParaxialModel::new(t.system(), t.system().primary_wavelength);
         let n = &m.reduced_index;
-        let p: f64 = (1..n.len() - 1)
-            .map(|j| m.power[j] / (n[j - 1] * n[j]))
-            .sum();
-        assert!(
-            (s.petzval_sum - p).abs() < 1e-14 * (1.0 + p.abs()),
-            "{name}"
-        );
+        // S_IV = H² P (P checked against closed forms elsewhere).
         let h2 = s.lagrange_invariant.powi(2);
         assert!(
-            (s.sums.s4 - h2 * p).abs() < 1e-12 * (1.0 + s.sums.s4.abs()),
+            (s.sums.s4 - h2 * s.petzval_sum).abs() < 1e-12 * (1.0 + s.sums.s4.abs()),
             "{name}"
         );
         // S_V division-free form equals (Ā/A)(S_III + S_IV) wherever A ≠ 0.

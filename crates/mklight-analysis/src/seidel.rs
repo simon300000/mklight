@@ -33,7 +33,10 @@
 //!
 //! The **Petzval sum** is `P = Σ φ/(n n')` with `φ = c (n' − n)`
 //! (`S_IV = H² P` summed), and the Petzval surface has radius
-//! `R_p = −1/(|n'_k| P)` in the image surface's local `z` sense.
+//! `R_p = −1/(n'_k P)` in the image surface's local `z` sense, with the
+//! **signed** image-space reduced index `n'_k` (negative after an odd number
+//! of reflections, where the light travels towards local `−z`): its sag
+//! `h²/(2R_p)` is the axial Petzval focus shift at paraxial image height `h`.
 //!
 //! Wavefront coefficients (mm, and waves at the Seidel wavelength):
 //! `W040 = S_I/8`, `W131 = S_II/2`, `W222 = S_III/2`,
@@ -329,7 +332,8 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
             .value();
     }
     let sums = SeidelTerms::from_array(sums);
-    let n_img = nn[img - 1].abs();
+    // Signed: the image-space light direction sets the side of the surface.
+    let n_img = nn[img - 1];
     let wl_mm = sys.wavelengths_um[w] * 1e-3;
     Ok(SeidelResult {
         wavelength: w,

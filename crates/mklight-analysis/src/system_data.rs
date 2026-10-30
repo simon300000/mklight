@@ -94,7 +94,7 @@ fn table(tracer: &SequentialTracer, w: usize) -> FirstOrderTable {
     let petzval: f64 = (1..n.len() - 1)
         .map(|j| m.power[j] / (n[j - 1] * n[j]))
         .sum();
-    let n_img = n[n.len() - 2].abs();
+    let n_img = n[n.len() - 2]; // signed (see `seidel` docs)
     let opt = |v: Option<f64>| v.unwrap_or(f64::NAN);
     let entries = vec![
         entry("efl", "Effective focal length", fo.efl, "mm"),
