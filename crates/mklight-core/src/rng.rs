@@ -30,12 +30,33 @@ pub fn philox4x32_10(ctr: [u32; 4], key: [u32; 2]) -> [u32; 4] {
     c
 }
 
-/// Converts a u32 to a float in the open interval (0, 1), using the top 24
-/// bits. This is the same mapping the GPU uses in f32, so both sides draw
-/// identical values.
+/// Converts a u32 to a float in the open interval (0, 1) from its top 24
+/// bits `k`: `(k + ½)·2⁻²⁴`. This is the f64 reference mapping.
+///
+/// For `k ≥ 2²³` this value needs 25 significand bits, so it is not an f32
+/// (and rounding it to nearest could give 1.0). GPU kernels therefore use
+/// [`u32_to_unit_f32`], which differs from this by half an f32 ulp for the
+/// upper half of the range. CPU and GPU streams are identical as raw words and
+/// as f32 uniforms; a consumer that needs the f64 uniform applies this
+/// function to the raw words (CONVENTIONS §6).
 #[inline]
 pub fn u32_to_unit_f64(x: u32) -> f64 {
     ((x >> 8) as f64 + 0.5) * (1.0 / 16_777_216.0)
+}
+
+/// The canonical f32 uniform in (0, 1), computed identically by every GPU
+/// backend: `(k + ½)·2⁻²⁴` rounded toward zero to f32, with `k = x >> 8`.
+/// Equal to [`u32_to_unit_f64`] for `k < 2²³` and `2⁻²⁵` below it otherwise.
+/// Every operation is exact (`k < 2²⁴`, power-of-two scale, and the half-ulp
+/// term is added only where it fits), so the result does not depend on
+/// rounding modes, FMA or flush-to-zero.
+#[inline]
+pub fn u32_to_unit_f32(x: u32) -> f32 {
+    const TWO_M24: f32 = 1.0 / 16_777_216.0;
+    const TWO_M25: f32 = 1.0 / 33_554_432.0;
+    let k = x >> 8;
+    let half = if k < 0x80_0000 { TWO_M25 } else { 0.0 };
+    (k as f32).mul_add(TWO_M24, half)
 }
 
 /// Stream of uniform numbers for `(seed, stream)`. Draw `i` comes from block
@@ -59,10 +80,12 @@ impl Philox {
             lane: 4,
         }
     }
-    /// Position the generator at draw index `i`.
+    /// Position the generator at draw index `i`: the next draw is draw `i`.
     pub fn seek(&mut self, i: u64) {
         self.block = i / 4;
         self.refill();
+        // `block` always names the next block to generate.
+        self.block = self.block.wrapping_add(1);
         self.lane = (i % 4) as usize;
     }
     fn refill(&mut self) {
@@ -77,7 +100,7 @@ impl Philox {
     pub fn next_u32(&mut self) -> u32 {
         if self.lane >= 4 {
             self.refill();
-            self.block += 1;
+            self.block = self.block.wrapping_add(1);
             self.lane = 0;
         }
         let v = self.buf[self.lane];
@@ -112,6 +135,47 @@ mod tests {
             ),
             [0xd16cfe09, 0x94fdcceb, 0x5001e420, 0x24126ea1]
         );
+    }
+
+    /// `seek(k)` followed by draws equals the sequential stream from `k`,
+    /// including across block boundaries and for `k` not a multiple of 4.
+    #[test]
+    fn seek_matches_sequential() {
+        let mut seq = Philox::new(0xABCD_EF01_2345_6789, 3);
+        let all: Vec<u32> = (0..64).map(|_| seq.next_u32()).collect();
+        for k in 0..40u64 {
+            let mut r = Philox::new(0xABCD_EF01_2345_6789, 3);
+            r.next_u32(); // seeking discards any state
+            r.seek(k);
+            for (j, &w) in all[k as usize..k as usize + 20].iter().enumerate() {
+                assert_eq!(r.next_u32(), w, "seek {k}, draw {j}");
+            }
+        }
+    }
+
+    #[test]
+    fn unit_mappings() {
+        for x in [
+            0u32,
+            1,
+            255,
+            256,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0xFFFF_FF00,
+            u32::MAX,
+        ]
+        .into_iter()
+        .chain((0..100_000u32).map(|i| i.wrapping_mul(0x9E37_79B9)))
+        {
+            let (f, d) = (u32_to_unit_f32(x), u32_to_unit_f64(x));
+            assert!(f > 0.0 && f < 1.0 && d > 0.0 && d < 1.0, "{x:#x}");
+            if (x >> 8) < 0x80_0000 {
+                assert_eq!(f as f64, d);
+            } else {
+                assert_eq!(f as f64, d - 2f64.powi(-25));
+            }
+        }
     }
 
     #[test]

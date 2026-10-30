@@ -1,5 +1,12 @@
 //! Metal device, queue, shader library and pipeline cache, plus synchronous
 //! command-buffer execution with error and timing reporting.
+//!
+//! The public surface is safe: device and library information, buffer
+//! allocation and pipeline compilation. Encoding and dispatching kernels
+//! ([`MetalContext::run`], [`Encoder`]) is crate-private and `unsafe`,
+//! because a kernel indexes buffers by the parameters it is given, which the
+//! type system cannot relate to the bound buffers' lengths. Solvers reach the
+//! GPU only through `ComputeBackend`.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -103,6 +110,7 @@ pub struct MetalContext {
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
     origin: LibraryOrigin,
+    library_build: String,
     pipelines: Mutex<HashMap<PipelineKey, Pso>>,
 }
 
@@ -136,48 +144,68 @@ fn select_device(sel: &DeviceSelector) -> Option<Retained<ProtocolObject<dyn MTL
 /// language version is 3.2 where available. On older systems the library
 /// still compiles, the numerics probe reports the contraction, and the
 /// backend refuses double-float work instead of returning different bits.
-fn compile_options(version: MTLLanguageVersion) -> Retained<MTLCompileOptions> {
+///
+/// Returns the options and a description of them for `RunInfo`.
+fn compile_options(version: MTLLanguageVersion) -> (Retained<MTLCompileOptions>, String) {
     let o = MTLCompileOptions::new();
+    let mut desc = vec!["fastMathEnabled=NO"];
     #[allow(deprecated)]
     o.setFastMathEnabled(false);
     if o.respondsToSelector(sel!(setMathMode:)) {
         o.setMathMode(MTLMathMode::Safe);
+        desc.push("mathMode=safe");
     }
     if o.respondsToSelector(sel!(setMathFloatingPointFunctions:)) {
         o.setMathFloatingPointFunctions(MTLMathFloatingPointFunctions::Precise);
+        desc.push("mathFloatingPointFunctions=precise");
     }
     o.setLanguageVersion(version);
-    o
+    (o, desc.join(" "))
 }
 
+type Library = (
+    Retained<ProtocolObject<dyn MTLLibrary>>,
+    LibraryOrigin,
+    String,
+);
+
+/// Loads the shader library. `Auto` prefers the precompiled metallib here;
+/// `MetalBackend` additionally falls back to runtime source when the
+/// precompiled library fails the numerics probe.
 fn load_library(
     device: &ProtocolObject<dyn MTLDevice>,
     choice: LibraryChoice,
-) -> MkResult<(Retained<ProtocolObject<dyn MTLLibrary>>, LibraryOrigin)> {
-    let precompiled = || -> MkResult<_> {
+) -> MkResult<Library> {
+    let precompiled = || -> MkResult<Library> {
         let bytes = shaders::METALLIB.ok_or_else(|| {
             MkError::Unsupported("no precompiled metallib was embedded at build time".into())
         })?;
         let data = DispatchData::from_static_bytes(bytes);
-        device
+        let lib = device
             .newLibraryWithData_error(&data)
-            .map_err(|e| ns_error("loading embedded metallib", &e))
+            .map_err(|e| ns_error("loading embedded metallib", &e))?;
+        let desc = format!("precompiled metallib, flags: {}", shaders::OFFLINE_FLAGS);
+        Ok((lib, LibraryOrigin::Precompiled, desc))
     };
-    let runtime = || -> MkResult<_> {
+    let runtime = || -> MkResult<Library> {
         let src = NSString::from_str(shaders::SOURCE);
-        let compile =
-            |v| device.newLibraryWithSource_options_error(&src, Some(&compile_options(v)));
-        compile(MTLLanguageVersion::Version3_2)
-            .or_else(|_| compile(MTLLanguageVersion::Version3_0))
+        let compile = |v, name: &str| {
+            let (opts, desc) = compile_options(v);
+            device
+                .newLibraryWithSource_options_error(&src, Some(&opts))
+                .map(|l| {
+                    let d = format!("runtime-compiled source, MSL {name}, {desc}");
+                    (l, LibraryOrigin::RuntimeSource, d)
+                })
+        };
+        compile(MTLLanguageVersion::Version3_2, "3.2")
+            .or_else(|_| compile(MTLLanguageVersion::Version3_0, "3.0"))
             .map_err(|e| ns_error("runtime shader compilation", &e))
     };
     match choice {
-        LibraryChoice::Precompiled => Ok((precompiled()?, LibraryOrigin::Precompiled)),
-        LibraryChoice::RuntimeSource => Ok((runtime()?, LibraryOrigin::RuntimeSource)),
-        LibraryChoice::Auto => match precompiled() {
-            Ok(l) => Ok((l, LibraryOrigin::Precompiled)),
-            Err(_) => Ok((runtime()?, LibraryOrigin::RuntimeSource)),
-        },
+        LibraryChoice::Precompiled => precompiled(),
+        LibraryChoice::RuntimeSource => runtime(),
+        LibraryChoice::Auto => precompiled().or_else(|_| runtime()),
     }
 }
 
@@ -192,12 +220,13 @@ impl MetalContext {
                 .newCommandQueue()
                 .ok_or_else(|| MkError::Backend("cannot create a command queue".into()))?;
             queue.setLabel(Some(&NSString::from_str("mklight")));
-            let (library, origin) = load_library(&device, opts.library)?;
+            let (library, origin, library_build) = load_library(&device, opts.library)?;
             Ok(Some(MetalContext {
                 device,
                 queue,
                 library,
                 origin,
+                library_build,
                 pipelines: Mutex::new(HashMap::new()),
             }))
         })
@@ -208,6 +237,11 @@ impl MetalContext {
     }
     pub fn library_origin(&self) -> LibraryOrigin {
         self.origin
+    }
+    /// How the shader library was built (origin, MSL version, flags or
+    /// compile options), recorded in `PrecisionDescriptor::kernel_build`.
+    pub fn library_build(&self) -> &str {
+        &self.library_build
     }
 
     pub fn buffer<T: Pod>(&self, data: &[T]) -> MkResult<SharedBuffer<T>> {
@@ -265,9 +299,18 @@ impl MetalContext {
     }
 
     /// Encode one compute command buffer with `encode`, commit it and wait for
-    /// completion. Buffers borrowed by `encode` stay borrowed until the GPU
-    /// has finished, so host and device never touch them concurrently.
-    pub fn run(
+    /// completion. Buffers the closure borrows stay borrowed until the GPU has
+    /// finished; buffers a kernel writes are bound with
+    /// [`Encoder::set_buffer_mut`], which needs `&mut`, so no host reference
+    /// to their contents can exist while the GPU writes them.
+    ///
+    /// # Safety
+    ///
+    /// For every dispatch encoded by `encode`, the kernel's accesses implied
+    /// by its parameters (counts, offsets, grid size) must stay inside the
+    /// bound buffers (measured from the bound element offset), and the kernel
+    /// may write only buffers bound with `set_buffer_mut`.
+    pub(crate) unsafe fn run(
         &self,
         label: &str,
         encode: impl FnOnce(&Encoder<'_>) -> MkResult<()>,
@@ -302,27 +345,41 @@ impl MetalContext {
 }
 
 /// A compute encoder borrowed for the duration of [`MetalContext::run`].
-pub struct Encoder<'a> {
+pub(crate) struct Encoder<'a> {
     enc: &'a ProtocolObject<dyn MTLComputeCommandEncoder>,
 }
 
 impl Encoder<'_> {
-    pub fn set_pipeline(&self, pso: &ProtocolObject<dyn MTLComputePipelineState>) {
+    pub(crate) fn set_pipeline(&self, pso: &ProtocolObject<dyn MTLComputePipelineState>) {
         self.enc.setComputePipelineState(pso);
     }
-    /// Bind `buf` starting at element `offset`.
-    pub fn set_buffer<T: Pod>(&self, index: usize, buf: &SharedBuffer<T>, offset: usize) {
+    fn bind<T: Pod>(&self, index: usize, buf: &SharedBuffer<T>, offset: usize) {
         assert!(offset <= buf.len(), "buffer offset out of range");
         // SAFETY: the buffer is alive for the whole command buffer (borrowed
-        // until `run` returns, and retained by the command buffer), and the
-        // offset is within it.
+        // by the `run` closure, and retained by the command buffer), and the
+        // offset is within it. Access bounds are `run`'s safety contract.
         unsafe {
             self.enc
                 .setBuffer_offset_atIndex(Some(buf.raw()), offset * size_of::<T>(), index)
         };
     }
+    /// Bind `buf`, which the kernel only reads, at element `offset`.
+    pub(crate) fn set_buffer<T: Pod>(&self, index: usize, buf: &SharedBuffer<T>, offset: usize) {
+        self.bind(index, buf, offset);
+    }
+    /// Bind `buf`, which the kernel writes, at element `offset`. The `&mut`
+    /// borrow (held by the `run` closure until the GPU is done) guarantees
+    /// that no host slice of the buffer exists meanwhile.
+    pub(crate) fn set_buffer_mut<T: Pod>(
+        &self,
+        index: usize,
+        buf: &mut SharedBuffer<T>,
+        offset: usize,
+    ) {
+        self.bind(index, buf, offset);
+    }
     /// Copy a small parameter block into the argument table.
-    pub fn set_bytes<T: Pod>(&self, index: usize, value: &T) {
+    pub(crate) fn set_bytes<T: Pod>(&self, index: usize, value: &T) {
         // SAFETY: `value` is a live Pod of the given size; Metal copies it.
         unsafe {
             self.enc.setBytes_length_atIndex(
@@ -333,7 +390,7 @@ impl Encoder<'_> {
         };
     }
     /// `groups` threadgroups of `threads` threads each.
-    pub fn dispatch_groups(&self, groups: [usize; 3], threads: usize) {
+    pub(crate) fn dispatch_groups(&self, groups: [usize; 3], threads: usize) {
         self.enc.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: groups[0],
@@ -349,7 +406,7 @@ impl Encoder<'_> {
     }
     /// At least `n` threads in 1-D, in uniform threadgroups (kernels check
     /// bounds), sized for the pipeline.
-    pub fn dispatch_1d(&self, pso: &ProtocolObject<dyn MTLComputePipelineState>, n: usize) {
+    pub(crate) fn dispatch_1d(&self, pso: &ProtocolObject<dyn MTLComputePipelineState>, n: usize) {
         let w = pso.maxTotalThreadsPerThreadgroup().clamp(1, 256);
         self.set_pipeline(pso);
         self.dispatch_groups([n.div_ceil(w).max(1), 1, 1], w);

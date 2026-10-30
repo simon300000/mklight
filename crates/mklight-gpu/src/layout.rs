@@ -9,8 +9,13 @@
 //! Packing rounds the f64 model once to f32. Values whose rounding would lose
 //! more than the error budget allows are carried with an f32 residual
 //! (`to_next_origin_lo`). Anything the layout cannot represent (too many
-//! wavelengths, asphere terms beyond A22, coefficients that underflow f32)
-//! is an error: the GPU never silently computes a different system.
+//! wavelengths, asphere terms beyond A22, a model parameter whose f32 is
+//! infinite, subnormal or a spurious zero) is an error: the GPU never silently
+//! computes a different system. Subnormals are excluded because GPUs flush
+//! them to zero (`fenv::Ftz`). The only values written as an exact zero
+//! although the f64 value is not are rotation entries and origin residuals
+//! below `f32::MIN_POSITIVE` (≈ 1.2e-38), whose effect is far below one ulp
+//! of the quantities they modify.
 
 use bytemuck::{Pod, Zeroable};
 use mklight_core::math::Mat3;
@@ -85,7 +90,7 @@ pub struct ReduceParams {
     pub count: u32,
     pub channel_stride: u32,
     pub num_groups: u32,
-    pub reserved: u32,
+    pub first_group: u32,
 }
 
 /// Mirror of `struct MklSagParams`.
@@ -180,14 +185,27 @@ pub struct PackedSystem {
     pub wavelengths: Vec<usize>,
 }
 
+/// `x` rounded to f32, which must be a normal number or an exact zero that
+/// stands for an exact zero (`v == 0 ⇔ x == 0`, see the sentinel rule in the
+/// header).
 fn f32_checked(x: f64, what: &str) -> MkResult<f32> {
     let v = x as f32;
-    if !v.is_finite() {
+    if !v.is_finite() || v.is_subnormal() || ((v == 0.0) != (x == 0.0)) {
         return Err(MkError::Unsupported(format!(
-            "{what} = {x} is not representable in f32"
+            "{what} = {x:e} is not representable as a normal f32"
         )));
     }
     Ok(v)
+}
+
+/// `v`, or a zero of the same sign if `v` is subnormal (what a flush-to-zero
+/// device would read anyway); used only where the module docs allow it.
+fn normal_or_zero(v: f32) -> f32 {
+    if v.is_subnormal() {
+        0f32.copysign(v)
+    } else {
+        v
+    }
 }
 
 /// Choose `e` so that every coefficient `A_(2j+4)·2^(e(2j+4))` is a normal,
@@ -275,7 +293,7 @@ impl PackedSystem {
             header.flags |= MKL_SYS_OBJECT_AT_INFINITY;
         }
         for (k, &w) in wls.iter().enumerate() {
-            header.wavelength_um[k] = rs.wavelengths_um[w] as f32;
+            header.wavelength_um[k] = f32_checked(rs.wavelengths_um[w], "wavelength")?;
             header.wavelength_source[k] = w as u32;
         }
 
@@ -389,13 +407,13 @@ impl PackedSystem {
                 let rt: Mat3 = f.rot.transpose();
                 for r in 0..3 {
                     for c in 0..3 {
-                        p.to_next_rot[3 * r + c] = rt.m[r][c] as f32;
+                        p.to_next_rot[3 * r + c] = normal_or_zero(rt.m[r][c] as f32);
                     }
                 }
                 for (k, &o) in [f.origin.x, f.origin.y, f.origin.z].iter().enumerate() {
                     let hi = f32_checked(o, &what("position"))?;
                     p.to_next_origin[k] = hi;
-                    p.to_next_origin_lo[k] = (o - hi as f64) as f32;
+                    p.to_next_origin_lo[k] = normal_or_zero((o - hi as f64) as f32);
                 }
                 if !s.to_next_is_axial {
                     header.flags |= MKL_SYS_HAS_TILTS;
@@ -434,7 +452,11 @@ impl PackedSystem {
         Ok(out)
     }
 
-    /// Structural checks a backend runs before uploading.
+    /// Checks a backend runs before uploading. Every field a kernel reads is
+    /// checked (the fields are public, so a record need not come from the
+    /// packer): magic and version, counts, enum codes, flag bits,
+    /// `num_asphere ≤ MAX_ASPHERE`, finiteness of every used float, and
+    /// physical ranges (`n_after > 0`, `alpha_after ≥ 0`, wavelengths > 0).
     pub fn validate(&self) -> MkResult<()> {
         let h = &self.header;
         let bad = |m: String| Err(MkError::Backend(format!("invalid packed system: {m}")));
@@ -455,6 +477,69 @@ impl PackedSystem {
         }
         if h.stop == 0 || h.stop + 1 >= h.num_surfaces {
             return bad(format!("stop {}", h.stop));
+        }
+        let nw = h.num_wavelengths as usize;
+        if h.primary_wavelength != MKL_INDEX_NONE && h.primary_wavelength >= h.num_wavelengths {
+            return bad(format!("primary wavelength {}", h.primary_wavelength));
+        }
+        if h.flags & !(MKL_SYS_OBJECT_AT_INFINITY | MKL_SYS_HAS_TILTS) != 0 {
+            return bad(format!("header flags {:#x}", h.flags));
+        }
+        if let Some(w) = h.wavelength_um[..nw]
+            .iter()
+            .find(|w| !(w.is_normal() && **w > 0.0))
+        {
+            return bad(format!("wavelength {w} µm"));
+        }
+        const SURF_FLAGS: u32 = MKL_SURF_HAS_TO_NEXT
+            | MKL_SURF_AXIAL
+            | MKL_SURF_IS_STOP
+            | MKL_SURF_COATED
+            | MKL_SURF_APERTURE_FROM_SD
+            | MKL_SURF_OBJECT
+            | MKL_SURF_IMAGE;
+        for (i, s) in self.surfaces.iter().enumerate() {
+            let bad = |m: &str| bad(format!("surface {i}: {m}"));
+            if s.shape > MKL_SHAPE_COORD_BREAK {
+                return bad(&format!("shape code {}", s.shape));
+            }
+            if s.interaction > MKL_INTERACT_DUMMY {
+                return bad(&format!("interaction code {}", s.interaction));
+            }
+            if s.aperture > MKL_APERTURE_ELLIPTICAL {
+                return bad(&format!("aperture code {}", s.aperture));
+            }
+            if s.flags & !SURF_FLAGS != 0 {
+                return bad(&format!("flags {:#x}", s.flags));
+            }
+            if s.num_asphere as usize > MAX_ASPHERE {
+                return bad(&format!("num_asphere {}", s.num_asphere));
+            }
+            let floats = [s.curvature, s.conic, s.paraxial_power]
+                .into_iter()
+                .chain(s.asphere)
+                .chain(s.aperture_params)
+                .chain(s.to_next_rot)
+                .chain(s.to_next_origin)
+                .chain(s.to_next_origin_lo);
+            if floats.into_iter().any(|v| !v.is_finite()) {
+                return bad("non-finite parameter");
+            }
+            if !(s.asphere_inv_norm2.is_normal() && s.asphere_inv_norm2 > 0.0) {
+                return bad("asphere_inv_norm2");
+            }
+            if s.aperture_params.iter().any(|&a| a < 0.0) {
+                return bad("negative aperture size");
+            }
+            if s.n_after[..nw].iter().any(|n| !(n.is_finite() && *n > 0.0)) {
+                return bad("refractive index not finite and positive");
+            }
+            if s.alpha_after[..nw]
+                .iter()
+                .any(|a| !(a.is_finite() && *a >= 0.0))
+            {
+                return bad("absorption not finite and non-negative");
+            }
         }
         Ok(())
     }
@@ -687,5 +772,65 @@ mod tests {
             set.header_bytes().len(),
             2 * MKL_PACKED_HEADER_SIZE as usize
         );
+    }
+
+    /// Model values whose f32 would be subnormal or a spurious zero are
+    /// rejected, not silently changed.
+    #[test]
+    fn rejects_values_that_vanish_in_f32() {
+        for c in [1e-46, 1e-40, -3e-39] {
+            let mut s = singlet();
+            s.surfaces[1].shape = SurfaceShape::Conic {
+                curvature: c,
+                conic: 0.0,
+            };
+            let rs = resolve(s);
+            assert!(
+                matches!(PackedSystem::pack_all(&rs), Err(MkError::Unsupported(_))),
+                "curvature {c}"
+            );
+        }
+        // The smallest normal f32 and exact zero are fine.
+        let mut s = singlet();
+        s.surfaces[1].shape = SurfaceShape::Conic {
+            curvature: f32::MIN_POSITIVE as f64,
+            conic: 0.0,
+        };
+        let p = PackedSystem::pack_all(&resolve(s)).unwrap();
+        assert_eq!(p.surfaces[1].curvature, f32::MIN_POSITIVE);
+        assert_eq!(p.surfaces[1].conic, 0.0);
+    }
+
+    /// `validate` checks every record a kernel reads, so a hand-modified
+    /// system cannot reach a backend.
+    #[test]
+    fn validate_checks_every_record() {
+        let good = PackedSystem::pack_all(&resolve(singlet())).unwrap();
+        assert!(good.validate().is_ok());
+        type Tamper = fn(&mut PackedSystem);
+        let cases: [(&str, Tamper); 12] = [
+            ("num_asphere", |p| p.surfaces[2].num_asphere = 11),
+            ("shape", |p| p.surfaces[1].shape = 99),
+            ("interaction", |p| p.surfaces[1].interaction = 3),
+            ("aperture", |p| p.surfaces[1].aperture = 5),
+            ("flags", |p| p.surfaces[1].flags |= 1 << 20),
+            ("curvature", |p| p.surfaces[1].curvature = f32::NAN),
+            ("rot", |p| p.surfaces[1].to_next_rot[4] = f32::INFINITY),
+            ("inv_norm2", |p| p.surfaces[2].asphere_inv_norm2 = 0.0),
+            ("index", |p| p.surfaces[1].n_after[2] = 0.0),
+            ("absorption", |p| p.surfaces[1].alpha_after[0] = -1.0),
+            ("primary", |p| p.header.primary_wavelength = 3),
+            ("wavelength", |p| p.header.wavelength_um[1] = f32::NAN),
+        ];
+        for (what, f) in cases {
+            let mut p = good.clone();
+            f(&mut p);
+            assert!(p.validate().is_err(), "{what}");
+            assert!(PackedSystemSet::new(&[p]).is_err(), "{what}");
+        }
+        // Unused wavelength slots are not checked (they are zero).
+        let mut p = good.clone();
+        p.surfaces[1].n_after[15] = 0.0;
+        assert!(p.validate().is_ok());
     }
 }

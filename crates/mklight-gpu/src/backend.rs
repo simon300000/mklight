@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::batch::{TraceRequest, TraceResult};
 use crate::df::Df32;
+use crate::fenv::FpEnv;
 use crate::layout::PackedSystem;
 use crate::pending::Pending;
 
@@ -125,7 +126,9 @@ pub struct NumericsProbe {
     pub correctly_rounded_div: bool,
     /// `sqrt(a)` is correctly rounded (needed only for bitwise df sqrt).
     pub correctly_rounded_sqrt: bool,
-    /// f32 subnormals are preserved (otherwise flushed to zero).
+    /// f32 subnormals are preserved. When false the device flushes them to
+    /// zero (`fenv::Ftz`), and a bit-identical emulation must use
+    /// `CpuF32Backend::matching(&probe)`.
     pub subnormals: bool,
 }
 
@@ -159,16 +162,41 @@ pub struct PrecisionDescriptor {
     pub compensated_reductions: bool,
     pub probe: NumericsProbe,
     pub budget: ErrorBudget,
+    /// How the kernels were built, for `RunInfo`: library origin, language
+    /// version and compiler flags or options (free-form, backend-specific).
+    pub kernel_build: String,
 }
 
 /// Opaque handle to systems uploaded with `upload_systems`. Only valid on the
-/// backend instance that issued it.
+/// backend instance that issued it. Backends never trust its contents beyond
+/// the lookup key: indices are checked against the stored system set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SystemHandle {
-    pub backend_instance: u64,
-    pub id: u64,
+    backend_instance: u64,
+    id: u64,
+    count: u32,
+}
+
+impl SystemHandle {
+    /// For backend implementations: a handle for upload `id` of `count`
+    /// systems on backend instance `backend_instance`.
+    pub fn new(backend_instance: u64, id: u64, count: u32) -> Self {
+        SystemHandle {
+            backend_instance,
+            id,
+            count,
+        }
+    }
+    pub fn backend_instance(&self) -> u64 {
+        self.backend_instance
+    }
+    pub fn id(&self) -> u64 {
+        self.id
+    }
     /// Number of systems in the uploaded set.
-    pub count: u32,
+    pub fn count(&self) -> u32 {
+        self.count
+    }
 }
 
 /// Unique id per backend instance, so handles cannot cross backends.
@@ -207,21 +235,25 @@ impl DfOp {
         DfOp::MulF32,
         DfOp::Hypot2,
     ];
-    /// Reference implementation (the CPU-f32 emulation).
+    /// Reference implementation (the CPU-f32 emulation, IEEE environment).
     pub fn apply(self, a: Df32, b: Df32) -> Df32 {
-        use crate::df::{fast_two_sum, two_prod, two_sum};
+        self.apply_in::<crate::fenv::Ieee>(a, b)
+    }
+    /// Reference implementation in environment `E`.
+    pub fn apply_in<E: FpEnv>(self, a: Df32, b: Df32) -> Df32 {
+        use crate::df::{fast_two_sum_in, two_prod_in, two_sum_in};
         let pair = |(h, l): (f32, f32)| Df32::new(h, l);
         match self {
-            DfOp::TwoSum => pair(two_sum(a.hi, b.hi)),
-            DfOp::FastTwoSum => pair(fast_two_sum(a.hi, b.hi)),
-            DfOp::TwoProd => pair(two_prod(a.hi, b.hi)),
-            DfOp::Add => a + b,
-            DfOp::Mul => a * b,
-            DfOp::Div => a / b,
-            DfOp::Sqrt => a.sqrt(),
-            DfOp::AddF32 => a.add_f32(b.hi),
-            DfOp::MulF32 => a.mul_f32(b.hi),
-            DfOp::Hypot2 => Df32::from_f32(crate::fmath::hypot2(a.hi, b.hi)),
+            DfOp::TwoSum => pair(two_sum_in::<E>(a.hi, b.hi)),
+            DfOp::FastTwoSum => pair(fast_two_sum_in::<E>(a.hi, b.hi)),
+            DfOp::TwoProd => pair(two_prod_in::<E>(a.hi, b.hi)),
+            DfOp::Add => a.add_in::<E>(b),
+            DfOp::Mul => a.mul_in::<E>(b),
+            DfOp::Div => a.div_in::<E>(b),
+            DfOp::Sqrt => a.sqrt_in::<E>(),
+            DfOp::AddF32 => a.add_f32_in::<E>(b.hi),
+            DfOp::MulF32 => a.mul_f32_in::<E>(b.hi),
+            DfOp::Hypot2 => Df32::from_f32(crate::fmath::hypot2_in::<E>(a.hi, b.hi)),
         }
     }
     /// Whether bitwise CPU/GPU agreement additionally needs a correctly
@@ -322,7 +354,7 @@ pub enum JobOutput {
     /// One double-float sum per channel.
     Sums(Vec<Df32>),
     F32(Vec<f32>),
-    Trace(TraceResult),
+    Trace(Box<TraceResult>),
 }
 
 /// Execution statistics for one job.
@@ -379,7 +411,7 @@ impl Job {
                 }
                 Ok(())
             }
-            Job::Trace(t) => t.rays.validate(),
+            Job::Trace(t) => t.validate(),
         }
     }
 }
@@ -394,8 +426,11 @@ pub trait ComputeBackend: Send + Sync {
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle>;
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()>;
 
-    /// Start a job asynchronously. Cancellation (`ctx.cancel`) is checked
-    /// between command buffers; progress is reported through `ctx`.
+    /// Start a job asynchronously. Cancellation (the returned
+    /// `Pending::cancel`, dropping the `Pending`, or `ctx.cancel`) is checked
+    /// between command buffers; progress is reported through `ctx` and
+    /// reaches 1 when the job succeeds. Indices in the job are checked
+    /// against the stored system set, never only against the handle.
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>>;
 
     /// Upload a single system.

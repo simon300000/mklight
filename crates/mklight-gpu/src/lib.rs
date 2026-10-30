@@ -6,9 +6,12 @@
 //! * [`layout`] mirrors `include/mklight_gpu_types.h`, the single definition
 //!   of every host/GPU struct (also `#include`d by the Metal shaders).
 //! * [`df`], [`fmath`] and [`reduce`] specify the f32 numerics (CONVENTIONS
-//!   §7) operation for operation; the shaders implement exactly these.
+//!   §7) operation for operation; the shaders implement exactly these. They
+//!   are generic over the f32 environment ([`fenv`]: IEEE or flush-to-zero).
 //! * [`cpu::CpuF32Backend`] runs those algorithms on the CPU, bit-identical
-//!   to a conforming GPU, to separate algorithm error from precision error.
+//!   to a GPU that passes the numerics probe when constructed for that
+//!   GPU's environment (`CpuF32Backend::matching`), to separate algorithm
+//!   error from precision error.
 //!
 //! See `docs/GPU.md`.
 
@@ -16,6 +19,7 @@ pub mod backend;
 pub mod batch;
 pub mod cpu;
 pub mod df;
+pub mod fenv;
 pub mod fmath;
 pub mod layout;
 pub mod pending;
@@ -31,9 +35,10 @@ pub use backend::{
     BackendKind, ComputeBackend, DeviceInfo, DfOp, ErrorBudget, Job, JobKind, JobOutput, JobResult,
     JobStats, NumericsProbe, PrecisionDescriptor, ReduceMode, SystemHandle,
 };
-pub use batch::{RayBatch, RayStatus, RecordMode, TraceRequest, TraceResult};
+pub use batch::{Radiometry, RayBatch, RayStatus, RecordMode, TraceRequest, TraceResult};
 pub use cpu::CpuF32Backend;
 pub use df::Df32;
+pub use fenv::{FpEnv, Ftz, Ieee};
 pub use layout::{PackOptions, PackedHeader, PackedSurface, PackedSystem, PackedSystemSet};
 pub use pending::Pending;
 

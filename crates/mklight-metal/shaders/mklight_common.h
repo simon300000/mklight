@@ -16,6 +16,9 @@
 //     work if these assumptions do not hold on the device.
 //   * Exact float equality only against the sentinels listed in
 //     mklight_gpu_types.h (packed exact zeros).
+//   * Apple GPUs flush subnormals to zero (operands and results of arithmetic,
+//     operands of comparisons). mklight_gpu::fenv::Ftz models exactly that, so
+//     the CPU emulation stays bit-identical; never rely on gradual underflow.
 #ifndef MKLIGHT_COMMON_H
 #define MKLIGHT_COMMON_H
 
@@ -189,9 +192,21 @@ static inline float2 mkl_hypot_scale(float m) {
     return float2(1.0f, 1.0f);
 }
 
+// IEEE hypot special values: any infinite component gives +inf (even with a
+// NaN), otherwise any NaN gives NaN (max() drops NaN, hence the explicit
+// test), and all zeros give +0. Constants are returned, never a raw input, so
+// flush-to-zero cannot pass a subnormal through. Returns -1 when m is regular.
+static inline float mkl_hypot_special(float m, bool any_nan) {
+    if (m == INFINITY) return INFINITY;
+    if (any_nan) return mkl_qnan();
+    if (m == 0.0f) return 0.0f;
+    return -1.0f;
+}
+
 static inline float mkl_hypot2(float x, float y) {
     float m = max(fabs(x), fabs(y));
-    if (m == 0.0f || !isfinite(m)) return m;
+    float sp = mkl_hypot_special(m, isnan(x) || isnan(y));
+    if (!(sp < 0.0f)) return sp;
     float2 sc = mkl_hypot_scale(m);
     float xs = x * sc.x, ys = y * sc.x;
     return sqrt(fma(xs, xs, ys * ys)) * sc.y;
@@ -199,7 +214,8 @@ static inline float mkl_hypot2(float x, float y) {
 
 static inline float mkl_hypot3(float x, float y, float z) {
     float m = max(max(fabs(x), fabs(y)), fabs(z));
-    if (m == 0.0f || !isfinite(m)) return m;
+    float sp = mkl_hypot_special(m, isnan(x) || isnan(y) || isnan(z));
+    if (!(sp < 0.0f)) return sp;
     float2 sc = mkl_hypot_scale(m);
     float3 v = float3(x * sc.x, y * sc.x, z * sc.x);
     return sqrt(mkl_dot3(v, v)) * sc.y;

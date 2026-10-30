@@ -30,11 +30,21 @@
 //! Error-free transforms are destroyed by fast-math (reassociation turns
 //! `(s − a) − b` into `0`) and by implicit FMA contraction; the Metal backend
 //! compiles with both disabled and proves it at start-up.
+//!
+//! Every algorithm also exists as a `*_in::<E: FpEnv>` function, so the
+//! emulation reproduces devices that flush subnormals to zero
+//! ([`crate::fenv::Ftz`]); the plain functions and operators are the IEEE
+//! instantiation. Under flush-to-zero the transforms stay exact as long as no
+//! result (including the error terms) falls below `f32::MIN_POSITIVE`, so
+//! double-float values keep their full ≈ 2⁻⁴⁸ relative accuracy for
+//! `|hi| ≥ 2⁻⁷⁸` (optical quantities are many decades above that).
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+
+use crate::fenv::{FpEnv, Ieee};
 
 /// A double-float number `hi + lo`. Layout-compatible with MSL `float2`
 /// (`x = hi`, `y = lo`; 8-byte size and alignment).
@@ -48,27 +58,45 @@ pub struct Df32 {
 /// `s + t = a + b` exactly, for any finite `a`, `b` (Knuth's 2Sum, 6 flops).
 #[inline]
 pub fn two_sum(a: f32, b: f32) -> (f32, f32) {
-    let s = a + b;
-    let a1 = s - b;
-    let b1 = s - a1;
-    let da = a - a1;
-    let db = b - b1;
-    (s, da + db)
+    two_sum_in::<Ieee>(a, b)
 }
 
 /// `s + t = a + b` exactly, provided `|a| ≥ |b|` or `a == 0` (Dekker, 3 flops).
 #[inline]
 pub fn fast_two_sum(a: f32, b: f32) -> (f32, f32) {
-    let s = a + b;
-    let z = s - a;
-    (s, b - z)
+    fast_two_sum_in::<Ieee>(a, b)
 }
 
 /// `p + e = a·b` exactly (barring underflow), using one fused multiply-add.
 #[inline]
 pub fn two_prod(a: f32, b: f32) -> (f32, f32) {
-    let p = a * b;
-    (p, a.mul_add(b, -p))
+    two_prod_in::<Ieee>(a, b)
+}
+
+/// [`two_sum`] in environment `E` (exact unless a result underflows under FTZ).
+#[inline]
+pub fn two_sum_in<E: FpEnv>(a: f32, b: f32) -> (f32, f32) {
+    let s = E::add(a, b);
+    let a1 = E::sub(s, b);
+    let b1 = E::sub(s, a1);
+    let da = E::sub(a, a1);
+    let db = E::sub(b, b1);
+    (s, E::add(da, db))
+}
+
+/// [`fast_two_sum`] in environment `E`.
+#[inline]
+pub fn fast_two_sum_in<E: FpEnv>(a: f32, b: f32) -> (f32, f32) {
+    let s = E::add(a, b);
+    let z = E::sub(s, a);
+    (s, E::sub(b, z))
+}
+
+/// [`two_prod`] in environment `E`.
+#[inline]
+pub fn two_prod_in<E: FpEnv>(a: f32, b: f32) -> (f32, f32) {
+    let p = E::mul(a, b);
+    (p, E::fma(a, b, -p))
 }
 
 impl Df32 {
@@ -105,38 +133,92 @@ impl Df32 {
     /// DWPlusFP: `self + y`.
     #[inline]
     pub fn add_f32(self, y: f32) -> Df32 {
-        let (sh, sl) = two_sum(self.hi, y);
-        let v = self.lo + sl;
-        let (zh, zl) = fast_two_sum(sh, v);
-        Df32::new(zh, zl)
+        self.add_f32_in::<Ieee>(y)
     }
-
     /// DWTimesFP3: `self · y`.
     #[inline]
     pub fn mul_f32(self, y: f32) -> Df32 {
-        let (ch, cl1) = two_prod(self.hi, y);
-        let cl3 = self.lo.mul_add(y, cl1);
-        let (zh, zl) = fast_two_sum(ch, cl3);
-        Df32::new(zh, zl)
+        self.mul_f32_in::<Ieee>(y)
     }
-
     /// Square root: `s = sqrt(hi)`, residual `x − s²` formed exactly with
     /// `two_prod` and Sterbenz, one Newton correction `e = r / 2s`. Returns
     /// NaN for negative input and 0 for 0.
     #[inline]
     pub fn sqrt(self) -> Df32 {
-        if self.hi <= 0.0 {
-            return if self.hi == 0.0 {
+        self.sqrt_in::<Ieee>()
+    }
+
+    /// [`Df32::add_f32`] in environment `E`.
+    #[inline]
+    pub fn add_f32_in<E: FpEnv>(self, y: f32) -> Df32 {
+        let (sh, sl) = two_sum_in::<E>(self.hi, y);
+        let v = E::add(self.lo, sl);
+        let (zh, zl) = fast_two_sum_in::<E>(sh, v);
+        Df32::new(zh, zl)
+    }
+
+    /// [`Df32::mul_f32`] in environment `E`.
+    #[inline]
+    pub fn mul_f32_in<E: FpEnv>(self, y: f32) -> Df32 {
+        let (ch, cl1) = two_prod_in::<E>(self.hi, y);
+        let cl3 = E::fma(self.lo, y, cl1);
+        let (zh, zl) = fast_two_sum_in::<E>(ch, cl3);
+        Df32::new(zh, zl)
+    }
+
+    /// [`Df32::sqrt`] in environment `E`.
+    #[inline]
+    pub fn sqrt_in<E: FpEnv>(self) -> Df32 {
+        if E::le(self.hi, 0.0) {
+            return if E::eq(self.hi, 0.0) {
                 Df32::ZERO
             } else {
                 Df32::new(f32::NAN, f32::NAN)
             };
         }
-        let s = self.hi.sqrt();
-        let (ph, pl) = two_prod(s, s);
-        let r = ((self.hi - ph) - pl) + self.lo;
-        let e = r / (2.0 * s);
-        let (zh, zl) = fast_two_sum(s, e);
+        let s = E::sqrt(self.hi);
+        let (ph, pl) = two_prod_in::<E>(s, s);
+        let r = E::add(E::sub(E::sub(self.hi, ph), pl), self.lo);
+        let e = E::div(r, E::mul(2.0, s));
+        let (zh, zl) = fast_two_sum_in::<E>(s, e);
+        Df32::new(zh, zl)
+    }
+
+    /// AccurateDWPlusDW (`+`) in environment `E`.
+    #[inline]
+    pub fn add_in<E: FpEnv>(self, y: Df32) -> Df32 {
+        let (sh, sl) = two_sum_in::<E>(self.hi, y.hi);
+        let (th, tl) = two_sum_in::<E>(self.lo, y.lo);
+        let c = E::add(sl, th);
+        let (vh, vl) = fast_two_sum_in::<E>(sh, c);
+        let w = E::add(tl, vl);
+        let (zh, zl) = fast_two_sum_in::<E>(vh, w);
+        Df32::new(zh, zl)
+    }
+
+    /// DWTimesDW3 (`*`) in environment `E`.
+    #[inline]
+    pub fn mul_in<E: FpEnv>(self, y: Df32) -> Df32 {
+        let (ch, cl1) = two_prod_in::<E>(self.hi, y.hi);
+        let tl0 = E::mul(self.lo, y.lo);
+        let tl1 = E::fma(self.hi, y.lo, tl0);
+        let cl2 = E::fma(self.lo, y.hi, tl1);
+        let cl3 = E::add(cl1, cl2);
+        let (zh, zl) = fast_two_sum_in::<E>(ch, cl3);
+        Df32::new(zh, zl)
+    }
+
+    /// DWDivDW2 (`/`) in environment `E`. `th = x.hi / y.hi` only needs to be
+    /// within a few ulp; `x.hi − r.hi` is exact by Sterbenz's lemma.
+    #[inline]
+    pub fn div_in<E: FpEnv>(self, y: Df32) -> Df32 {
+        let th = E::div(self.hi, y.hi);
+        let r = y.mul_f32_in::<E>(th);
+        let pi_h = E::sub(self.hi, r.hi);
+        let dl = E::sub(self.lo, r.lo);
+        let d = E::add(pi_h, dl);
+        let tl = E::div(d, y.hi);
+        let (zh, zl) = fast_two_sum_in::<E>(th, tl);
         Df32::new(zh, zl)
     }
 }
@@ -146,13 +228,7 @@ impl Add for Df32 {
     type Output = Df32;
     #[inline]
     fn add(self, y: Df32) -> Df32 {
-        let (sh, sl) = two_sum(self.hi, y.hi);
-        let (th, tl) = two_sum(self.lo, y.lo);
-        let c = sl + th;
-        let (vh, vl) = fast_two_sum(sh, c);
-        let w = tl + vl;
-        let (zh, zl) = fast_two_sum(vh, w);
-        Df32::new(zh, zl)
+        self.add_in::<Ieee>(y)
     }
 }
 
@@ -178,30 +254,16 @@ impl Mul for Df32 {
     type Output = Df32;
     #[inline]
     fn mul(self, y: Df32) -> Df32 {
-        let (ch, cl1) = two_prod(self.hi, y.hi);
-        let tl0 = self.lo * y.lo;
-        let tl1 = self.hi.mul_add(y.lo, tl0);
-        let cl2 = self.lo.mul_add(y.hi, tl1);
-        let cl3 = cl1 + cl2;
-        let (zh, zl) = fast_two_sum(ch, cl3);
-        Df32::new(zh, zl)
+        self.mul_in::<Ieee>(y)
     }
 }
 
-/// DWDivDW2: `x / y`. `th = x.hi / y.hi` only needs to be within a few ulp;
-/// `x.hi − r.hi` is exact by Sterbenz's lemma.
+/// DWDivDW2: `x / y`.
 impl Div for Df32 {
     type Output = Df32;
     #[inline]
     fn div(self, y: Df32) -> Df32 {
-        let th = self.hi / y.hi;
-        let r = y.mul_f32(th);
-        let pi_h = self.hi - r.hi;
-        let dl = self.lo - r.lo;
-        let d = pi_h + dl;
-        let tl = d / y.hi;
-        let (zh, zl) = fast_two_sum(th, tl);
-        Df32::new(zh, zl)
+        self.div_in::<Ieee>(y)
     }
 }
 
@@ -217,17 +279,25 @@ pub struct NeumaierF32 {
 impl NeumaierF32 {
     #[inline]
     pub fn add(&mut self, x: f32) {
-        let t = self.sum + x;
-        if self.sum.abs() >= x.abs() {
-            self.c += (self.sum - t) + x;
+        self.add_in::<Ieee>(x)
+    }
+    #[inline]
+    pub fn value(&self) -> Df32 {
+        self.value_in::<Ieee>()
+    }
+    #[inline]
+    pub fn add_in<E: FpEnv>(&mut self, x: f32) {
+        let t = E::add(self.sum, x);
+        if E::ge(self.sum.abs(), x.abs()) {
+            self.c = E::add(self.c, E::add(E::sub(self.sum, t), x));
         } else {
-            self.c += (x - t) + self.sum;
+            self.c = E::add(self.c, E::add(E::sub(x, t), self.sum));
         }
         self.sum = t;
     }
     #[inline]
-    pub fn value(&self) -> Df32 {
-        let (h, l) = two_sum(self.sum, self.c);
+    pub fn value_in<E: FpEnv>(&self) -> Df32 {
+        let (h, l) = two_sum_in::<E>(self.sum, self.c);
         Df32::new(h, l)
     }
 }

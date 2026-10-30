@@ -13,7 +13,14 @@ use std::process::Command;
 use std::{env, fs};
 
 /// Offline compiler flags, most specific first. The first set the toolchain
-/// accepts is used.
+/// accepts is used. Every set keeps the numerics contract flags
+/// ([`REQUIRED_FLAGS`], checked in `main`): the fallbacks only drop warnings
+/// as errors (a newer toolchain may add a warning) and then the math-mode
+/// flags an older toolchain may not know (`#pragma METAL fp math_mode(safe)`
+/// in `mklight_common.h` covers those on MSL ≥ 3.2). The backend's numerics
+/// probe still verifies the result on the device, and with
+/// `LibraryChoice::Auto` a precompiled library that fails it is replaced by
+/// the runtime-compiled source.
 const FLAG_SETS: &[&[&str]] = &[
     &[
         "-std=metal3.0",
@@ -29,10 +36,20 @@ const FLAG_SETS: &[&[&str]] = &[
         "-std=metal3.0",
         "-mmacosx-version-min=13.0",
         "-fno-fast-math",
+        "-fmetal-math-mode=safe",
+        "-fmetal-math-fp32-functions=precise",
         "-ffp-contract=off",
     ],
-    &["-fno-fast-math"],
+    &[
+        "-std=metal3.0",
+        "-mmacosx-version-min=13.0",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+    ],
 ];
+
+/// Flags without which the double-float error-free transforms break.
+const REQUIRED_FLAGS: &[&str] = &["-fno-fast-math", "-ffp-contract=off"];
 
 /// Inline local `#include "..."` directives (recursively), so the runtime
 /// compiler, which has no include path, sees one self-contained source.
@@ -170,6 +187,11 @@ fn try_offline(
 }
 
 fn main() {
+    for set in FLAG_SETS {
+        for f in REQUIRED_FLAGS {
+            assert!(set.contains(f), "flag set {set:?} lacks {f}");
+        }
+    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let shader_dir = manifest.join("shaders");

@@ -11,11 +11,11 @@ use mklight_core::rng::{Philox, philox4x32_10};
 use mklight_core::{JobContext, MkError};
 use mklight_gpu::cpu::run_output;
 use mklight_gpu::df::{two_prod, two_sum};
-use mklight_gpu::fmath::u32_to_unit_f32;
+use mklight_gpu::fmath::{hypot2, u32_to_unit_f32};
 use mklight_gpu::layout::{header_offsets, surface_offsets};
 use mklight_gpu::{
     ComputeBackend, CpuF32Backend, Df32, DfOp, Job, JobKind, JobOutput, PackedHeader,
-    PackedSurface, PackedSystem, ReduceMode, TraceRequest, testutil,
+    PackedSurface, PackedSystem, ReduceMode, SystemHandle, TraceRequest, testutil,
 };
 use mklight_metal::{LibraryChoice, LibraryOrigin, MetalBackend, MetalOptions};
 
@@ -62,6 +62,20 @@ fn device_info_and_numerics_probe() {
     eprintln!("device: {info:#?}");
     eprintln!("probe: {:#?}", p.probe);
     eprintln!("library: {:?}", b.context().library_origin());
+    eprintln!("kernel build: {}", p.kernel_build);
+    assert!(p.kernel_build.contains("mklight-metal"));
+    if b.context().library_origin() == LibraryOrigin::Precompiled {
+        assert!(
+            p.kernel_build.contains("-fno-fast-math"),
+            "{}",
+            p.kernel_build
+        );
+        assert!(
+            p.kernel_build.contains("-ffp-contract=off"),
+            "{}",
+            p.kernel_build
+        );
+    }
     assert!(info.max_buffer_bytes > 0 && info.simd_width > 0);
     assert!(!info.native_fp64);
     // Error-free transforms need IEEE add/mul, a true fma, and no
@@ -245,7 +259,7 @@ fn error_free_transforms_survive_on_gpu() {
 #[test]
 fn df_ops_match_emulation_and_f64() {
     let b = gpu_or_skip!();
-    let cpu = CpuF32Backend::new();
+    let cpu = CpuF32Backend::matching(&b.precision().probe);
     let probe = b.precision().probe;
     let mut r = Philox::new(12, 0);
     let n = 1 << 15;
@@ -323,7 +337,7 @@ fn df_ops_match_emulation_and_f64() {
 #[test]
 fn compensated_reduction_1e6() {
     let b = gpu_or_skip!();
-    let cpu = CpuF32Backend::new();
+    let cpu = CpuF32Backend::matching(&b.precision().probe);
     let mut r = Philox::new(13, 0);
     let n = 1_000_000;
     let x: Vec<f32> = (0..n).map(|_| r.uniform() as f32).collect();
@@ -397,7 +411,7 @@ fn compensated_reduction_cancellation_multichannel() {
 #[test]
 fn sag_probe_reads_uploaded_layout() {
     let b = gpu_or_skip!();
-    let cpu = CpuF32Backend::new();
+    let cpu = CpuF32Backend::matching(&b.precision().probe);
     let rs = testutil::singlet_resolved();
     let packed = PackedSystem::pack_all(&rs).unwrap();
     // Two systems in one set; probe the second to exercise surface_offset.
@@ -461,6 +475,11 @@ fn runtime_source_fallback_matches() {
     .unwrap()
     .unwrap();
     assert_eq!(rt.context().library_origin(), LibraryOrigin::RuntimeSource);
+    assert!(
+        rt.precision()
+            .kernel_build
+            .contains("runtime-compiled source, MSL")
+    );
     assert!(
         rt.precision().probe.error_free_transforms(),
         "{:?}",
@@ -534,14 +553,256 @@ fn chunking_progress_cancellation_and_timing() {
     assert_eq!(b2.run(job.clone(), &ctx), Err(MkError::Cancelled));
 
     // Cancelled through the Pending handle while running: either it finished
-    // first or it reports Cancelled, never a partial result.
+    // first or it reports Cancelled, never a partial result. A sibling job
+    // under the same context is not affected, nor is the context.
     b2.set_chunk_items(1_000);
-    let pending = b2.submit(job, &JobContext::new()).unwrap();
+    let shared = JobContext::new();
+    let pending = b2.submit(job.clone(), &shared).unwrap();
+    let sibling = b2.submit(job, &shared).unwrap();
     pending.cancel();
     match pending.wait() {
         Ok(r) => assert_eq!(r.stats.command_buffers, 95),
         Err(e) => assert_eq!(e, MkError::Cancelled),
     }
+    assert_eq!(sibling.wait().unwrap().stats.command_buffers, 95);
+    assert!(!shared.cancel.is_cancelled());
+
+    // Empty jobs succeed with full progress.
+    let ctx = JobContext::new();
+    let r = b2
+        .run(
+            Job::DfOps {
+                op: DfOp::Add,
+                a: vec![],
+                b: vec![],
+            },
+            &ctx,
+        )
+        .unwrap();
+    assert_eq!(r.output, JobOutput::Df(vec![]));
+    assert_eq!(r.stats.command_buffers, 0);
+    assert_eq!(ctx.progress.fraction(), 1.0);
+}
+
+/// Reductions are split into command buffers (group ranges of one channel,
+/// or several whole channels), bit-identical to the one-shot specification,
+/// cancellable between command buffers, with progress reaching 1.
+#[test]
+fn reduction_is_chunked_and_cancellable() {
+    let b = gpu_or_skip!();
+    let cpu = CpuF32Backend::matching(&b.precision().probe);
+    let b2 = MetalBackend::new().unwrap().unwrap();
+    let mut r = Philox::new(21, 0);
+    for (count, channels, chunk) in [
+        (1_000_003usize, 2usize, 100_000usize), // group ranges inside a channel
+        (4_097, 37, 10_000),                    // several whole channels per buffer
+        (7, 5, 1),                              // one channel per buffer
+    ] {
+        b2.set_chunk_items(chunk);
+        let values: Vec<f32> = (0..count * channels)
+            .map(|i| (r.uniform() as f32 - 0.25) * if i % 3 == 0 { 1e3 } else { 1.0 })
+            .collect();
+        for mode in [
+            ReduceMode::Plain,
+            ReduceMode::Kahan,
+            ReduceMode::DoubleFloat,
+        ] {
+            let job = || Job::Reduce {
+                mode,
+                count,
+                values: values.clone(),
+            };
+            let ctx = JobContext::new();
+            let res = b2.run(job(), &ctx).unwrap();
+            assert!(res.stats.command_buffers > 2, "{count} {channels}");
+            assert_eq!(ctx.progress.fraction(), 1.0);
+            let JobOutput::Sums(g) = res.output else {
+                panic!()
+            };
+            let JobOutput::Sums(e) = run_output(&cpu, job()).unwrap() else {
+                panic!()
+            };
+            assert_eq!(bits(&g), bits(&e), "{mode:?} count {count}");
+        }
+    }
+    let ctx = JobContext::new();
+    ctx.cancel.cancel();
+    let job = Job::Reduce {
+        mode: ReduceMode::DoubleFloat,
+        count: 10,
+        values: vec![1.0; 10],
+    };
+    assert_eq!(b2.run(job, &ctx), Err(MkError::Cancelled));
+}
+
+/// The emulation built for this device's probe reproduces its subnormal
+/// handling bit for bit (flush-to-zero on Apple GPUs): inputs, intermediates
+/// and results in and around the subnormal range, including the cases where
+/// IEEE and flush-to-zero results differ.
+#[test]
+fn subnormal_handling_matches_emulation() {
+    let b = gpu_or_skip!();
+    let probe = b.precision().probe;
+    eprintln!("subnormals preserved: {}", probe.subnormals);
+    let cpu = CpuF32Backend::matching(&probe);
+    let mut r = Philox::new(22, 0);
+    let n = 1 << 15;
+    // Magnitudes from 2^-150 (subnormal) to 2^-60.
+    let mut a: Vec<Df32> = (0..n).map(|_| rnd_df(&mut r, -150, -60)).collect();
+    let mut c: Vec<Df32> = (0..n).map(|_| rnd_df(&mut r, -150, -60)).collect();
+    for (x, y) in [
+        (1e-20f32, 1e-20f32),
+        (1.5e-38, -1.4e-38),
+        (-1.5e-38, 1.4e-38),
+        (1e-39, 0.0),
+        (-1e-39, 1.0),
+        (1e-39, 1e-39),
+        (1e-19, 1e-19),
+    ] {
+        a.push(Df32::new(x, 0.0));
+        c.push(Df32::new(y, 0.0));
+    }
+    a.push(Df32::new(1.0, 1e-39));
+    c.push(Df32::new(1.0, -1e-39));
+    let mut differs_from_ieee = 0;
+    let ieee = CpuF32Backend::new();
+    for op in DfOp::ALL {
+        if op.needs_correct_div_sqrt()
+            && !(probe.correctly_rounded_div && probe.correctly_rounded_sqrt)
+        {
+            continue;
+        }
+        let (a, c): (Vec<Df32>, Vec<Df32>) = if op == DfOp::FastTwoSum {
+            a.iter()
+                .zip(&c)
+                .map(|(x, y)| {
+                    if x.hi.abs() >= y.hi.abs() {
+                        (*x, *y)
+                    } else {
+                        (*y, *x)
+                    }
+                })
+                .unzip()
+        } else {
+            (a.clone(), c.clone())
+        };
+        let job = || Job::DfOps {
+            op,
+            a: a.clone(),
+            b: c.clone(),
+        };
+        let JobOutput::Df(g) = run_output(b, job()).unwrap() else {
+            panic!()
+        };
+        let JobOutput::Df(e) = run_output(&cpu, job()).unwrap() else {
+            panic!()
+        };
+        let JobOutput::Df(ie) = run_output(&ieee, job()).unwrap() else {
+            panic!()
+        };
+        differs_from_ieee += (bits(&ie) != bits(&e)) as usize;
+        for i in 0..g.len() {
+            assert_eq!(
+                (g[i].hi.to_bits(), g[i].lo.to_bits()),
+                (e[i].hi.to_bits(), e[i].lo.to_bits()),
+                "{op:?} #{i}: ({:?}, {:?}) GPU {:?} emulation {:?}",
+                a[i],
+                c[i],
+                g[i],
+                e[i]
+            );
+        }
+    }
+    if !probe.subnormals {
+        assert!(differs_from_ieee > 0, "inputs never exercise flush-to-zero");
+    }
+    // Reductions of tiny values.
+    let tiny: Vec<f32> = (0..9999).map(|i| (i as f32) * 1e-41).collect();
+    for vals in [vec![1e-39f32; 4096], tiny] {
+        for mode in [
+            ReduceMode::Plain,
+            ReduceMode::Kahan,
+            ReduceMode::DoubleFloat,
+        ] {
+            let job = || Job::Reduce {
+                mode,
+                count: vals.len(),
+                values: vals.clone(),
+            };
+            let JobOutput::Sums(g) = run_output(b, job()).unwrap() else {
+                panic!()
+            };
+            let JobOutput::Sums(e) = run_output(&cpu, job()).unwrap() else {
+                panic!()
+            };
+            assert_eq!(bits(&g), bits(&e), "{mode:?}");
+        }
+    }
+}
+
+/// hypot never masks NaN, on the GPU as on the CPU (IEEE special values).
+#[test]
+fn hypot_special_values_on_gpu() {
+    let b = gpu_or_skip!();
+    let cases = [
+        (f32::NAN, 0.0f32),
+        (0.0, f32::NAN),
+        (f32::NAN, 1.0),
+        (f32::NAN, f32::INFINITY),
+        (f32::NEG_INFINITY, f32::NAN),
+        (0.0, -0.0),
+        (3.0, 4.0),
+        (3e30, 4e30),
+        (3e-30, 4e-30),
+    ];
+    let job = Job::DfOps {
+        op: DfOp::Hypot2,
+        a: cases.iter().map(|c| Df32::from_f32(c.0)).collect(),
+        b: cases.iter().map(|c| Df32::from_f32(c.1)).collect(),
+    };
+    let JobOutput::Df(g) = run_output(b, job).unwrap() else {
+        panic!()
+    };
+    for (i, (x, y)) in cases.iter().enumerate() {
+        let want = hypot2(*x, *y);
+        assert!(
+            want.to_bits() == g[i].hi.to_bits() || (want.is_nan() && g[i].hi.is_nan()),
+            "hypot({x}, {y}): GPU {} CPU {want}",
+            g[i].hi
+        );
+    }
+    assert!(g[0].hi.is_nan() && g[1].hi.is_nan() && g[2].hi.is_nan());
+    assert_eq!(g[3].hi, f32::INFINITY);
+    assert_eq!(g[4].hi, f32::INFINITY);
+}
+
+/// A forged handle count cannot make the GPU read past the uploaded set, and
+/// a tampered record never reaches the device.
+#[test]
+fn forged_handle_and_tampered_record_are_rejected() {
+    let b = gpu_or_skip!();
+    let p = PackedSystem::pack_all(&testutil::singlet_resolved()).unwrap();
+    let h = b.upload_system(&p).unwrap();
+    let forged = SystemHandle::new(h.backend_instance(), h.id(), 5);
+    let r = b.run(
+        Job::SagProbe {
+            systems: forged,
+            system: 3,
+            surface: 1,
+            r2: vec![1.0],
+        },
+        &JobContext::new(),
+    );
+    assert_eq!(
+        r,
+        Err(MkError::Backend(
+            "sag probe: system index out of range".into()
+        ))
+    );
+    let mut bad = p.clone();
+    bad.surfaces[2].num_asphere = 1000;
+    assert!(b.upload_system(&bad).is_err());
+    b.release_systems(h).unwrap();
 }
 
 #[test]
@@ -572,14 +833,7 @@ fn async_submission_and_unsupported_jobs() {
     let h = b
         .upload_system(&PackedSystem::pack_all(&rs).unwrap())
         .unwrap();
-    let trace = Job::Trace(Box::new(TraceRequest {
-        systems: h,
-        rays: Default::default(),
-        start_surface: 0,
-        end_surface: 3,
-        record: Default::default(),
-        apply_apertures: true,
-    }));
+    let trace = Job::Trace(Box::new(TraceRequest::new(h, Default::default(), 0, 3)));
     assert!(matches!(
         b.submit(trace, &JobContext::new()),
         Err(MkError::Unsupported(_))

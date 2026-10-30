@@ -5,20 +5,35 @@
 //! operation; change both together.
 
 use crate::consts::*;
+use crate::fenv::{FpEnv, Ieee};
 use crate::layout::PackedSurface;
+
+pub use mklight_core::rng::u32_to_unit_f32;
 
 /// `a·b` with nested fma, in the same order as `mklight_core::Vec3::dot`:
 /// `fma(a0, b0, fma(a1, b1, a2·b2))`.
 #[inline]
 pub fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0].mul_add(b[0], a[1].mul_add(b[1], a[2] * b[2]))
+    dot3_in::<Ieee>(a, b)
+}
+
+/// [`dot3`] in environment `E`.
+#[inline]
+pub fn dot3_in<E: FpEnv>(a: [f32; 3], b: [f32; 3]) -> f32 {
+    E::fma(a[0], b[0], E::fma(a[1], b[1], E::mul(a[2], b[2])))
 }
 
 /// `1 − x²` as `(1 − x)(1 + x)`: exact factors near |x| = 1, where the direct
 /// form cancels (cosines of near-normal rays, CONVENTIONS §7.3).
 #[inline]
 pub fn one_minus_sq(x: f32) -> f32 {
-    (1.0 - x) * (1.0 + x)
+    one_minus_sq_in::<Ieee>(x)
+}
+
+/// [`one_minus_sq`] in environment `E`.
+#[inline]
+pub fn one_minus_sq_in<E: FpEnv>(x: f32) -> f32 {
+    E::mul(E::sub(1.0, x), E::add(1.0, x))
 }
 
 /// `2^e` for normal exponents, built from the bit pattern (exact).
@@ -34,99 +49,125 @@ const SCALE_UP: f32 = pow2(80);
 /// squares of the scaled components cannot overflow or underflow. Scaling by
 /// a power of two is exact.
 #[inline]
-fn hypot_scale(m: f32) -> (f32, f32) {
-    if m > HYPOT_BIG {
+fn hypot_scale<E: FpEnv>(m: f32) -> (f32, f32) {
+    if E::gt(m, HYPOT_BIG) {
         (SCALE_DOWN, SCALE_UP)
-    } else if m < HYPOT_SMALL {
+    } else if E::lt(m, HYPOT_SMALL) {
         (SCALE_UP, SCALE_DOWN)
     } else {
         (1.0, 1.0)
     }
 }
 
+/// Special values of hypot, IEEE 754 §9.2: any infinite component gives
+/// `+inf` (even with a NaN), otherwise any NaN gives NaN, and all zeros give
+/// `+0`. `m` is the largest magnitude (`max` drops NaN, hence the explicit
+/// test). Results are constants, never a raw input, so a flush-to-zero device
+/// cannot pass a subnormal through.
+#[inline]
+fn hypot_special<E: FpEnv>(m: f32, any_nan: bool) -> Option<f32> {
+    if m == f32::INFINITY {
+        Some(f32::INFINITY)
+    } else if any_nan {
+        Some(f32::NAN)
+    } else if E::eq(m, 0.0) {
+        Some(0.0)
+    } else {
+        None
+    }
+}
+
 /// `sqrt(x² + y²)` without spurious overflow/underflow; `fma` for the sum.
 #[inline]
 pub fn hypot2(x: f32, y: f32) -> f32 {
+    hypot2_in::<Ieee>(x, y)
+}
+
+/// [`hypot2`] in environment `E`.
+#[inline]
+pub fn hypot2_in<E: FpEnv>(x: f32, y: f32) -> f32 {
     let m = x.abs().max(y.abs());
-    if m == 0.0 || !m.is_finite() {
-        return m;
+    if let Some(v) = hypot_special::<E>(m, x.is_nan() || y.is_nan()) {
+        return v;
     }
-    let (s, inv) = hypot_scale(m);
-    let (xs, ys) = (x * s, y * s);
-    xs.mul_add(xs, ys * ys).sqrt() * inv
+    let (s, inv) = hypot_scale::<E>(m);
+    let (xs, ys) = (E::mul(x, s), E::mul(y, s));
+    E::mul(E::sqrt(E::fma(xs, xs, E::mul(ys, ys))), inv)
 }
 
 /// `|v|` for a 3-vector, overflow-safe like [`hypot2`].
 #[inline]
 pub fn hypot3(x: f32, y: f32, z: f32) -> f32 {
+    hypot3_in::<Ieee>(x, y, z)
+}
+
+/// [`hypot3`] in environment `E`.
+#[inline]
+pub fn hypot3_in<E: FpEnv>(x: f32, y: f32, z: f32) -> f32 {
     let m = x.abs().max(y.abs()).max(z.abs());
-    if m == 0.0 || !m.is_finite() {
-        return m;
+    if let Some(v) = hypot_special::<E>(m, x.is_nan() || y.is_nan() || z.is_nan()) {
+        return v;
     }
-    let (s, inv) = hypot_scale(m);
-    let v = [x * s, y * s, z * s];
-    dot3(v, v).sqrt() * inv
+    let (s, inv) = hypot_scale::<E>(m);
+    let v = [E::mul(x, s), E::mul(y, s), E::mul(z, s)];
+    E::mul(E::sqrt(dot3_in::<E>(v, v)), inv)
 }
 
 /// Cancellation-free conic sag `c r² / (1 + √(1 − (1+k) c² r²))` in f32.
 /// Returns NaN outside the conic's domain (the f64 definition returns `None`).
 #[inline]
 pub fn conic_sag(c: f32, k: f32, r2: f32) -> f32 {
-    let cr2 = c * r2;
-    let ck = (1.0 + k) * c;
-    let arg = (-ck).mul_add(cr2, 1.0);
-    if arg.is_nan() || arg < 0.0 {
+    conic_sag_in::<Ieee>(c, k, r2)
+}
+
+/// [`conic_sag`] in environment `E`.
+#[inline]
+pub fn conic_sag_in<E: FpEnv>(c: f32, k: f32, r2: f32) -> f32 {
+    let cr2 = E::mul(c, r2);
+    let ck = E::mul(E::add(1.0, k), c);
+    let arg = E::fma(-ck, cr2, 1.0);
+    if arg.is_nan() || E::lt(arg, 0.0) {
         return f32::NAN;
     }
-    cr2 / (1.0 + arg.sqrt())
+    E::div(cr2, E::add(1.0, E::sqrt(arg)))
 }
 
 /// Sag of a packed surface at `r²` (mm), the f32 evaluation of the layout
 /// documented in `mklight_gpu_types.h`: conic part plus the normalised even
-/// polynomial `ρ⁴ Σ a_j ρ^(2j)` by Horner in `ρ² = r²/R²`.
+/// polynomial `ρ⁴ Σ a_j ρ^(2j)` by Horner in `ρ² = r²/R²`. The surface must
+/// have passed `PackedSystem::validate` (`num_asphere ≤ MAX_ASPHERE`).
 #[inline]
 pub fn packed_sag(s: &PackedSurface, r2: f32) -> f32 {
+    packed_sag_in::<Ieee>(s, r2)
+}
+
+/// [`packed_sag`] in environment `E`.
+#[inline]
+pub fn packed_sag_in<E: FpEnv>(s: &PackedSurface, r2: f32) -> f32 {
     match s.shape {
-        MKL_SHAPE_CONIC => conic_sag(s.curvature, s.conic, r2),
+        MKL_SHAPE_CONIC => conic_sag_in::<E>(s.curvature, s.conic, r2),
         MKL_SHAPE_EVEN_ASPHERE => {
-            let base = conic_sag(s.curvature, s.conic, r2);
-            let n = s.num_asphere as usize;
+            let base = conic_sag_in::<E>(s.curvature, s.conic, r2);
+            let n = (s.num_asphere as usize).min(s.asphere.len());
             if n == 0 {
                 return base;
             }
-            let rho2 = r2 * s.asphere_inv_norm2;
+            let rho2 = E::mul(r2, s.asphere_inv_norm2);
             let mut acc = s.asphere[n - 1];
             for j in (0..n - 1).rev() {
-                acc = acc.mul_add(rho2, s.asphere[j]);
+                acc = E::fma(acc, rho2, s.asphere[j]);
             }
-            let rho4 = rho2 * rho2;
-            acc.mul_add(rho4, base)
+            let rho4 = E::mul(rho2, rho2);
+            E::fma(acc, rho4, base)
         }
         _ => 0.0,
     }
-}
-
-/// f32 uniform in the open interval (0, 1) from one Philox output word; the
-/// GPU computes exactly this (CONVENTIONS §6).
-///
-/// `mklight_core::rng::u32_to_unit_f64` maps the top 24 bits `k` to
-/// `(k + ½)·2⁻²⁴`. For `k ≥ 2²³` that value needs 25 significand bits and is
-/// not an f32 (rounding to nearest could even produce 1.0). This mapping is
-/// that value **rounded toward zero to f32**: identical for `k < 2²³`, and
-/// `2⁻²⁵` (half an f32 ulp) below it otherwise. Every operation is exact, so
-/// the result does not depend on rounding modes or hardware.
-#[inline]
-pub fn u32_to_unit_f32(x: u32) -> f32 {
-    let k = x >> 8;
-    let half = if k < 0x80_0000 { pow2(-25) } else { 0.0 };
-    (k as f32).mul_add(pow2(-24), half) // k·2^-24 + half, exact
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use mklight_core::SurfaceShape;
-    use mklight_core::rng::u32_to_unit_f64;
 
     #[test]
     fn constants_are_exact_powers_of_two() {
@@ -146,6 +187,19 @@ mod tests {
         assert_eq!(hypot3(2.0, 3.0, 6.0), 7.0);
         assert!((hypot3(2e35, 3e35, 6e35) / 7e35 - 1.0).abs() < 1e-6);
         assert_eq!(hypot2(0.0, -0.0), 0.0);
+        // NaN is never masked (IEEE: NaN unless a component is infinite).
+        assert!(hypot2(f32::NAN, 0.0).is_nan());
+        assert!(hypot2(0.0, f32::NAN).is_nan());
+        assert!(hypot2(f32::NAN, 1.0).is_nan());
+        assert!(hypot3(f32::NAN, 0.0, 0.0).is_nan());
+        assert!(hypot3(0.0, 0.0, f32::NAN).is_nan());
+        assert_eq!(hypot2(f32::NAN, f32::NEG_INFINITY), f32::INFINITY);
+        assert_eq!(hypot3(0.0, f32::INFINITY, f32::NAN), f32::INFINITY);
+        // Subnormal components: exact scaling under IEEE, zero under FTZ.
+        let t = 2f32.powi(-140);
+        assert_eq!(hypot2(3.0 * t, 4.0 * t), 5.0 * t);
+        assert_eq!(hypot2_in::<crate::fenv::Ftz>(3.0 * t, 4.0 * t), 0.0);
+        assert_eq!(hypot2_in::<crate::fenv::Ftz>(1e-39, 1e-39).to_bits(), 0);
     }
 
     #[test]
@@ -179,30 +233,14 @@ mod tests {
         assert!(conic_sag(0.1, 0.0, 200.0).is_nan());
     }
 
+    /// The GPU mapping is the core's canonical f32 mapping.
     #[test]
-    fn unit_mapping_vs_core() {
-        let half_ulp = 2f64.powi(-25);
-        for x in [
-            0u32,
-            1,
-            255,
-            256,
-            0x7FFF_FFFF,
-            0x8000_0000,
-            0xFFFF_FF00,
-            u32::MAX,
-        ]
-        .into_iter()
-        .chain((0..100_000u32).map(|i| i.wrapping_mul(0x9E37_79B9)))
-        {
-            let f = u32_to_unit_f32(x);
-            assert!(f > 0.0 && f < 1.0, "{x:#x} -> {f}");
-            let d = u32_to_unit_f64(x);
-            if (x >> 8) < 0x80_0000 {
-                assert_eq!(f as f64, d);
-            } else {
-                assert_eq!(f as f64, d - half_ulp);
-            }
+    fn unit_mapping_is_cores() {
+        for x in [0u32, 255, 256, 0x7FFF_FFFF, 0x8000_0000, u32::MAX] {
+            assert_eq!(u32_to_unit_f32(x), mklight_core::rng::u32_to_unit_f32(x));
+            let k = x >> 8;
+            let half = if k < 0x80_0000 { pow2(-25) } else { 0.0 };
+            assert_eq!(u32_to_unit_f32(x), (k as f32).mul_add(pow2(-24), half));
         }
     }
 }

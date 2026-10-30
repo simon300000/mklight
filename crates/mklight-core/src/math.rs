@@ -56,8 +56,16 @@ impl Vec3 {
     #[inline]
     pub fn norm(self) -> f64 {
         // hypot-style scaling avoids overflow/underflow for extreme inputs.
+        // `max` drops NaN, so NaN is tested explicitly (IEEE hypot: any
+        // infinite component gives +inf, otherwise any NaN gives NaN).
         let m = self.x.abs().max(self.y.abs()).max(self.z.abs());
-        if m == 0.0 || !m.is_finite() {
+        if m == f64::INFINITY {
+            return m;
+        }
+        if self.x.is_nan() || self.y.is_nan() || self.z.is_nan() {
+            return f64::NAN;
+        }
+        if m == 0.0 {
             return m;
         }
         let (x, y, z) = (self.x / m, self.y / m, self.z / m);
@@ -303,6 +311,20 @@ mod tests {
         assert_abs_diff_eq!(v.z, 1.0, epsilon = 1e-15);
         let v = Mat3::rot_y(std::f64::consts::FRAC_PI_2).mul_vec(Vec3::Z);
         assert_abs_diff_eq!(v.x, 1.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn norm_extremes_and_nan() {
+        assert_eq!(Vec3::new(2.0, 3.0, 6.0).norm(), 7.0);
+        assert_eq!(Vec3::new(3e300, 4e300, 0.0).norm(), 5e300);
+        assert_eq!(Vec3::ZERO.norm(), 0.0);
+        assert!(Vec3::new(f64::NAN, 0.0, 0.0).norm().is_nan());
+        assert!(Vec3::new(0.0, 0.0, f64::NAN).norm().is_nan());
+        assert!(Vec3::new(1.0, f64::NAN, 2.0).norm().is_nan());
+        assert_eq!(
+            Vec3::new(f64::NAN, f64::NEG_INFINITY, 0.0).norm(),
+            f64::INFINITY
+        );
     }
 
     #[test]

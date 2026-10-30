@@ -17,11 +17,14 @@
 //!
 //! No atomics are used, so the order never depends on scheduling.
 
+use std::ops::Range;
+
 use rayon::prelude::*;
 
 use crate::backend::ReduceMode;
 use crate::consts::*;
 use crate::df::{Df32, NeumaierF32};
+use crate::fenv::{FpEnv, Ieee};
 
 pub const THREADS: usize = MKL_REDUCE_THREADS as usize;
 pub const MAX_GROUPS: usize = MKL_REDUCE_MAX_GROUPS as usize;
@@ -39,35 +42,41 @@ pub fn num_groups(count: usize) -> usize {
 /// `a ⊕ b` for the tree stages.
 #[inline]
 pub fn combine(mode: ReduceMode, a: Df32, b: Df32) -> Df32 {
+    combine_in::<Ieee>(mode, a, b)
+}
+
+/// [`combine`] in environment `E`.
+#[inline]
+pub fn combine_in<E: FpEnv>(mode: ReduceMode, a: Df32, b: Df32) -> Df32 {
     match mode {
-        ReduceMode::Plain => Df32::from_f32(a.hi + b.hi),
-        ReduceMode::Kahan | ReduceMode::DoubleFloat => a + b,
+        ReduceMode::Plain => Df32::from_f32(E::add(a.hi, b.hi)),
+        ReduceMode::Kahan | ReduceMode::DoubleFloat => a.add_in::<E>(b),
     }
 }
 
 /// One thread's grid-stride accumulation.
 #[inline]
-fn thread_sum(mode: ReduceMode, x: &[f32], g: usize, p: usize) -> Df32 {
+fn thread_sum<E: FpEnv>(mode: ReduceMode, x: &[f32], g: usize, p: usize) -> Df32 {
     let it = x.iter().skip(g).step_by(p).copied();
     match mode {
         ReduceMode::Plain => {
             let mut s = 0f32;
             for v in it {
-                s += v;
+                s = E::add(s, v);
             }
             Df32::from_f32(s)
         }
         ReduceMode::Kahan => {
             let mut k = NeumaierF32::default();
             for v in it {
-                k.add(v);
+                k.add_in::<E>(v);
             }
-            k.value()
+            k.value_in::<E>()
         }
         ReduceMode::DoubleFloat => {
             let mut s = Df32::ZERO;
             for v in it {
-                s = s.add_f32(v);
+                s = s.add_f32_in::<E>(v);
             }
             s
         }
@@ -75,12 +84,12 @@ fn thread_sum(mode: ReduceMode, x: &[f32], g: usize, p: usize) -> Df32 {
 }
 
 /// The in-group binary tree over exactly `THREADS` values.
-fn tree(mode: ReduceMode, v: &mut [Df32]) -> Df32 {
+fn tree<E: FpEnv>(mode: ReduceMode, v: &mut [Df32]) -> Df32 {
     debug_assert_eq!(v.len(), THREADS);
     let mut stride = THREADS / 2;
     while stride > 0 {
         for i in 0..stride {
-            v[i] = combine(mode, v[i], v[i + stride]);
+            v[i] = combine_in::<E>(mode, v[i], v[i + stride]);
         }
         stride /= 2;
     }
@@ -89,36 +98,53 @@ fn tree(mode: ReduceMode, v: &mut [Df32]) -> Df32 {
 
 /// Pass 1 for one channel: the `num_groups(x.len())` group partials.
 pub fn pass1(mode: ReduceMode, x: &[f32]) -> Vec<Df32> {
-    let g = num_groups(x.len());
-    let p = g * THREADS;
-    (0..g)
+    pass1_in::<Ieee>(mode, x, 0..num_groups(x.len()))
+}
+
+/// The partials of pass-1 groups `groups` (a sub-range of
+/// `0..num_groups(x.len())`) in environment `E`. Each group's result does not
+/// depend on which other groups run with it, so a backend may split pass 1
+/// into several launches (for cancellation) without changing any bit.
+pub fn pass1_in<E: FpEnv>(mode: ReduceMode, x: &[f32], groups: Range<usize>) -> Vec<Df32> {
+    let p = num_groups(x.len()) * THREADS;
+    groups
         .into_par_iter()
         .map(|group| {
             let mut v: Vec<Df32> = (0..THREADS)
-                .map(|t| thread_sum(mode, x, group * THREADS + t, p))
+                .map(|t| thread_sum::<E>(mode, x, group * THREADS + t, p))
                 .collect();
-            tree(mode, &mut v)
+            tree::<E>(mode, &mut v)
         })
         .collect()
 }
 
 /// Pass 2: fold the partials of one channel.
 pub fn pass2(mode: ReduceMode, partials: &[Df32]) -> Df32 {
+    pass2_in::<Ieee>(mode, partials)
+}
+
+/// [`pass2`] in environment `E`.
+pub fn pass2_in<E: FpEnv>(mode: ReduceMode, partials: &[Df32]) -> Df32 {
     let mut v: Vec<Df32> = (0..THREADS)
         .map(|t| {
             partials
                 .iter()
                 .skip(t)
                 .step_by(THREADS)
-                .fold(Df32::ZERO, |acc, &q| combine(mode, acc, q))
+                .fold(Df32::ZERO, |acc, &q| combine_in::<E>(mode, acc, q))
         })
         .collect();
-    tree(mode, &mut v)
+    tree::<E>(mode, &mut v)
 }
 
 /// The complete reduction of one channel, bit-identical to the GPU.
 pub fn reduce_channel(mode: ReduceMode, x: &[f32]) -> Df32 {
-    pass2(mode, &pass1(mode, x))
+    reduce_channel_in::<Ieee>(mode, x)
+}
+
+/// [`reduce_channel`] in environment `E`.
+pub fn reduce_channel_in<E: FpEnv>(mode: ReduceMode, x: &[f32]) -> Df32 {
+    pass2_in::<E>(mode, &pass1_in::<E>(mode, x, 0..num_groups(x.len())))
 }
 
 #[cfg(test)]
@@ -194,5 +220,41 @@ mod tests {
         let a = reduce_channel(ReduceMode::DoubleFloat, &x);
         let b = reduce_channel(ReduceMode::DoubleFloat, &x);
         assert_eq!(a, b);
+    }
+
+    /// Splitting pass 1 into group ranges changes no bit.
+    #[test]
+    fn split_pass1_is_identical() {
+        let x: Vec<f32> = (0..300_001usize)
+            .map(|i| ((i * 7919) % 1013) as f32 * 1e-2)
+            .collect();
+        let g = num_groups(x.len());
+        assert!(g > 10);
+        for mode in [
+            ReduceMode::Plain,
+            ReduceMode::Kahan,
+            ReduceMode::DoubleFloat,
+        ] {
+            let whole = pass1(mode, &x);
+            let mut parts = pass1_in::<Ieee>(mode, &x, 0..3);
+            parts.extend(pass1_in::<Ieee>(mode, &x, 3..g - 1));
+            parts.extend(pass1_in::<Ieee>(mode, &x, g - 1..g));
+            assert_eq!(whole, parts, "{mode:?}");
+        }
+    }
+
+    /// Under flush-to-zero, subnormal inputs contribute nothing.
+    #[test]
+    fn ftz_flushes_subnormal_inputs() {
+        use crate::fenv::Ftz;
+        let x = vec![1e-39f32; 4096];
+        for mode in [
+            ReduceMode::Plain,
+            ReduceMode::Kahan,
+            ReduceMode::DoubleFloat,
+        ] {
+            assert_eq!(reduce_channel_in::<Ftz>(mode, &x), Df32::ZERO, "{mode:?}");
+            assert!(reduce_channel(mode, &x).to_f64() > 4e-36);
+        }
     }
 }

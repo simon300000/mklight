@@ -1,10 +1,12 @@
 //! `MetalBackend`: `mklight_gpu::ComputeBackend` on Metal.
 //!
-//! Jobs run on a worker thread per submission. Large jobs are split into
-//! command buffers of at most `chunk_items` work items; the job's cancel
-//! token is checked and progress reported between them. Each command buffer
-//! is awaited and its status checked, so GPU errors surface as
-//! `MkError::Backend` and GPU time is summed into `JobStats`.
+//! Jobs run on a worker thread per submission. Every job is split into
+//! command buffers of at most `chunk_items` work items (values, for
+//! reductions); the submission's cancel token and the caller's context are
+//! checked and progress is reported between them, and progress reaches 1 on
+//! success. Each command buffer is awaited and its status checked, so GPU
+//! errors surface as `MkError::Backend` and GPU time is summed into
+//! `JobStats`. A worker panic becomes an error naming the job.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -17,7 +19,7 @@ use mklight_core::{JobContext, MkError, MkResult};
 use mklight_gpu::backend::next_backend_instance;
 use mklight_gpu::consts::*;
 use mklight_gpu::layout::{PhiloxParams, ReduceParams, SagParams};
-use mklight_gpu::pending::pending;
+use mklight_gpu::pending::{JobControl, pending, spawn_job};
 use mklight_gpu::{
     BackendKind, ComputeBackend, DeviceInfo, Df32, ErrorBudget, Job, JobKind, JobOutput, JobResult,
     JobStats, NumericsProbe, PackedHeader, PackedSurface, PackedSystem, PackedSystemSet, Pending,
@@ -26,7 +28,9 @@ use mklight_gpu::{
 use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLGPUFamily};
 
 use crate::buffer::SharedBuffer;
-use crate::context::{CommandStats, MetalContext, MetalOptions, PipelineKey};
+use crate::context::{
+    CommandStats, LibraryChoice, LibraryOrigin, MetalContext, MetalOptions, PipelineKey,
+};
 
 /// Default work items per command buffer.
 const DEFAULT_CHUNK: usize = 1 << 20;
@@ -105,17 +109,21 @@ fn run_probe(ctx: &MetalContext) -> MkResult<NumericsProbe> {
     let n = a.len();
     let words = MKL_PROBE_WORDS as usize;
     let (ba, bb, bc) = (ctx.buffer(&a)?, ctx.buffer(&b)?, ctx.buffer(&c)?);
-    let out = ctx.buffer_zeroed::<f32>(n * words)?;
+    let mut out = ctx.buffer_zeroed::<f32>(n * words)?;
     let pso = ctx.pipeline(&PipelineKey::plain("mkl_numerics_probe"))?;
-    ctx.run("mklight numerics probe", |e| {
-        e.set_buffer(0, &ba, 0);
-        e.set_buffer(1, &bb, 0);
-        e.set_buffer(2, &bc, 0);
-        e.set_buffer(3, &out, 0);
-        e.set_bytes(4, &(n as u32));
-        e.dispatch_1d(&pso, n);
-        Ok(())
-    })?;
+    // SAFETY: thread i < n reads a/b/c[i] (n elements each) and writes
+    // out[i*W .. i*W + W] (n*W elements); `out` is bound mutably.
+    unsafe {
+        ctx.run("mklight numerics probe", |e| {
+            e.set_buffer(0, &ba, 0);
+            e.set_buffer(1, &bb, 0);
+            e.set_buffer(2, &bc, 0);
+            e.set_buffer_mut(3, &mut out, 0);
+            e.set_bytes(4, &(n as u32));
+            e.dispatch_1d(&pso, n);
+            Ok(())
+        })?;
+    }
     let got = out.as_slice();
     let mut ok = [true; MKL_PROBE_WORDS as usize];
     for i in 0..n {
@@ -141,11 +149,29 @@ impl MetalBackend {
         Self::with_options(&MetalOptions::default())
     }
 
+    /// With `LibraryChoice::Auto`, a precompiled library that fails the
+    /// numerics probe (e.g. built with weaker fallback flags) is replaced by
+    /// the runtime-compiled source when that one passes.
     pub fn with_options(opts: &MetalOptions) -> MkResult<Option<Self>> {
-        let Some(ctx) = MetalContext::new(opts)? else {
+        let Some(mut ctx) = MetalContext::new(opts)? else {
             return Ok(None);
         };
-        let probe = run_probe(&ctx)?;
+        let mut probe = run_probe(&ctx)?;
+        if opts.library == LibraryChoice::Auto
+            && ctx.library_origin() == LibraryOrigin::Precompiled
+            && !probe.error_free_transforms()
+        {
+            let rt_opts = MetalOptions {
+                library: LibraryChoice::RuntimeSource,
+                ..opts.clone()
+            };
+            if let Ok(Some(rt)) = MetalContext::new(&rt_opts) {
+                let rt_probe = run_probe(&rt)?;
+                if rt_probe.error_free_transforms() {
+                    (ctx, probe) = (rt, rt_probe);
+                }
+            }
+        }
         let pso = ctx.pipeline(&PipelineKey::plain("mkl_philox_blocks"))?;
         let d = ctx.device();
         let name = d.name().to_string();
@@ -174,6 +200,11 @@ impl MetalBackend {
             compensated_reductions: true,
             probe,
             budget: ErrorBudget::CONVENTIONS,
+            kernel_build: format!(
+                "mklight-metal {}: {}",
+                env!("CARGO_PKG_VERSION"),
+                ctx.library_build()
+            ),
         };
         Ok(Some(MetalBackend {
             inner: Arc::new(Inner {
@@ -188,6 +219,8 @@ impl MetalBackend {
         }))
     }
 
+    /// Device, library and pipeline information (safe accessors only;
+    /// kernels are dispatched through `ComputeBackend`).
     pub fn context(&self) -> &MetalContext {
         &self.inner.ctx
     }
@@ -206,20 +239,24 @@ impl MetalBackend {
         let n = 4
             + mklight_gpu::layout::header_offsets().len()
             + mklight_gpu::layout::surface_offsets().len();
-        let out = ctx.buffer_zeroed::<u32>(n)?;
+        let mut out = ctx.buffer_zeroed::<u32>(n)?;
         let pso = ctx.pipeline(&PipelineKey::plain("mkl_layout_probe"))?;
-        ctx.run("mklight layout probe", |e| {
-            e.set_buffer(0, &out, 0);
-            e.dispatch_1d(&pso, 1);
-            Ok(())
-        })?;
+        // SAFETY: only thread 0 writes, `n` words (the count of entries the
+        // kernel writes is the length of the two offset lists plus 4).
+        unsafe {
+            ctx.run("mklight layout probe", |e| {
+                e.set_buffer_mut(0, &mut out, 0);
+                e.dispatch_1d(&pso, 1);
+                Ok(())
+            })?;
+        }
         Ok(out.to_vec())
     }
 }
 
 impl Inner {
     fn lookup(&self, h: SystemHandle) -> MkResult<Arc<Uploaded>> {
-        if h.backend_instance != self.instance {
+        if h.backend_instance() != self.instance {
             return Err(MkError::Backend(
                 "system handle belongs to another backend".into(),
             ));
@@ -227,7 +264,7 @@ impl Inner {
         self.systems
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&h.id)
+            .get(&h.id())
             .cloned()
             .ok_or_else(|| MkError::Backend("unknown or released system handle".into()))
     }
@@ -240,31 +277,35 @@ impl Inner {
         }
     }
 
+    fn chunk(&self) -> usize {
+        self.chunk_items.load(Ordering::Relaxed)
+    }
+
     /// Split `total` items into command buffers, checking cancellation and
     /// reporting progress between them.
     fn chunked(
         &self,
         total: usize,
-        ctx: &JobContext,
+        ctl: &JobControl,
         stage: &str,
         stats: &mut JobStats,
         mut f: impl FnMut(usize, usize) -> MkResult<CommandStats>,
     ) -> MkResult<()> {
-        let chunk = self.chunk_items.load(Ordering::Relaxed);
+        let chunk = self.chunk();
         let mut start = 0;
         while start < total {
-            ctx.check()?;
+            ctl.check()?;
             let len = chunk.min(total - start);
             let cs = f(start, len)?;
             stats.device_seconds += cs.gpu_seconds;
             stats.command_buffers += 1;
             start += len;
-            ctx.report(start as f64 / total as f64, stage);
+            ctl.report(start as f64 / total as f64, stage);
         }
-        ctx.check()
+        ctl.check()
     }
 
-    fn execute(&self, job: Job, ctx: &JobContext) -> MkResult<JobResult> {
+    fn execute(&self, job: Job, ctl: &JobControl) -> MkResult<JobResult> {
         let t0 = Instant::now();
         let mut stats = JobStats::default();
         let gpu = &self.ctx;
@@ -276,10 +317,10 @@ impl Inner {
                 num_blocks,
             } => {
                 let n = num_blocks as usize;
-                let raw = gpu.buffer_zeroed::<[u32; 4]>(n)?;
-                let uni = gpu.buffer_zeroed::<[f32; 4]>(n)?;
+                let mut raw = gpu.buffer_zeroed::<[u32; 4]>(n)?;
+                let mut uni = gpu.buffer_zeroed::<[f32; 4]>(n)?;
                 let pso = gpu.pipeline(&PipelineKey::plain("mkl_philox_stream"))?;
-                self.chunked(n, ctx, "philox", &mut stats, |start, len| {
+                self.chunked(n, ctl, "philox", &mut stats, |start, len| {
                     let b = first_block.wrapping_add(start as u64);
                     let p = PhiloxParams {
                         key: [seed as u32, (seed >> 32) as u32],
@@ -288,49 +329,61 @@ impl Inner {
                         num_blocks: len as u32,
                         reserved: 0,
                     };
-                    gpu.run("mkl_philox_stream", |e| {
-                        e.set_bytes(0, &p);
-                        e.set_buffer(1, &raw, start);
-                        e.set_buffer(2, &uni, start);
-                        e.dispatch_1d(&pso, len);
-                        Ok(())
-                    })
+                    // SAFETY: thread t < len writes raw/uni[start + t], and
+                    // start + len <= n = both buffers' lengths.
+                    unsafe {
+                        gpu.run("mkl_philox_stream", |e| {
+                            e.set_bytes(0, &p);
+                            e.set_buffer_mut(1, &mut raw, start);
+                            e.set_buffer_mut(2, &mut uni, start);
+                            e.dispatch_1d(&pso, len);
+                            Ok(())
+                        })
+                    }
                 })?;
                 philox_output(&raw, &uni)
             }
             Job::PhiloxBlocks { counters, keys } => {
                 let n = counters.len();
                 let (bc, bk) = (gpu.buffer(&counters)?, gpu.buffer(&keys)?);
-                let raw = gpu.buffer_zeroed::<[u32; 4]>(n)?;
-                let uni = gpu.buffer_zeroed::<[f32; 4]>(n)?;
+                let mut raw = gpu.buffer_zeroed::<[u32; 4]>(n)?;
+                let mut uni = gpu.buffer_zeroed::<[f32; 4]>(n)?;
                 let pso = gpu.pipeline(&PipelineKey::plain("mkl_philox_blocks"))?;
-                self.chunked(n, ctx, "philox", &mut stats, |start, len| {
-                    gpu.run("mkl_philox_blocks", |e| {
-                        e.set_buffer(0, &bc, start);
-                        e.set_buffer(1, &bk, start);
-                        e.set_buffer(2, &raw, start);
-                        e.set_buffer(3, &uni, start);
-                        e.set_bytes(4, &(len as u32));
-                        e.dispatch_1d(&pso, len);
-                        Ok(())
-                    })
+                self.chunked(n, ctl, "philox", &mut stats, |start, len| {
+                    // SAFETY: thread t < len accesses element start + t of
+                    // four buffers of length n (validated: keys.len() == n).
+                    unsafe {
+                        gpu.run("mkl_philox_blocks", |e| {
+                            e.set_buffer(0, &bc, start);
+                            e.set_buffer(1, &bk, start);
+                            e.set_buffer_mut(2, &mut raw, start);
+                            e.set_buffer_mut(3, &mut uni, start);
+                            e.set_bytes(4, &(len as u32));
+                            e.dispatch_1d(&pso, len);
+                            Ok(())
+                        })
+                    }
                 })?;
                 philox_output(&raw, &uni)
             }
             Job::DfOps { op, a, b } => {
                 let n = a.len();
                 let (ba, bb) = (gpu.buffer(&a)?, gpu.buffer(&b)?);
-                let out = gpu.buffer_zeroed::<Df32>(n)?;
+                let mut out = gpu.buffer_zeroed::<Df32>(n)?;
                 let pso = gpu.pipeline(&PipelineKey::with_u32("mkl_df_ops", 0, op as u32))?;
-                self.chunked(n, ctx, "double-float", &mut stats, |start, len| {
-                    gpu.run("mkl_df_ops", |e| {
-                        e.set_buffer(0, &ba, start);
-                        e.set_buffer(1, &bb, start);
-                        e.set_buffer(2, &out, start);
-                        e.set_bytes(3, &(len as u32));
-                        e.dispatch_1d(&pso, len);
-                        Ok(())
-                    })
+                self.chunked(n, ctl, "double-float", &mut stats, |start, len| {
+                    // SAFETY: thread i < len accesses element start + i of
+                    // three buffers of length n (validated: b.len() == n).
+                    unsafe {
+                        gpu.run("mkl_df_ops", |e| {
+                            e.set_buffer(0, &ba, start);
+                            e.set_buffer(1, &bb, start);
+                            e.set_buffer_mut(2, &mut out, start);
+                            e.set_bytes(3, &(len as u32));
+                            e.dispatch_1d(&pso, len);
+                            Ok(())
+                        })
+                    }
                 })?;
                 JobOutput::Df(out.to_vec())
             }
@@ -338,49 +391,7 @@ impl Inner {
                 mode,
                 count,
                 values,
-            } => {
-                let channels = values.len() / count;
-                let groups = reduce::num_groups(count);
-                let threads = reduce::THREADS;
-                let p1 =
-                    gpu.pipeline(&PipelineKey::with_u32("mkl_reduce_pass1", 1, mode as u32))?;
-                let p2 =
-                    gpu.pipeline(&PipelineKey::with_u32("mkl_reduce_pass2", 1, mode as u32))?;
-                for p in [&p1, &p2] {
-                    if p.maxTotalThreadsPerThreadgroup() < threads {
-                        return Err(MkError::Unsupported(format!(
-                            "reduction needs {threads} threads per group"
-                        )));
-                    }
-                }
-                let x = gpu.buffer(&values)?;
-                let partials = gpu.buffer_zeroed::<Df32>(groups * channels)?;
-                let sums = gpu.buffer_zeroed::<Df32>(channels)?;
-                let params = ReduceParams {
-                    count: count as u32,
-                    channel_stride: count as u32,
-                    num_groups: groups as u32,
-                    reserved: 0,
-                };
-                ctx.check()?;
-                let cs = gpu.run("mkl_reduce", |e| {
-                    e.set_pipeline(&p1);
-                    e.set_buffer(0, &x, 0);
-                    e.set_buffer(1, &partials, 0);
-                    e.set_bytes(2, &params);
-                    e.dispatch_groups([groups, channels, 1], threads);
-                    // Serial compute encoder: pass 2 starts after pass 1.
-                    e.set_pipeline(&p2);
-                    e.set_buffer(0, &partials, 0);
-                    e.set_buffer(1, &sums, 0);
-                    e.dispatch_groups([1, channels, 1], threads);
-                    Ok(())
-                })?;
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
-                ctx.report(1.0, "reduce");
-                JobOutput::Sums(sums.to_vec())
-            }
+            } => JobOutput::Sums(self.reduce(mode, count, &values, ctl, &mut stats)?),
             Job::SagProbe {
                 systems,
                 system,
@@ -388,29 +399,40 @@ impl Inner {
                 r2,
             } => {
                 let up = self.lookup(systems)?;
-                let h = up.set.headers[system as usize];
+                // Index the stored set, never trust the handle's count.
+                let h = *up.set.headers.get(system as usize).ok_or_else(|| {
+                    MkError::Backend("sag probe: system index out of range".into())
+                })?;
                 if surface >= h.num_surfaces {
                     return Err(MkError::Backend("sag probe: surface out of range".into()));
                 }
                 let n = r2.len();
                 let br = gpu.buffer(&r2)?;
-                let out = gpu.buffer_zeroed::<f32>(n)?;
+                let mut out = gpu.buffer_zeroed::<f32>(n)?;
                 let pso = gpu.pipeline(&PipelineKey::plain("mkl_sag_probe"))?;
                 let abs_surface = h.surface_offset + surface;
-                self.chunked(n, ctx, "sag", &mut stats, |start, len| {
+                debug_assert!((abs_surface as usize) < up.surfaces.len());
+                self.chunked(n, ctl, "sag", &mut stats, |start, len| {
                     let p = SagParams {
                         surface: abs_surface,
                         count: len as u32,
                         reserved: [0; 2],
                     };
-                    gpu.run("mkl_sag_probe", |e| {
-                        e.set_buffer(0, &up.surfaces, 0);
-                        e.set_bytes(1, &p);
-                        e.set_buffer(2, &br, start);
-                        e.set_buffer(3, &out, start);
-                        e.dispatch_1d(&pso, len);
-                        Ok(())
-                    })
+                    // SAFETY: the kernel reads surfaces[abs_surface] (inside
+                    // the validated set: surface_offset + surface <
+                    // surface_offset + num_surfaces <= len) and, for i < len,
+                    // r2/out[start + i] of buffers of length n. The record
+                    // passed `PackedSystem::validate` (num_asphere <= MAX).
+                    unsafe {
+                        gpu.run("mkl_sag_probe", |e| {
+                            e.set_buffer(0, &up.surfaces, 0);
+                            e.set_bytes(1, &p);
+                            e.set_buffer(2, &br, start);
+                            e.set_buffer_mut(3, &mut out, start);
+                            e.dispatch_1d(&pso, len);
+                            Ok(())
+                        })
+                    }
                 })?;
                 JobOutput::F32(out.to_vec())
             }
@@ -420,8 +442,114 @@ impl Inner {
                 ));
             }
         };
+        ctl.report(1.0, "");
         stats.wall_seconds = t0.elapsed().as_secs_f64();
         Ok(JobResult { output, stats })
+    }
+
+    /// Two-pass reduction in command buffers of about `chunk_items` values.
+    /// Pass 1 runs over rectangles of (channel range) × (group range): whole
+    /// channels when several fit in a chunk, otherwise group ranges of one
+    /// channel (`first_group`). Pass 2 runs over channel ranges. The result is
+    /// bit-identical to a single launch (`mklight_gpu::reduce`).
+    fn reduce(
+        &self,
+        mode: mklight_gpu::ReduceMode,
+        count: usize,
+        values: &[f32],
+        ctl: &JobControl,
+        stats: &mut JobStats,
+    ) -> MkResult<Vec<Df32>> {
+        let gpu = &self.ctx;
+        let chunk = self.chunk();
+        let channels = values.len() / count;
+        let groups = reduce::num_groups(count);
+        let threads = reduce::THREADS;
+        let p1 = gpu.pipeline(&PipelineKey::with_u32("mkl_reduce_pass1", 1, mode as u32))?;
+        let p2 = gpu.pipeline(&PipelineKey::with_u32("mkl_reduce_pass2", 1, mode as u32))?;
+        for p in [&p1, &p2] {
+            if p.maxTotalThreadsPerThreadgroup() < threads {
+                return Err(MkError::Unsupported(format!(
+                    "reduction needs {threads} threads per group"
+                )));
+            }
+        }
+        let x = gpu.buffer(values)?;
+        let mut partials = gpu.buffer_zeroed::<Df32>(groups * channels)?;
+        let mut sums = gpu.buffer_zeroed::<Df32>(channels)?;
+        let params = |first_group: usize| ReduceParams {
+            count: count as u32,
+            channel_stride: count as u32,
+            num_groups: groups as u32,
+            first_group: first_group as u32,
+        };
+
+        // Pass-1 launches: (first channel, channels, first group, groups).
+        let per_group = count.div_ceil(groups);
+        let group_step = (chunk / per_group).clamp(1, groups);
+        let mut launches = Vec::new();
+        if group_step == groups {
+            let ch_step = (chunk / count).max(1);
+            for c0 in (0..channels).step_by(ch_step) {
+                launches.push((c0, ch_step.min(channels - c0), 0, groups));
+            }
+        } else {
+            for c in 0..channels {
+                for g0 in (0..groups).step_by(group_step) {
+                    launches.push((c, 1, g0, group_step.min(groups - g0)));
+                }
+            }
+        }
+        // Pass 2 handles `groups` partials per channel.
+        let ch2_step = (chunk / (groups * threads).max(1)).max(1);
+        let total = (channels * groups + channels) as f64;
+        let mut done = 0usize;
+        let mut account = |cs: CommandStats, units: usize, stats: &mut JobStats| {
+            stats.device_seconds += cs.gpu_seconds;
+            stats.command_buffers += 1;
+            done += units;
+            ctl.report(done as f64 / total, "reduce");
+        };
+
+        for (c0, nc, g0, ng) in launches {
+            ctl.check()?;
+            let p = params(g0);
+            // SAFETY: channel c0 + y (y < nc <= channels − c0) reads
+            // x[(c0 + y)·count + i] for i < count and writes
+            // partials[(c0 + y)·groups + g] for g < g0 + ng <= groups: inside
+            // buffers of channels·count and channels·groups elements.
+            let cs = unsafe {
+                gpu.run("mkl_reduce_pass1", |e| {
+                    e.set_pipeline(&p1);
+                    e.set_buffer(0, &x, c0 * count);
+                    e.set_buffer_mut(1, &mut partials, c0 * groups);
+                    e.set_bytes(2, &p);
+                    e.dispatch_groups([ng, nc, 1], threads);
+                    Ok(())
+                })?
+            };
+            account(cs, nc * ng, stats);
+        }
+        for c0 in (0..channels).step_by(ch2_step) {
+            ctl.check()?;
+            let nc = ch2_step.min(channels - c0);
+            let p = params(0);
+            // SAFETY: channel c0 + y reads partials[(c0 + y)·groups + j] for
+            // j < groups and writes sums[c0 + y], y < nc <= channels − c0.
+            let cs = unsafe {
+                gpu.run("mkl_reduce_pass2", |e| {
+                    e.set_pipeline(&p2);
+                    e.set_buffer(0, &partials, c0 * groups);
+                    e.set_buffer_mut(1, &mut sums, c0);
+                    e.set_bytes(2, &p);
+                    e.dispatch_groups([1, nc, 1], threads);
+                    Ok(())
+                })?
+            };
+            account(cs, nc, stats);
+        }
+        ctl.check()?;
+        Ok(sums.to_vec())
     }
 }
 
@@ -444,6 +572,7 @@ impl ComputeBackend for MetalBackend {
     }
 
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle> {
+        // `PackedSystemSet::new` validates every record (kernels rely on it).
         let set = PackedSystemSet::new(systems)?;
         let up = Uploaded {
             headers: self.inner.ctx.buffer(&set.headers)?,
@@ -457,11 +586,7 @@ impl ComputeBackend for MetalBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::new(up));
-        Ok(SystemHandle {
-            backend_instance: self.inner.instance,
-            id,
-            count,
-        })
+        Ok(SystemHandle::new(self.inner.instance, id, count))
     }
 
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()> {
@@ -471,7 +596,7 @@ impl ComputeBackend for MetalBackend {
             .systems
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&handle.id);
+            .remove(&handle.id());
         Ok(())
     }
 
@@ -488,13 +613,10 @@ impl ComputeBackend for MetalBackend {
         if let Job::SagProbe { systems, .. } = &job {
             self.inner.lookup(*systems)?;
         }
-        let (p, c) = pending(ctx.cancel.clone());
+        let (p, c, ctl) = pending(ctx);
         let inner = self.inner.clone();
-        let ctx = ctx.clone();
-        std::thread::Builder::new()
-            .name("mklight-metal".into())
-            .spawn(move || c.complete(inner.execute(job, &ctx)))
-            .map_err(|e| MkError::Backend(e.to_string()))?;
+        let what = format!("metal {:?} job", job.kind());
+        spawn_job("mklight-metal", what, c, move || inner.execute(job, &ctl))?;
         Ok(p)
     }
 }

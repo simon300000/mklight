@@ -34,25 +34,35 @@ trait ComputeBackend: Send + Sync {
   immutable on the device, like the `Snapshot`s they come from. One upload can
   hold many systems (optimiser candidates, tolerance samples, zoom
   configurations); rays select one by index. A `SystemHandle` is only valid on
-  the backend instance that issued it.
+  the backend instance that issued it, and its fields are private: backends
+  use it only as a lookup key and check every index against the stored set.
+  Uploading runs `PackedSystem::validate` on every record (enum codes, flags,
+  `num_asphere`, finiteness, `n > 0`, `α ≥ 0`), so kernels can trust it.
 * **Jobs** (`Job`) are batched, backend-neutral descriptions of work over host
   structure-of-arrays data: `PhiloxStream`, `PhiloxBlocks`, `DfOps`,
   `Reduce`, `SagProbe`, and `Trace` (the sequential ray-trace kernel, added
   when it is ported from `mklight-trace`). Each has a typed `JobOutput`.
   `Job::validate` performs the backend-independent input checks.
 * **Asynchrony.** `submit` returns a `Pending<JobResult>` immediately. It can
-  be awaited (`Future`), waited on (`wait`, `wait_timeout`) or polled, and
-  cancelled (`Pending::cancel` or the `JobContext`'s token). A worker that dies
-  without a result resolves it with an error, never a hang.
-* **Cancellation and progress.** Backends split large jobs into command
-  buffers (launches) of `chunk_items` work items, check the cancel token
-  between them and report progress through the `JobContext`. A cancelled job
-  returns `Err(Cancelled)`, never a partial result.
+  be awaited (`Future`), waited on (`wait`, `wait_timeout`) or polled. A
+  worker that dies without a result resolves it with an error, never a hang,
+  and a worker panic becomes `MkError::Backend` naming the job.
+* **Cancellation and progress.** Every submission has its own cancel token.
+  The worker stops when either that token or the caller's `JobContext` token
+  is cancelled. `Pending::cancel`, or dropping an unfinished `Pending` (a
+  superseded request), cancels only that submission. Sibling jobs under the
+  same context keep running, and cancelling the context stops all of them.
+  Backends split every job into command buffers (launches) of `chunk_items`
+  work items (values, for reductions), check cancellation between them, and
+  report progress through the `JobContext`. Progress reaches 1 on success,
+  also for empty jobs. A cancelled job returns `Err(Cancelled)`, never a
+  partial result.
 * **Stats.** `JobStats` reports device time (GPU timestamps), wall time and
   the number of command buffers.
 * **Reproducibility.** `DeviceInfo::backend_id()` ("metal:Apple M2 Pro") and
-  the `PrecisionDescriptor` (serialisable) go into `RunInfo` together with the
-  seed. Philox streams and reductions are deterministic (see §3), so a
+  the `PrecisionDescriptor` (serialisable; it includes the measured numerics
+  probe and `kernel_build`, i.e. library origin, MSL version and compiler
+  flags) go into `RunInfo` together with the seed. Philox streams and reductions are deterministic (see §3), so a
   `(snapshot, settings, backend, seed)` tuple reproduces bit-identical output.
 * **Never silently degraded.** A backend that cannot run a job reports
   `supports(kind) == false` and returns `MkError::Unsupported`; the engine then
@@ -80,8 +90,17 @@ into `mklight_gpu::consts`, so no constant is written twice.
 **Layout rules:** only 4-byte scalars and fixed arrays (no `float3`: it is 16
 bytes in MSL and 16-byte aligned in GLSL), every struct a multiple of 16
 bytes with explicit `reserved` padding, no implicit padding (the Rust mirror
-derives `bytemuck::Pod`). Any change bumps `MKL_LAYOUT_VERSION`; the header
-carries a magic word and the version, and backends validate both on upload.
+derives `bytemuck::Pod`). Any change bumps `MKL_LAYOUT_VERSION` (now 2: the
+reduction parameter block gained `first_group`); the header carries a magic
+word and the version, and backends validate both on upload.
+
+**Representability.** The packer rounds each model value once to f32 and
+rejects any whose f32 is infinite, **subnormal**, or zero while the model
+value is not (for example a curvature of 1e-46). Kernels may compare packed
+parameters with exactly `0.0f`, and GPUs flush subnormals (§3.3), so either
+case would silently change the system. The only exceptions are rotation
+entries and origin residuals below `f32::MIN_POSITIVE`, which are written as
+zeros because their effect is far below one ulp of what they modify.
 
 ### 2.1 `MklPackedHeader` (176 bytes, one per system)
 
@@ -138,13 +157,24 @@ other float is compared for equality (CONVENTIONS §7.6).
 
 ### 2.3 Ray batches
 
-`RayBatch` / `TraceResult` are SoA arrays: position and direction cosines in
-the local frame of the start surface, optical path as double-float
-(`opl_hi`, `opl_lo`), packed wavelength index, optional system index, and a
-status word `code | surface << 8` (`MKL_RAY_OK, MISS, TIR, VIGNETTED,
-NONFINITE, NOT_CONVERGED`). Ray generation (field/pupil mapping, ray aiming)
-stays in the f64 reference code; rays are rounded to f32 once, on the start
-surface's local frame.
+`RayBatch` / `TraceResult` are SoA arrays. They hold position and direction
+cosines in the local frame of the start surface, optical path as double-float
+(`opl_hi`, `opl_lo`), the packed wavelength index, an optional system index,
+and a per-ray flux **weight** (empty means 1). The output adds a status word
+`code | surface << 8` (`MKL_RAY_OK, MISS, TIR, VIGNETTED, NONFINITE,
+NOT_CONVERGED`) and the output weight: input weight × path transmittance.
+`TraceRequest::radiometry` (`Off`, or `Unpolarized` by default) sets how
+`alpha_after` and the interface `T`/`R` act on the weight, with the same
+model as the CPU reference, so throughput, ghost and stray-light merits and
+the `T + R + A = 1` bookkeeping have a place in the interface. The enum is
+`non_exhaustive`: a polarised mode (Jones/Stokes state per ray, as extra SoA
+fields) will be an additive variant. `RecordMode::AllSurfaces` records
+`MKL_TRACE_RECORD_FLOATS` = 9 values per ray per surface (x, y, z, l, m, n,
+opl_hi, opl_lo, weight) plus a per-surface status word. `RayBatch`,
+`TraceRequest` (built with `TraceRequest::new`) and `TraceResult` are
+`non_exhaustive`, so the trace port can add fields without breaking callers.
+Ray generation (field/pupil mapping, ray aiming) stays in the f64 reference
+code; rays are rounded to f32 once, on the start surface's local frame.
 
 ## 3. Numerics strategy
 
@@ -212,10 +242,23 @@ IEEE binary32 on the CPU. The result (`NumericsProbe`) is part of the
 | no contraction | bitwise CPU/GPU agreement | yes (offline and MSL 3.2 runtime) |
 | no reassociation | error-free transforms | yes |
 | correctly rounded `/`, `sqrt` | bitwise df ÷, √, sag | yes |
-| subnormals preserved | – (values are far from 1e-38) | **no, flushed to zero** |
+| subnormals preserved | bitwise emulation in the matching environment | **no, flushed to zero** |
 
 `DfOps` and `Reduce` (and later every double-float kernel) are only offered
 when `error_free_transforms()` holds.
+
+**Flush-to-zero.** Measured on the M2 Pro: arithmetic (`+ − × fma / sqrt`)
+reads subnormal operands as zeros of the same sign and writes subnormal
+results as signed zeros (`fma` rounds the exact value once, then flushes).
+Comparisons also read subnormal operands as zero. `abs`, negation,
+`max`/`min`, selects, loads and stores only move bits. Every f32
+specification in `mklight-gpu` (`df`, `fmath`, `reduce`) is generic over an
+`FpEnv`: `Ieee`, or `Ftz` with exactly these rules. `CpuF32Backend::matching(&probe)`
+picks the device's environment, so the emulation stays bit-identical when
+inputs, intermediates or results are subnormal (tested on the device with
+operands from 2⁻¹⁵⁰ to 2⁻⁶⁰). Under flush-to-zero the error-free transforms
+are exact as long as no error term falls below 2⁻¹²⁶, so double-float values
+keep their full accuracy for `|hi| ≥ 2⁻⁷⁸`, far below any optical quantity.
 
 ### 3.4 Reductions
 
@@ -230,16 +273,27 @@ Neumaier in f32 loses accuracy over long systematic runs (its compensation
 term is itself f32), so it is only used for the short per-thread runs; the
 double-float mode is the default for statistics.
 
+For cancellation granularity, the Metal backend runs pass 1 in command
+buffers of about `chunk_items` values. A buffer covers several whole channels
+when they fit, otherwise a range of groups of one channel (`first_group` in
+`MklReduceParams`). Pass 2 then runs over channel ranges. Each group's
+partial depends only on its own index, so the split changes no bit (tested
+against the one-shot specification).
+
 ### 3.5 Random numbers
 
 Philox4x32-10 on the GPU is bit-identical to `mklight_core::rng` (raw words
 for any counter/key, and the `(seed, stream)` stream layout of `Philox`). The
-f32 uniform is `fmath::u32_to_unit_f32`: the core's `(k + ½)·2⁻²⁴` (top 24
-bits) rounded toward zero to f32, which is exact for `k < 2²³` and half an f32
-ulp lower otherwise. (`(k + ½)·2⁻²⁴` needs 25 bits for `k ≥ 2²³`; rounding it to
-nearest could produce 1.0.) Every operation in the mapping is exact, so it is
-identical on every device. Consumers that need the f64 uniform apply
-`u32_to_unit_f64` to the raw words on the host.
+canonical f32 uniform is `mklight_core::rng::u32_to_unit_f32` (re-exported as
+`fmath::u32_to_unit_f32`): the f64 reference `(k + ½)·2⁻²⁴` (top 24 bits)
+rounded toward zero to f32. It equals the reference for `k < 2²³` and is half
+an f32 ulp lower otherwise. (`(k + ½)·2⁻²⁴` needs 25 bits for `k ≥ 2²³`;
+rounding it to nearest could produce 1.0.) Every operation in the mapping is
+exact, so it is identical on every device and on the CPU. CONVENTIONS §6
+states the contract: raw words and f32 uniforms are identical across CPU and
+GPU. Consumers that need the f64 uniform apply `u32_to_unit_f64` to the raw
+words on the host. `Philox::seek(i)` positions the core generator at any
+draw (tested against sequential draws).
 
 ## 4. Validation
 
@@ -266,7 +320,11 @@ Three implementations are compared, each answering a different question:
   is not; ill-conditioned multi-channel sums; packed sag on the GPU against
   the emulation and the core's f64 sag; layout against the Metal compiler;
   the runtime-compiled library bit-identical to the precompiled one;
-  chunking, progress, cancellation, handle checks and unsupported jobs.
+  subnormal-range operands and sums bit-identical to the flush-to-zero
+  emulation; hypot special values (NaN never masked); chunked reductions
+  bit-identical to the specification; chunking, progress (including empty
+  jobs), per-submission cancellation, forged handles, tampered records and
+  unsupported jobs.
 * When the trace kernel lands, the cross-validation suite traces a fixed set
   of designs (singlets, a double Gauss, a Cooke triplet, a tilted/decentred
   system, a long-track telephoto, an asphere-heavy phone lens) through all
@@ -284,13 +342,25 @@ Three implementations are compared, each answering a different question:
   resolve). The include-inlined source is always embedded as a fallback;
   `MKLIGHT_METAL_SKIP_OFFLINE=1` forces the fallback for testing.
   `LibraryChoice::{Auto, Precompiled, RuntimeSource}` selects at run time.
+  If the strict flag set fails, the build retries without `-Wall -Werror`, and
+  then without the math-mode flags. Every set keeps `-fno-fast-math
+  -ffp-contract=off`, which `build.rs` asserts. With `Auto`, a precompiled
+  library that fails the numerics probe is replaced by the runtime-compiled
+  source when that one passes. The flags or options actually used are in
+  `PrecisionDescriptor::kernel_build`.
 * **Device and pipelines.** `DeviceSelector::{Default, NameContains,
   RegistryId}`. Pipelines are cached by kernel name + function-constant values
   (`mkl_fc_df_op` at index 0, `mkl_fc_reduce_mode` at index 1).
-* **Memory.** `SharedBuffer<T: Pod>` wraps `MTLStorageModeShared` buffers
-  (unified memory on Apple Silicon: uploads/readbacks are memcpys). The GPU
-  only touches a buffer inside `MetalContext::run`, which borrows it until the
-  command buffer has completed, so host and device never race.
+* **Memory and soundness.** `SharedBuffer<T: Pod>` wraps
+  `MTLStorageModeShared` buffers (unified memory on Apple Silicon:
+  uploads/readbacks are memcpys). Encoding and dispatch (`MetalContext::run`,
+  `Encoder`) are crate-private and `unsafe`, because a kernel indexes by its
+  parameters, which the type system cannot relate to buffer lengths. Each
+  call site states its bounds argument. A buffer the kernel writes is bound
+  with `set_buffer_mut(&mut SharedBuffer)`, and the borrow lasts until the
+  command buffer has completed, so no host slice of it can exist meanwhile
+  on any thread. The public safe surface is `ComputeBackend` plus device,
+  library, buffer and pipeline accessors.
 * **Execution.** Each submission runs on a worker thread: per chunk it checks
   cancellation, encodes, commits, waits, checks `MTLCommandBufferStatus.error`
   (reported as `MkError::Backend` with the Metal error text), and adds

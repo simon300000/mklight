@@ -56,7 +56,7 @@
 /* Versioning and fixed capacities                                           */
 /* ------------------------------------------------------------------------ */
 /* Layout version: bump on any change to a struct or enum below. */
-#define MKL_LAYOUT_VERSION 1u
+#define MKL_LAYOUT_VERSION 2u
 /* 'MKLP' little-endian; first word of every packed system header. */
 #define MKL_PACKED_MAGIC 0x504C4B4Du
 
@@ -126,6 +126,10 @@
 #define MKL_RAY_NOT_CONVERGED 5u /* asphere Newton iteration failed its sag tolerance */
 #define MKL_RAY_CODE_MASK 0xFFu
 #define MKL_RAY_SURFACE_SHIFT 8u
+
+/* Values recorded per ray per surface when a trace records every surface:
+ * x, y, z, l, m, n, opl_hi, opl_lo, weight (in that order). */
+#define MKL_TRACE_RECORD_FLOATS 9u
 
 /* ------------------------------------------------------------------------ */
 /* Packed system header (one per system; several systems may share one       */
@@ -216,12 +220,15 @@ struct MklPhiloxParams {
 };                         /* 32 bytes */
 
 /* Compensated reduction kernel. Values are channel-major: channel c occupies
- * [c*channel_stride, c*channel_stride + count). */
+ * [c*channel_stride, c*channel_stride + count). Pass 1 may be split into
+ * several launches over group ranges: a launch of k threadgroups computes
+ * groups first_group .. first_group + k - 1 (each group's partial does not
+ * depend on the split). */
 struct MklReduceParams {
     MKL_U32 count;          /*  0  values per channel */
     MKL_U32 channel_stride; /*  4  elements between channels */
-    MKL_U32 num_groups;     /*  8  threadgroups per channel in pass 1 */
-    MKL_U32 reserved;       /* 12 */
+    MKL_U32 num_groups;     /*  8  threadgroups per channel in pass 1 (all launches) */
+    MKL_U32 first_group;    /* 12  pass 1: index of this launch's first group; pass 2: 0 */
 };                          /* 16 bytes */
 
 /* Packed-sag probe kernel: evaluate the sag of one packed surface. */

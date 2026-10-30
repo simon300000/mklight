@@ -2,10 +2,11 @@
 //!
 //! `MTLStorageModeShared` buffers live in memory visible to both CPU and GPU
 //! (unified memory on Apple Silicon), so uploads and readbacks are plain
-//! memcpys. Host access goes through `&self`/`&mut self` slices; the backend
-//! only encodes GPU work inside [`crate::MetalContext::run`], which borrows
-//! the buffers for the duration of the command buffer and waits for it, so
-//! the host can never observe a buffer while the GPU writes it.
+//! memcpys. Host access goes through `&self`/`&mut self` slices. GPU work is
+//! encoded only by the crate-private `MetalContext::run`, which waits for the
+//! command buffer; a buffer a kernel writes must be bound through a `&mut`
+//! borrow that lasts until then, so no host slice of it (on any thread) can
+//! exist while the GPU writes it.
 
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -26,7 +27,9 @@ pub struct SharedBuffer<T: Pod> {
 // Metal threading guide: devices, queues, resources and pipeline states are
 // thread-safe; only command buffers and encoders are not). Access to the
 // buffer *contents* follows Rust borrows: shared reads via `&self`, writes
-// via `&mut self`, GPU access only while `MetalContext::run` holds a borrow.
+// via `&mut self`; GPU writes only through a `&mut` borrow held by
+// `MetalContext::run` until the command buffer completes, GPU reads through a
+// shared borrow held equally long.
 unsafe impl<T: Pod + Send> Send for SharedBuffer<T> {}
 unsafe impl<T: Pod + Sync> Sync for SharedBuffer<T> {}
 
@@ -84,8 +87,8 @@ impl<T: Pod> SharedBuffer<T> {
         // SAFETY: `contents` points to at least `len * size_of::<T>()` bytes of
         // CPU-visible memory, suitably aligned (Metal buffers are page
         // aligned), and `T: Pod` accepts any bit pattern. GPU writes only
-        // happen inside `MetalContext::run`, which holds a borrow of the
-        // buffer until the command buffer has completed.
+        // happen inside `MetalContext::run` through a `&mut` borrow held until
+        // the command buffer has completed, which excludes this `&self`.
         unsafe { std::slice::from_raw_parts(self.ptr().as_ptr(), self.len) }
     }
 

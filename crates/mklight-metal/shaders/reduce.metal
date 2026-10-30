@@ -3,8 +3,10 @@
 // fixed by the data size only (no atomics), and is specified and emulated
 // exactly by mklight_gpu::reduce; see that module for the full description.
 //
-// Pass 1: grid (num_groups, channels), MKL_REDUCE_THREADS threads per group.
+// Pass 1: grid (k, channels) with k <= num_groups, MKL_REDUCE_THREADS threads
+//         per group, computing groups first_group .. first_group + k - 1.
 // Pass 2: grid (1, channels), MKL_REDUCE_THREADS threads per group.
+// The host binds x, partials and sums at the first channel of a launch.
 #include "mklight_common.h"
 
 // Accumulator (MKL_REDUCE_*), specialised per pipeline.
@@ -40,7 +42,8 @@ kernel void mkl_reduce_pass1(device const float* x [[buffer(0)]],
     uint channel = group.y;
     device const float* xc = x + channel * p.channel_stride;
     uint stride = p.num_groups * MKL_REDUCE_THREADS;
-    uint g = group.x * MKL_REDUCE_THREADS + tid;
+    uint gidx = p.first_group + group.x;
+    uint g = gidx * MKL_REDUCE_THREADS + tid;
 
     float2 acc;
     if (mkl_fc_reduce_mode == MKL_REDUCE_PLAIN) {
@@ -58,7 +61,7 @@ kernel void mkl_reduce_pass1(device const float* x [[buffer(0)]],
     v[tid] = acc;
     float2 r = mkl_group_tree(v, tid);
     if (tid == 0u) {
-        partials[channel * p.num_groups + group.x] = r;
+        partials[channel * p.num_groups + gidx] = r;
     }
 }
 

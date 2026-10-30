@@ -1,9 +1,13 @@
 //! CPU-f32 emulation backend.
 //!
 //! Runs the GPU algorithms on the CPU with the same f32 operations in the
-//! same order, so its results are bit-identical to a conforming GPU (see
-//! `NumericsProbe`). Comparing *reference f64 ↔ CPU-f32* isolates precision
-//! error; comparing *CPU-f32 ↔ GPU* isolates backend/compiler error.
+//! same order and the same f32 environment ([`crate::fenv`]: IEEE, or
+//! flush-to-zero like Apple GPUs). Its results are bit-identical to a GPU
+//! whose numerics probe reports error-free transforms when it is built with
+//! [`CpuF32Backend::matching`] for that GPU's probe; division, square root and
+//! the sag additionally need the probe's correctly rounded `/` and `sqrt`.
+//! Comparing *reference f64 ↔ CPU-f32* isolates precision error; comparing
+//! *CPU-f32 ↔ GPU* isolates backend/compiler error.
 //!
 //! Kernels available now: Philox (stream and raw blocks), double-float
 //! operations, compensated reduction and the packed-sag probe. The
@@ -21,9 +25,10 @@ use rayon::prelude::*;
 
 use crate::backend::*;
 use crate::df::Df32;
-use crate::fmath::{packed_sag, u32_to_unit_f32};
+use crate::fenv::{FpEnv, Ftz, Ieee};
+use crate::fmath::{packed_sag_in, u32_to_unit_f32};
 use crate::layout::{PackedSystem, PackedSystemSet};
-use crate::pending::{Pending, pending};
+use crate::pending::{JobControl, Pending, pending, spawn_job};
 use crate::reduce;
 
 /// Work items between cancellation checks / progress reports.
@@ -48,11 +53,28 @@ impl Default for CpuF32Backend {
 }
 
 impl CpuF32Backend {
+    /// IEEE binary32 with subnormals.
     pub fn new() -> Self {
+        Self::with_subnormals(true)
+    }
+
+    /// The environment of a device with this numerics probe: flush-to-zero
+    /// when `probe.subnormals` is false.
+    pub fn matching(probe: &NumericsProbe) -> Self {
+        Self::with_subnormals(probe.subnormals)
+    }
+
+    /// IEEE (`true`) or flush-to-zero (`false`) f32 environment.
+    pub fn with_subnormals(subnormals: bool) -> Self {
+        let env = if subnormals {
+            "IEEE binary32, subnormals kept"
+        } else {
+            "flush-to-zero"
+        };
         let inner = Inner {
             info: DeviceInfo {
                 kind: BackendKind::CpuF32,
-                name: "CPU f32 emulation".into(),
+                name: format!("CPU f32 emulation ({env})"),
                 vendor: std::env::consts::ARCH.into(),
                 max_buffer_bytes: isize::MAX as u64,
                 recommended_working_set_bytes: None,
@@ -68,8 +90,15 @@ impl CpuF32Backend {
                 fast_math_disabled: true,
                 opl_double_float: true,
                 compensated_reductions: true,
-                probe: NumericsProbe::IEEE,
+                probe: NumericsProbe {
+                    subnormals,
+                    ..NumericsProbe::IEEE
+                },
                 budget: ErrorBudget::CONVENTIONS,
+                kernel_build: format!(
+                    "mklight-gpu {} Rust f32 emulation, {env}",
+                    env!("CARGO_PKG_VERSION")
+                ),
             },
             instance: next_backend_instance(),
             next_id: AtomicU64::new(1),
@@ -83,7 +112,7 @@ impl CpuF32Backend {
 
 impl Inner {
     fn lookup(&self, h: SystemHandle) -> MkResult<Arc<PackedSystemSet>> {
-        if h.backend_instance != self.instance {
+        if h.backend_instance() != self.instance {
             return Err(MkError::Backend(
                 "system handle belongs to another backend".into(),
             ));
@@ -91,7 +120,7 @@ impl Inner {
         self.systems
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&h.id)
+            .get(&h.id())
             .cloned()
             .ok_or_else(|| MkError::Backend("unknown or released system handle".into()))
     }
@@ -101,7 +130,7 @@ impl Inner {
 /// progress between chunks (the CPU analogue of command buffers).
 fn chunked<T: Send>(
     total: usize,
-    ctx: &JobContext,
+    ctl: &JobControl,
     stage: &str,
     stats: &mut JobStats,
     f: impl Fn(usize) -> T + Sync,
@@ -109,14 +138,14 @@ fn chunked<T: Send>(
     let mut out = Vec::with_capacity(total);
     let mut start = 0;
     while start < total {
-        ctx.check()?;
+        ctl.check()?;
         let end = (start + CHUNK).min(total);
         out.par_extend((start..end).into_par_iter().map(&f));
         stats.command_buffers += 1;
         start = end;
-        ctx.report(end as f64 / total as f64, stage);
+        ctl.report(end as f64 / total as f64, stage);
     }
-    ctx.check()?;
+    ctl.check()?;
     Ok(out)
 }
 
@@ -127,7 +156,7 @@ fn philox_output(blocks: Vec<[u32; 4]>) -> JobOutput {
 }
 
 impl Inner {
-    fn execute(&self, job: Job, ctx: &JobContext) -> MkResult<JobResult> {
+    fn execute<E: FpEnv>(&self, job: Job, ctl: &JobControl) -> MkResult<JobResult> {
         let t0 = Instant::now();
         let mut stats = JobStats::default();
         let output = match job {
@@ -138,7 +167,7 @@ impl Inner {
                 num_blocks,
             } => {
                 let key = [seed as u32, (seed >> 32) as u32];
-                let blocks = chunked(num_blocks as usize, ctx, "philox", &mut stats, |t| {
+                let blocks = chunked(num_blocks as usize, ctl, "philox", &mut stats, |t| {
                     let b = first_block.wrapping_add(t as u64);
                     let ctr = [
                         b as u32,
@@ -151,14 +180,14 @@ impl Inner {
                 philox_output(blocks)
             }
             Job::PhiloxBlocks { counters, keys } => {
-                let blocks = chunked(counters.len(), ctx, "philox", &mut stats, |i| {
+                let blocks = chunked(counters.len(), ctl, "philox", &mut stats, |i| {
                     philox4x32_10(counters[i], keys[i])
                 })?;
                 philox_output(blocks)
             }
             Job::DfOps { op, a, b } => {
-                JobOutput::Df(chunked(a.len(), ctx, "df", &mut stats, |i| {
-                    op.apply(a[i], b[i])
+                JobOutput::Df(chunked(a.len(), ctl, "df", &mut stats, |i| {
+                    op.apply_in::<E>(a[i], b[i])
                 })?)
             }
             Job::Reduce {
@@ -166,17 +195,29 @@ impl Inner {
                 count,
                 values,
             } => {
+                // Pass 1 in group ranges of about CHUNK values (the same
+                // split the GPU uses for its command buffers), then pass 2.
                 let channels = values.len() / count;
+                let groups = reduce::num_groups(count);
+                let per_group = count.div_ceil(groups);
+                let step = (CHUNK / per_group).clamp(1, groups);
+                let total = channels * groups;
                 let mut sums = Vec::with_capacity(channels);
+                let mut done = 0;
                 for c in 0..channels {
-                    ctx.check()?;
-                    sums.push(reduce::reduce_channel(
-                        mode,
-                        &values[c * count..(c + 1) * count],
-                    ));
-                    stats.command_buffers += 1;
-                    ctx.report((c + 1) as f64 / channels as f64, "reduce");
+                    let x = &values[c * count..(c + 1) * count];
+                    let mut partials = Vec::with_capacity(groups);
+                    for g0 in (0..groups).step_by(step) {
+                        ctl.check()?;
+                        let g1 = (g0 + step).min(groups);
+                        partials.extend(reduce::pass1_in::<E>(mode, x, g0..g1));
+                        stats.command_buffers += 1;
+                        done += g1 - g0;
+                        ctl.report(done as f64 / total as f64, "reduce");
+                    }
+                    sums.push(reduce::pass2_in::<E>(mode, &partials));
                 }
+                ctl.check()?;
                 JobOutput::Sums(sums)
             }
             Job::SagProbe {
@@ -186,13 +227,15 @@ impl Inner {
                 r2,
             } => {
                 let set = self.lookup(systems)?;
-                let h = &set.headers[system as usize];
+                let h = set.headers.get(system as usize).ok_or_else(|| {
+                    MkError::Backend("sag probe: system index out of range".into())
+                })?;
                 if surface >= h.num_surfaces {
                     return Err(MkError::Backend("sag probe: surface out of range".into()));
                 }
                 let s = set.surfaces[(h.surface_offset + surface) as usize];
-                JobOutput::F32(chunked(r2.len(), ctx, "sag", &mut stats, |i| {
-                    packed_sag(&s, r2[i])
+                JobOutput::F32(chunked(r2.len(), ctl, "sag", &mut stats, |i| {
+                    packed_sag_in::<E>(&s, r2[i])
                 })?)
             }
             Job::Trace(_) => {
@@ -201,6 +244,7 @@ impl Inner {
                 ));
             }
         };
+        ctl.report(1.0, "");
         stats.wall_seconds = t0.elapsed().as_secs_f64();
         Ok(JobResult { output, stats })
     }
@@ -225,11 +269,7 @@ impl ComputeBackend for CpuF32Backend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::new(set));
-        Ok(SystemHandle {
-            backend_instance: self.inner.instance,
-            id,
-            count,
-        })
+        Ok(SystemHandle::new(self.inner.instance, id, count))
     }
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()> {
         self.inner.lookup(handle)?;
@@ -237,7 +277,7 @@ impl ComputeBackend for CpuF32Backend {
             .systems
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&handle.id);
+            .remove(&handle.id());
         Ok(())
     }
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
@@ -252,15 +292,19 @@ impl ComputeBackend for CpuF32Backend {
         if let Job::SagProbe { systems, .. } = &job {
             self.inner.lookup(*systems)?;
         }
-        let (p, c) = pending(ctx.cancel.clone());
+        let (p, c, ctl) = pending(ctx);
         // The emulation is CPU-bound and parallel inside; run it on its own
         // thread so `submit` returns immediately, like a GPU queue.
-        let ctx = ctx.clone();
         let inner = self.inner.clone();
-        std::thread::Builder::new()
-            .name("mklight-cpu-f32".into())
-            .spawn(move || c.complete(inner.execute(job, &ctx)))
-            .map_err(|e| MkError::Backend(e.to_string()))?;
+        let what = format!("cpu-f32 {:?} job", job.kind());
+        let ftz = !self.inner.precision.probe.subnormals;
+        spawn_job("mklight-cpu-f32", what, c, move || {
+            if ftz {
+                inner.execute::<Ftz>(job, &ctl)
+            } else {
+                inner.execute::<Ieee>(job, &ctl)
+            }
+        })?;
         Ok(p)
     }
 }
@@ -310,11 +354,8 @@ mod tests {
         .unwrap() else {
             panic!()
         };
-        // Skip draws 0..12 (blocks 0..3) by drawing them.
         let mut r = Philox::new(0x1234_5678_9abc_def0, 77);
-        for _ in 0..12 {
-            r.next_u32();
-        }
+        r.seek(12); // block 3
         for (i, w) in raw.iter().enumerate() {
             assert_eq!(*w, r.next_u32(), "draw {i}");
             assert_eq!(uniform[i], u32_to_unit_f32(*w));
@@ -381,18 +422,137 @@ mod tests {
         assert!(a.submit(probe(h), &JobContext::new()).is_err());
         assert!(matches!(
             a.submit(
-                Job::Trace(Box::new(crate::batch::TraceRequest {
-                    systems: h,
-                    rays: Default::default(),
-                    start_surface: 0,
-                    end_surface: 3,
-                    record: Default::default(),
-                    apply_apertures: true,
-                })),
+                Job::Trace(Box::new(crate::batch::TraceRequest::new(
+                    h,
+                    Default::default(),
+                    0,
+                    3
+                ))),
                 &JobContext::new()
             ),
             Err(MkError::Unsupported(_))
         ));
+    }
+
+    /// A handle whose count was forged cannot make the worker index past the
+    /// stored set: the error names the problem instead of a worker panic.
+    #[test]
+    fn forged_handle_count_is_rejected() {
+        let b = CpuF32Backend::new();
+        let p = PackedSystem::pack_all(&crate::testutil::singlet_resolved()).unwrap();
+        let h = b.upload_system(&p).unwrap();
+        let forged = SystemHandle::new(h.backend_instance(), h.id(), 5);
+        let r = b.run(
+            Job::SagProbe {
+                systems: forged,
+                system: 3,
+                surface: 1,
+                r2: vec![1.0],
+            },
+            &JobContext::new(),
+        );
+        assert_eq!(
+            r,
+            Err(MkError::Backend(
+                "sag probe: system index out of range".into()
+            ))
+        );
+    }
+
+    /// Cancelling one submission does not cancel siblings sharing the context.
+    #[test]
+    fn pending_cancel_is_per_job() {
+        let b = CpuF32Backend::new();
+        let ctx = JobContext::new();
+        let job = || Job::PhiloxStream {
+            seed: 1,
+            stream: 0,
+            first_block: 0,
+            num_blocks: 1 << 22,
+        };
+        let p1 = b.submit(job(), &ctx).unwrap();
+        let p2 = b.submit(job(), &ctx).unwrap();
+        p1.cancel();
+        // p1 either finished first or was cancelled; p2 always completes.
+        if let Err(e) = p1.wait() {
+            assert_eq!(e, MkError::Cancelled);
+        }
+        assert!(p2.wait().is_ok());
+        assert!(!ctx.cancel.is_cancelled());
+    }
+
+    #[test]
+    fn empty_jobs_complete_with_full_progress() {
+        let b = CpuF32Backend::new();
+        let ctx = JobContext::new();
+        let r = b
+            .run(
+                Job::DfOps {
+                    op: DfOp::Add,
+                    a: vec![],
+                    b: vec![],
+                },
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(r.output, JobOutput::Df(vec![]));
+        assert_eq!(ctx.progress.fraction(), 1.0);
+    }
+
+    /// The flush-to-zero emulation reproduces the cases measured on Apple
+    /// GPUs (see the Metal tests for the device comparison).
+    #[test]
+    fn ftz_environment() {
+        let ieee = CpuF32Backend::new();
+        let ftz = CpuF32Backend::with_subnormals(false);
+        assert!(!ftz.precision().probe.subnormals);
+        assert!(ftz.precision().probe.error_free_transforms());
+        let job = || Job::DfOps {
+            op: DfOp::TwoProd,
+            a: vec![Df32::from_f32(1e-20)],
+            b: vec![Df32::from_f32(1e-20)],
+        };
+        assert_eq!(
+            run_output(&ftz, job()).unwrap(),
+            JobOutput::Df(vec![Df32::ZERO])
+        );
+        let JobOutput::Df(v) = run_output(&ieee, job()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(v[0].hi, 1e-20f32 * 1e-20f32);
+        let s = reduce_sums(&ftz, ReduceMode::DoubleFloat, 4096, vec![1e-39; 4096]).unwrap();
+        assert_eq!(s, vec![Df32::ZERO]);
+    }
+
+    /// Chunked reduction (several pass-1 launches per channel) is
+    /// bit-identical to the one-shot specification, and progress reaches 1.
+    #[test]
+    fn reduce_chunks_are_exact() {
+        let b = CpuF32Backend::new();
+        let n = 1_000_003;
+        let v: Vec<f32> = (0..2 * n)
+            .map(|i| ((i * 7919) % 1013) as f32 * 0.37)
+            .collect();
+        let ctx = JobContext::new();
+        let r = b
+            .run(
+                Job::Reduce {
+                    mode: ReduceMode::DoubleFloat,
+                    count: n,
+                    values: v.clone(),
+                },
+                &ctx,
+            )
+            .unwrap();
+        assert!(r.stats.command_buffers > 2);
+        assert_eq!(ctx.progress.fraction(), 1.0);
+        let JobOutput::Sums(s) = r.output else {
+            panic!()
+        };
+        for c in 0..2 {
+            let want = reduce::reduce_channel(ReduceMode::DoubleFloat, &v[c * n..(c + 1) * n]);
+            assert_eq!(s[c], want);
+        }
     }
 
     #[test]
