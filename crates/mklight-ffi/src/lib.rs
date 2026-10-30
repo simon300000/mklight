@@ -1017,6 +1017,14 @@ pub unsafe extern "C" fn mk_engine_migrate_project(
     })
 }
 
+/// Run `req` in the calling thread on the session's current snapshot,
+/// holding the session lock only while the job is built (as `submit`), so
+/// other calls on the session proceed meanwhile.
+fn run_unlocked(s: &MKSession, req: &AnalysisRequest) -> FfiResult<AnalysisResult> {
+    let spec = s.lock().analysis_job(req)?;
+    Ok((spec.work)(&JobContext::new())?)
+}
+
 /// Run an analysis on the current snapshot in the calling thread (blocking;
 /// no job, no callback) and return the result like `mk_job_take_result`.
 /// `request_json` is an analysis request as for
@@ -1045,7 +1053,7 @@ pub unsafe extern "C" fn mk_session_run_analysis_json(
         let out_b = unsafe { out_ptr(out_buffers, "out_buffers") }?;
         let out_c = unsafe { out_ptr(out_count, "out_count") }?;
         let req: AnalysisRequest = serde_json::from_str(text)?;
-        let r = s.lock().run_analysis(&req, &JobContext::new())?;
+        let r = run_unlocked(s, &req)?;
         unsafe { export_result(r, out_json, out_b, out_c) }
     })
 }
@@ -1061,8 +1069,8 @@ pub unsafe extern "C" fn mk_session_validate_json(
     guard(|| {
         let s = unsafe { session_ref(session) }?;
         unsafe { out_ptr(out_json, "out_json") }?;
-        let v = s.lock().validate()?;
-        unsafe { put_json(out_json, &v) }
+        let r = run_unlocked(s, &AnalysisRequest::new("validate", Value::Null))?;
+        unsafe { put_json(out_json, &r.json) }
     })
 }
 
@@ -1085,7 +1093,11 @@ pub unsafe extern "C" fn mk_session_apply_solves(
     guard(|| {
         let s = unsafe { session_ref(session) }?;
         let settings = unsafe { in_json(settings_json, "settings_json") }?;
-        let (hash, report) = s.lock().apply_solves(&settings, &JobContext::new())?;
+        // Solve without holding the session lock; commit only if the
+        // session did not change meanwhile.
+        let pending = s.lock().prepare_solves(&settings)?;
+        let (sys, report) = pending.run(&JobContext::new())?;
+        let hash = s.lock().commit_solves(&pending, sys)?;
         unsafe {
             put_json(out_report, &report)?;
             put_string(out_hash, &hash.to_hex());

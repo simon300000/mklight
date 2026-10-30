@@ -147,6 +147,11 @@ applies when they name none (`backend.requested` = `default:<id>`).
   and result assembly. Moving ray aiming and the reductions to the device
   is future work.
 * `MKLIGHT_DISABLE_GPU=1` makes every GPU backend unavailable.
+* Front ends spell `auto` differently: the engine (`Backend::parse("auto")`),
+  the FFI (`{"kind": "auto"}`) and the CLI (`--backend auto`) mean the
+  selection above, but the Python binding's string `"auto"` (its `backend`
+  default) means "the engine default" (docs/PYTHON.md); Python callers get
+  the selection with `backend={"kind": "auto"}`.
 
 ## 6. Cross-solver conventions
 

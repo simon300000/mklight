@@ -291,24 +291,29 @@ MKStatus mk_engine_set_default_backend(const MKEngine *engine, const char *backe
 MKStatus mk_engine_migrate_project(const MKEngine *engine, const char *path, int32_t backup,
                                    int32_t dry_run, char **out_json);
 
-/* Run an analysis in the calling thread (blocking; no job, no callback) on
- * the current snapshot. request_json as for mk_session_submit_analysis_json
- * (view_key ignored). Outputs as for mk_job_take_result; errors of the run
- * are returned directly. */
+/* Run an analysis in the calling thread (blocking; no job, no callback, not
+ * cancellable) on the current snapshot. request_json as for
+ * mk_session_submit_analysis_json (view_key ignored). Outputs as for
+ * mk_job_take_result; errors of the run are returned directly. The session
+ * is locked only while the request is checked, not during the run. For
+ * quick analyses; submit long ones as jobs. */
 MKStatus mk_session_run_analysis_json(const MKSession *session, const char *request_json,
                                       char **out_json, MKBuffer **out_buffers,
                                       size_t *out_count);
 
 /* The validate report {"ok", "errors", "warnings", "issues"} of the current
  * snapshot (non-finite numbers, aperture value, weights, mechanics, materials,
- * coatings, tracer set-up, chief and marginal rays; docs/RESULTS.md). */
+ * coatings, tracer set-up, chief and marginal rays; docs/RESULTS.md).
+ * Blocking; runs without holding the session lock. */
 MKStatus mk_session_validate_json(const MKSession *session, char **out_json);
 
 /* Apply the system's solves and commit the solved system as a new snapshot.
  * settings_json (nullable): solve settings (see the "solves" analysis).
  * out_report (nullable): the solve report; out_hash (nullable): the new
  * snapshot hash (unchanged when every solve already held). On failure the
- * session is unchanged. */
+ * session is unchanged. Blocking and not cancellable, but the solve runs
+ * without holding the session lock; if the session changed meanwhile nothing
+ * is committed and MK_ERR_CANCELLED (superseded) is returned. */
 MKStatus mk_session_apply_solves(MKSession *session, const char *settings_json,
                                  char **out_report, char **out_hash);
 

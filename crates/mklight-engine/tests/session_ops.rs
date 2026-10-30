@@ -86,6 +86,46 @@ fn apply_solves_commits_a_new_snapshot() {
     assert_eq!(s.snapshot_hash(), h3);
 }
 
+/// Solving without the session (prepare, run, commit) commits only onto
+/// the snapshot it started from: an edit in between supersedes it.
+#[test]
+fn solves_prepared_from_a_stale_snapshot_are_not_committed() {
+    let e = Engine::default();
+    let mut sys = samples::cooke_triplet();
+    let j = sys.surfaces.len() - 2;
+    sys.surfaces[j].thickness += 2.5;
+    sys.solves = vec![Solve::marginal_ray_height(sys.surfaces[j].id, 0.0)];
+    let mut s = e.session_from_project(Project::new(sys)).unwrap();
+    let h0 = s.snapshot_hash();
+    let p = s.prepare_solves(&Value::Null).unwrap();
+    assert_eq!(p.base_hash(), h0);
+    let (solved, _) = p.run(&JobContext::new()).unwrap();
+    // Meanwhile the user edits another surface.
+    let path = ParamPath::Thickness {
+        surface: s.system().surfaces[1].id,
+    };
+    let t1 = s.system().surfaces[1].thickness;
+    let edit = |value| mklight_engine::ParamEdit {
+        path: path.clone(),
+        value,
+    };
+    s.apply_edits(&[edit(t1 + 1.0)]).unwrap();
+    let h1 = s.snapshot_hash();
+    let err = s.commit_solves(&p, solved.clone()).unwrap_err();
+    assert!(err.is_cancelled(), "{err}");
+    assert_eq!(s.snapshot_hash(), h1);
+    // Reverting the edit restores the base snapshot: the commit applies.
+    s.apply_edits(&[edit(t1)]).unwrap();
+    assert_eq!(s.snapshot_hash(), h0);
+    let h2 = s.commit_solves(&p, solved).unwrap();
+    assert_ne!(h2, h0);
+    // Bad settings are refused before anything runs.
+    assert!(matches!(
+        s.prepare_solves(&json!({"tolerance": 2.0})),
+        Err(EngineError::InvalidSettings(_))
+    ));
+}
+
 #[test]
 fn validate_reports_engine_checks() {
     let e = Engine::default();

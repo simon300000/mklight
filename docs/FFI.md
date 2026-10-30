@@ -274,9 +274,13 @@ warning names the rejected backend and the reason, and the envelope's
 `mk_session_run_analysis_json(session, request, &json, &buffers, &count)`
 runs the same request in the calling thread (blocking, no job, no
 callback; `view_key` is ignored) and returns the result like
-`mk_job_take_result`; errors of the run are returned directly. Use it for
-quick, small analyses (validation, first-order data); interactive windows
-should submit jobs.
+`mk_job_take_result`; errors of the run are returned directly. The
+session lock is held only while the request is checked and the snapshot
+captured (as for submit), so other calls on the session, from other
+threads, proceed during the run; edits made meanwhile do not affect it.
+The run cannot be cancelled and has no progress: use it for quick, small
+analyses (validation, first-order data); interactive windows and anything
+long (stray light, large grids) should submit jobs.
 
 ### Job status (`mk_job_status_json`)
 
@@ -376,7 +380,12 @@ an automatic semi-diameter; a path the system does not have is
 * `mk_session_apply_solves(session, settings, &report, &hash)`: solves the
   system (`docs/SOLVES.md`) and commits it as a new snapshot (marks the
   session dirty); `report` is the `solves` result. The `solves` analysis is
-  the dry run (and can solve one configuration).
+  the dry run (and can solve one configuration). The solve runs without the
+  session lock (blocking the calling thread, not cancellable; solves are
+  fast); if the session changed meanwhile (an edit, undo, a catalog load),
+  nothing is committed and the call returns `MK_ERR_CANCELLED`
+  (superseded): solve again. `mk_session_validate_json` likewise runs
+  outside the lock.
 * `mk_session_autosave(session, path, &written)`: writes the project to
   `path` or `<project file>.autosave` without touching the session (path,
   dirty flag). Recover by opening the autosave file.

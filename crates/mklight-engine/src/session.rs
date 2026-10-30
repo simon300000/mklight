@@ -558,6 +558,18 @@ impl Session {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<(SnapshotHash, Value)> {
+        let p = self.prepare_solves(settings)?;
+        let (sys, report) = p.run(ctx)?;
+        let hash = self.commit_solves(&p, sys)?;
+        Ok((hash, report))
+    }
+
+    /// `apply_solves` in three steps, so a caller that shares the session
+    /// behind a lock can solve without holding it: `prepare_solves` (under
+    /// the lock: checks the settings and captures the current system and
+    /// library), `PendingSolves::run` (no lock), `commit_solves` (under the
+    /// lock again).
+    pub fn prepare_solves(&self, settings: &Value) -> EngineResult<PendingSolves> {
         let schema = crate::analysis::solves::solve_settings_schema();
         let s = crate::settings::normalize(&schema, settings)?;
         let o: crate::analysis::solves::SolveOptions =
@@ -569,11 +581,29 @@ impl Session {
                     .into(),
             ));
         }
-        let (sys, report) =
-            mklight_trace::apply_solves_with(self.system(), &self.library, &o.solver, ctx)?;
-        let (json, _) = crate::analysis::geometric::crate_json(&report)?;
-        let hash = self.set_system(sys)?;
-        Ok((hash, json))
+        Ok(PendingSolves {
+            base: self.current.clone(),
+            library: self.library.clone(),
+            library_generation: self.library_generation,
+            solver: o.solver,
+        })
+    }
+
+    /// Commit a solved system computed from `pending`. If the session
+    /// changed in between (an edit, undo, a new library), nothing is
+    /// committed and the call fails with `MkError::Cancelled` (superseded,
+    /// like a job with the same view key): solve again.
+    pub fn commit_solves(
+        &mut self,
+        pending: &PendingSolves,
+        solved: OpticalSystem,
+    ) -> EngineResult<SnapshotHash> {
+        if self.current.hash() != pending.base.hash()
+            || self.library_generation != pending.library_generation
+        {
+            return Err(MkError::Cancelled.into());
+        }
+        self.set_system(solved)
     }
 
     /// The engine's `validate` report of the current snapshot (computed in
@@ -716,6 +746,30 @@ impl Session {
     /// Queue an analysis on the current snapshot (see `analysis_job`).
     pub fn submit_analysis(&self, req: &AnalysisRequest) -> EngineResult<JobId> {
         self.engine.submit_job(self.analysis_job(req)?)
+    }
+}
+
+/// Solves captured by `Session::prepare_solves`, run without the session.
+pub struct PendingSolves {
+    base: Snapshot,
+    library: Arc<MaterialLibrary>,
+    library_generation: u64,
+    solver: mklight_trace::SolveSettings,
+}
+
+impl PendingSolves {
+    /// The snapshot the solves start from.
+    pub fn base_hash(&self) -> SnapshotHash {
+        self.base.hash()
+    }
+
+    /// Solve (`mklight_trace::apply_solves_with`): the solved system and
+    /// the solve report (the `solves` result shape).
+    pub fn run(&self, ctx: &JobContext) -> EngineResult<(OpticalSystem, Value)> {
+        let (sys, report) =
+            mklight_trace::apply_solves_with(self.base.system(), &self.library, &self.solver, ctx)?;
+        let (json, _) = crate::analysis::geometric::crate_json(&report)?;
+        Ok((sys, json))
     }
 }
 
