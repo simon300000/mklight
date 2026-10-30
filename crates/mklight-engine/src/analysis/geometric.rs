@@ -662,7 +662,7 @@ fn layout_schema() -> Value {
                 "kind_names",
                 arr(
                     string(""),
-                    "Name of each kind code: 0 surface_profile, 1 ring, 2 rim, 3 ray, 4 stop, 5 image, 6 axis, 7 element_outline.",
+                    "Name of each kind code: 0 surface_profile, 1 surface_rim, 2 element_edge, 3 stop, 4 image_plane, 5 ray, 6 axis, 7 element_outline.",
                 ),
             ),
             ("wavelengths_um", wl_um()),
@@ -751,8 +751,7 @@ fn run_layout(
         "elements": elements,
         "polyline_count": np,
         "vertex_count": nv,
-        "kind_names": ["surface_profile", "ring", "rim", "ray", "stop", "image", "axis",
-                       "element_outline"],
+        "kind_names": mklight_analysis::layout::PolylineKind::CODE_NAMES,
         "wavelengths_um": v["wavelengths_um"],
         "field_count": v["field_count"],
     });

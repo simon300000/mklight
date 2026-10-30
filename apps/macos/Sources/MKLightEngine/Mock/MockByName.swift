@@ -308,12 +308,12 @@ extension MockEngine {
             let kind: Double =
                 switch p.kind {
                 case .surfaceProfile: 0
-                case .surfaceRim: 2
-                case .ray: 3
-                case .stop: 4
-                case .imagePlane: 5
+                case .surfaceRim: 1
+                case .elementEdge: 2
+                case .stop: 3
+                case .imagePlane: 4
+                case .ray: 5
                 case .axis: 6
-                case .elementEdge: 1
                 }
             kinds.append(kind)
             surf.append(Double(p.surface ?? -1))
@@ -344,7 +344,7 @@ extension MockEngine {
             "wavelengths_um": .array(scene.wavelengthsUm.map(JSONValue.number)),
             "polyline_count": .integer(Int64(n)), "vertex_count": .integer(Int64(v)),
             "kind_names": .array(
-                ["surface_profile", "ring", "rim", "ray", "stop", "image", "axis", "element_outline"].map(JSONValue.string)),
+                ["surface_profile", "surface_rim", "element_edge", "stop", "image_plane", "ray", "axis", "element_outline"].map(JSONValue.string)),
         ])
         return (
             json,

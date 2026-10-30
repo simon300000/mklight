@@ -109,6 +109,19 @@ pub enum PolylineKind {
 }
 
 impl PolylineKind {
+    /// Names of the codes in [`LayoutBuffers::kinds`], indexed by code
+    /// (`7` is an element outline).
+    pub const CODE_NAMES: [&'static str; 8] = [
+        "surface_profile",
+        "surface_rim",
+        "element_edge",
+        "stop",
+        "image_plane",
+        "ray",
+        "axis",
+        "element_outline",
+    ];
+
     /// Code in [`LayoutBuffers::kinds`] (`7` is an element outline).
     pub fn code(self) -> u8 {
         self as u8
@@ -700,5 +713,29 @@ impl LayoutBuffers {
             out.extend_from_slice(&x.to_le_bytes());
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod code_name_tests {
+    use super::PolylineKind::{self, *};
+
+    #[test]
+    fn code_names_follow_the_enum() {
+        for k in [
+            SurfaceProfile,
+            SurfaceRim,
+            ElementEdge,
+            Stop,
+            ImagePlane,
+            Ray,
+            Axis,
+        ] {
+            let name = serde_json::to_value(k).unwrap();
+            assert_eq!(
+                PolylineKind::CODE_NAMES[k.code() as usize],
+                name.as_str().unwrap()
+            );
+        }
     }
 }

@@ -818,7 +818,7 @@ Result (`result` in the envelope):
 | `elements[].mechanical_semi_diameter` | nf | mm |  |
 | `elements[].outline_polyline` | integer |  | ≥ 0; Index of the element's closed outline in the polyline buffers (kind 7). |
 | `field_count` | integer |  | ≥ 0; Number of system fields. |
-| `kind_names` | array<string> |  | Name of each kind code: 0 surface_profile, 1 ring, 2 rim, 3 ray, 4 stop, 5 image, 6 axis, 7 element_outline. |
+| `kind_names` | array<string> |  | Name of each kind code: 0 surface_profile, 1 surface_rim, 2 element_edge, 3 stop, 4 image_plane, 5 ray, 6 axis, 7 element_outline. |
 | `origin` | [number; 3] |  | Global point subtracted from the f32 `vertices` (the bounds centre). |
 | `polyline_count` | integer |  | ≥ 0; Polylines P (rays, profiles, … then element outlines). |
 | `surfaces` | array<object> |  | Per drawn surface. |
