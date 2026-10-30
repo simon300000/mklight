@@ -59,6 +59,13 @@ struct SettingsBar: View {
         case "configuration":
             return (system?.configurations.count ?? 0) > 0 ? .number : .hidden
         case "stop_key", "delay_ms", "chunk": return .hidden
+        case "seed":
+            // A seed matters only for random pupil patterns, where the analysis has one.
+            if descriptor.settingsFields.contains(where: { $0.name == "pattern" }),
+                let p = pane.value("pattern")?.string, !["random", "dithered"].contains(p)
+            {
+                return .hidden
+            }
         default: break
         }
         if !f.enumValues.isEmpty { return .enumeration }
@@ -125,12 +132,15 @@ struct SettingsBar: View {
     }
 
     static func label(_ f: SettingsField) -> String {
-        let t = f.title == f.name ? f.name.replacingOccurrences(of: "_", with: " ").capitalized : f.title
+        var name = f.name
+        for suffix in ["_mm", "_um", "_deg"] where name.hasSuffix(suffix) { name.removeLast(suffix.count) }
+        let t = f.title == f.name ? name.replacingOccurrences(of: "_", with: " ").capitalized : f.title
         return t.count > 22 ? String(t.prefix(20)) + "…" : t
     }
 
     static func title(_ v: JSONValue) -> String {
         guard case .string(let s) = v else { return v.displayText }
+        if s.count <= 3 { return s.uppercased() }
         return s.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }

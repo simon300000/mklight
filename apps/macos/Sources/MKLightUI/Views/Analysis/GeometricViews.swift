@@ -51,6 +51,20 @@ struct SpotDiagramView: View {
         }
     }
 
+    /// Columns and cell size that show every field as large as possible
+    /// (each cell is a square plot plus two text lines).
+    static func grid(count: Int, size: CGSize) -> (Int, CGFloat) {
+        var best = (1, CGFloat(60))
+        for cols in 1...max(count, 1) {
+            let rows = Int(ceil(Double(count) / Double(cols)))
+            let w = (size.width - CGFloat(cols - 1) * Space.m) / CGFloat(cols)
+            let h = (size.height - CGFloat(rows - 1) * Space.m) / CGFloat(rows) - 36
+            let c = min(w, h)
+            if c > best.1 { best = (cols, c) }
+        }
+        return best
+    }
+
     /// One scale for every field: the largest GEO radius (or the Airy disk).
     private var halfWidth: Double {
         let geo = fields.map(\.geo).filter(\.isFinite).max() ?? 0
@@ -68,15 +82,14 @@ struct SpotDiagramView: View {
                 }
             }
             GeometryReader { geo in
-                let cols = max(1, min(fields.count, Int(geo.size.width / 170)))
-                let rows = Int(ceil(Double(fields.count) / Double(cols)))
-                let cell = min(geo.size.width / CGFloat(cols), geo.size.height / CGFloat(max(rows, 1))) - Space.m
+                let (cols, cell) = Self.grid(count: fields.count, size: geo.size)
                 ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Space.m), count: cols), spacing: Space.m) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: Space.m), count: cols), spacing: Space.m) {
                         ForEach(fields) { f in
-                            SpotCell(field: f, halfWidth: halfWidth, airy: airy, wavelengthsUm: wavelengthsUm, size: max(cell - 34, 80))
+                            SpotCell(field: f, halfWidth: halfWidth, airy: airy, wavelengthsUm: wavelengthsUm, size: max(cell - 4, 60))
                         }
                     }
+                    .frame(maxWidth: .infinity)
                 }
             }
             ScaleNote(halfWidth: halfWidth)
@@ -181,14 +194,17 @@ struct FanView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             WavelengthLegend(wavelengths: Array(Set(fields.flatMap { $0.tangential.map(\.wavelength) })).sorted(), um: wavelengthsUm)
-            ScrollView {
-                VStack(spacing: Space.m) {
-                    ForEach(fields) { f in
-                        HStack(spacing: Space.l) {
-                            PlotCell(title: f.label, subtitle: "Tangential") { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
-                            PlotCell(title: " ", subtitle: "Sagittal") { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
+            GeometryReader { geo in
+                let h = max((geo.size.height - CGFloat(fields.count - 1) * Space.m) / CGFloat(max(fields.count, 1)), 120)
+                ScrollView {
+                    VStack(spacing: Space.m) {
+                        ForEach(fields) { f in
+                            HStack(spacing: Space.l) {
+                                PlotCell(title: f.label, subtitle: "Tangential") { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
+                                PlotCell(title: " ", subtitle: "Sagittal") { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
+                            }
+                            .frame(height: h)
                         }
-                        .frame(height: 150)
                     }
                 }
             }
@@ -200,7 +216,7 @@ struct FanView: View {
         LineChart(
             series: curves.map { c in
                 Series(id: "\(c.wavelength)", label: "", color: color(c.wavelength), points: c.points)
-            }, xLabel: x, yLabel: y, xDomain: -1...1, yDomain: yDomain)
+            }, xLabel: x, yLabel: y, xDomain: -1...1, yDomain: yDomain, xTicks: [-1, -0.5, 0, 0.5, 1])
     }
 
     private func color(_ w: Int) -> Color { Palette.wavelengthColor(wavelengthsUm.indices.contains(w) ? wavelengthsUm[w] : 0.55) }

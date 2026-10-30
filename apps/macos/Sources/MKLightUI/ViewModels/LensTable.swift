@@ -90,7 +90,8 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             var cells: [LensColumn: String] = [.comment: sf.label]
             var exact: [LensColumn: String] = [.comment: sf.label]
             var editable: Set<LensColumn> = [.comment]
-            let hasCurvature = sf.shape.hasCurvature
+            // An object at infinity has no meaningful curvature.
+            let hasCurvature = sf.shape.hasCurvature && !(role == .object && sf.thickness.isInfinite)
             if hasCurvature {
                 cells[.radius] = RowFormat.length(sf.shape.radius)
                 exact[.radius] = NumberDisplay.exact(sf.shape.radius)

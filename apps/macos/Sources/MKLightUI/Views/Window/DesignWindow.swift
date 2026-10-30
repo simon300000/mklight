@@ -99,6 +99,7 @@ private struct DesignWindowContent: View {
         .task {
             await workspace.loadEngineMetadata()
             await workspace.open(system: system, catalogs: design.catalogs, projectDirectory: projectDirectory)
+            applyLaunchOptions()
         }
         .onDisappear { workspace.cancelAll() }
         .onChange(of: design.system) { _, s in workspace.update(system: s) }
@@ -172,6 +173,27 @@ private struct DesignWindowContent: View {
                 window.selection = nil
                 window.fitRequest += 1
             })
+    }
+
+    /// Debug builds: `-MKLightSelectSurface 3`, `-MKLightInspector system`,
+    /// `-MKLightSheet optimize`, `-MKLightSidebar hidden` (screenshots, UI checks).
+    private func applyLaunchOptions() {
+        #if DEBUG
+        let d = UserDefaults.standard
+        if let i = d.object(forKey: "MKLightSelectSurface") as? Int ?? Int(d.string(forKey: "MKLightSelectSurface") ?? ""),
+            system.surfaces.indices.contains(i)
+        {
+            window.selection = system.surfaces[i].id
+        }
+        if let t = d.string(forKey: "MKLightInspector") { window.inspectorTab = t == "system" ? .system : .surface }
+        if d.string(forKey: "MKLightSidebar") == "hidden" { columns = .detailOnly }
+        if let sheet = d.string(forKey: "MKLightSheet").flatMap(DesignJobKind.init(rawValue:)) {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                window.activeJob = sheet
+            }
+        }
+        #endif
     }
 
     private func insert(at index: Int) {

@@ -40,12 +40,22 @@ struct NumberField: View {
                         .help("Controlled by a \(solve) solve")
                 }
                 if let variable {
-                    Toggle(isOn: variable) { Text("V").font(.system(size: 10, weight: .bold, design: .rounded)) }
-                        .toggleStyle(.button)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(variable.wrappedValue ? Color.accentColor : Color.secondary.opacity(0.6))
-                        .help(variable.wrappedValue ? "Variable: the optimizer may change it" : "Make this a variable")
-                        .accessibilityLabel("Variable")
+                    Button {
+                        variable.wrappedValue.toggle()
+                    } label: {
+                        Text("V")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .frame(width: 14, height: 14)
+                            .foregroundStyle(variable.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .strokeBorder(variable.wrappedValue ? AnyShapeStyle(.tint.opacity(0.7)) : AnyShapeStyle(.quaternary), lineWidth: 1))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(variable.wrappedValue ? "Variable: the optimizer may change it. Click to fix it." : "Fixed. Click to make it a variable.")
+                    .accessibilityLabel("Variable")
+                    .accessibilityValue(variable.wrappedValue ? "on" : "off")
                 }
             }
         } label: {

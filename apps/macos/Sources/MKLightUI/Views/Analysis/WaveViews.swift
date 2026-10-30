@@ -69,29 +69,33 @@ struct WavefrontView: View {
                 Text(String(format: "RMS %.4f λ   P-V %.4f λ   Strehl %.3f", m.rms, m.pv, m.strehl))
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            HStack(alignment: .top, spacing: Space.l) {
-                HStack(alignment: .center, spacing: Space.s) {
-                    ZStack {
-                        HeatMapImage(grid: m.grid, scale: .diverging)
-                        Canvas { ctx, size in
-                            for loop in m.rim where loop.count > 2 {
-                                var p = Path()
-                                for (k, q) in loop.enumerated() {
-                                    let pt = CGPoint(x: (q.0 + 1) / 2 * size.width, y: (1 - q.1) / 2 * size.height)
-                                    if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            GeometryReader { geo in
+                let tableWidth: CGFloat = m.zernike.isEmpty ? 0 : min(200, geo.size.width * 0.38)
+                let side = max(min(geo.size.height, geo.size.width - tableWidth - 70), 60)
+                HStack(alignment: .top, spacing: Space.l) {
+                    HStack(alignment: .center, spacing: Space.s) {
+                        ZStack {
+                            HeatMapImage(grid: m.grid, scale: .diverging)
+                            Canvas { ctx, size in
+                                for loop in m.rim where loop.count > 2 {
+                                    var p = Path()
+                                    for (k, q) in loop.enumerated() {
+                                        let pt = CGPoint(x: (q.0 + 1) / 2 * size.width, y: (1 - q.1) / 2 * size.height)
+                                        if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+                                    }
+                                    p.closeSubpath()
+                                    ctx.stroke(p, with: .color(.secondary), lineWidth: 0.8)
                                 }
-                                p.closeSubpath()
-                                ctx.stroke(p, with: .color(.secondary), lineWidth: 0.8)
                             }
                         }
+                        .frame(width: side, height: side)
+                        .accessibilityLabel(String(format: "Wavefront map, RMS %.3f waves, peak to valley %.3f waves", m.rms, m.pv))
+                        ColorBar(scale: .diverging, range: m.grid.range, unit: "waves").frame(height: min(side, 240))
                     }
-                    .aspectRatio(1, contentMode: .fit)
-                    .accessibilityLabel(String(format: "Wavefront map, RMS %.3f waves, peak to valley %.3f waves", m.rms, m.pv))
-                    ColorBar(scale: .diverging, range: m.grid.range, unit: "λ").frame(maxHeight: 220)
-                }
-                .frame(maxWidth: .infinity)
-                if !m.zernike.isEmpty {
-                    ZernikeTable(coefficients: m.zernike, ordering: m.ordering).frame(width: 190)
+                    Spacer(minLength: 0)
+                    if !m.zernike.isEmpty {
+                        ZernikeTable(coefficients: m.zernike, ordering: m.ordering).frame(width: tableWidth)
+                    }
                 }
             }
         }
@@ -162,32 +166,32 @@ struct PSFView: View {
     var body: some View {
         let it = items[min(selected, items.count - 1)]
         VStack(alignment: .leading, spacing: Space.s) {
+            ItemPicker(titles: items.map(\.title), selection: $selected)
             HStack {
-                ItemPicker(titles: items.map(\.title), selection: $selected)
-                Spacer()
-                Toggle("Log scale", isOn: $log).toggleStyle(.checkbox).controlSize(.small)
                 Text(String(format: "Strehl %.3f", it.strehl)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+                Toggle("Log scale", isOn: $log).toggleStyle(.checkbox).controlSize(.small).fixedSize()
             }
-            HStack(spacing: Space.s) {
-                ZStack(alignment: .bottomLeading) {
-                    HeatMapImage(grid: it.grid, scale: .sequential(log: log))
-                    GeometryReader { geo in
+            GeometryReader { geo in
+                let side = max(min(geo.size.height, geo.size.width - 70), 60)
+                HStack(spacing: Space.s) {
+                    ZStack(alignment: .bottomLeading) {
+                        HeatMapImage(grid: it.grid, scale: .sequential(log: log))
                         let width = Double(it.size) * it.spacing
                         let bar = Nice.length(width / 4)
                         VStack(alignment: .leading, spacing: 2) {
-                            Rectangle().frame(width: geo.size.width * CGFloat(bar / width), height: 1.5)
+                            Rectangle().frame(width: side * CGFloat(bar / width), height: 1.5)
                             Text(Nice.lengthLabel(bar)).font(.caption2)
                         }
                         .foregroundStyle(.secondary)
                         .padding(Space.s)
-                        .frame(maxHeight: .infinity, alignment: .bottom)
                     }
+                    .frame(width: side, height: side)
+                    .accessibilityLabel(String(format: "Point spread function, Strehl ratio %.3f", it.strehl))
+                    ColorBar(scale: .sequential(log: log), range: it.grid.range).frame(height: min(side, 240))
+                    Spacer(minLength: 0)
                 }
-                .aspectRatio(1, contentMode: .fit)
-                .accessibilityLabel(String(format: "Point spread function, Strehl ratio %.3f", it.strehl))
-                ColorBar(scale: .sequential(log: log), range: it.grid.range).frame(maxHeight: 220)
             }
-            .frame(maxWidth: .infinity)
         }
         .padding(Space.m)
     }

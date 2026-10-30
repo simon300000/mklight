@@ -20,6 +20,8 @@ struct GhostPathsView: View {
     }
     let ghosts: [Ghost]
     let truncated: Bool
+
+    static func sci(_ v: Double) -> String { v.isFinite ? String(format: "%.2e", v) : "—" }
     let context: AnalysisContext
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
@@ -41,37 +43,35 @@ struct GhostPathsView: View {
             ContentUnavailableView("No Ghost Paths", systemImage: "checkmark.circle", description: Text("The enumeration found no ghost reaching the sensor."))
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                Grid(alignment: .trailing, horizontalSpacing: Space.l, verticalSpacing: 0) {
-                    GridRow {
-                        Text("Ghost").gridColumnAlignment(.leading)
-                        Text("Rel. irradiance")
-                        Text("Focus from sensor")
-                        Text("Blur ⌀")
-                        Text("ΠR")
-                    }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, Space.xs)
-                }
-                .padding(.horizontal, Space.m)
-                Divider()
                 ScrollView {
                     Grid(alignment: .trailing, horizontalSpacing: Space.l, verticalSpacing: 3) {
+                        GridRow {
+                            Text("Ghost").gridColumnAlignment(.leading)
+                            Text("Rel. irradiance")
+                            Text("Focus (mm)")
+                            Text("Blur ⌀ (mm)")
+                            Text("ΠR")
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        Divider().gridCellUnsizedAxes(.horizontal)
                         ForEach(ghosts) { g in
                             GridRow {
                                 HStack(spacing: Space.xs) {
-                                    if g.nearFocus {
-                                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help("Focused near the sensor")
-                                    }
                                     Text(g.label.isEmpty ? g.path.map(String.init).joined(separator: "·") : g.label)
+                                    if g.nearFocus {
+                                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                            .help("Focused near the sensor").accessibilityLabel("near focus")
+                                    }
                                 }
-                                .gridColumnAlignment(.leading)
-                                Text(Fmt.short(g.irradiance))
-                                Text(Fmt.short(g.focus) + " mm")
-                                Text(Fmt.short(g.spot) + " mm")
-                                Text(Fmt.short(g.reflectance))
+                                Text(Self.sci(g.irradiance))
+                                Text(String(format: "%.2f", g.focus))
+                                Text(String(format: "%.2f", g.spot))
+                                Text(Self.sci(g.reflectance))
                             }
                             .font(.callout.monospacedDigit())
+                            .lineLimit(1)
+                            .contentShape(Rectangle())
                             .onTapGesture { if let s = g.path.first { context.selectSurface(s) } }
                         }
                     }
@@ -105,16 +105,14 @@ struct SensorMapView: View {
                 Spacer()
                 Toggle("Log scale", isOn: $log).toggleStyle(.checkbox).controlSize(.small)
             }
-            HStack(alignment: .top, spacing: Space.l) {
-                HStack(spacing: Space.s) {
-                    HeatMapImage(grid: m.grid, scale: .sequential(log: log))
-                        .aspectRatio(CGFloat((m.grid.xRange.upperBound - m.grid.xRange.lowerBound) / max(m.grid.yRange.upperBound - m.grid.yRange.lowerBound, 1e-9)), contentMode: .fit)
-                        .overlay(RoundedRectangle(cornerRadius: 1).strokeBorder(.separator))
-                        .accessibilityLabel("\(m.title) map")
-                    ColorBar(scale: .sequential(log: log), range: m.grid.range, unit: unit).frame(maxHeight: 220)
-                }
-                .frame(maxWidth: .infinity)
-                if !rows.isEmpty { KeyValueGrid(rows: rows).frame(width: 200) }
+            MapLayout(aspect: CGFloat((m.grid.xRange.upperBound - m.grid.xRange.lowerBound) / max(m.grid.yRange.upperBound - m.grid.yRange.lowerBound, 1e-9))) {
+                HeatMapImage(grid: m.grid, scale: .sequential(log: log))
+                    .overlay(Rectangle().strokeBorder(.separator))
+                    .accessibilityLabel("\(m.title) map")
+            } bar: {
+                ColorBar(scale: .sequential(log: log), range: m.grid.range, unit: unit)
+            } side: {
+                if !rows.isEmpty { KeyValueGrid(rows: rows) }
             }
             Text(String(format: "Sensor %.2f × %.2f mm", m.grid.xRange.upperBound - m.grid.xRange.lowerBound, m.grid.yRange.upperBound - m.grid.yRange.lowerBound))
                 .font(.caption2).foregroundStyle(.secondary)
@@ -215,8 +213,7 @@ struct PolarizationView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            HStack(alignment: .top, spacing: Space.l) {
-                HStack(spacing: Space.s) {
+            MapLayout {
                     Canvas { ctx, size in
                         let r = min(size.width, size.height) / 2
                         let c = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -229,12 +226,11 @@ struct PolarizationView: View {
                             ctx.fill(Path(CGRect(x: q.x - cell / 2, y: q.y - cell / 2, width: cell, height: cell)), with: .color(Color(.sRGB, red: rgb.x, green: rgb.y, blue: rgb.z)))
                         }
                     }
-                    .aspectRatio(1, contentMode: .fit)
                     .accessibilityLabel("\(quantity.rawValue) over the pupil")
-                    ColorBar(scale: .sequential(log: false), range: range, unit: quantity == .retardance ? "rad" : "").frame(maxHeight: 220)
-                }
-                .frame(maxWidth: .infinity)
-                KeyValueGrid(rows: stats).frame(width: 200)
+            } bar: {
+                ColorBar(scale: .sequential(log: false), range: range, unit: quantity == .retardance ? "rad" : "")
+            } side: {
+                KeyValueGrid(rows: stats)
             }
         }
         .padding(Space.m)

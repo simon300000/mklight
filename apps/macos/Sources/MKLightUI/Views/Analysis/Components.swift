@@ -110,12 +110,14 @@ struct ColorBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            if !unit.isEmpty { Text(unit) }
             Text(label(scale == .diverging ? max(abs(range.lowerBound), abs(range.upperBound)) : range.upperBound))
             HeatMapImage(grid: bar, scale: scale, range: barRange)
                 .frame(width: 10)
                 .clipShape(RoundedRectangle(cornerRadius: 2))
             Text(label(scale == .diverging ? -max(abs(range.lowerBound), abs(range.upperBound)) : range.lowerBound))
         }
+        .fixedSize(horizontal: true, vertical: false)
         .font(.caption2.monospacedDigit())
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
@@ -135,7 +137,11 @@ struct ColorBar: View {
         return Grid2D(nx: 1, ny: n, values: values)
     }
 
-    private func label(_ v: Double) -> String { Fmt.short(v) + (unit.isEmpty ? "" : " " + unit) }
+    private func label(_ v: Double) -> String {
+        guard v.isFinite else { return Fmt.short(v) }
+        let a = abs(v)
+        return a != 0 && (a < 1e-2 || a >= 1e4) ? String(format: "%.1e", v) : String(format: "%.3g", v)
+    }
 }
 
 /// A legend entry: a short line or dot in the series colour plus its name.
@@ -211,8 +217,25 @@ struct LineChart: View {
     var yDomain: ClosedRange<Double>?
     var zeroLine = true
     var markers: [(x: Double, label: String)] = []
+    var xTicks: [Double]?
 
     var body: some View {
+        chart
+            .chartXAxis {
+                if let xTicks {
+                    AxisMarks(values: xTicks) { _ in
+                        AxisGridLine()
+                        AxisTick()
+                        AxisValueLabel()
+                    }
+                } else {
+                    AxisMarks()
+                }
+            }
+            .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+    }
+
+    private var chart: some View {
         Chart {
             if zeroLine {
                 RuleMark(y: .value("zero", 0)).foregroundStyle(.secondary.opacity(0.4)).lineStyle(StrokeStyle(lineWidth: 0.5))
@@ -316,5 +339,43 @@ enum Nice {
 
     static func lengthLabel(_ mm: Double) -> String {
         mm >= 1 ? String(format: "%g mm", mm) : mm >= 0.001 ? String(format: "%g µm", mm * 1000) : String(format: "%g nm", mm * 1e6)
+    }
+}
+
+/// A map (or pupil plot) with its colour bar and a side table: the map is as
+/// large as fits; the table moves below it in narrow panes.
+struct MapLayout<Plot: View, Bar: View, Side: View>: View {
+    var aspect: CGFloat = 1
+    @ViewBuilder var plot: Plot
+    @ViewBuilder var bar: Bar
+    @ViewBuilder var side: Side
+
+    var body: some View {
+        GeometryReader { geo in
+            let wide = geo.size.width > 560
+            let sideW: CGFloat = wide ? 210 : 0
+            let availW = max(geo.size.width - sideW - 70 - (wide ? Space.l : 0), 40)
+            let availH = max(geo.size.height - (wide ? 0 : 150), 40)
+            let w = min(availW, availH * aspect)
+            let h = w / max(aspect, 0.01)
+            if wide {
+                HStack(alignment: .top, spacing: Space.l) {
+                    HStack(spacing: Space.s) {
+                        plot.frame(width: w, height: h)
+                        bar.frame(height: min(h, 240))
+                    }
+                    Spacer(minLength: 0)
+                    ScrollView { side }.frame(width: sideW)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: Space.m) {
+                    HStack(spacing: Space.s) {
+                        plot.frame(width: w, height: h)
+                        bar.frame(height: min(h, 240))
+                    }
+                    ScrollView { side }
+                }
+            }
+        }
     }
 }

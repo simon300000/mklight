@@ -281,13 +281,14 @@ struct PaneFooter: View {
     var body: some View {
         HStack(spacing: Space.l) {
             let numbers = AnalysisResultView.keyNumbers(analysis: pane.analysis, output: output, context: context)
-            ForEach(numbers.prefix(4), id: \.label) { n in
-                HStack(spacing: 3) {
-                    Text(n.label).foregroundStyle(.secondary)
-                    Text(n.value).numeric()
-                }
-                .lineLimit(1)
+            ViewThatFits(in: .horizontal) {
+                numbersRow(numbers.prefix(4))
+                numbersRow(numbers.prefix(3))
+                numbersRow(numbers.prefix(2))
+                numbersRow(numbers.prefix(1))
+                Color.clear.frame(width: 0)
             }
+            .layoutPriority(1)
             Spacer(minLength: Space.s)
             Button {
                 showDetails.toggle()
@@ -310,6 +311,18 @@ struct PaneFooter: View {
         .padding(.horizontal, Space.m)
         .frame(height: 22)
         .opacity(pane.isStale ? 0.5 : 1)
+    }
+
+    private func numbersRow(_ numbers: ArraySlice<KeyNumber>) -> some View {
+        HStack(spacing: Space.l) {
+            ForEach(numbers, id: \.label) { n in
+                HStack(spacing: 3) {
+                    Text(n.label).foregroundStyle(.secondary)
+                    Text(n.value).numeric()
+                }
+                .fixedSize()
+            }
+        }
     }
 
     private var backend: String {
