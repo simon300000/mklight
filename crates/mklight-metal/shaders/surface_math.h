@@ -131,8 +131,15 @@ template<typename R> static inline bool mkl_surface_eval(constant MklPackedSurfa
     R c=mkl_parts<R>(s.curvature,s.curvature_lo),k=mkl_parts<R>(s.conic,s.conic_lo);
     if (s.shape==MKL_SHAPE_ODD_ASPHERE) {
         MklJet<R> base; if (!mkl_conic_sag_jet(c,k,r2,base)) return false;
-        if (mkl_zero(r2.v)) out=base; else {
-            auto r=mkl_jscale(mkl_jsqrt(r2),mkl_c<R>(1)/radius); out=base+mkl_poly(coeff,0,na,r)*r;
+        if (mkl_zero(x.v) && mkl_zero(y.v)) out=base; else {
+            MklJet<R> radial;
+            if (mkl_zero(r2.v)) {
+                R ax=mkl_le(x.v,0)?-x.v:x.v,ay=mkl_le(y.v,0)?-y.v:y.v;
+                R scale=mkl_le_value(ax,ay)?ay:ax;
+                R u=x.v/scale,v=y.v/scale,w=mkl_sqrt(u*u+v*v);
+                radial={scale*w,u/w,v/w};
+            } else radial=mkl_jsqrt(r2);
+            auto r=mkl_jscale(radial,mkl_c<R>(1)/radius); out=base+mkl_poly(coeff,0,na,r)*r;
         }
     } else if (s.shape==MKL_SHAPE_TOROID || s.shape==MKL_SHAPE_BICONIC) {
         R cx=mkl_load<R>(data,MKL_COEFF_CX),inv=mkl_c<R>(1)/radius;

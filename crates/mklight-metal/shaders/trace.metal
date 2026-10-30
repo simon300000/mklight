@@ -719,7 +719,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
         }
         const uint coating = surf.coating;
         const float3 dfv = mkl_hi3(dir);
-        if (surf.shape==MKL_SHAPE_DIFFRACTIVE && mkl_surface_data(surf,coefficients)[2*MKL_COEFF_TRACE_ORDER]!=0.0f && (act==1u||act==2u)) {
+        if (surf.shape==MKL_SHAPE_DIFFRACTIVE && !dummy && !is_image && mkl_surface_data(surf,coefficients)[2*MKL_COEFF_TRACE_ORDER]!=0.0f && (act==1u||act==2u)) {
             bool reflected=act==2u; float2 n2=reflected?n1:n_other;
             MklDv d2; float2 delta;
             if (!mkl_diffract(surf,coefficients,w,pos,dir,hit.g,n1,n2,reflected,d2,delta)) {status=MKL_RAY_EVANESCENT|fail_s;break;}

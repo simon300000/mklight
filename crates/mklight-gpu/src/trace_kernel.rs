@@ -1110,6 +1110,8 @@ pub fn trace_ray<E: FpEnv>(
         let coating = surf.coating;
         let df = hi3(dir);
         if surf.shape == MKL_SHAPE_DIFFRACTIVE
+            && !dummy
+            && !is_image
             && crate::surface_math::data(surf, pool)[MKL_COEFF_TRACE_ORDER as usize].hi != 0.0
             && matches!(act, Act::Refract | Act::Reflect)
         {

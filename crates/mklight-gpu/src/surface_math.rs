@@ -329,10 +329,27 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
     Some(match s.shape {
         MKL_SHAPE_ODD_ASPHERE => {
             let base = conic(curv, k, r2)?;
-            if r2.v.zero() {
+            if x.v.zero() && y.v.zero() {
                 base
             } else {
-                let r = r2.sqrt().scale(c::<R>(1.0) / radius);
+                // A nonzero cone radius can have an underflowing square.
+                // Recover r and its unit radial gradient with scaled hypot.
+                let radial = if r2.v.zero() {
+                    let ax = if x.v.le(0.0) { -x.v } else { x.v };
+                    let ay = if y.v.le(0.0) { -y.v } else { y.v };
+                    let scale = if ax.le_value(ay) { ay } else { ax };
+                    let u = x.v / scale;
+                    let v = y.v / scale;
+                    let w = (u * u + v * v).sqrt();
+                    Jet {
+                        v: scale * w,
+                        x: u / w,
+                        y: v / w,
+                    }
+                } else {
+                    r2.sqrt()
+                };
+                let r = radial.scale(c::<R>(1.0) / radius);
                 base + poly(coeff, 0, na, r) * r
             }
         }

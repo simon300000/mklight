@@ -411,7 +411,9 @@ odd/axis/XY/phase polynomials, differentiated Clenshaw evaluates Q, and
 Jacobi plus complex Cartesian powers evaluates Zernike without polar
 singularities. Toroid and biconic formulas keep their cylinder limits
 without dividing by curvature. The odd cone has the reference's axial
-normal at the vertex. An exact-conic departure retains the closed-form
+normal at the vertex. A nonzero cone radius whose square underflows uses
+a scaled hypot and unit radial gradient; it must not select the vertex
+normal (tested at radii ±1e-30 mm). An exact-conic departure retains the closed-form
 intersection and checks its finite normalization domain afterward.
 
 General sag intersections use the reference's y-curvature/conic seed,
@@ -670,6 +672,88 @@ relay (27 mm, NA 0.25, ideal lenses now exact in phase: the NA 0.05
 near-critical refraction of the TIR block 6.5e-4. Survival agreed for
 every ray, vignetted ones included. Bulk transmittance agrees to ≤ 4e-8.
 
+### 5.1.1 Extended-surface qualification (layout v5)
+
+Measured on Apple M2 Pro with the strict offline compiler flags, 2026-10-31.
+Each sample and its 0.93× aperture variant has 27,864 rays (64 × 64 pupil,
+all fields and wavelengths). GPU and matching FTZ emulation are bit-identical
+in every output plane and every surface record. Maxima below include both
+aperture variants; no survival mismatch or tolerance-band exception occurred.
+All nine samples also pass the default one-third-budget qualification.
+
+| sample | position (mm) | direction | OPD (waves) |
+|---|---:|---:|---:|
+| hybrid_doe | 8.2e-8 | 3.0e-8 | 1.4e-6 |
+| anamorphic | 1.6e-7 | 3.0e-8 | 9.3e-7 |
+| biconic | 8.4e-8 | 3.0e-8 | 1.9e-6 |
+| toroid | 8.3e-8 | 3.0e-8 | 1.9e-6 |
+| q_con | 8.4e-8 | 3.0e-8 | 1.9e-6 |
+| q_bfs | 8.3e-8 | 3.0e-8 | 2.0e-6 |
+| odd_asphere | 8.4e-8 | 3.0e-8 | 1.5e-6 |
+| xy_freeform | 8.4e-8 | 3.0e-8 | 2.4e-6 |
+| zernike_sag | 8.3e-8 | 3.0e-8 | 2.4e-6 |
+
+`surface_math::tests::full_capacity_sags_and_gradients_match_f64` checks
+all coefficient capacities, both Zernike orderings, negative curvature and
+both cylinder orientations in IEEE and FTZ environments against the core's
+independent f64 jets (absolute sag/gradient error < 2e-10). Device tests
+also upload these systems together, exercising rebased pool offsets and
+positive-y sag probes. DOE tests cover orders −2, 0, 1, 3 and 10,000,
+transmission, reflection, dummy pass-through, curved bases and evanescence;
+forced reflection at dummy/image DOEs also preserves specular direction and
+geometric OPL without adding phase;
+OPL is compared at the same reported point, within 1e-8 mm. The hybrid's
+OPD test includes the phase jump. Design order 2 and design wavelength
+0.55 µm are deliberately different from the selected order/wavelengths.
+
+**Steep random rays.** `extended_steep_rays_classify_and_match_f64` uses
+Philox seed `0x4d4b4c5355524635`, stream 0, 8,192 rays per full-capacity
+fixture: x/y uniform in [−14,14] mm, polar angle in [−80°,80°], random
+azimuth, no aperture clipping. The same set, plus DOE order/interaction
+variants, is bit-identical between Metal and FTZ emulation. Against f64:
+
+| fixture | equal statuses / 8192 | agreement | common hits |
+|---|---:|---:|---:|
+| odd, 20 terms | 8113 | 99.036% | 7238 |
+| QCon, 20 terms | 8192 | 100% | 3341 |
+| QBfs, 20 terms | 8192 | 100% | 3330 |
+| toroid, 10 y terms | 8183 | 99.890% | 7349 |
+| biconic, 10 terms per axis | 8169 | 99.719% | 5926 |
+| XY, 65 terms | 8192 | 100% | 3325 |
+| DOE, 10 phase terms on even-asphere base | 8166 | 99.683% | 3336 |
+| Fringe, 37 terms | 8192 | 100% | 3327 |
+| Standard, 45 terms | 8192 | 100% | 3327 |
+| x cylinder | 8191 | 99.988% | 6133 |
+| y cylinder | 8192 | 100% | 8151 |
+
+Every common hit meets the full budget: maximum position 1.86e-6 mm,
+direction 5.08e-8, same-point OPL 3.90e-12 mm, including DOE phase.
+The test requires >99% status agreement for each fixture and no common-hit
+geometry/OPL outlier; it does not hide failures in an aperture/TIR band.
+
+Residual classification differences, as `(f64 → f32, count)`:
+
+* Odd: OK→Miss 44, OK→NoConvergence 9, Miss→OK 26.
+* Toroid: OK→Miss 4, Miss→OK 5.
+* Biconic: OK→Miss 9, Miss→OK 8, OutsideDomain→OK 5,
+  OutsideDomain→Miss 1.
+* DOE base: Miss→NoConvergence 12, Miss→OutsideDomain 1,
+  NoConvergence→Miss 10, NoConvergence→OutsideDomain 1,
+  OutsideDomain→NoConvergence 2. Both implementations fail all 26.
+* x cylinder: OutsideDomain→Miss 1; both fail.
+
+The physical odd/axis series have no normalization-domain cutoff; the
+steep search can reach large departures and domain boundaries from a poor
+conic seed. Rounded residuals change backtracking acceptance and crossing
+brackets. These differences are **not confined to long searches**: the
+f64-only successes took 5–15 steps (odd), 12–14 (toroid), and 11–14
+(biconic). Conversely, f32-only successes land on the real sag; the maximum
+residual evaluated at their rounded output points is 2.7e-5 mm on the
+steep biconic (the sag residual includes gradient-amplified coordinate
+rounding). This stress test does not establish identical survival on
+arbitrary steep systems. Qualification remains mandatory, and the measured
+sample passes above do not claim exhaustive qualification of every ray.
+
 ### 5.2 Precision qualification and CPU fallback
 
 `xval::qualify(backend, tracer, settings, ctx)` runs a small
@@ -730,6 +814,39 @@ with host-side packing and unpacking of ~110 MB of planes, ~2.5×. (The
 double-float aperture tests of layout v4 cost ~5 % of device time.) Chained
 device-resident jobs (trace → reduce without readback) are the next
 optimisation (§8).
+
+### 5.4 Extended-shape throughput
+
+Ignored test: `source ~/.cargo/env && cargo test --release -p mklight-metal
+--test trace benchmark_extended_shapes -- --ignored --nocapture`.
+Apple M2 Pro, strict offline flags, 262,144 identical axial input rays over
+an 8 mm radius disk, one refracting surface, radiometry off, no records,
+all rays successful; one warm-up and best of three timed launches. Wall
+includes ray-plane upload and result unpacking, excludes system upload and
+request cloning. Device columns are millions of **rays/s** (one surface).
+These are timings from one best-of-three run, sensitive to device load.
+Each fixture uses its full coefficient capacity. The DOE base has two
+even-asphere terms, so its relative rate is not a standalone phase cost.
+
+| shape | device M rays/s | wall M rays/s | device / even10 |
+|---|---:|---:|---:|
+| even, 10 terms | 169.755 | 39.226 | 1.000 |
+| odd, 20 terms | 60.751 | 23.650 | 0.358 |
+| QCon, 20 terms | 34.782 | 16.799 | 0.205 |
+| QBfs, 20 terms | 67.357 | 28.370 | 0.397 |
+| toroid, 10 y terms | 98.838 | 28.898 | 0.582 |
+| biconic, 10 terms per axis | 93.594 | 25.705 | 0.551 |
+| XY, 65 terms | 32.866 | 19.078 | 0.194 |
+| DOE, 10 phase terms | 146.511 | 30.320 | 0.863 |
+| Fringe, 37 terms | 9.733 | 7.573 | 0.057 |
+| Standard, 45 terms | 6.627 | 5.862 | 0.039 |
+| x cylinder | 121.623 | 30.379 | 0.716 |
+| y cylinder | 119.680 | 32.310 | 0.705 |
+
+The high-order Zernike path evaluates a differentiated Jacobi recurrence
+and Cartesian angular powers for each populated term at every Newton
+sample/refinement. It is the largest cost here; these measurements use all
+terms, while the sample designs have sparse, shorter coefficient lists.
 
 ## 6. Metal backend notes
 
@@ -814,10 +931,12 @@ optimisation (§8).
   (§5.1); a consumer needing more could be given residual output planes.
 * Asphere searches that wander far from the conic seed (> 20 Newton steps)
   can settle on another root than the reference, and the failure class of
-  never-converging searches can differ (§5: strong aspheres). Designed
-  systems do not reach this.
+  never-converging searches can differ (§5: strong aspheres). Extended
+  physical series can also disagree in safeguarded decisions during shorter
+  steep searches (§5.1.1); none of the sample grids shows this.
 * Systems are limited by the packer: 16 wavelengths per packed chunk,
-  asphere terms up to A22, model values representable as normal f32.
+  even-asphere terms up to A22, the extended capacities in §2.2, and model
+  values representable as normal f32 after coefficient normalization.
 * Job inputs and outputs are host arrays; device-resident buffers chained
   between jobs (e.g. trace → reduce without a readback) are a later
   optimisation that does not change the interface's semantics.

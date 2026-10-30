@@ -523,10 +523,21 @@ fn extended_full_capacity_and_steep_rays_bitwise() {
             (i % 3) as u32,
         );
     }
+    for x in [-1e-30, 0.0, 1e-30, 1e-10] {
+        b.push_f64([x, 0.0, -5.0], [0.0, 0.0, 1.0], 1);
+    }
     let mut systems: Vec<_> = testutil::extended_shapes()
         .into_iter()
         .map(|(n, s)| (n.to_string(), testutil::one_surface(s)))
         .collect();
+    systems.push((
+        "odd cone".into(),
+        testutil::one_surface(mklight_core::SurfaceShape::OddAsphere {
+            curvature: 0.0,
+            conic: 0.0,
+            coefficients: vec![0.01],
+        }),
+    ));
     let doe = systems
         .iter()
         .find(|(n, _)| n == "doe10")
@@ -576,6 +587,23 @@ fn extended_full_capacity_and_steep_rays_bitwise() {
             .iter()
             .filter(|s| **s & 255 == MKL_RAY_EVANESCENT)
             .count();
+        if systems[k].1.surfaces[1].interaction == Interaction::Dummy {
+            let forced = |h| {
+                let mut r = TraceRequest::path(
+                    h,
+                    rays.clone(),
+                    0,
+                    vec![PathStep::forward(1, StepMode::Reflect)],
+                );
+                r.record = RecordMode::AllSurfaces;
+                r.apply_apertures = false;
+                r
+            };
+            let a = trace(g, forced(hg));
+            let b = trace(&c, forced(hc));
+            assert_bitwise(&a, &b, &format!("{name}, forced reflection"));
+            assert!(a.status.iter().all(|s| s & 255 != MKL_RAY_EVANESCENT));
+        }
         let r2: Vec<f32> = (0..=64).map(|j| j as f32 * 160.0 / 64.0).collect();
         let probe = |backend: &dyn ComputeBackend, h| match backend
             .run(

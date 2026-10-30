@@ -1384,3 +1384,80 @@ fn doe_orders_opl_and_evanescence() {
         }
     }
 }
+
+#[test]
+fn passive_doe_has_no_phase_on_forced_reflection() {
+    use mklight_core::model::surface::DiffractivePhase;
+    let b = CpuF32Backend::with_subnormals(false);
+    for at_image in [false, true] {
+        let shape = SurfaceShape::Diffractive {
+            base: Box::new(SurfaceShape::Plane),
+            phase: DiffractivePhase {
+                norm_radius: 10.0,
+                coefficients: vec![1e8],
+                design_order: 1,
+                trace_order: 1,
+                design_wavelength_um: 0.55,
+            },
+        };
+        let mut sys = testutil::one_surface(SurfaceShape::Plane);
+        let si = if at_image { 2 } else { 1 };
+        sys.surfaces[si].shape = shape;
+        sys.surfaces[si].interaction = Interaction::Dummy;
+        let rs = testutil::resolve(sys);
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
+        let rays = batch(&[(Ray::new(Vec3::new(1.0, 0.5, -5.0), Vec3::Z), 1)]);
+        let steps = if at_image {
+            vec![
+                PathStep::forward(1, StepMode::Transmit),
+                PathStep::forward(2, StepMode::Reflect),
+            ]
+        } else {
+            vec![PathStep::forward(1, StepMode::Reflect)]
+        };
+        let got = trace(&b, TraceRequest::path(h, rays, 0, steps));
+        assert_eq!(got.status[0], MKL_RAY_OK);
+        let (p, d) = v3(&got, 0);
+        assert_eq!(p, Vec3::new(1.0, 0.5, 0.0));
+        assert_eq!(d, -Vec3::Z);
+        let expected = 5.0
+            + if at_image {
+                rs.surfaces[1].thickness * rs.surfaces[1].n_after[1]
+            } else {
+                0.0
+            };
+        assert!((got.opl_hi[0] as f64 + got.opl_lo[0] as f64 - expected).abs() < 1e-10);
+        b.release_systems(h).unwrap();
+    }
+}
+
+#[test]
+fn odd_cone_normal_survives_small_nonzero_radius() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let rs = testutil::resolve(testutil::one_surface(SurfaceShape::OddAsphere {
+        curvature: 0.0,
+        conic: 0.0,
+        coefficients: vec![0.01],
+    }));
+    let h = b
+        .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+        .unwrap();
+    let rays: Vec<_> = [-1e-30, 0.0, 1e-30, 1e-10]
+        .into_iter()
+        .map(|x| (Ray::new(Vec3::new(x, 0.0, -5.0), Vec3::Z), 1))
+        .collect();
+    let got = trace(&b, TraceRequest::new(h, batch(&rays), 0, 1));
+    for (i, (ray, _)) in rays.iter().enumerate() {
+        let r = trace_ray(&rs, ray, 1, &TraceOptions::unclipped().to_surface(1), None);
+        assert_eq!(got.status[i], reference_status_word(&r.status));
+        assert!(
+            (v3(&got, i).1 - r.ray.dir).norm() < 2e-6,
+            "radius {}: {:?} vs {:?}",
+            ray.pos.x,
+            v3(&got, i).1,
+            r.ray.dir
+        );
+    }
+}
