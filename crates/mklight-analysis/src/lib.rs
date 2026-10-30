@@ -13,6 +13,7 @@ pub mod illumination;
 pub mod layout;
 pub mod seidel;
 pub mod spot;
+pub mod system_data;
 pub mod util;
 
 /// Convenience for tests, tools and examples: snapshot, resolve against the
