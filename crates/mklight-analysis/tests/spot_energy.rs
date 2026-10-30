@@ -406,3 +406,266 @@ fn results_round_trip_through_json_with_non_finite_values() {
     let back: FanResult = serde_json::from_str(&text).unwrap();
     assert_eq!(serde_json::to_string(&back).unwrap(), text);
 }
+
+#[test]
+fn defocus_on_a_curved_image_surface_warns_everywhere() {
+    let mut sys = samples::singlet();
+    let n = sys.surfaces.len();
+    sys.surfaces[n - 1].shape = mklight_core::SurfaceShape::sphere(-100.0);
+    let t = tracer(sys);
+    let curved = |w: &[String]| w.iter().any(|s| s.contains("curved image surface"));
+    let spot = |defocus: f64, tf: Option<ThroughFocus>| {
+        spot_diagram(
+            &t,
+            &SpotDiagramSettings {
+                defocus,
+                through_focus: tf,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .run_info
+        .warnings
+    };
+    assert!(!curved(&spot(0.0, None)));
+    assert!(curved(&spot(0.5, None)));
+    let tf = ThroughFocus {
+        min: -0.1,
+        max: 0.1,
+        steps: 3,
+    };
+    assert!(curved(&spot(0.0, Some(tf))));
+    let ee = |defocus: f64| {
+        encircled_energy(
+            &t,
+            &EncircledEnergySettings {
+                defocus,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .run_info
+        .warnings
+    };
+    assert!(!curved(&ee(0.0)) && curved(&ee(0.5)));
+    let mtf = |defocus: f64| {
+        geometric_mtf(
+            &t,
+            &GeometricMtfSettings {
+                defocus,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .run_info
+        .warnings
+    };
+    assert!(!curved(&mtf(0.0)) && curved(&mtf(0.5)));
+    // A plane image never warns.
+    let p = tracer(samples::singlet());
+    let w = spot_diagram(
+        &p,
+        &SpotDiagramSettings {
+            defocus: 0.5,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .run_info
+    .warnings;
+    assert!(!curved(&w));
+}
+
+/// Image rays of the given fields and wavelengths, traced directly with the
+/// batch tracer, standing in for another backend.
+fn external_batch(
+    t: &mklight_trace::SequentialTracer,
+    fields: &[usize],
+    wls: &[usize],
+    pupil: &[[f64; 2]],
+) -> RayBatch {
+    let sys = t.system();
+    let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
+    let mut out = Vec::new();
+    for &f in fields {
+        let pf = t.field(f).clone();
+        let grid = mklight_trace::Grid {
+            fields: std::slice::from_ref(&pf),
+            wavelengths: wls,
+            pupil,
+        };
+        let rays: Vec<ImageRay> = mklight_trace::trace_grid(t, &grid, &t.options())
+            .iter()
+            .map(|r| ImageRay {
+                wavelength: r.wavelength as usize,
+                hit: r.status.is_ok().then_some(ImageHit {
+                    point: [r.point.x, r.point.y],
+                    dir: r.dir,
+                }),
+            })
+            .collect();
+        let chief = |w: usize| {
+            let c = t.chief(&pf, w);
+            c.status.is_ok().then_some(ImageHit {
+                point: [c.ray.pos.x, c.ray.pos.y],
+                dir: c.ray.dir,
+            })
+        };
+        let wc: Vec<_> = wls.iter().map(|&w| chief(w)).collect();
+        let mut warn = Vec::new();
+        out.push(
+            FieldRays::from_image_rays(
+                f,
+                wls,
+                &weights,
+                chief(sys.primary_wavelength),
+                &wc,
+                &rays,
+                &mut warn,
+            )
+            .unwrap(),
+        );
+        assert!(warn.is_empty());
+    }
+    RayBatch {
+        wavelengths: wls.to_vec(),
+        fields: out,
+    }
+}
+
+#[test]
+fn reductions_of_an_external_batch_match_the_traced_analyses() {
+    let t = tracer(samples::cooke_triplet());
+    let gpu = mklight_analysis::util::BackendInfo {
+        name: "test-backend".into(),
+        precision: mklight_core::job::Precision::F32Gpu,
+    };
+    let fields = [0, 1, 2];
+    let wls = [0, 1, 2];
+    let sp = SpotDiagramSettings {
+        rings: 5,
+        defocus: 0.02,
+        ..Default::default()
+    };
+    let batch = external_batch(
+        &t,
+        &fields,
+        &wls,
+        &pupil_points(sp.pattern, sp.rings, sp.seed),
+    );
+    let a = spot_diagram(&t, &sp).unwrap();
+    let b = spot_from_rays(&t, &sp, &batch, &gpu, Vec::new()).unwrap();
+    assert_eq!(a.fields, b.fields);
+    assert_eq!(b.run_info.backend, "test-backend");
+    assert_eq!(b.run_info.precision, mklight_core::job::Precision::F32Gpu);
+    assert_eq!(a.run_info.backend, mklight_analysis::util::BACKEND);
+
+    let sampling = RaySampling {
+        pattern: PupilPattern::Square,
+        rings: 6,
+        ..Default::default()
+    };
+    let batch = external_batch(&t, &fields, &wls, &pupil_points(sampling.pattern, 6, 1));
+    let es = EncircledEnergySettings {
+        sampling: sampling.clone(),
+        ..Default::default()
+    };
+    let ea = encircled_energy(&t, &es).unwrap();
+    let eb = encircled_energy_from_rays(&t, &es, &batch, &gpu, Vec::new()).unwrap();
+    assert_eq!((ea.radius, ea.fields), (eb.radius, eb.fields));
+    let ms = GeometricMtfSettings {
+        sampling: sampling.clone(),
+        ..Default::default()
+    };
+    let ma = geometric_mtf(&t, &ms).unwrap();
+    let mb = geometric_mtf_from_rays(&t, &ms, &batch, &gpu, Vec::new()).unwrap();
+    assert_eq!(ma.curves, mb.curves);
+    let bs = BestFocusSettings {
+        sampling,
+        ..Default::default()
+    };
+    let ba = best_focus(&t, &bs).unwrap();
+    let bb = best_focus_from_rays(&t, &bs, &batch, &gpu, Vec::new()).unwrap();
+    assert_eq!((ba.defocus, ba.merit), (bb.defocus, bb.merit));
+
+    // Inconsistent batches are rejected.
+    let mut bad = batch.clone();
+    bad.fields[0].arrived[0] += 1;
+    assert!(spot_from_rays(&t, &sp, &bad, &gpu, Vec::new()).is_err());
+    let mut bad = batch;
+    bad.wavelengths.push(7);
+    assert!(best_focus_from_rays(&t, &bs, &bad, &gpu, Vec::new()).is_err());
+}
+
+#[test]
+fn best_focus_skips_fields_without_a_chief_ray_for_the_chief_reference() {
+    // Field 1's primary chief "failed": its positions are relative to the
+    // first arrived ray, so an RMS about the chief would be meaningless.
+    let t = defocused(0.3);
+    let pupil = pupil_points(PupilPattern::Hexapolar, 6, 1);
+    let mut batch = external_batch(&t, &[0, 1], &[0], &pupil);
+    let lost = {
+        let pf = t.field(1).clone();
+        let grid = mklight_trace::Grid {
+            fields: std::slice::from_ref(&pf),
+            wavelengths: &[0],
+            pupil: &pupil,
+        };
+        let rays: Vec<ImageRay> = mklight_trace::trace_grid(&t, &grid, &t.options())
+            .iter()
+            .map(|r| ImageRay {
+                wavelength: 0,
+                hit: Some(ImageHit {
+                    point: [r.point.x, r.point.y],
+                    dir: r.dir,
+                }),
+            })
+            .collect();
+        let mut w = Vec::new();
+        let f = FieldRays::from_image_rays(1, &[0], &[1.0], None, &[None], &rays, &mut w).unwrap();
+        assert!(!f.chief_ok && w.len() == 1);
+        f
+    };
+    batch.fields[1] = lost;
+    let set = BestFocusSettings {
+        reference: SpotReference::Chief,
+        ..Default::default()
+    };
+    let b = best_focus_from_rays(&t, &set, &batch, &Default::default(), Vec::new()).unwrap();
+    assert_eq!(b.fields, vec![0]);
+    assert!(b.run_info.warnings.iter().any(|w| w.contains("field 1")));
+    assert!((b.defocus + 0.3).abs() < 1e-7);
+    // The centroid reference keeps the field.
+    let set = BestFocusSettings {
+        reference: SpotReference::Centroid,
+        ..Default::default()
+    };
+    let b = best_focus_from_rays(&t, &set, &batch, &Default::default(), Vec::new()).unwrap();
+    assert_eq!(b.fields, vec![0, 1]);
+}
+
+#[test]
+fn best_focus_warns_when_not_converged_or_at_the_range_edge() {
+    let t = defocused(0.3);
+    let has = |b: &BestFocusResult, s: &str| b.run_info.warnings.iter().any(|w| w.contains(s));
+    let b = best_focus(
+        &t,
+        &BestFocusSettings {
+            max_evaluations: 3,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!b.converged && has(&b, "did not converge"));
+    let b = best_focus(
+        &t,
+        &BestFocusSettings {
+            range: Some([0.0, 1.0]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(b.defocus.abs() < 1e-6 && has(&b, "edge of the given search range"));
+    let b = best_focus(&t, &BestFocusSettings::default()).unwrap();
+    assert!(b.converged && b.run_info.warnings.is_empty());
+}

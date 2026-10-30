@@ -7,7 +7,9 @@
 //! `Square`, `Random` or `Dithered` patterns for area-uniform sampling;
 //! `Hexapolar` is nearly uniform). Energies are normalised to the weight of
 //! the rays that **arrive** (vignetted rays carry no energy). A defocus `δ`
-//! moves each image point along its ray, as in [`crate::spot`].
+//! moves each image point along its ray, as in [`crate::spot`]. Each
+//! analysis has a `*_from_rays` form that reduces a [`RayBatch`] from any
+//! backend with the same code (see [`crate::spot`]).
 //!
 //! # Encircled and ensquared energy
 //!
@@ -50,10 +52,10 @@ use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
 
-use crate::spot::{FieldRays, SpotReference, trace_field_rays, validate_sampling};
+use crate::spot::{FieldRays, RayBatch, SpotReference, trace_field_rays, validate_sampling};
 use crate::util::{
-    FieldSelection, PupilPattern, WavelengthSelection, brent_minimize, check_count, check_finite,
-    field_value, linspace, nf, pupil_points, run_info,
+    BackendInfo, FieldSelection, PupilPattern, WavelengthSelection, brent_minimize, check_count,
+    check_finite, curved_image_warning, field_value, linspace, nf, pupil_points, run_info_backend,
 };
 
 fn seed_of(pattern: PupilPattern, seed: u64) -> Option<u64> {
@@ -88,7 +90,7 @@ fn trace(
     s: &RaySampling,
     ctx: &JobContext,
     warnings: &mut Vec<String>,
-) -> MkResult<(Vec<FieldRays>, Vec<usize>)> {
+) -> MkResult<RayBatch> {
     validate_sampling(s.pattern, s.rings)?;
     let sys = tracer.system();
     let fields = s.fields.resolve(tracer.fields().len())?;
@@ -96,8 +98,12 @@ fn trace(
         .wavelengths
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
     let pupil = pupil_points(s.pattern, s.rings, s.seed);
-    let data = trace_field_rays(tracer, &fields, &wls, &pupil, ctx, warnings)?;
-    Ok((data, wls))
+    trace_field_rays(tracer, &fields, &wls, &pupil, ctx, warnings)
+}
+
+/// Validate a batch from another backend against the tracer's system.
+fn check_batch(tracer: &SequentialTracer, batch: &RayBatch) -> MkResult<()> {
+    batch.validate(tracer.fields().len(), tracer.system().wavelengths_um.len())
 }
 
 /// Points relative to the reference at defocus `delta`, with weights.
@@ -231,11 +237,55 @@ pub fn encircled_energy_job(
     ctx: &JobContext,
 ) -> MkResult<EncircledEnergyResult> {
     let timer = RunTimer::start();
-    check_count("radius samples", settings.samples, 2, 100_001)?;
-    check_finite("defocus", settings.defocus)?;
+    validate_ee(settings)?;
     let mut warnings = Vec::new();
-    let (data, wls) = trace(tracer, &settings.sampling, ctx, &mut warnings)?;
+    let batch = trace(tracer, &settings.sampling, ctx, &mut warnings)?;
+    let r = ee_reduce(
+        timer,
+        tracer,
+        settings,
+        &batch,
+        &BackendInfo::cpu_reference(),
+        warnings,
+    )?;
+    ctx.report(1.0, "encircled energy");
+    Ok(r)
+}
+
+fn validate_ee(settings: &EncircledEnergySettings) -> MkResult<()> {
+    check_count("radius samples", settings.samples, 2, 100_001)?;
+    check_finite("defocus", settings.defocus)
+}
+
+/// Encircled and ensquared energy of a ray batch traced by any backend.
+/// The batch replaces the settings' sampling. `backend` is recorded in the
+/// `RunInfo`.
+pub fn encircled_energy_from_rays(
+    tracer: &SequentialTracer,
+    settings: &EncircledEnergySettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    warnings: Vec<String>,
+) -> MkResult<EncircledEnergyResult> {
+    let timer = RunTimer::start();
+    validate_ee(settings)?;
+    check_batch(tracer, batch)?;
+    ee_reduce(timer, tracer, settings, batch, backend, warnings)
+}
+
+fn ee_reduce(
+    timer: RunTimer,
+    tracer: &SequentialTracer,
+    settings: &EncircledEnergySettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    mut warnings: Vec<String>,
+) -> MkResult<EncircledEnergyResult> {
+    let (data, wls) = (&batch.fields, &batch.wavelengths);
     let delta = settings.defocus;
+    if delta != 0.0 {
+        warnings.extend(curved_image_warning(tracer));
+    }
     let per: Vec<(Cumulative, Cumulative, usize, usize)> = data
         .iter()
         .map(|fr| {
@@ -280,18 +330,18 @@ pub fn encircled_energy_job(
             rays_arrived: *n,
         })
         .collect();
-    ctx.report(1.0, "encircled energy");
     Ok(EncircledEnergyResult {
         radius,
         fields,
-        wavelengths: wls,
-        run_info: run_info(
+        wavelengths: wls.clone(),
+        run_info: run_info_backend(
             timer,
             tracer,
             "encircled_energy",
             settings,
             seed_of(settings.sampling.pattern, settings.sampling.seed),
             warnings,
+            backend,
         ),
     })
 }
@@ -398,28 +448,82 @@ pub fn geometric_mtf_job(
     ctx: &JobContext,
 ) -> MkResult<GeometricMtfResult> {
     let timer = RunTimer::start();
-    check_count("frequency samples", settings.frequency_samples, 2, 100_001)?;
-    check_finite("defocus", settings.defocus)?;
-    let sys = tracer.system();
-    let fo = tracer.paraxial().primary();
-    let cutoff = 1.0 / (sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number);
-    let fmax = match settings.max_frequency {
-        Some(f) if f > 0.0 && f.is_finite() => f,
-        Some(_) => {
-            return Err(MkError::InvalidModel(
-                "maximum frequency must be positive".into(),
-            ));
-        }
-        None if cutoff.is_finite() && cutoff > 0.0 => cutoff,
-        None => 100.0,
-    };
+    validate_mtf(settings)?;
     let mut warnings = Vec::new();
-    let (data, _) = trace(
+    let batch = trace(
         tracer,
         &settings.sampling,
         &ctx.subrange(0.0, 0.8),
         &mut warnings,
     )?;
+    mtf_reduce(
+        timer,
+        tracer,
+        settings,
+        &batch,
+        &BackendInfo::cpu_reference(),
+        warnings,
+        &ctx.subrange(0.8, 1.0),
+    )
+}
+
+fn validate_mtf(settings: &GeometricMtfSettings) -> MkResult<()> {
+    check_count("frequency samples", settings.frequency_samples, 2, 100_001)?;
+    check_finite("defocus", settings.defocus)?;
+    if let Some(f) = settings.max_frequency
+        && !(f > 0.0 && f.is_finite())
+    {
+        return Err(MkError::InvalidModel(
+            "maximum frequency must be positive".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Geometric MTF of a ray batch traced by any backend. The batch replaces
+/// the settings' sampling. `backend` is recorded in the `RunInfo`.
+pub fn geometric_mtf_from_rays(
+    tracer: &SequentialTracer,
+    settings: &GeometricMtfSettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    warnings: Vec<String>,
+) -> MkResult<GeometricMtfResult> {
+    let timer = RunTimer::start();
+    validate_mtf(settings)?;
+    check_batch(tracer, batch)?;
+    mtf_reduce(
+        timer,
+        tracer,
+        settings,
+        batch,
+        backend,
+        warnings,
+        &JobContext::new(),
+    )
+}
+
+fn mtf_reduce(
+    timer: RunTimer,
+    tracer: &SequentialTracer,
+    settings: &GeometricMtfSettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    mut warnings: Vec<String>,
+    ctx: &JobContext,
+) -> MkResult<GeometricMtfResult> {
+    let sys = tracer.system();
+    if settings.defocus != 0.0 {
+        warnings.extend(curved_image_warning(tracer));
+    }
+    let fo = tracer.paraxial().primary();
+    let cutoff = 1.0 / (sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number);
+    let fmax = match settings.max_frequency {
+        Some(f) => f,
+        None if cutoff.is_finite() && cutoff > 0.0 => cutoff,
+        None => 100.0,
+    };
+    let data = &batch.fields;
     let freqs = linspace(0.0, fmax, settings.frequency_samples);
     let mut curves = Vec::with_capacity(2 * data.len());
     let mut field_values = Vec::with_capacity(data.len());
@@ -449,10 +553,7 @@ pub fn geometric_mtf_job(
             });
         }
         field_values.push(field_value(tracer, fr.field));
-        ctx.report(
-            0.8 + 0.2 * (k + 1) as f64 / data.len() as f64,
-            "geometric MTF",
-        );
+        ctx.report((k + 1) as f64 / data.len() as f64, "geometric MTF");
     }
     Ok(GeometricMtfResult {
         frequencies: freqs,
@@ -460,13 +561,14 @@ pub fn geometric_mtf_job(
         diffraction_limit: None,
         cutoff_frequency: cutoff,
         field_values,
-        run_info: run_info(
+        run_info: run_info_backend(
             timer,
             tracer,
             "geometric_mtf",
             settings,
             seed_of(settings.sampling.pattern, settings.sampling.seed),
             warnings,
+            backend,
         ),
     })
 }
@@ -582,29 +684,88 @@ pub fn best_focus_job(
     ctx: &JobContext,
 ) -> MkResult<BestFocusResult> {
     let timer = RunTimer::start();
-    check_finite("tolerance", settings.tolerance)?;
-    if !(settings.tolerance > 0.0) {
-        return Err(MkError::InvalidModel("tolerance must be positive".into()));
-    }
-    check_count("evaluations", settings.max_evaluations, 3, 100_000)?;
+    validate_best_focus(settings)?;
     let mut warnings = Vec::new();
-    let (data, _) = trace(
+    let batch = trace(
         tracer,
         &settings.sampling,
         &ctx.subrange(0.0, 0.9),
         &mut warnings,
     )?;
-    let osys = tracer.system().system();
-    if !matches!(
-        tracer.system().surfaces[tracer.system().image_index()].shape,
-        mklight_core::SurfaceShape::Plane
-    ) {
-        warnings
-            .push("curved image surface: defocus is a first-order transfer along the rays".into());
+    let r = best_focus_reduce(
+        timer,
+        tracer,
+        settings,
+        &batch,
+        &BackendInfo::cpu_reference(),
+        warnings,
+        ctx,
+    )?;
+    ctx.report(1.0, "best focus");
+    Ok(r)
+}
+
+fn validate_best_focus(settings: &BestFocusSettings) -> MkResult<()> {
+    check_finite("tolerance", settings.tolerance)?;
+    if !(settings.tolerance > 0.0) {
+        return Err(MkError::InvalidModel("tolerance must be positive".into()));
     }
+    check_count("evaluations", settings.max_evaluations, 3, 100_000)?;
+    if let Some([a, b]) = settings.range
+        && !(a.is_finite() && b.is_finite() && a < b)
+    {
+        return Err(MkError::InvalidModel(
+            "defocus range must be finite and ascending".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Best focus of a ray batch traced by any backend (an optimiser operand
+/// can reuse its own batch). The batch replaces the settings' sampling.
+/// `backend` is recorded in the `RunInfo`.
+pub fn best_focus_from_rays(
+    tracer: &SequentialTracer,
+    settings: &BestFocusSettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    warnings: Vec<String>,
+) -> MkResult<BestFocusResult> {
+    let timer = RunTimer::start();
+    validate_best_focus(settings)?;
+    check_batch(tracer, batch)?;
+    best_focus_reduce(
+        timer,
+        tracer,
+        settings,
+        batch,
+        backend,
+        warnings,
+        &JobContext::new(),
+    )
+}
+
+fn best_focus_reduce(
+    timer: RunTimer,
+    tracer: &SequentialTracer,
+    settings: &BestFocusSettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    mut warnings: Vec<String>,
+    ctx: &JobContext,
+) -> MkResult<BestFocusResult> {
+    let osys = tracer.system().system();
+    warnings.extend(curved_image_warning(tracer));
     // Field weights and quadratic coefficients of the fields with rays.
     let mut used = Vec::new();
-    for fr in &data {
+    for fr in &batch.fields {
+        if settings.reference == SpotReference::Chief && !fr.chief_ok {
+            warnings.push(format!(
+                "field {}: primary chief ray failed; skipped (chief reference)",
+                fr.field
+            ));
+            continue;
+        }
         if let Some(q) = quadratic(fr, settings.reference) {
             used.push((fr, osys.fields.fields[fr.field].weight, q));
         } else {
@@ -639,14 +800,7 @@ pub fn best_focus_job(
         .fold((0.0, 0.0), |(n, d), u| (n + u.1 * u.2.1, d + u.1 * u.2.2));
     let ms = if den > 0.0 { -num / den } else { 0.0 };
     let range = match settings.range {
-        Some([a, b]) => {
-            if !(a.is_finite() && b.is_finite() && a < b) {
-                return Err(MkError::InvalidModel(
-                    "defocus range must be finite and ascending".into(),
-                ));
-            }
-            [a, b]
-        }
+        Some(r) => r,
         None => {
             let mins: Vec<f64> = used
                 .iter()
@@ -669,8 +823,23 @@ pub fn best_focus_job(
         settings.max_evaluations,
     )?;
     let edge = (br.x - range[0]).min(range[1] - br.x) <= 2.0 * settings.tolerance;
-    if edge && settings.range.is_some() {
-        warnings.push("best focus is at the edge of the search range".into());
+    if edge {
+        warnings.push(format!(
+            "best focus is at the edge of the {} search range [{}, {}] mm",
+            if settings.range.is_some() {
+                "given"
+            } else {
+                "automatic"
+            },
+            range[0],
+            range[1]
+        ));
+    }
+    if !br.converged {
+        warnings.push(format!(
+            "best focus did not converge within {} merit evaluations",
+            settings.max_evaluations
+        ));
     }
     let (tfd, tfm) = if settings.through_focus_samples > 0 {
         let d = linspace(range[0], range[1], settings.through_focus_samples.max(2));
@@ -679,7 +848,6 @@ pub fn best_focus_job(
     } else {
         (Vec::new(), Vec::new())
     };
-    ctx.report(1.0, "best focus");
     Ok(BestFocusResult {
         defocus: br.x,
         merit: br.fx,
@@ -693,13 +861,14 @@ pub fn best_focus_job(
         converged: br.converged,
         through_focus_defocus: tfd,
         through_focus_merit: tfm,
-        run_info: run_info(
+        run_info: run_info_backend(
             timer,
             tracer,
             "best_focus",
             settings,
             seed_of(settings.sampling.pattern, settings.sampling.seed),
             warnings,
+            backend,
         ),
     })
 }

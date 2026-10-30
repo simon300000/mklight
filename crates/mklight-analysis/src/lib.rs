@@ -4,18 +4,18 @@
 //! Every analysis is a pure function of a [`SequentialTracer`] (which owns
 //! the `ResolvedSystem` and its snapshot) and a serde settings struct with
 //! `Default`, returning a serde result that carries a `RunInfo` (snapshot
-//! hash, settings, backend `cpu-f64`, seed where random, warnings). Long
-//! computations have a `*_job` variant taking a `JobContext` for
-//! cancellation and monotone progress. Results are deterministic: fixed
+//! hash, settings, backend `cpu-f64` or the backend of a reduced ray batch,
+//! seed where random, warnings). Long computations have a `*_job` variant
+//! taking a `JobContext` for cancellation and monotone progress. Results are deterministic: fixed
 //! ordering, compensated sums, Philox for random pupil sampling.
 //!
 //! | module | analyses |
 //! |---|---|
-//! | [`spot`] | spot diagrams (square, hexapolar, random, dithered sampling), centroid / RMS / GEO about centroid and chief, polychromatic weighting, Airy radius, vignetted fraction, through-focus |
+//! | [`spot`] | spot diagrams (square, hexapolar, random, dithered sampling), centroid / RMS / GEO about centroid and chief, polychromatic weighting, Airy radius, vignetted fraction, through-focus; the public ray-batch reduction layer (`RayBatch`, `FieldRays`, `*_from_rays`) shared with other backends |
 //! | [`fans`] | transverse ray fans and OPD fans |
-//! | [`curvature`] | field curvature (Coddington along the real chief ray, close-ray cross-check), distortion (paraxial, `f·tan θ`, `f·θ`), grid distortion |
+//! | [`curvature`] | field curvature (generalised Coddington along the real chief ray, close-ray cross-check), distortion (paraxial, `f·tan θ`, `f·θ`), grid distortion |
 //! | [`seidel`] | Seidel sums per surface, Petzval, wavefront coefficients, third-order ray aberrations, longitudinal aberration, chromatic focal shift, lateral colour |
-//! | [`illumination`] | relative illumination (projected solid angle with real aiming), vignetting vs field, surface footprints |
+//! | [`illumination`] | relative illumination (projected solid angle of the exit pupil seen from the image point, real aiming), vignetting vs field, surface footprints |
 //! | [`energy`] | geometric encircled / ensquared energy, geometric MTF, best focus (Brent) |
 //! | [`layout`] | the viewport scene in global coordinates, with compact buffers |
 //! | [`system_data`] | first-order report table |

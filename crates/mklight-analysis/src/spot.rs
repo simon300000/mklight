@@ -33,20 +33,29 @@
 //! A defocus `δ` moves every image point along its ray by an axial (local
 //! `z`) distance `δ`: `p(δ) = p + δ·(d_x, d_y)/d_z`. For a plane image surface
 //! this is exactly the spot on the image plane translated by `δ`; for a curved
-//! image surface it is the first-order translation of the surface. Positive
-//! `δ` is along the image frame's `+z`.
+//! image surface it is the first-order translation of the surface, and a
+//! warning says so. Positive `δ` is along the image frame's `+z`.
+//!
+//! # Batches from other backends
+//!
+//! The statistics are a reduction of a [`RayBatch`]. [`FieldRays`] holds
+//! the arrived rays of one field relative to its primary chief ray, and
+//! [`FieldRays::from_image_rays`] builds it from plain image hits.
+//! [`spot_from_rays`] reduces a batch traced elsewhere (a GPU backend, an
+//! optimiser operand) with exactly the same code as [`spot_diagram`], and
+//! records the given [`BackendInfo`] in the `RunInfo`.
 //!
 //! The Airy radius is `1.22 λ N_w` with the primary wavelength and the
 //! paraxial working F/#.
 
 use mklight_core::job::RunTimer;
-use mklight_core::{JobContext, MkResult, RunInfo};
+use mklight_core::{JobContext, MkError, MkResult, RunInfo, Vec3};
 use mklight_trace::{Grid, SequentialTracer, trace_grid_job};
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    FieldSelection, Moments, PupilPattern, WavelengthSelection, check_count, check_finite,
-    field_value, linspace, nf, pupil_points, run_info,
+    BackendInfo, FieldSelection, Moments, PupilPattern, WavelengthSelection, check_count,
+    check_finite, curved_image_warning, field_value, linspace, nf, pupil_points, run_info_backend,
 };
 
 /// Reference point of the plotted spot.
@@ -207,10 +216,26 @@ pub struct SpotDiagram {
 
 // ----- Shared ray data -----------------------------------------------------------
 
+/// A ray on the image surface: hit point (image local frame, mm) and unit
+/// direction (image local frame).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageHit {
+    pub point: [f64; 2],
+    pub dir: Vec3,
+}
+
+/// One launched ray of a batch: its system wavelength and its image hit,
+/// `None` when it was vignetted, missed or failed.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageRay {
+    pub wavelength: usize,
+    pub hit: Option<ImageHit>,
+}
+
 /// One arrived ray, relative to its field's primary chief ray.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RayHit {
-    /// Position in the list of selected wavelengths.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RayHit {
+    /// Position in the batch's list of wavelengths.
     pub wl_pos: usize,
     /// `p − c` (mm) at zero defocus.
     pub q: [f64; 2],
@@ -230,21 +255,72 @@ impl RayHit {
     }
 }
 
-/// Traced rays of one field.
-#[derive(Clone, Debug)]
-pub(crate) struct FieldRays {
+/// The rays of one field, reduced to the form every spot statistic uses:
+/// arrived rays relative to the primary chief ray (removing the large
+/// common image height before any sum), with their slopes for defocus.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldRays {
     pub field: usize,
     /// Absolute primary chief hit (image local), or the first arrived ray
     /// when the chief failed (`chief_ok = false`).
     pub origin: [f64; 2],
     pub origin_slope: [f64; 2],
     pub chief_ok: bool,
-    /// Chief of each selected wavelength relative to `origin`: `(q, dt)`,
-    /// NaN when it failed.
+    /// Chief of each batch wavelength relative to `origin`: `(q, dt)`, NaN
+    /// when it failed.
     pub wl_chief: Vec<([f64; 2], [f64; 2])>,
     pub rays: Vec<RayHit>,
+    /// Launched and arrived rays per batch wavelength.
     pub launched: Vec<usize>,
     pub arrived: Vec<usize>,
+}
+
+/// Image-plane ray data of several fields over one list of wavelengths: the
+/// input of the reductions [`spot_from_rays`] and
+/// `crate::energy::{encircled_energy, geometric_mtf, best_focus}_from_rays`,
+/// whatever backend traced the rays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RayBatch {
+    /// System wavelength indices; `RayHit::wl_pos` indexes this list.
+    pub wavelengths: Vec<usize>,
+    pub fields: Vec<FieldRays>,
+}
+
+impl RayBatch {
+    /// Check the internal consistency (counts and indices) of a batch built
+    /// outside this crate.
+    pub fn validate(&self, num_fields: usize, num_wavelengths: usize) -> MkResult<()> {
+        let bad = |m: String| Err(MkError::InvalidModel(format!("ray batch: {m}")));
+        let nw = self.wavelengths.len();
+        if nw == 0 || self.wavelengths.iter().any(|&w| w >= num_wavelengths) {
+            return bad("wavelength list empty or out of range".into());
+        }
+        for f in &self.fields {
+            if f.field >= num_fields {
+                return bad(format!("field {} does not exist", f.field));
+            }
+            if f.wl_chief.len() != nw || f.launched.len() != nw || f.arrived.len() != nw {
+                return bad(format!(
+                    "field {}: per-wavelength lists of wrong length",
+                    f.field
+                ));
+            }
+            let mut count = vec![0usize; nw];
+            for r in &f.rays {
+                if r.wl_pos >= nw {
+                    return bad(format!(
+                        "field {}: wavelength position out of range",
+                        f.field
+                    ));
+                }
+                count[r.wl_pos] += 1;
+            }
+            if count != f.arrived || f.arrived.iter().zip(&f.launched).any(|(a, l)| a > l) {
+                return bad(format!("field {}: arrived counts inconsistent", f.field));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl FieldRays {
@@ -253,7 +329,7 @@ impl FieldRays {
         Moments::of(self.rays.iter().map(move |r| (r.at(delta), r.weight)))
     }
 
-    /// Moments of one selected wavelength (position `k`) about its own chief.
+    /// Moments of one batch wavelength (position `k`) about its own chief.
     pub fn moments_wl(&self, k: usize, delta: f64) -> Moments {
         let (cq, cdt) = self.wl_chief[k];
         let c = [delta.mul_add(cdt[0], cq[0]), delta.mul_add(cdt[1], cq[1])];
@@ -267,26 +343,111 @@ impl FieldRays {
                 }),
         )
     }
+
+    /// Reduce the image hits of one field (from any backend). `weights` are
+    /// the spectral weights of `wavelengths` (system indices);
+    /// `wavelength_chiefs[k]` is the chief ray of `wavelengths[k]`, and
+    /// `primary_chief` the primary-wavelength chief, which is the origin of
+    /// every position (the first arrived ray, with a warning, if it failed).
+    /// A ray whose wavelength is not in `wavelengths` is an error.
+    pub fn from_image_rays(
+        field: usize,
+        wavelengths: &[usize],
+        weights: &[f64],
+        primary_chief: Option<ImageHit>,
+        wavelength_chiefs: &[Option<ImageHit>],
+        rays: &[ImageRay],
+        warnings: &mut Vec<String>,
+    ) -> MkResult<FieldRays> {
+        if weights.len() != wavelengths.len() || wavelength_chiefs.len() != wavelengths.len() {
+            return Err(MkError::InvalidModel(
+                "ray batch: per-wavelength lists of wrong length".into(),
+            ));
+        }
+        let hit = |h: &ImageHit| slope(h.dir).map(|t| (h.point, t));
+        let pc = primary_chief.as_ref().and_then(hit);
+        let first = rays.iter().filter_map(|r| r.hit.as_ref()).find_map(hit);
+        let (origin, origin_slope, chief_ok) = match (pc, first) {
+            (Some((p, t)), _) => (p, t, true),
+            (None, Some((p, t))) => {
+                warnings.push(format!(
+                    "field {field}: primary chief ray failed; statistics about the chief are undefined"
+                ));
+                (p, t, false)
+            }
+            (None, None) => ([0.0, 0.0], [0.0, 0.0], false),
+        };
+        let rel = |p: [f64; 2], t: [f64; 2]| {
+            (
+                [p[0] - origin[0], p[1] - origin[1]],
+                [t[0] - origin_slope[0], t[1] - origin_slope[1]],
+            )
+        };
+        let wl_chief = wavelength_chiefs
+            .iter()
+            .map(|c| match c.as_ref().and_then(hit) {
+                Some((p, t)) if chief_ok => rel(p, t),
+                _ => ([f64::NAN; 2], [f64::NAN; 2]),
+            })
+            .collect();
+        let mut hits = Vec::with_capacity(rays.len());
+        let mut launched = vec![0; wavelengths.len()];
+        let mut arrived = vec![0; wavelengths.len()];
+        for r in rays {
+            let k = wavelengths
+                .iter()
+                .position(|&w| w == r.wavelength)
+                .ok_or_else(|| {
+                    MkError::InvalidModel(format!(
+                        "ray batch: wavelength {} not in the batch",
+                        r.wavelength
+                    ))
+                })?;
+            launched[k] += 1;
+            let Some((p, t)) = r.hit.as_ref().and_then(hit) else {
+                continue;
+            };
+            arrived[k] += 1;
+            let (q, dt) = rel(p, t);
+            hits.push(RayHit {
+                wl_pos: k,
+                q,
+                dt,
+                weight: weights[k],
+            });
+        }
+        Ok(FieldRays {
+            field,
+            origin,
+            origin_slope,
+            chief_ok,
+            wl_chief,
+            rays: hits,
+            launched,
+            arrived,
+        })
+    }
 }
 
 /// Image-space slope `(d_x/d_z, d_y/d_z)`; `None` for a ray parallel to the
 /// image frame's `xy` plane or non-finite data.
 #[inline]
-pub(crate) fn slope(d: mklight_core::Vec3) -> Option<[f64; 2]> {
+pub(crate) fn slope(d: Vec3) -> Option<[f64; 2]> {
     let t = [d.x / d.z, d.y / d.z];
     (d.z != 0.0 && t[0].is_finite() && t[1].is_finite()).then_some(t)
 }
 
-/// Trace `fields × wavelengths × pupil` (clipped) and the chief rays, and
-/// collect the arrived rays relative to each field's primary chief ray.
-pub(crate) fn trace_field_rays(
+/// Trace `fields × wavelengths × pupil` (clipped) and the chief rays with
+/// the CPU reference tracer, and reduce them with
+/// [`FieldRays::from_image_rays`].
+pub fn trace_field_rays(
     tracer: &SequentialTracer,
     fields: &[usize],
     wls: &[usize],
     pupil: &[[f64; 2]],
     ctx: &JobContext,
     warnings: &mut Vec<String>,
-) -> MkResult<Vec<FieldRays>> {
+) -> MkResult<RayBatch> {
     let sys = tracer.system();
     let primary = sys.primary_wavelength;
     let prepared: Vec<_> = fields.iter().map(|&f| tracer.field(f).clone()).collect();
@@ -297,86 +458,41 @@ pub(crate) fn trace_field_rays(
     };
     let rays = trace_grid_job(tracer, &grid, &tracer.options(), &ctx.subrange(0.0, 0.95))?;
     let np = pupil.len();
+    let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
     let mut out = Vec::with_capacity(fields.len());
     for (fi, &f) in fields.iter().enumerate() {
         ctx.check()?;
         let pf = &prepared[fi];
-        let chief_hit = |wl: usize| {
+        let chief = |wl: usize| {
             let c = tracer.chief(pf, wl);
-            if !c.status.is_ok() {
-                return None;
-            }
-            slope(c.ray.dir).map(|t| ([c.ray.pos.x, c.ray.pos.y], t))
+            c.status.is_ok().then_some(ImageHit {
+                point: [c.ray.pos.x, c.ray.pos.y],
+                dir: c.ray.dir,
+            })
         };
-        let pc = chief_hit(primary);
-        let block = &rays[fi * wls.len() * np..(fi + 1) * wls.len() * np];
-        let first = block
+        let pc = chief(primary);
+        let wl_chiefs: Vec<_> = wls
             .iter()
-            .find(|r| r.status.is_ok() && slope(r.dir).is_some());
-        let (origin, origin_slope, chief_ok) = match (pc, first) {
-            (Some((p, t)), _) => (p, t, true),
-            (None, Some(r)) => {
-                warnings.push(format!(
-                    "field {f}: primary chief ray failed; statistics about the chief are undefined"
-                ));
-                (
-                    [r.point.x, r.point.y],
-                    slope(r.dir).unwrap_or([0.0, 0.0]),
-                    false,
-                )
-            }
-            (None, None) => ([0.0, 0.0], [0.0, 0.0], false),
-        };
-        let rel = |p: [f64; 2], t: [f64; 2]| {
-            (
-                [p[0] - origin[0], p[1] - origin[1]],
-                [t[0] - origin_slope[0], t[1] - origin_slope[1]],
-            )
-        };
-        let wl_chief = wls
+            .map(|&w| if w == primary { pc } else { chief(w) })
+            .collect();
+        let block: Vec<ImageRay> = rays[fi * wls.len() * np..(fi + 1) * wls.len() * np]
             .iter()
-            .map(|&w| {
-                let c = if w == primary { pc } else { chief_hit(w) };
-                match c {
-                    Some((p, t)) if chief_ok || w != primary => rel(p, t),
-                    _ => ([f64::NAN; 2], [f64::NAN; 2]),
-                }
+            .map(|r| ImageRay {
+                wavelength: r.wavelength as usize,
+                hit: r.status.is_ok().then_some(ImageHit {
+                    point: [r.point.x, r.point.y],
+                    dir: r.dir,
+                }),
             })
             .collect();
-        let mut hits = Vec::with_capacity(block.len());
-        let mut launched = vec![0; wls.len()];
-        let mut arrived = vec![0; wls.len()];
-        for r in block {
-            let k = wls
-                .iter()
-                .position(|&w| w as u32 == r.wavelength)
-                .expect("grid wavelength");
-            launched[k] += 1;
-            if !r.status.is_ok() {
-                continue;
-            }
-            let Some(t) = slope(r.dir) else { continue };
-            arrived[k] += 1;
-            let (q, dt) = rel([r.point.x, r.point.y], t);
-            hits.push(RayHit {
-                wl_pos: k,
-                q,
-                dt,
-                weight: sys.wavelength_weights[wls[k]],
-            });
-        }
-        out.push(FieldRays {
-            field: f,
-            origin,
-            origin_slope,
-            chief_ok,
-            wl_chief,
-            rays: hits,
-            launched,
-            arrived,
-        });
+        out.push(FieldRays::from_image_rays(
+            f, wls, &weights, pc, &wl_chiefs, &block, warnings,
+        )?);
     }
-    Ok(out)
+    Ok(RayBatch {
+        wavelengths: wls.to_vec(),
+        fields: out,
+    })
 }
 
 fn stats(
@@ -420,6 +536,17 @@ pub fn spot_diagram(
     spot_diagram_job(tracer, settings, &JobContext::new())
 }
 
+fn validate_spot_settings(settings: &SpotDiagramSettings) -> MkResult<()> {
+    validate_sampling(settings.pattern, settings.rings)?;
+    check_finite("defocus", settings.defocus)?;
+    if let Some(tf) = &settings.through_focus {
+        check_count("through-focus steps", tf.steps, 1, 100_000)?;
+        check_finite("through-focus range", tf.min)?;
+        check_finite("through-focus range", tf.max)?;
+    }
+    Ok(())
+}
+
 /// [`spot_diagram`] with cancellation and progress.
 pub fn spot_diagram_job(
     tracer: &SequentialTracer,
@@ -428,25 +555,72 @@ pub fn spot_diagram_job(
 ) -> MkResult<SpotDiagram> {
     let timer = RunTimer::start();
     let sys = tracer.system();
-    validate_sampling(settings.pattern, settings.rings)?;
-    check_finite("defocus", settings.defocus)?;
-    if let Some(tf) = &settings.through_focus {
-        check_count("through-focus steps", tf.steps, 1, 100_000)?;
-        check_finite("through-focus range", tf.min)?;
-        check_finite("through-focus range", tf.max)?;
-    }
+    validate_spot_settings(settings)?;
     let fields = settings.fields.resolve(tracer.fields().len())?;
     let wls = settings
         .wavelengths
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
     let pupil = pupil_points(settings.pattern, settings.rings, settings.seed);
     let mut warnings = Vec::new();
-    let data = trace_field_rays(tracer, &fields, &wls, &pupil, ctx, &mut warnings)?;
+    let batch = trace_field_rays(tracer, &fields, &wls, &pupil, ctx, &mut warnings)?;
+    let out = spot_reduce(
+        timer,
+        tracer,
+        settings,
+        &batch,
+        &BackendInfo::cpu_reference(),
+        warnings,
+        ctx,
+    )?;
+    ctx.report(1.0, "spot diagram");
+    Ok(out)
+}
+
+/// The spot diagram of a ray batch traced by any backend (module docs).
+/// The batch's fields and wavelengths replace the settings' selections. The
+/// reference, defocus, through-focus and point options apply as in
+/// [`spot_diagram`], and `backend` is recorded in the `RunInfo`.
+pub fn spot_from_rays(
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    warnings: Vec<String>,
+) -> MkResult<SpotDiagram> {
+    let timer = RunTimer::start();
+    validate_spot_settings(settings)?;
+    let sys = tracer.system();
+    batch.validate(tracer.fields().len(), sys.wavelengths_um.len())?;
+    spot_reduce(
+        timer,
+        tracer,
+        settings,
+        batch,
+        backend,
+        warnings,
+        &JobContext::new(),
+    )
+}
+
+fn spot_reduce(
+    timer: RunTimer,
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+    batch: &RayBatch,
+    backend: &BackendInfo,
+    mut warnings: Vec<String>,
+    ctx: &JobContext,
+) -> MkResult<SpotDiagram> {
+    let sys = tracer.system();
+    let wls = &batch.wavelengths;
     let delta = settings.defocus;
+    if delta != 0.0 || settings.through_focus.is_some() {
+        warnings.extend(curved_image_warning(tracer));
+    }
     let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
 
-    let mut out = Vec::with_capacity(data.len());
-    for fr in &data {
+    let mut out = Vec::with_capacity(batch.fields.len());
+    for fr in &batch.fields {
         ctx.check()?;
         let m = fr.moments(delta);
         let total: f64 = fr
@@ -555,7 +729,6 @@ pub fn spot_diagram_job(
             through_focus,
         });
     }
-    ctx.report(1.0, "spot diagram");
     let fo = tracer.paraxial().primary();
     let airy = 1.22 * sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number;
     let seed = matches!(
@@ -566,10 +739,18 @@ pub fn spot_diagram_job(
     Ok(SpotDiagram {
         fields: out,
         wavelengths_um: sys.wavelengths_um.clone(),
-        wavelengths: wls,
+        wavelengths: wls.clone(),
         airy_radius: airy,
         defocus: delta,
-        run_info: run_info(timer, tracer, "spot_diagram", settings, seed, warnings),
+        run_info: run_info_backend(
+            timer,
+            tracer,
+            "spot_diagram",
+            settings,
+            seed,
+            warnings,
+            backend,
+        ),
     })
 }
 

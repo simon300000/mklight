@@ -12,8 +12,33 @@ use mklight_trace::{ObjectSource, PreparedField, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
 /// Backend identifier recorded in `RunInfo` by every analysis of this crate
-/// (the CPU f64 reference tracer).
+/// that traces its own rays (the CPU f64 reference tracer).
 pub const BACKEND: &str = "cpu-f64";
+
+/// The backend that produced a ray batch, recorded in the `RunInfo` of a
+/// reduction (`*_from_rays`), so GPU and CPU batches share the statistics
+/// code but stay distinguishable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendInfo {
+    pub name: String,
+    pub precision: Precision,
+}
+
+impl BackendInfo {
+    /// The CPU f64 reference tracer ([`BACKEND`]).
+    pub fn cpu_reference() -> Self {
+        BackendInfo {
+            name: BACKEND.into(),
+            precision: Precision::F64Reference,
+        }
+    }
+}
+
+impl Default for BackendInfo {
+    fn default() -> Self {
+        Self::cpu_reference()
+    }
+}
 
 /// Build the `RunInfo` of a finished analysis. The tracer's warnings
 /// (resolution, paraxial, aiming) are prepended to the analysis' own.
@@ -25,17 +50,49 @@ pub(crate) fn run_info(
     seed: Option<u64>,
     warnings: Vec<String>,
 ) -> RunInfo {
+    run_info_backend(
+        timer,
+        tracer,
+        analysis,
+        settings,
+        seed,
+        warnings,
+        &BackendInfo::cpu_reference(),
+    )
+}
+
+/// [`run_info`] for rays from `backend`.
+pub(crate) fn run_info_backend(
+    timer: RunTimer,
+    tracer: &SequentialTracer,
+    analysis: &str,
+    settings: &impl Serialize,
+    seed: Option<u64>,
+    warnings: Vec<String>,
+    backend: &BackendInfo,
+) -> RunInfo {
     let mut w = tracer.warnings().to_vec();
     w.extend(warnings);
     timer.finish(
         &tracer.system().snapshot,
         analysis,
         settings,
-        BACKEND,
-        Precision::F64Reference,
+        &backend.name,
+        backend.precision,
         seed,
         w,
     )
+}
+
+/// The warning of analyses that move a **curved** image surface by
+/// transferring each ray along its direction (exact only for planes).
+pub(crate) fn curved_image_warning(tracer: &SequentialTracer) -> Option<String> {
+    let sys = tracer.system();
+    (!matches!(
+        sys.surfaces[sys.image_index()].shape,
+        mklight_core::SurfaceShape::Plane
+    ))
+    .then(|| "curved image surface: defocus is a first-order transfer along the rays".into())
 }
 
 // ----- Selections ---------------------------------------------------------------
@@ -311,7 +368,7 @@ pub fn pupil_points(pattern: PupilPattern, rings: usize, seed: u64) -> Vec<[f64;
 /// before any sum; centroid and second moments are compensated sums, and the
 /// RMS about the centroid is a two-pass `Σw|q − μ|²`, never `E[q²] − μ²`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Moments {
+pub struct Moments {
     pub weight: f64,
     pub count: usize,
     /// Centroid relative to the origin.

@@ -44,13 +44,13 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
 |---|---|---|
 | `spot_diagram` | `spot` | pupil pattern traced per field × wavelength; centroid, RMS/GEO about centroid and chief, weighted polychromatic stats, vignetted fraction, Airy radius `1.22 λ N_w`, through-focus by transfer along the rays |
 | `ray_fan`, `opd_fan` | `fans` | tangential `(0, P_y)` and sagittal `(P_x, 0)` fans; `εy`/`εx` about the primary (or same-wavelength) chief; OPD from the exit-pupil reference sphere of `mklight-trace` |
-| `field_curvature` | `curvature` | Coddington vergence equations along the real chief ray, cross-checked by close rays; distortion vs the paraxial chief height, `f·tan θ`, `f·θ` |
+| `field_curvature` | `curvature` | generalised Coddington (2×2 pencil matrices) along the real chief ray, labelled by the image frame, cross-checked by close rays; distortion vs the paraxial chief height, `f·tan θ`, `f·θ` |
 | `grid_distortion` | `curvature` | chief rays of a square field grid vs their paraxial image points |
 | `seidel` | `seidel` | per-surface `S_I…S_V`, `C_L`, `C_T` from the paraxial marginal and chief rays (aspheric terms included), Petzval sum and radius, `W040…W311`, third-order transverse aberration |
 | `longitudinal_aberration` | `seidel` | on-axis zonal rays: crossing with the chief ray vs the primary paraxial focus |
 | `chromatic_focal_shift` | `seidel` | paraxial focus of a wavelength sweep (copy of the system with the sweep as its wavelengths) |
 | `lateral_colour` | `seidel` | real chief heights per wavelength vs field |
-| `relative_illumination` | `illumination` | projected solid angle of the beam at the image point, with real ray aiming (§2.4) |
+| `relative_illumination` | `illumination` | projected solid angle of the real exit pupil seen from the chief-ray image point, by real-ray aiming of the rays through that point (§2.4) |
 | `footprint` | `illumination` | hit points on any surface, clipped points flagged |
 | `encircled_energy` | `energy` | weighted distance order statistics (circle and square) |
 | `geometric_mtf` | `energy` | `|Σ w e^{−2πiν q·e}|/Σw` along the tangential / sagittal direction |
@@ -63,13 +63,18 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
 Image positions are in the **image surface's local frame**. Each arrived ray
 stores its offset `q` from the primary chief ray and its slope difference
 `Δt = (d_x, d_y)/d_z − t_chief`, so the point at defocus `δ` is `q + δ Δt`:
-exact for a plane image surface, first order for a curved one (`best_focus`
-warns). The RMS radius is then the norm of an affine function of `δ`, so the
+exact for a plane image surface, first order for a curved one. On a curved
+image surface `best_focus` always warns, and `spot_diagram` (defocus or
+through-focus), `encircled_energy` and `geometric_mtf` warn when a defocus
+is set. The RMS radius is then the norm of an affine function of `δ`, so the
 best-focus merit (mean of per-field RMS radii) is convex and its minimiser
 lies between the per-field minimisers; that interval is Brent's default
 bracket. The closed-form minimiser of the mean *square* merit is reported as
 a cross-check, and the merit itself is evaluated from the rays (two-pass)
-because the quadratic form cancels near a sharp focus.
+because the quadratic form cancels near a sharp focus. With the chief-ray
+reference, fields whose primary chief ray failed are skipped with a warning.
+A minimum at the edge of the search range (given or automatic) and an
+unconverged search (`max_evaluations` reached) are reported as warnings.
 
 Pupil patterns (`util::PupilPattern`, density `rings`): `hexapolar`
 (`1 + 3r(r+1)` points), `square` (pitch `1/r`, clipped to the disk),
@@ -78,22 +83,34 @@ Pupil patterns (`util::PupilPattern`, density `rings`): `hexapolar`
 
 ### 2.2 Field curvature
 
-Thin tangential and sagittal pencils are followed along the real chief ray
-with vergences `V = n/t` (`t` the distance to the focus along the ray):
-transfer `V ← V/(1 − dV/n)`, refraction
-`n' cos²I'/t' = n cos²I/t + (n' cos I' − n cos I) κ_t` and
-`n'/s' = n/s + (n' cos I' − n cos I) κ_s`, reflection
-`V_t' = V_t − 2nκ_t/cos I`, `V_s' = V_s − 2nκ_s cos I`, and the ideal lens
-`V' = cos U'(V/cos U + n'/f)`. `κ_t`, `κ_s` are the surface's normal
-curvatures in and across the plane of incidence, from the principal
-curvatures of the surface of revolution (`κ_m = f''/(1+f'²)^{3/2}`,
-`κ_s = f'/(r√(1+f'²))`, evaluated without dividing by `r`). This is exact
-whenever the plane of incidence is a principal plane (meridional chief rays
-of centred and x-folded systems); twist terms for skew chief rays are
-neglected. Each value is cross-checked by close rays at pupil offsets `±h`
-(central differences, `O(h²)`); the two agree to about 10⁻⁶ mm on every
-sample. The reported curve is the axial (`z`) focus shift from the image
-surface.
+The pencil around the real chief ray is carried as a ray family
+`x_⊥ = X a`, `δk_⊥ = T a` (2×2 matrices) in a basis transverse to the ray.
+Its wavefront curvature is `C = −T X⁻¹`, and `(X, T)` stays finite both for
+collimated pencils and at a focus. The steps are:
+
+* transfer: `X ← X + dT`;
+* surfaces: second-order phase matching on the surface,
+  `n' P'ᵀC'P' = n PᵀCP + (n' k'·N − n k·N) K`, where `K` is the second
+  fundamental form from the principal curvatures of the surface of
+  revolution (`κ_m = f''/(1+f'²)^{3/2}`, `κ_s = f'/(r√(1+f'²))`, evaluated
+  without dividing by `r`) and `P = UᵀE` projects the tangent basis;
+* ideal lenses: the matrix form of `τ' = (n/n')τ − s/f`.
+
+This makes no principal-plane assumption, so it holds for skew chief rays,
+tilts about any axis and compound tilts. In a principal plane it reduces to
+Coddington's equations. The foci are the eigenvalues of the focal-distance
+matrix `F = −X T⁻¹`. A focus is labelled *tangential* when its collapsing
+direction is closer to the image frame's local `y` (CONVENTIONS §2), and
+*sagittal* otherwise. The labelling therefore follows the image frame, not
+each surface's plane of incidence. On a mirror tilted about `y`, the
+mirror's in-plane focus `(R/2) cos I` is the sagittal one.
+
+The close-ray cross-check traces pairs at pupil offsets `(0, ±h)` and
+`(±h, 0)` and finds where the pencil `X + sT` of the pair differences
+degenerates (`det = 0`, the eigenvalues of `−X T⁻¹`), labelled by the same
+rule. The two agree to about 10⁻⁶ mm on every sample and on tilted mirrors.
+`field_curvature` warns where they differ by more than `10⁻³(1 + |Δz|)` mm.
+The reported curve is the axial (`z`) focus shift from the image surface.
 
 ### 2.3 Seidel conventions
 
@@ -102,25 +119,50 @@ positive singlet has `S_I > 0`, `W040 > 0` matches the OPD sign of
 CONVENTIONS §4, and the third-order transverse aberration is
 `εy = (1/(2ω'))[S_I ρ³cos φ + S_II H ρ²(2 + cos 2φ) + (3S_III + S_IV)H²ρ cos φ + S_V H³]`
 with `ω'` the image-space reduced marginal slope (negative when converging);
-colour: `Δz(short − long) = −n'C_L/ω'²`, `Δy = C_T H/ω'`. `S_V` is evaluated
+colour: `Δz(short − long) = −n'C_L/ω'²`, `Δy = C_T H/ω'`. The Petzval
+radius is `R_p = −1/(n'_k P)` with the **signed** image-space reduced index.
+After an odd number of mirrors the light travels towards local `−z`, and a
+concentric mirror has `R_p = −R/2`, matching its focal sphere. `S_V` is evaluated
 in the division-free form `−Ā³yΔ(1/n²) + Āȳc(Āy + H)Δ(1/n)`. Ideal lenses
 are aberration-free and contribute nothing (with a warning).
 
 ### 2.4 Relative illumination: method
 
-For a uniform Lambertian object the image irradiance is
-`E = L (n'/n)² Ω_p` with `Ω_p` the projected solid angle of the converging
-beam, i.e. its area in the direction-cosine plane `(L, M)` of the image
-surface. The beam is generated with **real ray aiming** (a real-aiming copy
-of the tracer when the system uses paraxial aiming), so the normalised pupil
-maps linearly onto the real stop and every field's beam fills exactly the
-stop. Then `Ω_p = ∫∫_{disk} s(P) |∂(L,M)/∂(P_x,P_y)| dP`, with `s` the
-survival of the clipped ray (fixed apertures vignette) and the Jacobian from
-central differences of unclipped rays. Polar Gauss–Legendre × trapezoidal
-quadrature integrates an unvignetted beam to about 10⁻⁹ (checked against the
-exact disk view factor of an ideal lens); a vignetting edge limits it to
-`O(1/N)`. `RI(H) = Ω_p(H)/Ω_p(0)`; the vignetting fraction is the clipped
-share of the stop area.
+For a uniform Lambertian object the image irradiance is `E = L (n'/n)² Ω_p`,
+with `Ω_p` the projected solid angle of the **real exit pupil seen from the
+image point**: the area, in the direction-cosine plane `(L, M)` of the
+image surface's tangent plane, of the directions in which light arrives at
+the chief-ray image point `X₀`.
+
+With aberrations, the rays through `X₀` come from neighbouring object
+points, not from the field point itself. They are found by **real ray
+aiming**: a real-aiming copy of the tracer is used when the system aims
+paraxially. Normalised pupil coordinates `P` then label stop points for
+every object point `q` (direction tangents, or object-surface `x, y`). For
+each quadrature node the object point with `X(q, P) = X₀` is solved by
+chord Newton. The integrand is the implicit Jacobian
+
+`d(L,M)/dP|_X = ∂(L,M)/∂P − ∂(L,M)/∂q (∂X/∂q)⁻¹ ∂X/∂P`
+
+(central differences of unclipped rays), times the survival `s` of the
+clipped ray. Polar Gauss–Legendre × trapezoidal quadrature integrates an
+unvignetted beam to about 10⁻⁹. A vignetting edge limits the accuracy to
+`O(1/N)`. `RI(H) = Ω_p(H)/Ω_p(0)`, and the vignetting fraction is the
+clipped share of the stop area. Cost: about 15 traced rays per node and
+field.
+
+Two cross-checks pin the method:
+
+* **Object-side integral.** Integrating `δ(X − X₀)` on the object side,
+  `∫ A_⊥ ω / |det ∂X/∂q| dP`, agrees with it to 10⁻¹⁰ (étendue
+  conservation).
+* **Chief-ray étendue form.** `E ∝ A_⊥ dΩ_obj/dA_img` agrees only to first
+  order in the aberrations: within 10⁻⁴ on the singlet, but 0.5–0.8 % at
+  full field of the triplet and double Gauss.
+
+An earlier version measured the beam of one object point. That gives the
+solid angle at the beam's own astigmatic foci and grows with field
+curvature (RI > 1 at 5° on the singlet). It is not the image irradiance.
 
 ### 2.5 Layout
 
@@ -138,14 +180,37 @@ offsets, kind codes 0–6 as `PolylineKind`, 7 for element outlines, −1 for
 "no index") and `LayoutBuffers::to_le_bytes` one little-endian blob
 (`"MKLL"`, version 1; layout in its doc comment).
 
+### 2.6 Reductions from ray batches (backend seam)
+
+The statistics of `spot`, `energy` (encircled energy, geometric MTF, best
+focus) are public as reductions of a `spot::RayBatch`. A batch holds a list
+of system wavelengths and one `FieldRays` per field: arrived rays relative
+to the primary chief ray with their slopes, plus per-wavelength chiefs and
+launched/arrived counts. `FieldRays::from_image_rays` builds one from plain
+image hits (`ImageRay { wavelength, hit: Option<ImageHit { point, dir }> }`
+in the image local frame), so a GPU backend or an optimiser operand that
+already has image hits uses exactly the same compensated two-pass statistics
+and conventions:
+
+* `spot_from_rays`, `encircled_energy_from_rays`, `geometric_mtf_from_rays`,
+  `best_focus_from_rays` take `(&SequentialTracer, &Settings, &RayBatch,
+  &BackendInfo, warnings)`.
+* The tracer supplies metadata only (snapshot, fields, paraxial data); no
+  ray is traced. `BackendInfo { name, precision }` goes into `RunInfo`.
+* The batch's fields and wavelengths replace the settings' selections.
+  `RayBatch::validate` rejects inconsistent counts or indices.
+* The CPU analyses are `trace_field_rays` (public) followed by the same
+  reduction, and a test checks that both paths give identical results.
+* `util::Moments` (weighted two-pass point statistics) is public too.
+
 ## 3. Validation
 
 | test file | what it pins |
 |---|---|
-| `tests/curvature.rs` | Coddington = close rays (≤10⁻⁵ mm rel.) on every sample, field and wavelength; concentric mirror focal sphere `Δz = −(R/2)(1 − cos θ)` to 10⁻⁹; ideal lens flat and distortion-free, `f·θ` distortion `100(tan θ/θ − 1)` |
-| `tests/seidel.rs` | spherical mirror closed forms (stop at mirror / at centre, paraboloid `S_I = 0`, `W040 = y⁴/4R³`, Petzval radius `R/2`); thin plano-convex lens vs thin-lens `S_I…S_V`; Petzval sum = `Σφ/(nn')` on every sample; Seidel vs real rays (spherical, coma sign and size, astigmatism, sagittal coma, distortion) on the Cooke triplet and singlet at reduced aperture; `W040` vs OPD; exact mirror LSA `(R/2)(sec I − 1)`; thin-lens colour `−f/V`, `C_L`, `C_T` vs real colour |
-| `tests/illumination.rs` | RI of an ideal lens = exact disk view factor (10⁻⁸) and ≈ `cos⁴θ`; vignetting by a field aperture = disk-overlap area; footprints |
-| `tests/spot_energy.rs` | defocused ideal lens: RMS/GEO exactly the scaled pupil statistics, EE vs exact grid counts and `(r/R)²`, geometric MTF vs `2J₁(x)/x`; best focus recovers a known defocus and equals the retraced spot; paraboloid on-axis spot ≈ 0; polychromatic weighting; vignetted fraction; fans vs direct traces and symmetry; seeds; cancellation and progress; JSON round trips with NaN |
+| `tests/curvature.rs` | Coddington = close rays (≤10⁻⁵ mm rel.) on every sample, field and wavelength; concentric mirror focal sphere `Δz = −(R/2)(1 − cos θ)` to 10⁻⁹; ideal lens flat and distortion-free, `f·θ` distortion `100(tan θ/θ − 1)`; mirrors tilted about `y` and about `x`: foci `(R/2)cos I` and `R/(2 cos I)` labelled by the image frame (10⁻⁹); compound-tilted mirror: both methods find the two focal lines and label them alike |
+| `tests/seidel.rs` | spherical mirror closed forms (stop at mirror / at centre, paraboloid `S_I = 0`, `W040 = y⁴/4R³`, Petzval sum `−2/R`, radius `−R/2`); Petzval radius vs the Coddington and close-ray foci of a concentric mirror and vs the third-order foci `(3Δz_s − Δz_t)/2` of a singlet; two separated lenses `P = ΣK_i/n_i`; thin plano-convex lens vs thin-lens `S_I…S_V` (coma with its sign, independent `H`); `S_IV = H²P` and the `S_V` form on every sample; Seidel vs real rays (spherical, coma sign and size, astigmatism, sagittal coma, distortion) on the Cooke triplet and singlet at reduced aperture; `W040` vs OPD; exact mirror LSA `(R/2)(sec I − 1)`; thin-lens colour `−f/V`, `C_L`, `C_T` vs real colour |
+| `tests/illumination.rs` | RI of an ideal lens = exact disk view factor (10⁻⁸) and ≈ `cos⁴θ`; real singlet with the stop at the lens = `cos⁴θ` × distortion Jacobian (10⁻³); exact object-side integral on the singlet, triplet and double Gauss (10⁻⁸) and the chief-ray étendue form (first order); RI < 1 and falling on the achromat and finite relay; vignetting by a field aperture = disk-overlap area; footprints |
+| `tests/spot_energy.rs` | defocused ideal lens: RMS/GEO exactly the scaled pupil statistics, EE vs exact grid counts and `(r/R)²`, geometric MTF vs `2J₁(x)/x`; best focus recovers a known defocus and equals the retraced spot; paraboloid on-axis spot ≈ 0; polychromatic weighting; vignetted fraction; fans vs direct traces and symmetry; seeds; cancellation and progress; JSON round trips with NaN; curved-image defocus warnings; batch reductions of an externally traced batch equal the traced analyses (and record the backend); best focus skips chief-less fields for the chief reference and warns at range edges and on non-convergence |
 | `tests/layout.rs` | global profile end points, elements of cemented lenses, folded Newtonian in global coordinates, vignetted ray end points, buffer round trip |
 | `tests/system_data.rs` | report vs paraxial data, afocal `"inf"` serialisation |
 | `tests/golden.rs` | frozen first-order data, RMS spots per field and wavelength, Seidel sums and field curvature / distortion of every sample (relative 10⁻⁹) |
