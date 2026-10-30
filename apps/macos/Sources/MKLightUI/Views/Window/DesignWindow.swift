@@ -8,8 +8,9 @@ import UniformTypeIdentifiers
 /// ```
 /// ┌ sidebar ──┬ lens data table ─────────────────────────────┬ inspector ┐
 /// │ analyses  ├ layout viewport │ analysis panes …           │ surface / │
-/// │ (search)  │                 │                            │ system    │
-/// └───────────┴ status bar ──────────────────────────────────┴───────────┘
+/// │ (search)  │                 │                            │ system /  │
+/// │           │                 │                            │ job panel │
+/// └───────────┴──────────────────────────────────────────────┴───────────┘
 /// ```
 ///
 /// The document (`DesignDocument`) holds the design; this view owns the
@@ -50,6 +51,7 @@ private struct DesignWindowContent: View {
     let fileURL: URL?
     let engine: any EngineClient
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var importingCatalog = false
 
@@ -61,38 +63,29 @@ private struct DesignWindowContent: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
             AnalysisSidebar(workspace: workspace, window: window)
-                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 320)
         } detail: {
-            VStack(spacing: 0) {
-                SplitLayout(axis: .vertical, fraction: $window.editorFraction, minFirst: 110, minSecond: 220) {
-                    LensTableView(design: design, workspace: workspace, window: window)
+            SplitLayout(axis: .vertical, fraction: $window.editorFraction, minFirst: 120, minSecond: 240) {
+                LensTableView(design: design, workspace: workspace, window: window)
+            } second: {
+                SplitLayout(
+                    axis: .horizontal, fraction: $window.viewportFraction, showsFirst: window.showViewport, minFirst: 220,
+                    minSecond: 280
+                ) {
+                    LayoutPaneView(workspace: workspace, window: window, system: system)
                 } second: {
-                    SplitLayout(
-                        axis: .horizontal, fraction: $window.viewportFraction, showsFirst: window.showViewport, minFirst: 220,
-                        minSecond: 280
-                    ) {
-                        LayoutPaneView(workspace: workspace, window: window, system: system)
-                    } second: {
-                        AnalysisArea(workspace: workspace, window: window, system: system)
-                    }
+                    AnalysisArea(workspace: workspace, window: window, system: system)
                 }
-                StatusBar(workspace: workspace, window: window, engine: engine)
             }
+            .overlay(alignment: .bottom) { toast }
             .inspector(isPresented: $window.showInspector) {
                 InspectorView(design: design, workspace: workspace, window: window)
-                    .inspectorColumnWidth(min: 270, ideal: 300, max: 440)
+                    .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
             }
         }
         .navigationSubtitle(system.name)
         .toolbar { toolbar }
         .focusedSceneValue(\.windowActions, actions)
-        .sheet(item: $window.activeJob) { kind in
-            switch kind {
-            case .optimize: OptimizeSheet(design: design, workspace: workspace)
-            case .tolerance: ToleranceSheet(workspace: workspace)
-            case .solves: SolvesSheet(design: design, workspace: workspace)
-            }
-        }
         .fileImporter(isPresented: $importingCatalog, allowedContentTypes: [.json, .plainText, .data]) { result in
             if case .success(let url) = result { loadCatalog(url) }
         }
@@ -101,7 +94,11 @@ private struct DesignWindowContent: View {
             await workspace.open(system: system, catalogs: design.catalogs, projectDirectory: projectDirectory)
             applyLaunchOptions()
         }
-        .onDisappear { workspace.cancelAll() }
+        .onDisappear {
+            window.optimize.cancel()
+            window.tolerance.cancel()
+            workspace.cancelAll()
+        }
         .onChange(of: design.system) { _, s in workspace.update(system: s) }
         .onChange(of: design.catalogs) { _, refs in
             Task { await workspace.syncCatalogs(refs, projectDirectory: projectDirectory) }
@@ -109,25 +106,43 @@ private struct DesignWindowContent: View {
         .onChange(of: WorkspaceLayout(workspace: workspace, window: window)) { _, layout in
             design.setViews(layout.views)
         }
-        .onChange(of: window.selection) { _, s in if s != nil { window.inspectorTab = .surface } }
+        .onChange(of: window.selection) { _, s in
+            if s != nil && window.activeJob == nil { window.inspectorTab = .surface }
+        }
+    }
+
+    /// A transient message (a rejected edit) floating over the content.
+    @ViewBuilder private var toast: some View {
+        if let m = window.message {
+            Label(m, systemImage: "info.circle")
+                .font(.callout)
+                .lineLimit(2)
+                .padding(.horizontal, Space.l)
+                .padding(.vertical, Space.m)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.bottom, Space.l)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .accessibilityAddTraits(.isStaticText)
+                .onTapGesture { window.message = nil }
+        }
     }
 
     // MARK: Toolbar
 
+    /// Three groups, by function: design jobs; the window's content
+    /// (analyses, layout); the inspector at the trailing edge. The design's
+    /// status is in the centre.
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            ControlGroup {
-                Button("Optimize", systemImage: "wand.and.rays") { window.activeJob = .optimize }
-                    .help("Optimize the design (⌃⌘O)")
-                Button("Tolerance", systemImage: "plusminus") { window.activeJob = .tolerance }
-                    .help("Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)")
-                Button("Solves", systemImage: "function") { window.activeJob = .solves }
-                    .help("Preview and apply the design's solves (⌃⌘L)")
-            } label: {
-                Label("Design", systemImage: "wand.and.rays")
-            }
-            IssuesButton(workspace: workspace, window: window)
+        ToolbarItem(placement: .principal) {
+            DesignStatus(workspace: workspace, window: window, engine: engine, system: system)
         }
+        ToolbarItemGroup(placement: .primaryAction) {
+            ForEach(DesignJobKind.allCases) { job in
+                Button(job.title, systemImage: job.symbol) { toggle(job) }
+                    .help(help(job))
+            }
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
                 AddPaneMenuItems(workspace: workspace)
@@ -137,8 +152,23 @@ private struct DesignWindowContent: View {
             .help("Add an analysis pane")
             Toggle(isOn: $window.showViewport) { Label("Layout", systemImage: "rectangle.lefthalf.inset.filled") }
                 .help("Show or hide the layout viewport (⌥⌘L)")
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItem(placement: .primaryAction) {
             Button("Inspector", systemImage: "sidebar.right") { window.showInspector.toggle() }
                 .help("Show or hide the inspector (⌃⌘I)")
+        }
+    }
+
+    private func toggle(_ job: DesignJobKind) {
+        if window.activeJob == job && window.showInspector { window.activeJob = nil } else { window.open(job) }
+    }
+
+    private func help(_ job: DesignJobKind) -> String {
+        switch job {
+        case .optimize: "Optimize the design (⌃⌘O)"
+        case .tolerance: "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
+        case .solves: "Preview and apply the design's solves (⌃⌘L)"
         }
     }
 
@@ -146,7 +176,7 @@ private struct DesignWindowContent: View {
 
     private var actions: WindowActions {
         let column = window.focusedColumn
-        let path = window.selection.flatMap { id in column?.param(id) }
+        let path = selectedIndex.flatMap { i in column?.param(for: system.surfaces[i]) }
         return WindowActions(
             insertBefore: { insert(at: selectedIndex ?? system.imageIndex) },
             insertAfter: { insert(at: (selectedIndex ?? system.imageIndex - 1) + 1) },
@@ -156,7 +186,7 @@ private struct DesignWindowContent: View {
             canToggleVariable: path.map { $0.resolves(in: system) } ?? false,
             hasSurfaceSelection: selectedIndex.map { $0 > 0 && $0 < system.imageIndex } ?? false,
             loadCatalog: { importingCatalog = true },
-            designJob: { window.activeJob = $0 },
+            designJob: { window.open($0) },
             showIssues: { window.showIssues = true },
             issueCount: workspace.issues.count,
             addPane: { workspace.addPane($0) },
@@ -176,7 +206,8 @@ private struct DesignWindowContent: View {
     }
 
     /// Debug builds: `-MKLightSelectSurface 3`, `-MKLightInspector system`,
-    /// `-MKLightSheet optimize`, `-MKLightSidebar hidden` (screenshots, UI checks).
+    /// `-MKLightSheet optimize`, `-MKLightSidebar hidden`, `-MKLightViewport 3D`,
+    /// `-MKLightShowIssues YES`, `-MKLightToast text` (screenshots, UI checks).
     private func applyLaunchOptions() {
         #if DEBUG
         let d = UserDefaults.standard
@@ -194,10 +225,16 @@ private struct DesignWindowContent: View {
                 window.showIssues = true
             }
         }
-        if let sheet = d.string(forKey: "MKLightSheet").flatMap(DesignJobKind.init(rawValue:)) {
+        if let text = d.string(forKey: "MKLightToast") {
             Task {
                 try? await Task.sleep(for: .seconds(2))
-                window.activeJob = sheet
+                window.flash(text)
+            }
+        }
+        if let job = d.string(forKey: "MKLightSheet").flatMap(DesignJobKind.init(rawValue:)) {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                window.open(job)
             }
         }
         #endif

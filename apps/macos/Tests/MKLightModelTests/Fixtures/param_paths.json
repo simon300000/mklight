@@ -84,5 +84,87 @@
   },
   {
     "param": "pressure_atm"
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "odd",
+    "index": 2
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "q",
+    "index": 2
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "phase",
+    "index": 2
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "x_asphere",
+    "index": 2
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "y_asphere",
+    "index": 2
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "xy",
+    "index": 2
+  },
+  {
+    "param": "shape_coefficient",
+    "surface": 7,
+    "set": "zernike",
+    "index": 2
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "curvature_x"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "conic_x"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "curvature_y"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "conic_y"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "norm_radius"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "design_order"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "design_wavelength_um"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
+    "parameter": "trace_order"
   }
 ]

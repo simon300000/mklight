@@ -7,6 +7,8 @@ import SwiftUI
 /// or when focus leaves. An optional `V` toggle makes it a variable.
 struct NumberField: View {
     let title: String
+    /// What the value means, shown after the title (e.g. `r⁴` after `A₄`).
+    var detail: String = ""
     let value: Double?
     var unit: String = ""
     var placeholder: String = ""
@@ -59,7 +61,11 @@ struct NumberField: View {
                 }
             }
         } label: {
-            Text(title).help(help)
+            HStack(spacing: Space.xs) {
+                Text(title)
+                if !detail.isEmpty { Text(detail).foregroundStyle(.secondary).font(.callout) }
+            }
+            .help(help)
         }
         .onAppear { text = formatted }
         .onChange(of: value) { _, _ in if !focused { text = formatted } }

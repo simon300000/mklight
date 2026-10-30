@@ -2,22 +2,31 @@ import MKLightEngine
 import MKLightModel
 import SwiftUI
 
-/// The inspector: the selected surface's parameters, or the system's.
+/// The inspector: the selected surface's parameters, the system's, or the
+/// open design job (Optimize, Tolerance, Solves). It is a column of the
+/// window's glass layer: the Surface / System switch floats in a bar over
+/// the form, which scrolls beneath it.
 struct InspectorView: View {
     let design: DesignDocument
     let workspace: Workspace
     @Bindable var window: WindowState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Inspector", selection: $window.inspectorTab) {
-                ForEach(InspectorTab.allCases) { Text($0.rawValue).tag($0) }
+        Group {
+            if let job = window.activeJob {
+                JobPanel(kind: job, design: design, workspace: workspace, window: window)
+                    .id(job)
+                    .transition(.opacity)
+            } else {
+                tabs.transition(.opacity)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, Space.l)
-            .padding(.vertical, Space.m)
-            Divider()
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: window.activeJob)
+    }
+
+    private var tabs: some View {
+        Group {
             switch window.inspectorTab {
             case .surface:
                 if let id = window.selection, let i = design.system.surfaceIndex(of: id) {
@@ -32,11 +41,24 @@ struct InspectorView: View {
                 SystemInspector(design: design, workspace: workspace, window: window)
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .safeAreaBar(edge: .top) {
+            Picker("Inspector", selection: $window.inspectorTab) {
+                ForEach(InspectorTab.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.large)
+            .padding(.horizontal, Space.l)
+            .padding(.vertical, Space.s)
+        }
     }
 }
 
 /// The selected surface, built from its type's descriptor: only the
-/// parameters of that type show. Every value can be made a variable.
+/// parameters of that type show, with a preview of its shape. Every
+/// continuous value can be made a variable.
 struct SurfaceInspector: View {
     let design: DesignDocument
     let workspace: Workspace
@@ -49,35 +71,71 @@ struct SurfaceInspector: View {
     private var type: SurfaceTypeDescriptor { SurfaceTypes.descriptor(for: surface.shape) }
     private var isEnd: Bool { index == 0 || index == system.imageIndex }
     private var title: String {
-        index == 0 ? "Object" : index == system.imageIndex ? "Image" : "Surface \(index)" + (index == system.stop ? " · Stop" : "")
+        index == 0 ? "Object" : index == system.imageIndex ? "Image" : "Surface \(index)"
     }
 
     var body: some View {
         Form {
             Section {
-                HStack(alignment: .top, spacing: Space.l) {
-                    VStack(alignment: .leading, spacing: Space.xs) {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                         Text(title).font(.title3.weight(.semibold))
-                        Text(type.summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        if index == system.stop {
+                            Label("Stop", systemImage: "camera.aperture")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.tint.opacity(0.15), in: Capsule())
+                                .foregroundStyle(.tint)
+                        }
+                        Spacer()
+                        if !isEnd { TypeMenu(shape: surface.shape) { setType($0) } }
                     }
-                    Spacer()
-                    SagPreview(shape: surface.shape, semiDiameter: semiDiameter)
-                        .frame(width: 64, height: 64)
+                    Text(type.summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if !isEnd {
-                    Picker("Type", selection: Binding(get: { surface.shape.kind }, set: { setKind($0) })) {
-                        ForEach(SurfaceTypes.all) { t in Label(t.title, systemImage: t.symbol).tag(t.kind) }
-                    }
+                .padding(.vertical, Space.xs)
+                if !isEnd && type.preview != .idealLens && type.preview != .coordinateBreak {
+                    ShapePreview(shape: surface.shape, semiDiameter: semiDiameter, primaryWavelengthUm: primaryWavelength)
+                        .padding(.vertical, Space.xs)
                 }
                 TextValueField(title: "Comment", value: surface.label, prompt: "none") { v in
                     edit("Change Comment") { $0.label = v }
                 }
             }
             if type.placementFirst { PlacementSection(surface: surface, edit: edit, variable: variable) }
+            if case .diffractive(let base, _) = surface.shape {
+                Section("Base Shape") {
+                    Picker("Base", selection: Binding(get: { base.kind }, set: setDiffractiveBase)) {
+                        Text("Plane").tag(SurfaceShape.Kind.plane)
+                        Text("Sphere / Conic").tag(SurfaceShape.Kind.conic)
+                        Text("Even Asphere").tag(SurfaceShape.Kind.evenAsphere)
+                    }
+                }
+            }
             ForEach(type.sections) { section in
-                Section(section.title) {
-                    ForEach(section.params) { p in paramField(p) }
-                    if let list = section.coefficients { CoefficientRows(list: list, surface: surface, edit: edit, variable: variable) }
+                let params = section.params.filter { SurfaceTypes.value(surface.shape, at: $0.key) != nil }
+                let list = section.coefficients.flatMap { SurfaceTypes.value(surface.shape, at: $0.key) != nil ? $0 : nil }
+                if section.applies(surface.shape) && (!params.isEmpty || list != nil || !section.choices.isEmpty) {
+                    Section {
+                        ForEach(section.choices) { c in choiceField(c) }
+                        ForEach(params) { p in paramField(p) }
+                        if let list { CoefficientRows(list: list, surface: surface, edit: edit, variable: variable) }
+                    } header: {
+                        Text(section.title)
+                    } footer: {
+                        if !section.footer.isEmpty { Text(section.footer).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }
+            if surface.shape.kind == .biconic {
+                Section {
+                    Menu("Make Cylinder") {
+                        Button("Power in x (plane in y)") { setType(.cylinder(.x)) }
+                        Button("Power in y (plane in x)") { setType(.cylinder(.y)) }
+                    }
+                    .fixedSize()
+                } footer: {
+                    Text("A cylinder is a biconic with one section plane.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if index != system.imageIndex {
@@ -138,6 +196,11 @@ struct SurfaceInspector: View {
         surface.semiDiameter.fixedValue ?? EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output))[surface.id]
     }
 
+    private var primaryWavelength: Double {
+        let w = system.wavelengths
+        return w.wavelengths.indices.contains(w.primary) ? w.wavelengths[w.primary].um : 0.5875618
+    }
+
     @ViewBuilder private func paramField(_ p: ShapeParam) -> some View {
         let path = p.path?(surface.id)
         NumberField(
@@ -150,10 +213,28 @@ struct SurfaceInspector: View {
             },
             variable: path.map(variable), solve: path.flatMap { system.solve(for: $0)?.kind.kind.title }
         ) { stored in
+            let value: JSONValue = p.display == .integer ? .integer(Int64(stored)) : .number(stored)
             edit("Change \(p.title)") { s in
-                if let shape = SurfaceTypes.shape(s.shape, setting: p.key, to: .number(stored)) { s.shape = shape }
+                if let shape = SurfaceTypes.shape(s.shape, setting: p.key, to: value) { s.shape = shape }
             }
         }
+    }
+
+    private func choiceField(_ c: ShapeChoice) -> some View {
+        let current = SurfaceTypes.value(surface.shape, at: c.key)?.string ?? c.options.first?.value ?? ""
+        return Picker(
+            c.title,
+            selection: Binding(
+                get: { current },
+                set: { v in
+                    edit("Change \(c.title)") { s in
+                        if let shape = SurfaceTypes.shape(s.shape, setting: c.key, to: .string(v)) { s.shape = shape }
+                    }
+                })
+        ) {
+            ForEach(c.options, id: \.value) { Text($0.title).tag($0.value) }
+        }
+        .help(c.help)
     }
 
     private func edit(_ name: String, _ change: @escaping (inout Surface) -> Void) {
@@ -163,10 +244,21 @@ struct SurfaceInspector: View {
         }
     }
 
-    private func setKind(_ k: SurfaceShape.Kind) {
-        let id = surface.id
-        design.edit("Change Surface Type", undoManager: undoManager) { sys in
-            if let i = sys.surfaceIndex(of: id) { sys.setShapeKind(k, at: i) }
+    private func setType(_ choice: SurfaceTypeChoice) {
+        LensEditor(document: design, undoManager: undoManager).setType(choice, surface.id)
+    }
+
+    private func setDiffractiveBase(_ k: SurfaceShape.Kind) {
+        edit("Change Base Shape") { s in
+            guard case .diffractive(let base, let phase) = s.shape else { return }
+            let c = base.curvature, kk = base.conicConstant
+            let newBase: SurfaceShape =
+                switch k {
+                case .conic: .conic(curvature: c, conic: kk)
+                case .evenAsphere: .evenAsphere(curvature: c, conic: kk, coefficients: base.asphereCoefficients)
+                default: .plane
+                }
+            s.shape = .diffractive(base: newBase, phase: phase)
         }
     }
 
@@ -175,47 +267,130 @@ struct SurfaceInspector: View {
     }
 }
 
-/// The coefficient list of a type (e.g. A4, A6, … of an even asphere),
-/// with add and remove.
+/// The surface type as a menu grouped by family (Spherical, Aspheric,
+/// Freeform, Anamorphic, Diffractive, Special), with presets such as the
+/// cylinder. Shared by the inspector and the lens table.
+struct TypeMenu: View {
+    let shape: SurfaceShape
+    var compact = false
+    let choose: (SurfaceTypeChoice) -> Void
+
+    var body: some View {
+        let current = SurfaceTypes.choice(for: shape)
+        Menu {
+            ForEach(SurfaceTypes.menu, id: \.group) { g in
+                Section(g.group.title) {
+                    ForEach(g.choices) { c in
+                        Toggle(isOn: Binding(get: { c == current }, set: { _ in choose(c) })) {
+                            Label(SurfaceTypes.title(of: c), systemImage: SurfaceTypes.symbol(of: c))
+                        }
+                    }
+                }
+            }
+        } label: {
+            if compact {
+                Label(LensRow.typeTitle(shape), systemImage: SurfaceTypes.symbol(of: current))
+            } else {
+                Label(SurfaceTypes.title(of: current), systemImage: SurfaceTypes.symbol(of: current))
+            }
+        }
+        .accessibilityLabel("Surface type")
+        .accessibilityValue(SurfaceTypes.title(of: current))
+    }
+}
+
+/// The coefficient list of a type (e.g. A₄, A₆, … of an even asphere),
+/// each labelled with its meaning and with a variable toggle. Long lists
+/// (XY, Zernike) show their nonzero terms and add any term from a menu.
 private struct CoefficientRows: View {
     let list: CoefficientList
     let surface: Surface
     let edit: (String, @escaping (inout Surface) -> Void) -> Void
     let variable: (ParamPath) -> Binding<Bool>
+    @State private var revealed: Set<Int> = []
+    @State private var showAll = false
 
     var body: some View {
-        let values = SurfaceTypes.json(surface.shape)[list.key]?.nfArray ?? []
-        ForEach(Array(values.enumerated()), id: \.offset) { k, v in
-            HStack {
+        let values = SurfaceTypes.coefficients(list, in: surface.shape)
+        let limit = list.maxCount(surface.shape)
+        let visible = values.indices.filter { k in
+            !list.sparse || showAll || values[k] != 0 || revealed.contains(k) || k == values.count - 1
+        }
+        ForEach(visible, id: \.self) { k in
+            HStack(spacing: Space.xs) {
                 NumberField(
-                    title: list.term(k), value: v, unit: list.unit(k), variable: list.path.map { variable($0(surface.id, k)) }
+                    title: list.term(k, surface.shape), detail: list.meaning(k, surface.shape), value: values[k],
+                    unit: list.unit(k), variable: list.path.map { variable($0(surface.id, k)) }
                 ) { nv in set(values, k, nv) }
-                if k == values.count - 1 {
-                    Button("Remove \(list.term(k))", systemImage: "minus.circle") { remove(values) }
-                        .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
-                }
+                let removable = k == values.count - 1 || list.sparse
+                Button("Remove \(list.term(k, surface.shape))", systemImage: "minus.circle") { remove(values, k) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .opacity(removable ? 1 : 0)
+                    .disabled(!removable)
+                    .help(k == values.count - 1 ? "Remove this term" : "Set this term to zero")
             }
         }
-        if values.count < list.maxCount {
-            Button {
-                var a = values
-                a.append(0)
-                write(a, "Add \(list.term(values.count))")
-            } label: {
-                Label("Add \(list.term(values.count))", systemImage: "plus")
+        HStack {
+            if values.count < limit || (list.sparse && values.contains(0)) {
+                if list.sparse {
+                    Menu {
+                        ForEach(0..<limit, id: \.self) { k in
+                            if k >= values.count || (values[k] == 0 && !revealed.contains(k)) {
+                                Button("\(list.term(k, surface.shape))   \(list.meaning(k, surface.shape))") { add(values, k) }
+                            }
+                        }
+                    } label: {
+                        Label("Add Term", systemImage: "plus")
+                    }
+                    .fixedSize()
+                } else {
+                    Button {
+                        add(values, values.count)
+                    } label: {
+                        Label("Add \(list.term(values.count, surface.shape))  \(list.meaning(values.count, surface.shape))", systemImage: "plus")
+                    }
+                }
             }
-            .buttonStyle(.borderless)
+            Spacer()
+            if list.sparse && values.dropLast().contains(0) {
+                Toggle("Zero Terms", isOn: $showAll)
+                    .toggleStyle(.button)
+                    .help("Show the terms that are zero")
+            }
+        }
+        .buttonStyle(.borderless)
+        if values.count >= limit {
+            Text("\(limit) terms, the most this type allows.").font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private func set(_ values: [Double], _ k: Int, _ v: Double) {
         var a = values
         a[k] = v
-        write(a, "Change \(list.term(k))")
+        write(a, "Change \(list.term(k, surface.shape))")
     }
 
-    private func remove(_ values: [Double]) {
-        write(Array(values.dropLast()), "Remove \(list.term(values.count - 1))")
+    private func add(_ values: [Double], _ k: Int) {
+        var a = values
+        if k >= a.count { a += Array(repeating: 0, count: k - a.count + 1) }
+        revealed.insert(k)
+        write(a, "Add \(list.term(k, surface.shape))")
+    }
+
+    private func remove(_ values: [Double], _ k: Int) {
+        var a = values
+        if k == a.count - 1 {
+            a.removeLast()
+            if list.sparse {
+                while let last = a.last, last == 0, !revealed.contains(a.count - 1) { a.removeLast() }
+            }
+        } else {
+            a[k] = 0
+        }
+        revealed.remove(k)
+        write(a, "Remove \(list.term(k, surface.shape))")
     }
 
     private func write(_ a: [Double], _ name: String) {

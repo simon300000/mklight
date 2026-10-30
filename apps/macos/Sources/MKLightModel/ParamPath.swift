@@ -9,6 +9,12 @@ public enum ParamPath: Codable, Sendable, Hashable {
     case conic(surface: SurfaceID)
     /// Even-asphere coefficient `index` (0 → A4).
     case asphere(surface: SurfaceID, index: Int)
+    /// Coefficient `index` (zero-based) of an extended shape's coefficient
+    /// family (SURFACES §7). A missing in-range coefficient reads 0.
+    case shapeCoefficient(surface: SurfaceID, set: CoefficientSet, index: Int)
+    /// A scalar parameter of an extended shape. JSON names the selector
+    /// `parameter`, since `param` is the tag.
+    case shapeParam(surface: SurfaceID, parameter: ShapeParameter)
     case paraxialFocalLength(surface: SurfaceID)
     case modelNd(surface: SurfaceID)
     case modelVd(surface: SurfaceID)
@@ -59,6 +65,8 @@ public enum ParamPath: Codable, Sendable, Hashable {
         case .thickness(let s): ("thickness", s, nil)
         case .conic(let s): ("conic", s, nil)
         case .asphere(let s, let i): ("asphere", s, i)
+        case .shapeCoefficient(let s, _, let i): ("shape_coefficient", s, i)
+        case .shapeParam(let s, _): ("shape_param", s, nil)
         case .paraxialFocalLength(let s): ("paraxial_focal_length", s, nil)
         case .modelNd(let s): ("model_nd", s, nil)
         case .modelVd(let s): ("model_vd", s, nil)
@@ -96,6 +104,13 @@ public enum ParamPath: Codable, Sendable, Hashable {
             case "asphere":
                 try c.allowOnly("param", "surface", "index")
                 self = .asphere(surface: try c.value("surface"), index: try c.index("index"))
+            case "shape_coefficient":
+                try c.allowOnly("param", "surface", "set", "index")
+                self = .shapeCoefficient(
+                    surface: try c.value("surface"), set: try c.value("set"), index: try c.index("index"))
+            case "shape_param":
+                try c.allowOnly("param", "surface", "parameter")
+                self = .shapeParam(surface: try c.value("surface"), parameter: try c.value("parameter"))
             case "aperture_value", "temperature_c", "pressure_atm":
                 try c.allowOnly("param")
                 self = tag == "aperture_value" ? .apertureValue : tag == "temperature_c" ? .temperatureC : .pressureAtm
@@ -110,6 +125,11 @@ public enum ParamPath: Codable, Sendable, Hashable {
         let (tag, surface, index) = parts
         try c.put(tag, "param")
         if let surface { try c.put(surface, "surface") }
+        switch self {
+        case .shapeCoefficient(_, let set, _): try c.put(set, "set")
+        case .shapeParam(_, let p): try c.put(p, "parameter")
+        default: break
+        }
         if let index { try c.put(index, "index") }
     }
 }

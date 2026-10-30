@@ -597,7 +597,7 @@
           "coating": null,
           "scatter": null,
           "edge": {
-            "mechanical_semi_diameter": null,
+            "mechanical_semi_diameter": 8.6,
             "edge_scatter": null
           }
         },
@@ -622,7 +622,7 @@
           "coating": null,
           "scatter": null,
           "edge": {
-            "mechanical_semi_diameter": null,
+            "mechanical_semi_diameter": 8.6,
             "edge_scatter": null
           }
         },
@@ -695,7 +695,7 @@
               "vdx": 0.0,
               "vdy": 0.0,
               "vcx": 0.0,
-              "vcy": 0.0
+              "vcy": 0.15
             }
           },
           {
@@ -706,7 +706,7 @@
               "vdx": 0.0,
               "vdy": 0.0,
               "vcx": 0.0,
-              "vcy": 0.0
+              "vcy": 0.3
             }
           }
         ]
@@ -1016,7 +1016,7 @@
             "curvature": -0.02989983555090447,
             "conic": 0.0
           },
-          "thickness": 28.968768,
+          "thickness": 28.955554,
           "material": {
             "type": "air"
           },
@@ -1889,6 +1889,1779 @@
         }
       ],
       "stop": 4,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "hybrid_doe",
+    "system": {
+      "name": "Hybrid refractive-diffractive achromat",
+      "notes": "N-BK7 singlet, fixed-period DOE; F/C BFL corrected",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "singlet front",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.02,
+            "conic": 0.0
+          },
+          "thickness": 3.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear DOE",
+          "shape": {
+            "type": "diffractive",
+            "base": {
+              "type": "plane"
+            },
+            "phase": {
+              "norm_radius": 5.0,
+              "coefficients": [
+                -76.95754219030987
+              ],
+              "design_order": 1,
+              "design_wavelength_um": 0.5875618,
+              "trace_order": 1
+            }
+          },
+          "thickness": 89.86797532300147,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "anamorphic",
+    "system": {
+      "name": "2x cylindrical adapter and singlet",
+      "notes": "Two finite-thickness cylindrical elements; EFL_y/EFL_x=2",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.2,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.4,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 10,
+          "label": "negative cylinder",
+          "shape": {
+            "type": "biconic",
+            "curvature_x": -0.02,
+            "curvature_y": 0.0,
+            "conic_x": 0.0,
+            "conic_y": 0.0,
+            "x_asphere": [],
+            "y_asphere": []
+          },
+          "thickness": 2.0,
+          "material": {
+            "type": "constant",
+            "n": 1.5
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 11,
+          "label": "adapter first rear",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 98.66666666666667,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 12,
+          "label": "positive cylinder",
+          "shape": {
+            "type": "biconic",
+            "curvature_x": 0.01,
+            "curvature_y": 0.0,
+            "conic_x": 0.0,
+            "conic_y": 0.0,
+            "x_asphere": [],
+            "y_asphere": []
+          },
+          "thickness": 2.0,
+          "material": {
+            "type": "constant",
+            "n": 1.5
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 13,
+          "label": "adapter second rear",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 96.6967287,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "biconic",
+    "system": {
+      "name": "Biconic element",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "biconic",
+            "curvature_x": 0.02,
+            "curvature_y": 0.016666666666666666,
+            "conic_x": -0.5,
+            "conic_y": 0.0,
+            "x_asphere": [
+              1e-6
+            ],
+            "y_asphere": [
+              -1e-6
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 96.69672868056537,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "toroid",
+    "system": {
+      "name": "Toroidal element",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "toroid",
+            "curvature_x": 0.02,
+            "curvature_y": 0.016666666666666666,
+            "conic_y": -0.5,
+            "y_asphere": [
+              1e-6
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 96.69672868056537,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "q_con",
+    "system": {
+      "name": "Q-conic asphere lens",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "q_con",
+            "curvature": 0.016666666666666666,
+            "conic": -0.4,
+            "norm_radius": 5.0,
+            "coefficients": [
+              0.002,
+              -0.0004,
+              0.0001
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 96.69672868056537,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "q_bfs",
+    "system": {
+      "name": "Q-BFS asphere lens",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "q_bfs",
+            "curvature": 0.016666666666666666,
+            "norm_radius": 5.0,
+            "coefficients": [
+              0.002,
+              -0.0004,
+              0.0001
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 96.19645262575158,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "odd_asphere",
+    "system": {
+      "name": "Odd asphere element",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "odd_asphere",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0,
+            "coefficients": [
+              0.0,
+              0.00001,
+              -1e-6,
+              1e-7
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 96.59445813334544,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "xy_freeform",
+    "system": {
+      "name": "XY freeform corrector",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "xy_polynomial",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0,
+            "norm_radius": 5.0,
+            "coefficients": [
+              0.0,
+              0.0,
+              0.001,
+              0.0,
+              -0.001,
+              0.0002,
+              -0.0001,
+              0.0003,
+              0.0001
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 97.10791327833721,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {},
+      "mechanics": [],
+      "sensor": null,
+      "configurations": []
+    }
+  },
+  {
+    "id": "zernike_sag",
+    "system": {
+      "name": "Zernike sag element",
+      "notes": "CPU reference surface fixture, positive edge thickness",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 4.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 0.5,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "OBJ",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "front",
+          "shape": {
+            "type": "zernike_sag",
+            "curvature": 0.016666666666666666,
+            "conic": 0.0,
+            "norm_radius": 5.0,
+            "ordering": "fringe",
+            "coefficients": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.001,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0002
+            ]
+          },
+          "thickness": 5.0,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-BK7"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "rear",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.002857142857142857,
+            "conic": 0.0
+          },
+          "thickness": 97.10791327833721,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "IMA",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
       "ray_aiming": {
         "mode": "off"
       },
