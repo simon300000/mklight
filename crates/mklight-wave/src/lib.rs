@@ -25,6 +25,8 @@
 // rejects NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod analysis;
+pub mod detector;
 pub mod energy;
 mod fft;
 pub mod interp;
@@ -33,8 +35,15 @@ pub mod mtf;
 pub mod psf;
 pub mod pupil;
 pub mod special;
+pub mod traced;
 pub mod warnings;
 pub mod zernike;
+
+pub use detector::{DetectorCurve, DetectorSettings};
+pub use traced::{
+    AmplitudeModel, ExitPupilInfo, PupilSettings, ReferencePoint, TracedPupil, trace_pupil,
+    tracer_for_configuration,
+};
 
 pub use energy::{
     EnergyCenter, LineSpread, LsfAxis, StrehlReport, encircled_energy, ensquared_energy,

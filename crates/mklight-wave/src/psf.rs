@@ -603,7 +603,10 @@ pub struct HuygensSettings {
 /// unaffected.) `r − R` is formed as `(|x|² − 2p·x)/(r + R)` to avoid
 /// cancellation. No paraxial or Debye approximation, so it validates the
 /// FFT PSF and handles tilted and defocused planes. Cost `O(n²·M²)`,
-/// parallel over image rows.
+/// parallel over image rows. For a telecentric beam (`R = ∞`) the sum is
+/// its limit, a superposition of plane waves
+/// `U(x) ∝ Σ_j (c·A/γ)_j·e^{i2πW_j}·e^{−ik'·k̂_j·x}`, still exact on tilted
+/// and defocused planes.
 ///
 /// On a plane with normal `N̂` the plane integral of `|U|²` is
 /// `Σ_j E_j·γ_j/|k̂_j·N̂| / Σ_j E_j` times the flux (`k̂_j = (−α, −β, γ)` the
@@ -626,6 +629,7 @@ pub fn huygens_psf(
     let normal = settings.plane.normal();
     let n = pupil.n();
     let g = pupil.geometry();
+    let telecentric = g.is_telecentric();
     let r = g.reference_radius_mm;
     let sm = g.sin_max();
     let k = 2.0 * std::f64::consts::PI * g.image_index / (pupil.wavelength_um() * 1e-3);
@@ -646,9 +650,16 @@ pub fn huygens_psf(
             let (a, b) = (sm * pupil.coord(i), sm * pupil.coord(j));
             let s2 = a * a + b * b;
             let gamma = ((1.0 - s2).max(0.0)).sqrt();
-            let ds = r * r * d_alpha * d_alpha / gamma;
+            // Telecentric beams: the R → ∞ limit, scaled by 1/R (which
+            // cancels in the normalisation), leaves the plane-wave weight
+            // c·A·dα²/γ.
+            let ds = if telecentric {
+                d_alpha * d_alpha / gamma
+            } else {
+                r * r * d_alpha * d_alpha / gamma
+            };
             let amp = c * pupil.amplitude()[q] * ds;
-            u_dl0 += amp / r;
+            u_dl0 += if telecentric { amp } else { amp / r };
             let cos_in = Vec3::new(-a, -b, gamma).dot(normal).abs();
             if !(cos_in > 1e-9) {
                 return Err(MkError::InvalidParam(
@@ -658,8 +669,10 @@ pub fn huygens_psf(
             let e = c * (pupil.amplitude()[q] / gamma).powi(2);
             e_plane += e * gamma / cos_in;
             e_sum += e;
+            // Telecentric beams store the unit sphere point −k̂ instead.
+            let rr = if telecentric { 1.0 } else { r };
             pts.push((
-                Vec3::new(r * a, r * b, -r * gamma),
+                Vec3::new(rr * a, rr * b, -rr * gamma),
                 C64::from_polar(amp, tau * pupil.opd_waves()[q]),
             ));
         }
@@ -680,6 +693,15 @@ pub fn huygens_psf(
                         + pl.y_axis * ((jy as f64 - cidx) * settings.spacing_mm);
                     let x2 = x.norm2();
                     let (mut re, mut im) = (0.0, 0.0);
+                    if telecentric {
+                        // Plane waves `e^{−ik'·k̂·x}` with `k̂ = −p`.
+                        for (p, w) in &pts {
+                            let (s, c) = (k * p.dot(x)).sin_cos();
+                            re += w.re * c - w.im * s;
+                            im += w.re * s + w.im * c;
+                        }
+                        return (re * re + im * im) / (u_dl0 * u_dl0);
+                    }
                     for (p, w) in &pts {
                         let px = p.dot(x);
                         let dist = (x - *p).norm2().sqrt();

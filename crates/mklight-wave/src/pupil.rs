@@ -24,10 +24,25 @@
 //! `(ê_u, ê_v, ê_w)`: `ê_w` is the chief ray's image-space direction
 //! (exit-pupil centre → image point), and `(ê_u, ê_v)` are the image
 //! surface's `(x, y)` axes carried over by the smallest rotation that takes
-//! the surface normal onto `ê_w` (see [`PupilGeometry::chief_frame`]). A ray
-//! with unit direction `k̂` has `(u, v) = (k̂·ê_u, k̂·ê_v)/sinθ'max`
-//! ([`PupilGeometry::pupil_coords`]); the chief ray is `(0, 0)` and the
-//! Debye factor `γ = k̂·ê_w`. On axis the frame is the image frame.
+//! the surface normal onto `ê_w` (see [`PupilGeometry::chief_frame`]).
+//! Pupil coordinates are **positions on the reference sphere**: the sphere
+//! point `R·(α·ê_u + β·ê_v − γ·ê_w)` (relative to the reference point) has
+//! `(u, v) = (α, β)/sinθ'max`. An ideal ray from it travels along
+//! `k̂ = −α·ê_u − β·ê_v + γ·ê_w`, so a ray with unit direction `k̂` sits at
+//! `(u, v) = −(k̂·ê_u, k̂·ê_v)/sinθ'max` ([`PupilGeometry::pupil_coords`]);
+//! the chief ray is `(0, 0)` and the Debye factor is `γ = k̂·ê_w`. (A ray
+//! leaving the top of the pupil, `v > 0`, travels downwards.) On axis the
+//! frame is the image frame.
+//!
+//! # Image-space telecentric beams
+//!
+//! With the exit pupil at infinity the reference sphere becomes infinitely
+//! large (`a = R = ∞`, [`PupilGeometry::telecentric`]). Everything here
+//! depends on the beam only through `sinθ'max` and the directions, so the
+//! FFT, MTF and energy routes are unchanged; the OPD is the limit `R → ∞`
+//! of the reference-sphere OPD (the phase of each plane-wave component at
+//! the reference point), refocusing uses `W = (n'/λ)·dz·(1 − γ)` and
+//! [`crate::huygens_psf`] sums plane waves.
 //!
 //! The Fourier transform of the pupil gives the PSF in the plane normal to
 //! the chief ray. Results are reported on the **image surface** (CONVENTIONS
@@ -73,10 +88,13 @@ use crate::zernike::ZernikeSet;
 /// Image-space geometry needed to scale image-plane coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PupilGeometry {
-    /// Transverse radius `a` of the exit pupil on the reference sphere (mm).
+    /// Transverse radius `a` of the exit pupil on the reference sphere (mm);
+    /// `+∞` for an image-space telecentric beam.
+    #[serde(with = "mklight_core::serde_util::f64_inf")]
     pub exit_pupil_radius_mm: f64,
     /// Reference-sphere radius `R`: exit pupil → reference image point (mm,
-    /// positive).
+    /// positive); `+∞` for an image-space telecentric beam.
+    #[serde(with = "mklight_core::serde_util::f64_inf")]
     pub reference_radius_mm: f64,
     /// Image-space refractive index `n'` (relative to air).
     pub image_index: f64,
@@ -86,6 +104,10 @@ pub struct PupilGeometry {
     /// propagation. `[0, 0, 1]` on axis. See the module docs.
     #[serde(default = "on_axis")]
     pub chief_ray: [f64; 3],
+    /// `sinθ'max` of an image-space telecentric beam, whose `a/R` is
+    /// undefined (`a = R = ∞`); `None` for a finite reference sphere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telecentric_sin_max: Option<f64>,
 }
 
 fn on_axis() -> [f64; 3] {
@@ -107,9 +129,29 @@ impl PupilGeometry {
             reference_radius_mm,
             image_index,
             chief_ray: on_axis(),
+            telecentric_sin_max: None,
         };
         g.validate()?;
         Ok(g)
+    }
+
+    /// Geometry of an image-space telecentric beam (exit pupil at infinity,
+    /// `a = R = ∞`) with `sinθ'max = sin_max`.
+    pub fn telecentric(sin_max: f64, image_index: f64) -> MkResult<Self> {
+        let g = PupilGeometry {
+            exit_pupil_radius_mm: f64::INFINITY,
+            reference_radius_mm: f64::INFINITY,
+            image_index,
+            chief_ray: on_axis(),
+            telecentric_sin_max: Some(sin_max),
+        };
+        g.validate()?;
+        Ok(g)
+    }
+
+    /// `true` for an image-space telecentric beam (`R = ∞`).
+    pub fn is_telecentric(&self) -> bool {
+        self.telecentric_sin_max.is_some()
     }
 
     /// A copy with the chief ray along `direction` (image-surface frame,
@@ -154,11 +196,22 @@ impl PupilGeometry {
     pub fn validate(&self) -> MkResult<()> {
         let d = self.chief_ray;
         let unit = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - 1.0).abs() < 1e-9;
-        let ok = self.exit_pupil_radius_mm > 0.0
-            && self.reference_radius_mm > self.exit_pupil_radius_mm
+        let sphere = match self.telecentric_sin_max {
+            None => {
+                self.exit_pupil_radius_mm > 0.0
+                    && self.reference_radius_mm > self.exit_pupil_radius_mm
+                    && self.reference_radius_mm.is_finite()
+            }
+            Some(s) => {
+                s > 0.0
+                    && s < 1.0
+                    && self.exit_pupil_radius_mm == f64::INFINITY
+                    && self.reference_radius_mm == f64::INFINITY
+            }
+        };
+        let ok = sphere
             && self.image_index > 0.0
             && self.image_index.is_finite()
-            && self.reference_radius_mm.is_finite()
             && d.iter().all(|c| c.is_finite())
             && unit
             && d[2] >= MIN_CHIEF_COS;
@@ -171,9 +224,10 @@ impl PupilGeometry {
         }
     }
 
-    /// `sinθ'max = a/R`.
+    /// `sinθ'max = a/R` (the stored value for a telecentric beam).
     pub fn sin_max(&self) -> f64 {
-        self.exit_pupil_radius_mm / self.reference_radius_mm
+        self.telecentric_sin_max
+            .unwrap_or(self.exit_pupil_radius_mm / self.reference_radius_mm)
     }
     /// Image-space numerical aperture `n'·a/R`.
     pub fn numerical_aperture(&self) -> f64 {
@@ -216,13 +270,24 @@ impl PupilGeometry {
         ]
     }
 
-    /// Normalised pupil coordinates `(u, v)` of a ray with unit image-space
-    /// direction `k` (image-surface frame). This is how a tracer places its
-    /// rays on the pupil grid.
+    /// Normalised pupil coordinates `(u, v)` of an ideal ray with unit
+    /// image-space direction `k` (image-surface frame) converging to the
+    /// reference point: the reference-sphere point it comes from,
+    /// `−(k·ê_u, k·ê_v)/sinθ'max` (module docs).
     pub fn pupil_coords(&self, k: Vec3) -> (f64, f64) {
         let [eu, ev, _] = self.chief_frame();
         let s = self.sin_max();
-        (k.dot(eu) / s, k.dot(ev) / s)
+        (-k.dot(eu) / s, -k.dot(ev) / s)
+    }
+
+    /// Normalised pupil coordinates of a point `x` on (or near) the
+    /// reference sphere, relative to the reference point (image-surface
+    /// frame): `(x·ê_u, x·ê_v)/(R·sinθ'max)`. Finite spheres only (a
+    /// telecentric beam uses [`Self::pupil_coords`] of the ray direction).
+    pub fn sphere_coords(&self, x: Vec3) -> (f64, f64) {
+        let [eu, ev, _] = self.chief_frame();
+        let s = self.sin_max() * self.reference_radius_mm;
+        (x.dot(eu) / s, x.dot(ev) / s)
     }
 
     /// The projection `B` with `x_n = B·x_s`: image-surface coordinates
@@ -773,10 +838,17 @@ impl PupilFunction {
     /// `W = (n'/λ)·[r(1) − r(γ)]` with `r(γ) = √(R² + 2Rγ·dz + dz²)`, so a
     /// positive shift adds positive OPD at the pupil edge (CONVENTIONS §4:
     /// the wave then converges more than the shifted reference sphere).
-    /// Paraxially `W ≈ dz·NA²·ρ²/(2n'λ)`.
+    /// Paraxially `W ≈ dz·NA²·ρ²/(2n'λ)`. For a telecentric beam
+    /// (`R = ∞`) the limit `W = (n'/λ)·dz·(1 − γ)`.
     pub fn focus_shift_opd(&self, dz_mm: f64, u: f64, v: f64) -> f64 {
         let g = &self.geometry;
         let r = g.reference_radius_mm;
+        if g.is_telecentric() {
+            // 1 − γ = s²/(1 + γ), free of cancellation.
+            let s2 = g.sin_max().powi(2) * (u * u + v * v);
+            let gamma = (1.0 - s2).max(0.0).sqrt();
+            return g.image_index / (self.wavelength_um * 1e-3) * dz_mm * s2 / (1.0 + gamma);
+        }
         // r(γ) − R in cancellation-free form.
         let dr = |gamma: f64| {
             (2.0 * r * gamma * dz_mm + dz_mm * dz_mm)
@@ -1066,6 +1138,44 @@ mod tests {
         assert!((w - 0.1).abs() < 0.1 * 0.01, "{w}");
         assert!(p.focus_shift_opd(dz, 0.0, 0.0).abs() < 1e-15);
         assert!(p.focus_shift_opd(-dz, 1.0, 0.0) < 0.0);
+    }
+
+    #[test]
+    fn telecentric_geometry() {
+        let g = PupilGeometry::telecentric(0.1, 1.0).unwrap();
+        assert!(g.is_telecentric() && (g.working_f_number() - 5.0).abs() < 1e-14);
+        assert!(PupilGeometry::telecentric(1.0, 1.0).is_err());
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("\"inf\""), "{json}");
+        let back: PupilGeometry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, g);
+        // The R → ∞ limit of the exact refocus OPD.
+        let p = PupilFunction::diffraction_limited(32, 0.5, g, Aperture::Circular, 1).unwrap();
+        let dz = 0.01;
+        let w = p.focus_shift_opd(dz, 1.0, 0.0);
+        let exact = dz * (1.0 - (1.0f64 - 0.01).sqrt()) / 0.5e-3;
+        assert!((w - exact).abs() < 1e-12, "{w} vs {exact}");
+        let fin = PupilFunction::diffraction_limited(
+            32,
+            0.5,
+            PupilGeometry::new(1e5, 1e6, 1.0).unwrap(),
+            Aperture::Circular,
+            1,
+        )
+        .unwrap();
+        assert!((fin.focus_shift_opd(dz, 1.0, 0.0) - w).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pupil_coordinates_are_sphere_positions() {
+        let g = geom();
+        let s = g.sin_max();
+        // A ray converging from the top of the pupil travels downwards.
+        let k = Vec3::new(0.0, -0.5 * s, (1.0 - 0.25 * s * s).sqrt());
+        let (u, v) = g.pupil_coords(k);
+        assert!(u.abs() < 1e-15 && (v - 0.5).abs() < 1e-12);
+        let (u2, v2) = g.sphere_coords(-k * g.reference_radius_mm);
+        assert!((u2 - u).abs() < 1e-12 && (v2 - v).abs() < 1e-12);
     }
 
     #[test]
