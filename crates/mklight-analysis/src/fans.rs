@@ -129,6 +129,8 @@ pub fn ray_fan_job(
     settings: &FanSettings,
     ctx: &JobContext,
 ) -> MkResult<FanResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("fan samples", settings.samples, 2, 100_001)?;
@@ -214,6 +216,8 @@ pub fn opd_fan_job(
     settings: &FanSettings,
     ctx: &JobContext,
 ) -> MkResult<FanResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("fan samples", settings.samples, 2, 100_001)?;

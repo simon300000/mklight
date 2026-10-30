@@ -36,13 +36,10 @@
 //! * dummies and coordinate breaks: nothing (the basis is carried into each
 //!   surface frame).
 //!
-//! `K` comes from the principal curvatures of the surface of revolution at
-//! radius `r`, the meridional `κ_m = f''/(1 + f'²)^{3/2}` and the sagittal
-//! `κ_s = f'/(r √(1 + f'²))` ([`principal_curvatures`], evaluated without
-//! dividing by `r` or by the conic square root). Their directions are the
-//! radial direction projected onto the tangent plane and its perpendicular.
-//! The equations hold for skew chief rays and any tilts. No principal-plane
-//! assumption is made.
+//! `K` is the second fundamental form of the sag graph, projected from its
+//! Cartesian Hessian onto the orthonormal tangent basis. A DOE adds its
+//! covariant phase Hessian to the direction matching. Both mixed surface
+//! power and curved-base phase connections are retained. See ANALYSIS §2.2.
 //!
 //! At the image the **focal lines** follow from the eigen-decomposition of
 //! the symmetric focal-distance matrix `F = −X T⁻¹ = C⁻¹` (or of `C` for an
@@ -78,14 +75,15 @@
 //!
 //! # Distortion
 //!
-//! The real chief-ray height `y` (image local frame) is compared with the
-//! paraxial chief height `y_p` of the same object source at the same
+//! The real chief-ray height `y` (image local frame, along the sampled field
+//! axis) is compared with the paraxial chief height `y_p` (that axis's
+//! first-order sweep) of the same object source at the same
 //! wavelength: `k·tan θ` for an object at infinity (`k` = paraxial image
 //! height per unit `tan θ` on the actual image surface) and `m·h` for a
 //! finite object. `distortion = 100 (y − y_p)/y_p` %. For objects at
 //! infinity, the `f·tan θ` and `f·θ` distortions use `f = n₀·EFL`, the image
-//! height per unit `tan θ` at the paraxial focal plane. All are 0 on axis
-//! (their limit) and NaN where undefined.
+//! height per unit `tan θ` at the paraxial focal plane. All are 0 on the
+//! axis of a rotational system (their limit) and NaN where undefined.
 //!
 //! The grid distortion map traces the chief rays of a square grid of
 //! normalised fields `(Hx, Hy) ∈ [−a, a]²` (`a = 1/√2` by default, so the
@@ -93,6 +91,8 @@
 //! image points and the radial distortion `100 (|r| − |r_p|)/|r_p|`.
 
 use mklight_core::job::RunTimer;
+use mklight_core::model::surface::DiffractivePhase;
+use mklight_core::surface_math::{Symmetry, system_symmetry};
 use mklight_core::{Interaction, JobContext, MkResult, RunInfo, SurfaceShape, Vec3};
 use mklight_trace::trace::transfer_into;
 use mklight_trace::{FieldPoint, ObjectSource, PreparedField, Ray, SequentialTracer, TraceOptions};
@@ -100,69 +100,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    WavelengthSelection, check_count, check_finite, field_scale, field_unit, linspace, m2, nf,
-    paraxial_image_point, run_info, wavelength_or_primary,
+    FieldAxes, WavelengthSelection, check_count, check_finite, field_scale, field_sweep,
+    field_unit, first_order_x, linspace, m2, nf, paraxial_image_point, run_info,
+    wavelength_or_primary,
 };
-
-/// Principal curvatures `(κ_m, κ_s)` (meridional, sagittal) of a surface of
-/// revolution at radius `r ≥ 0`, positive when the centre of curvature lies
-/// at local `+z`. `None` outside the sag domain. Planes, ideal lenses and
-/// coordinate breaks have zero curvature.
-///
-/// With `w = √(1 − (1+k)c²r²)` the conic has `f'/r = c/w` and `f'' = c/w³`,
-/// so `κ_m = c/D^{3/2}` and `κ_s = c/√D` with `D = 1 − k c² r²`. An even
-/// asphere adds `Σ aᵢ(2i+4) r^{2i+2}` to `f'/r` and `Σ aᵢ(2i+4)(2i+3) r^{2i+2}`
-/// to `f''`.
-pub fn principal_curvatures(shape: &SurfaceShape, r: f64) -> Option<(f64, f64)> {
-    let r2 = r * r;
-    match shape {
-        SurfaceShape::Plane | SurfaceShape::Paraxial { .. } | SurfaceShape::CoordinateBreak => {
-            Some((0.0, 0.0))
-        }
-        SurfaceShape::Conic {
-            curvature: c,
-            conic: k,
-        } => {
-            let w2 = 1.0 - (1.0 + k) * c * c * r2;
-            if w2 < 0.0 {
-                return None;
-            }
-            let d = (-k * c * c).mul_add(r2, 1.0);
-            if d <= 0.0 {
-                return None;
-            }
-            Some((c / (d * d.sqrt()), c / d.sqrt()))
-        }
-        SurfaceShape::EvenAsphere {
-            curvature: c,
-            conic: k,
-            coefficients,
-        } => {
-            let w2 = 1.0 - (1.0 + k) * c * c * r2;
-            if w2 < 0.0 {
-                return None;
-            }
-            let w = w2.sqrt();
-            let (mut g, mut f2) = if *c == 0.0 {
-                (0.0, 0.0)
-            } else {
-                (c / w, c / (w * w2))
-            };
-            // Σ aᵢ (2i+4) r^{2i+2} and Σ aᵢ (2i+4)(2i+3) r^{2i+2}.
-            let mut p = r2; // r^{2i+2}
-            for (i, a) in coefficients.iter().enumerate() {
-                let e = (2 * i + 4) as f64;
-                g = (a * e).mul_add(p, g);
-                f2 = (a * e * (e - 1.0)).mul_add(p, f2);
-                p *= r2;
-            }
-            let q = (r2 * g).mul_add(g, 1.0); // 1 + f'²
-            let sq = q.sqrt();
-            Some((f2 / (q * sq), g / sq))
-        }
-        _ => None, // Extended surface tensors belong to the next analysis round.
-    }
-}
 
 /// Tangential and sagittal foci of the pencil around a chief ray: signed
 /// distances (mm) along the image-space chief ray from its image point
@@ -184,25 +125,45 @@ impl AstigmaticFocus {
     }
 }
 
-/// Tangent basis `E` (principal directions) and second fundamental form `K`
-/// (diagonal in `E`, relative to the normal `n`) of a surface of revolution
-/// at local hit `p`.
+/// `E_i,xyᵀ H E_j,xy` for a Cartesian Hessian `[h_xx, h_xy, h_yy]`.
+fn tangent_form(h: [f64; 3], e: &[Vec3; 2]) -> m2::M {
+    std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            e[i].x * (h[0] * e[j].x + h[1] * e[j].y) + e[i].y * (h[1] * e[j].x + h[2] * e[j].y)
+        })
+    })
+}
+
+/// Orthonormal tangent basis `E` and second fundamental form `K` (relative
+/// to the unit normal `n`) of the sag graph at local hit `p`.
 fn surface_tensor(shape: &SurfaceShape, p: Vec3, n: Vec3) -> Option<([Vec3; 2], m2::M)> {
-    let r = p.x.hypot(p.y);
-    let (km, ks) = principal_curvatures(shape, r)?;
-    let m = if r > 0.0 && km != ks {
-        let er = Vec3::new(p.x / r, p.y / r, 0.0);
-        er - n * er.dot(n)
-    } else {
-        let t = Vec3::X - n * n.x;
-        if t.norm() > 1e-6 {
-            t
-        } else {
-            Vec3::Y - n * n.y
-        }
-    };
-    let m = m.normalized();
-    Some(([m, n.cross(m)], [[km, 0.0], [0.0, ks]]))
+    let v = mklight_core::surface_math::evaluate(shape, p.x, p.y)?;
+    if !v.hessian.iter().all(|v| v.is_finite()) {
+        return None; // The cone vertex has no differential curvature.
+    }
+    let e0 = Vec3::new(1.0, 0.0, v.gradient[0]).normalized();
+    let e = [e0, n.cross(e0)];
+    Some((e, m2::scale(&tangent_form(v.hessian, &e), n.z)))
+}
+
+/// `q` times the covariant phase Hessian in the tangent basis,
+/// `q (Eᵀ H_Φ E + (∇Φ·N) K)`, `q = mλ/2π`: the connection term is the
+/// normal acceleration of a geodesic on a curved base.
+fn phase_tensor(
+    phase: &DiffractivePhase,
+    p: Vec3,
+    n: Vec3,
+    e: &[Vec3; 2],
+    k: &m2::M,
+    wl_um: f64,
+) -> Option<m2::M> {
+    let v = mklight_core::surface_math::phase(phase, p.x, p.y)?;
+    let gn = v.gradient[0] * n.x + v.gradient[1] * n.y;
+    let q = phase.trace_order as f64 * wl_um * 1e-3 / std::f64::consts::TAU;
+    Some(m2::scale(
+        &m2::add(&tangent_form(v.hessian, e), &m2::scale(k, gn)),
+        q,
+    ))
 }
 
 /// `P_ab = u_a · e_b`: transverse coordinates of tangent vectors.
@@ -373,14 +334,21 @@ pub fn coddington_focus(
                 (s.n_after[wl], carry(&u, k, kout))
             };
             // Surface coordinates δs = P⁻¹X a; with C = −T X⁻¹ the matching
-            // condition gives T' = P'⁻ᵀ (n Pᵀ T − g K δs)/n', X' = P' δs.
+            // condition gives T' = P'⁻ᵀ (n Pᵀ T + (Φ − g K) δs)/n', X' = P' δs,
+            // with Φ the scaled DOE phase tensor (zero otherwise).
             let p = proj(&u, &e);
             let p_out = proj(&u_out, &e);
             let ds = m2::mul(&m2::inv(&p)?, &x);
             let g = n2.mul_add(kout.dot(nrm), -n * k.dot(nrm));
+            let mut power = m2::scale(&kmat, -g);
+            if let SurfaceShape::Diffractive { phase, .. } = &s.shape {
+                let wl_um = sys.wavelengths_um[wl];
+                let ph = phase_tensor(phase, rec[i].point, nrm, &e, &kmat, wl_um)?;
+                power = m2::add(&power, &ph);
+            }
             let rhs = m2::add(
                 &m2::scale(&m2::mul(&m2::t(&p), &t), n),
-                &m2::scale(&m2::mul(&kmat, &ds), -g),
+                &m2::mul(&power, &ds),
             );
             t = m2::scale(&m2::mul(&m2::t(&m2::inv(&p_out)?), &rhs), 1.0 / n2);
             x = m2::mul(&p_out, &ds);
@@ -455,8 +423,10 @@ pub fn close_ray_focus(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FieldCurvatureSettings {
-    /// Field samples from the axis to the maximum field along `+y`.
+    /// Samples per selected field axis (signed where symmetry requires it).
     pub field_samples: usize,
+    /// Field axes of the sweep (ANALYSIS §2.2).
+    pub field_axes: FieldAxes,
     pub wavelengths: WavelengthSelection,
     /// Normalised pupil step of the close-ray cross-check.
     pub close_ray_step: f64,
@@ -466,6 +436,7 @@ impl Default for FieldCurvatureSettings {
     fn default() -> Self {
         FieldCurvatureSettings {
             field_samples: 21,
+            field_axes: Default::default(),
             wavelengths: WavelengthSelection::All,
             close_ray_step: 1e-3,
         }
@@ -508,9 +479,11 @@ pub struct FieldCurvatureCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldCurvatureResult {
-    /// Field values (in `field_unit`) from the axis to the maximum field.
+    /// Normalised `[Hx, Hy]` of each field sample.
+    pub field_coordinates: Vec<[f64; 2]>,
+    /// Signed field values (in `field_unit`) along each sample's axis.
     pub field_values: Vec<f64>,
-    /// The same samples as normalised `Hy`.
+    /// The same samples as normalised fields along their axis.
     pub normalized_field: Vec<f64>,
     pub field_unit: String,
     pub curves: Vec<FieldCurvatureCurve>,
@@ -544,7 +517,6 @@ pub fn field_curvature_job(
 ) -> MkResult<FieldCurvatureResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
-    sys.system().require_legacy_shapes("field curvature")?;
     check_count("field samples", settings.field_samples, 2, 100_001)?;
     check_finite("close-ray step", settings.close_ray_step)?;
     if !(settings.close_ray_step > 0.0 && settings.close_ray_step < 0.5) {
@@ -555,29 +527,33 @@ pub fn field_curvature_job(
     let wls = settings
         .wavelengths
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
-    let hs = linspace(0.0, 1.0, settings.field_samples);
+    let sweep = field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let rotational = system_symmetry(sys.system()) == Symmetry::Rotational;
     let mut warnings = Vec::new();
     ctx.report(0.0, "field curvature");
     // Prepare every field sample once (real image heights solve here).
-    let fields: Vec<Option<PreparedField>> = hs
+    let fields: Vec<Option<PreparedField>> = sweep
+        .coordinates
         .par_iter()
-        .map(|&h| tracer.prepare_field(FieldPoint::normalized(0.0, h)).ok())
+        .map(|&[hx, hy]| tracer.prepare_field(FieldPoint::normalized(hx, hy)).ok())
         .collect();
-    for (h, f) in hs.iter().zip(&fields) {
+    for (xy, f) in sweep.coordinates.iter().zip(&fields) {
         if f.is_none() {
-            warnings.push(format!("field Hy = {h}: could not be resolved"));
+            warnings.push(format!("field {xy:?}: could not be resolved"));
         }
     }
     ctx.check()?;
     let n0 = |w: usize| sys.n_object[w];
     let mut curves = Vec::with_capacity(wls.len());
     for (k, &w) in wls.iter().enumerate() {
-        let fo = tracer.paraxial().at(w);
-        let f_eff = n0(w) * fo.efl;
+        let (fx, fy) = (first_order_x(tracer, w)?, tracer.paraxial().at(w));
+        let efl = [fx.efl, fy.efl];
         let rows: Vec<[f64; 10]> = fields
             .par_iter()
-            .zip(&hs)
-            .map(|(f, &h)| {
+            .zip(&sweep.heights)
+            .zip(&sweep.components)
+            .map(|((f, &h), &axis)| {
+                let f_eff = n0(w) * efl[axis];
                 let mut row = [f64::NAN; 10];
                 let Some(f) = f else { return row };
                 if let Some(a) = coddington_focus(tracer, f, w) {
@@ -588,12 +564,12 @@ pub fn field_curvature_job(
                 }
                 let c = tracer.chief(f, w);
                 if c.status.is_ok() {
-                    row[4] = c.ray.pos.y;
+                    row[4] = [c.ray.pos.x, c.ray.pos.y][axis];
                 }
-                if let Some(p) = paraxial_image_point(tracer, f, w) {
-                    row[5] = p[1];
+                if let Some(p) = paraxial_image_point(&fx, fy, f) {
+                    row[5] = p[axis];
                 }
-                if h == 0.0 {
+                if h == 0.0 && rotational {
                     row[6] = 0.0;
                     row[7] = if sys.object_at_infinity {
                         0.0
@@ -606,7 +582,7 @@ pub fn field_curvature_job(
                     if let ObjectSource::Direction { dir } = f.source
                         && sys.object_at_infinity
                     {
-                        let t = dir.y / dir.z;
+                        let t = [dir.x, dir.y][axis] / dir.z;
                         row[7] = percent(row[4], f_eff * t);
                         row[8] = percent(row[4], f_eff * t.atan());
                     }
@@ -615,16 +591,16 @@ pub fn field_curvature_job(
             })
             .collect();
         // Independent estimates of the same foci: flag disagreements.
-        let bad: Vec<f64> = rows
+        let bad: Vec<[f64; 2]> = rows
             .iter()
-            .zip(&hs)
+            .zip(&sweep.coordinates)
             .filter(|(r, _)| (0..2).any(|j| (r[j] - r[j + 2]).abs() > 1e-3 * (1.0 + r[j].abs())))
-            .map(|(_, &h)| h)
+            .map(|(_, &xy)| xy)
             .collect();
         if let (Some(first), Some(last)) = (bad.first(), bad.last()) {
             warnings.push(format!(
                 "wavelength {w}: Coddington and close-ray foci differ by more than \
-                 1e-3 (1 + |Δz|) mm at {} field sample(s), Hy = {first}…{last}",
+                 1e-3 (1 + |Δz|) mm at {} field sample(s), [Hx, Hy] = {first:?}…{last:?}",
                 bad.len()
             ));
         }
@@ -647,8 +623,9 @@ pub fn field_curvature_job(
     }
     let scale = field_scale(tracer);
     Ok(FieldCurvatureResult {
-        field_values: hs.iter().map(|h| h * scale).collect(),
-        normalized_field: hs,
+        field_values: sweep.heights.iter().map(|h| h * scale).collect(),
+        normalized_field: sweep.heights,
+        field_coordinates: sweep.coordinates,
         field_unit: field_unit(sys.system().fields.kind).to_string(),
         curves,
         wavelengths_um: sys.wavelengths_um.clone(),
@@ -738,6 +715,8 @@ pub fn grid_distortion_job(
     let w = wavelength_or_primary(tracer, settings.wavelength)?;
     let n = settings.grid_size;
     let t = linspace(-settings.half_width, settings.half_width, n);
+    let (fx, fy) = (first_order_x(tracer, w)?, tracer.paraxial().at(w));
+    let rotational = system_symmetry(tracer.system().system()) == Symmetry::Rotational;
     let mut points = Vec::with_capacity(n * n);
     let mut failed = 0usize;
     for (j, &hy) in t.iter().enumerate() {
@@ -758,11 +737,11 @@ pub fn grid_distortion_job(
                 if c.status.is_ok() {
                     g.real = [c.ray.pos.x, c.ray.pos.y];
                 }
-                if let Some(p) = paraxial_image_point(tracer, &f, w) {
+                if let Some(p) = paraxial_image_point(&fx, fy, &f) {
                     g.paraxial = p;
                 }
                 let rp = g.paraxial[0].hypot(g.paraxial[1]);
-                g.distortion_percent = if hx == 0.0 && hy == 0.0 {
+                g.distortion_percent = if hx == 0.0 && hy == 0.0 && rotational {
                     0.0
                 } else {
                     percent(g.real[0].hypot(g.real[1]), rp)
@@ -796,13 +775,24 @@ pub fn grid_distortion_job(
 mod tests {
     use super::*;
 
+    /// Principal curvatures of the second fundamental form at local `(0, r)`.
+    fn principal(shape: &SurfaceShape, r: f64) -> (f64, f64) {
+        let [_, zy] = mklight_core::surface_math::evaluate(shape, 0.0, r)
+            .unwrap()
+            .gradient;
+        let n = Vec3::new(0.0, -zy, 1.0).normalized();
+        let (e, k) = surface_tensor(shape, Vec3::new(0.0, r, 0.0), n).unwrap();
+        // e[0] is the x (sagittal) direction, e[1] the meridional one.
+        assert!(e[0].dot(e[1]).abs() < 1e-15 && k[0][1].abs() < 1e-15);
+        (k[1][1], k[0][0])
+    }
+
     #[test]
-    fn principal_curvatures_of_known_surfaces() {
-        // Sphere: both curvatures equal c everywhere.
+    fn second_fundamental_form_of_known_surfaces() {
         let s = SurfaceShape::sphere(40.0);
-        let (km, ks) = principal_curvatures(&s, 25.0).unwrap();
+        let (km, ks) = principal(&s, 25.0);
         assert!((km - 0.025).abs() < 1e-15 && (ks - 0.025).abs() < 1e-15);
-        // Paraboloid z = r²/(2R): κ_m = c/(1 + c²r²)^{3/2}, κ_s = c/√(1 + c²r²).
+        // Paraboloid: κ_m = c/(1 + c²r²)^{3/2}, κ_s = c/√(1 + c²r²).
         let c = 0.01;
         let p = SurfaceShape::Conic {
             curvature: c,
@@ -810,18 +800,9 @@ mod tests {
         };
         let r: f64 = 30.0;
         let q = 1.0 + c * c * r * r;
-        let (km, ks) = principal_curvatures(&p, r).unwrap();
+        let (km, ks) = principal(&p, r);
         assert!((km - c / q.powf(1.5)).abs() < 1e-16);
         assert!((ks - c / q.sqrt()).abs() < 1e-16);
-        // The same paraboloid as an even asphere with c = 0 and A4 = 0 must
-        // differ; with c given as conic −1 plus zero terms it must agree.
-        let a = SurfaceShape::EvenAsphere {
-            curvature: c,
-            conic: -1.0,
-            coefficients: vec![0.0, 0.0],
-        };
-        let (am, as_) = principal_curvatures(&a, r).unwrap();
-        assert!((am - km).abs() < 1e-16 && (as_ - ks).abs() < 1e-16);
         // Pure quartic z = A r⁴: f' = 4Ar³, f'' = 12Ar².
         let a4 = 1e-5;
         let q = SurfaceShape::EvenAsphere {
@@ -830,12 +811,11 @@ mod tests {
             coefficients: vec![a4],
         };
         let r: f64 = 7.0;
-        let fp = 4.0 * a4 * r.powi(3);
-        let fpp = 12.0 * a4 * r * r;
-        let (qm, qs) = principal_curvatures(&q, r).unwrap();
+        let (fp, fpp) = (4.0 * a4 * r.powi(3), 12.0 * a4 * r * r);
+        let (qm, qs) = principal(&q, r);
         assert!((qm - fpp / (1.0 + fp * fp).powf(1.5)).abs() < 1e-15);
         assert!((qs - fp / (r * (1.0 + fp * fp).sqrt())).abs() < 1e-15);
         // Outside the sphere's domain.
-        assert!(principal_curvatures(&s, 41.0).is_none());
+        assert!(surface_tensor(&s, Vec3::new(0.0, 41.0, 0.0), Vec3::Z).is_none());
     }
 }

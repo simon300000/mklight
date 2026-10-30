@@ -6,10 +6,13 @@ use std::f64::consts::PI;
 
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::math::KahanSum;
+use mklight_core::model::surface::DiffractivePhase;
 use mklight_core::rng::Philox;
+use mklight_core::surface_math::{Symmetry, system_symmetry};
 use mklight_core::{FieldKind, MkError, MkResult, RunInfo};
-use mklight_trace::{ObjectSource, PreparedField, SequentialTracer};
+use mklight_trace::{FieldPoint, FirstOrder, ObjectSource, PreparedField, SequentialTracer};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Backend identifier recorded in `RunInfo` by every analysis of this crate
 /// that traces its own rays (the CPU f64 reference tracer).
@@ -128,6 +131,99 @@ impl FieldSelection {
     }
 }
 
+/// The tracer, with the missing axis fields appended for an `all` selection
+/// of a non-rotational system (ANALYSIS §1): `+x` and `±y`, plus `−x`
+/// without x reflection symmetry. They get analysis-local indices after the
+/// system fields; the snapshot is unchanged.
+pub fn default_fields<'a>(
+    tracer: &'a SequentialTracer,
+    selection: &FieldSelection,
+) -> MkResult<Cow<'a, SequentialTracer>> {
+    let symmetry = system_symmetry(tracer.system().system());
+    if *selection != FieldSelection::All || symmetry == Symmetry::Rotational {
+        return Ok(Cow::Borrowed(tracer));
+    }
+    let candidates: &[[f64; 2]] = if symmetry == Symmetry::None {
+        &[[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+    } else {
+        &[[1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+    };
+    let points: Vec<FieldPoint> = candidates
+        .iter()
+        .filter(|&&[hx, hy]| {
+            !tracer
+                .fields()
+                .iter()
+                .any(|f| f.point.hx == hx && f.point.hy == hy)
+        })
+        .map(|&[hx, hy]| FieldPoint::normalized(hx, hy))
+        .collect();
+    if points.is_empty() {
+        Ok(Cow::Borrowed(tracer))
+    } else {
+        Ok(Cow::Owned(tracer.with_additional_fields(&points)?))
+    }
+}
+
+/// Field axes of the scalar field sweeps. `auto` is `y` for rotational
+/// systems and both axes otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldAxes {
+    #[default]
+    Auto,
+    X,
+    Y,
+    Both,
+}
+
+impl FieldAxes {
+    /// Selected components (0 = x, 1 = y), y first.
+    pub(crate) fn components(self, symmetry: Symmetry) -> &'static [usize] {
+        match self {
+            Self::X => &[0],
+            Self::Y => &[1],
+            Self::Auto if symmetry == Symmetry::Rotational => &[1],
+            Self::Auto | Self::Both => &[1, 0],
+        }
+    }
+}
+
+/// Scalar field samples along the selected axes: `heights[i]` is the signed
+/// normalised field along axis `components[i]`, at `coordinates[i]`.
+/// Only rotational symmetry (any axis) and x reflection (the x axis) allow
+/// sampling from 0 instead of −1.
+pub(crate) struct FieldSweep {
+    pub heights: Vec<f64>,
+    pub coordinates: Vec<[f64; 2]>,
+    pub components: Vec<usize>,
+}
+
+pub(crate) fn field_sweep(
+    tracer: &SequentialTracer,
+    samples: usize,
+    axes: FieldAxes,
+) -> FieldSweep {
+    let symmetry = system_symmetry(tracer.system().system());
+    let mut sweep = FieldSweep {
+        heights: Vec::new(),
+        coordinates: Vec::new(),
+        components: Vec::new(),
+    };
+    for &component in axes.components(symmetry) {
+        let half = symmetry == Symmetry::Rotational
+            || (symmetry == Symmetry::Meridional && component == 0);
+        for h in linspace(if half { 0.0 } else { -1.0 }, 1.0, samples) {
+            let mut xy = [0.0; 2];
+            xy[component] = h;
+            sweep.heights.push(h);
+            sweep.coordinates.push(xy);
+            sweep.components.push(component);
+        }
+    }
+    sweep
+}
+
 /// Which system wavelengths an analysis covers. JSON: `{"type": "all"}`,
 /// `{"type": "primary"}`, `{"type": "index", "index": 0}` or
 /// `{"type": "list", "indices": [...]}`.
@@ -196,10 +292,16 @@ pub fn field_unit(kind: FieldKind) -> &'static str {
     }
 }
 
-/// Field value `(x, y)` of system field `i`, in the system's field units.
-pub(crate) fn field_value(tracer: &SequentialTracer, i: usize) -> [f64; 2] {
-    let f = &tracer.system().system().fields.fields[i];
-    [f.x, f.y]
+/// Field value `(x, y)` of field `i` in the system's field units (system
+/// fields, then [`default_fields`]).
+pub fn field_value(tracer: &SequentialTracer, i: usize) -> [f64; 2] {
+    if let Some(f) = tracer.system().system().fields.fields.get(i) {
+        [f.x, f.y]
+    } else {
+        let f = tracer.field(i).point;
+        let scale = field_scale(tracer);
+        [f.hx * scale, f.hy * scale]
+    }
 }
 
 /// Physical field value (system field units) of normalised field `h`.
@@ -207,27 +309,38 @@ pub(crate) fn field_scale(tracer: &SequentialTracer) -> f64 {
     tracer.system().system().fields.max_radial()
 }
 
-/// The paraxial image point `(x, y)` (image local frame) of a prepared field
-/// at wavelength `wl`: the paraxial chief-ray height per unit `tan θ` (object
+/// The paraxial image point `(x, y)` (image local frame) of a prepared field,
+/// from the x and y first-order sweeps: the paraxial chief-ray height per unit `tan θ` (object
 /// at infinity) or per unit object height (finite object), applied to the
 /// field's object source. `None` when the paraxial chief ray is undefined
 /// (e.g. an object-space telecentric system with an angle source).
 pub(crate) fn paraxial_image_point(
-    tracer: &SequentialTracer,
+    fx: &FirstOrder,
+    fy: &FirstOrder,
     field: &PreparedField,
-    wl: usize,
 ) -> Option<[f64; 2]> {
-    let fo = tracer.paraxial().at(wl);
     match field.source {
         ObjectSource::Direction { dir } => {
-            let k = fo.image_height_per_tan?;
-            (dir.z != 0.0).then(|| [k * dir.x / dir.z, k * dir.y / dir.z])
+            let (kx, ky) = (fx.image_height_per_tan?, fy.image_height_per_tan?);
+            (dir.z != 0.0).then(|| [kx * dir.x / dir.z, ky * dir.y / dir.z])
         }
-        ObjectSource::Point { point } => {
-            let k = fo.image_height_per_object_height?;
-            Some([k * point.x, k * point.y])
-        }
+        ObjectSource::Point { point } => Some([
+            fx.image_height_per_object_height? * point.x,
+            fy.image_height_per_object_height? * point.y,
+        ]),
     }
+}
+
+/// Reduced power of a DOE phase in its selected order, `−mλA₁/(π r_norm²)`
+/// (SURFACES §3); `wl_um` in µm.
+pub(crate) fn doe_power(phase: &DiffractivePhase, wl_um: f64) -> f64 {
+    let a1 = phase.coefficients.first().copied().unwrap_or(0.0);
+    -(phase.trace_order as f64) * wl_um * 1e-3 * a1 / (PI * phase.norm_radius.powi(2))
+}
+
+/// The x-axis first-order sweep at `wl` (the tracer's own is the y axis).
+pub(crate) fn first_order_x(tracer: &SequentialTracer, wl: usize) -> MkResult<FirstOrder> {
+    mklight_trace::paraxial::first_order_axis(tracer.system(), wl, mklight_trace::ParaxialAxis::X)
 }
 
 pub(crate) fn check_count(name: &str, v: usize, lo: usize, hi: usize) -> MkResult<()> {

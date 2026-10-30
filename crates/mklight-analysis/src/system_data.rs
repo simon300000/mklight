@@ -6,11 +6,12 @@
 //! telecentric pupils) serialise as `"inf"`/`"-inf"`, undefined ones as `null`.
 
 use mklight_core::job::RunTimer;
-use mklight_core::{FieldKind, MkResult, RayAiming, RunInfo};
-use mklight_trace::{FirstOrder, ParaxialModel, SequentialTracer};
+use mklight_core::surface_math::Symmetry;
+use mklight_core::{FieldKind, MkResult, RayAiming, ResolvedSystem, RunInfo, SurfaceShape};
+use mklight_trace::{FirstOrder, ParaxialModel, ParaxialXY, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
-use crate::util::{WavelengthSelection, field_unit, nf, run_info};
+use crate::util::{WavelengthSelection, doe_power, field_unit, nf, run_info};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,6 +67,7 @@ pub struct SystemSummary {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SystemDataResult {
+    pub paraxial_xy: ParaxialXYReport,
     /// The first selected wavelength's table (flattened for simple clients).
     pub wavelength_um: f64,
     pub entries: Vec<ReportEntry>,
@@ -73,6 +75,87 @@ pub struct SystemDataResult {
     pub tables: Vec<FirstOrderTable>,
     pub system: SystemSummary,
     pub run_info: RunInfo,
+}
+
+/// The x and y first-order sweeps (`ParaxialXY`) at every system
+/// wavelength. Mixed xy power remains a diagonal projection, as recorded in
+/// the warnings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParaxialXYReport {
+    pub symmetry: Symmetry,
+    pub primary_wavelength: usize,
+    pub squeeze_definition: String,
+    pub wavelengths: Vec<FirstOrderXYTable>,
+    pub warnings: Vec<String>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FirstOrderXYTable {
+    pub wavelength: usize,
+    pub wavelength_um: f64,
+    #[serde(with = "nf")]
+    pub efl_x: f64,
+    #[serde(with = "nf")]
+    pub efl_y: f64,
+    #[serde(with = "nf")]
+    pub bfl_x: f64,
+    #[serde(with = "nf")]
+    pub bfl_y: f64,
+    #[serde(with = "nf")]
+    pub squeeze: f64,
+    pub doe_power: Vec<DoePower>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DoePower {
+    pub surface: usize,
+    /// Selected-order reduced power, proportional to wavelength (mm⁻¹).
+    pub power: f64,
+}
+
+pub fn paraxial_xy_report(sys: &ResolvedSystem) -> MkResult<ParaxialXYReport> {
+    let xy = ParaxialXY::new(sys)?;
+    let wavelengths =
+        xy.x.iter()
+            .zip(&xy.y)
+            .enumerate()
+            .map(|(w, (x, y))| {
+                let doe_power = sys
+                    .surfaces
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(surface, s)| {
+                        let SurfaceShape::Diffractive { phase, .. } = &s.shape else {
+                            return None;
+                        };
+                        let passive = s.is_passive() || surface == sys.image_index();
+                        Some(DoePower {
+                            surface,
+                            power: if passive {
+                                0.0
+                            } else {
+                                doe_power(phase, sys.wavelengths_um[w])
+                            },
+                        })
+                    })
+                    .collect();
+                FirstOrderXYTable {
+                    wavelength: w,
+                    wavelength_um: x.wavelength_um,
+                    efl_x: x.efl,
+                    efl_y: y.efl,
+                    bfl_x: x.bfl,
+                    bfl_y: y.bfl,
+                    squeeze: xy.squeeze[w],
+                    doe_power,
+                }
+            })
+            .collect();
+    Ok(ParaxialXYReport {
+        symmetry: xy.symmetry,
+        primary_wavelength: xy.primary,
+        squeeze_definition: "signed EFL_y / EFL_x (unit-index referenced focal lengths)".into(),
+        wavelengths,
+        warnings: xy.run_info.warnings,
+    })
 }
 
 fn entry(key: &str, label: &str, value: f64, unit: &str) -> ReportEntry {
@@ -92,7 +175,14 @@ fn table(tracer: &SequentialTracer, w: usize) -> FirstOrderTable {
     let m = ParaxialModel::new(sys, w);
     let n = &m.reduced_index;
     let petzval: f64 = (1..n.len() - 1)
-        .map(|j| m.power[j] / (n[j - 1] * n[j]))
+        .map(|j| {
+            let power = if matches!(sys.surfaces[j].shape, SurfaceShape::Diffractive { .. }) {
+                sys.surfaces[j].shape.curvature() * (n[j] - n[j - 1])
+            } else {
+                m.power[j]
+            };
+            power / (n[j - 1] * n[j])
+        })
         .sum();
     let n_img = n[n.len() - 2]; // signed (see `seidel` docs)
     let opt = |v: Option<f64>| v.unwrap_or(f64::NAN);
@@ -218,7 +308,10 @@ pub fn system_data(
         .resolve(sys.wavelengths_um.len(), sys.primary_wavelength)?;
     let tables: Vec<FirstOrderTable> = wls.iter().map(|&w| table(tracer, w)).collect();
     let osys = sys.system();
+    let xy = paraxial_xy_report(sys)?;
+    let warnings = xy.warnings.clone();
     Ok(SystemDataResult {
+        paraxial_xy: xy,
         wavelength_um: tables[0].wavelength_um,
         entries: tables[0].entries.clone(),
         system: SystemSummary {
@@ -234,6 +327,6 @@ pub fn system_data(
             ray_aiming: tracer.aiming(),
         },
         tables,
-        run_info: run_info(timer, tracer, "first_order", settings, None, Vec::new()),
+        run_info: run_info(timer, tracer, "first_order", settings, None, warnings),
     })
 }

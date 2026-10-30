@@ -32,7 +32,12 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
 * **Selections.** `FieldSelection` (`{"type":"all"}`, `{"type":"index","index":i}`,
   `{"type":"list","indices":[…]}`) and `WavelengthSelection` (adds
   `{"type":"primary"}`) resolve to ascending, de-duplicated index lists;
-  invalid indices are errors.
+  invalid indices are errors. `all` also adds missing axis fields outside
+  rotational symmetry: +x and ±y, and -x when x reflection is unavailable.
+  These fields have analysis-local indices after the original system fields,
+  unit weight and no pupil compression. Their coordinates are reported;
+  the physical snapshot and its hash are unchanged. Explicit index/list
+  selections use only the requested fields.
 * **Non-finite numbers** (`util::nf`): `±∞` are written as `"inf"`/`"-inf"`
   (the core `serde_util` convention) and NaN, which means *undefined* (a
   vignetted field, a failed ray), as `null`. Reading accepts numbers, `null`,
@@ -91,9 +96,14 @@ collimated pencils and at a focus. The steps are:
 * transfer: `X ← X + dT`;
 * surfaces: second-order phase matching on the surface,
   `n' P'ᵀC'P' = n PᵀCP + (n' k'·N − n k·N) K`, where `K` is the second
-  fundamental form from the principal curvatures of the surface of
-  revolution (`κ_m = f''/(1+f'²)^{3/2}`, `κ_s = f'/(r√(1+f'²))`, evaluated
-  without dividing by `r`) and `P = UᵀE` projects the tangent basis;
+  fundamental form of the actual sag graph: in an orthonormal tangent basis
+  E, `K_ij = N_z E_i,xyᵀ H_sag E_j,xy`. Thus all Cartesian mixed derivatives
+  are retained, including toroids, biconics and freeforms. `P = UᵀE`
+  projects the tangent basis. For a DOE add `-q H_phase,surface` to the
+  curvature-matching right hand side (`q=mλ/(2π)`, λ in mm). The covariant
+  phase Hessian is `E_xyᵀ H_Φ E_xy + (∇Φ·N)K`; its connection term matters
+  on a curved base. In ray form the matching numerator is
+  `n Pᵀ T + (q H_phase,surface − gK) δs`;
 * ideal lenses: the matrix form of `τ' = (n/n')τ − s/f`.
 
 This makes no principal-plane assumption, so it holds for skew chief rays,
@@ -104,6 +114,20 @@ direction is closer to the image frame's local `y` (CONVENTIONS §2), and
 *sagittal* otherwise. The labelling therefore follows the image frame, not
 each surface's plane of incidence. On a mirror tilted about `y`, the
 mirror's in-plane focus `(R/2) cos I` is the sagittal one.
+
+The cone vertex with a nonzero r¹ coefficient has no Hessian: its differential
+focus is undefined (`null`); nearby real rays remain usable. An r³ departure
+has a Hessian but only O(h) convergence of the vertex close-ray check.
+
+`field_axes` selects `auto`, `x`, `y` or `both` for field curvature,
+lateral colour and relative illumination. Auto keeps the y sweep for
+rotational systems and covers both axes otherwise. Positive-y-only
+sampling requires rotational symmetry; meridional symmetry permits only
+the positive-x shortcut. `field_coordinates` gives normalised `[Hx,Hy]`
+for every scalar sample, and scalar heights/distortions use that sample's
+axis. Focal-line labels continue to follow image x/y. Grid distortion
+uses the separate x and y first-order image scales, with the tracer's
+warnings for mixed xy power.
 
 The close-ray cross-check traces pairs at pupil offsets `(0, ±h)` and
 `(±h, 0)` and finds where the pencil `X + sT` of the pair differences
@@ -125,6 +149,45 @@ After an odd number of mirrors the light travels towards local `−z`, and a
 concentric mirror has `R_p = −R/2`, matching its focal sphere. `S_V` is evaluated
 in the division-free form `−Ā³yΔ(1/n²) + Āȳc(Āy + H)Δ(1/n)`. Ideal lenses
 are aberration-free and contribute nothing (with a warning).
+
+Extended rotational shapes use the **exact** fourth-order sag expansion
+`z=c_eff r²/2 + a4 r⁴ + …`, with `G=a4-c_eff³/8` in the formulas above:
+
+* Odd asphere: `c_eff=c+2β₂`, `a4=(1+k)c³/8+β₄`. Nonzero r¹ and r³
+  terms are omitted with a warning: neither has an analytic fourth-order
+  vertex expansion, and their real-ray aberrations are not described by
+  these sums. With β₁ nonzero even first order is only formal.
+* QCon: `a4=(1+k)c³/8 + Σ a_m (-1)^m binomial(m+4,4)/R⁴`.
+* QBfs: if `S0=Σa_m Q_m(0)`, `S1=Σa_m Q'_m(0)`, then
+  `c_eff=c+2S0/R²`, `a4=c³/8+(S1-S0)/R⁴+c²S0/(2R²)`.
+  Both values come from the defining triangular recurrence, without finite
+  differences or a fitted polynomial. Rotational XY/Zernike departures
+  likewise use their analytic radial r⁴ coefficients.
+
+A DOE uses the standard thin phase plate / infinite-index lens limit
+([Buralli and Morris, *Design of diffractive singlets for monochromatic
+imaging*](https://doi.org/10.1364/AO.30.002151)). Put `q2=mλA1/(2πR²)`,
+`q4=mλA2/(2πR⁴)`, `p=-2q2`. Two coincident interfaces with middle index
+N, `c1=c`, `c2=c-p/N`, `a4_2=a4_1+q4/N` reproduce the base plus phase
+as `N→∞`. The implementation evaluates this limit algebraically (no huge
+index and no cancellation of huge terms). Its aspheric combination is
+`(n'-n)G-q4-3c²p/8`, and the second interface invariants are `A-py` and
+`Ā-pȳ`. The plate has **zero Petzval contribution**, despite finite power.
+With `d=(λ_short-λ_long)/λ`, its colour terms, including the base, are
+`C_L=y[(A-py)δn'/n'-Aδn/n+pyd]` and
+`C_T=y[(Ā-pȳ)δn'/n'-Āδn/n+pȳd]`. Colour sums are first order in spectral
+changes; exact F/C correction in a finite-thickness hybrid need not make
+this linearised colour identically zero.
+
+For non-rotational geometry, placement or apertures, Seidel returns
+`status="not_applicable"`, a reason suggesting full real-ray analyses,
+an empty per-surface array and undefined (`null`) coefficients. This is a
+successful result with RunInfo, not an unsupported-shape error.
+
+Longitudinal aberration traces signed pupil zones on both axes by default
+outside rotational symmetry (`axes` can select x/y/both); each curve names
+its axis and subtracts that axis's primary focus. Chromatic focal shift
+adds `paraxial_focus_x` and `focal_shift_x`; legacy arrays remain y.
 
 ### 2.4 Relative illumination: method
 
@@ -173,12 +236,41 @@ refracting surfaces with glass between them (cemented doublets share a
 surface); the outline uses `EdgeSpec::mechanical_semi_diameter` or the clear
 radius plus `edge_margin` (0.5 mm; the model defines no default margin),
 with edge flats at the sag of each clear edge. Planes between equal media
-(pure aperture stops) and dummies get no profile. `in_section` means every
-point has global `x = 0`. `LayoutScene::to_buffers` gives structure-of-arrays
+(pure aperture stops) and dummies get no profile.
+
+`section` selects `yz` (default) or `xz`; profiles and element outlines
+use the true signed Cartesian sag in the corresponding local plane.
+`in_section` means every point has global `x=0` or `y=0`, respectively.
+Rings and mechanical edge flats evaluate sag at each azimuth, rather than
+rotating a meridian. Clear radii stay inside the sag domain of both axes
+(toroids, biconics) and inside the normalisation radius. DOE surfaces carry `is_diffractive`, also bit 2 of
+polyline flags. `mesh_rings>0` with `include_3d=true` requests a coarse
+polar triangle mesh (`ring_samples` angular subdivisions); invalid-domain
+triangles are omitted. Engine buffers `surface_mesh` (f32 [T,3,3], relative
+to origin) and `mesh_surfaces` (u32 [T]) let the app draw the actual 3-D
+freeform graph. The legacy MKLL blob continues to contain polylines only.
+`LayoutScene::to_buffers` gives structure-of-arrays
 records (vertices as f32 relative to the scene centre plus absolute f64,
 offsets, kind codes 0–6 as `PolylineKind`, 7 for element outlines, −1 for
 "no index") and `LayoutBuffers::to_le_bytes` one little-endian blob
 (`"MKLL"`, version 1; layout in its doc comment).
+
+The first-order report and engine system summary include `paraxial_xy`:
+EFL_x/EFL_y and BFL_x/BFL_y at every system wavelength, signed anamorphic
+squeeze **EFL_y/EFL_x**, its definition, symmetry and per-surface DOE
+reduced power `-mλA1/(πR²)`. The legacy first-order entries remain the y
+sweep. Tilts/decentres are unfolded; mixed xy power is explicitly warned
+as a diagonal projection, not principal focal lengths (SURFACES §8).
+Piston, vertex tilt and an odd cone retain the tracer's nominal-vertex
+warnings. The plate's power is excluded from the report's Petzval sum.
+
+The symmetry audit covers spots, fans, footprints, energy/MTF/best focus,
+layout rays, grid distortion and all scalar field sweeps: pupils are
+sampled over the full disk/fan. Only the rotational longitudinal fan uses
+a half pupil. Tangential/sagittal fan labels denote image y/x; the
+geometric MTF's tangential direction is the field's radial direction (y on
+axis). Neither assumes the field lies on y. Scalar Airy/F-number reference
+scales retain the legacy y first-order convention.
 
 ### 2.6 Reductions from ray batches (backend seam)
 
@@ -213,6 +305,7 @@ and conventions:
 | `tests/spot_energy.rs` | defocused ideal lens: RMS/GEO exactly the scaled pupil statistics, EE vs exact grid counts and `(r/R)²`, geometric MTF vs `2J₁(x)/x`; best focus recovers a known defocus and equals the retraced spot; paraboloid on-axis spot ≈ 0; polychromatic weighting; vignetted fraction; fans vs direct traces and symmetry; seeds; cancellation and progress; JSON round trips with NaN; curved-image defocus warnings; batch reductions of an externally traced batch equal the traced analyses (and record the backend); best focus skips chief-less fields for the chief reference and warns at range edges and on non-convergence |
 | `tests/layout.rs` | global profile end points, elements of cemented lenses, folded Newtonian in global coordinates, vignetted ray end points, buffer round trip |
 | `tests/system_data.rs` | report vs paraxial data, afocal `"inf"` serialisation |
+| `tests/extended.rs` | all extended Hessians vs close rays at skew signed fields; curved DOE phase tensor; QCon/QBfs vs independent even-asphere equivalents; hybrid DOE Seidel vs real rays and colour; Cartesian layout sections/rims/meshes and the x domain of steep toroids/biconics; freeform/anamorphic spots, fans, distortion, signed longitudinal fans and first order |
 | `tests/golden.rs` | frozen first-order data, RMS spots per field and wavelength, Seidel sums and field curvature / distortion of every sample (relative 10⁻⁹) |
 
 **Golden files** live in `crates/mklight-analysis/tests/golden/<sample>.json`.

@@ -74,14 +74,17 @@ fn compute(t: &mklight_trace::SequentialTracer) -> Value {
     let c = fc.curve(t.system().primary_wavelength).unwrap();
     json!({
         "first_order": first_order,
+        "paraxial_xy": fo.paraxial_xy,
         "spot": spots,
         "seidel": {
+            "status": s.status,
             "sums": s.sums,
             "petzval_sum": s.petzval_sum,
             "lagrange_invariant": s.lagrange_invariant,
         },
         "field_curvature": {
             "normalized_field": fc.normalized_field,
+            "field_coordinates": fc.field_coordinates,
             "tangential": nums(&c.tangential),
             "sagittal": nums(&c.sagittal),
             "distortion_percent": nums(&c.distortion_percent),
@@ -129,7 +132,8 @@ fn compare(path: &str, a: &Value, b: &Value, errs: &mut Vec<String>) {
 fn golden_results_of_every_sample() {
     let update = std::env::var_os("MKLIGHT_UPDATE_GOLDEN").is_some();
     let mut errs = Vec::new();
-    for (name, t) in common::samples() {
+    for (name, sys) in mklight_core::samples::all() {
+        let t = common::tracer(sys);
         let now = compute(&t);
         let file = golden_dir().join(format!("{name}.json"));
         if update {

@@ -374,6 +374,22 @@ Result (`result` in the envelope):
 | `num_configurations` | integer |  | ≥ 0 |
 | `num_surfaces` | integer |  | ≥ 0 |
 | `object_at_infinity` | boolean |  |  |
+| `paraxial_xy` | object |  |  |
+| `paraxial_xy.primary_wavelength` | integer |  | ≥ 0; System wavelength index. |
+| `paraxial_xy.squeeze_definition` | string |  | Signed EFL_y / EFL_x; unit-index referenced. Mixed xy power gives diagonal projections, not principal focal lengths. |
+| `paraxial_xy.symmetry` | string |  | one of `"rotational"`, `"meridional"`, `"none"`; Geometry, placements and apertures; fields are sampling requests. |
+| `paraxial_xy.warnings` | array<string> |  | Limitations of the nominal-vertex unfolded sweeps. |
+| `paraxial_xy.wavelengths` | array<object> |  | Both first-order sweeps at every system wavelength. |
+| `paraxial_xy.wavelengths[].bfl_x` | nf | mm | X-axis back focus from the last optical surface. |
+| `paraxial_xy.wavelengths[].bfl_y` | nf | mm | Y-axis back focus from the last optical surface. |
+| `paraxial_xy.wavelengths[].doe_power` | array<object> |  | One entry per DOE; zero for trace order zero. |
+| `paraxial_xy.wavelengths[].doe_power[].power` | number | 1/mm | Selected-order phase power, -m λ A1/(π r_norm²); λ in mm. Base refractive power excluded. |
+| `paraxial_xy.wavelengths[].doe_power[].surface` | integer |  | ≥ 0 |
+| `paraxial_xy.wavelengths[].efl_x` | nf | mm | X-axis effective focal length. |
+| `paraxial_xy.wavelengths[].efl_y` | nf | mm | Y-axis effective focal length (legacy EFL). |
+| `paraxial_xy.wavelengths[].squeeze` | nf | 1 | Signed EFL_y / EFL_x. |
+| `paraxial_xy.wavelengths[].wavelength` | integer |  | ≥ 0; System wavelength index. |
+| `paraxial_xy.wavelengths[].wavelength_um` | number | µm |  |
 | `primary_wavelength` | integer |  | ≥ 0 |
 | `ray_aiming` | object |  |  |
 | `stop` | integer |  | ≥ 0 |
@@ -400,8 +416,9 @@ Result (`result` in the envelope):
 | `surfaces[].shape` | object |  | The model's SurfaceShape. |
 | `surfaces[].thickness` | nf | mm | To the next vertex ("inf" for an object at infinity). |
 | `surfaces[].to_next_is_axial` | boolean |  |  |
-| `surfaces[].type` | string |  | one of `"plane"`, `"sphere"`, `"conic"`, `"even_asphere"`, `"paraxial"`, `"coordinate_break"` |
+| `surfaces[].type` | string |  | one of `"plane"`, `"sphere"`, `"conic"`, `"even_asphere"`, `"odd_asphere"`, `"q_con"`, `"q_bfs"`, `"diffractive"`, `"toroid"`, `"biconic"`, `"xy_polynomial"`, `"zernike_sag"`, `"paraxial"`, `"coordinate_break"` |
 | `surfaces[].vd_after` | nf? |  |  |
+| `symmetry` | string |  | one of `"rotational"`, `"meridional"`, `"none"`; System geometry symmetry. |
 | `warnings` | array<string> |  |  |
 | `wavelength_weights` | array<number> |  |  |
 | `wavelengths_um` | array<number> |  |  |
@@ -495,7 +512,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `max_evaluations` | integer | `200` |  | 3 … 100000; Merit evaluations allowed. |
 | `pattern` | string | `"hexapolar"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `range` | array\|null | `null` | mm | Search range [min, max] of the defocus; null = automatic. |
@@ -515,6 +532,7 @@ Result (`result` in the envelope):
 | `evaluations` | integer |  | ≥ 0 |
 | `field_rms` | array<nf> | mm | Per-field RMS radius at the best focus. |
 | `field_rms_at_zero` | array<nf> | mm | Per-field RMS radius at zero defocus. |
+| `field_values` | array<[nf; 2]> |  | Field coordinates in system units, including analysis-local default fields. |
 | `fields` | array<integer> |  | Fields used. |
 | `mean_square_defocus` | number | mm | Closed-form minimiser of the mean square RMS (cross-check). |
 | `merit` | number | mm | Field-weighted mean RMS radius at the best focus. |
@@ -542,7 +560,9 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `focal_shift` | array<nf> | mm | Focus relative to the primary wavelength's. |
+| `focal_shift_x` | array<nf> | mm | X-axis paraxial focus relative to the primary wavelength's x focus. |
 | `paraxial_focus` | array<nf> | mm | Paraxial focus from the image surface. |
+| `paraxial_focus_x` | array<nf> | mm | X-axis paraxial focus from the image surface; legacy arrays are the y sweep. |
 | `primary_wavelength_um` | number | µm |  |
 | `range` | nf | mm | max − min of `focal_shift`. |
 | `wavelengths_um` | array<number> |  | Sweep wavelengths. |
@@ -558,7 +578,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `defocus` | number | `0.0` | mm | Defocus from the image surface. |
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `max_radius` | number\|null | `null` | mm | ≥ 0.0; Largest radius; null = the largest GEO radius over the fields. |
 | `pattern` | string | `"square"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `reference` | string | `"centroid"` |  | one of `"chief"`, `"centroid"`; Reference point: the primary-wavelength chief ray or the polychromatic centroid. |
@@ -586,7 +606,7 @@ Result (`result` in the envelope):
 
 ### `field_curvature_distortion` — Field curvature and distortion
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 2.
 
 Tangential and sagittal focus shifts along the real chief ray (generalised Coddington, cross-checked by close rays) and distortion (paraxial, f·tanθ, f·θ) versus field.
 
@@ -595,7 +615,8 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `close_ray_step` | number | `0.001` |  | 1e-9 … 0.5; Normalised pupil step of the close-ray cross-check. |
-| `field_samples` | integer | `21` |  | 2 … 10000; Field samples from the axis to the maximum field along +y. |
+| `field_axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone. |
+| `field_samples` | integer | `21` |  | 2 … 10000; Samples per selected axis, signed where symmetry requires it. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -603,7 +624,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `curves` | array<object> |  | One per selected wavelength. |
-| `curves[].distortion_percent` | array<nf> | % | 100 (y_real − y_paraxial)/y_paraxial. |
+| `curves[].distortion_percent` | array<nf> | % | 100 (h_real − h_paraxial)/h_paraxial along the sampled field axis. |
 | `curves[].f_tan_theta_distortion_percent` | array<nf> | % | Against f·tanθ. |
 | `curves[].f_theta_distortion_percent` | array<nf> | % | Against f·θ. |
 | `curves[].paraxial_height` | array<nf> | mm | Paraxial chief-ray image height. |
@@ -614,6 +635,7 @@ Result (`result` in the envelope):
 | `curves[].tangential_close_rays` | array<nf> | mm | Close-ray cross-check of `tangential`. |
 | `curves[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `curves[].wavelength_um` | number | µm |  |
+| `field_coordinates` | array<[nf; 2]> |  | Axis sweeps, with signed fields where symmetry requires them. |
 | `field_unit` | string |  | `°` for angles, `mm` for heights. |
 | `field_values` | array<nf> |  | Field samples in `field_unit`. |
 | `normalized_field` | array<nf> |  | Field samples normalised to the maximum field. |
@@ -640,6 +662,22 @@ Result (`result` in the envelope):
 | `entries[].label` | string |  | Display label. |
 | `entries[].unit` | string |  | Unit of `value` (`mm`, `°`, or empty). |
 | `entries[].value` | nf |  |  |
+| `paraxial_xy` | object |  |  |
+| `paraxial_xy.primary_wavelength` | integer |  | ≥ 0; System wavelength index. |
+| `paraxial_xy.squeeze_definition` | string |  | Signed EFL_y / EFL_x; unit-index referenced. Mixed xy power gives diagonal projections, not principal focal lengths. |
+| `paraxial_xy.symmetry` | string |  | one of `"rotational"`, `"meridional"`, `"none"`; Geometry, placements and apertures; fields are sampling requests. |
+| `paraxial_xy.warnings` | array<string> |  | Limitations of the nominal-vertex unfolded sweeps. |
+| `paraxial_xy.wavelengths` | array<object> |  | Both first-order sweeps at every system wavelength. |
+| `paraxial_xy.wavelengths[].bfl_x` | nf | mm | X-axis back focus from the last optical surface. |
+| `paraxial_xy.wavelengths[].bfl_y` | nf | mm | Y-axis back focus from the last optical surface. |
+| `paraxial_xy.wavelengths[].doe_power` | array<object> |  | One entry per DOE; zero for trace order zero. |
+| `paraxial_xy.wavelengths[].doe_power[].power` | number | 1/mm | Selected-order phase power, -m λ A1/(π r_norm²); λ in mm. Base refractive power excluded. |
+| `paraxial_xy.wavelengths[].doe_power[].surface` | integer |  | ≥ 0 |
+| `paraxial_xy.wavelengths[].efl_x` | nf | mm | X-axis effective focal length. |
+| `paraxial_xy.wavelengths[].efl_y` | nf | mm | Y-axis effective focal length (legacy EFL). |
+| `paraxial_xy.wavelengths[].squeeze` | nf | 1 | Signed EFL_y / EFL_x. |
+| `paraxial_xy.wavelengths[].wavelength` | integer |  | ≥ 0; System wavelength index. |
+| `paraxial_xy.wavelengths[].wavelength_um` | number | µm |  |
 | `system` | object |  | System summary: name, surfaces, stop, wavelengths_um, primary_wavelength, field_kind, field_unit, max_field, object_at_infinity, ray_aiming. |
 | `tables` | array<object> |  | One report per selected wavelength. |
 | `tables[].entries` | array<object> |  |  |
@@ -661,7 +699,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `pattern` | string | `"square"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `rings` | integer | `8` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
@@ -674,6 +712,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `aperture` | any |  | The surface's aperture shape (model JSON) or null. |
 | `extent` | array<nf> | mm | [x_min, x_max, y_min, y_max] over all passing hits. |
+| `field_values` | array<[nf; 2]> |  | Field coordinates in system units, including analysis-local default fields. |
 | `max_radius` | nf | mm |  |
 | `semi_diameter` | nf | mm | Clear semi-diameter (fixed, stop or traced). |
 | `sets` | array<object> |  | One per (field, wavelength). |
@@ -703,7 +742,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `defocus` | number | `0.0` | mm | Defocus from the image surface. |
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `frequency_samples` | integer | `41` |  | 2 … 100000; Frequency samples from 0 to max_frequency. |
 | `max_frequency` | number\|null | `null` | cycles/mm | ≥ 0.0; Highest frequency; null = the diffraction cutoff 1/(λN_w) at the primary wavelength. |
 | `pattern` | string | `"square"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
@@ -716,7 +755,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `curves` | array<object> |  |  |
-| `curves[].field` | integer |  | ≥ 0; System field index. |
+| `curves[].field` | integer |  | ≥ 0; Field index (system fields, then analysis-local defaults). |
 | `curves[].modulation` | array<nf> |  | Modulation per frequency (1 at 0). |
 | `curves[].orientation` | string |  | one of `"tangential"`, `"sagittal"` |
 | `cutoff_frequency` | nf | cycles/mm | Incoherent diffraction cutoff 1/(λN_w), for reference. |
@@ -757,7 +796,7 @@ Buffers:
 
 ### `lateral_colour` — Lateral colour
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 2.
 
 Real chief-ray image heights per wavelength versus field, relative to the primary wavelength, and the short−long difference.
 
@@ -765,7 +804,8 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `field_samples` | integer | `21` |  | 2 … 10000; Field samples from the axis to the maximum field along +y. |
+| `field_axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone. |
+| `field_samples` | integer | `21` |  | 2 … 10000; Samples per selected axis, signed where symmetry requires it. |
 | `long_wavelength` | integer\|null | `null` |  | ≥ 0; null = the longest system wavelength. |
 | `short_wavelength` | integer\|null | `null` |  | ≥ 0; null = the shortest system wavelength. |
 
@@ -778,6 +818,7 @@ Result (`result` in the envelope):
 | `curves[].offset` | array<nf> | mm | Chief-ray height minus the primary wavelength's. |
 | `curves[].wavelength` | integer |  | ≥ 0 |
 | `curves[].wavelength_um` | number | µm |  |
+| `field_coordinates` | array<[nf; 2]> |  | Axis sweeps, with signed fields where symmetry requires them. |
 | `field_unit` | string |  |  |
 | `field_values` | array<nf> |  | Field samples in `field_unit`. |
 | `lateral_colour` | array<nf> | mm | Short minus long chief-ray height. |
@@ -796,13 +837,15 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `edge_margin` | number | `0.5` | mm | ≥ 0.0; Mechanical margin beyond the clear semi-diameter where a surface has no mechanical semi-diameter. |
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `include_3d` | boolean | `true` |  | Also produce out-of-section geometry (sagittal profiles, rings, rims, sagittal fans). |
 | `lead_in` | number\|null | `null` | mm | ≥ 0.0; Ray length drawn before the first surface for an object at infinity; null = a quarter of the vertex track. |
+| `mesh_rings` | integer | `0` |  | 0 … 100; Radial subdivisions of the optional 3-D surface mesh; 0 disables it. Angular subdivisions use ring_samples. |
 | `profile_samples` | integer | `41` |  | 2 … 100000; Points per surface profile. |
 | `rays_per_field` | integer | `7` |  | 1 … 10000; Rays per fan, evenly spaced across the pupil (1: the chief ray). |
 | `ring_samples` | integer | `64` |  | 3 … 100000; Points per ring. |
 | `rings` | integer | `3` |  | 1 … 1000; Concentric rings per surface in 3-D (the last one is the rim). |
+| `section` | string | `"yz"` |  | one of `"yz"`, `"xz"`; Profile plane; yz by default. Section flags use its global plane. |
 | `wavelengths` | object | `{"type":"primary"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -818,13 +861,17 @@ Result (`result` in the envelope):
 | `elements[].mechanical_semi_diameter` | nf | mm |  |
 | `elements[].outline_polyline` | integer |  | ≥ 0; Index of the element's closed outline in the polyline buffers (kind 7). |
 | `field_count` | integer |  | ≥ 0; Number of system fields. |
+| `field_values` | array<[nf; 2]> |  | Field coordinates in system units, including analysis-local default fields. |
 | `kind_names` | array<string> |  | Name of each kind code: 0 surface_profile, 1 surface_rim, 2 element_edge, 3 stop, 4 image_plane, 5 ray, 6 axis, 7 element_outline. |
+| `mesh_triangle_count` | integer |  | ≥ 0; Triangle count T; zero when mesh_rings=0 or include_3d=false. |
 | `origin` | [number; 3] |  | Global point subtracted from the f32 `vertices` (the bounds centre). |
 | `polyline_count` | integer |  | ≥ 0; Polylines P (rays, profiles, … then element outlines). |
+| `section` | string |  | one of `"yz"`, `"xz"`; Selected 2-D section. |
 | `surfaces` | array<object> |  | Per drawn surface. |
 | `surfaces[].axis` | [nf; 3] |  | Global direction of the local +z axis. |
 | `surfaces[].id` | integer |  | ≥ 0; Stable surface id. |
 | `surfaces[].index` | integer |  | ≥ 0; Surface index. |
+| `surfaces[].is_diffractive` | boolean |  | Base surface carries a DOE phase. |
 | `surfaces[].is_mirror` | boolean |  |  |
 | `surfaces[].is_stop` | boolean |  |  |
 | `surfaces[].label` | string |  |  |
@@ -839,6 +886,8 @@ Buffers:
 
 | name | dtype | shape | unit | notes |
 |---|---|---|---|---|
+| `surface_mesh` | f32 | [T, 3, 3] | mm | Triangle vertices x,y,z relative to origin, counterclockwise toward the positive local normal. Domain holes omitted. |
+| `mesh_surfaces` | u32 | [T] |  | Surface index per mesh triangle. |
 | `vertices` | f32 | [V, 3] | mm | x, y, z relative to `origin` (global frame). |
 | `vertices_f64` | f64 | [V, 3] | mm | Absolute global x, y, z. |
 | `offsets` | u32 | [P+1] |  | Polyline i is vertices offsets[i] .. offsets[i+1]. |
@@ -846,11 +895,11 @@ Buffers:
 | `surfaces` | i32 | [P] |  | Surface index, −1 for none. |
 | `fields` | i32 | [P] |  | Field index of a ray, −1 for none. |
 | `wavelengths` | i32 | [P] |  | Wavelength index of a ray, −1 for none. |
-| `flags` | u8 | [P] |  | Bit 0: in the meridional section (x = 0); bit 1: vignetted ray. |
+| `flags` | u8 | [P] |  | Bit 0: in the selected global section; bit 1: vignetted ray; bit 2: DOE surface. |
 
 ### `longitudinal_aberration` — Longitudinal aberration
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 2.
 
 On-axis zonal rays: where each crosses the axis, relative to the primary paraxial focus, versus pupil zone, per wavelength.
 
@@ -858,7 +907,8 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `pupil_samples` | integer | `21` |  | 2 … 10000; Pupil zones from 0 to 1 (P_y). |
+| `axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto traces y in rotational systems, both axes otherwise. |
+| `pupil_samples` | integer | `21` |  | 2 … 10000; Pupil zones: 0 to 1 for rotational systems, -1 to 1 otherwise; selected x/y axes. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -867,6 +917,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `curves` | array<object> |  |  |
 | `curves[].aberration` | array<nf> | mm | Crossing relative to the primary paraxial focus. |
+| `curves[].axis` | string |  | one of `"x"`, `"y"`; Pupil axis of the zonal fan. |
 | `curves[].focus` | array<nf> | mm | Axis crossing of each zonal ray, from the image surface. |
 | `curves[].paraxial_focus` | nf | mm |  |
 | `curves[].wavelength` | integer |  | ≥ 0 |
@@ -884,7 +935,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `reference` | string | `"primary_chief"` |  | one of `"primary_chief"`, `"same_wavelength"`; Chief ray the aberrations are measured from: the primary wavelength's, or each wavelength's own. |
 | `samples` | integer | `41` |  | 2 … 100001; Pupil samples across each fan, from −1 to 1. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
@@ -894,7 +945,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `fields` | array<object> |  |  |
-| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field` | integer |  | ≥ 0; Field index (system fields, then analysis-local defaults). |
 | `fields[].field_value` | [nf; 2] |  | Field value as specified (degrees or mm, x and y). |
 | `fields[].sagittal` | array<object> |  | One curve per selected wavelength. |
 | `fields[].sagittal[].pupil` | array<number> |  | Normalised pupil coordinate P_y (tangential) or P_x (sagittal), −1 … 1. |
@@ -917,7 +968,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `reference` | string | `"primary_chief"` |  | one of `"primary_chief"`, `"same_wavelength"`; Chief ray the aberrations are measured from: the primary wavelength's, or each wavelength's own. |
 | `samples` | integer | `41` |  | 2 … 100001; Pupil samples across each fan, from −1 to 1. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
@@ -927,7 +978,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `fields` | array<object> |  |  |
-| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field` | integer |  | ≥ 0; Field index (system fields, then analysis-local defaults). |
 | `fields[].field_value` | [nf; 2] |  | Field value as specified (degrees or mm, x and y). |
 | `fields[].sagittal` | array<object> |  | One curve per selected wavelength. |
 | `fields[].sagittal[].cross` (optional) | array<nf> | mm | The other transverse component (εx on the tangential fan, εy on the sagittal fan). |
@@ -952,7 +1003,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `pattern` | string | `"hexapolar"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `rings` | integer | `6` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
@@ -963,6 +1014,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `arrived` | integer |  | ≥ 0; Rays that reached the image surface. |
+| `field_values` | array<[nf; 2]> |  | Field coordinates in system units, including analysis-local default fields. |
 | `fields` | array<integer> |  | Selected system fields (axis F). |
 | `launched` | integer |  | ≥ 0; F × W × P. |
 | `pupil_count` | integer |  | ≥ 0; Pupil samples P. |
@@ -980,7 +1032,7 @@ Buffers:
 
 ### `relative_illumination` — Relative illumination
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 2.
 
 Image irradiance of a uniform Lambertian object versus field, from the projected solid angle of the real exit pupil seen from each image point (real ray aiming), with the vignetted fraction.
 
@@ -989,7 +1041,8 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `azimuth_samples` | integer | `48` |  | 3 … 10000; Trapezoidal nodes in the pupil azimuth. |
-| `field_samples` | integer | `11` |  | 2 … 10000; Field samples from the axis to the maximum field along +y. |
+| `field_axes` | string | `"auto"` |  | one of `"auto"`, `"x"`, `"y"`, `"both"`; Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone. |
+| `field_samples` | integer | `11` |  | 2 … 10000; Samples per selected axis, signed where symmetry requires it. |
 | `radial_samples` | integer | `12` |  | 1 … 1000; Gauss–Legendre nodes in the pupil radius. |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary wavelength. |
 
@@ -999,6 +1052,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `chief_ray_angle_deg` | array<nf> | ° | Chief-ray angle of incidence on the image surface. |
 | `cos4_object` | array<nf> |  | cos⁴ of the object-space chief angle, for comparison. |
+| `field_coordinates` | array<[nf; 2]> |  | Axis sweeps, with signed fields where symmetry requires them. |
 | `field_unit` | string |  |  |
 | `field_values` | array<nf> |  | Field samples in `field_unit`. |
 | `normalized_field` | array<nf> |  |  |
@@ -1009,7 +1063,7 @@ Result (`result` in the envelope):
 
 ### `seidel` — Seidel aberration sums
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 2.
 
 Third-order (Seidel) coefficients S_I…S_V and chromatic C_L, C_T per surface and summed, Petzval sum and radius, wavefront coefficients.
 
@@ -1030,7 +1084,9 @@ Result (`result` in the envelope):
 | `long_wavelength` | integer |  | ≥ 0; Long wavelength of δn. |
 | `petzval_radius` | nf | mm | −1/(n'_k P), signed image-space reduced index. |
 | `petzval_sum` | nf | 1/mm | Σ φ/(n n'). |
+| `reason` | string? |  |  |
 | `short_wavelength` | integer |  | ≥ 0; Short wavelength of δn. |
+| `status` | string |  | one of `"applicable"`, `"not_applicable"`; Seidel requires rotational system symmetry. |
 | `sums` | object |  |  |
 | `sums.cl` | nf | mm | Axial colour C_L. |
 | `sums.ct` | nf | mm | Lateral colour C_T. |
@@ -1080,7 +1136,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `defocus` | number | `0.0` | mm | Defocus from the image surface along its local +z. |
-| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices). |
+| `fields` | object | `{"type":"all"}` |  | Field selection: {"type": "all"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system field indices; all also adds missing axis fields for non-rotational systems, with analysis-local indices and reported coordinates). |
 | `include_points` | boolean | `true` |  | Return the individual ray points (buffers `points`, `point_field`, `point_wavelength`). |
 | `pattern` | string | `"hexapolar"` |  | one of `"hexapolar"`, `"square"`, `"random"`, `"dithered"`; Pupil pattern: hexapolar (1 + 3r(r+1) rays), square (pitch 1/rings, clipped to the disk), random (1 + 3r(r+1) uniform points, Philox stream 0), dithered (one jittered point per square cell, stream 1). |
 | `reference` | string | `"chief"` |  | one of `"chief"`, `"centroid"`; Reference point: the primary-wavelength chief ray or the polychromatic centroid. |
@@ -1098,7 +1154,7 @@ Result (`result` in the envelope):
 | `fields` | array<object> |  | One entry per selected field. |
 | `fields[].centroid` | [nf; 2] |  | Polychromatic centroid (image local mm). |
 | `fields[].chief` | [nf; 2] |  | Primary-wavelength chief ray (image local mm). |
-| `fields[].field` | integer |  | ≥ 0; System field index. |
+| `fields[].field` | integer |  | ≥ 0; Field index (system fields, then analysis-local defaults). |
 | `fields[].field_value` | [nf; 2] |  | Field value as specified (degrees or mm, x and y). |
 | `fields[].geo_radius` | nf | mm | Largest distance from the reference. |
 | `fields[].per_wavelength` | array<object> |  |  |

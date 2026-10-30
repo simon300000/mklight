@@ -290,6 +290,14 @@ impl Analysis for SystemSummary {
                         "sphere",
                         "conic",
                         "even_asphere",
+                        "odd_asphere",
+                        "q_con",
+                        "q_bfs",
+                        "diffractive",
+                        "toroid",
+                        "biconic",
+                        "xy_polynomial",
+                        "zernike_sag",
                         "paraxial",
                         "coordinate_break",
                     ],
@@ -349,6 +357,14 @@ impl Analysis for SystemSummary {
         ]);
         result(
             &[
+                (
+                    "symmetry",
+                    enumeration(
+                        &["rotational", "meridional", "none"],
+                        "System geometry symmetry.",
+                    ),
+                ),
+                ("paraxial_xy", super::geometric::paraxial_xy_schema()),
                 ("name", string("")),
                 ("num_surfaces", int("")),
                 ("stop", int("")),
@@ -453,6 +469,8 @@ impl Analysis for SystemSummary {
             }));
             ctx.report((i + 1) as f64 / r.surfaces.len() as f64, "surface table");
         }
+        let xy = mklight_analysis::system_data::paraxial_xy_report(&r)?;
+        let warnings = xy.warnings.clone();
         let first = &r.surfaces[1].frame.origin;
         let img = &r.surfaces[r.image_index()].frame.origin;
         let track =
@@ -461,6 +479,8 @@ impl Analysis for SystemSummary {
         let ns = r.surfaces.len();
         Ok(AnalysisOutput {
             json: json!({
+                "symmetry": xy.symmetry,
+                "paraxial_xy": xy,
                 "name": sys.name,
                 "num_surfaces": ns,
                 "stop": r.stop,
@@ -482,7 +502,7 @@ impl Analysis for SystemSummary {
                 Buffer::new("n_after", vec![ns, nw], BufferData::F64(n_after)),
                 Buffer::new("vertex_global", vec![ns, 3], BufferData::F64(vertices)),
             ],
-            warnings: Vec::new(),
+            warnings,
         })
     }
 }

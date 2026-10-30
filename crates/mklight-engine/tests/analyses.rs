@@ -160,19 +160,8 @@ fn geometric_analyses_on_every_sample() {
         "validate",
     ];
     for (sample, sys) in samples::all() {
-        let extended = samples::has_extended_surfaces(&sys);
         let s = session(&e, sys);
         for n in names {
-            if extended && matches!(n, "layout" | "seidel" | "field_curvature_distortion") {
-                let error = s
-                    .run_analysis(&AnalysisRequest::new(n, Value::Null), &JobContext::new())
-                    .unwrap_err();
-                assert!(
-                    error.to_string().contains("unsupported"),
-                    "{sample}/{n}: {error}"
-                );
-                continue;
-            }
             let r = s
                 .run_analysis(&AnalysisRequest::new(n, Value::Null), &JobContext::new())
                 .unwrap_or_else(|err| panic!("{sample}/{n}: {err}"));
@@ -439,4 +428,66 @@ fn ghost_stray_radiometry_and_solves_equal_the_crates() {
     let r = run(&s, "solves", Value::Null);
     let (_, d) = mklight_trace::apply_solves(&sys, &MaterialLibrary::with_builtin()).unwrap();
     assert_eq!(r.json, direct(&d));
+}
+
+#[test]
+fn extended_first_order_and_mesh_contracts() {
+    let e = engine();
+    let s = session(&e, samples::anamorphic_adapter());
+    for name in ["first_order", "system_summary"] {
+        let r = run(&s, name, Value::Null);
+        check_schema(&e, &r);
+        let xy = &r.json["paraxial_xy"];
+        assert_eq!(xy["symmetry"], "meridional");
+        assert!(
+            xy["squeeze_definition"]
+                .as_str()
+                .unwrap()
+                .contains("EFL_y / EFL_x")
+        );
+        for row in xy["wavelengths"].as_array().unwrap() {
+            assert!((row["squeeze"].as_f64().unwrap() - 2.0).abs() < 1e-10);
+            assert!(
+                (row["efl_y"].as_f64().unwrap() / row["efl_x"].as_f64().unwrap() - 2.0).abs()
+                    < 1e-10
+            );
+            assert!(row["bfl_x"].is_number() && row["bfl_y"].is_number());
+        }
+    }
+    let s = session(&e, samples::hybrid_diffractive_achromat());
+    let r = run(&s, "system_summary", Value::Null);
+    check_schema(&e, &r);
+    let rows = r.json["paraxial_xy"]["wavelengths"].as_array().unwrap();
+    let ratios: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            r["doe_power"][0]["power"].as_f64().unwrap() / r["wavelength_um"].as_f64().unwrap()
+        })
+        .collect();
+    assert!(ratios[0] > 0.0 && ratios.iter().all(|r| (r - ratios[0]).abs() < 1e-14));
+    let r = run(&s, "layout", json!({"section":"xz","mesh_rings":3}));
+    check_schema(&e, &r);
+    assert_eq!(r.json["section"], "xz");
+    assert!(r.json["mesh_triangle_count"].as_u64().unwrap() > 0);
+    assert!(
+        r.json["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["is_diffractive"] == true)
+    );
+    let mesh = r.buffers.iter().find(|b| b.name == "surface_mesh").unwrap();
+    assert_eq!(
+        mesh.shape,
+        vec![
+            r.json["mesh_triangle_count"].as_u64().unwrap() as usize,
+            3,
+            3
+        ]
+    );
+    let s = session(&e, samples::xy_freeform());
+    let r = run(&s, "seidel", Value::Null);
+    check_schema(&e, &r);
+    assert_eq!(r.json["status"], "not_applicable");
+    assert!(r.json["reason"].as_str().unwrap().contains("real-ray"));
 }

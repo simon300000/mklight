@@ -75,15 +75,18 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    FieldSelection, PupilPattern, WavelengthSelection, check_count, field_scale, field_unit,
-    gauss_legendre_01, linspace, m2, nf, pupil_points, run_info, wavelength_or_primary,
+    FieldAxes, FieldSelection, PupilPattern, WavelengthSelection, check_count, field_scale,
+    field_sweep, field_unit, gauss_legendre_01, m2, nf, pupil_points, run_info,
+    wavelength_or_primary,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RelativeIlluminationSettings {
-    /// Field samples from the axis to the maximum field along `+y`.
+    /// Samples per selected field axis (signed where symmetry requires it).
     pub field_samples: usize,
+    /// Field axes of the sweep (ANALYSIS §2.2).
+    pub field_axes: FieldAxes,
     /// System wavelength index; the primary when `None`.
     pub wavelength: Option<usize>,
     /// Gauss–Legendre nodes in the pupil radius.
@@ -96,6 +99,7 @@ impl Default for RelativeIlluminationSettings {
     fn default() -> Self {
         RelativeIlluminationSettings {
             field_samples: 11,
+            field_axes: Default::default(),
             wavelength: None,
             radial_samples: 12,
             azimuth_samples: 48,
@@ -105,6 +109,8 @@ impl Default for RelativeIlluminationSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RelativeIlluminationResult {
+    /// Normalised `[Hx, Hy]` of each field sample.
+    pub field_coordinates: Vec<[f64; 2]>,
     pub field_values: Vec<f64>,
     pub normalized_field: Vec<f64>,
     pub field_unit: String,
@@ -166,9 +172,12 @@ impl Probe<'_> {
                 dir: Vec3::new(q[0], q[1], 1.0).normalized(),
             }
         } else {
-            let z = self.rt.system().surfaces[0]
-                .shape
-                .sag(q[0].mul_add(q[0], q[1] * q[1]))?;
+            let z = mklight_core::surface_math::evaluate(
+                &self.rt.system().surfaces[0].shape,
+                q[0],
+                q[1],
+            )?
+            .sag;
             ObjectSource::Point {
                 point: Vec3::new(q[0], q[1], z),
             }
@@ -396,8 +405,8 @@ pub fn relative_illumination_job(
             nodes.push((r * c, r * s, w * r * dphi));
         }
     }
-    let hs = linspace(0.0, 1.0, settings.field_samples);
-    let mut rows = Vec::with_capacity(hs.len());
+    let sweep = field_sweep(tracer, settings.field_samples, settings.field_axes);
+    let mut rows = Vec::with_capacity(sweep.heights.len());
     let mut warnings = Vec::new();
     ctx.report(0.0, "relative illumination");
     // Scale of the object parameters `q` for the difference steps.
@@ -409,15 +418,15 @@ pub fn relative_illumination_job(
         })
         .unwrap_or(0.0)
         .max(1e-3);
-    for (k, &h) in hs.iter().enumerate() {
+    for (k, &[hx, hy]) in sweep.coordinates.iter().enumerate() {
         ctx.check()?;
-        let row = match rt.prepare_field(FieldPoint::normalized(0.0, h)) {
+        let row = match rt.prepare_field(FieldPoint::normalized(hx, hy)) {
             Ok(f) if f.aims[wl].converged => match integrate_field(rt, &f, wl, &nodes, q_scale) {
                 Some((row, failed)) => {
                     if failed > 0 {
                         warnings.push(format!(
-                            "field Hy = {h}: {failed} of {} pupil nodes have no ray \
-                                 through the image point",
+                            "field ({hx}, {hy}): {failed} of {} pupil nodes have no ray \
+                             through the image point",
                             nodes.len()
                         ));
                     }
@@ -425,20 +434,30 @@ pub fn relative_illumination_job(
                 }
                 None => {
                     warnings.push(format!(
-                        "field Hy = {h}: chief ray or its object Jacobian failed"
+                        "field ({hx}, {hy}): chief ray or its object Jacobian failed"
                     ));
                     [f64::NAN; 4]
                 }
             },
             _ => {
-                warnings.push(format!("field Hy = {h}: chief ray could not be aimed"));
+                warnings.push(format!("field ({hx}, {hy}): chief ray could not be aimed"));
                 [f64::NAN; 4]
             }
         };
         rows.push(row);
-        ctx.report((k + 1) as f64 / hs.len() as f64, "relative illumination");
+        ctx.report(
+            (k + 1) as f64 / sweep.coordinates.len() as f64,
+            "relative illumination",
+        );
     }
-    let omega0 = rows[0][0];
+    // A signed sweep with an even sample count has no on-axis sample.
+    let omega0 = match sweep.coordinates.iter().position(|p| *p == [0.0; 2]) {
+        Some(k) => rows[k][0],
+        None => {
+            let on_axis = rt.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
+            integrate_field(rt, &on_axis, wl, &nodes, q_scale).map_or(f64::NAN, |(row, _)| row[0])
+        }
+    };
     if !(omega0 > 0.0) {
         return Err(MkError::Numerical(
             "on-axis beam has no projected solid angle".into(),
@@ -446,9 +465,10 @@ pub fn relative_illumination_job(
     }
     let scale = field_scale(tracer);
     Ok(RelativeIlluminationResult {
-        field_values: hs.iter().map(|h| h * scale).collect(),
+        field_values: sweep.heights.iter().map(|h| h * scale).collect(),
         field_unit: field_unit(tracer.system().system().fields.kind).to_string(),
-        normalized_field: hs,
+        normalized_field: sweep.heights,
+        field_coordinates: sweep.coordinates,
         wavelength: wl,
         relative_illumination: rows.iter().map(|r| r[0] / omega0).collect(),
         projected_solid_angle: rows.iter().map(|r| r[0]).collect(),
@@ -511,6 +531,7 @@ pub struct FootprintRays {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FootprintResult {
+    pub field_values: Vec<[f64; 2]>,
     pub surface: usize,
     /// Clear semi-diameter of the surface (fixed, stop or traced, mm).
     pub semi_diameter: f64,
@@ -539,6 +560,8 @@ pub fn footprint_job(
     settings: &FootprintSettings,
     ctx: &JobContext,
 ) -> MkResult<FootprintResult> {
+    let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
+    let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
     let sys = tracer.system();
     let s = settings.surface;
@@ -618,6 +641,9 @@ pub fn footprint_job(
     )
     .then_some(settings.seed);
     Ok(FootprintResult {
+        field_values: (0..tracer.fields().len())
+            .map(|i| crate::util::field_value(tracer, i))
+            .collect(),
         surface: s,
         semi_diameter: sd.values[s],
         aperture: sys.surfaces[s].aperture.clone(),
