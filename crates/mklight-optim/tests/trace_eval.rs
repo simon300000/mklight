@@ -14,13 +14,12 @@ use mklight_optim::merit::default::{DefaultMeritSpec, ThicknessBoundaries};
 use mklight_optim::merit::geometric::ModelEvaluator;
 use mklight_optim::merit::operand::*;
 use mklight_optim::merit::{
-    CompositeEvaluator, FailurePolicy, MeritFunctionSpec, Operand, OperandError,
-    OperandEvaluator, OperandRegistry, OperandValue, OpticalProblem, PupilSampling,
-    PupilSymmetry, TraceEvaluator, VariableSpec,
+    CompositeEvaluator, FailurePolicy, MeritFunctionSpec, Operand, OperandError, OperandEvaluator,
+    OperandRegistry, OperandValue, OpticalProblem, PupilSampling, PupilSymmetry, TraceEvaluator,
+    VariableSpec,
 };
 use mklight_optim::problem::{
-    BatchEvaluation, CandidateBatch, Constraint, EvalStatus, Problem, Variable, evaluate_one,
-    merit,
+    BatchEvaluation, CandidateBatch, Constraint, EvalStatus, Problem, Variable, evaluate_one, merit,
 };
 use mklight_trace::SemiDiameterSettings;
 
@@ -33,7 +32,8 @@ fn eval(sys: &OpticalSystem, ops: &[Operand]) -> Vec<OperandValue> {
 }
 
 fn ok(v: &OperandValue) -> f64 {
-    v.clone().unwrap_or_else(|e| panic!("operand failed: {e:?}"))
+    v.clone()
+        .unwrap_or_else(|e| panic!("operand failed: {e:?}"))
 }
 
 /// Ideal (paraxial) lens of focal length `f` at the stop, object at
@@ -110,7 +110,12 @@ fn paraxial_operands_match_thick_lens_formulas_and_first_order() {
         Operand::new(OperandKind::Magnification),
     ];
     let v = eval(&sys, &ops);
-    assert!((ok(&v[0]) - 1.0 / phi).abs() < 1e-9, "{:?} {}", v[0], 1.0 / phi);
+    assert!(
+        (ok(&v[0]) - 1.0 / phi).abs() < 1e-9,
+        "{:?} {}",
+        v[0],
+        1.0 / phi
+    );
     assert!((ok(&v[1]) - fo.bfl).abs() < 1e-12);
     assert!((ok(&v[2]) - petzval).abs() < 1e-15);
     assert!((ok(&v[3]) - 20.0).abs() < 1e-12);
@@ -120,7 +125,11 @@ fn paraxial_operands_match_thick_lens_formulas_and_first_order() {
     assert!((ok(&v[7]) - 10.0).abs() < 1e-12);
     assert!((ok(&v[8]) - 5.0).abs() < 1e-12);
     assert_eq!(ok(&v[9]), *fo.marginal.u.last().unwrap());
-    assert!(ok(&v[9]) < -0.09 && ok(&v[9]) > -0.11, "≈ −EPD/2f: {:?}", v[9]);
+    assert!(
+        ok(&v[9]) < -0.09 && ok(&v[9]) > -0.11,
+        "≈ −EPD/2f: {:?}",
+        v[9]
+    );
     let p = tr.paraxial();
     assert_eq!(ok(&v[10]), p.at(0).image_distance - p.at(2).image_distance);
     // A singlet focuses blue light shorter.
@@ -191,7 +200,10 @@ fn ideal_lens_known_answers() {
     ];
     let v = eval(&sys, &ops);
     assert!((ok(&v[0]) - f * theta.tan()).abs() < 1e-10, "{:?}", v[0]);
-    assert!(ok(&v[1]).abs() < 1e-9, "ideal lens is free of f·tanθ distortion");
+    assert!(
+        ok(&v[1]).abs() < 1e-9,
+        "ideal lens is free of f·tanθ distortion"
+    );
     let ftheta = 100.0 * (theta.tan() / theta - 1.0);
     assert!((ok(&v[2]) - ftheta).abs() < 1e-8, "{:?} {ftheta}", v[2]);
     // Stop at the lens: the chief ray is undeviated, CRA = field angle.
@@ -262,9 +274,17 @@ fn defocus_spot_and_wavefront_known_answers() {
     assert!((ok(&v[5]).abs() - r * dz / f).abs() < 1e-12);
     // Defocus W(h) ≈ h² δz / (2 f (f + δz)); RMS with piston removed = W(r)/√12.
     let w_edge = r * r * dz / (2.0 * f * (f + dz)) / lambda_mm;
-    assert!((ok(&v[4]).abs() - w_edge).abs() < 2e-3 * w_edge, "{:?} {w_edge}", v[4]);
+    assert!(
+        (ok(&v[4]).abs() - w_edge).abs() < 2e-3 * w_edge,
+        "{:?} {w_edge}",
+        v[4]
+    );
     let w_rms = w_edge / 12f64.sqrt();
-    assert!((ok(&v[3]) - w_rms).abs() < 2e-3 * w_rms, "{:?} {w_rms}", v[3]);
+    assert!(
+        (ok(&v[3]) - w_rms).abs() < 2e-3 * w_rms,
+        "{:?} {w_rms}",
+        v[3]
+    );
 }
 
 #[test]
@@ -342,7 +362,10 @@ fn real_ray_operands_match_the_tracer() {
     assert_eq!(ok(&v[4]), g.pos.z);
     // The fold sends the beam along −y: the image is ~400 mm down the tube
     // and 100 mm below the axis.
-    assert!((g.pos.y + 100.0).abs() < 1.0 && (g.pos.z + 400.0).abs() < 5.0, "{g:?}");
+    assert!(
+        (g.pos.y + 100.0).abs() < 1.0 && (g.pos.z + 400.0).abs() < 5.0,
+        "{g:?}"
+    );
     assert_eq!(ok(&v[5]), rec[5].opl);
     assert_eq!(ok(&v[6]), rec[1].cos_incidence.acos().to_degrees());
 
@@ -401,10 +424,7 @@ fn ray_groups_bilateral_equals_mirrored_full_pupil() {
                     px,
                     py,
                     reference: SpotReference::Centroid,
-                    group: Some(RayGroup {
-                        sampling: s,
-                        scope,
-                    }),
+                    group: Some(RayGroup { sampling: s, scope }),
                 },
                 2,
                 0,
@@ -424,7 +444,10 @@ fn ray_groups_bilateral_equals_mirrored_full_pupil() {
         );
         for k in [0, 2, 4] {
             let (a, b) = (ok(&v[k]), ok(&v[k + 1]));
-            assert!((a - b).abs() < 1e-12 * (1.0 + a.abs()), "{scope:?} {k}: {a} {b}");
+            assert!(
+                (a - b).abs() < 1e-12 * (1.0 + a.abs()),
+                "{scope:?} {k}: {a} {b}"
+            );
         }
         assert!(ok(&v[0]) > 1e-3, "the edge field has a visible spot");
     }
@@ -584,7 +607,10 @@ fn auto_semi_diameter_edge_thickness() {
         .evaluate_batch(std::slice::from_ref(&sys), &refs, &JobContext::new())
         .unwrap()
         .remove(0);
-    assert!(raw.iter().all(|r| matches!(r, Err(OperandError::Invalid(_)))));
+    assert!(
+        raw.iter()
+            .all(|r| matches!(r, Err(OperandError::Invalid(_))))
+    );
 }
 
 #[test]
@@ -611,7 +637,11 @@ fn failures_follow_the_policy() {
         sampling: PupilSampling::default(),
     });
     let v = eval(&sys, &[edge(1.0), edge(0.5), spot.clone()]);
-    assert!(matches!(v[0], Err(OperandError::RayFailure(_))), "{:?}", v[0]);
+    assert!(
+        matches!(v[0], Err(OperandError::RayFailure(_))),
+        "{:?}",
+        v[0]
+    );
     assert!(v[1].is_ok());
     assert!(ok(&v[2]) > 0.0, "the aggregate keeps the surviving rays");
     let reg = OperandRegistry::builtin();
@@ -857,7 +887,12 @@ fn derivatives_of_real_optical_operands_validate() {
     let ctx = JobContext::new();
     // Analytic thick-lens EFL derivatives vs the traced EFL operand.
     let sys = samples::singlet();
-    let n = TraceEvaluator::builtin().tracer(&sys).unwrap().system().surfaces[1].n_after[1];
+    let n = TraceEvaluator::builtin()
+        .tracer(&sys)
+        .unwrap()
+        .system()
+        .surfaces[1]
+        .n_after[1];
     let curv = |id| {
         VariableSpec::new(ParamPath::Curvature {
             surface: SurfaceId(id),
@@ -873,7 +908,11 @@ fn derivatives_of_real_optical_operands_validate() {
     .unwrap();
     let x = p.start_point().unwrap();
     let chk = check_jacobian(
-        &SingletEfl { inner: p, n, t: 5.0 },
+        &SingletEfl {
+            inner: p,
+            n,
+            t: 5.0,
+        },
         &x,
         &CheckSettings::default(),
         &ctx,
@@ -950,8 +989,13 @@ fn derivatives_of_real_optical_operands_validate() {
             &x,
             &settings,
             &ctx,
-        ).unwrap();
-        assert!(chk.passed, "central: {:?}", &chk.mismatches[..3.min(chk.mismatches.len())]);
+        )
+        .unwrap();
+        assert!(
+            chk.passed,
+            "central: {:?}",
+            &chk.mismatches[..3.min(chk.mismatches.len())]
+        );
         let loose = CheckSettings {
             rel_tol: 1e-3,
             abs_floor: 1e-5,
@@ -962,8 +1006,13 @@ fn derivatives_of_real_optical_operands_validate() {
             &x,
             &loose,
             &ctx,
-        ).unwrap();
-        assert!(chk.passed, "forward: {:?}", &chk.mismatches[..3.min(chk.mismatches.len())]);
+        )
+        .unwrap();
+        assert!(
+            chk.passed,
+            "forward: {:?}",
+            &chk.mismatches[..3.min(chk.mismatches.len())]
+        );
         // A wrong Jacobian is caught.
         struct Wrong<'a, P: Problem>(&'a P);
         impl<P: Problem> Problem for Wrong<'_, P> {

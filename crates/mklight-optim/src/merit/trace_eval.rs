@@ -45,14 +45,14 @@
 //! combine this evaluator with the ones providing them through
 //! [`CompositeEvaluator`](super::CompositeEvaluator).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mklight_core::materials::MaterialLibrary;
 use mklight_core::job::{Precision, RunTimer};
+use mklight_core::materials::MaterialLibrary;
 use mklight_core::{
     JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo, SemiDiameter, Snapshot,
     SurfaceId, Vec3,
@@ -173,6 +173,18 @@ impl TraceEvaluator {
         operands: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<OperandValue>> {
+        self.evaluate_one(s, operands, ctx, true)
+    }
+
+    /// [`evaluate_system`](Self::evaluate_system), tracing the candidate's
+    /// ray groups in parallel or not (batches parallelise over candidates).
+    fn evaluate_one(
+        &self,
+        s: &OpticalSystem,
+        operands: &[&Operand],
+        ctx: &JobContext,
+        parallel: bool,
+    ) -> MkResult<Vec<OperandValue>> {
         ctx.check()?;
         let needs_tracer = operands
             .iter()
@@ -183,7 +195,7 @@ impl TraceEvaluator {
             None
         };
         let cand = match &tracer {
-            Some(Ok(tr)) => Some(Candidate::build(self, tr, operands, ctx)?),
+            Some(Ok(tr)) => Some(Candidate::build(self, tr, operands, ctx, parallel)?),
             _ => None,
         };
         let mut fixed_sd: Option<OpticalSystem> = None;
@@ -288,9 +300,12 @@ impl OperandEvaluator for TraceEvaluator {
         operands: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
+        // Small batches (a single LM trial point) also parallelise inside
+        // each candidate; larger ones only over candidates.
+        let inner = systems.len() < rayon::current_num_threads();
         systems
             .par_iter()
-            .map(|s| self.evaluate_system(s, operands, ctx))
+            .map(|s| self.evaluate_one(s, operands, ctx, inner))
             .collect()
     }
 }
@@ -349,6 +364,8 @@ struct NodeRay {
 struct GroupRays {
     nodes: Vec<PupilNode>,
     rays: Vec<NodeRay>,
+    /// Node index by the bits of `(px, py)`.
+    index: HashMap<(u64, u64), usize>,
 }
 
 /// What an operand needs traced before evaluation.
@@ -387,6 +404,23 @@ fn weighted_mean<T>(
     Ok(s.value() / w)
 }
 
+/// `items.map(f)` in order, on the rayon pool when `parallel`.
+fn pmap<T: Sync, R: Send>(
+    items: &[T],
+    parallel: bool,
+    f: impl Fn(&T) -> R + Sync + Send,
+) -> Vec<R> {
+    if parallel && items.len() > 1 {
+        items.par_iter().map(f).collect()
+    } else {
+        items.iter().map(f).collect()
+    }
+}
+
+/// Memo key of a group reference: (field, operand λ, sampling,
+/// polychromatic scope, wavefront (piston/tilt) rather than spot centroid).
+type RefKey = (FieldKey, usize, SamplingKey, bool, bool);
+
 struct Candidate<'a> {
     ev: &'a TraceEvaluator,
     tr: &'a SequentialTracer,
@@ -394,6 +428,9 @@ struct Candidate<'a> {
     points: BTreeMap<FieldKey, Result<PreparedField, OperandError>>,
     chiefs: BTreeMap<(FieldKey, usize), ChiefData>,
     groups: BTreeMap<GroupKey, GroupRays>,
+    /// Centroids `[cx, cy, 0]` and piston/tilts of ray groups, computed on
+    /// first use (every ray operand of a group shares its reference).
+    refs: Mutex<BTreeMap<RefKey, Result<[f64; 3], OperandError>>>,
 }
 
 impl<'a> Candidate<'a> {
@@ -402,6 +439,7 @@ impl<'a> Candidate<'a> {
         tr: &'a SequentialTracer,
         operands: &[&Operand],
         ctx: &JobContext,
+        parallel: bool,
     ) -> MkResult<Self> {
         let opts = TraceOptions {
             clip: ev.settings.clip,
@@ -414,6 +452,7 @@ impl<'a> Candidate<'a> {
             points: BTreeMap::new(),
             chiefs: BTreeMap::new(),
             groups: BTreeMap::new(),
+            refs: Mutex::new(BTreeMap::new()),
         };
         let mut plan = Plan::default();
         for op in operands {
@@ -428,61 +467,61 @@ impl<'a> Candidate<'a> {
                 plan.points.insert(f);
             }
         }
+        // Parallel tracing inside one candidate only pays for a few hundred
+        // rays or more (measured on the Double Gauss, docs/OPTIMIZATION.md).
+        let rays: usize = plan.groups.values().map(|s| s.rings * s.arms).sum();
+        let parallel = parallel && rays >= 256;
         // Stage 1: arbitrary field points.
-        c.points = plan
-            .points
-            .par_iter()
-            .map(|&k| {
-                let FieldKey::Point(hx, hy) = k else {
-                    unreachable!()
-                };
-                let fp = mklight_trace::FieldPoint::normalized(f64::from_bits(hx), f64::from_bits(hy));
-                let f = tr
-                    .prepare_field(fp)
-                    .map_err(|e| OperandError::RayFailure(e.to_string()));
-                (k, f)
-            })
-            .collect();
+        let points: Vec<FieldKey> = plan.points.iter().copied().collect();
+        c.points = pmap(&points, parallel, |&k| {
+            let FieldKey::Point(hx, hy) = k else {
+                unreachable!()
+            };
+            let fp = mklight_trace::FieldPoint::normalized(f64::from_bits(hx), f64::from_bits(hy));
+            let f = tr
+                .prepare_field(fp)
+                .map_err(|e| OperandError::RayFailure(e.to_string()));
+            (k, f)
+        })
+        .into_iter()
+        .collect();
         ctx.check()?;
         // Stage 2: chief rays and reference spheres.
-        c.chiefs = plan
-            .chiefs
-            .par_iter()
-            .map(|&(f, w)| {
-                let d = match c.field(f) {
-                    Ok(field) => {
-                        let chief = tr.chief(field, w);
-                        let reference = tr.opd_reference(field, w).map_err(|s| {
-                            OperandError::RayFailure(format!("chief ray: {s:?}"))
-                        });
-                        ChiefData {
-                            chief: if chief.status.is_ok() {
-                                Ok(chief)
-                            } else {
-                                Err(status_error(&chief))
-                            },
-                            reference,
-                        }
+        let chiefs: Vec<(FieldKey, usize)> = plan.chiefs.iter().copied().collect();
+        c.chiefs = pmap(&chiefs, parallel, |&(f, w)| {
+            let d = match c.field(f) {
+                Ok(field) => {
+                    let chief = tr.chief(field, w);
+                    let reference = tr
+                        .opd_reference(field, w)
+                        .map_err(|s| OperandError::RayFailure(format!("chief ray: {s:?}")));
+                    ChiefData {
+                        chief: if chief.status.is_ok() {
+                            Ok(chief)
+                        } else {
+                            Err(status_error(&chief))
+                        },
+                        reference,
                     }
-                    Err(e) => ChiefData {
-                        chief: Err(e.clone()),
-                        reference: Err(e),
-                    },
-                };
-                ((f, w), d)
-            })
-            .collect();
+                }
+                Err(e) => ChiefData {
+                    chief: Err(e.clone()),
+                    reference: Err(e),
+                },
+            };
+            ((f, w), d)
+        })
+        .into_iter()
+        .collect();
         ctx.check()?;
         // Stage 3: pupil samplings.
-        let groups: MkResult<Vec<(GroupKey, GroupRays)>> = plan
-            .groups
-            .par_iter()
-            .map(|(&key, sampling)| {
-                ctx.check()?;
-                Ok((key, c.trace_group(key, sampling)))
-            })
-            .collect();
-        c.groups = groups?.into_iter().collect();
+        let groups: Vec<(GroupKey, PupilSampling)> =
+            plan.groups.iter().map(|(k, s)| (*k, *s)).collect();
+        let traced = pmap(&groups, parallel, |&(key, sampling)| {
+            ctx.check()?;
+            Ok((key, c.trace_group(key, &sampling)))
+        });
+        c.groups = traced.into_iter().collect::<MkResult<_>>()?;
         Ok(c)
     }
 
@@ -515,7 +554,12 @@ impl<'a> Candidate<'a> {
                 nodes.len()
             ],
         };
-        GroupRays { nodes, rays }
+        let index = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ((n.px.to_bits(), n.py.to_bits()), i))
+            .collect();
+        GroupRays { nodes, rays, index }
     }
 
     // ----- selectors -----------------------------------------------------
@@ -539,12 +583,12 @@ impl<'a> Candidate<'a> {
             ))),
             WavelengthSelector::All => {
                 let w = &self.tr.system().wavelength_weights;
-                let v: Vec<(usize, f64)> = (0..nw)
-                    .filter(|&i| w[i] > 0.0)
-                    .map(|i| (i, w[i]))
-                    .collect();
+                let v: Vec<(usize, f64)> =
+                    (0..nw).filter(|&i| w[i] > 0.0).map(|i| (i, w[i])).collect();
                 if v.is_empty() {
-                    Err(OperandError::Invalid("no wavelength with positive weight".into()))
+                    Err(OperandError::Invalid(
+                        "no wavelength with positive weight".into(),
+                    ))
                 } else {
                     Ok(v)
                 }
@@ -583,7 +627,9 @@ impl<'a> Candidate<'a> {
                     .map(|(i, f)| (FieldKey::Index(i), f.weight))
                     .collect();
                 if v.is_empty() {
-                    Err(OperandError::Invalid("no field with positive weight".into()))
+                    Err(OperandError::Invalid(
+                        "no field with positive weight".into(),
+                    ))
                 } else {
                     Ok(v)
                 }
@@ -635,7 +681,9 @@ impl<'a> Candidate<'a> {
         };
         match &op.kind {
             RayAberration {
-                reference, group: g, ..
+                reference,
+                group: g,
+                ..
             } => {
                 for &(f, _) in &fields {
                     if let Some(g) = g {
@@ -769,11 +817,10 @@ impl<'a> Candidate<'a> {
     }
 
     /// Node `(px, py)` of a traced group, by bit-exact coordinates.
-    fn node_in<'g>(g: &'g GroupRays, px: f64, py: f64) -> Option<&'g NodeRay> {
-        g.nodes
-            .iter()
-            .position(|n| n.px.to_bits() == px.to_bits() && n.py.to_bits() == py.to_bits())
-            .map(|i| &g.rays[i])
+    fn node_in(g: &GroupRays, px: f64, py: f64) -> Option<&NodeRay> {
+        g.index
+            .get(&(px.to_bits(), py.to_bits()))
+            .map(|&i| &g.rays[i])
     }
 
     /// Image `(x, y)` of pupil point `(px, py)`, reusing a group trace.
@@ -845,6 +892,38 @@ impl<'a> Candidate<'a> {
             ));
         }
         Ok((wt, xs, ys))
+    }
+
+    /// Memoised reference of ray group `g` for an operand at wavelength
+    /// `w`: the spot centroid `[cx, cy, 0]`, or the piston/tilt.
+    fn group_reference(
+        &self,
+        f: FieldKey,
+        w: usize,
+        g: &RayGroup,
+        wavefront: bool,
+    ) -> Result<[f64; 3], OperandError> {
+        let key = (
+            f,
+            w,
+            SamplingKey::of(&g.sampling),
+            g.scope == CentroidScope::Polychromatic,
+            wavefront,
+        );
+        if let Some(r) = self.refs.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return r;
+        }
+        let wls = self.group_wavelengths(g, w);
+        let r = if wavefront {
+            self.piston_tilt(f, &wls, &g.sampling)
+        } else {
+            self.centroid(f, &wls, &g.sampling)
+                .map(|c| [c[0], c[1], 0.0])
+        };
+        if let Ok(mut m) = self.refs.lock() {
+            m.insert(key, r.clone());
+        }
+        r
     }
 
     /// Spot centroid of a group over `wls`.
@@ -941,10 +1020,9 @@ impl<'a> Candidate<'a> {
             Magnification => fo_mean(&|fo| fo.magnification),
             EntrancePupilDiameter => fo_mean(&|fo| fo.entrance_pupil_diameter),
             ExitPupilPosition => finite(fo_mean(&|fo| fo.exit_pupil_position)?, "exit pupil"),
-            EntrancePupilPosition => finite(
-                fo_mean(&|fo| fo.entrance_pupil_position)?,
-                "entrance pupil",
-            ),
+            EntrancePupilPosition => {
+                finite(fo_mean(&|fo| fo.entrance_pupil_position)?, "entrance pupil")
+            }
             ParaxialRay {
                 ray,
                 quantity,
@@ -980,7 +1058,9 @@ impl<'a> Candidate<'a> {
             AxialColour { short, long } => {
                 let nw = self.tr.num_wavelengths();
                 if *short >= nw || *long >= nw {
-                    return Err(OperandError::Invalid("wavelength index out of range".into()));
+                    return Err(OperandError::Invalid(
+                        "wavelength index out of range".into(),
+                    ));
                 }
                 Ok(px.at(*short).image_distance - px.at(*long).image_distance)
             }
@@ -1010,7 +1090,8 @@ impl<'a> Candidate<'a> {
                         let g = group.as_ref().ok_or_else(|| {
                             OperandError::Invalid("centroid reference needs a ray group".into())
                         })?;
-                        self.centroid(f, &self.group_wavelengths(g, w), &g.sampling)?
+                        let c = self.group_reference(f, w, g, false)?;
+                        [c[0], c[1]]
                     }
                 };
                 Ok(axis_value(p, *axis) - axis_value(r, *axis))
@@ -1030,7 +1111,7 @@ impl<'a> Candidate<'a> {
                         let g = group.as_ref().ok_or_else(|| {
                             OperandError::Invalid("centroid reference needs a ray group".into())
                         })?;
-                        let c = self.piston_tilt(f, &self.group_wavelengths(g, w), &g.sampling)?;
+                        let c = self.group_reference(f, w, g, true)?;
                         Ok(v - (c[0] + c[1] * ppx + c[2] * ppy))
                     }
                 }
@@ -1302,7 +1383,8 @@ impl<'a> Candidate<'a> {
                 s.add(a);
             }
             for i in 0..nr - 1 {
-                if let Some(a) = area(&[rings[i][j], rings[i + 1][j], rings[i + 1][j1], rings[i][j1]])
+                if let Some(a) =
+                    area(&[rings[i][j], rings[i + 1][j], rings[i + 1][j1], rings[i][j1]])
                 {
                     s.add(a);
                 }

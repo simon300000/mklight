@@ -81,7 +81,10 @@ fn singlet_converges_to_best_form_bending() {
     let (c1, c2) = (r.x[0], r.x[1]);
     let q = (c1 + c2) / (c1 - c2);
     let q_thin = 2.0 * (n * n - 1.0) / (n + 2.0);
-    eprintln!("singlet: q = {q}, thin-lens {q_thin}, merit {m0} -> {}", r.merit);
+    eprintln!(
+        "singlet: q = {q}, thin-lens {q_thin}, merit {m0} -> {}",
+        r.merit
+    );
     assert!(
         (q - q_thin).abs() < 0.03,
         "q = {q}, thin-lens best form {q_thin}"
@@ -196,7 +199,10 @@ fn cooke_triplet_local_then_global() {
         ..Default::default()
     };
     let r = least_squares(&p, &x0, &lm, &Monitor::default()).unwrap();
-    eprintln!("triplet LM: {m0} -> {} ({:?}, {} evals)", r.merit, r.termination, r.evaluations);
+    eprintln!(
+        "triplet LM: {m0} -> {} ({:?}, {} evals)",
+        r.merit, r.termination, r.evaluations
+    );
     assert!(r.merit < 0.7 * m0, "LM: {m0} → {}", r.merit);
     assert!(r.violation < 1e-7, "{}", r.violation);
     let (m1, v1) = score(&p, &r.x);
@@ -221,11 +227,19 @@ fn cooke_triplet_local_then_global() {
         .run_info(timer, p.base(), "optimise/hammer", &hs, Some(hs.seed))
         .unwrap();
     let g2 = hammer(&p, &r.x, &hs, &Monitor::default()).unwrap();
-    eprintln!("triplet hammer: {} ({:?}, {} evals)", g1.merit, g1.termination, g1.evaluations);
+    eprintln!(
+        "triplet hammer: {} ({:?}, {} evals)",
+        g1.merit, g1.termination, g1.evaluations
+    );
     assert_eq!(g1.x, g2.x, "seeded global run is reproducible");
     assert_eq!(g1.merit.to_bits(), g2.merit.to_bits());
     assert_eq!(g1.evaluations, g2.evaluations);
-    assert!(g1.merit <= r.merit * (1.0 + 1e-12), "{} vs {}", g1.merit, r.merit);
+    assert!(
+        g1.merit <= r.merit * (1.0 + 1e-12),
+        "{} vs {}",
+        g1.merit,
+        r.merit
+    );
     assert!(g1.violation < 1e-7, "{}", g1.violation);
     assert_eq!(info.seed, Some(1234));
     assert_eq!(info.backend, TraceEvaluator::BACKEND);
@@ -379,7 +393,11 @@ fn cancellation_mid_optimisation_returns_best_so_far() {
     assert!(r.iterations <= 4, "{}", r.iterations);
     assert!(r.merit.is_finite() && r.merit < m0, "{} vs {m0}", r.merit);
     let best = mon.best.get().expect("best-so-far point");
-    assert!(best.merit <= r.merit && best.merit < m0, "{best:?} {}", r.merit);
+    assert!(
+        best.merit <= r.merit && best.merit < m0,
+        "{best:?} {}",
+        r.merit
+    );
     let (m, _) = score(&p, &best.x);
     assert_eq!(m, best.merit, "the best point re-evaluates to its merit");
 
