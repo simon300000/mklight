@@ -1,24 +1,24 @@
+/* transforms numeric records, owned by that package. Included by mklight_gpu_types.h. */
 #ifndef MKLIGHT_TRANSFORMS_TYPES_H
 #define MKLIGHT_TRANSFORMS_TYPES_H
-#define MKL_TRANSFORM_COPY 0u
-#define MKL_TRANSFORM_TRANSPOSE 1u
-#define MKL_TRANSFORM_FFT 2u
-#define MKL_TRANSFORM_TWIDDLE 3u
-#define MKL_TRANSFORM_PRE 4u
-#define MKL_TRANSFORM_KERNEL 5u
+#define MKL_TRANSFORM_FFT_ROWS 0u
+#define MKL_TRANSFORM_FFT_STAGE 1u
+#define MKL_TRANSFORM_TRANSPOSE 2u
+#define MKL_TRANSFORM_CHIRP_ROWS 3u
+#define MKL_TRANSFORM_KERNEL 4u
+#define MKL_TRANSFORM_PRE 5u
 #define MKL_TRANSFORM_POST 6u
 #define MKL_TRANSFORM_MULTIPLY 7u
 #define MKL_TRANSFORM_PHASE 8u
-#define MKL_TRANSFORM_LOCAL_FFT 9u
-/* All offsets count complex elements. Parameters are 16 u32 words followed
-   by six (hi,lo) coefficients; Rust recipe::Params is the host twin. */
+/* Offsets count complex elements. Rust twin: transforms::recipe::Params. */
 struct MklTransformParams {
     MKL_U32 mode, count, width, height, nx, ny, ox, oy;
-    MKL_U32 radix, span, sign_bits, scale_bits, start, conjugate, reserved0, reserved1;
+    MKL_U32 radices[2], stages, span, sign_bits, scale_bits, flags, reserved;
     MKL_F32 affine[6][2];
 };
+/* Rust twin: transforms::correlation::Params. */
 struct MklCorrelationParams {
-    MKL_U32 n, height, frequency, start, optical, covered, prepared, reserved;
+    MKL_U32 n, height, frequencies, first, optical, covered, prepared, reserved;
     MKL_F32 mapping[6][2], frame[3][3][2], sin_max[2], wavelength[2];
     MKL_U32 reserved_tail[2];
 };

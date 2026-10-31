@@ -194,10 +194,10 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             if left.desc != right.desc {
                 return Err(bad("spectral inputs must have identical grids"));
             }
-            if let Request::Multiply { scale, .. } = r {
-                if !scale.is_finite() {
-                    return Err(bad("spectral scale"));
-                }
+            if let Request::Multiply { scale, .. } = r
+                && !scale.is_finite()
+            {
+                return Err(bad("spectral scale"));
             }
             out(p, *output, &left.desc.shape)?;
         }
@@ -268,10 +268,10 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
             let count = frequencies(&c.frequencies)?;
             let stencil_desc = BufferDesc::new(ElementType::F32, vec![count, s[0] * s[1], 5]);
-            if let Some(v) = &c.stencil {
-                if v.desc != stencil_desc || v.stride != 1 {
-                    return Err(bad("optical stencil layout"));
-                }
+            if let Some(v) = &c.stencil
+                && (v.desc != stencil_desc || v.stride != 1)
+            {
+                return Err(bad("optical stencil layout"));
             }
             if matches!(r, Request::PrepareOpticalStencil(_)) {
                 if p.desc(c.output)? != &stencil_desc

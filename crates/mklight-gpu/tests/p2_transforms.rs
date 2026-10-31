@@ -20,6 +20,7 @@ pub fn upload(b: &dyn ComputeBackend, data: Vec<[f32; 2]>, shape: Vec<usize>) ->
     )
     .unwrap()
 }
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     b: &dyn ComputeBackend,
     data: &[[f32; 2]],
@@ -73,14 +74,14 @@ pub fn dft(
         .map(|k| {
             let (x, y) = ((k % ow) as f64, (k / ow) as f64);
             let mut z = [0.; 2];
-            for j in 0..w * h {
+            for (j, d) in data.iter().enumerate() {
                 let (u, v) = ((j % w) as f64, (j / w) as f64);
                 let ph = sign as f64
                     * std::f64::consts::TAU
                     * (u * (a[0] * x + a[1] * y + a[2]) + v * (a[3] * x + a[4] * y + a[5]));
                 let (s, c) = ph.sin_cos();
-                z[0] += (data[j][0] as f64 * c - data[j][1] as f64 * s) * scale as f64;
-                z[1] += (data[j][0] as f64 * s + data[j][1] as f64 * c) * scale as f64;
+                z[0] += (d[0] as f64 * c - d[1] as f64 * s) * scale as f64;
+                z[1] += (d[0] as f64 * s + d[1] as f64 * c) * scale as f64;
             }
             z
         })
@@ -118,6 +119,10 @@ pub fn suite(b: &dyn ComputeBackend) {
         vec![3, 5],
         vec![7, 11],
         vec![16, 32],
+        // Whole-row shared kernels at 4096 (radix 8 and mixed), then global stages.
+        vec![3000],
+        vec![4096],
+        vec![4200],
     ] {
         let n = dims.iter().product();
         let a = input(n);
@@ -159,6 +164,13 @@ pub fn suite(b: &dyn ComputeBackend) {
             vec![17],
             vec![23],
             [100001.03125, 0., 12345.125, 0., 0., 0.],
+            TransformKind::ChirpZ,
+        ),
+        // Chirp padding beyond one shared-memory row (unfused path).
+        (
+            vec![2100],
+            vec![2000],
+            [0.31 / 2100., 0., 0.07, 0., 0., 0.],
             TransformKind::ChirpZ,
         ),
     ] {
@@ -342,7 +354,7 @@ fn correlation_case(
         (q, g)
     };
     let mut want = vec![];
-    for nu in frequencies.chunks_exact(2) {
+    for nu in frequencies.as_chunks::<2>().0 {
         let mut re = 0.;
         let mut im = 0.;
         let mut norm = 0.;

@@ -1,6 +1,11 @@
-//! Standalone qualification/benchmark driver. Built by the temporary manifest
-//! documented in P2-evidence.md, so P2 adds no solver dependency to the backend.
-//! The unchanged wave FFT source is compiled as the CPU reference.
+//! Standalone qualification/benchmark driver, built by the temporary manifest
+//! described in P2-evidence.md so the backend gains no solver dependency.
+//! The unchanged wave FFT source is compiled as the f64 CPU reference.
+//!
+//! Modes: `samples` (every default sample pupil: FFT and optical MTF vs f64),
+//! `dense` (outer-field pupils at N=64/256/1024 and 1024→2048 MFTs vs f64),
+//! `sizes` (warm timings: FFT 256²–2048², MFT, optical correlation).
+//! `P2_LIBRARY=runtime` selects the runtime-compiled library.
 #[allow(dead_code)]
 #[path = "../../../mklight-wave/src/fft.rs"]
 mod reference;
@@ -11,6 +16,7 @@ use mklight_wave::{PupilFunction, PupilSettings, trace_pupil};
 use num_complex::Complex64 as C;
 use serde_json::json;
 use std::time::Instant;
+
 fn read(b: &dyn ComputeBackend, r: &PlanResult) -> Vec<[f32; 2]> {
     let BufferData::Complex32(v) = b
         .readback(r.outputs[0].view(), &JobContext::new())
@@ -21,63 +27,100 @@ fn read(b: &dyn ComputeBackend, r: &PlanResult) -> Vec<[f32; 2]> {
     };
     v
 }
-fn upload(b: &dyn ComputeBackend, field: &[C], n: usize) -> BufferHandle {
-    b.upload_buffer(
-        BufferDesc::new(ElementType::Complex32, vec![n, n]),
-        BufferData::Complex32(field.iter().map(|z| [z.re as f32, z.im as f32]).collect()),
-    )
-    .unwrap()
+fn import(
+    b: &dyn ComputeBackend,
+    p: &mut ResidentPlan,
+    ty: ElementType,
+    shape: Vec<usize>,
+    data: BufferData,
+) -> PlanView {
+    let h = b.upload_buffer(BufferDesc::new(ty, shape), data).unwrap();
+    let i = p.import(h.view());
+    p.view(i).unwrap()
 }
-fn plan(
+fn complex(field: &[C]) -> BufferData {
+    BufferData::Complex32(field.iter().map(|z| [z.re as f32, z.im as f32]).collect())
+}
+/// Forward n×n → m×m transform: FFT, separable ChirpZ or symmetric skew MFT.
+fn transform_plan(
+    b: &dyn ComputeBackend,
     s: Snapshot,
-    h: &BufferHandle,
+    field: &[C],
     n: usize,
     m: usize,
-    affine: Option<[Df32; 6]>,
-    chain: bool,
+    affine: Option<[f64; 6]>,
 ) -> ResidentPlan {
     let mut p = ResidentPlan::new(s);
-    p.settings = json!({"p2_benchmark":"v1","seed":0,"n":n,"m":m});
-    let i = p.import(h.view());
+    let input = import(
+        b,
+        &mut p,
+        ElementType::Complex32,
+        vec![n, n],
+        complex(field),
+    );
     let o = p.scratch(BufferDesc::new(ElementType::Complex32, vec![m, m]));
+    let kind = match affine {
+        None => TransformKind::Fft,
+        Some(a) if a[1] == 0.0 => TransformKind::ChirpZ,
+        Some(_) => TransformKind::AffineMft,
+    };
     p.operations
         .push(ResidentOp::Transforms(Request::Transform(TransformPlan {
-            kind: if affine.is_some() {
-                TransformKind::AffineMft
-            } else {
-                TransformKind::Fft
-            },
-            input: p.view(i).unwrap(),
+            kind,
+            input,
             output: o,
             dimensions: vec![n, n],
             output_dimensions: vec![m, m],
             sign: -1,
             scale: 1.,
-            affine: affine.unwrap_or([Df32::ZERO; 6]),
+            affine: affine.unwrap_or([0.; 6]).map(Df32::from_f64),
         })));
-    if chain {
-        let back = p.scratch(BufferDesc::new(ElementType::Complex32, vec![n, n]));
-        p.operations
-            .push(ResidentOp::Transforms(Request::Transform(TransformPlan {
-                kind: TransformKind::Fft,
-                input: p.view(o).unwrap(),
-                output: back,
-                dimensions: vec![n, n],
-                output_dimensions: vec![n, n],
-                sign: 1,
-                scale: 1. / (n * n) as f32,
-                affine: [Df32::ZERO; 6],
-            })));
-        p.outputs = vec![back];
-    } else {
-        p.outputs = vec![o];
-    }
+    p.outputs = vec![o];
     p
 }
+fn mft_affine(n: usize, skew: bool) -> [f64; 6] {
+    let s = if skew { -0.07 / n as f64 } else { 0. };
+    [0.37 / n as f64, s, -0.13, s, 0.29 / n as f64, 0.17]
+}
+/// f64 reference through the unchanged wave routines.
+fn reference(field: &[C], n: usize, m: usize, affine: Option<[f64; 6]>) -> Vec<C> {
+    let ctx = JobContext::new();
+    let Some(a) = affine else {
+        let mut v = field.to_vec();
+        reference::fft2(&mut v, n, reference::Dir::Forward, n, &ctx).unwrap();
+        return v;
+    };
+    let nu: Vec<_> = (0..n).map(|i| i as f64).collect();
+    let mut src = field.to_vec();
+    for j in 0..n {
+        for i in 0..n {
+            src[j * n + i] *= C::from_polar(
+                1.,
+                -std::f64::consts::TAU * (a[2] * i as f64 + a[5] * j as f64),
+            );
+        }
+    }
+    if a[1] != 0.0 {
+        let xs: Vec<_> = (0..m).map(|k| k as f64).collect();
+        reference::affine_mft(
+            &src,
+            n,
+            &nu,
+            &xs,
+            &xs,
+            [[-a[0], -a[1]], [-a[3], -a[4]]],
+            &ctx,
+        )
+        .unwrap()
+    } else {
+        let xs: Vec<_> = (0..m).map(|k| -a[0] * k as f64).collect();
+        let ys: Vec<_> = (0..m).map(|k| -a[4] * k as f64).collect();
+        reference::mft(&src, n, &nu, &nu, &xs, &ys, &ctx).unwrap()
+    }
+}
+/// T gate: relative L2 and scaled maximum; returns relative L2.
 fn error(a: &[[f32; 2]], b: &[C], l1: f64) -> f64 {
-    let mut e = 0.;
-    let mut norm = 0.;
-    let mut max = 0f64;
+    let (mut e, mut norm, mut max) = (0., 0., 0f64);
     for (a, b) in a.iter().zip(b) {
         let z = C::new(a[0] as f64, a[1] as f64) - b;
         e += z.norm_sqr();
@@ -91,232 +134,82 @@ fn error(a: &[[f32; 2]], b: &[C], l1: f64) -> f64 {
     );
     rel
 }
-fn optical(b: &dyn ComputeBackend, s: Snapshot, pupil: &PupilFunction) -> f64 {
-    let n = pupil.n();
-    let freqs = [0., 5., 17., 53.];
-    let ctx = JobContext::new();
-    let want = mklight_wave::mtf_direct(pupil, &freqs, &Default::default(), &ctx).unwrap();
-    let mut p = ResidentPlan::new(s);
-    let mut imp = |ty, shape, data| {
-        let h = b.upload_buffer(BufferDesc::new(ty, shape), data).unwrap();
-        let i = p.import(h.view());
-        p.view(i).unwrap()
-    };
-    let amplitude = imp(
-        ElementType::F32,
-        vec![n, n],
-        BufferData::F32(pupil.amplitude().iter().map(|v| *v as f32).collect()),
-    );
-    let coverage = imp(
-        ElementType::F32,
-        vec![n, n],
-        BufferData::F32(pupil.coverage().iter().map(|v| *v as f32).collect()),
-    );
-    let opd = imp(
-        ElementType::DoubleFloat,
-        vec![n, n],
-        BufferData::DoubleFloat(
-            pupil
-                .opd_waves()
-                .iter()
-                .map(|v| Df32::from_f64(if v.is_finite() { *v } else { 0. }))
-                .collect(),
-        ),
-    );
-    let frequencies = imp(
-        ElementType::F32,
-        vec![8, 2],
-        BufferData::F32(
-            freqs
-                .iter()
-                .flat_map(|v| [0f32, *v as f32])
-                .chain(freqs.iter().flat_map(|v| [*v as f32, 0f32]))
-                .collect(),
-        ),
-    );
-    let output = p.scratch(BufferDesc::new(ElementType::Complex32, vec![8]));
-    let frame = pupil
-        .geometry()
-        .chief_frame()
-        .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
-    let req = OpticalCorrelation {
-        stencil: None,
-        amplitude,
-        coverage,
-        opd,
-        frequencies,
-        frame,
-        sin_max: Df32::from_f64(pupil.geometry().sin_max()),
-        wavelength_over_index: Df32::from_f64(
-            pupil.wavelength_um() * 1e-3 / pupil.geometry().image_index,
-        ),
-        output,
-    };
-    p.operations
-        .push(ResidentOp::Transforms(Request::OpticalCorrelation(req)));
-    p.outputs = vec![output];
-    let r = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
-    let got = read(b, &r);
-    let mut max = 0f64;
-    for (a, b) in got.iter().zip(want.tangential.iter().chain(&want.sagittal)) {
-        max = max.max(((a[0] as f64).hypot(a[1] as f64) - b).abs());
-    }
-    assert!(max <= 2e-3, "optical MTF max={max}");
-    max
-}
-fn bench(
+fn optical_plan(
     b: &dyn ComputeBackend,
     s: Snapshot,
     pupil: &PupilFunction,
-    name: &str,
-    m: usize,
-    skew: bool,
-) {
+    freqs: &[f64],
+) -> ResidentPlan {
     let n = pupil.n();
-    let original = pupil.debye_field();
-    let field: Vec<C> = original
-        .iter()
-        .map(|z| C::new(z.re as f32 as f64, z.im as f32 as f64))
-        .collect();
-    let l1 = field.iter().map(|z| z.norm()).sum();
-    std::fs::create_dir_all("/tmp/mklight-p2-pupils").unwrap();
-    let stored = format!("/tmp/mklight-p2-pupils/{name}-{n}-{m}-{skew}.complex32");
-    let bytes: Vec<u8> = field
-        .iter()
-        .flat_map(|z| [z.re as f32, z.im as f32])
-        .flat_map(f32::to_le_bytes)
-        .collect();
-    std::fs::write(&stored, bytes).unwrap();
-    println!(
-        "{}",
-        json!({"kind":"input","case":name,"n":n,"m":m,"stored":stored,"snapshot":s.hash().to_hex(),"seed":0,"layout":"little-endian complex32 row-major"})
+    let mut p = ResidentPlan::new(s);
+    let f32s = |v: &[f64]| BufferData::F32(v.iter().map(|v| *v as f32).collect());
+    let amplitude = import(
+        b,
+        &mut p,
+        ElementType::F32,
+        vec![n, n],
+        f32s(pupil.amplitude()),
     );
-    let affine = if m != n || skew {
-        Some(
-            [
-                0.37 / n as f64,
-                if skew { -0.07 / n as f64 } else { 0. },
-                -0.13,
-                if skew { -0.07 / n as f64 } else { 0. },
-                0.29 / n as f64,
-                0.17,
-            ]
-            .map(Df32::from_f64),
-        )
-    } else {
-        None
-    };
-    let cpu = || {
-        if let Some(a) = affine {
-            let a = a.map(Df32::to_f64);
-            let nu: Vec<_> = (0..n).map(|i| i as f64).collect();
-            let xs: Vec<_> = (0..m).map(|k| k as f64).collect();
-            let mut src = field.clone();
-            for j in 0..n {
-                for i in 0..n {
-                    src[j * n + i] *= C::from_polar(
-                        1.,
-                        -std::f64::consts::TAU * (a[2] * i as f64 + a[5] * j as f64),
-                    );
-                }
-            }
-            if skew {
-                reference::affine_mft(
-                    &src,
-                    n,
-                    &nu,
-                    &xs,
-                    &xs,
-                    [[-a[0], -a[1]], [-a[3], -a[4]]],
-                    &JobContext::new(),
-                )
-                .unwrap()
-            } else {
-                let xs: Vec<_> = (0..m).map(|k| -a[0] * k as f64).collect();
-                let ys: Vec<_> = (0..m).map(|k| -a[4] * k as f64).collect();
-                reference::mft(&src, n, &nu, &nu, &xs, &ys, &JobContext::new()).unwrap()
-            }
-        } else {
-            let mut v = field.clone();
-            reference::fft2(&mut v, n, reference::Dir::Forward, n, &JobContext::new()).unwrap();
-            v
-        }
-    };
-    let h = upload(b, &field, n);
-    let p = plan(s.clone(), &h, n, m, affine, false);
-    let cpu_start = Instant::now();
-    let want = cpu();
-    let cpu_cold = cpu_start.elapsed().as_secs_f64();
-    let start = Instant::now();
-    let r = b
-        .submit_plan(p.clone(), &JobContext::new())
-        .unwrap()
-        .wait()
-        .unwrap();
-    let got = read(b, &r);
-    let cold = start.elapsed().as_secs_f64();
-    let rel = error(&got, &want, l1);
-    println!(
-        "{}",
-        json!({"case":name,"n":n,"m":m,"skew":skew,"kind":"cold","cpu_s":cpu_cold,"metal_s":cold,"relative_l2":rel,"stats":r.stats,"run_info":r.run_info})
+    let coverage = import(
+        b,
+        &mut p,
+        ElementType::F32,
+        vec![n, n],
+        f32s(pupil.coverage()),
     );
-    drop(r);
-    // One warm-up is separate from ten measured runs; readback is included.
-    let r = b
-        .submit_plan(p.clone(), &JobContext::new())
-        .unwrap()
-        .wait()
-        .unwrap();
-    drop(read(b, &r));
-    drop(r);
-    drop(cpu());
-    for run in 0..10 {
-        let t = Instant::now();
-        let baseline = cpu();
-        let cpu_s = t.elapsed().as_secs_f64();
-        std::hint::black_box(baseline);
-        let t = Instant::now();
-        let r = b
-            .submit_plan(p.clone(), &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        let got = read(b, &r);
-        let wall = t.elapsed().as_secs_f64();
-        let rel = error(&got, &want, l1);
-        let stats = r.stats.clone();
-        drop(r);
-        let t = Instant::now();
-        let h = upload(b, &field, n);
-        let fed = plan(s.clone(), &h, n, m, affine, false);
-        let r = b
-            .submit_plan(fed, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        drop(read(b, &r));
-        let host_fed = t.elapsed().as_secs_f64();
-        println!(
-            "{}",
-            json!({"case":name,"kind":"warm","n":n,"m":m,"skew":skew,"run":run,"cpu_s":cpu_s,"resident_s":wall,"host_fed_s":host_fed,"relative_l2":rel,"stats":stats})
-        );
-    }
-    if affine.is_none() {
-        let p = plan(s, &h, n, n, None, true);
-        let t = Instant::now();
-        let r = b
-            .submit_plan(p, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        let got = read(b, &r);
-        println!(
-            "{}",
-            json!({"case":name,"kind":"resident_roundtrip","n":n,"wall_s":t.elapsed().as_secs_f64(),"relative_l2":error(&got,&field,l1),"stats":r.stats,"run_info":r.run_info})
-        );
-    }
+    let opd = BufferData::DoubleFloat(
+        pupil
+            .opd_waves()
+            .iter()
+            .map(|v| Df32::from_f64(if v.is_finite() { *v } else { 0. }))
+            .collect(),
+    );
+    let opd = import(b, &mut p, ElementType::DoubleFloat, vec![n, n], opd);
+    let pairs: Vec<f32> = freqs
+        .iter()
+        .flat_map(|v| [0f32, *v as f32])
+        .chain(freqs.iter().flat_map(|v| [*v as f32, 0f32]))
+        .collect();
+    let frequencies = import(
+        b,
+        &mut p,
+        ElementType::F32,
+        vec![2 * freqs.len(), 2],
+        BufferData::F32(pairs),
+    );
+    let output = p.scratch(BufferDesc::new(
+        ElementType::Complex32,
+        vec![2 * freqs.len()],
+    ));
+    let g = pupil.geometry();
+    p.operations
+        .push(ResidentOp::Transforms(Request::OpticalCorrelation(
+            OpticalCorrelation {
+                stencil: None,
+                amplitude,
+                coverage,
+                opd,
+                frequencies,
+                frame: g.chief_frame().map(|v| [v.x, v.y, v.z].map(Df32::from_f64)),
+                sin_max: Df32::from_f64(g.sin_max()),
+                wavelength_over_index: Df32::from_f64(pupil.wavelength_um() * 1e-3 / g.image_index),
+                output,
+            },
+        )));
+    p.outputs = vec![output];
+    p
 }
-fn main() {
+/// Optical MTF (tangential then sagittal) vs the f64 direct autocorrelation.
+fn mtf_error(got: &[[f32; 2]], want: &mklight_wave::MtfCurve) -> f64 {
+    let max = got
+        .iter()
+        .zip(want.tangential.iter().chain(&want.sagittal))
+        .map(|(a, b)| ((a[0] as f64).hypot(a[1] as f64) - b).abs())
+        .fold(0., f64::max);
+    assert!(max <= 2e-3, "optical MTF max={max}");
+    max
+}
+fn backend() -> MetalBackend {
     let start = Instant::now();
     let b = MetalBackend::with_options(&MetalOptions {
         library: if std::env::var("P2_LIBRARY").as_deref() == Ok("runtime") {
@@ -331,34 +224,204 @@ fn main() {
     assert!(b.precision().probe.error_free_transforms());
     println!(
         "{}",
-        json!({"device":b.info().backend_id(),"build":b.precision().kernel_build,"probe":format!("{:?}",b.precision().probe),"startup_s":start.elapsed().as_secs_f64()})
+        json!({"device":b.info().backend_id(),"build":b.precision().kernel_build,"startup_s":start.elapsed().as_secs_f64()})
     );
+    b
+}
+fn pupil(name: &str, grid: usize, outer: bool) -> (Snapshot, PupilFunction) {
+    let sys = mklight_core::samples::all()
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .unwrap()
+        .1;
+    let tracer = mklight_analysis::tracer_for(sys.clone()).unwrap();
+    let f = if outer { tracer.fields().len() - 1 } else { 0 };
+    let settings = PupilSettings {
+        grid,
+        ..Default::default()
+    };
+    let tp = trace_pupil(&tracer, tracer.field(f), 0, &settings, &JobContext::new()).unwrap();
+    (Snapshot::new(sys).unwrap(), tp.pupil)
+}
+fn rounded(field: &[C]) -> Vec<C> {
+    field
+        .iter()
+        .map(|z| C::new(z.re as f32 as f64, z.im as f32 as f64))
+        .collect()
+}
+/// A pupil field centred in an m×m zero grid (PSF padding).
+fn embed(field: &[C], n: usize, m: usize) -> Vec<C> {
+    let mut out = vec![C::default(); m * m];
+    let o = (m - n) / 2;
+    for j in 0..n {
+        out[(j + o) * m + o..(j + o) * m + o + n].copy_from_slice(&field[j * n..(j + 1) * n]);
+    }
+    out
+}
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+const RUNS: usize = 15;
+/// Warm medians (one unmeasured warm-up): Metal wall to plan completion and
+/// including final readback, Metal device time, and the f64 CPU reference wall.
+fn time(case: &str, b: &dyn ComputeBackend, plan: &ResidentPlan, cpu: impl Fn()) -> Vec<[f32; 2]> {
+    let run = || {
+        let t = Instant::now();
+        let r = b
+            .submit_plan(plan.clone(), &JobContext::new())
+            .unwrap()
+            .wait()
+            .unwrap();
+        let done = t.elapsed().as_secs_f64();
+        let v = read(b, &r);
+        (t.elapsed().as_secs_f64(), r.stats, v, done)
+    };
+    let (_, _, got, _) = run();
+    cpu();
+    let (mut wall, mut device, mut host, mut complete) = (vec![], vec![], vec![], vec![]);
+    let mut commands = 0;
+    let runs = std::env::var("P2_RUNS").map_or(RUNS, |v| v.parse().unwrap());
+    for _ in 0..runs {
+        let (w, s, _, c) = run();
+        wall.push(w);
+        complete.push(c);
+        device.push(s.device_seconds);
+        commands = s.command_buffers;
+        let t = Instant::now();
+        cpu();
+        host.push(t.elapsed().as_secs_f64());
+    }
+    if std::env::var("P2_STATS").is_ok() {
+        let (_, s, _, c) = run();
+        eprintln!("{case}: complete {:.3} ms, stats {s:?}", c * 1e3);
+    }
+    let ms = |v: Vec<f64>| (median(v) * 1e5).round() / 100.;
+    let min = device.iter().copied().fold(f64::INFINITY, f64::min);
+    println!(
+        "{}",
+        json!({"case":case,"cpu_f64_ms":ms(host),"metal_wall_ms":ms(wall),"metal_complete_ms":ms(complete),"metal_device_ms":ms(device),"metal_device_min_ms":(min * 1e5).round() / 100.,"commands":commands})
+    );
+    got
+}
+fn sizes(b: &dyn ComputeBackend) {
+    let (s, p1024) = pupil("singlet", 1024, true);
+    let field = rounded(&p1024.debye_field());
+    for n in [256, 512, 1024, 2048] {
+        let (s, src) = match n {
+            1024 => (s.clone(), field.clone()),
+            2048 => (s.clone(), embed(&field, 1024, 2048)),
+            _ => {
+                let (s, p) = pupil("singlet", n, true);
+                (s, rounded(&p.debye_field()))
+            }
+        };
+        let plan = transform_plan(b, s, &src, n, n, None);
+        let want = reference(&src, n, n, None);
+        let got = time(&format!("fft {n}²"), b, &plan, || {
+            drop(reference(&src, n, n, None))
+        });
+        let rel = error(&got, &want, src.iter().map(|z| z.norm()).sum());
+        println!("{}", json!({"case":format!("fft {n}²"),"relative_l2":rel}));
+    }
+    let (s256, p256) = pupil("singlet", 256, true);
+    let f256 = rounded(&p256.debye_field());
+    for (n, m, skew, src, s) in [
+        (256, 512, false, &f256, &s256),
+        (1024, 2048, false, &field, &s),
+        (256, 512, true, &f256, &s256),
+        (1024, 2048, true, &field, &s),
+    ] {
+        let a = Some(mft_affine(n, skew));
+        let case = format!("{} {n}→{m}", if skew { "skew MFT" } else { "MFT" });
+        let plan = transform_plan(b, s.clone(), src, n, m, a);
+        let want = reference(src, n, m, a);
+        let got = time(&case, b, &plan, || drop(reference(src, n, m, a)));
+        let rel = error(&got, &want, src.iter().map(|z| z.norm()).sum());
+        println!("{}", json!({"case":case,"relative_l2":rel}));
+    }
+    let freqs: Vec<f64> = (0..32).map(|i| 3.0 * i as f64).collect();
+    for (n, s, p) in [(256, &s256, &p256), (1024, &s, &p1024)] {
+        let case = format!("optical correlation {n}², {} frequencies", 2 * freqs.len());
+        let plan = optical_plan(b, s.clone(), p, &freqs);
+        let ctx = JobContext::new();
+        let cpu = || mklight_wave::mtf_direct(p, &freqs, &Default::default(), &ctx).unwrap();
+        let want = cpu();
+        let got = time(&case, b, &plan, || drop(cpu()));
+        println!(
+            "{}",
+            json!({"case":case,"mtf_max_abs":mtf_error(&got, &want)})
+        );
+    }
+}
+fn check(
+    b: &dyn ComputeBackend,
+    s: Snapshot,
+    field: &[C],
+    n: usize,
+    m: usize,
+    affine: Option<[f64; 6]>,
+) -> f64 {
+    let r = b
+        .submit_plan(
+            transform_plan(b, s, field, n, m, affine),
+            &JobContext::new(),
+        )
+        .unwrap()
+        .wait()
+        .unwrap();
+    error(
+        &read(b, &r),
+        &reference(field, n, m, affine),
+        field.iter().map(|z| z.norm()).sum(),
+    )
+}
+fn main() {
+    let b = backend();
     let mode = std::env::args().nth(1).unwrap_or("samples".into());
+    if mode == "sizes" {
+        return sizes(&b);
+    }
+    if mode == "profile" {
+        for n in [1024, 2048] {
+            let field: Vec<C> = (0..n * n)
+                .map(|i| C::new((i % 7) as f64, (i % 3) as f64))
+                .collect();
+            let mut p = ResidentPlan::new(Snapshot::new(mklight_core::samples::singlet()).unwrap());
+            let input = import(
+                &b,
+                &mut p,
+                ElementType::Complex32,
+                vec![n, n],
+                complex(&field),
+            );
+            let o = p.scratch(BufferDesc::new(ElementType::Complex32, vec![n, n]));
+            p.operations
+                .push(ResidentOp::Transforms(Request::Transpose {
+                    input,
+                    output: o,
+                }));
+            p.outputs = vec![o];
+            time(&format!("transpose {n}²"), &b, &p, || {});
+            let p = transform_plan(
+                &b,
+                Snapshot::new(mklight_core::samples::singlet()).unwrap(),
+                &field,
+                n,
+                n,
+                None,
+            );
+            time(&format!("fft {n}²"), &b, &p, || {});
+        }
+        return;
+    }
+    let (mut fft, mut mtf) = (0f64, 0f64);
     for (name, sys) in mklight_core::samples::all() {
-        if mode == "skew" && name != "xy_freeform" {
-            continue;
-        }
-        if mode == "dense"
-            && ![
-                "singlet",
-                "cooke_triplet",
-                "double_gauss",
-                "newtonian",
-                "relay",
-                "hybrid_doe",
-                "anamorphic",
-                "xy_freeform",
-            ]
-            .contains(&name)
-        {
-            continue;
-        }
         let snapshot = Snapshot::new(sys.clone()).unwrap();
         let tracer = mklight_analysis::tracer_for(sys).unwrap();
         if mode == "samples" {
             for f in 0..tracer.fields().len() {
                 for w in 0..tracer.num_wavelengths() {
-                    let t = Instant::now();
                     let tp = trace_pupil(
                         &tracer,
                         tracer.field(f),
@@ -367,90 +430,76 @@ fn main() {
                         &JobContext::new(),
                     )
                     .unwrap();
-                    let pupil = tp.pupil;
-                    let n = pupil.n();
-                    let prep = t.elapsed().as_secs_f64();
-                    let src: Vec<C> = pupil
-                        .debye_field()
-                        .iter()
-                        .map(|z| C::new(z.re as f32 as f64, z.im as f32 as f64))
-                        .collect();
-                    let mut want = src.clone();
-                    reference::fft2(&mut want, n, reference::Dir::Forward, n, &JobContext::new())
-                        .unwrap();
-                    let h = upload(&b, &src, n);
-                    let p = plan(snapshot.clone(), &h, n, n, None, false);
+                    let n = tp.pupil.n();
+                    let rel = check(
+                        &b,
+                        snapshot.clone(),
+                        &rounded(&tp.pupil.debye_field()),
+                        n,
+                        n,
+                        None,
+                    );
+                    let freqs = [0., 5., 17., 53.];
                     let r = b
-                        .submit_plan(p, &JobContext::new())
+                        .submit_plan(
+                            optical_plan(&b, snapshot.clone(), &tp.pupil, &freqs),
+                            &JobContext::new(),
+                        )
                         .unwrap()
                         .wait()
                         .unwrap();
-                    let got = read(&b, &r);
-                    let rel = error(&got, &want, src.iter().map(|z| z.norm()).sum());
-                    let mtf = optical(&b, snapshot.clone(), &pupil);
+                    let want = mklight_wave::mtf_direct(
+                        &tp.pupil,
+                        &freqs,
+                        &Default::default(),
+                        &JobContext::new(),
+                    )
+                    .unwrap();
+                    let m = mtf_error(&read(&b, &r), &want);
+                    (fft, mtf) = (fft.max(rel), mtf.max(m));
                     println!(
                         "{}",
-                        json!({"kind":"sample","name":name,"field":f,"wavelength":w,"n":n,"prep_s":prep,"fft_relative_l2":rel,"mtf_max_abs":mtf,"warnings":tp.warnings,"stats":r.stats,"run_info":r.run_info})
+                        json!({"name":name,"field":f,"wavelength":w,"n":n,"fft_relative_l2":rel,"mtf_max_abs":m})
                     );
                 }
             }
-            let tp = trace_pupil(
-                &tracer,
-                tracer.field(0),
-                0,
-                &PupilSettings::default(),
-                &JobContext::new(),
-            )
-            .unwrap();
-            bench(
-                &b,
-                snapshot,
-                &tp.pupil,
-                &format!("{name}:f0:w0"),
-                tp.pupil.n(),
-                false,
-            );
-        } else if mode == "skew" {
-            let tp = trace_pupil(
-                &tracer,
-                tracer.field(tracer.fields().len() - 1),
-                0,
-                &PupilSettings {
-                    grid: 1024,
-                    ..Default::default()
-                },
-                &JobContext::new(),
-            )
-            .unwrap();
-            bench(&b, snapshot, &tp.pupil, name, 2048, true);
-        } else {
+        } else if [
+            "singlet",
+            "cooke_triplet",
+            "double_gauss",
+            "newtonian",
+            "relay",
+            "hybrid_doe",
+            "anamorphic",
+            "xy_freeform",
+        ]
+        .contains(&name)
+        {
             for n in [64, 256, 1024] {
-                let tp = trace_pupil(
-                    &tracer,
-                    tracer.field(tracer.fields().len() - 1),
-                    0,
-                    &PupilSettings {
-                        grid: n,
-                        ..Default::default()
-                    },
-                    &JobContext::new(),
-                )
-                .unwrap();
-                bench(
-                    &b,
-                    snapshot.clone(),
-                    &tp.pupil,
-                    &format!("{name}:f{}:w0", tracer.fields().len() - 1),
-                    n,
-                    false,
-                );
+                let (s, p) = pupil(name, n, true);
+                let field = rounded(&p.debye_field());
+                let mut cases = vec![(n, None)];
                 if n == 1024 {
-                    bench(&b, snapshot.clone(), &tp.pupil, name, 2048, false);
-                    if name == "xy_freeform" {
-                        bench(&b, snapshot.clone(), &tp.pupil, name, 2048, true);
-                    }
+                    cases.extend([
+                        (2048, Some(mft_affine(n, false))),
+                        (2048, Some(mft_affine(n, true))),
+                    ]);
+                }
+                for (m, a) in cases {
+                    let rel = check(&b, s.clone(), &field, n, m, a);
+                    fft = fft.max(rel);
+                    println!(
+                        "{}",
+                        json!({"name":name,"n":n,"m":m,"affine":a,"relative_l2":rel})
+                    );
                 }
             }
         }
     }
+    let summary = if mode == "samples" {
+        json!({"mode":mode,"max_relative_l2":fft,"max_mtf_abs":mtf})
+    } else {
+        json!({"mode":mode,"max_relative_l2":fft})
+    };
+    println!("{summary}");
 }

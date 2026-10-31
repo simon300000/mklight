@@ -8,8 +8,9 @@ use bytemuck::{Pod, Zeroable};
 pub struct Params {
     pub n: u32,
     pub height: u32,
-    pub frequency: u32,
-    pub start: u32,
+    /// Frequencies in the current tile, starting at `first`.
+    pub frequencies: u32,
+    pub first: u32,
     pub optical: u32,
     pub covered: u32,
     pub prepared: u32,
@@ -105,7 +106,7 @@ pub(super) fn cpu(
     let fs = values::<f32>(x, freq);
     let mut prepared = vec![];
     if let Request::PrepareOpticalStencil(_) = r {
-        for nu in fs.chunks_exact(2) {
+        for nu in fs.as_chunks::<2>().0 {
             for k in 0..count {
                 if k % 4096 == 0 {
                     ctl.check()?;
@@ -145,7 +146,7 @@ pub(super) fn cpu(
         _ => unreachable!(),
     };
     let mut out = vec![];
-    for (f, nu) in fs.chunks_exact(2).enumerate() {
+    for (f, nu) in fs.as_chunks::<2>().0.iter().enumerate() {
         let mut channels = vec![0f32; 3 * count];
         for k in 0..count {
             if k % 4096 == 0 {
