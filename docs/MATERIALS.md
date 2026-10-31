@@ -89,9 +89,11 @@ point per offset surface, computed at that glass's catalogue reference
 temperature and 1 atm. Only the shifted point carries that surface marker;
 its `offset` field identifies the changes. `glass_substitution` measures
 windows and distances from the **offset** position at catalogue reference
-conditions, then installs a nominal candidate with **both offsets cleared**,
+conditions, then installs a nominal candidate with **both base-reference offsets cleared**,
 even when the chosen catalogue/name is unchanged. A melt offset belongs to
 the original element's material data and is not transferred to a replacement.
+Explicit configuration overrides and pickups remain active, as for other
+numeric parameters; they can prescribe offsets on the replacement.
 Continuous material variables on a substituted surface are rejected.
 `glass_info` accepts the same optional `offset` object: computed indices,
 d/V/partial-dispersion values and the curve include it, while
