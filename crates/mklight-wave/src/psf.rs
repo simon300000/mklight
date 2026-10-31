@@ -52,7 +52,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::fft::{Dir, fft2, mft, next_fast_len};
+use crate::fft::{Dir, affine_mft, fft2, mft, next_fast_len};
 use crate::pupil::PupilFunction;
 use crate::warnings::{WaveWarning, push_unique};
 
@@ -317,10 +317,10 @@ fn separable(b: &[[f64; 2]; 2]) -> bool {
 /// `x_s = origin + ((k − c)·dx, (l − c)·dx)` relative to the pupil's
 /// reference point, evaluated at their normal-plane feet `B·x_s` (module
 /// docs). A diagonal `B` (on axis, or a chief ray in the x–z or y–z plane)
-/// uses the separable matrix transform; otherwise the sum
+/// uses the separable matrix transform. A skew `B` uses the 2-D chirp
+/// convolution ([`affine_mft`]) or, on small grids, the sum
 /// `Σ_j r_y^j Σ_i r_x^i p_ij` (`r = e^{i2πΔν·ξ}`, a unit-modulus phase
-/// factor dropped) is evaluated by Horner's rule along both pupil axes,
-/// `O(n²M²)`.
+/// factor dropped) by Horner's rule along both pupil axes, `O(n²M²)`.
 fn surface_intensity(
     pupil: &PupilFunction,
     dx: f64,
@@ -340,6 +340,10 @@ fn surface_intensity(
         let xn: Vec<f64> = xs.iter().map(|x| b[0][0] * x).collect();
         let yn: Vec<f64> = ys.iter().map(|y| b[1][1] * y).collect();
         let u = mft(&field, n, &nu, &nu, &xn, &yn, ctx)?;
+        return Ok(u.iter().map(|z| z.norm_sqr()).collect());
+    }
+    if n >= 32 && size >= 32 {
+        let u = affine_mft(&field, n, &nu, &xs, &ys, b, ctx)?;
         return Ok(u.iter().map(|z| z.norm_sqr()).collect());
     }
     // Bounding box of the non-zero samples keeps the Horner loops short.
@@ -762,14 +766,8 @@ pub struct PolyPsfSettings {
     pub grid_size: usize,
     pub spacing_mm: f64,
     pub normalization: PsfNormalization,
-    /// `Matrix` (the default from [`PolyPsfSettings::new`]) evaluates every
-    /// wavelength exactly on the common grid (band-limited resampling).
-    /// `Fft` keeps that separable transform where `B` is diagonal (on axis,
-    /// or a chief ray in the x–z or y–z plane), which is also the cheaper
-    /// one there. A skew pupil, whose exact transform costs `n²M²`, is
-    /// transformed by FFT on its chief-normal plane at a native spacing
-    /// `≤ min(Δx, λF#/8)` and projected bicubically onto the image surface,
-    /// with errors below about 10⁻³ of the peak.
+    /// Both transforms evaluate every wavelength exactly on the common grid
+    /// (band-limited resampling), by chirp convolutions on large grids.
     pub transform: PsfTransform,
 }
 
@@ -817,46 +815,8 @@ pub fn polychromatic_psf(
         let wn = w / wsum;
         let off = pupil.image_offset_mm();
         let (_, raw_energy) = raw_constants(pupil);
-        let lf = pupil.lambda_f_mm();
-        let native = dx.min(0.125 * lf);
-        let m_native =
-            next_fast_len((pupil.alias_free_field_mm() / native).ceil() as usize).max(pupil.n());
-        let b = pupil.geometry().surface_to_normal();
-        let matrix =
-            settings.transform == PsfTransform::Matrix || separable(&b) || m_native > MAX_FFT_LEN;
-        let unit: Vec<f64> = if matrix {
-            surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
-                .into_iter()
-                .map(|v| v / raw_energy)
-                .collect()
-        } else {
-            let s = PsfSettings {
-                grid_size: m_native,
-                sampling: ImageSampling::Spacing {
-                    mm: pupil.alias_free_field_mm() / m_native as f64,
-                },
-                normalization: PsfNormalization::UnitEnergy,
-                transform: PsfTransform::Fft,
-            };
-            let p = fft_psf(&pupil.on_normal_plane(), &s, &sub.subrange(0.0, 0.9))?;
-            let jac = pupil.geometry().projection_jacobian();
-            let mut data = Vec::with_capacity(size * size);
-            for j in 0..size {
-                sub.check()?;
-                let y = (j as f64 - (size / 2) as f64) * dx - off[1];
-                for i in 0..size {
-                    let x = (i as f64 - (size / 2) as f64) * dx - off[0];
-                    data.push(
-                        jac * p
-                            .interpolate(b[0][0] * x + b[0][1] * y, b[1][0] * x + b[1][1] * y)
-                            .max(0.0),
-                    );
-                }
-                sub.subrange(0.9, 1.0)
-                    .report((j + 1) as f64 / size as f64, "PSF projection");
-            }
-            data
-        };
+        let raw = surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?;
+        let unit: Vec<_> = raw.into_iter().map(|v| v / raw_energy).collect();
         for (a, v) in acc.iter_mut().zip(&unit) {
             *a += wn * v;
         }

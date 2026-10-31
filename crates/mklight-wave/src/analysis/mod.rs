@@ -43,6 +43,7 @@ use mklight_analysis::util::{FieldSelection, WavelengthSelection};
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::{JobContext, MkError, MkResult, RunInfo, Vec3};
 use mklight_trace::{FieldPoint, PreparedField, SequentialTracer};
+use rayon::prelude::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -263,6 +264,13 @@ pub(crate) fn field_value(tracer: &SequentialTracer, p: &FieldPoint) -> [f64; 2]
     [p.hx * m, p.hy * m]
 }
 
+/// Actual pupil sampling in selected-wavelength order.
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
+pub struct PupilSampling {
+    pub wavelength: usize,
+    pub grid: usize,
+}
+
 /// The pupils of one field at the selected wavelengths, placed relative to
 /// a common reference point.
 #[derive(Clone, Debug)]
@@ -279,6 +287,15 @@ pub(crate) struct FieldPupils {
 impl FieldPupils {
     pub fn weighted(&self) -> Vec<(&PupilFunction, f64)> {
         self.pupils.iter().map(|(_, w, p)| (&p.pupil, *w)).collect()
+    }
+    pub fn sampling(&self) -> Vec<PupilSampling> {
+        self.pupils
+            .iter()
+            .map(|(wl, _, p)| PupilSampling {
+                wavelength: *wl,
+                grid: p.pupil.n(),
+            })
+            .collect()
     }
     pub fn orientation(&self) -> MtfOrientation {
         MtfOrientation::from_field(self.point.hx, self.point.hy)
@@ -301,21 +318,25 @@ impl FieldPupils {
         if settings.grid != 0 {
             return Ok(Vec::new());
         }
-        let mut warnings = Vec::new();
         let count = self.pupils.len() as f64;
-        for (i, (_, _, tp)) in self.pupils.iter_mut().enumerate() {
-            let n = ((side / tp.pupil.lambda_f_mm())
-                .max(tp.pupil.n() as f64)
-                .min(crate::sampling::MAX_AUTO_PUPIL as f64)
-                .ceil() as usize)
-                .next_power_of_two();
-            warnings.extend(tp.resample(
-                n,
-                settings.supersample,
-                &ctx.subrange(i as f64 / count, (i + 1) as f64 / count),
-            )?);
-        }
-        Ok(warnings)
+        let warnings: Vec<Vec<String>> = self
+            .pupils
+            .par_iter_mut()
+            .enumerate()
+            .map(|(i, (_, _, tp))| {
+                let n = ((side / tp.pupil.lambda_f_mm())
+                    .max(tp.pupil.n() as f64)
+                    .min(crate::sampling::MAX_AUTO_PUPIL as f64)
+                    .ceil() as usize)
+                    .next_power_of_two();
+                tp.resample(
+                    n,
+                    settings.supersample,
+                    &ctx.subrange(i as f64 / count, (i + 1) as f64 / count),
+                )
+            })
+            .collect::<MkResult<_>>()?;
+        Ok(warnings.into_iter().flatten().collect())
     }
 }
 
@@ -341,16 +362,24 @@ pub(crate) fn field_pupils(
     ctx: &JobContext,
 ) -> MkResult<FieldPupils> {
     let nw = wls.len() as f64;
-    let mut pupils = Vec::with_capacity(wls.len());
+    let traced: Vec<_> = wls
+        .par_iter()
+        .enumerate()
+        .map(|(k, &(wl, w))| {
+            let sub = ctx.subrange(k as f64 / nw, (k + 1) as f64 / nw);
+            trace_pupil(tracer, field, wl, settings, &sub)
+                .map(|p| (wl, w, p))
+                .map_err(|e| in_context(e, &format!("{label}, wavelength {wl}")))
+        })
+        .collect();
+    let mut pupils: Vec<_> = traced.into_iter().collect::<MkResult<_>>()?;
     let mut warnings = Vec::new();
-    for (k, &(wl, w)) in wls.iter().enumerate() {
-        let sub = ctx.subrange(k as f64 / nw, (k + 1) as f64 / nw);
-        let tp = trace_pupil(tracer, field, wl, settings, &sub)
-            .map_err(|e| in_context(e, &format!("{label}, wavelength {wl}")))?;
-        for x in &tp.warnings {
-            warnings.push(format!("{label}, wavelength {wl}: {x}"));
-        }
-        pupils.push((wl, w, tp));
+    for (wl, _, tp) in &pupils {
+        warnings.extend(
+            tp.warnings
+                .iter()
+                .map(|x| format!("{label}, wavelength {wl}: {x}")),
+        );
     }
     let point_of = |p: &TracedPupil| p.info.reference_point_mm;
     let reference_mm = match settings.reference {
@@ -408,16 +437,23 @@ pub(crate) fn system_field_pupils(
     let mut out = Vec::with_capacity(idx.len());
     let mut skipped = Vec::new();
     let mut first_error = None;
-    for (k, &f) in idx.iter().enumerate() {
-        let sub = ctx.subrange(k as f64 / nf, (k + 1) as f64 / nf);
-        match field_pupils(
-            tracer,
-            tracer.field(f),
-            &format!("field {f}"),
-            wls,
-            settings,
-            &sub,
-        ) {
+    let traced: Vec<_> = idx
+        .par_iter()
+        .enumerate()
+        .map(|(k, &f)| {
+            let sub = ctx.subrange(k as f64 / nf, (k + 1) as f64 / nf);
+            field_pupils(
+                tracer,
+                tracer.field(f),
+                &format!("field {f}"),
+                wls,
+                settings,
+                &sub,
+            )
+        })
+        .collect();
+    for (&f, result) in idx.iter().zip(traced) {
+        match result {
             Ok(fp) => {
                 let sf = &tracer.system().system().fields.fields[f];
                 out.push((f, [sf.x, sf.y], fp));

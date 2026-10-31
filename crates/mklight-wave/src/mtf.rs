@@ -832,6 +832,213 @@ pub fn polychromatic_mtf(
     Ok(curve_from_otf(freqs, &acc, &dl, cutoff, warnings))
 }
 
+/// One covered sample of a direct autocorrelation at a fixed frequency:
+/// the coverage-weighted bilinear stencil of the shifted OPD and the
+/// magnitude `|p(u + s)·p*(u)|` (as in [`otf_direct`] and [`otf_surface`]).
+struct FocusTerm {
+    source: usize,
+    neighbours: [usize; 4],
+    coefficients: [f64; 4],
+    magnitude: f64,
+}
+
+/// The terms of one frequency, plus the zero-lag deficit, the
+/// normalisation and the image-offset phasor.
+struct FocusCorrelation {
+    terms: Vec<FocusTerm>,
+    deficit: f64,
+    norm: f64,
+    offset: C64,
+}
+
+/// Defocus changes only the OPD, so the stencils are prepared once.
+fn focus_correlations(
+    p: &PupilFunction,
+    nus: &[[f64; 2]],
+    ctx: &JobContext,
+) -> MkResult<Vec<FocusCorrelation>> {
+    let n = p.n();
+    let map = SensorMap::new(p);
+    let axis = p.geometry().is_on_axis();
+    let points = map.covered(p)?;
+    let field_weights = p.field_weights();
+    let (amp, cov) = (p.amplitude(), p.coverage());
+    let norm = if axis {
+        p.energy()
+    } else {
+        points
+            .iter()
+            .map(|&(k, q, gamma)| cov[k] * amp[k] * amp[k] / (gamma * -q.z))
+            .collect::<mklight_core::math::KahanSum>()
+            .value()
+    };
+    if !(norm > 0.0) {
+        return Err(MkError::Numerical("pupil transmits no light".into()));
+    }
+    let lag0 = norm - field_weights.iter().map(|w| w * w).sum::<f64>();
+    let scale = p.wavelength_um() * 1e-3 / p.geometry().image_index;
+    let per_nu = p.alias_free_field_mm();
+    let off = p.image_offset_mm();
+    nus.par_iter()
+        .map(|nu| {
+            ctx.check()?;
+            let mut terms = Vec::with_capacity(points.len());
+            let mut deficit = mklight_core::math::KahanSum::default();
+            for &(k, q, gamma) in &points {
+                let (ix, iy, qz) = if axis {
+                    (
+                        (k % n) as f64 + nu[0] * per_nu,
+                        (k / n) as f64 + nu[1] * per_nu,
+                        1.0,
+                    )
+                } else {
+                    let Some(x) = map.lattice(q.x + scale * nu[0], q.y + scale * nu[1]) else {
+                        continue;
+                    };
+                    x
+                };
+                let (i, j) = (ix.floor() as i64, iy.floor() as i64);
+                let (tx, ty) = (ix - ix.floor(), iy - iy.floor());
+                let weights = [
+                    (1.0 - tx) * (1.0 - ty),
+                    tx * (1.0 - ty),
+                    (1.0 - tx) * ty,
+                    tx * ty,
+                ];
+                let mut neighbours = [k; 4];
+                let mut coefficients = [0.0; 4];
+                let (mut a, mut c) = (0.0, 0.0);
+                for (s, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+                    let (x, y) = (i + dx, j + dy);
+                    if x < 0 || y < 0 || x >= n as i64 || y >= n as i64 {
+                        continue;
+                    }
+                    let index = y as usize * n + x as usize;
+                    if axis && field_weights[index] <= 0.0 {
+                        continue;
+                    }
+                    neighbours[s] = index;
+                    coefficients[s] = weights[s] * cov[index];
+                    c += coefficients[s];
+                    a += weights[s]
+                        * if axis {
+                            field_weights[index]
+                        } else {
+                            cov[index] * amp[index]
+                        };
+                }
+                if a <= 0.0 {
+                    continue;
+                }
+                coefficients.iter_mut().for_each(|x| *x /= c);
+                let magnitude = if axis {
+                    field_weights[k] * a
+                } else {
+                    let e = cov[k] * amp[k] * amp[k] / (gamma * -q.z);
+                    deficit.add(
+                        (1.0 - cov[k])
+                            * e
+                            * (1.0 - (ix - (k % n) as f64).abs()).max(0.0)
+                            * (1.0 - (iy - (k / n) as f64).abs()).max(0.0),
+                    );
+                    cov[k] * amp[k] / gamma * a / qz
+                };
+                terms.push(FocusTerm {
+                    source: k,
+                    neighbours,
+                    coefficients,
+                    magnitude,
+                });
+            }
+            if axis {
+                let (sx, sy) = (nu[0] * per_nu, nu[1] * per_nu);
+                deficit.add(lag0 * (1.0 - sx.abs()).max(0.0) * (1.0 - sy.abs()).max(0.0));
+            }
+            Ok(FocusCorrelation {
+                terms,
+                deficit: deficit.value(),
+                norm,
+                offset: C64::from_polar(
+                    1.0,
+                    -2.0 * std::f64::consts::PI * (nu[0] * off[0] + nu[1] * off[1]),
+                ),
+            })
+        })
+        .collect()
+}
+
+/// [`polychromatic_mtf`] by [`MtfMethod::Direct`] at each image-plane
+/// shift in `focus` (mm, as in [`through_focus_mtf`]). Each pupil's
+/// autocorrelation stencils are prepared once and reused for every plane.
+pub(crate) fn polychromatic_focus_mtf(
+    pupils: &[(&PupilFunction, f64)],
+    focus: &[f64],
+    freqs: &[f64],
+    orientation: &MtfOrientation,
+    ctx: &JobContext,
+) -> MkResult<Vec<MtfCurve>> {
+    let nus = freq_vectors(freqs, orientation);
+    let wsum: f64 = pupils.iter().map(|(_, w)| w).sum();
+    let tau = 2.0 * std::f64::consts::PI;
+    let mut acc = vec![vec![C64::default(); nus.len()]; focus.len()];
+    let mut dl = vec![C64::default(); nus.len()];
+    let mut warnings = vec![Vec::new(); focus.len()];
+    let mut cutoff: f64 = 0.0;
+    let np = pupils.len() as f64;
+    for (q, &(p, w)) in pupils.iter().enumerate() {
+        let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
+        let wn = w / wsum;
+        let prepared = focus_correlations(p, &nus, &sub.subrange(0.0, 0.2))?;
+        for (d, c) in dl.iter_mut().zip(&prepared) {
+            let sum: mklight_core::math::KahanSum = c.terms.iter().map(|t| t.magnitude).collect();
+            *d += C64::new((sum.value() + c.deficit) / c.norm, 0.0) * wn;
+        }
+        let planes: Vec<(Vec<C64>, Vec<WaveWarning>)> = focus
+            .par_iter()
+            .map(|&dz| {
+                sub.check()?;
+                let shifted = p.with_focus_shift(dz / p.geometry().chief_ray[2]);
+                let opd = shifted.opd_waves();
+                let otf = prepared
+                    .iter()
+                    .map(|c| {
+                        let mut re = mklight_core::math::KahanSum::default();
+                        let mut im = mklight_core::math::KahanSum::default();
+                        for t in &c.terms {
+                            let w: f64 = t
+                                .neighbours
+                                .iter()
+                                .zip(&t.coefficients)
+                                .map(|(&k, c)| c * opd[k])
+                                .sum();
+                            let (s, cs) = (tau * (w - opd[t.source])).sin_cos();
+                            re.add(t.magnitude * cs);
+                            im.add(t.magnitude * s);
+                        }
+                        C64::new(re.value() + c.deficit, im.value()) / c.norm * c.offset
+                    })
+                    .collect();
+                Ok((otf, shifted.sampling_warnings()))
+            })
+            .collect::<MkResult<_>>()?;
+        for ((acc, warnings), (otf, plane)) in acc.iter_mut().zip(&mut warnings).zip(planes) {
+            for (a, z) in acc.iter_mut().zip(otf) {
+                *a += z * wn;
+            }
+            for x in plane {
+                push_unique(warnings, x);
+            }
+        }
+        cutoff = cutoff.max(p.geometry().cutoff_frequency(p.wavelength_um()));
+        sub.report(1.0, "through-focus MTF");
+    }
+    Ok(acc
+        .iter()
+        .zip(warnings)
+        .map(|(a, w)| curve_from_otf(freqs, a, &dl, cutoff, w))
+        .collect())
+}
+
 /// A focus change for [`through_focus_mtf`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -933,4 +1140,81 @@ pub fn mtf_from_psf(
     // A sampled PSF carries no aperture description.
     curve.diffraction_limit.clear();
     Ok(curve)
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn cached_focus_matches_independent_pupil_autocorrelations() {
+        for system in [
+            mklight_core::samples::double_gauss(),
+            mklight_core::samples::anamorphic_adapter(),
+        ] {
+            let t = mklight_analysis::tracer_for(system).unwrap();
+            for field in [0, t.fields().len() - 1] {
+                let pupils: Vec<_> = (0..2)
+                    .map(|wl| {
+                        crate::trace_pupil(
+                            &t,
+                            t.field(field),
+                            wl,
+                            &crate::PupilSettings {
+                                grid: 64,
+                                rays: 33,
+                                ..Default::default()
+                            },
+                            &JobContext::new(),
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                let weighted: Vec<_> = pupils.iter().map(|p| (&p.pupil, 1.0)).collect();
+                let focus = [-0.037, 0.0, 0.042];
+                let frequencies = [0.0, 7.3, 31.0, 85.0];
+                let o = MtfOrientation::from_field(0.3, 0.7);
+                let cached = polychromatic_focus_mtf(
+                    &weighted,
+                    &focus,
+                    &frequencies,
+                    &o,
+                    &JobContext::new(),
+                )
+                .unwrap();
+                for (i, dz) in focus.into_iter().enumerate() {
+                    let shifted: Vec<_> = pupils
+                        .iter()
+                        .map(|p| {
+                            p.pupil
+                                .with_focus_shift(dz / p.pupil.geometry().chief_ray[2])
+                        })
+                        .collect();
+                    let weighted: Vec<_> = shifted.iter().map(|p| (p, 1.0)).collect();
+                    let want = polychromatic_mtf(
+                        &weighted,
+                        &frequencies,
+                        &o,
+                        MtfMethod::Direct,
+                        &JobContext::new(),
+                    )
+                    .unwrap();
+                    for (a, b) in cached[i]
+                        .tangential
+                        .iter()
+                        .chain(&cached[i].sagittal)
+                        .chain(&cached[i].diffraction_limit)
+                        .zip(
+                            want.tangential
+                                .iter()
+                                .chain(&want.sagittal)
+                                .chain(&want.diffraction_limit),
+                        )
+                    {
+                        assert!((a - b).abs() < 2e-12, "field={field}, dz={dz}: {a} vs {b}");
+                    }
+                }
+            }
+        }
+    }
 }

@@ -108,10 +108,10 @@ fn settings_schema(name: &str) -> Value {
                 "padding": {"exclusiveMinimum": 0.0, "description": "Positive image sampling factor."}
             }));
             if name == "mtf" {
-                annotations["max_frequency"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "cycles/mm", "description": "Positive maximum image-space frequency; null uses min(100, cutoff/4, 1/(2 geometric RMS blur))."});
+                annotations["max_frequency"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "cycles/mm", "description": "Positive maximum image-space frequency; null estimates 10% polychromatic contrast including diffraction and lateral colour."});
                 annotations["frequency_samples"] = json!({"minimum": 2});
             } else {
-                annotations["frequencies"] = json!({"items": {"type": "number", "minimum": 0.0}, "unit": "cycles/mm", "description": "Image-space frequencies; empty selects round 1-2-5 frequencies spanning the useful blur-limited range."});
+                annotations["frequencies"] = json!({"items": {"type": "number", "minimum": 0.0}, "unit": "cycles/mm", "description": "Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range."});
                 if name == "mtf_vs_field" {
                     annotations["field_samples"] = json!({"minimum": 1, "maximum": 1001});
                     annotations["direction"] = tuple(
@@ -221,6 +221,13 @@ fn result_schema(name: &str) -> Value {
         "mtf_vs_field" => result(
             &[
                 (
+                    "pupil_sampling",
+                    arr(
+                        pupil_sampling_schema(),
+                        "One pupil sampling list per field sample; empty for skipped fields.",
+                    ),
+                ),
+                (
                     "normalized_field",
                     vector(
                         "1",
@@ -276,6 +283,7 @@ fn result_schema(name: &str) -> Value {
         ),
         "through_focus_mtf" => {
             let mut f = field_props();
+            f.push(("pupil_sampling", pupil_sampling_schema()));
             f.push((
                 "curves",
                 arr(
@@ -321,6 +329,9 @@ fn result_schema(name: &str) -> Value {
         "diffraction_encircled_energy" => {
             let mut f = field_props();
             f.extend([
+                ("pupil_sampling", pupil_sampling_schema()),
+                ("grid_size", int("Actual PSF image samples per axis.")),
+                ("spacing_mm", num("mm", "Actual PSF image sample spacing.")),
                 (
                     "center_mm",
                     xy("Energy centre relative to the common reference, mm."),
@@ -399,6 +410,7 @@ fn result_schema(name: &str) -> Value {
         "line_spread" => {
             let mut f = field_props();
             f.extend([
+                ("pupil_sampling", pupil_sampling_schema()),
                 (
                     "positions_mm",
                     vector(
@@ -450,6 +462,19 @@ fn result_schema(name: &str) -> Value {
         }
         _ => unreachable!(),
     }
+}
+
+pub(super) fn pupil_sampling_schema() -> Value {
+    arr(
+        obj(&[
+            ("wavelength", int("System wavelength index.")),
+            (
+                "grid",
+                int("Actual pupil samples per axis, after automatic refinements."),
+            ),
+        ]),
+        "Actual pupil grids in selected-wavelength order.",
+    )
 }
 
 fn exit_pupil_schema() -> Value {
@@ -597,6 +622,7 @@ fn wavefront_schema() -> Value {
 fn psf_schema() -> Value {
     let mut f = field_props();
     f.extend([
+        ("pupil_sampling", pupil_sampling_schema()),
         ("wavelength", nullable(int("System wavelength index; null for a polychromatic PSF."))),
         ("reference_mm", xy("Common image-local reference point, mm.")),
         ("strehl", num("1", "Peak / aberration-free peak for the same pupil and spectral weights.")),
@@ -635,6 +661,7 @@ fn psf_schema() -> Value {
 fn mtf_schema() -> Value {
     let mut f = field_props();
     f.extend([
+        ("pupil_sampling", pupil_sampling_schema()),
         (
             "tangential_direction",
             xy("Tangential unit vector in image x/y; sagittal is perpendicular."),

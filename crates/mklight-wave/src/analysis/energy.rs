@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::psf::{PsfMethod, check_huygens_grid, compute_psf, image_grid};
 use super::{check_pos, fields, linspace, run_info, system_field_pupils, wavelengths};
 use crate::energy::{
-    EnergyCenter, LsfAxis, encircled_energy, ensquared_energy, line_spread_function,
+    EnergyCenter, LsfAxis, encircled_energy_batch, ensquared_energy, line_spread_function,
 };
 use crate::psf::PsfNormalization;
 use crate::pupil::PupilFunction;
@@ -59,6 +59,9 @@ impl Default for EncircledEnergySettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldEnergy {
+    pub grid_size: usize,
+    pub spacing_mm: f64,
+    pub pupil_sampling: Vec<super::PupilSampling>,
     pub field: usize,
     pub field_value: [f64; 2],
     /// Centre of the integration relative to the field's reference point
@@ -154,11 +157,11 @@ pub fn diffraction_encircled_energy_job(
     let radius = linspace(0.0, rmax, settings.samples);
     let dense = linspace(0.0, rmax, 8 * settings.samples);
     let mut warnings = skipped;
-    let mut out = Vec::new();
+    let mut pending = Vec::new();
     let nf = per.len().max(1) as f64;
     for (k, (f, value, mut fp)) in per.into_iter().enumerate() {
         warnings.extend(fp.warnings.iter().cloned());
-        let sub = ctx.subrange(0.3 + 0.7 * k as f64 / nf, 0.3 + 0.7 * (k + 1) as f64 / nf);
+        let sub = ctx.subrange(0.3 + 0.5 * k as f64 / nf, 0.3 + 0.5 * (k + 1) as f64 / nf);
         warnings.extend(fp.ensure_window(
             grid as f64 * spacing,
             &settings.pupil,
@@ -194,15 +197,7 @@ pub fn diffraction_encircled_energy_job(
             &sub.subrange(0.5, 0.7),
         )?;
         let c = settings.center;
-        let enc = encircled_energy(&psf, &radius, c, &sub.subrange(0.7, 0.8))?;
-        let sq = ensquared_energy(&psf, &radius, c, &sub.subrange(0.8, 0.85))?;
-        let dl = encircled_energy(
-            &dl_psf,
-            &radius,
-            EnergyCenter::Centroid,
-            &sub.subrange(0.85, 0.9),
-        )?;
-        let fine = encircled_energy(&psf, &dense, c, &sub.subrange(0.9, 1.0))?;
+        let sq = ensquared_energy(&psf, &radius, c, &sub.subrange(0.7, 1.0))?;
         let center_mm = match c {
             EnergyCenter::Reference => psf.center_mm,
             EnergyCenter::Centroid => psf.centroid(),
@@ -212,18 +207,36 @@ pub fn diffraction_encircled_energy_job(
             }
             EnergyCenter::Point { x, y } => [x, y],
         };
-        out.push(FieldEnergy {
-            field: f,
-            field_value: value,
-            center_mm,
-            encircled: enc,
-            ensquared: sq,
-            diffraction_limit: dl,
-            r50_mm: quantile(&dense, &fine, 0.5),
-            r80_mm: quantile(&dense, &fine, 0.8),
-            r90_mm: quantile(&dense, &fine, 0.9),
-        });
+        pending.push((f, value, fp.sampling(), center_mm, psf, dl_psf, sq));
     }
+    let mut all_radii = radius.clone();
+    all_radii.extend_from_slice(&dense);
+    let psfs: Vec<_> = pending
+        .iter()
+        .flat_map(|(_, _, _, _, p, dl, _)| [(p, settings.center), (dl, EnergyCenter::Centroid)])
+        .collect();
+    let energies = encircled_energy_batch(&psfs, &all_radii, &ctx.subrange(0.8, 1.0))?;
+    let out = pending
+        .into_iter()
+        .zip(energies.chunks(2))
+        .map(|((f, value, sampling, center_mm, _, _, sq), energy)| {
+            let (enc, fine) = energy[0].split_at(radius.len());
+            FieldEnergy {
+                field: f,
+                field_value: value,
+                center_mm,
+                grid_size: grid,
+                spacing_mm: spacing,
+                pupil_sampling: sampling,
+                encircled: enc.to_vec(),
+                ensquared: sq,
+                diffraction_limit: energy[1][..radius.len()].to_vec(),
+                r50_mm: quantile(&dense, fine, 0.5),
+                r80_mm: quantile(&dense, fine, 0.8),
+                r90_mm: quantile(&dense, fine, 0.9),
+            }
+        })
+        .collect();
     ctx.report(1.0, "encircled energy");
     Ok(WaveEncircledEnergyResult {
         radius_mm: radius,
@@ -266,6 +279,7 @@ impl Default for LineSpreadSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldLineSpread {
+    pub pupil_sampling: Vec<super::PupilSampling>,
     pub field: usize,
     pub field_value: [f64; 2],
     /// Sample positions relative to the field's reference point (mm),
@@ -331,6 +345,7 @@ pub fn line_spread_job(
             field: f,
             field_value: value,
             positions_mm: lx.positions_mm,
+            pupil_sampling: fp.sampling(),
             x: lx.values,
             y: ly.values,
         });

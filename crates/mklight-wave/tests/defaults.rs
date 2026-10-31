@@ -93,10 +93,10 @@ fn ideal_cone_sets_frequency_and_depth_and_explicit_settings_win() {
     let t = mklight_analysis::tracer_for(s).unwrap();
     let n = (10000.0f64 + 25.0).sqrt() / 10.0;
     let mtf = analysis::mtf_analysis(&t, &Default::default()).unwrap();
-    assert!((mtf.frequencies.last().unwrap() * 0.55e-3 * n - 0.25).abs() < 1e-8);
+    assert!((mtf.frequencies.last().unwrap() * 0.55e-3 * n - 0.8).abs() < 1e-8);
     let focus = analysis::through_focus_mtf_analysis(&t, &Default::default()).unwrap();
     assert!((focus.focus_mm.last().unwrap() / (8.0 * 0.55e-3 * n * n) - 1.0).abs() < 1e-8);
-    assert_eq!(focus.frequencies, [5.0, 10.0, 20.0]);
+    assert_eq!(focus.frequencies, [20.0, 40.0, 80.0]);
     let explicit = analysis::ThroughFocusSettings {
         frequencies: vec![7.0, 19.0],
         focus_range_mm: Some(0.07),
@@ -119,5 +119,24 @@ fn ideal_cone_sets_frequency_and_depth_and_explicit_settings_win() {
     )
     .unwrap();
     assert_eq!(psf.psfs[0].psf.size, 31);
+    assert_eq!(psf.psfs[0].pupil_sampling[0].grid, 32);
     assert_eq!(psf.psfs[0].psf.spacing_mm, 0.001);
+}
+
+#[test]
+fn camera_defaults_use_photographic_frequencies_and_report_sampling() {
+    let t = mklight_analysis::tracer_for(samples::double_gauss()).unwrap();
+    let mtf = analysis::mtf_analysis(&t, &Default::default()).unwrap();
+    assert!((mtf.frequencies.last().unwrap() - 40.0).abs() < 1e-9);
+    for f in &mtf.fields {
+        let wavelengths: Vec<_> = f.pupil_sampling.iter().map(|s| s.wavelength).collect();
+        assert_eq!(wavelengths, [0, 1, 2]);
+        assert!(f.pupil_sampling.iter().all(|s| s.grid >= 64));
+    }
+    let settings = analysis::ThroughFocusSettings {
+        focus_samples: 3,
+        ..Default::default()
+    };
+    let focus = analysis::through_focus_mtf_analysis(&t, &settings).unwrap();
+    assert_eq!(focus.frequencies, [10.0, 20.0, 40.0]);
 }

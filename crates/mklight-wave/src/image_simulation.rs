@@ -124,6 +124,7 @@ impl Default for ImageGridSettings {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FieldMapping {
+    pub pupil_sampling: Vec<crate::analysis::PupilSampling>,
     pub field: [f64; 2],
     /// Paraxial chief image point.
     pub ideal_mm: [f64; 2],
@@ -214,20 +215,27 @@ pub fn build_psf_grid(
     }
     // All nodes set the common spacing; using only the first can undersample
     // a slightly faster cone elsewhere in the patch.
-    let mut per = Vec::new();
-    for (i, p) in d.points.iter().enumerate() {
-        let f = t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1]))?;
-        let n = d.points.len() as f64;
-        let pupils = field_pupils(
-            t,
-            &f,
-            "image simulation",
-            &wls,
-            &s.pupil,
-            &ctx.subrange(0.2 + 0.4 * i as f64 / n, 0.2 + 0.4 * (i + 1) as f64 / n),
-        )?;
+    let n = d.points.len() as f64;
+    let mut per: Vec<_> = d
+        .points
+        .par_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let f = t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1]))?;
+            field_pupils(
+                t,
+                &f,
+                "image simulation",
+                &wls,
+                &s.pupil,
+                &ctx.subrange(0.2 + 0.4 * i as f64 / n, 0.2 + 0.4 * (i + 1) as f64 / n),
+            )
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<MkResult<_>>()?;
+    for pupils in &per {
         warnings.extend(pupils.warnings.iter().cloned());
-        per.push(pupils);
     }
     let dx = s.psf_spacing_mm.unwrap_or_else(|| {
         per.iter()
@@ -247,7 +255,6 @@ pub fn build_psf_grid(
     let mut kernels = Vec::new();
     let mut mapping = Vec::new();
     for (i, (p, pupils)) in d.points.iter().zip(&mut per).enumerate() {
-        let n = d.points.len() as f64;
         let sub = ctx.subrange(0.6 + 0.4 * i as f64 / n, 0.6 + 0.4 * (i + 1) as f64 / n);
         warnings.extend(pupils.ensure_window(
             size as f64 * dx,
@@ -275,6 +282,7 @@ pub fn build_psf_grid(
         let sum: f64 = psf.data.iter().sum();
         kernels.push(psf.data.iter().map(|v| v / sum).collect());
         mapping.push(FieldMapping {
+            pupil_sampling: pupils.sampling(),
             field: p.field,
             ideal_mm: p.paraxial,
             real_mm: pupils.reference_mm,
@@ -1220,6 +1228,7 @@ mod tests {
                 (0..2).map(move |x| {
                     let point = [x as f64, y as f64];
                     FieldMapping {
+                        pupil_sampling: Vec::new(),
                         field: point,
                         ideal_mm: point,
                         real_mm: point,

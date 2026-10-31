@@ -182,15 +182,37 @@ pub fn grid_from_structured(
         if a1 < a0 || b1 < b0 {
             continue;
         }
-        for b in b0 as usize..=b1 as usize {
-            for a in a0 as usize..=a1 as usize {
-                let k = b * ns + a;
-                if owner[k] != NONE {
-                    continue;
-                }
-                let l = t.bary(sub_coord(a), sub_coord(b));
-                if l.iter().all(|&x| x >= -1e-12) {
-                    owner[k] = t_id as u32;
+        for j in b0 as usize / s..=b1 as usize / s {
+            for i in a0 as usize / s..=a1 as usize / s {
+                let (aa, bb) = (i * s, j * s);
+                let full = aa >= a0 as usize
+                    && aa + s - 1 <= a1 as usize
+                    && bb >= b0 as usize
+                    && bb + s - 1 <= b1 as usize
+                    && [
+                        (aa, bb),
+                        (aa + s - 1, bb),
+                        (aa, bb + s - 1),
+                        (aa + s - 1, bb + s - 1),
+                    ]
+                    .iter()
+                    .all(|&(x, y)| {
+                        t.bary(sub_coord(x), sub_coord(y))
+                            .iter()
+                            .all(|&l| l >= -1e-12)
+                    });
+                for b in bb.max(b0 as usize)..(bb + s).min(b1 as usize + 1) {
+                    for a in aa.max(a0 as usize)..(aa + s).min(a1 as usize + 1) {
+                        let k = b * ns + a;
+                        if owner[k] == NONE
+                            && (full
+                                || t.bary(sub_coord(a), sub_coord(b))
+                                    .iter()
+                                    .all(|&l| l >= -1e-12))
+                        {
+                            owner[k] = t_id as u32;
+                        }
+                    }
                 }
             }
         }
@@ -205,17 +227,36 @@ pub fn grid_from_structured(
             ctx.check()?;
             // Multi-source BFS (8-neighbour) from every rasterised sub-point:
             // each reached sub-point inherits the triangle of its source.
-            let mut from = vec![NONE; ns * ns];
-            let mut src_pt = vec![usize::MAX; ns * ns];
+            let missing: Vec<bool> = owner.iter().map(|&id| id == NONE).collect();
+            let mut from = owner;
+            let mut src_pt = vec![NONE; ns * ns];
+            let mut seeds = Vec::new();
             let mut queue = VecDeque::new();
             for k in 0..ns * ns {
-                if owner[k] != NONE {
-                    from[k] = owner[k];
-                    src_pt[k] = k;
-                    queue.push_back(k);
+                if !missing[k] {
+                    // Interior seeds cannot reach an unowned point before a
+                    // boundary seed. Preserve row order for identical ties.
+                    let (a, b) = (k % ns, k / ns);
+                    if (b.saturating_sub(1)..=(b + 1).min(ns - 1)).any(|y| {
+                        (a.saturating_sub(1)..=(a + 1).min(ns - 1)).any(|x| missing[y * ns + x])
+                    }) {
+                        src_pt[k] = seeds.len() as u32;
+                        seeds.push(k);
+                        queue.push_back(k);
+                    }
                 }
             }
-            while let Some(k) = queue.pop_front() {
+            let mut remaining = inside
+                .iter()
+                .zip(&missing)
+                .filter(|(i, m)| **i && **m)
+                .count();
+            while remaining > 0
+                && let Some(k) = queue.pop_front()
+            {
+                if k % ns == 0 {
+                    ctx.check()?;
+                }
                 let (a, b) = ((k % ns) as i64, (k / ns) as i64);
                 for (da, db) in [
                     (1, 0),
@@ -235,6 +276,7 @@ pub fn grid_from_structured(
                     if from[q] == NONE {
                         from[q] = from[k];
                         src_pt[q] = src_pt[k];
+                        remaining -= usize::from(inside[q]);
                         queue.push_back(q);
                     }
                 }
@@ -243,8 +285,8 @@ pub fn grid_from_structured(
             // edge, not sqrt(area): anamorphic pupils have unequal spacings.
             let mut worst = (0.0, 1.0);
             for k in 0..ns * ns {
-                if inside[k] && owner[k] == NONE && src_pt[k] != usize::MAX {
-                    let q = src_pt[k];
+                if inside[k] && missing[k] && src_pt[k] != NONE {
+                    let q = seeds[src_pt[k] as usize];
                     let gap = (sub_coord(k % ns) - sub_coord(q % ns))
                         .hypot(sub_coord(k / ns) - sub_coord(q / ns));
                     let t = &tris[from[k] as usize];
@@ -272,33 +314,72 @@ pub fn grid_from_structured(
         }
     };
     ctx.report(0.8, "pupil resampling");
-    let mut cnt = vec![0u32; n * n];
-    let mut sum_w = vec![0.0; n * n];
-    let mut sum_a = vec![0.0; n * n];
-    for (k, &t_id) in source.iter().enumerate() {
-        if t_id == NONE {
-            continue;
-        }
-        let (a, b) = (k % ns, k / ns);
-        let t = &tris[t_id as usize];
-        let (w, amp) = t.eval(t.bary(sub_coord(a), sub_coord(b)));
-        let c = (b / s) * n + a / s;
-        cnt[c] += 1;
-        sum_w[c] += w;
-        sum_a[c] += amp;
-    }
     let ss = (s * s) as f64;
     let mut cov = vec![0.0; n * n];
     let mut amp = vec![0.0; n * n];
     let mut opd = vec![0.0; n * n];
-    for k in 0..n * n {
-        if cnt[k] > 0 {
-            let c = cnt[k] as f64;
-            cov[k] = c / ss;
-            amp[k] = sum_a[k] / c;
-            opd[k] = sum_w[k] / c;
-        }
-    }
+    cov.par_chunks_mut(n)
+        .zip(amp.par_chunks_mut(n))
+        .zip(opd.par_chunks_mut(n))
+        .enumerate()
+        .try_for_each(|(j, ((cov, amp), opd))| -> MkResult<()> {
+            ctx.check()?;
+            for i in 0..n {
+                let (a, b) = (i * s, j * s);
+                let id = source[b * ns + a];
+                let uniform =
+                    id != NONE && (b..b + s).all(|y| (a..a + s).all(|x| source[y * ns + x] == id));
+                if uniform {
+                    let t = &tris[id as usize];
+                    // Both fields are affine inside a triangle. The mean
+                    // of a symmetric subgrid is its centre value. Retain
+                    // subpoint integration if extrapolated amplitude clips.
+                    let positive = [
+                        (a, b),
+                        (a + s - 1, b),
+                        (a, b + s - 1),
+                        (a + s - 1, b + s - 1),
+                    ]
+                    .iter()
+                    .all(|&(x, y)| {
+                        let l = t.bary(sub_coord(x), sub_coord(y));
+                        l.iter()
+                            .zip(&t.v)
+                            .map(|(l, r)| l * r.amplitude)
+                            .sum::<f64>()
+                            >= 0.0
+                    });
+                    if positive {
+                        let u = -1.0 + (i as f64 + 0.5) * 2.0 / n as f64;
+                        let v = -1.0 + (j as f64 + 0.5) * 2.0 / n as f64;
+                        let (w, amplitude) = t.eval(t.bary(u, v));
+                        cov[i] = 1.0;
+                        amp[i] = amplitude;
+                        opd[i] = w;
+                        continue;
+                    }
+                }
+                let (mut count, mut w, mut amplitude) = (0, 0.0, 0.0);
+                for y in b..b + s {
+                    for x in a..a + s {
+                        let id = source[y * ns + x];
+                        if id != NONE {
+                            let t = &tris[id as usize];
+                            let (ww, aa) = t.eval(t.bary(sub_coord(x), sub_coord(y)));
+                            count += 1;
+                            w += ww;
+                            amplitude += aa;
+                        }
+                    }
+                }
+                if count > 0 {
+                    cov[i] = count as f64 / ss;
+                    amp[i] = amplitude / count as f64;
+                    opd[i] = w / count as f64;
+                }
+            }
+            Ok(())
+        })?;
     let pupil = PupilFunction::from_samples(n, wavelength_um, geometry, amp, cov, opd)?;
     ctx.report(1.0, "pupil resampling");
     Ok((pupil, warnings))

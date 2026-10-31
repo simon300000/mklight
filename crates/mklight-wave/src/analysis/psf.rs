@@ -72,6 +72,7 @@ impl Default for PsfAnalysisSettings {
 /// The PSF of one field (polychromatic) or one (field, wavelength).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldPsf {
+    pub pupil_sampling: Vec<super::PupilSampling>,
     pub field: usize,
     pub field_value: [f64; 2],
     /// `None` for a polychromatic PSF.
@@ -385,6 +386,11 @@ pub fn psf_analysis_job(
                 field: f,
                 field_value: value,
                 wavelength: wl,
+                pupil_sampling: fp
+                    .sampling()
+                    .into_iter()
+                    .filter(|s| wl.is_none_or(|wl| s.wavelength == wl))
+                    .collect(),
                 reference_mm: fp.reference_mm,
                 strehl: psf.strehl(),
                 centroid_mm: psf.centroid(),
