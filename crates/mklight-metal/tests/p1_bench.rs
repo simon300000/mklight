@@ -184,7 +184,7 @@ fn aim_trace_opd_matrix() {
         rayon::current_num_threads()
     );
     eprintln!(
-        "| sample | case | aim | rays | CPU f64 med/p95 ms | GPU med/p95 ms | GPU device ms | commands | speed-up | mean iterations | unresolved |"
+        "| sample | case | aim | rays | CPU f64 med/p95 ms | GPU med/p95 ms | GPU device ms | commands | speed-up | mean iterations | unresolved | upload/readback copy bytes |"
     );
     for name in names.split(',') {
         let base = match name {
@@ -243,7 +243,7 @@ fn aim_trace_opd_matrix() {
                     Some(format!("{name}:{label}:{aiming:?}")),
                 );
                 let (mut cpu, mut wall, mut device) = (vec![], vec![], vec![]);
-                let mut commands = 0;
+                let (mut commands, mut copies) = (0, (0, 0));
                 let (mut iterations, mut unresolved) = (0.0, 0);
                 for run in 0..=runs {
                     let start = Instant::now();
@@ -255,9 +255,18 @@ fn aim_trace_opd_matrix() {
                         .unwrap()
                         .wait()
                         .unwrap();
+                    // Read only what a consumer needs: the OPD plane (or the
+                    // trace status plane) and the status.
+                    let mut copied = 0;
                     let data: Vec<_> = r.outputs[1..]
                         .iter()
-                        .map(|o| gpu.readback(o.view(), &JobContext::new()).unwrap().data)
+                        .map(|o| {
+                            let mut v = o.view();
+                            v.desc = BufferDesc::new(v.desc.element, [n]);
+                            let b = gpu.readback(v, &JobContext::new()).unwrap();
+                            copied += b.copied_bytes;
+                            b.data
+                        })
                         .collect();
                     black_box(&data);
                     let gpu_s = start.elapsed().as_secs_f64();
@@ -310,6 +319,9 @@ fn aim_trace_opd_matrix() {
                     wall.push(gpu_s);
                     device.push(r.stats.device_seconds);
                     commands = r.stats.command_buffers;
+                    // Copies per warm run: plan uploads (none: inputs are
+                    // imported leases) and host readback of the results.
+                    copies = (r.stats.uploaded_bytes, copied);
                 }
                 // Cold: chief seeds prepared inside the plan (no cache key).
                 let cold: Vec<_> = (0..3)
@@ -346,9 +358,11 @@ fn aim_trace_opd_matrix() {
                     "real"
                 };
                 eprintln!(
-                    "| {name} | {label} | {mode} | {n} | {c:.3}/{cp:.3} | {g:.3}/{gp:.3} | {:.3} | {commands} | {:.2}x | {iterations:.2} | {unresolved} |",
+                    "| {name} | {label} | {mode} | {n} | {c:.3}/{cp:.3} | {g:.3}/{gp:.3} | {:.3} | {commands} | {:.2}x | {iterations:.2} | {unresolved} | {}/{} |",
                     stats(device).0,
-                    c / g
+                    c / g,
+                    copies.0,
+                    copies.1
                 );
                 eprintln!(
                     "| {name} | {label} cold | {mode} | {n} | {:.3} | {:.3} | | | {:.2}x | | |",
