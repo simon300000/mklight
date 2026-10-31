@@ -2229,7 +2229,6 @@ Result (`result` in the envelope):
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
-| `evaluations` | integer |  | ≥ 0; One complete merit evaluation; setup and GPU qualification excluded. |
 | `merit` | nf |  |  |
 | `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands and the EFL hold. |
 | `operands` | array<object> |  | Snapshot operand values, residuals and merit shares. |
@@ -2250,7 +2249,6 @@ Result (`result` in the envelope):
 | `operands[].value` | nf |  |  |
 | `operands[].wavelength` | object |  | WavelengthSelector. |
 | `operands[].weight` | nf |  |  |
-| `operands[].weighted_residual` | nf |  | sqrt(weight) * residual; null for constraints/disabled operands. |
 | `status` | object |  | EvalStatus. |
 | `violation` | nf |  | Total normalised constraint violation. |
 
@@ -2341,7 +2339,6 @@ Result (`result` in the envelope):
 | `operands[].value` | nf |  |  |
 | `operands[].wavelength` | object |  | WavelengthSelector. |
 | `operands[].weight` | nf |  |  |
-| `operands[].weighted_residual` | nf |  | sqrt(weight) * residual; null for constraints/disabled operands. |
 | `search` | object |  |  |
 | `search.merit` | nf |  |  |
 | `search.reference_merit` | nf |  |  |

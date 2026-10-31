@@ -823,6 +823,10 @@ The device comes from the engine's lazily opened `GpuProvider`; its
 and library. `GpuTraceEvaluator::with_qualification` reuses that verdict.
 An explicit GPU request bypasses the automatic workload crossover.
 
+`optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
+the start before building the merit. Solve-controlled parameters are never variables: automatic variables
+skip them and explicit ones are rejected. The search does not re-solve.
+
 Both jobs also run with no settings at all: `optimize` then varies every
 curvature and the back focus against the default merit (thickness boundaries
 included) and holds the focal length; `tolerance` analyses a basic tolerance
@@ -855,34 +859,26 @@ Measured on the seven samples with the default settings, every method
 (`lm`, `dogleg`, `de`, `cma_es`, `nelder_mead`, `hammer`) improved every
 sample and ended feasible.
 
-**End-point feasibility restoration.** At the end of a constrained LM or
-dogleg run (including basin hopping's local solves), up to three short
-Gauss–Newton corrections reduce the constraint defect before final ranking.
-The ranking tolerance itself is unchanged: a near-feasible point must actually
-be restored, rather than receiving a relaxed definition of feasibility.
-This handles a nonlinear equality's second-order defect when the iteration
-budget ends just above the tolerance; otherwise even a substantial merit
-improvement can lose to the feasible start.
-
-Let `r` contain the signed, normalised equality errors and positive inequality
-violations (zero for satisfied inequalities), `J` their Jacobian, and
-`S = diag(variable.scale)`. With `A = J S / ‖J S‖F`, `b = r / ‖J S‖F`, the
-correction solves `min_z ‖A z + b‖² + sqrt(eps) ‖z‖²` by augmented
-Householder QR. The small ridge selects an approximate minimum-norm step even
-with dependent constraints or fewer constraints than variables, without normal
-equations. Scale normalisation makes the ridge independent of the constraint
-units and overall derivative magnitude. Variables pinned by bounds or failed
-derivative columns are frozen; outward gradients at active bounds are frozen
-too. Each correction is limited to `‖z‖ ≤ 1e-3` variable scales, projected
-onto the bounds and backtracked at most eight times until **total normalised
-violation strictly decreases**. The pass stops once that violation is within
-`min(feasibility_tolerance, options.constraints.tol)`, or on no progress.
-It leaves the main termination reason and iteration count intact, records
-accepted corrections with stage `feasibility restoration`, counts every
-extra evaluation against `max_evaluations`, and honours cancellation. Only the
-constraint linearisation drives the correction; the evaluator still computes
-full trial merits, so best-so-far and the final CPU reference comparison retain
-their usual semantics. This is a local repair, not a general feasibility solver.
+**End-point feasibility restoration.** A nonlinear equality such as the
+EFL hold can end an LM or dogleg run (and basin hopping's local solves) just
+outside the feasibility tolerance, after which the feasible start would win
+the ranking despite a much lower merit. Such a run therefore ends with up to
+three Gauss–Newton corrections of the constraints alone; the tolerance is not
+relaxed. With `r` the normalised equality errors and inequality violations
+(zero for satisfied inequalities), `J` their Jacobian and
+`S = diag(variable.scale)`, a correction solves
+`min_z ‖A z + b‖² + sqrt(eps) ‖z‖²` with `A = J S / ‖J S‖F`, `b = r / ‖J S‖F`
+by Householder QR: the ridge selects the minimum-norm step for dependent or
+underdetermined constraints, and the normalisation makes it unit-free.
+Failed derivative columns, and variables at a bound that the step would push
+outward, are frozen. The step is capped at `‖z‖ ≤ 1e-3` scales, projected
+onto the bounds and halved (at most eight times) until the total normalised
+violation strictly decreases. The pass stops within `feasibility_tolerance`
+(the ranking's) or without progress, so a feasible end point is never
+touched. Its evaluations count against
+`max_evaluations`, accepted corrections are recorded with stage
+`feasibility restoration`, cancellation is honoured, and the termination
+reason and iteration count are unchanged.
 
 **Applying the result.** `result.system` is the optimised `OpticalSystem` in
 model JSON. The app applies it with `Session::set_system`, which creates a new
@@ -890,45 +886,24 @@ undoable snapshot whose hash equals `result.system_hash` (tested).
 
 ### `merit_evaluation`
 
-Submit `{"analysis": "merit_evaluation", "settings": {…}}` with the same
-settings object as `optimize`. The analysis shares its merit construction and
-operand report: explicit `merit` or `default_merit`, extra `operands` and
-`constraints`, automatic variables, fixed-boundary relaxation, the
-algorithm-dependent EFL hold, and the complete built-in evaluator stack.
-Solves are applied to the snapshot before this preparation in both analyses;
-automatic variables exclude solve-controlled parameters, and explicit
-solve-controlled variables are rejected. The input snapshot stays unchanged.
+The merit of the start of an `optimize` request, evaluated once: the same
+settings object, the same merit construction (explicit `merit` or
+`default_merit`, extra `operands` and `constraints`, automatic variables,
+fixed-boundary relaxation, the EFL hold that `algorithm` selects, solves
+applied first) and the same operand report, without a search or derivatives.
+A derivative-free EFL penalty is weighted from that one evaluation. On the
+CPU every number equals `optimize`'s `start` report (tested). `backend`,
+`gpu_batch`, qualification and fallback follow `optimize` with a workload of
+one candidate, so `auto` normally stays on the CPU; an explicit GPU traces
+the ray operands there, and `backend.reported_on` names it.
 
-There is **one complete merit evaluation of one candidate**, with no optimiser
-or finite-difference Jacobian. Preparation still applies solves, tests default
-thickness boundaries for fixed violations, obtains the paraxial EFL hold, and
-qualifies an explicitly selected GPU when needed. These setup operations are
-excluded from `evaluations: 1`. The derivative-free EFL penalty weight is
-filled from the single baseline report, then totals are recomputed from the
-same raw operand values. Iteration,
-FD and algorithm options do not launch a search; `algorithm` still chooses
-whether the automatic EFL hold is a constraint or a penalty.
-
-`backend`, `gpu_batch`, precision qualification and CPU fallback follow
-`optimize`'s evaluator policy, with workload batch **1**. `auto` therefore
-normally chooses the CPU reference. An explicit GPU evaluates supported ray
-operands there and the remaining operands on the CPU, with `backend.reported_on`
-naming the evaluator used. For CPU evaluation, every value equals `optimize`'s
-CPU start report; explicit GPU ray values follow the documented precision
-budget. As with other analyses, the envelope carries `RunInfo` and records the
-actual backend, snapshot, library and effective settings.
-
-The JSON result contains `merit`, `violation`, `status` (`EvalStatus`),
-`evaluations: 1`, `backend`, `merit_spec` and `operands`. `merit_spec` is the
-complete expanded `MeritFunctionSpec`, including generated operands and the EFL
-hold, ready to use as a custom merit. Each operand row is the same as
-`optimize`'s report (`start` and `value` both hold the snapshot value), with
-`target`, `comparison`, `weight`, signed/one-sided `residual`,
-`weighted_residual = sqrt(weight) * residual`, `contribution = weight * residual²`,
-and `contribution_fraction = contribution / merit`. Residuals/contributions are
-null for disabled or constraint operands; a zero total merit has undefined
-(null) shares. Failed operands have a null value and an `error` string;
-the total merit and status obey the spec's failure policy. No buffers are needed.
+The result holds `merit`, `violation` (total normalised), `status`
+(`EvalStatus`), `operands`, `merit_spec` and `backend`, and no buffers.
+`merit_spec` is the expanded `MeritFunctionSpec` (generated operands and the
+EFL hold included), usable as a custom `merit`. `operands` rows are
+`optimize`'s, with `start` and `value` both the snapshot value. Failed
+operands have a null `value` and an `error`; the totals follow the spec's
+failure policy.
 
 ### `optimize` settings
 
@@ -1074,8 +1049,8 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
 | GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, both qualifications pass, reported on the reference, merit decreases; `auto` with a device stays on the CPU for LM on a two-field, one-wavelength default merit (38 rays, batch 7) and uses the GPU for a 12 × 24 merit with DE populations of 16 |
 | global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
-| snapshot merit | Cooke triplet and Double Gauss, default RMS spot, worst-field MTF and a custom merit: equal to the optimise start report; expanded defaults round-trip as custom; CPU-f32 GPU counters record one candidate; solve ordering and per-operand errors checked |
-| feasibility restoration | nonlinear equality leaves a 2.7e-6 defect after one improving LM/dogleg step: repaired below the ranking tolerance, bounds and hard evaluation budgets respected, cancellation retains the best point |
+| snapshot merit | Cooke triplet and Double Gauss, default RMS spot, worst-field MTF and a custom merit, and the DE penalty hold: equal to the optimize start report; expanded defaults round-trip as custom; CPU-f32 GPU counters record one candidate; solves applied first; per-operand errors |
+| feasibility restoration | nonlinear equality leaves a 2.7e-6 defect after one improving LM/dogleg step: repaired below the ranking tolerance, bounds and hard evaluation budgets respected, cancellation retains the best point; 20 LM iterations on the Double Gauss with the worst-field MTF merit (release, ignored) end 3e-3 off the EFL hold and are restored instead of returning the start |
 | defaults feasible | `{}` on the Cooke triplet (the 1 mm glass minimum relaxed to 0.99997, warned), the Petzval and the relay: feasible, improved, EFL held to 1e-6 mm |
 | bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface, a `stop_key` in use → `InvalidSettings` |
 | stopped sensitivity | a compensated sensitivity of 30 tolerances stopped after its first batch: `stopped`, 15 operands kept, `cancelled: true` |

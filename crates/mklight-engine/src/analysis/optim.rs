@@ -478,22 +478,13 @@ fn qualify(
 }
 
 impl Evaluation {
+    /// The evaluator for `snapshot`, the start of the run.
     fn new(
         choice: BackendChoice,
         input: &AnalysisInput<'_>,
-        batch: usize,
-        work: Workload,
-        ctx: &JobContext,
-    ) -> EngineResult<Self> {
-        Self::new_on(choice, input, batch, work, &input.snapshot, ctx)
-    }
-
-    fn new_on(
-        choice: BackendChoice,
-        input: &AnalysisInput<'_>,
-        batch: usize,
-        work: Workload,
         snapshot: &Snapshot,
+        batch: usize,
+        work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
         let cpu = BuiltinEvaluator::new(input.library.clone());
@@ -644,26 +635,6 @@ fn build_merit(
 /// Relative EFL error at which the penalty that holds the focal length in
 /// the derivative-free methods costs as much as the start merit.
 const EFL_PENALTY_RELATIVE: f64 = 1e-4;
-
-/// The merit of `spec` at the start (CPU reference).
-fn start_merit(
-    system: &OpticalSystem,
-    variables: &[VariableSpec],
-    spec: &MeritFunctionSpec,
-    cpu: &BuiltinEvaluator,
-    reg: &OperandRegistry,
-    ctx: &JobContext,
-) -> EngineResult<f64> {
-    let p = OpticalProblem::new(
-        system.clone(),
-        variables.to_vec(),
-        spec.clone(),
-        cpu.clone(),
-        reg,
-    )?;
-    let x0 = p.start_point()?;
-    Ok(evaluation_values(&p, &[&x0], ctx)?.merit[0])
-}
 
 /// Thickness boundaries of the generated default merit that the start
 /// violates and that no variable changes (for example the default 1 mm
@@ -841,12 +812,12 @@ fn operand_table(
         .map(|(i, op)| {
             let (v0, _) = value_json(&start[i]);
             let (v1, err) = value_json(&end[i]);
-            let (res, weighted, contrib) = match (&end[i], op.role) {
+            let (res, contrib) = match (&end[i], op.role) {
                 (Ok(v), OperandRole::Residual) if op.enabled => {
                     let r = op.residual(*v);
-                    (num(r), num(op.weight.sqrt() * r), op.weight * r * r)
+                    (num(r), op.weight * r * r)
                 }
-                _ => (Value::Null, Value::Null, f64::NAN),
+                _ => (Value::Null, f64::NAN),
             };
             json!({
                 "index": i,
@@ -862,7 +833,6 @@ fn operand_table(
                 "wavelength": op.wavelength,
                 "start": v0,
                 "value": v1,
-                "weighted_residual": weighted,
                 "residual": res,
                 "contribution": num(contrib),
                 "contribution_fraction": num(if end_merit > 0.0 { contrib / end_merit } else { f64::NAN }),
@@ -905,13 +875,6 @@ pub(super) fn operand_schema() -> Value {
                 "weight * residual squared; null for constraints/disabled operands.",
             ),
         ),
-        (
-            "weighted_residual",
-            nf_u(
-                "",
-                "sqrt(weight) * residual; null for constraints/disabled operands.",
-            ),
-        ),
         ("contribution_fraction", nf()),
         ("error", nullable(string("Operand failure."))),
     ])
@@ -929,19 +892,14 @@ fn reference_values(
     p: &OpticalProblem<BuiltinEvaluator>,
     points: &[&[f64]],
 ) -> EngineResult<Reference> {
-    evaluation_values(p, points, &JobContext::new())
+    let batch = CandidateBatch::from_points(p.num_variables(), points.iter().copied());
+    Ok(values_report(
+        p,
+        p.operand_values(&batch, &JobContext::new())?,
+    ))
 }
 
-fn evaluation_values<E: OperandEvaluator>(
-    p: &OpticalProblem<E>,
-    points: &[&[f64]],
-    ctx: &JobContext,
-) -> EngineResult<Reference> {
-    let n = p.num_variables();
-    let batch = CandidateBatch::from_points(n, points.iter().copied());
-    Ok(values_report(p, p.operand_values(&batch, ctx)?))
-}
-
+/// The report of operand values `vals` (one entry per candidate) of `p`.
 fn values_report<E: OperandEvaluator>(
     p: &OpticalProblem<E>,
     vals: Vec<Option<Vec<OperandValue>>>,
@@ -1061,17 +1019,19 @@ struct OptimizeSettings {
     backend: BackendChoice,
     gpu_batch: usize,
     feasibility_tolerance: f64,
-    stop_key: Option<String>,
 }
 
-/// Shared merit construction for optimisation and snapshot evaluation.
+/// The merit of an `optimize` or `merit_evaluation` request: its settings,
+/// the solved start, the variables and the effective merit spec.
 struct PreparedMerit {
     settings: OptimizeSettings,
-    system: OpticalSystem,
+    /// The snapshot's system with its solves applied.
+    snapshot: Snapshot,
     cpu: BuiltinEvaluator,
     reg: OperandRegistry,
     spec: MeritFunctionSpec,
     warnings: Vec<String>,
+    /// The derivative-free EFL penalty, still of weight 0 (`weight_efl`).
     efl_penalty: Option<usize>,
 }
 
@@ -1091,8 +1051,7 @@ impl PreparedMerit {
         if s.variables.is_empty() {
             s.variables = auto_variables(&system);
             s.variables.retain(|v| !solved.contains(&v.param));
-        }
-        if s.variables.iter().any(|v| solved.contains(&v.param)) {
+        } else if s.variables.iter().any(|v| solved.contains(&v.param)) {
             return Err(invalid(
                 "'variables': a solve-controlled parameter cannot vary",
             ));
@@ -1160,7 +1119,7 @@ impl PreparedMerit {
         }
         Ok(PreparedMerit {
             settings: s,
-            system,
+            snapshot: Snapshot::new(system)?,
             cpu,
             reg,
             spec,
@@ -1169,8 +1128,18 @@ impl PreparedMerit {
         })
     }
 
-    // Start with a zero-weight hold, then fill its weight from the baseline
-    // report without another operand evaluation.
+    fn problem<E: OperandEvaluator>(&self, evaluator: E) -> EngineResult<OpticalProblem<E>> {
+        Ok(OpticalProblem::new(
+            self.snapshot.system().clone(),
+            self.settings.variables.clone(),
+            self.spec.clone(),
+            evaluator,
+            &self.reg,
+        )?)
+    }
+
+    /// Weight the EFL penalty by the start merit, which its zero weight
+    /// leaves unchanged.
     fn weight_efl(&mut self, start_merit: f64) {
         if let Some(i) = self.efl_penalty {
             let op = &mut self.spec.operands[i];
@@ -1516,46 +1485,35 @@ impl Analysis for Optimize {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let mut prepared = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
-        if prepared.efl_penalty.is_some() {
-            let phi = start_merit(
-                &prepared.system,
-                &prepared.settings.variables,
-                &prepared.spec,
-                &prepared.cpu,
-                &prepared.reg,
-                &ctx.subrange(0.0, 0.0),
-            )?;
-            prepared.weight_efl(phi);
+        // Before the merit is prepared, so that a stop meanwhile is kept.
+        let stop = StopRequest::register(settings["stop_key"].as_str(), input.stop.clone())?;
+        let mut m = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
+        if m.settings.variables.is_empty() {
+            return Err(invalid(
+                "'variables': none given, and the system has nothing to vary",
+            ));
         }
+        if m.efl_penalty.is_some() {
+            let p = m.problem(m.cpu.clone())?;
+            let phi = reference_values(&p, &[&p.start_point()?])?.merit[0];
+            m.weight_efl(phi);
+        }
+        let reference = m.problem(m.cpu.clone())?;
         let PreparedMerit {
             settings: s,
-            system,
+            snapshot: start,
             cpu,
             reg,
             spec,
             mut warnings,
             ..
-        } = prepared;
-        if s.variables.is_empty() {
-            return Err(invalid(
-                "'variables': none given, and the system has nothing to vary",
-            ));
-        }
-        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
+        } = m;
+        let system = start.system();
         let (algo, max_iter) = Algo::new(&s)?;
-        let reference = OpticalProblem::new(
-            system.clone(),
-            s.variables.clone(),
-            spec.clone(),
-            cpu.clone(),
-            &reg,
-        )?;
         let x0 = reference.start_point()?;
-        let work = Workload::new(&cpu.trace, &system, &spec, algo.batch(x0.len()));
+        let work = Workload::new(&cpu.trace, system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "qualifying the merit evaluator");
-        let start_snapshot = Snapshot::new(system.clone())?;
-        let mut ev = Evaluation::new_on(s.backend, input, s.gpu_batch, work, &start_snapshot, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &start, s.gpu_batch, work, ctx)?;
         ctx.check()?;
 
         // The search.
@@ -1744,84 +1702,56 @@ impl Analysis for Optimize {
     }
 }
 
-/// Evaluate one snapshot without computing a Jacobian or running an optimiser.
+/// `merit_evaluation`: the merit of the start of an `optimize` request,
+/// evaluated once.
 pub(super) fn evaluate_merit(
     input: &AnalysisInput<'_>,
     settings: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
-    let mut prepared = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
-    let PreparedMerit {
-        settings: s,
-        system,
-        cpu,
-        spec,
-        ..
-    } = &prepared;
-    let work = Workload::new(&cpu.trace, system, spec, 1);
+    let mut m = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
+    let work = Workload::new(&m.cpu.trace, m.snapshot.system(), &m.spec, 1);
     ctx.report(0.0, "qualifying the merit evaluator");
-    let start_snapshot = Snapshot::new(system.clone())?;
-    let mut ev = Evaluation::new_on(
-        s.backend,
+    let (backend, batch) = (m.settings.backend, m.settings.gpu_batch);
+    let mut ev = Evaluation::new(
+        backend,
         input,
-        s.gpu_batch,
+        &m.snapshot,
+        batch,
         work,
-        &start_snapshot,
         &ctx.subrange(0.0, 0.2),
     )?;
     ctx.report(0.2, "evaluating merit");
-    let backend = s.backend;
-    let evaluator = match ev.active_gpu() {
-        Some(g) => g.clone().composite().with(cpu.clone()),
-        None => mklight_optim::merit::CompositeEvaluator::new().with(cpu.clone()),
+    let reference = m.problem(m.cpu.clone())?;
+    let x0 = reference.start_point()?;
+    let x0 = CandidateBatch::from_points(x0.len(), [&x0[..]]);
+    let eval_ctx = ctx.subrange(0.2, 1.0);
+    let values = match ev.active_gpu() {
+        Some(g) => m
+            .problem(g.clone().composite().with(m.cpu.clone()))?
+            .operand_values(&x0, &eval_ctx)?,
+        None => reference.operand_values(&x0, &eval_ctx)?,
     };
-    let values = snapshot_values(&mut prepared, evaluator, &ctx.subrange(0.2, 1.0))?;
+    let r = if m.efl_penalty.is_some() {
+        m.weight_efl(values_report(&reference, values.clone()).merit[0]);
+        values_report(&m.problem(m.cpu.clone())?, values)
+    } else {
+        values_report(&reference, values)
+    };
     ev.finish(input, backend, None, ctx)?;
-    let spec = &prepared.spec;
-    ev.warnings.extend(prepared.warnings);
+    ev.warnings.extend(m.warnings);
     Ok(AnalysisOutput {
         json: json!({
-            "merit": num(values.merit[0]),
-            "violation": num(values.violation[0]),
-            "status": values.status[0],
-            "evaluations": 1,
-            "operands": operand_table(&spec, &values.values[0], &values.values[0], values.merit[0]),
-            "merit_spec": spec,
+            "merit": num(r.merit[0]),
+            "violation": num(r.violation[0]),
+            "status": r.status[0],
+            "operands": operand_table(&m.spec, &r.values[0], &r.values[0], r.merit[0]),
+            "merit_spec": m.spec,
             "backend": ev.report,
         }),
         warnings: ev.warnings,
         ..Default::default()
     })
-}
-
-fn snapshot_values<E: OperandEvaluator>(
-    prepared: &mut PreparedMerit,
-    evaluator: E,
-    ctx: &JobContext,
-) -> EngineResult<Reference> {
-    let p = OpticalProblem::new(
-        prepared.system.clone(),
-        prepared.settings.variables.clone(),
-        prepared.spec.clone(),
-        evaluator,
-        &prepared.reg,
-    )?;
-    let x0 = p.start_point()?;
-    let batch = CandidateBatch::from_points(x0.len(), [&x0[..]]);
-    let values = p.operand_values(&batch, ctx)?;
-    if prepared.efl_penalty.is_none() {
-        return Ok(values_report(&p, values));
-    }
-    let baseline = values_report(&p, values.clone()).merit[0];
-    prepared.weight_efl(baseline);
-    let p = OpticalProblem::new(
-        prepared.system.clone(),
-        prepared.settings.variables.clone(),
-        prepared.spec.clone(),
-        prepared.cpu.clone(),
-        &prepared.reg,
-    )?;
-    Ok(values_report(&p, values))
 }
 
 // ---------------------------------------------------------------------------
@@ -2119,7 +2049,7 @@ impl Analysis for Tolerance {
             batch,
         );
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
         ctx.check()?;
         let split = if do_sens && do_mc {
             0.2
@@ -3153,5 +3083,27 @@ mod tests {
                     .any(|o| o["param"]["parameter"] == parameter && f(&o["worst"]) > 0.0)
             );
         }
+    }
+
+    /// 20 LM iterations on the Double Gauss with the worst-field MTF merit
+    /// end 3e-3 off the EFL hold; before the end-point restoration the run
+    /// returned the start design.
+    #[test]
+    #[ignore = "diffraction MTF merit; run in release mode"]
+    fn double_gauss_mtf_end_point_is_restored() {
+        let r = run(
+            samples::double_gauss(),
+            "optimize",
+            json!({
+                "backend": "cpu", "max_iterations": 20,
+                "default_merit": {"criterion": {"type": "mtf", "frequencies": [30.0],
+                    "target": 0.8, "worst_field": true}}
+            }),
+        )
+        .unwrap()
+        .json;
+        assert_eq!(r["improved"], true);
+        assert_eq!(r["final"]["feasible"], true);
+        assert!(f(&r["final"]["merit"]) < 0.9 * f(&r["start"]["merit"]));
     }
 }
