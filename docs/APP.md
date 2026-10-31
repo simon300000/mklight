@@ -281,9 +281,26 @@ What we took from Apple's current guidance, and how MKLight applies it.
     They are readable without a click (the badge's help tag lists them),
     in VoiceOver (the badge's label reads them) and in the run details
     popover, which also lists the engine's raw messages and offers a
-    one-click remedy where the analysis has the setting: "Sample the Pupil
-    Finer (grid 64 → 128)" for coarse pupil sampling, "Enlarge the Image
-    Grid" for a truncated PSF. Stale: dimmed, desaturated, slightly blurred, with a glass card
+    one-click remedy where the analysis has the setting: an explicit coarse
+    pupil grid, image grid or image-simulation PSF window goes back to the
+    engine's automatic choice ("Sample the Pupil Automatically (grid 32 →
+    auto)", "Size the Image Grid Automatically", "Size the PSF Window
+    Automatically"). An automatic setting that still warns has reached the
+    engine's cap, so no button is offered.
+  * *Automatic settings* (`AutoSettings`): the engine chooses the pupil
+    grid, the PSF / line-spread / encircled-energy image grids, the PSF
+    spacing, the MTF frequency limit, the fixed frequencies of MTF vs field
+    and through-focus MTF, the through-focus range and the image
+    simulation's PSF window and spacing from the system when they are 0,
+    null or empty (docs/WAVE.md). The settings bar and popover show such a
+    setting as "Auto (n)" with the value the last run used, read from its
+    result (`Auto (282–371)` for PSF windows that differ by field, `Auto
+    (2, 5, 10)` for frequencies, `Auto (±0.437)` for a focus range), never
+    as a bare 0; clearing a field, typing 0 or "auto" makes it automatic
+    again. The pupil object has its own compact control (grid and rays), and
+    the image simulation's `optics` one (PSF window, spacing, pupil grid,
+    rays, PSF grid). Values the engine does not report (the pupil grid of
+    MTF and PSF, the encircled-energy grid) read "Auto". Stale: dimmed, desaturated, slightly blurred, with a glass card
   and a prominent Update; updating: a progress line and a gentle pulse. The
   dedicated views are as before (first order with the anamorphic note, spot,
   fans, field curvature, Seidel with S_I … S_V and C_L, C_T set with real
@@ -304,7 +321,12 @@ What we took from Apple's current guidance, and how MKLight applies it.
   compare designs; a flat map gets a narrow band around its value. The
   polarisation pupil maps and generic grids follow it; PSF and irradiance
   images keep the one-hue magnitude ramp whose zero recedes into the
-  plot. Relative illumination adds iso-lines (marching squares, about
+  plot. Cells the engine reports as null are no data, never 0: the
+  relative illumination map's cells outside the field (hypot(Hx, Hy) > 1,
+  image points included) leave a fine hatch showing through, the map is
+  interpolated from the finite corners and clipped at the field's edge,
+  and its iso-lines are traced on that clipped grid, so they reach the
+  edge and never enter masked cells. Relative illumination adds iso-lines (marching squares, about
   five round levels inside the data's range, white on a dark halo,
   labels kept apart) and the illumination against image radius. The chief ray angle is plotted against image height with the
   sensor limit; the margin between them is shaded and turns red where the
@@ -315,18 +337,24 @@ What we took from Apple's current guidance, and how MKLight applies it.
   glasses are ringed and labelled with their surfaces; hover shows a glass's
   data and a click inspects it. The image simulation shows the simulated
   sensor image beside its source, side by side, split or blinking, with
-  exposure, zoom and pan. New panes start on a visible patch
-  (`ImageSimulationSettings.starting`): the centre 10 % of the field at
-  256 px (about 9.5 µm pixels on the Double Gauss against its 22 µm RMS
-  spot), a 161-sample PSF window and a 96-sample pupil, so the PSFs are
-  not truncated; the engine's defaults (the full field at 64 px, a
-  33-sample PSF) show no blur at all. The view's controls set the field
-  of view (full field, ½, ¼, centre 10 %, 5 %, 2 %: a square centred on
-  the axis, each with its width and pixel size on the sensor) and the
-  resolution (128 … 1024 px). Image simulation starts manual (seconds per
-  run). Panes saved with the engine's defaults by an older version (no
-  settings, or only default values) take these starting settings when the
-  project opens, and wait for Update. Built-in patterns are drawn by the app with the engine's
+  exposure, zoom and pan. The simulated patch is a square of the
+  normalised field around a centre (`optics.field_center`) chosen in the
+  view: on axis, at a design field point (normalised by the largest radial
+  field), or anywhere on a small field diagram that a click or drag moves
+  (snapping to the axis and the field points, warning when part of the
+  patch leaves the field). The footer names the patch ("At Field 2 (0.00,
+  +0.71)", with its image point in the help) and the PSF window the run
+  used ("PSF 505 × 0.39 µm"). New panes start on a visible patch
+  (`ImageSimulationSettings.starting`): 10 % of the field on axis at 256 px,
+  with the engine's automatic PSF window and pupil (the engine's own view,
+  the inscribed square at 64 px, has pixels larger than the spot). The
+  view's controls set the field of view (full field = the square inscribed
+  in the field disk, ½, ¼, 10 %, 5 %, 2 %, each with its width and pixel
+  size on the sensor), the centre and the resolution (128 … 1024 px). Image
+  simulation starts manual (seconds per run). Panes saved with the engine's
+  defaults by an older version take these starting settings when the
+  project opens, and wait for Update; panes saved with the earlier fixed
+  sampling (a 161-sample PSF, a 96 grid of 97 rays) go back to automatic. Built-in patterns are drawn by the app with the engine's
   definition, area-sampled (4 × 4 per pixel) and sent as a buffer source
   at the run's size, so both the shown source and the simulation are
   antialiased; a user image (any format ImageIO reads) is cropped to the
@@ -334,7 +362,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
   keeps only its path. The footer has the pixel size, the largest distortion and
   the lowest relative illumination of the field mapping, which a popover
   lists node by node. The settings bar has compact controls for two-number
-  settings (grid, extent, size), a table for the sensor CRA limit and a
+  settings (grid, extent, size; a field point such as grid distortion's
+  `field_center` reads "Centre Hx … Hy …" and accepts signed values), a table for the sensor CRA limit and a
   source menu.
 * **Run-local spectrum.** Every analysis whose schema has `spectrum` shows
   a spectrum control (`SpectrumControl`) in its settings popover, with a
@@ -450,8 +479,60 @@ What we took from Apple's current guidance, and how MKLight applies it.
   previews that combination's system in the layout and every analysis and
   shows a before/after card (glasses per surface with n_d / V_d, merit,
   shape changes, the two layouts) and the glass map with the candidate's
-  glasses ringed. Apply to Design is one undoable step. *Tolerance*: ranked sensitivities with bars,
-  Monte-Carlo statistics and a histogram. *Apply Solves*: a dry run (now →
+  glasses ringed. Apply to Design is one undoable step. *Tolerance* (`TolerancePanel`, the engine's `tolerance`):
+  * **Tolerance set** (`ToleranceSettings`, saved in the project's
+    `tolerances` section as the engine's `ToleranceSpec`, `schema_version`,
+    `operands`, `compensators`, `criterion`, `monte_carlo`, as last
+    expanded, plus the app's rows under `app`; a spec written elsewhere is
+    read back as rows). *Default Tolerances…* generates a set from a class
+    of manufacture, Commercial / Precision / High precision, with every
+    value editable: power in fringes (at 632.8 nm over the clear aperture,
+    Δc = Nλ/h²), thickness, surface decentre and tilt (x and y, arc
+    minutes), index and Abbe number (% of V_d), surface irregularity, and
+    the trial distribution. It covers every lens surface's power, decentre
+    and tilt, every gap inside the lens (glass, air, the stop's; the back
+    focus is the compensator) and the index and Abbe number of every model
+    glass. The table is grouped by element (`L1 · N-SK16`, `Air after L1`,
+    `Stop S6`, collapsible): kind, surface (a menu), one ± field or − and +
+    fields, and the unit (fringes, ΔR mm or % of R for radii; ′ or ° for
+    tilts; % or ΔV for Abbe), changing which converts the limits. Add (by
+    kind and surface), duplicate (⌘D) and delete (⌫); the context menu sets
+    the unit, the distribution (uniform, normal with the limits at ±2σ or
+    ±3σ, end points) and symmetric / asymmetric limits. Problems show under
+    their row in red and block the run; index and Abbe on catalogue glasses
+    are left out with a note. Every change is undoable and saved; rows keep
+    their identity across undo (aligned by content).
+  * **Decentres and tilts** move one surface: the run gives each such
+    surface (without a placement of its own) a placement that returns to
+    the axis after it (`restore_after`), on a snapshot of its own, so the
+    rest of the system stays in place.
+  * **Compensators**: the back focus (±0.5 mm) by default; any air space,
+    design variable, or a surface's decentre, tilt, thickness or curvature
+    from a menu, each with a ± range around nominal (empty is free).
+  * **Criterion**: RMS spot radius (centroid or chief), RMS wavefront, MTF
+    at frequencies (diffraction or geometric, weighted or weakest field;
+    the shortfall from 1, so it never saturates) with the merit editor's
+    rings, arms, fields and wavelengths controls, or the Optimize panel's
+    merit; the engine's criterion (a mean of squares) is shown as a lens
+    designer reads it: √ in µm, waves, or 1 − √ as an MTF. An optional pass
+    limit gives the yield.
+  * **Analysis**: sensitivity, Monte Carlo or both, trials and seed. While
+    it runs: progress, the stage ("Monte Carlo 40 / 200"), elapsed time and
+    an estimate of what is left; Stop keeps the sensitivities and trials
+    completed, Cancel discards.
+  * **Results**: nominal and RSS prediction, the 50 / 90 / 97.7 % levels of
+    the builds and the yield; the sensitivity table by share of the RSS
+    with a bar, the worst offenders (the largest shares making up half of
+    it) tinted, a click selecting the surface in the lens table, and an eye
+    that previews the build: the tolerance at its worse limit with the
+    compensators at the values the engine re-optimised for it, read-only,
+    labelled "not applied" in the layout; the Monte-Carlo histogram with
+    the cumulative share of builds (right axis), the nominal and the three
+    levels marked; the compensators' nominal value, the range the
+    sensitivity evaluations used against the allowed range (a bar, a
+    warning at the limit) and their Monte-Carlo mean and σ. Export copies a
+    text summary or saves the sensitivity table or the trials as CSV.
+  *Apply Solves*: a dry run (now →
   solved, residual), then one undoable commit.
 * **Welcome window**: New Design (prominent glass) and Open (glass), and the
   engine's sample designs as cards with thumbnails of their layouts,
@@ -546,7 +627,9 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   `-MKLightAppearance light|dark` (overrides the system appearance),
   `-MKLightSheet glass`, `-MKLightAutoRun glass` (and `-MKLightAutoPick n`),
   `-MKLightAutoStop s` and `-MKLightAutoApply s` (press Stop / Apply after
-  s seconds), `-MKLightFootprints YES`, `-MKLightFit lens`,
+  s seconds), `-MKLightToleranceTrials n` and `-MKLightTolerancePreview k`
+  (with `-MKLightAutoRun tolerance`: the trials, and the k-th largest
+  sensitivity previewed once the run ends), `-MKLightFootprints YES`, `-MKLightFit lens`,
   `-MKLightRunDetails <analysis>` (opens that pane's run details),
   `-MKLightAutoEdit s` (edits the merit s seconds after the Optimize panel
   opens and restores it a second later) and `-MKLightAutoConvert s`
@@ -639,8 +722,8 @@ callback never runs on the main thread and holds no engine lock.
 
 ## Tests
 
-`swift test` in `apps/macos` (248 tests in 42 suites: model 69, engine 33,
-FFI 36, UI 110):
+`swift test` in `apps/macos` (269 tests: model 69, engine 33, FFI 39,
+UI 128):
 
 * `MKLightModelTests`: round trips against JSON written by the Rust side
   (every model variant including the extended shapes in
@@ -695,7 +778,25 @@ FFI 36, UI 110):
   ramp's monotonic lightness, iso-levels), warning grouping and remedies,
   the automatic stretch and its projection, area-sampled patterns and the
   image simulation's starting settings; the stretch saved in `views`, old
-  image-simulation panes migrating, subscripted labels.
+  image-simulation panes migrating, subscripted labels. The analysis
+  defaults round (`AutoSettingsTests`): which settings are automatic and
+  "Auto (n)" read from each result (PSF windows and spacings, the MTF
+  limit, fixed frequencies, the focus range, wavefront grids, the image
+  simulation's PSF window), no bare 0 in the number field, warning fixes
+  going back to automatic (and none for an automatic setting), the patch
+  centre's encoding inside `optics`, the design's field points, snapping,
+  the run's patch from its mapping nodes, the starting settings and the
+  migration of the earlier fixed sampling, and null relative-illumination
+  cells staying no data, clipped at the field's edge. Tolerancing
+  (`ToleranceTests`): presets, the generator over the Cooke's elements
+  (no back focus, catalogue glasses skipped, model glasses included),
+  grouping, fringes / ΔR / % / arc minutes / % of V_d to engine limits and
+  back, return placements, edits with undo and redo keeping row ids, the
+  project round trip (and a spec without app rows), the back-focus
+  default and the compensator menu, the criterion settings and display,
+  shares, worst offenders, percentiles, compensator ranges, previews of
+  sensitivity builds, Stop and Cancel, the summary and CSV export, and
+  the run blocked by broken rows only.
 * FFI additions: the extended shapes run through the layout (x–z section,
   surface mesh, DOE flag) and Seidel; footprint overlays; the default merit
   evaluates through `merit_evaluation` to `optimize`'s start merit, its
@@ -703,7 +804,13 @@ FFI 36, UI 110):
   evaluate to the merit shown before; a solved variable is left out (sent
   as it is, the engine refuses it); custom operands report values; spectrum panes stay current; the glass
   substitution flow on the achromat (select, run, preview, apply, undo,
-  redo) and Stop keeping the ranking; the new analyses' views read the
+  redo) and Stop keeping the ranking; tolerancing on the Cooke
+  (`FFIToleranceTests`: the default set with fringes over the layout's
+  apertures, decentres and tilts on return placements and the back-focus
+  compensator, sensitivity ranked with a nominal RMS spot in µm, Monte
+  Carlo with percentiles, yield and the compensator's spread, the same
+  trials for a seed, a previewed build, the CSV, and Stop keeping partial
+  trials); the relative illumination map's null cells outside the field; the new analyses' views read the
   engine's results; spectra and x/y first order on the real engine.
 
 ## iPadOS readiness
@@ -758,8 +865,14 @@ Remaining for an iPadOS target:
 
 * The lens table's keyboard navigation is implemented with SwiftUI focus
   and key handlers and checked by hand in the app, not by UI tests.
-* Tolerance sets and compensators are not editable yet (the engine accepts
-  them); the Tolerance panel uses the engine's basic set.
+* Tolerancing: surface irregularity is kept in the generator but not run,
+  index and Abbe tolerances apply to model glasses only, and element
+  decentres and tilts (a cemented group moving as one) cannot be
+  expressed, since a tolerance perturbs one parameter: the engine needs
+  these perturbations (see Engine gaps). A Monte-Carlo trial cannot be
+  previewed: the engine returns no trial systems or perturbations, so only
+  sensitivity builds are rebuilt from the reported limits and compensator
+  values.
 * Configurations are listed but not editable; multi-configuration analyses
   use the `configuration` setting where the schema has one.
 * Engine 0.1 writes the `layout` kind codes in its enum order while
@@ -787,45 +900,27 @@ Remaining for an iPadOS target:
   * `image_simulation`'s text chart and PNG-path sources come out
     vertically mirrored (their top row lands at the low-y edge); imported
     images go as buffers, which are correct.
-  * `image_simulation` samples its built-in patterns at the output pixel
-    centres (`pattern_value`), so their edges are staircases; the app
-    sends the patterns area-sampled as buffers instead. The engine should
-    area-sample them (or supersample) itself.
-  * `image_simulation` can only simulate a square centred on the axis
-    (`optics.field_extent`): an off-axis patch around a chosen field point
-    (`optics.field_center: [hx, hy]`, or a rectangle in normalised field)
-    is what a designer needs to see the corner aberrations at a pixel
-    size that resolves them; the app offers centred patches until then.
-    Its defaults (64 px over the full field, a 33-sample PSF of λF/2
-    spacing, a 32-sample pupil) truncate the PSF to about 20 % of its
-    energy on the Double Gauss (`psf_truncated` warnings) and use pixels
-    ten times the spot; the app starts panes with a 161-sample PSF and a
-    96-sample pupil. The engine should size the PSF window and the pupil
-    grid from the spot and the wavefront slope.
-  * Default sampling warns on stock designs: `mtf`, `psf`,
-    `line_spread` and `diffraction_encircled_energy` at the engine's
-    default pupil grid on the Double Gauss warn "wavefront changes by up
-    to 0.58 (0.72) waves between pupil samples (limit 0.5)", the PSF
-    keeps 46 % of its energy on its default image grid, and
-    `relative_illumination_map` warns that "54 of 576 pupil nodes have no
-    ray" at the corners of its square field grid, which lie at √2 of the
-    design's field. The warnings are true statements about the run, so
-    the app shows them (with a one-click finer pupil); the engine should
-    pick its default pupil and image grids from the system (and sample
-    field maps inside the design's field, or not warn about nodes outside
-    it). On the cylindrical adapter `mtf` warns per field and wavelength
-    that parts of the aperture are 0.044 pupil units from the nearest
-    ray (the pupil is anamorphic); the default `image_simulation` PSF
-    spacing (λF/2 at the shortest wavelength) is itself flagged as
-    coarser than Nyquist by a fraction of a percent ("4.948e-4 mm …
-    limit 4.885e-4 mm"), a self-inconsistency of the engine.
-  * `mtf_vs_field` and `through_focus_mtf` default to frequencies of ⅛, ¼
-    and ½ of the diffraction cutoff (129, 259, 517 cycles/mm at F/2) and
-    a focus range of ±4λF² (±8 µm): sensible for diffraction-limited
-    optics, but on a camera lens such as the Double Gauss every curve
-    lies near zero. The app keeps the engine's defaults; the engine could
-    pick them from the system's aberrations (or a camera-lens preset of
-    10, 20 and 40 cycles/mm).
+  * `image_simulation` now area-averages its grid and slanted edge and
+    supersamples the star and text chart; the app still sends its own
+    area-sampled patterns as buffers (4 × 4 per pixel), which also keeps
+    the shown source identical to the simulated one.
+  * `diffraction_encircled_energy` does not report the image grid it chose,
+    and `mtf`, `psf` and `line_spread` not the pupil grid; those settings
+    read "Auto" without a value.
+  * On the sample designs the automatic MTF limit `1/(2 r_rms)` is low for
+    camera lenses: 19 cycles/mm on the Double Gauss and the Cooke, so MTF
+    vs field and through-focus MTF use 2, 5 and 10 cycles/mm. The curves
+    fill the plot, but a designer of a 50 mm F/2 lens usually looks at 10 to
+    40 cycles/mm; the fields accept explicit frequencies.
+  * `tolerance`: the Monte-Carlo result has no nominal (only the
+    sensitivity reports it), fixed percentiles (50, 80, 90, 95, 98; the app
+    computes 50 / 90 / 97.7 from the trials), no per-trial compensator
+    values or perturbations (only their mean and σ), and an empty label
+    comes back as the parameter's JSON. With the MTF criterion and a
+    back-focus compensator a trial costs about 3 s on the Double Gauss (40
+    trials in about 2 minutes), and about one trial in six refocuses into a
+    secondary maximum (MTF 0.12 against 0.33), a bimodal distribution that
+    is the compensator's, not the lens's.
   * `glass_map` reports no glass status unless AGF metadata is passed, so
     catalogue glasses show as "Catalogue glass".
   * LM with the MTF weakest-field merit and the EFL hold can end slightly

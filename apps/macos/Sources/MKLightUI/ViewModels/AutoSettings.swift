@@ -66,14 +66,14 @@ public enum AutoSettings {
             return range((j["fields"]?.array ?? []).compactMap { f in output.buffer(ref: f["positions_mm"]).map { Double($0.count) } })
         case ("mtf", "max_frequency"):
             guard let f = output.buffer(ref: j["frequencies"]) ?? output.buffer(named: "frequencies"), f.count > 0 else { return nil }
-            return Fmt.short(f[f.count - 1])
+            return String(format: "%.3g", f[f.count - 1])
         case ("mtf_vs_field", "frequencies"), ("through_focus_mtf", "frequencies"):
             guard let f = output.buffer(ref: j["frequencies"]) ?? output.buffer(named: "frequencies"), f.count > 0 else { return nil }
-            return f.doubles.map(Fmt.short).joined(separator: ", ")
+            return f.doubles.map { String(format: "%.3g", $0) }.joined(separator: ", ")
         case ("through_focus_mtf", "focus_range_mm"):
             guard let f = output.buffer(ref: j["focus_mm"]) ?? output.buffer(named: "focus_mm"), f.count > 0 else { return nil }
             let half = f.doubles.map(abs).max() ?? .nan
-            return half.isFinite ? "±" + Fmt.short(half) : nil
+            return half.isFinite ? "±" + String(format: "%.3g", half) : nil
         case (_, "pupil.grid"):
             // Wavefront maps report their grids; other analyses do not.
             return range((j["maps"]?.array ?? []).compactMap { $0["grid"]?.doubleValue })

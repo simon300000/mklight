@@ -275,7 +275,8 @@ struct ImageSimulationView: View {
 
     private var caption: some View {
         let clipped = cache.clipped
-        return HStack(spacing: Space.l) {
+        // One flow that wraps in narrow panes, so nothing is cut off.
+        return FlowLayout(spacing: Space.l, lineSpacing: Space.xxs) {
             Text("\(data.image.width) × \(data.image.height) px" + (data.image.channels == 3 ? ", RGB" : ", monochrome"))
             if data.pixelSize.x.isFinite, abs(data.pixelSize.x - data.pixelSize.y) > 1e-9 * data.pixelSize.x {
                 Text("Pixel \(Fmt.length(data.pixelSize.x)) × \(Fmt.length(data.pixelSize.y))")
@@ -289,9 +290,8 @@ struct ImageSimulationView: View {
                     .help("The PSF window and sample spacing this run used\(psfAuto ? ", chosen by the engine from the blur and diffraction" : "").")
             }
             if clipped > 0.001 { Text(String(format: "%.1f%% clipped", clipped * 100)).foregroundStyle(.orange) }
-            Spacer(minLength: 0)
             if pattern != nil {
-                Text("Pattern area-sampled (antialiased)").help(
+                Text("Pattern area-sampled").help(
                     "The built-in pattern is drawn by the app with the engine's definition, averaged over each pixel (4 × 4 samples), and sent to the engine as the source image.")
             } else if case .pattern = data.source {
                 Text("Source drawn as the engine defines it").help(
@@ -301,6 +301,7 @@ struct ImageSimulationView: View {
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
         .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

@@ -22,13 +22,14 @@ struct TolerancePanel: View {
     /// The design with the clear apertures the layout resolved (fringes
     /// are counted over them).
     private var context: ToleranceContext {
-        ToleranceContext(system: design.system, semiDiameters: EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output)))
+        ToleranceContext(system: design.system, semiDiameters: session.semiDiameters(from: workspace.layout.output))
     }
 
     private var subtitle: String {
         let t = session.settings
         let n = t.rows.count, c = t.compensators.count
-        return "\(design.system.name) · \(n) tolerance\(n == 1 ? "" : "s") · \(c == 0 ? "no" : "\(c)") compensator\(c == 1 ? "" : "s")"
+        let comp = c == 0 ? "no compensator" : c == 1 ? t.compensators[0].title(in: design.system).lowercased() : "\(c) compensators"
+        return "\(design.system.name) · \(n) tolerance\(n == 1 ? "" : "s") · \(comp)"
     }
 
     var body: some View {
@@ -184,6 +185,7 @@ struct ToleranceTableSection: View {
     let edit: (String, (inout ToleranceSettings) -> Void) -> Void
     @State private var selection: Set<UUID> = []
     @State private var showGenerator = false
+    @State private var collapsed: Set<String> = []
 
     private var system: OpticalSystem { design.system }
     private var rows: [ToleranceRow] { session.settings.rows }
@@ -207,10 +209,9 @@ struct ToleranceTableSection: View {
                         .font(.callout).foregroundStyle(.secondary).padding(.vertical, Space.m)
                 } else {
                     ToleranceColumnsHeader()
-                    ForEach(groups, id: \.title) { g in
-                        Text(g.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, Space.xs)
-                            .accessibilityAddTraits(.isHeader)
-                        ForEach(g.rows) { r in
+                    ForEach(groups, id: \.key) { g in
+                        groupHeader(g)
+                        ForEach(collapsed.contains(g.key) ? [] : g.rows) { r in
                             ToleranceRowView(
                                 row: r, system: system, context: context, issue: issues[r.id], selected: selection.contains(r.id),
                                 select: { additive in select(r.id, additive: additive) }, edit: edit,
@@ -281,8 +282,35 @@ struct ToleranceTableSection: View {
         .controlSize(.small)
     }
 
+    /// An element's title (with its glasses), a disclosure chevron, and
+    /// when collapsed its count and the problems in it.
+    private func groupHeader(_ g: (key: String, title: String, rows: [ToleranceRow])) -> some View {
+        let closed = collapsed.contains(g.key)
+        return Button {
+            if closed { collapsed.remove(g.key) } else { collapsed.insert(g.key) }
+        } label: {
+            HStack(spacing: Space.xs) {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .rotationEffect(.degrees(closed ? 0 : 90))
+                    .frame(width: 10)
+                Text(g.title).font(.caption.weight(.semibold))
+                Spacer(minLength: Space.xs)
+                if closed { Text("\(g.rows.count)").font(.caption.monospacedDigit()) }
+            }
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, Space.xs)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityLabel(g.title)
+        .accessibilityValue(closed ? "Collapsed, \(g.rows.count) tolerances" : "Expanded")
+        .help(closed ? "Show the \(g.rows.count) tolerances of \(g.key)" : "Hide the tolerances of \(g.key)")
+    }
+
     /// Rows by element (`L1`, `Air after L1`, …) in surface order.
-    private var groups: [(title: String, rows: [ToleranceRow])] {
+    private var groups: [(key: String, title: String, rows: [ToleranceRow])] {
         let lens = LensElements.groups(system)
         var order: [String] = []
         var byTitle: [String: [ToleranceRow]] = [:]
@@ -299,7 +327,7 @@ struct ToleranceTableSection: View {
         return order.map { t in
             let lensTitle = lens.first { $0.title == t }
             let glasses = lensTitle.map { $0.glasses.isEmpty ? "" : " · " + $0.glasses.joined(separator: ", ") } ?? ""
-            return (t + glasses, byTitle[t] ?? [])
+            return (t, t + glasses, byTitle[t] ?? [])
         }
     }
 
@@ -424,7 +452,7 @@ struct ToleranceRowView: View {
             }
         }
         .font(.callout)
-        .padding(.vertical, 2)
+        .padding(.vertical, 1)
         .padding(.horizontal, Space.xs)
         .background(selected ? AnyShapeStyle(.tint.opacity(0.16)) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 5))
         .contextMenu { menu }
@@ -437,16 +465,16 @@ struct ToleranceRowView: View {
         HStack(spacing: 3) {
             if symmetric {
                 Text("±").foregroundStyle(.secondary)
-                OptionalNumberField(title: "Limit", value: row.minus, prompt: "0", width: 64) { v in
+                OptionalNumberField(title: "Limit", value: row.minus, prompt: "0", width: 64, compact: true) { v in
                     set("Change Tolerance") { $0.minus = v ?? $0.minus; $0.plus = v ?? $0.plus }
                 }
             } else {
                 Text("−").foregroundStyle(.secondary)
-                OptionalNumberField(title: "Minus limit", value: row.minus, prompt: "0", width: 50) { v in
+                OptionalNumberField(title: "Minus limit", value: row.minus, prompt: "0", width: 50, compact: true) { v in
                     set("Change Tolerance") { $0.minus = v ?? $0.minus }
                 }
                 Text("+").foregroundStyle(.secondary)
-                OptionalNumberField(title: "Plus limit", value: row.plus, prompt: "0", width: 50) { v in
+                OptionalNumberField(title: "Plus limit", value: row.plus, prompt: "0", width: 50, compact: true) { v in
                     set("Change Tolerance") { $0.plus = v ?? $0.plus }
                 }
             }
@@ -471,7 +499,17 @@ struct ToleranceRowView: View {
         .help("The surface (a thickness is the gap after it)")
     }
 
-    private var unitMenu: some View {
+    @ViewBuilder private var unitMenu: some View {
+        if row.kind.units.count < 2 {
+            Text(row.unit.label.isEmpty ? row.path.unit(in: system) : row.unit.label)
+                .foregroundStyle(.secondary)
+                .help(row.unit.title)
+        } else {
+            unitChoice
+        }
+    }
+
+    private var unitChoice: some View {
         Menu {
             ForEach(row.kind.units, id: \.self) { u in
                 Button {
@@ -487,8 +525,7 @@ struct ToleranceRowView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(row.kind.units.count < 2)
-        .help(row.kind.units.count < 2 ? row.unit.title : "Unit: " + row.unit.title + ". Changing it converts the limits.")
+        .help("Unit: " + row.unit.title + ". Changing it converts the limits.")
     }
 
     @ViewBuilder private var menu: some View {
@@ -800,7 +837,7 @@ struct CriterionSection: View {
         switch display {
         case .spot: "RMS spot radius over the chosen fields and wavelengths (root of the weighted mean square), after the compensators."
         case .wavefront: "RMS wavefront error in waves over the chosen fields and wavelengths, after the compensators."
-        case .mtf: "Polychromatic tangential and sagittal MTF, the root-mean-square shortfall from 1 shown as an MTF."
+        case .mtf: "Polychromatic tangential and sagittal MTF, the root-mean-square shortfall from 1 shown as an MTF. Each trial costs as much as an MTF analysis per compensator step: start with a few dozen trials."
         case .merit: "The merit value itself (lower is better)."
         }
     }
@@ -880,6 +917,17 @@ struct ToleranceProgress: View {
         return stage.prefix(1).uppercased() + stage.dropFirst()
     }
 
+    /// "0:42 elapsed · about 2 min left" (the estimate once 5 % is done).
+    static func timing(elapsed: TimeInterval, fraction: Double) -> String {
+        func clock(_ s: TimeInterval) -> String { String(format: "%d:%02d", Int(s) / 60, Int(s) % 60) }
+        var t = clock(elapsed) + " elapsed"
+        if fraction >= 0.05 && fraction < 1 {
+            let left = elapsed * (1 - fraction) / fraction
+            t += left < 60 ? " · less than a minute left" : " · about \(Int((left / 60).rounded())) min left"
+        }
+        return t
+    }
+
     var body: some View {
         let t = session.settings
         VStack(alignment: .leading, spacing: Space.l) {
@@ -888,6 +936,12 @@ struct ToleranceProgress: View {
                 BigNumber(label: "Stage", value: Self.stageText(progress.stage))
             }
             ProgressView(value: min(max(progress.fraction, 0), 1))
+            if let start = session.startedAt {
+                TimelineView(.periodic(from: .now, by: 1)) { t in
+                    Text(Self.timing(elapsed: t.date.timeIntervalSince(start), fraction: progress.fraction))
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
             Text("\(t.rows.count) tolerances · \(t.compensators.count) compensator\(t.compensators.count == 1 ? "" : "s")"
                 + (t.mode == .sensitivity ? "" : " · \(t.trials) trials, seed \(t.seed)"))
                 .font(.callout).foregroundStyle(.secondary)
@@ -942,9 +996,6 @@ struct ToleranceResultView: View {
                             .help(result.compensators.isEmpty ? "The design as it is" : "The design as it is, with the compensators re-optimised")
                         BigNumber(label: "Predicted (RSS)", value: d.format(d.value(result.predicted)))
                             .help("Nominal plus the root-sum-square of every tolerance's worst change")
-                    }
-                    if result.hasMonteCarlo, !result.hasSensitivity {
-                        BigNumber(label: "Median", value: d.format(d.value(result.percentile(50))))
                     }
                 }
                 if result.hasMonteCarlo {
@@ -1021,7 +1072,7 @@ struct ToleranceResultView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Sensitivity").font(.headline)
                 Spacer()
-                Text("Δ \(d.title.lowercased()) at − / +").font(.caption).foregroundStyle(.secondary)
+                Text("Δ \(d.unit.isEmpty ? d.title : d.unit) at − / +").font(.caption).foregroundStyle(.secondary)
             }
             Text("Each tolerance alone at its limits, largest share of the RSS first. Click a row to select its surface; the eye previews that build.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1060,13 +1111,16 @@ struct ToleranceResultView: View {
 
     private var monteCarlo: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Monte Carlo").font(.headline)
-                Spacer()
-                Text("\(result.trials) trials · seed \(result.seed)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            }
+            Text("Monte Carlo").font(.headline)
             MonteCarloChart(result: result).frame(height: 190)
+            FlowLayout(spacing: Space.m, lineSpacing: Space.xxs) {
+                if result.hasSensitivity { LegendItem(color: .accentColor, label: "Nominal " + d.format(d.value(result.nominal))) }
+                LegendItem(color: .secondary, label: "50, 90, 97.7 % of builds", dashed: true)
+                LegendItem(color: .primary.opacity(0.75), label: "Cumulative share (right axis)")
+            }
+            .font(.caption)
             KeyValueGrid(rows: [
+                ("Trials", "\(result.trials), seed \(result.seed)"),
                 ("Mean", d.formatWithUnit(d.value(result.mean))),
                 ("Best", d.formatWithUnit(d.value(result.min))), ("Worst", d.formatWithUnit(d.value(result.max))),
             ] + (result.failures > 0 ? [("Failed trials", "\(result.failures)")] : []))
@@ -1185,7 +1239,8 @@ struct MonteCarloChart: View {
         let peak = Double(bins.map(\.1).max() ?? 1)
         let curve = cumulative(shown)
         let nominal = result.hasSensitivity ? d.value(result.nominal) : nil
-        let levels = ToleranceResult.levels.map { (p: $0, v: d.value(result.percentile($0))) }
+        let dom = domain(shown, nominal: nominal)
+        let levels = Self.labelled(ToleranceResult.levels.map { (p: $0, v: d.value(result.percentile($0))) }, span: dom.upperBound - dom.lowerBound)
         Chart {
             ForEach(bins, id: \.0) { b in
                 RectangleMark(
@@ -1207,7 +1262,7 @@ struct MonteCarloChart: View {
                         .foregroundStyle(Color.secondary)
                         .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
                         .annotation(position: .top, alignment: .center, spacing: 2) {
-                            Text(Fmt.short(l.p) + "%").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            Text(l.label).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         }
                 }
             }
@@ -1215,9 +1270,6 @@ struct MonteCarloChart: View {
                 RuleMark(x: .value(d.title, nominal))
                     .foregroundStyle(Color.accentColor)
                     .lineStyle(StrokeStyle(lineWidth: 1.6))
-                    .annotation(position: .top, alignment: .leading, spacing: 2) {
-                        Text("Nominal").font(.caption2.weight(.semibold)).foregroundStyle(.tint)
-                    }
             }
         }
         .environment(\.locale, NumberDisplay.locale)
@@ -1234,12 +1286,28 @@ struct MonteCarloChart: View {
             }
         }
         .chartYAxisLabel("Trials", position: .leading)
-        .chartXScale(domain: domain(shown, nominal: nominal))
+        .chartXScale(domain: dom)
+        .padding(.top, Space.l)
         .font(.caption2)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Distribution of \(shown.count) Monte-Carlo trials of the \(d.title)")
         .accessibilityValue(
             levels.map { "\(Fmt.short($0.p)) percent of builds \(d.higherIsBetter ? "at least" : "at most") \(d.formatWithUnit($0.v))" }.joined(separator: ", "))
+    }
+
+    /// Percent levels with their labels; a level too close to the one
+    /// before it (under 8 % of the axis) shares that label ("90, 97.7").
+    static func labelled(_ levels: [(p: Double, v: Double)], span: Double) -> [(p: Double, v: Double, label: String)] {
+        var out: [(p: Double, v: Double, label: String)] = []
+        for l in levels {
+            if let last = out.last, last.v.isFinite, l.v.isFinite, abs(l.v - last.v) < 0.08 * span, !last.label.isEmpty {
+                out[out.count - 1].label += ", " + Fmt.short(l.p)
+                out.append((l.p, l.v, ""))
+            } else {
+                out.append((l.p, l.v, Fmt.short(l.p)))
+            }
+        }
+        return out
     }
 
     /// The cumulative share of trials as good as or better than each value,
@@ -1300,7 +1368,7 @@ struct CompensatorStats: View {
             let mean = result.compensatorMean[j], sd = result.compensatorStd.indices.contains(j) ? result.compensatorStd[j] : .nan
             let shift = nominal.map { mean - $0 }
             rows.append(("Monte Carlo mean", Fmt.value(mean, unit: unit) + (shift.map { " (" + Fmt.signed($0, decimals: 4).trimmingCharacters(in: .whitespaces) + ")" } ?? "")))
-            rows.append(("Monte Carlo σ (±3σ)", Fmt.short(sd) + " (±" + Fmt.short(3 * sd) + ") " + unit))
+            rows.append(("Monte Carlo σ (±3σ)", String(format: "%.4g (±%.4g) ", sd, 3 * sd) + unit))
         }
         return rows
     }

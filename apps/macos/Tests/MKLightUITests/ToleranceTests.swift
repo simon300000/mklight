@@ -51,7 +51,7 @@ import Testing
         // Grouped by element: L1 is S1–S2, the air after it its own group.
         let groups = LensElements.groups(cooke)
         #expect(groups.map(\.title) == ["L1", "L2", "L3"] && groups[0].surfaces == [1, 2] && groups[2].surfaces == [6, 7] && groups[0].glasses == ["N-SK16"])
-        #expect(LensElements.groupTitle(of: ToleranceRow(.thickness, surface: id(5), minus: 0.05), in: cooke, groups: groups) == "S5")
+        #expect(LensElements.groupTitle(of: ToleranceRow(.thickness, surface: id(5), minus: 0.05), in: cooke, groups: groups) == "Stop S5")
         let t2 = ToleranceRow(.thickness, surface: id(2), minus: 0.05)
         #expect(LensElements.groupTitle(of: t2, in: cooke, groups: groups) == "Air after L1")
         #expect(LensElements.groupTitle(of: ToleranceRow(.radius, surface: id(2), minus: 3), in: cooke, groups: groups) == "L1")

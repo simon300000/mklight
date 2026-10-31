@@ -551,7 +551,7 @@ public enum LensElements {
             if row.kind == .thickness, g.surfaces.last == i { return "Air after \(g.title)" }
             return g.title
         }
-        return "S\(i)"
+        return i == s.stop ? "Stop S\(i)" : "S\(i)"
     }
 }
 

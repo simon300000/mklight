@@ -22,8 +22,21 @@ public final class ToleranceSession {
     public private(set) var runSystem: OpticalSystem?
     /// The sensitivity row previewed in the window, and at which limit.
     public private(set) var previewed: (row: Int, plus: Bool)?
+    /// When the running job started.
+    public private(set) var startedAt: Date?
     @ObservationIgnored private var job: AnalysisJob?
-    @ObservationIgnored private var loadedSection: JSONValue?
+    @ObservationIgnored private var apertureCache: (key: String, value: [SurfaceID: Double])?
+
+    /// The clear semi-diameters the layout resolved, read once per layout
+    /// result (fringes are counted over them).
+    public func semiDiameters(from layout: AnalysisOutput?) -> [SurfaceID: Double] {
+        guard let layout else { return [:] }
+        let key = "\(layout.runInfo.snapshotHash.hex)-\(layout.runInfo.startedUnixMs)-\(layout.runInfo.durationMs)"
+        if let c = apertureCache, c.key == key { return c.value }
+        let v = EngineLayout.autoSemiDiameters(EngineLayout.scene(from: layout))
+        apertureCache = (key, v)
+        return v
+    }
 
     public init() {}
 
@@ -118,6 +131,7 @@ public final class ToleranceSession {
         let rows = ids.compactMap { id in settings.rows.first { $0.id == id } }
         result = nil
         previewed = nil
+        startedAt = Date()
         state = .running(JobProgress(fraction: 0, stage: "Queued"))
         Task { @MainActor [weak self] in
             guard let self else { return }
