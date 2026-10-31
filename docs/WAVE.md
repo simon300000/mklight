@@ -39,9 +39,9 @@ coordinates); the module docs in
   tracer link existed, `pupil_coords` returned `+k̂·ê/sinθ'max`, the
   point-reflected position; that was a sign error, fixed here.)
 * **Chief-ray frame** `(ê_u, ê_v, ê_w)`: the image surface axes carried by
-  the smallest rotation onto the chief ray. FFT PSFs use the image-surface
-  projection `B` (`pupil` module docs); MTF uses the full sensor angular
-  spectrum (§5).
+  the smallest rotation onto the chief ray. FFT PSFs are reported on the
+  image surface via the projection `B` (`pupil` module docs); the MTF uses
+  the angular spectrum on the surface (§5).
 * **Telecentric beams.** `PupilGeometry::telecentric(sinθ'max, n')` has
   `a = R = ∞` (serialised as `"inf"`) and stores `sinθ'max`. FFT, MTF and
   energy routes depend only on `sinθ'max`; refocusing is
@@ -268,47 +268,41 @@ rim of a squeezed pupil. A genuinely missing region still warns (tested
 with rays absent over half of a masked aperture).
 
 **MTF methods.** `direct` (default) evaluates the pupil autocorrelation at
-each requested frequency. Both Fourier MTF methods use the **image-surface
-angular spectrum**. Write a unit reference-sphere point in image coordinates
-as `q = α ê_u + β ê_v − γ ê_w`, with `γ = √(1 − α² − β²)`.
-The sensor kernel is `exp(ik' (q_x x + q_y y))`. Its transverse direction
-cosines include `−γ ê_w`: replacing that term by its chief-ray value drops
-the longitudinal phase across an off-axis blur. That error does not vanish
-with finer sampling, and a pupil-coordinate tilt is then not, in general,
-a pure translation on the sensor.
-
-The coordinate Jacobian is `|∂(q_x,q_y)/∂(α,β)| = |q_z|/γ`, so the
-angular spectrum is `A/|q_z| · exp(i2πW)`. `direct` shifts `(q_x,q_y)`
-by `λν/n'`, inverts the unit sphere to interpolate the second sample, and
-integrates in the original pupil coordinates with normalization
-`∫ A²/(γ|q_z|) dα dβ`. `fft` resamples the same spectrum onto a Cartesian
-sensor-frequency lattice before its autocorrelation. Its frequency pitch
-comes from the mapped pupil bounds; on axis it remains `Δν = cutoff/n`.
-Pupils crossing the sensor horizon are rejected because this map ceases
-to be one-to-one. The on-axis calculation is unchanged.
-The off-axis FFT adds an interpolation step: refine the pupil grid as well
-as the traced-ray lattice when checking its convergence.
-
-This retains the full angular Debye kernel. Finite-distance propagation
-from the sphere still belongs to `huygens`; enlarge its PSF window and
-refine both pupil and image sampling before comparing its Fourier transform.
-The FFT **PSF** route still uses the chief-normal projection described in §2;
-for a large off-axis blur its transform can therefore differ from the
-sensor-spectrum MTF. Use the Huygens PSF when this approximation matters.
-
-`fft` is interpolated between lattice points (`Otf`). For strongly aberrated
+each requested frequency. `fft` is exact on its lattice `Δν = cutoff/n`
+and interpolated between lattice points (`Otf`). For strongly aberrated
 pupils that interpolation is poor within the first few `Δν`: singlet at
-full field, `n = 64` (`Δν` = 5.4 cycles/mm), gives 0.088 at 5 cycles/mm
-where the converged value is 0.041 (`direct`: 0.038). Elsewhere the two
+full field, `n = 64` (`Δν` = 5.4 cycles/mm), gives 0.092 at 5 cycles/mm
+where the converged value is 0.037 (`direct`: 0.037). Elsewhere the two
 agree to about 0.02 (Cooke triplet off axis). `huygens` needs the whole
 PSF inside its window (see `psf_truncated` above).
+
+**Off-axis MTF.** On the image surface the field is the angular spectrum of
+the directions `q = α·ê_u + β·ê_v − γ·ê_w` (`γ = √(1 − α² − β²)`) with
+kernel `exp(ik'(q_x x + q_y y))`. With the Jacobian
+`|∂(q_x, q_y)/∂(α, β)| = |q_z|/γ` the spectrum is `c·A·exp(i2πW)/|q_z|`,
+and the OTF is its autocorrelation under the shift `λν/n'` in
+`(q_x, q_y)`. The chief-normal projection `B` (§2) amounts to replacing
+`−γ·ê_w` by `−ê_w`; that drops the longitudinal phase across an off-axis
+blur (`|x|·sinθ_c·NA²/(2λ)` waves) and does not shrink with sampling.
+`direct` maps each shifted direction back to the pupil lattice and
+interpolates the pupil there. `fft` samples the spectrum at the directions
+whose transverse part is `α·ê_u + β·ê_v − γ_rim·ê_w`, a linearisation of
+the lattice through the aperture rim, so its transform is still the PSF at
+`B·x` on the normal-plane lattice `Δν = cutoff/n` (read at `B^{−T}·ν`).
+Only the remainder `(γ_rim − γ)·ê_w`, a fraction of a cell that vanishes
+on the rim (no blurred edge), is interpolated. On axis both are unchanged, bit for bit.
+On the double Gauss (F/2) the change reaches 0.015 at the 14° field, where
+the result agrees with the transformed Huygens PSF to 0.01 (the projection
+was off by up to 0.02). Pupils crossing the sensor horizon (`q_z ≥ 0`) are
+rejected. The FFT **PSF** still uses `B`; use the Huygens PSF when the
+longitudinal phase matters.
 
 ## 6. Validation
 
 | test file | what it pins |
 |---|---|
 | `tests/analytic.rs`, `tests/regressions.rs` | the pupil-function layer against closed forms (Airy pattern and EE, circular/annular/square MTF, defocus Strehl, Parseval, FFT vs Huygens, tilt direction, polychromatic sums, sampling warnings, determinism, cancellation, resampling) |
-| `tests/sensor_mtf.rs` | oblique and rotated Gaussian angular spectra with quadratic phase against closed-form sensor-plane MTF (direct and FFT); sensor translation and reference-offset cancellation in the complex OTF; a defocused ideal lens at 55° against spherical-wave integration on its physical lens plane, with conserved-energy normalization |
+| `tests/sensor_mtf.rs` | off-axis MTF on the image surface: Gaussian angular spectra with quadratic phase at 55° (two azimuths) against the closed-form autocorrelation (direct and FFT, 1.5e-3); a sensor translation cancels against the image offset in the complex OTF; a defocused F/2.1 ideal lens at 55° against a spherical-wave sum over the lens plane (2e-3 at 40 and 60 cycles/mm) |
 | `tests/traced.rs` | lattice OPD = `mklight_trace` OPD (1e-9) on triplet, Newtonian, finite relay and Petzval asphere; diffraction-limited ideal lens and paraboloid (Strehl, analytic MTF to 2e-3, Airy zero at 1.2197 λN), achromat at F/10 and singlet at F/20 (Strehl > 0.99, MTF within 0.01, scale = paraxial working F/# to 1 %); defocus: every ray = exact sphere-to-sphere closed form (1e-8 waves), Zernike focus = `δz NA²/(2λ)`, RMS = `W020/√12`; spherical: `6·Z9` = Seidel `W040` (3 %), fit = traced marginal OPD; Cooke triplet off axis: FFT vs Huygens (0.03) vs direct (0.02) MTF, tangential ≠ sagittal; 10-wave defocus: wave MTF → geometric MTF (0.05); vignetted triplet: rim area = 801² ray-grid transmission (2e-3), coverage = mask area, rim beats the hull; telecentric: `R = ∞`, OPD = `n δz (1 − cosθ)` (1e-8), refocus, FFT = plane-wave Huygens (1e-9), chief ray parallel off axis; mirrors: single paraboloid (`propagation_sign = −1`, defocus closed form), Newtonian, and the PSF centroid = ray centroid off axis (paraboloid, Newtonian, triplet; 3 %); radiometric amplitude of an ideal lens `A² = 1/cos³θ` (2e-3) and flat for a 1:1 finite relay; detector sinc zeros at `1/p`, fill factor, diffusion, product and Nyquist; registry JSON runs, round trips, determinism, cancellation (before and during a run, from another thread) and progress (sampled: monotone, with intermediate values); polychromatic = weighted sum of placed monochromatic PSFs; configurations and through-focus symmetry; Airy EE, `r50`, `r80` and LSF normalisation; MTF vs field = MTF at the system fields; `R → ∞` lattice OPD = `mklight_trace` OPD on and off axis; exit pupil beyond the image (`σ = +1`): every ray = far-sheet closed form (1e-8), positive defocus; annular stop: two rim loops, transmission `1 − ε²` (1e-3), mapped clear area (2e-3), analytic annular MTF (3e-3); PSF centroid = ray centroid for `−x` and diagonal fields (triplet, paraboloid); `transmission` amplitude biases the singlet's centroid by > 15 %, `radiometric` < 10 %; Huygens grid and cost limits (`InvalidParam`, no tracing); `psf_truncated` on a defocused PSF but not an Airy one; unusable fields skipped with warnings (`null` in MTF vs field, error when no field is usable); the axial MTF-vs-field sample follows the sweep direction (non-square pixels); configured runs record the base hash, configuration and solve warnings; default MTF right near zero frequency where the FFT interpolation is not |
 
 ## 7. Open points

@@ -397,22 +397,15 @@ minimum. The minimum has a kink where the weakest value changes.
 A separate minimum per direction would let least squares trade one
 direction's weakest field against the other's when the target is out of
 reach: on the Cooke triplet (30 cycles/mm, target 0.8, back focus variable)
-it shortens the back focus by 0.12 mm and drops the weakest MTF from 0.169 to
-0.050. The joint minimum reaches 0.174 from the nominal focus or from 0.1 mm
-of defocus; the field-weighted bounds settle at 0.063. The optimisation
+it shortens the back focus by 0.12 mm and drops the weakest MTF from about
+0.17 to 0.05. The joint minimum reaches 0.173 from the nominal focus or from
+0.1 mm of defocus; the field-weighted bounds settle at 0.061. The optimisation
 test checks both. These Cooke values are physical: on axis the
 polychromatic MTF at 30 cycles/mm is 0.69, but the 14° field's astigmatism
-holds it near 0.17 (T 0.169, S 0.180; geometric 0.184/0.174; a 128 grid
-gives 0.173/0.178). Far from focus (0.3 mm, about 4 waves at F/4) every
+holds it near 0.17 (T 0.169, S 0.177; geometric 0.184/0.174; a 128 grid
+gives 0.172/0.179). Far from focus (0.3 mm, about 4 waves at F/4) every
 field oscillates through zeros and the minimum is multimodal, so LM from
-there stops in a local maximum near 0.016.
-
-Those sampled values use the chief-normal projected MTF. With the
-sensor-spectrum transform (WAVE §5), the fixed 64-grid test improves the
-minimum from 0.101 to 0.168, versus 0.058 for field-weighted bounds. The
-regression checks the optimiser against an independent 0.005 mm focus
-sweep (within 0.002 MTF), as well as its improvement over the start and the
-field-weighted result.
+there stops in a local maximum near 0.017.
 
 Symmetry uses the core system classification, including shape coefficients,
 placements and apertures. A system that is not meridionally symmetric

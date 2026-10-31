@@ -81,6 +81,9 @@ fn sensor_translation_and_reference_offset_cancel_in_complex_otf() {
     }
 }
 
+/// A defocused F/2.1 ideal lens at 55°: the longitudinal phase across the
+/// blur moves the 40 and 60 cycles/mm MTF by 0.003 to 0.006 if it is
+/// dropped.
 #[test]
 fn wide_field_ideal_lens_matches_spherical_wave_integration() {
     use mklight_core::{
@@ -90,7 +93,7 @@ fn wide_field_ideal_lens_matches_spherical_wave_integration() {
     use mklight_wave::{AmplitudeModel, MtfOrientation, PupilSettings, mtf_direct, trace_pupil};
     use rayon::prelude::*;
 
-    let (f, radius, dz, theta) = (25.0, 2.0, 0.4, 55.0_f64.to_radians());
+    let (f, radius, dz, theta) = (25.0, 6.0, 0.045, 55.0_f64.to_radians());
     let mut system = OpticalSystem::new_empty();
     system.aperture = ApertureSpec::EntrancePupilDiameter {
         value: 2.0 * radius,
@@ -131,7 +134,7 @@ fn wide_field_ideal_lens_matches_spherical_wave_integration() {
         &JobContext::new(),
     )
     .unwrap();
-    let frequencies = [10.0, 20.0, 40.0];
+    let frequencies = [40.0, 60.0];
     let actual = mtf_direct(
         &pupil.pupil,
         &frequencies,
@@ -143,7 +146,7 @@ fn wide_field_ideal_lens_matches_spherical_wave_integration() {
     // An ideal lens supplies the spherical phase −|F−s| on its physical
     // plane. Integrate there, without a traced OPD, exit pupil, resampling
     // mask or Fourier-plane projection. Flux conservation supplies the
-    // outgoing amplitude sqrt(cos(theta)/d_z).
+    // outgoing amplitude sqrt(cos(theta)/cos_in).
     let focus = Vec3::new(0.0, f * theta.tan(), f);
     let image = Vec3::new(0.0, (f + dz) * theta.tan(), f + dz);
     let mut sources = Vec::new();
@@ -161,8 +164,8 @@ fn wide_field_ideal_lens_matches_spherical_wave_integration() {
             sources.push((source, distance, cos_in, amplitude * area));
         }
     }
-    let size = 192;
-    let spacing = 0.00125;
+    let size = 256;
+    let spacing = 0.0005;
     let coord = |i: usize| (i as f64 - (size / 2) as f64) * spacing;
     let intensity: Vec<f64> = (0..size * size)
         .into_par_iter()
@@ -199,7 +202,7 @@ fn wide_field_ideal_lens_matches_spherical_wave_integration() {
             // only the captured PSF energy would overestimate its contrast.
             let expected = otf.norm() * spacing * spacing / (0.00055_f64.powi(2) * source_energy);
             assert!(
-                (value - expected).abs() < 0.004,
+                (value - expected).abs() < 0.002,
                 "axis {axis}, {frequency}: {value} != {expected}"
             );
         }
