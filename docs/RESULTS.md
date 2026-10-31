@@ -21,6 +21,7 @@ Python `Result.envelope()` return:
                 "started_unix_ms": 1761840000000, "duration_ms": 4.2,
                 "warnings": [] },
   "library_hash": "<64 hex>",
+  "derived_snapshot_hash": null,
   "backend": { "requested": "auto", "used": "gpu:metal", "precision": "f32_gpu",
                "device": "Apple M2 Pro", "fallback_reason": null,
                "qualification": { "passed": true, "budget_fraction": 0.05, … } },

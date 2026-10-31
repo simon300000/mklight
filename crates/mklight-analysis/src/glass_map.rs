@@ -171,14 +171,13 @@ IT 0.55 0.81 10
         assert_eq!(g.relative_cost, Some(2.0));
         assert_eq!(g.climate_resistance, Some(3.0));
         assert_eq!(g.stain_resistance, Some(4.0));
-        assert_eq!(g.transmittance.len(), 1);
         assert_eq!(
-            (
-                g.transmittance[0].um,
-                g.transmittance[0].tau,
-                g.transmittance[0].thickness_mm
-            ),
-            (0.55, 0.81, 10.0)
+            g.transmittance,
+            [TransmittancePoint {
+                um: 0.55,
+                tau: 0.81,
+                thickness_mm: 10.0
+            }]
         );
     }
 

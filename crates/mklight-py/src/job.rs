@@ -24,6 +24,7 @@ pub struct ResultData {
     pub backend: BackendReport,
     pub result_version: u32,
     pub library_hash: String,
+    pub derived_snapshot_hash: Option<String>,
     pub json: Value,
     pub buffers: Vec<Arc<Buffer>>,
 }
@@ -35,6 +36,7 @@ impl From<AnalysisResult> for ResultData {
             backend: r.backend,
             result_version: r.result_version,
             library_hash: r.library_hash,
+            derived_snapshot_hash: r.derived_snapshot_hash,
             json: r.json,
             buffers: r.buffers.into_iter().map(Arc::new).collect(),
         }
@@ -155,6 +157,7 @@ impl PyAnalysisResult {
             &serde_json::json!({
                 "run_info": self.data.run_info,
                 "library_hash": self.data.library_hash,
+                "derived_snapshot_hash": self.data.derived_snapshot_hash,
                 "backend": self.data.backend,
                 "result_version": self.data.result_version,
                 "result": self.data.json,

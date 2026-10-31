@@ -54,8 +54,7 @@ import Testing
     }
 
     /// A pane with a run-local spectrum stays current after it ran (the
-    /// engine records the derived system's hash; the app keeps the
-    /// submitted snapshot).
+    /// engine records the submitted snapshot's hash).
     @Test func spectrumPanesAreNotStale() async throws {
         let system = try #require(SampleSystems.bundled("double_gauss"))
         let pane = AnalysisPane(analysis: "spot_diagram", settings: ["spectrum": .object(["kind": .string("photopic")])])
@@ -65,7 +64,7 @@ import Testing
         w.update(system: system, immediately: true)
         try await wait { pane.output != nil && !pane.isRunning }
         let out = try #require(pane.output)
-        #expect(out.runInfo.snapshotHash != w.snapshot?.hash, "engine gap still present? then this workaround can go")
+        #expect(out.runInfo.snapshotHash == w.snapshot?.hash)
         #expect(!pane.isStale)
     }
 

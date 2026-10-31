@@ -1358,13 +1358,7 @@ mod tests {
         assert!(cases.len() >= 20);
         for c in cases {
             let now = c.system.validate();
-            // These app fixtures predate generic y-section curvature paths.
-            let expected_error = c.error.is_some()
-                && !matches!(
-                    c.name.as_str(),
-                    "curvature on toroid" | "curvature on biconic"
-                );
-            assert_eq!(now.is_err(), expected_error, "{}: {now:?}", c.name);
+            assert_eq!(now.is_err(), c.error.is_some(), "{}: {now:?}", c.name);
             if let (Err(e), Some(old)) = (now, c.error) {
                 // Same reason, now with a code and a path.
                 let why = old.rsplit(": ").next().unwrap();

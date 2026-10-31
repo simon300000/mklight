@@ -37173,7 +37173,7 @@
         }
       ]
     },
-    "error": "invalid model: [invalid_configuration] configurations[0].overrides[0]: invalid parameter path 'Curvature { surface: SurfaceId(7) }: surface has no curvature'"
+    "error": null
   },
   {
     "name": "curvature on biconic",
@@ -37818,7 +37818,7 @@
         }
       ]
     },
-    "error": "invalid model: [invalid_configuration] configurations[0].overrides[0]: invalid parameter path 'Curvature { surface: SurfaceId(8) }: surface has no curvature'"
+    "error": null
   },
   {
     "name": "conic on toroid",
