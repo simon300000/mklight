@@ -52,6 +52,7 @@ pub(crate) fn execute(
     ctl: &JobControl,
     chunk: usize,
 ) -> MkResult<PlanResult> {
+    let copied_before = crate::buffer::copied_bytes();
     let timer = RunTimer::start();
     let start = Instant::now();
     let mut x = Execution {
@@ -124,6 +125,7 @@ pub(crate) fn execute(
         x.stats.command_buffers += stage.command_buffers;
         x.stats.stages.push(stage);
     }
+    x.stats.copied_bytes = crate::buffer::copied_bytes() - copied_before;
     let stats = std::mem::take(&mut x.stats);
     rt.finish(plan, backend, timer, start, stats, ctl, |id| {
         x.take_output(id)
@@ -243,7 +245,11 @@ impl Execution<'_> {
         let steps = if let Some(steps) = self.cached::<SharedBuffer<u32>>(&key)? {
             steps
         } else {
-            let steps = Arc::new(self.gpu.buffer(&prep.steps)?);
+            // A few words of cached metadata, like a parameter block.
+            let steps = Arc::new(
+                self.gpu
+                    .buffer_filled(prep.steps.len(), |out| out.copy_from_slice(&prep.steps))?,
+            );
             self.stats.allocations += 1;
             self.stats.uploaded_bytes += (prep.steps.len() * 4) as u64;
             self.cache(key, (prep.steps.len() * 4).max(16), steps.clone());

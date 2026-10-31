@@ -441,29 +441,33 @@ pub trait ComputeBackend: Send + Sync {
     ) -> MkResult<crate::resident::BufferHandle> {
         crate::resident::unsupported("buffer upload")
     }
+    /// Write a new buffer in place: `fill` gets exclusive access to its
+    /// (pooled, unspecified) storage before publication and must write every element.
+    fn fill_buffer(
+        &self,
+        _desc: crate::resident::BufferDesc,
+        _fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        crate::resident::unsupported("buffer fill")
+    }
+    /// Publish page-owned host storage without copying.
+    fn import_buffer(
+        &self,
+        _desc: crate::resident::BufferDesc,
+        _data: crate::resident::HostAllocation,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        crate::resident::unsupported("host allocation import")
+    }
+    /// Borrow a contiguous published buffer in place.
+    fn read_view(&self, _view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView> {
+        crate::resident::unsupported("read view")
+    }
+    /// Copy a (possibly strided) view into owned data.
     fn readback(
         &self,
         _view: crate::resident::BufferView,
         _ctx: &JobContext,
     ) -> MkResult<crate::resident::Readback> {
-        crate::resident::unsupported("readback")
-    }
-    /// Zero-copy upload: `fill` writes every word of the new buffer in place
-    /// (shared storage on unified memory; a pooled buffer holds stale words).
-    fn upload_buffer_with(
-        &self,
-        _desc: crate::resident::BufferDesc,
-        _fill: &mut dyn FnMut(&mut [u32]),
-    ) -> MkResult<crate::resident::BufferHandle> {
-        crate::resident::unsupported("buffer upload")
-    }
-    /// Zero-copy readback: `read` sees a contiguous view's words in place.
-    fn read_in_place(
-        &self,
-        _view: crate::resident::BufferView,
-        _ctx: &JobContext,
-        _read: &mut dyn FnMut(&[u32]),
-    ) -> MkResult<()> {
         crate::resident::unsupported("readback")
     }
     fn submit_plan(

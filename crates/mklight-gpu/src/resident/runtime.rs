@@ -15,7 +15,7 @@ pub trait Storage: Send + Sync + 'static {
     fn words(&self) -> &[u32];
     fn words_mut(&mut self) -> &mut [u32];
 }
-impl Storage for Vec<u32> {
+impl Storage for HostAllocation {
     fn words(&self) -> &[u32] {
         self
     }
@@ -24,10 +24,17 @@ impl Storage for Vec<u32> {
     }
 }
 
+impl<T: Storage> ReadStorage for Allocation<T> {
+    fn words(&self) -> &[u32] {
+        T::words(self)
+    }
+}
+
 pub struct Runtime<T> {
     pub owner: u64,
     cache: Arc<Mutex<ImmutableCache>>,
     next: AtomicU64,
+    copied_bytes: AtomicU64,
     pool: Arc<Mutex<Pool<T>>>,
 }
 impl<T: Storage> Runtime<T> {
@@ -36,6 +43,7 @@ impl<T: Storage> Runtime<T> {
             owner,
             cache: Arc::new(Mutex::new(ImmutableCache::new(64 << 20))),
             next: AtomicU64::new(1),
+            copied_bytes: AtomicU64::new(0),
             pool: Arc::new(Mutex::new(Pool::new(256 << 20))),
         }
     }
@@ -76,61 +84,69 @@ impl<T: Storage> Runtime<T> {
         }
         let mut b = self.take(data.words().len(), &mut PlanStats::default(), allocate)?;
         b.words_mut().copy_from_slice(data.words());
+        self.copied_bytes
+            .fetch_add(desc.byte_len()? as u64, Ordering::Relaxed);
         Ok(self.publish(desc, b))
     }
-    pub fn upload_with(
+    pub fn fill(
         &self,
         desc: BufferDesc,
-        fill: &mut dyn FnMut(&mut [u32]),
+        fill: &mut dyn FnMut(BufferFill<'_>) -> MkResult<()>,
         allocate: impl FnOnce(usize) -> MkResult<T>,
     ) -> MkResult<BufferHandle> {
         let mut b = self.take(desc.byte_len()? / 4, &mut PlanStats::default(), allocate)?;
-        fill(b.words_mut());
+        fill(BufferFill {
+            element: desc.element,
+            words: b.words_mut(),
+        })?;
         Ok(self.publish(desc, b))
     }
-    pub fn read_in_place(
-        &self,
-        view: BufferView,
-        ctx: &JobContext,
-        read: &mut dyn FnMut(&[u32]),
-    ) -> MkResult<()> {
-        ctx.check()?;
+    /// Publish caller-owned storage; it is released, never pooled.
+    pub fn adopt(&self, desc: BufferDesc, storage: T) -> MkResult<BufferHandle> {
+        let words = desc.byte_len()? / 4;
+        if storage.words().len() != words {
+            return Err(bad("import length"));
+        }
+        Ok(self.publish(desc, Allocation::unpooled(storage, words)))
+    }
+    pub fn read_view(&self, view: BufferView) -> MkResult<ReadView> {
         view.validate()?;
         if view.stride != 1 {
-            return Err(bad("in-place readback needs a contiguous view"));
+            return unsupported("strided read view; use readback");
         }
-        let b = self.lease(&view.buffer)?;
         let width = view.desc.element.words();
-        read(&T::words(&b)[view.offset * width..(view.offset + view.desc.len()?) * width]);
-        Ok(())
+        Ok(ReadView {
+            storage: self.lease(&view.buffer)?,
+            offset: view.offset * width,
+            len: view.desc.len()? * width,
+            element: view.desc.element,
+        })
     }
+    /// One copy into owned data (a memcpy when contiguous).
     pub fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback> {
         ctx.check()?;
         view.validate()?;
         let t = Instant::now();
         let b = self.lease(&view.buffer)?;
         let src = T::words(&b);
-        let width = view.desc.element.words();
-        let n = view.desc.len()?;
-        let words = if view.stride == 1 {
-            src[view.offset * width..(view.offset + n) * width].to_vec()
-        } else {
-            let mut words = Vec::with_capacity(n * width);
-            for i in 0..n {
-                let a = (view.offset + i * view.stride) * width;
-                words.extend_from_slice(&src[a..a + width]);
-            }
-            words
+        let data = match view.desc.element {
+            ElementType::F32 => BufferData::F32(gather(src, &view)?),
+            ElementType::U32 => BufferData::U32(gather(src, &view)?),
+            ElementType::DoubleFloat => BufferData::DoubleFloat(gather(src, &view)?),
+            ElementType::Complex32 => BufferData::Complex32(gather(src, &view)?),
         };
+        let copied_bytes = data.words().len() as u64 * 4;
+        self.copied_bytes.fetch_add(copied_bytes, Ordering::Relaxed);
         ctx.check()?;
         ctx.report(1., "readback");
         Ok(Readback {
-            copied_bytes: (words.len() * 4) as u64,
-            data: BufferData::from_words(view.desc.element, &words),
+            copied_bytes,
+            data,
             wall_seconds: t.elapsed().as_secs_f64(),
         })
     }
     pub fn cache_stats(&self, mut s: ResidentCacheStats) -> ResidentCacheStats {
+        s.copied_bytes = self.copied_bytes.load(Ordering::Relaxed);
         s.pooled_bytes = lock(&self.pool).bytes() as u64;
         s.operation_cache_bytes = lock(&self.cache).bytes() as u64;
         s
@@ -215,6 +231,18 @@ impl OperationCache {
     ) {
         lock(&self.cache).insert(key, bytes, value)
     }
+}
+
+fn gather<V: BufferElement>(src: &[u32], view: &BufferView) -> MkResult<Vec<V>> {
+    let w = V::ELEMENT.words();
+    let n = view.desc.len()?;
+    let at = |i: usize| (view.offset + i * view.stride) * w;
+    if view.stride == 1 {
+        return Ok(typed::<V>(view.desc.element, &src[at(0)..at(n)])?.to_vec());
+    }
+    (0..n)
+        .map(|i| Ok(typed::<V>(view.desc.element, &src[at(i)..at(i) + w])?[0]))
+        .collect()
 }
 
 fn lock<V>(m: &Mutex<V>) -> std::sync::MutexGuard<'_, V> {

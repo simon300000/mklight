@@ -1,5 +1,5 @@
 //! Ordered resident plans. Buffers become immutable leases on publication;
-//! only explicit readback crosses back to host arrays. Plan-local storage has
+//! host views pin those leases until their last borrow ends. Plan-local storage has
 //! one writer and cannot alias imported buffers or another live submission.
 use crate::{ComputeBackend, Df32, ReduceMode, TraceRequest};
 use mklight_core::job::{RunInfo, RunTimer};
@@ -166,6 +166,88 @@ impl BufferData {
             ),
             ElementType::Complex32 => Self::Complex32(bytemuck::cast_slice(words).to_vec()),
         }
+    }
+}
+/// Element types of typed host views (sealed: layout matches `ElementType`).
+pub trait BufferElement: bytemuck::Pod + element::Sealed {
+    const ELEMENT: ElementType;
+}
+mod element {
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for u32 {}
+    impl Sealed for crate::Df32 {}
+    impl Sealed for [f32; 2] {}
+}
+impl BufferElement for f32 {
+    const ELEMENT: ElementType = ElementType::F32;
+}
+impl BufferElement for u32 {
+    const ELEMENT: ElementType = ElementType::U32;
+}
+impl BufferElement for Df32 {
+    const ELEMENT: ElementType = ElementType::DoubleFloat;
+}
+impl BufferElement for [f32; 2] {
+    const ELEMENT: ElementType = ElementType::Complex32;
+}
+/// Words of `T`; storage is page-aligned and views start on element boundaries.
+fn typed<T: BufferElement>(element: ElementType, words: &[u32]) -> MkResult<&[T]> {
+    if element != T::ELEMENT {
+        return Err(bad("host view element type"));
+    }
+    Ok(bytemuck::cast_slice(words))
+}
+
+/// The unpublished allocation of `fill_buffer`, exclusive for the callback.
+/// Its slices cannot escape the callback:
+/// ```compile_fail,E0521
+/// # use mklight_gpu::{resident::*, *};
+/// let b = CpuF32Backend::new();
+/// let mut escaped: &mut [u32] = &mut [];
+/// b.fill_buffer(BufferDesc::new(ElementType::U32, [1]), &mut |mut f| {
+///     escaped = f.as_mut_slice::<u32>()?;
+///     Ok(())
+/// });
+/// ```
+pub struct BufferFill<'a> {
+    pub(crate) element: ElementType,
+    pub(crate) words: &'a mut [u32],
+}
+impl BufferFill<'_> {
+    pub fn as_mut_slice<T: BufferElement>(&mut self) -> MkResult<&mut [T]> {
+        if self.element != T::ELEMENT {
+            return Err(bad("host view element type"));
+        }
+        Ok(bytemuck::cast_slice_mut(self.words))
+    }
+}
+/// Type-erased published storage pinned by a `ReadView`.
+pub trait ReadStorage: Send + Sync {
+    fn words(&self) -> &[u32];
+}
+/// A contiguous view of published (hence device-complete, immutable) storage.
+/// It pins the allocation: the pool cannot reuse it, and dropping handles or
+/// the backend does not invalidate it. Slices borrow the guard:
+/// ```compile_fail,E0716
+/// # use mklight_gpu::{resident::*, *};
+/// let b = CpuF32Backend::new();
+/// let h = b.fill_buffer(BufferDesc::new(ElementType::U32, [1]), &mut |_| Ok(())).unwrap();
+/// let words = b.read_view(h.view()).unwrap().words();
+/// assert_eq!(words.len(), 1);
+/// ```
+pub struct ReadView {
+    pub(crate) storage: Arc<dyn ReadStorage>,
+    pub(crate) offset: usize,
+    pub(crate) len: usize,
+    pub(crate) element: ElementType,
+}
+impl ReadView {
+    pub fn words(&self) -> &[u32] {
+        &self.storage.words()[self.offset..self.offset + self.len]
+    }
+    pub fn as_slice<T: BufferElement>(&self) -> MkResult<&[T]> {
+        typed(self.element, self.words())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -462,6 +544,8 @@ pub struct StageStats {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanStats {
+    /// Actual bulk staging copies; excludes direct fills and small setBytes parameters.
+    pub copied_bytes: u64,
     pub stages: Vec<StageStats>,
     pub wall_seconds: f64,
     pub device_seconds: f64,
@@ -500,6 +584,8 @@ pub struct SystemCacheKey {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResidentCacheStats {
+    /// Cumulative explicit upload/readback copies outside plan execution.
+    pub copied_bytes: u64,
     pub system_uploads: u64,
     pub system_hits: u64,
     pub uploaded_bytes: u64,
@@ -545,6 +631,8 @@ pub fn unsupported<T>(name: &str) -> MkResult<T> {
         "resident {name} is not implemented"
     )))
 }
+pub mod host;
+pub use host::HostAllocation;
 pub mod cache;
 pub mod cpu;
 pub mod immutable;

@@ -48,7 +48,7 @@ struct Inner {
     instance: u64,
     next_id: AtomicU64,
     systems: Mutex<HashMap<u64, Arc<PackedSystemSet>>>,
-    resident: crate::resident::runtime::Runtime<Vec<u32>>,
+    resident: crate::resident::runtime::Runtime<crate::resident::HostAllocation>,
     cache: Mutex<crate::resident::cache::SystemCache<PackedSystemSet>>,
 }
 
@@ -293,7 +293,28 @@ impl ComputeBackend for CpuF32Backend {
         desc: crate::resident::BufferDesc,
         data: crate::resident::BufferData,
     ) -> MkResult<crate::resident::BufferHandle> {
-        self.inner.resident.upload(desc, data, |n| Ok(vec![0; n]))
+        self.inner
+            .resident
+            .upload(desc, data, crate::resident::HostAllocation::new)
+    }
+    fn fill_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner
+            .resident
+            .fill(desc, fill, crate::resident::HostAllocation::new)
+    }
+    fn import_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::HostAllocation,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner.resident.adopt(desc, data)
+    }
+    fn read_view(&self, view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView> {
+        self.inner.resident.read_view(view)
     }
     fn readback(
         &self,
@@ -301,21 +322,6 @@ impl ComputeBackend for CpuF32Backend {
         ctx: &JobContext,
     ) -> MkResult<crate::resident::Readback> {
         self.inner.resident.readback(view, ctx)
-    }
-    fn upload_buffer_with(
-        &self,
-        desc: crate::resident::BufferDesc,
-        fill: &mut dyn FnMut(&mut [u32]),
-    ) -> MkResult<crate::resident::BufferHandle> {
-        self.inner.resident.upload_with(desc, fill, |n| Ok(vec![0; n]))
-    }
-    fn read_in_place(
-        &self,
-        view: crate::resident::BufferView,
-        ctx: &JobContext,
-        read: &mut dyn FnMut(&[u32]),
-    ) -> MkResult<()> {
-        self.inner.resident.read_in_place(view, ctx, read)
     }
     fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
         let s = self

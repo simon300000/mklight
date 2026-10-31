@@ -709,33 +709,35 @@ impl ComputeBackend for MetalBackend {
             .resident
             .upload(desc, data, |n| ctx.buffer_filled(n, |_| {}))
     }
+    fn fill_buffer(
+        &self,
+        desc: mklight_gpu::resident::BufferDesc,
+        fill: &mut dyn FnMut(mklight_gpu::resident::BufferFill<'_>) -> MkResult<()>,
+    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
+        self.inner
+            .resident
+            .fill(desc, fill, |n| self.inner.ctx.buffer_filled(n, |_| {}))
+    }
+    fn import_buffer(
+        &self,
+        desc: mklight_gpu::resident::BufferDesc,
+        data: mklight_gpu::resident::HostAllocation,
+    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
+        let storage = SharedBuffer::from_host(self.inner.ctx.device(), data)?;
+        self.inner.resident.adopt(desc, storage)
+    }
+    fn read_view(
+        &self,
+        view: mklight_gpu::resident::BufferView,
+    ) -> MkResult<mklight_gpu::resident::ReadView> {
+        self.inner.resident.read_view(view)
+    }
     fn readback(
         &self,
         view: mklight_gpu::resident::BufferView,
         ctx: &JobContext,
     ) -> MkResult<mklight_gpu::resident::Readback> {
         self.inner.resident.readback(view, ctx)
-    }
-    fn upload_buffer_with(
-        &self,
-        desc: mklight_gpu::resident::BufferDesc,
-        fill: &mut dyn FnMut(&mut [u32]),
-    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
-        if desc.byte_len()? as u64 > self.info().max_buffer_bytes {
-            return Err(mklight_gpu::resident::bad("upload exceeds device limit"));
-        }
-        let ctx = &self.inner.ctx;
-        self.inner
-            .resident
-            .upload_with(desc, fill, |n| ctx.buffer_filled(n, |_| {}))
-    }
-    fn read_in_place(
-        &self,
-        view: mklight_gpu::resident::BufferView,
-        ctx: &JobContext,
-        read: &mut dyn FnMut(&[u32]),
-    ) -> MkResult<()> {
-        self.inner.resident.read_in_place(view, ctx, read)
     }
     fn resident_cache_stats(&self) -> mklight_gpu::resident::ResidentCacheStats {
         let s = self

@@ -95,23 +95,35 @@ pub fn radices(mut n: usize) -> Vec<u32> {
 /// R, entry `p-1 + k(R-1) + t-1` is exp(-2πi·t·k/(pR)). Inverse
 /// transforms conjugate them.
 pub fn twiddles(n: usize) -> Vec<[f32; 2]> {
-    let mut out = Vec::with_capacity(n);
+    let mut out = vec![[0.; 2]; n - 1];
+    fill_twiddles(n, &mut out);
+    out
+}
+/// Write the same table directly into shared storage (n-1 complex elements).
+pub fn fill_twiddles(n: usize, out: &mut [[f32; 2]]) {
+    let mut index = 0;
     let mut p = 1;
     for r in radices(n).into_iter().map(|r| r as usize) {
         for k in 0..p {
             for t in 1..r {
                 let (s, c) = (std::f64::consts::TAU * (t * k) as f64 / (p * r) as f64).sin_cos();
-                out.push([c as f32, -s as f32]);
+                out[index] = [c as f32, -s as f32];
+                index += 1;
             }
         }
         p *= r;
     }
-    out
 }
 /// Fused chirp-row factors from f64: nx pre-chirps exp(s·2πi·(a·x²/2 + b·x))
 /// then ox post-chirps exp(s·2πi·a·x²/2). Each double-float coefficient part
 /// times an integer power of x is exact in f64 and is reduced modulo a turn.
 pub fn chirp_factors(p: &Params) -> Vec<[f32; 2]> {
+    let mut out = vec![[0.; 2]; (p.nx + p.ox) as usize];
+    fill_chirp_factors(p, &mut out);
+    out
+}
+/// Write chirp factors into the caller's shared allocation.
+pub fn fill_chirp_factors(p: &Params, out: &mut [[f32; 2]]) {
     let turns = |c: [f32; 2], m: f64| {
         c.iter()
             .map(|&v| v as f64 * m - (v as f64 * m).round())
@@ -123,8 +135,12 @@ pub fn chirp_factors(p: &Params) -> Vec<[f32; 2]> {
         [c as f32, s as f32]
     };
     let pre = (0..p.nx as usize).map(|x| cis(quadratic(x) + turns(p.affine[2], x as f64)));
-    pre.chain((0..p.ox as usize).map(|x| cis(quadratic(x))))
-        .collect()
+    for (out, v) in out
+        .iter_mut()
+        .zip(pre.chain((0..p.ox as usize).map(|x| cis(quadratic(x)))))
+    {
+        *out = v;
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Step {

@@ -578,14 +578,10 @@ fn benchmark_trace_collectives() {
                 .unwrap()
                 .wait()
                 .unwrap();
-            let mut moments = vec![];
-            g.read_in_place(stats.outputs[0].view(), &JobContext::new(), &mut |w| {
-                moments.extend(
-                    w.chunks(2)
-                        .map(|d| f32::from_bits(d[0]) as f64 + f32::from_bits(d[1]) as f64),
-                )
-            })
-            .unwrap();
+            let moments: Vec<f64> = (g.read_view(stats.outputs[0].view()).unwrap().words())
+                .chunks(2)
+                .map(|d| f32::from_bits(d[0]) as f64 + f32::from_bits(d[1]) as f64)
+                .collect();
             let new_wall = wall.elapsed().as_secs_f64();
             let mut error = 0f64;
             let mut survival_count_mismatched_segments = 0;
@@ -603,7 +599,7 @@ fn benchmark_trace_collectives() {
             }
             eprintln!(
                 "{}",
-                serde_json::json!({"workload":name,"rays":n,"run":run,"phase":phase,"cpu_f64_ms":cpu_wall*1e3,"old_wall_ms":old_wall*1e3,"old_device_ms":old_device*1e3,"old_reduce_pack_ms":reduction*1e3,"new_wall_ms":new_wall*1e3,"read_in_place_bytes":moments.len()*8,"run_info":if run==0{Some(&stats.run_info)}else{None},"new_prepare_ms":prepare*1e3,"new_device_ms":stats.stats.device_seconds*1e3,"new_stats":stats.stats,"old_readback_bytes":n*52,"new_readback_bytes":offsets.len().saturating_sub(1)*84,"max_aggregate_error_mm":error,"survival_count_mismatched_segments":survival_count_mismatched_segments})
+                serde_json::json!({"workload":name,"rays":n,"run":run,"phase":phase,"cpu_f64_ms":cpu_wall*1e3,"old_wall_ms":old_wall*1e3,"old_device_ms":old_device*1e3,"old_reduce_pack_ms":reduction*1e3,"new_wall_ms":new_wall*1e3,"read_view_bytes":moments.len()*8,"run_info":if run==0{Some(&stats.run_info)}else{None},"new_prepare_ms":prepare*1e3,"new_device_ms":stats.stats.device_seconds*1e3,"new_stats":stats.stats,"old_readback_bytes":n*52,"new_readback_bytes":offsets.len().saturating_sub(1)*84,"max_aggregate_error_mm":error,"survival_count_mismatched_segments":survival_count_mismatched_segments})
             );
             if run == 0 {
                 cold = [cpu_wall, old_wall, new_wall];
@@ -643,11 +639,9 @@ fn bench_gpu(g: &MetalBackend, p: &ResidentPlan) -> serde_json::Value {
             .unwrap();
         let (mut sum, mut bytes) = (0u32, 0usize);
         for h in &out.outputs {
-            g.read_in_place(h.view(), &JobContext::new(), &mut |w| {
-                sum = w.iter().fold(sum, |a, &b| a.wrapping_add(b));
-                bytes += 4 * w.len();
-            })
-            .unwrap();
+            let v = g.read_view(h.view()).unwrap();
+            sum = v.words().iter().fold(sum, |a, &b| a.wrapping_add(b));
+            bytes += 4 * v.words().len();
         }
         std::hint::black_box(sum);
         let wall = t.elapsed().as_secs_f64();
@@ -656,7 +650,7 @@ fn bench_gpu(g: &MetalBackend, p: &ResidentPlan) -> serde_json::Value {
     });
     let (commands, peak, read) = stats.unwrap();
     serde_json::json!({"gpu_ms":median*1e3,"gpu_p95_ms":p95*1e3,"gpu_device_ms":device*1e3,
-        "gpu_cold_ms":cold*1e3,"commands":commands,"peak_bytes":peak,"read_in_place_bytes":read,"copied_bytes":0})
+        "gpu_cold_ms":cold*1e3,"commands":commands,"peak_bytes":peak,"read_view_bytes":read,"copied_bytes":0})
 }
 fn bench_cpu(mut f: impl FnMut()) -> serde_json::Value {
     let (_, (median, p95), _) = runs(|| {
