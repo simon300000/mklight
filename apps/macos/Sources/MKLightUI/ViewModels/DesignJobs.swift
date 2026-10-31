@@ -264,7 +264,10 @@ public final class OptimizeSession {
         Task { @MainActor [weak self] in
             for await p in job.progress {
                 guard let self, self.job === job else { return }
-                if case .running = self.state { self.state = .running(p) }
+                // Progress can still be queued after the result arrived;
+                // the result's history is final then.
+                guard case .running = self.state else { continue }
+                self.state = .running(p)
                 if let m = MeritPoint.parse(p.stage), m.iteration != self.trace.last?.iteration { self.trace.append(m) }
             }
         }
