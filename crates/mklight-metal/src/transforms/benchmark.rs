@@ -335,6 +335,9 @@ fn main() {
     );
     let mode = std::env::args().nth(1).unwrap_or("samples".into());
     for (name, sys) in mklight_core::samples::all() {
+        if mode == "skew" && name != "xy_freeform" {
+            continue;
+        }
         if mode == "dense"
             && ![
                 "singlet",
@@ -407,6 +410,19 @@ fn main() {
                 tp.pupil.n(),
                 false,
             );
+        } else if mode == "skew" {
+            let tp = trace_pupil(
+                &tracer,
+                tracer.field(tracer.fields().len() - 1),
+                0,
+                &PupilSettings {
+                    grid: 1024,
+                    ..Default::default()
+                },
+                &JobContext::new(),
+            )
+            .unwrap();
+            bench(&b, snapshot, &tp.pupil, name, 2048, true);
         } else {
             for n in [64, 256, 1024] {
                 let tp = trace_pupil(

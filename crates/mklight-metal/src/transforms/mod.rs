@@ -182,7 +182,9 @@ fn execute_transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
             x.stats.command_buffers += commands;
             x.stats.device_seconds += device;
             x.stats.parameter_bytes += commands as u64 * size_of::<Params>() as u64;
-            if s.cache {
+            // P0's immutable cache retains at most 64 MiB. Larger spectra
+            // remain pooled plan scratch, including in peak-memory accounting.
+            if s.cache && s.p.count as usize * 8 <= 64 << 20 {
                 // Cache storage is immutable and separately accounted. Copy on
                 // device; reading an intermediate on the host is never needed.
                 let mut cached = x.gpu.buffer_zeroed::<u32>(s.p.count as usize * 2)?;
