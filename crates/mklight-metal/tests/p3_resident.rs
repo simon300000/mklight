@@ -193,16 +193,39 @@ fn masked_subnormals_modes_and_views() {
     let c = CpuF32Backend::matching(&g.precision().probe);
     let n = 15007;
     let long = (vec![0, 0, 257, 4097, n as u32], n);
-    let short = ((0..n as u32).step_by(37).chain([n as u32]).collect::<Vec<_>>(), 37);
+    let short = (
+        (0..n as u32)
+            .step_by(37)
+            .chain([n as u32])
+            .collect::<Vec<_>>(),
+        37,
+    );
     for (offsets, bound) in [long, short] {
-        for mode in [ReduceMode::Plain, ReduceMode::Kahan, ReduceMode::DoubleFloat] {
-            for kind in [SegmentKind::Sum, SegmentKind::Summary, SegmentKind::SourceProducts] {
+        for mode in [
+            ReduceMode::Plain,
+            ReduceMode::Kahan,
+            ReduceMode::DoubleFloat,
+        ] {
+            for kind in [
+                SegmentKind::Sum,
+                SegmentKind::Summary,
+                SegmentKind::SourceProducts,
+            ] {
                 let build = |b: &dyn ComputeBackend| {
                     let values = (0..2 * n).map(|i| [1e8, 1., -1e8, 1e-39][i % 4]).collect();
-                    let mut p = cases::segment(b, BufferData::F32(values), 2, offsets.clone(), kind, None, bound);
+                    let mut p = cases::segment(
+                        b,
+                        BufferData::F32(values),
+                        2,
+                        offsets.clone(),
+                        kind,
+                        None,
+                        bound,
+                    );
                     let mask = (0..n).map(|i| u32::from(i % 7 != 0)).collect();
                     let mask = cases::import(b, &mut p, [n], BufferData::U32(mask));
-                    let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
+                    let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0]
+                    else {
                         unreachable!()
                     };
                     (r.mode, r.mask, r.mask_value) = (mode, Some(mask), 1);
@@ -270,7 +293,12 @@ fn concurrent_cancellation_progress_and_reuse() {
     let (v, warm) = cases::read(&*g, p);
     assert!(warm.stats.reused_allocations > 0);
     assert!(warm.stats.command_buffers > 1);
-    assert!(warm.stats.stages.iter().any(|s| s.max_command_seconds > 0. && s.max_command_seconds < 0.05));
+    assert!(
+        warm.stats
+            .stages
+            .iter()
+            .any(|s| s.max_command_seconds > 0. && s.max_command_seconds < 0.05)
+    );
     assert_eq!(cases::df(&v[2])[0], 120.);
     assert!((cases::df(&v[1])[0] - 1.).abs() < 1e-10);
     let mut bad = cases::scan_case(&*g, 7, true, true);
@@ -545,10 +573,17 @@ fn benchmark_trace_collectives() {
                 .unwrap_or(0);
             let p = trace_plan(&g, &t, h, rays.clone(), offsets.clone(), false, bound);
             let prepare = wall.elapsed().as_secs_f64();
-            let stats = g.submit_plan(p, &JobContext::new()).unwrap().wait().unwrap();
+            let stats = g
+                .submit_plan(p, &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap();
             let mut moments = vec![];
             g.read_in_place(stats.outputs[0].view(), &JobContext::new(), &mut |w| {
-                moments.extend(w.chunks(2).map(|d| f32::from_bits(d[0]) as f64 + f32::from_bits(d[1]) as f64))
+                moments.extend(
+                    w.chunks(2)
+                        .map(|d| f32::from_bits(d[0]) as f64 + f32::from_bits(d[1]) as f64),
+                )
             })
             .unwrap();
             let new_wall = wall.elapsed().as_secs_f64();
@@ -601,7 +636,11 @@ fn bench_gpu(g: &MetalBackend, p: &ResidentPlan) -> serde_json::Value {
     let mut stats = None;
     let (cold, (median, p95), device) = runs(|| {
         let t = Instant::now();
-        let out = g.submit_plan(p.clone(), &JobContext::new()).unwrap().wait().unwrap();
+        let out = g
+            .submit_plan(p.clone(), &JobContext::new())
+            .unwrap()
+            .wait()
+            .unwrap();
         let (mut sum, mut bytes) = (0u32, 0usize);
         for h in &out.outputs {
             g.read_in_place(h.view(), &JobContext::new(), &mut |w| {
@@ -857,7 +896,10 @@ fn benchmark_collectives() {
             }
         });
         if g.submit_plan(p.clone(), &JobContext::new()).is_err() {
-            eprintln!("{}", serde_json::json!({"workload":"qr","size":size,"gpu":"unsupported"}));
+            eprintln!(
+                "{}",
+                serde_json::json!({"workload":"qr","size":size,"gpu":"unsupported"})
+            );
             continue;
         }
         let (v, _) = cases::read(&g, p.clone());

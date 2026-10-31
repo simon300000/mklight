@@ -43,14 +43,27 @@ fn mapped_tree_preserves_legacy_geometry() {
             ReduceMode::Kahan,
             ReduceMode::DoubleFloat,
         ] {
-            let a =
-                reduce::tree_in::<Ieee>(reduce::Accumulator::Sum(mode), Df32::ZERO, n, |i| Df32::from_f32(values[i]), &ctl).unwrap();
+            let a = reduce::tree_in::<Ieee>(
+                reduce::Accumulator::Sum(mode),
+                Df32::ZERO,
+                n,
+                |i| Df32::from_f32(values[i]),
+                &ctl,
+            )
+            .unwrap();
             let b = reduce::reduce_channel_in::<Ieee>(mode, &values);
             assert_eq!(
                 [a.hi.to_bits(), a.lo.to_bits()],
                 [b.hi.to_bits(), b.lo.to_bits()]
             );
-            let a = reduce::tree_in::<Ftz>(reduce::Accumulator::Sum(mode), Df32::ZERO, n, |i| Df32::from_f32(values[i]), &ctl).unwrap();
+            let a = reduce::tree_in::<Ftz>(
+                reduce::Accumulator::Sum(mode),
+                Df32::ZERO,
+                n,
+                |i| Df32::from_f32(values[i]),
+                &ctl,
+            )
+            .unwrap();
             let b = reduce::reduce_channel_in::<Ftz>(mode, &values);
             assert_eq!(
                 [a.hi.to_bits(), a.lo.to_bits()],

@@ -42,11 +42,15 @@ fn actual_metal_known_answers_both_libraries() {
 /// across both segment paths, every radix digit and QR group widths.
 #[test]
 fn bitwise_fixed_collectives() {
-    let g = backend(LibraryChoice::Precompiled);
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        bitwise(&backend(origin));
+    }
+}
+fn bitwise(g: &MetalBackend) {
     let c = CpuF32Backend::matching(&g.precision().probe);
     let same = |build: &dyn Fn(&dyn ComputeBackend) -> ResidentPlan| {
         let (a, _) = p3_cases::read(&c, build(&c));
-        let (b, _) = p3_cases::read(&g, build(&g));
+        let (b, _) = p3_cases::read(g, build(g));
         for (a, b) in a.iter().zip(&b) {
             p3_cases::assert_bits(a, b);
         }
@@ -66,7 +70,10 @@ fn bitwise_fixed_collectives() {
     }
     // Short segments (SIMD path) and the same records under a long bound
     // (tree-group path); one segment spans several tree groups.
-    let short: Vec<u32> = (0..=600).map(|s| s * 61 / 2).chain([18_300, 30_001]).collect();
+    let short: Vec<u32> = (0..=600)
+        .map(|s| s * 61 / 2)
+        .chain([18_300, 30_001])
+        .collect();
     same(&|b| p3_cases::moments_case(b, short[..601].to_vec(), 61));
     same(&|b| p3_cases::moments_case(b, short[..601].to_vec(), 18_300));
     same(&|b| p3_cases::moments_case(b, short.clone(), 30_001));

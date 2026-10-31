@@ -138,7 +138,11 @@ fn qr_sum<E: FpEnv>(m: usize, f: impl Fn(usize) -> D) -> D {
     partials[0]
 }
 fn max_nan(a: f32, b: f32) -> f32 {
-    if a.is_nan() || b.is_nan() { f32::NAN } else { a.max(b) }
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else {
+        a.max(b)
+    }
 }
 /// x 2^e through two normal powers of two.
 fn ldexp<E: FpEnv>(x: D, e: i32) -> D {
@@ -167,7 +171,11 @@ fn abs(x: D) -> D {
     if x.hi < 0.0 { -x } else { x }
 }
 fn ext_max(a: D, b: D) -> D {
-    if a.hi.is_nan() || (!b.hi.is_nan() && df_cmp(a, b) != Ordering::Less) { a } else { b }
+    if a.hi.is_nan() || (!b.hi.is_nan() && df_cmp(a, b) != Ordering::Less) {
+        a
+    } else {
+        b
+    }
 }
 /// One fit, step for step as `mkl_c_qr_{prepare,pivot,project,finish}`.
 pub fn qr<E: FpEnv>(
@@ -181,7 +189,11 @@ pub fn qr<E: FpEnv>(
     let at = |i: usize, j: usize| i * n + j;
     let mut f = vec![D::ZERO; (m + n + 2) * n];
     let mut v: Vec<Vec<D>> = (0..=n)
-        .map(|j| (0..m).map(|i| if j == n { rhs[i] } else { a[at(i, j)] }).collect())
+        .map(|j| {
+            (0..m)
+                .map(|i| if j == n { rhs[i] } else { a[at(i, j)] })
+                .collect()
+        })
         .collect();
     let mut norms = vec![D::ZERO; n + 1];
     let mut y = vec![D::ZERO; n];
@@ -273,8 +285,8 @@ pub fn qr<E: FpEnv>(
     if ok {
         for i in (0..n).rev() {
             let mut t = y[i];
-            for j in i + 1..n {
-                t = t.add_in::<E>(-(r(i, j).mul_in::<E>(x[j])));
+            for (j, &xj) in x.iter().enumerate().skip(i + 1) {
+                t = t.add_in::<E>(-(r(i, j).mul_in::<E>(xj)));
             }
             x[i] = t.div_in::<E>(r(i, i));
         }
@@ -315,6 +327,11 @@ pub fn qr<E: FpEnv>(
     Ok(QrResult {
         factors: f,
         solution,
-        diagnostics: [D::from_f32(rank as f32), condition, residual, D::from_f32(status)],
+        diagnostics: [
+            D::from_f32(rank as f32),
+            condition,
+            residual,
+            D::from_f32(status),
+        ],
     })
 }

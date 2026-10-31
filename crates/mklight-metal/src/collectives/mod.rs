@@ -146,7 +146,14 @@ impl Plan {
         params: P,
         n: usize,
     ) -> MkResult<()> {
-        self.push(x, kernel, buffers, params, [n.div_ceil(256).max(1), 1, 1], n)
+        self.push(
+            x,
+            kernel,
+            buffers,
+            params,
+            [n.div_ceil(256).max(1), 1, 1],
+            n,
+        )
     }
     /// Encodes the dispatches serially, cutting command buffers at the work
     /// bound; returns the leases for publication or recycling.
@@ -285,7 +292,11 @@ fn segments(
         SegmentKind::Summary => 4 * c,
         _ => c,
     };
-    let phases = if r.kind == SegmentKind::Moments2 { 2 } else { 1 };
+    let phases = if r.kind == SegmentKind::Moments2 {
+        2
+    } else {
+        1
+    };
     let all_terms: usize = (0..phases).map(terms).sum();
     let maxg = reduce::num_groups(r.max_segment_len);
     let values = Buf::View(r.values.clone());
@@ -312,7 +323,8 @@ fn segments(
         ..Default::default()
     };
     // Work of a tile of segments: at most max_len records each, n in total.
-    let work = |segments: usize, terms: usize| (segments * r.max_segment_len).min(n).max(segments) * terms;
+    let work =
+        |segments: usize, terms: usize| (segments * r.max_segment_len).min(n).max(segments) * terms;
     // Both paths reproduce the same trees; a SIMD group per segment wins
     // when segments are many or tiny, tree groups when few are long.
     if maxg == 1 && (s >= 512 || r.max_segment_len <= 64) {
@@ -327,7 +339,14 @@ fn segments(
             let mut buffers = inputs.clone();
             buffers.extend([out.clone(), status.clone()]);
             let units = 4 * work(end - first, all_terms);
-            plan.push(x, "mkl_c_seg_short", buffers, p, [(end - first).div_ceil(8), 1, 1], units)?;
+            plan.push(
+                x,
+                "mkl_c_seg_short",
+                buffers,
+                p,
+                [(end - first).div_ceil(8), 1, 1],
+                units,
+            )?;
         }
     } else {
         let max_terms = (0..phases).map(terms).max().unwrap();
@@ -347,9 +366,28 @@ fn segments(
                 };
                 let mut buffers = inputs.clone();
                 buffers.extend([out.clone(), partials.clone()]);
-                plan.push(x, "mkl_c_seg_pass1", buffers, p, [maxg, terms(phase), end - first], work(end - first, terms(phase)))?;
-                let buffers = vec![Buf::View(r.offsets.clone()), partials.clone(), out.clone(), status.clone()];
-                plan.push(x, "mkl_c_seg_pass2", buffers, p, [(end - first).div_ceil(8), 1, 1], (end - first) * terms(phase) * maxg)?;
+                plan.push(
+                    x,
+                    "mkl_c_seg_pass1",
+                    buffers,
+                    p,
+                    [maxg, terms(phase), end - first],
+                    work(end - first, terms(phase)),
+                )?;
+                let buffers = vec![
+                    Buf::View(r.offsets.clone()),
+                    partials.clone(),
+                    out.clone(),
+                    status.clone(),
+                ];
+                plan.push(
+                    x,
+                    "mkl_c_seg_pass2",
+                    buffers,
+                    p,
+                    [(end - first).div_ceil(8), 1, 1],
+                    (end - first) * terms(phase) * maxg,
+                )?;
             }
         }
     }
@@ -399,10 +437,27 @@ impl ScanLevels {
             flag: u32::from(binary),
             ..Default::default()
         };
-        plan.push(x, "mkl_c_scan_blocks", vec![input, local.clone(), totals.clone()], p, [blocks, 1, 1], n)?;
+        plan.push(
+            x,
+            "mkl_c_scan_blocks",
+            vec![input, local.clone(), totals.clone()],
+            p,
+            [blocks, 1, 1],
+            n,
+        )?;
         if blocks > 1 {
             let k = if kind == 0 { 0 } else { 2 };
-            self.level(plan, x, level + 1, totals, blocks, k, false, prefix.clone(), false)?;
+            self.level(
+                plan,
+                x,
+                level + 1,
+                totals,
+                blocks,
+                k,
+                false,
+                prefix.clone(),
+                false,
+            )?;
         }
         let p = StepParams {
             n: n as u32,
@@ -421,11 +476,9 @@ fn compact(
     stats: &mut StageStats,
 ) -> MkResult<()> {
     let n = r.ids.desc.shape[0];
-    let width = if n == 0 {
-        0
-    } else {
-        r.values.desc.len()? * r.values.desc.element.words() / n
-    };
+    let width = (r.values.desc.len()? * r.values.desc.element.words())
+        .checked_div(n)
+        .unwrap_or(0);
     let mut plan = Plan::default();
     let out = plan.output(x, r.output);
     let ids = plan.output(x, r.output_ids);
@@ -433,7 +486,17 @@ fn compact(
     let prefix = plan.scratch(x, n)?;
     if n > 0 {
         let levels = ScanLevels::new(&mut plan, x, n, 0)?;
-        levels.level(&mut plan, x, 0, Buf::View(r.mask.clone()), n, 0, true, prefix.clone(), false)?;
+        levels.level(
+            &mut plan,
+            x,
+            0,
+            Buf::View(r.mask.clone()),
+            n,
+            0,
+            true,
+            prefix.clone(),
+            false,
+        )?;
     }
     let p = StepParams {
         n: n as u32,
@@ -486,7 +549,11 @@ fn sort(
         words: key_words,
         ..Default::default()
     };
-    let buffers = vec![Buf::View(r.keys.clone()), Buf::View(r.ids.clone()), a.clone()];
+    let buffers = vec![
+        Buf::View(r.keys.clone()),
+        Buf::View(r.ids.clone()),
+        a.clone(),
+    ];
     plan.push_1d(x, "mkl_c_sort_init", buffers, p, n)?;
     // Least significant first: logical ID, then key words from low to high.
     let words: &[u32] = if kind == 2 { &[2, 1, 0] } else { &[2, 0] };
@@ -499,13 +566,40 @@ fn sort(
                 blocks: blocks as u32,
                 ..Default::default()
             };
-            plan.push(x, "mkl_c_radix_count", vec![a.clone(), hist.clone()], p, [blocks, 1, 1], n)?;
-            levels.level(&mut plan, x, 0, hist.clone(), 256 * blocks, 0, false, start.clone(), true)?;
-            plan.push(x, "mkl_c_radix_scatter", vec![a.clone(), start.clone(), b.clone()], p, [blocks, 1, 1], 2 * n)?;
+            plan.push(
+                x,
+                "mkl_c_radix_count",
+                vec![a.clone(), hist.clone()],
+                p,
+                [blocks, 1, 1],
+                n,
+            )?;
+            levels.level(
+                &mut plan,
+                x,
+                0,
+                hist.clone(),
+                256 * blocks,
+                0,
+                false,
+                start.clone(),
+                true,
+            )?;
+            plan.push(
+                x,
+                "mkl_c_radix_scatter",
+                vec![a.clone(), start.clone(), b.clone()],
+                p,
+                [blocks, 1, 1],
+                2 * n,
+            )?;
             std::mem::swap(&mut a, &mut b);
         }
     }
-    let value_words = r.values.as_ref().map_or(0, |v| v.desc.len().unwrap() * v.desc.element.words() / n);
+    let value_words = r
+        .values
+        .as_ref()
+        .map_or(0, |v| v.desc.len().unwrap() * v.desc.element.words() / n);
     let p = StepParams {
         n: n as u32,
         words: key_words,
@@ -562,25 +656,87 @@ fn qr(r: &QrFit, x: &mut Execution<'_>, ctl: &JobControl, stats: &mut StageStats
         diag.clone(),
     ];
     let cols = b * (n + 1) * m;
-    plan.push_threads(x, "mkl_c_qr_prepare", buffers, p, [n + 1, b, 1], threads, cols)?;
+    plan.push_threads(
+        x,
+        "mkl_c_qr_prepare",
+        buffers,
+        p,
+        [n + 1, b, 1],
+        threads,
+        cols,
+    )?;
     for k in 0..n {
-        let p = QrParams { step: k as u32, ..p };
+        let p = QrParams {
+            step: k as u32,
+            ..p
+        };
         let pivot = vec![work.clone(), factors.clone(), aux.clone(), diag.clone()];
         plan.push_threads(x, "mkl_c_qr_pivot", pivot, p, [b, 1, 1], threads, b * m)?;
         // One classical Gram-Schmidt pass of the (already projected) pivot
         // column against every earlier q restores orthogonality to rounding.
         if k > 0 {
             let dot = vec![work.clone(), aux.clone(), diag.clone(), qcol.clone()];
-            plan.push_threads(x, "mkl_c_qr_reorth_dot", dot, p, [k, b, 1], threads, b * k * m)?;
-            let update = vec![work.clone(), factors.clone(), aux.clone(), diag.clone(), qcol.clone()];
-            plan.push(x, "mkl_c_qr_reorth_update", update, p, [m.div_ceil(256), b, 1], b * k * m)?;
+            plan.push_threads(
+                x,
+                "mkl_c_qr_reorth_dot",
+                dot,
+                p,
+                [k, b, 1],
+                threads,
+                b * k * m,
+            )?;
+            let update = vec![
+                work.clone(),
+                factors.clone(),
+                aux.clone(),
+                diag.clone(),
+                qcol.clone(),
+            ];
+            plan.push(
+                x,
+                "mkl_c_qr_reorth_update",
+                update,
+                p,
+                [m.div_ceil(256), b, 1],
+                b * k * m,
+            )?;
         }
         let normalise = vec![work.clone(), factors.clone(), diag.clone(), qcol.clone()];
-        plan.push_threads(x, "mkl_c_qr_normalise", normalise, p, [b, 1, 1], threads, b * m)?;
-        let project = vec![work.clone(), factors.clone(), aux.clone(), diag.clone(), qcol.clone()];
-        plan.push_threads(x, "mkl_c_qr_project", project, p, [n - k, b, 1], threads, b * (n - k) * m)?;
+        plan.push_threads(
+            x,
+            "mkl_c_qr_normalise",
+            normalise,
+            p,
+            [b, 1, 1],
+            threads,
+            b * m,
+        )?;
+        let project = vec![
+            work.clone(),
+            factors.clone(),
+            aux.clone(),
+            diag.clone(),
+            qcol.clone(),
+        ];
+        plan.push_threads(
+            x,
+            "mkl_c_qr_project",
+            project,
+            p,
+            [n - k, b, 1],
+            threads,
+            b * (n - k) * m,
+        )?;
     }
     let buffers = vec![factors, aux, diag, solution, inverse];
-    plan.push_threads(x, "mkl_c_qr_finish", buffers, p, [b, 1, 1], threads, b * n * n * n)?;
+    plan.push_threads(
+        x,
+        "mkl_c_qr_finish",
+        buffers,
+        p,
+        [b, 1, 1],
+        threads,
+        b * n * n * n,
+    )?;
     finish(plan, x, ctl, stats, &outputs)
 }

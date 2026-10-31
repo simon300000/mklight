@@ -20,7 +20,11 @@ pub fn scratch(p: &mut ResidentPlan, t: ElementType, s: impl Into<Vec<usize>>) -
     p.scratch(BufferDesc::new(t, s))
 }
 pub fn read(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanResult) {
-    let out = b.submit_plan(p, &JobContext::new()).unwrap().wait().unwrap();
+    let out = b
+        .submit_plan(p, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
     assert_eq!(out.stats.fallback_count, 0);
     let v = out
         .outputs
@@ -521,7 +525,9 @@ pub fn qr_plan(
 /// column-major storage (the CPU fit path's algorithm), never normal equations.
 pub fn reference_qr(a: &[f64], rhs: &[f64], m: usize, n: usize) -> Vec<f64> {
     let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let mut cols: Vec<Vec<f64>> = (0..n).map(|j| (0..m).map(|i| a[i * n + j]).collect()).collect();
+    let mut cols: Vec<Vec<f64>> = (0..n)
+        .map(|j| (0..m).map(|i| a[i * n + j]).collect())
+        .collect();
     let scale: Vec<f64> = cols.iter().map(|c| norm(c)).collect();
     for (c, s) in cols.iter_mut().zip(&scale) {
         c.iter_mut().for_each(|v| *v /= s);
@@ -686,7 +692,9 @@ pub fn qr_answers(b: &dyn ComputeBackend) {
     let a: Vec<_> = (0..m)
         .flat_map(|i| (0..n).map(move |j| ((i as f64 + 0.5) / m as f64).powi(j as i32)))
         .collect();
-    let rhs: Vec<_> = (0..m).map(|i| (3. * (i as f64 + 0.5) / m as f64).exp()).collect();
+    let rhs: Vec<_> = (0..m)
+        .map(|i| (3. * (i as f64 + 0.5) / m as f64).exp())
+        .collect();
     qr_check(b, a, rhs, m, n, 1e-12, n);
 }
 
@@ -812,7 +820,12 @@ pub fn random_sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType)
     };
     let mut p = plan();
     let k = import(b, &mut p, [n], keys);
-    let ids = import(b, &mut p, [n], BufferData::U32((0..n).map(|i| bits[n + i] | 0xff).collect()));
+    let ids = import(
+        b,
+        &mut p,
+        [n],
+        BufferData::U32((0..n).map(|i| bits[n + i] | 0xff).collect()),
+    );
     let ok = scratch(&mut p, key_type, [n]);
     let oi = scratch(&mut p, ElementType::U32, [n]);
     p.operations
@@ -834,8 +847,14 @@ pub fn moments_case(b: &dyn ComputeBackend, offsets: Vec<u32>, bound: usize) -> 
     let s = offsets.len() - 1;
     let bits = philox(3 * n, 2);
     let u = |i: usize| bits[i] as f64 / u32::MAX as f64;
-    let keep = |i: usize| bits[i] % 11 != 0;
-    let coord = |i: usize, j: usize, base: f64| if keep(i) { base + 1e-3 * u(j) } else { f64::NAN };
+    let keep = |i: usize| !bits[i].is_multiple_of(11);
+    let coord = |i: usize, j: usize, base: f64| {
+        if keep(i) {
+            base + 1e-3 * u(j)
+        } else {
+            f64::NAN
+        }
+    };
     let values = (0..n)
         .map(|i| coord(i, i, 10000.))
         .chain((0..n).map(|i| coord(i, n + i, -2000.)))
@@ -848,11 +867,18 @@ pub fn moments_case(b: &dyn ComputeBackend, offsets: Vec<u32>, bound: usize) -> 
         offsets,
         SegmentKind::Moments2,
         Some(BufferData::DoubleFloat(
-            (0..2 * s).map(|i| Df32::from_f64([10000., -2000.][i % 2])).collect(),
+            (0..2 * s)
+                .map(|i| Df32::from_f64([10000., -2000.][i % 2]))
+                .collect(),
         )),
         bound,
     );
-    let mask = import(b, &mut p, [n], BufferData::U32((0..n).map(|i| u32::from(keep(i)) * 5).collect()));
+    let mask = import(
+        b,
+        &mut p,
+        [n],
+        BufferData::U32((0..n).map(|i| u32::from(keep(i)) * 5).collect()),
+    );
     let weights = import(
         b,
         &mut p,

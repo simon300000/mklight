@@ -151,7 +151,11 @@ fn extremum(a: Df32, b: Df32, max: bool) -> Df32 {
         return b;
     }
     let c = crate::collectives::spec::df_cmp(a, b);
-    if (max && c == Less) || (!max && c == Greater) { b } else { a }
+    if (max && c == Less) || (!max && c == Greater) {
+        b
+    } else {
+        a
+    }
 }
 fn combine_acc<E: FpEnv>(op: Accumulator, a: Df32, b: Df32) -> Df32 {
     match op {
@@ -177,7 +181,9 @@ pub fn tree_in<E: FpEnv>(
         ctl.check()?;
         let mut v: Vec<Df32> = (0..THREADS)
             .map(|t| {
-                let items = (g * THREADS + t..count).step_by(groups * THREADS).map(&value);
+                let items = (g * THREADS + t..count)
+                    .step_by(groups * THREADS)
+                    .map(&value);
                 match op {
                     Accumulator::Sum(ReduceMode::Plain) => Df32::from_f32(
                         items.fold(identity.hi, |s, q| E::add(s, E::add(q.hi, q.lo))),

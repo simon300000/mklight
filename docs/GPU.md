@@ -325,7 +325,8 @@ keep their full accuracy for `|hi| ≥ 2⁻⁷⁸`, far below any optical quanti
 only on the data size: 256 threads per group, `G = clamp(⌈n/4096⌉, 1, 256)`
 groups, grid-stride accumulation per thread (plain f32, Neumaier f32, or
 double-float), an in-group binary tree combined in double-float, and a final
-single-group tree over the partials. No atomics, so the result is
+single-group tree over the partials. Tree strides below 32 run as SIMD
+shuffles, which is the same order. No atomics, so the result is
 reproducible run to run and bit-identical to the CPU emulation. Several
 channels (Σw, Σwx, Σwy, Σwx², …) reduce in one dispatch. Single-level
 Neumaier in f32 loses accuracy over long systematic runs (its compensation
@@ -1315,6 +1316,39 @@ thread/queue positions, address draws; preserve the reference draw order
 for tolerance trials and a stray source ray's depth-first split tree.
 Moving to a different RNG addressing scheme would require an explicit
 version and reference implementation, not an unnoticed backend difference.
+
+**Collectives, measured (P3).** Segment terms keep §3.4's tree; segments
+of at most 4096 records run one SIMD group each (eight emulated tree threads
+per lane, no partials) when there are at least 512 segments or all are at
+most 64 long, otherwise 256-thread groups plus a SIMD-group pass 2. Both
+paths, all scans, the radix sort (8-bit digits, ID digits first) and the
+pivoted QR are bit-identical to the matching CPU-f32 specification, so
+chunking, command boundaries, workers and concurrency change no bit. QR is
+equilibrated pivoted MGS with two projections per step plus one classical
+reorthogonalisation pass of each pivot column; Q stays orthogonal to
+rounding on ill-conditioned Jacobians (columns are not capped). Apple M2 Pro,
+release, precompiled library, warm medians of 10; inputs resident, outputs
+read in place (no copies); CPU is the serial f64 host reference.
+
+| Case | 1e3 | 1e4 | 1e5 | 1e6 |
+|---|---:|---:|---:|---:|
+| Spot moments, 9 segments: CPU / Metal ms | 0.009 / 0.33 | 0.094 / 0.37 | 0.94 / 0.59 | 9.5 / 1.4 |
+| Summary, 17-record segments | 0.001 / 0.29 | 0.012 / 0.36 | 0.12 / 0.93 | 1.2 / 3.0 |
+| Stable sort, f32 keys + IDs | 0.015 / 0.57 | 0.22 / 0.76 | 2.8 / 0.64 | 37 / 4.5 |
+| Inclusive f32 scan to double-float | 0.001 / 0.27 | 0.009 / 0.27 | 0.089 / 0.29 | 0.92 / 0.68 |
+| Compaction of [n,2] double-float | 0.001 / 0.28 | 0.010 / 0.28 | 0.10 / 0.37 | 1.0 / 1.1 |
+
+QR (rows×cols×batch), CPU f64 Householder / Metal ms: 200×20×1 0.05 / 0.97;
+200×20×256 14 / 7.7; 2000×60×1 4.2 / 4.4; 4225×37×1 3.7 / 3.3;
+20000×120×1 177 / 62 (50 device); 65536×37×1 67 / 21. Coefficient error
+≤6.2e-15. Small Metal timings vary up to 1.8× between runs (clock ramp).
+
+**CPU-preferred (standalone, host-fed):** spot moments below ≈3e4 records,
+sorts below ≈3e4, scans below ≈5e5, compactions up to 1e6, summaries of very
+short segments up to 1e6 (extrema terms dominate), and single QR fits up to
+about 2000×60. A plan costs ≈0.22 ms to submit and complete, which dominates
+small work; inside a resident chain only device time applies. Batched and tall
+fits are Metal-preferred. These are cost exceptions only.
 
 **Radiometry and non-sequential reuse.** One device coating service provides
 both powers and complex flux-normalised amplitudes, keyed by wavelength,

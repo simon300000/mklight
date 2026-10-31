@@ -32,8 +32,13 @@ impl<'a> Values<'a> {
     }
 }
 fn put(x: &mut Execution, id: BufferId, offset: usize, v: &[D]) {
-    for (dest, q) in x.words_mut(id)[2 * offset..].chunks_exact_mut(2).zip(v) {
-        dest.copy_from_slice(&[q.hi.to_bits(), q.lo.to_bits()]);
+    for (dest, q) in x.words_mut(id)[2 * offset..]
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(v)
+    {
+        *dest = [q.hi.to_bits(), q.lo.to_bits()];
     }
 }
 pub fn execute(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
@@ -76,12 +81,13 @@ pub fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) ->
                 Values::new(x, &r.mask),
             );
             let n = ids.words.len();
-            let width = if n == 0 { 0 } else { a.words.len() / n };
+            let width = a.words.len().checked_div(n).unwrap_or(0);
             let mut out = vec![0; a.words.len()];
             let mut out_ids = vec![u32::MAX; n];
             let mut kept = 0;
             for i in (0..n).filter(|&i| mask.words[i] != 0) {
-                out[kept * width..(kept + 1) * width].copy_from_slice(&a.words[i * width..(i + 1) * width]);
+                out[kept * width..(kept + 1) * width]
+                    .copy_from_slice(&a.words[i * width..(i + 1) * width]);
                 out_ids[kept] = ids.words[i];
                 kept += 1;
             }
@@ -188,7 +194,11 @@ fn segments<E: FpEnv>(
         unreachable!()
     };
     let s = offsets.len() - 1;
-    let phases = if r.kind == SegmentKind::Moments2 { 2 } else { 1 };
+    let phases = if r.kind == SegmentKind::Moments2 {
+        2
+    } else {
+        1
+    };
     let mut out = vec![D::ZERO; segment_shape(r).iter().product()];
     let mut status = vec![0; s];
     for z in 0..s {
@@ -196,7 +206,11 @@ fn segments<E: FpEnv>(
         let (a, b) = (offsets[z] as usize, offsets[z + 1] as usize);
         if !(a <= b && b <= n && b - a <= r.max_segment_len) {
             status[z] = 1;
-            let products = if r.kind == SegmentKind::SourceProducts { c * (c + 1) / 2 } else { 0 };
+            let products = if r.kind == SegmentKind::SourceProducts {
+                c * (c + 1) / 2
+            } else {
+                0
+            };
             for phase in 0..phases {
                 for t in 0..terms(r, c, phase) + products {
                     out[slot(r, c, s, z, phase, t)] = D::from_f32(f32::NAN);
