@@ -167,6 +167,10 @@ public final class Workspace {
     /// starting patch, PSF and pupil sampling, and waits for Update.
     private func migrateSavedPanes() {
         for p in panes where p.analysis == "image_simulation" && p.output == nil && !p.isRunning {
+            if let m = ImageSimulationSettings.migrated(p.settings) {
+                p.setSettings(m)
+                continue
+            }
             guard ImageSimulationSettings.isEngineDefault(p.settings, defaults: descriptor(p.analysis)?.defaultSettings) else { continue }
             p.autoUpdate = Self.autoUpdateDefault(p.analysis)
             p.setSettings(startingSettings(p.analysis))
@@ -464,6 +468,24 @@ public final class Workspace {
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)),
             on: snapshot)
+        liveJobs.set("job:" + (key ?? analysis), job)
+        return job
+    }
+
+    /// Starts a design job on `system`, a variant of the design (the
+    /// tolerance run's surfaces get placements that return to the axis),
+    /// on a snapshot of its own; the design's snapshot when they are equal.
+    public func submitJob(_ analysis: String, settings: [String: JSONValue], on system: OpticalSystem, key: String? = nil) async throws -> AnalysisJob {
+        guard let design = designSnapshot ?? snapshot, modelErrors.isEmpty else {
+            throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
+        }
+        guard system != design.system else { return try submitJob(analysis, settings: settings, key: key) }
+        if let d = descriptor(analysis), !d.available {
+            throw EngineError.unsupported(d.unavailableReason ?? "\(analysis) is not available")
+        }
+        let snap = try await documentEngine.openSnapshot(system)
+        let job = documentEngine.submit(
+            EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)), on: snap)
         liveJobs.set("job:" + (key ?? analysis), job)
         return job
     }

@@ -12,6 +12,9 @@ struct OptionalNumberField: View {
     var format: (Double) -> String = Fmt.short
     /// Accept `∞` / `inf` (radius bounds).
     var allowsInfinite = false
+    /// A borderless cell on a light fill (dense tables) instead of a
+    /// bordered field.
+    var compact = false
     let commit: (Double?) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
@@ -19,9 +22,18 @@ struct OptionalNumberField: View {
     var body: some View {
         TextField(title, text: $text, prompt: Text(prompt))
             .labelsHidden()
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(compact ? AnyTextFieldStyle(.plain) : AnyTextFieldStyle(.roundedBorder))
             .multilineTextAlignment(.trailing)
             .font(.callout.monospacedDigit())
+            .padding(.horizontal, compact ? 4 : 0)
+            .padding(.vertical, compact ? 1 : 0)
+            .background {
+                if compact {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(focused ? AnyShapeStyle(.background) : AnyShapeStyle(.quaternary.opacity(0.6)))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(focused ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear)))
+                }
+            }
             .frame(width: width)
             .focused($focused)
             .onSubmit(finish)
@@ -1004,4 +1016,15 @@ struct VariableBoundsRow: View {
         }
         return "now \(Fmt.short(value))"
     }
+}
+
+/// A type-erased text field style (bordered or plain by a flag).
+struct AnyTextFieldStyle: TextFieldStyle {
+    private let make: (TextField<_Label>) -> AnyView
+
+    init<S: TextFieldStyle>(_ style: S) {
+        make = { AnyView($0.textFieldStyle(style)) }
+    }
+
+    func _body(configuration: TextField<_Label>) -> some View { make(configuration) }
 }

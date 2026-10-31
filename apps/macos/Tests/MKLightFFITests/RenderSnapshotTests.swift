@@ -112,5 +112,44 @@ import Testing
         try await render("status-popover", width: 340, StatusDetails(workspace: w, window: window, engine: w.engine, system: system))
         try await render("inspector-system", width: 300, SystemInspector(design: doc, workspace: w, window: window).frame(height: 900))
     }
+
+    /// The tolerance editor and its results on the Double Gauss and the Cooke.
+    @Test func tolerancePanel() async throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for sample in ["double_gauss", "cooke_triplet"] {
+            let system = try #require(SampleSystems.bundled(sample))
+            let doc = DesignDocument(system: system)
+            let w = Workspace(engine: try FFIEngine())
+            w.debounce = .zero
+            await w.loadEngineMetadata()
+            w.update(system: system, immediately: true)
+            while w.layout.output == nil { try await Task.sleep(for: .milliseconds(20)) }
+            let window = WindowState()
+            let session = ToleranceSession()
+            session.load(doc)
+            let context = ToleranceContext(system: system, semiDiameters: session.semiDiameters(from: w.layout.output))
+            try await render("tol-editor-\(sample)", width: 340, ToleranceEditor(design: doc, workspace: w, session: session, context: context, edit: { name, change in
+                session.edit(doc, name, context: context, undoManager: nil, change)
+            }))
+            session.edit(doc, "Set", context: context, undoManager: nil) {
+                $0.trials = 500
+                $0.criterion.threshold = sample == "double_gauss" ? 20.5 : 40
+            }
+            session.start(in: w, context: context, merit: doc.merit)
+            while session.isRunning || session.result == nil { try await Task.sleep(for: .milliseconds(20)) }
+            let r = try #require(session.result)
+            try await render("tol-result-\(sample)", width: 340, ToleranceResultView(design: doc, workspace: w, window: window, session: session, result: r))
+            session.edit(doc, "MTF", context: context, undoManager: nil) {
+                $0.criterion.kind = .mtf
+                $0.criterion.threshold = nil
+                $0.mode = .monteCarlo
+                $0.trials = 40
+                print("MTF run start", Date())
+            }
+            session.start(in: w, context: context, merit: doc.merit)
+            while session.isRunning || session.result == nil { try await Task.sleep(for: .milliseconds(20)) }
+            try await render("tol-result-mtf-\(sample)", width: 340, ToleranceResultView(design: doc, workspace: w, window: window, session: session, result: try #require(session.result)))
+        }
+    }
 }
 #endif

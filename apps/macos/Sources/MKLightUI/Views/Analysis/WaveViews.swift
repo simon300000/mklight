@@ -225,7 +225,7 @@ struct MTFVsFieldView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
                 ForEach(Array(curves.enumerated()), id: \.offset) { k, c in
-                    LegendItem(color: Palette.fieldColor(k), label: String(format: "%.0f cycles/mm", c.0))
+                    LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " cycles/mm")
                 }
                 LegendItem(color: .secondary, label: "T solid, S dashed")
             }
@@ -261,6 +261,14 @@ struct ThroughFocusMTFView: View {
         }
     }
 
+    /// The engine's focus range, exactly (its automatic half-range follows
+    /// the blur: max(8 λN², 4 N r_rms)).
+    private var focusDomain: ClosedRange<Double>? {
+        let v = focus.filter(\.isFinite)
+        guard let lo = v.min(), let hi = v.max(), hi > lo else { return nil }
+        return lo...hi
+    }
+
     var body: some View {
         let f = fields[min(selected, fields.count - 1)]
         VStack(alignment: .leading, spacing: Space.s) {
@@ -268,7 +276,7 @@ struct ThroughFocusMTFView: View {
             ItemPicker(titles: fields.map(\.title), selection: $selected)
             FlowLayout(spacing: Space.m) {
                 ForEach(Array(f.curves.enumerated()), id: \.offset) { k, c in
-                    LegendItem(color: Palette.fieldColor(k), label: String(format: "%.0f cycles/mm", c.0))
+                    LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " cycles/mm")
                 }
                 LegendItem(color: .secondary, label: "T solid, S dashed")
             }
@@ -278,7 +286,8 @@ struct ThroughFocusMTFView: View {
                         Series(id: "t\(k)", label: "", color: Palette.fieldColor(k), points: zip(focus, c.1).map { ($0, $1) }),
                         Series(id: "s\(k)", label: "", color: Palette.fieldColor(k), points: zip(focus, c.2).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: "Focus shift (mm)", yLabel: "Modulation", yDomain: 0...1.02, zeroLine: false, markers: [(x: 0, label: "Image")])
+                }, xLabel: "Focus shift (mm)", yLabel: "Modulation", xDomain: focusDomain, yDomain: 0...1.02, zeroLine: false,
+                markers: [(x: 0, label: "Image")])
         }
         .padding(Space.m)
     }

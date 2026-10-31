@@ -14,6 +14,7 @@ extension SettingsBar {
         let types = Set(f.types).subtracting(["null"])
         if f.name == "sensor_limit" && types == ["array"] { return .sensorLimit }
         if f.name == "source" && types == ["object"] && f.defaultValue?["kind"]?.string == "pattern" { return .imageSource }
+        if f.name == "optics" && types == ["object"] && f.defaultValue?["psf_size"] != nil { return .imageOptics }
         if types == ["array"], let d = f.defaultValue?.array, d.count == 2, d.allSatisfy({ $0.doubleValue != nil }) { return .pair }
         return nil
     }
@@ -32,6 +33,7 @@ extension SettingsBar {
             }
         }
         if let a = v.array, a.count == 2, let x = a[0].doubleValue, let y = a[1].doubleValue {
+            if f.name.hasSuffix("center") { return "(\(Fmt.short(x)), \(Fmt.short(y)))" }
             return "\(Fmt.short(x)) × \(Fmt.short(y))"
         }
         return nil
@@ -46,6 +48,8 @@ extension SettingsBar {
             SensorLimitControl(value: pane.value(f.name), help: f.description, set: { pane.set(f.name, $0) })
         case .imageSource:
             ImageSourceControl(pane: pane, field: f)
+        case .imageOptics:
+            ImageOpticsControl(pane: pane, field: f)
         default:
             EmptyView()
         }
@@ -65,8 +69,13 @@ struct SettingPairField: View {
     /// Integers when the default is (`grid`, `size`).
     var isInteger: Bool { field.defaultValue?.array?.allSatisfy { if case .integer = $0 { true } else { false } } ?? false }
 
-    /// Bounds the description states ("1..101", "2..4096"), else positive.
+    /// A point of the normalised field (`field_center`): `Hx, Hy`, signed.
+    var isFieldPoint: Bool { field.name.hasSuffix("center") || field.name.hasSuffix("centre") }
+
+    /// Bounds the description states ("1..101", "2..4096"), else positive
+    /// (a field point: within ±2 field radii).
     var bounds: ClosedRange<Double> {
+        if isFieldPoint { return -2...2 }
         let text = field.description
         if let r = text.range(of: #"(\d+)\.\.(\d+)"#, options: .regularExpression) {
             let parts = text[r].components(separatedBy: "..").compactMap(Double.init)
@@ -77,9 +86,9 @@ struct SettingPairField: View {
 
     var body: some View {
         HStack(spacing: Space.xs) {
-            Text(label).foregroundStyle(.secondary)
+            Text(isFieldPoint ? "Centre Hx" : label).foregroundStyle(.secondary)
             box($a, index: 0)
-            Text("×").foregroundStyle(.secondary)
+            Text(isFieldPoint ? "Hy" : "×").foregroundStyle(.secondary)
             box($b, index: 1)
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
@@ -304,5 +313,63 @@ struct ImageSourceControl: View {
         let size = (try? MKLightJSON.encode(pane.value("size") ?? .null)).map { String(decoding: $0, as: UTF8.self) } ?? ""
         let aspect = ImageSourceImport.fieldAspect(pane).map { String(format: "%.6f", $0) } ?? ""
         return (file ?? "") + "|" + size + "|" + aspect
+    }
+}
+
+/// The image simulation's optics sampling (`optics`): the PSF window and
+/// spacing, the pupil grid and rays (automatic by default, shown with the
+/// values the run used) and the field grid of PSFs. The patch's extent and
+/// centre are set in the view; other keys are kept as they are.
+struct ImageOpticsControl: View {
+    let pane: AnalysisPane
+    let field: SettingsField
+
+    private var optics: [String: JSONValue] { pane.value(field.name)?.object ?? field.defaultValue?.object ?? [:] }
+    private var pupil: [String: JSONValue] { optics["pupil"]?.object ?? [:] }
+
+    private func used(_ key: String) -> String? { AutoSettings.used(key, analysis: pane.analysis, output: pane.output) }
+
+    var body: some View {
+        FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
+            SettingNumberField(
+                field: number("psf_size", integer: true, "PSF window samples per side (odd); 0 sizes it from the blur and diffraction."),
+                label: "PSF window", value: optics["psf_size"], auto: .zero, autoUsed: used("optics.psf_size")
+            ) { set("psf_size", $0) }
+            SettingNumberField(
+                field: number("psf_spacing_mm", integer: false, "PSF sample spacing; empty uses the smallest λ·F/# over the patch divided by 2.5.", unit: "mm"),
+                label: "Spacing", value: optics["psf_spacing_mm"], auto: .null, autoUsed: used("optics.psf_spacing_mm")
+            ) { set("psf_spacing_mm", $0) }
+            SettingNumberField(
+                field: number("grid", integer: true, "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024)."),
+                label: "Pupil", value: pupil["grid"], auto: .zero, autoUsed: used("optics.pupil.grid")
+            ) { setPupil("grid", $0) }
+            SettingNumberField(
+                field: number("rays", integer: true, "Rays traced per pupil diameter."), label: "Rays", value: pupil["rays"]
+            ) { setPupil("rays", $0) }
+            SettingNumberField(
+                field: number("field_grid", integer: true, "PSFs per side of the patch; the image is mapped between them."),
+                label: "PSF grid", value: optics["field_grid"]
+            ) { set("field_grid", $0) }
+        }
+    }
+
+    private func number(_ name: String, integer: Bool, _ help: String, unit: String = "") -> SettingsField {
+        var schema: [String: JSONValue] = ["type": integer ? .string("integer") : .array([.string("number"), .string("null")]), "description": .string(help)]
+        if !unit.isEmpty { schema["unit"] = .string(unit) }
+        var f = SettingsField(name: name, schema: .object(schema), required: false)
+        f.minimum = 0
+        return f
+    }
+
+    private func set(_ key: String, _ v: JSONValue?) {
+        var o = optics
+        o[key] = v ?? field.defaultValue?[key]
+        pane.set(field.name, .object(o))
+    }
+
+    private func setPupil(_ key: String, _ v: JSONValue?) {
+        var p = pupil
+        p[key] = v ?? field.defaultValue?["pupil"]?[key]
+        set("pupil", .object(p))
     }
 }

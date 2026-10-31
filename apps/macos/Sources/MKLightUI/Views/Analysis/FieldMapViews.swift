@@ -50,7 +50,7 @@ struct FieldMapPlot: View {
 
     var body: some View {
         let display = grid.upsampled(to: 192)
-        let segments = contours.map { (level: $0, segments: Contours.segments(grid, level: $0)) }
+        let segments = contours.map { (level: $0, segments: Contours.mapSegments(grid, level: $0)) }
         Chart {
             PointMark(x: .value("Hx", grid.xRange.lowerBound), y: .value("Hy", grid.yRange.lowerBound)).opacity(0)
             if showsNodes {
@@ -87,6 +87,9 @@ struct FieldMapPlot: View {
                     let r = geo[f]
                     // Pixels are centred on the interpolated values: extend by half a pixel.
                     let px = r.width / CGFloat(max(display.nx - 1, 1)), py = r.height / CGFloat(max(display.ny - 1, 1))
+                    if grid.noData != nil || grid.values.contains(where: { !$0.isFinite }) {
+                        NoDataHatch().frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
+                    }
                     HeatMapImage(grid: display, scale: scale, range: range)
                         .frame(width: r.width + px, height: r.height + py)
                         .position(x: r.midX, y: r.midY)
@@ -123,6 +126,25 @@ struct FieldMapPlot: View {
         let f = grid.finite
         guard let lo = f.min(), let hi = f.max() else { return "No values" }
         return "From \(format(lo)) to \(format(hi))"
+    }
+}
+
+/// Fine diagonal hatching behind a map, showing through where it has no
+/// data (outside the field, failed samples): never mistaken for a value.
+struct NoDataHatch: View {
+    var body: some View {
+        Canvas { ctx, size in
+            var p = Path()
+            var x = -size.height
+            while x < size.width {
+                p.move(to: CGPoint(x: x, y: size.height))
+                p.addLine(to: CGPoint(x: x + size.height, y: 0))
+                x += 6
+            }
+            ctx.stroke(p, with: .color(.secondary.opacity(0.35)), lineWidth: 0.6)
+        }
+        .clipped()
+        .accessibilityHidden(true)
     }
 }
 
@@ -203,7 +225,8 @@ private struct FieldMapOverlay: View {
         let q = point(p)
         let v = grid.values[k]
         return VStack(alignment: .leading, spacing: 1) {
-            Text(v.isFinite ? format(v) : "No value").font(.caption.weight(.semibold))
+            Text(v.isFinite ? format(v) : grid.noData?.excludes(grid.node(k).x, grid.node(k).y) == true ? "Outside the field" : "No value")
+                .font(.caption.weight(.semibold))
             Text(String(format: "Hx %.3g  Hy %.3g", p.x, p.y)).font(.caption2).foregroundStyle(.secondary)
         }
         .monospacedDigit()

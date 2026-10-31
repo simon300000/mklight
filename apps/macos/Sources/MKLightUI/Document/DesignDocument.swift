@@ -207,6 +207,25 @@ public final class DesignDocument {
         setSectionUndoable("merit", value.section, actionName: actionName, undoManager: undoManager)
     }
 
+    // MARK: Tolerances
+
+    /// The design's tolerancing (`tolerances` section). A design that never
+    /// had one starts from the generator's default set with the back focus
+    /// as compensator (not saved until edited).
+    public var tolerances: ToleranceSettings {
+        let t = ToleranceSettings(section: project.sections["tolerances"], system: system)
+        if project.sections["tolerances"] == nil || project.sections["tolerances"] == .null { return .defaults(for: system) }
+        return t
+    }
+
+    /// Replaces the tolerancing (undoable). `context` expands the rows to
+    /// the engine's operands kept in the section.
+    public func setTolerances(_ value: ToleranceSettings, context: ToleranceContext?, actionName: String, undoManager: UndoManager?) {
+        let section = value.section(context: context, merit: merit)
+        guard section != project.sections["tolerances"] else { return }
+        setSectionUndoable("tolerances", section, actionName: actionName, undoManager: undoManager)
+    }
+
     /// Removes every variable (undoable).
     public func clearVariables(undoManager: UndoManager?) {
         guard !variables.isEmpty else { return }

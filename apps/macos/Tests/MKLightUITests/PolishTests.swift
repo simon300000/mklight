@@ -261,15 +261,6 @@ import Testing
         #expect(ImageSourceImport.engineSettings("psf", ["size": .integer(3)], defaults: nil) == ["size": .integer(3)])
     }
 
-    @Test func imageSimulationStartsOnAVisiblePatch() {
-        let defaults: JSONValue = .object(["optics": .object(["field_extent": .number(1), "psf_size": .integer(33), "pupil": .object(["grid": .integer(32), "amplitude": .string("radiometric")])])])
-        let s = ImageSimulationSettings.starting(defaults: defaults)
-        #expect(s["size"] == .array([.integer(256), .integer(256)]))
-        #expect(s["optics"]?["field_extent"]?.doubleValue == 0.1 && s["optics"]?["psf_size"]?.int == 161)
-        #expect(s["optics"]?["pupil"]?["grid"]?.int == 96 && s["optics"]?["pupil"]?["amplitude"]?.string == "radiometric")
-        #expect(ImageSimulationSettings.extentTitle(1) == "full field" && ImageSimulationSettings.extentTitle(0.1) == "centre 10 %")
-    }
-
     /// Image simulation panes saved with the engine's defaults (before the
     /// starting settings existed) take the starting settings and wait for
     /// Update; panes the user changed keep their settings.

@@ -12,6 +12,21 @@ struct Grid2D: Sendable {
     var values: [Double]
     var xRange: ClosedRange<Double>
     var yRange: ClosedRange<Double>
+    /// Where the map has no data by definition (`unitDisk`: outside the
+    /// normalised field, hypot(Hx, Hy) > 1). Upsampling then interpolates
+    /// cells with missing corners from their finite corners and clips at
+    /// the boundary, so the map reaches the field's edge exactly.
+    var noData: NoData?
+
+    enum NoData: Sendable, Equatable {
+        case unitDisk
+
+        func excludes(_ x: Double, _ y: Double) -> Bool {
+            switch self {
+            case .unitDisk: (x * x + y * y).squareRoot() > 1 + 1e-9
+            }
+        }
+    }
 
     init(nx: Int, ny: Int, values: [Double], xRange: ClosedRange<Double> = -1...1, yRange: ClosedRange<Double> = -1...1) {
         self.nx = nx

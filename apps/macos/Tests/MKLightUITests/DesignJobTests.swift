@@ -72,11 +72,15 @@ import Testing
     }
 
     @Test func toleranceReportsSensitivityAndMonteCarlo() async throws {
-        let w = try await workspace(SampleSystems.cookeTriplet())
+        let doc = DesignDocument(system: SampleSystems.cookeTriplet())
+        let w = try await workspace(doc.system)
         let session = ToleranceSession()
-        session.trials = 50
-        session.seed = 7
-        session.start(in: w)
+        session.load(doc)
+        session.edit(doc, "Trials", context: nil, undoManager: nil) {
+            $0.trials = 50
+            $0.seed = 7
+        }
+        session.start(in: w, context: ToleranceContext(system: doc.system, semiDiameters: [:]), merit: doc.merit)
         try await waitUntil { session.state == .finished }
         let r = try #require(session.result)
         #expect(!r.sensitivities.isEmpty && r.hasMonteCarlo && r.criteria.count == 50)

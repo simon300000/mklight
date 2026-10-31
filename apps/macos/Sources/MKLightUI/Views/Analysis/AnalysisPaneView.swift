@@ -616,35 +616,49 @@ struct RunDetails: View {
 
     /// A setting change that addresses the warning, when the analysis has it.
     private func remedy(_ g: WarningGroup) -> Fix? {
-        guard let pane, let kind = g.remedy else { return nil }
+        guard let pane, let kind = g.remedy, let r = RunDetails.remedy(kind, settings: { pane.value($0) }) else { return nil }
+        return Fix(title: r.title, help: r.help) { pane.set(r.key, r.value) }
+    }
+
+    /// The setting change for a warning, given the pane's settings: an
+    /// explicit coarse pupil grid, image grid or PSF window goes back to the
+    /// engine's automatic choice, which sizes it from the system. Automatic
+    /// settings that still warn reached the engine's cap: nothing to offer.
+    struct Remedy: Equatable {
+        var title: String
+        var help: String
+        var key: String
+        var value: JSONValue
+    }
+
+    static func remedy(_ kind: WarningGroup.Remedy, settings value: (String) -> JSONValue?) -> Remedy? {
+        // Image simulation keeps its pupil and PSF window in `optics`.
+        let optics = value("pupil") == nil && value("grid_size") == nil ? value("optics")?.object : nil
         switch kind {
         case .pupilSampling:
-            // The pupil is a setting of its own, or part of the image simulation's optics.
-            let nested = pane.value("pupil") == nil
-            let container = nested ? pane.value("optics")?.object : nil
-            guard var pupil = (nested ? container?["pupil"] : pane.value("pupil"))?.object, let grid = pupil["grid"]?.int, grid < 512
-            else { return nil }
-            let new = min(grid * 2, 512)
-            pupil["grid"] = .integer(Int64(new))
-            if pupil["rays"] != nil { pupil["rays"] = .integer(Int64(new + 1)) }
-            let fixed = JSONValue.object(pupil)
-            return Fix(
-                title: "Sample the Pupil Finer (grid \(grid) → \(new))",
-                help: "Doubles the pupil grid of this pane and runs it again (slower, more accurate)"
-            ) {
-                if nested, var optics = container {
-                    optics["pupil"] = fixed
-                    pane.set("optics", .object(optics))
-                } else {
-                    pane.set("pupil", fixed)
-                }
+            guard var pupil = (optics?["pupil"] ?? value("pupil"))?.object, let grid = pupil["grid"]?.int, grid > 0 else { return nil }
+            pupil["grid"] = .integer(0)
+            let title = "Sample the Pupil Automatically (grid \(grid) → auto)"
+            let help = "The pupil grid is set to \(grid). Automatic sampling picks a grid fine enough for the wavefront's slope (64 to 1024), then runs again."
+            if var o = optics {
+                o["pupil"] = .object(pupil)
+                return Remedy(title: title, help: help, key: "optics", value: .object(o))
             }
+            return Remedy(title: title, help: help, key: "pupil", value: .object(pupil))
         case .imageGrid:
-            guard let size = pane.value("grid_size")?.int, size < 1024 else { return nil }
-            let new = min(size * 2, 1024)
-            return Fix(
-                title: "Enlarge the Image Grid (\(size) → \(new))",
-                help: "Doubles the image grid of this pane, so the PSF fits, and runs it again") { pane.set("grid_size", .integer(Int64(new))) }
+            if var o = optics {
+                guard let size = o["psf_size"]?.int, size > 0 else { return nil }
+                o["psf_size"] = .integer(0)
+                return Remedy(
+                    title: "Size the PSF Window Automatically (\(size) → auto)",
+                    help: "The PSF window is set to \(size) samples. The automatic window holds the blur and its diffraction wings, then runs again.",
+                    key: "optics", value: .object(o))
+            }
+            guard let size = value("grid_size")?.int, size > 0 else { return nil }
+            return Remedy(
+                title: "Size the Image Grid Automatically (\(size) → auto)",
+                help: "The image grid is set to \(size). The automatic grid holds the blur and its diffraction wings, then runs again.",
+                key: "grid_size", value: .integer(0))
         }
     }
 
