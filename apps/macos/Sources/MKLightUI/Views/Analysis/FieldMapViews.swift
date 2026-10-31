@@ -111,10 +111,10 @@ struct FieldMapPlot: View {
         let step = Nice.length((r.upperBound - r.lowerBound) / 4)
         guard step > 0, step.isFinite else { return [r.lowerBound, r.upperBound] }
         var out: [Double] = []
-        var v = (r.lowerBound / step).rounded(.up) * step
-        while v <= r.upperBound + step * 1e-9 {
-            out.append(abs(v) < step * 1e-9 ? 0 : v)
-            v += step
+        var k = (r.lowerBound / step).rounded(.up)
+        while k * step <= r.upperBound + step * 1e-9 {
+            out.append(((k * step) * 1e9).rounded() / 1e9)
+            k += 1
         }
         return out
     }
@@ -238,11 +238,13 @@ func fieldValueFormat(_ c: FieldMapData.Column) -> (Double) -> String {
 /// for signed quantities), or as a curve for a sweep.
 struct PupilAberrationView: View {
     let data: FieldMapData
-    @State private var column = 0
+    @State private var column: Int
 
     init?(output: AnalysisOutput) {
         guard let d = FieldMapData(output: output) else { return nil }
         data = d
+        // The first column that varies (a y sweep has no x stop error).
+        _column = State(initialValue: d.columns.indices.first { c in d.range(c).map { $0.upperBound - $0.lowerBound > 1e-12 } ?? false } ?? 0)
     }
 
     var body: some View {
@@ -269,7 +271,11 @@ struct FieldMapContent: View {
     var body: some View {
         let col = data.columns[column]
         let format = fieldValueFormat(col)
-        if data.layout == .map {
+        if data.range(column) == nil {
+            ContentUnavailableView(
+                "No Values", systemImage: "square.dashed",
+                description: Text("\(col.title) is undefined at every sample: \(col.definition)."))
+        } else if data.layout == .map {
             let signed = data.isSigned(column)
             let r = range ?? data.range(column) ?? 0...1
             FieldMapPanel(
@@ -408,7 +414,7 @@ struct ChiefRayAngleView: View {
                     .fixedSize()
                 }
                 if display == .map && data.layout == .map {
-                    FieldColumnPicker(columns: data.columns.filter { $0.name != "limit" }, selection: filteredColumn)
+                    FieldColumnPicker(columns: mapColumns.map { data.columns[$0] }, selection: filteredColumn)
                 } else {
                     legend
                 }
@@ -423,9 +429,15 @@ struct ChiefRayAngleView: View {
         .padding(Space.m)
     }
 
-    /// The picker over the columns without `limit` (constant in a map).
+    /// The columns worth a map: not `limit` (it follows the radius), and
+    /// not undefined everywhere (the margin without a sensor limit).
+    private var mapColumns: [Int] {
+        data.columns.indices.filter { data.columns[$0].name != "limit" && data.range($0) != nil }
+    }
+
+    /// The picker over `mapColumns`.
     private var filteredColumn: Binding<Int> {
-        let shown = data.columns.indices.filter { data.columns[$0].name != "limit" }
+        let shown = mapColumns
         return Binding(
             get: { shown.firstIndex(of: column) ?? 0 },
             set: { column = shown[min(max($0, 0), shown.count - 1)] })

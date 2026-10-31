@@ -263,10 +263,12 @@ enum Contours {
         guard r.upperBound > r.lowerBound, r.lowerBound.isFinite, r.upperBound.isFinite else { return [] }
         let step = Nice.length((r.upperBound - r.lowerBound) / Double(count))
         var out: [Double] = []
-        var v = (r.lowerBound / step).rounded(.up) * step
-        while v < r.upperBound - step * 1e-9 {
-            if v > r.lowerBound + step * 1e-9 { out.append(v) }
-            v += step
+        var k = (r.lowerBound / step).rounded(.up)
+        while k * step < r.upperBound - step * 1e-9 {
+            // Multiples of the step, rounded to its precision.
+            let v = ((k * step) / step).rounded() * step
+            if v > r.lowerBound + step * 1e-9 { out.append((v * 1e9).rounded() / 1e9) }
+            k += 1
         }
         return out
     }
@@ -454,8 +456,9 @@ struct GlassMapData: Sendable {
 enum SRGB {
     static func encode(_ linear: Double) -> Double {
         guard linear.isFinite else { return 0 }
-        let x = min(max(linear, 0), 1)
-        return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1 / 2.4) - 0.055
+        if linear >= 1 { return 1 }
+        let x = max(linear, 0)
+        return x <= 0.0031308 ? 12.92 * x : min(1.055 * pow(x, 1 / 2.4) - 0.055, 1)
     }
 
     static func decode(_ code: Double) -> Double {

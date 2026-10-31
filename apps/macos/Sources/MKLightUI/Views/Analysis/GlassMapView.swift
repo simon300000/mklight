@@ -324,7 +324,7 @@ struct GlassMapView: View {
     var body: some View {
         let statuses = GlassStatus.allCases.filter { s in data.glasses.contains { $0.status.group == s && !($0.kind == .model) } }
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(spacing: Space.m) {
+            FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
                 Picker("Plane", selection: $plane) {
                     ForEach(GlassMapPlane.allCases) { Text($0.segmentTitle).tag($0) }
                 }
@@ -341,18 +341,24 @@ struct GlassMapView: View {
                     .labelsHidden()
                     .fixedSize()
                 }
-                Spacer(minLength: 0)
                 GlassStatusLegend(statuses: statuses.isEmpty ? [.unknown] : statuses)
                     .fixedSize()
             }
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: Space.l) {
                     chart.frame(minWidth: 360)
-                    side.frame(width: 200)
+                    VStack(alignment: .leading, spacing: Space.m) {
+                        selected
+                        designList
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: 200)
                 }
+                // Narrow: the chart, then the selected glass only (the chart
+                // labels the design's glasses).
                 VStack(alignment: .leading, spacing: Space.m) {
                     chart.frame(minHeight: 200)
-                    side.frame(maxHeight: 150)
+                    selected.fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -363,51 +369,51 @@ struct GlassMapView: View {
         GlassMapChart(glasses: shown, highlighted: data.designHighlights, selection: $selection, plane: plane)
     }
 
-    private var side: some View {
-        VStack(alignment: .leading, spacing: Space.m) {
-                if let s = selection, let g = data.glasses.first(where: { $0.id == s }) {
-                    VStack(alignment: .leading, spacing: Space.s) {
-                        GlassCard(glass: g)
-                        if !g.surfaces.isEmpty {
-                            HStack(spacing: Space.xs) {
-                                Text("Select").font(.caption).foregroundStyle(.secondary)
-                                ForEach(g.surfaces, id: \.self) { s in
-                                    Button("S\(s)") { selectSurface(s) }
-                                        .help("Select surface \(s) in the lens table")
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
+    @ViewBuilder private var selected: some View {
+        if let s = selection, let g = data.glasses.first(where: { $0.id == s }) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                GlassCard(glass: g)
+                if !g.surfaces.isEmpty {
+                    HStack(spacing: Space.xs) {
+                        Text("Select").font(.caption).foregroundStyle(.secondary)
+                        ForEach(g.surfaces, id: \.self) { s in
+                            Button("S\(s)") { selectSurface(s) }
+                                .help("Select surface \(s) in the lens table")
                         }
                     }
-                    .padding(Space.m)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.fill.quinary, in: .rect(cornerRadius: 8))
-                } else {
-                    Text("Click a glass to inspect it.").font(.caption).foregroundStyle(.secondary)
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
                 }
-                let design = data.glasses.filter(\.inDesign)
-                if !design.isEmpty {
-                    VStack(alignment: .leading, spacing: Space.xs) {
-                        Text("In the design").font(.caption.weight(.semibold))
-                        ForEach(design) { g in
-                            Button {
-                                selection = g.id
-                            } label: {
-                                HStack {
-                                    Text(g.displayName).lineLimit(1)
-                                    Spacer(minLength: Space.s)
-                                    Text(g.surfaceLabel).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .font(.callout)
-                            .accessibilityLabel("\(g.name), surfaces \(g.surfaceLabel)")
+            }
+            .padding(Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.fill.quinary, in: .rect(cornerRadius: 8))
+        } else {
+            Text("Click a glass to inspect it.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var designList: some View {
+        let design = data.glasses.filter(\.inDesign)
+        if !design.isEmpty {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text("In the design").font(.caption.weight(.semibold))
+                ForEach(design) { g in
+                    Button {
+                        selection = g.id
+                    } label: {
+                        HStack {
+                            Text(g.displayName).lineLimit(1)
+                            Spacer(minLength: Space.s)
+                            Text(g.surfaceLabel).foregroundStyle(.secondary).lineLimit(1)
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .font(.callout)
+                    .accessibilityLabel("\(g.name), surfaces \(g.surfaceLabel)")
                 }
-                Spacer(minLength: 0)
+            }
         }
     }
 }
