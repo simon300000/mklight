@@ -10,7 +10,7 @@ use mklight_core::{JobContext, MkResult};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 use rustfft::{Fft, FftPlanner};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Direction of a transform. `Inverse` is the unnormalised
 /// `Σ x_j e^{+2πi jk/M}`; `Forward` uses `e^{−2πi jk/M}`.
@@ -21,7 +21,11 @@ pub(crate) enum Dir {
 }
 
 fn plan(m: usize, dir: Dir) -> Arc<dyn Fft<f64>> {
-    let mut p = FftPlanner::new();
+    static PLANNER: OnceLock<Mutex<FftPlanner<f64>>> = OnceLock::new();
+    let mut p = PLANNER
+        .get_or_init(|| Mutex::new(FftPlanner::new()))
+        .lock()
+        .unwrap();
     match dir {
         Dir::Forward => p.plan_fft_forward(m),
         Dir::Inverse => p.plan_fft_inverse(m),
@@ -132,6 +136,9 @@ pub(crate) fn mft(
     ctx: &JobContext,
 ) -> MkResult<Vec<C64>> {
     let (kx, ly) = (xs.len(), ys.len());
+    if n >= 32 && kx >= 32 && ly >= 32 {
+        return chirp_mft(f, n, nu_x, nu_y, xs, ys, ctx);
+    }
     let tau = 2.0 * std::f64::consts::PI;
     // Kernel along x: ex[i * kx + k].
     let ex: Vec<C64> = (0..n * kx)
@@ -177,6 +184,167 @@ pub(crate) fn mft(
             Ok(())
         })?;
     Ok(u)
+}
+
+/// Exact affine image-grid transform. The chief-frame projection B is
+/// symmetric, so the 2-D chirp identity turns its mixed xy term into one
+/// convolution, without interpolation on an oversized normal-plane FFT.
+pub(crate) fn affine_mft(f: &[C64], n: usize, nu: &[f64], xs: &[f64], ys: &[f64], b: [[f64;2];2], ctx: &JobContext) -> MkResult<Vec<C64>> {
+    let size = xs.len();
+    let m = next_fast_len(n+size-1);
+    let tau = 2.0*std::f64::consts::PI;
+    let dn = (nu[n-1]-nu[0])/(n-1) as f64;
+    let dx = (xs[size-1]-xs[0])/(size-1) as f64;
+    let quadratic = |x: f64,y: f64| 0.5*tau*dn*dx*(b[0][0]*x*x+2.0*b[0][1]*x*y+b[1][1]*y*y);
+    let mut kernel = vec![C64::default();m*m];
+    kernel.par_chunks_mut(m).enumerate().for_each(|(j,row)| {
+        let y = if j<size {Some(j as f64)} else if j>m-n {Some(j as f64-m as f64)} else {None};
+        if let Some(y)=y {
+            for (i,z) in row.iter_mut().enumerate() {
+                let x = if i<size {Some(i as f64)} else if i>m-n {Some(i as f64-m as f64)} else {None};
+                if let Some(x)=x { *z=C64::from_polar(1.0,-quadratic(x,y)); }
+            }
+        }
+    });
+    fft2(&mut kernel,m,Dir::Forward,m,&ctx.subrange(0.0,0.3))?;
+    let mut buf = vec![C64::default();m*m];
+    buf[..n*m].par_chunks_mut(m).enumerate().for_each(|(j,row)| {
+        let y=j as f64;
+        for i in 0..n {
+            let x=i as f64;
+            let phase=tau*dn*(x*(b[0][0]*xs[0]+b[0][1]*ys[0])+y*(b[1][0]*xs[0]+b[1][1]*ys[0]))+quadratic(x,y);
+            row[i]=f[j*n+i]*C64::from_polar(1.0,phase);
+        }
+    });
+    fft2(&mut buf,m,Dir::Forward,n,&ctx.subrange(0.3,0.6))?;
+    buf.par_iter_mut().zip(&kernel).for_each(|(z,k)| *z*=k);
+    drop(kernel);
+    fft2(&mut buf,m,Dir::Inverse,m,&ctx.subrange(0.6,0.95))?;
+    let mut out=vec![C64::default();size*size];
+    out.par_chunks_mut(size).enumerate().for_each(|(j,row)| {
+        for (i,z) in row.iter_mut().enumerate() {
+            let phase=tau*nu[0]*((b[0][0]+b[1][0])*xs[i]+(b[0][1]+b[1][1])*ys[j])+quadratic(i as f64,j as f64);
+            *z=buf[j*m+i]*C64::from_polar(1.0/(m*m) as f64,phase);
+        }
+    });
+    Ok(out)
+}
+
+/// Uniform-frequency, uniform-image transform via Bluestein convolution.
+/// exp(i θ i k) = exp(i θ i²/2) exp(i θ k²/2) exp(−i θ (k−i)²/2).
+/// This evaluates the same finite sum as the matrix transform, without
+/// interpolation or a padded image-plane approximation.
+struct ChirpTransform {
+    len: usize,
+    input: Vec<C64>,
+    output: Vec<C64>,
+    kernel: Vec<C64>,
+    forward: Arc<dyn Fft<f64>>,
+    inverse: Arc<dyn Fft<f64>>,
+}
+
+impl ChirpTransform {
+    fn new(nu: &[f64], x: &[f64]) -> Self {
+        let n = nu.len();
+        let len = next_fast_len(n + x.len() - 1);
+        let tau = 2.0 * std::f64::consts::PI;
+        let dn = (nu[n - 1] - nu[0]) / (n - 1) as f64;
+        let theta = tau * dn * (x[x.len() - 1] - x[0]) / (x.len() - 1) as f64;
+        let input = (0..n)
+            .map(|i| {
+                let i = i as f64;
+                C64::from_polar(1.0, tau * dn * x[0] * i + 0.5 * theta * i * i)
+            })
+            .collect();
+        let output = x
+            .iter()
+            .enumerate()
+            .map(|(k, &x)| {
+                let k = k as f64;
+                C64::from_polar(1.0 / len as f64, tau * nu[0] * x + 0.5 * theta * k * k)
+            })
+            .collect();
+        let mut kernel = vec![C64::default(); len];
+        for k in 0..x.len() {
+            kernel[k] = C64::from_polar(1.0, -0.5 * theta * (k as f64).powi(2));
+        }
+        for k in 1..n {
+            kernel[len - k] = C64::from_polar(1.0, -0.5 * theta * (k as f64).powi(2));
+        }
+        let forward = plan(len, Dir::Forward);
+        let inverse = plan(len, Dir::Inverse);
+        forward.process(&mut kernel);
+        Self {
+            len,
+            input,
+            output,
+            kernel,
+            forward,
+            inverse,
+        }
+    }
+
+    fn rows(&self, src: &[C64], dst: &mut [C64], ctx: &JobContext) -> MkResult<()> {
+        let scratch = self
+            .forward
+            .get_inplace_scratch_len()
+            .max(self.inverse.get_inplace_scratch_len());
+        src.par_chunks(self.input.len())
+            .zip(dst.par_chunks_mut(self.output.len()))
+            .try_for_each_init(
+                || {
+                    (
+                        vec![C64::default(); self.len],
+                        vec![C64::default(); scratch],
+                    )
+                },
+                |(buf, scratch), (row, out)| {
+                    ctx.check()?;
+                    buf.fill(C64::default());
+                    for ((b, v), ph) in buf.iter_mut().zip(row).zip(&self.input) {
+                        *b = v * ph;
+                    }
+                    self.forward.process_with_scratch(buf, scratch);
+                    for (b, k) in buf.iter_mut().zip(&self.kernel) {
+                        *b *= k;
+                    }
+                    self.inverse.process_with_scratch(buf, scratch);
+                    for ((o, b), ph) in out.iter_mut().zip(buf.iter()).zip(&self.output) {
+                        *o = b * ph;
+                    }
+                    Ok(())
+                },
+            )
+    }
+}
+
+fn chirp_mft(
+    f: &[C64],
+    n: usize,
+    nu_x: &[f64],
+    nu_y: &[f64],
+    xs: &[f64],
+    ys: &[f64],
+    ctx: &JobContext,
+) -> MkResult<Vec<C64>> {
+    let (kx, ly) = (xs.len(), ys.len());
+    let mut t = vec![C64::default(); n * kx];
+    ChirpTransform::new(nu_x, xs).rows(f, &mut t, ctx)?;
+    let mut columns = vec![C64::default(); n * kx];
+    columns.par_chunks_mut(n).enumerate().for_each(|(k, col)| {
+        for (j, z) in col.iter_mut().enumerate() {
+            *z = t[j * kx + k];
+        }
+    });
+    let mut u = vec![C64::default(); ly * kx];
+    ChirpTransform::new(nu_y, ys).rows(&columns, &mut u, ctx)?;
+    let mut out = vec![C64::default(); ly * kx];
+    out.par_chunks_mut(kx).enumerate().for_each(|(j, row)| {
+        for (k, z) in row.iter_mut().enumerate() {
+            *z = u[k * ly + j];
+        }
+    });
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -239,6 +407,41 @@ mod tests {
         for (a, b) in u.iter().zip(&g) {
             assert!((a - b).norm() < 1e-10);
         }
+    }
+
+    #[test]
+    fn chirp_transform_matches_finite_sum_on_arbitrary_uniform_grids() {
+        for (n, m, dn, dx) in [(37, 53, 0.013, 0.21), (64, 47, -0.04, 0.37), (513, 769, 0.017, 0.09)] {
+            let nu: Vec<_> = (0..n).map(|i| (i as f64 - 0.5*n as f64)*dn).collect();
+            let xs: Vec<_> = (0..m).map(|i| -0.37 + i as f64*dx).collect();
+            let f: Vec<_> = (0..n).map(|i| C64::new((i as f64*0.3).sin(), (i as f64*0.7).cos())).collect();
+            let c = ChirpTransform::new(&nu, &xs);
+            let mut got = vec![C64::default(); m];
+            c.rows(&f, &mut got, &JobContext::new()).unwrap();
+            for (k, &x) in xs.iter().enumerate() {
+                let want: C64 = f.iter().zip(&nu).map(|(z,v)| z*C64::from_polar(1.0, 2.0*std::f64::consts::PI*v*x)).sum();
+                assert!((got[k]-want).norm() < 2e-9, "n={n} k={k}: {}", (got[k]-want).norm());
+            }
+        }
+    }
+
+    #[test]
+    fn affine_transform_matches_direct_skew_sum() {
+        let (n,m)=(13,19);
+        let nu: Vec<_>=(0..n).map(|i| (i as f64-6.0)*0.31).collect();
+        let xs: Vec<_>=(0..m).map(|i| (i as f64-9.0)*0.037-0.013).collect();
+        let ys: Vec<_>=xs.iter().map(|x| x+0.021).collect();
+        let f: Vec<_>=(0..n*n).map(|i| C64::new((i as f64*0.3).sin(),(i as f64*0.7).cos())).collect();
+        let b=[[0.83,-0.17],[-0.17,0.76]];
+        let got=affine_mft(&f,n,&nu,&xs,&ys,b,&JobContext::new()).unwrap();
+        for j in 0..m { for i in 0..m {
+            let mut want=C64::default();
+            for y in 0..n { for x in 0..n {
+                let phase=2.0*std::f64::consts::PI*(nu[x]*(b[0][0]*xs[i]+b[0][1]*ys[j])+nu[y]*(b[1][0]*xs[i]+b[1][1]*ys[j]));
+                want+=f[y*n+x]*C64::from_polar(1.0,phase);
+            }}
+            assert!((got[j*m+i]-want).norm()<1e-11);
+        }}
     }
 
     #[test]

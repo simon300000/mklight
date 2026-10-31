@@ -76,6 +76,7 @@ fn spectrum(psf: &Psf, q: [f64; 2], ctx: &JobContext) -> MkResult<(Vec<f64>, Vec
     Ok((g, nu))
 }
 
+#[cfg(test)]
 fn energy_integral(
     psf: &Psf,
     sizes: &[f64],
@@ -114,21 +115,50 @@ pub fn encircled_energy(
     center: EnergyCenter,
     ctx: &JobContext,
 ) -> MkResult<Vec<f64>> {
-    let tau = 2.0 * std::f64::consts::PI;
-    energy_integral(
-        psf,
-        radii_mm,
-        center,
-        |v, r| {
-            let rho = v[0].hypot(v[1]);
-            if rho * r < 1e-12 {
-                std::f64::consts::PI * r * r
-            } else {
-                r * bessel_j1(tau * rho * r) / rho
+    if !(psf.total_energy > 0.0) {
+        return Err(MkError::Numerical("PSF has no energy".into()));
+    }
+    let (g, _) = spectrum(psf, resolve_center(psf, center), &ctx.subrange(0.0, 0.2))?;
+    let m = psf.size;
+    // The circle kernel depends only on i²+j². Combine equal radii
+    // before evaluating Bessel functions; no spectral bins are discarded.
+    let mut shells = vec![mklight_core::math::KahanSum::default(); 2 * (m / 2).pow(2) + 1];
+    for j in 0..m {
+        let y = signed_index(j, m);
+        for i in 0..m {
+            let x = signed_index(i, m);
+            shells[(x * x + y * y) as usize].add(g[j * m + i]);
+        }
+    }
+    let dnu = 1.0 / (m as f64 * psf.spacing_mm);
+    let shells: Vec<_> = shells
+        .into_iter()
+        .enumerate()
+        .filter_map(|(k, s)| {
+            let v = s.value();
+            (v != 0.0).then_some(((k as f64).sqrt() * dnu, v))
+        })
+        .collect();
+    radii_mm
+        .par_iter()
+        .map(|&r| {
+            ctx.check()?;
+            if r <= 0.0 {
+                return Ok(0.0);
             }
-        },
-        ctx,
-    )
+            let sum: mklight_core::math::KahanSum = shells
+                .iter()
+                .map(|&(rho, v)| {
+                    v * if rho * r < 1e-12 {
+                        std::f64::consts::PI * r * r
+                    } else {
+                        r * bessel_j1(2.0 * std::f64::consts::PI * rho * r) / rho
+                    }
+                })
+                .collect();
+            Ok(sum.value() / psf.total_energy)
+        })
+        .collect()
 }
 
 /// Fraction of the total energy inside squares of the given half-widths
@@ -139,21 +169,37 @@ pub fn ensquared_energy(
     center: EnergyCenter,
     ctx: &JobContext,
 ) -> MkResult<Vec<f64>> {
-    let tau = 2.0 * std::f64::consts::PI;
-    let side = |nu: f64, h: f64| {
-        if (nu * h).abs() < 1e-12 {
-            2.0 * h
-        } else {
-            (tau * nu * h).sin() / (std::f64::consts::PI * nu)
-        }
-    };
-    energy_integral(
-        psf,
-        half_widths_mm,
-        center,
-        |v, h| side(v[0], h) * side(v[1], h),
-        ctx,
-    )
+    if !(psf.total_energy > 0.0) {
+        return Err(MkError::Numerical("PSF has no energy".into()));
+    }
+    let (g, _) = spectrum(psf, resolve_center(psf, center), &ctx.subrange(0.0, 0.2))?;
+    let m = psf.size;
+    let dnu = 1.0 / (m as f64 * psf.spacing_mm);
+    half_widths_mm
+        .par_iter()
+        .map(|&h| {
+            ctx.check()?;
+            if h <= 0.0 {
+                return Ok(0.0);
+            }
+            let side: Vec<_> = (0..m)
+                .map(|i| {
+                    let nu = signed_index(i, m) as f64 * dnu;
+                    if (nu * h).abs() < 1e-12 {
+                        2.0 * h
+                    } else {
+                        (2.0 * std::f64::consts::PI * nu * h).sin() / (std::f64::consts::PI * nu)
+                    }
+                })
+                .collect();
+            let sum: mklight_core::math::KahanSum = g
+                .chunks(m)
+                .zip(&side)
+                .flat_map(|(row, y)| row.iter().zip(&side).map(move |(v, x)| v * x * y))
+                .collect();
+            Ok(sum.value() / psf.total_energy)
+        })
+        .collect()
 }
 
 /// Image direction along which a line-spread function is profiled.
@@ -231,5 +277,33 @@ pub fn strehl_report(pupil: &PupilFunction, psf: Option<&Psf>) -> StrehlReport {
         psf_peak: psf.map(|p| p.strehl()),
         rms_waves: rms,
         marechal: strehl_marechal(rms),
+    }
+}
+
+#[cfg(test)]
+mod acceleration_tests {
+    use super::*;
+    use crate::{PupilGeometry, PupilFunction, PolyPsfSettings, polychromatic_psf};
+
+    #[test]
+    fn grouped_energy_matches_full_spectral_integral() {
+        let p = PupilFunction::from_fn(32, 0.55, PupilGeometry::new(5.0,100.0,1.0).unwrap(), 4,
+            |u,v| u*u+v*v < 1.0, |u,v| (1.0, 0.3*u*u*v+0.15*v*v)).unwrap();
+        let psf = polychromatic_psf(&[(&p,1.0)], &PolyPsfSettings::new(83, p.lambda_f_mm()/3.0), &JobContext::new()).unwrap();
+        let radii = [0.0, 0.0017, 0.005, 0.012, 0.023];
+        let tau = 2.0*std::f64::consts::PI;
+        for center in [EnergyCenter::Centroid, EnergyCenter::Point { x: 0.0013, y: -0.0021 }] {
+            let got = encircled_energy(&psf, &radii, center, &JobContext::new()).unwrap();
+            let want = energy_integral(&psf, &radii, center, |v,r| {
+                let rho = v[0].hypot(v[1]);
+                if rho*r < 1e-12 { std::f64::consts::PI*r*r } else { r*bessel_j1(tau*rho*r)/rho }
+            }, &JobContext::new()).unwrap();
+            for (a,b) in got.iter().zip(want) { assert!((a-b).abs()<2e-12); }
+            let got = ensquared_energy(&psf, &radii, center, &JobContext::new()).unwrap();
+            let want = energy_integral(&psf, &radii, center, |v,h| {
+                v.into_iter().map(|nu| if (nu*h).abs()<1e-12 {2.0*h} else {(tau*nu*h).sin()/(std::f64::consts::PI*nu)}).product()
+            }, &JobContext::new()).unwrap();
+            for (a,b) in got.iter().zip(want) { assert!((a-b).abs()<2e-12); }
+        }
     }
 }
