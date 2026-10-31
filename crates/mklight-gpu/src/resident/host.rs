@@ -6,36 +6,33 @@ use std::{
     ptr::NonNull,
 };
 
-/// An initialized, page-aligned allocation with a page-multiple capacity.
-/// Moving this owner into `import_buffer` relinquishes all mutable CPU access.
-/// The allocation is freed exactly once, after the last backend reference ends.
+/// Alignment and capacity granule. A multiple of every Apple page size (4 KiB
+/// x86_64, 16 KiB arm64), as `newBufferWithBytesNoCopy` requires.
+pub const PAGE: usize = 16384;
+
+/// Zero-initialised, `PAGE`-aligned words with a `PAGE`-multiple capacity.
 pub struct HostAllocation {
     ptr: NonNull<u32>,
     words: usize,
     layout: Layout,
 }
-// SAFETY: access to initialized words follows exclusive/shared Rust borrows.
+// SAFETY: a unique owner of plain words; access follows Rust borrows.
 unsafe impl Send for HostAllocation {}
 unsafe impl Sync for HostAllocation {}
 impl HostAllocation {
     pub fn new(words: usize) -> MkResult<Self> {
-        #[cfg(unix)]
-        // SAFETY: sysconf has no pointer arguments.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        #[cfg(not(unix))]
-        let page = 65536;
-        let bytes = words
+        let layout = words
             .checked_mul(4)
-            .and_then(|n| n.max(1).checked_next_multiple_of(page))
-            .ok_or_else(|| bad("host allocation size overflow"))?;
-        let layout =
-            Layout::from_size_align(bytes, page).map_err(|_| bad("host allocation layout"))?;
-        // SAFETY: nonzero valid layout; all u32 bit patterns are valid.
+            .and_then(|n| n.max(1).checked_next_multiple_of(PAGE))
+            .and_then(|n| Layout::from_size_align(n, PAGE).ok())
+            .ok_or_else(|| bad("host allocation size"))?;
+        // SAFETY: nonzero size; zeroed memory is a valid [u32].
         let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })
             .ok_or_else(|| bad("host allocation failed"))?
             .cast();
         Ok(Self { ptr, words, layout })
     }
+    /// Whole pages owned (the length a no-copy wrapper must declare).
     pub fn allocation_bytes(&self) -> usize {
         self.layout.size()
     }
@@ -43,19 +40,19 @@ impl HostAllocation {
 impl Deref for HostAllocation {
     type Target = [u32];
     fn deref(&self) -> &[u32] {
-        // SAFETY: allocation owns at least words initialized u32s until drop.
+        // SAFETY: `words` initialised u32s, live until drop.
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.words) }
     }
 }
 impl DerefMut for HostAllocation {
     fn deref_mut(&mut self) -> &mut [u32] {
-        // SAFETY: the unique borrow excludes other CPU/GPU access.
+        // SAFETY: as above; `&mut self` is the only access.
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.words) }
     }
 }
 impl Drop for HostAllocation {
     fn drop(&mut self) {
-        // SAFETY: original pointer and layout, with unique ownership.
+        // SAFETY: allocated in `new` with this layout; dropped once.
         unsafe { dealloc(self.ptr.as_ptr().cast(), self.layout) }
     }
 }

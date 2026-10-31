@@ -424,7 +424,6 @@ dependencies = [
  "approx",
  "blake3",
  "bytemuck",
- "libc",
  "mklight-core",
  "mklight-trace",
  "rayon",

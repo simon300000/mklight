@@ -712,12 +712,11 @@ impl ComputeBackend for MetalBackend {
     fn fill_buffer(
         &self,
         desc: mklight_gpu::resident::BufferDesc,
-        ctx: &JobContext,
         fill: &mut dyn FnMut(mklight_gpu::resident::BufferFill<'_>) -> MkResult<()>,
     ) -> MkResult<mklight_gpu::resident::BufferHandle> {
         self.inner
             .resident
-            .fill(desc, ctx, fill, |n| self.inner.ctx.buffer_filled(n, |_| {}))
+            .fill(desc, fill, |n| self.inner.ctx.buffer_filled(n, |_| {}))
     }
     fn import_buffer(
         &self,
@@ -730,9 +729,8 @@ impl ComputeBackend for MetalBackend {
     fn read_view(
         &self,
         view: mklight_gpu::resident::BufferView,
-        ctx: &JobContext,
     ) -> MkResult<mklight_gpu::resident::ReadView> {
-        self.inner.resident.read_view(view, ctx)
+        self.inner.resident.read_view(view)
     }
     fn readback(
         &self,

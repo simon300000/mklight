@@ -168,7 +168,7 @@ impl BufferData {
         }
     }
 }
-/// Supported typed views. Sealed so layout and element identity cannot disagree.
+/// Element types of typed host views (sealed: layout matches `ElementType`).
 pub trait BufferElement: bytemuck::Pod + element::Sealed {
     const ELEMENT: ElementType;
 }
@@ -191,8 +191,25 @@ impl BufferElement for Df32 {
 impl BufferElement for [f32; 2] {
     const ELEMENT: ElementType = ElementType::Complex32;
 }
+/// Words of `T`; storage is page-aligned and views start on element boundaries.
+fn typed<T: BufferElement>(element: ElementType, words: &[u32]) -> MkResult<&[T]> {
+    if element != T::ELEMENT {
+        return Err(bad("host view element type"));
+    }
+    Ok(bytemuck::cast_slice(words))
+}
 
-/// Exclusive upload view; cannot escape the fill callback or overlap device work.
+/// The unpublished allocation of `fill_buffer`, exclusive for the callback.
+/// Its slices cannot escape the callback:
+/// ```compile_fail,E0521
+/// # use mklight_gpu::{resident::*, *};
+/// let b = CpuF32Backend::new();
+/// let mut escaped: &mut [u32] = &mut [];
+/// b.fill_buffer(BufferDesc::new(ElementType::U32, [1]), &mut |mut f| {
+///     escaped = f.as_mut_slice::<u32>()?;
+///     Ok(())
+/// });
+/// ```
 pub struct BufferFill<'a> {
     pub(crate) element: ElementType,
     pub(crate) words: &'a mut [u32],
@@ -200,35 +217,37 @@ pub struct BufferFill<'a> {
 impl BufferFill<'_> {
     pub fn as_mut_slice<T: BufferElement>(&mut self) -> MkResult<&mut [T]> {
         if self.element != T::ELEMENT {
-            return Err(bad("upload view type"));
+            return Err(bad("host view element type"));
         }
-        bytemuck::try_cast_slice_mut(self.words).map_err(|_| bad("upload view alignment"))
+        Ok(bytemuck::cast_slice_mut(self.words))
     }
 }
-/// Type-erased immutable storage pinned by a host view.
+/// Type-erased published storage pinned by a `ReadView`.
 pub trait ReadStorage: Send + Sync {
     fn words(&self) -> &[u32];
 }
-/// A contiguous, read-only view of completed shared storage. Dropping handles,
-/// plans or the backend cannot invalidate it. Slices borrow this guard; the pool
-/// receives the allocation only after every guard/import/handle is gone.
+/// A contiguous view of published (hence device-complete, immutable) storage.
+/// It pins the allocation: the pool cannot reuse it, and dropping handles or
+/// the backend does not invalidate it. Slices borrow the guard:
+/// ```compile_fail,E0716
+/// # use mklight_gpu::{resident::*, *};
+/// let b = CpuF32Backend::new();
+/// let h = b.fill_buffer(BufferDesc::new(ElementType::U32, [1]), &mut |_| Ok(())).unwrap();
+/// let words = b.read_view(h.view()).unwrap().words();
+/// assert_eq!(words.len(), 1);
+/// ```
 pub struct ReadView {
     pub(crate) storage: Arc<dyn ReadStorage>,
     pub(crate) offset: usize,
     pub(crate) len: usize,
     pub(crate) element: ElementType,
-    pub copied_bytes: u64,
-    pub wall_seconds: f64,
 }
 impl ReadView {
     pub fn words(&self) -> &[u32] {
         &self.storage.words()[self.offset..self.offset + self.len]
     }
     pub fn as_slice<T: BufferElement>(&self) -> MkResult<&[T]> {
-        if self.element != T::ELEMENT {
-            return Err(bad("read view type"));
-        }
-        bytemuck::try_cast_slice(self.words()).map_err(|_| bad("read view alignment"))
+        typed(self.element, self.words())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

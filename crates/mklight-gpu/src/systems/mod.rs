@@ -255,44 +255,58 @@ impl UploadedSystem {
     ) -> MkResult<SystemBatchPlan> {
         let count = candidates.len();
         let nparam = self.compiled.parameter_count();
-        let mut parameters = HostAllocation::new(count * nparam * 2)?;
-        let parameter_values: &mut [Df32] = bytemuck::cast_slice_mut(&mut parameters);
-        let mut ids = HostAllocation::new(count * 4)?;
         let mut hash = blake3::Hasher::new();
         hash.update(self.compiled.snapshot.hash().to_hex().as_bytes());
         let bounds = self.compiled.bounds();
-        for (row, candidate) in candidates.iter().enumerate() {
-            ctx.check()?;
-            if candidate.values.len() != nparam {
-                return Err(MkError::InvalidParam("candidate parameter width".into()));
-            }
-            let mut input_status = READY;
-            for (column, (&v, &(lower, upper))) in candidate.values.iter().zip(&bounds).enumerate()
-            {
-                let d = Df32::from_f64(v);
-                if !(lower..=upper).contains(&v) {
-                    input_status = OUTSIDE_BOUNDS;
-                } else if input_status == READY
-                    && (!d.is_finite() || d.hi.is_subnormal() || (d.hi == 0.0 && v != 0.0))
-                {
-                    // Not representable as a normal double-float.
-                    input_status = INVALID_NUMERIC;
-                }
-                hash.update(&v.to_bits().to_le_bytes());
-                parameter_values[row * nparam + column] = d;
-            }
-            ids[row * 4..(row + 1) * 4].copy_from_slice(&[
-                candidate.id as u32,
-                (candidate.id >> 32) as u32,
-                self.compiled.configuration.map_or(u32::MAX, |k| k as u32),
-                input_status,
-            ]);
-        }
-        let parameters = backend.import_buffer(
+        let mut status = Vec::with_capacity(count);
+        let parameters = backend.fill_buffer(
             BufferDesc::new(ElementType::DoubleFloat, [count, nparam]),
-            parameters,
+            &mut |mut fill| {
+                let out = fill.as_mut_slice::<Df32>()?;
+                for (row, candidate) in candidates.iter().enumerate() {
+                    ctx.check()?;
+                    if candidate.values.len() != nparam {
+                        return Err(MkError::InvalidParam("candidate parameter width".into()));
+                    }
+                    let mut input_status = READY;
+                    for (column, (&v, &(lower, upper))) in
+                        candidate.values.iter().zip(&bounds).enumerate()
+                    {
+                        let d = Df32::from_f64(v);
+                        if !(lower..=upper).contains(&v) {
+                            input_status = OUTSIDE_BOUNDS;
+                        } else if input_status == READY
+                            && (!d.is_finite() || d.hi.is_subnormal() || (d.hi == 0.0 && v != 0.0))
+                        {
+                            // Not representable as a normal double-float.
+                            input_status = INVALID_NUMERIC;
+                        }
+                        hash.update(&v.to_bits().to_le_bytes());
+                        out[row * nparam + column] = d;
+                    }
+                    status.push(input_status);
+                }
+                Ok(())
+            },
         )?;
-        let slots = backend.import_buffer(BufferDesc::new(ElementType::U32, [count, 4]), ids)?;
+        let configuration = self.compiled.configuration.map_or(u32::MAX, |k| k as u32);
+        let slots = backend.fill_buffer(
+            BufferDesc::new(ElementType::U32, [count, 4]),
+            &mut |mut fill| {
+                let (rows, _) = fill.as_mut_slice::<u32>()?.as_chunks_mut::<4>();
+                for ((row, candidate), &input_status) in
+                    rows.iter_mut().zip(candidates).zip(&status)
+                {
+                    *row = [
+                        candidate.id as u32,
+                        (candidate.id >> 32) as u32,
+                        configuration,
+                        input_status,
+                    ];
+                }
+                Ok(())
+            },
+        )?;
         let parameters = plan.import(parameters.view());
         let slots = plan.import(slots.view());
         self.append_resident(

@@ -245,11 +245,11 @@ impl Execution<'_> {
         let steps = if let Some(steps) = self.cached::<SharedBuffer<u32>>(&key)? {
             steps
         } else {
-            let steps = Arc::new(self.gpu.buffer_filled(prep.steps.len(), |out| {
-                for (word, step) in out.iter_mut().zip(t.request().program()) {
-                    *word = step.encode();
-                }
-            })?);
+            // A few words of cached metadata, like a parameter block.
+            let steps = Arc::new(
+                self.gpu
+                    .buffer_filled(prep.steps.len(), |out| out.copy_from_slice(&prep.steps))?,
+            );
             self.stats.allocations += 1;
             self.stats.uploaded_bytes += (prep.steps.len() * 4) as u64;
             self.cache(key, (prep.steps.len() * 4).max(16), steps.clone());

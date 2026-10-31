@@ -1,16 +1,15 @@
 //! Typed shared-storage Metal buffers.
 //!
 //! `MTLStorageModeShared` buffers live in memory visible to both CPU and GPU
-//! (unified memory on Apple Silicon), so fills and read views access the same pages. Host access goes through
-//! `&self`/`&mut self` slices. GPU work is
+//! (unified memory on Apple Silicon), so host fills and read views touch the
+//! device's pages. Host access goes through `&self`/`&mut self` slices. GPU work is
 //! encoded only by the crate-private `MetalContext::run`, which waits for the
 //! command buffer; a buffer a kernel writes must be bound through a `&mut`
 //! borrow that lasts until then, so no host slice of it (on any thread) can
 //! exist while the GPU writes it.
 
 use mklight_gpu::resident::HostAllocation;
-use std::{cell::Cell, ptr::NonNull};
-use std::{marker::PhantomData, sync::Arc};
+use std::{cell::Cell, marker::PhantomData, ptr::NonNull};
 
 use bytemuck::Pod;
 use mklight_core::{MkError, MkResult};
@@ -19,8 +18,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
 thread_local! {
-    // Resident encoding is synchronous on one worker thread. Thread-local
-    // accounting keeps concurrent jobs from charging one another's copies.
+    // Bytes copied by `from_slice` on this thread. A resident plan encodes
+    // synchronously on one worker, so its delta excludes concurrent jobs.
     static COPIED_BYTES: Cell<u64> = const { Cell::new(0) };
 }
 pub(crate) fn copied_bytes() -> u64 {
@@ -135,30 +134,22 @@ impl<T: Pod> SharedBuffer<T> {
 }
 
 impl SharedBuffer<u32> {
-    /// Transfer initialized page-owned storage to Metal. The block retains its
-    /// owner until Metal releases the last buffer reference, including on error.
+    /// Wrap `data`'s pages without copying. The deallocator block owns `data`,
+    /// so the pages are freed exactly once, when Metal releases the block
+    /// after the buffer's last reference (or here, if creation fails).
     pub fn from_host(
         device: &ProtocolObject<dyn MTLDevice>,
-        data: HostAllocation,
+        mut data: HostAllocation,
     ) -> MkResult<Self> {
         let len = data.len();
         let bytes = data.allocation_bytes();
-        if bytes as u64 > device.maxBufferLength() as u64 {
-            return Err(MkError::Backend(
-                "host allocation exceeds device limit".into(),
-            ));
-        }
-        let owner = Arc::new(data);
-        let ptr = NonNull::new(owner.as_ptr().cast_mut().cast()).unwrap();
+        let ptr = NonNull::new(data.as_mut_ptr()).unwrap().cast();
         let release = block2::RcBlock::new(move |_: NonNull<std::ffi::c_void>, _: usize| {
-            // Metal retains this block. Its captured owner frees the pages when
-            // the block is released; the callback never exposes the allocation.
-            let _keep_alive = &owner;
+            let _owner = &data;
         });
-        // SAFETY: HostAllocation supplies page-aligned initialized pages with a
-        // page-multiple capacity. Ownership moved exclusively into the retained
-        // deallocator block; no CPU alias remains. Tracked shared storage is
-        // governed by the same synchronous GPU borrows as ordinary buffers.
+        // SAFETY: `ptr` and `bytes` are page-aligned and cover exactly the
+        // owned allocation, which lives as long as the block. `data` was moved
+        // in, so the only access is through the returned buffer's borrows.
         let raw = unsafe {
             device.newBufferWithBytesNoCopy_length_options_deallocator(
                 ptr,

@@ -91,20 +91,17 @@ impl<T: Storage> Runtime<T> {
     pub fn fill(
         &self,
         desc: BufferDesc,
-        ctx: &JobContext,
         fill: &mut dyn FnMut(BufferFill<'_>) -> MkResult<()>,
         allocate: impl FnOnce(usize) -> MkResult<T>,
     ) -> MkResult<BufferHandle> {
-        ctx.check()?;
         let mut b = self.take(desc.byte_len()? / 4, &mut PlanStats::default(), allocate)?;
         fill(BufferFill {
             element: desc.element,
             words: b.words_mut(),
         })?;
-        ctx.check()?;
-        ctx.report(1., "upload fill");
         Ok(self.publish(desc, b))
     }
+    /// Publish caller-owned storage; it is released, never pooled.
     pub fn adopt(&self, desc: BufferDesc, storage: T) -> MkResult<BufferHandle> {
         let words = desc.byte_len()? / 4;
         if storage.words().len() != words {
@@ -112,53 +109,34 @@ impl<T: Storage> Runtime<T> {
         }
         Ok(self.publish(desc, Allocation::unpooled(storage, words)))
     }
-    pub fn read_view(&self, view: BufferView, ctx: &JobContext) -> MkResult<ReadView> {
-        ctx.check()?;
+    pub fn read_view(&self, view: BufferView) -> MkResult<ReadView> {
         view.validate()?;
         if view.stride != 1 {
-            return unsupported("strided read view; use copying readback");
+            return unsupported("strided read view; use readback");
         }
-        let t = Instant::now();
-        let storage = self.lease(&view.buffer)?;
         let width = view.desc.element.words();
-        let len = view.desc.len()? * width;
-        ctx.report(1., "read view");
         Ok(ReadView {
-            storage,
+            storage: self.lease(&view.buffer)?,
             offset: view.offset * width,
-            len,
+            len: view.desc.len()? * width,
             element: view.desc.element,
-            copied_bytes: 0,
-            wall_seconds: t.elapsed().as_secs_f64(),
         })
     }
+    /// One copy into owned data (a memcpy when contiguous).
     pub fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback> {
         ctx.check()?;
         view.validate()?;
         let t = Instant::now();
         let b = self.lease(&view.buffer)?;
         let src = T::words(&b);
-        let width = view.desc.element.words();
-        let n = view.desc.len()?;
-        // Gather directly into the requested owned type: no intermediate word Vec.
-        let at = |i: usize| (view.offset + i * view.stride) * width;
         let data = match view.desc.element {
-            ElementType::F32 => {
-                BufferData::F32(self.gather(n, width, ctx, |i| f32::from_bits(src[at(i)]))?)
-            }
-            ElementType::U32 => BufferData::U32(self.gather(n, width, ctx, |i| src[at(i)])?),
-            ElementType::DoubleFloat => {
-                BufferData::DoubleFloat(self.gather(n, width, ctx, |i| {
-                    let a = at(i);
-                    Df32::new(f32::from_bits(src[a]), f32::from_bits(src[a + 1]))
-                })?)
-            }
-            ElementType::Complex32 => BufferData::Complex32(self.gather(n, width, ctx, |i| {
-                let a = at(i);
-                [f32::from_bits(src[a]), f32::from_bits(src[a + 1])]
-            })?),
+            ElementType::F32 => BufferData::F32(gather(src, &view)?),
+            ElementType::U32 => BufferData::U32(gather(src, &view)?),
+            ElementType::DoubleFloat => BufferData::DoubleFloat(gather(src, &view)?),
+            ElementType::Complex32 => BufferData::Complex32(gather(src, &view)?),
         };
-        let copied_bytes = (n * width * 4) as u64;
+        let copied_bytes = data.words().len() as u64 * 4;
+        self.copied_bytes.fetch_add(copied_bytes, Ordering::Relaxed);
         ctx.check()?;
         ctx.report(1., "readback");
         Ok(Readback {
@@ -166,26 +144,6 @@ impl<T: Storage> Runtime<T> {
             data,
             wall_seconds: t.elapsed().as_secs_f64(),
         })
-    }
-    fn gather<V>(
-        &self,
-        n: usize,
-        width: usize,
-        ctx: &JobContext,
-        value: impl Fn(usize) -> V,
-    ) -> MkResult<Vec<V>> {
-        let mut out = Vec::with_capacity(n);
-        for start in (0..n).step_by(65536) {
-            ctx.check()?;
-            let end = (start + 65536).min(n);
-            out.extend((start..end).map(&value));
-            self.copied_bytes
-                .fetch_add(((end - start) * width * 4) as u64, Ordering::Relaxed);
-            if end < n {
-                ctx.report(end as f64 / n as f64, "readback");
-            }
-        }
-        Ok(out)
     }
     pub fn cache_stats(&self, mut s: ResidentCacheStats) -> ResidentCacheStats {
         s.copied_bytes = self.copied_bytes.load(Ordering::Relaxed);
@@ -273,6 +231,18 @@ impl OperationCache {
     ) {
         lock(&self.cache).insert(key, bytes, value)
     }
+}
+
+fn gather<V: BufferElement>(src: &[u32], view: &BufferView) -> MkResult<Vec<V>> {
+    let w = V::ELEMENT.words();
+    let n = view.desc.len()?;
+    let at = |i: usize| (view.offset + i * view.stride) * w;
+    if view.stride == 1 {
+        return Ok(typed::<V>(view.desc.element, &src[at(0)..at(n)])?.to_vec());
+    }
+    (0..n)
+        .map(|i| Ok(typed::<V>(view.desc.element, &src[at(i)..at(i) + w])?[0]))
+        .collect()
 }
 
 fn lock<V>(m: &Mutex<V>) -> std::sync::MutexGuard<'_, V> {

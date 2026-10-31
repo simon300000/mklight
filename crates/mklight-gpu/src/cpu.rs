@@ -300,12 +300,11 @@ impl ComputeBackend for CpuF32Backend {
     fn fill_buffer(
         &self,
         desc: crate::resident::BufferDesc,
-        ctx: &JobContext,
         fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
     ) -> MkResult<crate::resident::BufferHandle> {
         self.inner
             .resident
-            .fill(desc, ctx, fill, crate::resident::HostAllocation::new)
+            .fill(desc, fill, crate::resident::HostAllocation::new)
     }
     fn import_buffer(
         &self,
@@ -314,12 +313,8 @@ impl ComputeBackend for CpuF32Backend {
     ) -> MkResult<crate::resident::BufferHandle> {
         self.inner.resident.adopt(desc, data)
     }
-    fn read_view(
-        &self,
-        view: crate::resident::BufferView,
-        ctx: &JobContext,
-    ) -> MkResult<crate::resident::ReadView> {
-        self.inner.resident.read_view(view, ctx)
+    fn read_view(&self, view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView> {
+        self.inner.resident.read_view(view)
     }
     fn readback(
         &self,

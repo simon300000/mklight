@@ -25,7 +25,6 @@ fn fft(b: &dyn ComputeBackend) -> ResidentPlan {
     let h = b
         .fill_buffer(
             BufferDesc::new(ElementType::Complex32, [n, n]),
-            &JobContext::new(),
             &mut |mut f| {
                 for (i, v) in f.as_mut_slice::<[f32; 2]>()?.iter_mut().enumerate() {
                     *v = [((i % 251) as f32 - 125.) / 128., 0.];
@@ -127,13 +126,9 @@ fn benchmark_zero_copy() {
                 .unwrap()
                 .wait()
                 .unwrap();
-            let mut copied = 0;
-            let mut hashes = vec![];
-            for h in &r.outputs {
-                let read = b.read_view(h.view(), &JobContext::new()).unwrap();
-                copied += read.copied_bytes;
-                hashes.push(digest(black_box(read.words())));
-            }
+            let hashes: Vec<_> = (r.outputs.iter())
+                .map(|h| digest(black_box(b.read_view(h.view()).unwrap().words())))
+                .collect();
             let expected: &[u64] = match name {
                 "trace_1m" => &[16663909210024701490],
                 "opd_1024" => &[5738852189248301980, 17415920747824051813],
@@ -142,10 +137,9 @@ fn benchmark_zero_copy() {
             assert_eq!(hashes, expected);
             assert_eq!(r.stats.copied_bytes, 0);
             assert_eq!(b.resident_cache_stats().copied_bytes, before);
-            assert_eq!(copied, 0);
             eprintln!(
                 "ZERO_COPY_RAW {}",
-                serde_json::json!({"case":name,"round":round,"warmup":round==0,"wall_s":wall.elapsed().as_secs_f64(),"read_copied_bytes":copied,"hashes":hashes,"stats":r.stats})
+                serde_json::json!({"case":name,"round":round,"warmup":round==0,"wall_s":wall.elapsed().as_secs_f64(),"hashes":hashes,"stats":r.stats})
             );
         }
         if let Some(h) = h {
@@ -173,7 +167,7 @@ fn host_views_both_origins() {
             let hashes: Vec<_> = r
                 .outputs
                 .iter()
-                .map(|h| digest(b.read_view(h.view(), &JobContext::new()).unwrap().words()))
+                .map(|h| digest(b.read_view(h.view()).unwrap().words()))
                 .collect();
             assert_eq!(hashes, expected);
         }
@@ -184,9 +178,7 @@ fn host_views_both_origins() {
             .unwrap()
             .wait()
             .unwrap();
-        let g = b
-            .read_view(r.outputs[0].view(), &JobContext::new())
-            .unwrap();
+        let g = b.read_view(r.outputs[0].view()).unwrap();
         assert_eq!(digest(g.words()), 16663909210024701490);
         assert_eq!(r.stats.copied_bytes, 0);
         b.release_systems(h).unwrap();

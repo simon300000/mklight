@@ -15,7 +15,6 @@ serde_json.workspace = true
 bytemuck.workspace = true
 rayon.workspace = true
 blake3.workspace = true
-libc = "0.2"
 
 [dev-dependencies]
 approx.workspace = true

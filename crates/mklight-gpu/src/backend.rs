@@ -441,17 +441,16 @@ pub trait ComputeBackend: Send + Sync {
     ) -> MkResult<crate::resident::BufferHandle> {
         crate::resident::unsupported("buffer upload")
     }
-    /// Fill an exclusive shared allocation before publishing it. The callback is
-    /// called once; long fills should check the supplied job context in chunks.
+    /// Write a new buffer in place: `fill` gets exclusive access to its
+    /// (pooled, unspecified) storage before publication and must write every element.
     fn fill_buffer(
         &self,
         _desc: crate::resident::BufferDesc,
-        _ctx: &JobContext,
         _fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
     ) -> MkResult<crate::resident::BufferHandle> {
         crate::resident::unsupported("buffer fill")
     }
-    /// Transfer a page-aligned allocation; no alias survives ownership transfer.
+    /// Publish page-owned host storage without copying.
     fn import_buffer(
         &self,
         _desc: crate::resident::BufferDesc,
@@ -459,16 +458,11 @@ pub trait ComputeBackend: Send + Sync {
     ) -> MkResult<crate::resident::BufferHandle> {
         crate::resident::unsupported("host allocation import")
     }
-    /// Borrow completed contiguous storage without copying. Strided owned
-    /// gathering and data that must outlive the lease use `readback` instead.
-    fn read_view(
-        &self,
-        _view: crate::resident::BufferView,
-        _ctx: &JobContext,
-    ) -> MkResult<crate::resident::ReadView> {
+    /// Borrow a contiguous published buffer in place.
+    fn read_view(&self, _view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView> {
         crate::resident::unsupported("read view")
     }
-    /// Explicit copying convenience, with exactly one gather into owned data.
+    /// Copy a (possibly strided) view into owned data.
     fn readback(
         &self,
         _view: crate::resident::BufferView,

@@ -12,7 +12,6 @@ pub fn upload<T: bytemuck::Pod>(
     let buf = b
         .fill_buffer(
             BufferDesc::new(ElementType::U32, [rows, width]),
-            &JobContext::new(),
             &mut |mut fill| {
                 bytemuck::cast_slice_mut::<u32, T>(fill.as_mut_slice::<u32>()?)
                     .copy_from_slice(values);
@@ -27,7 +26,6 @@ pub fn df(b: &dyn ComputeBackend, p: &mut ResidentPlan, v: &[Df32]) -> PlanView 
     let buf = b
         .fill_buffer(
             BufferDesc::new(ElementType::DoubleFloat, [v.len()]),
-            &JobContext::new(),
             &mut |mut fill| {
                 fill.as_mut_slice::<Df32>()?.copy_from_slice(v);
                 Ok(())
@@ -67,7 +65,6 @@ pub fn make_plan(
     let sample_buffer = b
         .fill_buffer(
             BufferDesc::new(ElementType::U32, [points.len(), size_of::<Sample>() / 4]),
-            &JobContext::new(),
             &mut |mut fill| {
                 let out: &mut [Sample] = bytemuck::cast_slice_mut(fill.as_mut_slice::<u32>()?);
                 for (i, (&pt, sample)) in points.iter().zip(out).enumerate() {
@@ -96,7 +93,6 @@ pub fn make_plan(
     let buf = b
         .fill_buffer(
             BufferDesc::new(ElementType::U32, [steps]),
-            &JobContext::new(),
             &mut |mut fill| {
                 for (i, word) in fill.as_mut_slice::<u32>()?.iter_mut().enumerate() {
                     *word = (i + 1) as u32;
