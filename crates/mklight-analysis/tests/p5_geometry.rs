@@ -295,6 +295,19 @@ fn pencils(b: &dyn ComputeBackend) {
                     "{name} Coddington {a} {g}"
                 );
             }
+            for (a, g) in a
+                .tangential_close_rays
+                .iter()
+                .chain(&a.sagittal_close_rays)
+                .zip(g.tangential_close_rays.iter().chain(&g.sagittal_close_rays))
+            {
+                assert!(
+                    (a - g).abs() < 1e-3 * (1.0 + a.abs())
+                        || a.is_nan() && g.is_nan()
+                        || a.is_infinite() && a == g,
+                    "{name} close pencil {a} {g}"
+                );
+            }
             for (a, g) in a.distortion_percent.iter().zip(&g.distortion_percent) {
                 assert!(
                     (a - g).abs() < 1e-4 || a.is_nan() && g.is_nan() || a.is_infinite() && a == g,
@@ -1178,4 +1191,124 @@ fn metal_tiled_footprints() {
     let execution = &g.run_info.settings["resident_execution"];
     assert!(!execution["extra_plans"].as_array().unwrap().is_empty());
     assert!(execution["plan_stats"]["peak_bytes"].as_u64().unwrap() < 256 * 1024 * 1024);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_tilted_mirror_focal_lines() {
+    use mklight_core::{Interaction, MaterialRef, Placement, SurfaceShape};
+    let b = mklight_metal::MetalBackend::new()
+        .unwrap()
+        .expect("host Metal required");
+    let radius = 200.0;
+    for (tx, ty) in [(0.0, 10.0), (10.0, 0.0)] {
+        let cb = |id, t| {
+            let mut s = common::surf(id, SurfaceShape::CoordinateBreak, t, MaterialRef::Air);
+            s.placement = Some(Placement {
+                tilt_x: tx,
+                tilt_y: ty,
+                ..Default::default()
+            });
+            s
+        };
+        let mut mirror = common::surf(2, SurfaceShape::sphere(-radius), 0.0, MaterialRef::Air);
+        mirror.interaction = Interaction::Reflect;
+        let t = tracer_for(common::infinite_system(
+            20.0,
+            vec![cb(1, 0.0), mirror, cb(3, -0.5 * radius)],
+            2,
+            &[0.0, 3.0],
+        ))
+        .unwrap();
+        let field = t
+            .prepare_field(mklight_trace::FieldPoint::normalized(0.0, 0.0))
+            .unwrap();
+        let mut records = Vec::new();
+        let chief = t.trace_with(
+            &field,
+            0,
+            0.0,
+            0.0,
+            &mklight_trace::TraceOptions::unclipped(),
+            Some(&mut records),
+        );
+        assert!(chief.status.is_ok());
+        let global = |i: usize| {
+            t.system().surfaces[i]
+                .frame
+                .to_global_point(records[i].point)
+        };
+        let distance = (global(4) - global(2)).norm();
+        let cos_i = records[2].cos_incidence;
+        let inplane = 0.5 * radius * cos_i - distance;
+        let perpendicular = 0.5 * radius / cos_i - distance;
+        let (et, es) = if ty != 0.0 {
+            (perpendicular, inplane)
+        } else {
+            (inplane, perpendicular)
+        };
+        let g = gpu::field_curvature_job(
+            &b,
+            &t,
+            &mklight_analysis::curvature::FieldCurvatureSettings {
+                field_samples: 3,
+                ..Default::default()
+            },
+            &JobContext::new(),
+        )
+        .unwrap();
+        let c = &g.curves[0];
+        let i = g
+            .field_coordinates
+            .iter()
+            .position(|p| *p == [0.0, 0.0])
+            .unwrap();
+        for (value, expected) in [(c.tangential[i], et), (c.sagittal[i], es)] {
+            assert!(
+                (value - expected * chief.ray.dir.z).abs() < 1e-6,
+                "tilts {tx}/{ty}: {value} versus {}",
+                expected * chief.ray.dir.z
+            );
+        }
+        assert!((c.tangential[i] - c.tangential_close_rays[i]).abs() < 1e-3);
+        assert!((c.sagittal[i] - c.sagittal_close_rays[i]).abs() < 1e-3);
+    }
+}
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_long_track_geometry_and_opd() {
+    let b = mklight_metal::MetalBackend::new()
+        .unwrap()
+        .expect("host Metal required");
+    let t = tracer_for(common::ideal_lens(1200.0, 24.0, &[0.0, 2.0, 5.0])).unwrap();
+    let s = SpotDiagramSettings {
+        rings: 8,
+        ..Default::default()
+    };
+    let a = spot::spot_diagram(&t, &s).unwrap();
+    let g = gpu::spot_diagram_job(&b, &t, &s, &JobContext::new()).unwrap();
+    for (a, g) in a.fields.iter().zip(&g.fields) {
+        assert_eq!(a.polychromatic.rays_arrived, g.polychromatic.rays_arrived);
+        for (a, g) in a.points.iter().zip(&g.points) {
+            assert!((a.x - g.x).abs() < 2e-5 && (a.y - g.y).abs() < 2e-5);
+        }
+    }
+    let s = mklight_analysis::fans::FanSettings {
+        samples: 17,
+        ..Default::default()
+    };
+    let a = mklight_analysis::fans::opd_fan(&t, &s).unwrap();
+    let g = gpu::opd_fan_job(&b, &t, &s, &JobContext::new()).unwrap();
+    for (a, g) in a.fields.iter().zip(&g.fields) {
+        for (a, g) in a
+            .tangential
+            .iter()
+            .chain(&a.sagittal)
+            .zip(g.tangential.iter().chain(&g.sagittal))
+        {
+            for (a, g) in a.values.iter().zip(&g.values) {
+                assert!((a - g).abs() < 0.005 || a.is_nan() && g.is_nan());
+            }
+        }
+    }
 }
