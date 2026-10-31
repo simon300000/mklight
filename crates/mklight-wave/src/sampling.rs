@@ -40,16 +40,15 @@ pub(crate) fn pupil_grid(rays: &StructuredSamples) -> usize {
 /// Image-space geometrical displacement from phase slope (ε = −λ/NA ∇W),
 /// maximum about the reference and RMS about the mean. Projection carries
 /// the chief-normal plane onto the image surface.
-pub(crate) fn blur(p: &PupilFunction) -> (f64, f64) {
+fn blur_points(p: &PupilFunction, step: usize) -> Vec<([f64; 2], f64)> {
     let n = p.n();
     let b = p.geometry().surface_to_normal();
     let det = b[0][0] * b[1][1] - b[0][1] * b[1][0];
     let mut points = Vec::new();
     let scale = -2.0 * p.lambda_f_mm() / p.spacing();
     let off = p.image_offset_mm();
-    let mut extent: f64 = 0.0;
-    for j in 0..n - 1 {
-        for i in 0..n - 1 {
+    for j in (0..n - 1).step_by(step) {
+        for i in (0..n - 1).step_by(step) {
             let k = j * n + i;
             if [k, k + 1, k + n].iter().all(|&q| p.coverage()[q] > 0.0) {
                 let x = scale * (p.opd_waves()[k + 1] - p.opd_waves()[k]);
@@ -58,11 +57,20 @@ pub(crate) fn blur(p: &PupilFunction) -> (f64, f64) {
                     (b[1][1] * x - b[0][1] * y) / det + off[0],
                     (b[0][0] * y - b[1][0] * x) / det + off[1],
                 ];
-                extent = extent.max(q[0].abs()).max(q[1].abs());
                 points.push((q, p.coverage()[k] * p.amplitude()[k].powi(2)));
             }
         }
     }
+    points
+}
+
+pub(crate) fn blur(p: &PupilFunction) -> (f64, f64) {
+    let points = blur_points(p, 1);
+    let extent = points
+        .iter()
+        .flat_map(|(q, _)| q)
+        .map(|x| x.abs())
+        .fold(0.0, f64::max);
     let rms = mklight_analysis::util::Moments::of(points.iter().copied()).rms_centroid;
     (extent, rms)
 }
@@ -78,14 +86,60 @@ pub(crate) fn image_side(pupils: &[(&PupilFunction, f64)]) -> f64 {
 }
 
 pub(crate) fn image_grid(pupils: &[(&PupilFunction, f64)], spacing: f64) -> usize {
-    ((image_side(pupils) / spacing).ceil() as usize).clamp(64, MAX_AUTO_IMAGE)
+    crate::fft::next_fast_len(
+        ((image_side(pupils) / spacing).ceil() as usize).clamp(64, MAX_AUTO_IMAGE),
+    )
+    .min(MAX_AUTO_IMAGE)
 }
 
 pub(crate) fn useful_frequency(pupils: &[(&PupilFunction, f64)]) -> f64 {
-    pupils
+    use mklight_core::math::KahanSum;
+    // A geometric characteristic function retains the high-contrast core
+    // when a few flare rays inflate RMS blur. Include diffraction and
+    // lateral colour, and look for 10% contrast in both image directions.
+    let cutoff = pupils
         .iter()
-        .map(|(p, _)| (0.25 / p.lambda_f_mm()).min(0.5 / blur(p).1).min(100.0))
-        .fold(f64::INFINITY, f64::min)
+        .map(|(p, _)| 1.0 / p.lambda_f_mm())
+        .fold(0.0, f64::max);
+    let floor = 40.0f64.min(0.1 * cutoff);
+    let ceiling = 0.8 * cutoff;
+    let points: Vec<_> = pupils
+        .iter()
+        .map(|(p, w)| {
+            let pts = blur_points(p, (p.n() / 64).max(1));
+            let sum: f64 = pts.iter().map(|(_, w)| w).sum();
+            (pts, w / sum, p.lambda_f_mm())
+        })
+        .collect();
+    let contrast = |f: f64| {
+        [0, 1]
+            .map(|axis| {
+                let mut re = KahanSum::default();
+                let mut im = KahanSum::default();
+                for (pts, weight, lf) in &points {
+                    let dl = crate::mtf::diffraction_limited_mtf(f * lf, 0.0);
+                    let mut r = KahanSum::default();
+                    let mut i = KahanSum::default();
+                    for (q, w) in pts {
+                        let (sn, cs) = (2.0 * std::f64::consts::PI * f * q[axis]).sin_cos();
+                        r.add(w * cs);
+                        i.add(w * sn);
+                    }
+                    re.add(weight * dl * r.value());
+                    im.add(weight * dl * i.value());
+                }
+                re.value().hypot(im.value())
+            })
+            .into_iter()
+            .fold(0.0, f64::max)
+    };
+    let mut f = floor;
+    while f < ceiling && contrast(f) > 0.1 {
+        f *= 1.25;
+    }
+    // Round upward to two significant decimal digits; retain the cutoff.
+    let step = 10.0f64.powf(f.log10().floor() - 1.0);
+    ((f / step).ceil() * step).min(ceiling)
 }
 
 pub(crate) fn round_frequency(f: f64) -> f64 {
@@ -144,7 +198,7 @@ mod tests {
         let radius = 40.0 * p.lambda_f_mm();
         assert!((extent / radius - 1.0).abs() < 0.04);
         assert!((rms / (radius / 2.0f64.sqrt()) - 1.0).abs() < 0.04);
-        assert!((useful_frequency(&[(&p, 1.0)]) * 2.0 * rms - 1.0).abs() < 1e-12);
+        assert!(useful_frequency(&[(&p, 1.0)]) >= 40.0f64.min(0.1 / p.lambda_f_mm()));
         assert!(image_side(&[(&p, 1.0)]) > 2.0 * radius);
     }
 

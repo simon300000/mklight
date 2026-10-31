@@ -124,6 +124,7 @@ impl Default for ImageGridSettings {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FieldMapping {
+    pub pupil_sampling: Vec<crate::analysis::PupilSampling>,
     pub field: [f64; 2],
     /// Paraxial chief image point.
     pub ideal_mm: [f64; 2],
@@ -246,40 +247,61 @@ pub fn build_psf_grid(
     };
     let mut kernels = Vec::new();
     let mut mapping = Vec::new();
-    for (i, (p, pupils)) in d.points.iter().zip(&mut per).enumerate() {
-        let n = d.points.len() as f64;
-        let sub = ctx.subrange(0.6 + 0.4 * i as f64 / n, 0.6 + 0.4 * (i + 1) as f64 / n);
-        warnings.extend(pupils.ensure_window(
-            size as f64 * dx,
-            &s.pupil,
-            &sub.subrange(0.0, 0.1),
-        )?);
-        let psf = crate::polychromatic_psf(
-            &pupils.weighted(),
-            &PolyPsfSettings {
-                grid_size: size,
-                spacing_mm: dx,
-                normalization: PsfNormalization::UnitEnergy,
-                transform: PsfTransform::Fft,
-            },
-            &sub.subrange(0.1, 1.0),
-        )?;
-        let energy = psf.energy_in_grid() / psf.total_energy;
-        if energy < crate::analysis::MIN_ENERGY_IN_GRID {
-            let w = crate::WaveWarning::PsfTruncated {
-                energy_in_grid: energy,
-            };
-            warnings.push(format!("field {:?}: {w}", p.field));
+    // Bound simultaneous large PSF buffers while overlapping independent nodes.
+    for (block, pair) in per.chunks_mut(2).enumerate() {
+        let computed: Vec<_> = pair
+            .par_iter_mut()
+            .enumerate()
+            .map(|(j, pupils)| -> MkResult<_> {
+                let i = 2 * block + j;
+                let p = &d.points[i];
+                let mut warnings = Vec::new();
+                let n = d.points.len() as f64;
+                let sub = ctx.subrange(0.6 + 0.4 * i as f64 / n, 0.6 + 0.4 * (i + 1) as f64 / n);
+                warnings.extend(pupils.ensure_window(
+                    size as f64 * dx,
+                    &s.pupil,
+                    &sub.subrange(0.0, 0.1),
+                )?);
+                let psf = crate::polychromatic_psf(
+                    &pupils.weighted(),
+                    &PolyPsfSettings {
+                        grid_size: size,
+                        spacing_mm: dx,
+                        normalization: PsfNormalization::UnitEnergy,
+                        transform: PsfTransform::Fft,
+                    },
+                    &sub.subrange(0.1, 1.0),
+                )?;
+                let energy = psf.energy_in_grid() / psf.total_energy;
+                if energy < crate::analysis::MIN_ENERGY_IN_GRID {
+                    let w = crate::WaveWarning::PsfTruncated {
+                        energy_in_grid: energy,
+                    };
+                    warnings.push(format!("field {:?}: {w}", p.field));
+                }
+                warnings.extend(psf.warnings.iter().map(ToString::to_string));
+                let sum: f64 = psf.data.iter().sum();
+                let kernel = psf.data.iter().map(|v| v / sum).collect::<Vec<_>>();
+                Ok((
+                    kernel,
+                    FieldMapping {
+                        pupil_sampling: pupils.sampling(),
+                        field: p.field,
+                        ideal_mm: p.paraxial,
+                        real_mm: pupils.reference_mm,
+                        relative_illumination: irradiance[i] / axial,
+                    },
+                    warnings,
+                ))
+            })
+            .collect();
+        for result in computed {
+            let (kernel, point, diagnostics) = result?;
+            kernels.push(kernel);
+            mapping.push(point);
+            warnings.extend(diagnostics);
         }
-        warnings.extend(psf.warnings.iter().map(ToString::to_string));
-        let sum: f64 = psf.data.iter().sum();
-        kernels.push(psf.data.iter().map(|v| v / sum).collect());
-        mapping.push(FieldMapping {
-            field: p.field,
-            ideal_mm: p.paraxial,
-            real_mm: pupils.reference_mm,
-            relative_illumination: irradiance[i] / axial,
-        });
     }
     Ok(PsfGrid {
         mapping,
@@ -1220,6 +1242,7 @@ mod tests {
                 (0..2).map(move |x| {
                     let point = [x as f64, y as f64];
                     FieldMapping {
+                        pupil_sampling: Vec::new(),
                         field: point,
                         ideal_mm: point,
                         real_mm: point,

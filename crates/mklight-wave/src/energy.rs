@@ -115,50 +115,76 @@ pub fn encircled_energy(
     center: EnergyCenter,
     ctx: &JobContext,
 ) -> MkResult<Vec<f64>> {
-    if !(psf.total_energy > 0.0) {
+    Ok(encircled_energy_batch(&[(psf, center)], radii_mm, ctx)?.remove(0))
+}
+
+/// Shared circle kernels for PSFs on one common image grid. Spectra and
+/// centres differ, but each radius/Bessel kernel is evaluated only once.
+pub(crate) fn encircled_energy_batch(
+    psfs: &[(&Psf, EnergyCenter)],
+    radii: &[f64],
+    ctx: &JobContext,
+) -> MkResult<Vec<Vec<f64>>> {
+    if psfs.iter().any(|(p, _)| !(p.total_energy > 0.0)) {
         return Err(MkError::Numerical("PSF has no energy".into()));
     }
-    let (g, _) = spectrum(psf, resolve_center(psf, center), &ctx.subrange(0.0, 0.2))?;
-    let m = psf.size;
-    // The circle kernel depends only on i²+j². Combine equal radii
-    // before evaluating Bessel functions; no spectral bins are discarded.
-    let mut shells = vec![mklight_core::math::KahanSum::default(); 2 * (m / 2).pow(2) + 1];
-    for j in 0..m {
-        let y = signed_index(j, m);
-        for i in 0..m {
-            let x = signed_index(i, m);
-            shells[(x * x + y * y) as usize].add(g[j * m + i]);
-        }
-    }
-    let dnu = 1.0 / (m as f64 * psf.spacing_mm);
-    let shells: Vec<_> = shells
-        .into_iter()
-        .enumerate()
-        .filter_map(|(k, s)| {
-            let v = s.value();
-            (v != 0.0).then_some(((k as f64).sqrt() * dnu, v))
-        })
-        .collect();
-    radii_mm
+    let m = psfs[0].0.size;
+    let dnu = 1.0 / (m as f64 * psfs[0].0.spacing_mm);
+    let spectra: Vec<Vec<f64>> = psfs
         .par_iter()
-        .map(|&r| {
+        .map(|&(psf, center)| -> MkResult<_> {
+            let (g, _) = spectrum(psf, resolve_center(psf, center), &ctx.subrange(0.0, 0.2))?;
+            let mut shells = vec![mklight_core::math::KahanSum::default(); 2 * (m / 2).pow(2) + 1];
+            for j in 0..m {
+                ctx.check()?;
+                let y = signed_index(j, m);
+                for i in 0..m {
+                    let x = signed_index(i, m);
+                    shells[(x * x + y * y) as usize].add(g[j * m + i]);
+                }
+            }
+            Ok(shells.into_iter().map(|s| s.value()).collect())
+        })
+        .collect::<MkResult<_>>()?;
+    let active: Vec<_> = (0..spectra[0].len())
+        .filter(|&k| spectra.iter().any(|s| s[k] != 0.0))
+        .collect();
+    let rho: Vec<_> = active.iter().map(|&k| (k as f64).sqrt() * dnu).collect();
+    let weights: Vec<Vec<_>> = spectra
+        .into_iter()
+        .map(|s| active.iter().map(|&k| s[k]).collect())
+        .collect();
+    let values: Vec<Vec<f64>> = radii
+        .par_iter()
+        .map(|&r| -> MkResult<_> {
             ctx.check()?;
             if r <= 0.0 {
-                return Ok(0.0);
+                return Ok(vec![0.0; psfs.len()]);
             }
-            let sum: mklight_core::math::KahanSum = shells
+            let kernel: Vec<_> = rho
                 .iter()
-                .map(|&(rho, v)| {
-                    v * if rho * r < 1e-12 {
+                .map(|&rho| {
+                    if rho * r < 1e-12 {
                         std::f64::consts::PI * r * r
                     } else {
                         r * bessel_j1(2.0 * std::f64::consts::PI * rho * r) / rho
                     }
                 })
                 .collect();
-            Ok(sum.value() / psf.total_energy)
+            Ok(weights
+                .iter()
+                .zip(psfs)
+                .map(|(w, (psf, _))| {
+                    let sum: mklight_core::math::KahanSum =
+                        w.iter().zip(&kernel).map(|(w, k)| w * k).collect();
+                    sum.value() / psf.total_energy
+                })
+                .collect())
         })
-        .collect()
+        .collect::<MkResult<_>>()?;
+    Ok((0..psfs.len())
+        .map(|i| values.iter().map(|v| v[i]).collect())
+        .collect())
 }
 
 /// Fraction of the total energy inside squares of the given half-widths
@@ -283,27 +309,78 @@ pub fn strehl_report(pupil: &PupilFunction, psf: Option<&Psf>) -> StrehlReport {
 #[cfg(test)]
 mod acceleration_tests {
     use super::*;
-    use crate::{PupilGeometry, PupilFunction, PolyPsfSettings, polychromatic_psf};
+    use crate::{PolyPsfSettings, PupilFunction, PupilGeometry, polychromatic_psf};
 
     #[test]
     fn grouped_energy_matches_full_spectral_integral() {
-        let p = PupilFunction::from_fn(32, 0.55, PupilGeometry::new(5.0,100.0,1.0).unwrap(), 4,
-            |u,v| u*u+v*v < 1.0, |u,v| (1.0, 0.3*u*u*v+0.15*v*v)).unwrap();
-        let psf = polychromatic_psf(&[(&p,1.0)], &PolyPsfSettings::new(83, p.lambda_f_mm()/3.0), &JobContext::new()).unwrap();
+        let p = PupilFunction::from_fn(
+            32,
+            0.55,
+            PupilGeometry::new(5.0, 100.0, 1.0).unwrap(),
+            4,
+            |u, v| u * u + v * v < 1.0,
+            |u, v| (1.0, 0.3 * u * u * v + 0.15 * v * v),
+        )
+        .unwrap();
+        let psf = polychromatic_psf(
+            &[(&p, 1.0)],
+            &PolyPsfSettings::new(83, p.lambda_f_mm() / 3.0),
+            &JobContext::new(),
+        )
+        .unwrap();
         let radii = [0.0, 0.0017, 0.005, 0.012, 0.023];
-        let tau = 2.0*std::f64::consts::PI;
-        for center in [EnergyCenter::Centroid, EnergyCenter::Point { x: 0.0013, y: -0.0021 }] {
-            let got = encircled_energy(&psf, &radii, center, &JobContext::new()).unwrap();
-            let want = energy_integral(&psf, &radii, center, |v,r| {
-                let rho = v[0].hypot(v[1]);
-                if rho*r < 1e-12 { std::f64::consts::PI*r*r } else { r*bessel_j1(tau*rho*r)/rho }
-            }, &JobContext::new()).unwrap();
-            for (a,b) in got.iter().zip(want) { assert!((a-b).abs()<2e-12); }
+        let tau = 2.0 * std::f64::consts::PI;
+        let centers = [
+            EnergyCenter::Centroid,
+            EnergyCenter::Point {
+                x: 0.0013,
+                y: -0.0021,
+            },
+        ];
+        let inputs: Vec<_> = centers.iter().map(|&c| (&psf, c)).collect();
+        let batch = encircled_energy_batch(&inputs, &radii, &JobContext::new()).unwrap();
+        for (index, center) in centers.into_iter().enumerate() {
+            let got = &batch[index];
+            let want = energy_integral(
+                &psf,
+                &radii,
+                center,
+                |v, r| {
+                    let rho = v[0].hypot(v[1]);
+                    if rho * r < 1e-12 {
+                        std::f64::consts::PI * r * r
+                    } else {
+                        r * bessel_j1(tau * rho * r) / rho
+                    }
+                },
+                &JobContext::new(),
+            )
+            .unwrap();
+            for (a, b) in got.iter().zip(want) {
+                assert!((a - b).abs() < 2e-12);
+            }
             let got = ensquared_energy(&psf, &radii, center, &JobContext::new()).unwrap();
-            let want = energy_integral(&psf, &radii, center, |v,h| {
-                v.into_iter().map(|nu| if (nu*h).abs()<1e-12 {2.0*h} else {(tau*nu*h).sin()/(std::f64::consts::PI*nu)}).product()
-            }, &JobContext::new()).unwrap();
-            for (a,b) in got.iter().zip(want) { assert!((a-b).abs()<2e-12); }
+            let want = energy_integral(
+                &psf,
+                &radii,
+                center,
+                |v, h| {
+                    v.into_iter()
+                        .map(|nu| {
+                            if (nu * h).abs() < 1e-12 {
+                                2.0 * h
+                            } else {
+                                (tau * nu * h).sin() / (std::f64::consts::PI * nu)
+                            }
+                        })
+                        .product()
+                },
+                &JobContext::new(),
+            )
+            .unwrap();
+            for (a, b) in got.iter().zip(want) {
+                assert!((a - b).abs() < 2e-12);
+            }
         }
     }
 }

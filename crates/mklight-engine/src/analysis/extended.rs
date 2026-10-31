@@ -304,6 +304,7 @@ impl Analysis for ImageSimulation {
                     "field_mapping",
                     arr(
                         obj(&[
+                            ("pupil_sampling", super::wave::pupil_sampling_schema()),
                             ("field", tuple(num("1", ""), 2, "Normalised field.")),
                             (
                                 "ideal_mm",

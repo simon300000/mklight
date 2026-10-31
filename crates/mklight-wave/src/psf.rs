@@ -52,7 +52,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::fft::{affine_mft,Dir, fft2, mft, next_fast_len};
+use crate::fft::{Dir, affine_mft, fft2, mft, next_fast_len};
 use crate::pupil::PupilFunction;
 use crate::warnings::{WaveWarning, push_unique};
 
@@ -764,12 +764,9 @@ pub struct PolyPsfSettings {
     pub normalization: PsfNormalization,
     /// `Matrix` (the default from [`PolyPsfSettings::new`]) evaluates every
     /// wavelength exactly on the common grid (band-limited resampling).
-    /// `Fft` keeps that separable transform where `B` is diagonal (on axis,
-    /// or a chief ray in the x–z or y–z plane), which is also the cheaper
-    /// one there. A skew pupil, whose exact transform costs `n²M²`, is
-    /// transformed by FFT on its chief-normal plane at a native spacing
-    /// `≤ min(Δx, λF#/8)` and projected bicubically onto the image surface,
-    /// with errors below about 10⁻³ of the peak.
+    /// `Fft` evaluates diagonal projections by separable chirp transforms
+    /// and skew projections by an exact 2-D chirp convolution. Both use
+    /// the requested image-surface grid without image interpolation.
     pub transform: PsfTransform,
 }
 
@@ -819,15 +816,24 @@ pub fn polychromatic_psf(
         let (_, raw_energy) = raw_constants(pupil);
         let b = pupil.geometry().surface_to_normal();
         let raw = if settings.transform == PsfTransform::Matrix || separable(&b) {
-            surface_intensity(pupil,dx,size,[-off[0],-off[1]],&sub)?
+            surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
         } else {
-            let n=pupil.n();
-            let nu: Vec<_>=(0..n).map(|i| pupil.coord(i)*pupil.frequency_scale()).collect();
-            let xs: Vec<_>=(0..size).map(|i| (i as f64-(size/2) as f64)*dx-off[0]).collect();
-            let ys: Vec<_>=(0..size).map(|i| (i as f64-(size/2) as f64)*dx-off[1]).collect();
-            affine_mft(&pupil.debye_field(),n,&nu,&xs,&ys,b,&sub)?.into_iter().map(|z| z.norm_sqr()).collect()
+            let n = pupil.n();
+            let nu: Vec<_> = (0..n)
+                .map(|i| pupil.coord(i) * pupil.frequency_scale())
+                .collect();
+            let xs: Vec<_> = (0..size)
+                .map(|i| (i as f64 - (size / 2) as f64) * dx - off[0])
+                .collect();
+            let ys: Vec<_> = (0..size)
+                .map(|i| (i as f64 - (size / 2) as f64) * dx - off[1])
+                .collect();
+            affine_mft(&pupil.debye_field(), n, &nu, &xs, &ys, b, &sub)?
+                .into_iter()
+                .map(|z| z.norm_sqr())
+                .collect()
         };
-        let unit: Vec<_> = raw.into_iter().map(|v| v/raw_energy).collect();
+        let unit: Vec<_> = raw.into_iter().map(|v| v / raw_energy).collect();
         for (a, v) in acc.iter_mut().zip(&unit) {
             *a += wn * v;
         }

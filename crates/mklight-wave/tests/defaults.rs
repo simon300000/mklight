@@ -93,10 +93,10 @@ fn ideal_cone_sets_frequency_and_depth_and_explicit_settings_win() {
     let t = mklight_analysis::tracer_for(s).unwrap();
     let n = (10000.0f64 + 25.0).sqrt() / 10.0;
     let mtf = analysis::mtf_analysis(&t, &Default::default()).unwrap();
-    assert!((mtf.frequencies.last().unwrap() * 0.55e-3 * n - 0.25).abs() < 1e-8);
+    assert!((mtf.frequencies.last().unwrap() * 0.55e-3 * n - 0.8).abs() < 1e-8);
     let focus = analysis::through_focus_mtf_analysis(&t, &Default::default()).unwrap();
     assert!((focus.focus_mm.last().unwrap() / (8.0 * 0.55e-3 * n * n) - 1.0).abs() < 1e-8);
-    assert_eq!(focus.frequencies, [5.0, 10.0, 20.0]);
+    assert_eq!(focus.frequencies, [20.0, 40.0, 80.0]);
     let explicit = analysis::ThroughFocusSettings {
         frequencies: vec![7.0, 19.0],
         focus_range_mm: Some(0.07),
@@ -119,5 +119,38 @@ fn ideal_cone_sets_frequency_and_depth_and_explicit_settings_win() {
     )
     .unwrap();
     assert_eq!(psf.psfs[0].psf.size, 31);
+    assert_eq!(psf.psfs[0].pupil_sampling[0].grid, 32);
     assert_eq!(psf.psfs[0].psf.spacing_mm, 0.001);
+}
+
+#[test]
+fn camera_defaults_cover_photographic_frequencies_and_report_sampling() {
+    for system in [samples::double_gauss(), samples::cooke_triplet()] {
+        let t = mklight_analysis::tracer_for(system).unwrap();
+        let mtf = analysis::mtf_analysis(&t, &Default::default()).unwrap();
+        assert!(*mtf.frequencies.last().unwrap() >= 40.0);
+        assert!(
+            mtf.fields
+                .iter()
+                .all(|f| !f.pupil_sampling.is_empty()
+                    && f.pupil_sampling.iter().all(|s| s.grid >= 64))
+        );
+        let focus = analysis::through_focus_mtf_analysis(&t, &Default::default()).unwrap();
+        assert!(
+            focus.frequencies[0] >= 10.0 && focus.frequencies[2] >= 40.0,
+            "{:?}",
+            focus.frequencies
+        );
+        let energy = analysis::diffraction_encircled_energy(&t, &Default::default()).unwrap();
+        assert!(
+            energy
+                .fields
+                .iter()
+                .all(|f| f.grid_size >= 64 && f.spacing_mm > 0.0)
+        );
+        let psf = analysis::psf_analysis(&t, &Default::default()).unwrap();
+        assert!(psf.psfs.iter().all(|f| !f.pupil_sampling.is_empty()));
+        let lsf = analysis::line_spread(&t, &Default::default()).unwrap();
+        assert!(lsf.fields.iter().all(|f| !f.pupil_sampling.is_empty()));
+    }
 }

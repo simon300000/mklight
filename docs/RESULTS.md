@@ -1726,9 +1726,14 @@ Result (`result` in the envelope):
 | `fields[].ensquared` | string | 1 | Buffer name; energy inside a square of half-width radius_mm. |
 | `fields[].field` | integer |  | ≥ 0; System field index. |
 | `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].grid_size` | integer |  | ≥ 0; Actual PSF image samples per axis. |
+| `fields[].pupil_sampling` | array<object> |  | Actual pupil grids in selected-wavelength order. |
+| `fields[].pupil_sampling[].grid` | integer |  | ≥ 0; Actual pupil samples per axis, after automatic refinements. |
+| `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `fields[].r50_mm` | nf | mm | Radius enclosing 50 % of total energy. |
 | `fields[].r80_mm` | nf | mm | Radius enclosing 80 % of total energy. |
 | `fields[].r90_mm` | nf | mm | Radius enclosing 90 % of total energy. |
+| `fields[].spacing_mm` | number | mm | Actual PSF image sample spacing. |
 | `radius_mm` | string | mm | Buffer name; radii / square half-widths. |
 
 Buffers:
@@ -1770,6 +1775,9 @@ Result (`result` in the envelope):
 | `field_mapping` | array<object> |  | Row-major field nodes; mapping is bilinear between nodes. |
 | `field_mapping[].field` | [number; 2] |  | Normalised field. |
 | `field_mapping[].ideal_mm` | [number; 2] |  | First-order chief image. |
+| `field_mapping[].pupil_sampling` | array<object> |  | Actual pupil grids in selected-wavelength order. |
+| `field_mapping[].pupil_sampling[].grid` | integer |  | ≥ 0; Actual pupil samples per axis, after automatic refinements. |
+| `field_mapping[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `field_mapping[].real_mm` | [number; 2] |  | Real image point of the PSF reference (primary chief by default): the PSF centre. |
 | `field_mapping[].relative_illumination` | nf | 1 | Spectrally weighted projected-solid-angle irradiance ratio. |
 | `image` | string |  | Image buffer name. |
@@ -1812,6 +1820,9 @@ Result (`result` in the envelope):
 | `fields[].field` | integer |  | ≥ 0; System field index. |
 | `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
 | `fields[].positions_mm` | string | mm | Buffer name; positions relative to the common reference. |
+| `fields[].pupil_sampling` | array<object> |  | Actual pupil grids in selected-wavelength order. |
+| `fields[].pupil_sampling[].grid` | integer |  | ≥ 0; Actual pupil samples per axis, after automatic refinements. |
+| `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `fields[].x` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over y. |
 | `fields[].y` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over x. |
 
@@ -1838,7 +1849,7 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `frequency_samples` | integer | `41` |  | ≥ 2 |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
-| `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null uses min(100, cutoff/4, 1/(2 geometric RMS blur)). |
+| `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null estimates 10% polychromatic contrast including diffraction and lateral colour. |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
@@ -1858,6 +1869,9 @@ Result (`result` in the envelope):
 | `fields[].diffraction_limit` | string | 1 | Buffer name; aberration-free MTF of the same pupil. |
 | `fields[].field` | integer |  | ≥ 0; System field index. |
 | `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].pupil_sampling` | array<object> |  | Actual pupil grids in selected-wavelength order. |
+| `fields[].pupil_sampling[].grid` | integer |  | ≥ 0; Actual pupil samples per axis, after automatic refinements. |
+| `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `fields[].sagittal` | string | 1 | Buffer name; optical sagittal MTF. |
 | `fields[].system_sagittal` | string? |  |  |
 | `fields[].system_tangential` | string? |  |  |
@@ -1893,7 +1907,7 @@ Settings:
 | `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
 | `direction` | [number; 2] | `[0.0,1.0]` |  | Nonzero direction in normalised field coordinates. |
 | `field_samples` | integer | `11` |  | 1 … 1001 |
-| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects round 1-2-5 frequencies spanning the useful blur-limited range. |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
@@ -1911,6 +1925,7 @@ Result (`result` in the envelope):
 | `field_values` | string | degrees or mm | Buffer name; specified [x, y] of each field sample. |
 | `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
 | `normalized_field` | string | 1 | Buffer name; normalised radial field from axis to edge. |
+| `pupil_sampling` | array<array<object>> |  | One pupil sampling list per field sample; empty for skipped fields. |
 
 Buffers:
 
@@ -1963,6 +1978,9 @@ Result (`result` in the envelope):
 | `psfs[].psf.total_energy` | number | mm^2 or 1 | Integral over the infinite image plane in the selected normalisation. |
 | `psfs[].psf.warnings` | array<any> |  | Also carried as text in RunInfo warnings. |
 | `psfs[].psf.wavelength_um` | number? |  |  |
+| `psfs[].pupil_sampling` | array<object> |  | Actual pupil grids in selected-wavelength order. |
+| `psfs[].pupil_sampling[].grid` | integer |  | ≥ 0; Actual pupil samples per axis, after automatic refinements. |
+| `psfs[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `psfs[].reference_mm` | [nf; 2] |  | Common image-local reference point, mm. |
 | `psfs[].strehl` | number | 1 | Peak / aberration-free peak for the same pupil and spectral weights. |
 | `psfs[].wavelength` | integer? |  |  |
@@ -1988,7 +2006,7 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `focus_range_mm` | number\|null | `null` | mm | > 0.0; Positive half-range; null uses max(8 wavelength × F/# squared, 4 F/# × geometric RMS blur). |
 | `focus_samples` | integer | `21` |  | 1 … 1001 |
-| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects round 1-2-5 frequencies spanning the useful blur-limited range. |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
 | `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
@@ -2006,6 +2024,9 @@ Result (`result` in the envelope):
 | `fields[].curves[].tangential` | string | 1 | Buffer name; MTF along the local field direction. |
 | `fields[].field` | integer |  | ≥ 0; System field index. |
 | `fields[].field_value` | [nf; 2] |  | Field [x, y] in the system's units (degrees or mm). |
+| `fields[].pupil_sampling` | array<object> |  | Actual pupil grids in selected-wavelength order. |
+| `fields[].pupil_sampling[].grid` | integer |  | ≥ 0; Actual pupil samples per axis, after automatic refinements. |
+| `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `focus_mm` | string | mm | Buffer name; image-plane shift, positive along propagation. |
 | `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
 

@@ -17,8 +17,8 @@
 //! * `huygens`: direct DFT of the Huygens PSF on the image surface
 //!   ([`crate::mtf_from_psf`]), an independent route through image space.
 //!
-//! The default frequency range runs to the largest incoherent cutoff
-//! `1/(λ_min·F#)` of the field's pupils. With a detector the pixel MTF
+//! The default frequency range estimates 10% polychromatic contrast from
+//! geometric phase slopes and diffraction, with a cutoff-relative floor. With a detector the pixel MTF
 //! ([`crate::detector`]) is reported and multiplied in (`system_*`), and the
 //! Nyquist frequency is marked.
 //!
@@ -31,6 +31,7 @@ use mklight_analysis::util::{FieldSelection, WavelengthSelection, nf};
 use mklight_core::job::RunTimer;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::{FieldPoint, SequentialTracer};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::psf::{PsfMethod, check_huygens_grid, compute_psf};
@@ -148,7 +149,7 @@ pub struct MtfSettings {
     pub wavelengths: WavelengthSelection,
     pub pupil: PupilSettings,
     pub method: MtfAnalysisMethod,
-    /// Highest frequency (cycles/mm); blur-limited and capped at 100 when `None`.
+    /// Highest frequency (cycles/mm); estimated 10% polychromatic contrast when `None`.
     pub max_frequency: Option<f64>,
     pub frequency_samples: usize,
     pub detector: Option<DetectorSettings>,
@@ -172,6 +173,7 @@ impl Default for MtfSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldMtf {
+    pub pupil_sampling: Vec<super::PupilSampling>,
     pub field: usize,
     pub field_value: [f64; 2],
     /// Unit tangential direction on the image surface.
@@ -254,34 +256,47 @@ pub fn mtf_analysis_job(
     let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
-    for (k, (f, value, fp)) in per.iter().enumerate() {
-        warnings.extend(fp.warnings.iter().cloned());
-        let sub = ctx.subrange(0.5 + 0.5 * k as f64 / nf, 0.5 + 0.5 * (k + 1) as f64 / nf);
-        let o = fp.orientation();
-        let c = field_mtf(
-            &o,
-            &fp.weighted(),
-            &freqs,
-            settings.method,
-            &settings.huygens,
-            &sub,
-        )?;
-        for w in &c.warnings {
-            warnings.push(format!("field {f}: {w}"));
-        }
-        let (det, st, ss) = with_detector(settings.detector.as_ref(), &freqs, &o, &c);
-        out.push(FieldMtf {
-            field: *f,
-            field_value: *value,
-            tangential_direction: fp.orientation().tangential,
-            tangential: c.tangential,
-            sagittal: c.sagittal,
-            diffraction_limit: c.diffraction_limit,
-            cutoff: c.cutoff,
-            detector: det,
-            system_tangential: st,
-            system_sagittal: ss,
-        });
+    let computed: Vec<_> = per
+        .par_iter()
+        .enumerate()
+        .map(|(k, (f, value, fp))| -> MkResult<_> {
+            let mut field_warnings = fp.warnings.clone();
+            let sub = ctx.subrange(0.5 + 0.5 * k as f64 / nf, 0.5 + 0.5 * (k + 1) as f64 / nf);
+            let o = fp.orientation();
+            let c = field_mtf(
+                &o,
+                &fp.weighted(),
+                &freqs,
+                settings.method,
+                &settings.huygens,
+                &sub,
+            )?;
+            for w in &c.warnings {
+                field_warnings.push(format!("field {f}: {w}"));
+            }
+            let (det, st, ss) = with_detector(settings.detector.as_ref(), &freqs, &o, &c);
+            Ok((
+                FieldMtf {
+                    field: *f,
+                    field_value: *value,
+                    tangential_direction: fp.orientation().tangential,
+                    pupil_sampling: fp.sampling(),
+                    tangential: c.tangential,
+                    sagittal: c.sagittal,
+                    diffraction_limit: c.diffraction_limit,
+                    cutoff: c.cutoff,
+                    detector: det,
+                    system_tangential: st,
+                    system_sagittal: ss,
+                },
+                field_warnings,
+            ))
+        })
+        .collect();
+    for result in computed {
+        let (field, field_warnings) = result?;
+        warnings.extend(field_warnings);
+        out.push(field);
     }
     ctx.report(1.0, "MTF");
     Ok(WaveMtfResult {
@@ -292,13 +307,11 @@ pub fn mtf_analysis_job(
     })
 }
 
-/// Explicit frequencies or three distinct 1-2-5 values below the useful limit.
+/// Explicit frequencies or a round base and its 2x/4x multiples.
 fn fixed_frequencies(list: &[f64], useful: impl FnOnce() -> f64) -> MkResult<Vec<f64>> {
     if list.is_empty() {
-        let top = crate::sampling::round_frequency(useful());
-        return Ok([0.25, 0.5, 1.0]
-            .map(|x| crate::sampling::round_frequency(x * top))
-            .to_vec());
+        let base = crate::sampling::round_frequency(useful() / 4.0);
+        return Ok([1.0, 2.0, 4.0].map(|x| x * base).to_vec());
     }
     if list.iter().any(|f| !(f.is_finite() && *f >= 0.0)) {
         return Err(MkError::InvalidParam(
@@ -354,6 +367,8 @@ pub struct MtfFieldCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtfVsFieldResult {
+    /// One selected-wavelength list per field sample; empty for skipped fields.
+    pub pupil_sampling: Vec<Vec<super::PupilSampling>>,
     /// Normalised radial field of each sample.
     pub normalized_field: Vec<f64>,
     /// Field values in the system's field units.
@@ -403,14 +418,21 @@ pub fn mtf_vs_field_job(
     // `None` for a sample whose pupil cannot be built (NaN in the curves).
     let mut pupils = Vec::new();
     let mut first_error = None;
-    for (k, &h) in hs.iter().enumerate() {
-        let sub = ctx.subrange(0.6 * k as f64 / ns, 0.6 * (k + 1) as f64 / ns);
-        let point = FieldPoint::normalized(h * dx / len, h * dy / len);
-        values.push(field_value(tracer, &point));
-        let label = format!("field {h:.3}");
-        let fp = tracer.prepare_field(point).and_then(|prepared| {
-            field_pupils(tracer, &prepared, &label, &wls, &settings.pupil, &sub)
-        });
+    let traced: Vec<_> = hs
+        .par_iter()
+        .enumerate()
+        .map(|(k, &h)| {
+            let sub = ctx.subrange(0.6 * k as f64 / ns, 0.6 * (k + 1) as f64 / ns);
+            let point = FieldPoint::normalized(h * dx / len, h * dy / len);
+            let label = format!("field {h:.3}");
+            let fp = tracer.prepare_field(point).and_then(|prepared| {
+                field_pupils(tracer, &prepared, &label, &wls, &settings.pupil, &sub)
+            });
+            (field_value(tracer, &point), label, fp)
+        })
+        .collect();
+    for (value, label, fp) in traced {
+        values.push(value);
         match fp {
             Ok(fp) => {
                 warnings.extend(fp.warnings.iter().cloned());
@@ -431,25 +453,34 @@ pub fn mtf_vs_field_job(
         useful_frequency(pupils.iter().flatten())
     })?;
     let mut per_field = Vec::new();
-    for (k, fp) in pupils.iter().enumerate() {
-        let Some(fp) = fp else {
-            per_field.push(None);
-            continue;
-        };
-        let c = field_mtf(
-            &o,
-            &fp.weighted(),
-            &freqs,
-            settings.method,
-            &settings.huygens,
-            &ctx.subrange(0.6 + 0.4 * k as f64 / ns, 0.6 + 0.4 * (k + 1) as f64 / ns),
-        )?;
-        warnings.extend(
-            c.warnings
-                .iter()
-                .map(|w| format!("field {:.3}: {w}", hs[k])),
-        );
-        per_field.push(Some(c));
+    let computed: Vec<_> = pupils
+        .par_iter()
+        .enumerate()
+        .map(|(k, fp)| -> MkResult<_> {
+            let Some(fp) = fp else {
+                return Ok(None);
+            };
+            let c = field_mtf(
+                &o,
+                &fp.weighted(),
+                &freqs,
+                settings.method,
+                &settings.huygens,
+                &ctx.subrange(0.6 + 0.4 * k as f64 / ns, 0.6 + 0.4 * (k + 1) as f64 / ns),
+            )?;
+            Ok(Some(c))
+        })
+        .collect();
+    for (k, result) in computed.into_iter().enumerate() {
+        let c = result?;
+        if let Some(c) = &c {
+            warnings.extend(
+                c.warnings
+                    .iter()
+                    .map(|w| format!("field {:.3}: {w}", hs[k])),
+            );
+        }
+        per_field.push(c);
     }
     let curves = freqs
         .iter()
@@ -475,6 +506,10 @@ pub fn mtf_vs_field_job(
         .collect();
     ctx.report(1.0, "MTF vs field");
     Ok(MtfVsFieldResult {
+        pupil_sampling: pupils
+            .iter()
+            .map(|fp| fp.as_ref().map_or_else(Vec::new, |fp| fp.sampling()))
+            .collect(),
         normalized_field: hs,
         field_values: values,
         frequencies: freqs,
@@ -528,6 +563,7 @@ pub struct ThroughFocusCurve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThroughFocusField {
+    pub pupil_sampling: Vec<super::PupilSampling>,
     pub field: usize,
     pub field_value: [f64; 2],
     pub curves: Vec<ThroughFocusCurve>,
@@ -600,52 +636,71 @@ pub fn through_focus_mtf_analysis_job(
         warnings.extend(fp.warnings.iter().cloned());
         if settings.pupil.grid == 0 {
             // Automatic pupils also resolve the phase at both focus ends.
-            for (_, _, tp) in &mut fp.pupils {
-                let p = &tp.pupil;
-                let step = [-half, half]
-                    .map(|dz| {
-                        p.with_focus_shift(dz / p.geometry().chief_ray[2])
-                            .max_phase_step()
-                    })
-                    .into_iter()
-                    .fold(0.0, f64::max);
-                let n = ((p.n() as f64 * step / 0.35)
-                    .max(p.n() as f64)
-                    .min(crate::sampling::MAX_AUTO_PUPIL as f64)
-                    .ceil() as usize)
-                    .next_power_of_two();
-                warnings.extend(tp.resample(
-                    n,
-                    settings.pupil.supersample,
-                    &ctx.subrange(0.3, 0.3),
-                )?);
-            }
+            let refined: Vec<Vec<String>> = fp
+                .pupils
+                .par_iter_mut()
+                .map(|(_, _, tp)| {
+                    let p = &tp.pupil;
+                    let step = [-half, half]
+                        .map(|dz| {
+                            p.with_focus_shift(dz / p.geometry().chief_ray[2])
+                                .max_phase_step()
+                        })
+                        .into_iter()
+                        .fold(0.0, f64::max);
+                    let n = ((p.n() as f64 * step / 0.35)
+                        .max(p.n() as f64)
+                        .min(crate::sampling::MAX_AUTO_PUPIL as f64)
+                        .ceil() as usize)
+                        .next_power_of_two();
+                    tp.resample(n, settings.pupil.supersample, &ctx.subrange(0.3, 0.3))
+                })
+                .collect::<MkResult<_>>()?;
+            warnings.extend(refined.into_iter().flatten());
         }
         let mut t = vec![vec![0.0; focus.len()]; freqs.len()];
         let mut s = t.clone();
-        for (z, &dz) in focus.iter().enumerate() {
-            let shifted: Vec<PupilFunction> = fp
-                .pupils
-                .iter()
-                .map(|(_, _, p)| {
-                    let cos = p.pupil.geometry().chief_ray[2];
-                    p.pupil.with_focus_shift(dz / cos)
-                })
-                .collect();
-            let weighted: Vec<(&PupilFunction, f64)> = shifted
-                .iter()
-                .zip(&fp.pupils)
-                .map(|(p, (_, w, _))| (p, *w))
-                .collect();
-            let sub = ctx.subrange(0.3 + 0.7 * done / total, 0.3 + 0.7 * (done + 1.0) / total);
-            let c = field_mtf(
-                &fp.orientation(),
-                &weighted,
+        let cached = if settings.method == MtfAnalysisMethod::Direct {
+            Some(crate::mtf::polychromatic_focus_mtf(
+                &fp.weighted(),
+                &focus,
                 &freqs,
-                settings.method,
-                &settings.huygens,
-                &sub,
-            )?;
+                &fp.orientation(),
+                &ctx.subrange(
+                    0.3 + 0.7 * done / total,
+                    0.3 + 0.7 * (done + focus.len() as f64) / total,
+                ),
+            )?)
+        } else {
+            None
+        };
+        for (z, &dz) in focus.iter().enumerate() {
+            let c = if let Some(cached) = &cached {
+                cached[z].clone()
+            } else {
+                let shifted: Vec<PupilFunction> = fp
+                    .pupils
+                    .iter()
+                    .map(|(_, _, p)| {
+                        let cos = p.pupil.geometry().chief_ray[2];
+                        p.pupil.with_focus_shift(dz / cos)
+                    })
+                    .collect();
+                let weighted: Vec<(&PupilFunction, f64)> = shifted
+                    .iter()
+                    .zip(&fp.pupils)
+                    .map(|(p, (_, w, _))| (p, *w))
+                    .collect();
+                let sub = ctx.subrange(0.3 + 0.7 * done / total, 0.3 + 0.7 * (done + 1.0) / total);
+                field_mtf(
+                    &fp.orientation(),
+                    &weighted,
+                    &freqs,
+                    settings.method,
+                    &settings.huygens,
+                    &sub,
+                )?
+            };
             done += 1.0;
             for w in &c.warnings {
                 let m = format!("field {f}: {w}");
@@ -661,6 +716,7 @@ pub fn through_focus_mtf_analysis_job(
             }
         }
         out.push(ThroughFocusField {
+            pupil_sampling: fp.sampling(),
             field: f,
             field_value: value,
             curves: freqs
