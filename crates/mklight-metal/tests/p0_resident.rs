@@ -83,6 +83,24 @@ fn bits(a: &[f32], b: &[f32]) {
 fn both_origins_resident_trace_sum_all_samples() {
     for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
         let g = backend(origin);
+        let mut layout = vec![
+            size_of::<PackedHeader>() as u32,
+            size_of::<PackedSurface>() as u32,
+            align_of::<PackedHeader>() as u32,
+            align_of::<PackedSurface>() as u32,
+        ];
+        layout.extend(
+            mklight_gpu::layout::header_offsets()
+                .iter()
+                .map(|(_, n)| *n as u32),
+        );
+        layout.extend(
+            mklight_gpu::layout::surface_offsets()
+                .iter()
+                .map(|(_, n)| *n as u32),
+        );
+        assert_eq!(g.layout_probe().unwrap(), layout);
+
         let c = CpuF32Backend::matching(&g.precision().probe);
         let mut max_sum_error = 0f64;
         for (name, sys) in testutil::xval_systems() {
@@ -487,12 +505,16 @@ fn benchmark_resident_chains() {
                 .par_iter()
                 .map(|(r, w)| mklight_trace::trace_ray(t.system(), r, *w, &opts, None))
                 .collect();
-            let cpu_sums = [
-                out.iter().map(|r| r.ray.pos.x).sum::<f64>(),
-                out.iter().map(|r| r.ray.pos.y).sum::<f64>(),
-                out.iter().map(|r| r.ray.pos.z).sum::<f64>(),
-            ];
-            std::hint::black_box(cpu_sums);
+            let mut cpu_sums = [mklight_trace::Compensated::ZERO; 3];
+            for r in &out {
+                for (sum, value) in cpu_sums
+                    .iter_mut()
+                    .zip([r.ray.pos.x, r.ray.pos.y, r.ray.pos.z])
+                {
+                    sum.add(value);
+                }
+            }
+            std::hint::black_box(cpu_sums.map(|s| s.value()));
             let cpu = wall.elapsed().as_secs_f64();
             let record = serde_json::json!({"sample":name,"rays":n,"pupil_grid_side":grid_side,"round":round,"cold":round==0,"warmup":round==1,"seed":null,"setup_probe_s":setup_s,"prepare_s":prepare,"plan_prepare_s":plan_prepare_s,"qualification_s":qualification_s,"qualification":qualification,"system_upload_s":upload_s,"new_wall_s":new_wall,"new":result.stats,"readback_s":rb.wall_seconds,"old_wall_s":old_wall,"old":old.stats,"old_sum":old_sum.stats,"old_allocations":10,"old_uploaded_bytes":n*80+(t.system().image_index()*4),"old_readback_bytes":n*52+24,"old_host_reduce_s":reduction,"cpu_chain_wall_s":cpu,"cache":g.resident_cache_stats()});
             eprintln!("RAW {record}");
