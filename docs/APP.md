@@ -82,8 +82,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
 3. *One prominent action per view, tinted; hierarchy by style, not size*
    (Toolbars, Buttons, Color). `.glassProminent` or an accent-tinted glass
    capsule only for the single primary action of a flow: Optimize → Apply to
-   Design, Run (Tolerance), Apply to Design (Solves), New Design (welcome),
-   Update on a stale pane. Everything else is regular glass or plain.
+   Design, Find Glasses → Apply to Design (Glass Substitution), Run
+   (Tolerance), Apply to Design (Solves), New Design (welcome), Update on a
+   stale pane. A disabled action dims and loses its tint. Everything else is regular glass or plain.
 4. *Morph glass when controls change state* (`glassEffectID`). The job
    action bar morphs Optimize → [progress, Cancel, Stop] → [Discard, Apply to
    Design] → [Run Again, Done]; the viewport's Section / 3D selection slides
@@ -169,8 +170,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
   reference or GPU f32, with the fallback reason) and its warnings, one
   click away from the pane's backend badge. A result that no longer matches
   the design, the glass library or its settings is dimmed and blurred under
-  a glass "Design changed" card with Update. A schematic drawn from the
-  model, where the engine's layout cannot draw a design yet, says so.
+  a glass "Design changed" card with Update. A previewed candidate design
+  is labelled as not applied.
 * **Calm and native.** Liquid Glass for controls (above), system materials
   and semantic colours elsewhere, SF Symbols, the system font with tabular
   digits, a 2–24 pt spacing scale (`Space`). Light and dark appearance are
@@ -183,7 +184,7 @@ What we took from Apple's current guidance, and how MKLight applies it.
 ## Window structure
 
 ```
-┌ toolbar: ◧ title │   ⟳ EFL · F/# · TT · ⓘ issues   │ Optimize Tolerance Solves │ + Layout │ ◨ ┐
+┌ toolbar: ◧ title │ ⟳ EFL · F/# · TT · ⓘ │ Optimize Glass Tolerance Solves │ + Layout │ ◨ ┐
 ├ sidebar (glass) ─┬ Lens Data (hard scroll edge) ──────────────────────┬ inspector ─────────┤
 │ Analyses         │ Surf Type Comment Radius Thickness Material …      │ [Surface|System]  │
 │  (searchable,    ├─────────────────────────┬──────────────────────────┤ type menu, preview│
@@ -199,7 +200,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
   pane, ⌥-click or the context menu opens a new pane. Open analyses carry a
   dot, unavailable ones are dimmed with the engine's reason as help.
 * **Toolbar**: three groups separated by `ToolbarSpacer`: the design jobs
-  (Optimize, Tolerance, Apply Solves, each opening its inspector panel);
+  (Optimize, Glass Substitution, Tolerance, Apply Solves, each opening its
+  inspector panel);
   Add Analysis and the layout toggle; the inspector toggle. In the centre,
   the **status capsule** (`DesignStatus`): a running job ("Optimizing ·
   479", click to show it) or analysis activity, EFL (EFL y for a design that
@@ -219,8 +221,17 @@ What we took from Apple's current guidance, and how MKLight applies it.
 * **Layout pane**: the engine's `layout` scene in the Metal viewport, edge to
   edge, with glass controls floating over it (title chip, Section / 3D
   selector, display options, fit), a scale bar, and a glass "Design changed"
-  button when stale. A design with surface types the engine's layout does
-  not draw yet shows a labelled schematic from the model.
+  button when stale. The engine draws every surface type (the model
+  schematic is gone). For designs without rotational symmetry the selector
+  offers Y–Z, X–Z and 3D; the layout's `section` setting follows it and the
+  glass fills pair the profiles along the section's own axis. DOE surfaces
+  carry a fine violet hatch (flag bit 2). In 3D the Display menu adds the
+  engine's surface mesh (`mesh_rings`, flat shaded, the selected surface in
+  the accent) and a Footprints button runs `footprint` and draws every
+  surface's beam outline per field (`global_outlines`), filled
+  translucently. Fit Lens frames the elements; the first fit of a long,
+  slim scene does so by itself. A previewed candidate design shows a glass
+  "Previewing … · not applied" label under the controls.
 * **Analysis panes** (`AnalysisPaneView`): side by side with resizable
   widths. The header has the analysis menu and a one-line state or settings
   summary, and a glass cluster: Run (Cancel while running), automatic update
@@ -233,10 +244,55 @@ What we took from Apple's current guidance, and how MKLight applies it.
   dedicated views are as before (first order with the anamorphic note, spot,
   fans, field curvature, Seidel, MTF, PSF, wavefront, ghosts, stray light,
   polarisation, …); everything else uses the generic view.
+* **Field maps, glass map and image simulation** have dedicated views.
+  `pupil_aberration`, `relative_illumination_map` and `chief_ray_angle`
+  share one reader (`FieldMapData`). A grid run is a heat map over the
+  normalised field, interpolated between the sample dots, with a column
+  picker that shows each column's definition (beside it, or below in
+  narrow panes) and the diverging scale for signed quantities; an x or y
+  sweep is a curve. Relative illumination adds iso-lines (marching squares,
+  0.5…0.95) on a fixed 0…1 scale and the illumination against image
+  radius. The chief ray angle is plotted against image height with the
+  sensor limit; the margin between them is shaded and turns red where the
+  limit is exceeded, and asymmetric systems open on a map. The glass map
+  (`GlassMapChart`, reused by Glass Substitution) draws the catalogue in the
+  n_d–V_d or P_g,F–V_d plane with V_d decreasing to the right; status is
+  shown by colour and, for obsolete glasses, by a hollow mark; the design's
+  glasses are ringed and labelled with their surfaces; hover shows a glass's
+  data and a click inspects it. The image simulation shows the simulated
+  sensor image beside its source, side by side, split or blinking, with
+  exposure, zoom and pan; built-in patterns are drawn as the engine defines
+  them; a user image (any format ImageIO reads) is cropped to the field,
+  resampled in linear light and sent as a buffer, and the project keeps
+  only its path. The footer has the pixel size, the largest distortion and
+  the lowest relative illumination of the field mapping, which a popover
+  lists node by node. The settings bar has compact controls for two-number
+  settings (grid, extent, size), a table for the sensor CRA limit and a
+  source menu.
+* **Run-local spectrum.** Every analysis whose schema has `spectrum` shows
+  a spectrum control (`SpectrumControl`) in its settings popover, with a
+  compact "Spectrum: …" button in the pinned bar: the design's wavelengths
+  (the setting is left out), Photopic V(λ), Scotopic V′(λ), a blackbody
+  (temperature in K, quick picks 5500 K and 3200 K), explicit wavelengths
+  (an editable list seeded from the design), or a sensor response imported
+  from CSV (two columns, λ and response; optional header; comma, semicolon
+  or tab; nm detected by magnitude or header; unreadable rows listed by
+  line). Presets, blackbody and sensor take the engine's sampling (samples,
+  range, equal-energy or uniform spacing). A small chart shows the weights
+  the run will use in spectral colours with the primary marked, resolved by
+  the engine (`system_summary` with the spectrum) or, until it answers, a
+  local preview labelled approximate. The pane summary reads e.g.
+  "Spectrum photopic". A spectrum run records the derived system's hash in
+  `run_info`, so a pane remembers the snapshot it submitted to (otherwise
+  it would look stale forever).
 * **Inspector** (`.inspector`): Surface or System, switched by a segmented
   control in a `safeAreaBar`. Surface: title with a stop badge, the type
   menu, the type's summary and preview, then the data-driven sections,
-  spacing and medium, aperture, placement, coating, solves. Previews:
+  spacing and medium, aperture, placement, coating, solves. A diffractive
+  surface adds Diffraction Efficiency: the order-efficiency model (ideal,
+  kinoform, multilevel with its number of levels), the trace order's
+  efficiency at the design wavelength and, estimated with the blaze
+  m₀λ₀/λ, at the system wavelengths as bars. Previews:
   rotational shapes a sag profile; toroid and biconic x and y profiles; XY
   and Zernike x and y profiles plus a false-colour departure map (diverging
   blue–red, PV); DOE the phase profile in waves, its paraxial power at the
@@ -244,27 +300,73 @@ What we took from Apple's current guidance, and how MKLight applies it.
   order), focal length, smallest zone period and zone count.
 * **Design jobs** are inspector panels (`JobPanel`) with a header, a
   scrolling body and a glass action bar whose buttons morph between states.
-  *Optimize*: merit (RMS spot or wavefront, pupil sampling, hold EFL),
-  variables (the design's `V` marks, as chips, or the engine's automatic
-  set), algorithm, iterations and seed; live iteration, merit, improvement
-  and a log-scale merit sparkline; **Stop** keeps the best design so far,
-  Cancel discards; the result lists every variable before → after, applied
-  as one undoable step. *Tolerance*: ranked sensitivities with bars,
+  *Optimize*:
+  * **Merit function** (`MeritFunctionSection`), Default or Custom, with the
+    merit at the current design read out live. *Default* edits the engine's
+    generator: criterion RMS spot (centroid or chief, per-wavelength or
+    white-light centroid), RMS wavefront, or MTF (frequencies, target,
+    diffraction or geometric, weakest field); rings and arms; fields and
+    wavelengths as checklists; glass and air thickness limits; the
+    anamorphic squeeze target. *Custom* is an operand list: a searchable
+    picker grouped by category (first order, geometry, real rays, image
+    quality, ghosts and stray light, manufacturing, composition); each row
+    shows the operand, its parameters, comparison and target, weight, its
+    current value and its share of the merit as a bar; the selected
+    operand's parameters, field, wavelength, comparison (=, ≤, ≥), target,
+    weight, constraint role and enable are edited below the list; add after
+    the selection, delete (⌫), duplicate, drag or ⌥⌘↑/↓ to reorder, with
+    `combine` references following their operands; local problems and the
+    engine's operand errors show inline. *Convert to Custom* starts from
+    the operands the engine generates for the default merit. Every change
+    is undoable and saved in the project's `merit` section.
+  * **Live evaluation.** The engine has no evaluate-only call, so the panel
+    runs `optimize` with one LM iteration (debounced, cancelled by newer
+    edits, on the design's snapshot) and reads its `start` merit and
+    operand `start` values; shares are weight × residual² over their sum.
+  * **Variables and bounds** (`VariablesBoundsList`): every design variable
+    with its current value (radius and curvature for curvatures), inline
+    min and max (empty is unbounded), pin (equal bounds: kept but held, and
+    left out of the run), remove; out-of-bounds values, automatic
+    semi-diameters and vanished parameters are flagged. New variables get
+    sensible bounds: air gaps and the back focus ≥ 0, glass thickness ≥ 1
+    mm, model n_d 1.4…2.1 and V_d 15…100, semi-diameters and normalisation
+    radii > 0.
+  * Algorithm, iterations and seed; live iteration, search merit,
+    improvement and a log-scale merit sparkline; **Stop** keeps the best
+    design so far, Cancel discards. The result is previewed in the window
+    (layout and analyses, with a before/after layout comparison) and lists
+    every variable before → after; Apply to Design is one undoable step.
+  *Glass Substitution* (`GlassSubstitutionPanel`, the engine's
+  `glass_substitution`): the glass gaps as checkboxes with their current
+  glass (none ticked snaps every model glass); candidates for every lens or
+  per lens in plain words (catalogues, status, the n nearest or an
+  n_d/V_d window, always include, never use, and transmission, cost,
+  climate and stain limits); Quick (tabu) or Thorough (global) with the
+  number of combinations, a time limit, shape iterations per combination
+  and how many to keep; the merit and variables are the Optimize panel's.
+  Live: combinations so far, the best merit, the best glasses, a sparkline.
+  Stop keeps the ranking, Cancel discards. The result is a ranked list
+  (merit, improvement, glasses, re-optimised variables); selecting a row
+  previews that combination's system in the layout and every analysis and
+  shows a before/after card (glasses per surface with n_d / V_d, merit,
+  shape changes, the two layouts) and the glass map with the candidate's
+  glasses ringed. Apply to Design is one undoable step. *Tolerance*: ranked sensitivities with bars,
   Monte-Carlo statistics and a histogram. *Apply Solves*: a dry run (now →
   solved, residual), then one undoable commit.
 * **Welcome window**: New Design (prominent glass) and Open (glass), and the
   engine's sample designs as cards with thumbnails of their layouts,
   computed by the engine on a session of their own (`SampleThumbnails`);
-  samples with extended surface types are listed under "Surface Types" with
-  a schematic.
+  samples with extended surface types are listed under "Surface Types".
+  Slim, long designs are framed on their lens.
 * **Layout persistence**: the panes (analysis, settings, automatic update,
   pinned settings, widths), split positions, viewport mode and ray colouring
   are saved in the project's `views` section (`[{key, analysis, settings,
   ui}]`), written with the next save, not as an undoable design change.
 
 Keyboard: ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete, ⇧⌘T make stop,
-⌃⌘V toggle variable, ⌃⌘O optimize, ⌃⌘T tolerance, ⌃⌘L apply solves, ⌃⌘E issues,
-⌘R run analyses, ⌘. cancel, ⌘2 / ⌘3 section / 3-D, ⌘0 fit, ⌥⌘L layout,
+⌃⌘V toggle variable, ⌃⌘O optimize, ⌃⌘G glass substitution, ⌃⌘T tolerance,
+⌃⌘L apply solves, ⌃⌘E issues, ⌘R run analyses, ⌘. cancel, ⌘2 / ⌥⌘2 / ⌘3
+y–z section / x–z section / 3-D, ⌘0 fit, ⌥⌘L layout,
 ⌃⌘I inspector, ⌃⌘S sidebar. In a job panel Return is the primary action and
 Esc closes the panel.
 
@@ -294,12 +396,16 @@ Changing the type keeps what carries over (curvature, conic, norm radius;
 a DOE wraps the old shape as its base) and drops configuration overrides
 that no longer resolve, as one undoable step.
 
-**First order of anamorphic designs.** The status capsule, its popover and
-the First-Order pane label EFL as the y section's when the design has a
-toroid, biconic or freeform. The engine's `ParaxialXY` (EFL x / y, squeeze)
-is not exposed by `first_order` or `system_summary` yet; the app reads it
-when it appears (`AnamorphicFirstOrder`: `efl_x`, `efl_y`, `squeeze`
-entries or a `paraxial_xy` object) and says it is not reported otherwise.
+**First order of anamorphic designs.** The First-Order pane, the status
+capsule, its popover and the System inspector read the engine's
+`paraxial_xy` and `symmetry`. A design that is not rotationally symmetric
+shows EFL and BFL in x and y, the signed squeeze EFL_y/EFL_x (the engine's
+definition as help), the symmetry class (meridional or none), DOE powers,
+the engine's warnings, and the other wavelengths in a disclosure. The
+capsule shows EFL y and the squeeze. The surface kinds decide only when an
+engine does not report the symmetry. Automatic semi-diameters of every
+surface type come from the engine's layout, in the table and the previews.
+
 ## Building
 
 ```sh
@@ -337,8 +443,11 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   <i>`, `-MKLightInspector system`, `-MKLightViewport 3D`, `-MKLightSheet
   optimize|tolerance|solves` (opens the job panel), `-MKLightAutoRun
   lm|de|tolerance`, `-MKLightShowIssues YES`, `-MKLightToast <text>`,
-  `-MKLightAppearance light|dark` (overrides the system appearance). Pane
-  layouts come from the document's `views`.
+  `-MKLightAppearance light|dark` (overrides the system appearance),
+  `-MKLightSheet glass`, `-MKLightAutoRun glass` (and `-MKLightAutoPick n`),
+  `-MKLightAutoStop s` and `-MKLightAutoApply s` (press Stop / Apply after
+  s seconds), `-MKLightFootprints YES`, `-MKLightFit lens`. Pane layouts
+  come from the document's `views`.
 
 ## `FFIEngine`
 
@@ -384,7 +493,9 @@ callback never runs on the main thread and holds no engine lock.
   them in the same step. Optimisation and solve results replace the system
   as one undoable step (`replace(system:actionName:undoManager:)`).
   Variables are a project section (`[{param, lower, upper}]`, the engine's
-  `VariableSpec`) and their changes are undoable too.
+  `VariableSpec`) and their changes, bounds and pins are undoable too; so
+  is the merit function (`merit`: `{mode, default_merit, spec, hold_efl}`,
+  `spec` an engine `MeritFunctionSpec`).
 * **File** (`ProjectDocument`, `ReferenceFileDocument`): reads and writes the
   engine's project format through `ProjectFile`; SwiftUI's document
   machinery provides autosave in place, versions and the dirty state (it
@@ -399,21 +510,28 @@ callback never runs on the main thread and holds no engine lock.
   automatic update re-run, the others wait for Update. Long analyses (stray
   light, ghost irradiance, through-focus and MTF vs field) start manual.
   The project's glass catalogs are loaded before the first snapshot;
-  undoing Load Glass Catalog rebuilds the session without it.
+  undoing Load Glass Catalog rebuilds the session without it. A **preview**
+  (`Workspace.preview`) snapshots a candidate design (an optimisation or
+  glass substitution result) instead of the document's, so the layout and
+  every pane show it; the outputs of the design just before are kept as a
+  baseline for comparisons; any design change ends the preview, and design
+  jobs always run on the design's own snapshot (`designSnapshot`).
 * **Window state** (`WindowState`): selection (by `SurfaceID`), inspector
   tab, split fractions, viewport mode and camera, ray colouring, transient
   messages, the open job panel. It never enters the design; its layout part
   is saved in `views` (`WorkspaceLayout`).
-* **Design jobs** (`OptimizeSession`, `ToleranceSession`, `SolvesSession`):
-  view models that submit the engine's `optimize`, `tolerance` and `solves`
-  analyses, follow their progress, and apply results to the document. The
+* **Design jobs** (`OptimizeSession` with the merit editor's working copy
+  and live evaluation, `GlassSubstitutionSession`, `ToleranceSession`,
+  `SolvesSession`): view models that submit the engine's `optimize`,
+  `glass_substitution`, `tolerance` and `solves` analyses, follow their
+  progress, preview and apply results to the document. The
   window state owns one of each, so a job outlives its panel; closing the
   window cancels them.
 
 ## Tests
 
-`swift test` in `apps/macos` (173 tests in 29 suites: model 69, engine 33,
-FFI 20, UI 51):
+`swift test` in `apps/macos` (227 tests in 41 suites: model 69, engine 33,
+FFI 35, UI 90):
 
 * `MKLightModelTests`: round trips against JSON written by the Rust side
   (every model variant including the extended shapes in
@@ -450,7 +568,20 @@ FFI 20, UI 51):
   anamorphic first-order reader); design jobs (merit progress parsing, Optimize
   applied as one undoable step, Stop keeps and Cancel discards, tolerance
   ranking and Monte Carlo, Apply Solves dry run then undoable commit);
-  parsers, viewport math and shaders.
+  parsers, viewport math and shaders; the merit editor (add after the
+  selection, reorder, duplicate and delete with `combine` references kept,
+  the operand JSON, contributions from the start values, undo and the saved
+  section) and variable bounds (defaults, edit, pin, held when pinned, table
+  marks, undo); glass substitution settings, progress and results; spectrum
+  settings encoding and CSV import; the field-map, glass-map and
+  image-simulation readers.
+* FFI additions: the extended shapes run through the layout (x–z section,
+  surface mesh, DOE flag) and Seidel; footprint overlays; the default merit
+  evaluates and converts to custom operands with the same merit; custom
+  operands report values; spectrum panes stay current; the glass
+  substitution flow on the achromat (select, run, preview, apply, undo,
+  redo) and Stop keeping the ranking; the new analyses' views read the
+  engine's results; spectra and x/y first order on the real engine.
 
 ## iPadOS readiness
 
@@ -504,9 +635,8 @@ Remaining for an iPadOS target:
 
 * The lens table's keyboard navigation is implemented with SwiftUI focus
   and key handlers and checked by hand in the app, not by UI tests.
-* Merit functions are the engine's default merit generator (criterion,
-  pupil sampling, hold EFL); explicit operand editing, bounds on variables
-  and tolerance sets are not in the UI yet (the engine accepts them).
+* Tolerance sets and compensators are not editable yet (the engine accepts
+  them); the Tolerance panel uses the engine's basic set.
 * Configurations are listed but not editable; multi-configuration analyses
   use the `configuration` setting where the schema has one.
 * Engine 0.1 writes the `layout` kind codes in its enum order while
@@ -525,14 +655,23 @@ Remaining for an iPadOS target:
   them and uses no custom translucency of its own; Reduce Motion is honoured
   in code (`accessibilityReduceMotion`).
 * Engine gaps the UI works around:
-  * `layout`, `seidel`, field curvature, ghost paths, GPU packing, stray
-    geometry and merit evaluation reject the extended shapes
-    (`require_legacy_shapes`). The viewport and the welcome window show a
-    labelled schematic from the model instead of the layout; Optimize and
-    Tolerance fail on such designs with the engine's message.
-  * `first_order` and `system_summary` do not expose `ParaxialXY` (EFL x and
-    y, squeeze); the app labels EFL as the y section's and reads the x data
-    as soon as the engine reports it.
-  * The engine's automatic semi-diameters come from the layout, so designs
-    with extended shapes show `auto` without a value; previews then use the
-    normalisation radius.
+  * No evaluate-only merit call: the live merit runs `optimize` with one LM
+    iteration (n + 1 merit evaluations) and reads its start columns.
+  * A run with a `spectrum` records the run-local system's hash in
+    `run_info.snapshot_hash`, which breaks the "current while the hash
+    matches" rule of RESULTS §1; panes remember the snapshot they submitted.
+  * `layout` and `ParamPath` still treat a few cases strictly: the
+    `curvature` path refuses toroids and biconics (the app addresses their
+    sections with `shape_param curvature_x/y`), reading an automatic
+    semi-diameter through a path fails (the app shows the layout's value and
+    flags such a variable), and a trace order of 0.5 is refused (the app
+    rejects non-integer orders before the engine sees them).
+  * `image_simulation`'s text chart and PNG-path sources come out
+    vertically mirrored (their top row lands at the low-y edge); imported
+    images go as buffers, which are correct.
+  * `glass_map` reports no glass status unless AGF metadata is passed, so
+    catalogue glasses show as "Catalogue glass".
+  * LM with the MTF weakest-field merit and the EFL hold can end slightly
+    infeasible (violation 2.7e-6 after 100 iterations on the Double Gauss),
+    so the feasibility-first rule returns the start although the merit
+    improved by a quarter.
