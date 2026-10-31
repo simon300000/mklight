@@ -71,6 +71,69 @@ fn wide_field_chief_ray_matches_inverse_snell() {
     }
 }
 
+#[test]
+fn grazing_field_chief_ray_matches_snell() {
+    // Choose the incident direction and surface hit; tangential momentum
+    // fixes the outgoing direction and the stop's axial position.
+    let radius: f64 = -30.0;
+    let height: f64 = -0.05;
+    let sag = radius + (radius * radius - height * height).sqrt();
+    for axis in 0..2 {
+        let mut point = Vec3::new(0.0, height, sag);
+        let mut incident = Vec3::new(
+            0.0,
+            89.5_f64.to_radians().sin(),
+            89.5_f64.to_radians().cos(),
+        );
+        if axis == 0 {
+            point = Vec3::new(height, 0.0, sag);
+            incident = Vec3::new(incident.y, 0.0, incident.z);
+        }
+        let normal = Vec3::new(-point.x / radius, -point.y / radius, 1.0 - sag / radius);
+        let tangent = (incident - normal * incident.dot(normal)) / 1.5;
+        let outgoing = tangent + normal * (1.0 - tangent.norm2()).sqrt();
+        let gap = sag - height * outgoing.z / if axis == 0 { outgoing.x } else { outgoing.y };
+        let glass = MaterialRef::Constant { n: 1.5 };
+        let mut system = infinite_system(
+            0.01,
+            vec![
+                surf(1, SurfaceShape::sphere(radius), gap, glass.clone()),
+                surf(2, SurfaceShape::Plane, 2.0, glass.clone()),
+            ],
+            3,
+        );
+        system.surfaces[3].material = glass;
+        system.stop = 2;
+        system.ray_aiming = mklight_core::RayAiming::Real { tolerance: 1e-10 };
+        system.fields = angle_fields(&[89.5]);
+        if axis == 0 {
+            system.fields.fields[0].x = 89.5;
+            system.fields.fields[0].y = 0.0;
+        }
+        let t = tracer(system);
+        let g = t.generate(t.field(0), 0, 0.0, 0.0).expect("chief ray");
+        let hit = trace_ray(
+            t.system(),
+            &g.ray,
+            0,
+            &TraceOptions::unclipped().to_surface(1),
+            None,
+        );
+        assert!(hit.status.is_ok());
+        assert!((hit.ray.pos - point).norm() < 1e-9);
+        assert!((hit.ray.dir - outgoing).norm() < 1e-10);
+        let stop = trace_ray(
+            t.system(),
+            &g.ray,
+            0,
+            &TraceOptions::unclipped().to_surface(2),
+            None,
+        );
+        assert!(stop.status.is_ok());
+        assert!(stop.ray.pos.x.hypot(stop.ray.pos.y) < 1e-10);
+    }
+}
+
 fn paraboloid(epd: f64) -> mklight_trace::SequentialTracer {
     let mut m = surf(
         1,

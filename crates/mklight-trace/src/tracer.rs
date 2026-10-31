@@ -41,7 +41,9 @@
 //! linear prediction from the cached chief-ray aim point and Jacobian of the
 //! (field, wavelength). If the direct solve fails, it falls back to
 //! continuation in the pupil radius (25 %, 50 %, 75 %, 100 %). Aiming ignores
-//! clipping. Convergence is reported per ray.
+//! clipping. At infinity, chief-ray recovery continues unit directions from
+//! the axis, preserving the entrance hit between steps. Convergence is reported
+//! per ray.
 
 use std::sync::Arc;
 
@@ -403,24 +405,60 @@ impl SequentialTracer {
                 let (mut s, _) = self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None);
                 if !s.converged {
                     // A wide-field paraxial seed can miss the front surfaces:
-                    // continue the source from the axis in 16 steps, ending
-                    // on `src` itself. Any failed step keeps the first solve.
+                    // continue the source from the axis in bounded steps, ending
+                    // on `src` itself. Blend unit directions so the first
+                    // step stays near the axis even for a grazing field.
+                    // Any failed step keeps the first solve.
                     let p = self.source_params(src);
-                    let steps = (0..16)
+                    let count = if matches!(src, ObjectSource::Direction { .. }) {
+                        64
+                    } else {
+                        16
+                    };
+                    let steps = (0..count)
                         .map(|k| {
-                            let f = k as f64 / 16.0;
-                            self.source_from_params([f * p[0], f * p[1]])
+                            let f = k as f64 / count as f64;
+                            match *src {
+                                ObjectSource::Direction { dir } => Some(ObjectSource::Direction {
+                                    dir: (Vec3::Z * (1.0 - f) + dir * f).normalized(),
+                                }),
+                                ObjectSource::Point { .. } => {
+                                    self.source_from_params([f * p[0], f * p[1]])
+                                }
+                            }
                         })
                         .chain([Some(*src)]);
                     let (mut x, mut j) = ([0.0, 0.0], None);
+                    let mut entrance: Option<Vec3> = None;
                     for (k, step) in steps.enumerate() {
                         let Some(step) = step else { break };
+                        if let (Some(p), ObjectSource::Direction { dir }) = (entrance, step) {
+                            // Keep the previous entrance hit in the new beam.
+                            let dz = self.pupil.z_ep - p.z;
+                            x = [p.x + dz * dir.x / dir.z, p.y + dz * dir.y / dir.z];
+                        }
                         let (sk, _) = self.solve_aim(&step, wl, [0.0, 0.0], x, j);
                         if !sk.converged {
                             break;
                         }
                         (x, j) = (sk.x, sk.jacobian);
-                        if k == 16 {
+                        if k < count && matches!(step, ObjectSource::Direction { .. }) {
+                            let ray = self.start_ray(&step, x).unwrap();
+                            let hit = trace_ray(
+                                &self.sys,
+                                &ray,
+                                wl,
+                                &TraceOptions {
+                                    clip: false,
+                                    last_surface: Some(1),
+                                    intersect: self.settings.intersect,
+                                },
+                                None,
+                            );
+                            entrance =
+                                Some(self.sys.surfaces[1].frame.to_global_point(hit.ray.pos));
+                        }
+                        if k == count {
                             s = sk;
                         }
                     }
