@@ -49,5 +49,10 @@ debug = 1
 lto = "thin"
 codegen-units = 1
 
+[profile.dev]
+# Line tables keep backtraces readable at a fraction of full debug info.
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
