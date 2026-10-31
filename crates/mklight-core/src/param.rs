@@ -35,6 +35,23 @@ pub enum ShapeParameter {
     TraceOrder,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementComponent {
+    DecenterX,
+    DecenterY,
+    TiltX,
+    TiltY,
+    TiltZ,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IrregularityMode {
+    Astigmatism,
+    Spherical,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(
     remote = "Self",
@@ -43,6 +60,18 @@ pub enum ShapeParameter {
     deny_unknown_fields
 )]
 pub enum ParamPath {
+    /// Reflected test fringes over the overlay's clear radius.
+    Irregularity {
+        surface: SurfaceId,
+        mode: IrregularityMode,
+    },
+    ElementPlacement {
+        surface: SurfaceId,
+        last: SurfaceId,
+        #[serde(default)]
+        pivot: Option<SurfaceId>,
+        component: PlacementComponent,
+    },
     ShapeCoefficient {
         surface: SurfaceId,
         set: CoefficientSet,
@@ -154,7 +183,9 @@ impl ParamPath {
     pub fn surface(&self) -> Option<SurfaceId> {
         use ParamPath::*;
         match self {
-            Curvature { surface }
+            Irregularity { surface, .. }
+            | ElementPlacement { surface, .. }
+            | Curvature { surface }
             | Thickness { surface }
             | Conic { surface }
             | Asphere { surface, .. }
@@ -179,6 +210,45 @@ impl ParamPath {
     pub fn get(&self, s: &OpticalSystem) -> MkResult<f64> {
         use ParamPath::*;
         Ok(match self {
+            Irregularity { surface, mode } => match overlay_geometry(&surf(s, *surface)?.shape) {
+                SurfaceShape::SagOverlay {
+                    astigmatism,
+                    spherical,
+                    ..
+                } => match mode {
+                    IrregularityMode::Astigmatism => *astigmatism,
+                    IrregularityMode::Spherical => *spherical,
+                },
+                _ => 0.0,
+            },
+            ElementPlacement {
+                surface,
+                last,
+                pivot,
+                component,
+            } => {
+                let first = s
+                    .surfaces
+                    .iter()
+                    .position(|sf| sf.id == *surface)
+                    .ok_or_else(|| bad(self, "missing first surface"))?;
+                let end = s
+                    .surfaces
+                    .iter()
+                    .position(|sf| sf.id == *last)
+                    .ok_or_else(|| bad(self, "missing last surface"))?;
+                if first == 0 || end < first || end + 1 == s.surfaces.len() {
+                    return Err(bad(self, "expected an interior, ordered surface range"));
+                }
+                if let Some(id) = pivot {
+                    surf(s, *id)?;
+                }
+                match &s.surfaces[first].element_placement {
+                    Some(e) if e.last == *last && e.pivot == *pivot => component.get(&e.motion),
+                    Some(_) => return Err(bad(self, "different range or pivot on this vertex")),
+                    None => 0.0,
+                }
+            }
             ShapeCoefficient {
                 surface,
                 set,
@@ -332,6 +402,64 @@ impl ParamPath {
             return Err(bad(self, "value must be finite"));
         }
         match self {
+            Irregularity { surface, mode } => {
+                let wavelength = s.wavelengths.wavelengths[s.wavelengths.primary].um;
+                let sf = surf_mut(s, *surface)?;
+                let radius = sf
+                    .aperture
+                    .as_ref()
+                    .map(|a| a.bounding_radius())
+                    .or_else(|| match sf.semi_diameter {
+                        crate::model::SemiDiameter::Fixed { value } => Some(value),
+                        _ => None,
+                    });
+                let shape = overlay_geometry_mut(&mut sf.shape);
+                if !matches!(shape, SurfaceShape::SagOverlay { .. }) {
+                    if matches!(
+                        shape,
+                        SurfaceShape::CoordinateBreak | SurfaceShape::Paraxial { .. }
+                    ) {
+                        return Err(bad(self, "surface has no manufacturing sag"));
+                    }
+                    let radius =
+                        radius.ok_or_else(|| bad(self, "irregularity requires a clear radius"))?;
+                    *shape = SurfaceShape::SagOverlay {
+                        base: Box::new(shape.clone()),
+                        norm_radius: radius,
+                        test_wavelength_um: wavelength,
+                        astigmatism: 0.0,
+                        spherical: 0.0,
+                    };
+                }
+                if let SurfaceShape::SagOverlay {
+                    astigmatism,
+                    spherical,
+                    ..
+                } = shape
+                {
+                    match mode {
+                        IrregularityMode::Astigmatism => *astigmatism = v,
+                        IrregularityMode::Spherical => *spherical = v,
+                    }
+                }
+            }
+            ElementPlacement {
+                surface,
+                last,
+                pivot,
+                component,
+            } => {
+                self.get(s)?;
+                let sf = surf_mut(s, *surface)?;
+                let e = sf.element_placement.get_or_insert_with(|| {
+                    crate::model::surface::ElementPlacement {
+                        last: *last,
+                        pivot: *pivot,
+                        motion: Placement::default(),
+                    }
+                });
+                component.set(&mut e.motion, v);
+            }
             ShapeCoefficient {
                 surface,
                 set,
@@ -435,7 +563,10 @@ impl ParamPath {
             | TiltY { surface }
             | TiltZ { surface } => {
                 let sf = surf_mut(s, *surface)?;
-                let p: &mut Placement = sf.placement.get_or_insert_with(Placement::default);
+                let p: &mut Placement = sf.placement.get_or_insert_with(|| Placement {
+                    restore_after: true,
+                    ..Placement::default()
+                });
                 match self {
                     DecenterX { .. } => p.decenter_x = v,
                     DecenterY { .. } => p.decenter_y = v,
@@ -502,16 +633,50 @@ impl ParamPath {
     }
 }
 
+fn overlay_geometry(shape: &SurfaceShape) -> &SurfaceShape {
+    match shape {
+        SurfaceShape::Diffractive { base, .. } => base,
+        _ => shape,
+    }
+}
+fn overlay_geometry_mut(shape: &mut SurfaceShape) -> &mut SurfaceShape {
+    match shape {
+        SurfaceShape::Diffractive { base, .. } => base,
+        _ => shape,
+    }
+}
+
+impl PlacementComponent {
+    pub fn get(self, p: &Placement) -> f64 {
+        match self {
+            Self::DecenterX => p.decenter_x,
+            Self::DecenterY => p.decenter_y,
+            Self::TiltX => p.tilt_x,
+            Self::TiltY => p.tilt_y,
+            Self::TiltZ => p.tilt_z,
+        }
+    }
+    pub fn set(self, p: &mut Placement, v: f64) {
+        match self {
+            Self::DecenterX => p.decenter_x = v,
+            Self::DecenterY => p.decenter_y = v,
+            Self::TiltX => p.tilt_x = v,
+            Self::TiltY => p.tilt_y = v,
+            Self::TiltZ => p.tilt_z = v,
+        }
+    }
+}
+
 fn geometry(shape: &SurfaceShape) -> &SurfaceShape {
-    if let SurfaceShape::Diffractive { base, .. } = shape {
-        base
+    if let SurfaceShape::Diffractive { base, .. } | SurfaceShape::SagOverlay { base, .. } = shape {
+        geometry(base)
     } else {
         shape
     }
 }
 fn geometry_mut(shape: &mut SurfaceShape) -> &mut SurfaceShape {
-    if let SurfaceShape::Diffractive { base, .. } = shape {
-        base
+    if let SurfaceShape::Diffractive { base, .. } | SurfaceShape::SagOverlay { base, .. } = shape {
+        geometry_mut(base)
     } else {
         shape
     }
@@ -554,12 +719,18 @@ macro_rules! coefficient_slot {
     }};
 }
 fn shape_coefficients(shape: &SurfaceShape, set: CoefficientSet) -> Option<(&Vec<f64>, usize)> {
+    if let SurfaceShape::SagOverlay { base, .. } = shape {
+        return shape_coefficients(base, set);
+    }
     coefficient_slot!(shape, set)
 }
 fn shape_coefficients_mut(
     shape: &mut SurfaceShape,
     set: CoefficientSet,
 ) -> Option<(&mut Vec<f64>, usize)> {
+    if let SurfaceShape::SagOverlay { base, .. } = shape {
+        return shape_coefficients_mut(base, set);
+    }
     coefficient_slot!(shape, set)
 }
 
@@ -624,12 +795,18 @@ macro_rules! parameter_slot {
     }};
 }
 fn shape_parameter(shape: &SurfaceShape, param: ShapeParameter) -> Option<Slot<&f64, &i32>> {
+    if let SurfaceShape::SagOverlay { base, .. } = shape {
+        return shape_parameter(base, param);
+    }
     parameter_slot!(shape, param)
 }
 fn shape_parameter_mut(
     shape: &mut SurfaceShape,
     param: ShapeParameter,
 ) -> Option<Slot<&mut f64, &mut i32>> {
+    if let SurfaceShape::SagOverlay { base, .. } = shape {
+        return shape_parameter_mut(base, param);
+    }
     parameter_slot!(shape, param)
 }
 

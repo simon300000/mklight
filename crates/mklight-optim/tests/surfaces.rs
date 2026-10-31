@@ -242,6 +242,7 @@ fn q_coefficient_and_toroid_curvature_tolerances() {
             seed: 1024,
             batch: 4,
             threshold: None,
+            ..Default::default()
         };
         let a = monte_carlo(&tol, &eval, &settings, &Monitor::default()).unwrap();
         let b = monte_carlo(&tol, &eval, &settings, &Monitor::default()).unwrap();

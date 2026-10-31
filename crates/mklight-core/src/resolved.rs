@@ -162,6 +162,32 @@ impl ResolvedSystem {
             frames[0] = f;
         }
 
+        // Entry and returning placements are evaluated as a frame pair: only
+        // the inclusive range moves; the downstream baseline is preserved.
+        for (i, sf) in sys.surfaces.iter().enumerate() {
+            if let Some(e) = &sf.element_placement {
+                if e.motion.is_identity() {
+                    continue;
+                }
+                let end = sys.surfaces.iter().position(|s| s.id == e.last).unwrap();
+                let pivot = e
+                    .pivot
+                    .and_then(|id| sys.surfaces.iter().position(|s| s.id == id))
+                    .unwrap_or(i);
+                let anchor = frames[i];
+                let point = frames[pivot].origin;
+                let motion = placement_frame(&e.motion);
+                let rotation = anchor
+                    .rot
+                    .mul_mat(&motion.rot)
+                    .mul_mat(&anchor.rot.transpose());
+                let shift = anchor.rot.mul_vec(motion.origin);
+                for f in &mut frames[i..=end] {
+                    f.origin = point + rotation.mul_vec(f.origin - point) + shift;
+                    f.rot = rotation.mul_mat(&f.rot);
+                }
+            }
+        }
         // --- Media, indices, coatings.
         let mut surfaces = Vec::with_capacity(n);
         let mut medium_before = object_medium.clone();

@@ -384,6 +384,11 @@ fn pack_shape(
     (p.conic, p.conic_lo) = split_checked(shape.conic(), &what("conic"))?;
     let too_wide = || MkError::Unsupported(what("coefficients span too many decades for f32"));
     let (a, b) = match shape {
+        SagOverlay { .. } => {
+            return Err(MkError::Unsupported(what(
+                "sag overlay requires CPU reference",
+            )));
+        }
         OddAsphere { coefficients, .. } => {
             p.shape = MKL_SHAPE_ODD_ASPHERE;
             let c = trimmed(coefficients);

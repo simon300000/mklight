@@ -311,6 +311,19 @@ fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
     use SurfaceShape::*;
     let r2 = x * x + y * y;
     Some(match shape {
+        SagOverlay {
+            base,
+            norm_radius,
+            test_wavelength_um,
+            astigmatism,
+            spherical,
+        } => {
+            let (u, v, r2) = normalized(x, y, *norm_radius)?;
+            // PV(Z5)=2; PV(Z9)=3/2. Each reflected fringe is λ/2 sag PV.
+            sag_jet(base, x, y)?
+                + (u * u - v * v) * (*astigmatism * *test_wavelength_um * 1e-3 / 4.0)
+                + (r2 * r2 * 6.0 - r2 * 6.0 + 1.0) * (*spherical * *test_wavelength_um * 1e-3 / 3.0)
+        }
         Plane | Paraxial { .. } | CoordinateBreak => Jet::ZERO,
         Conic {
             curvature,
@@ -601,6 +614,13 @@ pub fn shape_symmetry(shape: &SurfaceShape) -> Symmetry {
             }
             symmetry
         }
+        SagOverlay {
+            base, astigmatism, ..
+        } => shape_symmetry(base).max(if *astigmatism == 0.0 {
+            Symmetry::Rotational
+        } else {
+            Symmetry::Meridional
+        }),
         Diffractive { base, .. } => shape_symmetry(base),
         _ => Symmetry::Rotational,
     }
@@ -615,6 +635,11 @@ pub fn system_symmetry(system: &OpticalSystem) -> Symmetry {
         .iter()
         .fold(Symmetry::Rotational, |mut symmetry, s| {
             symmetry = symmetry.max(shape_symmetry(&s.shape));
+            if let Some(e) = &s.element_placement {
+                if !e.motion.is_identity() {
+                    symmetry = Symmetry::None;
+                }
+            }
             if let Some(p) = s.placement {
                 if p.decenter_x != 0.0 || p.tilt_y != 0.0 || p.tilt_z != 0.0 {
                     return Symmetry::None;

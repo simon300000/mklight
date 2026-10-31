@@ -52,6 +52,16 @@ document on purpose in the same change.
   by the right-hand rule, unless `order = TiltThenDecenter`. A `CoordinateBreak`
   surface only changes the frame. Any surface's placement can be `Restore`d after
   the surface. Rotations act on the frame, so all following surfaces move too.
+* **Tolerance motion and irregularity.** A new single-surface parameter
+  placement restores after that surface; an explicit existing placement keeps
+  its return rule. `element_placement` applies the same rigid motion to an
+  inclusive surface-ID range, about its first vertex or a chosen pivot
+  vertex, with a returning frame after the range. Decentres are mm, tilts
+  degrees. `sag_overlay` irregularity is measured in reflected test fringes
+  (one fringe = λ_test/2 PV sag), split into astigmatic and primary spherical
+  parts over its clear radius. Test wavelength is µm; actual tracing uses
+  the sag in mm. Formula and reflected RMS: `OPTIMIZATION.md`, Irregularity
+  and rigid elements.
 * **Field angle** `θy > 0` means the chief ray's direction has a positive y
   component in object space. Field heights are measured on the object (or
   image) surface, in mm along +y/+x.
@@ -322,7 +332,9 @@ override or pickup of it) and the image thickness. Codes:
 `coordinate_break_at_end`, `image_mirror`, `invalid_coating`,
 `missing_surface` (mechanics, overrides, solves and pickups),
 `invalid_mechanics`, `invalid_sensor`, `invalid_configuration`,
-`invalid_solve`. A configuration override is checked by the same rules on
+`invalid_solve`, `invalid_sag_overlay_base` (non-geometric overlay base),
+`invalid_element_range` (an unordered or non-interior rigid
+range). A configuration override is checked by the same rules on
 the configured system: an issue it causes is reported at
 `configurations[k].overrides[j]` with the underlying code
 (`invalid_aperture_value` for an F/# override of 0). Unit variants of

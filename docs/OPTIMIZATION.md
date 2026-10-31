@@ -553,8 +553,63 @@ so statistics are bit-reproducible for a seed and any trial can be replayed on
 its own. Both are tested on the Cooke triplet with a back-focus compensator.
 Without compensators every trial is a single evaluation, so the evaluator
 receives a whole batch of perturbed systems in one call (one GPU dispatch
-with `GpuTraceEvaluator`). With compensators, each trial runs its own small LM
-in parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
+with `GpuTraceEvaluator`). With compensators, each trial starts from their nominal values, scans 33
+uniformly spaced values across each bounded range (also retaining nominal),
+and chooses the lowest feasible criterion. A single compensator gets a
+bracketed golden-section refinement before LM; multiple compensators are
+screened coordinate by coordinate before LM. Scan and refinement are
+cancellable and deterministic. Unbounded compensators use nominal-start LM.
+This avoids selecting a secondary MTF focus peak by its local slope. For MTF criteria an
+exact per-trial cache retains up to 64 candidate/operand evaluations, so
+revisited bracket and LM points reuse their traced/MTF result without
+rebuilding pupils; changed prescriptions are always retraced. Trials run in
+parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
+
+### Irregularity and rigid elements
+
+`ParamPath::Irregularity` uses JSON
+`{"param":"irregularity","surface":3,"mode":"astigmatism"}` (or
+`"spherical"`). Values and tolerance limits are **reflected test fringes**:
+one fringe is λ_test/2 peak-to-valley sag, not a wave of transmitted OPD.
+The engine freezes the nominal clear radius into a `sag_overlay`, using
+its explicit aperture/fixed semi-diameter or the nominal traced radius for
+an automatic surface. `irregularity_wavelength_um` selects the test
+wavelength; null uses the primary wavelength when creating an overlay.
+Existing overlay values are the nominal values; tolerance deltas add to them.
+Direct Rust `ParamPath::set` requires an explicit aperture/fixed radius when
+creating the overlay; a model may also supply its radius and test wavelength.
+
+Over the unit disk X=x/a, Y=y/a, r²=X²+Y², the added sag (mm) is
+
+```
+s = (λ_test_um * 1e-3) * [f_astig (X²−Y²)/4
+                        + f_spherical (6r⁴−6r²+1)/3].
+```
+
+These are the Fringe astigmatic and primary spherical polynomials, scaled
+by their respective PVs (2 and 3/2). They preserve the underlying geometric
+shape, including freeforms and the phase of a diffractive surface. For a
+full circular reflected test pupil, piston-removed RMS in test waves is
+`sqrt(f_astig²/24 + 4*f_spherical²/45)`; each pure one-fringe component has
+one wave PV in reflection. The optical criterion traces the real sag and
+normal with the actual media and wavelength; it does not treat fringes as
+transmitted waves. Noncircular/obscured pupils have different RMS. Sag
+overlays currently select the CPU f64 reference explicitly, with a warning
+when the requested backend was not CPU.
+
+Rigid range parameters use, for example,
+`{"param":"element_placement","surface":3,"last":5,"component":"tilt_y","pivot":3}`.
+`surface` and `last` are inclusive stable surface IDs, in prescription order;
+`component` is `decenter_x`, `decenter_y` (mm), or `tilt_x`, `tilt_y`, `tilt_z`
+(degrees). `pivot` is an optional vertex ID, defaulting to the first vertex.
+The model stores an `element_placement` on the first surface. Resolving it
+applies paired entry/return frames around the range: every member receives
+the same rigid motion about that pivot, while downstream frames retain
+their original positions and orientations. Existing surface placements are
+composed inside this motion; IDs and stop indices do not change. More than
+one component on the same first vertex must use the same range and pivot.
+A newly created single-surface decentre/tilt placement also returns after
+that surface. An existing placement keeps its explicitly saved return rule.
 
 ## End-to-end tests (`tests/trace_optim.rs`)
 
@@ -563,6 +618,7 @@ in parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
 | singlet best form | f = 100, F/10, N-BK7, start equi-convex; vars c₁, c₂, back focus; EFL = 100 constraint; on-axis d-light RMS spot | shape factor `q = 0.730`, thin-lens best form `2(n²−1)/(n+2) = 0.740`; merit ÷150; EFL within 1e-6 mm |
 | doublet achromatisation | N-BK7/F2, start with R₂ = −60, R₃ = −300 (focal shift > 0.5 mm) | F–C focal shift 2e-10 mm (test: < 1e-6), EFL = 100 ± 1e-6, R₂ → −40.2 mm, R₃ → −375 mm (the sample achromat, bent for minimum spherical aberration, has −42.5 / −410) |
 | Cooke triplet | default spot merit (3 fields × 3 λ), 6 curvatures + back focus, EFL constraint, glass/air centre and auto-SD edge bounds | LM (40 iterations) lowers the merit by 35 %; seeded basin hopping is bit-reproducible and does not increase it; all constraints hold |
+| MTF focus tolerancing | Double Gauss with a saved 0.3 mm focus offset, 18 trials, seed 71 | main peak retained; first trial cross-checked against a 129-point focus scan; disabling coarse screening reproduces secondary-peak failures |
 | tolerancing | Cooke triplet, 9 tolerances, back-focus compensator | ranked sensitivities; the compensator removes > 50 % of an air-space error; Monte Carlo identical for a seed, different for another |
 | cancellation | Cooke triplet | LM and basin hopping return `Cancelled` with the best-so-far point (feasibility-ranked) |
 
@@ -989,13 +1045,17 @@ the best point seen. `final` is the better of the answer and the start
 | key | type, default | meaning |
 |---|---|---|
 | `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface. A parameter the system does not have (here and in `compensators`) is rejected |
-| `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial |
+| `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), screened and re-optimised for every trial |
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
 | `mode` | `sensitivity` \| `monte_carlo` \| `both`, `both` | what to run |
 | `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed` |
 | `threshold` | number or null, `null` | criterion value for the yield |
-| `compensator_iterations` | integer, `20` | LM iterations per trial |
+| `compensator_iterations` | integer, `20` | golden-section refinement steps and maximum LM iterations per trial |
+| `percentiles` | array, `[50,90,97.7]` | requested percentiles in [0,100], linearly interpolated successful order statistics, in request order |
+| `record_trials`, `record_limit` | boolean/integer, `false`, `1000` | retain the first completed trial records, with a hard maximum of 10000 records |
+| `preview_case` | object or null, `null` | evaluate only `{type:"trial",trial:0}` or `{type:"sensitivity",operand:0,positive:true}` and return the compensated model and content hash; zero-based indices |
+| `irregularity_wavelength_um` | positive number or null, `null` | reflected fringe test wavelength in µm; null retains an existing overlay's wavelength or uses primary for a new overlay |
 | `backend`, `gpu_batch`, `stop_key` | as for `optimize` | |
 
 Without compensators, every trial is a single evaluation, and a batch of trials
@@ -1022,13 +1082,19 @@ goes to the evaluator as one batch (one GPU dispatch).
   },
   "monte_carlo": {                                  // null when not run
     "trials": 100, "failures": 0, "seed": 0,
+    "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
+    "seconds_per_trial": [/* elapsed seconds; amortised batch wall time without compensators */],
+    "mean_seconds_per_trial": 0.02,
+    "records": [{"trial": 0, "criterion": 4.1e-4, "ok": true,
+                 "compensators": [42.31], "perturbations": [0.01, -0.02], "seconds": 0.02}],
     "mean": 4.2e-4, "std_dev": 1.1e-5, "min": 4.0e-4, "max": 4.6e-4,
-    "percentiles": [{"percentile": 50.0, "value": 4.2e-4}, …80, 90, 95, 98],
+    "percentiles": [{"percentile": 50.0, "value": 4.2e-4}, …90, 97.7],
     "yield_fraction": 0.93 | null, "threshold": 4.5e-4 | null,
     "compensator_mean": [42.25], "compensator_std": [0.04],
     "cancelled": false,                              // true: statistics of the completed trials
     "criteria": [/* per trial, "inf" for failed trials */]
   },
+  "preview": null,                                   // preview_case: {system, system_hash, criterion, compensators, perturbations}
   "compensators": [/* the Compensators */],
   "criterion_spec": {/* MeritFunctionSpec */},
   "backend": {/* as for optimize; no final_qualification */}

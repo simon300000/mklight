@@ -102,6 +102,15 @@ pub enum SurfaceShape {
         ordering: ZernikeOrdering,
         coefficients: Vec<f64>,
     },
+    /// Manufacturing sag departure on an arbitrary geometric base.
+    SagOverlay {
+        base: Box<SurfaceShape>,
+        norm_radius: f64,
+        test_wavelength_um: f64,
+        /// Reflected test fringes (one fringe = λ/2 peak-to-valley sag).
+        astigmatism: f64,
+        spherical: f64,
+    },
     /// Ideal thin lens with the given focal length in mm: a perfect paraxial
     /// element that images without aberration (used for afocal output and testing).
     Paraxial { focal_length: f64 },
@@ -121,7 +130,8 @@ impl SurfaceShape {
             | SurfaceShape::QBfs { curvature, .. }
             | SurfaceShape::XYPolynomial { curvature, .. }
             | SurfaceShape::ZernikeSag { curvature, .. } => curvature,
-            SurfaceShape::Diffractive { ref base, .. } => base.curvature(),
+            SurfaceShape::Diffractive { ref base, .. }
+            | SurfaceShape::SagOverlay { ref base, .. } => base.curvature(),
             SurfaceShape::Toroid { curvature_y, .. }
             | SurfaceShape::Biconic { curvature_y, .. } => curvature_y,
             _ => 0.0,
@@ -135,7 +145,8 @@ impl SurfaceShape {
             | SurfaceShape::QCon { conic, .. }
             | SurfaceShape::XYPolynomial { conic, .. }
             | SurfaceShape::ZernikeSag { conic, .. } => conic,
-            SurfaceShape::Diffractive { ref base, .. } => base.conic(),
+            SurfaceShape::Diffractive { ref base, .. }
+            | SurfaceShape::SagOverlay { ref base, .. } => base.conic(),
             SurfaceShape::Toroid { conic_y, .. } | SurfaceShape::Biconic { conic_y, .. } => conic_y,
             _ => 0.0,
         }
@@ -154,6 +165,7 @@ impl SurfaceShape {
     /// The serde `type` tag.
     pub fn type_name(&self) -> &'static str {
         match self {
+            Self::SagOverlay { .. } => "sag_overlay",
             Self::Plane => "plane",
             Self::Conic { .. } => "conic",
             Self::EvenAsphere { .. } => "even_asphere",
@@ -418,6 +430,17 @@ impl Placement {
     }
 }
 
+/// A rigid motion of a surface range, expressed in the first vertex frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElementPlacement {
+    pub last: SurfaceId,
+    /// Vertex about which the range rotates; absent means its first vertex.
+    #[serde(default)]
+    pub pivot: Option<SurfaceId>,
+    pub motion: Placement,
+}
+
 /// Mechanical description of a lens surface's edge. The stray-light solver
 /// uses it as non-optical geometry. Sizes are in mm.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -439,6 +462,9 @@ pub struct Surface {
     #[serde(default)]
     pub label: String,
     pub shape: SurfaceShape,
+    /// Paired entry/return placement of an inclusive surface range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element_placement: Option<ElementPlacement>,
     /// Distance to the next vertex (CONVENTIONS §2). May be `±∞` for the object.
     #[serde(with = "f64_inf")]
     pub thickness: f64,
@@ -472,6 +498,7 @@ impl Surface {
             id: SurfaceId(id),
             label: String::new(),
             shape,
+            element_placement: None,
             thickness,
             material,
             interaction: Interaction::Refract,

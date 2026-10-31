@@ -28,7 +28,8 @@ wavelength and surface indices are **0-based** (surface 0 is the object).
   `±∞` are the strings `"inf"`/`"-inf"`, NaN is `null` (as in `docs/FFI.md`).
   Object keys are in a fixed (sorted) order.
 * `--no-timing` removes the wall-clock fields `started_unix_ms`,
-  `duration_ms` and `elapsed_ms` everywhere, and `created`/`modified` inside
+  `duration_ms`, `elapsed_ms`, tolerancing `seconds_per_trial`,
+  `mean_seconds_per_trial` and record `seconds` everywhere, and `created`/`modified` inside
   `metadata` objects. With it, two runs on the same inputs print
   **byte-identical** JSON (tested for `run`, `show`, `paraxial`, `trace`,
   `analyses`, `info`). It also applies to files written with `run --out`.

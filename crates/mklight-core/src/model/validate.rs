@@ -177,8 +177,41 @@ fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
             radius(out, "norm_radius", *norm_radius);
             series(out, "coefficients", coefficients, ordering.max_terms());
         }
+        SagOverlay {
+            base,
+            norm_radius,
+            test_wavelength_um,
+            astigmatism,
+            spherical,
+        } => {
+            if matches!(
+                **base,
+                CoordinateBreak | Paraxial { .. } | Diffractive { .. }
+            ) {
+                out.push(
+                    "invalid_sag_overlay_base",
+                    format!("{path}.base"),
+                    "expected a geometric sag base; wrap a diffractive surface's base instead",
+                );
+            }
+            check_shape(out, &format!("{path}.base"), base);
+            radius(out, "norm_radius", *norm_radius);
+            out.positive(
+                "invalid_wavelength",
+                format!("{path}.test_wavelength_um"),
+                *test_wavelength_um,
+            );
+            scalars(
+                out,
+                &[("astigmatism", *astigmatism), ("spherical", *spherical)],
+            );
+        }
         Diffractive { base, phase } => {
-            if matches!(**base, Plane | Conic { .. } | EvenAsphere { .. }) {
+            let geometry = match &**base {
+                SagOverlay { base, .. } => &**base,
+                base => base,
+            };
+            if matches!(geometry, Plane | Conic { .. } | EvenAsphere { .. }) {
                 check_shape(out, &format!("{path}.base"), base);
             } else {
                 out.push(
@@ -605,6 +638,30 @@ impl OpticalSystem {
             }
             if let Some(a) = &s.aperture {
                 check_aperture_shape(&mut out, &format!("{p}.aperture"), a);
+            }
+            if let Some(e) = &s.element_placement {
+                check_placement(
+                    &mut out,
+                    &format!("{p}.element_placement.motion"),
+                    &e.motion,
+                );
+                let end = self.surfaces.iter().position(|sf| sf.id == e.last);
+                if i == 0 || end.is_none_or(|end| end < i || end + 1 == self.surfaces.len()) {
+                    out.push(
+                        "invalid_element_range",
+                        format!("{p}.element_placement.last"),
+                        "expected an interior ordered range",
+                    );
+                }
+                if e.pivot
+                    .is_some_and(|id| !self.surfaces.iter().any(|sf| sf.id == id))
+                {
+                    out.push(
+                        "missing_surface",
+                        format!("{p}.element_placement.pivot"),
+                        "missing pivot vertex",
+                    );
+                }
             }
             if let Some(pl) = &s.placement {
                 check_placement(&mut out, &format!("{p}.placement"), pl);
