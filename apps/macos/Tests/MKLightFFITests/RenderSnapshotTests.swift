@@ -124,10 +124,13 @@ import Testing
             await w.loadEngineMetadata()
             w.update(system: system, immediately: true)
             while w.layout.output == nil { try await Task.sleep(for: .milliseconds(20)) }
+            let glasses = system.surfaces.filter { if case .catalog = $0.material { true } else { false } }.map(\.material)
+            while Set(glasses).count > w.glassNumbers.count { _ = w.abbeNumbers(of: system); try await Task.sleep(for: .milliseconds(20)) }
             let window = WindowState()
             let session = ToleranceSession()
             session.load(doc)
-            let context = ToleranceContext(system: system, semiDiameters: session.semiDiameters(from: w.layout.output))
+            let context = ToleranceContext(
+                system: system, semiDiameters: session.semiDiameters(from: w.layout.output), abbeNumbers: w.abbeNumbers(of: system))
             try await render("tol-editor-\(sample)", width: 340, ToleranceEditor(design: doc, workspace: w, session: session, context: context, edit: { name, change in
                 session.edit(doc, name, context: context, undoManager: nil, change)
             }))
@@ -139,6 +142,13 @@ import Testing
             while session.isRunning || session.result == nil { try await Task.sleep(for: .milliseconds(20)) }
             let r = try #require(session.result)
             try await render("tol-result-\(sample)", width: 340, ToleranceResultView(design: doc, workspace: w, window: window, session: session, result: r))
+            // The worst trial rebuilt and previewed, its bar's trials listed.
+            if let k = r.trialsWorstFirst.first {
+                session.preview(.trial(k), in: w)
+                while session.previewLoading { try await Task.sleep(for: .milliseconds(20)) }
+                try await render("tol-trial-\(sample)", width: 340, ToleranceResultView(design: doc, workspace: w, window: window, session: session, result: r))
+                session.endPreview(in: w)
+            }
             session.edit(doc, "MTF", context: context, undoManager: nil) {
                 $0.criterion.kind = .mtf
                 $0.criterion.threshold = nil

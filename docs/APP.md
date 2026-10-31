@@ -231,7 +231,18 @@ What we took from Apple's current guidance, and how MKLight applies it.
   Special (cylinder presets under Anamorphic). Small inline markers show
   variables (`V`) and solves (`M`, `C`, `F`, `P`, …); validation issues badge
   their surface. Insert and delete are glass buttons in the header, and in
-  the context menu and the Lens menu.
+  the context menu and the Lens menu. A catalogue glass with a melt offset
+  (docs/MATERIALS.md) carries it as a small suffix, `N-SK16 +0.0012/−0.8`
+  (Δn_d / ΔV_d; the column widens to fit, a `V` marks an offset variable).
+  Retyping the same glass keeps its offset; another glass starts without.
+* **Glass offsets in the inspector**: a catalogue glass shows "Add Melt
+  Offset…"; then Δn_d and ΔV_d (`MeltOffsetRows`), validated against the
+  engine's ±0.05 and ±10 as typed, each a possible variable (bounded to
+  those limits) and solve target, one undoable edit each, with the melt
+  glass's n_d and V_d against the catalogue's (`glass_info`, cached per
+  glass in `Workspace.glassNumbers`) and Remove Melt Offset. The glass map
+  marks the offset glass at its shifted position (`kind: "offset"`, its own
+  id), dotted from its catalogue point, with a "Melt offset" legend entry.
 * **Layout pane**: the engine's `layout` scene in the Metal viewport, edge to
   edge, with glass controls floating over it (title chip, Section / 3D
   selector, display options, fit), a scale bar, and a glass "Design changed"
@@ -458,7 +469,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
     window containing R = 0 (−50 … 50) is no curvature interval and is
     refused with an explanation. New variables get
     sensible bounds: air gaps and the back focus ≥ 0, glass thickness ≥ 1
-    mm, model n_d 1.4…2.1 and V_d 15…100, semi-diameters and normalisation
+    mm, model n_d 1.4…2.1 and V_d 15…100, melt offsets Δn_d ±0.05 and ΔV_d
+    ±10, semi-diameters and normalisation
     radii > 0.
   * Algorithm, iterations and seed; live iteration, search merit,
     improvement and a log-scale merit sparkline; **Stop** keeps the best
@@ -479,33 +491,59 @@ What we took from Apple's current guidance, and how MKLight applies it.
   previews that combination's system in the layout and every analysis and
   shows a before/after card (glasses per surface with n_d / V_d, merit,
   shape changes, the two layouts) and the glass map with the candidate's
-  glasses ringed. Apply to Design is one undoable step. *Tolerance* (`TolerancePanel`, the engine's `tolerance`):
+  glasses ringed. Apply to Design is one undoable step. A ticked glass with
+  a melt offset shows it in its row, and a note says that a replacement is
+  installed without it, even the same glass (the offset belonged to the
+  original melt); offset and model-glass variables of ticked glasses are
+  left out of the re-optimisation, which the engine would refuse. The
+  before/after card shows the offset on the glass it leaves.
+  *Tolerance* (`TolerancePanel`, the engine's `tolerance`):
   * **Tolerance set** (`ToleranceSettings`, saved in the project's
     `tolerances` section as the engine's `ToleranceSpec`, `schema_version`,
-    `operands`, `compensators`, `criterion`, `monte_carlo`, as last
-    expanded, plus the app's rows under `app`; a spec written elsewhere is
-    read back as rows). *Default Tolerances…* generates a set from a class
-    of manufacture, Commercial / Precision / High precision, with every
-    value editable: power in fringes (at 632.8 nm over the clear aperture,
-    Δc = Nλ/h²), thickness, surface decentre and tilt (x and y, arc
-    minutes), index and Abbe number (% of V_d), surface irregularity, and
-    the trial distribution. It covers every lens surface's power, decentre
-    and tilt, every gap inside the lens (glass, air, the stop's; the back
-    focus is the compensator) and the index and Abbe number of every model
-    glass. The table is grouped by element (`L1 · N-SK16`, `Air after L1`,
-    `Stop S6`, collapsible): kind, surface (a menu), one ± field or − and +
-    fields, and the unit (fringes, ΔR mm or % of R for radii; ′ or ° for
-    tilts; % or ΔV for Abbe), changing which converts the limits. Add (by
-    kind and surface), duplicate (⌘D) and delete (⌫); the context menu sets
-    the unit, the distribution (uniform, normal with the limits at ±2σ or
-    ±3σ, end points) and symmetric / asymmetric limits. Problems show under
-    their row in red and block the run; index and Abbe on catalogue glasses
-    are left out with a note. Every change is undoable and saved; rows keep
-    their identity across undo (aligned by content).
-  * **Decentres and tilts** move one surface: the run gives each such
-    surface (without a placement of its own) a placement that returns to
-    the axis after it (`restore_after`), on a snapshot of its own, so the
-    rest of the system stays in place.
+    `operands`, `compensators`, `criterion`, `monte_carlo` (with
+    `percentiles` and `record_trials`), as last expanded, plus the app's
+    rows and the test wavelength under `app`; a spec written elsewhere is
+    read back as rows, element motions and irregularity included).
+    *Default Tolerances…* generates a set from a class of manufacture,
+    Commercial / Precision / High precision, with every value editable (0
+    leaves a kind out), in three groups: surfaces (power in test fringes
+    over the clear aperture, Δc = Nλ/h²; astigmatic and spherical
+    irregularity in test fringes; thickness; decentre and tilt of each
+    surface alone), elements (decentre and tilt of each element as a rigid
+    body, a cemented group together) and glasses (index Δn_d and Abbe
+    number in % of V_d of every glass), and the trial distribution. It
+    covers every lens surface, every gap inside the lens (glass, air, the
+    stop's; the back focus is the compensator), every element and every
+    glass. **Test fringes at 632.8 nm** is one setting for the whole set,
+    under the table's toolbar: power and irregularity are counted at it,
+    and it is sent as `irregularity_wavelength_um`. The table is grouped by
+    element (`L1 · N-SK16`, `Air after L1`, `Stop S6`, collapsible): kind
+    (short titles; the full label is the tooltip), surface (a menu; `L2`
+    for an element), one ± field or − and + fields, and the unit (fringes,
+    ΔR mm or % of R for radii; ′ or ° for tilts; % or ΔV for Abbe),
+    changing which converts the limits. Add has a Surface section (by kind
+    and surface) and an Element section (by kind and element);
+    duplicate (⌘D) and delete (⌫); the context menu sets the unit, the
+    distribution (uniform, normal with the limits at ±2σ or ±3σ, end
+    points) and symmetric / asymmetric limits. Problems show under their
+    row in red and block the run. Every change is undoable and saved; rows
+    keep their identity across undo (aligned by content).
+  * **Element tolerances** (`element_placement`): the element's first row
+    says which surfaces move ("S3 S4 S5 move together") and its pivot, a
+    menu: first vertex (the default), last vertex or any surface. The
+    surface menu picks another element, or the first and last surface of
+    a custom range. Every element row starting on one surface shares the
+    range and pivot (the engine requires it): an edit to one moves the
+    group, a row added there joins it, and rows that disagree (a file
+    written elsewhere) are flagged, as is a range that clashes with an
+    element placement of the design itself.
+  * **Surface decentres and tilts** move one surface: the engine returns
+    to the axis after a surface without a placement of its own, so the
+    design is sent as it is. **Index and Abbe** address a model glass's
+    n_d and V_d, a catalogue glass's melt offset (`material_dn_d`,
+    `material_dv_d`, added to the saved offset; a limit that would take the
+    offset past the engine's bounds is flagged). Abbe in % needs the
+    glass's V_d: the panel asks the engine (`glass_info`) once per glass.
   * **Compensators**: the back focus (±0.5 mm) by default; any air space,
     design variable, or a surface's decentre, tilt, thickness or curvature
     from a menu, each with a ± range around nominal (empty is free).
@@ -516,22 +554,45 @@ What we took from Apple's current guidance, and how MKLight applies it.
     merit; the engine's criterion (a mean of squares) is shown as a lens
     designer reads it: √ in µm, waves, or 1 − √ as an MTF. An optional pass
     limit gives the yield.
-  * **Analysis**: sensitivity, Monte Carlo or both, trials and seed. While
-    it runs: progress, the stage ("Monte Carlo 40 / 200"), elapsed time and
-    an estimate of what is left; Stop keeps the sensitivities and trials
-    completed, Cancel discards.
-  * **Results**: nominal and RSS prediction, the 50 / 90 / 97.7 % levels of
-    the builds and the yield; the sensitivity table by share of the RSS
-    with a bar, the worst offenders (the largest shares making up half of
-    it) tinted, a click selecting the surface in the lens table, and an eye
-    that previews the build: the tolerance at its worse limit with the
-    compensators at the values the engine re-optimised for it, read-only,
-    labelled "not applied" in the layout; the Monte-Carlo histogram with
-    the cumulative share of builds (right axis), the nominal and the three
-    levels marked; the compensators' nominal value, the range the
+  * **Analysis**: sensitivity, Monte Carlo or both, trials and seed, the
+    levels (percentiles, "50, 90, 97.7" by default, any list in 0…100) and
+    how many trials keep their perturbations and compensators (200 by
+    default, at most every trial and 10 000). After a run, "Last run: 20 ms
+    per trial, so 200 trials take about 4 s" estimates the next. While it
+    runs: progress, the stage ("Monte Carlo 8048 / 20000", the trials
+    counted from the progress), elapsed time, the time per trial (measured
+    in the Monte Carlo; before it, the last run's or the sensitivity's time
+    per evaluation) and the time left; Stop keeps the sensitivities and
+    trials completed, Cancel discards.
+  * **Results**: the engine's nominal (with a Monte Carlo alone too) and
+    RSS prediction, the engine's percentile levels and the yield; the
+    sensitivity table by share of the RSS with a bar, the worst offenders
+    (the largest shares making up half of it) tinted, a click selecting
+    the surface in the lens table, and an eye that previews that build
+    (the tolerance at its worse limit). The Monte-Carlo histogram with the
+    cumulative share of builds (right axis), the nominal and the levels
+    marked: a click on a bar lists its trials (else the worst trials), each
+    with its value and recorded compensator move; a click on a trial
+    previews it, and the previewed trial is marked under the histogram.
+    Then the time per trial, the compensators' nominal value, the range the
     sensitivity evaluations used against the allowed range (a bar, a
     warning at the limit) and their Monte-Carlo mean and σ. Export copies a
-    text summary or saves the sensitivity table or the trials as CSV.
+    text summary or saves the sensitivity table or the trials (with the
+    recorded compensators and perturbations) as CSV.
+  * **Previews** of a trial or a sensitivity case are rebuilt by the
+    engine (`preview_case` with the run's own settings and system), so the
+    build shown is exactly the one evaluated: read-only in the layout and
+    every analysis ("Previewing Tolerance: trial 298, compensated · not
+    applied"). A card above the sensitivities shows the build's criterion,
+    its compensators (value and move from nominal) and its perturbations
+    in the rows' units, largest share of their limit first, each with a
+    bar from −limit to +limit; End Preview returns to the design. Labels
+    are the app's own, by row position, never the engine's.
+  * The layout of a toleranced build has no line exactly in the section
+    plane, so the engine flags none in section; the reader then takes the
+    profiles, stops, edges and rays within 2 % of the scene's height of the
+    plane (`EngineLayout.markNearSection`), so the section view still
+    draws the build.
   *Apply Solves*: a dry run (now →
   solved, residual), then one undoable commit.
 * **Welcome window**: New Design (prominent glass) and Open (glass), and the
@@ -629,7 +690,8 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   `-MKLightAutoStop s` and `-MKLightAutoApply s` (press Stop / Apply after
   s seconds), `-MKLightToleranceTrials n` and `-MKLightTolerancePreview k`
   (with `-MKLightAutoRun tolerance`: the trials, and the k-th largest
-  sensitivity previewed once the run ends), `-MKLightFootprints YES`, `-MKLightFit lens`,
+  sensitivity previewed once the run ends; `trial` previews the worst
+  trial), `-MKLightFootprints YES`, `-MKLightFit lens`,
   `-MKLightRunDetails <analysis>` (opens that pane's run details),
   `-MKLightAutoEdit s` (edits the merit s seconds after the Optimize panel
   opens and restores it a second later) and `-MKLightAutoConvert s`
@@ -789,14 +851,25 @@ UI 128):
   migration of the earlier fixed sampling, and null relative-illumination
   cells staying no data, clipped at the field's edge. Tolerancing
   (`ToleranceTests`): presets, the generator over the Cooke's elements
-  (no back focus, catalogue glasses skipped, model glasses included),
-  grouping, fringes / ΔR / % / arc minutes / % of V_d to engine limits and
-  back, return placements, edits with undo and redo keeping row ids, the
-  project round trip (and a spec without app rows), the back-focus
-  default and the compensator menu, the criterion settings and display,
-  shares, worst offenders, percentiles, compensator ranges, previews of
-  sensitivity builds, Stop and Cancel, the summary and CSV export, and
-  the run blocked by broken rows only.
+  (no back focus, irregularity, element motions, catalogue glasses through
+  their offsets, 0 leaving a kind out), grouping, fringes / ΔR / % / arc
+  minutes / % of V_d to engine limits and back, element groups and pivots
+  (labels, moving surfaces, the shared range and pivot, conflicts, an
+  interior range, the design's own element placement, saved and foreign
+  forms), irregularity rows and the one test wavelength, the percentiles
+  and recorded trials (sent, saved, validated, undone), edits with undo
+  and redo keeping row ids, the project round trip (and a spec without
+  app rows), the back-focus default and the compensator menu, the
+  criterion settings and display, shares, worst offenders, the engine's
+  percentiles, nominal, records and timing, time-left estimates,
+  compensator ranges, previews rebuilt by the (mock) engine for a
+  sensitivity case and a trial, the near-section layout of a build, Stop
+  and Cancel, the summary and CSV export, and the run blocked by broken
+  rows only. Glass offsets (`GlassOffsetTests`): the table's suffix and
+  offset-variable marker, Δn_d / ΔV_d validation, one undoable edit,
+  default variable bounds, retyping keeping or dropping the offset, the
+  glass map's offset point, and the substitution note with offset
+  variables left out.
 * FFI additions: the extended shapes run through the layout (x–z section,
   surface mesh, DOE flag) and Seidel; footprint overlays; the default merit
   evaluates through `merit_evaluation` to `optimize`'s start merit, its
@@ -805,12 +878,17 @@ UI 128):
   as it is, the engine refuses it); custom operands report values; spectrum panes stay current; the glass
   substitution flow on the achromat (select, run, preview, apply, undo,
   redo) and Stop keeping the ranking; tolerancing on the Cooke
-  (`FFIToleranceTests`: the default set with fringes over the layout's
-  apertures, decentres and tilts on return placements and the back-focus
-  compensator, sensitivity ranked with a nominal RMS spot in µm, Monte
-  Carlo with percentiles, yield and the compensator's spread, the same
-  trials for a seed, a previewed build, the CSV, and Stop keeping partial
-  trials); the relative illumination map's null cells outside the field; the new analyses' views read the
+  (`FFIToleranceTests`: the whole default set, power and irregularity in
+  test fringes over the layout's apertures, surface and element motions,
+  catalogue index and Abbe with V_d from `glass_info`, and the back-focus
+  compensator; every kind moving the criterion, sensitivity ranked with a
+  nominal RMS spot in µm, Monte Carlo with the requested percentiles,
+  yield, timing, records and the compensator's spread, the same trials for
+  a seed, the CSVs; the trial-preview flow with a fixed seed: the worst
+  trial rebuilt with the run's criterion, perturbations and compensators,
+  element L1 moved and irregular surfaces in the rebuilt system, a
+  sensitivity case with one perturbation at its limit, the design never
+  changed; and Stop keeping partial trials with their nominal); the relative illumination map's null cells outside the field; the new analyses' views read the
   engine's results; spectra and x/y first order on the real engine.
 
 ## iPadOS readiness
@@ -865,14 +943,12 @@ Remaining for an iPadOS target:
 
 * The lens table's keyboard navigation is implemented with SwiftUI focus
   and key handlers and checked by hand in the app, not by UI tests.
-* Tolerancing: surface irregularity is kept in the generator but not run,
-  index and Abbe tolerances apply to model glasses only, and element
-  decentres and tilts (a cemented group moving as one) cannot be
-  expressed, since a tolerance perturbs one parameter: the engine needs
-  these perturbations (see Engine gaps). A Monte-Carlo trial cannot be
-  previewed: the engine returns no trial systems or perturbations, so only
-  sensitivity builds are rebuilt from the reported limits and compensator
-  values.
+* Tolerancing: element tilt z and irregularity orientation (the engine's
+  astigmatism is x² − y², fixed) are not offered; a trial's perturbation of
+  a radius in ΔR or % is shown scaled linearly from its limit. The trial
+  list only shows compensator moves for recorded trials (any trial can be
+  previewed). Pickups have no editor anywhere in the app, so melt offsets
+  get variables and solve markers but no pickup UI.
 * Configurations are listed but not editable; multi-configuration analyses
   use the `configuration` setting where the schema has one.
 * Engine 0.1 writes the `layout` kind codes in its enum order while
@@ -912,15 +988,16 @@ Remaining for an iPadOS target:
     vs field and through-focus MTF use 2, 5 and 10 cycles/mm. The curves
     fill the plot, but a designer of a 50 mm F/2 lens usually looks at 10 to
     40 cycles/mm; the fields accept explicit frequencies.
-  * `tolerance`: the Monte-Carlo result has no nominal (only the
-    sensitivity reports it), fixed percentiles (50, 80, 90, 95, 98; the app
-    computes 50 / 90 / 97.7 from the trials), no per-trial compensator
-    values or perturbations (only their mean and σ), and an empty label
-    comes back as the parameter's JSON. With the MTF criterion and a
-    back-focus compensator a trial costs about 3 s on the Double Gauss (40
-    trials in about 2 minutes), and about one trial in six refocuses into a
-    secondary maximum (MTF 0.12 against 0.33), a bimodal distribution that
-    is the compensator's, not the lens's.
+  * `tolerance`: with irregularity in the set (the default) the job runs
+    on the CPU reference (sag overlays are not packed for the GPU), which
+    the backend report says. With the MTF criterion and a back-focus
+    compensator a trial costs about 1 s on the Cooke (40 trials in under a
+    minute, the time per trial shown). Engine labels use surface ids; the
+    app labels operands itself by row.
+  * `layout` of a slightly decentred or tilted system (a toleranced build)
+    flags no polyline as in the section, so the reader keeps those within
+    2 % of the scene's height of the plane (`markNearSection`); the engine
+    could flag meridional lines with a tolerance itself.
   * `glass_map` reports no glass status unless AGF metadata is passed, so
     catalogue glasses show as "Catalogue glass".
   * LM with the MTF weakest-field merit and the EFL hold can end slightly

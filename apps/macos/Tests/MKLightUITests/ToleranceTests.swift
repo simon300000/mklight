@@ -502,6 +502,21 @@ import Testing
         #expect(trials[1] == "1,0.0004,20,42.12,5e-05,-0.01,0" && trials[2].hasPrefix("2,0.0005,22.36") && trials[2].hasSuffix(",,,,"))
     }
 
+    /// A toleranced build's layout: nothing lies exactly in the section, so
+    /// profiles and meridional rays near it are drawn; rims and skew rays
+    /// are not. A layout with in-section lines is left alone.
+    @Test func previewLayoutKeepsItsSection() {
+        func line(_ k: LayoutScene.PolylineKind, x: Double, _ inSection: Bool = false) -> LayoutScene.Polyline {
+            LayoutScene.Polyline(kind: k, points: [Point3(x, -10, 0), Point3(x, 10, 5)], inSection: inSection)
+        }
+        var lines = [line(.surfaceProfile, x: 0.03), line(.ray, x: 0.1), line(.ray, x: 2.1), line(.surfaceRim, x: 9), line(.imagePlane, x: 0, true)]
+        EngineLayout.markNearSection(&lines, section: "yz")
+        #expect(lines.map(\.inSection) == [true, true, false, false, true])
+        var nominal = [line(.surfaceProfile, x: 0, true), line(.ray, x: 0.1)]
+        EngineLayout.markNearSection(&nominal, section: "yz")
+        #expect(nominal.map(\.inSection) == [true, false])
+    }
+
     @Test func runIsBlockedByBrokenRowsOnly() {
         let doc = DesignDocument(system: cooke)
         let session = ToleranceSession()

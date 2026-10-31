@@ -293,7 +293,10 @@ public final class GlassSubstitutionSession {
         let system = document.system
         let s = settings(system: system, merit: document.merit, variables: document.variables)
         startGlasses = Dictionary(
-            uniqueKeysWithValues: GlassSlot.all(in: system).map { ($0.id, $0.material) })
+            uniqueKeysWithValues: GlassSlot.all(in: system).map { s in
+                // A melt offset shows on the glass it leaves.
+                (s.id, s.material + (s.offset.map { $0.isZero ? "" : " " + $0.compactText } ?? ""))
+            })
         workspace.preview(nil)
         do {
             let job = try workspace.submitJob("glass_substitution", settings: s)

@@ -60,6 +60,20 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
         }
     }
 
+    /// The title in the tolerance table, where the surface column tells a
+    /// surface (`S3`) from an element (`L2`).
+    public var shortTitle: String {
+        switch self {
+        case .irregularityAstigmatism: "Irreg. astig."
+        case .irregularitySpherical: "Irreg. sph."
+        case .decenterX, .elementDecenterX: "Decentre x"
+        case .decenterY, .elementDecenterY: "Decentre y"
+        case .tiltX, .elementTiltX: "Tilt x"
+        case .tiltY, .elementTiltY: "Tilt y"
+        default: title
+        }
+    }
+
     public var symbol: String {
         switch self {
         case .radius: "circle.lefthalf.filled"

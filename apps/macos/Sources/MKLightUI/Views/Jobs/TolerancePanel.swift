@@ -216,11 +216,13 @@ struct ToleranceTableSection: View {
                         .font(.callout).foregroundStyle(.secondary).padding(.vertical, Space.m)
                 } else {
                     ToleranceColumnsHeader()
+                    let leading = leadingElementRows
                     ForEach(groups, id: \.key) { g in
                         groupHeader(g)
                         ForEach(collapsed.contains(g.key) ? [] : g.rows) { r in
                             ToleranceRowView(
-                                row: r, system: system, context: context, issue: issues[r.id], selected: selection.contains(r.id),
+                                row: r, system: system, context: context, issue: issues[r.id], showsElementLine: leading.contains(r.id),
+                                selected: selection.contains(r.id),
                                 select: { additive in select(r.id, additive: additive) }, edit: edit,
                                 duplicate: { duplicate([r.id]) }, delete: { delete([r.id]) })
                         }
@@ -325,6 +327,14 @@ struct ToleranceTableSection: View {
         .accessibilityLabel(g.title)
         .accessibilityValue(closed ? "Collapsed, \(g.rows.count) tolerances" : "Expanded")
         .help(closed ? "Show the \(g.rows.count) tolerances of \(g.key)" : "Hide the tolerances of \(g.key)")
+    }
+
+    /// The first element row of each group (rows starting on one surface
+    /// share range and pivot, so one line shows them).
+    private var leadingElementRows: Set<UUID> {
+        var seen = Set<SurfaceID>(), out = Set<UUID>()
+        for r in rows where r.kind.isElement && seen.insert(r.surface).inserted { out.insert(r.id) }
+        return out
     }
 
     /// Rows by element (`L1`, `Air after L1`, …) in surface order.
@@ -456,6 +466,9 @@ struct ToleranceRowView: View {
     let system: OpticalSystem
     let context: ToleranceContext
     let issue: ToleranceIssue?
+    /// Whether this row shows its element's moving surfaces and pivot (the
+    /// first element row of a group: the group shares them).
+    var showsElementLine = true
     let selected: Bool
     let select: (Bool) -> Void
     let edit: (String, (inout ToleranceSettings) -> Void) -> Void
@@ -466,6 +479,12 @@ struct ToleranceRowView: View {
     static let limitsWidth: CGFloat = 124
     static let unitWidth: CGFloat = 26
 
+    /// Limits as typed: `0.0005`, not `5.000e-04`.
+    static let limitFormat: (Double) -> String = { v in
+        guard v.isFinite else { return Fmt.short(v) }
+        return abs(v) >= 1e-6 && abs(v) < 1e6 ? String(format: "%.6g", v) : Fmt.short(v)
+    }
+
     private var symmetric: Bool { row.minus == row.plus }
 
     var body: some View {
@@ -473,7 +492,7 @@ struct ToleranceRowView: View {
             HStack(spacing: Space.s) {
                 HStack(spacing: Space.xs) {
                     Image(systemName: row.kind.symbol).font(.caption).foregroundStyle(.secondary).frame(width: 14)
-                    Text(row.kind == .other ? row.path(in: system).label(in: system) : row.kind.title)
+                    Text(row.kind == .other ? row.path(in: system).label(in: system) : row.kind.shortTitle)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(row.label(in: system))
@@ -485,7 +504,7 @@ struct ToleranceRowView: View {
                 limits.frame(width: Self.limitsWidth, alignment: .trailing)
                 unitMenu.frame(width: Self.unitWidth, alignment: .leading)
             }
-            if row.kind.isElement { elementLine }
+            if row.kind.isElement && showsElementLine { elementLine }
             if let issue {
                 Text(issue.text)
                     .font(.caption2)
@@ -508,16 +527,16 @@ struct ToleranceRowView: View {
         HStack(spacing: 3) {
             if symmetric {
                 Text("±").foregroundStyle(.secondary)
-                OptionalNumberField(title: "Limit", value: row.minus, prompt: "0", width: 64, compact: true) { v in
+                OptionalNumberField(title: "Limit", value: row.minus, prompt: "0", width: 64, format: ToleranceRowView.limitFormat, compact: true) { v in
                     set("Change Tolerance") { $0.minus = v ?? $0.minus; $0.plus = v ?? $0.plus }
                 }
             } else {
                 Text("−").foregroundStyle(.secondary)
-                OptionalNumberField(title: "Minus limit", value: row.minus, prompt: "0", width: 50, compact: true) { v in
+                OptionalNumberField(title: "Minus limit", value: row.minus, prompt: "0", width: 50, format: ToleranceRowView.limitFormat, compact: true) { v in
                     set("Change Tolerance") { $0.minus = v ?? $0.minus }
                 }
                 Text("+").foregroundStyle(.secondary)
-                OptionalNumberField(title: "Plus limit", value: row.plus, prompt: "0", width: 50, compact: true) { v in
+                OptionalNumberField(title: "Plus limit", value: row.plus, prompt: "0", width: 50, format: ToleranceRowView.limitFormat, compact: true) { v in
                     set("Change Tolerance") { $0.plus = v ?? $0.plus }
                 }
             }
@@ -595,7 +614,7 @@ struct ToleranceRowView: View {
                     }
                 }
             } label: {
-                Text("pivot " + pivotText(pivot, moving: moving))
+                Text("pivot " + pivotText(pivot, moving: moving)).font(.caption2).foregroundStyle(.tint)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -1477,7 +1496,7 @@ struct TrialList: View {
             guard let c = r.compensators.first, let n = result.nominalCompensators.first, let p = result.compensators.first,
                 let system = session.runSystem
             else { return nil }
-            return ToleranceCompensator(p.param).title(in: system) + " " + Fmt.signed(c - n, decimals: 3)
+            return ToleranceCompensator(p.param).title(in: system) + " " + Fmt.signed(c - n, decimals: 3).replacingOccurrences(of: "-", with: "\u{2212}")
         }
         return HStack(spacing: Space.s) {
             Text("Trial \(k + 1)").monospacedDigit().frame(width: 72, alignment: .leading)
@@ -1557,7 +1576,7 @@ struct TolerancePreviewCard: View {
                     Text(ToleranceCompensator(c.param).title(in: system))
                     Spacer(minLength: Space.xs)
                     Text(Fmt.value(v, unit: unit)).monospacedDigit()
-                    if let n { Text("(" + Fmt.signed(v - n, decimals: 4).trimmingCharacters(in: .whitespaces) + ")").monospacedDigit().foregroundStyle(.secondary) }
+                    if let n { Text("(" + Fmt.signed(v - n, decimals: 4).trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "-", with: "\u{2212}") + ")").monospacedDigit().foregroundStyle(.secondary) }
                 }
                 .font(.caption)
                 .help("Re-optimised for this build\(n.map { "; nominal " + Fmt.value($0, unit: unit) } ?? "")")
