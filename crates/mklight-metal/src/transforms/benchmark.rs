@@ -4,8 +4,9 @@
 //!
 //! Modes: `samples` (every default sample pupil: FFT and optical MTF vs f64),
 //! `dense` (outer-field pupils at N=64/256/1024 and 1024→2048 MFTs vs f64),
-//! `sizes` (warm timings: FFT 256²–2048², MFT, optical correlation).
-//! `P2_LIBRARY=runtime` selects the runtime-compiled library.
+//! `sizes` (warm timings: FFT 64²–2048², MFT, optical correlation).
+//! `P2_LIBRARY=runtime` selects the runtime-compiled library; `P2_RUNS` the
+//! number of measured runs (default 15).
 #[allow(dead_code)]
 #[path = "../../../mklight-wave/src/fft.rs"]
 mod reference;
@@ -292,10 +293,6 @@ fn time(case: &str, b: &dyn ComputeBackend, plan: &ResidentPlan, cpu: impl Fn())
         cpu();
         host.push(t.elapsed().as_secs_f64());
     }
-    if std::env::var("P2_STATS").is_ok() {
-        let (_, s, _, c) = run();
-        eprintln!("{case}: complete {:.3} ms, stats {s:?}", c * 1e3);
-    }
     let ms = |v: Vec<f64>| (median(v) * 1e5).round() / 100.;
     let min = device.iter().copied().fold(f64::INFINITY, f64::min);
     println!(
@@ -307,7 +304,7 @@ fn time(case: &str, b: &dyn ComputeBackend, plan: &ResidentPlan, cpu: impl Fn())
 fn sizes(b: &dyn ComputeBackend) {
     let (s, p1024) = pupil("singlet", 1024, true);
     let field = rounded(&p1024.debye_field());
-    for n in [256, 512, 1024, 2048] {
+    for n in [64, 128, 256, 512, 1024, 2048] {
         let (s, src) = match n {
             1024 => (s.clone(), field.clone()),
             2048 => (s.clone(), embed(&field, 1024, 2048)),
@@ -381,39 +378,6 @@ fn main() {
     let mode = std::env::args().nth(1).unwrap_or("samples".into());
     if mode == "sizes" {
         return sizes(&b);
-    }
-    if mode == "profile" {
-        for n in [1024, 2048] {
-            let field: Vec<C> = (0..n * n)
-                .map(|i| C::new((i % 7) as f64, (i % 3) as f64))
-                .collect();
-            let mut p = ResidentPlan::new(Snapshot::new(mklight_core::samples::singlet()).unwrap());
-            let input = import(
-                &b,
-                &mut p,
-                ElementType::Complex32,
-                vec![n, n],
-                complex(&field),
-            );
-            let o = p.scratch(BufferDesc::new(ElementType::Complex32, vec![n, n]));
-            p.operations
-                .push(ResidentOp::Transforms(Request::Transpose {
-                    input,
-                    output: o,
-                }));
-            p.outputs = vec![o];
-            time(&format!("transpose {n}²"), &b, &p, || {});
-            let p = transform_plan(
-                &b,
-                Snapshot::new(mklight_core::samples::singlet()).unwrap(),
-                &field,
-                n,
-                n,
-                None,
-            );
-            time(&format!("fft {n}²"), &b, &p, || {});
-        }
-        return;
     }
     let (mut fft, mut mtf) = (0f64, 0f64);
     for (name, sys) in mklight_core::samples::all() {
