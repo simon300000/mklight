@@ -1258,6 +1258,18 @@ candidate/configuration/field/λ/pupil order. Source snapshots remain
 immutable; transient candidate IDs refer to the base hash plus parameter
 vectors, and published candidate systems receive their normal content hash.
 
+*Measured (P4, Apple M2 Pro, warm end-to-end medians, 16 samples plus rigid,
+20-wavelength thermal and material-choice fixtures).* Resident preparation
+including final readback costs about 0.4–2.6 ms up to B=64, almost all
+command submission and per-candidate latency; parallel CPU f64 reference
+preparation costs 0.04–0.08 ms at B=1, 0.24–0.41 ms at B=16 and 0.55–1.1 ms
+at B=64, so it was faster on every workload up to B=64. B=128 is break-even
+(Metal faster on 10 of 19). Metal was faster on 17 of 19 at B=256
+(0.9–2.4 ms against 1.6–3.6 ms) and on all at B=1024 (1.3–4.8 ms against
+5.8–13 ms). Batches of fewer than 128 candidates are therefore
+CPU-preferred until P11 repeats this on a quiet host. This is a cost
+exception only; an explicit Metal request still runs on Metal.
+
 **Transforms.** Implement portable complex f32 1-D/2-D FFT kernels (radices
 2/3/5/7 and Bluestein for other lengths), tiled transpose, spectral products,
 chirp-z/separable MFT and symmetric affine MFT. Specify signs, normalisation,
