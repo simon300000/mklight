@@ -158,7 +158,12 @@ impl BufferData {
         match t {
             ElementType::F32 => Self::F32(bytemuck::cast_slice(words).to_vec()),
             ElementType::U32 => Self::U32(words.to_vec()),
-            ElementType::DoubleFloat => Self::DoubleFloat(bytemuck::cast_slice(words).to_vec()),
+            // Df32 is 8-byte aligned; a u32 slice (e.g. an empty one) need not be.
+            ElementType::DoubleFloat => Self::DoubleFloat(
+                (words.as_chunks().0.iter())
+                    .map(|&[hi, lo]| crate::Df32::new(f32::from_bits(hi), f32::from_bits(lo)))
+                    .collect(),
+            ),
             ElementType::Complex32 => Self::Complex32(bytemuck::cast_slice(words).to_vec()),
         }
     }
