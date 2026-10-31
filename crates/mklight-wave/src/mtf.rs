@@ -213,7 +213,7 @@ impl Otf {
             + Self::lattice(grid, m, i + 1, j + 1) * (tx * ty)
     }
 
-    /// Lattice coordinates of a normal-plane frequency.
+    /// Lattice coordinates of a stored-plane frequency.
     fn index_of(&self, nx: f64, ny: f64) -> (f64, f64) {
         let c = (self.size / 2) as f64;
         (nx / self.spacing + c, ny / self.spacing + c)
@@ -229,8 +229,9 @@ impl Otf {
         C64::from_polar(1.0, ph)
     }
 
-    /// OTF at a normal-plane frequency, without the image-offset phase (see
-    /// the type docs for the interpolation); zero beyond the grid.
+    /// OTF in the stored lattice plane, without the image-offset phase (see
+    /// the type docs for the interpolation); zero beyond the grid. Off-axis
+    /// sensor spectra already have their lattice in the image surface.
     pub fn at_normal(&self, nx: f64, ny: f64) -> C64 {
         let (fx, fy) = self.index_of(nx, ny);
         let back = C64::from_polar(

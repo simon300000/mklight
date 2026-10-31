@@ -39,8 +39,9 @@ coordinates); the module docs in
   tracer link existed, `pupil_coords` returned `+k̂·ê/sinθ'max`, the
   point-reflected position; that was a sign error, fixed here.)
 * **Chief-ray frame** `(ê_u, ê_v, ê_w)`: the image surface axes carried by
-  the smallest rotation onto the chief ray. Off-axis results are reported on
-  the image surface via the projection `B` (`pupil` module docs).
+  the smallest rotation onto the chief ray. FFT PSFs use the image-surface
+  projection `B` (`pupil` module docs); MTF uses the full sensor angular
+  spectrum (§5).
 * **Telecentric beams.** `PupilGeometry::telecentric(sinθ'max, n')` has
   `a = R = ∞` (serialised as `"inf"`) and stores `sinθ'max`. FFT, MTF and
   energy routes depend only on `sinθ'max`; refocusing is

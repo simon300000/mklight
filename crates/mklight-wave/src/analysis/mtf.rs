@@ -7,8 +7,8 @@
 //!
 //! * `direct` (default): pupil autocorrelation at each requested frequency
 //!   (`O(n²)` per frequency, no frequency lattice);
-//! * `fft`: pupil → PSF → OTF by FFT (exact on the frequency lattice
-//!   `Δν = cutoff/n`, interpolated between, [`crate::otf_fft`]). For a
+//! * `fft`: angular spectrum → PSF → OTF by FFT (exact on its sensor-frequency
+//!   lattice, interpolated between, [`crate::otf_fft`]). For a
 //!   strongly aberrated pupil the interpolation within the first few
 //!   lattice spacings can be far off: singlet sample at full field, `n = 64`
 //!   (`Δν` = 5.4 cycles/mm), 0.088 at 5 cycles/mm against 0.041 converged
