@@ -21,7 +21,8 @@ struct SettingsBar: View {
     /// Every setting on its own row, the advanced ones as JSON below.
     private var list: some View {
         let fields = descriptor.settingsFields.filter { kind(of: $0) != .hidden }
-        let simple = fields.filter { kind(of: $0) != .advanced }
+        // The spectrum, the largest control, comes last.
+        let simple = fields.filter { ![.advanced, .spectrum].contains(kind(of: $0)) } + fields.filter { kind(of: $0) == .spectrum }
         let advanced = fields.filter { kind(of: $0) == .advanced }
         return VStack(alignment: .leading, spacing: Space.m) {
             ForEach(simple) { f in
@@ -153,9 +154,13 @@ struct SettingsBar: View {
             SettingNumberField(field: f, label: label, value: value, set: { pane.set(f.name, $0) })
         case .spectrum:
             if vertical {
-                SpectrumControl(value: spectrumBinding(f), systemWavelengths: systemSpectrum, resolve: spectrumResolver)
+                SpectrumControl(
+                    value: spectrumBinding(f), systemWavelengths: systemSpectrum, systemPrimary: system?.wavelengths.primary,
+                    resolve: spectrumResolver)
             } else {
-                SpectrumBarButton(value: spectrumBinding(f), systemWavelengths: systemSpectrum, resolve: spectrumResolver)
+                SpectrumBarButton(
+                    value: spectrumBinding(f), systemWavelengths: systemSpectrum, systemPrimary: system?.wavelengths.primary,
+                    resolve: spectrumResolver)
             }
         case .hidden, .advanced:
             EmptyView()

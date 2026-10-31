@@ -20,21 +20,34 @@ public typealias SpectrumResolver = @Sendable (JSONValue) async throws -> [Spect
 public struct SpectrumControl: View {
     @Binding var value: JSONValue?
     let systemWavelengths: [SpectrumSample]
+    /// The design's primary wavelength (index into `systemWavelengths`).
+    var systemPrimary: Int?
     var resolve: SpectrumResolver?
 
     @State private var importing = false
     @State private var report: SpectrumCSV?
     @State private var resolved: (key: JSONValue, samples: [SpectrumSample])?
 
-    public init(value: Binding<JSONValue?>, systemWavelengths: [SpectrumSample], resolve: SpectrumResolver? = nil) {
+    /// - Parameters:
+    ///   - value: the `spectrum` setting; `nil` is the design's wavelengths.
+    ///   - systemWavelengths: the design's wavelengths and weights (shown
+    ///     for "Design wavelengths", the seed of an explicit list).
+    ///   - systemPrimary: the design's primary wavelength.
+    ///   - resolve: asks the engine what a spectrum resolves to.
+    public init(
+        value: Binding<JSONValue?>, systemWavelengths: [SpectrumSample], systemPrimary: Int? = nil, resolve: SpectrumResolver? = nil
+    ) {
         _value = value
         self.systemWavelengths = systemWavelengths
+        self.systemPrimary = systemPrimary
         self.resolve = resolve
     }
 
     /// Design wavelengths of equal weight.
-    public init(value: Binding<JSONValue?>, systemWavelengths: [Double], resolve: SpectrumResolver? = nil) {
-        self.init(value: value, systemWavelengths: systemWavelengths.map { SpectrumSample(um: $0, weight: 1) }, resolve: resolve)
+    public init(value: Binding<JSONValue?>, systemWavelengths: [Double], systemPrimary: Int? = nil, resolve: SpectrumResolver? = nil) {
+        self.init(
+            value: value, systemWavelengths: systemWavelengths.map { SpectrumSample(um: $0, weight: 1) }, systemPrimary: systemPrimary,
+            resolve: resolve)
     }
 
     private var setting: SpectrumSetting? { SpectrumSetting(json: value) }
@@ -125,25 +138,8 @@ public struct SpectrumControl: View {
         switch s {
         case .design:
             EmptyView()
-        case .blackbody(let t, let sampling):
-            VStack(alignment: .leading, spacing: Space.s) {
-                HStack(spacing: Space.xs) {
-                    Text("Temperature").foregroundStyle(.secondary)
-                    SpectrumNumberField(value: t, width: 64, label: "Temperature in kelvin") { v in
-                        write(.blackbody(temperatureK: v, sampling: sampling))
-                    }
-                    Text("K").foregroundStyle(.secondary)
-                    Spacer(minLength: Space.s)
-                    ForEach(SpectrumSetting.blackbodyPresets.prefix(2), id: \.self) { p in
-                        Button(SpectrumSetting.kelvin(p)) { write(.blackbody(temperatureK: p, sampling: sampling)) }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                            .monospacedDigit()
-                            .help(p == 5500 ? "Daylight" : "Tungsten halogen")
-                    }
-                }
-                samplingEditor(s, sampling)
-            }
+        case .blackbody(_, let sampling):
+            samplingEditor(s, sampling)
         case .photopic(let sampling), .scotopic(let sampling):
             samplingEditor(s, sampling)
         case .explicit(let list):
@@ -164,8 +160,30 @@ public struct SpectrumControl: View {
         }
     }
 
+    /// Sampling (and a blackbody's temperature, in the same grid so that the
+    /// fields line up).
     private func samplingEditor(_ s: SpectrumSetting, _ sampling: SpectralSampling) -> some View {
         Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.s) {
+            if case .blackbody(let t, _) = s {
+                GridRow {
+                    Text("Temperature").foregroundStyle(.secondary)
+                    HStack(spacing: Space.xs) {
+                        SpectrumNumberField(value: t, width: 52, label: "Temperature in kelvin") { v in
+                            write(.blackbody(temperatureK: v, sampling: sampling))
+                        }
+                        Text("K").foregroundStyle(.secondary)
+                        Spacer(minLength: Space.s)
+                        ForEach(SpectrumSetting.blackbodyPresets.prefix(2), id: \.self) { p in
+                            Button(SpectrumSetting.kelvin(p)) { write(.blackbody(temperatureK: p, sampling: sampling)) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                                .monospacedDigit()
+                                .disabled(p == t)
+                                .help(p == 5500 ? "Daylight, 5500 K" : "Tungsten halogen, 3200 K")
+                        }
+                    }
+                }
+            }
             GridRow {
                 Text("Samples").foregroundStyle(.secondary)
                 HStack(spacing: Space.xs) {
@@ -328,7 +346,9 @@ public struct SpectrumControl: View {
             default: engineSamples != nil ? .engine : .approximate
             }
         if let samples = currentSamples, !samples.isEmpty {
-            SpectrumPreview(samples: samples, curve: s.previewCurve(), source: source)
+            SpectrumPreview(
+                samples: samples, curve: s.previewCurve(), source: source,
+                primary: source == .design ? systemPrimary.flatMap { samples.indices.contains($0) ? $0 : nil } : nil)
         }
     }
 
@@ -388,17 +408,20 @@ struct SpectrumPreview: View {
     let samples: [SpectrumSample]
     let curve: [SpectrumSample]?
     let source: Source
+    /// The primary's index; by default the engine's rule for spectra
+    /// (nearest the energy-weighted mean).
+    var primary: Int?
 
     var body: some View {
         let peak = max(samples.map(\.weight).max() ?? 1, .leastNormalMagnitude)
-        let primary = SpectrumSetting.primaryIndex(samples)
+        let primary = primary ?? SpectrumSetting.primaryIndex(samples)
         let domain = xDomain
         VStack(alignment: .leading, spacing: Space.xxs) {
             Chart {
                 if let curve {
                     ForEach(Array(curve.enumerated()), id: \.offset) { _, p in
                         AreaMark(x: .value("λ", p.um), y: .value("Response", p.weight))
-                            .foregroundStyle(.secondary.opacity(0.18))
+                            .foregroundStyle(Color.primary.opacity(0.07))
                             .interpolationMethod(.monotone)
                     }
                 }
@@ -446,7 +469,7 @@ struct SpectrumPreview: View {
     private var xDomain: ClosedRange<Double> {
         let xs = samples.map(\.um) + (curve?.map(\.um) ?? [])
         guard let lo = xs.min(), let hi = xs.max() else { return 0.4...0.7 }
-        let pad = max((hi - lo) * 0.04, 0.005)
+        let pad = max((hi - lo) * 0.08, 0.012)
         return (lo - pad)...(hi + pad)
     }
 
@@ -487,6 +510,8 @@ struct SpectrumNumberField: View {
     private var display: String { integer ? String(Int(value.rounded())) : Fmt.short(value) }
 
     private func apply() {
+        // Unchanged text keeps the full-precision value it displays.
+        if text == display { return }
         guard let d = LensValueParser.number(text.trimmingCharacters(in: .whitespaces)), d.isFinite else {
             text = display
             return
@@ -499,23 +524,41 @@ struct SpectrumNumberField: View {
 
 /// The spectrum as one button for the compact settings bar: its summary,
 /// opening the full control in a popover.
-struct SpectrumBarButton: View {
+public struct SpectrumBarButton: View {
     @Binding var value: JSONValue?
     let systemWavelengths: [SpectrumSample]
+    var systemPrimary: Int?
     var resolve: SpectrumResolver?
     @State private var open = false
 
-    var body: some View {
+    public init(
+        value: Binding<JSONValue?>, systemWavelengths: [SpectrumSample], systemPrimary: Int? = nil, resolve: SpectrumResolver? = nil
+    ) {
+        _value = value
+        self.systemWavelengths = systemWavelengths
+        self.systemPrimary = systemPrimary
+        self.resolve = resolve
+    }
+
+    private var title: String { SpectrumSetting(json: value).map { $0.kind == .design ? "Design" : $0.summary } ?? "Custom" }
+
+    public var body: some View {
         Button {
             open = true
         } label: {
-            Text("Spectrum: \(SpectrumSetting(json: value).map { $0.kind == .design ? "Design" : $0.summary } ?? "Custom")")
+            HStack(spacing: 3) {
+                Text("Spectrum: \(title)").monospacedDigit()
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).imageScale(.small)
+            }
+            .contentShape(.rect)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .fixedSize()
         .help("The wavelengths this analysis runs with")
+        .accessibilityLabel("Spectrum")
+        .accessibilityValue(title)
         .popover(isPresented: $open) {
-            SpectrumControl(value: $value, systemWavelengths: systemWavelengths, resolve: resolve)
+            SpectrumControl(value: $value, systemWavelengths: systemWavelengths, systemPrimary: systemPrimary, resolve: resolve)
                 .controlSize(.small)
                 .padding(Space.l)
                 .frame(width: 320)

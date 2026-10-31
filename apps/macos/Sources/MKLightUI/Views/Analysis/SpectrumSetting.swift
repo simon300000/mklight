@@ -508,14 +508,14 @@ public struct SpectrumCSV: Equatable, Sendable {
         }
         // Units: a header that names them wins; otherwise wavelengths above
         // 50 are nanometres (optical µm values stay far below).
-        let h = header?.lowercased() ?? ""
+        let words = Set((header?.lowercased() ?? "").split { !($0.isLetter || $0 == "µ") }.map(String.init))
         let unit: Unit =
-            if h.contains("nm") || h.contains("nanomet") { .nanometre }
-            else if h.contains("µm") || h.contains("um") || h.contains("micro") { .micrometre }
+            if !words.isDisjoint(with: ["nm", "nanometer", "nanometers", "nanometre", "nanometres"]) { .nanometre }
+            else if !words.isDisjoint(with: ["um", "µm", "micron", "microns", "micrometer", "micrometers", "micrometre", "micrometres"]) { .micrometre }
             else { (rows.map(\.um).max() ?? 0) > 50 ? .nanometre : .micrometre }
         let scale = unit == .nanometre ? 0.001 : 1
         var table: [SpectrumSample] = []
-        for r in rows.sorted(by: { $0.um < $1.um }) {
+        for r in rows.sorted(by: { ($0.um, $0.line) < ($1.um, $1.line) }) {
             let um = r.um * scale
             if let last = table.last, abs(last.um - um) < 1e-12 {
                 bad.append(BadRow(line: r.line, text: r.text, reason: "repeats a wavelength"))
