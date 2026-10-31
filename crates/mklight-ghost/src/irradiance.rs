@@ -20,6 +20,13 @@
 //! of its parent's flux. This resolves clipping boundaries without giving
 //! every cell the weight of its centre's binary acceptance.
 //!
+//! All centres and corners lie on an integer lattice of 32 units per base
+//! cell, converted to pupil coordinates in one place ([`pupil`]). Per path,
+//! each lattice point (and field and wavelength) is traced once: refinement
+//! proceeds level by level, tracing the new centres, then the new corners of
+//! the cells at that level, in parallel batches; shared corners and the
+//! centres and corners of parents are looked up, not traced again.
+//!
 //! Each ray carries the flux `w_f w_λ · h²/π`: the field and wavelength
 //! weights (normalised over the selection; wavelength weights include the
 //! sensor's spectral response) times the fraction of the unit entrance
@@ -56,8 +63,9 @@
 //!
 //! # Determinism, parallelism, cancellation
 //!
-//! Rays are traced in parallel (rayon) in blocks; results are collected in
-//! the fixed order `(field, wavelength, pupil)` and accumulated sequentially
+//! Probes are traced in parallel (rayon) in blocks; a probe's result depends
+//! only on its lattice point, and leaves are collected depth first in the
+//! fixed order `(field, wavelength, base cell)` and accumulated sequentially
 //! with Neumaier compensation, so maps are bit-identical run to run. The
 //! [`JobContext`] is checked before every block; progress is monotone and
 //! ends at 1.
@@ -65,14 +73,17 @@
 //! # GPU port
 //!
 //! The work decomposes into independent rays indexed by
-//! `(path, field, wavelength, pupil)`; starting rays depend only on
-//! `(field, wavelength, pupil)` and are shared by all paths. The kernel
-//! interface needed from a GPU backend is described in `docs/GHOST.md`.
+//! `(path, field, wavelength, lattice point)`. The kernel interface needed
+//! from a GPU backend is described in `docs/GHOST.md`.
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::hash::BuildHasherDefault;
 
 use mklight_core::job::RunTimer;
 use mklight_core::math::KahanSum;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
-use mklight_trace::{FieldPoint, PreparedField, Ray};
+use mklight_trace::{FieldPoint, PreparedField};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -242,12 +253,66 @@ pub struct GhostIrradiance {
     pub coverage: GhostCoverage,
 }
 
-/// One prepared starting ray.
+/// Resolve discontinuities at the pupil rim, clipping apertures and map
+/// boundary. A cell-centre grid can alias a small ghost footprint badly;
+/// refine cells whose centre and corners disagree, to 1/16 of a base cell.
+const BOUNDARY_DEPTH: u32 = 4;
+
+/// Half a base cell in lattice units.
+const HALF: i32 = 1 << BOUNDARY_DEPTH;
+
+/// Pupil coordinate of lattice coordinate `u` (0 at the chief ray, `±n·HALF`
+/// at `±overfill`).
+fn pupil(u: i32, n: usize, overfill: f64) -> f64 {
+    f64::from(u) * overfill / (n as f64 * f64::from(HALF))
+}
+
+/// A lattice probe: field index, wavelength index and lattice point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Probe {
+    field: u32,
+    wl: u32,
+    x: i32,
+    y: i32,
+}
+
+impl Probe {
+    /// The four probes at `±d` in both axes, `y` outer.
+    fn around(self, d: i32) -> [Probe; 4] {
+        [(-d, -d), (d, -d), (-d, d), (d, d)].map(|(dx, dy)| Probe {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..self
+        })
+    }
+}
+
+/// Multiplicative hash of a probe's integers; SipHash dominated the
+/// sequential cache bookkeeping.
+#[derive(Default)]
+struct ProbeHasher(u64);
+
+impl std::hash::Hasher for ProbeHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u32(b.into());
+        }
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(i)).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    fn write_i32(&mut self, i: i32) {
+        self.write_u32(i as u32);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A base cell: its centre probe and its flux weight.
 #[derive(Clone, Copy, Debug)]
-struct StartRay {
-    ray: Option<Ray>,
-    pupil: [f64; 2],
-    wl: usize,
+struct Cell {
+    probe: Probe,
     weight: f64,
 }
 
@@ -319,24 +384,17 @@ fn ratio(a: f64, b: f64) -> f64 {
     }
 }
 
-/// Starting rays per selected field (module docs).
-fn start_rays(
+/// Base cells per selected field (module docs).
+fn base_cells(
     model: &GhostModel,
     fields: &[SelectedField],
     wls: &[usize],
     settings: &IrradianceSettings,
-) -> MkResult<Vec<Vec<StartRay>>> {
-    let tracer = model.tracer();
+) -> MkResult<Vec<Vec<Cell>>> {
     let sys = model.system();
     let osys = sys.system();
     let n = settings.pupil_samples;
     let k = settings.overfill;
-    let pupil = tracer.pupil();
-    let scale = if pupil.telecentric {
-        pupil.u_marginal.abs()
-    } else {
-        pupil.r_ep
-    };
     let fw: Vec<f64> = fields.iter().map(|f| f.weight).collect();
     let ww: Vec<f64> = wls
         .iter()
@@ -355,40 +413,35 @@ fn start_rays(
         ));
     }
     let h = 2.0 * k / n as f64;
-    let cell = h * h / std::f64::consts::PI;
+    let area = h * h / std::f64::consts::PI;
     let mut out = Vec::with_capacity(fields.len());
     for (fi, sel) in fields.iter().enumerate() {
-        let field = sel.field.as_ref();
-        let mut rays = Vec::new();
-        if field.is_valid() {
+        let mut cells = Vec::new();
+        if sel.field.is_valid() {
             for (wi, &w) in wls.iter().enumerate() {
-                let weight = fw[fi] / sf * ww[wi] / sw * cell;
-                let c = field.aims[w].chief;
+                let weight = fw[fi] / sf * ww[wi] / sw * area;
                 for iy in 0..n {
-                    let py = -k + h * (iy as f64 + 0.5);
                     for ix in 0..n {
-                        let px = -k + h * (ix as f64 + 0.5);
-                        if (px.abs() - h * 0.5).max(0.0).powi(2)
-                            + (py.abs() - h * 0.5).max(0.0).powi(2)
-                            > k * k
-                        {
+                        let [x, y] = [ix, iy].map(|i| (2 * i as i32 + 1 - n as i32) * HALF);
+                        // Skip cells entirely outside the sampled disc.
+                        let [nx, ny] = [x, y].map(|u| pupil((u.abs() - HALF).max(0), n, k));
+                        if nx.mul_add(nx, ny * ny) > k * k {
                             continue;
                         }
-                        let a = [px.mul_add(scale, c[0]), py.mul_add(scale, c[1])];
-                        let ray = (px.mul_add(px, py * py) <= k * k)
-                            .then(|| tracer.start_ray(&field.source, a))
-                            .flatten();
-                        rays.push(StartRay {
-                            ray,
-                            pupil: [px, py],
-                            wl: w,
+                        cells.push(Cell {
+                            probe: Probe {
+                                field: fi as u32,
+                                wl: w as u32,
+                                x,
+                                y,
+                            },
                             weight,
                         });
                     }
                 }
             }
         }
-        out.push(rays);
+        out.push(cells);
     }
     Ok(out)
 }
@@ -405,32 +458,19 @@ struct PathRun {
 /// Outcome of one ray: detected `(x, y, w)`, or lost as virtual with `w`.
 type RayOut = Result<Option<(f64, f64, f64)>, f64>;
 
-/// Resolve discontinuities at the pupil rim, clipping apertures and map
-/// boundary. A cell-centre grid can alias a small ghost footprint badly;
-/// refine cells whose centre and corners disagree, to 1/16 of a base cell.
-const BOUNDARY_DEPTH: u32 = 4;
-
-struct CellTrace<'a> {
+/// One path's probes on the pupil lattice.
+struct PathTrace<'a> {
     model: &'a GhostModel,
     steps: &'a [Step],
-    field: &'a PreparedField,
-    wl: usize,
+    fields: &'a [SelectedField<'a>],
+    n: usize,
     overfill: f64,
     map: &'a IrradianceMap,
 }
 
-impl CellTrace<'_> {
-    fn trace(&self, ray: Option<Ray>) -> RayOut {
-        let Some(ray) = ray else { return Ok(None) };
-        let r = self.model.trace_steps(&ray, self.wl, self.steps, None);
-        match r.status {
-            SequenceStatus::Ok => Ok(Some((r.ray.pos.x, r.ray.pos.y, r.weight()))),
-            SequenceStatus::Virtual { .. } => Err(r.weight()),
-            _ => Ok(None),
-        }
-    }
-
-    fn sample(&self, p: [f64; 2]) -> RayOut {
+impl PathTrace<'_> {
+    fn trace(&self, probe: Probe) -> RayOut {
+        let p = [probe.x, probe.y].map(|u| pupil(u, self.n, self.overfill));
         if p[0].mul_add(p[0], p[1] * p[1]) > self.overfill * self.overfill {
             return Ok(None);
         }
@@ -441,11 +481,18 @@ impl CellTrace<'_> {
         } else {
             pupil.r_ep
         };
-        let c = self.field.aims[self.wl].chief;
-        self.trace(tracer.start_ray(
-            &self.field.source,
-            [p[0].mul_add(scale, c[0]), p[1].mul_add(scale, c[1])],
-        ))
+        let (field, wl) = (&self.fields[probe.field as usize].field, probe.wl as usize);
+        let c = field.aims[wl].chief;
+        let a = [p[0].mul_add(scale, c[0]), p[1].mul_add(scale, c[1])];
+        let Some(ray) = tracer.start_ray(&field.source, a) else {
+            return Ok(None);
+        };
+        let r = self.model.trace_steps(&ray, wl, self.steps, None);
+        match r.status {
+            SequenceStatus::Ok => Ok(Some((r.ray.pos.x, r.ray.pos.y, r.weight()))),
+            SequenceStatus::Virtual { .. } => Err(r.weight()),
+            _ => Ok(None),
+        }
     }
 
     fn region(&self, sample: RayOut) -> u8 {
@@ -457,61 +504,157 @@ impl CellTrace<'_> {
         }
     }
 
-    fn integrate(
+    /// Whether the cell of half-width `half` around `centre` is refined; its
+    /// centre and corners must be cached.
+    fn splits(&self, probes: &Probes, centre: Probe, half: i32) -> bool {
+        let region = self.region(probes.get(centre));
+        half > 1
+            && centre
+                .around(half)
+                .into_iter()
+                .any(|c| self.region(probes.get(c)) != region)
+    }
+
+    /// Weighted leaves of a cell, depth first.
+    fn leaves(
         &self,
-        p: [f64; 2],
-        half: f64,
+        probes: &Probes,
+        centre: Probe,
+        half: i32,
         weight: f64,
-        centre: RayOut,
-        depth: u32,
         out: &mut Vec<RayOut>,
     ) {
-        let region = self.region(centre);
-        if depth > 0
-            && [-1.0, 1.0].iter().any(|x| {
-                [-1.0, 1.0]
-                    .iter()
-                    .any(|y| self.region(self.sample([p[0] + x * half, p[1] + y * half])) != region)
-            })
-        {
-            let half = half * 0.5;
-            for y in [-1.0, 1.0] {
-                for x in [-1.0, 1.0] {
-                    let child = [p[0] + x * half, p[1] + y * half];
-                    self.integrate(
-                        child,
-                        half,
-                        weight * 0.25,
-                        self.sample(child),
-                        depth - 1,
-                        out,
-                    );
-                }
+        if self.splits(probes, centre, half) {
+            for c in centre.around(half / 2) {
+                self.leaves(probes, c, half / 2, weight * 0.25, out);
             }
         } else {
-            out.push(match centre {
-                Ok(Some((x, y, w))) => Ok(Some((x, y, weight * w))),
-                Ok(None) => Ok(None),
-                Err(w) => Err(weight * w),
-            });
+            out.push(weighted(probes.get(centre), weight));
         }
     }
 }
 
-/// Trace one path for all start rays; per-field maps and statistics.
+fn weighted(sample: RayOut, weight: f64) -> RayOut {
+    match sample {
+        Ok(Some((x, y, w))) => Ok(Some((x, y, weight * w))),
+        Ok(None) => Ok(None),
+        Err(w) => Err(weight * w),
+    }
+}
+
+/// Traced probes of one path.
+#[derive(Default)]
+struct Probes {
+    index: HashMap<Probe, usize, BuildHasherDefault<ProbeHasher>>,
+    outs: Vec<RayOut>,
+}
+
+impl Probes {
+    fn get(&self, p: Probe) -> RayOut {
+        self.outs[self.index[&p]]
+    }
+
+    /// Trace the probes not yet cached, in parallel.
+    fn add(
+        &mut self,
+        probes: impl IntoIterator<Item = Probe>,
+        path: &PathTrace,
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        let mut new = Vec::new();
+        for p in probes {
+            if let Entry::Vacant(e) = self.index.entry(p) {
+                e.insert(self.outs.len() + new.len());
+                new.push(p);
+            }
+        }
+        for block in new.chunks(BLOCK) {
+            ctx.check()?;
+            self.outs
+                .par_extend(block.par_iter().with_min_len(64).map(|&p| path.trace(p)));
+        }
+        Ok(())
+    }
+
+    /// Trace every probe the refinement of `cells` needs, level by level.
+    fn refine(
+        cells: &[Cell],
+        path: &PathTrace,
+        ctx: &JobContext,
+        progress: (f64, f64),
+    ) -> MkResult<Probes> {
+        let mut probes = Probes::default();
+        probes.index.reserve(4 * cells.len());
+        let mut level: Vec<Probe> = cells.iter().map(|c| c.probe).collect();
+        let mut half = HALF;
+        loop {
+            probes.add(level.iter().copied(), path, ctx)?;
+            let done = (HALF / half).ilog2() as f64 / BOUNDARY_DEPTH as f64;
+            ctx.report(
+                progress.0 + done * (progress.1 - progress.0),
+                "tracing ghost paths",
+            );
+            if half == 1 {
+                return Ok(probes);
+            }
+            probes.add(level.iter().flat_map(|c| c.around(half)), path, ctx)?;
+            level = level
+                .par_iter()
+                .filter(|&&c| path.splits(&probes, c, half))
+                .flat_map_iter(|c| c.around(half / 2))
+                .collect();
+            half /= 2;
+        }
+    }
+}
+
+/// Trace one path for all base cells; per-field maps and statistics.
 #[allow(clippy::too_many_arguments)]
 fn run_path(
     model: &GhostModel,
     steps: &[Step],
-    starts: &[Vec<StartRay>],
+    cells: &[Vec<Cell>],
     fields: &[SelectedField],
     settings: &IrradianceSettings,
     template: &IrradianceMap,
     ctx: &JobContext,
     progress: (f64, f64),
 ) -> MkResult<PathRun> {
-    let total: usize = starts.iter().map(Vec::len).sum();
-    let offsets: Vec<usize> = starts
+    let path = PathTrace {
+        model,
+        steps,
+        fields,
+        n: settings.pupil_samples,
+        overfill: settings.overfill,
+        map: template,
+    };
+    let all: Vec<Cell> = cells.iter().flatten().copied().collect();
+    let probes = Probes::refine(&all, &path, ctx, progress)?;
+    let leaves: Vec<Vec<RayOut>> = all
+        .par_iter()
+        .with_min_len(64)
+        .map(|c| {
+            let mut out = Vec::new();
+            path.leaves(&probes, c.probe, HALF, c.weight, &mut out);
+            out
+        })
+        .collect();
+    let (mut virtual_rays, mut virtual_flux) = (0usize, KahanSum::default());
+    let hits: Vec<Vec<Option<(f64, f64, f64)>>> = leaves
+        .into_iter()
+        .map(|cell| {
+            cell.into_iter()
+                .map(|o| {
+                    o.unwrap_or_else(|w| {
+                        virtual_rays += 1;
+                        virtual_flux.add(w);
+                        None
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    let offsets: Vec<usize> = cells
         .iter()
         .scan(0, |acc, v| {
             let o = *acc;
@@ -519,69 +662,12 @@ fn run_path(
             Some(o)
         })
         .collect();
-    let locate = |i: usize| {
-        let f = offsets.partition_point(|&o| o <= i) - 1;
-        (f, i - offsets[f])
-    };
-    let mut hits: Vec<Vec<Option<(f64, f64, f64)>>> = Vec::with_capacity(total);
-    let (mut virtual_rays, mut virtual_flux) = (0usize, KahanSum::default());
-    let mut start = 0;
-    while start < total {
-        ctx.check()?;
-        let end = (start + BLOCK).min(total);
-        let block: Vec<Vec<RayOut>> = (start..end)
-            .into_par_iter()
-            .with_min_len(64)
-            .map(|i| {
-                let (f, j) = locate(i);
-                let s = &starts[f][j];
-                let cell = CellTrace {
-                    model,
-                    steps,
-                    field: &fields[f].field,
-                    wl: s.wl,
-                    overfill: settings.overfill,
-                    map: template,
-                };
-                let mut out = Vec::new();
-                cell.integrate(
-                    s.pupil,
-                    settings.overfill / settings.pupil_samples as f64,
-                    s.weight,
-                    cell.trace(s.ray),
-                    BOUNDARY_DEPTH,
-                    &mut out,
-                );
-                out
-            })
-            .collect();
-        for cell in block {
-            hits.push(
-                cell.into_iter()
-                    .map(|o| match o {
-                        Ok(h) => h,
-                        Err(w) => {
-                            virtual_rays += 1;
-                            virtual_flux.add(w);
-                            None
-                        }
-                    })
-                    .collect(),
-            );
-        }
-        start = end;
-        let f = start as f64 / total as f64;
-        ctx.report(
-            progress.0 + f * (progress.1 - progress.0),
-            "tracing ghost paths",
-        );
-    }
     let area = template.bin_area();
     let mut maps = Vec::with_capacity(fields.len());
     let mut stats = Vec::with_capacity(fields.len());
     for (fi, field) in fields.iter().enumerate() {
         let lo = offsets[fi];
-        let field_hits = &hits[lo..lo + starts[fi].len()];
+        let field_hits = &hits[lo..lo + cells[fi].len()];
         let mut bins = vec![KahanSum::default(); template.values.len()];
         let (mut sw, mut swx, mut swy, mut on) = (
             KahanSum::default(),
@@ -720,14 +806,14 @@ pub fn ghost_irradiance(
 
     ctx.report(0.0, "preparing rays");
     ctx.check()?;
-    let starts = start_rays(model, &selected, &wls, settings)?;
+    let cells = base_cells(model, &selected, &wls, settings)?;
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
     let prun = run_path(
         model,
         &pstep,
-        &starts,
+        &cells,
         &selected,
         settings,
         &template,
@@ -766,7 +852,7 @@ pub fn ghost_irradiance(
     for (k, (path, steps)) in paths.iter().zip(&path_steps).enumerate() {
         let span = ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs);
         let PathRun { maps, stats, .. } = run_path(
-            model, steps, &starts, &selected, settings, &template, ctx, span,
+            model, steps, &cells, &selected, settings, &template, ctx, span,
         )?;
         let map = sum_maps(&maps, &template);
         for (acc, v) in total_acc.iter_mut().zip(&map.values) {
@@ -810,4 +896,104 @@ pub fn ghost_irradiance(
         truncated,
         coverage,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::{ResolvedSystem, Snapshot, samples};
+
+    use super::*;
+    use crate::GhostSettings;
+
+    /// The recursion without a cache: traces every centre and corner it
+    /// visits, recording each.
+    fn uncached(
+        path: &PathTrace,
+        centre: Probe,
+        half: i32,
+        weight: f64,
+        out: &mut Vec<RayOut>,
+        traced: &mut Vec<Probe>,
+    ) {
+        traced.push(centre);
+        let sample = path.trace(centre);
+        let mut split = false;
+        if half > 1 {
+            for c in centre.around(half) {
+                traced.push(c);
+                split |= path.region(path.trace(c)) != path.region(sample);
+            }
+        }
+        if split {
+            for c in centre.around(half / 2) {
+                uncached(path, c, half / 2, weight * 0.25, out, traced);
+            }
+        } else {
+            out.push(weighted(sample, weight));
+        }
+    }
+
+    #[test]
+    fn cache_traces_each_lattice_point_once_and_matches_uncached() {
+        let snapshot = Snapshot::new(samples::double_gauss()).unwrap();
+        let system =
+            ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+        let model = GhostModel::from_system(Arc::new(system), GhostSettings::default()).unwrap();
+        let template = IrradianceMap::new([24, 24], [12.0, 12.0]);
+        // A repeated wavelength shares its probes.
+        let wls = [0, 1, 1];
+        for (n, overfill) in [(12, 1.5), (21, 1.3)] {
+            let settings = IrradianceSettings {
+                fields: vec![0, 2],
+                pupil_samples: n,
+                overfill,
+                ..Default::default()
+            };
+            let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
+            let cells = base_cells(&model, &fields, &wls, &settings)
+                .unwrap()
+                .concat();
+            for path in [
+                GhostPath::primary(),
+                GhostPath::new(vec![9, 7]),
+                GhostPath::new(vec![11, 1]),
+            ] {
+                let steps = model.check_path(&path).unwrap();
+                let trace = PathTrace {
+                    model: &model,
+                    steps: &steps,
+                    fields: &fields,
+                    n,
+                    overfill,
+                    map: &template,
+                };
+                let probes =
+                    Probes::refine(&cells, &trace, &JobContext::new(), (0.0, 1.0)).unwrap();
+                let (mut cached, mut expected, mut requested) = (vec![], vec![], vec![]);
+                for c in &cells {
+                    trace.leaves(&probes, c.probe, HALF, c.weight, &mut cached);
+                    uncached(
+                        &trace,
+                        c.probe,
+                        HALF,
+                        c.weight,
+                        &mut expected,
+                        &mut requested,
+                    );
+                }
+                assert_eq!(cached, expected, "n = {n}, path {path:?}");
+                let distinct: HashSet<Probe> = requested.iter().copied().collect();
+                assert!(distinct.len() < requested.len());
+                assert_eq!(probes.outs.len(), distinct.len());
+                assert_eq!(
+                    probes.index.keys().copied().collect::<HashSet<_>>(),
+                    distinct
+                );
+            }
+        }
+    }
 }
