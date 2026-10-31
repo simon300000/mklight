@@ -1258,6 +1258,18 @@ candidate/configuration/field/λ/pupil order. Source snapshots remain
 immutable; transient candidate IDs refer to the base hash plus parameter
 vectors, and published candidate systems receive their normal content hash.
 
+*Measured (P4, Apple M2 Pro, warm end-to-end medians, 16 samples plus rigid,
+20-wavelength thermal and material-choice fixtures).* Resident preparation
+including final readback costs about 0.4–2.6 ms up to B=64, almost all
+command submission and per-candidate latency; parallel CPU f64 reference
+preparation costs 0.04–0.08 ms at B=1, 0.24–0.41 ms at B=16 and 0.55–1.1 ms
+at B=64, so it was faster on every workload up to B=64. B=128 is break-even
+(Metal faster on 10 of 19). Metal was faster on 17 of 19 at B=256
+(0.9–2.4 ms against 1.6–3.6 ms) and on all at B=1024 (1.3–4.8 ms against
+5.8–13 ms). Batches of fewer than 128 candidates are therefore
+CPU-preferred until P11 repeats this on a quiet host. This is a cost
+exception only; an explicit Metal request still runs on Metal.
+
 **Transforms.** Implement portable complex f32 1-D/2-D FFT kernels (radices
 2/3/5/7 and Bluestein for other lengths), tiled transpose, spectral products,
 chirp-z/separable MFT and symmetric affine MFT. Specify signs, normalisation,
@@ -1268,6 +1280,26 @@ and interpolation of `wave/mtf.rs`; it is not interchangeable with an
 interpolated FFT curve. Cache stencils across focus planes. Huygens uses
 the same phase/sum primitives with distance tiles. No approximate transform
 replaces the existing finite sum or discards sampling warnings.
+
+**Transforms, measured (P2).** Apple M2 Pro, release, precompiled library,
+idle host, warm medians of 15 runs; CPU is the f64 `wave/fft.rs` reference
+(rustfft + rayon), Metal end-to-end includes submission and final readback.
+
+| Case | CPU f64 | Metal end-to-end | Metal device |
+|---|---:|---:|---:|
+| FFT 64² / 128² | 0.25 / 0.29 ms | 0.29 / 0.30 ms | 0.07 / 0.08 ms |
+| FFT 256² / 512² | 0.38 / 0.79 ms | 0.33 / 0.84 ms | 0.09 / 0.23 ms |
+| FFT 1024² / 2048² | 2.7 / 10.2 ms | 1.7 / 4.7 ms | 0.5 / 2.5 ms |
+| MFT 256→512 / 1024→2048 | 1.5 / 22 ms | 1.2 / 11 ms | 0.4 / 9.2 ms |
+| Skew MFT 256→512 / 1024→2048 | 5.3 / 83 ms | 2.1 / 30 ms | 1.2 / 27 ms |
+| Optical correlation 256² / 1024², 64 frequencies | 11 / 170 ms | 3.4 / 37 ms | 2.8 / 33 ms |
+
+**CPU-preferred:** standalone host-fed FFTs up to 128², where the fixed
+≈0.25 ms Metal command latency plus readback exceeds the whole CPU
+transform; 256²–512² are at parity end-to-end. Inside resident chains only
+the device time applies. Accuracy against f64: FFT relative L2 ≤1.6e-7 on all
+144 default sample pupils, ≤1.5e-5 for dense 1024→2048 MFTs; optical MTF
+≤1.9e-6.
 
 **Collectives and RNG.** Extend §3.4's fixed tree to segments keyed by
 candidate/field/λ/path/pixel. Chunk boundaries partition work, not the
