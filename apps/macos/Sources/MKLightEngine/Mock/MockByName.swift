@@ -73,6 +73,14 @@ extension MockEngine {
                     "stop_key": .object(["type": .array([.string("string"), .string("null")]), "default": .null]),
                 ]),
             d(
+                "merit_evaluation", "Evaluate merit", "optimization",
+                [
+                    "algorithm": enm("lm", ["lm", "dogleg", "de", "cma_es", "nelder_mead", "hammer"], "Algorithm"),
+                    "hold_efl": .object(["type": .string("boolean"), "default": .bool(true)]),
+                    "variables": .object(["type": .string("array"), "default": .array([])]),
+                    "default_merit": .object(["type": .string("object"), "default": .object([:])]),
+                ]),
+            d(
                 "tolerance", "Tolerance", "optimization",
                 [
                     "mode": enm("both", ["sensitivity", "monte_carlo", "both"], "Mode"),
@@ -109,6 +117,10 @@ extension MockEngine {
                 (json, buffers) = try await Self.mockOptimize(request.settings, snapshot, optics, reporter, stop, latency)
             case "tolerance":
                 (json, buffers) = try await Self.mockTolerance(request.settings, snapshot, reporter, stop, latency)
+            case "merit_evaluation":
+                if latency > .zero { try await Task.sleep(for: latency / 8) }
+                try reporter.checkCancelled()
+                (json, buffers) = (try Self.mockMeritEvaluation(request.settings, optics), [])
             default:
                 reporter.report(0.2, stage: "Resolving system")
                 if latency > .zero { try await Task.sleep(for: latency) }
@@ -434,6 +446,88 @@ extension MockEngine {
             "system": try JSONValue.from(system), "system_hash": .string(hash.hex),
         ])
         return (json, [ResultBuffer(name: "merit_history", doubles: flat, shape: [done, 4])])
+    }
+
+    /// `merit_evaluation`: the default merit is one RMS spot operand per
+    /// field (the mean is the merit, as `optimize`'s start); a custom merit
+    /// evaluates `efl` from the paraxial trace and every other operand as
+    /// that RMS spot. The EFL hold is appended as a constraint.
+    static func mockMeritEvaluation(_ s: [String: JSONValue], _ o: MockOptics) throws -> JSONValue {
+        var spotSettings = SpotDiagramSettings()
+        spotSettings.rings = 3
+        let r = try o.spot(spotSettings)
+        let spots = r.fields.map(\.rmsRadius).map { $0.isFinite ? $0 : 0 }
+        let mean = max(spots.reduce(0, +) / Double(max(spots.count, 1)), 1e-6)
+        let efl = o.efl(o.system.wavelengths.primary) ?? .nan
+        var ops: [JSONValue]
+        if let custom = s["merit"]?["operands"]?.array {
+            ops = custom
+        } else {
+            let w = 1 / Double(max(spots.count, 1))
+            ops = spots.indices.map { i in
+                .object([
+                    "kind": .object(["type": .string("rms_spot")]), "target": .number(0), "weight": .number(w), "comparison": .string("equal"),
+                    "role": .string("residual"), "field": .object(["field": .string("index"), "index": .integer(Int64(i))]),
+                    "wavelength": .object(["wavelength": .string("primary")]), "config": .integer(0), "enabled": .bool(true),
+                ])
+            }
+        }
+        let hasEFL = ops.contains { $0[path: "kind", "type"]?.string == "efl" }
+        if s["hold_efl"]?.bool ?? true, !hasEFL, efl.isFinite {
+            ops.append(
+                .object([
+                    "kind": .object(["type": .string("efl")]), "target": .number(efl), "weight": .number(1), "comparison": .string("equal"),
+                    "role": .string("constraint"), "field": .object(["field": .string("all")]),
+                    "wavelength": .object(["wavelength": .string("primary")]), "config": .integer(0), "enabled": .bool(true),
+                    "label": .string("hold EFL"),
+                ]))
+        }
+        var rows: [[String: JSONValue]] = []
+        var total = 0.0
+        for (k, op) in ops.enumerated() {
+            let kind = op[path: "kind", "type"]?.string ?? ""
+            let field = op[path: "field", "index"]?.int
+            let value = kind == "efl" ? efl : field.map { spots.indices.contains($0) ? spots[$0] : mean } ?? mean
+            let target = op["target"]?.nf ?? 0
+            let weight = op["weight"]?.nf ?? 1
+            let constraint = op["role"]?.string == "constraint"
+            let enabled = op["enabled"]?.bool ?? true
+            let d = value - target
+            let residual: Double =
+                switch op["comparison"]?.string {
+                case "less_than": max(d, 0)
+                case "greater_than": min(d, 0)
+                default: d
+                }
+            let counted = !constraint && enabled
+            let c = counted ? weight * residual * residual : .nan
+            if counted { total += c }
+            var row = op.object ?? [:]
+            row["index"] = .integer(Int64(k))
+            row["kind"] = .string(kind)
+            row["label"] = op["label"] ?? .string("")
+            row["start"] = num(value)
+            row["value"] = num(value)
+            row["residual"] = counted ? num(residual) : .null
+            row["contribution"] = counted ? num(c) : .null
+            row["error"] = .null
+            rows.append(row)
+        }
+        for i in rows.indices {
+            let c = rows[i]["contribution"]?.nf ?? .nan
+            rows[i]["contribution_fraction"] = c.isFinite ? num(total > 0 ? c / total : 0) : .null
+        }
+        let spec = JSONValue.object([
+            "schema_version": .integer(1), "name": .string("default"),
+            "on_failure": .object(["mode": .string("penalty"), "value": .number(1000)]), "operands": .array(ops),
+        ])
+        return .object([
+            "merit": num(total), "violation": .number(0), "status": .object(["status": .string("ok")]),
+            "operands": .array(rows.map(JSONValue.object)), "merit_spec": spec,
+            "backend": .object([
+                "requested": .string("auto"), "evaluated_on": .string("mock"), "reported_on": .string("mock"), "precision": .string("f64_reference"),
+            ]),
+        ])
     }
 
     static func mockTolerance(

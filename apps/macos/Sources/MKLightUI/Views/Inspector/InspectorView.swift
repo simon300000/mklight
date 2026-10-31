@@ -267,8 +267,10 @@ struct SurfaceInspector: View {
         }
     }
 
-    private func variable(_ p: ParamPath) -> Binding<Bool> {
-        Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) })
+    private func variable(_ p: ParamPath) -> FieldVariable {
+        FieldVariable(
+            isOn: Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) }),
+            solve: design.system.solve(for: p)?.kind.kind.title)
     }
 }
 
@@ -311,7 +313,7 @@ private struct CoefficientRows: View {
     let list: CoefficientList
     let surface: Surface
     let edit: (String, @escaping (inout Surface) -> Void) -> Void
-    let variable: (ParamPath) -> Binding<Bool>
+    let variable: (ParamPath) -> FieldVariable
     @State private var revealed: Set<Int> = []
     @State private var showAll = false
 
@@ -412,7 +414,7 @@ private struct ApertureSection: View {
     let surface: Surface
     let autoValue: Double?
     let edit: (String, @escaping (inout Surface) -> Void) -> Void
-    let variable: (ParamPath) -> Binding<Bool>
+    let variable: (ParamPath) -> FieldVariable
 
     enum Shape: String, CaseIterable { case none, circular, annular, rectangular, elliptical }
 
@@ -486,7 +488,7 @@ private struct ApertureSection: View {
 private struct PlacementSection: View {
     let surface: Surface
     let edit: (String, @escaping (inout Surface) -> Void) -> Void
-    let variable: (ParamPath) -> Binding<Bool>
+    let variable: (ParamPath) -> FieldVariable
     @State private var expanded = false
 
     var body: some View {

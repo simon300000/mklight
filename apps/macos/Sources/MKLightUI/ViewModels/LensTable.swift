@@ -55,12 +55,12 @@ public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// The parameter behind the column for this surface's shape: radius and
-    /// conic of a toroid or biconic are its y section's, `radiusX` and
-    /// `conicX` its x section's (a toroid's x section has no conic).
+    /// conic of a toroid or biconic are its y section's (the `curvature`
+    /// path addresses the y section), `radiusX` and `conicX` its x
+    /// section's (a toroid's x section has no conic).
     public func param(for surface: Surface) -> ParamPath? {
         guard surface.shape.isAnamorphic else { return self == .radiusX || self == .conicX ? nil : param(surface.id) }
         switch self {
-        case .radius: return .shapeParam(surface: surface.id, parameter: .curvatureY)
         case .radiusX: return .shapeParam(surface: surface.id, parameter: .curvatureX)
         case .conic: return .shapeParam(surface: surface.id, parameter: .conicY)
         case .conicX: return surface.shape.kind == .biconic ? .shapeParam(surface: surface.id, parameter: .conicX) : nil
@@ -151,7 +151,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
         for s: OpticalSystem, autoSemiDiameters: [SurfaceID: Double] = [:], variables: Set<ParamPath> = [],
         bounds: [ParamPath: CellMarker.Bounds] = [:]
     ) -> [LensRow] {
-        let solves = Dictionary(s.solves.map { ($0.target, $0.kind.kind) }, uniquingKeysWith: { a, _ in a })
+        let solves = Dictionary(s.solves.map { (s.canonical($0.target), $0.kind.kind) }, uniquingKeysWith: { a, _ in a })
         return s.surfaces.enumerated().map { i, sf in
             let role: Role = i == 0 ? .object : (i == s.imageIndex ? .image : (i == s.stop ? .stop : .surface))
             var cells: [LensColumn: String] = [.comment: sf.label]
@@ -226,7 +226,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             if !sf.isCoordinateBreak { editable.insert(.semiDiameter) }
             var markers: [LensColumn: CellMarker] = [:]
             for c in LensColumn.allCases {
-                guard let p = c.param(for: sf) else { continue }
+                guard let p = c.param(for: sf).map(s.canonical) else { continue }
                 var m = CellMarker(isVariable: variables.contains(p))
                 if m.isVariable { m.bounds = bounds[p] ?? .free }
                 if let k = solves[p] { m.solve = (k.letter, k.title) }
@@ -255,8 +255,6 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     public func edit(_ column: LensColumn, text: String) -> Result<LensEdit, LensValueParser.Failure>? {
         switch column {
         case .comment: return .success(.setLabel(id, text))
-        case .radius where kind == .toroid || kind == .biconic:
-            return LensValueParser.curvature(fromRadiusText: text).map { .setShapeParameter(id, .curvatureY, $0) }
         case .radiusX where kind == .toroid || kind == .biconic:
             return LensValueParser.curvature(fromRadiusText: text).map { .setShapeParameter(id, .curvatureX, $0) }
         case .conic where kind == .toroid || kind == .biconic:

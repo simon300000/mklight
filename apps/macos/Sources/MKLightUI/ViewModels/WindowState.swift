@@ -50,6 +50,9 @@ public struct ViewportCamera: Equatable, Sendable {
     /// slim designs are drawn `stretch` times taller than long. The 3-D
     /// view always keeps true proportions.
     public var stretch = 1.0
+    /// The stretch was chosen (in the menu, or saved with the project), so
+    /// the first fit keeps it instead of choosing one for a slim design.
+    public var stretchChosen = false
 
     public init() {}
 
@@ -174,6 +177,9 @@ public struct WorkspaceLayout: Equatable, Sendable {
     public var showViewport = true
     public var viewportMode = ViewportMode.section2D
     public var rayColoring = RayColoring.field
+    /// The section views' vertical stretch, when one was chosen or applied
+    /// (`nil`: the first fit picks one for a slim design).
+    public var stretch: Double?
     public var layoutSettings: [String: JSONValue] = [:]
 
     public init() {}
@@ -199,6 +205,7 @@ public struct WorkspaceLayout: Equatable, Sendable {
                 showViewport = ui["show_viewport"]?.bool ?? true
                 viewportMode = ui["mode"]?.string.flatMap(ViewportMode.init(rawValue:)) ?? .section2D
                 rayColoring = ui["ray_coloring"]?.string.flatMap(RayColoring.init(rawValue:)) ?? .field
+                stretch = ui["stretch"]?.doubleValue.flatMap { $0.isFinite && $0 >= 1 ? $0 : nil }
                 layoutSettings = settings
             } else if let analysis = v["analysis"]?.string {
                 panes.append(
@@ -210,14 +217,16 @@ public struct WorkspaceLayout: Equatable, Sendable {
     }
 
     public var views: JSONValue {
+        var layoutUI: [String: JSONValue] = [
+            "editor_fraction": .number(editorFraction), "viewport_fraction": .number(viewportFraction),
+            "show_viewport": .bool(showViewport), "mode": .string(viewportMode.rawValue),
+            "ray_coloring": .string(rayColoring.rawValue),
+        ]
+        if let stretch { layoutUI["stretch"] = .number(stretch) }
         var out: [JSONValue] = [
             .object([
                 "key": .string("layout"), "analysis": .string("layout"), "settings": .object(layoutSettings),
-                "ui": .object([
-                    "editor_fraction": .number(editorFraction), "viewport_fraction": .number(viewportFraction),
-                    "show_viewport": .bool(showViewport), "mode": .string(viewportMode.rawValue),
-                    "ray_coloring": .string(rayColoring.rawValue),
-                ]),
+                "ui": .object(layoutUI),
             ])
         ]
         for p in panes {
@@ -251,6 +260,8 @@ extension WorkspaceLayout {
         showViewport = window.showViewport
         viewportMode = window.viewportMode
         rayColoring = window.rayColoring
+        let c = window.camera
+        stretch = c.stretchChosen || c.stretch != 1 ? c.stretch : nil
         layoutSettings = workspace.layout.settings
     }
 
@@ -271,6 +282,10 @@ extension WorkspaceLayout {
         window.showViewport = showViewport
         window.viewportMode = viewportMode
         window.rayColoring = rayColoring
+        if let stretch {
+            window.camera.stretch = stretch
+            window.camera.stretchChosen = true
+        }
         window.paneWidths = Dictionary(panes.compactMap { p in p.width.map { (p.key, $0) } }, uniquingKeysWith: { a, _ in a })
     }
 }

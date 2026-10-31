@@ -279,7 +279,7 @@ public final class GlassSubstitutionSession {
         ]
         if let maxSeconds { s["max_seconds"] = .number(maxSeconds) }
         s.merge(merit.jobSettings) { _, b in b }
-        if let v = OptimizeSession.variableSettings(variables, useDesign: useDesignVariables) { s["variables"] = v }
+        if let v = OptimizeSession.variableSettings(variables, useDesign: useDesignVariables, system: system) { s["variables"] = v }
         let order = GlassSlot.all(in: system).map(\.id).filter(selected.contains)
         s["material_variables"] = .array(
             order.map { id in .object(["surface": .integer(Int64(id.rawValue)), "candidates": (overrides[id] ?? candidates).json]) })

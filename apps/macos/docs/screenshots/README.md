@@ -9,17 +9,18 @@ launch options (`-MKLightAppearance light|dark`, `-MKLightSheet`,
 `-MKLightAutoPick`, `-MKLightFootprints`, `-MKLightFit lens`,
 `-MKLightRunDetails`, docs/APP.md "Building"); downscaled to 1600 px. The
 review round (narrow panes, bounds, sections, scales, image simulation,
-warnings) retook the shots marked *new* or *updated*; the job-panel shots
-(Optimize running and result, Glass Substitution, the custom merit) and the
-welcome window are from the round before. Appearance in the file name. Reduce
+warnings) retook the shots marked *new* or *updated*; the two merit shots
+are from the `merit_evaluation` round (`-MKLightAutoConvert` pressed
+Convert to Custom); the other job-panel shots (Optimize running and result,
+Glass Substitution) and the welcome window are from the round before. Appearance in the file name. Reduce
 Transparency and Increase Contrast were not captured (switching them changes
 a system setting).
 
 | file | shows |
 |---|---|
 | `main-light.png`, `main-dark.png` | *updated* Double Gauss: glass sidebar (analyses in title case), toolbar with the four design jobs, lens data, layout, spot diagram (statistics on two lines in the narrow pane), MTF (its warning badge) and the glass map with the design's glasses ringed and labelled with their surfaces; the dark one with the surface inspector |
-| `merit-default-light.png` | *updated* Optimize: the default merit generator set to MTF (20 and 40 cycles/mm, target 0.6, weakest field), the live merit, Convert to Custom; variables with bounds in their units: radii as radius windows in mm (23.81 … 33.33; 16.67 … −100 through ∞; −25 … −16.67), the A₄ coefficient in mm⁻³, thicknesses in mm, the Radius mm / Curvature 1/mm switch; bounded marks in the table |
-| `merit-custom-dark.png` | the custom merit: operands with parameters, comparison, target and weight, their current values and shares of the merit as bars, constraints badged |
+| `merit-default-light.png` | *updated* Optimize on the Double Gauss: the default merit set to MTF (20 and 40 cycles/mm, target 0.6, weakest field) with the live merit from `merit_evaluation` (0.351515), Convert to Custom; variables with bounds in their units (radius windows in mm, one through ∞, thicknesses in mm) and a variable left on the back focus that a marginal-ray-height solve sets, flagged "Set by a solve: not varied"; the Seidel legend with S_I … S_V subscripts |
+| `merit-custom-dark.png` | *updated* the same merit converted to custom: the 29 generated operands (rows lead with their field: F1, F2, F3 …), their values and shares, the `combine` minimum carrying the merit, and the same merit, 0.351515 |
 | `optimize-running-light.png` | an LM run in progress: iteration, search merit, sparkline, the glass action bar with Cancel and Stop |
 | `optimize-result-light.png` | the stopped run's result previewed in the window ("Previewing Optimized design (stopped) · not applied"), the before/after layouts, every variable before → after, Discard and the prominent Apply to Design |
 | `glass-substitution-dark.png` | Glass Substitution on the achromat: 96 combinations ranked by merit with their improvement; candidate 2 previewed in the window and the panes (spot and glass map follow it), the before/after card and the panel's glass map with the candidate's glasses ringed |

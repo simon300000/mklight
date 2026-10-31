@@ -153,17 +153,27 @@ public final class DesignDocument {
         return list
     }
 
-    public func isVariable(_ path: ParamPath) -> Bool { variables.contains { $0.param == path } }
+    /// Whether `path` (or another path to the same parameter) is a variable.
+    public func isVariable(_ path: ParamPath) -> Bool { variable(path) != nil }
 
-    /// Makes `path` a variable or a fixed parameter (undoable).
+    /// Why `path` cannot become a variable: a solve sets it, and `optimize`
+    /// applies solves first and refuses solved parameters as variables.
+    public func variableRefusal(_ path: ParamPath) -> String? {
+        guard let s = system.solve(for: path) else { return nil }
+        return "Set by a solve (\(s.kind.kind.title)), so the optimizer cannot vary it. Remove the solve to make it a variable."
+    }
+
+    /// Makes `path` a variable or a fixed parameter (undoable). A parameter
+    /// a solve sets cannot become one (`variableRefusal`).
     public func setVariable(_ path: ParamPath, _ on: Bool, undoManager: UndoManager?) {
         var list = variables
+        let p = system.canonical(path)
         if on {
-            guard !list.contains(where: { $0.param == path }) else { return }
+            guard variableRefusal(path) == nil, !list.contains(where: { system.canonical($0.param) == p }) else { return }
             let b = DesignVariable.defaultBounds(for: path, in: system)
             list.append(DesignVariable(path, lower: b.lower, upper: b.upper))
         } else {
-            list.removeAll { $0.param == path }
+            list.removeAll { system.canonical($0.param) == p }
         }
         setSectionUndoable("variables", Self.encode(list), actionName: on ? "Make Variable" : "Remove Variable", undoManager: undoManager)
     }
@@ -180,7 +190,10 @@ public final class DesignDocument {
     }
 
     /// The variable of `path`, if it is one.
-    public func variable(_ path: ParamPath) -> DesignVariable? { variables.first { $0.param == path } }
+    public func variable(_ path: ParamPath) -> DesignVariable? {
+        let p = system.canonical(path)
+        return variables.first { system.canonical($0.param) == p }
+    }
 
     // MARK: Merit function
 

@@ -420,6 +420,9 @@ public struct MeritSettings: Hashable, Sendable {
     public var defaults = DefaultMeritSettings()
     public var operands: [MeritOperand] = []
     public var holdEFL = true
+    /// The custom spec's other keys (`name`, `on_failure`, …), kept as the
+    /// engine wrote them so a converted default merit evaluates the same.
+    public var specOptions: [String: JSONValue] = [:]
 
     public init() {}
 
@@ -428,6 +431,7 @@ public struct MeritSettings: Hashable, Sendable {
         mode = s["mode"]?.string.flatMap(Mode.init(rawValue:)) ?? .default
         defaults = DefaultMeritSettings(json: s["default_merit"])
         operands = (s[path: "spec", "operands"]?.array ?? []).compactMap(MeritOperand.init(json:))
+        specOptions = (s["spec"]?.object ?? [:]).filter { $0.key != "operands" && $0.key != "schema_version" }
         holdEFL = s["hold_efl"]?.bool ?? true
     }
 
@@ -440,7 +444,11 @@ public struct MeritSettings: Hashable, Sendable {
 
     /// The custom operands as a `MeritFunctionSpec`.
     public var spec: JSONValue {
-        .object(["schema_version": .integer(1), "name": .string(""), "operands": .array(operands.map(\.json))])
+        var o: [String: JSONValue] = ["name": .string("")]
+        o.merge(specOptions) { _, b in b }
+        o["schema_version"] = .integer(1)
+        o["operands"] = .array(operands.map(\.json))
+        return .object(o)
     }
 
     /// The merit part of `optimize` / `glass_substitution` settings.
@@ -509,59 +517,84 @@ public struct MeritSettings: Hashable, Sendable {
 
 // MARK: - Evaluation
 
-/// The merit and its operands at the current design, from a one-iteration
-/// `optimize` run (the engine has no evaluate-only call): its `start`
-/// values are the design's, on the CPU f64 reference.
+/// The merit and its operands at the current design, from the engine's
+/// `merit_evaluation`: one evaluation with `optimize`'s settings (solves
+/// applied, the default merit generated, the EFL hold added).
 public struct MeritEvaluation: Sendable, Equatable {
     public struct Row: Sendable, Equatable {
         public var index: Int
         public var kind: String
         public var label: String
         public var isConstraint: Bool
+        public var enabled: Bool
+        /// NaN when the operand failed (`error` says why).
         public var value: Double
         public var target: Double
+        public var weight: Double
+        /// `value − target`, one-sided for inequalities; NaN for constraints
+        /// and disabled operands.
+        public var residual: Double
+        /// `weight · residual²`; NaN for constraints and disabled operands.
         public var contribution: Double
-        /// Share of the merit (0…1); NaN for constraints.
+        /// Share of the merit (0…1); NaN for constraints and disabled operands.
         public var fraction: Double
         public var error: String?
     }
+
+    /// The engine's `EvalStatus`.
+    public enum Status: Sendable, Equatable {
+        case ok
+        /// Usable, but `failures` residuals carry penalty values.
+        case degraded(failures: Int)
+        /// No meaningful merit.
+        case failed
+    }
+
     public var merit: Double
+    /// Total normalised constraint violation.
     public var violation: Double
+    public var status: Status
+    /// The evaluator that computed it (`backend.reported_on`, e.g.
+    /// `cpu-f64-reference`).
+    public var reportedOn: String
     public var rows: [Row]
-    /// The effective spec the engine used (generated operands included).
+    /// The expanded spec (generated operands and the EFL hold included),
+    /// usable as a custom `merit`.
     public var spec: JSONValue?
 
     public init?(json: JSONValue) {
-        guard json.object != nil else { return nil }
-        merit = json[path: "start", "merit"]?.nf ?? .nan
-        violation = json[path: "start", "violation"]?.nf ?? .nan
+        guard json.object != nil, json["merit"] != nil else { return nil }
+        merit = json["merit"]?.nf ?? .nan
+        violation = json["violation"]?.nf ?? .nan
+        switch json[path: "status", "status"]?.string {
+        case "degraded": status = .degraded(failures: json[path: "status", "failures"]?.int ?? 0)
+        case "failed": status = .failed
+        default: status = .ok
+        }
+        reportedOn = json[path: "backend", "reported_on"]?.string ?? json[path: "backend", "evaluated_on"]?.string ?? ""
         spec = json["merit_spec"]
-        var rows: [Row] = []
-        for (k, o) in (json["operands"]?.array ?? []).enumerated() {
-            let value = o["start"]?.nf ?? .nan
-            let target = o["target"]?.nf ?? 0
-            let weight = o["weight"]?.nf ?? 0
-            let constraint = o["role"]?.string == "constraint"
-            let enabled = o["enabled"]?.bool ?? true
-            var op = MeritOperand(kind: ["type": .string(o["kind"]?.string ?? "")])
-            op.target = target
-            op.comparison = o["comparison"]?.string.flatMap(MeritOperand.Comparison.init(rawValue:)) ?? .equal
-            let r = op.residual(value)
-            let c = constraint || !enabled ? Double.nan : weight * r * r
-            rows.append(
-                Row(
-                    index: o["index"]?.int ?? k, kind: o["kind"]?.string ?? "", label: o["label"]?.string ?? "", isConstraint: constraint,
-                    value: value, target: target, contribution: c, fraction: .nan, error: o["error"]?.string))
+        rows = (json["operands"]?.array ?? []).enumerated().map { k, o in
+            Row(
+                index: o["index"]?.int ?? k, kind: o["kind"]?.string ?? "", label: o["label"]?.string ?? "",
+                isConstraint: o["role"]?.string == "constraint", enabled: o["enabled"]?.bool ?? true,
+                value: o["value"]?.nf ?? .nan, target: o["target"]?.nf ?? .nan, weight: o["weight"]?.nf ?? .nan,
+                residual: o["residual"]?.nf ?? .nan, contribution: o["contribution"]?.nf ?? .nan,
+                fraction: o["contribution_fraction"]?.nf ?? .nan, error: o["error"]?.string)
         }
-        let total = rows.map(\.contribution).filter(\.isFinite).reduce(0, +)
-        for i in rows.indices where rows[i].contribution.isFinite {
-            rows[i].fraction = total > 0 ? rows[i].contribution / total : 0
-        }
-        self.rows = rows
     }
 
-    public func row(_ index: Int) -> Row? { rows.first { $0.index == index } }
+    /// The row of operand `index`, if it is an operand of type `kind` (an
+    /// evaluation of an older operand list says nothing about a new one).
+    public func row(_ index: Int, kind: String? = nil) -> Row? {
+        rows.first { $0.index == index && (kind == nil || $0.kind == kind) }
+    }
 
-    /// The generated (or custom) operands of the effective spec.
+    /// The operands of the expanded spec (generated ones and the EFL hold).
     public var specOperands: [MeritOperand] { (spec?["operands"]?.array ?? []).compactMap(MeritOperand.init(json:)) }
+
+    /// The expanded spec's keys besides its operands (name, failure policy).
+    public var specOptions: [String: JSONValue] {
+        (spec?.object ?? [:]).filter { $0.key != "operands" && $0.key != "schema_version" }
+    }
 }
+

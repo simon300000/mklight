@@ -478,11 +478,13 @@ struct PaneFooter: View {
         HStack(spacing: Space.l) {
             ForEach(numbers, id: \.label) { n in
                 HStack(spacing: 3) {
-                    Text(n.label).foregroundStyle(.secondary)
+                    Subscripted.text(n.label).foregroundStyle(.secondary)
                     Text(n.value).numeric().fontWeight(.medium)
                 }
                 .fixedSize()
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Subscripted.spoken(n.label))
+                .accessibilityValue(n.value)
             }
         }
     }

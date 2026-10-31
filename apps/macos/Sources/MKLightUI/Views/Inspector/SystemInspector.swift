@@ -235,8 +235,10 @@ struct SystemInspector: View {
         design.edit(name, undoManager: undoManager, change)
     }
 
-    private func variable(_ p: ParamPath) -> Binding<Bool> {
-        Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) })
+    private func variable(_ p: ParamPath) -> FieldVariable {
+        FieldVariable(
+            isOn: Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) }),
+            solve: design.system.solve(for: p)?.kind.kind.title)
     }
 }
 

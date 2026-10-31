@@ -188,7 +188,7 @@ struct OptimizePanel: View {
         .onChange(of: design.merit) { _, _ in session.load(design) }
         .task(id: evaluationKey) {
             session.load(design)
-            if case .setup = session.state { session.scheduleEvaluation(in: workspace, variables: design.variables) }
+            if case .setup = session.state { session.scheduleEvaluation(in: workspace, variables: design.variables, system: design.system) }
         }
     }
 
@@ -238,7 +238,7 @@ struct OptimizePanel: View {
                         Text("Mark values with V in the lens data or the inspector to choose them; each gets sensible bounds you can edit here.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    if let why = session.variableProblem(design.variables) {
+                    if let why = session.variableProblem(design.variables, system: design.system) {
                         Label(why, systemImage: "pin.fill").font(.caption).foregroundStyle(.orange)
                     }
                 }
@@ -378,7 +378,7 @@ struct OptimizePanel: View {
                 session.start(in: workspace, variables: design.variables)
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(blocked || session.variableProblem(design.variables) != nil)
+            .disabled(blocked || session.variableProblem(design.variables, system: design.system) != nil)
         case .running(let p):
             GlassProgress(progress: p, detail: session.trace.last.map { "Iteration \($0.iteration)" } ?? "", namespace: glass)
             GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }
@@ -409,6 +409,7 @@ struct OptimizePanel: View {
     private func autoRun() {
         #if DEBUG
         let d = UserDefaults.standard
+        autoMerit(d)
         guard let a = d.string(forKey: "MKLightAutoRun"), ["lm", "dogleg", "de", "cma_es", "nelder_mead", "hammer"].contains(a),
             case .setup = session.state
         else { return }
@@ -433,6 +434,42 @@ struct OptimizePanel: View {
         #endif
     }
 }
+
+#if DEBUG
+extension OptimizePanel {
+    /// Debug builds, for screenshots and checks of the live merit:
+    /// `-MKLightAutoEdit s` edits the merit s seconds after the panel opens
+    /// and restores it a second later (default: the MTF target up 0.1, or
+    /// one more ring; custom: the first operand's weight doubled), and `-MKLightAutoConvert s`
+    /// presses Convert to Custom s seconds after it opens.
+    fileprivate func autoMerit(_ d: UserDefaults) {
+        let editAfter = d.double(forKey: "MKLightAutoEdit"), convertAfter = d.double(forKey: "MKLightAutoConvert")
+        guard editAfter > 0 || convertAfter > 0 else { return }
+        Task {
+            let start = ContinuousClock.now
+            if editAfter > 0 {
+                try? await Task.sleep(for: .seconds(editAfter))
+                for k in 0..<2 {
+                    session.editMerit(design, "Auto Edit", undoManager: undoManager) { m in
+                        if m.mode == .default && m.defaults.criterion == .mtf {
+                            m.defaults.mtfTarget += k == 0 ? 0.1 : -0.1
+                        } else if m.mode == .default {
+                            m.defaults.rings += k == 0 ? 1 : -1
+                        } else if !m.operands.isEmpty {
+                            m.operands[0].weight *= k == 0 ? 2 : 0.5
+                        }
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+            if convertAfter > 0 {
+                try? await Task.sleep(until: start + .seconds(convertAfter))
+                await session.convertToCustom(in: workspace, document: design, variables: design.variables, undoManager: undoManager)
+            }
+        }
+    }
+}
+#endif
 
 // MARK: - Tolerance
 

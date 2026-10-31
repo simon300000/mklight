@@ -250,7 +250,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
   turns it on at the smallest step that fills a third. A stretched view
   says so in a tinted "Stretch ×N" menu among the controls and on the
   scale bar, which adds an upright bar of a round length as drawn and
-  "vertical ×N"; the 3-D view always keeps true proportions. A previewed candidate design shows a glass
+  "vertical ×N"; the 3-D view always keeps true proportions. The stretch
+  is saved in the project's `views` (`ui.stretch` of the layout entry);
+  a saved one, even ×1, is kept instead of the automatic choice. A previewed candidate design shows a glass
   "Previewing … · not applied" label under the controls.
 * **Analysis panes** (`AnalysisPaneView`): side by side with resizable
   widths. The header has the analysis menu and a one-line state or settings
@@ -284,7 +286,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
     Grid" for a truncated PSF. Stale: dimmed, desaturated, slightly blurred, with a glass card
   and a prominent Update; updating: a progress line and a gentle pulse. The
   dedicated views are as before (first order with the anamorphic note, spot,
-  fans, field curvature, Seidel, MTF, PSF, wavefront, ghosts, stray light,
+  fans, field curvature, Seidel with S_I … S_V and C_L, C_T set with real
+  subscripts in its legend and key numbers (`Subscripted`), MTF, PSF, wavefront, ghosts, stray light,
   polarisation, …); everything else uses the generic view.
 * **Field maps, glass map and image simulation** have dedicated views.
   `pupil_aberration`, `relative_illumination_map` and `chief_ray_angle`
@@ -321,7 +324,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
   of view (full field, ½, ¼, centre 10 %, 5 %, 2 %: a square centred on
   the axis, each with its width and pixel size on the sensor) and the
   resolution (128 … 1024 px). Image simulation starts manual (seconds per
-  run). Built-in patterns are drawn by the app with the engine's
+  run). Panes saved with the engine's defaults by an older version (no
+  settings, or only default values) take these starting settings when the
+  project opens, and wait for Update. Built-in patterns are drawn by the app with the engine's
   definition, area-sampled (4 × 4 per pixel) and sent as a buffer source
   at the run's size, so both the shown source and the simulation are
   antialiased; a user image (any format ImageIO reads) is cropped to the
@@ -344,9 +349,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
   the run will use in spectral colours with the primary marked, resolved by
   the engine (`system_summary` with the spectrum) or, until it answers, a
   local preview labelled approximate. The pane summary reads e.g.
-  "Spectrum photopic". A spectrum run records the derived system's hash in
-  `run_info`, so a pane remembers the snapshot it submitted to (otherwise
-  it would look stale forever).
+  "Spectrum photopic". A spectrum pane is current while its
+  `run_info.snapshot_hash` matches like any other (the engine reports the
+  run-local system separately as `derived_snapshot_hash`).
 * **Inspector** (`.inspector`): Surface or System, switched by a segmented
   control in a `safeAreaBar`. Surface: title with a stop badge, the type
   menu, the type's summary and preview, then the data-driven sections,
@@ -375,22 +380,43 @@ What we took from Apple's current guidance, and how MKLight applies it.
     shows the operand, its parameters, comparison and target, weight, its
     current value and its share of the merit as a bar; the selected
     operand's parameters, field, wavelength, comparison (=, ≤, ≥), target,
-    weight, constraint role and enable are edited below the list; add after
-    the selection, delete (⌫), duplicate, drag or ⌥⌘↑/↓ to reorder, with
+    weight, constraint role and enable are edited below the list (the
+    row's summary leads with its field and wavelength); add after the
+    selection, delete (⌫), duplicate, drag or ⌥⌘↑/↓ to reorder, with
     `combine` references following their operands; local problems and the
-    engine's operand errors show inline. *Convert to Custom* starts from
-    the operands the engine generates for the default merit. Every change
-    is undoable and saved in the project's `merit` section.
-  * **Live evaluation.** The engine has no evaluate-only call, so the panel
-    runs `optimize` with one LM iteration (debounced, cancelled by newer
-    edits, on the design's snapshot) and reads its `start` merit and
-    operand `start` values; shares are weight × residual² over their sum.
+    engine's operand errors show inline. *Convert to Custom* takes the
+    expanded merit the engine evaluated (`merit_spec`: the generated
+    operands, with the spec's failure policy kept in the saved spec); the
+    EFL hold stays with the "Hold the focal length" switch, which adds it
+    again, so the custom merit equals the default's. Every change is
+    undoable and saved in the project's `merit` section.
+  * **Live evaluation** (`OptimizeSession.scheduleEvaluation`): the
+    engine's `merit_evaluation` with exactly `optimize`'s settings (merit,
+    variables, `hold_efl`, algorithm), on the design's snapshot, 200 ms
+    after the last edit; a newer edit cancels the pending request, an edit
+    undone before its answer drops it, and the readout dims from the edit
+    until the answer. The merit, every operand's value, its contribution
+    (weight × residual²) and its share come from the engine's report, a
+    failed operand with its error; the readout's help names the evaluator
+    and a degraded or failed status. On the Double Gauss an MTF or
+    RMS-spot evaluation takes 40–110 ms (CPU f64) on an idle machine.
+  * **Solves and variables.** `optimize` and `merit_evaluation` apply the
+    solves first and refuse a solve-controlled parameter as a variable. A
+    solved value's `V` toggle (inspector) is struck through, its help says
+    which solve sets it and how to vary it; the table's Variables menu and
+    ⌃⌘V refuse it with that message. A variable left on a parameter that
+    later got a solve keeps an orange `V` in the table, is flagged "Set by a
+    solve: not varied" in the bounds list (the solve in its help) and is
+    left out of the run; a run whose variables are all pinned or solved is
+    blocked with an explanation. `curvature` and `shape_param
+    curvature_y` name one parameter of a toroid or biconic
+    (`OpticalSystem.canonical`), so variables and solves match by either.
   * **Variables and bounds** (`VariablesBoundsList`): every design variable
     with its current value, inline min and max (empty is unbounded) in the
     unit of the row's unit column, pin (equal bounds: kept but held, and
     left out of the run), remove; out-of-bounds values, automatic
-    semi-diameters and vanished parameters are flagged. **Radii are
-    bounded as a radius window in mm** by default (`RadiusBounds`; a
+    semi-diameters, solved parameters and vanished parameters are flagged.
+    **Radii are bounded as a radius window in mm** by default (`RadiusBounds`; a
     "Curvatures as Radius mm | Curvature 1/mm" switch shows the engine's
     curvature bounds instead, and each row's help gives the bounds in the
     other unit). The window `min … max` rises from min to max on the
@@ -460,8 +486,8 @@ Every engine shape (docs/SURFACES.md) is mirrored in `MKLightModel`
 | | Q-type (best-fit sphere) | BFS radius, norm radius; a₀ … a₁₉ Qₘᵇᶠˢ | idem |
 | Freeform | XY polynomial | base conic, norm radius; C(xᵐyⁿ), degree 1–10 (65), any term from a menu, zero terms hidden | `shape_coefficient xy` |
 | | Zernike sag | base conic, norm radius, ordering (Fringe 37 / Standard 45); Zⱼ with names | `shape_coefficient zernike` |
-| Anamorphic | Toroid | y profile (R_y, k_y, B₄ y⁴ …), rotation R_x | `shape_param curvature_x/y, conic_y`, `shape_coefficient y_asphere` |
-| | Biconic | x and y sections (R, k, A x⁴ … / B y⁴ …) | `shape_param …`, `shape_coefficient x_asphere/y_asphere` |
+| Anamorphic | Toroid | y profile (R_y, k_y, B₄ y⁴ …), rotation R_x | `curvature` (the y section), `shape_param curvature_x, conic_y`, `shape_coefficient y_asphere` |
+| | Biconic | x and y sections (R, k, A x⁴ … / B y⁴ …) | `curvature` (y), `shape_param curvature_x, conic_x/y`, `shape_coefficient x_asphere/y_asphere` |
 | | Cylinder (x or y) | a biconic preset ("Make Cylinder") | as biconic |
 | Diffractive | Diffractive | base (plane, conic, even asphere) and its parameters; phase norm radius, A₁ ρ² … A₁₀ ρ²⁰ (rad); design order, design λ, trace order | `curvature`/`conic`/`asphere` address the base; `shape_coefficient phase`, `shape_param norm_radius`; orders are never variables |
 | Special | Ideal lens, Coordinate break | focal length; placement | `paraxial_focal_length`, decenters and tilts |
@@ -521,7 +547,12 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   `-MKLightSheet glass`, `-MKLightAutoRun glass` (and `-MKLightAutoPick n`),
   `-MKLightAutoStop s` and `-MKLightAutoApply s` (press Stop / Apply after
   s seconds), `-MKLightFootprints YES`, `-MKLightFit lens`,
-  `-MKLightRunDetails <analysis>` (opens that pane's run details) and
+  `-MKLightRunDetails <analysis>` (opens that pane's run details),
+  `-MKLightAutoEdit s` (edits the merit s seconds after the Optimize panel
+  opens and restores it a second later) and `-MKLightAutoConvert s`
+  (presses Convert to Custom; debug builds log every live evaluation's
+  time and merit under the `com.mklight.app` subsystem, category
+  `merit`), and
   `-MKLightCurvatureBoundsUnit curvature` (the bounds list's unit, an
   `@AppStorage` preference). Pane layouts come from the document's
   `views`.
@@ -572,7 +603,8 @@ callback never runs on the main thread and holds no engine lock.
   Variables are a project section (`[{param, lower, upper}]`, the engine's
   `VariableSpec`) and their changes, bounds and pins are undoable too; so
   is the merit function (`merit`: `{mode, default_merit, spec, hold_efl}`,
-  `spec` an engine `MeritFunctionSpec`).
+  `spec` an engine `MeritFunctionSpec`, keeping keys such as
+  `on_failure` that the app does not edit).
 * **File** (`ProjectDocument`, `ReferenceFileDocument`): reads and writes the
   engine's project format through `ProjectFile`; SwiftUI's document
   machinery provides autosave in place, versions and the dirty state (it
@@ -607,8 +639,8 @@ callback never runs on the main thread and holds no engine lock.
 
 ## Tests
 
-`swift test` in `apps/macos` (241 tests in 42 suites: model 69, engine 33,
-FFI 35, UI 104):
+`swift test` in `apps/macos` (248 tests in 42 suites: model 69, engine 33,
+FFI 36, UI 110):
 
 * `MKLightModelTests`: round trips against JSON written by the Rust side
   (every model variant including the extended shapes in
@@ -647,8 +679,11 @@ FFI 35, UI 104):
   ranking and Monte Carlo, Apply Solves dry run then undoable commit);
   parsers, viewport math and shaders; the merit editor (add after the
   selection, reorder, duplicate and delete with `combine` references kept,
-  the operand JSON, contributions from the start values, undo and the saved
-  section) and variable bounds (defaults, edit, pin, held when pinned, table
+  the operand JSON, the `merit_evaluation` report, live evaluation and
+  conversion on the mock engine, an undone edit dropping its pending
+  evaluation, undo and the saved section), solved parameters (refused as
+  variables, flagged and left out, `curvature` ≡ `curvature_y` on a toroid)
+  and variable bounds (defaults, edit, pin, held when pinned, table
   marks, undo); glass substitution settings, progress and results; spectrum
   settings encoding and CSV import; the field-map, glass-map and
   image-simulation readers; the review round (`PolishTests`): radius ↔
@@ -659,11 +694,14 @@ FFI 35, UI 104):
   heat-map scale choice (data range, 0…1, diverging, flat maps, the
   ramp's monotonic lightness, iso-levels), warning grouping and remedies,
   the automatic stretch and its projection, area-sampled patterns and the
-  image simulation's starting settings.
+  image simulation's starting settings; the stretch saved in `views`, old
+  image-simulation panes migrating, subscripted labels.
 * FFI additions: the extended shapes run through the layout (x–z section,
   surface mesh, DOE flag) and Seidel; footprint overlays; the default merit
-  evaluates and converts to custom operands with the same merit; custom
-  operands report values; spectrum panes stay current; the glass
+  evaluates through `merit_evaluation` to `optimize`'s start merit, its
+  contributions add up to it, and it converts to custom operands that
+  evaluate to the merit shown before; a solved variable is left out (sent
+  as it is, the engine refuses it); custom operands report values; spectrum panes stay current; the glass
   substitution flow on the achromat (select, run, preview, apply, undo,
   redo) and Stop keeping the ranking; the new analyses' views read the
   engine's results; spectra and x/y first order on the real engine.
@@ -740,17 +778,12 @@ Remaining for an iPadOS target:
   them and uses no custom translucency of its own; Reduce Motion is honoured
   in code (`accessibilityReduceMotion`).
 * Engine gaps the UI works around:
-  * No evaluate-only merit call: the live merit runs `optimize` with one LM
-    iteration (n + 1 merit evaluations) and reads its start columns.
-  * A run with a `spectrum` records the run-local system's hash in
-    `run_info.snapshot_hash`, which breaks the "current while the hash
-    matches" rule of RESULTS §1; panes remember the snapshot they submitted.
-  * `layout` and `ParamPath` still treat a few cases strictly: the
-    `curvature` path refuses toroids and biconics (the app addresses their
-    sections with `shape_param curvature_x/y`), reading an automatic
-    semi-diameter through a path fails (the app shows the layout's value and
-    flags such a variable), and a trace order of 0.5 is refused (the app
-    rejects non-integer orders before the engine sees them).
+  * `optimize` and `merit_evaluation` still refuse a variable on an
+    automatic semi-diameter ("semi-diameter is automatic"), although
+    `mk_session_get_param` now reads its resolved value; the bounds list
+    flags such a variable ("set a value in the lens data first"). A trace
+    order of 0.5 is refused (the app rejects non-integer orders before the
+    engine sees them).
   * `image_simulation`'s text chart and PNG-path sources come out
     vertically mirrored (their top row lands at the low-y edge); imported
     images go as buffers, which are correct.

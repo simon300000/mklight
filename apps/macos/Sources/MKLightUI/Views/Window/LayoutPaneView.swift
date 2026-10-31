@@ -98,6 +98,7 @@ struct LayoutPaneView: View {
             get: { window.camera.stretch },
             set: { s in
                 window.camera.stretch = s
+                window.camera.stretchChosen = true
                 window.fitRequest += 1
             })
     }

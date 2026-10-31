@@ -125,7 +125,10 @@ extension ParamPath {
     public func label(in system: OpticalSystem) -> String {
         let n = surface.flatMap(system.surfaceIndex(of:)).map(String.init) ?? "?"
         switch self {
-        case .curvature: return "Radius \(n)"
+        case .curvature(let id):
+            // The y section of a toroid or biconic.
+            let anamorphic = system.surfaceIndex(of: id).map { system.surfaces[$0].shape.kind == .toroid || system.surfaces[$0].shape.kind == .biconic } ?? false
+            return anamorphic ? "Radius y \(n)" : "Radius \(n)"
         case .thickness: return "Thickness \(n)"
         case .conic: return "Conic \(n)"
         case .asphere(_, let k): return "A\(2 * k + 4) on \(n)"

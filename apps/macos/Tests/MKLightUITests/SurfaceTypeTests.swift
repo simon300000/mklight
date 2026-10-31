@@ -149,7 +149,7 @@ import Testing
         let edit = try #require(rows[1].edit(.radius, text: "50")).get()
         edit.apply(to: &s)
         #expect(s.surfaces[1].shape.shapeParameter(.curvatureY) == 0.02)
-        #expect(LensColumn.radius.param(for: s.surfaces[1]) == .shapeParam(surface: s.surfaces[1].id, parameter: .curvatureY))
+        #expect(LensColumn.radius.param(for: s.surfaces[1]) == .curvature(surface: s.surfaces[1].id), "the curvature path is the y section")
         // A Q-BFS surface has a radius but no conic.
         s.setShapeKind(.qBfs, at: 1)
         let q = LensRow.rows(for: s)[1]
