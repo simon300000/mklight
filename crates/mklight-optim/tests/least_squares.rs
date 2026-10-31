@@ -336,11 +336,16 @@ fn augmented_lagrangian_inner_cap() {
         least_squares(&p, &x0, &s, &Monitor::default()).unwrap()
     };
     let (free, capped) = (run(None, 40), run(Some(5), 40));
-    eprintln!(
-        "40 iterations: violation {:.3e} uncapped, {:.3e} capped",
-        free.violation, capped.violation
-    );
-    assert!(capped.violation < 1e-3 * free.violation);
+    // Compare the AL endpoints before the separate feasibility restoration.
+    let before_restoration = |r: &mklight_optim::OptimResult| {
+        r.history
+            .iter()
+            .rfind(|h| h.stage != "feasibility restoration")
+            .unwrap()
+            .violation
+    };
+    assert!(before_restoration(&capped) < 1e-3 * before_restoration(&free));
+    assert!(free.violation < 1e-8 && capped.violation < 1e-8);
     // While infeasible no round exceeds the cap.
     let mut rows = std::collections::BTreeMap::<String, usize>::new();
     for h in capped.history.iter().filter(|h| h.violation > 1e-9) {
@@ -353,4 +358,67 @@ fn augmented_lagrangian_inner_cap() {
     for (u, v) in a.x.iter().zip(&b.x) {
         assert!((u - v).abs() < 1e-5, "{:?} vs {:?}", a.x, b.x);
     }
+}
+
+/// A tangent LM step improves the merit but leaves a second-order equality
+/// defect just above the ranking tolerance, as with a focal-length hold.
+#[test]
+fn restore_tiny_nonlinear_constraint_defect_before_ranking() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let p = FnProblem::new(
+        vec![
+            Variable::bounded("x", 0.0, 2.0),
+            Variable::bounded("y", -1e-3, 0.0),
+        ],
+        1,
+        move |x, r, c| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            assert!((0.0..=2.0).contains(&x[0]) && (-1e-3..=0.0).contains(&x[1]));
+            r[0] = x[0] - 1.0;
+            c[0] = x[1] + 2.7e-6 * x[0] * x[0];
+            EvalStatus::Ok
+        },
+    )
+    .with_constraints(vec![Constraint::equal("hold", 0.0)]);
+    for method in [LsqSettings::default(), LsqSettings::dogleg()] {
+        let s = LsqSettings {
+            max_iterations: 1,
+            ..method
+        };
+        let mut mon = Monitor::default();
+        mon.feasibility_tol = 1e-6;
+        let before = calls.load(Ordering::SeqCst);
+        let r = least_squares(&p, &[0.0, 0.0], &s, &mon).unwrap();
+        assert_eq!(r.evaluations, calls.load(Ordering::SeqCst) - before);
+        assert!(r.violation <= mon.feasibility_tol, "{r:?}");
+        assert!(r.merit < 0.01, "{r:?}");
+        assert!(mon.best.get().unwrap().merit < 0.01);
+        assert_eq!(r.iterations, 1);
+    }
+    for budget in [4, 6, 20] {
+        let s = LsqSettings {
+            max_iterations: 1,
+            max_evaluations: budget,
+            ..Default::default()
+        };
+        let before = calls.load(Ordering::SeqCst);
+        let r = least_squares(&p, &[0.0, 0.0], &s, &Monitor::default()).unwrap();
+        assert_eq!(r.evaluations, calls.load(Ordering::SeqCst) - before);
+        assert!(r.evaluations <= budget);
+    }
+    let ctx = JobContext::new();
+    let token = ctx.cancel.clone();
+    let mon = Monitor::new(ctx).with_callback(move |r| {
+        if r.stage == "feasibility restoration" {
+            token.cancel();
+        }
+    });
+    let s = LsqSettings {
+        max_iterations: 1,
+        ..Default::default()
+    };
+    let r = least_squares(&p, &[0.0, 0.0], &s, &mon).unwrap();
+    assert_eq!(r.termination, Termination::Cancelled);
+    assert!(mon.best.get().unwrap().merit < 0.01);
 }

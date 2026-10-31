@@ -44,6 +44,7 @@ pub const GPU_ANALYSES: &[&str] = &[
     "best_focus",
     "ray_grid",
     "optimize",
+    "merit_evaluation",
     "tolerance",
 ];
 

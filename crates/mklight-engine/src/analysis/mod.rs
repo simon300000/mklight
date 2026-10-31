@@ -27,6 +27,7 @@ pub mod extended;
 pub mod geometric;
 pub mod ghost;
 pub mod gpu;
+pub mod merit_evaluation;
 pub mod optim;
 pub mod radiometry;
 pub mod schema;
@@ -465,6 +466,7 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     radiometry::register_all(r);
     solves::register_all(r);
     optim::register(r);
+    merit_evaluation::register_all(r);
 }
 
 /// Analyses by name.

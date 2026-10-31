@@ -432,7 +432,7 @@ impl Analysis for GlassSubstitution {
                 1
             };
         let work = Workload::new(&cpu.trace, &system, &spec, jacobian_batch);
-        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
         let space = Arc::new(LensSpace {
             indices: s
                 .material_variables

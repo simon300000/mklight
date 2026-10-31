@@ -2142,7 +2142,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
@@ -2195,6 +2195,78 @@ Result (`result` in the envelope):
 | `stopped` | boolean |  | Stopped; the results so far are kept. |
 | `termination` | string |  | Search termination; time_limit when max_seconds expired. |
 
+### `merit_evaluation` — Evaluate merit
+
+Category `optimization`, result version 1, **GPU path**.
+
+Evaluates the snapshot's merit once, without optimisation or finite differences. Uses optimize's merit settings, solves, default generator and operand report; returns the expanded merit spec for conversion to custom operands.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
+| `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
+| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
+| `hold_efl` | boolean | `true` |  | Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead. |
+| `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
+| `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
+| `operands` | array | `[]` |  | Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM. |
+| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
+| `seed` | integer | `0` |  | ≥ 0 |
+| `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
+| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `backend` | object |  |  |
+| `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
+| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
+| `backend.gpu_stats` (optional) | object |  |  |
+| `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.device_seconds` | number | s |  |
+| `backend.gpu_stats.dispatches` | integer |  | ≥ 0 |
+| `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
+| `backend.gpu_stats.rays` | integer |  | ≥ 0 |
+| `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
+| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
+| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
+| `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.workload` | object |  |  |
+| `backend.workload.batch` | integer |  | ≥ 0 |
+| `backend.workload.gpu_faster` | boolean |  |  |
+| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `merit` | nf |  |  |
+| `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands and the EFL hold. |
+| `operands` | array<object> |  | Snapshot operand values, residuals and merit shares. |
+| `operands[].comparison` | string |  | one of `"equal"`, `"less_than"`, `"greater_than"` |
+| `operands[].config` | integer |  | ≥ 0 |
+| `operands[].contribution` | nf | merit | weight * residual squared; null for constraints/disabled operands. |
+| `operands[].contribution_fraction` | nf |  |  |
+| `operands[].enabled` | boolean |  |  |
+| `operands[].error` | string? |  |  |
+| `operands[].field` | object |  | FieldSelector. |
+| `operands[].index` | integer |  | ≥ 0 |
+| `operands[].kind` | string |  | Operand name. |
+| `operands[].label` | string |  |  |
+| `operands[].residual` | nf | operand | Signed value - target for equal; one-sided violation otherwise. |
+| `operands[].role` | string |  | one of `"residual"`, `"constraint"` |
+| `operands[].start` | nf |  |  |
+| `operands[].target` | nf |  |  |
+| `operands[].value` | nf |  |  |
+| `operands[].wavelength` | object |  | WavelengthSelector. |
+| `operands[].weight` | nf |  |  |
+| `status` | object |  | EvalStatus. |
+| `violation` | nf |  | Total normalised constraint violation. |
+
 ### `optimize` — Optimize
 
 Category `optimization`, result version 1, **GPU path**.
@@ -2239,7 +2311,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
@@ -2352,7 +2424,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; search evaluator for tolerance. |
+| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |

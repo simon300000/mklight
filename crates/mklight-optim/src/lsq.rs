@@ -56,6 +56,10 @@
 //! (Conn, Gould & Toint; Nocedal & Wright Alg. 17.4). Unlike a pure penalty,
 //! `μ` stays bounded, so the inner problems stay well conditioned, and the
 //! converged multipliers are returned as `OptimResult::multipliers`.
+//!
+//! **End-point restoration.** A constrained run that ends just outside the
+//! feasibility tolerance takes up to three bounded constraint-only
+//! Gauss–Newton corrections (`docs/OPTIMIZATION.md`).
 
 use serde::{Deserialize, Serialize};
 
@@ -970,8 +974,108 @@ pub fn least_squares<P: Problem + ?Sized>(
             };
         }
     }
+    if termination != Termination::Cancelled {
+        match restore_feasibility(&mut c, &aug.rows, &mut x, &mut e) {
+            Ok(()) => {}
+            Err(MkError::Cancelled) => termination = Termination::Cancelled,
+            Err(err) => return Err(err),
+        }
+    }
     let mult = aug.multipliers(k);
     Ok(finish(&c, x, Some(e), termination, Some(mult)))
+}
+
+/// End-point restoration (`docs/OPTIMIZATION.md`): while the end point is
+/// infeasible by the monitor's tolerance, up to three Gauss–Newton
+/// corrections of the violated constraint `rows` alone, each the
+/// ridge-regularised minimum-norm step in variable scales, capped at 1e-3
+/// scales and halved until the total violation decreases.
+fn restore_feasibility<P: Problem + ?Sized>(
+    c: &mut Ctx<'_, P>,
+    rows: &[ConsRow],
+    x: &mut Vec<f64>,
+    e: &mut Evaluation,
+) -> MkResult<()> {
+    let vars = c.p.variables();
+    let n = vars.len();
+    'corrections: for _ in 0..3 {
+        c.mon.job.check()?;
+        let violation = scalar(c.p, e).violation;
+        if !e.status.is_usable() || violation <= c.mon.feasibility_tol || !c.budget_left() {
+            break;
+        }
+        let budget = c.s.max_evaluations.saturating_sub(c.ctr.evaluations + 1);
+        let Some(jac) = jacobian_budget(c.p, x, e, &c.s.jacobian, &c.mon.job, budget)? else {
+            break;
+        };
+        c.ctr.evaluations += jac.evaluations;
+        // Active rows: every equality, violated inequalities.
+        let mut r = vec![0.0; rows.len()];
+        let mut j = Matrix::zeros(rows.len(), n);
+        for (i, row) in rows.iter().enumerate() {
+            let g = Aug::g(row, &e.constraints);
+            if matches!(row.kind, RowKind::Eq) || g > 0.0 {
+                r[i] = g;
+                let f = match row.kind {
+                    RowKind::Lower => -row.inv_scale,
+                    _ => row.inv_scale,
+                };
+                for k in 0..n {
+                    j[(i, k)] = f * jac.constraints[(row.k, k)] * vars[k].safe_scale();
+                }
+            }
+        }
+        // Freeze failed columns and variables a descent step would push out
+        // of their bounds.
+        let grad = j.tr_mul_vec(&r);
+        for k in 0..n {
+            if jac.failed_columns.contains(&k)
+                || (x[k] <= vars[k].lo() && grad[k] > 0.0)
+                || (x[k] >= vars[k].hi() && grad[k] < 0.0)
+            {
+                for i in 0..j.rows {
+                    j[(i, k)] = 0.0;
+                }
+            }
+        }
+        // Unit Frobenius norm makes the ridge independent of units.
+        let scale = norm2(&j.data);
+        if !(scale > 0.0 && scale.is_finite()) {
+            break;
+        }
+        j.data.iter_mut().chain(&mut r).for_each(|v| *v /= scale);
+        let sub = Sub::new(j, &r, vec![1.0; n]);
+        let step = sub.solve_lambda(f64::EPSILON.sqrt(), &sub.b0).0;
+        let len = norm2(&step);
+        if !(len > 0.0) {
+            break;
+        }
+        let mut alpha = (1e-3 / len).min(1.0);
+        for _ in 0..8 {
+            if !c.budget_left() {
+                break;
+            }
+            let trial: Vec<f64> = (0..n)
+                .map(|k| vars[k].clamp(x[k] + alpha * vars[k].safe_scale() * step[k]))
+                .collect();
+            let value = c.eval(&trial)?;
+            let sc = scalar(c.p, &value);
+            if sc.violation < violation {
+                *x = trial;
+                *e = value;
+                let mut rec = IterationRecord::new(c.s.name(), c.ctr.iterations, c.ctr.evaluations);
+                rec.stage = "feasibility restoration".into();
+                rec.merit = sc.merit;
+                rec.violation = sc.violation;
+                rec.best_merit = c.mon.best.get().map_or(sc.merit, |b| b.merit);
+                c.mon.record(&mut c.history, rec);
+                continue 'corrections;
+            }
+            alpha *= 0.5;
+        }
+        break;
+    }
+    Ok(())
 }
 
 fn finish<P: Problem + ?Sized>(
