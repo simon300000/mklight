@@ -90,6 +90,10 @@ struct MeritFunctionSection: View {
                 case .custom:
                     OperandTable(design: design, workspace: workspace, session: session, selection: $selection)
                 }
+                if let e = session.evaluationError, !session.evaluating {
+                    Label("The engine could not evaluate this merit: \(e)", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange).lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                }
                 Toggle("Hold the focal length", isOn: Binding(get: { merit.holdEFL }, set: { v in edit("Hold Focal Length") { $0.holdEFL = v } }))
                     .help("Keep the EFL at its start value as a constraint, unless the merit has an EFL operand.")
             }
@@ -481,7 +485,7 @@ struct OperandRow: View {
             Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 24, alignment: .trailing)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text(OperandCatalog.title(operand.type)).font(.callout).lineLimit(1)
+                    Text(OperandCatalog.title(operand.type)).font(.callout).lineLimit(1).layoutPriority(1)
                     if operand.isConstraint {
                         Text("constraint").font(.caption2).foregroundStyle(.secondary)
                             .padding(.horizontal, 4).background(.quaternary, in: Capsule())
@@ -558,7 +562,7 @@ enum OperandSummary {
             switch p.kind {
             case .surface: parts.append("\(p.title.lowercased()) S\(v.int.map(String.init) ?? "?")")
             case .wavelength: parts.append("\(p.title) λ\((v.int ?? 0) + 1)")
-            case .choice: parts.append(SettingsBar.title(v))
+            case .choice: parts.append((v.string ?? v.displayText).replacingOccurrences(of: "_", with: " "))
             case .flag: if v.bool == true { parts.append(p.title.lowercased()) }
             case .sampling: parts.append("\(v["rings"]?.int ?? 3)×\(v["arms"]?.int ?? 6)")
             case .operandList: parts.append("of " + (v.intArray ?? []).map { "#\($0 + 1)" }.joined(separator: ", "))

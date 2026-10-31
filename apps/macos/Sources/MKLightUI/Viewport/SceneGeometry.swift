@@ -176,6 +176,8 @@ enum SceneGeometry {
                     dark: style.dark)
             var a: Float = line.vignetted ? 0.35 : 0.9
             if style.stale { a *= 0.35 }
+            // Footprints are the subject: the rays step back.
+            if style.mode == .orbit3D && style.footprints != nil { a *= 0.35 }
             add(line, color: SIMD4(SIMD3<Float>(rgb), a), width: 1.1)
         }
         for line in scene.polylines where line.kind != .ray && (style.mode == .orbit3D || line.inSection) {

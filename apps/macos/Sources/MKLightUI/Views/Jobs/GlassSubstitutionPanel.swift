@@ -279,7 +279,7 @@ struct GlassSubstitutionPanel: View {
             HStack {
                 Text("Candidate \(c.rank)").font(.headline)
                 Spacer()
-                Text("Previewed in the window").font(.caption).foregroundStyle(.tint)
+                Text(session.applied ? "Applied to the design" : "Previewed in the window").font(.caption).foregroundStyle(.tint)
             }
             HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
                 BigNumber(label: "Merit now", value: Fmt.short(start))
@@ -314,7 +314,10 @@ struct GlassSubstitutionPanel: View {
                 }
                 .font(.callout)
             }
-            LayoutComparison(before: EngineLayout.scene(from: workspace.baseline["layout"]), after: workspace.isPreviewing ? EngineLayout.scene(from: workspace.layout.output) : nil)
+            // While previewed, the candidate's layout; once applied, the design's.
+            LayoutComparison(
+                before: EngineLayout.scene(from: workspace.baseline["layout"]),
+                after: workspace.isPreviewing || session.applied ? EngineLayout.scene(from: workspace.layout.output) : nil)
         }
         .padding(Space.m)
         .background(.fill.quinary, in: .rect(cornerRadius: 10))

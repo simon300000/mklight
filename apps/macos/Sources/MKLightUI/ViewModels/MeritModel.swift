@@ -167,10 +167,10 @@ public enum OperandCatalog {
 
     public static let all: [OperandDescriptor] = [
         // First order
-        .init(type: "efl", title: "Effective focal length", category: "First order", unit: "mm", summary: "EFL of the y section"),
+        .init(type: "efl", title: "EFL", category: "First order", unit: "mm", summary: "Effective focal length (of the y section)"),
         .init(type: "efl_x", title: "EFL x", category: "First order", unit: "mm", summary: "Focal length of the x section"),
         .init(type: "efl_y", title: "EFL y", category: "First order", unit: "mm", summary: "Focal length of the y section"),
-        .init(type: "bfl", title: "Back focal length", category: "First order", unit: "mm", summary: "Last surface to paraxial focus"),
+        .init(type: "bfl", title: "BFL", category: "First order", unit: "mm", summary: "Back focal length: last surface to paraxial focus"),
         .init(type: "bfl_x", title: "BFL x", category: "First order", unit: "mm", summary: "Back focus of the x section"),
         .init(type: "bfl_y", title: "BFL y", category: "First order", unit: "mm", summary: "Back focus of the y section"),
         .init(type: "anamorphic_squeeze", title: "Anamorphic squeeze", category: "First order", unit: "", summary: "Signed EFL_y / EFL_x"),
