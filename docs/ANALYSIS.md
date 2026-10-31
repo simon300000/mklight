@@ -601,3 +601,16 @@ matched settings. Numerical maxima, hardware, raw runs, cold preparation,
 median/p95, copy/storage counters and any qualification gaps are retained
 in the task's `scratchpad/gpu/P5-evidence.md`. Performance routing must use
 those measurements, not a fixed ray-count assumption.
+
+On the measured M2 Pro, 113- and 9,845-ray spots and the default spots on
+all 16 samples favor f64. At the capped 823,473-ray square-pupil setting,
+resident spot medians were 23–34 ms versus 37–89 ms f64 across the six dense
+representatives. Complete Cooke global footprints at that density measured
+434 ms resident, 477 ms legacy Metal and 831 ms f64, with 173 MiB peak
+resident-plan scratch (public output and host hull storage excluded).
+Default interactive layouts and Cooke RI at 5²/33² fields still favor f64;
+RI medians were 42/1819 ms resident versus 23/1441 ms f64. Each owned series
+uses one warm run plus ten measured runs. These measurements are for P11's
+policy review; they do not install a ray-count crossover or qualify changed
+candidates. The external evidence retains p95, raw settings/load snapshots,
+explicit copy/fallback counts and the remaining acceptance gaps.
