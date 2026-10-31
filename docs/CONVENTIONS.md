@@ -333,6 +333,10 @@ may change.
 * Ray clouds, grids, maps and scene geometry travel as row-major buffers
   with NaN for "no value" (a ray that did not arrive); curves along one
   axis stay in the JSON (§11 rules for non-finite numbers).
+* Image simulation rasters use row zero at low y, rows increasing with image
+  y and columns with x, with channels interleaved. Every source follows this
+  order: top-to-bottom file rows and text glyphs are converted on input.
+  Upright display traverses rows from high to low y.
 
 ## 15. Wave-optics pupils
 

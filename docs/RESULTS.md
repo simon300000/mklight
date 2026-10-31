@@ -21,6 +21,7 @@ Python `Result.envelope()` return:
                 "started_unix_ms": 1761840000000, "duration_ms": 4.2,
                 "warnings": [] },
   "library_hash": "<64 hex>",
+  "derived_snapshot_hash": null,
   "backend": { "requested": "auto", "used": "gpu:metal", "precision": "f32_gpu",
                "device": "Apple M2 Pro", "fallback_reason": null,
                "qualification": { "passed": true, "budget_fraction": 0.05, … } },
@@ -37,6 +38,9 @@ Python `Result.envelope()` return:
   (`cpu_reference`, `gpu:metal`, …), not the one requested; see section 5.
 * A result is current while `run_info.snapshot_hash` and `library_hash`
   equal the session's (`docs/FFI.md`).
+* `derived_snapshot_hash` is the run-local system hash when `spectrum`
+  replaces the design wavelengths, otherwise null. `run_info.snapshot_hash`
+  always identifies the submitted snapshot, including on spectrum runs.
 * The solver crates' own `RunInfo` is not repeated inside `result`; its
   warnings are merged into `run_info.warnings`.
 
@@ -71,6 +75,10 @@ Python `Result.envelope()` return:
   `"nan"`. `T?` is `T` or `null`. `[T; n]` is a fixed-length array (e.g.
   `[nf; 2]` = `[x, y]`). `array<T>` has any length. `object` without listed
   fields is a model type documented in `mklight-core` / the solver crate.
+* **Image simulation row order:** buffers and all decoded/generated sources
+  use row zero at the low-y edge, increasing with image y; columns increase
+  with x. PNG top rows become high-y rows. Display rows from high to low y
+  for upright text (CONVENTIONS §14).
 * **Image positions** (spots, fans, ray grids, footprints) are in the local
   frame of the surface concerned (the image surface unless stated): for an
   untilted image this is the global frame shifted to the image vertex.
@@ -516,13 +524,13 @@ Buffers:
 
 Category `materials`, result version 1.
 
-Catalogue n_d / V_d and P_g,F / V_d, with design surface markers and optional retained AGF statuses.
+Catalogue n_d / V_d and P_g,F / V_d, with design surface markers and retained AGF status and quality data.
 
 Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `metadata` | array | `[]` |  | Optional retained AGF metadata [{catalog,name,status,exclude_substitution}]. MaterialLibrary does not retain AGF availability: unknown status remains null. |
+| `metadata` | array | `[]` |  | Optional availability overrides [{catalog,name,status,exclude_substitution}]; defaults come from each catalogue material. |
 
 Result (`result` in the envelope):
 
@@ -531,14 +539,21 @@ Result (`result` in the envelope):
 | `coordinates` | string |  | Buffer name. |
 | `glasses` | array<object> |  | All loaded glasses in catalogue order, then model glasses in surface order. |
 | `glasses[].catalog` | string? |  |  |
+| `glasses[].climate_resistance` | number? |  |  |
 | `glasses[].exclude_substitution` | boolean? |  |  |
 | `glasses[].kind` | string |  | one of `"catalog"`, `"model"` |
 | `glasses[].name` | string |  |  |
 | `glasses[].nd` | nf | 1 | Catalogue d-line index; model computed at reference conditions. |
 | `glasses[].pgf` | nf | 1 | (n_g-n_F)/(n_F-n_C), computed from dispersion. |
-| `glasses[].status` | string\|object\|null |  | Retained AGF status, or null when unavailable. |
+| `glasses[].relative_cost` | number? |  |  |
+| `glasses[].stain_resistance` | number? |  |  |
+| `glasses[].status` | string\|object\|null |  | Catalogue availability (standard when unspecified); null for model glasses. |
 | `glasses[].status.other` | integer |  | ≥ 0; Unrecognised AGF status code. |
 | `glasses[].surfaces` | array<integer> |  | Surface indices whose following medium is this glass. |
+| `glasses[].transmittance` | array<object> |  | Catalogue internal transmission samples. |
+| `glasses[].transmittance[].tau` | number |  | Internal transmittance, excluding interfaces. |
+| `glasses[].transmittance[].thickness_mm` | number |  | Sample thickness in mm. |
+| `glasses[].transmittance[].um` | number |  | Wavelength in µm. |
 | `glasses[].vd` | nf | 1 | Abbe number. |
 
 Buffers:

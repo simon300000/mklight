@@ -136,6 +136,8 @@ pub struct AnalysisResult {
     /// identifies the inputs: a result is current only while both match the
     /// session's. (Moves into `RunInfo` once mklight-core carries it.)
     pub library_hash: String,
+    /// Run-local spectrum snapshot; the submitted snapshot stays in RunInfo.
+    pub derived_snapshot_hash: Option<String>,
     pub json: Value,
     pub buffers: Vec<Buffer>,
 }
@@ -154,6 +156,7 @@ impl AnalysisResult {
         json!({
             "run_info": self.run_info,
             "library_hash": self.library_hash,
+            "derived_snapshot_hash": self.derived_snapshot_hash,
             "backend": self.backend,
             "result_version": self.result_version,
             "result": self.json,
@@ -393,6 +396,7 @@ pub fn run_analysis(
         Some(v) => Some(spectrum::derived(input, v)?),
         None => None,
     };
+    let submitted_snapshot = &input.snapshot;
     let input = derived.as_ref().unwrap_or(input);
     let out = analysis.run(input, &solver_settings, ctx)?;
     ctx.check()?;
@@ -429,7 +433,7 @@ pub fn run_analysis(
         }
     }
     let run_info = timer.finish(
-        &input.snapshot,
+        submitted_snapshot,
         analysis.name(),
         &settings,
         &backend.used,
@@ -443,6 +447,7 @@ pub fn run_analysis(
         backend,
         result_version: analysis.result_version(),
         library_hash: input.library_hash().to_string(),
+        derived_snapshot_hash: derived.as_ref().map(|i| i.snapshot.hash().to_hex()),
         json: out.json,
         buffers: out.buffers,
     })

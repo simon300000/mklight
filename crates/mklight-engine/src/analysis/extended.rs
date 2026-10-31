@@ -140,11 +140,11 @@ impl Analysis for GlassMap {
         "materials"
     }
     fn description(&self) -> &str {
-        "Catalogue n_d / V_d and P_g,F / V_d, with design surface markers and optional retained AGF statuses."
+        "Catalogue n_d / V_d and P_g,F / V_d, with design surface markers and retained AGF status and quality data."
     }
     fn settings_schema(&self) -> Value {
         settings_from_default::<gm::GlassMapSettings>(
-            json!({"metadata":{"description":"Optional retained AGF metadata [{catalog,name,status,exclude_substitution}]. MaterialLibrary does not retain AGF availability: unknown status remains null."}}),
+            json!({"metadata":{"description":"Optional availability overrides [{catalog,name,status,exclude_substitution}]; defaults come from each catalogue material."}}),
         )
     }
     fn result_schema(&self) -> Value {
@@ -174,9 +174,35 @@ impl Analysis for GlassMap {
                             ),
                             (
                                 "status",
-                                json!({"anyOf":[{"type":"string","enum":["standard","preferred","obsolete","special","melt"]},obj(&[("other",int("Unrecognised AGF status code."))]),{"type":"null"}],"description":"Retained AGF status, or null when unavailable."}),
+                                json!({"anyOf":[{"type":"string","enum":["standard","preferred","obsolete","special","melt"]},obj(&[("other",int("Unrecognised AGF status code."))]),{"type":"null"}],"description":"Catalogue availability (standard when unspecified); null for model glasses."}),
                             ),
                             ("exclude_substitution", nullable(boolean(""))),
+                            ("relative_cost", nullable(num("", "AGF relative cost."))),
+                            (
+                                "climate_resistance",
+                                nullable(num("", "AGF climate class (CR).")),
+                            ),
+                            (
+                                "stain_resistance",
+                                nullable(num("", "AGF stain class (FR).")),
+                            ),
+                            (
+                                "transmittance",
+                                arr(
+                                    obj(&[
+                                        ("um", num("", "Wavelength in µm.")),
+                                        (
+                                            "tau",
+                                            num(
+                                                "",
+                                                "Internal transmittance, excluding interfaces.",
+                                            ),
+                                        ),
+                                        ("thickness_mm", num("", "Sample thickness in mm.")),
+                                    ]),
+                                    "Catalogue internal transmission samples.",
+                                ),
+                            ),
                             (
                                 "surfaces",
                                 arr(

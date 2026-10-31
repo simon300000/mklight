@@ -233,25 +233,43 @@ fn migrate_file_upgrades_with_a_backup() {
 #[test]
 fn parameter_values() {
     let e = Engine::default();
-    let s = e
-        .session_from_project(Project::new(samples::singlet()))
-        .unwrap();
-    let id = s.system().surfaces[1].id;
-    let t = s
-        .param_value(&ParamPath::Thickness { surface: id })
-        .unwrap();
-    assert_eq!(t, Some(s.system().surfaces[1].thickness));
-    // An automatic semi-diameter has no value, but exists.
-    assert_eq!(
-        s.param_value(&ParamPath::SemiDiameter { surface: id })
-            .unwrap(),
-        None
-    );
-    // A surface that does not exist is an error.
-    assert!(
-        s.param_value(&ParamPath::Thickness {
-            surface: mklight_core::SurfaceId(999)
-        })
-        .is_err()
-    );
+    for system in [
+        samples::singlet(),
+        samples::toroidal_element(),
+        samples::biconic_element(),
+    ] {
+        let s = e.session_from_project(Project::new(system)).unwrap();
+        let id = s.system().surfaces[1].id;
+        let t = s
+            .param_value(&ParamPath::Thickness { surface: id })
+            .unwrap();
+        assert_eq!(t, Some(s.system().surfaces[1].thickness));
+        let layout = s
+            .run_analysis(
+                &AnalysisRequest::new("layout", Value::Null),
+                &JobContext::new(),
+            )
+            .unwrap();
+        let radius = layout.json["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["index"] == 1)
+            .unwrap()["semi_diameter"]
+            .as_f64()
+            .unwrap();
+        // An automatic semi-diameter reads as the radius layout draws.
+        assert_eq!(
+            s.param_value(&ParamPath::SemiDiameter { surface: id })
+                .unwrap(),
+            Some(radius)
+        );
+        // A surface that does not exist is an error.
+        assert!(
+            s.param_value(&ParamPath::Thickness {
+                surface: mklight_core::SurfaceId(999)
+            })
+            .is_err()
+        );
+    }
 }

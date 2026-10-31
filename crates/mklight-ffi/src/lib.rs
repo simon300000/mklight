@@ -1137,8 +1137,8 @@ pub unsafe extern "C" fn mk_session_autosave(
 }
 
 /// Current value of a parameter: `{"value": number | "inf" | "-inf" |
-/// null}` (null: the parameter has no value, e.g. an automatic
-/// semi-diameter). `path_json` is a ParamPath as in
+/// null}` (an automatic semi-diameter reads its resolved layout radius).
+/// `path_json` is a ParamPath as in
 /// `mk_session_apply_param_edit`; a path this system does not have is
 /// `MK_ERR_INVALID_ARGUMENT`.
 #[unsafe(no_mangle)]

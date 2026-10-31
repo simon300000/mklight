@@ -246,9 +246,9 @@ import Testing
         #expect(ok14)
         #expect(s.surfaces[6].shape.asphereCoefficients == [1e-6, -2e-9, 0, 1e-12])
         #expect(ParamPath.asphere(surface: SurfaceID(5), index: 0).unresolvedReason(in: s) == "surface is not an even asphere")
-        // Toroid and biconic have no rotational curvature; QBfs has no conic.
-        #expect(ParamPath.curvature(surface: SurfaceID(7)).unresolvedReason(in: s) == "surface has no curvature")
-        #expect(ParamPath.curvature(surface: SurfaceID(8)).unresolvedReason(in: s) == "surface has no curvature")
+        // Curvature on a toroid or biconic is its y section; QBfs has no conic.
+        #expect(s.value(at: .curvature(surface: SurfaceID(7))) == s.surfaces[7].shape.shapeParameter(.curvatureY))
+        #expect(s.value(at: .curvature(surface: SurfaceID(8))) == s.surfaces[8].shape.shapeParameter(.curvatureY))
         #expect(ParamPath.conic(surface: SurfaceID(3)).unresolvedReason(in: s) == "surface has no conic")
         let ok15 = s.setValue(0.03, at: .curvature(surface: SurfaceID(3)))
         #expect(ok15)
@@ -349,12 +349,12 @@ import Testing
         s.setShapeKind(.qBfs, at: 1)
         #expect(s.configurations[0].overrides.map(\.first) == [.curvature(surface: id), .thickness(surface: id)])
         s.setShapeKind(.toroid, at: 1)
-        #expect(s.configurations[0].overrides.map(\.first) == [.thickness(surface: id)])
+        #expect(s.configurations[0].overrides.map(\.first) == [.curvature(surface: id), .thickness(surface: id)])
         s.configurations[0].overrides.append(Pair(.shapeParam(surface: id, parameter: .curvatureX), 0.01))
         s.setShapeKind(.biconic, at: 1)
-        #expect(s.configurations[0].overrides.count == 2)
+        #expect(s.configurations[0].overrides.count == 3)
         s.setShapeKind(.conic, at: 1)
-        #expect(s.configurations[0].overrides.map(\.first) == [.thickness(surface: id)])
+        #expect(s.configurations[0].overrides.map(\.first) == [.curvature(surface: id), .thickness(surface: id)])
     }
 
     @Test func cylinderPreset() {

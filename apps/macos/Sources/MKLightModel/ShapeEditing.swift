@@ -129,11 +129,11 @@ extension SurfaceShape {
     public var normRadius: Double? { shapeParameter(.normRadius) }
 
     /// Whether the `curvature` path resolves (the engine's `Curvature` get):
-    /// the geometry is a plane or has a rotational `curvature` field. Toroid,
-    /// biconic, paraxial and coordinate break have none.
+    /// the geometry is a plane or has a `curvature` field, which on a toroid
+    /// or biconic is the y section. Paraxial and coordinate break have none.
     public var hasCurvature: Bool {
         switch geometry {
-        case .plane, .conic, .evenAsphere, .oddAsphere, .qCon, .qBfs, .xyPolynomial, .zernikeSag: true
+        case .plane, .conic, .evenAsphere, .oddAsphere, .qCon, .qBfs, .xyPolynomial, .zernikeSag, .toroid, .biconic: true
         default: false
         }
     }
@@ -164,8 +164,8 @@ extension SurfaceShape {
     }
 
     /// Sets the curvature of the geometry, promoting a plane to a sphere,
-    /// exactly like the engine's `ParamPath::Curvature` setter. Returns
-    /// false for shapes without one.
+    /// exactly like the engine's `ParamPath::Curvature` setter (the y section
+    /// of a toroid or biconic). Returns false for shapes without one.
     @discardableResult
     public mutating func setCurvature(_ c: Double) -> Bool {
         editGeometry { s in
@@ -180,6 +180,9 @@ extension SurfaceShape {
                 s = .xyPolynomial(curvature: c, conic: k, normRadius: r, coefficients: a)
             case .zernikeSag(_, let k, let r, let o, let a):
                 s = .zernikeSag(curvature: c, conic: k, normRadius: r, ordering: o, coefficients: a)
+            case .toroid(let cx, _, let k, let a): s = .toroid(curvatureX: cx, curvatureY: c, conicY: k, yAsphere: a)
+            case .biconic(let cx, _, let kx, let ky, let ax, let ay):
+                s = .biconic(curvatureX: cx, curvatureY: c, conicX: kx, conicY: ky, xAsphere: ax, yAsphere: ay)
             default: return false
             }
             return true

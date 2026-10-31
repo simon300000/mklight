@@ -330,8 +330,8 @@ MKStatus mk_session_apply_solves(MKSession *session, const char *settings_json,
 MKStatus mk_session_autosave(const MKSession *session, const char *path, char **out_path);
 
 /* Current value of a parameter: {"value": number | "inf" | "-inf" | null}
- * (null: no value, e.g. an automatic semi-diameter). path_json is a
- * ParamPath as in mk_session_apply_param_edit. */
+ * (an automatic semi-diameter reads its resolved layout radius). path_json
+ * is a ParamPath as in mk_session_apply_param_edit. */
 MKStatus mk_session_get_param(const MKSession *session, const char *path_json,
                               char **out_json);
 

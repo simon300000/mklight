@@ -372,8 +372,10 @@ Every wavelength-dependent geometric, wave, radiometry, ghost and stray
 analysis accepts optional `spectrum`, as do optimisation and wavelength-based
 model/material reports through the same dispatcher (`run_analysis`). The engine applies it **once**, before
 material resolution or backend qualification, to a derived immutable snapshot.
-The session design is unchanged. `RunInfo.snapshot_hash` identifies that
-derived snapshot; `RunInfo.settings.spectrum` records the request. Wavelength
+The session design is unchanged. `RunInfo.snapshot_hash` identifies the
+submitted snapshot; the envelope's `derived_snapshot_hash` identifies the
+run-local system (null without a spectrum). `RunInfo.settings.spectrum`
+records the request. Wavelength
 indices in the result and in selections refer to the replacement list.
 Absent or null preserves the design wavelengths and existing defaults.
 
@@ -460,9 +462,10 @@ are computed at reference conditions. `surfaces` marks each surface's
 following medium, resolving unqualified catalogue names in library order.
 The aligned `coordinates[glasses,3]` buffer supports either map projection.
 Catalogue name, glass kind, availability and substitution exclusion are
-metadata. `MaterialLibrary` discards AGF-only availability data: unknown
-status/exclusion remain null. A caller retaining `AgfCatalog::meta` can
-supply `metadata:[{catalog,name,status,exclude_substitution},…]`; these
+metadata. The material library retains AGF status/exclusion, relative cost,
+climate/stain resistance and internal transmission samples; `glass_map`
+reports them by default (unspecified catalogue status is standard, model
+status/exclusion are null). Callers can override availability with `metadata:[{catalog,name,status,exclude_substitution},…]`; these
 settings are recorded in RunInfo. No availability is inferred from a name.
 
 The existing `footprint` result keeps its selected-surface local x/y

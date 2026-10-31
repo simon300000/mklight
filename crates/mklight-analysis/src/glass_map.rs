@@ -1,12 +1,11 @@
 //! Catalogue and design glass coordinates at standard spectral lines.
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::materials::agf::GlassStatus;
-use mklight_core::materials::{MaterialLibrary, ResolvedMaterial, lines};
+use mklight_core::materials::{MaterialLibrary, ResolvedMaterial, TransmittancePoint, lines};
 use mklight_core::{JobContext, MaterialRef, MkResult, RunInfo, Snapshot};
 use serde::{Deserialize, Serialize};
 
-/// Optional AGF metadata: the core MaterialLibrary intentionally keeps only
-/// GlassCatalog, so callers retaining AgfCatalog::meta can supply statuses.
+/// Optional overrides of the availability retained on catalogue materials.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlassMetadata {
@@ -33,6 +32,10 @@ pub struct GlassPoint {
     pub pgf: f64,
     pub status: Option<GlassStatus>,
     pub exclude_substitution: Option<bool>,
+    pub relative_cost: Option<f64>,
+    pub climate_resistance: Option<f64>,
+    pub stain_resistance: Option<f64>,
+    pub transmittance: Vec<TransmittancePoint>,
     pub surfaces: Vec<usize>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,8 +72,14 @@ pub fn glass_map_job(
                 nd: g.nd,
                 vd: g.vd,
                 pgf,
-                status: meta.map(|m| m.status),
-                exclude_substitution: meta.map(|m| m.exclude_substitution),
+                status: Some(meta.map_or(g.substitution.status, |m| m.status)),
+                exclude_substitution: Some(meta.map_or(g.substitution.exclude_substitution, |m| {
+                    m.exclude_substitution
+                })),
+                relative_cost: g.relative_cost,
+                climate_resistance: g.substitution.climate_resistance,
+                stain_resistance: g.substitution.stain_resistance,
+                transmittance: g.transmittance.clone(),
                 surfaces: Vec::new(),
             });
             ctx.report(
@@ -112,6 +121,10 @@ pub fn glass_map_job(
                     pgf,
                     status: None,
                     exclude_substitution: None,
+                    relative_cost: None,
+                    climate_resistance: None,
+                    stain_resistance: None,
+                    transmittance: Vec::new(),
                     surfaces: vec![i],
                 });
             }
@@ -135,6 +148,39 @@ pub fn glass_map_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agf_material_metadata_is_reported_without_overrides() {
+        let catalog = mklight_core::materials::agf::parse_agf(
+            "FIXTURE",
+            "\
+NM TEST 5 0 1.5 0 1 2 0
+CD 1.5 0 0
+LD 0.3 2.5
+OD 2 3 4 -1 -1 -1
+IT 0.55 0.81 10
+",
+        )
+        .unwrap();
+        let mut lib = MaterialLibrary::with_builtin();
+        lib.add_catalog(std::sync::Arc::new(catalog));
+        let snap = Snapshot::new(mklight_core::samples::singlet()).unwrap();
+        let r = glass_map_job(&snap, &lib, &Default::default(), &JobContext::new()).unwrap();
+        let g = r.glasses.iter().find(|g| g.name == "TEST").unwrap();
+        assert_eq!(g.status, Some(GlassStatus::Obsolete));
+        assert_eq!(g.exclude_substitution, Some(true));
+        assert_eq!(g.relative_cost, Some(2.0));
+        assert_eq!(g.climate_resistance, Some(3.0));
+        assert_eq!(g.stain_resistance, Some(4.0));
+        assert_eq!(
+            g.transmittance,
+            [TransmittancePoint {
+                um: 0.55,
+                tau: 0.81,
+                thickness_mm: 10.0
+            }]
+        );
+    }
+
     #[test]
     fn catalogue_and_model_coordinates_and_markers() {
         let mut sys = mklight_core::samples::singlet();

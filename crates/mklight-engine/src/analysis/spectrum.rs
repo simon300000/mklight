@@ -34,7 +34,7 @@ pub(super) fn settings_schema(mut schema: Value, category: &str, name: &str) -> 
 }
 
 /// The input with the design's wavelengths replaced by `spectrum` (a
-/// derived snapshot, so caches and `RunInfo.snapshot_hash` see it).
+/// derived snapshot used by solver caches).
 pub(super) fn derived<'a>(
     input: &AnalysisInput<'a>,
     spectrum: Value,
@@ -87,7 +87,16 @@ mod tests {
             .unwrap();
         assert_eq!(custom.json, plain.json);
         assert_eq!(custom.buffers, plain.buffers);
-        assert_eq!(custom.run_info.snapshot_hash, expected_hash);
+        assert_eq!(
+            custom.run_info.snapshot_hash,
+            session.snapshot_hash().to_string()
+        );
+        assert_eq!(
+            custom.derived_snapshot_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(custom.envelope()["derived_snapshot_hash"], expected_hash);
+        assert!(plain.derived_snapshot_hash.is_none());
         let mut appended = original.clone();
         appended.wavelengths.wavelengths.push(Wavelength {
             um: 0.55,

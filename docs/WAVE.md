@@ -282,7 +282,9 @@ The source occupies the rectangular **first-order image plane** bounded by
 that grid. Output pixel edges span the same rectangle in the real image
 frame. The result provides `pixel_size_mm`, `origin_mm`, and all field nodes'
 normalised fields, ideal/real chief positions and RI. Coordinates increase
-with image x/y; row zero is the low-y edge. Every output pixel inverts the
+with image x/y; row zero is the low-y edge (CONVENTIONS §14). All source
+types use that order. PNG rows and text glyphs are converted from top-down
+order at input, so upright display reads output rows from high to low y. Every output pixel inverts the
 bilinearly interpolated chief mapping by Newton iteration, then resamples
 the ideal source with bilinear interpolation and applies RI. Unmapped pixels
 are black. Singular or folded field mappings need finer grids or a different

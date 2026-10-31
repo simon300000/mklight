@@ -196,7 +196,15 @@ impl ParamPath {
                 | SurfaceShape::QCon { curvature, .. }
                 | SurfaceShape::QBfs { curvature, .. }
                 | SurfaceShape::XYPolynomial { curvature, .. }
-                | SurfaceShape::ZernikeSag { curvature, .. } => *curvature,
+                | SurfaceShape::ZernikeSag { curvature, .. }
+                | SurfaceShape::Toroid {
+                    curvature_y: curvature,
+                    ..
+                }
+                | SurfaceShape::Biconic {
+                    curvature_y: curvature,
+                    ..
+                } => *curvature,
                 SurfaceShape::Plane => 0.0,
                 _ => return Err(bad(self, "surface has no curvature")),
             },
@@ -342,7 +350,15 @@ impl ParamPath {
                     | SurfaceShape::QCon { curvature, .. }
                     | SurfaceShape::QBfs { curvature, .. }
                     | SurfaceShape::XYPolynomial { curvature, .. }
-                    | SurfaceShape::ZernikeSag { curvature, .. } => *curvature = v,
+                    | SurfaceShape::ZernikeSag { curvature, .. }
+                    | SurfaceShape::Toroid {
+                        curvature_y: curvature,
+                        ..
+                    }
+                    | SurfaceShape::Biconic {
+                        curvature_y: curvature,
+                        ..
+                    } => *curvature = v,
                     shape @ SurfaceShape::Plane => {
                         *shape = SurfaceShape::Conic {
                             curvature: v,
@@ -592,6 +608,30 @@ fn shape_parameter_mut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_curvature_edits_y_section_only() {
+        for mut system in [
+            crate::samples::toroidal_element(),
+            crate::samples::biconic_element(),
+        ] {
+            let surface = system.surfaces[1].id;
+            let y = ParamPath::ShapeParam {
+                surface,
+                parameter: ShapeParameter::CurvatureY,
+            };
+            let x = ParamPath::ShapeParam {
+                surface,
+                parameter: ShapeParameter::CurvatureX,
+            };
+            let original_x = x.get(&system).unwrap();
+            let generic = ParamPath::Curvature { surface };
+            assert_eq!(generic.get(&system).unwrap(), y.get(&system).unwrap());
+            generic.set(&mut system, 0.031).unwrap();
+            assert_eq!(y.get(&system).unwrap(), 0.031);
+            assert_eq!(x.get(&system).unwrap(), original_x);
+        }
+    }
 
     #[test]
     fn get_set_roundtrip() {
