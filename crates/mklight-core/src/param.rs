@@ -30,6 +30,7 @@ pub enum ShapeParameter {
     CurvatureY,
     ConicY,
     NormRadius,
+    AstigmatismAngleDeg,
     DesignOrder,
     DesignWavelengthUm,
     TraceOrder,
@@ -425,6 +426,7 @@ impl ParamPath {
                             .ok_or_else(|| bad(self, "irregularity needs a fixed clear radius"))?,
                         test_wavelength_um: wavelength,
                         astigmatism: 0.0,
+                        astigmatism_angle_deg: 0.0,
                         spherical: 0.0,
                     };
                 }
@@ -778,8 +780,21 @@ macro_rules! parameter_slot {
     }};
 }
 fn shape_parameter(shape: &SurfaceShape, param: ShapeParameter) -> Option<Slot<&f64, &i32>> {
-    if let SurfaceShape::SagOverlay { base, .. } = shape {
+    if let SurfaceShape::SagOverlay {
+        astigmatism_angle_deg,
+        base,
+        ..
+    } = shape
+    {
+        if param == ShapeParameter::AstigmatismAngleDeg {
+            return Some(Slot::Real(astigmatism_angle_deg));
+        }
         return shape_parameter(base, param);
+    }
+    if param == ShapeParameter::AstigmatismAngleDeg {
+        if let SurfaceShape::Diffractive { base, .. } = shape {
+            return shape_parameter(base, param);
+        }
     }
     parameter_slot!(shape, param)
 }
@@ -787,8 +802,21 @@ fn shape_parameter_mut(
     shape: &mut SurfaceShape,
     param: ShapeParameter,
 ) -> Option<Slot<&mut f64, &mut i32>> {
-    if let SurfaceShape::SagOverlay { base, .. } = shape {
+    if let SurfaceShape::SagOverlay {
+        astigmatism_angle_deg,
+        base,
+        ..
+    } = shape
+    {
+        if param == ShapeParameter::AstigmatismAngleDeg {
+            return Some(Slot::Real(astigmatism_angle_deg));
+        }
         return shape_parameter_mut(base, param);
+    }
+    if param == ShapeParameter::AstigmatismAngleDeg {
+        if let SurfaceShape::Diffractive { base, .. } = shape {
+            return shape_parameter_mut(base, param);
+        }
     }
     parameter_slot!(shape, param)
 }

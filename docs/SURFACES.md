@@ -396,3 +396,10 @@ mm, `test_wavelength_um` µm, and `astigmatism`/`spherical` are test fringes
 (one fringe = λ_test/2 PV sag). The formula and RMS are in
 `OPTIMIZATION.md`, Irregularity and rigid elements. An overlay with zero
 fringes traces exactly as its base; others use the general sag intersection.
+`astigmatism_angle_deg` (default 0) rotates the astigmatism axis from +x
+toward +y, with period 180 degrees. At 45 degrees the departure is pure xy;
+its PV and full-disk RMS are unchanged. `ShapeParam` parameter
+`astigmatism_angle_deg` edits the angle on an existing overlay (including a
+DOE's base). Rotated astigmatism generally breaks meridional symmetry.
+Metal and CPU-f32 emulation carry the same overlay on every geometric base,
+including a DOE's base; see `GPU.md` for the coefficient-pool representation.

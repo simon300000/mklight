@@ -109,6 +109,9 @@ pub enum SurfaceShape {
         test_wavelength_um: f64,
         /// Reflected test fringes (one fringe = λ/2 peak-to-valley sag).
         astigmatism: f64,
+        /// Astigmatism axis from +x toward +y, degrees (period 180°).
+        #[serde(default)]
+        astigmatism_angle_deg: f64,
         spherical: f64,
     },
     /// Ideal thin lens with the given focal length in mm: a perfect paraxial

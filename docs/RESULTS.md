@@ -1020,7 +1020,7 @@ Buffers:
 | `surfaces` | i32 | [P] |  | Surface index, −1 for none. |
 | `fields` | i32 | [P] |  | Field index of a ray, −1 for none. |
 | `wavelengths` | i32 | [P] |  | Wavelength index of a ray, −1 for none. |
-| `flags` | u8 | [P] |  | Bit 0: in the selected global section; bit 1: vignetted ray; bit 2: DOE surface. |
+| `flags` | u8 | [P] |  | Bit 0: within 1% of the largest mechanical diameter of the selected global plane; bit 1: vignetted ray; bit 2: DOE surface. |
 
 ### `longitudinal_aberration` — Longitudinal aberration
 
@@ -2434,6 +2434,7 @@ Settings:
 | `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
 | `percentiles` | array<number> | `[50,90,97.7]` |  | Monte Carlo percentiles of the successful criteria, linearly interpolated. |
 | `preview_case` | object\|null | `null` |  | Evaluate only this case and return its compensated system: {type:trial,trial} or {type:sensitivity,operand,positive}; zero-based. |
+| `random_irregularity_orientation` | boolean | `true` |  | Monte Carlo: independent uniform astigmatism axes in [0,180) degrees per surface and trial, reproducible from the seed. False keeps the model angle; sensitivity always keeps it. |
 | `record_trials` | integer | `0` |  | 0 … 10000; Keep perturbations and compensators of the first this many trials. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |

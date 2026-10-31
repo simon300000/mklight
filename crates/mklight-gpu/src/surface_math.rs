@@ -316,7 +316,27 @@ pub(crate) fn phase<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> 
         t,
     ) * t
 }
-pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Option<Jet<R>> {
+fn evaluate_base<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Option<Jet<R>> {
+    let shape = if s.shape == MKL_SHAPE_DIFFRACTIVE {
+        data(s, pool)[MKL_COEFF_KIND as usize].hi as u32
+    } else {
+        s.shape
+    };
+    if shape <= MKL_SHAPE_EVEN_ASPHERE {
+        let (x, y) = (Jet::variable(x, true), Jet::variable(y, false));
+        let r2 = x * x + y * y;
+        let base = conic(
+            R::parts(s.curvature, s.curvature_lo),
+            R::parts(s.conic, s.conic_lo),
+            r2,
+        )?;
+        let t = r2.scale(c(s.asphere_inv_norm2));
+        let mut p = Jet::constant(c(0.0));
+        for j in (0..s.num_asphere as usize).rev() {
+            p = (p * t).add(R::parts(s.asphere[j], s.asphere_lo[j]));
+        }
+        return Some(base + p * t * t);
+    }
     let data = data(s, pool);
     let radius = load::<R>(data, 0);
     let na = data[MKL_COEFF_NA as usize].hi as usize;
@@ -424,6 +444,27 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
             }
         }
     })
+}
+
+pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Option<Jet<R>> {
+    let base = evaluate_base(s, pool, x, y)?;
+    if s.flags & MKL_SURF_HAS_SAG_OVERLAY == 0 {
+        return Some(base);
+    }
+    let d = data(s, pool);
+    let d = &d[d.len() - MKL_OVERLAY_COUNT as usize..];
+    let (u, v, t) = scaled(
+        Jet::variable(x, true),
+        Jet::variable(y, false),
+        load(d, MKL_OVERLAY_RADIUS as usize),
+    );
+    Some(
+        base + ((u - v) * (u + v)).scale(load(d, MKL_OVERLAY_COS as usize))
+            + (u * v).scale(c::<R>(2.0) * load(d, MKL_OVERLAY_SIN as usize))
+            + t * t
+                .scale(load(d, MKL_OVERLAY_S4 as usize))
+                .add(load(d, MKL_OVERLAY_S2 as usize)),
+    )
 }
 
 #[cfg(test)]

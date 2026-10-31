@@ -222,7 +222,8 @@ pub fn packed_sag_in<E: FpEnv>(s: &PackedSurface, r2: f32) -> f32 {
 /// `pool` is the validated system set's coefficient pool.
 pub fn packed_sag_with_pool_in<E: FpEnv>(s: &PackedSurface, pool: &[crate::Df32], r2: f32) -> f32 {
     use crate::{fx::F, surface_math};
-    if s.shape <= MKL_SHAPE_COORD_BREAK {
+    let overlay = s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0;
+    if s.shape <= MKL_SHAPE_COORD_BREAK && !overlay {
         return packed_sag_in::<E>(s, r2);
     }
     let y = F::<E>::new(r2).sqrt();
@@ -232,7 +233,9 @@ pub fn packed_sag_with_pool_in<E: FpEnv>(s: &PackedSurface, pool: &[crate::Df32]
         }
         let mut base = *s;
         base.shape = surface_math::data(s, pool)[MKL_COEFF_KIND as usize].hi as u32;
-        return packed_sag_in::<E>(&base, r2);
+        if !overlay {
+            return packed_sag_in::<E>(&base, r2);
+        }
     }
     surface_math::evaluate(s, pool, F::<E>::ZERO, y).map_or(f32::NAN, |v| v.v.v())
 }

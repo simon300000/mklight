@@ -98,7 +98,8 @@ added; now 4: residuals of the ideal-lens power and vergences, the aperture
 sizes and the asphere coefficients, and the trace flag
 `MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`; now **5**: the coefficient-pool
 indices in the former final padding words, extended shape codes, and
-`MKL_RAY_EVANESCENT`); the header carries a magic word and
+`MKL_RAY_EVANESCENT`; now **6**: an optional sag-overlay suffix and
+`MKL_SURF_HAS_SAG_OVERLAY`); the header carries a magic word and
 the version, and backends validate both on upload.
 
 **Representability.** The packer rounds each model value once to f32 and
@@ -137,7 +138,7 @@ Systems with more than 16 wavelengths are packed in chunks
 | `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK, ODD_ASPHERE, Q_CON, Q_BFS, DIFFRACTIVE, TOROID, BICONIC, XY, ZERNIKE}` |
 | `interaction` | `MKL_INTERACT_{REFRACT, REFLECT, DUMMY}` |
 | `aperture`, `aperture_params[4]` (+`_lo`) | `MKL_APERTURE_*`; mm, including the CONVENTIONS §2 edge tolerance. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
-| `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE` |
+| `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE`, `HAS_SAG_OVERLAY` |
 | `curvature` (+`_lo`), `conic` (+`_lo`) | 1/mm, dimensionless |
 | `paraxial_power` (+`_lo`) | 1/f (1/mm) for ideal thin lenses |
 | `vergence[16]` (+`_lo`) | ideal lens: paraxial object vergence 1/a (1/mm) per packed wavelength (`mklight_trace::paraxial::ideal_lens_object_vergence`), the conjugate at which it is perfect in phase |
@@ -186,6 +187,23 @@ normalization radius as hi + lo. QBfs uses the Forbes triangular conversion
 once in the packer, storing auxiliary-basis coefficients as hi + lo; the
 kernel evaluates the differentiated auxiliary Clenshaw recurrence directly.
 No conversion to monomials is involved.
+
+**Manufacturing overlays (v6).** `HAS_SAG_OVERLAY` retains the base shape
+code and appends five double-float pairs after its existing coefficients:
+`radius, cos_amplitude, sin_amplitude, spherical_2, spherical_4` (the
+`MKL_OVERLAY_*` offsets). With U=x/radius, V=y/radius, t=U²+V², the
+extra sag is `cos_amplitude*(U−V)*(U+V) + sin_amplitude*2UV +
+t*(spherical_2 + t*spherical_4)`. Radius is a power of two near the
+aperture; the host computes fringe/wavelength scaling and sin/cos of twice
+the orientation in f64, then splits each value into hi + lo. Nested
+overlays combine into the same polynomial; an exactly zero departure adds
+no flag or suffix and keeps the base's exact intersection. A legacy base
+needs only this suffix; an extended base retains its prefix and coefficients.
+A DOE retains its phase prefix and wavelength factors before the suffix.
+Upload checks the suffix length, positive radius, representability and base
+kind alongside the existing coefficient metadata. No surface record grows.
+The departure extends beyond its normalization disk, without extending the
+base's geometric domain.
 
 **Transforms** (CONVENTIONS §7.1). `to_next_origin` is the next vertex in this
 surface's local frame and `to_next_rot` maps this frame's axes to the next
@@ -427,6 +445,12 @@ refinements on the double-float line and a fresh double-float gradient
 produce the carried point and normal. Normalization-domain comparisons in
 the refinement use hi + lo and the reference's radial margin. A DOE first
 intersects its base using the legacy path, then checks the phase domain.
+With a nonzero sag overlay, base and departure run through the same general
+sag Newton/refinement path; the differentiated normalized polynomial is
+identical operation for operation in Rust and MSL, in f32 for decisions and
+double-float for the two refinements and normals. A DOE applies the phase
+domain check after intersecting the overlaid base. Fast math and implicit
+contraction remain disabled.
 
 DOE interaction projects the phase gradient onto the actual base tangent
 plane. The selected order adds `m λ ∇surfaceΦ/(2π)` to tangential momentum
@@ -781,6 +805,25 @@ domain (`OutsideDomain`). The f32-only hits are genuine roots (residual
 coordinate rounding). No f32 search can reproduce these decisions;
 qualification remains mandatory for steep systems, and the sample passes
 above do not claim exhaustive qualification of every ray.
+
+### 5.1.2 Manufacturing overlays (layout v6)
+
+Measured on Apple M2 Pro, 2026-10-31, with strict offline flags. The same
+8,192 steep Cartesian rays cover rotated astigmatism plus spherical
+irregularity on plane, even-asphere, QCon and XY bases, nested overlays and
+a DOE base. Every output plane, surface record and positive-y sag probe is
+bit-identical to matching FTZ emulation. Against f64, maximum common-hit
+position error is 1.91e-6 mm, direction error 4.24e-8 and same-point OPL
+error 2.67e-13 mm. Four fixtures have identical statuses for all 8,192 rays;
+even-asphere and DOE overlays each differ on one failed ray
+(OutsideDomain versus Miss). No common hit exceeds the precision budget.
+IEEE and FTZ double-float sag/gradient checks also remain below 2e-10.
+
+The full pupil-grid cross-validation set includes a tilted/decentred Cooke
+trial with rotated overlays. Engine tests exercise irregularity tolerance
+jobs on Cooke, biconic and hybrid DOE systems on emulation and available
+Metal devices, checking GPU candidate counts, trial-preview replay, f64
+criterion agreement, and invariance to Monte-Carlo batch size.
 
 ### 5.2 Precision qualification and CPU fallback
 

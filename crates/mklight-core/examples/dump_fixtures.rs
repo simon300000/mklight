@@ -356,6 +356,7 @@ fn variants() -> Vec<OpticalSystem> {
         norm_radius: 5.0,
         test_wavelength_um: 0.6328,
         astigmatism: 0.5,
+        astigmatism_angle_deg: 30.0,
         spherical: -0.25,
     };
     e.surfaces[1].element_placement = Some(ElementPlacement {
@@ -439,6 +440,7 @@ fn all_param_paths() -> Vec<ParamPath> {
             ShapeParameter::CurvatureY,
             ShapeParameter::ConicY,
             ShapeParameter::NormRadius,
+            ShapeParameter::AstigmatismAngleDeg,
             ShapeParameter::DesignOrder,
             ShapeParameter::DesignWavelengthUm,
             ShapeParameter::TraceOrder,

@@ -401,14 +401,15 @@ static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* poo
     return MKL_RAY_NOT_CONVERGED;
 }
 static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,constant MklTraceParams& prm,thread MklHit& hit) {
-    if (s.shape<=MKL_SHAPE_COORD_BREAK) return mkl_intersect_legacy(s,s.shape,p,d,prm,hit);
+    bool overlay=(s.flags & MKL_SURF_HAS_SAG_OVERLAY)!=0u;
+    if (s.shape<=MKL_SHAPE_COORD_BREAK && !overlay) return mkl_intersect_legacy(s,s.shape,p,d,prm,hit);
     constant float* data=mkl_surface_data(s,pool);
-    if (s.shape==MKL_SHAPE_DIFFRACTIVE) {
+    if (s.shape==MKL_SHAPE_DIFFRACTIVE && !overlay) {
         uint code=mkl_intersect_legacy(s,uint(data[2*MKL_COEFF_KIND]),p,d,prm,hit);
         if (code!=MKL_RAY_OK) return code;
         return mkl_surface_domain(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]})?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
     }
-    if (data[2*MKL_COEFF_EXACT_CONIC]!=0.0f) {
+    if (!overlay && data[2*MKL_COEFF_EXACT_CONIC]!=0.0f) {
         uint code=mkl_intersect_legacy(s,MKL_SHAPE_CONIC,p,d,prm,hit);
         if (code!=MKL_RAY_OK) return code;
         MklJet<MklDf> v;
@@ -427,6 +428,7 @@ static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* po
     }
     hit.x=mkl_point_on(q,tb.v,d); MklJet<MklDf> v;
     if (!mkl_surface_eval(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
+    if (s.shape==MKL_SHAPE_DIFFRACTIVE && !mkl_surface_domain(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]})) return MKL_RAY_OUTSIDE_DOMAIN;
     hit.g.v[0]=mkl_df_neg(v.x.v);hit.g.v[1]=mkl_df_neg(v.y.v);hit.g.v[2]=float2(1,0);
     if (!mkl_finite3(mkl_hi3(hit.g))) return MKL_RAY_OUTSIDE_DOMAIN;
     hit.ta=ta;hit.tb=tb.v;hit.normal=mkl_normalized(mkl_hi3(hit.g)); return MKL_RAY_OK;

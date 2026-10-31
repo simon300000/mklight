@@ -63,8 +63,9 @@
  * 4: double-float ideal lens (paraxial_power_lo in place of reserved2,
  *    vergence_lo), apertures (aperture_params_lo) and asphere polynomial
  *    (asphere_lo); trace flag MKL_TRACE_NEWTON_CAP_NOT_CONVERGED.
- * 5: coefficient pool, extended shapes and evanescent diffraction status. */
-#define MKL_LAYOUT_VERSION 5u
+ * 5: coefficient pool, extended shapes and evanescent diffraction status.
+ * 6: optional manufacturing sag polynomial at the end of the pool record. */
+#define MKL_LAYOUT_VERSION 6u
 /* 'MKLP' little-endian; first word of every packed system header. */
 #define MKL_PACKED_MAGIC 0x504C4B4Du
 
@@ -114,6 +115,16 @@
 #define MKL_COEFF_DESIGN_WAVELENGTH 9u
 #define MKL_COEFF_PREFIX 10u
 
+/* HAS_SAG_OVERLAY: final five pairs, U=x/radius, V=y/radius, t=U²+V².
+ * Departure = COS*(U-V)*(U+V) + SIN*2*U*V + t*(S2+t*S4).
+ * Base shape and its prefix remain unchanged, including a DOE phase. */
+#define MKL_OVERLAY_RADIUS 0u
+#define MKL_OVERLAY_COS 1u
+#define MKL_OVERLAY_SIN 2u
+#define MKL_OVERLAY_S2 3u
+#define MKL_OVERLAY_S4 4u
+#define MKL_OVERLAY_COUNT 5u
+
 /* MklPackedSurface.interaction */
 #define MKL_INTERACT_REFRACT 0u
 #define MKL_INTERACT_REFLECT 1u
@@ -142,6 +153,7 @@
 #define MKL_SURF_COATED (1u << 3)          /* has a coating (see MklPackedSurface.coating) */
 #define MKL_SURF_APERTURE_FROM_SD (1u << 4) /* CIRCULAR aperture comes from a fixed semi-diameter */
 #define MKL_SURF_OBJECT (1u << 5)          /* surface 0 */
+#define MKL_SURF_HAS_SAG_OVERLAY (1u << 7)
 #define MKL_SURF_IMAGE (1u << 6)           /* surface N-1 */
 
 /* MklPackedSurface.coating: how the interface splits flux (CONVENTIONS §5).

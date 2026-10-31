@@ -465,6 +465,7 @@ pub fn xval_systems() -> Vec<(String, OpticalSystem)> {
         v.push((format!("{name} (vignetted)"), vig));
     }
     v.push(("tilted triplet".into(), tilted_triplet()));
+    v.push(("irregular triplet".into(), irregular_triplet()));
     v.push(("ideal lenses".into(), ideal_lenses()));
     v.push(("ideal relay".into(), ideal_relay()));
     v.push(("apertures".into(), apertures()));
@@ -473,6 +474,23 @@ pub fn xval_systems() -> Vec<(String, OpticalSystem)> {
     v.push(("f1000 achromat".into(), long_track()));
     v.push(("absorbing triplet".into(), absorbing_triplet()));
     v
+}
+
+/// A tolerance-scale Cooke trial: rigid motion plus rotated irregularities.
+pub fn irregular_triplet() -> OpticalSystem {
+    let mut sys = tilted_triplet();
+    for j in 1..=6 {
+        let base = std::mem::replace(&mut sys.surfaces[j].shape, SurfaceShape::Plane);
+        sys.surfaces[j].shape = SurfaceShape::SagOverlay {
+            base: Box::new(base),
+            norm_radius: 12.0,
+            test_wavelength_um: 0.6328,
+            astigmatism: 0.5,
+            astigmatism_angle_deg: 17.0 * j as f64,
+            spherical: -0.25,
+        };
+    }
+    sys
 }
 
 /// Result of [`f64_path`].
@@ -749,6 +767,48 @@ pub fn extended_shapes() -> Vec<(&'static str, SurfaceShape)> {
             },
         ));
     }
+    let overlay = |base: SurfaceShape| SurfaceShape::SagOverlay {
+        base: Box::new(base),
+        norm_radius: 12.0,
+        test_wavelength_um: 0.6328,
+        astigmatism: 1.25,
+        astigmatism_angle_deg: 31.0,
+        spherical: -0.75,
+    };
+    let q = shapes
+        .iter()
+        .find(|(n, _)| *n == "qcon20")
+        .unwrap()
+        .1
+        .clone();
+    let xy = shapes.iter().find(|(n, _)| *n == "xy65").unwrap().1.clone();
+    let mut doe = shapes
+        .iter()
+        .find(|(n, _)| *n == "doe10")
+        .unwrap()
+        .1
+        .clone();
+    if let SurfaceShape::Diffractive { base, .. } = &mut doe {
+        **base = overlay((**base).clone());
+    }
+    shapes.extend([
+        ("overlay_plane", overlay(SurfaceShape::Plane)),
+        (
+            "overlay_even",
+            overlay(SurfaceShape::EvenAsphere {
+                curvature: 0.04,
+                conic: -0.3,
+                coefficients: vec![1e-6, -1e-9],
+            }),
+        ),
+        ("overlay_q", overlay(q)),
+        ("overlay_xy", overlay(xy)),
+        (
+            "overlay_nested",
+            overlay(overlay(SurfaceShape::sphere(25.0))),
+        ),
+        ("overlay_doe", doe),
+    ]);
     shapes
 }
 

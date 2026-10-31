@@ -182,6 +182,7 @@ fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
             norm_radius,
             test_wavelength_um,
             astigmatism,
+            astigmatism_angle_deg,
             spherical,
         } => {
             if matches!(
@@ -203,7 +204,11 @@ fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
             );
             scalars(
                 out,
-                &[("astigmatism", *astigmatism), ("spherical", *spherical)],
+                &[
+                    ("astigmatism", *astigmatism),
+                    ("astigmatism_angle_deg", *astigmatism_angle_deg),
+                    ("spherical", *spherical),
+                ],
             );
         }
         Diffractive { base, phase } => {

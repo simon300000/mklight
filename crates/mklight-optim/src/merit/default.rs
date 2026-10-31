@@ -195,7 +195,13 @@ pub fn is_meridionally_symmetric(s: &OpticalSystem) -> bool {
 pub fn breaks_meridional_symmetry(p: &ParamPath) -> bool {
     matches!(
         p,
-        ParamPath::DecenterX { .. }
+        ParamPath::Irregularity {
+            mode: mklight_core::param::IrregularityMode::Astigmatism,
+            ..
+        } | ParamPath::ShapeParam {
+            parameter: mklight_core::param::ShapeParameter::AstigmatismAngleDeg,
+            ..
+        } | ParamPath::DecenterX { .. }
             | ParamPath::TiltY { .. }
             | ParamPath::TiltZ { .. }
             | ParamPath::FieldX { .. }
