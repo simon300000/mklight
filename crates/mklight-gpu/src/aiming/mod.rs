@@ -206,17 +206,24 @@ fn check_systems(s: &SystemSet, p: &ResidentPlan) -> MkResult<()> {
     } = s
     {
         if *count == 0
+            || *count > u32::MAX as usize
             || *max_surfaces < 2
             || *max_surfaces > u32::MAX as usize
             || *max_wavelengths > crate::layout::MAX_WAVELENGTHS
         {
             return Err(bad("resident system dimensions"));
         }
+        let header_words = count
+            .checked_mul(size_of::<crate::layout::PackedHeader>() / 4)
+            .ok_or_else(|| bad("resident system extent overflow"))?;
+        let surface_words = count
+            .checked_mul(*max_surfaces)
+            .and_then(|n| n.checked_mul(size_of::<crate::layout::PackedSurface>() / 4))
+            .ok_or_else(|| bad("resident system extent overflow"))?;
         if p.desc(*headers)?.element != ElementType::U32
-            || p.desc(*headers)?.len()? != count * size_of::<crate::layout::PackedHeader>() / 4
+            || p.desc(*headers)?.len()? != header_words
             || p.desc(*surfaces)?.element != ElementType::U32
-            || p.desc(*surfaces)?.len()?
-                != count * max_surfaces * size_of::<crate::layout::PackedSurface>() / 4
+            || p.desc(*surfaces)?.len()? != surface_words
             || p.desc(*coefficients)?.element != ElementType::DoubleFloat
         {
             return Err(bad("resident system sidecars"));

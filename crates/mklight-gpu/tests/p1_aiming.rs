@@ -131,3 +131,36 @@ fn projection_sheets_centroid_and_telecentric_known_answers() {
         }
     }
 }
+
+#[test]
+fn overflowing_resident_extents_are_rejected_at_submission() {
+    use aiming::*;
+    use resident::*;
+    let mut p = ResidentPlan::new(mklight_core::Snapshot::new(samples::singlet()).unwrap());
+    let headers = p.scratch(BufferDesc::new(ElementType::U32, [44]));
+    let surfaces = p.scratch(BufferDesc::new(ElementType::U32, [156]));
+    let coefficients = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [0]));
+    let input = rays(&mut p, 0);
+    let output = hits(&mut p, 0, 0);
+    let steps = p.scratch(BufferDesc::new(ElementType::U32, [1]));
+    for count in [usize::MAX, u32::MAX as usize] {
+        let request = Request::TraceResident(TraceResident {
+            systems: SystemSet::Resident {
+                headers,
+                surfaces,
+                coefficients,
+                count,
+                max_surfaces: u32::MAX as usize,
+                max_wavelengths: 1,
+            },
+            input: input.clone(),
+            steps: p.view(steps).unwrap(),
+            start_surface: 0,
+            apply_apertures: true,
+            radiometry: 0,
+            newton: Default::default(),
+            output: output.clone(),
+        });
+        assert!(aiming::validate(&request, &p).is_err());
+    }
+}
