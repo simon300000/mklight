@@ -229,7 +229,7 @@ impl Compiler {
         let start = off
             + MKL_COEFF_PREFIX as usize
             + if p.shape == MKL_SHAPE_DIFFRACTIVE {
-                16
+                crate::layout::MAX_WAVELENGTHS
             } else {
                 0
             };

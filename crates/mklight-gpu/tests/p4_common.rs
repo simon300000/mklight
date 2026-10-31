@@ -507,3 +507,241 @@ pub fn extended_cases() -> Vec<(String, CompiledSystem, Vec<Candidate>)> {
     ));
     out
 }
+
+pub fn resident_input_check(backend: &dyn ComputeBackend) {
+    use mklight_core::param::ParamPath;
+    let s = mklight_core::samples::singlet();
+    let surface = s.surfaces[1].id;
+    let c = CompiledSystem::compile(
+        Snapshot::new(s).unwrap(),
+        testutil::library(),
+        vec![Parameter {
+            path: ParamPath::Curvature { surface },
+            lower: 0.01,
+            upper: 0.03,
+        }],
+        None,
+        &JobContext::new(),
+    )
+    .unwrap();
+    let u = c.upload(backend, &JobContext::new()).unwrap();
+    let mut plan = ResidentPlan::new(c.snapshot().clone());
+    let input = backend
+        .upload_buffer(
+            BufferDesc::new(ElementType::F32, [3, 1]),
+            BufferData::F32(vec![0.0, 0.015, 0.02]),
+        )
+        .unwrap();
+    let id = plan.import(input.view());
+    let sum = plan.sum(plan.view(id).unwrap(), ReduceMode::DoubleFloat);
+    let parameters = PlanView {
+        buffer: sum,
+        offset: 1,
+        desc: BufferDesc::new(ElementType::DoubleFloat, [2, 1]),
+        stride: 1,
+    };
+    let slots = backend
+        .upload_buffer(
+            BufferDesc::new(ElementType::U32, [3, 4]),
+            BufferData::U32(vec![
+                0,
+                0,
+                0,
+                0,
+                71,
+                5,
+                u32::MAX,
+                READY,
+                7,
+                9,
+                u32::MAX,
+                READY,
+            ]),
+        )
+        .unwrap();
+    let id = plan.import(slots.view());
+    let slots = PlanView {
+        buffer: id,
+        offset: 4,
+        desc: BufferDesc::new(ElementType::U32, [2, 4]),
+        stride: 1,
+    };
+    let r = u
+        .append_resident(
+            &mut plan,
+            parameters,
+            slots,
+            "sum-generated-rows-v1",
+            &JobContext::new(),
+        )
+        .unwrap();
+    plan.outputs = r.outputs();
+    let result = backend
+        .submit_plan(plan, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    assert_eq!(result.stats.readback_bytes, 0);
+    let data: Vec<_> = result
+        .outputs
+        .iter()
+        .map(|h| backend.readback(h.view(), &JobContext::new()).unwrap().data)
+        .collect();
+    assert_eq!(data[4].words(), [71, 5, 7, 9]);
+    for (i, value) in [0.015f32, 0.02].into_iter().enumerate() {
+        let rs = c
+            .reference(
+                &Candidate {
+                    id: i as u64,
+                    values: vec![value as f64],
+                },
+                &JobContext::new(),
+            )
+            .unwrap();
+        compare(&data, i, &rs);
+    }
+    u.release(backend).unwrap();
+}
+
+pub fn ray_derivative_check(backend: &dyn ComputeBackend) {
+    use mklight_core::param::ParamPath;
+    let system = mklight_core::samples::singlet();
+    let value = system.surfaces[1].shape.curvature();
+    let c = CompiledSystem::compile(
+        Snapshot::new(system.clone()).unwrap(),
+        testutil::library(),
+        vec![Parameter {
+            path: ParamPath::Curvature {
+                surface: system.surfaces[1].id,
+            },
+            lower: 0.01,
+            upper: 0.03,
+        }],
+        None,
+        &JobContext::new(),
+    )
+    .unwrap();
+    let reference = |v| {
+        let rs = c
+            .reference(
+                &Candidate {
+                    id: 0,
+                    values: vec![v],
+                },
+                &JobContext::new(),
+            )
+            .unwrap();
+        let t = SequentialTracer::new(rs.into()).unwrap();
+        let ray = t.generate(t.field(1), 1, 0.2, 0.6).unwrap().ray;
+        let result = mklight_trace::trace_ray(t.system(), &ray, 1, &t.options(), None);
+        result.ray.pos.y
+    };
+    for fraction in [0.001, 0.003, 0.01] {
+        let h = value * fraction;
+        let rows = [
+            Candidate {
+                id: 1,
+                values: vec![value - h],
+            },
+            Candidate {
+                id: 2,
+                values: vec![value + h],
+            },
+        ];
+        let (data, _) = run(backend, &c, &rows, 64);
+        let mut packed = vec![];
+        let mut rays = RayBatch::default();
+        for (i, row) in rows.iter().enumerate() {
+            let rs = c.reference(row, &JobContext::new()).unwrap();
+            packed.extend(decode(&data, i, &rs));
+            let t = SequentialTracer::new(rs.into()).unwrap();
+            let ray = t.generate(t.field(1), 1, 0.2, 0.6).unwrap().ray;
+            rays.push_f64(
+                [ray.pos.x, ray.pos.y, ray.pos.z],
+                [ray.dir.x, ray.dir.y, ray.dir.z],
+                1,
+            );
+            rays.system.push(i as u32);
+        }
+        let handle = backend.upload_systems(&packed).unwrap();
+        let mut req = TraceRequest::new(handle, rays, 0, 3);
+        req.radiometry = Radiometry::Off;
+        let result = backend
+            .run(Job::Trace(Box::new(req)), &JobContext::new())
+            .unwrap();
+        backend.release_systems(handle).unwrap();
+        let JobOutput::Trace(result) = result.output else {
+            unreachable!()
+        };
+        assert_eq!(result.status, vec![consts::MKL_RAY_OK; 2]);
+        let device = (result.y[1] as f64 - result.y[0] as f64) / (2.0 * h);
+        let coarse = (reference(value + h) - reference(value - h)) / (2.0 * h);
+        let fine = (reference(value + h / 2.0) - reference(value - h / 2.0)) / h;
+        let richardson = (4.0 * fine - coarse) / 3.0;
+        let error = (device - richardson).abs() / richardson.abs().max(1e-8);
+        eprintln!("P4 ray FD relative_step={fraction} scaled_column_error={error:e}");
+        assert!(error <= 1e-3);
+    }
+}
+
+pub fn domain_check(backend: &dyn ComputeBackend, n: usize) {
+    use mklight_core::{
+        model::{MaterialRef, SurfaceShape},
+        param::ParamPath,
+    };
+    let mut cases: Vec<_> = testutil::xval_systems()
+        .into_iter()
+        .filter(|(name, _)| {
+            name.contains("vignetted")
+                || [
+                    "tilted triplet",
+                    "ideal lenses",
+                    "ideal relay",
+                    "apertures",
+                    "TIR block",
+                    "asphere singlet",
+                    "f1000 achromat",
+                    "absorbing triplet",
+                ]
+                .contains(&name.as_str())
+        })
+        .collect();
+    let mut tele = mklight_core::samples::singlet();
+    tele.surfaces[1].shape = SurfaceShape::Plane;
+    tele.surfaces[1].material = MaterialRef::Air;
+    tele.surfaces[1].thickness = 100.0;
+    tele.surfaces[2].shape = SurfaceShape::Paraxial {
+        focal_length: 100.0,
+    };
+    tele.surfaces[2].thickness = 103.0;
+    cases.push(("telecentric".into(), tele));
+    for (name, s) in cases {
+        let i = if name == "telecentric" { 2 } else { 1 };
+        let surface = s.surfaces[i].id;
+        let t = s.surfaces[i].thickness;
+        let c = CompiledSystem::compile(
+            Snapshot::new(s).unwrap(),
+            testutil::library(),
+            vec![Parameter {
+                path: ParamPath::Thickness { surface },
+                lower: t - 0.1,
+                upper: t + 0.1,
+            }],
+            None,
+            &JobContext::new(),
+        )
+        .unwrap();
+        let rows = [Candidate {
+            id: 23,
+            values: vec![t + 0.01],
+        }];
+        let (out, _) = run(backend, &c, &rows, 64);
+        let rs = c.reference(&rows[0], &JobContext::new()).unwrap();
+        compare(&out, 0, &rs);
+        let trace = trace_check(backend, &out, 0, rs, n);
+        eprintln!(
+            "P4-domain {name} trace={}",
+            serde_json::to_string(&trace).unwrap()
+        );
+    }
+}

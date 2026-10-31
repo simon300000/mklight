@@ -178,3 +178,15 @@ fn host_metal_cancel_progress_release() {
     eprintln!("P4 max_command_seconds={max:.6}");
     assert!(max < 0.05);
 }
+#[test]
+fn host_metal_resident_generated_rows() {
+    resident_input_check(&backend(LibraryChoice::Precompiled));
+}
+#[test]
+fn host_metal_traced_fd() {
+    ray_derivative_check(&backend(LibraryChoice::Precompiled));
+}
+#[test]
+fn host_metal_vignetted_tilted_long_track_and_telecentric() {
+    domain_check(&backend(LibraryChoice::Precompiled), 64);
+}

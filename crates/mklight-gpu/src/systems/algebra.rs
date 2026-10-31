@@ -162,8 +162,14 @@ impl Neg for E {
     }
 }
 
-pub(crate) fn evaluate(code: &[[u32; 4]], parameters: &[Df32], values: &mut [Df32]) {
-    for (i, &[op, a, b, c]) in code.iter().enumerate() {
+pub(crate) fn evaluate(
+    code: &[[u32; 4]],
+    parameters: &[Df32],
+    values: &mut [Df32],
+    range: std::ops::Range<usize>,
+) {
+    for i in range {
+        let [op, a, b, c] = code[i];
         values[i] = match op {
             CONSTANT => Df32::new(f32::from_bits(a), f32::from_bits(b)),
             PARAMETER => parameters[a as usize],

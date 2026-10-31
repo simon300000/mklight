@@ -32,30 +32,39 @@ pub(crate) fn execute(
     for first in (0..r.map.count).step_by(r.tile_candidates) {
         ctl.check()?;
         let count = r.tile_candidates.min(r.map.count - first);
-        let params = r.dispatch_params(first, count);
-        let wall = Instant::now();
-        // SAFETY: the private host compiler owns the immutable instruction and
-        // patch leases. Submission verifies their identity and every output
-        // extent. Scratch has one disjoint instruction plane per tile lane.
-        let cs = unsafe {
-            x.gpu.run("prepare systems", |e| {
-                e.set_pipeline(&pipeline);
-                for (i, (b, off)) in inputs.iter().enumerate() {
-                    e.set_buffer(i, *b, *off);
-                }
-                e.set_buffer_mut(5, &mut scratch, 0);
-                for (i, (_, out)) in outputs.iter_mut().enumerate() {
-                    e.set_buffer_mut(6 + i, out, 0);
-                }
-                e.set_bytes(14, &params);
-                e.dispatch_1d(&pipeline, count);
-                Ok(())
-            })?
-        };
-        stage.command_buffers += 1;
-        stage.device_seconds += cs.gpu_seconds;
-        stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
-        ctl.check()?;
+        let mut params = r.dispatch_params(first, count);
+        for instruction in (0..params.instructions as usize)
+            .step_by(mklight_gpu::systems::INSTRUCTIONS_PER_COMMAND)
+        {
+            ctl.check()?;
+            params.first_instruction = instruction as u32;
+            params.instruction_count = mklight_gpu::systems::INSTRUCTIONS_PER_COMMAND
+                .min(params.instructions as usize - instruction)
+                as u32;
+            let wall = Instant::now();
+            // SAFETY: the private host compiler owns the immutable instruction and
+            // patch leases. Submission verifies their identity and every output
+            // extent. Scratch has one disjoint instruction plane per tile lane.
+            let cs = unsafe {
+                x.gpu.run("prepare systems", |e| {
+                    e.set_pipeline(&pipeline);
+                    for (i, (b, off)) in inputs.iter().enumerate() {
+                        e.set_buffer(i, *b, *off);
+                    }
+                    e.set_buffer_mut(5, &mut scratch, 0);
+                    for (i, (_, out)) in outputs.iter_mut().enumerate() {
+                        e.set_buffer_mut(6 + i, out, 0);
+                    }
+                    e.set_bytes(14, &params);
+                    e.dispatch_1d(&pipeline, count);
+                    Ok(())
+                })?
+            };
+            stage.command_buffers += 1;
+            stage.device_seconds += cs.gpu_seconds;
+            stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
+            ctl.check()?;
+        }
         ctl.report(
             (first + count) as f64 / r.map.count as f64,
             "prepare systems",

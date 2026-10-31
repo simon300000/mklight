@@ -198,3 +198,121 @@ fn invalid_slots_fallback_identity_and_thick_lens_derivative() {
         Err(MkError::Cancelled)
     ));
 }
+#[test]
+fn resident_rows_chain_without_readback() {
+    resident_input_check(&CpuF32Backend::new());
+}
+
+#[test]
+fn cache_invalidation_and_automatic_apertures() {
+    use mklight_core::param::ParamPath;
+    let s = mklight_core::samples::singlet();
+    let id = s.surfaces[1].id;
+    let snapshot = Snapshot::new(s.clone()).unwrap();
+    let rows = basic_rows(&s);
+    let b = CpuF32Backend::new();
+    let c = CompiledSystem::compile(
+        snapshot.clone(),
+        testutil::library(),
+        basic_variables(&s),
+        None,
+        &JobContext::new(),
+    )
+    .unwrap();
+    let u = c.upload(&b, &JobContext::new()).unwrap();
+    let v = c.upload(&b, &JobContext::new()).unwrap();
+    assert!(b.resident_cache_stats().system_hits > 0);
+    let (a, _) = run_uploaded(&b, &c, &u, &rows, 64);
+    let mut changed = rows.clone();
+    changed[0].values[0] += 0.1;
+    let (new, _) = run_uploaded(&b, &c, &v, &changed, 1);
+    assert_ne!(a[1].words(), new[1].words());
+    assert_eq!(new[6].words()[1] & DIRTY_APERTURES, DIRTY_APERTURES);
+    let mut changed = s;
+    changed.surfaces[1].material = mklight_core::MaterialRef::Constant { n: 1.6 };
+    let d = CompiledSystem::compile(
+        Snapshot::new(changed.clone()).unwrap(),
+        testutil::library(),
+        basic_variables(&changed),
+        None,
+        &JobContext::new(),
+    )
+    .unwrap();
+    assert_ne!(c.fingerprint(), d.fingerprint());
+    let fixed = CompiledSystem::compile(
+        snapshot,
+        testutil::library(),
+        vec![Parameter {
+            path: ParamPath::SemiDiameter { surface: id },
+            lower: 5.0,
+            upper: 20.0,
+        }],
+        None,
+        &JobContext::new(),
+    )
+    .unwrap();
+    let rows = [Candidate {
+        id: 0,
+        values: vec![10.0],
+    }];
+    let (data, _) = run(&b, &fixed, &rows, 1);
+    compare(
+        &data,
+        0,
+        &fixed.reference(&rows[0], &JobContext::new()).unwrap(),
+    );
+    u.release(&b).unwrap();
+    v.release(&b).unwrap();
+}
+#[test]
+fn traced_fd_matches_reference_richardson() {
+    ray_derivative_check(&CpuF32Backend::new());
+}
+
+#[test]
+fn configuration_overrides_parameter_alias() {
+    use mklight_core::{
+        model::Configuration,
+        param::{ParamPath, ShapeParameter},
+    };
+    let mut s = mklight_core::samples::biconic_element();
+    let surface = s.surfaces[1].id;
+    let c1 = s.surfaces[1].shape.curvature();
+    s.configurations = vec![Configuration {
+        name: "alias override".into(),
+        overrides: vec![(
+            ParamPath::ShapeParam {
+                surface,
+                parameter: ShapeParameter::CurvatureY,
+            },
+            c1 + 0.001,
+        )],
+    }];
+    let variables = vec![Parameter {
+        path: ParamPath::Curvature { surface },
+        lower: c1 - 0.002,
+        upper: c1 + 0.002,
+    }];
+    let c = CompiledSystem::compile(
+        Snapshot::new(s).unwrap(),
+        testutil::library(),
+        variables,
+        Some(0),
+        &JobContext::new(),
+    )
+    .unwrap();
+    let rows = [Candidate {
+        id: 0,
+        values: vec![c1 - 0.001],
+    }];
+    let (data, _) = run(&CpuF32Backend::new(), &c, &rows, 64);
+    compare(
+        &data,
+        0,
+        &c.reference(&rows[0], &JobContext::new()).unwrap(),
+    );
+}
+#[test]
+fn vignetted_tilted_long_track_and_telecentric() {
+    domain_check(&CpuF32Backend::new(), 9);
+}

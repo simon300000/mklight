@@ -30,7 +30,7 @@ kernel void mkl_systems_prepare(
         if (!all(isfinite(a)) || !mkl_p4_le(bounds[2*j],a) || !mkl_p4_le(a,bounds[2*j+1]))
             status = MKL_SYSTEMS_OUTSIDE_BOUNDS;
     }
-    for (uint j=0; j<p.instructions; ++j) {
+    for (uint j=p.first_instruction; j<p.first_instruction+p.instruction_count; ++j) {
         uint op=program[4*j], ia=program[4*j+1], ib=program[4*j+2], ic=program[4*j+3];
         if (op==0) { v[j]=float2(as_type<float>(ia),as_type<float>(ib)); continue; }
         if (op==1) { v[j]=params[ia]; continue; }
@@ -45,6 +45,7 @@ kernel void mkl_systems_prepare(
         }
         v[j]=value;
     }
+    if (p.first_instruction+p.instruction_count<p.instructions) return;
     uint guard_start=4*(p.instructions+p.patches);
     for (uint j=0; j<p.guards; ++j) {
         float2 value=v[program[guard_start+j]];

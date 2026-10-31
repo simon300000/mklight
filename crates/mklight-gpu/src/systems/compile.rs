@@ -15,6 +15,20 @@ use mklight_core::{
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+fn canonical(path: &ParamPath) -> ParamPath {
+    match path {
+        ParamPath::ShapeParam {
+            surface,
+            parameter: ShapeParameter::CurvatureY,
+        } => ParamPath::Curvature { surface: *surface },
+        ParamPath::ShapeParam {
+            surface,
+            parameter: ShapeParameter::ConicY,
+        } => ParamPath::Conic { surface: *surface },
+        _ => path.clone(),
+    }
+}
+
 pub(super) struct Compiler {
     pub model: OpticalSystem,
     pub library: Arc<MaterialLibrary>,
@@ -29,7 +43,8 @@ impl Compiler {
         E::constant(&self.b, x)
     }
     pub fn param(&mut self, p: &ParamPath) -> MkResult<E> {
-        if let Some(e) = self.params.get(p) {
+        let p = canonical(p);
+        if let Some(e) = self.params.get(&p) {
             return Ok(e.clone());
         }
         let e = self.c(p.get(&self.model)?);
@@ -104,7 +119,7 @@ impl Compiler {
                     )));
                 }
             };
-            self.params.insert(solve.target.clone(), e);
+            self.params.insert(canonical(&solve.target), e);
         }
         Ok(())
     }
@@ -126,7 +141,7 @@ pub(super) fn compile(
     };
     let mut paths = std::collections::BTreeSet::new();
     for v in &variables {
-        if !paths.insert(v.path.clone())
+        if !paths.insert(canonical(&v.path))
             || !v.lower.is_finite()
             || !v.upper.is_finite()
             || v.lower > v.upper
@@ -142,7 +157,11 @@ pub(super) fn compile(
             Err(e) => return Err(e),
         };
         v.path.set(&mut model, nominal)?;
-        if model.solved_params().contains(&v.path) {
+        if model
+            .solved_params()
+            .iter()
+            .any(|p| canonical(p) == canonical(&v.path))
+        {
             return Err(MkError::InvalidParam(
                 "P4 variable is solve-controlled".into(),
             ));
@@ -220,10 +239,10 @@ pub(super) fn compile(
             snapshot.system().configurations[k]
                 .overrides
                 .iter()
-                .any(|(p, _)| p == &v.path)
+                .any(|(p, _)| canonical(p) == canonical(&v.path))
         });
         if !overridden {
-            c.params.insert(v.path.clone(), E::parameter(&c.b, i));
+            c.params.insert(canonical(&v.path), E::parameter(&c.b, i));
         }
     }
     c.solves()?;
@@ -280,6 +299,7 @@ pub(super) fn compile(
     }
     for (i, s) in model.surfaces.iter().enumerate() {
         ctx.check()?;
+        ctx.report(0.3 * i as f64 / n as f64, "compile materials");
         if i > 0 && (s.interaction != Interaction::Refract || s.is_coordinate_break()) {
             ns.push(ns[i - 1].clone());
             alphas.push(alphas[i - 1].clone());
@@ -299,6 +319,7 @@ pub(super) fn compile(
                 let mut valid = c.c(0.0);
                 c.choice_active = true;
                 for (j, material) in slot.choices.iter().enumerate() {
+                    ctx.check()?;
                     let (nj, aj) = c.material(s.id, material, l.clone())?;
                     let match_choice = (selector.clone() - j as f64).abs();
                     index = match_choice.clone().select(nj, index);
@@ -323,6 +344,8 @@ pub(super) fn compile(
     }
     let mut fo = vec![];
     for (w, l) in wavelengths.iter().enumerate() {
+        ctx.check()?;
+        ctx.report(0.3 + 0.4 * w as f64 / nw as f64, "compile first order");
         let mut signed = Vec::new();
         let mut power_y = Vec::new();
         for axis in 0..2 {
@@ -413,8 +436,8 @@ pub(super) fn compile(
         for j in 1..n {
             if matches!(model.surfaces[j].shape, SurfaceShape::Paraxial { .. }) {
                 let v = slope.clone() / (y.clone() * signed[j - 1].clone().abs());
-                let row = (w / 16) * n + j;
-                let k = w % 16;
+                let row = (w / crate::layout::MAX_WAVELENGTHS) * n + j;
+                let k = w % crate::layout::MAX_WAVELENGTHS;
                 c.surf(
                     row,
                     std::mem::offset_of!(PackedSurface, vergence) + k * 4,
@@ -427,6 +450,11 @@ pub(super) fn compile(
         }
     }
     for (chunk, pack) in packed.iter().enumerate() {
+        ctx.check()?;
+        ctx.report(
+            0.7 + 0.25 * chunk as f64 / packed.len() as f64,
+            "compile packed outputs",
+        );
         for (k, &w) in pack.wavelengths.iter().enumerate() {
             c.patch(
                 0,

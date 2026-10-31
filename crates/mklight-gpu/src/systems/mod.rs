@@ -21,6 +21,7 @@ use mklight_core::{
 use std::sync::Arc;
 
 pub const VERSION: u32 = 1;
+pub const INSTRUCTIONS_PER_COMMAND: usize = 2048;
 pub const READY: u32 = 0;
 pub const OUTSIDE_BOUNDS: u32 = 1;
 pub const INVALID_NUMERIC: u32 = 2;
@@ -146,6 +147,18 @@ impl CompiledSystem {
         ctx: &JobContext,
     ) -> MkResult<Self> {
         compile::compile(snapshot, library, variables, materials, configuration, ctx)
+    }
+    /// Stable transient identity, independent of batch order/chunking. A
+    /// published candidate instead uses the normal Snapshot content hash from
+    /// `reference` after reconstruction and solves.
+    pub fn transient_hash(&self, candidate: &Candidate) -> String {
+        let mut hash = blake3::Hasher::new();
+        hash.update(self.snapshot.hash().to_hex().as_bytes());
+        hash.update(self.fingerprint.as_bytes());
+        for value in &candidate.values {
+            hash.update(&value.to_bits().to_le_bytes());
+        }
+        hash.finalize().to_hex().to_string()
     }
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
@@ -413,7 +426,10 @@ impl SystemBatchPlan {
             coefficients: self.coefficients,
             count: self.map.count * self.program.chunk_count,
             max_surfaces: self.program.surface_count,
-            max_wavelengths: self.program.wavelength_count.min(16),
+            max_wavelengths: self
+                .program
+                .wavelength_count
+                .min(crate::layout::MAX_WAVELENGTHS),
         }
     }
     pub fn dispatch_params(&self, first: usize, count: usize) -> DispatchParams {
@@ -432,7 +448,9 @@ impl SystemBatchPlan {
             chunks: p.chunk_count as u32,
             surfaces: p.surface_count as u32,
             model_words: (p.model_len * 2) as u32,
-            reserved: [0; 3],
+            first_instruction: 0,
+            instruction_count: p.code.len() as u32,
+            reserved: 0,
         }
     }
     /// Instruction scratch is bounded by a tile, independent of the batch size.
@@ -456,7 +474,9 @@ pub struct DispatchParams {
     pub chunks: u32,
     pub surfaces: u32,
     pub model_words: u32,
-    pub reserved: [u32; 3],
+    pub first_instruction: u32,
+    pub instruction_count: u32,
+    pub reserved: u32,
 }
 
 pub fn validate(request: &Request, plan: &ResidentPlan) -> MkResult<()> {
@@ -512,9 +532,6 @@ pub fn validate(request: &Request, plan: &ResidentPlan) -> MkResult<()> {
             return Err(bad("system preparation output extent"));
         }
     }
-    if r.parameters.desc.shape[0] != n {
-        return Err(bad("system preparation candidate map count"));
-    }
     Ok(())
 }
 pub fn accesses(request: &Request) -> Access {
@@ -543,11 +560,12 @@ pub fn execute(
     let mut values = vec![Df32::ZERO; p.code.len()];
     for row in 0..r.map.count {
         ctl.check()?;
-        let parameters: Vec<Df32> = x.words(r.parameters.buffer)
-            [row * width * 2..(row + 1) * width * 2]
-            .chunks_exact(2)
-            .map(|v| Df32::new(f32::from_bits(v[0]), f32::from_bits(v[1])))
-            .collect();
+        let parameters: Vec<Df32> =
+            x.words(r.parameters.buffer)[(r.parameters.offset + row * width) * 2
+                ..(r.parameters.offset + (row + 1) * width) * 2]
+                .chunks_exact(2)
+                .map(|v| Df32::new(f32::from_bits(v[0]), f32::from_bits(v[1])))
+                .collect();
         let bounds: Vec<Df32> = x
             .words(r.bounds.buffer)
             .chunks_exact(2)
@@ -562,7 +580,15 @@ pub fn execute(
                 status = OUTSIDE_BOUNDS;
             }
         }
-        algebra::evaluate(&p.code, &parameters, &mut values);
+        for first in (0..p.code.len()).step_by(INSTRUCTIONS_PER_COMMAND) {
+            ctl.check()?;
+            algebra::evaluate(
+                &p.code,
+                &parameters,
+                &mut values,
+                first..(first + INSTRUCTIONS_PER_COMMAND).min(p.code.len()),
+            );
+        }
         if status == READY
             && p.guards
                 .iter()
@@ -670,12 +696,18 @@ fn reference_system(
         variable.path.set(&mut model, value)?;
     }
     let settings = mklight_trace::solves::SolveSettings::default();
+    let solve_ctx = ctx.subrange(0.0, 0.9);
     let (model, _) = if let Some(k) = configuration {
-        mklight_trace::solves::apply_solves_configuration(&model, library, k, &settings, ctx)?
+        mklight_trace::solves::apply_solves_configuration(
+            &model, library, k, &settings, &solve_ctx,
+        )?
     } else {
-        mklight_trace::solves::apply_solves_with(&model, library, &settings, ctx)?
+        mklight_trace::solves::apply_solves_with(&model, library, &settings, &solve_ctx)?
     };
-    ResolvedSystem::new(&Snapshot::new(model)?, library.clone())
+    let resolved = ResolvedSystem::new(&Snapshot::new(model)?, library.clone())?;
+    ctx.check()?;
+    ctx.report(1.0, "resolve candidate");
+    Ok(resolved)
 }
 pub fn reference_batch(
     snapshot: &Snapshot,
@@ -691,17 +723,25 @@ pub fn reference_batch(
     for (i, c) in candidates.iter().enumerate() {
         ctx.check()?;
         let sub = ctx.subrange(
-            i as f64 / candidates.len() as f64,
-            (i + 1) as f64 / candidates.len() as f64,
+            0.95 * i as f64 / candidates.len() as f64,
+            0.95 * (i + 1) as f64 / candidates.len() as f64,
         );
-        let result = reference_system(snapshot, &library, variables, &[], c, configuration, &sub)
-            .and_then(|rs| PackedSystem::pack_chunks(&rs, None));
+        let result = reference_system(
+            snapshot,
+            &library,
+            variables,
+            &[],
+            c,
+            configuration,
+            &sub.subrange(0.0, 0.9),
+        )
+        .and_then(|rs| PackedSystem::pack_chunks(&rs, None));
         if matches!(result, Err(MkError::Cancelled)) {
             return Err(MkError::Cancelled);
         }
         out.push((c.id, result));
         ctx.report(
-            (i + 1) as f64 / candidates.len() as f64,
+            0.95 * (i + 1) as f64 / candidates.len() as f64,
             "reference system preparation",
         );
     }
@@ -716,6 +756,8 @@ pub fn reference_batch(
         None,
         vec![reason.into()],
     );
+    ctx.check()?;
+    ctx.report(1.0, "reference system preparation");
     Ok(ReferenceBatch {
         candidates: out,
         run_info,

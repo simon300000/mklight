@@ -12,7 +12,7 @@ struct MklSystemsDispatch {
     uint32_t first, count, parameters, instructions;
     uint32_t patches, guards, header_words, surface_words;
     uint32_t coefficient_words, first_order_words, chunks, surfaces;
-    uint32_t model_words, reserved[3];
+    uint32_t model_words, first_instruction, instruction_count, reserved;
 };
 /* Instruction uint4: opcode, a, b, c. Constant: a/b are hi/lo bits;
  * parameter: a is its column; arithmetic operands are earlier node indices.
