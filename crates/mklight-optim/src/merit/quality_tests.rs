@@ -247,7 +247,7 @@ fn cooke_mtf_worst_field_optimisation_raises_the_minimum() {
     let (before, worst) = run(true);
     let (_, average) = run(false);
     assert!(
-        (before - 0.1125).abs() < 0.005 && worst > 0.17 && average < 0.1,
+        (before - 0.109).abs() < 0.005 && worst > 0.17 && average < 0.1,
         "minimum MTF {before} -> {worst} (worst field), {average} (field average)"
     );
 }

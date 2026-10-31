@@ -11,8 +11,8 @@
 //!   `Δν = cutoff/n`, interpolated between, [`crate::otf_fft`]). For a
 //!   strongly aberrated pupil the interpolation within the first few
 //!   lattice spacings can be far off: singlet sample at full field, `n = 64`
-//!   (`Δν` = 5.4 cycles/mm), 0.088 at 5 cycles/mm against 0.041 converged
-//!   (`direct` gives 0.038). Use it with fine pupil grids or for whole
+//!   (`Δν` = 5.4 cycles/mm), 0.092 at 5 cycles/mm against 0.037 converged
+//!   (`direct` gives 0.037). Use it with fine pupil grids or for whole
 //!   lattices;
 //! * `huygens`: direct DFT of the Huygens PSF on the image surface
 //!   ([`crate::mtf_from_psf`]), an independent route through image space.

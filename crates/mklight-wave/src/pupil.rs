@@ -50,10 +50,10 @@
 //! a surface point maps to its foot on the normal plane. `B` is symmetric
 //! with eigenvalues `1` (sagittal) and `cosθ_c` (tangential), so a chief
 //! ray at angle `θ_c` stretches the PSF by `1/cosθ_c` along the tangential
-//! direction and `MTF_surface(ν) = MTF_normal(B^{−T}·ν)`. The projection
-//! neglects the defocus `x_s·ê_w` across the PSF (a phase of about
-//! `|x_s|·sinθ_c·NA²/(2λ)` waves at distance `|x_s|`); [`crate::huygens_psf`]
-//! on [`crate::ImagePlane::image_surface`] includes it exactly.
+//! direction. The projection neglects the defocus `x_s·ê_w` across the PSF
+//! (a phase of about `|x_s|·sinθ_c·NA²/(2λ)` waves at distance `|x_s|`);
+//! [`crate::huygens_psf`] on [`crate::ImagePlane::image_surface`] includes
+//! it exactly, and so does the MTF (the angular spectrum in [`mod@crate::mtf`]).
 //!
 //! # Field
 //!

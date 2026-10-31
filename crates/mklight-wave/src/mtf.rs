@@ -6,10 +6,10 @@
 //! `OTF(ν) = Σ_u p(u + s)·p*(u) / Σ|p|²` with the pupil shift
 //! `s = 2ν·λF#` (normalised units; `s = 2` at the cutoff `ν_c = 1/(λF#)`).
 //! MTF = |OTF|, 1 at zero frequency. Frequencies are in cycles/mm on the
-//! image surface: for an off-axis chief ray the pupil's OTF (normal-plane
-//! frequencies) is evaluated at `B^{−T}·ν` (see the chief-ray frame in
-//! [`crate::pupil`]), so the tangential cutoff on the surface is
-//! `cosθ_c/(λF#)`.
+//! image surface. Off axis the OTF is the autocorrelation of the angular
+//! spectrum over the image-surface direction cosines (`SensorMap`), which
+//! keeps the longitudinal phase across the PSF; the tangential cutoff on the
+//! surface is `cosθ_c/(λF#)`.
 //!
 //! **Orientation** (CONVENTIONS §4): *tangential* frequencies run along the
 //! meridional direction of the field point (image +y on axis or for a field
@@ -20,7 +20,9 @@
 //! * [`otf_fft`] / [`mtf_fft`]: the pupil is zero-padded to `≥ 2n`, Fourier
 //!   transformed to the PSF, squared, and transformed back. This yields the
 //!   exact discrete autocorrelation on the frequency lattice
-//!   `Δν = 1/(n·λF#)`; other frequencies are interpolated (see [`Otf::at`]).
+//!   `Δν = 1/(n·λF#)` (normal plane; off axis the angular spectrum is first
+//!   resampled, see `sensor_spectrum`); other frequencies are interpolated
+//!   (see [`Otf::at`]).
 //! * [`mtf_direct`]: the autocorrelation evaluated directly for each
 //!   requested frequency, shifting the pupil by `s` with bilinear
 //!   interpolation of amplitude and OPD (no frequency lattice). An
@@ -28,7 +30,7 @@
 //! * [`mtf_from_psf`]: a direct DFT of a sampled PSF (any PSF: Huygens,
 //!   polychromatic, tilted planes).
 
-use mklight_core::{JobContext, MkError, MkResult};
+use mklight_core::{JobContext, MkError, MkResult, Vec3};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -301,7 +303,11 @@ impl Otf {
 fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<C64>)> {
     let n = pupil.n();
     let m = next_fast_len(2 * n);
-    let field = pupil.debye_field();
+    let (field, energy) = if pupil.geometry().is_on_axis() {
+        (pupil.debye_field(), pupil.energy())
+    } else {
+        sensor_spectrum(pupil)?
+    };
     let mut buf = vec![C64::default(); m * m];
     for j in 0..n {
         buf[j * m..j * m + n].copy_from_slice(&field[j * n..(j + 1) * n]);
@@ -312,7 +318,7 @@ fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<
     fft2(&mut buf, m, Dir::Forward, m, &ctx.subrange(0.5, 1.0))?;
     // Σ_k I_k = M²·Σ|p|²; normalise by the area-weighted energy instead
     // (see `PupilFunction::energy`) and set the zero lag to exactly 1.
-    let o0 = (m * m) as f64 * pupil.energy();
+    let o0 = (m * m) as f64 * energy;
     if !(o0 > 0.0) {
         return Err(MkError::Numerical("pupil transmits no light".into()));
     }
@@ -327,6 +333,45 @@ fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<
         .collect();
     data[(m / 2) * m + m / 2] = C64::new(1.0, 0.0);
     Ok((m, data))
+}
+
+/// The angular spectrum (`SensorMap`) of an off-axis pupil, sampled at the
+/// directions with transverse components `α·ê_u + β·ê_v − γ_rim·ê_w`, a
+/// linearisation of the lattice through the aperture rim. Its lattice
+/// transform is the PSF at normal-plane coordinates `B·x` as on axis; only
+/// the remainder `(γ_rim − γ)·ê_w` (a fraction of a cell for moderate
+/// apertures, zero on the rim so the hard edge is not blurred) is
+/// interpolated. Returns the samples and their hard-edged energy (see
+/// [`PupilFunction::energy`]).
+fn sensor_spectrum(pupil: &PupilFunction) -> MkResult<(Vec<C64>, f64)> {
+    let n = pupil.n();
+    let map = SensorMap::new(pupil);
+    map.covered(pupil)?;
+    let [eu, ev, ew] = map.frame;
+    let g = (1.0 - map.sin_max * map.sin_max).sqrt();
+    let tau = 2.0 * std::f64::consts::PI;
+    let mut field = vec![C64::default(); n * n];
+    let mut energy = mklight_core::math::KahanSum::default();
+    for (k, z) in field.iter_mut().enumerate() {
+        let (a, b) = (
+            map.sin_max * pupil.coord(k % n),
+            map.sin_max * pupil.coord(k / n),
+        );
+        let (x, y) = (
+            a * eu.x + b * ev.x - g * ew.x,
+            a * eu.y + b * ev.y - g * ew.y,
+        );
+        let Some((ix, iy, qz)) = map.lattice(x, y) else {
+            continue;
+        };
+        let (s, c, w) = map.sample(ix, iy);
+        if c > 0.0 {
+            // `s = c·A`: the hard edge counts `c·A²`.
+            energy.add(s * s / (c * qz * qz));
+            *z = C64::from_polar(s / qz, tau * w);
+        }
+    }
+    Ok((field, energy.value()))
 }
 
 /// 2-D OTF by FFT (pupil → PSF → OTF), exact on its frequency lattice. For
@@ -415,36 +460,196 @@ fn otf_and_reference(
             Ok((o, r))
         }
         MtfMethod::Direct => {
-            let t = pupil.geometry().surface_to_normal_frequency();
-            let normal: Vec<[f64; 2]> = nus
-                .iter()
-                .map(|v| {
-                    [
-                        t[0][0] * v[0] + t[0][1] * v[1],
-                        t[1][0] * v[0] + t[1][1] * v[1],
-                    ]
-                })
-                .collect();
-            let sub = if with_reference { 0.5 } else { 1.0 };
+            let (o, r) = if pupil.geometry().is_on_axis() {
+                let sub = if with_reference { 0.5 } else { 1.0 };
+                let o = otf_direct(pupil, nus, &ctx.subrange(0.0, sub))?;
+                let r = if with_reference {
+                    otf_direct(&pupil.without_aberrations(), nus, &ctx.subrange(0.5, 1.0))?
+                } else {
+                    Vec::new()
+                };
+                (o, r)
+            } else {
+                let (o, r) = otf_surface(pupil, nus, ctx)?;
+                (o, if with_reference { r } else { Vec::new() })
+            };
             let off = pupil.image_offset_mm();
             let tau = 2.0 * std::f64::consts::PI;
-            let o = otf_direct(pupil, &normal, &ctx.subrange(0.0, sub))?
+            let o = o
                 .into_iter()
                 .zip(nus)
                 .map(|(z, v)| z * C64::from_polar(1.0, -tau * (v[0] * off[0] + v[1] * off[1])))
                 .collect();
-            let r = if with_reference {
-                otf_direct(
-                    &pupil.without_aberrations(),
-                    &normal,
-                    &ctx.subrange(0.5, 1.0),
-                )?
-            } else {
-                Vec::new()
-            };
             Ok((o, r))
         }
     }
+}
+
+/// The map between the pupil lattice and the unit directions
+/// `q = α·ê_u + β·ê_v − γ·ê_w` of the reference sphere in image-surface
+/// coordinates. The sensor field is `∫ S·e^{ik'(q_x x + q_y y)} dq_x dq_y`
+/// with the angular spectrum `S = c·A·e^{i2πW}/|q_z|` (the Jacobian
+/// `|∂(q_x, q_y)/∂(α, β)| = |q_z|/γ` turns the Debye `1/γ` into `1/|q_z|`).
+/// Keeping `−γ·ê_w` in `(q_x, q_y)` keeps the longitudinal phase across an
+/// off-axis PSF that the chief-normal projection `B` drops.
+struct SensorMap {
+    frame: [Vec3; 3],
+    sin_max: f64,
+    n: usize,
+    /// `[c·A, c, c·W]` per sample.
+    cells: Vec<[f64; 3]>,
+}
+
+impl SensorMap {
+    fn new(pupil: &PupilFunction) -> Self {
+        let (amp, cov, opd) = (pupil.amplitude(), pupil.coverage(), pupil.opd_waves());
+        SensorMap {
+            frame: pupil.geometry().chief_frame(),
+            sin_max: pupil.geometry().sin_max(),
+            n: pupil.n(),
+            cells: (0..cov.len())
+                .map(|k| [cov[k] * amp[k], cov[k], cov[k] * opd[k]])
+                .collect(),
+        }
+    }
+
+    /// `(k, q, γ)` of every covered sample.
+    fn covered(&self, pupil: &PupilFunction) -> MkResult<Vec<(usize, Vec3, f64)>> {
+        let [eu, ev, ew] = self.frame;
+        let n = self.n;
+        (0..n * n)
+            .filter(|&k| self.cells[k][1] > 0.0)
+            .map(|k| {
+                let (a, b) = (
+                    self.sin_max * pupil.coord(k % n),
+                    self.sin_max * pupil.coord(k / n),
+                );
+                let gamma = (1.0 - a * a - b * b).sqrt();
+                let q = eu * a + ev * b - ew * gamma;
+                if q.z >= 0.0 {
+                    // The map to (q_x, q_y) is no longer one-to-one.
+                    return Err(MkError::InvalidParam(
+                        "pupil crosses the image-surface horizon".into(),
+                    ));
+                }
+                Ok((k, q, gamma))
+            })
+            .collect()
+    }
+
+    /// Lattice coordinates (in samples) and `|q_z|` of the direction with
+    /// transverse components `(x, y)`; `None` off the unit sphere or behind
+    /// the pupil's hemisphere.
+    fn lattice(&self, x: f64, y: f64) -> Option<(f64, f64, f64)> {
+        let z2 = 1.0 - x * x - y * y;
+        if z2 <= 0.0 {
+            return None;
+        }
+        let q = Vec3::new(x, y, -z2.sqrt());
+        let [eu, ev, ew] = self.frame;
+        if q.dot(ew) >= 0.0 {
+            return None;
+        }
+        let (s, o) = (
+            0.5 * self.n as f64 / self.sin_max,
+            0.5 * (self.n - 1) as f64,
+        );
+        Some((q.dot(eu) * s + o, q.dot(ev) * s + o, -q.z))
+    }
+
+    /// Bilinear `c·A` and `c`, and the coverage-weighted OPD (as in
+    /// [`otf_direct`]), at lattice coordinates `(x, y)`.
+    fn sample(&self, x: f64, y: f64) -> (f64, f64, f64) {
+        let n = self.n as i64;
+        let (fx, fy) = (x.floor(), y.floor());
+        let (tx, ty) = (x - fx, y - fy);
+        let (i, j) = (fx as i64, fy as i64);
+        let (mut a, mut c, mut w) = (0.0, 0.0, 0.0);
+        for (dx, dy, weight) in [
+            (0, 0, (1.0 - tx) * (1.0 - ty)),
+            (1, 0, tx * (1.0 - ty)),
+            (0, 1, (1.0 - tx) * ty),
+            (1, 1, tx * ty),
+        ] {
+            let (x, y) = (i + dx, j + dy);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                continue;
+            }
+            let [ca, cc, cw] = self.cells[(y * n + x) as usize];
+            a += weight * ca;
+            c += weight * cc;
+            w += weight * cw;
+        }
+        (a, c, if c > 0.0 { w / c } else { 0.0 })
+    }
+}
+
+/// Direct autocorrelation of the angular spectrum (`SensorMap`) of an
+/// off-axis pupil at image-surface frequencies, and the same without
+/// aberrations: `(q_x, q_y)` shifts by `λν/n'`, integrated over the pupil
+/// lattice with weight `γ/|q_z|` and normalised by `Σ c·A²/(γ|q_z|)`.
+fn otf_surface(
+    pupil: &PupilFunction,
+    nus: &[[f64; 2]],
+    ctx: &JobContext,
+) -> MkResult<(Vec<C64>, Vec<C64>)> {
+    let n = pupil.n();
+    let map = SensorMap::new(pupil);
+    let scale = pupil.wavelength_um() * 1e-3 / pupil.geometry().image_index;
+    let tau = 2.0 * std::f64::consts::PI;
+    let (amp, cov, opd) = (pupil.amplitude(), pupil.coverage(), pupil.opd_waves());
+    let mut norm = mklight_core::math::KahanSum::default();
+    let points: Vec<_> = map
+        .covered(pupil)?
+        .into_iter()
+        .map(|(k, q, gamma)| {
+            let e = cov[k] * amp[k] * amp[k] / (gamma * -q.z);
+            norm.add(e);
+            (k, q, cov[k] * amp[k] / gamma, (1.0 - cov[k]) * e)
+        })
+        .collect();
+    let norm = norm.value();
+    if !(norm > 0.0) {
+        return Err(MkError::Numerical("pupil transmits no light".into()));
+    }
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let values: Vec<(C64, C64)> = nus
+        .par_iter()
+        .map(|nu| {
+            ctx.check()?;
+            let [mut re, mut im, mut dl] = [(); 3].map(|_| mklight_core::math::KahanSum::default());
+            for &(k, q, weight, deficit) in &points {
+                let Some((ix, iy, qz)) = map.lattice(q.x + scale * nu[0], q.y + scale * nu[1])
+                else {
+                    continue;
+                };
+                let (a, _, w) = map.sample(ix, iy);
+                if a <= 0.0 {
+                    continue;
+                }
+                // Zero-lag deficit of partly covered cells, as in
+                // `otf_direct`, at this sample's own shift.
+                let d = if deficit > 0.0 {
+                    let (i, j) = ((k % n) as f64, (k / n) as f64);
+                    deficit * (1.0 - (ix - i).abs()).max(0.0) * (1.0 - (iy - j).abs()).max(0.0)
+                } else {
+                    0.0
+                };
+                let m = weight * a / qz;
+                let (s, c) = (tau * (w - opd[k])).sin_cos();
+                re.add(m * c + d);
+                im.add(m * s);
+                dl.add(m + d);
+            }
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            ctx.report(d as f64 / nus.len() as f64, "");
+            Ok((
+                C64::new(re.value(), im.value()) / norm,
+                C64::new(dl.value() / norm, 0.0),
+            ))
+        })
+        .collect::<MkResult<_>>()?;
+    Ok(values.into_iter().unzip())
 }
 
 /// Direct pupil autocorrelation `Σ_u p(u + s)·p*(u) / E` for each
