@@ -642,6 +642,7 @@ fn shape_radius_limit(shape: &SurfaceShape) -> f64 {
         SurfaceShape::Diffractive { base, phase } => {
             phase.norm_radius.min(shape_radius_limit(base))
         }
+        SurfaceShape::SagOverlay { base, .. } => shape_radius_limit(base),
         // At y = 0 the x section is a circle of curvature c_x; this bound is
         // exact while the y profile sags no further than that circle.
         SurfaceShape::Toroid {

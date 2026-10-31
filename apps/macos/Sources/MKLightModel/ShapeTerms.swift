@@ -32,7 +32,8 @@ public enum CoefficientSet: String, Codable, Sendable, Hashable, CaseIterable, I
     /// Number of coefficients `shape` allows in this set, or `nil` when the
     /// set does not belong to the shape.
     public func maxCount(for shape: SurfaceShape) -> Int? {
-        switch (shape, self) {
+        if case .sagOverlay(let base, _, _, _, _) = shape { return maxCount(for: base) }
+        return switch (shape, self) {
         case (.oddAsphere, .odd): Self.maxOddTerms
         case (.qCon, .q), (.qBfs, .q): Self.maxQTerms
         case (.diffractive, .phase): Self.maxPhaseTerms
@@ -185,7 +186,8 @@ extension SurfaceShape {
     /// missing trailing terms are zero), or `nil` when the set does not
     /// belong to the shape.
     public func coefficients(in set: CoefficientSet) -> [Double]? {
-        switch (self, set) {
+        if case .sagOverlay(let base, _, _, _, _) = self { return base.coefficients(in: set) }
+        return switch (self, set) {
         case (.oddAsphere(_, _, let a), .odd), (.qCon(_, _, _, let a), .q), (.qBfs(_, _, let a), .q),
             (.biconic(_, _, _, _, let a, _), .xAsphere), (.biconic(_, _, _, _, _, let a), .yAsphere),
             (.toroid(_, _, _, let a), .yAsphere), (.xyPolynomial(_, _, _, let a), .xy),
@@ -201,6 +203,7 @@ extension SurfaceShape {
     /// validation reports it).
     @discardableResult
     public mutating func setCoefficients(_ a: [Double], in set: CoefficientSet) -> Bool {
+        if let done = editOverlayBase({ $0.setCoefficients(a, in: set) }) { return done }
         switch (self, set) {
         case (.oddAsphere(let c, let k, _), .odd): self = .oddAsphere(curvature: c, conic: k, coefficients: a)
         case (.qCon(let c, let k, let r, _), .q): self = .qCon(curvature: c, conic: k, normRadius: r, coefficients: a)
@@ -226,7 +229,8 @@ extension SurfaceShape {
     /// The value of a scalar shape parameter (orders as `Double`), or `nil`
     /// when the parameter does not belong to the shape.
     public func shapeParameter(_ p: ShapeParameter) -> Double? {
-        switch (self, p) {
+        if case .sagOverlay(let base, _, _, _, _) = self { return base.shapeParameter(p) }
+        return switch (self, p) {
         case (.toroid(let cx, _, _, _), .curvatureX), (.biconic(let cx, _, _, _, _, _), .curvatureX): cx
         case (.toroid(_, let cy, _, _), .curvatureY), (.biconic(_, let cy, _, _, _, _), .curvatureY): cy
         case (.biconic(_, _, let kx, _, _, _), .conicX): kx
@@ -258,6 +262,7 @@ extension SurfaceShape {
     @discardableResult
     public mutating func setShapeParameter(_ p: ShapeParameter, _ v: Double) -> Bool {
         guard shapeParameter(p) != nil, Self.orderRejection(p, v) == nil else { return false }
+        if let done = editOverlayBase({ $0.setShapeParameter(p, v) }) { return done }
         switch self {
         case .toroid(var cx, var cy, var ky, let ya):
             switch p {

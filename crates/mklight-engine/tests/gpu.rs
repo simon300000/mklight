@@ -473,7 +473,11 @@ fn merit_jobs_reuse_failed_provider_qualification_and_fall_back() {
         } else {
             "monte_carlo"
         };
-        assert_eq!(fallback.json[key], cpu.json[key]);
+        let (mut actual, mut expected) = (fallback.json[key].clone(), cpu.json[key].clone());
+        for result in [&mut actual, &mut expected] {
+            result.as_object_mut().unwrap().remove("seconds_per_trial");
+        }
+        assert_eq!(actual, expected);
     }
 }
 

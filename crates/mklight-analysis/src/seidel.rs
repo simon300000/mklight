@@ -285,6 +285,17 @@ fn fourth_order(shape: &SurfaceShape) -> (f64, f64) {
     let c = mklight_core::surface_math::vertex_curvatures(shape)[2];
     let base = (1.0 + shape.conic()) * shape.curvature().powi(3) / 8.0;
     let fourth = match shape {
+        // The overlay's r⁴ coefficient is 2·f·λ/a⁴ (SURFACES §10).
+        SurfaceShape::SagOverlay {
+            base: inner,
+            norm_radius,
+            test_wavelength_um,
+            spherical,
+            ..
+        } => {
+            fourth_order(inner).1
+                + 2.0 * spherical * test_wavelength_um * 1e-3 / norm_radius.powi(4)
+        }
         SurfaceShape::EvenAsphere { coefficients, .. } => {
             base + coefficients.first().copied().unwrap_or(0.0)
         }

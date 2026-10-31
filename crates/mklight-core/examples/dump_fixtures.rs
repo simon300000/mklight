@@ -10,8 +10,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use mklight_core::job::Precision;
-use mklight_core::model::surface::{DiffractivePhase, ZernikeOrdering};
-use mklight_core::param::{CoefficientSet, ParamPath, ShapeParameter};
+use mklight_core::model::surface::{DiffractivePhase, ElementPlacement, ZernikeOrdering};
+use mklight_core::param::{
+    CoefficientSet, IrregularityMode, ParamPath, PlacementComponent, ShapeParameter,
+};
 use mklight_core::*;
 use serde::Serialize;
 
@@ -314,7 +316,8 @@ fn kitchen_sink() -> OpticalSystem {
     s
 }
 
-/// Each aperture spec, field kind and ray-aiming mode, plus `±∞` thicknesses.
+/// Each aperture spec, field kind and ray-aiming mode, `±∞` thicknesses and
+/// the tolerancing sag overlay and element placement.
 fn variants() -> Vec<OpticalSystem> {
     let base = OpticalSystem::new_empty;
     let mut out = Vec::new();
@@ -344,6 +347,27 @@ fn variants() -> Vec<OpticalSystem> {
     d.surfaces[0].thickness = f64::NEG_INFINITY;
     d.surfaces[2].thickness = f64::INFINITY;
     out.push(d);
+
+    // Tolerancing perturbations: an irregular surface in a moved range.
+    let mut e = base();
+    e.name = "irregular moved surface".into();
+    e.surfaces[1].shape = SurfaceShape::SagOverlay {
+        base: Box::new(SurfaceShape::sphere(50.0)),
+        norm_radius: 5.0,
+        test_wavelength_um: 0.6328,
+        astigmatism: 0.5,
+        spherical: -0.25,
+    };
+    e.surfaces[1].element_placement = Some(ElementPlacement {
+        last: e.surfaces[1].id,
+        pivot: None,
+        motion: Placement {
+            decenter_y: 0.02,
+            tilt_x: 0.1,
+            ..Default::default()
+        },
+    });
+    out.push(e);
     out
 }
 
@@ -374,6 +398,22 @@ fn all_param_paths() -> Vec<ParamPath> {
         ParamPath::WavelengthWeight { index: 0 },
         ParamPath::TemperatureC,
         ParamPath::PressureAtm,
+        ParamPath::Irregularity {
+            surface,
+            mode: IrregularityMode::Spherical,
+        },
+        ParamPath::ElementPlacement {
+            surface,
+            last: SurfaceId(9),
+            pivot: Some(SurfaceId(8)),
+            component: PlacementComponent::TiltY,
+        },
+        ParamPath::ElementPlacement {
+            surface,
+            last: SurfaceId(9),
+            pivot: None,
+            component: PlacementComponent::DecenterX,
+        },
     ]
     .into_iter()
     .chain(

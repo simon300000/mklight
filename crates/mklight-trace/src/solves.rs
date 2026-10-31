@@ -296,10 +296,7 @@ fn solve_system(
     let order = sys.solve_order()?;
     let mut warnings = Vec::new();
     if sys.solves.iter().any(|s| s.kind.is_paraxial())
-        && sys
-            .surfaces
-            .iter()
-            .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
+        && sys.surfaces.iter().any(|s| s.is_displaced())
     {
         warnings.push(
             "system has tilts or decenters: paraxial solves use the unfolded, rotationally \
@@ -453,9 +450,13 @@ fn sweep_progress(sweep: usize, done: usize, n: usize) -> f64 {
 /// A placement applies before its surface, so the one on `lo` moves both
 /// ends rigidly and does not count.
 fn placed_between(sys: &OpticalSystem, lo: usize, hi: usize) -> bool {
-    sys.surfaces[lo + 1..=hi]
-        .iter()
-        .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
+    sys.surfaces.iter().enumerate().any(|(i, s)| {
+        (lo < i && i <= hi && s.placement.is_some_and(|p| !p.is_identity()))
+            || s.element_placement.as_ref().is_some_and(|e| {
+                let last = sys.surface_index(e.last).unwrap_or(i);
+                !e.motion.is_identity() && (lo < i && i <= hi || lo <= last && last < hi)
+            })
+    })
 }
 
 /// Scale below which a parameter change is measured absolutely

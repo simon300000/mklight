@@ -36,6 +36,11 @@ public enum ParamPath: Codable, Sendable, Hashable {
     case wavelengthWeight(index: Int)
     case temperatureC
     case pressureAtm
+    /// Test fringes of a sag overlay (SURFACES §10); 0 without one.
+    case irregularity(surface: SurfaceID, mode: IrregularityMode)
+    /// One component of the rigid motion of the range `surface…last` about
+    /// `pivot` (`nil`: `surface`); mm or degrees.
+    case elementPlacement(surface: SurfaceID, last: SurfaceID, pivot: SurfaceID?, component: PlacementComponent)
 
     /// The `param` tag of each surface-addressed case.
     private static let surfaceTags: [String: @Sendable (SurfaceID) -> ParamPath] = [
@@ -92,6 +97,8 @@ public enum ParamPath: Codable, Sendable, Hashable {
         case .wavelengthWeight(let i): ("wavelength_weight", nil, i)
         case .temperatureC: ("temperature_c", nil, nil)
         case .pressureAtm: ("pressure_atm", nil, nil)
+        case .irregularity(let s, _): ("irregularity", s, nil)
+        case .elementPlacement(let s, _, _, _): ("element_placement", s, nil)
         }
     }
 
@@ -118,6 +125,14 @@ public enum ParamPath: Codable, Sendable, Hashable {
             case "shape_param":
                 try c.allowOnly("param", "surface", "parameter")
                 self = .shapeParam(surface: try c.value("surface"), parameter: try c.value("parameter"))
+            case "irregularity":
+                try c.allowOnly("param", "surface", "mode")
+                self = .irregularity(surface: try c.value("surface"), mode: try c.value("mode"))
+            case "element_placement":
+                try c.allowOnly("param", "surface", "last", "pivot", "component")
+                self = .elementPlacement(
+                    surface: try c.value("surface"), last: try c.value("last"), pivot: try c.optional("pivot"),
+                    component: try c.value("component"))
             case "aperture_value", "temperature_c", "pressure_atm":
                 try c.allowOnly("param")
                 self = tag == "aperture_value" ? .apertureValue : tag == "temperature_c" ? .temperatureC : .pressureAtm
@@ -135,9 +150,48 @@ public enum ParamPath: Codable, Sendable, Hashable {
         switch self {
         case .shapeCoefficient(_, let set, _): try c.put(set, "set")
         case .shapeParam(_, let p): try c.put(p, "parameter")
+        case .irregularity(_, let mode): try c.put(mode, "mode")
+        case .elementPlacement(_, let last, let pivot, let component):
+            try c.put(last, "last")
+            try c.putOptional(pivot, "pivot")
+            try c.put(component, "component")
         default: break
         }
         if let index { try c.put(index, "index") }
+    }
+}
+
+/// Part of a sag overlay's fringe irregularity.
+public enum IrregularityMode: String, Codable, Sendable, Hashable, CaseIterable {
+    case astigmatism, spherical
+}
+
+/// One component of a rigid `ElementPlacement` motion.
+public enum PlacementComponent: String, Codable, Sendable, Hashable, CaseIterable {
+    case decenterX = "decenter_x"
+    case decenterY = "decenter_y"
+    case tiltX = "tilt_x"
+    case tiltY = "tilt_y"
+    case tiltZ = "tilt_z"
+
+    public var title: String {
+        switch self {
+        case .decenterX: "Decenter X"
+        case .decenterY: "Decenter Y"
+        case .tiltX: "Tilt X"
+        case .tiltY: "Tilt Y"
+        case .tiltZ: "Tilt Z"
+        }
+    }
+
+    public var keyPath: WritableKeyPath<Placement, Double> {
+        switch self {
+        case .decenterX: \.decenterX
+        case .decenterY: \.decenterY
+        case .tiltX: \.tiltX
+        case .tiltY: \.tiltY
+        case .tiltZ: \.tiltZ
+        }
     }
 }
 

@@ -35,16 +35,34 @@ enum Fixtures {
 
     @Test func variantsRoundTrip() throws {
         let systems = try Fixtures.roundTrip([OpticalSystem].self, "variants")
-        #expect(systems.map(\.aperture.kind) == [.imageSpaceFNumber, .paraxialWorkingFNumber, .floatByStopSize, .entrancePupilDiameter])
-        #expect(systems.map(\.fields.kind) == [.paraxialImageHeight, .realImageHeight, .objectAngle, .objectAngle])
+        #expect(
+            systems.map(\.aperture.kind) == [
+                .imageSpaceFNumber, .paraxialWorkingFNumber, .floatByStopSize, .entrancePupilDiameter, .entrancePupilDiameter,
+            ])
+        #expect(systems.map(\.fields.kind) == [.paraxialImageHeight, .realImageHeight, .objectAngle, .objectAngle, .objectAngle])
         #expect(systems[1].rayAiming == .real(tolerance: 1e-10))
         #expect(systems[3].surfaces[0].thickness == -.infinity)
         #expect(systems[3].surfaces[2].thickness == .infinity)
+        // A sag overlay keeps its base's kind; the element placement round-trips.
+        var moved = systems[4]
+        let id = moved.surfaces[1].id
+        #expect(moved.surfaces[1].shape.typeName == "sag_overlay" && moved.surfaces[1].shape.kind == .conic)
+        #expect(moved.surfaces[1].elementPlacement == ElementPlacement(last: id, motion: Placement(decenterY: 0.02, tiltX: 0.1)))
+        #expect(moved.value(at: .irregularity(surface: id, mode: .spherical)) == -0.25)
+        #expect(moved.value(at: .curvature(surface: id)) == 0.02)
+        let fringes = moved.setValue(1, at: .irregularity(surface: id, mode: .astigmatism))
+        let tilt = moved.setValue(0.3, at: .elementPlacement(surface: id, last: id, pivot: nil, component: .tiltY))
+        let otherPivot = moved.setValue(0.3, at: .elementPlacement(surface: id, last: id, pivot: id, component: .tiltY))
+        #expect(fringes && moved.value(at: .irregularity(surface: id, mode: .astigmatism)) == 1)
+        #expect(tilt && moved.surfaces[1].elementPlacement?.motion.tiltY == 0.3)
+        #expect(!otherPivot, "one range and pivot per first surface")
     }
 
     @Test func paramPathsRoundTrip() throws {
         let paths = try Fixtures.roundTrip([ParamPath].self, "param_paths")
-        #expect(paths.count == 24 + CoefficientSet.allCases.count + ShapeParameter.allCases.count)
+        #expect(paths.count == 27 + CoefficientSet.allCases.count + ShapeParameter.allCases.count)
+        #expect(paths.contains(.irregularity(surface: SurfaceID(7), mode: .spherical)))
+        #expect(paths.contains(.elementPlacement(surface: SurfaceID(7), last: SurfaceID(9), pivot: nil, component: .decenterX)))
         #expect(Set(paths).count == paths.count, "every variant decodes to a distinct case")
         #expect(paths[3] == .asphere(surface: SurfaceID(7), index: 2))
         #expect(paths.contains(.apertureValue) && paths.contains(.pressureAtm))

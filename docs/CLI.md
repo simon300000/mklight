@@ -28,10 +28,11 @@ wavelength and surface indices are **0-based** (surface 0 is the object).
   `±∞` are the strings `"inf"`/`"-inf"`, NaN is `null` (as in `docs/FFI.md`).
   Object keys are in a fixed (sorted) order.
 * `--no-timing` removes the wall-clock fields `started_unix_ms`,
-  `duration_ms` and `elapsed_ms` everywhere, and `created`/`modified` inside
-  `metadata` objects. With it, two runs on the same inputs print
-  **byte-identical** JSON (tested for `run`, `show`, `paraxial`, `trace`,
-  `analyses`, `info`). It also applies to files written with `run --out`.
+  `duration_ms`, `elapsed_ms` and `seconds_per_trial` everywhere, and
+  `created`/`modified` inside `metadata` objects. With it, two runs on the
+  same inputs print **byte-identical** JSON (tested for `run`, `show`,
+  `paraxial`, `trace`, `analyses`, `info`). It also applies to files
+  written with `run --out`.
 * Errors are printed to stderr as `mklight: error: …`. With `--json`, stdout
   additionally carries `{"error": {"exit_code", "kind", "message"}}`.
 * Warnings (missing catalogs, migration notes, glass data ranges, tracer

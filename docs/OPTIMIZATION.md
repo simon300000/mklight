@@ -554,7 +554,55 @@ its own. Both are tested on the Cooke triplet with a back-focus compensator.
 Without compensators every trial is a single evaluation, so the evaluator
 receives a whole batch of perturbed systems in one call (one GPU dispatch
 with `GpuTraceEvaluator`). With compensators, each trial runs its own small LM
-in parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
+in parallel. MTF is not unimodal in focus, so LM from the start point can
+settle on a side lobe: with an MTF criterion, each bounded compensator is
+first screened on 33 evenly spaced values across its range (plus the start
+point), and LM starts from the best feasible one. This costs one batched
+evaluation of 34 systems per compensator per trial (Double Gauss, one
+focus compensator: about 15 → 29 ms per trial single-threaded); other criteria
+skip it. The Monte Carlo report includes the compensated `nominal`, the
+requested `percentiles` (linear interpolation between order statistics of
+the successful trials; default 50, 90, 97.7), `records` of the first
+`record_trials` trials (perturbations and compensators, so any trial can be
+rebuilt with `ToleranceSpec::case_system`) and `seconds_per_trial`, the
+wall time over the completed trials. The engine job `tolerance` wraps both
+drivers (see Engine jobs).
+
+### Irregularity and rigid elements
+
+`ParamPath::Irregularity` (`{"param":"irregularity","surface":3,"mode":"astigmatism"}`
+or `"spherical"`) is in **test fringes**: one fringe is λ_test/2 sag
+peak-to-valley, i.e. one wave in a reflected (double-pass) test, whether the
+surface refracts or reflects in the system. Setting it wraps the surface's
+geometric shape (a diffractive surface's base) in a `sag_overlay` with the
+surface's clear radius `a` (aperture or fixed semi-diameter) and the primary
+wavelength as λ_test. The `tolerance` job first freezes the nominal traced
+clear radius of each irregular surface, so automatic semi-diameters work
+too; `irregularity_wavelength_um` overrides λ_test. With X = x/a, Y = y/a,
+s = X² + Y², the added sag in mm is
+
+```
+Δz = λ_test_um · 1e-3 · [f_astig (X² − Y²)/4 + 2 f_spherical (s² − s)],
+```
+
+the fringe astigmatism and primary spherical terms scaled to a PV of one
+fringe on the disk, without piston (the vertex stays at z = 0). It extends
+smoothly beyond the disk. In a reflected test the piston-removed RMS is
+`sqrt(f_astig²/24 + 4 f_spherical²/45)` waves over a full circular pupil.
+The criterion traces the real sag and normals in the actual media. Sag
+overlays are not packed for the GPU: the `tolerance` job then runs on the
+CPU reference and reports why (warning and backend `fallback_reason`).
+
+`ParamPath::ElementPlacement`
+(`{"param":"element_placement","surface":3,"last":5,"pivot":5,"component":"tilt_y"}`)
+moves the inclusive surface range `surface..=last` rigidly: `decenter_x`,
+`decenter_y` (mm), `tilt_x`, `tilt_y`, `tilt_z` (degrees), in the first
+vertex's axes, about the `pivot` vertex (default: the first). The model keeps
+it as `element_placement` on the first surface; surfaces after the range do
+not move (an entry/return pair). All components on one first surface share
+the range and pivot. A single-surface decentre or tilt set through a
+`ParamPath` on a surface without a placement now returns after that surface
+(`restore_after`), so it no longer moves the rest of the system.
 
 ## End-to-end tests (`tests/trace_optim.rs`)
 
@@ -563,6 +611,7 @@ in parallel. The engine job `tolerance` wraps both drivers (see Engine jobs).
 | singlet best form | f = 100, F/10, N-BK7, start equi-convex; vars c₁, c₂, back focus; EFL = 100 constraint; on-axis d-light RMS spot | shape factor `q = 0.730`, thin-lens best form `2(n²−1)/(n+2) = 0.740`; merit ÷150; EFL within 1e-6 mm |
 | doublet achromatisation | N-BK7/F2, start with R₂ = −60, R₃ = −300 (focal shift > 0.5 mm) | F–C focal shift 2e-10 mm (test: < 1e-6), EFL = 100 ± 1e-6, R₂ → −40.2 mm, R₃ → −375 mm (the sample achromat, bent for minimum spherical aberration, has −42.5 / −410) |
 | Cooke triplet | default spot merit (3 fields × 3 λ), 6 curvatures + back focus, EFL constraint, glass/air centre and auto-SD edge bounds | LM (40 iterations) lowers the merit by 35 %; seeded basin hopping is bit-reproducible and does not increase it; all constraints hold |
+| MTF focus tolerancing (`tests/tolerance.rs`) | Double Gauss with a 0.3 mm focus offset, focus compensator ±0.8 mm, 18 trials, seed 71 | every trial stays on the main MTF peak (without screening, trial 6 settles on a side lobe: 0.84 vs 0.49); the first trial is at least as good as a 129-point focus scan |
 | tolerancing | Cooke triplet, 9 tolerances, back-focus compensator | ranked sensitivities; the compensator removes > 50 % of an air-space error; Monte Carlo identical for a seed, different for another |
 | cancellation | Cooke triplet | LM and basin hopping return `Cancelled` with the best-so-far point (feasibility-ranked) |
 
@@ -989,13 +1038,17 @@ the best point seen. `final` is the better of the answer and the start
 | key | type, default | meaning |
 |---|---|---|
 | `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface. A parameter the system does not have (here and in `compensators`) is rejected |
-| `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial |
+| `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial (screened first for an MTF criterion) |
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
 | `mode` | `sensitivity` \| `monte_carlo` \| `both`, `both` | what to run |
 | `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed` |
 | `threshold` | number or null, `null` | criterion value for the yield |
 | `compensator_iterations` | integer, `20` | LM iterations per trial |
+| `percentiles` | array, `[50, 90, 97.7]` | Monte Carlo percentiles, each in [0, 100] |
+| `record_trials` | integer, `0` (≤ 10000) | keep `records` of the first this many trials |
+| `preview_case` | object or null, `null` | evaluate only `{"type":"trial","trial":k}` or `{"type":"sensitivity","operand":k,"positive":true}` (zero-based) and return it as `preview` instead of `sensitivity`/`monte_carlo` |
+| `irregularity_wavelength_um` | positive number or null, `null` | fringe test wavelength; null keeps an existing overlay's, else the primary wavelength |
 | `backend`, `gpu_batch`, `stop_key` | as for `optimize` | |
 
 Without compensators, every trial is a single evaluation, and a batch of trials
@@ -1022,13 +1075,19 @@ goes to the evaluator as one batch (one GPU dispatch).
   },
   "monte_carlo": {                                  // null when not run
     "trials": 100, "failures": 0, "seed": 0,
+    "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
+    "seconds_per_trial": 0.02,                       // wall time over completed trials
+    "records": [{"trial": 0, "criterion": 4.1e-4, "ok": true,  // first record_trials trials
+                 "compensators": [42.31], "perturbations": [0.01, -0.02]}],
     "mean": 4.2e-4, "std_dev": 1.1e-5, "min": 4.0e-4, "max": 4.6e-4,
-    "percentiles": [{"percentile": 50.0, "value": 4.2e-4}, …80, 90, 95, 98],
+    "percentiles": [{"percentile": 50.0, "value": 4.2e-4}, …90, 97.7],
     "yield_fraction": 0.93 | null, "threshold": 4.5e-4 | null,
     "compensator_mean": [42.25], "compensator_std": [0.04],
     "cancelled": false,                              // true: statistics of the completed trials
     "criteria": [/* per trial, "inf" for failed trials */]
   },
+  "preview": null,                                  // with preview_case: {system, system_hash,
+                                                    //   criterion, compensators, perturbations}
   "compensators": [/* the Compensators */],
   "criterion_spec": {/* MeritFunctionSpec */},
   "backend": {/* as for optimize; no final_qualification */}

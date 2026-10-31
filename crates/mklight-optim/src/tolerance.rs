@@ -23,8 +23,9 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::time::Instant;
 
-use mklight_core::param::ParamPath;
+use mklight_core::param::{IrregularityMode, ParamPath, PlacementComponent};
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 
 use crate::lsq::{LsqSettings, least_squares};
@@ -33,7 +34,7 @@ use crate::merit::{
     OpticalProblem, VariableSpec,
 };
 use crate::monitor::{Monitor, Termination};
-use crate::problem::{Problem, merit, total_violation};
+use crate::problem::{CandidateBatch, Problem, merit, total_violation};
 use crate::rand::{Rng, streams};
 
 /// Schema version of serialised tolerance specs.
@@ -85,6 +86,42 @@ impl ToleranceOperand {
         self.distribution = d;
         self
     }
+    /// `label`, or a readable name for the parameter.
+    pub fn display_label(&self) -> String {
+        if !self.label.trim().is_empty() {
+            return self.label.clone();
+        }
+        if let ParamPath::ElementPlacement {
+            surface,
+            last,
+            component,
+            ..
+        } = self.param
+        {
+            let component = match component {
+                PlacementComponent::DecenterX => "Decenter X",
+                PlacementComponent::DecenterY => "Decenter Y",
+                PlacementComponent::TiltX => "Tilt X",
+                PlacementComponent::TiltY => "Tilt Y",
+                PlacementComponent::TiltZ => "Tilt Z",
+            };
+            return format!("Surfaces {}–{}: {component}", surface.0, last.0);
+        }
+        if let ParamPath::Irregularity { surface, mode } = self.param {
+            let kind = match mode {
+                IrregularityMode::Astigmatism => "Astigmatic",
+                IrregularityMode::Spherical => "Spherical",
+            };
+            return format!("Surface {}: {kind} irregularity", surface.0);
+        }
+        let value = serde_json::to_value(&self.param).expect("parameter serializes");
+        let name = value["param"].as_str().unwrap().replace('_', " ");
+        let name = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+        match self.param.surface() {
+            Some(id) => format!("Surface {}: {name}", id.0),
+            None => name,
+        }
+    }
     /// Draw one perturbation.
     pub fn sample(&self, rng: &mut Rng) -> f64 {
         match self.distribution {
@@ -123,7 +160,7 @@ pub struct Compensator {
     pub scale: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MonteCarloSettings {
     pub trials: usize,
     pub seed: u64,
@@ -132,6 +169,15 @@ pub struct MonteCarloSettings {
     /// Criterion value for the yield statistic (`criterion ≤ threshold`).
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Reported percentiles of the successful criteria, in [0, 100].
+    #[serde(default = "default_percentiles")]
+    pub percentiles: Vec<f64>,
+    /// Keep a `TrialRecord` for the first this many trials.
+    #[serde(default)]
+    pub record_trials: usize,
+}
+pub fn default_percentiles() -> Vec<f64> {
+    vec![50.0, 90.0, 97.7]
 }
 
 impl Default for MonteCarloSettings {
@@ -141,6 +187,8 @@ impl Default for MonteCarloSettings {
             seed: 0,
             batch: 64,
             threshold: None,
+            percentiles: default_percentiles(),
+            record_trials: 0,
         }
     }
 }
@@ -178,10 +226,25 @@ impl ToleranceSpec {
                 self.schema_version
             )));
         }
+        let mut ranges = BTreeMap::new();
         for (i, o) in self.operands.iter().enumerate() {
             if !(o.minus >= 0.0 && o.plus >= 0.0 && o.minus.is_finite() && o.plus.is_finite()) {
                 return Err(MkError::InvalidParam(format!(
                     "tolerance {i}: limits must be finite and ≥ 0"
+                )));
+            }
+            // One rigid motion per first surface: every trial would fail.
+            if let ParamPath::ElementPlacement {
+                surface,
+                last,
+                pivot,
+                ..
+            } = o.param
+                && *ranges.entry(surface).or_insert((last, pivot)) != (last, pivot)
+            {
+                return Err(MkError::InvalidParam(format!(
+                    "tolerance {i}: another range or pivot starts at surface {}",
+                    surface.0
                 )));
             }
         }
@@ -192,6 +255,22 @@ impl ToleranceSpec {
     pub fn sample_trial(&self, seed: u64, trial: u64) -> Vec<f64> {
         let mut rng = Rng::new(seed, streams::TOLERANCE | trial);
         self.operands.iter().map(|o| o.sample(&mut rng)).collect()
+    }
+    /// The system of a reported case: perturbed, with its final compensators.
+    pub fn case_system(
+        &self,
+        nominal: &OpticalSystem,
+        deltas: &[f64],
+        compensators: &[f64],
+    ) -> MkResult<OpticalSystem> {
+        if compensators.len() != self.compensators.len() {
+            return Err(MkError::InvalidParam("compensator count differs".into()));
+        }
+        let mut system = self.apply(nominal, deltas)?;
+        for (c, value) in self.compensators.iter().zip(compensators) {
+            c.param.set(&mut system, *value)?;
+        }
+        Ok(system)
     }
     /// Apply perturbations to a copy of `nominal`. Several operands on the
     /// same parameter add up.
@@ -355,11 +434,7 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
         rss += worst * worst;
         ops.push(OperandSensitivity {
             index: i,
-            label: if o.label.is_empty() {
-                format!("{:?}", o.param)
-            } else {
-                o.label.clone()
-            },
+            label: o.display_label(),
             minus: m,
             plus: p,
             change_minus: cm,
@@ -383,7 +458,19 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrialRecord {
+    pub trial: usize,
+    pub outcome: TrialOutcome,
+    pub perturbations: Vec<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MonteCarloReport {
+    /// The unperturbed system, compensated like a trial.
+    pub nominal: TrialOutcome,
+    pub records: Vec<TrialRecord>,
+    /// Wall time over completed trials (parallel trials overlap).
+    pub seconds_per_trial: f64,
     pub trials: usize,
     pub failures: usize,
     pub criteria: Vec<f64>,
@@ -391,7 +478,7 @@ pub struct MonteCarloReport {
     pub std_dev: f64,
     pub min: f64,
     pub max: f64,
-    /// `(percentile, value)` for 50, 80, 90, 95, 98 % (successful trials).
+    /// Requested `(percentile, value)` pairs, successful trials only.
     pub percentiles: Vec<(f64, f64)>,
     /// Fraction of all trials with `criterion ≤ threshold`.
     #[serde(default)]
@@ -413,6 +500,16 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<MonteCarloReport> {
     spec.validate()?;
+    if !s.percentiles.iter().all(|p| (0.0..=100.0).contains(p)) {
+        return Err(MkError::InvalidParam(
+            "percentiles must be in [0, 100]".into(),
+        ));
+    }
+    let nominal = evaluator
+        .evaluate_batch(&[vec![0.0; spec.operands.len()]], &mon.job)?
+        .remove(0);
+    let start = Instant::now();
+    let mut records = Vec::new();
     let mut outcomes: Vec<TrialOutcome> = Vec::with_capacity(s.trials);
     let batch = s.batch.max(1);
     let mut cancelled = false;
@@ -433,7 +530,16 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
                         "tolerance evaluator returned the wrong count".into(),
                     ));
                 }
-                outcomes.extend(o);
+                for (outcome, perturbations) in o.into_iter().zip(pts) {
+                    if outcomes.len() < s.record_trials {
+                        records.push(TrialRecord {
+                            trial: outcomes.len(),
+                            outcome: outcome.clone(),
+                            perturbations,
+                        });
+                    }
+                    outcomes.push(outcome);
+                }
             }
             Err(MkError::Cancelled) => {
                 cancelled = true;
@@ -494,6 +600,9 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
             / outcomes.len().max(1) as f64
     });
     Ok(MonteCarloReport {
+        nominal,
+        records,
+        seconds_per_trial: start.elapsed().as_secs_f64() / outcomes.len().max(1) as f64,
         trials: outcomes.len(),
         failures: outcomes.len() - ok.len(),
         criteria: outcomes.iter().map(|o| o.criterion).collect(),
@@ -501,10 +610,7 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
         std_dev: var.sqrt(),
         min: vals.first().copied().unwrap_or(f64::NAN),
         max: vals.last().copied().unwrap_or(f64::NAN),
-        percentiles: [50.0, 80.0, 90.0, 95.0, 98.0]
-            .into_iter()
-            .map(|p| (p, pct(p)))
-            .collect(),
+        percentiles: s.percentiles.iter().copied().map(|p| (p, pct(p))).collect(),
         yield_fraction,
         compensator_mean: cm,
         compensator_std: cs,
@@ -563,6 +669,7 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             ctx.cancel.clone(),
             mklight_core::job::Progress::default(),
         ));
+        let ctx = &mon.job;
         let vars: Vec<VariableSpec> = self
             .spec
             .compensators
@@ -601,7 +708,42 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
                 TrialOutcome::failed()
             });
         }
-        let x0 = p.start_point()?;
+        let mut x0 = p.start_point()?;
+        // MTF is not unimodal in focus, so LM from the start can settle on a
+        // side lobe. Screen each bounded compensator on a uniform grid first.
+        let multimodal =
+            (self.criterion.operands.iter()).any(|o| matches!(o.kind, OperandKind::Mtf { .. }));
+        for j in (0..x0.len()).filter(|_| multimodal) {
+            let (Some(lo), Some(hi)) = (p.variables()[j].lower, p.variables()[j].upper) else {
+                continue;
+            };
+            const STEPS: usize = 32;
+            let points: Vec<Vec<f64>> = (0..=STEPS)
+                .map(|k| {
+                    let mut x = x0.clone();
+                    x[j] = lo + (hi - lo) * k as f64 / STEPS as f64;
+                    x
+                })
+                .chain([x0.clone()])
+                .collect();
+            let e = p.evaluate_batch(
+                &CandidateBatch::from_points(x0.len(), points.iter().map(Vec::as_slice)),
+                ctx,
+            )?;
+            let score = |k: usize| {
+                if total_violation(p.constraints(), e.constraints(k), e.status[k])
+                    <= mon.feasibility_tol
+                {
+                    merit(p.weights(), e.residuals(k), e.status[k])
+                } else {
+                    f64::INFINITY
+                }
+            };
+            let best = (0..points.len())
+                .min_by(|&a, &b| score(a).total_cmp(&score(b)))
+                .expect("non-empty scan");
+            x0[j] = points[best][j];
+        }
         let r = least_squares(&p, &x0, &self.lsq, &mon)?;
         if r.termination == Termination::Cancelled {
             return Err(MkError::Cancelled);

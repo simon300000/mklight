@@ -10,8 +10,14 @@ use serde_json::{Value, json};
 
 /// Keys that carry wall-clock data. `--no-timing` removes them anywhere in
 /// a document (`run_info.started_unix_ms`, `run_info.duration_ms`,
-/// `status.elapsed_ms`), plus `created`/`modified` inside `metadata` objects.
-pub const TIMING_KEYS: &[&str] = &["started_unix_ms", "duration_ms", "elapsed_ms"];
+/// `status.elapsed_ms`, tolerancing `monte_carlo.seconds_per_trial`), plus
+/// `created`/`modified` inside `metadata` objects.
+pub const TIMING_KEYS: &[&str] = &[
+    "started_unix_ms",
+    "duration_ms",
+    "elapsed_ms",
+    "seconds_per_trial",
+];
 const METADATA_TIME_KEYS: &[&str] = &["created", "modified"];
 
 /// Remove the timing fields from `v` in place (see `TIMING_KEYS`).
@@ -200,7 +206,7 @@ mod tests {
             "run_info": {"started_unix_ms": 1, "duration_ms": 2.0, "seed": 3},
             "status": [{"elapsed_ms": 4.0, "progress": 0.5}],
             "metadata": {"created": "x", "modified": "y", "author": "a"},
-            "result": {"created": "kept outside metadata"}
+            "result": {"created": "kept outside metadata", "seconds_per_trial": 0.2}
         });
         strip_timing(&mut v);
         assert_eq!(

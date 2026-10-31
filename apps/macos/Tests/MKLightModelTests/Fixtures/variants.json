@@ -542,5 +542,160 @@
     "mechanics": [],
     "sensor": null,
     "configurations": []
+  },
+  {
+    "name": "irregular moved surface",
+    "notes": "",
+    "aperture": {
+      "type": "entrance_pupil_diameter",
+      "value": 10.0
+    },
+    "fields": {
+      "kind": "object_angle",
+      "fields": [
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "weight": 1.0,
+          "vignetting": {
+            "vdx": 0.0,
+            "vdy": 0.0,
+            "vcx": 0.0,
+            "vcy": 0.0
+          }
+        }
+      ]
+    },
+    "wavelengths": {
+      "wavelengths": [
+        {
+          "um": 0.4861327,
+          "weight": 1.0
+        },
+        {
+          "um": 0.5875618,
+          "weight": 1.0
+        },
+        {
+          "um": 0.6562725,
+          "weight": 1.0
+        }
+      ],
+      "primary": 1
+    },
+    "surfaces": [
+      {
+        "id": 0,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": "inf",
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "diffraction_efficiency": {
+          "type": "ideal"
+        },
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 1,
+        "label": "STOP",
+        "shape": {
+          "type": "sag_overlay",
+          "base": {
+            "type": "conic",
+            "curvature": 0.02,
+            "conic": 0.0
+          },
+          "norm_radius": 5.0,
+          "test_wavelength_um": 0.6328,
+          "astigmatism": 0.5,
+          "spherical": -0.25
+        },
+        "element_placement": {
+          "last": 1,
+          "pivot": null,
+          "motion": {
+            "decenter_x": 0.0,
+            "decenter_y": 0.02,
+            "tilt_x": 0.1,
+            "tilt_y": 0.0,
+            "tilt_z": 0.0,
+            "order": "decenter_then_tilt",
+            "restore_after": false
+          }
+        },
+        "thickness": 10.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "diffraction_efficiency": {
+          "type": "ideal"
+        },
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      },
+      {
+        "id": 2,
+        "label": "",
+        "shape": {
+          "type": "plane"
+        },
+        "thickness": 0.0,
+        "material": {
+          "type": "air"
+        },
+        "interaction": "refract",
+        "semi_diameter": {
+          "mode": "auto"
+        },
+        "aperture": null,
+        "placement": null,
+        "coating": null,
+        "scatter": null,
+        "diffraction_efficiency": {
+          "type": "ideal"
+        },
+        "edge": {
+          "mechanical_semi_diameter": null,
+          "edge_scatter": null
+        }
+      }
+    ],
+    "stop": 1,
+    "ray_aiming": {
+      "mode": "off"
+    },
+    "environment": {
+      "temperature_c": 20.0,
+      "pressure_atm": 1.0
+    },
+    "coatings": {},
+    "mechanics": [],
+    "sensor": null,
+    "configurations": []
   }
 ]

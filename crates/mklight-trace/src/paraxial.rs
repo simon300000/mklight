@@ -327,12 +327,7 @@ impl Paraxial {
 
 fn first_order_warnings(sys: &ResolvedSystem) -> Vec<String> {
     let mut warnings = Vec::new();
-    if sys
-        .system()
-        .surfaces
-        .iter()
-        .any(|s| s.placement.is_some_and(|p| !p.is_identity()))
-    {
+    if sys.system().surfaces.iter().any(|s| s.is_displaced()) {
         warnings.push(
             "system has tilts or decenters: paraxial values are for the unfolded, \
              rotationally symmetric equivalent"

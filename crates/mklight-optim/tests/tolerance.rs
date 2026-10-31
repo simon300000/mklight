@@ -199,6 +199,7 @@ fn monte_carlo_statistics_and_determinism() {
         seed: 17,
         batch: 1000,
         threshold: Some(a * a),
+        ..Default::default()
     };
     let r = monte_carlo(&spec, &ev, &s, &Monitor::default()).unwrap();
     assert_eq!(r.trials, 20_000);
@@ -207,7 +208,7 @@ fn monte_carlo_statistics_and_determinism() {
     assert!((r.mean / e - 1.0).abs() < 0.02, "{} vs {e}", r.mean);
     // P((δ₁+δ₂)² ≤ a²) = P(|U₁+U₂| ≤ 1) for U uniform on ±1 = 3/4.
     assert!((r.yield_fraction.unwrap() - 0.75).abs() < 0.01);
-    assert!(r.percentiles[0].1 <= r.percentiles[4].1);
+    assert!(r.percentiles[0].1 <= r.percentiles[2].1);
     assert!(r.compensator_mean[0].abs() < 3e-3);
     let r2 = monte_carlo(&spec, &ev, &s, &Monitor::default()).unwrap();
     assert_eq!(r.criteria, r2.criteria);
@@ -327,4 +328,360 @@ fn spec_serialises() {
     assert_eq!(back, spec);
     let applied = spec.apply(&sys(), &[0.02]).unwrap();
     assert!((applied.surfaces[1].thickness - 5.02).abs() < 1e-15);
+}
+
+#[test]
+fn reflected_irregularity_has_known_pv_and_rms() {
+    use mklight_core::param::IrregularityMode;
+    use mklight_core::surface_math::evaluate;
+    let mut system = sys();
+    system.surfaces[1].shape = SurfaceShape::Plane;
+    system.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 5.0 };
+    let wavelength_mm = system.wavelengths.primary_um() * 1e-3;
+    for (mode, rms) in [
+        (IrregularityMode::Astigmatism, 1.0 / (2.0 * 6f64.sqrt())),
+        (IrregularityMode::Spherical, 2.0 / (3.0 * 5f64.sqrt())),
+    ] {
+        let path = ParamPath::Irregularity {
+            surface: SurfaceId(10),
+            mode,
+        };
+        let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(path, 1.0)]);
+        let perturbed = spec.apply(&system, &[1.0]).unwrap();
+        let opd =
+            |x, y| 2.0 * evaluate(&perturbed.surfaces[1].shape, x, y).unwrap().sag / wavelength_mm;
+        let pv = match mode {
+            IrregularityMode::Astigmatism => opd(5.0, 0.0) - opd(0.0, 5.0),
+            IrregularityMode::Spherical => opd(0.0, 0.0) - opd(5.0 / 2f64.sqrt(), 0.0),
+        };
+        assert!((pv - 1.0).abs() < 1e-14);
+        // Independent area quadrature, uniform in radius squared and azimuth.
+        let mut sum = 0.0;
+        let mut square = 0.0;
+        for k in 0..1000 {
+            let radius = 5.0 * ((k as f64 + 0.5) / 1000.0).sqrt();
+            for j in 0..32 {
+                let a = std::f64::consts::TAU * j as f64 / 32.0;
+                let w = opd(radius * a.cos(), radius * a.sin());
+                sum += w;
+                square += w * w;
+            }
+        }
+        let measured = (square / 32000.0 - (sum / 32000.0).powi(2)).sqrt();
+        assert!(
+            (measured - rms).abs() < 2e-6,
+            "{mode:?}: {measured} vs {rms}"
+        );
+    }
+}
+
+#[test]
+fn returning_surface_and_rigid_group_frames() {
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::param::PlacementComponent;
+    use mklight_core::{ResolvedSystem, Snapshot, Vec3};
+    use std::sync::Arc;
+    let nominal = mklight_core::samples::double_gauss();
+    let resolve = |s: OpticalSystem| {
+        ResolvedSystem::new(
+            &Snapshot::new(s).unwrap(),
+            Arc::new(MaterialLibrary::with_builtin()),
+        )
+        .unwrap()
+    };
+    let baseline = resolve(nominal.clone());
+    for path in [
+        ParamPath::DecenterX {
+            surface: SurfaceId(3),
+        },
+        ParamPath::TiltY {
+            surface: SurfaceId(3),
+        },
+    ] {
+        let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(path, 0.2)]);
+        for d in [0.0, 0.2] {
+            let moved = resolve(spec.apply(&nominal, &[d]).unwrap());
+            for i in 4..nominal.surfaces.len() {
+                assert_eq!(moved.surfaces[i].frame, baseline.surfaces[i].frame);
+            }
+        }
+    }
+    let decenter = ParamPath::ElementPlacement {
+        surface: SurfaceId(3),
+        last: SurfaceId(5),
+        pivot: None,
+        component: PlacementComponent::DecenterX,
+    };
+    let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(decenter, 0.2)]);
+    for d in [0.0, 0.2] {
+        let moved = resolve(spec.apply(&nominal, &[d]).unwrap());
+        for i in 1..nominal.surfaces.len() {
+            let shift = if (3..=5).contains(&i) {
+                Vec3::new(d, 0.0, 0.0)
+            } else {
+                Vec3::ZERO
+            };
+            assert!(
+                (moved.surfaces[i].frame.origin - baseline.surfaces[i].frame.origin - shift).norm()
+                    < 1e-14
+            );
+            assert_eq!(moved.surfaces[i].frame.rot, baseline.surfaces[i].frame.rot);
+        }
+    }
+    // Rear-vertex pivot: first vertex follows x'=sin(theta)*(z-z_pivot).
+    let tilt = ParamPath::ElementPlacement {
+        surface: SurfaceId(3),
+        last: SurfaceId(5),
+        pivot: Some(SurfaceId(5)),
+        component: PlacementComponent::TiltY,
+    };
+    let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(tilt, 2.0)]);
+    let moved = resolve(spec.apply(&nominal, &[2.0]).unwrap());
+    for i in 3..=5 {
+        let z = baseline.surfaces[i].frame.origin.z - baseline.surfaces[5].frame.origin.z;
+        assert!((moved.surfaces[i].frame.origin.x - z * 2f64.to_radians().sin()).abs() < 1e-14);
+    }
+    for i in 6..nominal.surfaces.len() {
+        assert_eq!(moved.surfaces[i].frame, baseline.surfaces[i].frame);
+    }
+    // One rigid motion per first surface: a second pivot is rejected up front.
+    let pivot = |pivot| ParamPath::ElementPlacement {
+        surface: SurfaceId(3),
+        last: SurfaceId(5),
+        pivot,
+        component: PlacementComponent::TiltX,
+    };
+    let conflicting = ToleranceSpec::new(vec![
+        ToleranceOperand::symmetric(pivot(None), 1.0),
+        ToleranceOperand::symmetric(pivot(Some(SurfaceId(4))), 1.0),
+    ]);
+    assert!(conflicting.validate().is_err());
+}
+
+#[test]
+fn requested_percentiles_records_and_case_reconstruction() {
+    let nominal = sys();
+    let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(t(10), 0.1)]);
+    let reg = OperandRegistry::builtin();
+    let criterion = track_spec();
+    let evaluator = OpticalToleranceEvaluator {
+        nominal: &nominal,
+        spec: &spec,
+        criterion: &criterion,
+        evaluator: &ModelEvaluator,
+        registry: &reg,
+        lsq: LsqSettings::default(),
+    };
+    let settings = MonteCarloSettings {
+        trials: 9,
+        record_trials: 3,
+        percentiles: vec![0.0, 50.0, 97.7, 100.0],
+        ..Default::default()
+    };
+    let r = monte_carlo(&spec, &evaluator, &settings, &Monitor::default()).unwrap();
+    assert!(r.nominal.criterion < 1e-20);
+    assert_eq!(r.percentiles[0].1, r.min);
+    assert_eq!(r.percentiles[3].1, r.max);
+    let mut sorted = r.criteria.clone();
+    sorted.sort_by(f64::total_cmp);
+    assert_eq!(r.percentiles[1].1, sorted[4]);
+    assert!((r.percentiles[2].1 - (sorted[7] + 0.816 * (sorted[8] - sorted[7]))).abs() < 1e-15);
+    assert_eq!(r.records.len(), 3);
+    for record in &r.records {
+        let system = spec
+            .case_system(
+                &nominal,
+                &record.perturbations,
+                &record.outcome.compensators,
+            )
+            .unwrap();
+        let track: f64 = system.surfaces[1..system.surfaces.len() - 1]
+            .iter()
+            .map(|sf| sf.thickness)
+            .sum();
+        assert!(((track - 100.0).powi(2) - record.outcome.criterion).abs() < 1e-16);
+    }
+    let r = sensitivity(&spec, &evaluator, &Monitor::default()).unwrap();
+    assert_eq!(r.operands[0].label, "Surface 10: Thickness");
+    assert!(!r.operands[0].label.contains('{'));
+}
+
+#[test]
+fn double_gauss_mtf_compensation_stays_on_main_peak() {
+    use mklight_optim::merit::operand::{MtfMethod, MtfOrientation};
+    use mklight_optim::merit::{BuiltinEvaluator, FieldSelector, OperandEvaluator};
+    use mklight_optim::tolerance::ToleranceEvaluator;
+    let mut nominal = mklight_core::samples::double_gauss();
+    // A saved focus offset puts nominal-start local refinement near a side
+    // lobe; the allowed range still contains the principal peak.
+    nominal.surfaces[11].thickness += 0.3;
+    let mut op = Operand::new(OperandKind::Mtf {
+        frequency: 30.0,
+        orientation: MtfOrientation::Average,
+        method: MtfMethod::Diffraction,
+        defocus_mm: 0.0,
+        detector: None,
+        wavelengths: vec![],
+    })
+    .target(1.0);
+    op.field = FieldSelector::Index { index: 0 };
+    let criterion = MeritFunctionSpec::new(vec![op.clone()]);
+    let mut spec = ToleranceSpec::new(vec![
+        ToleranceOperand::symmetric(t(1), 0.02),
+        ToleranceOperand::symmetric(t(3), 0.02),
+        ToleranceOperand::symmetric(
+            ParamPath::Curvature {
+                surface: SurfaceId(11),
+            },
+            1e-5,
+        ),
+    ]);
+    spec.compensators.push(Compensator {
+        param: t(11),
+        range: Some(0.8),
+        scale: Some(0.1),
+    });
+    let mut evaluator = BuiltinEvaluator::builtin();
+    evaluator.mtf.pupil.grid = 32;
+    evaluator.mtf.pupil.rays = 17;
+    evaluator.mtf.pupil.supersample = 2;
+    let registry = OperandRegistry::builtin();
+    let optical = OpticalToleranceEvaluator {
+        nominal: &nominal,
+        spec: &spec,
+        criterion: &criterion,
+        evaluator: &evaluator,
+        registry: &registry,
+        lsq: LsqSettings {
+            max_iterations: 16,
+            ..Default::default()
+        },
+    };
+    let settings = MonteCarloSettings {
+        trials: 18,
+        seed: 71,
+        batch: 6,
+        record_trials: 1,
+        ..Default::default()
+    };
+    let report = monte_carlo(&spec, &optical, &settings, &Monitor::default()).unwrap();
+    assert_eq!(report.failures, 0);
+    // The secondary peak (MTF about .12) gives a much larger squared
+    // residual than the main peak. Every small-error trial stays near nominal.
+    for value in &report.criteria {
+        assert!(
+            *value < 1.10 * report.nominal.criterion,
+            "{} vs nominal {}",
+            value,
+            report.nominal.criterion
+        );
+    }
+    // Independent dense scan of the first perturbed prescription.
+    let delta = spec.sample_trial(settings.seed, 0);
+    let mut system = spec.apply(&nominal, &delta).unwrap();
+    let focus = t(11).get(&nominal).unwrap();
+    let mut systems = Vec::new();
+    for k in 0..=128 {
+        t(11)
+            .set(&mut system, focus - 0.8 + 1.6 * k as f64 / 128.0)
+            .unwrap();
+        systems.push(system.clone());
+    }
+    let scan = evaluator
+        .evaluate_batch(&systems, &[&op], &JobContext::new())
+        .unwrap();
+    let best = scan
+        .iter()
+        .map(|row| (row[0].as_ref().unwrap() - 1.0).powi(2))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        report.criteria[0] <= best + 1e-6,
+        "{} vs scan {best}",
+        report.criteria[0]
+    );
+    let repeated = optical
+        .evaluate_batch(&[delta], &JobContext::new())
+        .unwrap();
+    assert_eq!(repeated[0].criterion, report.criteria[0]);
+    assert_eq!(
+        repeated[0].compensators,
+        report.records[0].outcome.compensators
+    );
+}
+
+#[test]
+fn rigid_decentre_ray_matches_translated_lens_analytic_solution() {
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::param::PlacementComponent;
+    use mklight_core::{ResolvedSystem, Snapshot, Vec3};
+    use mklight_trace::trace::{Ray, TraceOptions, trace_ray};
+    use std::sync::Arc;
+    let system = mklight_core::samples::singlet();
+    let path = ParamPath::ElementPlacement {
+        surface: SurfaceId(1),
+        last: SurfaceId(2),
+        pivot: None,
+        component: PlacementComponent::DecenterX,
+    };
+    let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(path, 0.2)]);
+    let moved = spec.apply(&system, &[0.2]).unwrap();
+    let resolve = |s| {
+        ResolvedSystem::new(
+            &Snapshot::new(s).unwrap(),
+            Arc::new(MaterialLibrary::with_builtin()),
+        )
+        .unwrap()
+    };
+    let a = resolve(system);
+    let b = resolve(moved);
+    let trace = |s, x| {
+        trace_ray(
+            s,
+            &Ray::new(Vec3::new(x, 0.0, -1.0), Vec3::Z),
+            1,
+            &TraceOptions::unclipped(),
+            None,
+        )
+    };
+    let nominal_ray = trace(&a, 0.7);
+    let displaced_ray = trace(&b, 0.9);
+    assert!(nominal_ray.status.is_ok() && displaced_ray.status.is_ok());
+    assert!(
+        (displaced_ray.ray.pos - nominal_ray.ray.pos - Vec3::new(0.2, 0.0, 0.0)).norm() < 1e-13
+    );
+    assert!((displaced_ray.ray.dir - nominal_ray.ray.dir).norm() < 1e-15);
+}
+
+#[test]
+fn zero_irregularity_traces_exactly_as_its_base() {
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::param::IrregularityMode;
+    use mklight_core::{ResolvedSystem, Snapshot, Vec3};
+    use mklight_trace::trace::{Ray, TraceOptions, trace_ray};
+    use std::sync::Arc;
+    let mut system = mklight_core::samples::singlet();
+    system.surfaces[2].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 5.0 };
+    let path = ParamPath::Irregularity {
+        surface: system.surfaces[2].id,
+        mode: IrregularityMode::Spherical,
+    };
+    let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(path, 1.0)]);
+    let trace = |s: OpticalSystem| {
+        let r = ResolvedSystem::new(
+            &Snapshot::new(s).unwrap(),
+            Arc::new(MaterialLibrary::with_builtin()),
+        )
+        .unwrap();
+        let ray = Ray::new(Vec3::new(3.0, 1.0, -1.0), Vec3::Z);
+        trace_ray(&r, &ray, 1, &TraceOptions::unclipped(), None)
+    };
+    let zero = spec.apply(&system, &[0.0]).unwrap();
+    assert!(matches!(
+        zero.surfaces[2].shape,
+        SurfaceShape::SagOverlay { .. }
+    ));
+    let (a, b) = (trace(system.clone()), trace(zero));
+    assert_eq!((a.ray.pos, a.ray.dir, a.opl), (b.ray.pos, b.ray.dir, b.opl));
+    let c = trace(spec.apply(&system, &[1.0]).unwrap());
+    assert_ne!(a.ray.dir, c.ray.dir);
 }

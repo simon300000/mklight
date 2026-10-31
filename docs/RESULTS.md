@@ -2409,7 +2409,11 @@ Settings:
 | `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `gpu_batch` | integer | `512` |  | ≥ 1 |
+| `irregularity_wavelength_um` | number\|null | `null` | µm | > 0; Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength. |
 | `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
+| `percentiles` | array<number> | `[50,90,97.7]` |  | Monte Carlo percentiles of the successful criteria, linearly interpolated. |
+| `preview_case` | object\|null | `null` |  | Evaluate only this case and return its compensated system: {type:trial,trial} or {type:sensitivity,operand,positive}; zero-based. |
+| `record_trials` | integer | `0` |  | 0 … 10000; Keep perturbations and compensators of the first this many trials. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `stop_key` | string\|null | `null` |  |  |
@@ -2449,14 +2453,31 @@ Result (`result` in the envelope):
 | `monte_carlo.max` | nf |  |  |
 | `monte_carlo.mean` | nf |  |  |
 | `monte_carlo.min` | nf |  |  |
+| `monte_carlo.nominal` | object |  |  |
+| `monte_carlo.nominal.compensators` | array<nf> |  | Parameter values. |
+| `monte_carlo.nominal.criterion` | nf |  |  |
+| `monte_carlo.nominal.ok` | boolean |  |  |
 | `monte_carlo.percentiles` | array<object> |  |  |
 | `monte_carlo.percentiles[].percentile` | number | % |  |
 | `monte_carlo.percentiles[].value` | nf |  |  |
+| `monte_carlo.records` | array<object> |  | The first record_trials trials. |
+| `monte_carlo.records[].compensators` | array<nf> |  |  |
+| `monte_carlo.records[].criterion` | nf |  |  |
+| `monte_carlo.records[].ok` | boolean |  |  |
+| `monte_carlo.records[].perturbations` | array<nf> |  | In tolerance order. |
+| `monte_carlo.records[].trial` | integer |  | ≥ 0; Zero-based index. |
+| `monte_carlo.seconds_per_trial` | number | s | Wall time over completed trials. |
 | `monte_carlo.seed` | integer |  | ≥ 0; Philox seed. |
 | `monte_carlo.std_dev` | nf |  |  |
 | `monte_carlo.threshold` | nf |  |  |
 | `monte_carlo.trials` | integer |  | ≥ 0; Completed trials. |
 | `monte_carlo.yield_fraction` | nf |  | Fraction at or below threshold; null without threshold. |
+| `preview` | object? |  |  |
+| `preview.compensators` | array<nf> |  | Final compensator values. |
+| `preview.criterion` | nf |  |  |
+| `preview.perturbations` | array<nf> |  | Selected case in tolerance declaration order. |
+| `preview.system` | object |  | Compensated OpticalSystem; apply as a new session snapshot. |
+| `preview.system_hash` | string |  | Content hash of the preview model. |
 | `sensitivity` | object? |  |  |
 | `sensitivity.cancelled` | boolean |  | Partial sensitivity after interruption. |
 | `sensitivity.evaluations` | integer |  | ≥ 0 |

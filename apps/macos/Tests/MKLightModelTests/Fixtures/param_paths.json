@@ -94,6 +94,25 @@
     "param": "pressure_atm"
   },
   {
+    "param": "irregularity",
+    "surface": 7,
+    "mode": "spherical"
+  },
+  {
+    "param": "element_placement",
+    "surface": 7,
+    "last": 9,
+    "pivot": 8,
+    "component": "tilt_y"
+  },
+  {
+    "param": "element_placement",
+    "surface": 7,
+    "last": 9,
+    "pivot": null,
+    "component": "decenter_x"
+  },
+  {
     "param": "shape_coefficient",
     "surface": 7,
     "set": "odd",

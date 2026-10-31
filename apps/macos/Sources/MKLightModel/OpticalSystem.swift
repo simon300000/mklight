@@ -277,8 +277,19 @@ extension OpticalSystem {
             finite("conic", k)
             normRadius("norm_radius", r)
             series("coefficients", a, o.maxTerms)
-        case .diffractive(let base, let phase):
+        case .sagOverlay(let base, let r, let w, let a, let sph):
             switch base {
+            case .coordinateBreak, .paraxial, .diffractive:
+                issue("invalid_sag_overlay_base", "\(path).base", "expected a geometric sag base")
+            default: break
+            }
+            out += shapeIssues(base, path: "\(path).base", surface: i)
+            normRadius("norm_radius", r)
+            positive("invalid_wavelength", "test_wavelength_um", w)
+            finite("astigmatism", a)
+            finite("spherical", sph)
+        case .diffractive(let base, let phase):
+            switch base.sagShapeBase {
             case .plane, .conic, .evenAsphere: out += shapeIssues(base, path: "\(path).base", surface: i)
             default: issue("invalid_diffractive_base", "\(path).base", "expected plane, conic or even_asphere")
             }

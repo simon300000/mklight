@@ -366,6 +366,7 @@ fn cooke_triplet_tolerancing() {
         seed: 99,
         batch: 5,
         threshold: Some(rep.nominal.criterion * 4.0),
+        ..Default::default()
     };
     let a = monte_carlo(&spec, &with, &mc, &Monitor::default()).unwrap();
     let b = monte_carlo(&spec, &with, &mc, &Monitor::default()).unwrap();
@@ -374,7 +375,7 @@ fn cooke_triplet_tolerancing() {
     assert_eq!(a.compensator_mean, b.compensator_mean);
     assert_eq!(a.trials, 12);
     assert_eq!(a.failures, 0);
-    assert!(a.mean >= rep.nominal.criterion * (1.0 - 1e-9));
+    assert_eq!(a.nominal.criterion, rep.nominal.criterion);
     assert!(a.std_dev > 0.0 && a.min <= a.mean && a.mean <= a.max);
     assert!(a.yield_fraction.is_some());
     let other = monte_carlo(

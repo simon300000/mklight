@@ -386,3 +386,13 @@ and every supported Zernike term to its independent factorial definition;
 the wave crate checks that Zernike sag equals its own basis term by term. Legacy-only solver
 cross-validation sets explicitly exclude extended shapes; engine tests check
 their unsupported-analysis errors.
+
+## 10. Manufacturing sag overlays
+
+`sag_overlay` adds fringe irregularity to a geometric `base` (any shape
+except a coordinate break, ideal lens or diffractive surface; on a
+diffractive surface it wraps the base inside the phase). `norm_radius` is
+mm, `test_wavelength_um` µm, and `astigmatism`/`spherical` are test fringes
+(one fringe = λ_test/2 PV sag). The formula and RMS are in
+`OPTIMIZATION.md`, Irregularity and rigid elements. An overlay with zero
+fringes traces exactly as its base; others use the general sag intersection.
