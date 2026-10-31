@@ -126,7 +126,7 @@ struct ZernikeTable: View {
                             Text("Z\(k + 1)").foregroundStyle(.secondary)
                             Text(ordering == "fringe" && k < Self.fringeNames.count ? Self.fringeNames[k] : "")
                                 .foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                            Text(String(format: "%+.4f", coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
+                            Text(Fmt.signed(coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
                                 .foregroundStyle(abs(coefficients[k]) >= 0.05 ? .primary : .secondary)
                         }
                     }

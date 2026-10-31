@@ -266,10 +266,11 @@ struct LineChart: View {
                 // `.aligned` keeps the first and last labels inside the plot,
                 // so narrow panes do not drop the end labels.
                 if let xTicks {
-                    AxisMarks(preset: .aligned, values: xTicks) { _ in
+                    AxisMarks(values: xTicks) { v in
                         AxisGridLine()
                         AxisTick()
-                        AxisValueLabel()
+                        // End labels grow inwards, so neither is clipped.
+                        AxisValueLabel(anchor: v.index == 0 ? .topLeading : v.index == v.count - 1 ? .topTrailing : .top)
                     }
                 } else {
                     AxisMarks(preset: .aligned, values: .automatic(desiredCount: xCount))

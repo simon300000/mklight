@@ -480,10 +480,10 @@ struct FieldMappingTable: View {
                     Divider().gridCellUnsizedAxes(.horizontal)
                     ForEach(Array(nodes.enumerated()), id: \.offset) { _, n in
                         GridRow {
-                            Text(String(format: "%+.2f, %+.2f", n.field.x, n.field.y))
+                            Text(Fmt.signed(n.field.x, decimals: 2) + ", " + Fmt.signed(n.field.y, decimals: 2))
                             Text(String(format: "%.4f, %.4f", n.ideal.x, n.ideal.y))
                             Text(String(format: "%.4f, %.4f", n.real.x, n.real.y))
-                            Text(n.distortionPercent.isFinite ? String(format: "%+.3f %%", n.distortionPercent) : "—")
+                            Text(n.distortionPercent.isFinite ? Fmt.signed(n.distortionPercent, decimals: 3) + " %" : "—")
                             Text(n.relativeIllumination.isFinite ? String(format: "%.3f", n.relativeIllumination) : "—")
                         }
                         .font(.caption.monospacedDigit())

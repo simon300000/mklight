@@ -370,6 +370,22 @@ struct SeidelView: View {
         petzvalRadius = j["petzval_radius"]?.nf ?? .nan
     }
 
+    private var picker: some View {
+        Picker("Coefficients", selection: $chromatic) {
+            Text("Seidel").tag(false)
+            Text("Chromatic").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+    }
+
+    @ViewBuilder private var petzval: some View {
+        if petzvalRadius.isFinite {
+            Text("Petzval radius \(Fmt.short(petzvalRadius)) mm").font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
+        }
+    }
+
     private var bars: [Bar] {
         let terms = chromatic ? Self.colour : Self.terms
         var out: [Bar] = []
@@ -383,17 +399,16 @@ struct SeidelView: View {
     var body: some View {
         let terms = (chromatic ? Self.colour : Self.terms).map(\.1)
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack {
-                Picker("Coefficients", selection: $chromatic) {
-                    Text("Seidel").tag(false)
-                    Text("Chromatic").tag(true)
+            // The Petzval radius beside the picker, or under it in narrow panes.
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    picker
+                    Spacer()
+                    petzval
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                Spacer()
-                if petzvalRadius.isFinite {
-                    Text("Petzval radius \(Fmt.short(petzvalRadius)) mm").font(.caption).foregroundStyle(.secondary).numeric()
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    picker
+                    petzval
                 }
             }
             Chart(bars) { b in
@@ -408,15 +423,15 @@ struct SeidelView: View {
             .chartXAxisLabel("Surface", alignment: .center)
             .accessibilityLabel("Seidel coefficients per surface and their sum")
             if !wavefront.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: Space.l) {
-                        ForEach(wavefront, id: \.0) { k, v in
-                            VStack(spacing: 1) {
-                                Text(k).font(.caption2).foregroundStyle(.secondary)
-                                Text(String(format: "%.4f", v)).font(.caption.monospacedDigit())
-                            }
+                // Wavefront coefficients, wrapped in narrow panes.
+                FlowLayout(spacing: Space.l, lineSpacing: Space.xs) {
+                    Text("Wavefront (waves)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach(wavefront, id: \.0) { k, v in
+                        HStack(spacing: 3) {
+                            Text(k).font(.caption2).foregroundStyle(.secondary)
+                            Text(Fmt.signed(v)).font(.caption.monospacedDigit())
                         }
-                        Text("waves").font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityElement(children: .combine)
                     }
                 }
             }

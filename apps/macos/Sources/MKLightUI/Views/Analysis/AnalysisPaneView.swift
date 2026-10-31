@@ -449,6 +449,14 @@ struct PaneFooter: View {
             .help(badgeHelp)
             .accessibilityHint("Shows how this result was computed" + (output.runInfo.warnings.isEmpty ? "" : ", and its warnings"))
             .popover(isPresented: $showDetails) { RunDetails(output: output, pane: pane).frame(width: 400) }
+            #if DEBUG
+            // `-MKLightRunDetails <analysis>` opens the run details (screenshots).
+            .task {
+                guard UserDefaults.standard.string(forKey: "MKLightRunDetails") == pane.analysis, !pane.isStale else { return }
+                try? await Task.sleep(for: .seconds(1))
+                showDetails = true
+            }
+            #endif
         }
         .font(.caption)
         .padding(.horizontal, Space.m)
@@ -575,7 +583,7 @@ struct RunDetails: View {
                         if let fix = remedy(g) {
                             Button(fix.title, action: fix.apply)
                                 .controlSize(.small)
-                                .buttonStyle(.glass)
+                                .buttonStyle(.bordered)
                                 .padding(.leading, 22)
                                 .help(fix.help)
                         }

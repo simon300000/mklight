@@ -111,7 +111,10 @@ struct DepartureMap: View {
                 .overlay(alignment: .topLeading) { axisLabel("y ↑") }
                 .overlay(alignment: .bottomTrailing) { axisLabel("x →") }
                 .frame(maxHeight: 132)
-                ColorBar(scale: .diverging, range: -max(peak, 1e-15)...max(peak, 1e-15), unit: "mm")
+                // In µm below 0.1 mm, as the PV reads.
+                let micro = peak < 0.1
+                let p = max(peak, 1e-15) * (micro ? 1000 : 1)
+                ColorBar(scale: .diverging, range: -p...p, unit: micro ? "µm" : "mm")
                     .frame(width: 44, height: 120)
             }
         }
