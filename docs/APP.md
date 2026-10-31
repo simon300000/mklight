@@ -145,8 +145,22 @@ What we took from Apple's current guidance, and how MKLight applies it.
 * **The lens data is the heart.** The table is always visible at the top of
   the window and shows only what every surface has: surface (with the stop
   marked), type, comment, radius, thickness, material, semi-diameter and
-  conic. Everything type-specific lives in the inspector. A toroid's or
-  biconic's radius and conic are its y section's, marked `y`.
+  conic. Everything type-specific lives in the inspector. Anamorphic
+  surfaces (toroid, biconic, cylinder) show both sections in the radius
+  cell, `y ∞   x −50`, each edited in place (Tab moves y → x); a
+  cylinder's flat section is dimmed and only its powered section's conic
+  shows; a biconic shows both conics.
+* **One number format.** Numbers read the same everywhere, whatever the
+  system region: a decimal point and no digit grouping (`n=1.5`,
+  `12345.678`), as in prescriptions, glass catalogues and the engine's
+  files. Every window runs with `NumberDisplay.locale` (en_US_POSIX), so
+  chart axes, number fields and `formatted()` follow the rule; the
+  `String(format:)` paths are locale-free. Typed numbers also accept a
+  decimal comma (`1,5`). Signed columns never show `−0.0000`.
+* **Units at hand.** Every bounded or edited quantity names its unit: the
+  lens table's header (mm), the bounds list's unit column (`mm`, `1/mm`,
+  `mm⁻³` for A₄, `°`, `µm`, `rad`; dimensionless shows `–`), the colour
+  bars, the axis titles.
 * **Progressive disclosure.** Surface types are described as data
   (`SurfaceTypes`): sections of parameters addressed by their key path in the
   model's JSON (`curvature`, `phase.norm_radius`), coefficient lists with add
@@ -230,7 +244,13 @@ What we took from Apple's current guidance, and how MKLight applies it.
   the accent) and a Footprints button runs `footprint` and draws every
   surface's beam outline per field (`global_outlines`), filled
   translucently. Fit Lens frames the elements; the first fit of a long,
-  slim scene does so by itself. A previewed candidate design shows a glass
+  slim scene does so by itself. **Vertical stretch**: the section views
+  can be drawn ×2 … ×50 taller than long (Display menu); a first fit that
+  would leave the section a sliver (under an eighth of the view's height)
+  turns it on at the smallest step that fills a third. A stretched view
+  says so in a tinted "Stretch ×N" menu among the controls and on the
+  scale bar, which adds an upright bar of a round length as drawn and
+  "vertical ×N"; the 3-D view always keeps true proportions. A previewed candidate design shows a glass
   "Previewing … · not applied" label under the controls.
 * **Analysis panes** (`AnalysisPaneView`): side by side with resizable
   widths. The header has the analysis menu and a one-line state or settings
@@ -238,8 +258,28 @@ What we took from Apple's current guidance, and how MKLight applies it.
   (bolt), Settings (a popover with the schema-driven form; "Pin in pane"
   keeps it as a compact strip) and More. The plot is content. The footer has
   the key numbers and a backend badge (CPU · f64 neutral, GPU · f32 in the
-  accent, an orange mark for warnings or a fallback) that opens the run
-  details. Stale: dimmed, desaturated, slightly blurred, with a glass card
+  accent, an orange mark for warnings or a fallback, with their count when
+  there are several kinds) that opens the run details.
+  * *Narrow panes* (checked at about 240 pt): the header folds Update and
+    Settings into More first, then sets the title a type step smaller,
+    then abbreviates it (`RI Map`, `CRA`, `Pupil Aberr.`; the full title
+    stays in the help tag and the VoiceOver label); the state line
+    truncates and never decides the layout. Legends are one flow that
+    wraps (wavelengths, line styles, the Airy disk together), spot
+    statistics move to two lines, fan plots put the field above the
+    tangential and sagittal plots, chart axes take about one label per
+    70 pt and keep their end labels inside, the CRA legend moves under
+    its picker, the Seidel Petzval radius under its picker and the
+    wavefront coefficients wrap.
+  * *Warnings* (`RunWarnings`): the engine's run warnings are grouped by
+    message (numbers masked), with the fields and wavelengths they
+    concern numbered from 1 as everywhere in the app (`Field 1, Field 3`).
+    They are readable without a click (the badge's help tag lists them),
+    in VoiceOver (the badge's label reads them) and in the run details
+    popover, which also lists the engine's raw messages and offers a
+    one-click remedy where the analysis has the setting: "Sample the Pupil
+    Finer (grid 64 → 128)" for coarse pupil sampling, "Enlarge the Image
+    Grid" for a truncated PSF. Stale: dimmed, desaturated, slightly blurred, with a glass card
   and a prominent Update; updating: a progress line and a gentle pulse. The
   dedicated views are as before (first order with the anamorphic note, spot,
   fans, field curvature, Seidel, MTF, PSF, wavefront, ghosts, stray light,
@@ -249,10 +289,19 @@ What we took from Apple's current guidance, and how MKLight applies it.
   share one reader (`FieldMapData`). A grid run is a heat map over the
   normalised field, interpolated between the sample dots, with a column
   picker that shows each column's definition (beside it, or below in
-  narrow panes) and the diverging scale for signed quantities; an x or y
-  sweep is a curve. Relative illumination adds iso-lines (marching squares,
-  0.5…0.95) on a fixed 0…1 scale and the illumination against image
-  radius. The chief ray angle is plotted against image height with the
+  narrow panes); an x or y sweep is a curve. **Heat-map scales**
+  (`HeatMapScale`, one rule for every map of a quantity): signed data
+  keeps the diverging blue–red scale centred on 0 and symmetric about it;
+  other data takes the perceptual sequential ramp (viridis from its 0.1
+  step: lightness rises monotonically, readable in light and dark and
+  with colour-vision deficiencies) over the data's own range, so a 0.85…1
+  illumination map shows its fall-off; fractions offer "0 to 1" to
+  compare designs; a flat map gets a narrow band around its value. The
+  polarisation pupil maps and generic grids follow it; PSF and irradiance
+  images keep the one-hue magnitude ramp whose zero recedes into the
+  plot. Relative illumination adds iso-lines (marching squares, about
+  five round levels inside the data's range, white on a dark halo,
+  labels kept apart) and the illumination against image radius. The chief ray angle is plotted against image height with the
   sensor limit; the margin between them is shaded and turns red where the
   limit is exceeded, and asymmetric systems open on a map. The glass map
   (`GlassMapChart`, reused by Glass Substitution) draws the catalogue in the
@@ -261,10 +310,21 @@ What we took from Apple's current guidance, and how MKLight applies it.
   glasses are ringed and labelled with their surfaces; hover shows a glass's
   data and a click inspects it. The image simulation shows the simulated
   sensor image beside its source, side by side, split or blinking, with
-  exposure, zoom and pan; built-in patterns are drawn as the engine defines
-  them; a user image (any format ImageIO reads) is cropped to the field,
-  resampled in linear light and sent as a buffer, and the project keeps
-  only its path. The footer has the pixel size, the largest distortion and
+  exposure, zoom and pan. New panes start on a visible patch
+  (`ImageSimulationSettings.starting`): the centre 10 % of the field at
+  256 px (about 9.5 µm pixels on the Double Gauss against its 22 µm RMS
+  spot), a 161-sample PSF window and a 96-sample pupil, so the PSFs are
+  not truncated; the engine's defaults (the full field at 64 px, a
+  33-sample PSF) show no blur at all. The view's controls set the field
+  of view (full field, ½, ¼, centre 10 %, 5 %, 2 %: a square centred on
+  the axis, each with its width and pixel size on the sensor) and the
+  resolution (128 … 1024 px). Image simulation starts manual (seconds per
+  run). Built-in patterns are drawn by the app with the engine's
+  definition, area-sampled (4 × 4 per pixel) and sent as a buffer source
+  at the run's size, so both the shown source and the simulation are
+  antialiased; a user image (any format ImageIO reads) is cropped to the
+  field, resampled in linear light and sent as a buffer, and the project
+  keeps only its path. The footer has the pixel size, the largest distortion and
   the lowest relative illumination of the field mapping, which a popover
   lists node by node. The settings bar has compact controls for two-number
   settings (grid, extent, size), a table for the sensor CRA limit and a
@@ -324,10 +384,22 @@ What we took from Apple's current guidance, and how MKLight applies it.
     edits, on the design's snapshot) and reads its `start` merit and
     operand `start` values; shares are weight × residual² over their sum.
   * **Variables and bounds** (`VariablesBoundsList`): every design variable
-    with its current value (radius and curvature for curvatures), inline
-    min and max (empty is unbounded), pin (equal bounds: kept but held, and
+    with its current value, inline min and max (empty is unbounded) in the
+    unit of the row's unit column, pin (equal bounds: kept but held, and
     left out of the run), remove; out-of-bounds values, automatic
-    semi-diameters and vanished parameters are flagged. New variables get
+    semi-diameters and vanished parameters are flagged. **Radii are
+    bounded as a radius window in mm** by default (`RadiusBounds`; a
+    "Curvatures as Radius mm | Curvature 1/mm" switch shows the engine's
+    curvature bounds instead, and each row's help gives the bounds in the
+    other unit). The window `min … max` rises from min to max on the
+    projective line of radii: 40 … 60 is c ∈ [1/60, 1/40] and −60 … −40 is
+    c ∈ [−1/40, −1/60]; min above max wraps through flat (R = ∞), so
+    100 … −100 is |R| ≥ 100, the curvature interval [−0.01, 0.01] through
+    0 (the caption says "through ∞"); an empty side is open (50 …
+    empty is R ≥ 50, c ∈ [0, 0.02]); 0 is the limit R → 0, leaving the
+    curvature unbounded on that side; ∞ … ∞ holds the surface flat. A
+    window containing R = 0 (−50 … 50) is no curvature interval and is
+    refused with an explanation. New variables get
     sensible bounds: air gaps and the back focus ≥ 0, glass thickness ≥ 1
     mm, model n_d 1.4…2.1 and V_d 15…100, semi-diameters and normalisation
     radii > 0.
@@ -446,8 +518,11 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   `-MKLightAppearance light|dark` (overrides the system appearance),
   `-MKLightSheet glass`, `-MKLightAutoRun glass` (and `-MKLightAutoPick n`),
   `-MKLightAutoStop s` and `-MKLightAutoApply s` (press Stop / Apply after
-  s seconds), `-MKLightFootprints YES`, `-MKLightFit lens`. Pane layouts
-  come from the document's `views`.
+  s seconds), `-MKLightFootprints YES`, `-MKLightFit lens`,
+  `-MKLightRunDetails <analysis>` (opens that pane's run details) and
+  `-MKLightCurvatureBoundsUnit curvature` (the bounds list's unit, an
+  `@AppStorage` preference). Pane layouts come from the document's
+  `views`.
 
 ## `FFIEngine`
 
@@ -530,8 +605,8 @@ callback never runs on the main thread and holds no engine lock.
 
 ## Tests
 
-`swift test` in `apps/macos` (227 tests in 41 suites: model 69, engine 33,
-FFI 35, UI 90):
+`swift test` in `apps/macos` (241 tests in 42 suites: model 69, engine 33,
+FFI 35, UI 104):
 
 * `MKLightModelTests`: round trips against JSON written by the Rust side
   (every model variant including the extended shapes in
@@ -574,7 +649,15 @@ FFI 35, UI 90):
   section) and variable bounds (defaults, edit, pin, held when pinned, table
   marks, undo); glass substitution settings, progress and results; spectrum
   settings encoding and CSV import; the field-map, glass-map and
-  image-simulation readers.
+  image-simulation readers; the review round (`PolishTests`): radius ↔
+  curvature bounds with signs, windows through ∞, 0 and refused windows
+  through R = 0, units of every bounded quantity, anamorphic table cells
+  (cylinder, biconic, toroid: shown sections, flat section, edits),
+  number formatting (decimal point, decimal comma input, signed zeros),
+  heat-map scale choice (data range, 0…1, diverging, flat maps, the
+  ramp's monotonic lightness, iso-levels), warning grouping and remedies,
+  the automatic stretch and its projection, area-sampled patterns and the
+  image simulation's starting settings.
 * FFI additions: the extended shapes run through the layout (x–z section,
   surface mesh, DOE flag) and Seidel; footprint overlays; the default merit
   evaluates and converts to custom operands with the same merit; custom
@@ -669,6 +752,38 @@ Remaining for an iPadOS target:
   * `image_simulation`'s text chart and PNG-path sources come out
     vertically mirrored (their top row lands at the low-y edge); imported
     images go as buffers, which are correct.
+  * `image_simulation` samples its built-in patterns at the output pixel
+    centres (`pattern_value`), so their edges are staircases; the app
+    sends the patterns area-sampled as buffers instead. The engine should
+    area-sample them (or supersample) itself.
+  * `image_simulation` can only simulate a square centred on the axis
+    (`optics.field_extent`): an off-axis patch around a chosen field point
+    (`optics.field_center: [hx, hy]`, or a rectangle in normalised field)
+    is what a designer needs to see the corner aberrations at a pixel
+    size that resolves them; the app offers centred patches until then.
+    Its defaults (64 px over the full field, a 33-sample PSF of λF/2
+    spacing, a 32-sample pupil) truncate the PSF to about 20 % of its
+    energy on the Double Gauss (`psf_truncated` warnings) and use pixels
+    ten times the spot; the app starts panes with a 161-sample PSF and a
+    96-sample pupil. The engine should size the PSF window and the pupil
+    grid from the spot and the wavefront slope.
+  * Default sampling warns on stock designs: `mtf`, `psf`,
+    `line_spread` and `diffraction_encircled_energy` at the engine's
+    default pupil grid on the Double Gauss warn "wavefront changes by up
+    to 0.58 (0.72) waves between pupil samples (limit 0.5)", the PSF
+    keeps 46 % of its energy on its default image grid, and
+    `relative_illumination_map` warns that "54 of 576 pupil nodes have no
+    ray" at the corners of its square field grid, which lie at √2 of the
+    design's field. The warnings are true statements about the run, so
+    the app shows them (with a one-click finer pupil); the engine should
+    pick its default pupil and image grids from the system (and sample
+    field maps inside the design's field, or not warn about nodes outside
+    it). On the cylindrical adapter `mtf` warns per field and wavelength
+    that parts of the aperture are 0.044 pupil units from the nearest
+    ray (the pupil is anamorphic); the default `image_simulation` PSF
+    spacing (λF/2 at the shortest wavelength) is itself flagged as
+    coarser than Nyquist by a fraction of a percent ("4.948e-4 mm …
+    limit 4.885e-4 mm"), a self-inconsistency of the engine.
   * `glass_map` reports no glass status unless AGF metadata is passed, so
     catalogue glasses show as "Catalogue glass".
   * LM with the MTF weakest-field merit and the EFL hold can end slightly

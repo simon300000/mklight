@@ -981,7 +981,9 @@ struct VariableBoundsRow: View {
         // bounds in the other unit are in the help.
         if path.isCurvature {
             let r = RadiusDisplay.radius(fromCurvature: value)
-            return asRadius ? "now R \(Fmt.short(r))" : "now c \(Fmt.short(value)) (R \(Fmt.short(r)))"
+            guard asRadius else { return "now c \(BoundsFormat.compact(value))" }
+            let s = shown
+            return "now R \(Fmt.short(r))" + (RadiusBounds.passesThroughFlat(minRadius: s.min, maxRadius: s.max) ? " · through ∞" : "")
         }
         return "now \(Fmt.short(value))"
     }

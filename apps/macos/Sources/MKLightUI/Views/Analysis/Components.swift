@@ -254,9 +254,9 @@ struct LineChart: View {
     var xTicks: [Double]?
 
     var body: some View {
-        // About one x label per 70 pt, so narrow panes do not overlap them.
+        // About one x label per 60 pt (at least three), so narrow panes do not overlap them.
         GeometryReader { geo in
-            axes(chart, xCount: max(2, min(6, Int(geo.size.width / 70))))
+            axes(chart, xCount: max(3, min(6, Int(geo.size.width / 60))))
         }
     }
 
