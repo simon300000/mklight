@@ -1020,7 +1020,7 @@ Buffers:
 | `surfaces` | i32 | [P] |  | Surface index, −1 for none. |
 | `fields` | i32 | [P] |  | Field index of a ray, −1 for none. |
 | `wavelengths` | i32 | [P] |  | Wavelength index of a ray, −1 for none. |
-| `flags` | u8 | [P] |  | Bit 0: within 1% of the largest mechanical diameter of the selected global plane; bit 1: vignetted ray; bit 2: DOE surface. |
+| `flags` | u8 | [P] |  | Bit 0: in the selected global section (a slab of 1% of the largest mechanical diameter); bit 1: vignetted ray; bit 2: DOE surface. |
 
 ### `longitudinal_aberration` — Longitudinal aberration
 

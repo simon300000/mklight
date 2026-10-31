@@ -130,7 +130,7 @@ kernel void mkl_sag_probe(constant MklPackedSurface* surfaces [[buffer(0)]],
                           uint i [[thread_position_in_grid]]) {
     if (i >= p.count) return;
     constant MklPackedSurface& s=surfaces[p.surface];
-    bool overlay=(s.flags & MKL_SURF_HAS_SAG_OVERLAY)!=0u;
+    bool overlay=(s.flags&MKL_SURF_HAS_SAG_OVERLAY)!=0u;
     if (s.shape<=MKL_SHAPE_COORD_BREAK && !overlay) {out[i]=mkl_packed_sag(s,r2[i]);return;}
     float y=sqrt(r2[i]);
     if (s.shape==MKL_SHAPE_DIFFRACTIVE) {
@@ -139,5 +139,5 @@ kernel void mkl_sag_probe(constant MklPackedSurface* surfaces [[buffer(0)]],
         if (!overlay) {out[i]=mkl_packed_sag(base,r2[i]);return;}
     }
     MklJet<float> v;
-    out[i]=mkl_surface_eval(s,coefficients,0.0f,y,v)?v.v:NAN;
+    out[i]=mkl_surface_eval<true>(s,coefficients,0.0f,y,v)?v.v:NAN;
 }

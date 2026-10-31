@@ -790,10 +790,10 @@ fn irregularity_axes_are_uniform_independent_and_replayable() {
             spec.trial_case_system(&nominal, &deltas, &[], &settings, trial)
                 .unwrap()
         );
-        for j in 0..2 {
+        for (j, bins) in bins.iter_mut().enumerate() {
             let a = axis(&s, j + 1);
             assert!((0.0..180.0).contains(&a));
-            bins[j][(a / 15.0) as usize] += 1;
+            bins[(a / 15.0) as usize] += 1;
         }
         assert_ne!(axis(&s, 1), axis(&s, 2));
     }

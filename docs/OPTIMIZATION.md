@@ -590,23 +590,20 @@ the fringe astigmatism and primary spherical terms scaled to a PV of one
 fringe on the disk, without piston (the vertex stays at z = 0). It extends
 smoothly beyond the disk. In a reflected test the piston-removed RMS is
 `sqrt(f_astig²/24 + 4 f_spherical²/45)` waves over a full circular pupil.
-The criterion traces the real sag and normals in the actual media. Metal and
-CPU-f32 emulation support these overlays with double-float coefficients,
-sag and normals, under the same precision qualification as other surfaces.
+The criterion traces the real sag and normals in the actual media, on the
+CPU or the GPU (GPU.md, manufacturing overlays).
 
-The saved angle defaults to zero, from +x toward +y, and is editable through
-`ShapeParam { parameter: astigmatism_angle_deg }` on an existing overlay.
-Sensitivity uses that saved angle. Monte Carlo defaults to
-`random_irregularity_orientation: true`: each astigmatism-toleranced surface
-gets an independent uniform axis in [0,180) degrees in every trial. This
-preserves the amplitude distribution and full-disk RMS. Axes use Philox
-stream `TOLERANCE_ORIENTATION | trial` (namespace 0x07), in sorted surface-ID
-order, independently of the amplitude stream; batching and worker scheduling
-change no draw. Set the option false to retain the saved angle. Nominal
-criterion evaluation always retains it. Use `trial_case_system` with the
-reported perturbations, compensators, seed and trial index to reconstruct a
-Monte-Carlo system; `case_system` reconstructs sensitivity cases. Engine
-trial previews use exactly the same orientation draws and compensation.
+θ (`astigmatism_angle_deg`, default 0, from +x toward +y) is a shape
+parameter (`{"param":"shape_param","surface":id,"parameter":"astigmatism_angle_deg"}`).
+Sensitivity and the nominal keep it. Monte Carlo with
+`random_irregularity_orientation` (default true) replaces it, per trial and
+per astigmatism-toleranced surface, with an independent uniform angle in
+[0, 180)°; PV and RMS are unchanged. The angles come from Philox stream
+`TOLERANCE_ORIENTATION | trial` of the seed, one draw per surface in
+surface-id order, so they are reproducible and independent of the amplitude
+draws, batching and threads. `ToleranceSpec::trial_case_system` rebuilds a
+trial (seed, trial index, perturbations, compensators), as the engine's trial
+preview does; `case_system` rebuilds sensitivity cases.
 
 `ParamPath::ElementPlacement`
 (`{"param":"element_placement","surface":3,"last":5,"pivot":5,"component":"tilt_y"}`)
@@ -1064,7 +1061,7 @@ the best point seen. `final` is the better of the answer and the start
 | `record_trials` | integer, `0` (≤ 10000) | keep `records` of the first this many trials |
 | `preview_case` | object or null, `null` | evaluate only `{"type":"trial","trial":k}` or `{"type":"sensitivity","operand":k,"positive":true}` (zero-based) and return it as `preview` instead of `sensitivity`/`monte_carlo` |
 | `irregularity_wavelength_um` | positive number or null, `null` | fringe test wavelength; null keeps an existing overlay's, else the primary wavelength |
-| `random_irregularity_orientation` | boolean, `true` | Monte Carlo draws an independent uniform astigmatism axis in [0,180) degrees per toleranced surface and trial; false keeps the saved angle. Sensitivity and nominal always keep it |
+| `random_irregularity_orientation` | boolean, `true` | Monte Carlo: a uniform astigmatism axis in [0, 180)° per toleranced surface and trial, reproducible from the seed; false keeps the model's angle |
 | `backend`, `gpu_batch`, `stop_key` | as for `optimize` | |
 
 Without compensators, every trial is a single evaluation, and a batch of trials

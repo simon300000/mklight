@@ -363,8 +363,73 @@ fn pack_legacy(
 }
 
 /// Packs `shape`; extended shapes append their `MKL_COEFF_*` prefix and
-/// coefficients to `pool` (the record does not grow).
+/// coefficients to `pool` (the record does not grow), and a nonzero sag
+/// overlay appends its `MKL_OVERLAY_*` suffix.
 fn pack_shape(
+    p: &mut PackedSurface,
+    shape: &SurfaceShape,
+    bounding: Option<f64>,
+    what: &dyn Fn(&str) -> String,
+    wavelengths_um: &[f64],
+    pool: &mut Vec<Df32>,
+) -> MkResult<()> {
+    pack_geometry(p, shape, bounding, what, wavelengths_um, pool)?;
+    let Some(overlay) = overlay_polynomial(shape.sag_shape(), bounding) else {
+        return Ok(());
+    };
+    if p.coefficient_count == 0 {
+        p.coefficient_offset = u32::try_from(pool.len())
+            .map_err(|_| MkError::Unsupported(what("coefficient pool too large")))?;
+    }
+    for value in overlay {
+        let (hi, lo) = split_checked(value, &what("sag overlay coefficient"))?;
+        pool.push(Df32::new(hi, lo));
+    }
+    p.coefficient_count += MKL_OVERLAY_COUNT;
+    p.flags |= MKL_SURF_HAS_SAG_OVERLAY;
+    Ok(())
+}
+
+/// Nested overlays summed into one `MKL_OVERLAY_*` polynomial; `None` for
+/// no or zero departure. The radius is a power of two near the aperture, so
+/// U = x/radius is exact.
+fn overlay_polynomial(mut shape: &SurfaceShape, bounding: Option<f64>) -> Option<[f64; 5]> {
+    let SurfaceShape::SagOverlay { norm_radius, .. } = shape else {
+        return None;
+    };
+    let radius = 2f64.powi(bounding.unwrap_or(*norm_radius).log2().round() as i32);
+    let mut overlay = [1.0 / radius, 0.0, 0.0, 0.0, 0.0];
+    while let SurfaceShape::SagOverlay {
+        base,
+        norm_radius,
+        test_wavelength_um,
+        astigmatism,
+        astigmatism_angle_deg,
+        spherical,
+    } = shape
+    {
+        let r2 = (radius / norm_radius).powi(2);
+        let wave = test_wavelength_um * 1e-3;
+        let a = astigmatism * wave * r2 / 4.0;
+        let (sin, cos) = (2.0 * astigmatism_angle_deg.to_radians()).sin_cos();
+        overlay[MKL_OVERLAY_COS as usize] += a * cos;
+        overlay[MKL_OVERLAY_SIN as usize] += a * sin;
+        overlay[MKL_OVERLAY_S2 as usize] -= 2.0 * spherical * wave * r2;
+        overlay[MKL_OVERLAY_S4 as usize] += 2.0 * spherical * wave * r2 * r2;
+        shape = base;
+    }
+    overlay[1..].iter().any(|v| *v != 0.0).then_some(overlay)
+}
+
+/// The geometry beneath any sag overlays.
+fn without_overlay(mut shape: &SurfaceShape) -> &SurfaceShape {
+    while let SurfaceShape::SagOverlay { base, .. } = shape {
+        shape = base;
+    }
+    shape
+}
+
+fn pack_geometry(
     p: &mut PackedSurface,
     shape: &SurfaceShape,
     bounding: Option<f64>,
@@ -374,47 +439,7 @@ fn pack_shape(
 ) -> MkResult<()> {
     use SurfaceShape::*;
     use mklight_core::model::surface::ZernikeOrdering;
-    if let SagOverlay { norm_radius, .. } = shape {
-        // Flatten nested overlays into one normalized Cartesian polynomial.
-        // The power-of-two scale keeps high-order coefficients representable.
-        let radius = 2f64.powi(bounding.unwrap_or(*norm_radius).log2().round() as i32);
-        let mut overlay = [radius, 0.0, 0.0, 0.0, 0.0];
-        let mut base = shape;
-        while let SagOverlay {
-            base: inner,
-            norm_radius,
-            test_wavelength_um,
-            astigmatism,
-            astigmatism_angle_deg,
-            spherical,
-        } = base
-        {
-            let r2 = (radius / norm_radius).powi(2);
-            let wave = test_wavelength_um * 1e-3;
-            let a = astigmatism * wave * r2 / 4.0;
-            let (sin, cos) = (2.0 * astigmatism_angle_deg.to_radians()).sin_cos();
-            overlay[MKL_OVERLAY_COS as usize] += a * cos;
-            overlay[MKL_OVERLAY_SIN as usize] += a * sin;
-            overlay[MKL_OVERLAY_S2 as usize] -= 2.0 * spherical * wave * r2;
-            overlay[MKL_OVERLAY_S4 as usize] += 2.0 * spherical * wave * r2 * r2;
-            base = inner;
-        }
-        pack_shape(p, base, bounding, what, wavelengths_um, pool)?;
-        if overlay[1..].iter().all(|v| *v == 0.0) {
-            return Ok(());
-        }
-        if p.coefficient_count == 0 {
-            p.coefficient_offset = u32::try_from(pool.len())
-                .map_err(|_| MkError::Unsupported(what("coefficient pool too large")))?;
-        }
-        for value in overlay {
-            let (hi, lo) = split_checked(value, &what("sag overlay coefficient"))?;
-            pool.push(Df32::new(hi, lo));
-        }
-        p.coefficient_count += MKL_OVERLAY_COUNT;
-        p.flags |= MKL_SURF_HAS_SAG_OVERLAY;
-        return Ok(());
-    }
+    let shape = without_overlay(shape);
     if shape.is_legacy() {
         return pack_legacy(p, shape, bounding, what);
     }
@@ -425,7 +450,6 @@ fn pack_shape(
     (p.conic, p.conic_lo) = split_checked(shape.conic(), &what("conic"))?;
     let too_wide = || MkError::Unsupported(what("coefficients span too many decades for f32"));
     let (a, b) = match shape {
-        SagOverlay { .. } => unreachable!("overlay packed above"),
         OddAsphere { coefficients, .. } => {
             p.shape = MKL_SHAPE_ODD_ASPHERE;
             let c = trimmed(coefficients);
@@ -513,10 +537,7 @@ fn pack_shape(
             (normalise(x, e, 4, 2), normalise(y, e, 4, 2))
         }
         Diffractive { base, phase } => {
-            let start = pool.len();
-            pack_shape(p, base, bounding, what, wavelengths_um, pool)?;
-            // A DOE's geometric base is legacy, optionally with an overlay.
-            let overlay: Vec<Df32> = pool.drain(start..).collect();
+            pack_legacy(p, without_overlay(base), bounding, what)?;
             data[MKL_COEFF_KIND as usize] = p.shape as f64;
             p.shape = MKL_SHAPE_DIFFRACTIVE;
             data[MKL_COEFF_RADIUS as usize] = phase.norm_radius;
@@ -529,21 +550,15 @@ fn pack_shape(
                     phase.trace_order as f64 * lambda * 1e-3 / std::f64::consts::TAU
                 })
             }));
-            let a = trimmed(&phase.coefficients);
-            data[MKL_COEFF_NA as usize] = a.len() as f64;
-            data.extend_from_slice(a);
-            p.coefficient_offset = u32::try_from(start)
-                .map_err(|_| MkError::Unsupported(what("coefficient pool too large")))?;
-            p.coefficient_count = data.len() as u32 + overlay.len() as u32;
-            for value in data {
-                let (hi, lo) = split_checked(value, &what("coefficient"))?;
-                pool.push(Df32::new(hi, lo));
-            }
-            pool.extend(overlay);
-            return Ok(());
+            (trimmed(&phase.coefficients).to_vec(), vec![])
         }
-        Plane | Conic { .. } | EvenAsphere { .. } | Paraxial { .. } | CoordinateBreak => {
-            unreachable!("legacy shape")
+        SagOverlay { .. }
+        | Plane
+        | Conic { .. }
+        | EvenAsphere { .. }
+        | Paraxial { .. }
+        | CoordinateBreak => {
+            unreachable!("legacy shape or overlay")
         }
     };
     data[MKL_COEFF_NA as usize] = a.len() as f64;
@@ -580,7 +595,7 @@ fn validate_coefficients(s: &PackedSurface, pool: &[Df32]) -> Result<(), &'stati
             .len()
             .checked_sub(MKL_OVERLAY_COUNT as usize)
             .ok_or("overlay count")?;
-        if d[end + MKL_OVERLAY_RADIUS as usize].hi <= 0.0 {
+        if d[end + MKL_OVERLAY_INV_RADIUS as usize].hi <= 0.0 {
             return Err("overlay radius");
         }
         if matches!(s.shape, MKL_SHAPE_PARAXIAL | MKL_SHAPE_COORD_BREAK) {

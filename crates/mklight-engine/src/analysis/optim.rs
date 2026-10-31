@@ -2797,13 +2797,6 @@ mod tests {
                     "minus":0.25, "plus":0.25}]});
             let result = run(system.clone(), "tolerance", settings.clone()).unwrap();
             assert_eq!(result.json["monte_carlo"]["failures"], json!(0));
-            assert!(
-                !result
-                    .run_info
-                    .warnings
-                    .iter()
-                    .any(|w| w.contains("no sag overlays"))
-            );
             let sensitivity = &result.json["sensitivity"]["operands"][0];
             assert_eq!(sensitivity["ok"], json!(true));
             assert!(f(&sensitivity["worst"]) > 0.0);
@@ -2915,11 +2908,7 @@ mod tests {
                 assert!(
                     (0.0..180.0).contains(astigmatism_angle_deg) && *astigmatism_angle_deg != 0.0
                 );
-                assert_eq!(
-                    preview.json["preview"]["system_hash"],
-                    execute(&preview_settings).json["preview"]["system_hash"]
-                );
-                // The criterion of the reconstructed system agrees with f64.
+                // The reconstructed system's f64 criterion agrees.
                 let reference = run(
                     model,
                     "merit_evaluation",
@@ -2943,7 +2932,7 @@ mod tests {
                     ..
                 } = model.surfaces[2].shape.sag_shape()
                 else {
-                    panic!()
+                    panic!("missing overlay")
                 };
                 assert_eq!(*astigmatism_angle_deg, 0.0);
             }

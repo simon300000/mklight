@@ -389,7 +389,7 @@ struct MockOptics {
             }
             return (z, dz)
         // The mock ignores fringe irregularity.
-        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): return sag(base, rho)
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _, _): return sag(base, rho)
         case .toroid(_, let cy, let ky, let ya), .biconic(_, let cy, _, let ky, _, let ya):
             // The y meridian is exactly the y profile; the mock is rotational.
             return sag(.evenAsphere(curvature: cy, conic: ky, coefficients: ya), rho)

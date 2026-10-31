@@ -175,12 +175,12 @@ pub struct MonteCarloSettings {
     /// Keep a `TrialRecord` for the first this many trials.
     #[serde(default)]
     pub record_trials: usize,
-    /// Uniform astigmatism axis in [0, 180) degrees for each toleranced
-    /// surface and trial. False retains the model's orientation.
-    #[serde(default = "random_orientation_default")]
+    /// Draw a uniform astigmatism axis in [0, 180)° per astigmatism-
+    /// toleranced surface and trial; false keeps the model's angle.
+    #[serde(default = "yes")]
     pub random_irregularity_orientation: bool,
 }
-pub fn random_orientation_default() -> bool {
+fn yes() -> bool {
     true
 }
 
@@ -265,12 +265,22 @@ impl ToleranceSpec {
         let mut rng = Rng::new(seed, streams::TOLERANCE | trial);
         self.operands.iter().map(|o| o.sample(&mut rng)).collect()
     }
-    /// Apply the independently sampled astigmatism axes of a trial. The
-    /// separate Philox namespace preserves the amplitude draws and batching.
-    pub fn orient_trial(&self, system: &mut OpticalSystem, seed: u64, trial: u64) {
-        let surfaces: BTreeSet<_> = self
-            .operands
-            .iter()
+    /// The perturbed system of Monte-Carlo trial `trial`. Random astigmatism
+    /// axes come from their own Philox stream (seed, trial), one draw per
+    /// surface in surface-id order, so the amplitude draws and batching are
+    /// unaffected.
+    pub fn trial_system(
+        &self,
+        nominal: &OpticalSystem,
+        deltas: &[f64],
+        settings: &MonteCarloSettings,
+        trial: u64,
+    ) -> MkResult<OpticalSystem> {
+        let mut system = self.apply(nominal, deltas)?;
+        if !settings.random_irregularity_orientation {
+            return Ok(system);
+        }
+        let surfaces: BTreeSet<_> = (self.operands.iter())
             .filter_map(|o| match o.param {
                 ParamPath::Irregularity {
                     surface,
@@ -279,20 +289,23 @@ impl ToleranceSpec {
                 _ => None,
             })
             .collect();
-        let mut rng = Rng::new(seed, streams::TOLERANCE_ORIENTATION | trial);
+        let mut rng = Rng::new(settings.seed, streams::TOLERANCE_ORIENTATION | trial);
         for id in surfaces {
-            let i = system.surface_index(id).expect("tolerance surface exists");
+            let angle = rng.range(0.0, 180.0);
+            let Some(i) = system.surface_index(id) else {
+                continue;
+            };
             if let mklight_core::SurfaceShape::SagOverlay {
                 astigmatism_angle_deg,
                 ..
             } = system.surfaces[i].shape.sag_shape_mut()
             {
-                *astigmatism_angle_deg = rng.range(0.0, 180.0);
+                *astigmatism_angle_deg = angle;
             }
         }
+        Ok(system)
     }
-    /// Reconstruct a Monte-Carlo case, including its random axes and final
-    /// compensators. Sensitivity cases use `case_system` instead.
+    /// The system of a reported Monte-Carlo case, with its final compensators.
     pub fn trial_case_system(
         &self,
         nominal: &OpticalSystem,
@@ -301,10 +314,7 @@ impl ToleranceSpec {
         settings: &MonteCarloSettings,
         trial: u64,
     ) -> MkResult<OpticalSystem> {
-        let mut system = self.apply(nominal, deltas)?;
-        if settings.random_irregularity_orientation {
-            self.orient_trial(&mut system, settings.seed, trial);
-        }
+        let system = self.trial_system(nominal, deltas, settings, trial)?;
         self.with_compensators(system, compensators)
     }
     /// The system of a reported case: perturbed, with its final compensators.
@@ -377,16 +387,15 @@ pub trait ToleranceEvaluator: Sync {
         perturbations: &[Vec<f64>],
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>>;
-    /// Monte-Carlo batch with replayable trial identities. Model evaluators
-    /// use these for the independently randomized irregularity axes.
+    /// Monte-Carlo trials `first_trial..`: as `evaluate_batch`, plus the
+    /// trials' random irregularity axes (`ToleranceSpec::trial_system`).
     fn evaluate_trials(
         &self,
         perturbations: &[Vec<f64>],
-        settings: &MonteCarloSettings,
-        first_trial: u64,
+        _settings: &MonteCarloSettings,
+        _first_trial: u64,
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
-        let _ = (settings, first_trial);
         self.evaluate_batch(perturbations, ctx)
     }
 }
@@ -841,16 +850,11 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
         first_trial: u64,
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
-        let systems = perturbations
-            .iter()
-            .enumerate()
+        let systems = (perturbations.iter().enumerate())
             .map(|(i, d)| {
-                let mut s = self.spec.apply(self.nominal, d).ok()?;
-                if settings.random_irregularity_orientation {
-                    self.spec
-                        .orient_trial(&mut s, settings.seed, first_trial + i as u64);
-                }
-                Some(s)
+                (self.spec)
+                    .trial_system(self.nominal, d, settings, first_trial + i as u64)
+                    .ok()
             })
             .collect();
         self.evaluate_systems(systems, ctx)

@@ -780,21 +780,17 @@ macro_rules! parameter_slot {
     }};
 }
 fn shape_parameter(shape: &SurfaceShape, param: ShapeParameter) -> Option<Slot<&f64, &i32>> {
-    if let SurfaceShape::SagOverlay {
-        astigmatism_angle_deg,
-        base,
-        ..
-    } = shape
-    {
-        if param == ShapeParameter::AstigmatismAngleDeg {
-            return Some(Slot::Real(astigmatism_angle_deg));
-        }
-        return shape_parameter(base, param);
-    }
     if param == ShapeParameter::AstigmatismAngleDeg {
-        if let SurfaceShape::Diffractive { base, .. } = shape {
-            return shape_parameter(base, param);
-        }
+        return match shape.sag_shape() {
+            SurfaceShape::SagOverlay {
+                astigmatism_angle_deg,
+                ..
+            } => Some(Slot::Real(astigmatism_angle_deg)),
+            _ => None,
+        };
+    }
+    if let SurfaceShape::SagOverlay { base, .. } = shape {
+        return shape_parameter(base, param);
     }
     parameter_slot!(shape, param)
 }
@@ -802,21 +798,17 @@ fn shape_parameter_mut(
     shape: &mut SurfaceShape,
     param: ShapeParameter,
 ) -> Option<Slot<&mut f64, &mut i32>> {
-    if let SurfaceShape::SagOverlay {
-        astigmatism_angle_deg,
-        base,
-        ..
-    } = shape
-    {
-        if param == ShapeParameter::AstigmatismAngleDeg {
-            return Some(Slot::Real(astigmatism_angle_deg));
-        }
-        return shape_parameter_mut(base, param);
-    }
     if param == ShapeParameter::AstigmatismAngleDeg {
-        if let SurfaceShape::Diffractive { base, .. } = shape {
-            return shape_parameter_mut(base, param);
-        }
+        return match shape.sag_shape_mut() {
+            SurfaceShape::SagOverlay {
+                astigmatism_angle_deg,
+                ..
+            } => Some(Slot::Real(astigmatism_angle_deg)),
+            _ => None,
+        };
+    }
+    if let SurfaceShape::SagOverlay { base, .. } = shape {
+        return shape_parameter_mut(base, param);
     }
     parameter_slot!(shape, param)
 }

@@ -415,4 +415,25 @@ import Testing
             "[invalid_focal_length] surfaces[2].shape.focal_length: an ideal lens needs a non-zero focal length"
         ])
     }
+
+    /// The astigmatism axis is a shape parameter of the sag shape's overlay,
+    /// as in the engine, and survives fringe edits.
+    @Test func overlayAxisIsAShapeParameter() {
+        let conic = SurfaceShape.conic(curvature: 0.02, conic: 0)
+        #expect(conic.shapeParameter(.astigmatismAngleDeg) == nil)
+        var overlay = SurfaceShape.sagOverlay(
+            base: conic, normRadius: 5, testWavelengthUm: 0.6328, astigmatism: 0.5, spherical: 0)
+        #expect(overlay.shapeParameters == [.astigmatismAngleDeg])
+        let setAngle = overlay.setShapeParameter(.astigmatismAngleDeg, 30)
+        let setFringes = overlay.setIrregularity(.spherical, 0.25, clearRadius: nil, testWavelengthUm: 0.6328)
+        #expect(setAngle && setFringes)
+        #expect(
+            overlay
+                == .sagOverlay(
+                    base: conic, normRadius: 5, testWavelengthUm: 0.6328, astigmatism: 0.5, astigmatismAngleDeg: 30,
+                    spherical: 0.25))
+        var doe = SurfaceShape.diffractive(base: overlay, phase: DiffractivePhase(normRadius: 5, designWavelengthUm: 0.55))
+        let setDOE = doe.setShapeParameter(.astigmatismAngleDeg, 45)
+        #expect(setDOE && doe.shapeParameter(.astigmatismAngleDeg) == 45)
+    }
 }

@@ -115,10 +115,10 @@
 #define MKL_COEFF_DESIGN_WAVELENGTH 9u
 #define MKL_COEFF_PREFIX 10u
 
-/* HAS_SAG_OVERLAY: final five pairs, U=x/radius, V=y/radius, t=U²+V².
- * Departure = COS*(U-V)*(U+V) + SIN*2*U*V + t*(S2+t*S4).
- * Base shape and its prefix remain unchanged, including a DOE phase. */
-#define MKL_OVERLAY_RADIUS 0u
+/* HAS_SAG_OVERLAY: five pairs after the base's own (a DOE's included).
+ * U=x*INV_RADIUS, V=y*INV_RADIUS, t=U²+V²:
+ * departure = COS*(U-V)*(U+V) + SIN*2*U*V + t*(S2+t*S4). */
+#define MKL_OVERLAY_INV_RADIUS 0u
 #define MKL_OVERLAY_COS 1u
 #define MKL_OVERLAY_SIN 2u
 #define MKL_OVERLAY_S2 3u
@@ -153,8 +153,8 @@
 #define MKL_SURF_COATED (1u << 3)          /* has a coating (see MklPackedSurface.coating) */
 #define MKL_SURF_APERTURE_FROM_SD (1u << 4) /* CIRCULAR aperture comes from a fixed semi-diameter */
 #define MKL_SURF_OBJECT (1u << 5)          /* surface 0 */
-#define MKL_SURF_HAS_SAG_OVERLAY (1u << 7)
 #define MKL_SURF_IMAGE (1u << 6)           /* surface N-1 */
+#define MKL_SURF_HAS_SAG_OVERLAY (1u << 7) /* MKL_OVERLAY_* pool suffix */
 
 /* MklPackedSurface.coating: how the interface splits flux (CONVENTIONS §5).
  *   BARE   uncoated: Fresnel on refracting surfaces, R = 1 on mirrors

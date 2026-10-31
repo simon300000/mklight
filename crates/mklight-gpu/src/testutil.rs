@@ -775,19 +775,8 @@ pub fn extended_shapes() -> Vec<(&'static str, SurfaceShape)> {
         astigmatism_angle_deg: 31.0,
         spherical: -0.75,
     };
-    let q = shapes
-        .iter()
-        .find(|(n, _)| *n == "qcon20")
-        .unwrap()
-        .1
-        .clone();
-    let xy = shapes.iter().find(|(n, _)| *n == "xy65").unwrap().1.clone();
-    let mut doe = shapes
-        .iter()
-        .find(|(n, _)| *n == "doe10")
-        .unwrap()
-        .1
-        .clone();
+    let pick = |name: &str| shapes.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+    let (q, xy, mut doe) = (pick("qcon20"), pick("xy65"), pick("doe10"));
     if let SurfaceShape::Diffractive { base, .. } = &mut doe {
         **base = overlay((**base).clone());
     }

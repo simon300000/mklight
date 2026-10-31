@@ -842,7 +842,7 @@ fn layout_schema() -> Value {
                 "u8",
                 &["P"],
                 "",
-                "Bit 0: within 1% of the largest mechanical diameter of the selected global plane; bit 1: vignetted ray; bit 2: DOE surface.",
+                "Bit 0: in the selected global section (a slab of 1% of the largest mechanical diameter); bit 1: vignetted ray; bit 2: DOE surface.",
             ),
         ],
     )
