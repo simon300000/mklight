@@ -657,13 +657,17 @@ fn packed_double_float_parameters() {
         assert!((got - want).abs() <= 1e-14 * want.abs(), "A{}", 2 * j + 4);
     }
     assert!(s2.asphere_lo.iter().any(|&l| l != 0.0));
-    // Aperture sizes.
+    // Aperture sizes, with the edge tolerance of `ApertureShape::passes`.
     let rs = testutil::resolve(testutil::apertures());
     let p = PackedSystem::pack_all(&rs).unwrap();
     let mut checked = 0;
     for (i, s) in rs.surfaces.iter().enumerate() {
         let ps = &p.surfaces[i];
-        let sizes: Vec<f64> = match (&s.aperture, s.fixed_semi_diameter) {
+        let tolerant = s.aperture.as_ref().map(|a| a.with_edge_tolerance());
+        let sd = s
+            .fixed_semi_diameter
+            .map(|r| r * (1.0 + mklight_core::APERTURE_EDGE_TOLERANCE));
+        let sizes: Vec<f64> = match (&tolerant, sd) {
             (
                 Some(mklight_core::model::ApertureShape::Annular {
                     inner_radius,
@@ -1021,7 +1025,7 @@ fn strong_aspheres_classify_like_the_reference() {
 /// Apertures are tested in double-float: at a 300 mm radius half an f32
 /// ulp of the size (1.5e-5 mm) exceeds the 1e-5 mm edge band, yet rays
 /// 2e-6 mm inside or outside every edge of every shape survive exactly as
-/// in the reference.
+/// in the reference, and rays on an edge pass (CONVENTIONS §2).
 #[test]
 fn large_apertures_clip_in_double_float() {
     use mklight_core::model::ApertureShape;
@@ -1052,10 +1056,11 @@ fn large_apertures_clip_in_double_float() {
             .upload_system(&PackedSystem::pack_all(&rs).unwrap())
             .unwrap();
         let mut rays = Vec::new();
+        let mut on_edge = Vec::new();
         for j in 0..32 {
             let a = j as f64 * std::f64::consts::TAU / 32.0;
             let (c, sn) = (a.cos(), a.sin());
-            // Points just inside / outside the edges along this direction.
+            // Points just inside / on / outside the edges along this direction.
             let edges: Vec<f64> = match ap.clone() {
                 ApertureShape::Circular { radius } => vec![radius],
                 ApertureShape::Annular {
@@ -1070,9 +1075,10 @@ fn large_apertures_clip_in_double_float() {
                 }
             };
             for e in edges {
-                for dr in [-2e-6, 2e-6] {
+                for dr in [-2e-6, 0.0, 2e-6] {
                     let p = Vec3::new((e + dr) * c, (e + dr) * sn, -1.0);
                     rays.push((Ray::new(p, Vec3::Z), 1u32));
+                    on_edge.push(dr == 0.0);
                 }
             }
         }
@@ -1083,10 +1089,11 @@ fn large_apertures_clip_in_double_float() {
                 &trace_ray(&rs, ray, 1, &TraceOptions::default(), None).status,
             );
             assert_eq!(g.status[i], want, "shape {k} ray {i}");
+            assert!(!on_edge[i] || want == MKL_RAY_OK, "shape {k} ray {i}");
             clipped += usize::from(want != MKL_RAY_OK);
         }
         assert!(
-            clipped * 3 > rays.len() && clipped < rays.len(),
+            clipped * 4 > rays.len() && clipped < rays.len(),
             "shape {k}"
         );
     }

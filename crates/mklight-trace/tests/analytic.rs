@@ -9,6 +9,68 @@ use mklight_trace::{
     PupilSampling, Ray, TraceOptions, surface::intersect, trace_ray, trace_ray_recorded,
 };
 
+#[test]
+fn wide_field_chief_ray_matches_inverse_snell() {
+    // Choose a point on a concave sphere and a transmitted direction through
+    // the stop centre. Tangential momentum gives the incident ray exactly.
+    let radius: f64 = -30.0;
+    let height: f64 = -6.0;
+    let gap = 10.0;
+    let sag = radius + (radius * radius - height * height).sqrt();
+    let normal = Vec3::new(0.0, -height / radius, 1.0 - sag / radius);
+    let outgoing = Vec3::new(0.0, -height, gap - sag).normalized();
+    let tangent = (outgoing - normal * outgoing.dot(normal)) * 1.5;
+    let incident = tangent + normal * (1.0 - tangent.dot(tangent)).sqrt();
+
+    for finite in [false, true] {
+        let glass = MaterialRef::Constant { n: 1.5 };
+        let mut system = infinite_system(
+            1.0,
+            vec![
+                surf(1, SurfaceShape::sphere(radius), gap, glass.clone()),
+                surf(2, SurfaceShape::Plane, 2.0, glass.clone()),
+            ],
+            3,
+        );
+        system.surfaces[3].material = glass;
+        system.stop = 2;
+        system.ray_aiming = mklight_core::RayAiming::Real { tolerance: 1e-10 };
+        system.fields = angle_fields(&[incident.y.atan2(incident.z).to_degrees()]);
+        if finite {
+            system.surfaces[0].thickness = 100.0;
+            system.fields.kind = mklight_core::FieldKind::ObjectHeight;
+            system.fields.fields[0].y = height - (sag + 100.0) * incident.y / incident.z;
+        }
+        let t = tracer(system);
+        let ray = t.generate(t.field(0), 0, 0.0, 0.0).expect("chief ray");
+        let at_surface = trace_ray(
+            t.system(),
+            &ray.ray,
+            0,
+            &TraceOptions {
+                last_surface: Some(1),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(at_surface.status.is_ok());
+        assert!((at_surface.ray.pos.y - height).abs() < 1e-9);
+        assert!((at_surface.ray.dir - outgoing).norm() < 1e-10);
+        let at_stop = trace_ray(
+            t.system(),
+            &ray.ray,
+            0,
+            &TraceOptions {
+                last_surface: Some(2),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(at_stop.status.is_ok());
+        assert!(at_stop.ray.pos.y.abs() < 1e-9);
+    }
+}
+
 fn paraboloid(epd: f64) -> mklight_trace::SequentialTracer {
     let mut m = surf(
         1,

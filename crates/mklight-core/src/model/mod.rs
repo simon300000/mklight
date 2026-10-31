@@ -17,8 +17,8 @@ pub use spec::{
     WavelengthSet,
 };
 pub use surface::{
-    ApertureShape, EdgeSpec, Interaction, Placement, SemiDiameter, Surface, SurfaceId,
-    SurfaceShape, TransformOrder,
+    APERTURE_EDGE_TOLERANCE, ApertureShape, EdgeSpec, Interaction, Placement, SemiDiameter,
+    Surface, SurfaceId, SurfaceShape, TransformOrder,
 };
 pub use validate::ValidationIssue;
 

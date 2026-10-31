@@ -136,7 +136,7 @@ Systems with more than 16 wavelengths are packed in chunks
 |---|---|
 | `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK, ODD_ASPHERE, Q_CON, Q_BFS, DIFFRACTIVE, TOROID, BICONIC, XY, ZERNIKE}` |
 | `interaction` | `MKL_INTERACT_{REFRACT, REFLECT, DUMMY}` |
-| `aperture`, `aperture_params[4]` (+`_lo`) | `MKL_APERTURE_*`; mm. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
+| `aperture`, `aperture_params[4]` (+`_lo`) | `MKL_APERTURE_*`; mm, including the CONVENTIONS §2 edge tolerance. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
 | `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE` |
 | `curvature` (+`_lo`), `conic` (+`_lo`) | 1/mm, dimensionless |
 | `paraxial_power` (+`_lo`) | 1/f (1/mm) for ideal thin lenses |

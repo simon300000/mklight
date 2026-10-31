@@ -125,8 +125,10 @@
  *   ANNULAR      [0] = inner radius, [1] = outer radius
  *   RECTANGULAR  [0] = half width x, [1] = half width y
  *   ELLIPTICAL   [0] = semi axis x,  [1] = semi axis y
- * Unused entries are 0. A fixed semi-diameter is packed as CIRCULAR with the
- * MKL_SURF_APERTURE_FROM_SD flag; an explicit aperture always wins. */
+ * Sizes include the edge tolerance (CONVENTIONS §2): outer sizes grown, the
+ * inner radius shrunk by 1e-10 relative. Unused entries are 0. A fixed
+ * semi-diameter is packed as CIRCULAR with the MKL_SURF_APERTURE_FROM_SD flag;
+ * an explicit aperture always wins. */
 #define MKL_APERTURE_NONE 0u
 #define MKL_APERTURE_CIRCULAR 1u
 #define MKL_APERTURE_ANNULAR 2u

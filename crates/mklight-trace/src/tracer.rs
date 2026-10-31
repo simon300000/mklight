@@ -400,7 +400,31 @@ impl SequentialTracer {
                 residual: 0.0,
             },
             RayAiming::Real { .. } => {
-                let (s, _) = self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None);
+                let (mut s, _) = self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None);
+                if !s.converged {
+                    // A wide-field paraxial seed can miss the front surfaces:
+                    // continue the source from the axis in 16 steps, ending
+                    // on `src` itself. Any failed step keeps the first solve.
+                    let p = self.source_params(src);
+                    let steps = (0..16)
+                        .map(|k| {
+                            let f = k as f64 / 16.0;
+                            self.source_from_params([f * p[0], f * p[1]])
+                        })
+                        .chain([Some(*src)]);
+                    let (mut x, mut j) = ([0.0, 0.0], None);
+                    for (k, step) in steps.enumerate() {
+                        let Some(step) = step else { break };
+                        let (sk, _) = self.solve_aim(&step, wl, [0.0, 0.0], x, j);
+                        if !sk.converged {
+                            break;
+                        }
+                        (x, j) = (sk.x, sk.jacobian);
+                        if k == 16 {
+                            s = sk;
+                        }
+                    }
+                }
                 let f = |a: [f64; 2]| self.stop_hit(src, a, wl);
                 let jac = f(s.x)
                     .and_then(|fx| fd_jacobian(&f, s.x, fx, self.fd_step()))
