@@ -56,7 +56,8 @@ pub struct SegmentReduce {
     pub mask_value: u32,
     /// Optional separate moment weights [count]; otherwise third channel or 1.
     pub weights: Option<PlanView>,
-    /// Upper bound on a segment length; checked on device and used to tile scratch.
+    /// Upper bound on a segment length (<= count); checked on the device. It
+    /// selects the dispatch path and tiles scratch, never the result bits.
     pub max_segment_len: usize,
     pub reference: Option<PlanView>,
     pub mode: crate::ReduceMode,

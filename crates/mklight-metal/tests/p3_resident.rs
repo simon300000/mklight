@@ -185,49 +185,34 @@ fn trace_moments_all_samples_and_fixtures() {
     );
     assert_eq!(status_mismatches, 0);
 }
+/// Masked subnormal cancellation sums, every mode and kind, through the
+/// tree-group path (long bound) and the SIMD path (many short segments).
 #[test]
 fn masked_subnormals_modes_and_views() {
     let g = backend(LibraryChoice::Precompiled);
     let c = CpuF32Backend::matching(&g.precision().probe);
-    for mode in [
-        ReduceMode::Plain,
-        ReduceMode::Kahan,
-        ReduceMode::DoubleFloat,
-    ] {
-        for kind in [
-            SegmentKind::Sum,
-            SegmentKind::Summary,
-            SegmentKind::SourceProducts,
-        ] {
-            let build = |b: &dyn ComputeBackend| {
-                let mut p = cases::segment(
-                    b,
-                    BufferData::F32((0..15007).map(|i| [1e8, 1., -1e8, 1e-39][i % 4]).collect()),
-                    1,
-                    vec![0, 0, 257, 4097, 15007],
-                    kind,
-                    None,
-                    15007,
-                );
-                let mask = cases::import(
-                    b,
-                    &mut p,
-                    [15007],
-                    BufferData::U32((0..15007).map(|i| u32::from(i % 7 != 0)).collect()),
-                );
-                let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0]
-                else {
-                    unreachable!()
+    let n = 15007;
+    let long = (vec![0, 0, 257, 4097, n as u32], n);
+    let short = ((0..n as u32).step_by(37).chain([n as u32]).collect::<Vec<_>>(), 37);
+    for (offsets, bound) in [long, short] {
+        for mode in [ReduceMode::Plain, ReduceMode::Kahan, ReduceMode::DoubleFloat] {
+            for kind in [SegmentKind::Sum, SegmentKind::Summary, SegmentKind::SourceProducts] {
+                let build = |b: &dyn ComputeBackend| {
+                    let values = (0..2 * n).map(|i| [1e8, 1., -1e8, 1e-39][i % 4]).collect();
+                    let mut p = cases::segment(b, BufferData::F32(values), 2, offsets.clone(), kind, None, bound);
+                    let mask = (0..n).map(|i| u32::from(i % 7 != 0)).collect();
+                    let mask = cases::import(b, &mut p, [n], BufferData::U32(mask));
+                    let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
+                        unreachable!()
+                    };
+                    (r.mode, r.mask, r.mask_value) = (mode, Some(mask), 1);
+                    p
                 };
-                r.mode = mode;
-                r.mask = Some(mask);
-                r.mask_value = 1;
-                p
-            };
-            let (a, _) = cases::read(&c, build(&c));
-            let (b, _) = cases::read(&g, build(&g));
-            for (a, b) in a.iter().zip(b) {
-                cases::assert_bits(a, &b);
+                let (a, _) = cases::read(&c, build(&c));
+                let (b, _) = cases::read(&g, build(&g));
+                for (a, b) in a.iter().zip(&b) {
+                    cases::assert_bits(a, b);
+                }
             }
         }
     }
