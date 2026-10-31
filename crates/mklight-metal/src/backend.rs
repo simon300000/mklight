@@ -715,9 +715,6 @@ impl ComputeBackend for MetalBackend {
         ctx: &JobContext,
         fill: &mut dyn FnMut(mklight_gpu::resident::BufferFill<'_>) -> MkResult<()>,
     ) -> MkResult<mklight_gpu::resident::BufferHandle> {
-        if desc.byte_len()? as u64 > self.info().max_buffer_bytes {
-            return Err(mklight_gpu::resident::bad("upload exceeds device limit"));
-        }
         self.inner
             .resident
             .fill(desc, ctx, fill, |n| self.inner.ctx.buffer_filled(n, |_| {}))
@@ -727,9 +724,6 @@ impl ComputeBackend for MetalBackend {
         desc: mklight_gpu::resident::BufferDesc,
         data: mklight_gpu::resident::HostAllocation,
     ) -> MkResult<mklight_gpu::resident::BufferHandle> {
-        if desc.byte_len()? / 4 != data.len() {
-            return Err(mklight_gpu::resident::bad("import length"));
-        }
         let storage = SharedBuffer::from_host(self.inner.ctx.device(), data)?;
         self.inner.resident.adopt(desc, storage)
     }

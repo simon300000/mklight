@@ -181,7 +181,9 @@ impl<T: Storage> Runtime<T> {
             out.extend((start..end).map(&value));
             self.copied_bytes
                 .fetch_add(((end - start) * width * 4) as u64, Ordering::Relaxed);
-            ctx.report(end as f64 / n as f64, "readback");
+            if end < n {
+                ctx.report(end as f64 / n as f64, "readback");
+            }
         }
         Ok(out)
     }
