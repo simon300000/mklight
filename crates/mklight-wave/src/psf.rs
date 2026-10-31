@@ -317,10 +317,10 @@ fn separable(b: &[[f64; 2]; 2]) -> bool {
 /// `x_s = origin + ((k − c)·dx, (l − c)·dx)` relative to the pupil's
 /// reference point, evaluated at their normal-plane feet `B·x_s` (module
 /// docs). A diagonal `B` (on axis, or a chief ray in the x–z or y–z plane)
-/// uses the separable matrix transform; otherwise the sum
+/// uses the separable matrix transform. A skew `B` uses the 2-D chirp
+/// convolution ([`affine_mft`]) or, on small grids, the sum
 /// `Σ_j r_y^j Σ_i r_x^i p_ij` (`r = e^{i2πΔν·ξ}`, a unit-modulus phase
-/// factor dropped) is evaluated by Horner's rule along both pupil axes,
-/// `O(n²M²)`.
+/// factor dropped) by Horner's rule along both pupil axes, `O(n²M²)`.
 fn surface_intensity(
     pupil: &PupilFunction,
     dx: f64,
@@ -340,6 +340,10 @@ fn surface_intensity(
         let xn: Vec<f64> = xs.iter().map(|x| b[0][0] * x).collect();
         let yn: Vec<f64> = ys.iter().map(|y| b[1][1] * y).collect();
         let u = mft(&field, n, &nu, &nu, &xn, &yn, ctx)?;
+        return Ok(u.iter().map(|z| z.norm_sqr()).collect());
+    }
+    if n >= 32 && size >= 32 {
+        let u = affine_mft(&field, n, &nu, &xs, &ys, b, ctx)?;
         return Ok(u.iter().map(|z| z.norm_sqr()).collect());
     }
     // Bounding box of the non-zero samples keeps the Horner loops short.
@@ -762,11 +766,8 @@ pub struct PolyPsfSettings {
     pub grid_size: usize,
     pub spacing_mm: f64,
     pub normalization: PsfNormalization,
-    /// `Matrix` (the default from [`PolyPsfSettings::new`]) evaluates every
-    /// wavelength exactly on the common grid (band-limited resampling).
-    /// `Fft` evaluates diagonal projections by separable chirp transforms
-    /// and skew projections by an exact 2-D chirp convolution. Both use
-    /// the requested image-surface grid without image interpolation.
+    /// Both transforms evaluate every wavelength exactly on the common grid
+    /// (band-limited resampling), by chirp convolutions on large grids.
     pub transform: PsfTransform,
 }
 
@@ -814,25 +815,7 @@ pub fn polychromatic_psf(
         let wn = w / wsum;
         let off = pupil.image_offset_mm();
         let (_, raw_energy) = raw_constants(pupil);
-        let b = pupil.geometry().surface_to_normal();
-        let raw = if settings.transform == PsfTransform::Matrix || separable(&b) {
-            surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
-        } else {
-            let n = pupil.n();
-            let nu: Vec<_> = (0..n)
-                .map(|i| pupil.coord(i) * pupil.frequency_scale())
-                .collect();
-            let xs: Vec<_> = (0..size)
-                .map(|i| (i as f64 - (size / 2) as f64) * dx - off[0])
-                .collect();
-            let ys: Vec<_> = (0..size)
-                .map(|i| (i as f64 - (size / 2) as f64) * dx - off[1])
-                .collect();
-            affine_mft(&pupil.debye_field(), n, &nu, &xs, &ys, b, &sub)?
-                .into_iter()
-                .map(|z| z.norm_sqr())
-                .collect()
-        };
+        let raw = surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?;
         let unit: Vec<_> = raw.into_iter().map(|v| v / raw_energy).collect();
         for (a, v) in acc.iter_mut().zip(&unit) {
             *a += wn * v;

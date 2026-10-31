@@ -630,9 +630,9 @@ pub fn through_focus_mtf_analysis_job(
     };
     let mut warnings = skipped;
     let mut out = Vec::new();
-    let total = (per.len() * focus.len()).max(1) as f64;
-    let mut done = 0.0;
-    for (f, value, mut fp) in per {
+    let nf = per.len().max(1) as f64;
+    for (k, (f, value, mut fp)) in per.into_iter().enumerate() {
+        let sub = ctx.subrange(0.3 + 0.7 * k as f64 / nf, 0.3 + 0.7 * (k + 1) as f64 / nf);
         warnings.extend(fp.warnings.iter().cloned());
         if settings.pupil.grid == 0 {
             // Automatic pupils also resolve the phase at both focus ends.
@@ -653,63 +653,54 @@ pub fn through_focus_mtf_analysis_job(
                         .min(crate::sampling::MAX_AUTO_PUPIL as f64)
                         .ceil() as usize)
                         .next_power_of_two();
-                    tp.resample(n, settings.pupil.supersample, &ctx.subrange(0.3, 0.3))
+                    tp.resample(n, settings.pupil.supersample, &sub.subrange(0.0, 0.0))
                 })
                 .collect::<MkResult<_>>()?;
             warnings.extend(refined.into_iter().flatten());
         }
+        let o = fp.orientation();
+        let curves = if settings.method == MtfAnalysisMethod::Direct {
+            crate::mtf::polychromatic_focus_mtf(&fp.weighted(), &focus, &freqs, &o, &sub)?
+        } else {
+            let nz = focus.len() as f64;
+            focus
+                .iter()
+                .enumerate()
+                .map(|(z, &dz)| {
+                    let shifted: Vec<PupilFunction> = fp
+                        .pupils
+                        .iter()
+                        .map(|(_, _, p)| {
+                            let cos = p.pupil.geometry().chief_ray[2];
+                            p.pupil.with_focus_shift(dz / cos)
+                        })
+                        .collect();
+                    let weighted: Vec<(&PupilFunction, f64)> = shifted
+                        .iter()
+                        .zip(&fp.pupils)
+                        .map(|(p, (_, w, _))| (p, *w))
+                        .collect();
+                    field_mtf(
+                        &o,
+                        &weighted,
+                        &freqs,
+                        settings.method,
+                        &settings.huygens,
+                        &sub.subrange(z as f64 / nz, (z + 1) as f64 / nz),
+                    )
+                })
+                .collect::<MkResult<Vec<_>>>()?
+        };
         let mut t = vec![vec![0.0; focus.len()]; freqs.len()];
         let mut s = t.clone();
-        let cached = if settings.method == MtfAnalysisMethod::Direct {
-            Some(crate::mtf::polychromatic_focus_mtf(
-                &fp.weighted(),
-                &focus,
-                &freqs,
-                &fp.orientation(),
-                &ctx.subrange(
-                    0.3 + 0.7 * done / total,
-                    0.3 + 0.7 * (done + focus.len() as f64) / total,
-                ),
-            )?)
-        } else {
-            None
-        };
-        for (z, &dz) in focus.iter().enumerate() {
-            let c = if let Some(cached) = &cached {
-                cached[z].clone()
-            } else {
-                let shifted: Vec<PupilFunction> = fp
-                    .pupils
-                    .iter()
-                    .map(|(_, _, p)| {
-                        let cos = p.pupil.geometry().chief_ray[2];
-                        p.pupil.with_focus_shift(dz / cos)
-                    })
-                    .collect();
-                let weighted: Vec<(&PupilFunction, f64)> = shifted
-                    .iter()
-                    .zip(&fp.pupils)
-                    .map(|(p, (_, w, _))| (p, *w))
-                    .collect();
-                let sub = ctx.subrange(0.3 + 0.7 * done / total, 0.3 + 0.7 * (done + 1.0) / total);
-                field_mtf(
-                    &fp.orientation(),
-                    &weighted,
-                    &freqs,
-                    settings.method,
-                    &settings.huygens,
-                    &sub,
-                )?
-            };
-            done += 1.0;
+        for (z, c) in curves.iter().enumerate() {
             for w in &c.warnings {
                 let m = format!("field {f}: {w}");
                 if !warnings.contains(&m) {
                     warnings.push(m);
                 }
             }
-            let (_, st, ss) =
-                with_detector(settings.detector.as_ref(), &freqs, &fp.orientation(), &c);
+            let (_, st, ss) = with_detector(settings.detector.as_ref(), &freqs, &o, c);
             for q in 0..freqs.len() {
                 t[q][z] = st.as_ref().map_or(c.tangential[q], |v| v[q]);
                 s[q][z] = ss.as_ref().map_or(c.sagittal[q], |v| v[q]);

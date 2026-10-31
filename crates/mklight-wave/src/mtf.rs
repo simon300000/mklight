@@ -832,46 +832,18 @@ pub fn polychromatic_mtf(
     Ok(curve_from_otf(freqs, &acc, &dl, cutoff, warnings))
 }
 
-/// Unit phasor with cycle-domain reduction (the quarter-cycle subtraction
-/// is exact). Taylor remainders on |x| ≤ π/4 are below 6e-17. Avoids
-/// repeated general-purpose radian argument reduction in focus sweeps.
-fn phase_sin_cos(waves: f64) -> (f64, f64) {
-    let cycles = waves - waves.floor();
-    let quadrant = (4.0 * cycles).round();
-    let x = (cycles - 0.25 * quadrant) * (2.0 * std::f64::consts::PI);
-    let z = x * x;
-    let sin = x + x
-        * z
-        * (-1.0 / 6.0
-            + z * (1.0 / 120.0
-                + z * (-1.0 / 5040.0
-                    + z * (1.0 / 362880.0
-                        + z * (-1.0 / 39916800.0
-                            + z * (1.0 / 6227020800.0 - z / 1307674368000.0))))));
-    let cos = 1.0
-        + z * (-1.0 / 2.0
-            + z * (1.0 / 24.0
-                + z * (-1.0 / 720.0
-                    + z * (1.0 / 40320.0
-                        + z * (-1.0 / 3628800.0
-                            + z * (1.0 / 479001600.0
-                                + z * (-1.0 / 87178291200.0 + z / 20922789888000.0)))))));
-    match quadrant as u8 % 4 {
-        0 => (sin, cos),
-        1 => (cos, -sin),
-        2 => (-sin, -cos),
-        _ => (-cos, sin),
-    }
-}
-
-/// A fixed-frequency autocorrelation stencil, shared by every focus plane.
+/// One covered sample of a direct autocorrelation at a fixed frequency:
+/// the coverage-weighted bilinear stencil of the shifted OPD and the
+/// magnitude `|p(u + s)·p*(u)|` (as in [`otf_direct`] and [`otf_surface`]).
 struct FocusTerm {
     source: usize,
     neighbours: [usize; 4],
     coefficients: [f64; 4],
-    phase: f64,
-    amplitude: f64,
+    magnitude: f64,
 }
+
+/// The terms of one frequency, plus the zero-lag deficit, the
+/// normalisation and the image-offset phasor.
 struct FocusCorrelation {
     terms: Vec<FocusTerm>,
     deficit: f64,
@@ -879,18 +851,18 @@ struct FocusCorrelation {
     offset: C64,
 }
 
+/// Defocus changes only the OPD, so the stencils are prepared once.
 fn focus_correlations(
     p: &PupilFunction,
     nus: &[[f64; 2]],
     ctx: &JobContext,
 ) -> MkResult<Vec<FocusCorrelation>> {
+    let n = p.n();
     let map = SensorMap::new(p);
     let axis = p.geometry().is_on_axis();
     let points = map.covered(p)?;
     let field_weights = p.field_weights();
-    let cov = p.coverage();
-    let opd = p.opd_waves();
-    let amp = p.amplitude();
+    let (amp, cov) = (p.amplitude(), p.coverage());
     let norm = if axis {
         p.energy()
     } else {
@@ -900,7 +872,13 @@ fn focus_correlations(
             .collect::<mklight_core::math::KahanSum>()
             .value()
     };
+    if !(norm > 0.0) {
+        return Err(MkError::Numerical("pupil transmits no light".into()));
+    }
+    let lag0 = norm - field_weights.iter().map(|w| w * w).sum::<f64>();
     let scale = p.wavelength_um() * 1e-3 / p.geometry().image_index;
+    let per_nu = p.alias_free_field_mm();
+    let off = p.image_offset_mm();
     nus.par_iter()
         .map(|nu| {
             ctx.check()?;
@@ -909,8 +887,8 @@ fn focus_correlations(
             for &(k, q, gamma) in &points {
                 let (ix, iy, qz) = if axis {
                     (
-                        (k % p.n()) as f64 + nu[0] * p.alias_free_field_mm(),
-                        (k / p.n()) as f64 + nu[1] * p.alias_free_field_mm(),
+                        (k % n) as f64 + nu[0] * per_nu,
+                        (k / n) as f64 + nu[1] * per_nu,
                         1.0,
                     )
                 } else {
@@ -929,17 +907,19 @@ fn focus_correlations(
                 ];
                 let mut neighbours = [k; 4];
                 let mut coefficients = [0.0; 4];
-                let (mut a, mut c, mut w) = (0.0, 0.0, 0.0);
+                let (mut a, mut c) = (0.0, 0.0);
                 for (s, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
                     let (x, y) = (i + dx, j + dy);
-                    if x < 0 || y < 0 || x >= p.n() as i64 || y >= p.n() as i64 {
+                    if x < 0 || y < 0 || x >= n as i64 || y >= n as i64 {
                         continue;
                     }
-                    let index = y as usize * p.n() + x as usize;
+                    let index = y as usize * n + x as usize;
+                    if axis && field_weights[index] <= 0.0 {
+                        continue;
+                    }
                     neighbours[s] = index;
                     coefficients[s] = weights[s] * cov[index];
                     c += coefficients[s];
-                    w += coefficients[s] * opd[index];
                     a += weights[s]
                         * if axis {
                             field_weights[index]
@@ -950,40 +930,30 @@ fn focus_correlations(
                 if a <= 0.0 {
                     continue;
                 }
-                for coeff in &mut coefficients {
-                    *coeff /= c;
-                }
+                coefficients.iter_mut().for_each(|x| *x /= c);
                 let magnitude = if axis {
                     field_weights[k] * a
                 } else {
-                    cov[k] * amp[k] / gamma * a / qz
-                };
-                if !axis {
                     let e = cov[k] * amp[k] * amp[k] / (gamma * -q.z);
                     deficit.add(
                         (1.0 - cov[k])
                             * e
-                            * (1.0 - (ix - (k % p.n()) as f64).abs()).max(0.0)
-                            * (1.0 - (iy - (k / p.n()) as f64).abs()).max(0.0),
+                            * (1.0 - (ix - (k % n) as f64).abs()).max(0.0)
+                            * (1.0 - (iy - (k / n) as f64).abs()).max(0.0),
                     );
-                }
+                    cov[k] * amp[k] / gamma * a / qz
+                };
                 terms.push(FocusTerm {
                     source: k,
                     neighbours,
                     coefficients,
-                    phase: w / c - opd[k],
-                    amplitude: magnitude,
+                    magnitude,
                 });
             }
             if axis {
-                let lag = norm - field_weights.iter().map(|w| w * w).sum::<f64>();
-                let (sx, sy) = (
-                    nu[0] * p.alias_free_field_mm(),
-                    nu[1] * p.alias_free_field_mm(),
-                );
-                deficit.add(lag * (1.0 - sx.abs()).max(0.0) * (1.0 - sy.abs()).max(0.0));
+                let (sx, sy) = (nu[0] * per_nu, nu[1] * per_nu);
+                deficit.add(lag0 * (1.0 - sx.abs()).max(0.0) * (1.0 - sy.abs()).max(0.0));
             }
-            let off = p.image_offset_mm();
             Ok(FocusCorrelation {
                 terms,
                 deficit: deficit.value(),
@@ -997,8 +967,9 @@ fn focus_correlations(
         .collect()
 }
 
-/// Direct polychromatic focus sweep with geometry, interpolation stencils
-/// and the unaberrated correlation prepared once per wavelength/frequency.
+/// [`polychromatic_mtf`] by [`MtfMethod::Direct`] at each image-plane
+/// shift in `focus` (mm, as in [`through_focus_mtf`]). Each pupil's
+/// autocorrelation stencils are prepared once and reused for every plane.
 pub(crate) fn polychromatic_focus_mtf(
     pupils: &[(&PupilFunction, f64)],
     focus: &[f64],
@@ -1008,138 +979,58 @@ pub(crate) fn polychromatic_focus_mtf(
 ) -> MkResult<Vec<MtfCurve>> {
     let nus = freq_vectors(freqs, orientation);
     let wsum: f64 = pupils.iter().map(|(_, w)| w).sum();
-    let per: Vec<_> = pupils
-        .par_iter()
-        .enumerate()
-        .map(|(index, &(p, w))| -> MkResult<_> {
-            let mut acc = vec![vec![C64::default(); nus.len()]; focus.len()];
-            let mut dl = vec![C64::default(); nus.len()];
-            let mut warnings = vec![Vec::new(); focus.len()];
-            let sub = ctx.subrange(
-                index as f64 / pupils.len() as f64,
-                (index + 1) as f64 / pupils.len() as f64,
-            );
-            let prepared = focus_correlations(p, &nus, &sub)?;
-            for (d, c) in dl.iter_mut().zip(&prepared) {
-                let sum: mklight_core::math::KahanSum =
-                    c.terms.iter().map(|t| t.amplitude).collect();
-                *d += C64::new((sum.value() + c.deficit) / c.norm * w / wsum, 0.0);
-            }
-            let common_warnings: Vec<_> = p
-                .sampling_warnings()
-                .into_iter()
-                .filter(|w| !matches!(w, WaveWarning::PupilUndersampled { .. }))
-                .collect();
-            // Radius and chief reference are fixed throughout the sweep.
-            // Cache direction cosines once, and form the reference distance
-            // once per plane rather than once per covered grid sample.
-            let r = p.geometry().reference_radius_mm;
-            let telecentric = p.geometry().is_telecentric();
-            let scale = p.geometry().image_index / (p.wavelength_um() * 1e-3);
-            let radial: Vec<_> = (0..p.n() * p.n())
-                .filter(|&k| p.coverage()[k] > 0.0)
-                .map(|k| {
-                    let (u, v) = (p.coord(k % p.n()), p.coord(k / p.n()));
-                    let s2 = p.geometry().sin_max().powi(2) * (u * u + v * v);
-                    let gamma = if telecentric {
-                        (1.0 - s2).max(0.0).sqrt()
-                    } else {
-                        let s = p.geometry().sin_max() * (u * u + v * v).sqrt();
-                        ((1.0 - s) * (1.0 + s)).max(0.0).sqrt()
-                    };
-                    (k, gamma, s2)
-                })
-                .collect();
-            acc.par_iter_mut()
-                .zip(&mut warnings)
-                .zip(focus.par_iter())
-                .try_for_each(|((row, warnings), &dz)| -> MkResult<()> {
-                    sub.check()?;
-                    let shift = dz / p.geometry().chief_ray[2];
-                    let mut delta = vec![0.0; p.n() * p.n()];
-                    if telecentric {
-                        for &(k, gamma, s2) in &radial {
-                            delta[k] = scale * shift * s2 / (1.0 + gamma);
-                        }
-                    } else {
-                        let dr = |gamma: f64| {
-                            (2.0 * r * gamma * shift + shift * shift)
-                                / ((r * r + 2.0 * r * gamma * shift + shift * shift).sqrt() + r)
-                        };
-                        let reference = dr(1.0);
-                        for &(k, gamma, _) in &radial {
-                            delta[k] = scale * (reference - dr(gamma));
-                        }
-                    }
-                    for (z, c) in row.iter_mut().zip(&prepared) {
-                        let mut re = mklight_core::math::KahanSum::default();
-                        let mut im = mklight_core::math::KahanSum::default();
-                        for t in &c.terms {
-                            let phase = t.phase
-                                + t.neighbours
-                                    .iter()
-                                    .zip(&t.coefficients)
-                                    .map(|(&k, w)| delta[k] * w)
-                                    .sum::<f64>()
-                                - delta[t.source];
-                            let (sn, cs) = phase_sin_cos(phase);
-                            re.add(t.amplitude * cs);
-                            im.add(t.amplitude * sn);
-                        }
-                        *z += C64::new(re.value() + c.deficit, im.value()) / c.norm
-                            * c.offset
-                            * (w / wsum);
-                    }
-                    warnings.extend(common_warnings.iter().cloned());
-                    let mut max_step: f64 = 0.0;
-                    let n = p.n();
-                    for &(k, _, _) in &radial {
-                        let (i, j) = (k % n, k / n);
-                        let w = p.opd_waves()[k] + delta[k];
-                        for q in [
-                            if i + 1 < n { k + 1 } else { k },
-                            if j + 1 < n { k + n } else { k },
-                        ] {
-                            if p.coverage()[q] > 0.0 {
-                                max_step = max_step.max((p.opd_waves()[q] + delta[q] - w).abs());
-                            }
-                        }
-                    }
-                    if max_step > 0.5 {
-                        push_unique(
-                            warnings,
-                            WaveWarning::PupilUndersampled {
-                                max_step_waves: max_step,
-                            },
-                        );
-                    }
-                    Ok(())
-                })?;
-            sub.report(1.0, "through-focus MTF");
-            Ok((acc, dl, warnings, 1.0 / p.lambda_f_mm()))
-        })
-        .collect::<MkResult<_>>()?;
+    let tau = 2.0 * std::f64::consts::PI;
     let mut acc = vec![vec![C64::default(); nus.len()]; focus.len()];
     let mut dl = vec![C64::default(); nus.len()];
     let mut warnings = vec![Vec::new(); focus.len()];
     let mut cutoff: f64 = 0.0;
-    for (values, reference, diagnostics, c) in per {
-        cutoff = cutoff.max(c);
-        for (sum, value) in dl.iter_mut().zip(reference) {
-            *sum += value;
+    let np = pupils.len() as f64;
+    for (q, &(p, w)) in pupils.iter().enumerate() {
+        let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
+        let wn = w / wsum;
+        let prepared = focus_correlations(p, &nus, &sub.subrange(0.0, 0.2))?;
+        for (d, c) in dl.iter_mut().zip(&prepared) {
+            let sum: mklight_core::math::KahanSum = c.terms.iter().map(|t| t.magnitude).collect();
+            *d += C64::new((sum.value() + c.deficit) / c.norm, 0.0) * wn;
         }
-        for ((sum, value), (warnings, diagnostics)) in acc
-            .iter_mut()
-            .zip(values)
-            .zip(warnings.iter_mut().zip(diagnostics))
-        {
-            for (sum, value) in sum.iter_mut().zip(value) {
-                *sum += value;
+        let planes: Vec<(Vec<C64>, Vec<WaveWarning>)> = focus
+            .par_iter()
+            .map(|&dz| {
+                sub.check()?;
+                let shifted = p.with_focus_shift(dz / p.geometry().chief_ray[2]);
+                let opd = shifted.opd_waves();
+                let otf = prepared
+                    .iter()
+                    .map(|c| {
+                        let mut re = mklight_core::math::KahanSum::default();
+                        let mut im = mklight_core::math::KahanSum::default();
+                        for t in &c.terms {
+                            let w: f64 = t
+                                .neighbours
+                                .iter()
+                                .zip(&t.coefficients)
+                                .map(|(&k, c)| c * opd[k])
+                                .sum();
+                            let (s, cs) = (tau * (w - opd[t.source])).sin_cos();
+                            re.add(t.magnitude * cs);
+                            im.add(t.magnitude * s);
+                        }
+                        C64::new(re.value() + c.deficit, im.value()) / c.norm * c.offset
+                    })
+                    .collect();
+                Ok((otf, shifted.sampling_warnings()))
+            })
+            .collect::<MkResult<_>>()?;
+        for ((acc, warnings), (otf, plane)) in acc.iter_mut().zip(&mut warnings).zip(planes) {
+            for (a, z) in acc.iter_mut().zip(otf) {
+                *a += z * wn;
             }
-            for warning in diagnostics {
-                push_unique(warnings, warning);
+            for x in plane {
+                push_unique(warnings, x);
             }
         }
+        cutoff = cutoff.max(p.geometry().cutoff_frequency(p.wavelength_um()));
+        sub.report(1.0, "through-focus MTF");
     }
     Ok(acc
         .iter()
@@ -1254,15 +1145,6 @@ pub fn mtf_from_psf(
 #[cfg(test)]
 mod focus_tests {
     use super::*;
-    #[test]
-    fn reduced_cycle_phasor_matches_standard_trigonometry() {
-        for i in -16000..16000 {
-            let w = i as f64 * 0.01731;
-            let (s, c) = phase_sin_cos(w);
-            let (sr, cr) = (2.0 * std::f64::consts::PI * w).sin_cos();
-            assert!((s - sr).abs() < 4e-13 && (c - cr).abs() < 4e-13);
-        }
-    }
 
     #[test]
     fn cached_focus_matches_independent_pupil_autocorrelations() {

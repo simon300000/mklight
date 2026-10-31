@@ -37,9 +37,9 @@ pub(crate) fn pupil_grid(rays: &StructuredSamples) -> usize {
         .next_power_of_two()
 }
 
-/// Image-space geometrical displacement from phase slope (ε = −λ/NA ∇W),
-/// maximum about the reference and RMS about the mean. Projection carries
-/// the chief-normal plane onto the image surface.
+/// Image-space geometrical displacement from phase slope (ε = −λ/NA ∇W)
+/// and intensity weight of every `step`-th covered sample. Projection
+/// carries the chief-normal plane onto the image surface.
 fn blur_points(p: &PupilFunction, step: usize) -> Vec<([f64; 2], f64)> {
     let n = p.n();
     let b = p.geometry().surface_to_normal();
@@ -64,6 +64,8 @@ fn blur_points(p: &PupilFunction, step: usize) -> Vec<([f64; 2], f64)> {
     points
 }
 
+/// Geometric blur: maximum displacement about the reference and RMS about
+/// the mean.
 pub(crate) fn blur(p: &PupilFunction) -> (f64, f64) {
     let points = blur_points(p, 1);
     let extent = points
@@ -86,58 +88,48 @@ pub(crate) fn image_side(pupils: &[(&PupilFunction, f64)]) -> f64 {
 }
 
 pub(crate) fn image_grid(pupils: &[(&PupilFunction, f64)], spacing: f64) -> usize {
-    crate::fft::next_fast_len(
-        ((image_side(pupils) / spacing).ceil() as usize).clamp(64, MAX_AUTO_IMAGE),
-    )
-    .min(MAX_AUTO_IMAGE)
+    ((image_side(pupils) / spacing).ceil() as usize).clamp(64, MAX_AUTO_IMAGE)
 }
 
+/// Frequency where the polychromatic contrast estimate falls to 0.1 along
+/// both image axes: the geometric characteristic function of the phase-slope
+/// displacements (which keeps the core contrast when a few flare rays
+/// inflate the RMS blur, and includes lateral colour) times the
+/// diffraction-limited MTF. Scanned in steps of 1.25 from
+/// `min(40, cutoff/10)` to `0.8 cutoff` and rounded up to two digits.
 pub(crate) fn useful_frequency(pupils: &[(&PupilFunction, f64)]) -> f64 {
     use mklight_core::math::KahanSum;
-    // A geometric characteristic function retains the high-contrast core
-    // when a few flare rays inflate RMS blur. Include diffraction and
-    // lateral colour, and look for 10% contrast in both image directions.
     let cutoff = pupils
         .iter()
         .map(|(p, _)| 1.0 / p.lambda_f_mm())
         .fold(0.0, f64::max);
     let floor = 40.0f64.min(0.1 * cutoff);
     let ceiling = 0.8 * cutoff;
-    let points: Vec<_> = pupils
+    let wsum: f64 = pupils.iter().map(|(_, w)| w).sum();
+    let spectra: Vec<_> = pupils
         .iter()
-        .map(|(p, w)| {
-            let pts = blur_points(p, (p.n() / 64).max(1));
-            let sum: f64 = pts.iter().map(|(_, w)| w).sum();
-            (pts, w / sum, p.lambda_f_mm())
+        .filter_map(|(p, w)| {
+            let points = blur_points(p, (p.n() / 64).max(1));
+            let sum: f64 = points.iter().map(|(_, e)| e).sum();
+            (sum > 0.0).then(|| (points, w / (wsum * sum), p.lambda_f_mm()))
         })
         .collect();
-    let contrast = |f: f64| {
-        [0, 1]
-            .map(|axis| {
-                let mut re = KahanSum::default();
-                let mut im = KahanSum::default();
-                for (pts, weight, lf) in &points {
-                    let dl = crate::mtf::diffraction_limited_mtf(f * lf, 0.0);
-                    let mut r = KahanSum::default();
-                    let mut i = KahanSum::default();
-                    for (q, w) in pts {
-                        let (sn, cs) = (2.0 * std::f64::consts::PI * f * q[axis]).sin_cos();
-                        r.add(w * cs);
-                        i.add(w * sn);
-                    }
-                    re.add(weight * dl * r.value());
-                    im.add(weight * dl * i.value());
-                }
-                re.value().hypot(im.value())
-            })
-            .into_iter()
-            .fold(0.0, f64::max)
+    let contrast = |f: f64, axis: usize| {
+        let (mut re, mut im) = (KahanSum::default(), KahanSum::default());
+        for (points, weight, lf) in &spectra {
+            let dl = weight * crate::mtf::diffraction_limited_mtf(f * lf, 0.0);
+            for (q, e) in points {
+                let (s, c) = (2.0 * std::f64::consts::PI * f * q[axis]).sin_cos();
+                re.add(dl * e * c);
+                im.add(dl * e * s);
+            }
+        }
+        re.value().hypot(im.value())
     };
     let mut f = floor;
-    while f < ceiling && contrast(f) > 0.1 {
+    while f < ceiling && (contrast(f, 0) > 0.1 || contrast(f, 1) > 0.1) {
         f *= 1.25;
     }
-    // Round upward to two significant decimal digits; retain the cutoff.
     let step = 10.0f64.powf(f.log10().floor() - 1.0);
     ((f / step).ceil() * step).min(ceiling)
 }

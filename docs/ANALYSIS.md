@@ -301,13 +301,6 @@ and conventions:
   reduction, and a test checks that both paths give identical results.
 * `util::Moments` (weighted two-pass point statistics) is public too.
 
-The wave analyses use the same field/wavelength selections and spectral
-weights. Their automatic plotting ranges estimate contrast from geometric
-phase-gradient offsets, including diffraction and lateral colour, rather
-than using RMS blur alone; the wave solver still computes every plotted
-ordinate. Actual pupil grids and image sampling are published in the results
-for front ends (`docs/WAVE.md`, automatic sampling and execution).
-
 ## 3. Validation
 
 | test file | what it pins |

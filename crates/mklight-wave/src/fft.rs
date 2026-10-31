@@ -191,9 +191,11 @@ pub(crate) fn mft(
     Ok(u)
 }
 
-/// Exact affine image-grid transform. The chief-frame projection B is
-/// symmetric, so the 2-D chirp identity turns its mixed xy term into one
-/// convolution, without interpolation on an oversized normal-plane FFT.
+/// [`mft`] of the skew map `(x, y) → B·(x, y)` on square uniform grids:
+/// `U(x_k, y_l) = Σ_{i,j} f[j·n + i] · exp(+2πi ν_{ij}·B·(x_k, y_l))`.
+/// `B` is symmetric (the chief-frame projection), so with
+/// `Q(v) = vᵀBv` the identity `2 iᵀBk = Q(i) + Q(k) − Q(k − i)` turns the
+/// sum into one 2-D chirp convolution.
 pub(crate) fn affine_mft(
     f: &[C64],
     n: usize,
@@ -211,71 +213,54 @@ pub(crate) fn affine_mft(
     let quadratic = |x: f64, y: f64| {
         0.5 * tau * dn * dx * (b[0][0] * x * x + 2.0 * b[0][1] * x * y + b[1][1] * y * y)
     };
+    // Circular index → lag k − i, which runs over (−n, size).
+    let lag = |i: usize| {
+        if i < size {
+            Some(i as f64)
+        } else {
+            (i > m - n).then_some(i as f64 - m as f64)
+        }
+    };
     let mut kernel = vec![C64::default(); m * m];
-    kernel
-        .par_chunks_mut(m)
-        .enumerate()
-        .try_for_each(|(j, row)| -> MkResult<()> {
-            ctx.check()?;
-            let y = if j < size {
-                Some(j as f64)
-            } else if j > m - n {
-                Some(j as f64 - m as f64)
-            } else {
-                None
-            };
-            if let Some(y) = y {
-                for (i, z) in row.iter_mut().enumerate() {
-                    let x = if i < size {
-                        Some(i as f64)
-                    } else if i > m - n {
-                        Some(i as f64 - m as f64)
-                    } else {
-                        None
-                    };
-                    if let Some(x) = x {
-                        *z = C64::from_polar(1.0, -quadratic(x, y));
-                    }
+    kernel.par_chunks_mut(m).enumerate().for_each(|(j, row)| {
+        if let Some(y) = lag(j) {
+            for (i, z) in row.iter_mut().enumerate() {
+                if let Some(x) = lag(i) {
+                    *z = C64::from_polar(1.0, -quadratic(x, y));
                 }
             }
-            Ok(())
-        })?;
+        }
+    });
     fft2(&mut kernel, m, Dir::Forward, m, &ctx.subrange(0.0, 0.3))?;
+    let (x0, y0) = (xs[0], ys[0]);
     let mut buf = vec![C64::default(); m * m];
     buf[..n * m]
         .par_chunks_mut(m)
         .enumerate()
-        .try_for_each(|(j, row)| -> MkResult<()> {
-            ctx.check()?;
+        .for_each(|(j, row)| {
             let y = j as f64;
-            for i in 0..n {
+            for (i, z) in row[..n].iter_mut().enumerate() {
                 let x = i as f64;
                 let phase = tau
                     * dn
-                    * (x * (b[0][0] * xs[0] + b[0][1] * ys[0])
-                        + y * (b[1][0] * xs[0] + b[1][1] * ys[0]))
+                    * (x * (b[0][0] * x0 + b[0][1] * y0) + y * (b[1][0] * x0 + b[1][1] * y0))
                     + quadratic(x, y);
-                row[i] = f[j * n + i] * C64::from_polar(1.0, phase);
+                *z = f[j * n + i] * C64::from_polar(1.0, phase);
             }
-            Ok(())
-        })?;
+        });
     fft2(&mut buf, m, Dir::Forward, n, &ctx.subrange(0.3, 0.6))?;
     buf.par_iter_mut().zip(&kernel).for_each(|(z, k)| *z *= k);
     drop(kernel);
     fft2(&mut buf, m, Dir::Inverse, m, &ctx.subrange(0.6, 0.95))?;
+    let scale = 1.0 / (m * m) as f64;
     let mut out = vec![C64::default(); size * size];
-    out.par_chunks_mut(size)
-        .enumerate()
-        .try_for_each(|(j, row)| -> MkResult<()> {
-            ctx.check()?;
-            for (i, z) in row.iter_mut().enumerate() {
-                let phase =
-                    tau * nu[0] * ((b[0][0] + b[1][0]) * xs[i] + (b[0][1] + b[1][1]) * ys[j])
-                        + quadratic(i as f64, j as f64);
-                *z = buf[j * m + i] * C64::from_polar(1.0 / (m * m) as f64, phase);
-            }
-            Ok(())
-        })?;
+    out.par_chunks_mut(size).enumerate().for_each(|(j, row)| {
+        for (i, z) in row.iter_mut().enumerate() {
+            let phase = tau * nu[0] * ((b[0][0] + b[1][0]) * xs[i] + (b[0][1] + b[1][1]) * ys[j])
+                + quadratic(i as f64, j as f64);
+            *z = buf[j * m + i] * C64::from_polar(scale, phase);
+        }
+    });
     Ok(out)
 }
 
@@ -313,12 +298,13 @@ impl ChirpTransform {
                 C64::from_polar(1.0 / len as f64, tau * nu[0] * x + 0.5 * theta * k * k)
             })
             .collect();
+        let chirp = |k: usize| C64::from_polar(1.0, -0.5 * theta * (k as f64).powi(2));
         let mut kernel = vec![C64::default(); len];
-        for k in 0..x.len() {
-            kernel[k] = C64::from_polar(1.0, -0.5 * theta * (k as f64).powi(2));
+        for (k, z) in kernel[..x.len()].iter_mut().enumerate() {
+            *z = chirp(k);
         }
         for k in 1..n {
-            kernel[len - k] = C64::from_polar(1.0, -0.5 * theta * (k as f64).powi(2));
+            kernel[len - k] = chirp(k);
         }
         let forward = plan(len, Dir::Forward);
         let inverse = plan(len, Dir::Inverse);

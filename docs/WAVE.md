@@ -220,27 +220,23 @@ results report their actual grids and image spacing.
   `16 λN`, maximised over the selected wavelengths. This holds the
   aberrated flare and diffraction wings, rather than only an Airy core.
   Spacing is `min(λN)/padding`, with default padding 2.5 (safely finer
-  than intensity Nyquist). Round the required image side up to a 7-smooth
-  pixel count (at least 64; Huygens at most 1024). Encircled energy uses the largest
+  than intensity Nyquist). Round the required image side up to whole pixels
+  (at least 64; Huygens at most 1024). Encircled energy uses the largest
   field's window for all fields. Increase an automatic pupil grid further
   if needed to keep the window within every wavelength's alias-free field
   `n λN`.
-* `mtf` estimates the frequency where polychromatic contrast falls to 0.1.
-  A coarse (at most 64 samples per pupil diameter) geometric characteristic
-  function of the phase-gradient image offsets retains the core contrast
-  even when a few flare rays inflate RMS blur. Spectral weights, lateral
-  colour and circular diffraction MTF are included. Scan frequencies in
-  factors of 1.25 until both image-axis contrasts are at most 0.1, between
-  `min(40 cycles/mm, cutoff/10)` and `0.8 cutoff`, then round upward to two
-  significant decimal digits. The cutoff is the largest spectral cutoff;
-  take the smallest useful limit over fields. This is a plotting estimate,
-  not a replacement for the wave MTF calculation. `mtf_vs_field` uses its
-  sweep and `through_focus_mtf` its selected fields. Their empty frequency
-  lists select a `1, 2, 5 × 10^k` base at or below a quarter of the limit,
-  and its 2× and 4× multiples (for example 10/20/40 cycles/mm). Explicit
-  frequency lists and limits always win. Here `r_rms` in the focus rule
-  below remains the compensated, coverage- and amplitude-squared-weighted
-  geometric RMS radius about the centroid.
+* `mtf` runs to the frequency where an estimate of the polychromatic
+  contrast falls to 0.1 along both image axes: the geometric
+  characteristic function of the phase-slope offsets above (at most 64
+  samples per pupil diameter, spectrally weighted, so lateral colour
+  counts) times the diffraction-limited MTF. Unlike the RMS blur, this
+  keeps the contrast of a sharp core with a little flare. Scan from
+  `min(40 cycles/mm, cutoff/10)` in steps of 1.25 up to at most
+  `0.8 cutoff` (the largest spectral cutoff), round up to two significant
+  digits and take the smallest value over the fields. `mtf_vs_field`
+  (over its sweep) and `through_focus_mtf` (over its fields) take the
+  `1, 2, 5 × 10^k` value at or below a quarter of that limit and its 2×
+  and 4× multiples, e.g. 10/20/40 cycles/mm for the Double Gauss.
 * The default through-focus half-range is `max(8 λN², 4 N r_rms)` over
   all selected pupils (λ in mm). Refine automatic pupil grids against
   the phase steps at both focus endpoints before computing the curves.
@@ -248,40 +244,28 @@ results report their actual grids and image spacing.
 **Cost caps.** Automatic pupil grids stop at 1024 per side (1,048,576
 cells, 16 subpoints per cell at the default supersampling); automatic
 image grids stop at 2048 per side (2047, odd, in image simulation). The
-trace lattice remains the requested `rays` count. Image simulation and polychromatic PSFs use exact chirp-z transforms:
-separable surface maps use two one-dimensional FFT convolutions; skew
-maps use one two-dimensional convolution, exploiting the symmetric
-chief-frame projection. Transform lengths are 7-smooth and at least
-`n + M - 1`, without image interpolation or an oversized chief-normal
-plane. `PolyPsfSettings::transform: matrix` retains the direct skew sum. Huygens retains its separate work/grid limits
-above.
+trace lattice remains the requested `rays` count. Polychromatic PSFs (and
+image simulation) evaluate the exact matrix transform by chirp
+convolutions of 7-smooth length `≥ n + M − 1` on large grids: separable
+surface maps by two 1-D convolutions, skew maps by one 2-D convolution
+(the chief-frame projection `B` is symmetric). Huygens retains its
+separate work/grid limits above.
 These are per pupil/PSF caps, not a wall-time guarantee for arbitrary numbers
 of fields or wavelengths. Cancellation and progress also cover refinements.
 
-**Execution.** Fields, wavelength pupils and automatic refinements run in parallel;
-results and spectral reductions retain selection order. Image simulation processes
-at most two large PSF nodes together to bound temporary memory. FFT plans are reused.
-Pupil rasterisation recognises triangle interiors and integrates an affine
-interpolant at the cell centre when every covered subpoint has the same
-source triangle; clipped/extrapolated cells retain subpoint integration.
-Rim extrapolation starts its breadth-first search at triangle boundaries and
-stops when all aperture gaps have a source. Through-focus prepares each
-fixed-frequency autocorrelation stencil once and reuses it for every focus,
-with the exact reference-sphere defocus phase and one unaberrated reference.
-Encircled energy combines equal-radius Fourier bins and shares Bessel kernels
-across the fields and diffraction references on the common image grid;
-square kernels reuse their separable factors. These changes retain
-the finite sums and sampling diagnostics, rather than reducing the grids.
-The default 65×65 trace lattice is below the engine's 65,536-ray GPU
-crossover; interpolation and diffraction, rather than tracing, dominate the
-large default jobs. These wave routes continue to report the CPU f64 backend.
+Fields, wavelengths and refinements run in parallel; reductions keep the
+selection order, so results are deterministic. Through-focus prepares the
+autocorrelation stencils of each frequency once and only adds the exact
+defocus OPD per plane. Encircled energy sums Fourier bins of equal `|ν|`
+first and shares each Bessel kernel across the fields and diffraction
+references.
 
-Per-field `pupil_sampling` lists report `(wavelength, grid)` after every
-refinement (`mtf_vs_field` has one list per sweep sample, empty for skipped
-samples). PSFs report image size/spacing in `psf`; encircled energy reports
-`grid_size` and `spacing_mm` per field, and line-spread positions give its
-image sampling. Image simulation reports the pupil lists in `field_mapping`.
-Sentinel settings remain unchanged in RunInfo.
+Results report the actual pupil grids as `pupil_sampling` lists of
+`(wavelength, grid)` after every refinement: per field for `psf`, `mtf`,
+`through_focus_mtf`, `line_spread` and `diffraction_encircled_energy`, per
+sweep sample for `mtf_vs_field` (empty for skipped samples) and per node in
+image simulation's `field_mapping`. Encircled energy also reports
+`grid_size` and `spacing_mm`.
 
 Diagnostics are retained at the cap and for explicit coarse settings:
 `pupil_undersampled` above half a wave per pupil cell, `field_wraps` when
@@ -336,37 +320,15 @@ longitudinal phase matters.
 | `tests/sensor_mtf.rs` | off-axis MTF on the image surface: Gaussian angular spectra with quadratic phase at 55° (two azimuths) against the closed-form autocorrelation (direct and FFT, 1.5e-3); a sensor translation cancels against the image offset in the complex OTF; a defocused F/2.1 ideal lens at 55° against a spherical-wave sum over the lens plane (2e-3 at 40 and 60 cycles/mm) |
 | `tests/traced.rs` | lattice OPD = `mklight_trace` OPD (1e-9) on triplet, Newtonian, finite relay and Petzval asphere; diffraction-limited ideal lens and paraboloid (Strehl, analytic MTF to 2e-3, Airy zero at 1.2197 λN), achromat at F/10 and singlet at F/20 (Strehl > 0.99, MTF within 0.01, scale = paraxial working F/# to 1 %); defocus: every ray = exact sphere-to-sphere closed form (1e-8 waves), Zernike focus = `δz NA²/(2λ)`, RMS = `W020/√12`; spherical: `6·Z9` = Seidel `W040` (3 %), fit = traced marginal OPD; Cooke triplet off axis: FFT vs Huygens (0.03) vs direct (0.02) MTF, tangential ≠ sagittal; 10-wave defocus: wave MTF → geometric MTF (0.05); vignetted triplet: rim area = 801² ray-grid transmission (2e-3), coverage = mask area, rim beats the hull; telecentric: `R = ∞`, OPD = `n δz (1 − cosθ)` (1e-8), refocus, FFT = plane-wave Huygens (1e-9), chief ray parallel off axis; mirrors: single paraboloid (`propagation_sign = −1`, defocus closed form), Newtonian, and the PSF centroid = ray centroid off axis (paraboloid, Newtonian, triplet; 3 %); radiometric amplitude of an ideal lens `A² = 1/cos³θ` (2e-3) and flat for a 1:1 finite relay; detector sinc zeros at `1/p`, fill factor, diffusion, product and Nyquist; registry JSON runs, round trips, determinism, cancellation (before and during a run, from another thread) and progress (sampled: monotone, with intermediate values); polychromatic = weighted sum of placed monochromatic PSFs; configurations and through-focus symmetry; Airy EE, `r50`, `r80` and LSF normalisation; MTF vs field = MTF at the system fields; `R → ∞` lattice OPD = `mklight_trace` OPD on and off axis; exit pupil beyond the image (`σ = +1`): every ray = far-sheet closed form (1e-8), positive defocus; annular stop: two rim loops, transmission `1 − ε²` (1e-3), mapped clear area (2e-3), analytic annular MTF (3e-3); PSF centroid = ray centroid for `−x` and diagonal fields (triplet, paraboloid); `transmission` amplitude biases the singlet's centroid by > 15 %, `radiometric` < 10 %; Huygens grid and cost limits (`InvalidParam`, no tracing); `psf_truncated` on a defocused PSF but not an Airy one; unusable fields skipped with warnings (`null` in MTF vs field, error when no field is usable); the axial MTF-vs-field sample follows the sweep direction (non-square pixels); configured runs record the base hash, configuration and solve warnings; default MTF right near zero frequency where the FFT interpolation is not |
 
-The non-ignored unit regressions compare chirp transforms with direct finite
-sums (including a skew projection), grouped energy with the full spectral
-integrals (2e-12), and cached focus curves with independent pupil
-correlations (2e-12). The cycle-reduced focus phasor uses Taylor remainders
-below 6e-17 on its reduced interval and is checked against standard
-trigonometry. `tests/defaults.rs` checks every built-in design's automatic
-sampling diagnostics, the camera frequency floor and result sampling metadata.
-
-Run the ignored camera-design benchmark with:
+Unit tests compare the chirp transforms with direct sums (including a skew
+projection), the grouped energy kernels with the full spectral integrals
+and the cached through-focus curves with independent autocorrelations
+(2e-12). `tests/interactive.rs` holds an ignored timing run of every default
+wave analysis and image simulation on built-in samples:
 
 ```sh
-source ~/.cargo/env
 cargo test --release -p mklight-wave --test interactive -- --ignored --nocapture
 ```
-
-It reports every default wave analysis plus image simulation on the singlet,
-Double Gauss, Cooke triplet, Petzval asphere and anamorphic samples. Timings
-are wall time per design/analysis, including pupil setup, with the default
-Rayon pool. Run without competing computations when measuring latency.
-
-Release CLI wall seconds on the built-in samples (CPU f64, default Rayon
-pool, serial jobs; machine load affects the measurements). "Wave maximum"
-is the slowest of the seven default wave analyses, including pupil setup.
-
-| sample | wave maximum before | after | image simulation before | after |
-|---|---:|---:|---:|---:|
-| Singlet | 8.325 | 1.679 | 3.334 | 1.526 |
-| Double Gauss | 0.887 | 0.251 | 1.247 | 0.922 |
-| Cooke triplet | 0.755 | 0.209 | 0.492 | 0.530 |
-| Petzval asphere | 0.142 | 0.092 | 0.151 | 0.362 |
-| Anamorphic | 0.109 | 0.098 | 0.166 | 0.291 |
 
 ## 7. Open points
 
