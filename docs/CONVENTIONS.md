@@ -26,6 +26,14 @@ document on purpose in the same change.
   **image**. `system.stop` names the aperture-stop surface.
 * Each surface has a **local frame**. The vertex is at the origin and the sag is
   `z = f(x, y)`. The surface is defined by the frame plus its shape.
+* **Apertures** clip rays at the local `(x, y)` of the hit: a fixed
+  semi-diameter (a circle) or an explicit circular, annular, rectangular or
+  elliptical aperture, which wins over the semi-diameter. The edge passes,
+  to a relative tolerance of 10⁻¹⁰ (`APERTURE_EDGE_TOLERANCE`, the default
+  real-aiming accuracy): outer sizes are grown by that factor and an
+  annulus's inner radius shrunk by it, so a ray aimed at the rim of the stop
+  is not clipped by its own aiming residual. Every CPU and GPU path tests
+  these same sizes (`ApertureShape::passes`; the GPU packer packs them).
 * **Curvature** `c = 1/R` is stored instead of radius (a plane is `c = 0`).
   `R > 0` means the centre of curvature lies at **+z** from the vertex.
 * **Thickness** `t_i` is the signed distance along the local z axis, after

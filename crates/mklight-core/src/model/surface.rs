@@ -314,27 +314,54 @@ pub enum ApertureShape {
     },
 }
 
+/// Relative tolerance of an aperture edge (CONVENTIONS §2): the default
+/// real-aiming accuracy, so a ray aimed at the rim is not clipped by its own
+/// aiming residual.
+pub const APERTURE_EDGE_TOLERANCE: f64 = 1e-10;
+
 impl ApertureShape {
-    /// Does the local point `(x, y)` pass the aperture? Include the boundary
-    /// to the default real-aiming accuracy (1e-10 of the aperture size), so
-    /// roundoff in an aimed rim ray does not create artificial vignetting.
-    pub fn passes(&self, x: f64, y: f64) -> bool {
-        let outer = 1.0 + 1e-10;
-        let inner = 1.0 - 1e-10;
+    /// The shape whose edges [`passes`](Self::passes) tests: outer sizes
+    /// grown and an annulus's inner radius shrunk by
+    /// [`APERTURE_EDGE_TOLERANCE`].
+    pub fn with_edge_tolerance(&self) -> Self {
+        let outer = 1.0 + APERTURE_EDGE_TOLERANCE;
         match *self {
-            ApertureShape::Circular { radius } => x * x + y * y <= (radius * outer).powi(2),
+            ApertureShape::Circular { radius } => ApertureShape::Circular {
+                radius: radius * outer,
+            },
+            ApertureShape::Annular {
+                inner_radius,
+                outer_radius,
+            } => ApertureShape::Annular {
+                inner_radius: inner_radius * (1.0 - APERTURE_EDGE_TOLERANCE),
+                outer_radius: outer_radius * outer,
+            },
+            ApertureShape::Rectangular { half_x, half_y } => ApertureShape::Rectangular {
+                half_x: half_x * outer,
+                half_y: half_y * outer,
+            },
+            ApertureShape::Elliptical { semi_x, semi_y } => ApertureShape::Elliptical {
+                semi_x: semi_x * outer,
+                semi_y: semi_y * outer,
+            },
+        }
+    }
+
+    /// Does the local point `(x, y)` pass the aperture, edge tolerance
+    /// included?
+    pub fn passes(&self, x: f64, y: f64) -> bool {
+        match self.with_edge_tolerance() {
+            ApertureShape::Circular { radius } => x * x + y * y <= radius * radius,
             ApertureShape::Annular {
                 inner_radius,
                 outer_radius,
             } => {
                 let r2 = x * x + y * y;
-                r2 >= (inner_radius * inner).powi(2) && r2 <= (outer_radius * outer).powi(2)
+                r2 >= inner_radius * inner_radius && r2 <= outer_radius * outer_radius
             }
-            ApertureShape::Rectangular { half_x, half_y } => {
-                x.abs() <= half_x * outer && y.abs() <= half_y * outer
-            }
+            ApertureShape::Rectangular { half_x, half_y } => x.abs() <= half_x && y.abs() <= half_y,
             ApertureShape::Elliptical { semi_x, semi_y } => {
-                (x / semi_x).powi(2) + (y / semi_y).powi(2) <= outer * outer
+                (x / semi_x).powi(2) + (y / semi_y).powi(2) <= 1.0
             }
         }
     }

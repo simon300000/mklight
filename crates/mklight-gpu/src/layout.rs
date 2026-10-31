@@ -20,7 +20,7 @@
 use bytemuck::{Pod, Zeroable};
 use mklight_core::materials::coating::ResolvedCoating;
 use mklight_core::math::Mat3;
-use mklight_core::model::{ApertureShape, Interaction, SurfaceShape};
+use mklight_core::model::{APERTURE_EDGE_TOLERANCE, ApertureShape, Interaction, SurfaceShape};
 use mklight_core::snapshot::SnapshotHash;
 use mklight_core::{MkError, MkResult, ResolvedSystem};
 
@@ -639,11 +639,12 @@ impl PackedSystem {
             };
 
             // Aperture: an explicit shape overrides a fixed semi-diameter.
+            // Sizes include the edge tolerance of `ApertureShape::passes`.
             let hint = opts.radius_hints.as_ref().map(|h| h[i]);
             let mut bounding = hint;
             match (&s.aperture, s.fixed_semi_diameter) {
                 (Some(a), _) => {
-                    let (t, prm) = match *a {
+                    let (t, prm) = match a.with_edge_tolerance() {
                         ApertureShape::Circular { radius } => {
                             (MKL_APERTURE_CIRCULAR, [radius, 0.0])
                         }
@@ -669,7 +670,7 @@ impl PackedSystem {
                     p.aperture = MKL_APERTURE_CIRCULAR;
                     p.flags |= MKL_SURF_APERTURE_FROM_SD;
                     (p.aperture_params[0], p.aperture_params_lo[0]) =
-                        split_checked(r, &what("semi-diameter"))?;
+                        split_checked(r * (1.0 + APERTURE_EDGE_TOLERANCE), &what("semi-diameter"))?;
                     bounding = bounding.or(Some(r));
                 }
                 (None, None) => p.aperture = MKL_APERTURE_NONE,
