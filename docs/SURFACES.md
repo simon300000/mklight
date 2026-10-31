@@ -316,7 +316,13 @@ validation, never by the path itself. `ShapeParam {surface,parameter}` supports
 `param` tag, so the scalar selector is named **parameter**. Order edits
 must be integral. Orders are discrete, not continuous optimisation variables.
 Legacy `Curvature`, `Conic` and `Asphere` paths retain their meanings, also
-addressing a DOE's base where applicable.
+addressing a DOE's base where applicable. On toroids and biconics, generic
+`Curvature` reads/writes the y-section `curvature_y`; the independent
+`curvature_x` shape parameter is unchanged. Session parameter reads of an
+automatic semi-diameter return the resolved layout radius, using the same
+default aperture solve, field augmentation and sag-domain clipping. Core
+`ParamPath::get` has no tracer/material context and still requires a fixed
+radius. Writes continue to replace Auto with a fixed positive radius.
 
 ## 8. Reference tracing, first order and symmetry
 

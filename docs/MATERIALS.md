@@ -145,7 +145,10 @@ lib.add_catalog(Arc::new(cat));
 
 `GlassCatalog::from_agf_file` and `MaterialLibrary` retain availability,
 exclude-substitution and climate/stain resistance in `Glass::substitution`.
-The complete AGF metadata (including ΔP_g,F and other resistance codes)
+`Glass::relative_cost` and `Glass::transmittance` retain OD cost and IT
+samples. `glass_map` reports all these material fields without separate
+metadata; `glass_substitution` filters use the same values. The complete
+AGF metadata (including ΔP_g,F and other resistance codes)
 stays in `AgfCatalog::meta`. The `glass_substitution` job filters the retained
 summary; its candidate settings and distance metric are in `OPTIMIZATION.md`.
 

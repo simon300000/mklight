@@ -41,7 +41,8 @@ pub enum ImageSource {
     Pattern {
         pattern: TestPattern,
     },
-    /// Linear-light samples, row-major interleaved; one or three channels.
+    /// Linear-light samples, row-major interleaved, row zero at low y.
+    /// One or three channels.
     Buffer {
         width: usize,
         height: usize,
@@ -345,7 +346,9 @@ fn read_png(path: &str) -> MkResult<Raster> {
             .collect(),
     };
     let data = code
-        .chunks_exact(stored)
+        .chunks_exact(w * stored)
+        .rev()
+        .flat_map(|row| row.chunks_exact(stored))
         .flat_map(|px| px[..c].iter())
         .map(|&x| {
             if x <= 0.04045 {
@@ -388,7 +391,9 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
                 [17, 18, 20, 24, 20, 18, 17],
                 [16, 16, 16, 16, 16, 16, 31],
             ];
-            let band = (v * 3.0) as usize;
+            // Glyph bitmaps and scale bands are written top to bottom.
+            let y = h - 1 - y;
+            let band = (y as f64 * 3.0 / h as f64) as usize;
             let scale = [4, 2, 1][band.min(2)];
             let (gx, gy) = (x / scale, y / scale);
             let glyph = (gx / 6) % 3;
@@ -1098,6 +1103,86 @@ mod tests {
         let chief = t.chief(&f, t.system().primary_wavelength).ray.pos;
         assert!((m.real_mm[1] - chief.y).abs() > 1e-3);
     }
+    #[test]
+    fn asymmetric_sources_keep_their_orientation_through_identity_mapping() {
+        let t = ideal();
+        let n = 108;
+        // Identity image-plane mapping and delta PSFs isolate source orientation.
+        let mapping = (0..2)
+            .flat_map(|y| {
+                (0..2).map(move |x| {
+                    let point = [x as f64, y as f64];
+                    FieldMapping {
+                        field: point,
+                        ideal_mm: point,
+                        real_mm: point,
+                        relative_illumination: 1.0,
+                    }
+                })
+            })
+            .collect();
+        let grid = Arc::new(PsfGrid {
+            mapping,
+            size: 2,
+            psf_size: 3,
+            spacing_mm: 1.0 / n as f64,
+            kernels: vec![vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]; 4],
+            warnings: Vec::new(),
+        });
+        let run = |source| {
+            image_simulation_job(
+                &t,
+                &ImageSimulationSettings {
+                    source,
+                    size: [n, n],
+                    ..Default::default()
+                },
+                Some(grid.clone()),
+                &JobContext::new(),
+            )
+            .unwrap()
+            .image
+        };
+        let text = run(ImageSource::Pattern {
+            pattern: TestPattern::TextChart,
+        });
+        // The L at the top has a vertical stem and a bottom horizontal bar.
+        assert!((text[(n - 1) * n + 52] - 1.0).abs() < 1e-12);
+        assert!(text[(n - 1 - 24) * n + 52].abs() < 1e-12);
+
+        let path =
+            std::env::temp_dir().join(format!("mklight-orientation-{}.png", std::process::id()));
+        let mut top_down = vec![0u8; n * n];
+        top_down[7] = 255;
+        {
+            let mut encoder =
+                png::Encoder::new(std::fs::File::create(&path).unwrap(), n as u32, n as u32);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&top_down)
+                .unwrap();
+        }
+        let png = run(ImageSource::Path {
+            path: path.to_str().unwrap().into(),
+        });
+        std::fs::remove_file(path).unwrap();
+        let mut bottom_up = vec![0.0; n * n];
+        bottom_up[(n - 1) * n + 7] = 1.0;
+        let buffer = run(ImageSource::Buffer {
+            width: n,
+            height: n,
+            channels: 1,
+            data: bottom_up,
+        });
+        assert!((png[(n - 1) * n + 7] - 1.0).abs() < 1e-12);
+        for (a, b) in png.iter().zip(buffer) {
+            assert!((a - b).abs() < 1e-12);
+        }
+    }
+
     #[test]
     fn png_sources_decode_srgb_to_linear() {
         let path = std::env::temp_dir().join(format!("mklight-im-{}.png", std::process::id()));

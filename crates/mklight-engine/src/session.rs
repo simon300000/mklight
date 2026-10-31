@@ -616,9 +616,25 @@ impl Session {
         Ok(r.json)
     }
 
-    /// Current value of one parameter (`None` where it has none, e.g. an
-    /// automatic semi-diameter).
+    /// Current parameter value; automatic semi-diameters use the layout solve.
     pub fn param_value(&self, path: &ParamPath) -> EngineResult<Option<f64>> {
+        if let ParamPath::SemiDiameter { surface } = path {
+            if let Some(index) = self.system().surfaces.iter().position(|s| s.id == *surface) {
+                if matches!(
+                    self.system().surfaces[index].semi_diameter,
+                    mklight_core::model::SemiDiameter::Auto
+                ) {
+                    let tracer = mklight_trace::SequentialTracer::new(self.resolved()?)?;
+                    let tracer =
+                        mklight_analysis::util::default_fields(&tracer, &Default::default())?;
+                    let sd = tracer.semi_diameters(&Default::default());
+                    return Ok(Some(
+                        mklight_analysis::layout::resolved_semi_diameters(tracer.as_ref(), &sd)
+                            [index],
+                    ));
+                }
+            }
+        }
         match path.get(self.system()) {
             Ok(v) => Ok(Some(v)),
             Err(e) => {

@@ -361,6 +361,26 @@ pub fn layout(tracer: &SequentialTracer, settings: &LayoutSettings) -> MkResult<
     layout_job(tracer, settings, &JobContext::new())
 }
 
+/// Display radii from the layout aperture solve, including domain clipping.
+pub fn resolved_semi_diameters(
+    tracer: &SequentialTracer,
+    sd: &mklight_trace::semidia::SemiDiameters,
+) -> Vec<f64> {
+    let sys = tracer.system();
+    let max_sd = sd.values.iter().copied().fold(0.0, f64::max);
+    let floor = if max_sd > 0.0 { 0.05 * max_sd } else { 1.0 };
+    (0..sys.num_surfaces())
+        .map(|j| {
+            let v = match sd.sources[j] {
+                SemiDiameterSource::Stop => sd.values[j].max(sd.traced[j]),
+                _ => sd.values[j],
+            };
+            let v = if v > 0.0 { v } else { floor };
+            v.min(domain_radius(&sys.surfaces[j].shape))
+        })
+        .collect()
+}
+
 /// [`layout`] with cancellation and progress (geometry, then rays).
 pub fn layout_job(
     tracer: &SequentialTracer,
@@ -388,18 +408,7 @@ pub fn layout_job(
     let n = sys.num_surfaces();
     let img = sys.image_index();
     let sd = tracer.semi_diameters(&SemiDiameterSettings::default());
-    let max_sd = sd.values.iter().copied().fold(0.0, f64::max);
-    let floor = if max_sd > 0.0 { 0.05 * max_sd } else { 1.0 };
-    let clear: Vec<f64> = (0..n)
-        .map(|j| {
-            let v = match sd.sources[j] {
-                SemiDiameterSource::Stop => sd.values[j].max(sd.traced[j]),
-                _ => sd.values[j],
-            };
-            let v = if v > 0.0 { v } else { floor };
-            v.min(domain_radius(&sys.surfaces[j].shape))
-        })
-        .collect();
+    let clear = resolved_semi_diameters(tracer, &sd);
     let mech: Vec<f64> = (0..n)
         .map(|j| {
             sys.system().surfaces[j]

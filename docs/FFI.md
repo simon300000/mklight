@@ -320,6 +320,8 @@ through `mk_job_status`).
 
 `run_info.backend` names the backend that computed the result; `backend`
 adds what was requested and why another backend was used, if one was.
+The envelope also carries `derived_snapshot_hash` for a run-local spectrum
+(null otherwise); `run_info.snapshot_hash` always names the submitted design.
 
 A result's inputs are identified by the pair (`run_info.snapshot_hash`,
 `library_hash`): the system and the glass data it was computed with.
@@ -370,9 +372,10 @@ atomically (all or none):
 (unchanged when the values were already set).
 
 `mk_session_get_param(session, path_json, &json)` reads one parameter:
-`{"value": number | "inf" | "-inf" | null}` (`null`: it has no value, e.g.
-an automatic semi-diameter; a path the system does not have is
-`MK_ERR_INVALID_ARGUMENT`).
+`{"value": number | "inf" | "-inf" | null}`. Automatic semi-diameters
+return the resolved layout radius (same aperture solve and domain clipping);
+writes still set a fixed radius. A path the system does not have is
+`MK_ERR_INVALID_ARGUMENT`.
 
 ### Validation, solves, autosave, migration
 
