@@ -230,7 +230,6 @@ pub fn covered(paths: &BTreeSet<GhostPath>, sig: &Signature) -> bool {
     let mut path = GhostPath::new(reflections);
     path.diffraction = sig
         .diffraction()
-        .iter()
         .filter(|e| !e.selected)
         .map(|e| mklight_ghost::path::DiffractionOrder {
             surface: e.surface,

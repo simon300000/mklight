@@ -1,4 +1,4 @@
-//! Repeated DOE encounters must preserve ghost ownership past six visits.
+//! DOE visit capacity of path signatures.
 mod common;
 
 use common::*;
@@ -89,10 +89,10 @@ fn seven_pass_doe_ghost_matches_explicit_weight_and_exclusion() {
     let seven = result
         .signatures
         .iter()
-        .find(|s| s.class == PathClass::Ghost && s.signature.diffraction().len() == 7)
+        .find(|s| s.class == PathClass::Ghost && s.signature.diffraction().count() == 7)
         .unwrap();
     assert!(!seven.signature.overflow());
-    for (visit, event) in seven.signature.diffraction().iter().enumerate() {
+    for (visit, event) in seven.signature.diffraction().enumerate() {
         assert_eq!(
             (event.surface, event.visit, event.order),
             (2, visit as u32, 1)
@@ -124,7 +124,7 @@ fn doe_capacity_preserves_late_order_overrides_and_refuses_overflow_coverage() {
     assert!(signature.overflow());
     assert!(!mklight_stray::tracer::covered(&covered, &signature));
 
-    // Transport validates the total across different DOE surfaces as well.
+    // The transport limit counts visits over all DOE surfaces.
     let mut s = window(1.0, 1.0, 1.0);
     s.surfaces.truncate(1);
     for i in 1..=MAX_DIFFRACTION_VISITS + 1 {

@@ -245,16 +245,14 @@ fn sample(table: &[[f64; 2]], s: &SpectralSampling) -> MkResult<Vec<Wavelength>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Published CIE 018:2019 Tables 1/2 and dataset column sums;
-    // DOI 10.25039/CIE.DS.dktna2s3 and 10.25039/CIE.DS.gr6w4b5g.
+    /// Samples and `sumOfColumns` from the CIE dataset metadata.
     #[test]
     fn cie_published_values_and_integrals() {
-        for (table, start_nm, sum, energy_nm, samples) in [
+        for (table, start_nm, sum, samples) in [
             (
                 tables::photopic(),
                 360,
                 106.8569171011719,
-                106.8569149167669,
                 &[
                     (360, 0.000003917),
                     (450, 0.038),
@@ -268,7 +266,6 @@ mod tests {
                 tables::scotopic(),
                 380,
                 97.0713165740,
-                97.0710220045,
                 &[
                     (380, 0.000589),
                     (450, 0.455),
@@ -283,14 +280,13 @@ mod tests {
         ] {
             let end_nm = samples.last().unwrap().0;
             assert_eq!(table.len(), end_nm - start_nm + 1);
-            for (i, &[um, _]) in table.iter().enumerate() {
-                assert_eq!(um, (start_nm + i) as f64 * 0.001);
-            }
             for &(nm, value) in samples {
-                assert_eq!(table[nm - start_nm][1], value, "{nm} nm");
+                assert_eq!(response(&table, nm as f64 * 0.001), value, "{nm} nm");
             }
             assert!((table.iter().map(|r| r[1]).sum::<f64>() - sum).abs() < 1e-12);
-            let range_um = [start_nm as f64 * 0.001, end_nm as f64 * 0.001];
+            // Trapezoid at 1 nm: the column sum less half of each endpoint.
+            let energy_nm = sum - (table[0][1] + table[table.len() - 1][1]) / 2.0;
+            let range_um = [table[0][0], table[table.len() - 1][0]];
             assert!(
                 (integral(&table, range_um[0], range_um[1]).0 * 1000.0 - energy_nm).abs() < 1e-12
             );

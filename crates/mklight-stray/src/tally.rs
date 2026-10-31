@@ -818,7 +818,7 @@ impl StrayTally {
             .map(|((c, sig), acc)| SignatureFlux {
                 class: PathClass::ALL[*c as usize],
                 events: sig.events().collect(),
-                diffraction: sig.diffraction().to_vec(),
+                diffraction: sig.diffraction().collect(),
                 overflow: sig.overflow(),
                 label: String::new(),
                 flux: acc.flux.value(),
