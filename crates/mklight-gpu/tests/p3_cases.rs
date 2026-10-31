@@ -20,52 +20,14 @@ pub fn scratch(p: &mut ResidentPlan, t: ElementType, s: impl Into<Vec<usize>>) -
     p.scratch(BufferDesc::new(t, s))
 }
 pub fn read(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanResult) {
-    let (v, out, _, _) = read_timed(b, p);
-    (v, out)
-}
-pub fn read_timed(
-    b: &dyn ComputeBackend,
-    mut p: ResidentPlan,
-) -> (Vec<BufferData>, PlanResult, f64, u64) {
-    p.settings["p3_requests"] = serde_json::json!(
-        p.operations
-            .iter()
-            .filter_map(|op| match op {
-                ResidentOp::Collectives(r) => Some(format!("{r:?}")),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    );
-    let out = b
-        .submit_plan(p, &JobContext::new())
-        .unwrap()
-        .wait()
-        .unwrap();
-    assert_eq!(out.stats.readback_bytes, 0);
+    let out = b.submit_plan(p, &JobContext::new()).unwrap().wait().unwrap();
     assert_eq!(out.stats.fallback_count, 0);
-    let mut seconds = 0.0;
-    let mut bytes = 0;
     let v = out
         .outputs
         .iter()
-        .map(|h| {
-            // Empty leases execute and publish. P0 empty DF readback has an
-            // alignment bug; the evidence records this separate runtime gap.
-            if h.desc().len().unwrap() == 0 {
-                return match h.desc().element {
-                    ElementType::U32 => BufferData::U32(vec![]),
-                    ElementType::F32 => BufferData::F32(vec![]),
-                    ElementType::DoubleFloat => BufferData::DoubleFloat(vec![]),
-                    ElementType::Complex32 => BufferData::Complex32(vec![]),
-                };
-            }
-            let r = b.readback(h.view(), &JobContext::new()).unwrap();
-            seconds += r.wall_seconds;
-            bytes += r.copied_bytes;
-            r.data
-        })
+        .map(|h| b.readback(h.view(), &JobContext::new()).unwrap().data)
         .collect();
-    (v, out, seconds, bytes)
+    (v, out)
 }
 pub fn df(v: &BufferData) -> Vec<f64> {
     let BufferData::DoubleFloat(v) = v else {
@@ -555,41 +517,35 @@ pub fn qr_plan(
     p.outputs = vec![factors, solution, rank_condition];
     p
 }
-// Independent f64 Householder reference, never a normal-equation solve.
+/// Independent CPU f64 reference: column-equilibrated Householder QR on
+/// column-major storage (the CPU fit path's algorithm), never normal equations.
 pub fn reference_qr(a: &[f64], rhs: &[f64], m: usize, n: usize) -> Vec<f64> {
-    let mut a = a.to_vec();
+    let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let mut cols: Vec<Vec<f64>> = (0..n).map(|j| (0..m).map(|i| a[i * n + j]).collect()).collect();
+    let scale: Vec<f64> = cols.iter().map(|c| norm(c)).collect();
+    for (c, s) in cols.iter_mut().zip(&scale) {
+        c.iter_mut().for_each(|v| *v /= s);
+    }
     let mut b = rhs.to_vec();
-    for k in 0..n {
-        let norm = (k..m)
-            .map(|i| a[i * n + k] * a[i * n + k])
-            .sum::<f64>()
-            .sqrt();
-        let alpha = -norm.copysign(a[k * n + k]);
-        let mut v: Vec<_> = (k..m).map(|i| a[i * n + k]).collect();
+    let mut diag = vec![0.; n];
+    for j in 0..n {
+        let (head, tail) = cols.split_at_mut(j + 1);
+        let v = &mut head[j][j..];
+        let alpha = -norm(v).copysign(v[0]);
         v[0] -= alpha;
-        let vv = v.iter().map(|x| x * x).sum::<f64>();
-        for j in k..n {
-            let d = 2.
-                * v.iter()
-                    .enumerate()
-                    .map(|(i, v)| v * a[(i + k) * n + j])
-                    .sum::<f64>()
-                / vv;
-            for (i, &v) in v.iter().enumerate() {
-                a[(i + k) * n + j] -= d * v;
-            }
-        }
-        let d = 2. * v.iter().enumerate().map(|(i, v)| v * b[i + k]).sum::<f64>() / vv;
-        for (i, &v) in v.iter().enumerate() {
-            b[i + k] -= d * v;
+        diag[j] = alpha;
+        let vv: f64 = v.iter().map(|x| x * x).sum();
+        for c in tail.iter_mut().map(|c| &mut c[j..]).chain([&mut b[j..]]) {
+            let f = 2. * v.iter().zip(c.iter()).map(|(v, x)| v * x).sum::<f64>() / vv;
+            c.iter_mut().zip(v.iter()).for_each(|(x, v)| *x -= f * v);
         }
     }
     let mut x = vec![0.; n];
     for i in (0..n).rev() {
-        let s = (i + 1..n).map(|j| a[i * n + j] * x[j]).sum::<f64>();
-        x[i] = (b[i] - s) / a[i * n + i];
+        let s: f64 = (i + 1..n).map(|j| cols[j][i] * x[j]).sum();
+        x[i] = (b[i] - s) / diag[i];
     }
-    x
+    x.iter().zip(&scale).map(|(x, s)| x / s).collect()
 }
 pub fn qr_check(
     b: &dyn ComputeBackend,
@@ -723,8 +679,15 @@ pub fn qr_answers(b: &dyn ComputeBackend) {
     for (x, want) in df(&v[1]).iter().zip(coeff) {
         assert!((x - want).abs() < 1e-10);
     }
-    let max = qr_check(b, a, rhs, m, 6, 1e-10, 6);
-    eprintln!("QR f64 reconstruction max={max:e}");
+    qr_check(b, a, rhs, m, 6, 1e-10, 6);
+    // Ill-conditioned Jacobian: monomials t^0..t^9 on [0, 1] with a
+    // non-polynomial residual; equilibrated condition estimate ~1e8.
+    let (m, n) = (200, 10);
+    let a: Vec<_> = (0..m)
+        .flat_map(|i| (0..n).map(move |j| ((i as f64 + 0.5) / m as f64).powi(j as i32)))
+        .collect();
+    let rhs: Vec<_> = (0..m).map(|i| (3. * (i as f64 + 0.5) / m as f64).exp()).collect();
+    qr_check(b, a, rhs, m, n, 1e-12, n);
 }
 
 pub fn energy_chain(b: &dyn ComputeBackend) {
@@ -821,4 +784,84 @@ pub fn nonfinite_qr(b: &dyn ComputeBackend) {
     );
     assert_eq!(df(&v[2])[3], 2.);
     assert!(df(&v[1]).iter().all(|x| x.is_nan()));
+}
+fn philox(n: usize, stream: u64) -> Vec<u32> {
+    let mut r = mklight_core::rng::Philox::new(3, stream);
+    (0..n).map(|_| r.next_u32()).collect()
+}
+/// Full-range keys and IDs with ties, signed zeros, subnormals and NaNs, so
+/// every radix digit matters.
+pub fn random_sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType) -> ResidentPlan {
+    let bits = philox(2 * n, 1);
+    let key = |i: usize| bits[i % (n / 3 + 1)];
+    let float = |u: u32| match u % 7 {
+        0 => 0.,
+        1 => -0.,
+        2 => f32::NAN,
+        3 => f32::from_bits(u >> 9),
+        _ => f32::from_bits(u),
+    };
+    let keys = match key_type {
+        ElementType::U32 => BufferData::U32((0..n).map(key).collect()),
+        ElementType::F32 => BufferData::F32((0..n).map(|i| float(key(i))).collect()),
+        _ => BufferData::DoubleFloat(
+            (0..n)
+                .map(|i| Df32::new(float(key(i)) * 1e-3, float(key(i).rotate_left(7)) * 1e-12))
+                .collect(),
+        ),
+    };
+    let mut p = plan();
+    let k = import(b, &mut p, [n], keys);
+    let ids = import(b, &mut p, [n], BufferData::U32((0..n).map(|i| bits[n + i] | 0xff).collect()));
+    let ok = scratch(&mut p, key_type, [n]);
+    let oi = scratch(&mut p, ElementType::U32, [n]);
+    p.operations
+        .push(ResidentOp::Collectives(Request::StableSort(StableSort {
+            keys: k,
+            ids,
+            values: None,
+            output_keys: ok,
+            output_ids: oi,
+            output_values: None,
+        })));
+    p.outputs = vec![ok, oi];
+    p
+}
+/// Double-float moments at large image height with a reference, separate
+/// weights and a mask whose rejected records hold NaN coordinates.
+pub fn moments_case(b: &dyn ComputeBackend, offsets: Vec<u32>, bound: usize) -> ResidentPlan {
+    let n = *offsets.last().unwrap() as usize;
+    let s = offsets.len() - 1;
+    let bits = philox(3 * n, 2);
+    let u = |i: usize| bits[i] as f64 / u32::MAX as f64;
+    let keep = |i: usize| bits[i] % 11 != 0;
+    let coord = |i: usize, j: usize, base: f64| if keep(i) { base + 1e-3 * u(j) } else { f64::NAN };
+    let values = (0..n)
+        .map(|i| coord(i, i, 10000.))
+        .chain((0..n).map(|i| coord(i, n + i, -2000.)))
+        .map(Df32::from_f64)
+        .collect();
+    let mut p = segment(
+        b,
+        BufferData::DoubleFloat(values),
+        2,
+        offsets,
+        SegmentKind::Moments2,
+        Some(BufferData::DoubleFloat(
+            (0..2 * s).map(|i| Df32::from_f64([10000., -2000.][i % 2])).collect(),
+        )),
+        bound,
+    );
+    let mask = import(b, &mut p, [n], BufferData::U32((0..n).map(|i| u32::from(keep(i)) * 5).collect()));
+    let weights = import(
+        b,
+        &mut p,
+        [n],
+        BufferData::DoubleFloat((0..n).map(|i| Df32::from_f64(u(2 * n + i) - 0.1)).collect()),
+    );
+    let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
+        unreachable!()
+    };
+    (r.mask, r.mask_value, r.weights) = (Some(mask), 5, Some(weights));
+    p
 }

@@ -1,30 +1,26 @@
-//! Deterministic resident collectives. Layouts and fixed-order algorithms are
-//! part of the portable kernel contract; no solver-specific state lives here.
+//! Deterministic resident collectives. Layouts and fixed-order algorithms
+//! are part of the portable kernel contract; `spec` and `cpu` are the CPU-f32
+//! specification that Metal reproduces bit for bit (QR included).
 //!
-//! Active numeric records are finite and double-float pairs are normalised;
-//! upstream producers own these invariants. Masks are applied before loading
-//! inactive coordinates (failed trace records may contain NaN).
-//! Views are contiguous. Segments are half-open ranges in a u32 offsets array;
-//! empty segments are legal. Device-produced offsets are checked on the device
-//! and publish status 1 for an invalid range (status 0 means success).
-//! Stable ordering uses (key, logical ID, original position). Float keys use
-//! numeric order, equal signed zeros tie, and NaNs follow all numeric keys.
-//! Compaction keeps input order and zero-fills the unused tail (IDs use MAX).
-//! Scans use a 256-element inclusive doubling tree, recursively scan block
-//! totals, then add the preceding block prefix. U32 addition wraps modulo 2^32.
-//! F32 scans publish double-float; double-float scans retain both words.
+//! Active records are finite and double-float pairs normalised; upstream
+//! producers own these invariants. Masked records are never loaded.
+//! Segments are half-open ranges of a u32 offsets array, checked on the
+//! device (status 1 and NaN outputs for an invalid range); empty segments
+//! are legal. Every segment term uses the fixed tree of [`crate::reduce`].
+//! Stable ordering is by (key, logical ID, original position); float keys
+//! use numeric order, signed zeros tie and NaNs follow all numbers.
+//! Compaction keeps input order and clears the tail (IDs u32::MAX). Scans
+//! use 256-element doubling blocks, recursively scanned block totals and
+//! wrapping u32 or double-float addition (f32 inputs publish double-float).
 //!
-//! QR supports up to MKL_COLLECT_QR_MAX_COLUMNS (64) columns per fit.
-//! Larger solves return Unsupported for the adapter to report/fall back.
-//! QR is column-equilibrated, pivoted, twice-reorthogonalised modified
-//! Gram-Schmidt in double-float. Largest residual norm wins; ties use the
-//! original column index. Rank stops at norm <= tolerance * first pivot.
-//! Factors [batch, rows+cols+2, cols] contain thin Q, upper R, original column
-//! scales, then pivot indices (encoded exactly as double-float). Thus
-//! A[:,pivot[j]] = scale[pivot[j]] * (Q R)[:,j]. The reported condition is
-//! ||R||_inf ||R^-1||_inf of the equilibrated matrix, infinity when deficient;
-//! it is an estimate of conditioning, not a singular-value computation.
-//! Rank-deficient solutions are NaN and must be handled by the caller.
+//! QR is column-equilibrated, pivoted modified Gram-Schmidt with two
+//! projections per step, in double-float. The largest residual norm wins,
+//! ties take the lower original column; rank stops at norm <= tolerance *
+//! first pivot norm. Factors [batch, rows+cols+2, cols] hold thin Q, upper R,
+//! the column scales and pivot indices: A[:,pivot[j]] = scale[pivot[j]] (QR)[:,j].
+//! The condition is ||R||_inf ||R^-1||_inf of the equilibrated matrix
+//! (infinite when deficient), an estimate rather than a singular-value ratio.
+//! Rank-deficient or non-finite fits publish NaN coefficients.
 use crate::resident::{
     Access, BufferDesc, BufferId, ElementType as Ty, PlanView, ResidentPlan, bad,
 };
@@ -106,7 +102,7 @@ pub struct QrFit {
     /// DoubleFloat [batch,cols], in original column order.
     pub solution: BufferId,
     /// DoubleFloat [batch,4]: rank, condition estimate, residual norm, status
-    /// (0 full rank, 1 rank deficient, 2 non-finite arithmetic/input).
+    /// (0 full rank, 1 rank deficient, 2 non-finite input or arithmetic).
     pub rank_condition: BufferId,
 }
 #[derive(Clone, Debug)]
@@ -256,10 +252,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             {
                 return Err(bad("QR dimensions or tolerance"));
             }
-            if n > crate::consts::MKL_COLLECT_QR_MAX_COLUMNS as usize {
-                return crate::resident::unsupported("QR exceeds 64 columns");
-            }
-            if b * (m * (n + 1)).max(3 * (n + 1) + 4) > u32::MAX as usize / 2 {
+            if 2 * b * (n + 1) * m > u32::MAX as usize {
                 return Err(bad("QR work extent"));
             }
             output(p, r.factors, Ty::DoubleFloat, [b, m + n + 2, n])?;

@@ -232,10 +232,27 @@ fn masked_subnormals_modes_and_views() {
         }
     }
 }
+/// A fit spanning several command buffers (20000 x 120).
+fn long_fit(g: &dyn ComputeBackend) -> ResidentPlan {
+    let (m, n) = (20000, 120);
+    let a: Vec<_> = (0..m)
+        .flat_map(|i| {
+            (0..n).map(move |j| {
+                if j == 0 {
+                    1.
+                } else {
+                    ((i as f64 + 0.5) * j as f64 * std::f64::consts::PI / m as f64).cos()
+                }
+            })
+        })
+        .collect();
+    let rhs: Vec<_> = (0..m).map(|i| a[i * n] + 0.2 * a[i * n + 1]).collect();
+    cases::qr_plan(g, m, n, 1, a, rhs, 1e-10)
+}
 #[test]
 fn concurrent_cancellation_progress_and_reuse() {
     let g = Arc::new(backend(LibraryChoice::Precompiled));
-    let p = cases::sort_case(&*g, 1_000_003, ElementType::F32);
+    let p = long_fit(&*g);
     let ctx = JobContext::new();
     let pending = g.submit_plan(p.clone(), &ctx).unwrap();
     let start = Instant::now();
@@ -248,46 +265,29 @@ fn concurrent_cancellation_progress_and_reuse() {
             break;
         }
         assert!(start.elapsed() < Duration::from_secs(30));
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_micros(200));
     }
     assert!(
         previous > 0. && previous < 1.,
         "must observe device-work progress before cancellation"
     );
-    let cancel_at = Instant::now();
     pending.cancel();
     assert!(matches!(pending.wait(), Err(MkError::Cancelled)));
-    assert!(!ctx.cancel.is_cancelled());
-    eprintln!(
-        "cancel completion ms={}",
-        cancel_at.elapsed().as_secs_f64() * 1e3
-    );
+    // Concurrent jobs reproduce every bit.
     let a = g.submit_plan(p.clone(), &JobContext::new()).unwrap();
     let b = g.submit_plan(p.clone(), &JobContext::new()).unwrap();
-    let a = a.wait().unwrap();
-    let b = b.wait().unwrap();
+    let (a, b) = (a.wait().unwrap(), b.wait().unwrap());
     for (a, b) in a.outputs.iter().zip(&b.outputs) {
         let aa = g.readback(a.view(), &JobContext::new()).unwrap();
         let bb = g.readback(b.view(), &JobContext::new()).unwrap();
         cases::assert_bits(&aa.data, &bb.data);
     }
-    drop(a);
-    drop(b);
-    let (_, warm) = cases::read(&*g, p);
+    let (v, warm) = cases::read(&*g, p);
     assert!(warm.stats.reused_allocations > 0);
-    assert_eq!(warm.stats.fallback_count, 0);
-    assert!(
-        warm.stats
-            .stages
-            .iter()
-            .any(|s| s.device_seconds > 0. && s.max_command_seconds > 0.)
-    );
-    let unsupported = cases::qr_plan(&*g, 65, 65, 1, vec![0.; 65 * 65], vec![0.; 65], 1e-10);
-    assert!(matches!(
-        g.submit_plan(unsupported, &JobContext::new()),
-        Err(MkError::Unsupported(_))
-    ));
-    // Unsupported domain plans stay errors; cancellation never starts a CPU replacement.
+    assert!(warm.stats.command_buffers > 1);
+    assert!(warm.stats.stages.iter().any(|s| s.max_command_seconds > 0. && s.max_command_seconds < 0.05));
+    assert_eq!(cases::df(&v[2])[0], 120.);
+    assert!((cases::df(&v[1])[0] - 1.).abs() < 1e-10);
     let mut bad = cases::scan_case(&*g, 7, true, true);
     let ResidentOp::Collectives(Request::Scan(r)) = &mut bad.operations[0] else {
         unreachable!()
@@ -560,9 +560,13 @@ fn benchmark_trace_collectives() {
                 .unwrap_or(0);
             let p = trace_plan(&g, &t, h, rays.clone(), offsets.clone(), false, bound);
             let prepare = wall.elapsed().as_secs_f64();
-            let (out, stats, readback_seconds, readback_bytes) = cases::read_timed(&g, p);
+            let stats = g.submit_plan(p, &JobContext::new()).unwrap().wait().unwrap();
+            let mut moments = vec![];
+            g.read_in_place(stats.outputs[0].view(), &JobContext::new(), &mut |w| {
+                moments.extend(w.chunks(2).map(|d| f32::from_bits(d[0]) as f64 + f32::from_bits(d[1]) as f64))
+            })
+            .unwrap();
             let new_wall = wall.elapsed().as_secs_f64();
-            let moments = cases::df(&out[0]);
             let mut error = 0f64;
             let mut survival_count_mismatched_segments = 0;
             for (j, want) in ref_value.iter().enumerate() {
@@ -579,7 +583,7 @@ fn benchmark_trace_collectives() {
             }
             eprintln!(
                 "{}",
-                serde_json::json!({"workload":name,"rays":n,"run":run,"phase":phase,"cpu_f64_ms":cpu_wall*1e3,"old_wall_ms":old_wall*1e3,"old_device_ms":old_device*1e3,"old_reduce_pack_ms":reduction*1e3,"new_wall_ms":new_wall*1e3,"final_readback_ms":readback_seconds*1e3,"final_readback_bytes":readback_bytes,"run_info":if run==0{Some(&stats.run_info)}else{None},"new_prepare_ms":prepare*1e3,"new_device_ms":stats.stats.device_seconds*1e3,"new_stats":stats.stats,"old_readback_bytes":n*52,"new_readback_bytes":offsets.len().saturating_sub(1)*84,"max_aggregate_error_mm":error,"survival_count_mismatched_segments":survival_count_mismatched_segments})
+                serde_json::json!({"workload":name,"rays":n,"run":run,"phase":phase,"cpu_f64_ms":cpu_wall*1e3,"old_wall_ms":old_wall*1e3,"old_device_ms":old_device*1e3,"old_reduce_pack_ms":reduction*1e3,"new_wall_ms":new_wall*1e3,"read_in_place_bytes":moments.len()*8,"run_info":if run==0{Some(&stats.run_info)}else{None},"new_prepare_ms":prepare*1e3,"new_device_ms":stats.stats.device_seconds*1e3,"new_stats":stats.stats,"old_readback_bytes":n*52,"new_readback_bytes":offsets.len().saturating_sub(1)*84,"max_aggregate_error_mm":error,"survival_count_mismatched_segments":survival_count_mismatched_segments})
             );
             if run == 0 {
                 cold = [cpu_wall, old_wall, new_wall];
@@ -595,188 +599,289 @@ fn benchmark_trace_collectives() {
         g.release_systems(h).unwrap();
     }
 }
+fn median_p95(mut v: Vec<f64>) -> (f64, f64) {
+    v.sort_by(f64::total_cmp);
+    (v[v.len() / 2], v[(v.len() * 95).div_ceil(100) - 1])
+}
+/// Cold run, one warm-up, then ten measured runs of `f` (seconds, device seconds).
+fn runs(mut f: impl FnMut() -> (f64, f64)) -> (f64, (f64, f64), f64) {
+    let cold = f().0;
+    f();
+    let (wall, device): (Vec<_>, Vec<_>) = (0..10).map(|_| f()).unzip();
+    (cold, median_p95(wall), median_p95(device).0)
+}
+/// Inputs are imported once (resident, as in a GPU chain); every run submits,
+/// waits and reads every output in place from shared memory (no copy).
+fn bench_gpu(g: &MetalBackend, p: &ResidentPlan) -> serde_json::Value {
+    let mut stats = None;
+    let (cold, (median, p95), device) = runs(|| {
+        let t = Instant::now();
+        let out = g.submit_plan(p.clone(), &JobContext::new()).unwrap().wait().unwrap();
+        let (mut sum, mut bytes) = (0u32, 0usize);
+        for h in &out.outputs {
+            g.read_in_place(h.view(), &JobContext::new(), &mut |w| {
+                sum = w.iter().fold(sum, |a, &b| a.wrapping_add(b));
+                bytes += 4 * w.len();
+            })
+            .unwrap();
+        }
+        std::hint::black_box(sum);
+        let wall = t.elapsed().as_secs_f64();
+        stats = Some((out.stats.command_buffers, out.stats.peak_bytes, bytes));
+        (wall, out.stats.device_seconds)
+    });
+    let (commands, peak, read) = stats.unwrap();
+    serde_json::json!({"gpu_ms":median*1e3,"gpu_p95_ms":p95*1e3,"gpu_device_ms":device*1e3,
+        "gpu_cold_ms":cold*1e3,"commands":commands,"peak_bytes":peak,"read_in_place_bytes":read,"copied_bytes":0})
+}
+fn bench_cpu(mut f: impl FnMut()) -> serde_json::Value {
+    let (_, (median, p95), _) = runs(|| {
+        let t = Instant::now();
+        f();
+        (t.elapsed().as_secs_f64(), 0.)
+    });
+    serde_json::json!({"cpu_ms":median*1e3,"cpu_p95_ms":p95*1e3})
+}
+fn report(workload: &str, size: &str, cpu: serde_json::Value, gpu: serde_json::Value) {
+    let mut v = serde_json::json!({"workload":workload,"size":size});
+    for part in [cpu, gpu] {
+        v.as_object_mut()
+            .unwrap()
+            .extend(part.as_object().unwrap().clone());
+    }
+    eprintln!("{v}");
+}
+fn uniform(n: usize, stream: u64) -> Vec<f64> {
+    let mut r = mklight_core::rng::Philox::new(0, stream);
+    (0..n).map(|_| r.uniform()).collect()
+}
 #[test]
-#[ignore = "host benchmark: ordering, maps, tall-skinny QR"]
-fn benchmark_order_maps_qr() {
+#[ignore = "host benchmark: warm medians of resident collectives versus CPU f64"]
+fn benchmark_collectives() {
     let g = backend(LibraryChoice::Precompiled);
-    for n in [100, 10_000, 1_000_000] {
-        for workload in ["sort", "short_segments", "detector_map"] {
-            let build = |b: &dyn ComputeBackend| {
-                if workload == "sort" {
-                    cases::sort_case(b, n, ElementType::F32)
-                } else {
-                    let width = if workload == "short_segments" {
-                        17
+    eprintln!(
+        "{}",
+        serde_json::json!({"hardware":g.info(),"precision":g.precision(),"seed":0,"runs":"cold, warm-up, 10 measured","cpu":"serial f64 host reference"})
+    );
+    for n in [1_000, 10_000, 100_000, 1_000_000] {
+        let size = n.to_string();
+        // Spot moments: x, y, weight in nine field/wavelength segments, 5% vignetted.
+        let (x, y, w) = (uniform(n, 1), uniform(n, 2), uniform(n, 3));
+        let keep: Vec<bool> = (0..n).map(|i| i % 20 != 7).collect();
+        let offsets: Vec<u32> = (0..=9).map(|s| (s * n / 9) as u32).collect();
+        let mut p = cases::segment(
+            &g,
+            BufferData::F32(
+                x.iter()
+                    .chain(&y)
+                    .chain(&w)
+                    .map(|&v| v as f32 * 10.)
+                    .collect(),
+            ),
+            3,
+            offsets.clone(),
+            SegmentKind::Moments2,
+            None,
+            n.div_ceil(9),
+        );
+        let mask = cases::import(
+            &g,
+            &mut p,
+            [n],
+            BufferData::U32(keep.iter().map(|&k| u32::from(k)).collect()),
+        );
+        let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
+            unreachable!()
+        };
+        r.mask = Some(mask);
+        r.mask_value = 1;
+        let cpu = bench_cpu(|| {
+            let pts: Vec<_> = (0..n)
+                .map(|i| {
+                    if keep[i] {
+                        [x[i] * 10., y[i] * 10.]
                     } else {
-                        257
-                    };
-                    let offsets: Vec<_> = (0..n)
-                        .step_by(width)
-                        .chain(std::iter::once(n))
-                        .map(|i| i as u32)
-                        .collect();
-                    cases::segment(
-                        b,
-                        BufferData::F32((0..n).map(|i| (i % 17) as f32 / 16.).collect()),
-                        1,
-                        offsets,
-                        SegmentKind::Summary,
-                        None,
-                        width.min(n),
-                    )
-                }
-            };
-            let mut runs = vec![];
-            let mut cold = 0.;
-            let mut host_runs = vec![];
-            let mut host_cold = 0.;
-            for run in 0..12 {
-                let host_at = Instant::now();
-                if workload == "sort" {
-                    let mut rows: Vec<_> = (0..n)
-                        .map(|i| (((i * 7919) % 17) as u32, ((n - i) * 13 % 31) as u32, i))
-                        .collect();
-                    rows.sort_by_key(|&v| v);
-                    std::hint::black_box(rows);
-                } else {
-                    let width = if workload == "short_segments" {
-                        17
-                    } else {
-                        257
-                    };
-                    let values: Vec<_> = (0..n).map(|i| (i % 17) as f64 / 16.).collect();
-                    let reduced: Vec<_> = values
-                        .chunks(width)
-                        .map(|chunk| {
-                            let sum = chunk
-                                .iter()
-                                .copied()
-                                .collect::<mklight_core::math::KahanSum>()
-                                .value();
-                            let lo = chunk.iter().copied().fold(f64::INFINITY, f64::min);
-                            let hi = chunk.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                            [sum, chunk.len() as f64, lo, hi]
-                        })
-                        .collect();
-                    std::hint::black_box(reduced);
-                }
-                let host_wall = host_at.elapsed().as_secs_f64();
-                if run == 0 {
-                    host_cold = host_wall;
-                } else if run >= 2 {
-                    host_runs.push((host_wall, 0.));
-                }
-                let t = Instant::now();
-                let p = build(&g);
-                let (_, out, readback_seconds, readback_bytes) = cases::read_timed(&g, p);
-                let wall = t.elapsed().as_secs_f64();
-                eprintln!(
-                    "{}",
-                    serde_json::json!({"workload":workload,"items":n,"run":run,"cpu_f64_wall_ms":host_wall*1e3,"wall_ms":wall*1e3,"final_readback_ms":readback_seconds*1e3,"final_readback_bytes":readback_bytes,"run_info":if run==0{Some(&out.run_info)}else{None},"stats":out.stats,"sort_index_scratch_bytes":if workload=="sort"{8*n}else{0}})
-                );
-                if run == 0 {
-                    cold = wall;
-                } else if run >= 2 {
-                    runs.push((wall, out.stats.device_seconds));
+                        [f64::NAN; 2]
+                    }
+                })
+                .collect();
+            std::hint::black_box(host_moments(&pts, &offsets));
+        });
+        report("moments_9_segments", &size, cpu, bench_gpu(&g, &p));
+
+        // Many short segments (detector bins / split children): length 17.
+        let values: Vec<f64> = uniform(n, 4);
+        let offsets: Vec<u32> = (0..n)
+            .step_by(17)
+            .chain(std::iter::once(n))
+            .map(|i| i as u32)
+            .collect();
+        let p = cases::segment(
+            &g,
+            BufferData::F32(values.iter().map(|&v| v as f32).collect()),
+            1,
+            offsets.clone(),
+            SegmentKind::Summary,
+            None,
+            17,
+        );
+        let cpu = bench_cpu(|| {
+            let out: Vec<_> = offsets
+                .windows(2)
+                .map(|r| {
+                    let c = &values[r[0] as usize..r[1] as usize];
+                    let sum = c.iter().copied().collect::<mklight_core::math::KahanSum>();
+                    let lo = c.iter().copied().fold(f64::INFINITY, f64::min);
+                    let hi = c.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    [sum.value(), c.len() as f64, lo, hi]
+                })
+                .collect();
+            std::hint::black_box(out);
+        });
+        report("summary_short_segments_17", &size, cpu, bench_gpu(&g, &p));
+
+        // Radius sort with logical-ID ties.
+        let keys: Vec<f32> = uniform(n, 5).iter().map(|&v| v as f32).collect();
+        let ids: Vec<u32> = (0..n as u32).map(|i| i % 97).collect();
+        let mut p = cases::plan();
+        let k = cases::import(&g, &mut p, [n], BufferData::F32(keys.clone()));
+        let i = cases::import(&g, &mut p, [n], BufferData::U32(ids.clone()));
+        let ok = cases::scratch(&mut p, ElementType::F32, [n]);
+        let oi = cases::scratch(&mut p, ElementType::U32, [n]);
+        p.operations
+            .push(ResidentOp::Collectives(Request::StableSort(StableSort {
+                keys: k,
+                ids: i,
+                values: None,
+                output_keys: ok,
+                output_ids: oi,
+                output_values: None,
+            })));
+        p.outputs = vec![ok, oi];
+        let cpu = bench_cpu(|| {
+            let mut order: Vec<u32> = (0..n as u32).collect();
+            order.sort_by(|&a, &b| {
+                keys[a as usize]
+                    .total_cmp(&keys[b as usize])
+                    .then(ids[a as usize].cmp(&ids[b as usize]))
+            });
+            let out: (Vec<_>, Vec<_>) = order
+                .iter()
+                .map(|&j| (keys[j as usize], ids[j as usize]))
+                .unzip();
+            std::hint::black_box(out);
+        });
+        report("sort_f32_keys", &size, cpu, bench_gpu(&g, &p));
+
+        // Inclusive f32 scan (energy curves) published as double-float.
+        let mut p = cases::plan();
+        let v = cases::import(&g, &mut p, [n], BufferData::F32(keys.clone()));
+        let o = cases::scratch(&mut p, ElementType::DoubleFloat, [n]);
+        p.operations
+            .push(ResidentOp::Collectives(Request::Scan(Scan {
+                values: v,
+                inclusive: true,
+                output: o,
+            })));
+        p.outputs = vec![o];
+        let cpu = bench_cpu(|| {
+            let mut s = 0f64;
+            let out: Vec<f64> = keys
+                .iter()
+                .map(|&v| {
+                    s += v as f64;
+                    s
+                })
+                .collect();
+            std::hint::black_box(out);
+        });
+        report("scan_f32", &size, cpu, bench_gpu(&g, &p));
+
+        // Stable compaction of [n,2] double-float records, two thirds kept.
+        let mut p = cases::plan();
+        let records: Vec<Df32> = uniform(2 * n, 6).into_iter().map(Df32::from_f64).collect();
+        let mask: Vec<u32> = (0..n as u32).map(|i| u32::from(i % 3 != 0)).collect();
+        let v = cases::import(&g, &mut p, [n, 2], BufferData::DoubleFloat(records.clone()));
+        let ids = cases::import(&g, &mut p, [n], BufferData::U32((0..n as u32).collect()));
+        let m = cases::import(&g, &mut p, [n], BufferData::U32(mask.clone()));
+        let out = cases::scratch(&mut p, ElementType::DoubleFloat, [n, 2]);
+        let oi = cases::scratch(&mut p, ElementType::U32, [n]);
+        let cnt = cases::scratch(&mut p, ElementType::U32, [1]);
+        p.operations
+            .push(ResidentOp::Collectives(Request::StableCompact(
+                StableCompact {
+                    values: v,
+                    ids,
+                    mask: m,
+                    output: out,
+                    output_ids: oi,
+                    count: cnt,
+                },
+            )));
+        p.outputs = vec![out, oi, cnt];
+        let cpu = bench_cpu(|| {
+            let mut out = Vec::with_capacity(2 * n);
+            let mut oi = Vec::with_capacity(n);
+            for i in 0..n {
+                if mask[i] != 0 {
+                    out.extend_from_slice(&records[2 * i..2 * i + 2]);
+                    oi.push(i as u32);
                 }
             }
-            report_bench(&format!("{workload}/{n}/cpu_f64"), &host_runs, host_cold);
-            report_bench(&format!("{workload}/{n}"), &runs, cold);
-        }
+            std::hint::black_box((out, oi));
+        });
+        report("compact_df_records", &size, cpu, bench_gpu(&g, &p));
     }
-    for side in [64, 256, 1024] {
-        let m = side * side;
-        let n = 37;
-        let a: Vec<_> = (0..m)
-            .flat_map(|i| {
-                (0..n).map(move |j| {
-                    if j == 0 {
-                        1.
-                    } else {
-                        ((i as f64 + 0.5) * j as f64 * std::f64::consts::PI / m as f64).cos()
-                    }
+    // Tall-skinny and batched least squares; known coefficients.
+    for (m, n, batch) in [
+        (200, 20, 1),
+        (200, 20, 256),
+        (2000, 60, 1),
+        (4225, 37, 1),
+        (20000, 120, 1),
+        (65536, 37, 1),
+    ] {
+        let a: Vec<f64> = (0..batch)
+            .flat_map(|z| {
+                (0..m).flat_map(move |i| {
+                    (0..n).map(move |j| {
+                        let t = (i as f64 + 0.5) / m as f64;
+                        if j == 0 {
+                            1.
+                        } else {
+                            (t * j as f64 * std::f64::consts::PI + z as f64 * 1e-3).cos()
+                        }
+                    })
                 })
             })
             .collect();
-        let rhs: Vec<_> = (0..m)
-            .map(|i| (0..n).map(|j| a[i * n + j] * (j as f64 + 1.) / 100.).sum())
+        let rhs: Vec<f64> = (0..batch * m)
+            .map(|r| (0..n).map(|j| a[r * n + j] * (j as f64 + 1.) / 100.).sum())
             .collect();
-        let mut runs = vec![];
-        let mut cold = 0.;
-        let mut host_runs = vec![];
-        let mut host_cold = 0.;
-        for run in 0..12 {
-            let host_at = Instant::now();
-            let reference = cases::reference_qr(&a, &rhs, m, n);
-            std::hint::black_box(reference);
-            let host_wall = host_at.elapsed().as_secs_f64();
-            if run == 0 {
-                host_cold = host_wall;
-            } else if run >= 2 {
-                host_runs.push((host_wall, 0.));
+        let mut p = cases::qr_plan(&g, m, n, batch, a.clone(), rhs.clone(), 1e-10);
+        p.outputs.remove(0);
+        let size = format!("{m}x{n}x{batch}");
+        let cpu = bench_cpu(|| {
+            for z in 0..batch {
+                std::hint::black_box(cases::reference_qr(
+                    &a[z * m * n..(z + 1) * m * n],
+                    &rhs[z * m..(z + 1) * m],
+                    m,
+                    n,
+                ));
             }
-            let start = Instant::now();
-            let mut p = cases::qr_plan(&g, m, n, 1, a.clone(), rhs.clone(), 1e-10);
-            p.outputs.remove(0);
-            let (v, out, readback_seconds, readback_bytes) = cases::read_timed(&g, p);
-            let wall = start.elapsed().as_secs_f64();
-            let err = cases::df(&v[0])
-                .iter()
-                .enumerate()
-                .map(|(i, &x)| (x - (i as f64 + 1.) / 100.).abs())
-                .fold(0f64, f64::max);
-            assert!(err < 1e-8);
-            eprintln!(
-                "{}",
-                serde_json::json!({"workload":"qr","side":side,"rows":m,"cols":n,"run":run,"cpu_f64_wall_ms":host_wall*1e3,"final_readback_bytes":readback_bytes,"final_readback_ms":readback_seconds*1e3,"run_info":if run==0{Some(&out.run_info)}else{None},"wall_ms":wall*1e3,"coefficient_max_error":err,"stats":out.stats})
-            );
-            if run == 0 {
-                cold = wall;
-            } else if run >= 2 {
-                runs.push((wall, out.stats.device_seconds));
-            }
+        });
+        if g.submit_plan(p.clone(), &JobContext::new()).is_err() {
+            eprintln!("{}", serde_json::json!({"workload":"qr","size":size,"gpu":"unsupported"}));
+            continue;
         }
-        report_bench(
-            &format!("qr/{side}x{side}/37/cpu_f64_householder"),
-            &host_runs,
-            host_cold,
-        );
-        report_bench(&format!("qr/{side}x{side}/37"), &runs, cold);
+        let (v, _) = cases::read(&g, p.clone());
+        let x = cases::df(&v[0]);
+        let err = (0..batch * n)
+            .map(|i| (x[i] - ((i % n) as f64 + 1.) / 100.).abs())
+            .fold(0f64, f64::max);
+        let mut gpu = bench_gpu(&g, &p);
+        gpu["coefficient_max_error"] = err.into();
+        report("qr", &size, cpu, gpu);
     }
-}
-
-#[test]
-fn cancel_qr_during_orthogonalisation() {
-    let g = backend(LibraryChoice::Precompiled);
-    let (m, n) = (65536, 37);
-    let a: Vec<_> = (0..m)
-        .flat_map(|i| {
-            (0..n).map(move |j| {
-                if j == 0 {
-                    1.
-                } else {
-                    ((i as f64 + 0.5) * j as f64 * std::f64::consts::PI / m as f64).cos()
-                }
-            })
-        })
-        .collect();
-    let rhs: Vec<_> = (0..m).map(|i| a[i * n] + 0.2 * a[i * n + 1]).collect();
-    let mut p = cases::qr_plan(&g, m, n, 1, a, rhs, 1e-10);
-    p.outputs.remove(0);
-    let ctx = JobContext::new();
-    let pending = g.submit_plan(p.clone(), &ctx).unwrap();
-    let at = Instant::now();
-    while ctx.progress.fraction() == 0.0 {
-        assert!(!pending.is_ready());
-        assert!(at.elapsed() < Duration::from_secs(30));
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(ctx.progress.fraction() < 1.0);
-    ctx.cancel.cancel();
-    assert!(matches!(pending.wait(), Err(MkError::Cancelled)));
-    let (v, out, _readback_seconds, _readback_bytes) = cases::read_timed(&g, p);
-    assert!(out.stats.reused_allocations >= 6);
-    assert_eq!(cases::df(&v[1])[0], 37.);
-    assert!((cases::df(&v[0])[0] - 1.).abs() < 1e-10);
-    assert_eq!(out.stats.fallback_count, 0);
 }

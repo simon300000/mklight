@@ -83,19 +83,6 @@ fn thread_sum<E: FpEnv>(mode: ReduceMode, x: &[f32], g: usize, p: usize) -> Df32
     }
 }
 
-/// The in-group binary tree over exactly `THREADS` values.
-fn tree<E: FpEnv>(mode: ReduceMode, v: &mut [Df32]) -> Df32 {
-    debug_assert_eq!(v.len(), THREADS);
-    let mut stride = THREADS / 2;
-    while stride > 0 {
-        for i in 0..stride {
-            v[i] = combine_in::<E>(mode, v[i], v[i + stride]);
-        }
-        stride /= 2;
-    }
-    v[0]
-}
-
 /// Pass 1 for one channel: the `num_groups(x.len())` group partials.
 pub fn pass1(mode: ReduceMode, x: &[f32]) -> Vec<Df32> {
     pass1_in::<Ieee>(mode, x, 0..num_groups(x.len()))
@@ -113,7 +100,7 @@ pub fn pass1_in<E: FpEnv>(mode: ReduceMode, x: &[f32], groups: Range<usize>) -> 
             let mut v: Vec<Df32> = (0..THREADS)
                 .map(|t| thread_sum::<E>(mode, x, group * THREADS + t, p))
                 .collect();
-            tree::<E>(mode, &mut v)
+            tree_acc::<E>(Accumulator::Sum(mode), &mut v)
         })
         .collect()
 }
@@ -134,7 +121,7 @@ pub fn pass2_in<E: FpEnv>(mode: ReduceMode, partials: &[Df32]) -> Df32 {
                 .fold(Df32::ZERO, |acc, &q| combine_in::<E>(mode, acc, q))
         })
         .collect();
-    tree::<E>(mode, &mut v)
+    tree_acc::<E>(Accumulator::Sum(mode), &mut v)
 }
 
 /// The complete reduction of one channel, bit-identical to the GPU.
@@ -145,6 +132,93 @@ pub fn reduce_channel(mode: ReduceMode, x: &[f32]) -> Df32 {
 /// [`reduce_channel`] in environment `E`.
 pub fn reduce_channel_in<E: FpEnv>(mode: ReduceMode, x: &[f32]) -> Df32 {
     pass2_in::<E>(mode, &pass1_in::<E>(mode, x, 0..num_groups(x.len())))
+}
+
+/// Accumulator of a fixed tree: a summation mode or a double-float extremum
+/// (ties keep the earlier operand, the first NaN wins).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accumulator {
+    Sum(ReduceMode),
+    Min,
+    Max,
+}
+fn extremum(a: Df32, b: Df32, max: bool) -> Df32 {
+    use std::cmp::Ordering::*;
+    if a.hi.is_nan() {
+        return a;
+    }
+    if b.hi.is_nan() {
+        return b;
+    }
+    let c = crate::collectives::spec::df_cmp(a, b);
+    if (max && c == Less) || (!max && c == Greater) { b } else { a }
+}
+fn combine_acc<E: FpEnv>(op: Accumulator, a: Df32, b: Df32) -> Df32 {
+    match op {
+        Accumulator::Sum(mode) => combine_in::<E>(mode, a, b),
+        Accumulator::Min => extremum(a, b, false),
+        Accumulator::Max => extremum(a, b, true),
+    }
+}
+
+/// The fixed two-pass tree of this module over generated double-float
+/// values, starting every thread and pass-2 slot from `identity`. For f32
+/// values (lo = 0) and sums from zero it reproduces [`reduce_channel_in`].
+pub fn tree_in<E: FpEnv>(
+    op: Accumulator,
+    identity: Df32,
+    count: usize,
+    value: impl Fn(usize) -> Df32,
+    ctl: &crate::pending::JobControl,
+) -> mklight_core::MkResult<Df32> {
+    let groups = num_groups(count);
+    let mut partials = Vec::with_capacity(groups);
+    for g in 0..groups {
+        ctl.check()?;
+        let mut v: Vec<Df32> = (0..THREADS)
+            .map(|t| {
+                let items = (g * THREADS + t..count).step_by(groups * THREADS).map(&value);
+                match op {
+                    Accumulator::Sum(ReduceMode::Plain) => Df32::from_f32(
+                        items.fold(identity.hi, |s, q| E::add(s, E::add(q.hi, q.lo))),
+                    ),
+                    Accumulator::Sum(ReduceMode::Kahan) => {
+                        let mut k = NeumaierF32::default();
+                        for q in items {
+                            k.add_in::<E>(q.hi);
+                            if q.lo != 0.0 {
+                                k.add_in::<E>(q.lo);
+                            }
+                        }
+                        k.value_in::<E>()
+                    }
+                    _ => items.fold(identity, |a, q| combine_acc::<E>(op, a, q)),
+                }
+            })
+            .collect();
+        partials.push(tree_acc::<E>(op, &mut v));
+    }
+    let mut v: Vec<Df32> = (0..THREADS)
+        .map(|t| {
+            partials
+                .iter()
+                .skip(t)
+                .step_by(THREADS)
+                .fold(identity, |a, &q| combine_acc::<E>(op, a, q))
+        })
+        .collect();
+    Ok(tree_acc::<E>(op, &mut v))
+}
+/// The in-group binary tree over exactly `THREADS` values.
+fn tree_acc<E: FpEnv>(op: Accumulator, v: &mut [Df32]) -> Df32 {
+    let mut stride = THREADS / 2;
+    while stride > 0 {
+        for i in 0..stride {
+            v[i] = combine_acc::<E>(op, v[i], v[i + stride]);
+        }
+        stride /= 2;
+    }
+    v[0]
 }
 
 #[cfg(test)]
@@ -257,45 +331,4 @@ mod tests {
             assert!(reduce_channel(mode, &x).to_f64() > 4e-36);
         }
     }
-}
-
-/// Fixed two-pass tree over generated double-float values. Used by resident
-/// collectives without materialising products or chief-relative coordinates.
-/// For f32 inputs (lo=0), the three modes reproduce the existing tree exactly.
-pub fn mapped_in<E: FpEnv>(
-    mode: ReduceMode,
-    count: usize,
-    value: impl Fn(usize) -> Df32,
-    ctl: &crate::pending::JobControl,
-) -> mklight_core::MkResult<Df32> {
-    let groups = num_groups(count);
-    let mut partials = Vec::with_capacity(groups);
-    for g in 0..groups {
-        ctl.check()?;
-        let mut v = vec![Df32::ZERO; THREADS];
-        for (t, acc) in v.iter_mut().enumerate() {
-            let mut k = NeumaierF32::default();
-            for i in (g * THREADS + t..count).step_by(groups * THREADS) {
-                if ((i - g * THREADS - t) / (groups * THREADS)) % 4096 == 0 {
-                    ctl.check()?;
-                }
-                let q = value(i);
-                match mode {
-                    ReduceMode::Plain => acc.hi = E::add(acc.hi, E::add(q.hi, q.lo)),
-                    ReduceMode::Kahan => {
-                        k.add_in::<E>(q.hi);
-                        if q.lo != 0.0 {
-                            k.add_in::<E>(q.lo);
-                        }
-                    }
-                    ReduceMode::DoubleFloat => *acc = acc.add_in::<E>(q),
-                }
-            }
-            if mode == ReduceMode::Kahan {
-                *acc = k.value_in::<E>();
-            }
-        }
-        partials.push(tree::<E>(mode, &mut v));
-    }
-    Ok(pass2_in::<E>(mode, &partials))
 }

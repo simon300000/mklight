@@ -38,24 +38,43 @@ fn actual_metal_known_answers_both_libraries() {
         p3_cases::nonfinite_qr(&b);
     }
 }
+/// Matching-environment CPU specification and Metal agree bit for bit,
+/// across both segment paths, every radix digit and QR group widths.
 #[test]
 fn bitwise_fixed_collectives() {
     let g = backend(LibraryChoice::Precompiled);
     let c = CpuF32Backend::matching(&g.precision().probe);
+    let same = |build: &dyn Fn(&dyn ComputeBackend) -> ResidentPlan| {
+        let (a, _) = p3_cases::read(&c, build(&c));
+        let (b, _) = p3_cases::read(&g, build(&g));
+        for (a, b) in a.iter().zip(&b) {
+            p3_cases::assert_bits(a, b);
+        }
+    };
     for n in [0, 257, 10003] {
         for t in [ElementType::U32, ElementType::F32, ElementType::DoubleFloat] {
-            let (cpu, _) = p3_cases::read(&c, p3_cases::sort_case(&c, n, t));
-            let (gpu, _) = p3_cases::read(&g, p3_cases::sort_case(&g, n, t));
-            for (a, b) in cpu.iter().zip(&gpu) {
-                p3_cases::assert_bits(a, b);
-            }
+            same(&|b| p3_cases::sort_case(b, n, t));
         }
         for integer in [true, false] {
             for inclusive in [true, false] {
-                let (a, _) = p3_cases::read(&c, p3_cases::scan_case(&c, n, integer, inclusive));
-                let (b, _) = p3_cases::read(&g, p3_cases::scan_case(&g, n, integer, inclusive));
-                p3_cases::assert_bits(&a[0], &b[0]);
+                same(&|b| p3_cases::scan_case(b, n, integer, inclusive));
             }
         }
+    }
+    for t in [ElementType::U32, ElementType::F32, ElementType::DoubleFloat] {
+        same(&|b| p3_cases::random_sort_case(b, 70001, t));
+    }
+    // Short segments (SIMD path) and the same records under a long bound
+    // (tree-group path); one segment spans several tree groups.
+    let short: Vec<u32> = (0..=600).map(|s| s * 61 / 2).chain([18_300, 30_001]).collect();
+    same(&|b| p3_cases::moments_case(b, short[..601].to_vec(), 61));
+    same(&|b| p3_cases::moments_case(b, short[..601].to_vec(), 18_300));
+    same(&|b| p3_cases::moments_case(b, short.clone(), 30_001));
+    for (m, n, batch) in [(41, 3, 1), (9, 3, 16), (9000, 5, 2)] {
+        let a: Vec<f64> = (0..batch * m * n)
+            .map(|i| ((i * 7919 % 1013) as f64 / 1013.).powi(1 + (i % n) as i32))
+            .collect();
+        let rhs: Vec<f64> = (0..batch * m).map(|i| (i as f64 * 0.37).sin()).collect();
+        same(&|b| p3_cases::qr_plan(b, m, n, batch, a.clone(), rhs.clone(), 1e-10));
     }
 }

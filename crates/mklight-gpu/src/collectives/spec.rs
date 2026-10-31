@@ -1,11 +1,8 @@
-//! Portable CPU-f32 specification. These routines perform no backend dispatch.
-use crate::{Df32 as D, ReduceMode, fenv::FpEnv, pending::JobControl, reduce};
+//! Portable CPU-f32 specification of the collective kernels.
+use crate::{Df32 as D, consts::*, fenv::FpEnv, pending::JobControl};
 use mklight_core::MkResult;
 use std::cmp::Ordering;
 
-pub fn sum<E: FpEnv>(n: usize, f: impl Fn(usize) -> D, ctl: &JobControl) -> MkResult<D> {
-    reduce::mapped_in::<E>(ReduceMode::DoubleFloat, n, f, ctl)
-}
 pub fn scan_u32(x: &[u32], ctl: &JobControl) -> MkResult<Vec<u32>> {
     scan(x, 0, |a, b| a.wrapping_add(b), ctl)
 }
@@ -108,33 +105,71 @@ pub struct QrResult {
     pub solution: Vec<D>,
     pub diagnostics: [D; 4],
 }
-/// Independent columns are scaled before orthogonalisation. Norms use a
-/// maximum scale before squaring, retaining finite very small/large columns.
-fn norm<E: FpEnv>(x: &[D], ctl: &JobControl) -> MkResult<D> {
-    let mut scale = 0f32;
-    for (i, v) in x.iter().enumerate() {
-        if i % 4096 == 0 {
-            ctl.check()?;
-        }
-        if !v.is_finite() {
-            return Ok(D::from_f32(f32::NAN));
-        }
-        scale = scale.max(v.hi.abs());
+/// Threads per QR column group for `rows` rows.
+pub fn qr_threads(rows: usize) -> usize {
+    if rows >= MKL_COLLECT_QR_WIDE_ROWS as usize {
+        MKL_COLLECT_QR_WIDE_THREADS as usize
+    } else {
+        MKL_COLLECT_QR_THREADS as usize
     }
-    if E::eq(scale, 0.0) {
-        return Ok(D::ZERO);
-    }
-    Ok(sum::<E>(
-        x.len(),
-        |i| {
-            let v = x[i].div_in::<E>(D::from_f32(scale));
-            v.mul_in::<E>(v)
-        },
-        ctl,
-    )?
-    .sqrt_in::<E>()
-    .mul_f32_in::<E>(scale))
 }
+/// Strides 16..1 of the binary tree inside each 32-lane SIMD group.
+fn simd_levels<E: FpEnv>(v: &mut [D]) {
+    for s in [16, 8, 4, 2, 1] {
+        for l in 0..s {
+            v[l] = v[l].add_in::<E>(v[l + s]);
+        }
+    }
+}
+/// QR group sum: thread t adds rows t, t+T, ...; SIMD levels in each SIMD
+/// group, then the same levels over the zero-padded SIMD partials.
+fn qr_sum<E: FpEnv>(m: usize, f: impl Fn(usize) -> D) -> D {
+    let threads = qr_threads(m);
+    let mut t = vec![D::ZERO; threads];
+    for i in 0..m {
+        t[i % threads] = t[i % threads].add_in::<E>(f(i));
+    }
+    let mut partials = [D::ZERO; 32];
+    for (s, lanes) in t.chunks_mut(32).enumerate() {
+        simd_levels::<E>(lanes);
+        partials[s] = lanes[0];
+    }
+    simd_levels::<E>(&mut partials);
+    partials[0]
+}
+fn max_nan(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() { f32::NAN } else { a.max(b) }
+}
+/// x 2^e through two normal powers of two.
+fn ldexp<E: FpEnv>(x: D, e: i32) -> D {
+    let pow2 = |k: i32| f32::from_bits(((127 + k) as u32) << 23);
+    let (a, b) = (pow2(e / 2), pow2(e - e / 2));
+    D::new(E::mul(E::mul(x.hi, a), b), E::mul(E::mul(x.lo, a), b))
+}
+/// 2-norm scaled by the exponent of the largest |hi|; NaN if any entry is
+/// non-finite.
+fn norm<E: FpEnv>(v: &[D]) -> D {
+    let mx = v.iter().fold(0f32, |m, x| max_nan(m, x.hi.abs()));
+    if !mx.is_finite() {
+        return D::from_f32(f32::NAN);
+    }
+    if mx == 0.0 {
+        return D::ZERO;
+    }
+    let e = ((mx.to_bits() >> 23) & 255) as i32 - 126;
+    let s = qr_sum::<E>(v.len(), |i| {
+        let x = ldexp::<E>(v[i], -e);
+        x.mul_in::<E>(x)
+    });
+    ldexp::<E>(s.sqrt_in::<E>(), e)
+}
+fn abs(x: D) -> D {
+    if x.hi < 0.0 { -x } else { x }
+}
+fn ext_max(a: D, b: D) -> D {
+    if a.hi.is_nan() || (!b.hi.is_nan() && df_cmp(a, b) != Ordering::Less) { a } else { b }
+}
+/// One fit, step for step as `mkl_c_qr_{prepare,pivot,project,finish}`.
 pub fn qr<E: FpEnv>(
     a: &[D],
     rhs: &[D],
@@ -143,43 +178,35 @@ pub fn qr<E: FpEnv>(
     tolerance: f32,
     ctl: &JobControl,
 ) -> MkResult<QrResult> {
-    let mut v: Vec<Vec<D>> = (0..n)
-        .map(|j| (0..m).map(|i| a[i * n + j]).collect())
+    let at = |i: usize, j: usize| i * n + j;
+    let mut f = vec![D::ZERO; (m + n + 2) * n];
+    let mut v: Vec<Vec<D>> = (0..=n)
+        .map(|j| (0..m).map(|i| if j == n { rhs[i] } else { a[at(i, j)] }).collect())
         .collect();
-    let mut b = rhs.to_vec();
-    let mut scales = vec![D::ZERO; n];
-    let mut pivot: Vec<_> = (0..n).collect();
-    let mut q = vec![vec![D::ZERO; m]; n];
-    let mut r = vec![vec![D::ZERO; n]; n];
+    let mut norms = vec![D::ZERO; n + 1];
     let mut y = vec![D::ZERO; n];
-    let mut rank = 0usize;
-    let mut status = 0f32;
-    for j in 0..n {
-        scales[j] = norm::<E>(&v[j], ctl)?;
-        if !scales[j].is_finite() {
-            status = 2.0;
+    for j in 0..=n {
+        let scale = norm::<E>(&v[j]);
+        if j == n {
+            norms[n] = scale;
+            continue;
         }
-        if scales[j].hi != 0.0 {
-            for (index, x) in v[j].iter_mut().enumerate() {
-                if index % 4096 == 0 {
-                    ctl.check()?;
-                }
-                *x = x.div_in::<E>(scales[j]);
-            }
+        f[at(m + n, j)] = scale;
+        f[at(m + n + 1, j)] = D::from_f64(j as f64);
+        if scale.hi != 0.0 {
+            v[j].iter_mut().for_each(|x| *x = x.div_in::<E>(scale));
         }
+        norms[j] = norm::<E>(&v[j]);
     }
-    let mut first = D::ZERO;
+    let (mut rank, mut status, mut first) = (0usize, 0f32, D::ZERO);
+    let mut qs: Vec<Vec<D>> = Vec::with_capacity(n);
     for k in 0..n {
         ctl.check()?;
-        let mut norms = vec![D::ZERO; n];
-        for j in k..n {
-            norms[j] = norm::<E>(&v[j], ctl)?;
-        }
+        let pivot = |f: &[D], j: usize| f[at(m + n + 1, j)].hi;
         let mut best = k;
         for j in k + 1..n {
-            if df_cmp(norms[j], norms[best]) == Ordering::Greater
-                || (df_cmp(norms[j], norms[best]) == Ordering::Equal && pivot[j] < pivot[best])
-            {
+            let c = df_cmp(norms[j], norms[best]);
+            if c == Ordering::Greater || (c == Ordering::Equal && pivot(&f, j) < pivot(&f, best)) {
                 best = j;
             }
         }
@@ -187,7 +214,7 @@ pub fn qr<E: FpEnv>(
         if k == 0 {
             first = d;
         }
-        if !d.is_finite() || status == 2.0 {
+        if !d.is_finite() || (k == 0 && (0..n).any(|j| !f[at(m + n, j)].is_finite())) {
             status = 2.0;
             break;
         }
@@ -195,113 +222,99 @@ pub fn qr<E: FpEnv>(
             status = 1.0;
             break;
         }
+        rank = k + 1;
+        for r in (m..m + k).chain([m + n + 1]) {
+            f.swap(at(r, k), at(r, best));
+        }
         v.swap(k, best);
-        pivot.swap(k, best);
-        for row in r.iter_mut().take(k) {
-            row.swap(k, best);
-        }
-        rank += 1;
-        r[k][k] = d;
-        for i in 0..m {
-            if i % 4096 == 0 {
-                ctl.check()?;
+        // Classical Gram-Schmidt, twice, against every earlier q.
+        for _ in 0..2 * usize::from(k > 0) {
+            let c: Vec<D> = (0..k)
+                .map(|i| qr_sum::<E>(m, |r| qs[i][r].mul_in::<E>(v[k][r])))
+                .collect();
+            for (r, x) in v[k].iter_mut().enumerate() {
+                *x = (0..k).fold(*x, |x, i| x.add_in::<E>(-(qs[i][r].mul_in::<E>(c[i]))));
             }
-            q[k][i] = v[k][i].div_in::<E>(d);
-        }
-        // Two passes prevent loss of orthogonality on clipped/conditioned pupils.
-        for _ in 0..2 {
-            for j in k + 1..n {
-                let dot = sum::<E>(m, |i| q[k][i].mul_in::<E>(v[j][i]), ctl)?;
-                r[k][j] = r[k][j].add_in::<E>(dot);
-                for i in 0..m {
-                    if i % 4096 == 0 {
-                        ctl.check()?;
-                    }
-                    v[j][i] = v[j][i].add_in::<E>(-(q[k][i].mul_in::<E>(dot)));
-                }
-            }
-            let dot = sum::<E>(m, |i| q[k][i].mul_in::<E>(b[i]), ctl)?;
-            y[k] = y[k].add_in::<E>(dot);
-            for i in 0..m {
-                if i % 4096 == 0 {
-                    ctl.check()?;
-                }
-                b[i] = b[i].add_in::<E>(-(q[k][i].mul_in::<E>(dot)));
+            for (i, c) in c.iter().enumerate() {
+                f[at(m + i, k)] = f[at(m + i, k)].add_in::<E>(*c);
             }
         }
+        let d = norm::<E>(&v[k]);
+        f[at(m + k, k)] = d;
+        let q: Vec<D> = v[k].iter().map(|x| x.div_in::<E>(d)).collect();
+        for (i, &q) in q.iter().enumerate() {
+            f[at(i, k)] = q;
+        }
+        for j in k + 1..=n {
+            let c = &mut v[j];
+            let dot1 = qr_sum::<E>(m, |i| q[i].mul_in::<E>(c[i]));
+            let once = |i: usize| c[i].add_in::<E>(-(q[i].mul_in::<E>(dot1)));
+            let dot2 = qr_sum::<E>(m, |i| q[i].mul_in::<E>(once(i)));
+            let projected: Vec<D> = (0..m)
+                .map(|i| once(i).add_in::<E>(-(q[i].mul_in::<E>(dot2))))
+                .collect();
+            *c = projected;
+            let r = dot1.add_in::<E>(dot2);
+            if j < n {
+                f[at(m + k, j)] = r;
+            } else {
+                y[k] = r;
+            }
+            norms[j] = norm::<E>(c);
+        }
+        qs.push(q);
         ctl.report((k + 1) as f64 / (n + 1) as f64, "QR orthogonalisation");
     }
-    let nan = D::from_f32(f32::NAN);
-    let mut solution = vec![nan; n];
-    let mut condition = D::from_f32(f32::INFINITY);
-    if rank == n && status == 0.0 {
-        let mut x = vec![D::ZERO; n];
+    let r = |i: usize, j: usize| f[at(m + i, j)];
+    let residual = norms[n];
+    let mut ok = residual.is_finite() && status == 0.0;
+    let mut x = vec![D::ZERO; n];
+    let mut solution = vec![D::from_f32(f32::NAN); n];
+    if ok {
         for i in (0..n).rev() {
             let mut t = y[i];
             for j in i + 1..n {
-                t = t.add_in::<E>(-(r[i][j].mul_in::<E>(x[j])));
+                t = t.add_in::<E>(-(r(i, j).mul_in::<E>(x[j])));
             }
-            x[i] = t.div_in::<E>(r[i][i]);
-            solution[pivot[i]] = x[i].div_in::<E>(scales[pivot[i]]);
-        }
-        let mut rows = vec![D::ZERO; n];
-        let mut normr = D::ZERO;
-        for i in 0..n {
-            let mut row = D::ZERO;
-            for j in i..n {
-                row = row.add_in::<E>(abs(r[i][j]));
-            }
-            if df_cmp(row, normr) == Ordering::Greater {
-                normr = row;
-            }
-        }
-        for col in 0..n {
-            ctl.check()?;
-            x.fill(D::ZERO);
-            for i in (0..=col).rev() {
-                let mut t = D::from_f32(if i == col { 1.0 } else { 0.0 });
-                for j in i + 1..=col {
-                    t = t.add_in::<E>(-(r[i][j].mul_in::<E>(x[j])));
-                }
-                x[i] = t.div_in::<E>(r[i][i]);
-                rows[i] = rows[i].add_in::<E>(abs(x[i]));
-            }
-        }
-        let norminv = rows.into_iter().max_by(|a, b| df_cmp(*a, *b)).unwrap();
-        condition = normr.mul_in::<E>(norminv);
-    }
-    let mut factors = vec![D::ZERO; (m + n + 2) * n];
-    for i in 0..m {
-        for j in 0..n {
-            factors[i * n + j] = q[j][i];
+            x[i] = t.div_in::<E>(r(i, i));
         }
     }
-    for i in 0..n {
-        for j in i..n {
-            factors[(m + i) * n + j] = r[i][j];
+    for (i, &xi) in x.iter().enumerate() {
+        if !ok {
+            break;
         }
+        let j = f[at(m + n + 1, i)].hi as usize;
+        let c = xi.div_in::<E>(f[at(m + n, j)]);
+        solution[j] = c;
+        ok = c.is_finite();
     }
-    for j in 0..n {
-        factors[(m + n) * n + j] = scales[j];
-        factors[(m + n + 1) * n + j] = D::from_f64(pivot[j] as f64);
-    }
-    let residual = norm::<E>(&b, ctl)?;
-    if !residual.is_finite() || status == 0.0 && solution.iter().any(|x| !x.is_finite()) {
+    if !residual.is_finite() || (!ok && status == 0.0) {
         status = 2.0;
-        condition = D::from_f32(f32::INFINITY);
-        solution.fill(nan);
+    }
+    let mut condition = D::from_f32(f32::INFINITY);
+    if ok {
+        let (mut normr, mut norminv) = (D::ZERO, D::ZERO);
+        let mut z = vec![D::ZERO; n];
+        for i in 0..n {
+            ctl.check()?;
+            let row = (i..n).fold(D::ZERO, |s, j| s.add_in::<E>(abs(r(i, j))));
+            z[i] = D::from_f32(1.0).div_in::<E>(r(i, i));
+            let mut sum = abs(z[i]);
+            for j in i + 1..n {
+                let t = (i..j).fold(D::ZERO, |t, l| t.add_in::<E>(z[l].mul_in::<E>(r(l, j))));
+                z[j] = (-t).div_in::<E>(r(j, j));
+                sum = sum.add_in::<E>(abs(z[j]));
+            }
+            normr = ext_max(normr, row);
+            norminv = ext_max(norminv, sum);
+        }
+        condition = normr.mul_in::<E>(norminv);
+    } else {
+        solution.fill(D::from_f32(f32::NAN));
     }
     Ok(QrResult {
-        factors,
+        factors: f,
         solution,
-        diagnostics: [
-            D::from_f32(rank as f32),
-            condition,
-            residual,
-            D::from_f32(status),
-        ],
+        diagnostics: [D::from_f32(rank as f32), condition, residual, D::from_f32(status)],
     })
-}
-fn abs(x: D) -> D {
-    if x.hi < 0.0 { -x } else { x }
 }
