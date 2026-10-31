@@ -122,6 +122,11 @@ pub const NO_SURFACE: u16 = u16::MAX;
 /// Events kept per path signature; later events set `Signature::overflow`.
 pub const MAX_SIGNATURE_EVENTS: usize = 6;
 
+/// DOE visits kept independently of non-designed events. Thirty-two supports
+/// multi-pass trains without heap allocation in the copied path history.
+/// Longer coverage is rejected at transport input; overflow stays uncovered.
+pub const MAX_DIFFRACTION_VISITS: usize = 32;
+
 /// Kind of a non-designed event in a [`Signature`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -181,7 +186,7 @@ pub struct Signature {
     overflow: bool,
     /// `kind << 28 | id`.
     events: [u32; MAX_SIGNATURE_EVENTS],
-    orders: [DiffractionEvent; MAX_SIGNATURE_EVENTS],
+    orders: [DiffractionEvent; MAX_DIFFRACTION_VISITS],
     order_len: u8,
 }
 
@@ -218,7 +223,7 @@ impl Signature {
             .iter()
             .filter(|e| e.surface == surface as u32)
             .count() as u32;
-        if (self.order_len as usize) < MAX_SIGNATURE_EVENTS {
+        if (self.order_len as usize) < MAX_DIFFRACTION_VISITS {
             self.orders[self.order_len as usize] = DiffractionEvent {
                 surface: surface as u32,
                 visit,

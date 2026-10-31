@@ -431,8 +431,21 @@ Scatter, Mechanical and Sneak take precedence as before. When combined with
 an explicit ghost run, `covered` compares both reflections and non-selected
 order overrides. Selected-order reflection coverage cannot exclude an
 uncovered diffraction path. Compact-signature overflow stays uncovered;
-coverage with more than six DOE visits is rejected at transport input to
-avoid claiming an exclusion the signature cannot express. Thus
+coverage with more than 32 DOE visits is rejected at transport input to
+avoid claiming an exclusion the signature cannot express. This is a total
+across all DOE surfaces, independent of the six non-designed-event slots.
+The previous shared six-slot capacity could reject even a three-round-trip
+path through one DOE (seven visits). Thirty-two can also hold four DOE
+planes crossed seven times (28 visits), while retaining allocation-free,
+`Copy` path histories
+on splitting and signature tallying: the DOE array grows from 120 to 640
+bytes per signature. An unbounded vector would require heap allocation and
+cloning in those hot paths, so the limit is raised rather than removed.
+`tests/doe_visits.rs` checks a seven-pass DOE ghost against its exact
+`T²R⁶` weight and explicit ghost trace, including coverage exclusion, late
+order overrides and rejection beyond the DOE capacity.
+This limits combined-run coverage and signature detail, not physical tracing;
+longer paths still trace, overflow, and remain owned by stray. Thus
 
 ```
 MC detected = sequential Primary + explicit covered Ghost
