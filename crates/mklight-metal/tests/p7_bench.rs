@@ -7,6 +7,9 @@ use mklight_metal::MetalBackend;
 use mklight_trace::{PolarizationState, PupilSampling};
 use rayon::prelude::*;
 use std::time::Instant;
+fn selected(case: &str) -> bool {
+    std::env::var("P7_BENCH_CASE").map_or(true, |v| v == case)
+}
 fn percentiles(mut x: Vec<f64>) -> (f64, f64) {
     x.sort_by(f64::total_cmp);
     (x[x.len() / 2], x[(x.len() * 95).div_ceil(100) - 1])
@@ -85,13 +88,18 @@ fn grids() {
         let field = t.fields().len() - 1;
         let wl = t.system().primary_wavelength;
         for side in sizes {
+            if !selected(&format!("grid:{name}:{side}")) {
+                continue;
+            }
             let pts = (PupilSampling::Grid { n: side }).points();
             let state = PolarizationState::Unpolarized;
             let setup = Instant::now();
             let prepared = PreparedRadiometry::new(&b, t.system(), &JobContext::new()).unwrap();
-            let h = b
-                .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
-                .unwrap();
+            let packed = PackedSystem::pack_all(t.system()).unwrap();
+            let initial_system_copy_bytes = std::mem::size_of_val(&packed.header)
+                + std::mem::size_of_val(packed.surfaces.as_slice())
+                + std::mem::size_of_val(packed.coefficients.as_slice());
+            let h = b.upload_system(&packed).unwrap();
             let p = pupil_plan(
                 &b,
                 &t,
@@ -202,7 +210,7 @@ fn grids() {
             let (cm, cp) = percentiles(cpus.clone());
             eprintln!(
                 "{}",
-                serde_json::json!({"qualification_ms":qualification_ms,"max_jones":max_jones,"raw_gpu_ms":walls,"raw_device_ms":devices,"raw_cpu_ms":cpus,"sample":name,"grid":side,"rays":pts.len(),"field":field,"wavelength":wl,"seed":null,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cpu_cold,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"speedup":cm/gm,"stats":last.stats,"table_bytes":prepared.surfaces.desc().byte_len().unwrap()+prepared.layers.desc().byte_len().unwrap(),"old_metal":"no PRT path"})
+                serde_json::json!({"initial_system_copy_bytes":initial_system_copy_bytes,"qualification_ms":qualification_ms,"max_jones":max_jones,"raw_gpu_ms":walls,"raw_device_ms":devices,"raw_cpu_ms":cpus,"sample":name,"grid":side,"rays":pts.len(),"field":field,"wavelength":wl,"seed":null,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cpu_cold,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"speedup":cm/gm,"stats":last.stats,"table_bytes":prepared.surfaces.desc().byte_len().unwrap()+prepared.layers.desc().byte_len().unwrap(),"old_metal":"no PRT path"})
             );
             b.release_systems(h).unwrap();
         }
@@ -252,6 +260,9 @@ fn coating_stacks() {
             .map(|(w, a, z)| CoatingSpec::resolve(&coating, w, a, z, false, &mut layers).unwrap())
             .collect();
         for n in [100, 10_000, 1_000_000] {
+            if !selected(&format!("coating:{count}:{n}")) {
+                continue;
+            }
             let q: Vec<_> = (0..n)
                 .map(|i| {
                     CoatingQuery::new((i % 6) as u32, 0.8 + 0.2 * (i % 1000) as f64 / 1000.)
@@ -352,7 +363,7 @@ fn coating_stacks() {
             let (dm, dp) = percentiles(devices.clone());
             eprintln!(
                 "{}",
-                serde_json::json!({"accuracy_amplitude_power_ledger":maxima,"layers":count,"queries":n,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"cpu_median_ms":cm,"cpu_p95_ms":cp,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"raw_device_ms":devices,"stats":last.stats,"table_bytes":specs.len()*size_of::<CoatingSpec>()+layers.len()*size_of::<CoatingLayer>(),"sampling":"cosine 0.8..1, three wavelengths, both sides","speedup":cm/gm})
+                serde_json::json!({"initial_input_copy_bytes":std::mem::size_of_val(q.as_slice())+std::mem::size_of_val(specs.as_slice())+std::mem::size_of_val(layers.as_slice()),"accuracy_amplitude_power_ledger":maxima,"layers":count,"queries":n,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"cpu_median_ms":cm,"cpu_p95_ms":cp,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"raw_device_ms":devices,"stats":last.stats,"table_bytes":specs.len()*size_of::<CoatingSpec>()+layers.len()*size_of::<CoatingLayer>(),"sampling":"cosine 0.8..1, three wavelengths, both sides","speedup":cm/gm})
             );
         }
     }
@@ -377,6 +388,9 @@ fn transmission_jobs() {
     ] {
         let t = testutil::tracer(model);
         for n in [65, 256, 1024] {
+            if !selected(&format!("transmission:{name}:{n}")) {
+                continue;
+            }
             let settings = TransmissionSettings {
                 fields: vec![t.field(t.fields().len() - 1).point],
                 wavelengths: vec![t.system().primary_wavelength],
@@ -386,7 +400,11 @@ fn transmission_jobs() {
             };
             let gpu = || {
                 let start = Instant::now();
-                let r = system_transmission(&b, &t, &settings, &JobContext::new()).unwrap();
+                let cache_before = b.resident_cache_stats();
+                let mut r = system_transmission(&b, &t, &settings, &JobContext::new()).unwrap();
+                r.run_info.settings["system_upload_copy_bytes"] = serde_json::json!(
+                    b.resident_cache_stats().uploaded_bytes - cache_before.uploaded_bytes
+                );
                 (start.elapsed().as_secs_f64() * 1e3, r)
             };
             let cpu = || {
@@ -396,6 +414,7 @@ fn transmission_jobs() {
                 (start.elapsed().as_secs_f64() * 1e3, r)
             };
             let (cold, mut result) = gpu();
+            let cold_copy = result.run_info.settings["system_upload_copy_bytes"].clone();
             let (cc, reference) = cpu();
             assert!(
                 (result.points[0].transmission - reference.points[0].transmission).abs() < 1e-5
@@ -412,7 +431,7 @@ fn transmission_jobs() {
             let (gm, gp) = percentiles(walls.clone());
             eprintln!(
                 "{}",
-                serde_json::json!({"job":"scalar_transmission","sample":name,"grid":n,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"gpu_median_ms":gm,"gpu_p95_ms":gp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"speedup":cm/gm,"metadata":result.run_info.settings})
+                serde_json::json!({"cold_system_copy_bytes":cold_copy,"warm_system_copy_bytes":result.run_info.settings["system_upload_copy_bytes"],"job":"scalar_transmission","sample":name,"grid":n,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"gpu_median_ms":gm,"gpu_p95_ms":gp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"speedup":cm/gm,"metadata":result.run_info.settings})
             );
         }
     }

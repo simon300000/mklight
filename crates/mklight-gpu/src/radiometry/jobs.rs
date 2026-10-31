@@ -4,9 +4,52 @@ use crate::{ComputeBackend, Df32, PackedSystem, aiming};
 use mklight_core::{JobContext, job::RunInfo};
 use mklight_trace::{FieldPoint, PolarizationState, PreparedField, SequentialTracer};
 
+/// Completed backend rows, borrowed in place unless reference completion
+/// requires a mutable working copy. The view pins its storage independently
+/// of the backend and plan lifetimes.
+pub struct ResultSlice<T: bytemuck::Pod> {
+    storage: ResultStorage<T>,
+}
+enum ResultStorage<T: bytemuck::Pod> {
+    Resident(ReadView, usize),
+    Reference(Vec<T>),
+}
+impl<T: bytemuck::Pod> ResultSlice<T> {
+    pub(super) fn resident(view: ReadView, count: usize) -> Self {
+        Self {
+            storage: ResultStorage::Resident(view, count),
+        }
+    }
+    pub(super) fn owned(rows: Vec<T>) -> Self {
+        Self {
+            storage: ResultStorage::Reference(rows),
+        }
+    }
+    pub fn is_resident(&self) -> bool {
+        matches!(self.storage, ResultStorage::Resident(..))
+    }
+}
+impl<T: bytemuck::Pod> std::ops::Deref for ResultSlice<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        match &self.storage {
+            ResultStorage::Resident(view, count) => {
+                let rows: &[T] = bytemuck::cast_slice(view.words());
+                &rows[..*count]
+            }
+            ResultStorage::Reference(rows) => rows,
+        }
+    }
+}
+impl<T: bytemuck::Pod> AsRef<[T]> for ResultSlice<T> {
+    fn as_ref(&self) -> &[T] {
+        self
+    }
+}
+
 pub struct PupilResult {
-    pub values: Vec<PolarizationValue>,
-    pub trace_status: Vec<u32>,
+    pub values: ResultSlice<PolarizationValue>,
+    pub trace_status: ResultSlice<u32>,
     /// P3 summary [channel][sum,count,min,max], channels as append_summary.
     pub summary: [[f64; 4]; 10],
     pub run_info: RunInfo,
@@ -41,7 +84,9 @@ pub fn pupil_plan(
 ) -> MkResult<ResidentPlan> {
     ctx.check()?;
     if wl >= t.num_wavelengths() || points.is_empty() || points.len() > u32::MAX as usize {
-        return Err(bad("polarization wavelength or empty pupil"));
+        return Err(mklight_core::MkError::InvalidModel(
+            "polarization wavelength or empty pupil".into(),
+        ));
     }
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.identity.library_hash = prepared.identity.clone();
@@ -62,7 +107,9 @@ pub fn pupil_plan(
                 ctx.check()?;
             }
             if !point.iter().all(|v| v.is_finite()) {
-                return Err(bad("nonfinite pupil point"));
+                return Err(mklight_core::MkError::InvalidModel(
+                    "nonfinite pupil point".into(),
+                ));
             }
             *out = aiming::Sample::new(*point, 0, i as u64);
         }
@@ -148,7 +195,16 @@ fn pupil_mode(
     let field = t.prepare_field(field)?;
     let prepared = PreparedRadiometry::new(b, t.system(), &ctx.subrange(0.0, 0.05))?;
     let packed = PackedSystem::pack_all(t.system())?;
-    let handle = b.upload_system(&packed)?;
+    let cache_key = SystemCacheKey {
+        snapshot: t.system().snapshot.hash().to_hex(),
+        library: prepared.identity.clone(),
+        configuration: "primary".into(),
+        spectrum: "all".into(),
+        layout: crate::consts::MKL_LAYOUT_VERSION,
+        kernel_build: b.precision().kernel_build.clone(),
+        operation_settings: "radiometry geometry v1".into(),
+    };
+    let handle = b.upload_systems_cached(&cache_key, std::slice::from_ref(&packed))?;
     let result = (|| {
         let mut p = pupil_plan(
             b, t, &prepared, handle, &field, wl, points, state, clip, ctx,
@@ -169,12 +225,20 @@ fn pupil_mode(
     let sum = b.read_view(result.outputs[2].view())?;
     let sums = sum.as_slice::<Df32>()?;
     let mut summary = std::array::from_fn(|c| std::array::from_fn(|k| sums[4 * c + k].to_f64()));
-    if !retain_values && result.stats.fallback_count == 0 {
+    if result.stats.fallback_count == 0 {
+        let (values, trace_status) = if retain_values {
+            (
+                ResultSlice::resident(b.read_view(result.outputs[0].view())?, points.len()),
+                ResultSlice::resident(b.read_view(result.outputs[1].view())?, points.len()),
+            )
+        } else {
+            (ResultSlice::owned(vec![]), ResultSlice::owned(vec![]))
+        };
         ctx.check()?;
-        ctx.report(1., "transmission summary complete");
+        ctx.report(1., "radiometry complete");
         return Ok(PupilResult {
-            values: vec![],
-            trace_status: vec![],
+            values,
+            trace_status,
             summary,
             run_info: result.run_info,
             stats: result.stats,
@@ -198,6 +262,7 @@ fn pupil_mode(
         let aim_failed =
             (trace_status[i] & crate::consts::MKL_RAY_CODE_MASK) == crate::consts::MKL_AIM_FAILED;
         if v.status == crate::consts::MKL_RAD_REFERENCE || aim_failed {
+            ctx.check()?;
             let ray = t.trace_polarized(
                 &field,
                 wl,
@@ -257,12 +322,16 @@ fn pupil_mode(
         }
         result.run_info.warnings.push(format!("P7 reference evaluated {fallback} pupil rows (coating/retarder conditioning or unresolved aiming); final summary rebuilt in f64"));
         result.run_info.settings["p7_reference_rows"] = serde_json::json!(fallback);
+        result.run_info.settings["reference_read_copy_bytes"] = serde_json::json!(
+            (points.len() - fallback) * std::mem::size_of::<PolarizationValue>()
+                + std::mem::size_of_val(trace_status.as_slice())
+        );
     }
     ctx.check()?;
     ctx.report(1., "polarization complete");
     Ok(PupilResult {
-        values,
-        trace_status,
+        values: ResultSlice::owned(values),
+        trace_status: ResultSlice::owned(trace_status),
         summary,
         run_info: result.run_info,
         stats: result.stats,
@@ -376,7 +445,9 @@ pub fn system_transmission(
         settings.wavelengths.clone()
     };
     if wavelengths.iter().any(|&w| w >= t.num_wavelengths()) {
-        return Err(bad("transmission wavelength"));
+        return Err(mklight_core::MkError::InvalidModel(
+            "transmission wavelength".into(),
+        ));
     }
     let state = match settings.model {
         RadiometryModel::Unpolarized => PolarizationState::Unpolarized,
@@ -384,7 +455,9 @@ pub fn system_transmission(
     };
     let samples = settings.pupil.points();
     if samples.is_empty() {
-        return Err(bad("transmission empty pupil"));
+        return Err(mklight_core::MkError::InvalidModel(
+            "transmission empty pupil".into(),
+        ));
     }
     let channel = if matches!(settings.model, RadiometryModel::Unpolarized) {
         0
@@ -579,7 +652,8 @@ pub fn polarization_pupil_map(
     let ok = r.summary[6][0];
     let defined = if eta > 0. { r.summary[7][0] } else { 0. };
     let undefined = (ok - defined) as usize;
-    let mut warnings = r.run_info.warnings;
+    let mut warnings = t.warnings().to_vec();
+    warnings.extend(r.run_info.warnings);
     if undefined > 0 {
         warnings.push(format!("{undefined} pupil samples have a singular Jones matrix (no defined retarder) and are excluded from retardance statistics"));
     }

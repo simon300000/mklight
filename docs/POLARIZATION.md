@@ -394,7 +394,13 @@ the reference mask decision without division by zero. A P1 failure retains its
 original status alongside the zero pupil.
 
 Immutable coating and surface tables are produced directly inside `fill_buffer`;
-outputs use `read_view`, with no bulk staging copies. Scalar transmission has
+outputs use `read_view`, with no bulk staging copies. `ResultSlice` keeps
+completed coating/pupil rows and statuses in place; only reference completion
+creates a mutable working copy (reported as `reference_read_copy_bytes`).
+Borrowed host coating-query arrays require one input copy, recorded as
+`input_copy_bytes`; direct producers can use `fill_buffer` and the raw request.
+The existing P0 system-cache API copies cold packed geometry once and reuses it
+on warm jobs; benchmarks report this separately from resident-plan copies. Scalar transmission has
 a dedicated transport kernel that skips PRT and retardance, and reads only the
 P3 summary when no reference completion is needed. Numeric outputs are final result assembly, not f64-labelled GPU
 arithmetic. Per-ray operation order is independent of tile/command sizes;

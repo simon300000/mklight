@@ -95,6 +95,7 @@ impl PreparedRadiometry {
         hits: &ResidentHits,
         state: &mklight_trace::PolarizationState,
     ) -> MkResult<BufferId> {
+        state.validate()?;
         let st = state.stokes();
         let surfaces = p.import(self.surfaces.view());
         let layers = p.import(self.layers.view());
@@ -116,7 +117,7 @@ impl PreparedRadiometry {
                     indices: p.view(hits.rays.indices)?,
                     trace_status: p.view(hits.status)?,
                     wavelengths: self.wavelengths,
-                    stokes: [st.s0, st.s1, st.s2, st.s3].map(Df32::from_f64),
+                    stokes: [1.0, st.s1 / st.s0, st.s2 / st.s0, st.s3 / st.s0].map(Df32::from_f64),
                     output,
                     tile: 65536,
                 }
@@ -185,7 +186,7 @@ pub struct PreparedCoatings {
     domains: Vec<CoatingDomain>,
 }
 pub struct CoatingResult {
-    pub values: Vec<CoatingValue>,
+    pub values: ResultSlice<CoatingValue>,
     pub run_info: mklight_core::job::RunInfo,
     pub stats: PlanStats,
 }
@@ -246,7 +247,7 @@ impl PreparedCoatings {
             }
         }
         let mut p = ResidentPlan::new(snapshot);
-        p.settings = serde_json::json!({"operation":"coating","version":crate::consts::MKL_RAD_VERSION,"specs_hash":blake3::hash(bytemuck::cast_slice(b.read_view(self.specs.view())?.words())).to_hex().to_string(),"layers_hash":blake3::hash(bytemuck::cast_slice(b.read_view(self.layers.view())?.words())).to_hex().to_string(),"query_hash":blake3::hash(bytemuck::cast_slice(queries)).to_hex().to_string()});
+        p.settings = serde_json::json!({"operation":"coating","input_copy_bytes":std::mem::size_of_val(queries),"version":crate::consts::MKL_RAD_VERSION,"specs_hash":blake3::hash(bytemuck::cast_slice(b.read_view(self.specs.view())?.words())).to_hex().to_string(),"layers_hash":blake3::hash(bytemuck::cast_slice(b.read_view(self.layers.view())?.words())).to_hex().to_string(),"query_hash":blake3::hash(bytemuck::cast_slice(queries)).to_hex().to_string()});
         let specs = p.import(self.specs.view());
         let layers = p.import(self.layers.view());
         let query = fill(b, queries, ctx)?;
@@ -263,6 +264,15 @@ impl PreparedCoatings {
         p.outputs = vec![output];
         let mut r = b.submit_plan(p, &ctx.subrange(0., 0.9))?.wait()?;
         let guard = b.read_view(r.outputs[0].view())?;
+        if r.stats.fallback_count == 0 {
+            ctx.check()?;
+            ctx.report(1., "coating complete");
+            return Ok(CoatingResult {
+                values: ResultSlice::resident(guard, queries.len()),
+                run_info: r.run_info,
+                stats: r.stats,
+            });
+        }
         let mut values = Vec::with_capacity(queries.len());
         for (i, v) in bytemuck::cast_slice::<u32, CoatingValue>(guard.words())
             .iter()
@@ -306,12 +316,16 @@ impl PreparedCoatings {
             values.push(v);
         }
         if r.stats.fallback_count > 0 {
+            r.run_info.settings["reference_read_copy_bytes"] = serde_json::json!(
+                (queries.len() - r.stats.fallback_count as usize)
+                    * std::mem::size_of::<CoatingValue>()
+            );
             r.run_info.warnings.push(format!("P7 coating: {} direct evaluations completed with CPU f64 (grazing film or phase range)",r.stats.fallback_count));
         }
         ctx.check()?;
         ctx.report(1., "coating complete");
         Ok(CoatingResult {
-            values,
+            values: ResultSlice::owned(values),
             run_info: r.run_info,
             stats: r.stats,
         })

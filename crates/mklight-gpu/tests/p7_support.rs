@@ -136,6 +136,7 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
     }
     let (values, r) = run(b, plan(b, &specs, &layers, &queries, 1024));
     let mut max_power = 0.0f64;
+    let mut max_budget_fraction = 0.0f64;
     let mut max_amp = 0.0f64;
     let mut max_ledger = 0.0f64;
     for (i, (v, (a, p))) in values.iter().zip(refs).enumerate() {
@@ -161,6 +162,7 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
         for (k, refp) in [p.rs, p.rp, p.ts, p.tp].into_iter().enumerate() {
             let err = (v.powers[k].to_f64() - refp).abs();
             max_power = max_power.max(err);
+            max_budget_fraction = max_budget_fraction.max(err / (1e-5 * refp.abs() + 1e-10));
             assert!(
                 err <= 1e-5 * refp.abs() + 1e-10,
                 "power {i}:{k} err={err:e} ref={refp:e} {v:?}"
@@ -175,6 +177,10 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
             assert!(err <= 1e-6, "ledger {i}:{pol} {err:e}");
         }
     }
+    assert!(
+        max_budget_fraction <= 1.0 / 3.0,
+        "coating sampled safety margin {max_budget_fraction}"
+    );
     assert_eq!(
         r.stats.fallback_count,
         values
@@ -184,7 +190,7 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
     );
     assert_eq!(r.stats.copied_bytes, 0);
     eprintln!(
-        "P7 coating count={} max_power={max_power:e} max_amplitude={max_amp:e} max_ledger={max_ledger:e} stats={:?}",
+        "P7 coating count={} max_power={max_power:e} max_amplitude={max_amp:e} max_ledger={max_ledger:e} max_budget_fraction={max_budget_fraction:e} stats={:?}",
         values.len(),
         r.stats
     );
@@ -449,6 +455,41 @@ pub fn fixtures(b: &dyn ComputeBackend) {
     }
 }
 pub fn known_answers(b: &dyn ComputeBackend) {
+    let tracer = testutil::tracer(samples::singlet());
+    for n in [0, 2] {
+        let settings = mklight_trace::TransmissionSettings {
+            pupil: mklight_trace::PupilSamples::Grid { n },
+            ..Default::default()
+        };
+        assert!(matches!(
+            system_transmission(b, &tracer, &settings, &JobContext::new()),
+            Err(mklight_core::MkError::InvalidModel(_))
+        ));
+    }
+
+    for scale in [1e-200, 1., 1e200] {
+        let state = mklight_trace::PolarizationState::Stokes {
+            s: mklight_trace::Stokes {
+                s0: scale,
+                s1: 0.2 * scale,
+                s2: 0.3 * scale,
+                s3: 0.4 * scale,
+            },
+        };
+        let r = pupil(
+            b,
+            &tracer,
+            tracer.field(0).point,
+            0,
+            &[[0., 0.5]],
+            &state,
+            true,
+            &JobContext::new(),
+        )
+        .unwrap();
+        let reference = tracer.trace_polarized(tracer.field(0), 0, 0., 0.5, &Default::default());
+        assert!((r.values[0].power[2].to_f64() - reference.intensity(&state)).abs() < 1e-12);
+    }
     let cs = coatings();
     let domains = vec![
         CoatingDomain {
@@ -579,6 +620,7 @@ pub fn malus_and_channels(b: &dyn ComputeBackend) {
             &JobContext::new(),
         )
         .unwrap();
+        assert!(r.values.is_resident() && r.trace_status.is_resident());
         let v = r.values[0];
         intensities.push(v.power[2].to_f64());
         let k = v.direction.map(Df32::to_f64);

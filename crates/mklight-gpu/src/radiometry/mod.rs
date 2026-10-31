@@ -67,7 +67,7 @@ fn check<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
     let n = v.desc.shape.first().copied().unwrap_or(0);
     if v.desc != record_desc::<T>(n)
         || v.stride != 1
-        || !(base + v.offset).is_multiple_of(2)
+        || (base ^ v.offset) & 1 != 0
         || v.desc.len()? > u32::MAX as usize
     {
         return Err(bad("radiometry record layout"));

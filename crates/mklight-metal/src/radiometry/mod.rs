@@ -9,7 +9,13 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         name: match r {
             Request::Coating(_) => "coating",
             Request::PupilChannels { .. } => "complex pupil channels",
-            Request::Polarization(_) => "polarization",
+            Request::Polarization(r) => {
+                if r.scalar {
+                    "scalar transmission"
+                } else {
+                    "polarization"
+                }
+            }
             Request::Channels { .. } => "radiometry channels",
         }
         .into(),
