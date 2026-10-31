@@ -697,8 +697,8 @@ pub fn complex_correlation_suite(b: &dyn ComputeBackend) {
         .unwrap();
     let fh = b
         .upload_buffer(
-            BufferDesc::new(ElementType::F32, vec![5, 2]),
-            BufferData::F32(shifts.concat()),
+            BufferDesc::new(ElementType::F32, vec![12]),
+            BufferData::F32([vec![99.], shifts.concat(), vec![77.]].concat()),
         )
         .unwrap();
     let mut p = ResidentPlan::new(snapshot());
@@ -711,7 +711,12 @@ pub fn complex_correlation_suite(b: &dyn ComputeBackend) {
             CorrelationStencil {
                 pupil: p.view(i).unwrap(),
                 coverage: Some(p.view(c).unwrap()),
-                frequencies: p.view(f).unwrap(),
+                frequencies: PlanView {
+                    buffer: f,
+                    offset: 1,
+                    desc: BufferDesc::new(ElementType::F32, vec![5, 2]),
+                    stride: 1,
+                },
                 mapping: [1., 0., 0., 0., 1., 0.].map(Df32::from_f64),
                 output: o,
             },

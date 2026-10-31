@@ -61,14 +61,14 @@ static P2Geometry p2_geometry(constant MklCorrelationParams&p,uint k,float2 nu){
     float2 ix=mkl_df_add_f32(mkl_df_mul(p2_dot(shifted,p.frame[0]),scale),offset),iy=mkl_df_add_f32(mkl_df_mul(p2_dot(shifted,p.frame[1]),scale),offset);
     g.x=ix.x+ix.y;g.y=iy.x+iy.y;g.z=-sz.x;return g;
 }
-kernel void mkl_optical_stencil(device const float2*freq[[buffer(0)]],device float*dst[[buffer(1)]],constant MklCorrelationParams&p[[buffer(2)]],uint tid[[thread_position_in_grid]]){
+kernel void mkl_optical_stencil(device const float*freq[[buffer(0)]],device float*dst[[buffer(1)]],constant MklCorrelationParams&p[[buffer(2)]],uint tid[[thread_position_in_grid]]){
     uint k=tid+p.start,count=p.n*p.height;if(k>=count)return;
-    P2Geometry g=p2_geometry(p,k,freq[p.frequency]);uint o=(p.frequency*count+k)*5;
+    P2Geometry g=p2_geometry(p,k,float2(freq[2*p.frequency],freq[2*p.frequency+1]));uint o=(p.frequency*count+k)*5;
     dst[o]=g.x;dst[o+1]=g.y;dst[o+2]=g.z;dst[o+3]=g.gamma;dst[o+4]=g.source_z;
 }
-kernel void mkl_correlation_terms(device const float*field[[buffer(0)]],device const float2*opd[[buffer(1)]],device const float*cov[[buffer(2)]],device const float2*freq[[buffer(3)]],device const float*stencil[[buffer(4)]],device float*out[[buffer(5)]],constant MklCorrelationParams&p[[buffer(6)]],uint tid[[thread_position_in_grid]]){
+kernel void mkl_correlation_terms(device const float*field[[buffer(0)]],device const float2*opd[[buffer(1)]],device const float*cov[[buffer(2)]],device const float*freq[[buffer(3)]],device const float*stencil[[buffer(4)]],device float*out[[buffer(5)]],constant MklCorrelationParams&p[[buffer(6)]],uint tid[[thread_position_in_grid]]){
     uint k=tid+p.start,count=p.n*p.height;if(k>=count)return;out[k]=0;out[count+k]=0;out[2*count+k]=0;
-    float c=p.covered?cov[k]:1.0f;if(c<=0)return;float2 nu=freq[p.frequency];P2Geometry g;
+    float c=p.covered?cov[k]:1.0f;if(c<=0)return;float2 nu=float2(freq[2*p.frequency],freq[2*p.frequency+1]);P2Geometry g;
     if(p.optical){if(p.prepared){uint o=(p.frequency*count+k)*5;g={stencil[o],stencil[o+1],stencil[o+2],stencil[o+3],stencil[o+4]};}else g=p2_geometry(p,k,nu);}
     else{
         float2 sx=mkl_df_add(mkl_df_add(mkl_df_mul_f32(p2_df(p.mapping[0]),nu.x),mkl_df_mul_f32(p2_df(p.mapping[1]),nu.y)),p2_df(p.mapping[2]));
