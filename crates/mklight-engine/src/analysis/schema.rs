@@ -118,31 +118,16 @@ pub fn any(description: &str) -> Value {
     v
 }
 
-/// Catalogue reference offsets (MATERIALS.md); both components default to zero.
+/// `MaterialOffset` (MATERIALS.md); both components default to zero.
 pub fn material_offset() -> Value {
-    json!({"type":"object", "additionalProperties":false,
-        "default":{"dn_d":0.0,"dv_d":0.0}, "properties":{
-            "dn_d":{"type":"number","default":0.0,"minimum":-0.05,"maximum":0.05},
-            "dv_d":{"type":"number","default":0.0,"minimum":-10.0,"maximum":10.0}
-        }, "description":"d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios."})
-}
-
-pub fn material_ref() -> Value {
-    json!({"description":"The model's tagged material reference (air, vacuum, catalog, model, constant). Catalogue references may carry offset:{dn_d,dv_d}, both default zero; bounds ±0.05 and ±10 (MATERIALS.md).", "anyOf":[
-        obj(&[("type", enumeration(&["air"], ""))]),
-        obj(&[("type", enumeration(&["vacuum"], ""))]),
-        obj_opt(&[
-            ("type", enumeration(&["catalog"], "")),
-            ("catalog", nullable(string("Null searches loaded catalogues in order."))),
-            ("name", string("Catalogue glass name.")),
-            ("offset", material_offset()),
-        ], &["catalog", "offset"]),
-        obj_opt(&[
-            ("type", enumeration(&["model"], "")),
-            ("nd", num("1", "")), ("vd", num("1", "")), ("dpgf", num("1", "")),
-        ], &["dpgf"]),
-        obj(&[("type", enumeration(&["constant"], "")), ("n", num("1", ""))]),
-    ]})
+    use mklight_core::materials::MaterialOffset as O;
+    json!({"type": "object", "additionalProperties": false,
+        "default": {"dn_d": 0.0, "dv_d": 0.0},
+        "properties": {
+            "dn_d": {"type": "number", "default": 0.0, "minimum": -O::MAX_DN_D, "maximum": O::MAX_DN_D},
+            "dv_d": {"type": "number", "default": 0.0, "minimum": -O::MAX_DV_D, "maximum": O::MAX_DV_D}
+        },
+        "description": "d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios."})
 }
 
 fn annotate(v: &mut Value, unit: &str, description: &str) {
@@ -395,8 +380,7 @@ pub fn type_label(s: &Value) -> String {
         return "nf".into();
     }
     if let Some(alts) = s.get("anyOf").and_then(Value::as_array) {
-        let mut labels: Vec<String> = alts.iter().map(type_label).collect();
-        labels.dedup();
+        let labels: Vec<String> = alts.iter().map(type_label).collect();
         if labels.len() == 2 && labels[1] == "null" {
             return format!("{}?", labels[0]);
         }
@@ -463,11 +447,7 @@ fn result_rows(path: &str, s: &Value, required: bool, out: &mut Vec<String>) {
     let inner = s
         .get("anyOf")
         .and_then(Value::as_array)
-        .and_then(|a| {
-            let mut objects = a.iter().filter(|x| x.get("properties").is_some());
-            let first = objects.next()?;
-            objects.next().is_none().then_some(first)
-        })
+        .and_then(|a| a.iter().find(|x| x.get("properties").is_some()))
         .unwrap_or(s);
     if !path.is_empty() {
         let opt = if required { "" } else { " (optional)" };

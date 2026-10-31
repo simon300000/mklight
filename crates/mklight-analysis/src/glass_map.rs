@@ -2,7 +2,7 @@
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::materials::agf::GlassStatus;
 use mklight_core::materials::{
-    CATALOG_T_C, MaterialLibrary, MaterialOffset, ResolvedMaterial, TransmittancePoint, lines,
+    MaterialLibrary, MaterialOffset, ResolvedMaterial, TransmittancePoint, lines,
 };
 use mklight_core::{JobContext, MaterialRef, MkResult, RunInfo, Snapshot};
 use serde::{Deserialize, Serialize};
@@ -118,11 +118,7 @@ pub fn glass_map_job(
                     point.surfaces.push(i);
                 } else {
                     let mut point = point.clone();
-                    let env = mklight_core::model::Environment {
-                        temperature_c: g.thermal.map_or(CATALOG_T_C, |t| t.t_ref_c),
-                        ..Default::default()
-                    };
-                    let m = library.resolve(&surface.material, &env)?;
+                    let m = library.resolve(&surface.material, &g.catalog_environment())?;
                     [point.nd, point.vd, point.pgf] = coordinates(&m);
                     point.kind = "offset".into();
                     point.offset = *offset;
@@ -256,9 +252,9 @@ IT 0.55 0.81 10
         lib.add_catalog(std::sync::Arc::new(other));
         let mut sys = mklight_core::samples::cooke_triplet();
         sys.surfaces[1].material = MaterialRef::Catalog {
-            offset: Default::default(),
             catalog: Some("other".into()),
             name: "n-sk16".into(),
+            offset: Default::default(),
         };
         let r = glass_map_job(
             &Snapshot::new(sys).unwrap(),

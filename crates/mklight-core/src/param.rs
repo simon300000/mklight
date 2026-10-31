@@ -79,11 +79,11 @@ pub enum ParamPath {
     ModelDpgf {
         surface: SurfaceId,
     },
-    /// Catalogue-glass index offset, also used by tolerance operands.
+    /// `Δn_d` of a catalogue glass (`MaterialOffset`).
     MaterialDnD {
         surface: SurfaceId,
     },
-    /// Catalogue-glass Abbe offset, also used by tolerance operands.
+    /// `ΔV_d` of a catalogue glass (`MaterialOffset`).
     MaterialDvD {
         surface: SurfaceId,
     },

@@ -7,9 +7,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use mklight_core::materials::coating::ResolvedCoating;
-use mklight_core::materials::{
-    CATALOG_T_C, Glass, MaterialLibrary, MaterialOffset, ResolvedMaterial, lines,
-};
+use mklight_core::materials::{Glass, MaterialLibrary, MaterialOffset, ResolvedMaterial, lines};
 use mklight_core::math::KahanSum;
 use mklight_core::rng::Philox;
 use mklight_core::{
@@ -324,7 +322,7 @@ impl Analysis for SystemSummary {
                 "material",
                 nullable(string("Display name of the medium after the surface.")),
             ),
-            ("material_ref", material_ref()),
+            ("material_ref", any("The model's MaterialRef.")),
             ("interaction", string("refract or reflect.")),
             ("semi_diameter", any("The model's SemiDiameter.")),
             ("aperture", any("Resolved aperture shape or null.")),
@@ -562,9 +560,9 @@ impl Analysis for GlassInfo {
         "materials"
     }
     fn description(&self) -> &str {
-        "Catalog data of one glass, with optional index/Abbe offsets, and its index relative to air at chosen wavelengths and \
-         environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the \
-         glass's valid range."
+        "Catalog data of one glass, with an optional index/Abbe offset, and its index relative \
+         to air at chosen wavelengths and environment. Buffer `dispersion_curve` [samples × 2] \
+         holds (λ µm, n) over the glass's valid range."
     }
     fn result_schema(&self) -> Value {
         use super::schema::*;
@@ -579,7 +577,7 @@ impl Analysis for GlassInfo {
                     "nd",
                     num(
                         "",
-                        "Computed at the d line with offsets (catalog conditions).",
+                        "Computed at the d line, offset included (catalog conditions).",
                     ),
                 ),
                 ("ne", num("", "")),
@@ -587,9 +585,7 @@ impl Analysis for GlassInfo {
                 ("pgf", nf_u("", "Partial dispersion P_g,F.")),
                 (
                     "dispersion",
-                    opaque(
-                        "Nominal catalogue dispersion formula and coefficients; offsets apply separately.",
-                    ),
+                    opaque("Nominal dispersion formula and coefficients, without the offset."),
                 ),
                 ("min_um", num("µm", "")),
                 ("max_um", num("µm", "")),
@@ -672,11 +668,9 @@ impl Analysis for GlassInfo {
             offset: s.offset,
         };
         let m = input.library.resolve(&reference, &env)?;
-        let reference_env = mklight_core::model::Environment {
-            temperature_c: glass.thermal.map_or(CATALOG_T_C, |t| t.t_ref_c),
-            pressure_atm: 1.0,
-        };
-        let m_catalog = input.library.resolve(&reference, &reference_env)?;
+        let m_catalog = input
+            .library
+            .resolve(&reference, &glass.catalog_environment())?;
         let wls = s
             .wavelengths_um
             .unwrap_or_else(|| sys.wavelengths.wavelengths.iter().map(|w| w.um).collect());

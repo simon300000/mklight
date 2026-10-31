@@ -421,7 +421,7 @@ Result (`result` in the envelope):
 | `surfaces[].is_stop` | boolean |  |  |
 | `surfaces[].label` | string |  |  |
 | `surfaces[].material` | string? |  |  |
-| `surfaces[].material_ref` | object |  | The model's tagged material reference (air, vacuum, catalog, model, constant). Catalogue references may carry offset:{dn_d,dv_d}, both default zero; bounds ±0.05 and ±10 (MATERIALS.md). |
+| `surfaces[].material_ref` | any |  | The model's MaterialRef. |
 | `surfaces[].n_after` | array<number> |  | Index after the surface at every system wavelength (relative to air). |
 | `surfaces[].nd_after` | nf |  |  |
 | `surfaces[].radius` | nf | mm | 1/curvature; "inf" for a plane. |
@@ -472,7 +472,7 @@ Result (`result` in the envelope):
 
 Category `materials`, result version 1.
 
-Catalog data of one glass, with optional index/Abbe offsets, and its index relative to air at chosen wavelengths and environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the glass's valid range.
+Catalog data of one glass, with an optional index/Abbe offset, and its index relative to air at chosen wavelengths and environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the glass's valid range.
 
 Settings:
 
@@ -497,7 +497,7 @@ Result (`result` in the envelope):
 | `comment` | any |  |  |
 | `cte` | any |  | Thermal expansion (1/K) or null. |
 | `density` | any |  | g/cm³ or null. |
-| `dispersion` | object |  | Nominal catalogue dispersion formula and coefficients; offsets apply separately. |
+| `dispersion` | object |  | Nominal dispersion formula and coefficients, without the offset. |
 | `environment` | object |  | Temperature and pressure used. |
 | `has_thermal_data` | boolean |  |  |
 | `indices` | array<object> |  |  |
@@ -509,7 +509,7 @@ Result (`result` in the envelope):
 | `max_um` | number | µm |  |
 | `min_um` | number | µm |  |
 | `name` | string |  |  |
-| `nd` | number |  | Computed at the d line with offsets (catalog conditions). |
+| `nd` | number |  | Computed at the d line, offset included (catalog conditions). |
 | `ne` | number |  |  |
 | `offset` | object |  | d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios. |
 | `offset.dn_d` (optional) | number |  | -0.05 … 0.05 |

@@ -446,9 +446,9 @@ pub fn absorbing_triplet() -> OpticalSystem {
     for surf in &mut s.surfaces {
         if surf.material == MaterialRef::glass("N-SK16") {
             surf.material = MaterialRef::Catalog {
-                offset: Default::default(),
                 catalog: Some("TEST".into()),
                 name: "ABSORB".into(),
+                offset: Default::default(),
             };
         }
     }

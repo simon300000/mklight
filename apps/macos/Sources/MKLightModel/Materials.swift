@@ -7,7 +7,8 @@ public enum MaterialRef: Codable, Sendable, Hashable {
     /// Vacuum (index `1/n_air`).
     case vacuum
     /// A catalog glass; `catalog == nil` searches every loaded catalog.
-    case catalog(catalog: String?, name: String)
+    /// `offset` shifts its `n_d` and `V_d` (docs/MATERIALS.md).
+    case catalog(catalog: String?, name: String, offset: MaterialOffset = .zero)
     /// Model glass from `n_d`, `V_d` and `ΔP_g,F`.
     case model(nd: Double, vd: Double, dpgf: Double)
     /// Constant index at every wavelength.
@@ -22,7 +23,7 @@ public enum MaterialRef: Codable, Sendable, Hashable {
         switch self {
         case .air: "AIR"
         case .vacuum: "VACUUM"
-        case .catalog(_, let name): name
+        case .catalog(_, let name, _): name
         case .model(let nd, let vd, _): String(format: "%.5f/%.2f", nd, vd)
         case .constant(let n): "n=" + NumberDisplay.significant(n)
         }
@@ -38,8 +39,10 @@ public enum MaterialRef: Codable, Sendable, Hashable {
             try c.allowOnly("type")
             self = .vacuum
         case "catalog":
-            try c.allowOnly("type", "catalog", "name")
-            self = .catalog(catalog: try c.optional("catalog"), name: try c.value("name"))
+            try c.allowOnly("type", "catalog", "name", "offset")
+            self = .catalog(
+                catalog: try c.optional("catalog"), name: try c.value("name"),
+                offset: try c.value("offset", default: .zero))
         case "model":
             try c.allowOnly("type", "nd", "vd", "dpgf")
             self = .model(nd: try c.value("nd"), vd: try c.value("vd"), dpgf: try c.value("dpgf", default: 0))
@@ -56,10 +59,11 @@ public enum MaterialRef: Codable, Sendable, Hashable {
         switch self {
         case .air: try c.put("air", "type")
         case .vacuum: try c.put("vacuum", "type")
-        case .catalog(let cat, let name):
+        case .catalog(let cat, let name, let offset):
             try c.put("catalog", "type")
             try c.putOptional(cat, "catalog")
             try c.put(name, "name")
+            if !offset.isZero { try c.put(offset, "offset") }
         case .model(let nd, let vd, let dpgf):
             try c.put("model", "type")
             try c.put(nd, "nd")
@@ -69,6 +73,38 @@ public enum MaterialRef: Codable, Sendable, Hashable {
             try c.put("constant", "type")
             try c.put(n, "n")
         }
+    }
+}
+
+/// Changes `Δn_d`, `ΔV_d` to a catalog glass; its dispersion is scaled about
+/// d, keeping partial-dispersion ratios. Omitted from JSON when zero.
+public struct MaterialOffset: Codable, Sendable, Hashable {
+    public var dnD: Double
+    public var dvD: Double
+
+    public static let zero = MaterialOffset()
+    /// Structural bounds on `|Δn_d|` and `|ΔV_d|`.
+    public static let maxDnD = 0.05
+    public static let maxDvD = 10.0
+
+    public init(dnD: Double = 0, dvD: Double = 0) {
+        self.dnD = dnD
+        self.dvD = dvD
+    }
+
+    public var isZero: Bool { dnD == 0 && dvD == 0 }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("dn_d", "dv_d")
+        dnD = try c.value("dn_d", default: 0)
+        dvD = try c.value("dv_d", default: 0)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.put(dnD, "dn_d")
+        try c.put(dvD, "dv_d")
     }
 }
 

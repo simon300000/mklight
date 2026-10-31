@@ -25,9 +25,8 @@ use crate::model::{Environment, MaterialRef};
 pub const CATALOG_T_C: f64 = 20.0;
 pub const CATALOG_P_ATM: f64 = 1.0;
 
-/// Changes to the d-line index and Abbe number of a catalogue reference.
-/// Dispersion is scaled about d; partial-dispersion ratios are preserved.
-/// See MATERIALS.md for the formula and environmental convention.
+/// Changes `Δn_d`, `ΔV_d` to a catalogue glass (MATERIALS.md): the
+/// dispersion is scaled about d, keeping partial-dispersion ratios.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MaterialOffset {
@@ -36,32 +35,12 @@ pub struct MaterialOffset {
 }
 
 impl MaterialOffset {
+    /// Structural bounds on `|Δn_d|` and `|ΔV_d|` (CONVENTIONS §13).
+    pub const MAX_DN_D: f64 = 0.05;
+    pub const MAX_DV_D: f64 = 10.0;
+
     pub fn is_zero(&self) -> bool {
         self.dn_d == 0.0 && self.dv_d == 0.0
-    }
-
-    pub(crate) fn invalid_fields(
-        &self,
-    ) -> impl Iterator<Item = (&'static str, &'static str, String)> {
-        [("dn_d", self.dn_d, 0.05), ("dv_d", self.dv_d, 10.0)]
-            .into_iter()
-            .filter_map(|(field, value, limit)| {
-                if !value.is_finite() {
-                    Some((
-                        field,
-                        "non_finite",
-                        format!("{value} is not a finite number"),
-                    ))
-                } else if value.abs() > limit {
-                    Some((
-                        field,
-                        "invalid_material",
-                        format!("absolute offset must be ≤ {limit}"),
-                    ))
-                } else {
-                    None
-                }
-            })
     }
 }
 
@@ -134,6 +113,14 @@ impl Glass {
         self.dispersion.index(lambda_um)
     }
 
+    /// Conditions at which `catalog_index` holds: `T_ref` and `CATALOG_P_ATM`.
+    pub fn catalog_environment(&self) -> Environment {
+        Environment {
+            temperature_c: self.thermal.map_or(CATALOG_T_C, |t| t.t_ref_c),
+            pressure_atm: CATALOG_P_ATM,
+        }
+    }
+
     /// Internal absorption coefficient α (1/mm), so that `τ(L) = exp(−α L)`.
     /// Returns 0 when no transmittance data exists.
     pub fn absorption_per_mm(&self, lambda_um: f64) -> f64 {
@@ -196,6 +183,7 @@ pub enum ResolvedMaterial {
     Constant {
         n: f64,
     },
+    /// A catalogue glass with an offset: `n_d + Δn_d + scale·(n_base(λ) − n_d)`.
     Offset {
         base: Box<ResolvedMaterial>,
         nd: f64,
@@ -362,11 +350,6 @@ impl MaterialLibrary {
                 name,
                 offset,
             } => {
-                if let Some((field, code, message)) = offset.invalid_fields().next() {
-                    return Err(MkError::InvalidModel(format!(
-                        "[{code}] offset.{field}: {message}"
-                    )));
-                }
                 let base = ResolvedMaterial::Glass {
                     glass: self.find_glass(catalog.as_deref(), name)?,
                     env: *env,
@@ -374,23 +357,21 @@ impl MaterialLibrary {
                 if offset.is_zero() {
                     return Ok(base);
                 }
+                // Anchors at the requested environment (MATERIALS.md).
                 let nd = base.index(lines::D);
                 let vd = (nd - 1.0) / (base.index(lines::F) - base.index(lines::C));
-                if !(nd > 1.0
-                    && vd.is_finite()
-                    && vd > 0.0
-                    && nd + offset.dn_d > 1.0
-                    && vd + offset.dv_d > 0.0)
-                {
-                    return Err(MkError::InvalidModel(
-                        "[invalid_material] offset glass needs n_d > 1 and finite V_d > 0 before and after the offset".into(),
-                    ));
+                let (nd_new, vd_new) = (nd + offset.dn_d, vd + offset.dv_d);
+                if !(nd > 1.0 && nd_new > 1.0 && vd > 0.0 && vd_new > 0.0 && vd.is_finite()) {
+                    return Err(MkError::InvalidModel(format!(
+                        "offset glass {name} needs n_d > 1 and finite V_d > 0 \
+                         (got {nd}, {vd} → {nd_new}, {vd_new})"
+                    )));
                 }
                 ResolvedMaterial::Offset {
-                    scale: (nd + offset.dn_d - 1.0) / (nd - 1.0) * vd / (vd + offset.dv_d),
                     base: Box::new(base),
                     nd,
                     dn_d: offset.dn_d,
+                    scale: (nd_new - 1.0) / (nd - 1.0) * vd / vd_new,
                 }
             }
         })

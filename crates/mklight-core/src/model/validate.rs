@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::error::{MkError, MkResult};
+use crate::materials::MaterialOffset;
 use crate::model::{
     ApertureShape, ApertureSpec, CoatingDef, FieldKind, Interaction, MaterialRef, MechanicalPart,
     OpticalSystem, Placement, RayAiming, ScatterModel, SemiDiameter, SurfaceShape,
@@ -278,8 +279,18 @@ fn check_scatter(out: &mut Issues, path: &str, m: &ScatterModel) {
 fn check_material(out: &mut Issues, path: &str, m: &MaterialRef) {
     match *m {
         MaterialRef::Catalog { offset, .. } => {
-            for (field, code, message) in offset.invalid_fields() {
-                out.push(code, format!("{path}.offset.{field}"), message);
+            for (name, v, max) in [
+                ("dn_d", offset.dn_d, MaterialOffset::MAX_DN_D),
+                ("dv_d", offset.dv_d, MaterialOffset::MAX_DV_D),
+            ] {
+                let p = format!("{path}.offset.{name}");
+                if out.finite(p.clone(), v) && v.abs() > max {
+                    out.push(
+                        "invalid_material",
+                        p,
+                        format!("must be within ±{max} (got {v})"),
+                    );
+                }
             }
         }
         MaterialRef::Model { nd, vd, dpgf } => {

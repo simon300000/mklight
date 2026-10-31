@@ -9,8 +9,7 @@
 //! both use this metric.
 
 use mklight_core::materials::{
-    Glass, MaterialLibrary, ResolvedMaterial, agf::GlassStatus, builtin::BUILTIN_CATALOG_NAME,
-    lines, normal_pgf,
+    Glass, MaterialLibrary, agf::GlassStatus, builtin::BUILTIN_CATALOG_NAME, lines, normal_pgf,
 };
 use mklight_core::{MaterialRef, MkError, MkResult, OpticalSystem, SurfaceId};
 use serde::{Deserialize, Serialize};
@@ -88,12 +87,12 @@ pub struct GlassChoice {
 }
 
 impl GlassChoice {
-    /// A replacement names the nominal catalogue glass: melt offsets are cleared.
+    /// The nominal catalogue glass: a replacement carries no offset.
     pub fn material(&self) -> MaterialRef {
         MaterialRef::Catalog {
-            offset: Default::default(),
             catalog: Some(self.catalog.clone()),
             name: self.name.clone(),
+            offset: Default::default(),
         }
     }
     pub fn coordinates(&self) -> Vec<f64> {
@@ -103,7 +102,10 @@ impl GlassChoice {
 
 /// `(n_d, V_d / 100, ΔP_g,F)` of a glass from its dispersion formula.
 pub fn coordinates(glass: &Glass) -> [f64; 3] {
-    let n = |l| glass.catalog_index(l);
+    index_coordinates(|l| glass.catalog_index(l))
+}
+
+fn index_coordinates(n: impl Fn(f64) -> f64) -> [f64; 3] {
     let dfc = n(lines::F) - n(lines::C);
     let nd = n(lines::D);
     let vd = (nd - 1.0) / dfc;
@@ -147,16 +149,11 @@ impl CandidateSet {
         let sf = &system.surfaces[index];
         let origin = match &sf.material {
             MaterialRef::Model { nd, vd, dpgf } => [*nd, *vd / 100.0, *dpgf],
+            // The offset position, at catalogue conditions like the candidates.
             MaterialRef::Catalog { catalog, name, .. } => {
                 let glass = library.find_glass(catalog.as_deref(), name)?;
-                let env = mklight_core::model::Environment {
-                    temperature_c: glass
-                        .thermal
-                        .map_or(mklight_core::materials::CATALOG_T_C, |t| t.t_ref_c),
-                    ..Default::default()
-                };
-                let m = library.resolve(&sf.material, &env)?;
-                resolved_coordinates(&m)
+                let m = library.resolve(&sf.material, &glass.catalog_environment())?;
+                index_coordinates(|l| m.index(l))
             }
             _ => {
                 return Err(MkError::InvalidParam(
@@ -286,12 +283,6 @@ impl CandidateSet {
         }
         Ok(result)
     }
-}
-
-fn resolved_coordinates(m: &ResolvedMaterial) -> [f64; 3] {
-    let [d, f, c, g] = [lines::D, lines::F, lines::C, lines::G].map(|l| m.index(l));
-    let vd = (d - 1.0) / (f - c);
-    [d, vd / 100.0, (g - f) / (f - c) - normal_pgf(vd)]
 }
 
 /// Empty material-variable settings snap every model-glass optical gap.

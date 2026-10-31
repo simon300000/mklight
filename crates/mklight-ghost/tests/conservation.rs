@@ -109,9 +109,9 @@ fn absorbing_plate_bookkeeping() {
     // Absorbing glass (bulk) and an absorbing coating (interfaces) at 20°.
     let mut sys = plate(1.5, 10.0, 20.0, &[0.0, 20.0], Some(absorbing_coating()));
     sys.surfaces[2].material = MaterialRef::Catalog {
-        offset: Default::default(),
         catalog: Some("TEST".into()),
         name: "ABS".into(),
+        offset: Default::default(),
     };
     let m = GhostModel::from_system(resolve_with(sys, absorbing_library()), unclipped()).unwrap();
     let ray = m

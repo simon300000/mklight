@@ -943,9 +943,9 @@ mod tests {
 
         let mut sys = s.system().clone();
         sys.surfaces[1].material = MaterialRef::Catalog {
-            offset: Default::default(),
             catalog: Some("MYCAT".into()),
             name: "FAKE1".into(),
+            offset: Default::default(),
         };
         s.set_system(sys).unwrap();
         let n = s.resolved().unwrap().surfaces[1].n_after[0];
