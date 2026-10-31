@@ -41,9 +41,9 @@
 //! linear prediction from the cached chief-ray aim point and Jacobian of the
 //! (field, wavelength). If the direct solve fails, it falls back to
 //! continuation in the pupil radius (25 %, 50 %, 75 %, 100 %). Aiming ignores
-//! clipping. At infinity, chief-ray recovery continues unit directions from
-//! the axis, preserving the entrance hit between steps. Convergence is reported
-//! per ray.
+//! clipping. At infinity, chief-ray recovery blends unit directions from the
+//! axis and keeps the entrance hit between steps. Convergence is reported per
+//! ray.
 
 use std::sync::Arc;
 
@@ -405,19 +405,17 @@ impl SequentialTracer {
                 let (mut s, _) = self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None);
                 if !s.converged {
                     // A wide-field paraxial seed can miss the front surfaces:
-                    // continue the source from the axis in bounded steps, ending
-                    // on `src` itself. Blend unit directions so the first
-                    // step stays near the axis even for a grazing field.
-                    // Any failed step keeps the first solve.
+                    // continue the source from the axis, ending on `src`
+                    // itself. Directions are blended as unit vectors so a
+                    // grazing field advances evenly, and each step re-aims
+                    // through the previous entrance hit. Any failed step
+                    // keeps the first solve.
                     let p = self.source_params(src);
-                    let count = if matches!(src, ObjectSource::Direction { .. }) {
-                        64
-                    } else {
-                        16
-                    };
-                    let steps = (0..count)
+                    let at_infinity = matches!(src, ObjectSource::Direction { .. });
+                    let n = if at_infinity { 64 } else { 16 };
+                    let steps = (0..n)
                         .map(|k| {
-                            let f = k as f64 / count as f64;
+                            let f = k as f64 / n as f64;
                             match *src {
                                 ObjectSource::Direction { dir } => Some(ObjectSource::Direction {
                                     dir: (Vec3::Z * (1.0 - f) + dir * f).normalized(),
@@ -432,34 +430,27 @@ impl SequentialTracer {
                     let mut entrance: Option<Vec3> = None;
                     for (k, step) in steps.enumerate() {
                         let Some(step) = step else { break };
-                        if let (Some(p), ObjectSource::Direction { dir }) = (entrance, step) {
-                            // Keep the previous entrance hit in the new beam.
-                            let dz = self.pupil.z_ep - p.z;
-                            x = [p.x + dz * dir.x / dir.z, p.y + dz * dir.y / dir.z];
+                        if let (Some(e), ObjectSource::Direction { dir }) = (entrance, step) {
+                            let t = (self.pupil.z_ep - e.z) / dir.z;
+                            x = [e.x + t * dir.x, e.y + t * dir.y];
                         }
                         let (sk, _) = self.solve_aim(&step, wl, [0.0, 0.0], x, j);
                         if !sk.converged {
                             break;
                         }
                         (x, j) = (sk.x, sk.jacobian);
-                        if k < count && matches!(step, ObjectSource::Direction { .. }) {
+                        if k == n {
+                            s = sk;
+                        } else if at_infinity {
                             let ray = self.start_ray(&step, x).unwrap();
-                            let hit = trace_ray(
-                                &self.sys,
-                                &ray,
-                                wl,
-                                &TraceOptions {
-                                    clip: false,
-                                    last_surface: Some(1),
-                                    intersect: self.settings.intersect,
-                                },
-                                None,
-                            );
+                            let options = TraceOptions {
+                                clip: false,
+                                last_surface: Some(1),
+                                intersect: self.settings.intersect,
+                            };
+                            let hit = trace_ray(&self.sys, &ray, wl, &options, None);
                             entrance =
                                 Some(self.sys.surfaces[1].frame.to_global_point(hit.ray.pos));
-                        }
-                        if k == count {
-                            s = sk;
                         }
                     }
                 }
