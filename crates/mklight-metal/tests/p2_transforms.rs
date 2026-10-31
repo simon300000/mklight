@@ -71,10 +71,25 @@ fn deterministic_reuse_concurrent_and_cancellation() {
         .unwrap();
     let bits = read(&r);
     drop(r);
+    let other_data: Vec<_> = input(256 * 256)
+        .into_iter()
+        .map(|z| [0.3 * z[1] + 0.25, -0.8 * z[0]])
+        .collect();
+    let other_input = upload(&b, other_data, vec![256, 256]);
+    let mut other_plan = p.clone();
+    other_plan.buffers[i.0] = PlanBuffer::Import(other_input.view());
+    let other = b
+        .submit_plan(other_plan.clone(), &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    let other_bits = read(&other);
+    drop(other);
+    assert_ne!(bits, other_bits);
     let c1 = JobContext::new();
     let c2 = JobContext::new();
     let a = b.submit_plan(p.clone(), &c1).unwrap();
-    let d = b.submit_plan(p.clone(), &c2).unwrap();
+    let d = b.submit_plan(other_plan, &c2).unwrap();
     let mut progress = 0.;
     while !a.is_ready() {
         let q = c1.progress.fraction();
@@ -85,7 +100,7 @@ fn deterministic_reuse_concurrent_and_cancellation() {
     let a = a.wait().unwrap();
     let d = d.wait().unwrap();
     assert_eq!(read(&a), bits);
-    assert_eq!(read(&d), bits);
+    assert_eq!(read(&d), other_bits);
     assert!(a.stats.reused_allocations > 0);
     let ctx = JobContext::new();
     let q = b.submit_plan(p.clone(), &ctx).unwrap();
