@@ -18,6 +18,23 @@ fn quadratic(a: &[Df32; 6], x: f32, y: f32) -> Df32 {
 }
 fn eval(s: &Step, a: &[C], b: &[C], ctl: &JobControl) -> MkResult<Vec<C>> {
     let p = s.p;
+    if p.mode == MKL_TRANSFORM_LOCAL_FFT {
+        let mut values = a.to_vec();
+        let mut span = 1;
+        let mut rem = p.width;
+        for radix in [2, 3, 5, 7] {
+            while rem.is_multiple_of(radix) {
+                let mut stage = s.clone();
+                stage.p.mode = MKL_TRANSFORM_FFT;
+                stage.p.radix = radix;
+                stage.p.span = span;
+                values = eval(&stage, &values, b, ctl)?;
+                span *= radix;
+                rem /= radix;
+            }
+        }
+        return Ok(values);
+    }
     let affine = p.affine.map(|v| Df32::new(v[0], v[1]));
     let (w, h) = (p.width as usize, p.height as usize);
     let (n, m) = (p.nx as usize, p.ny as usize);

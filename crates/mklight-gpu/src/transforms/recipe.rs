@@ -99,6 +99,9 @@ impl Recipe {
         let mut p = Params::new(MKL_TRANSFORM_TWIDDLE, w, 1);
         p.sign_bits = sign as u32;
         let tw = self.push(0, 0, p, true);
+        if w <= 4096 {
+            return self.push(a, tw, Params::new(MKL_TRANSFORM_LOCAL_FFT, w, h), false);
+        }
         let mut span = 1;
         let mut rem = w;
         for r in [2, 3, 5, 7] {
@@ -323,7 +326,7 @@ pub fn request(r: &Request) -> MkResult<Recipe> {
 pub fn dependencies(s: &Step) -> Vec<usize> {
     match s.p.mode {
         MKL_TRANSFORM_TWIDDLE | MKL_TRANSFORM_KERNEL => vec![],
-        MKL_TRANSFORM_FFT | MKL_TRANSFORM_MULTIPLY => vec![s.a, s.b],
+        MKL_TRANSFORM_FFT | MKL_TRANSFORM_LOCAL_FFT | MKL_TRANSFORM_MULTIPLY => vec![s.a, s.b],
         _ => vec![s.a],
     }
 }

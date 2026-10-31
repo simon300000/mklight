@@ -236,11 +236,16 @@ fn boundary_validation() {
     assert!(b.submit_plan(p, &JobContext::new()).is_err());
 }
 pub fn correlation_suite(b: &dyn ComputeBackend) {
+    let mut stencil = None;
     for defocus in [0.0, 30.0, -30.0] {
-        correlation_case(b, defocus);
+        stencil = Some(correlation_case(b, defocus, stencil.as_ref()));
     }
 }
-fn correlation_case(b: &dyn ComputeBackend, defocus: f64) {
+fn correlation_case(
+    b: &dyn ComputeBackend,
+    defocus: f64,
+    previous: Option<&BufferHandle>,
+) -> BufferHandle {
     let n = 17;
     let count = n * n;
     let angle = 0.37f64;
@@ -295,17 +300,26 @@ fn correlation_case(b: &dyn ComputeBackend, defocus: f64) {
         wavelength_over_index: Df32::from_f64(wave),
         output: o,
     };
-    let st = p.scratch(BufferDesc::new(ElementType::F32, vec![4, count, 5]));
-    let mut prep = req.clone();
-    prep.output = st;
-    p.operations
-        .push(ResidentOp::Transforms(Request::PrepareOpticalStencil(prep)));
+    let st = if let Some(previous) = previous {
+        p.import(previous.view())
+    } else {
+        let st = p.scratch(BufferDesc::new(ElementType::F32, vec![4, count, 5]));
+        let mut prep = req.clone();
+        prep.output = st;
+        p.operations
+            .push(ResidentOp::Transforms(Request::PrepareOpticalStencil(prep)));
+        st
+    };
     req.stencil = Some(p.view(st).unwrap());
     p.operations
         .push(ResidentOp::Transforms(Request::OpticalCorrelation(
             req.clone(),
         )));
-    p.outputs = vec![o, st];
+    p.outputs = if previous.is_some() {
+        vec![o]
+    } else {
+        vec![o, st]
+    };
     let r = b
         .submit_plan(p.clone(), &JobContext::new())
         .unwrap()
@@ -403,7 +417,8 @@ fn correlation_case(b: &dyn ComputeBackend, defocus: f64) {
     let c = q.import(ch.view());
     let w = q.import(wh.view());
     let f = q.import(fh.view());
-    let stencil = q.import(r.outputs[1].view());
+    let geometry = previous.cloned().unwrap_or_else(|| r.outputs[1].clone());
+    let stencil = q.import(geometry.view());
     let o = q.scratch(BufferDesc::new(ElementType::Complex32, vec![4]));
     req.amplitude = q.view(a).unwrap();
     req.coverage = q.view(c).unwrap();
@@ -442,12 +457,15 @@ fn correlation_case(b: &dyn ComputeBackend, defocus: f64) {
             .words(),
         bytemuck::cast_slice::<_, u32>(&got)
     );
+    geometry
 }
 pub fn primitives_suite(b: &dyn ComputeBackend) {
     let dims = vec![7, 11];
     let data = input(77);
     let mut impulse = vec![[0.; 2]; 77];
-    impulse[0] = [1., 0.];
+    impulse[0] = [0.25, 0.];
+    impulse[1] = [0.5, 0.];
+    impulse[13] = [0.25, 0.];
     let h = upload(b, data.clone(), dims.clone());
     let k = upload(b, impulse, dims.clone());
     let mut p = ResidentPlan::new(snapshot());
@@ -472,11 +490,23 @@ pub fn primitives_suite(b: &dyn ComputeBackend) {
     else {
         panic!()
     };
-    compare(
-        &got,
-        &data.iter().map(|v| v.map(f64::from)).collect::<Vec<_>>(),
-        77.,
-    );
+    let expected: Vec<[f64; 2]> = (0..77)
+        .map(|k| {
+            let (x, y) = (k % 11, k / 11);
+            std::array::from_fn(|c| {
+                0.25 * data[k][c] as f64
+                    + 0.5 * data[y * 11 + (x + 10) % 11][c] as f64
+                    + 0.25 * data[((y + 6) % 7) * 11 + (x + 9) % 11][c] as f64
+            })
+        })
+        .collect();
+    compare(&got, &expected, 77.);
+    for c in 0..2 {
+        let before = data.iter().map(|v| v[c] as f64).sum::<f64>();
+        let after = got.iter().map(|v| v[c] as f64).sum::<f64>();
+        assert!((before - after).abs() < 1e-4);
+    }
+
     for mode in 0..3 {
         let n = 64;
         let a: Vec<_> = (0..n)
@@ -732,4 +762,95 @@ pub fn complex_correlation_suite(b: &dyn ComputeBackend) {
 #[test]
 fn cpu_complex_correlation() {
     complex_correlation_suite(&CpuF32Backend::new());
+}
+pub fn physical_grid_mft(b: &dyn ComputeBackend) {
+    let (w, h, ow, oh) = (7, 5, 11, 9);
+    let data = input(w * h);
+    let map = [[0.83, -0.17], [-0.17, 0.76]];
+    let (dn, dx) = (0.13, 0.027);
+    let source = [-0.5, -0.7];
+    let image = [-0.13, 0.21];
+    let affine = [
+        dn * dx * map[0][0],
+        dn * dx * map[0][1],
+        dn * (map[0][0] * image[0] + map[0][1] * image[1]),
+        dn * dx * map[1][0],
+        dn * dx * map[1][1],
+        dn * (map[1][0] * image[0] + map[1][1] * image[1]),
+    ]
+    .map(Df32::from_f64);
+    let hnd = upload(b, data.clone(), vec![h, w]);
+    let mut p = ResidentPlan::new(snapshot());
+    let i = p.import(hnd.view());
+    let o = p.scratch(BufferDesc::new(ElementType::Complex32, vec![oh, ow]));
+    p.operations
+        .push(ResidentOp::Transforms(Request::Transform(TransformPlan {
+            kind: TransformKind::AffineMft,
+            input: p.view(i).unwrap(),
+            output: o,
+            dimensions: vec![h, w],
+            output_dimensions: vec![oh, ow],
+            sign: 1,
+            scale: 1.,
+            affine,
+        })));
+    let output = p.scratch(BufferDesc::new(ElementType::Complex32, vec![oh, ow]));
+    let linear = [
+        source[0] * map[0][0] + source[1] * map[1][0],
+        source[0] * map[0][1] + source[1] * map[1][1],
+    ];
+    let coefficients = [
+        0.,
+        0.,
+        0.,
+        dx * linear[0],
+        dx * linear[1],
+        image[0] * linear[0] + image[1] * linear[1],
+    ]
+    .map(Df32::from_f64);
+    p.operations.push(ResidentOp::Transforms(Request::Phase {
+        input: p.view(o).unwrap(),
+        coefficients,
+        output,
+    }));
+    p.outputs = vec![output];
+    let r = b
+        .submit_plan(p, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    let BufferData::Complex32(got) = b
+        .readback(r.outputs[0].view(), &JobContext::new())
+        .unwrap()
+        .data
+    else {
+        panic!()
+    };
+    let mut want = vec![];
+    for l in 0..oh {
+        for k in 0..ow {
+            let x = image[0] + dx * k as f64;
+            let y = image[1] + dx * l as f64;
+            let mut sum = [0.; 2];
+            for j in 0..h {
+                for i in 0..w {
+                    let nu = source[0] + dn * i as f64;
+                    let mu = source[1] + dn * j as f64;
+                    let ph = std::f64::consts::TAU
+                        * (nu * (map[0][0] * x + map[0][1] * y)
+                            + mu * (map[1][0] * x + map[1][1] * y));
+                    let (s, c) = ph.sin_cos();
+                    let v = data[j * w + i];
+                    sum[0] += v[0] as f64 * c - v[1] as f64 * s;
+                    sum[1] += v[0] as f64 * s + v[1] as f64 * c;
+                }
+            }
+            want.push(sum);
+        }
+    }
+    compare(&got, &want, (w * h) as f64);
+}
+#[test]
+fn cpu_physical_grid_mft() {
+    physical_grid_mft(&CpuF32Backend::new());
 }

@@ -98,6 +98,12 @@ fn execute_transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
     let transpose = x
         .gpu
         .pipeline(&PipelineKey::plain("mkl_transform_transpose"))?;
+    let local_small = x
+        .gpu
+        .pipeline(&PipelineKey::plain("mkl_transform_rows_small"))?;
+    let local_large = x
+        .gpu
+        .pipeline(&PipelineKey::plain("mkl_transform_rows_large"))?;
     let mut final_buffer = Some(x.take_output(access.writes[0]));
     for (i, s) in recipe.steps.iter().enumerate() {
         ctl.check()?;
@@ -124,12 +130,21 @@ fn execute_transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
             let mut commands = 0;
             let mut device = 0.;
             let tiled = s.p.mode == mklight_gpu::consts::MKL_TRANSFORM_TRANSPOSE;
-            let total = if tiled {
+            let local = s.p.mode == mklight_gpu::consts::MKL_TRANSFORM_LOCAL_FFT;
+            let total = if local {
+                s.p.height as usize
+            } else if tiled {
                 (s.p.width as usize).div_ceil(16) * (s.p.height as usize).div_ceil(16)
             } else {
                 s.p.count as usize
             };
-            let chunk = if tiled { 1024 } else { 262144 };
+            let chunk = if local {
+                (1048576 / s.p.width as usize).max(1)
+            } else if tiled {
+                4096
+            } else {
+                1048576
+            };
             for start in (0..total).step_by(chunk) {
                 ctl.check()?;
                 let mut p = s.p;
@@ -144,7 +159,14 @@ fn execute_transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
                         e.set_buffer(1, b, bo);
                         e.set_buffer_mut(2, &mut dst, 0);
                         e.set_bytes(3, &p);
-                        if tiled {
+                        if local {
+                            e.set_pipeline(if s.p.width <= 1024 {
+                                &local_small
+                            } else {
+                                &local_large
+                            });
+                            e.dispatch_groups([n, 1, 1], (s.p.width as usize).min(256));
+                        } else if tiled {
                             e.set_pipeline(&transpose);
                             e.dispatch_groups([n, 1, 1], 256);
                         } else {

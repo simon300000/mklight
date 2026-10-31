@@ -9,6 +9,7 @@
 #define MKL_TRANSFORM_POST 6u
 #define MKL_TRANSFORM_MULTIPLY 7u
 #define MKL_TRANSFORM_PHASE 8u
+#define MKL_TRANSFORM_LOCAL_FFT 9u
 /* All offsets count complex elements. Parameters are 16 u32 words followed
    by six (hi,lo) coefficients; Rust recipe::Params is the host twin. */
 struct MklTransformParams {

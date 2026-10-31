@@ -102,3 +102,34 @@ kernel void mkl_transform_transpose(device const float2*a[[buffer(0)]],device fl
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(bx+ty<p.width&&by+tx<p.height)out[(bx+ty)*p.height+by+tx]=tile[tx][ty];
 }
+// One independent row per group. A complete stage is read into registers
+// before writing shared storage; the barriers preserve the Stockham ordering.
+static void p2_local_rows(device const float2*a,device const float2*tw,device float2*out,constant MklTransformParams&p,threadgroup float2*data,uint tid,uint threads,uint group){
+    uint w=p.width,row=group+p.start;
+    for(uint k=tid;k<w;k+=threads)data[k]=a[row*w+k];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint span=1,remaining=w;const uint radices[4]={2,3,5,7};
+    for(uint ri=0;ri<4;ri++){
+        uint r=radices[ri];
+        while(remaining%r==0){
+            float2 values[16];
+            for(uint k=tid,q=0;k<w;k+=threads,q++){
+                uint i=k%span,j=(k/span)%r,g=k/(span*r);
+                float2 sum=data[g*span+i];
+                for(uint t=1;t<r;t++)sum+=p2_cmul(data[g*span+i+t*w/r],tw[(t*(i+j*span)*(w/(r*span)))%w]);
+                values[q]=sum;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            for(uint k=tid,q=0;k<w;k+=threads,q++)data[k]=values[q];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            span*=r;remaining/=r;
+        }
+    }
+    for(uint k=tid;k<w;k+=threads)out[row*w+k]=data[k];
+}
+kernel void mkl_transform_rows_small(device const float2*a[[buffer(0)]],device const float2*tw[[buffer(1)]],device float2*out[[buffer(2)]],constant MklTransformParams&p[[buffer(3)]],uint tid[[thread_index_in_threadgroup]],uint size[[threads_per_threadgroup]],uint group[[threadgroup_position_in_grid]]){
+    threadgroup float2 data[1024];p2_local_rows(a,tw,out,p,data,tid,size,group);
+}
+kernel void mkl_transform_rows_large(device const float2*a[[buffer(0)]],device const float2*tw[[buffer(1)]],device float2*out[[buffer(2)]],constant MklTransformParams&p[[buffer(3)]],uint tid[[thread_index_in_threadgroup]],uint size[[threads_per_threadgroup]],uint group[[threadgroup_position_in_grid]]){
+    threadgroup float2 data[4096];p2_local_rows(a,tw,out,p,data,tid,size,group);
+}

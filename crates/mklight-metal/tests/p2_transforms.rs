@@ -30,6 +30,7 @@ fn actual_metal_both_libraries() {
         primitives_suite(&b);
         phase_and_views(&b);
         complex_correlation_suite(&b);
+        physical_grid_mft(&b);
     }
 }
 #[test]
@@ -75,7 +76,7 @@ fn deterministic_reuse_concurrent_and_cancellation() {
     let a = b.submit_plan(p.clone(), &c1).unwrap();
     let d = b.submit_plan(p.clone(), &c2).unwrap();
     let mut progress = 0.;
-    while c1.progress.fraction() < 1. && !c1.cancel.is_cancelled() {
+    while !a.is_ready() {
         let q = c1.progress.fraction();
         assert!(q >= progress);
         progress = q;
@@ -88,7 +89,7 @@ fn deterministic_reuse_concurrent_and_cancellation() {
     assert!(a.stats.reused_allocations > 0);
     let ctx = JobContext::new();
     let q = b.submit_plan(p.clone(), &ctx).unwrap();
-    while ctx.progress.fraction() == 0. {
+    while ctx.progress.fraction() < 0.15 && !q.is_ready() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     q.cancel();

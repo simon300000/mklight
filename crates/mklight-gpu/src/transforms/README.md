@@ -10,7 +10,9 @@ input/output buffers. FFT bins are unshifted and the sign is explicit:
 `-1` forward, `+1` inverse, both unnormalised before the supplied `scale`.
 A round trip uses inverse scale `1/product(dimensions)`.
 
-FFT uses fixed Stockham stages with radices 2/3/5/7. Other lengths use exact
+FFT uses fixed Stockham stages with radices 2/3/5/7. Rows up to 4096
+elements keep their stages in threadgroup storage; larger rows use resident
+planes between stages. Other lengths use exact
 Bluestein convolution. ChirpZ uses two row convolutions and tiled transposes;
 a symmetric skew AffineMft uses a two-dimensional chirp convolution. Padding
 is internal and never changes the requested output lattice. `Convolve` is
@@ -73,7 +75,7 @@ same geometry is evaluated per frequency, using only three scalar work planes.
 Twiddles, chirp spectra and schedules use the existing bounded operation
 cache with full resident identity and content keys. Mutable scratch is local
 to a job and recycled after its last consumer. Commands process at most
-262144 complex outputs (transpose: 1024 16×16 tiles), or 65536 optical samples.
+1048576 complex outputs (transpose: 4096 16×16 tiles), or 65536 optical samples.
 Correlation uses the existing deterministic double-float reduction tree.
 No intermediate host readback occurs. A detailed `transforms` stats entry
 supplements P0's coarse `domain` boundary.
