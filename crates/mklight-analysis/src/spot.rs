@@ -536,7 +536,7 @@ pub fn spot_diagram(
     spot_diagram_job(tracer, settings, &JobContext::new())
 }
 
-fn validate_spot_settings(settings: &SpotDiagramSettings) -> MkResult<()> {
+pub(crate) fn validate_spot_settings(settings: &SpotDiagramSettings) -> MkResult<()> {
     validate_sampling(settings.pattern, settings.rings)?;
     check_finite("defocus", settings.defocus)?;
     if let Some(tf) = &settings.through_focus {

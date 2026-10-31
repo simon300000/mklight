@@ -337,8 +337,10 @@ name = "mklight-analysis"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "bytemuck",
  "mklight-core",
  "mklight-gpu",
+ "mklight-metal",
  "mklight-trace",
  "rayon",
  "serde",
