@@ -417,9 +417,13 @@ For a continuous response, weights are **bin integrals**, in response·µm:
 The in-code 1 nm tables are CIE 018:2019 Tables 1 and 2:
 [CIE 1924 photopic V(λ), DOI 10.25039/CIE.DS.dktna2s3](https://doi.org/10.25039/CIE.DS.dktna2s3)
 and [CIE 1951 scotopic V′(λ), DOI 10.25039/CIE.DS.gr6w4b5g](https://doi.org/10.25039/CIE.DS.gr6w4b5g).
-The photopic integral over 360–830 nm is 106.8569 nm (test tolerance
-0.0002 nm). Ordinary material resolution emits the same formula-range
-warnings as a design using those wavelengths; extrapolation is not hidden.
+All 471 photopic (360–830 nm) and 401 scotopic (380–780 nm) rows match
+the CIE CSVs (MD5 `f389958555461a7d9a7562145e8ca9c0` and
+`3e45714a429d02e5d1f2a752226d7698`); V′ is 1.000 at 506–508 nm. Tests pin
+published samples and the metadata column sums, 106.8569171011719 and
+97.0713165740; the integrals are those sums less half of each endpoint
+value (1 nm trapezoids), and sampled weights sum to them. Ordinary
+material resolution emits the same formula-range warnings as a design using those wavelengths; extrapolation is not hidden.
 A wavelength-sweep analysis still evaluates its requested sweep, using the
 replacement spectrum to set its primary reference and default spectral range.
 

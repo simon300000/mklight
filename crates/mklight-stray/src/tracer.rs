@@ -80,7 +80,8 @@ use std::collections::BTreeSet;
 use crate::bsdf::Bsdf;
 use crate::geom::{Ray, RayCaster, onb, reflect, refract};
 use crate::path::{
-    ClassMask, EventKind, History, MAX_SIGNATURE_EVENTS, PathClass, Signature, flags,
+    ClassMask, EventKind, History, MAX_DIFFRACTION_VISITS, MAX_SIGNATURE_EVENTS, PathClass,
+    Signature, flags,
 };
 use crate::scene::{
     Behavior, DiffractiveInterface, InterfaceKind, MediumId, Scene, SceneOptions, Side,
@@ -229,7 +230,6 @@ pub fn covered(paths: &BTreeSet<GhostPath>, sig: &Signature) -> bool {
     let mut path = GhostPath::new(reflections);
     path.diffraction = sig
         .diffraction()
-        .iter()
         .filter(|e| !e.selected)
         .map(|e| mklight_ghost::path::DiffractionOrder {
             surface: e.surface,
@@ -864,7 +864,7 @@ pub fn run_with<C: RayCaster>(
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
     settings.validate()?;
-    // A signature keeps MAX_SIGNATURE_EVENTS DOE visits: a covered path
+    // A signature keeps MAX_DIFFRACTION_VISITS DOE visits: a covered path
     // with more could never be matched, so its flux would count twice.
     if let (Some(paths), Some(&image)) = (&settings.covered_ghosts, scene.sequence.last()) {
         let does: BTreeSet<usize> = (0..scene.primitives().len())
@@ -882,9 +882,9 @@ pub fn run_with<C: RayCaster>(
                 .iter()
                 .filter(|st| does.contains(&(st.surface as usize)))
                 .count();
-            if visits > MAX_SIGNATURE_EVENTS {
+            if visits > MAX_DIFFRACTION_VISITS {
                 return Err(MkError::InvalidModel(format!(
-                    "covered path has {visits} DOE visits; signatures keep at most {MAX_SIGNATURE_EVENTS}"
+                    "covered path has {visits} DOE visits; signatures keep at most {MAX_DIFFRACTION_VISITS}"
                 )));
             }
         }

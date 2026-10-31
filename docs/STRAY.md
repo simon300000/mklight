@@ -431,8 +431,13 @@ Scatter, Mechanical and Sneak take precedence as before. When combined with
 an explicit ghost run, `covered` compares both reflections and non-selected
 order overrides. Selected-order reflection coverage cannot exclude an
 uncovered diffraction path. Compact-signature overflow stays uncovered;
-coverage with more than six DOE visits is rejected at transport input to
-avoid claiming an exclusion the signature cannot express. Thus
+coverage with more than 32 DOE visits is rejected at transport input to
+avoid claiming an exclusion the signature cannot express. The 32 visits
+are counted over all DOE surfaces, separately from the six non-designed
+events, and are stored in 8 bytes each (the visit number is recounted on
+read) so path histories stay allocation-free `Copy` values on splitting.
+The limit affects coverage and signature detail only: longer paths still
+trace, overflow, and stay owned by stray. Thus
 
 ```
 MC detected = sequential Primary + explicit covered Ghost

@@ -122,6 +122,10 @@ pub const NO_SURFACE: u16 = u16::MAX;
 /// Events kept per path signature; later events set `Signature::overflow`.
 pub const MAX_SIGNATURE_EVENTS: usize = 6;
 
+/// DOE visits kept per signature, over all DOE surfaces and separately from
+/// the events above; later visits set `Signature::overflow`.
+pub const MAX_DIFFRACTION_VISITS: usize = 32;
+
 /// Kind of a non-designed event in a [`Signature`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -181,8 +185,18 @@ pub struct Signature {
     overflow: bool,
     /// `kind << 28 | id`.
     events: [u32; MAX_SIGNATURE_EVENTS],
-    orders: [DiffractionEvent; MAX_SIGNATURE_EVENTS],
+    orders: [Visit; MAX_DIFFRACTION_VISITS],
     order_len: u8,
+}
+
+/// Stored DOE visit (8 bytes: `History` is copied on every split). Its visit
+/// number is recounted on read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct Visit {
+    order: i32,
+    surface: u16,
+    reflected: bool,
+    selected: bool,
 }
 
 /// Physical DOE events, including selected orders, in encounter order.
@@ -209,20 +223,21 @@ pub enum SurfaceOp {
 }
 
 impl Signature {
-    pub fn diffraction(&self) -> &[DiffractionEvent] {
-        &self.orders[..self.order_len as usize]
+    pub fn diffraction(&self) -> impl Iterator<Item = DiffractionEvent> + '_ {
+        let kept = &self.orders[..self.order_len as usize];
+        kept.iter().enumerate().map(|(i, v)| DiffractionEvent {
+            surface: v.surface as u32,
+            visit: kept[..i].iter().filter(|p| p.surface == v.surface).count() as u32,
+            order: v.order,
+            reflected: v.reflected,
+            selected: v.selected,
+        })
     }
     pub fn diffract(&mut self, surface: usize, order: i32, selected: i32, reflected: bool) {
-        let visit = self
-            .diffraction()
-            .iter()
-            .filter(|e| e.surface == surface as u32)
-            .count() as u32;
-        if (self.order_len as usize) < MAX_SIGNATURE_EVENTS {
-            self.orders[self.order_len as usize] = DiffractionEvent {
-                surface: surface as u32,
-                visit,
+        if let Some(v) = self.orders.get_mut(self.order_len as usize) {
+            *v = Visit {
                 order,
+                surface: surface as u16,
                 reflected,
                 selected: order == selected,
             };
@@ -276,7 +291,7 @@ impl Signature {
                 EventKind::MechanicalScatter => format!("Ms[{}]", label(id)),
             })
             .collect();
-        parts.extend(self.diffraction().iter().map(|e| {
+        parts.extend(self.diffraction().map(|e| {
             format!(
                 "D{}:{}:{}{}",
                 e.surface,

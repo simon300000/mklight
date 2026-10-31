@@ -245,25 +245,67 @@ fn sample(table: &[[f64; 2]], s: &SpectralSampling) -> MkResult<Vec<Wavelength>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Samples and `sumOfColumns` from the CIE dataset metadata.
     #[test]
-    fn cie_integral_and_peak() {
-        let table = tables::photopic();
-        assert_eq!(response(&table, 0.555), 1.0);
-        assert_eq!(response(&table, 0.510), 0.503);
-        assert_eq!(response(&table, 0.610), 0.503);
-        assert!((integral(&table, 0.36, 0.83).0 - 0.1068569).abs() < 2e-7);
-        for spacing in [Sampling::Uniform, Sampling::EqualWeight] {
-            let s = SpectralSampling {
-                range_um: [0.36, 0.83],
-                spacing,
-                ..Default::default()
-            };
-            let ws = Spectrum::Photopic { sampling: s }.wavelengths().unwrap();
+    fn cie_published_values_and_integrals() {
+        for (table, start_nm, sum, samples) in [
+            (
+                tables::photopic(),
+                360,
+                106.8569171011719,
+                &[
+                    (360, 0.000003917),
+                    (450, 0.038),
+                    (510, 0.503),
+                    (555, 1.0),
+                    (610, 0.503),
+                    (830, 0.00000045181),
+                ][..],
+            ),
+            (
+                tables::scotopic(),
+                380,
+                97.0713165740,
+                &[
+                    (380, 0.000589),
+                    (450, 0.455),
+                    (506, 1.0),
+                    (507, 1.0),
+                    (508, 1.0),
+                    (555, 0.402),
+                    (650, 0.000677),
+                    (780, 0.000000139),
+                ][..],
+            ),
+        ] {
+            let end_nm = samples.last().unwrap().0;
+            assert_eq!(table.len(), end_nm - start_nm + 1);
+            for &(nm, value) in samples {
+                assert_eq!(response(&table, nm as f64 * 0.001), value, "{nm} nm");
+            }
+            assert!((table.iter().map(|r| r[1]).sum::<f64>() - sum).abs() < 1e-12);
+            // Trapezoid at 1 nm: the column sum less half of each endpoint.
+            let energy_nm = sum - (table[0][1] + table[table.len() - 1][1]) / 2.0;
+            let range_um = [table[0][0], table[table.len() - 1][0]];
             assert!(
-                (ws.wavelengths.iter().map(|w| w.weight).sum::<f64>() - 0.1068569).abs() < 2e-7
+                (integral(&table, range_um[0], range_um[1]).0 * 1000.0 - energy_nm).abs() < 1e-12
             );
+            for spacing in [Sampling::Uniform, Sampling::EqualWeight] {
+                let wavelengths = sample(
+                    &table,
+                    &SpectralSampling {
+                        range_um,
+                        spacing,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(
+                    (wavelengths.iter().map(|w| w.weight).sum::<f64>() * 1000.0 - energy_nm).abs()
+                        < 1e-12
+                );
+            }
         }
-        assert_eq!(response(&tables::scotopic(), 0.507), 1.0);
     }
     #[test]
     fn triangular_response_centroid_and_energy() {
