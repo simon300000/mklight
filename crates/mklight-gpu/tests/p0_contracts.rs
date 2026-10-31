@@ -95,3 +95,55 @@ fn ill_conditioned_sums_and_reuse() {
         Err(mklight_core::MkError::Cancelled)
     ));
 }
+#[test]
+fn reserved_operation_is_explicitly_unsupported() {
+    let b = CpuF32Backend::new();
+    let mut p = ResidentPlan::new(snapshot());
+    let id = p.scratch(BufferDesc::new(ElementType::Complex32, vec![4]));
+    p.operations.push(ResidentOp::Transforms(
+        mklight_gpu::transforms::Request::Transform(mklight_gpu::transforms::TransformPlan {
+            kind: mklight_gpu::transforms::TransformKind::Fft,
+            input: p.view(id).unwrap(),
+            output: id,
+            dimensions: vec![4],
+            output_dimensions: vec![4],
+            sign: 1,
+            scale: 1.,
+            affine: [Df32::ZERO; 6],
+        }),
+    ));
+    assert!(matches!(
+        b.submit_plan(p, &JobContext::new()),
+        Err(mklight_core::MkError::Unsupported(_))
+    ));
+}
+#[test]
+fn immutable_cache_eviction_preserves_live_leases() {
+    use mklight_gpu::resident::immutable::{ImmutableCache, OperationCacheKey};
+    use std::sync::Arc;
+    let b = CpuF32Backend::new();
+    let key = |name: &str| OperationCacheKey {
+        system: SystemCacheKey {
+            snapshot: snapshot().hash().to_hex(),
+            library: "test".into(),
+            configuration: "base".into(),
+            spectrum: "all".into(),
+            layout: consts::MKL_LAYOUT_VERSION,
+            kernel_build: b.precision().kernel_build.clone(),
+            operation_settings: "fixed".into(),
+        },
+        operation: name.into(),
+        plan_version: PLAN_VERSION,
+    };
+    let mut cache = ImmutableCache::new(8);
+    let live = Arc::new([7u32]);
+    cache.insert(key("a"), 4, live.clone());
+    cache.insert(key("b"), 4, Arc::new([11u32]));
+    cache.insert(key("c"), 4, Arc::new([13u32]));
+    assert!(cache.get::<[u32; 1]>(&key("a")).unwrap().is_none());
+    assert_eq!(*live, [7]);
+    assert_eq!(cache.bytes(), 8);
+    assert!(cache.get::<f32>(&key("b")).is_err());
+    assert_eq!(*cache.get::<[u32; 1]>(&key("b")).unwrap().unwrap(), [11]);
+    assert_eq!(cache.bytes(), 8);
+}

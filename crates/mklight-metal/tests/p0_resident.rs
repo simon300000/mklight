@@ -360,7 +360,6 @@ fn bounded_snapshot_cache_and_pinned_outputs() {
 #[ignore = "host benchmark, run alone"]
 fn benchmark_resident_chains() {
     use rayon::prelude::*;
-    let g = backend(LibraryChoice::Precompiled);
     let mut cases: Vec<_> = mklight_core::samples::all()
         .into_iter()
         .map(|(name, sys)| (name, sys, 10_000))
@@ -385,10 +384,20 @@ fn benchmark_resident_chains() {
         }
     }
     for (name, sys, n) in cases {
+        let setup = Instant::now();
+        let g = backend(LibraryChoice::Precompiled);
+        let setup_s = setup.elapsed().as_secs_f64();
         let snap = Snapshot::new(sys.clone()).unwrap();
         let prep = Instant::now();
         let t = testutil::tracer(sys);
-        let base = rays(&t, 9);
+        let grid_side = ((n as f64 * 4.
+            / std::f64::consts::PI
+            / (t.fields().len() * t.num_wavelengths()) as f64)
+            .sqrt()
+            .ceil() as usize
+            + 2)
+        .max(3);
+        let base = rays(&t, grid_side);
         let mut batch = RayBatch::with_capacity(n);
         let mut reference = Vec::with_capacity(n);
         for i in 0..n {
@@ -415,6 +424,15 @@ fn benchmark_resident_chains() {
         }
         let packed = PackedSystem::pack_all(t.system()).unwrap();
         let prepare = prep.elapsed().as_secs_f64();
+        let qualification_timer = Instant::now();
+        let mut qualification_settings = mklight_gpu::xval::XvalSettings::qualification();
+        qualification_settings.radiometry = Radiometry::Off;
+        let qualification =
+            mklight_gpu::xval::qualify(&g, &t, Some(&qualification_settings), &JobContext::new())
+                .unwrap();
+        assert!(qualification.passed, "{name}: {:?}", qualification.reason);
+        let qualification_s = qualification_timer.elapsed().as_secs_f64();
+
         let upload = Instant::now();
         let h = g.upload_systems_cached(&key(&g, &snap), &[packed]).unwrap();
         let upload_s = upload.elapsed().as_secs_f64();
@@ -423,7 +441,11 @@ fn benchmark_resident_chains() {
             q.radiometry = Radiometry::Off;
             q
         };
-        let p = plan(snap, req(), false);
+        let plan_timer = Instant::now();
+        let mut p = plan(snap, req(), false);
+        p.identity.library_hash = "test-library-v1".into();
+        p.identity.qualification = Some(serde_json::to_value(&qualification).unwrap());
+        let plan_prepare_s = plan_timer.elapsed().as_secs_f64();
         let mut records = vec![];
         for round in 0..12 {
             let wall = Instant::now();
@@ -472,24 +494,72 @@ fn benchmark_resident_chains() {
             ];
             std::hint::black_box(cpu_sums);
             let cpu = wall.elapsed().as_secs_f64();
-            let record = serde_json::json!({"sample":name,"rays":n,"round":round,"cold":round==0,"warmup":round==1,"seed":null,"prepare_s":prepare,"system_upload_s":upload_s,"new_wall_s":new_wall,"new":result.stats,"readback_s":rb.wall_seconds,"old_wall_s":old_wall,"old":old.stats,"old_sum":old_sum.stats,"old_allocations":10,"old_uploaded_bytes":n*80+(t.system().image_index()*4),"old_readback_bytes":n*52+24,"old_host_reduce_s":reduction,"cpu_chain_wall_s":cpu,"cache":g.resident_cache_stats()});
+            let record = serde_json::json!({"sample":name,"rays":n,"pupil_grid_side":grid_side,"round":round,"cold":round==0,"warmup":round==1,"seed":null,"setup_probe_s":setup_s,"prepare_s":prepare,"plan_prepare_s":plan_prepare_s,"qualification_s":qualification_s,"qualification":qualification,"system_upload_s":upload_s,"new_wall_s":new_wall,"new":result.stats,"readback_s":rb.wall_seconds,"old_wall_s":old_wall,"old":old.stats,"old_sum":old_sum.stats,"old_allocations":10,"old_uploaded_bytes":n*80+(t.system().image_index()*4),"old_readback_bytes":n*52+24,"old_host_reduce_s":reduction,"cpu_chain_wall_s":cpu,"cache":g.resident_cache_stats()});
             eprintln!("RAW {record}");
             if round >= 2 {
                 records.push((new_wall, old_wall, cpu));
             }
         }
-        let quantile = |mut x: Vec<f64>, q: f64| {
-            x.sort_by(f64::total_cmp);
-            x[((x.len() - 1) as f64 * q).ceil() as usize]
-        };
         for (which, ix) in [("resident", 0), ("legacy", 1), ("cpu_chain", 2)] {
-            let vals: Vec<f64> = records.iter().map(|r| [r.0, r.1, r.2][ix]).collect();
+            let mut vals: Vec<_> = records.iter().map(|r| [r.0, r.1, r.2][ix]).collect();
+            vals.sort_by(f64::total_cmp);
+            let median = (vals[4] + vals[5]) / 2.;
+            let p95 = vals[9];
             eprintln!(
                 "SUMMARY sample={name} rays={n} kind={which} median_ms={:.6} p95_ms={:.6}",
-                quantile(vals.clone(), 0.5) * 1e3,
-                quantile(vals, 0.95) * 1e3
+                median * 1e3,
+                p95 * 1e3
             );
         }
         g.release_systems(h).unwrap();
     }
+}
+#[test]
+#[ignore = "host benchmark, run alone"]
+fn benchmark_snapshot_churn() {
+    let g = backend(LibraryChoice::Precompiled);
+    let mut rows = vec![];
+    for round in 0..12 {
+        let before = g.resident_cache_stats();
+        let start = Instant::now();
+        let mut prepare = 0.;
+        let mut upload = 0.;
+        for i in 0..160 {
+            let timer = Instant::now();
+            let mut sys = testutil::singlet();
+            sys.surfaces[1].shape = mklight_core::SurfaceShape::sphere(50. + i as f64 * 0.01);
+            let snapshot = Snapshot::new(sys.clone()).unwrap();
+            let t = testutil::tracer(sys);
+            let packed = PackedSystem::pack_all(t.system()).unwrap();
+            prepare += timer.elapsed().as_secs_f64();
+            let timer = Instant::now();
+            let k = key(&g, &snapshot);
+            let h = g
+                .upload_systems_cached(&k, std::slice::from_ref(&packed))
+                .unwrap();
+            g.release_systems(h).unwrap();
+            let warm = g
+                .upload_systems_cached(&k, std::slice::from_ref(&packed))
+                .unwrap();
+            g.release_systems(warm).unwrap();
+            upload += timer.elapsed().as_secs_f64();
+        }
+        let stats = g.resident_cache_stats();
+        let wall = start.elapsed().as_secs_f64();
+        assert_eq!(stats.system_uploads - before.system_uploads, 160);
+        assert_eq!(stats.system_hits - before.system_hits, 160);
+        eprintln!(
+            "CHURN {}",
+            serde_json::json!({"round":round,"changes":160,"prepare_s":prepare,"cache_upload_s":upload,"wall_s":wall,"stats":stats})
+        );
+        if round >= 2 {
+            rows.push(wall);
+        }
+    }
+    rows.sort_by(f64::total_cmp);
+    eprintln!(
+        "CHURN_SUMMARY changes=160 median_ms={} p95_ms={}",
+        (rows[4] + rows[5]) * 500.,
+        rows[9] * 1e3
+    );
 }

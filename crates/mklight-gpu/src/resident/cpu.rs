@@ -1,4 +1,5 @@
 //! CPU-f32 specification for resident ordered plans; no CPU speed path.
+use super::immutable as super_cache;
 use super::pool::{Allocation, Pool};
 use super::*;
 use crate::{FpEnv, JobStats, TraceRequest, TraceResult, pending::JobControl, reduce};
@@ -14,6 +15,7 @@ use std::{
 type Lease = Allocation<Vec<u32>>;
 pub struct Runtime {
     pub owner: u64,
+    cache: Arc<Mutex<super_cache::ImmutableCache>>,
     next: AtomicU64,
     pool: Arc<Mutex<Pool<Vec<u32>>>>,
 }
@@ -21,6 +23,7 @@ impl Runtime {
     pub fn new(owner: u64) -> Self {
         Self {
             owner,
+            cache: Arc::new(Mutex::new(super_cache::ImmutableCache::new(64 << 20))),
             next: AtomicU64::new(1),
             pool: Arc::new(Mutex::new(Pool::new(256 << 20))),
         }
@@ -50,6 +53,10 @@ impl Runtime {
             Arc::new(b),
         )
     }
+    pub fn operation_cache_bytes(&self) -> u64 {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).bytes() as u64
+    }
+
     pub fn pooled_bytes(&self) -> u64 {
         self.pool.lock().unwrap_or_else(|e| e.into_inner()).bytes() as u64
     }
@@ -79,6 +86,7 @@ impl Runtime {
         &self,
         backend: &dyn ComputeBackend,
         plan: ResidentPlan,
+        systems: std::collections::HashMap<crate::SystemHandle, Arc<crate::PackedSystemSet>>,
         ctl: &JobControl,
         mut trace: impl FnMut(usize, &TraceRequest, &JobControl, &mut JobStats) -> MkResult<TraceResult>,
     ) -> MkResult<PlanResult> {
@@ -86,6 +94,8 @@ impl Runtime {
         let start = Instant::now();
         let mut x = Execution {
             buffers: vec![],
+            systems,
+            cache: self.cache.clone(),
             stats: PlanStats::default(),
         };
         for b in &plan.buffers {
@@ -112,7 +122,7 @@ impl Runtime {
             let mut js = JobStats::default();
             match op {
                 ResidentOp::TraceUpload(t) => {
-                    let r = trace(i, &t.request, &sub, &mut js)?;
+                    let r = trace(i, t.request(), &sub, &mut js)?;
                     let n = r.len();
                     let f: [&[f32]; 10] = [
                         &r.x,
@@ -223,6 +233,7 @@ impl Runtime {
         });
         x.stats.wall_seconds = start.elapsed().as_secs_f64();
         run_info.settings["plan_stats"] = serde_json::to_value(&x.stats).unwrap();
+        ctl.check()?;
         ctl.report(1., "resident plan");
         Ok(PlanResult {
             outputs,
@@ -250,10 +261,40 @@ impl Slot {
     }
 }
 pub struct Execution {
+    cache: Arc<Mutex<super_cache::ImmutableCache>>,
+    systems: std::collections::HashMap<crate::SystemHandle, Arc<crate::PackedSystemSet>>,
     buffers: Vec<Option<Slot>>,
     pub stats: PlanStats,
 }
 impl Execution {
+    pub fn cached<T: std::any::Any + Send + Sync>(
+        &self,
+        key: &super_cache::OperationCacheKey,
+    ) -> MkResult<Option<Arc<T>>> {
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+    }
+    pub fn cache<T: std::any::Any + Send + Sync>(
+        &self,
+        key: super_cache::OperationCacheKey,
+        bytes: usize,
+        value: Arc<T>,
+    ) {
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, bytes, value);
+    }
+
+    pub fn system(&self, handle: crate::SystemHandle) -> MkResult<Arc<crate::PackedSystemSet>> {
+        self.systems
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| bad("system not declared in operation accesses"))
+    }
+
     pub fn words(&self, id: BufferId) -> &[u32] {
         self.buffers[id.0].as_ref().unwrap().words()
     }

@@ -717,6 +717,7 @@ impl ComputeBackend for MetalBackend {
             .unwrap_or_else(|e| e.into_inner())
             .stats();
         s.pooled_bytes = self.inner.resident.pooled_bytes();
+        s.operation_cache_bytes = self.inner.resident.operation_cache_bytes();
         s
     }
     fn upload_systems_cached(
@@ -779,11 +780,14 @@ impl ComputeBackend for MetalBackend {
                 self.inner.resident.validate_import(v)?;
             }
         }
+        for h in plan.system_handles() {
+            pinned.insert(h, self.inner.lookup(h)?);
+        }
         for op in &plan.operations {
             if let ResidentOp::TraceUpload(t) = op {
-                let up = self.inner.lookup(t.request.systems)?;
-                prepared.push(Some(PreparedTrace::new(&t.request, &up.set)?));
-                pinned.insert(t.request.systems, up);
+                let up = pinned[&t.request().systems].clone();
+                prepared.push(Some(PreparedTrace::new(t.request(), &up.set)?));
+                pinned.insert(t.request().systems, up);
             } else {
                 prepared.push(None);
             }

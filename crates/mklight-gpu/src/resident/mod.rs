@@ -195,8 +195,22 @@ pub struct TraceBuffers {
 /// Device generation and aiming use aiming::TraceResident (P1).
 #[derive(Clone, Debug)]
 pub struct TraceUpload {
-    pub request: TraceRequest,
+    request: Arc<TraceRequest>,
+    manifest: serde_json::Value,
     pub output: TraceBuffers,
+}
+impl TraceUpload {
+    pub fn new(request: TraceRequest, output: TraceBuffers) -> Self {
+        let manifest = trace_manifest(&request);
+        Self {
+            request: Arc::new(request),
+            manifest,
+            output,
+        }
+    }
+    pub fn request(&self) -> &TraceRequest {
+        &self.request
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Sum {
@@ -292,10 +306,10 @@ impl ResidentPlan {
             record_status: self.scratch(BufferDesc::new(ElementType::U32, vec![slots, n])),
         };
         self.operations
-            .push(ResidentOp::TraceUpload(Box::new(TraceUpload {
+            .push(ResidentOp::TraceUpload(Box::new(TraceUpload::new(
                 request,
-                output: out.clone(),
-            })));
+                out.clone(),
+            ))));
         out
     }
     pub fn sum(&mut self, input: PlanView, mode: ReduceMode) -> BufferId {
@@ -309,6 +323,16 @@ impl ResidentPlan {
             output: out,
         }));
         out
+    }
+    /// Uploads referenced by either compatibility or domain operations.
+    pub fn system_handles(&self) -> Vec<crate::SystemHandle> {
+        self.operations
+            .iter()
+            .flat_map(|op| match op {
+                ResidentOp::TraceUpload(t) => vec![t.request.systems],
+                _ => accesses(op).systems,
+            })
+            .collect()
     }
     /// Single-writer ordered dependency validation, once at submission.
     pub fn validate(&self, owner: u64, max_bytes: u64) -> MkResult<()> {
@@ -334,7 +358,6 @@ impl ResidentPlan {
         for op in &self.operations {
             let writes = match op {
                 ResidentOp::TraceUpload(t) => {
-                    t.request.validate()?;
                     let n = t.request.rays.len();
                     let slots = if t.request.record == crate::RecordMode::AllSurfaces {
                         t.request.program().len() + 1
@@ -501,6 +524,7 @@ pub struct ResidentCacheStats {
     pub uploaded_bytes: u64,
     pub system_bytes: u64,
     pub pooled_bytes: u64,
+    pub operation_cache_bytes: u64,
 }
 pub fn stamp(
     plan: &ResidentPlan,
@@ -508,17 +532,12 @@ pub fn stamp(
     timer: RunTimer,
     stats: &PlanStats,
 ) -> RunInfo {
-    let operations:Vec<_>=plan.operations.iter().map(|op|match op {
-        ResidentOp::TraceUpload(t)=>{
-            let r=&t.request;let mut h=blake3::Hasher::new();
-            for v in [&r.rays.x,&r.rays.y,&r.rays.z,&r.rays.l,&r.rays.m,&r.rays.n,&r.rays.opl_hi,&r.rays.opl_lo,&r.rays.weight,&r.rays.x_lo,&r.rays.y_lo,&r.rays.z_lo,&r.rays.l_lo,&r.rays.m_lo,&r.rays.n_lo] {h.update(&(v.len() as u64).to_le_bytes());h.update(bytemuck::cast_slice(v));}
-            h.update(bytemuck::cast_slice(&r.rays.wavelength));h.update(bytemuck::cast_slice(&r.rays.system));
-            serde_json::json!({"kind":"trace_upload","rays":r.rays.len(),"input_hash":h.finalize().to_hex().to_string(),"start_surface":r.start_surface,"end_surface":r.end_surface,"path":r.program().iter().map(|p|p.encode()).collect::<Vec<_>>(),"clip":r.apply_apertures,"radiometry":r.radiometry,"record":r.record,"newton":r.newton})
-        },
-        ResidentOp::Sum(s)=>serde_json::json!({"kind":"sum","input":s.input.buffer.0,"offset":s.input.offset,"shape":s.input.desc.shape,"mode":s.mode,"output":s.output.0}),
-        _=>serde_json::json!({"kind":"domain","settings":plan.settings}),
+    let operations: Vec<_> = plan.operations.iter().map(|op| match op {
+        ResidentOp::TraceUpload(t) => t.manifest.clone(),
+        ResidentOp::Sum(s) => serde_json::json!({"kind":"sum","input":s.input.buffer.0,"offset":s.input.offset,"shape":s.input.desc.shape,"mode":s.mode,"output":s.output.0}),
+        _ => serde_json::json!({"kind":"domain","settings":plan.settings}),
     }).collect();
-    let settings = serde_json::json!({"plan_version":plan.version,"identity":plan.identity,"operation_settings":plan.settings,"operations":operations,"buffers":plan.buffers.iter().map(PlanBuffer::desc).collect::<Vec<_>>(),"device":backend.info(),"precision":backend.precision(),"stages":stats.stages});
+    let settings = serde_json::json!({"plan_version":plan.version,"identity":plan.identity,"requested_backend":plan.identity.requested_backend.as_deref().unwrap_or(&backend.info().backend_id()),"used_backend":backend.info().backend_id(),"cost_decision":"explicit_backend","operation_settings":plan.settings,"operations":operations,"buffers":plan.buffers.iter().map(PlanBuffer::desc).collect::<Vec<_>>(),"device":backend.info(),"precision":backend.precision(),"stages":stats.stages});
     timer.finish(
         &plan.snapshot,
         "resident_plan",
@@ -555,12 +574,14 @@ pub type SubmitPlan =
     fn(&dyn ComputeBackend, ResidentPlan, &JobContext) -> MkResult<Pending<PlanResult>>;
 pub mod cache;
 pub mod cpu;
+pub mod immutable;
 pub mod pool;
 
 #[derive(Default)]
 pub struct Access {
     pub reads: Vec<PlanView>,
     pub writes: Vec<BufferId>,
+    pub systems: Vec<crate::SystemHandle>,
 }
 pub fn accesses(op: &ResidentOp) -> Access {
     match op {
@@ -598,4 +619,33 @@ pub struct PlanIdentity {
     pub derived_snapshot_hash: Option<String>,
     pub configuration: String,
     pub spectrum: String,
+    pub requested_backend: Option<String>,
+    pub qualification: Option<serde_json::Value>,
+}
+
+fn trace_manifest(r: &TraceRequest) -> serde_json::Value {
+    let mut h = blake3::Hasher::new();
+    for v in [
+        &r.rays.x,
+        &r.rays.y,
+        &r.rays.z,
+        &r.rays.l,
+        &r.rays.m,
+        &r.rays.n,
+        &r.rays.opl_hi,
+        &r.rays.opl_lo,
+        &r.rays.weight,
+        &r.rays.x_lo,
+        &r.rays.y_lo,
+        &r.rays.z_lo,
+        &r.rays.l_lo,
+        &r.rays.m_lo,
+        &r.rays.n_lo,
+    ] {
+        h.update(&(v.len() as u64).to_le_bytes());
+        h.update(bytemuck::cast_slice(v));
+    }
+    h.update(bytemuck::cast_slice(&r.rays.wavelength));
+    h.update(bytemuck::cast_slice(&r.rays.system));
+    serde_json::json!({"kind":"trace_upload","rays":r.rays.len(),"input_hash":h.finalize().to_hex().to_string(),"start_surface":r.start_surface,"end_surface":r.end_surface,"path":r.program().iter().map(|p|p.encode()).collect::<Vec<_>>(),"clip":r.apply_apertures,"radiometry":r.radiometry,"record":r.record,"newton":r.newton})
 }

@@ -1110,7 +1110,8 @@ fn resident_cache_stats(&self) -> ResidentCacheStats;
 
 `ResidentPlan::new(snapshot)` holds ordered `operations`, typed `buffers`,
 final `outputs`, `settings`, `seed` and `PlanIdentity` (library, derived
-snapshot, configuration and spectrum identities). `import` adds an
+snapshot, configuration and spectrum identities, requested backend and optional
+qualification report). `import` adds an
 immutable lease view; `scratch` declares a plan-local destination. `BufferId`
 is an index into this plan, never a global resource ID. Submission validates
 shape/extent/type, ownership, dependencies and single writers. Imported
@@ -1134,7 +1135,8 @@ registers each package's 16-byte operation descriptor (`input`, `output`,
 sidecars belong in that package's header. Packed system layout v6 and all
 existing trace/reduction layouts and constants remain unchanged.
 
-`TraceUpload { request: TraceRequest, output: TraceBuffers }` adapts the
+`TraceUpload::new(request, output)` keeps immutable shared host inputs and a
+manifest/digest computed once during plan construction. It adapts the
 existing host ray batch without altering the trace algorithm. The four
 outputs are f32 `[10,rays]`, u32 `[3,rays]`, f32
 `[record_slots,rays,9]`, and u32 `[record_slots,rays]`, using the existing
@@ -1163,31 +1165,39 @@ float planes (including position/direction residuals), two index planes and
 separate two-word logical IDs. `ResidentHits` adds status and optional
 record/residual sidecars; P1 must retain hi+lo geometry internally.
 The central routers invoke the frozen `validate(request, plan)`,
-`accesses(request) -> Access { reads, writes }`, and
-`execute(request, execution, control)` hooks. CPU execution exposes word
+`accesses(request) -> Access { reads, writes, systems }`, and
+`execute(request, execution, control)` hooks. Referenced immutable systems are pinned at submission, and both execution
+contexts provide a system lookup for package handlers. CPU execution exposes word
 slices; Metal execution exposes typed view bindings, exclusive output
 leases, pooled temporaries and the existing command encoder. New owners
 change these handlers without editing crate roots or central routers.
 
 The pool holds at most 256 MiB of idle storage per backend; immutable
-system caching holds at most 64 entries and 64 MiB. Active leases/handles
+system caching holds at most 64 entries and 64 MiB. A separate immutable
+operation cache (64 entries / 64 MiB) is available through execution
+`cached<T>` / `cache<T>` hooks for aim seeds, transform plans, twiddles,
+pupils and stencils, keyed by full system/build/settings identity and
+operation/version. P0 uses it for path-program buffers. The pipeline cache
+holds at most 128 specialisations; live jobs retain evicted objects. Active leases/handles
 pin resources outside idle-cache limits. System cache identity includes
 snapshot/library/configuration/spectrum, layout, build and operation
 settings, plus a digest of the actual packed content. Cache hits issue
-independently releasable handles. P0 caps resident trace commands at 65,536
+independently releasable handles. P0 caps resident trace commands at 262,144
 rays and partitions reduction groups without changing the tree. Limits
 are resource/cancellation controls, not engine backend selection thresholds.
 
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
-uploaded/readback bytes, peak live plan storage and fallback/polish counts.
+uploaded/readback and parameter-block bytes, peak live plan storage and fallback/polish counts.
 The run records the actual backend/precision/build/probe, version, identity,
 legacy operation manifest/input digest, seed and stage stats. Domain-specific
 settings belong in `ResidentPlan.settings`. Explicit `Readback` reports its
-own copied bytes and wall time: plan execution has zero readback bytes.
+own copied bytes and wall time: plan execution has zero readback bytes. Worker wall time excludes caller-side
+submission/validation; benchmark end-to-end wall time includes them and final
+readback.
 System transfers/cache retention are reported separately by
 `resident_cache_stats`; peak plan storage excludes cached systems, idle
-pool storage and host metadata. P0 returns errors for unsupported/resource
+pool storage, immutable operation caches and host metadata. P0 returns errors for unsupported/resource
 failures and cancellation; fallback policy remains with the engine adapter.
 
 **Residency.** A backend owns its queue, pipelines, system cache and buffer

@@ -310,6 +310,7 @@ impl ComputeBackend for CpuF32Backend {
             .unwrap_or_else(|e| e.into_inner())
             .stats();
         s.pooled_bytes = self.inner.resident.pooled_bytes();
+        s.operation_cache_bytes = self.inner.resident.operation_cache_bytes();
         s
     }
     fn upload_systems_cached(
@@ -355,11 +356,14 @@ impl ComputeBackend for CpuF32Backend {
                     .lease::<crate::resident::pool::Allocation<Vec<u32>>>(self.inner.instance)?;
             }
         }
+        for h in plan.system_handles() {
+            pinned.insert(h, self.inner.lookup(h)?);
+        }
         for op in &plan.operations {
             if let ResidentOp::TraceUpload(t) = op {
-                let set = self.inner.lookup(t.request.systems)?;
-                prepared.push(Some(PreparedTrace::new(&t.request, &set)?));
-                pinned.insert(t.request.systems, set);
+                let set = pinned[&t.request().systems].clone();
+                prepared.push(Some(PreparedTrace::new(t.request(), &set)?));
+                pinned.insert(t.request().systems, set);
             } else {
                 prepared.push(None);
             }
@@ -392,9 +396,13 @@ impl ComputeBackend for CpuF32Backend {
                         }
                     };
                 if b.precision().probe.subnormals {
-                    b.inner.resident.execute::<Ieee>(&b, plan, &ctl, trace)
+                    b.inner
+                        .resident
+                        .execute::<Ieee>(&b, plan, pinned.clone(), &ctl, trace)
                 } else {
-                    b.inner.resident.execute::<Ftz>(&b, plan, &ctl, trace)
+                    b.inner
+                        .resident
+                        .execute::<Ftz>(&b, plan, pinned.clone(), &ctl, trace)
                 }
             },
         )?;

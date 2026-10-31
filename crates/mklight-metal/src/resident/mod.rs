@@ -6,6 +6,7 @@ use crate::{
     context::{CommandStats, MetalContext, PipelineKey},
 };
 use mklight_core::{JobContext, MkResult, job::RunTimer};
+use mklight_gpu::resident::immutable as super_cache;
 use mklight_gpu::resident::{
     pool::{Allocation, Pool},
     *,
@@ -30,6 +31,7 @@ use std::{
 pub(crate) type Lease = Allocation<SharedBuffer<u32>>;
 pub(crate) struct Runtime {
     owner: u64,
+    cache: Arc<Mutex<super_cache::ImmutableCache>>,
     next: AtomicU64,
     pool: Arc<Mutex<Pool<SharedBuffer<u32>>>>,
 }
@@ -37,10 +39,15 @@ impl Runtime {
     pub(crate) fn new(owner: u64) -> Self {
         Self {
             owner,
+            cache: Arc::new(Mutex::new(super_cache::ImmutableCache::new(64 << 20))),
             next: AtomicU64::new(1),
             pool: Arc::new(Mutex::new(Pool::new(256 << 20))),
         }
     }
+    pub(crate) fn operation_cache_bytes(&self) -> u64 {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).bytes() as u64
+    }
+
     pub(crate) fn pooled_bytes(&self) -> u64 {
         self.pool.lock().unwrap_or_else(|e| e.into_inner()).bytes() as u64
     }
@@ -125,8 +132,19 @@ impl Runtime {
             buffers: vec![],
             stats: PlanStats::default(),
             live_bytes: 0,
-            chunk: chunk.min(1 << 16),
+            chunk: chunk.min(1 << 18),
             sum_scratch: None,
+            systems: pinned.clone(),
+            cache: self.cache.clone(),
+            cache_identity: mklight_gpu::resident::SystemCacheKey {
+                snapshot: plan.snapshot.hash().to_hex(),
+                library: plan.identity.library_hash.clone(),
+                configuration: plan.identity.configuration.clone(),
+                spectrum: plan.identity.spectrum.clone(),
+                layout: MKL_LAYOUT_VERSION,
+                kernel_build: backend.precision().kernel_build.clone(),
+                operation_settings: plan.settings.to_string(),
+            },
         };
         let mut imported = std::collections::HashSet::new();
         for b in &plan.buffers {
@@ -174,13 +192,8 @@ impl Runtime {
             match op {
                 ResidentOp::TraceUpload(t) => {
                     stage.name = "trace".into();
-                    x.trace(
-                        t,
-                        &pinned[&t.request.systems],
-                        prepared[i].as_ref().unwrap(),
-                        &sub,
-                        &mut stage,
-                    )?;
+                    let up = x.system(t.request().systems)?;
+                    x.trace(t, &up, prepared[i].as_ref().unwrap(), &sub, &mut stage)?;
                 }
                 ResidentOp::Sum(s) => {
                     stage.name = "sum".into();
@@ -224,6 +237,7 @@ impl Runtime {
         });
         x.stats.wall_seconds = start.elapsed().as_secs_f64();
         run_info.settings["plan_stats"] = serde_json::to_value(&x.stats).unwrap();
+        ctl.check()?;
         ctl.report(1., "resident plan");
         Ok(PlanResult {
             outputs,
@@ -257,6 +271,8 @@ impl Slot {
     }
 }
 pub(crate) struct Execution<'a> {
+    cache: Arc<Mutex<super_cache::ImmutableCache>>,
+    cache_identity: mklight_gpu::resident::SystemCacheKey,
     pub(crate) gpu: &'a MetalContext,
     runtime: &'a Runtime,
     buffers: Vec<Option<Slot>>,
@@ -264,8 +280,37 @@ pub(crate) struct Execution<'a> {
     live_bytes: u64,
     chunk: usize,
     sum_scratch: Option<Lease>,
+    systems: HashMap<mklight_gpu::SystemHandle, Arc<Uploaded>>,
 }
 impl Execution<'_> {
+    pub(crate) fn cached<T: std::any::Any + Send + Sync>(
+        &self,
+        key: &super_cache::OperationCacheKey,
+    ) -> MkResult<Option<Arc<T>>> {
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+    }
+    pub(crate) fn cache<T: std::any::Any + Send + Sync>(
+        &self,
+        key: super_cache::OperationCacheKey,
+        bytes: usize,
+        value: Arc<T>,
+    ) {
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, bytes, value);
+    }
+
+    pub(crate) fn system(&self, handle: mklight_gpu::SystemHandle) -> MkResult<Arc<Uploaded>> {
+        self.systems
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| bad("system not declared in operation accesses"))
+    }
+
     pub(crate) fn buffer(&self, view: &PlanView) -> (&SharedBuffer<u32>, usize) {
         let slot = self.buffers[view.buffer.0].as_ref().unwrap();
         (
@@ -303,17 +348,29 @@ impl Execution<'_> {
         ctl: &JobControl,
         stage: &mut StageStats,
     ) -> MkResult<()> {
-        let n = t.request.rays.len();
+        let n = t.request().rays.len();
         let mut fu = self.allocate(n * MKL_TRACE_IN_UINTS as usize)?;
         let mut ff = self.allocate(n * MKL_TRACE_IN_FLOATS as usize)?;
         PreparedTrace::write_input_planes(
-            &t.request.rays,
+            &t.request().rays,
             bytemuck::cast_slice_mut(ff.as_mut_slice()),
             fu.as_mut_slice(),
         );
-        let mut steps = self.allocate(prep.steps.len())?;
-        steps.as_mut_slice().copy_from_slice(&prep.steps);
-        self.stats.uploaded_bytes += ((fu.len() + ff.len() + steps.len()) * 4) as u64;
+        let key = super_cache::OperationCacheKey {
+            system: self.cache_identity.clone(),
+            operation: format!("trace_steps:{:?}", prep.steps),
+            plan_version: PLAN_VERSION,
+        };
+        let steps = if let Some(steps) = self.cached::<SharedBuffer<u32>>(&key)? {
+            steps
+        } else {
+            let steps = Arc::new(self.gpu.buffer(&prep.steps)?);
+            self.stats.allocations += 1;
+            self.stats.uploaded_bytes += (prep.steps.len() * 4) as u64;
+            self.cache(key, (prep.steps.len() * 4).max(16), steps.clone());
+            steps
+        };
+        self.stats.uploaded_bytes += ((fu.len() + ff.len()) * 4) as u64;
         let mut of = self.take_output(t.output.floats);
         let mut ou = self.take_output(t.output.indices);
         let mut rf = self.take_output(t.output.records);
@@ -376,7 +433,6 @@ impl Execution<'_> {
         }
         self.recycle(ff);
         self.recycle(fu);
-        self.recycle(steps);
         Ok(())
     }
     fn sum(&mut self, s: &Sum, ctl: &JobControl, stage: &mut StageStats) -> MkResult<()> {
