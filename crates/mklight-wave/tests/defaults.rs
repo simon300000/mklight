@@ -11,8 +11,8 @@ fn accuracy_warning(w: &str) -> bool {
         "wavefront there is extrapolated",
         "ill-conditioned",
         "beyond the sampled range",
-        "outside the design field",
         "only ",
+        "have no ray through the image point",
     ]
     .iter()
     .any(|s| w.contains(s))
@@ -24,7 +24,6 @@ fn every_analysis_default_on_every_sample() {
     for (name, system) in samples::all() {
         let t = mklight_analysis::tracer_for(system).unwrap();
         for a in analysis::ANALYSES {
-            eprintln!("{name}: {}", a.name);
             let r = (a.run)(&t, &serde_json::json!({}), &JobContext::new()).unwrap();
             for w in r["run_info"]["warnings"].as_array().unwrap() {
                 let w = w.as_str().unwrap();
@@ -33,7 +32,6 @@ fn every_analysis_default_on_every_sample() {
                 }
             }
         }
-        eprintln!("{name}: relative_illumination_map");
         let r = mklight_analysis::field_maps::field_map_job(
             &t,
             mklight_analysis::field_maps::FieldAnalysis::RelativeIllumination,
@@ -48,7 +46,6 @@ fn every_analysis_default_on_every_sample() {
                 .filter(|w| accuracy_warning(w))
                 .map(|w| format!("{name}/relative_illumination_map: {w}")),
         );
-        eprintln!("{name}: image_simulation");
         let r = image_simulation::image_simulation_job(
             &t,
             &Default::default(),

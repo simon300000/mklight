@@ -180,11 +180,6 @@ pub(crate) fn compute_psf(
     normalization: PsfNormalization,
     ctx: &JobContext,
 ) -> MkResult<Psf> {
-    let grid = if grid == 0 {
-        crate::sampling::image_grid(pupils, spacing)
-    } else {
-        grid
-    };
     let mut psf = compute_psf_raw(pupils, method, grid, spacing, normalization, ctx)?;
     let e = psf.energy_in_grid() / psf.total_energy;
     if e.is_finite() && e < MIN_ENERGY_IN_GRID {
@@ -194,6 +189,22 @@ pub(crate) fn compute_psf(
         );
     }
     Ok(psf)
+}
+
+/// `grid`, or when zero the automatic window of `pupils` (Huygens-capped).
+pub(crate) fn image_grid(
+    grid: usize,
+    method: PsfMethod,
+    pupils: &[(&PupilFunction, f64)],
+    spacing: f64,
+) -> usize {
+    match (grid, method) {
+        (0, PsfMethod::Huygens) => {
+            crate::sampling::image_grid(pupils, spacing).min(MAX_HUYGENS_GRID)
+        }
+        (0, PsfMethod::Fft) => crate::sampling::image_grid(pupils, spacing),
+        _ => grid,
+    }
 }
 
 fn compute_psf_raw(
@@ -305,7 +316,7 @@ pub fn psf_analysis_job(
     ctx: &JobContext,
 ) -> MkResult<PsfResult> {
     let timer = RunTimer::start();
-    if settings.grid_size != 0 && !(1..=4096).contains(&settings.grid_size) {
+    if settings.grid_size > 4096 {
         return Err(MkError::InvalidParam(format!(
             "PSF grid size {}",
             settings.grid_size
@@ -332,15 +343,10 @@ pub fn psf_analysis_job(
         .sum::<usize>()
         .max(1);
     let mut done = 0usize;
-    for (f, value, fp) in &per {
+    for (f, value, mut fp) in per {
         warnings.extend(fp.warnings.iter().cloned());
-        let spacing = default_spacing(fp, settings.spacing_mm, settings.padding)?;
-        let mut fp = fp.clone();
-        let grid = if settings.grid_size == 0 {
-            crate::sampling::image_grid(&fp.weighted(), spacing)
-        } else {
-            settings.grid_size
-        };
+        let spacing = default_spacing(&fp, settings.spacing_mm, settings.padding)?;
+        let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
         warnings.extend(fp.ensure_window(
             grid as f64 * spacing,
             &settings.pupil,
@@ -376,8 +382,8 @@ pub fn psf_analysis_job(
             }
             let (_, i, j) = psf.peak();
             psfs.push(FieldPsf {
-                field: *f,
-                field_value: *value,
+                field: f,
+                field_value: value,
                 wavelength: wl,
                 reference_mm: fp.reference_mm,
                 strehl: psf.strehl(),

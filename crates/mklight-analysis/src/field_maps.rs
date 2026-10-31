@@ -224,11 +224,15 @@ pub fn field_map_job(
     // The chief ray passes the stop centre (real aiming), as in the radial
     // relative-illumination analysis, whatever the design's aiming.
     let rt = real_aimed(t)?;
+    // Relative illumination is only defined inside the radial field.
+    let skip = |p: &[f64; 2]| {
+        matches!(kind, FieldAnalysis::RelativeIllumination) && p[0].hypot(p[1]) > 1.0 + 1e-12
+    };
     let mut images = Vec::with_capacity(coords.len());
     let mut chiefs = Vec::with_capacity(coords.len());
-    for &p in &coords {
+    for p in &coords {
         ctx.check()?;
-        if matches!(kind, FieldAnalysis::RelativeIllumination) && p[0].hypot(p[1]) > 1.0 + 1e-12 {
+        if skip(p) {
             images.push([f64::NAN; 2]);
             chiefs.push(None);
             continue;
@@ -254,11 +258,7 @@ pub fn field_map_job(
     }
     let values = match kind {
         FieldAnalysis::RelativeIllumination => {
-            let inside: Vec<_> = coords
-                .iter()
-                .copied()
-                .filter(|p| p[0].hypot(p[1]) <= 1.0 + 1e-12)
-                .collect();
+            let inside: Vec<_> = coords.iter().copied().filter(|p| !skip(p)).collect();
             let (rows, omega0) = illumination_rows(
                 t,
                 &inside,
@@ -272,12 +272,11 @@ pub fn field_map_job(
             coords
                 .iter()
                 .flat_map(|p| {
-                    if p[0].hypot(p[1]) > 1.0 + 1e-12 {
-                        [f64::NAN; 3]
-                    } else {
-                        let r = rows.next().unwrap();
-                        [r[0] / omega0, r[0], 1.0 - r[1]]
+                    if skip(p) {
+                        return [f64::NAN; 3];
                     }
+                    let r = rows.next().unwrap();
+                    [r[0] / omega0, r[0], 1.0 - r[1]]
                 })
                 .collect()
         }

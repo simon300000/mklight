@@ -28,9 +28,10 @@ pub(crate) fn pupil_grid(rays: &StructuredSamples) -> usize {
             }
         }
     }
-    // 0.35 waves leaves room for edge-cell averaging and later refocusing.
+    // At most 0.35 waves per sample: margin below the 0.5-wave diagnostic
+    // for edge-cell averaging and refocusing. PSF windows enlarge this
+    // further through `FieldPupils::ensure_window`.
     ((2.0 * gradient / 0.35)
-        .max(4.0 * gradient + 48.0)
         .clamp(64.0, MAX_AUTO_PUPIL as f64)
         .ceil() as usize)
         .next_power_of_two()
@@ -77,9 +78,7 @@ pub(crate) fn image_side(pupils: &[(&PupilFunction, f64)]) -> f64 {
 }
 
 pub(crate) fn image_grid(pupils: &[(&PupilFunction, f64)], spacing: f64) -> usize {
-    ((image_side(pupils) / spacing).ceil() as usize)
-        .max(64)
-        .min(MAX_AUTO_IMAGE)
+    ((image_side(pupils) / spacing).ceil() as usize).clamp(64, MAX_AUTO_IMAGE)
 }
 
 pub(crate) fn useful_frequency(pupils: &[(&PupilFunction, f64)]) -> f64 {

@@ -428,6 +428,41 @@ impl PupilMask {
             }
         }
     }
+
+    /// [`Self::contains`] on the lattice `coords × coords` (row-major, `v`
+    /// by row): polygon crossings are found once per row, not per point.
+    pub fn contains_lattice(&self, coords: &[f64]) -> Vec<bool> {
+        let n = coords.len();
+        let mut out = vec![false; n * n];
+        out.par_chunks_mut(n)
+            .zip(coords)
+            .for_each(|(row, &v)| match self {
+                PupilMask::Analytic { aperture } => {
+                    for (o, &u) in row.iter_mut().zip(coords) {
+                        *o = aperture.contains(u, v);
+                    }
+                }
+                PupilMask::Polygons { loops } => {
+                    let mut xs = Vec::new();
+                    for l in loops {
+                        let mut j = l.len() - 1;
+                        for i in 0..l.len() {
+                            let (a, b) = (l[i], l[j]);
+                            if (a[1] > v) != (b[1] > v) {
+                                xs.push(a[0] + (v - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+                            }
+                            j = i;
+                        }
+                    }
+                    xs.sort_by(f64::total_cmp);
+                    // Odd number of crossings strictly to the right of u.
+                    for (o, &u) in row.iter_mut().zip(coords) {
+                        *o = (xs.len() - xs.partition_point(|&x| x <= u)) % 2 == 1;
+                    }
+                }
+            });
+        out
+    }
 }
 
 /// Clear-aperture shape in normalised pupil coordinates.
@@ -1088,6 +1123,31 @@ mod tests {
         assert!((g.lambda_f_mm(0.5) - 0.0025).abs() < 1e-15);
         assert!((g.cutoff_frequency(0.5) - 400.0).abs() < 1e-9);
         assert!(PupilGeometry::new(10.0, 5.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn lattice_mask_matches_point_tests() {
+        // A concave star with a square hole, sampled through its vertices.
+        let star = (0..10)
+            .map(|i| {
+                let (s, c) = (i as f64 * std::f64::consts::PI / 5.0).sin_cos();
+                let r = if i % 2 == 0 { 0.9 } else { 0.4 };
+                [r * c, r * s]
+            })
+            .collect();
+        let hole = vec![[-0.2, -0.2], [0.2, -0.2], [0.2, 0.2], [-0.2, 0.2]];
+        let coords: Vec<f64> = (0..41).map(|i| -1.0 + i as f64 * 0.05).collect();
+        for mask in [
+            PupilMask::Polygons {
+                loops: vec![star, hole],
+            },
+            Aperture::Annular { obscuration: 0.3 }.into(),
+        ] {
+            let grid = mask.contains_lattice(&coords);
+            for (k, inside) in grid.into_iter().enumerate() {
+                assert_eq!(inside, mask.contains(coords[k % 41], coords[k / 41]));
+            }
+        }
     }
 
     #[test]

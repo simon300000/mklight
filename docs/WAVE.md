@@ -210,18 +210,20 @@ results report their actual grids and image spacing.
 * Trace the `rays × rays` entrance-pupil lattice and rim first (65 rays per
   diameter by default). In its mapped exit-pupil triangles, find
   `G = max(|∂W/∂u|, |∂W/∂v|)` in waves per normalised pupil unit.
-  Choose the next power of two at least `max(64, 2G/0.35, 4G + 48)`.
-  The phase target 0.35 waves leaves margin below the diagnostic's 0.5-wave
-  limit; the additional term reserves an alias-free diffraction halo.
+  Choose the next power of two at least `max(64, 2G/0.35)`. The phase
+  target 0.35 waves per sample leaves margin below the diagnostic's
+  0.5-wave limit.
 * Estimate geometric ray offsets from `ε_normal = −2 λN ∇W`, project them
   onto the image surface with `B⁻¹`, and include the wavelengths' reference
   offsets. The image half-width is the largest Cartesian offset plus
   `16 λN`, maximised over the selected wavelengths. This holds the
   aberrated flare and diffraction wings, rather than only an Airy core.
   Spacing is `min(λN)/padding`, with default padding 2.5 (safely finer
-  than intensity Nyquist). Round the required image side up to whole pixels.
-  Increase an automatic pupil grid further if needed to keep the window
-  within every wavelength's alias-free field `n λN`.
+  than intensity Nyquist). Round the required image side up to whole pixels
+  (at least 64; Huygens at most 1024). Encircled energy uses the largest
+  field's window for all fields. Increase an automatic pupil grid further
+  if needed to keep the window within every wavelength's alias-free field
+  `n λN`.
 * `mtf` uses `min(100 cycles/mm, cutoff/4, 1/(2 r_rms))`, minimised over
   the selected fields and wavelengths. Here `r_rms` is the coverage- and
   amplitude-squared-weighted geometric RMS radius about its centroid,
@@ -238,12 +240,14 @@ results report their actual grids and image spacing.
 **Cost caps.** Automatic pupil grids stop at 1024 per side (1,048,576
 cells, up to 16 subpoints per cell at the default supersampling); automatic
 image grids stop at 2048 per side (2047, odd, in image simulation). The
-trace lattice remains the requested `rays` count. Image simulation's FFT
-route uses at most 8192 per side, with bicubic resampling from a normal-plane
-raster at `≤ λN/8` onto the projected image surface; the exact skew matrix
-transform remains available through `PolyPsfSettings::transform`. A diagonal
-field therefore does not multiply image and pupil sample counts quadratically
-in image simulation. Huygens retains its separate work/grid limits above.
+trace lattice remains the requested `rays` count. Image simulation
+evaluates pupils with a separable surface map (on axis, or a chief ray in
+the x–z or y–z plane) with the exact matrix transform; a skew pupil, whose
+exact transform costs `n²M²`, is transformed by FFT (at most 8192 per side)
+on its chief-normal plane at `≤ λN/8` and projected bicubically onto the
+image surface. The exact skew transform remains available through
+`PolyPsfSettings::transform`. Huygens retains its separate work/grid limits
+above.
 These are per pupil/PSF caps, not a wall-time guarantee for arbitrary numbers
 of fields or wavelengths. Cancellation and progress also cover refinements.
 

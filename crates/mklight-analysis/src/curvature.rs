@@ -707,12 +707,12 @@ pub fn grid_distortion_job(
     settings: &GridDistortionSettings,
     ctx: &JobContext,
 ) -> MkResult<GridDistortionResult> {
-    for v in settings.field_center {
-        check_finite("grid field centre", v)?;
-    }
     let timer = RunTimer::start();
     check_count("grid size", settings.grid_size, 2, 1001)?;
     check_finite("grid half-width", settings.half_width)?;
+    for v in settings.field_center {
+        check_finite("grid field centre", v)?;
+    }
     if !(settings.half_width > 0.0) {
         return Err(mklight_core::MkError::InvalidModel(
             "grid half-width must be positive".into(),

@@ -266,12 +266,10 @@ pub fn build_psf_grid(
         )?;
         let energy = psf.energy_in_grid() / psf.total_energy;
         if energy < crate::analysis::MIN_ENERGY_IN_GRID {
-            warnings.push(
-                crate::WaveWarning::PsfTruncated {
-                    energy_in_grid: energy,
-                }
-                .to_string(),
-            );
+            let w = crate::WaveWarning::PsfTruncated {
+                energy_in_grid: energy,
+            };
+            warnings.push(format!("field {:?}: {w}", p.field));
         }
         warnings.extend(psf.warnings.iter().map(ToString::to_string));
         let sum: f64 = psf.data.iter().sum();
@@ -389,6 +387,7 @@ fn read_png(path: &str) -> MkResult<Raster> {
         .collect();
     Ok(Raster { w, h, c, data })
 }
+/// Pixel `(x, y)` of a built-in pattern, area-averaged over the pixel.
 fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 {
     match p {
         TestPattern::Grid => {
@@ -402,6 +401,20 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
                 * (white((y + 1) as f64 / h as f64) - white(y as f64 / h as f64))
                 * h as f64
         }
+        TestPattern::SiemensStar => {
+            // 16×16 midpoint supersampling of the 24 spokes.
+            let mut sum = 0.0;
+            for j in 0..16 {
+                for i in 0..16 {
+                    let u = (x as f64 + (i as f64 + 0.5) / 16.0) / w as f64;
+                    let v = (y as f64 + (j as f64 + 0.5) / 16.0) / h as f64;
+                    if ((v - 0.5).atan2(u - 0.5) * 24.0).cos() > 0.0 {
+                        sum += 1.0;
+                    }
+                }
+            }
+            sum / 256.0
+        }
         TestPattern::SlantedEdge => {
             // Exact area to the right of a line in this pixel rectangle.
             let (lo, hi) = (x as f64 / w as f64, (x + 1) as f64 / w as f64);
@@ -411,46 +424,6 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
             };
             (primitive((y + 1) as f64 / h as f64) - primitive(y as f64 / h as f64)) * (w * h) as f64
         }
-        _ => {
-            let mut sum = 0.0;
-            for j in 0..16 {
-                for i in 0..16 {
-                    sum += pattern_point(
-                        p,
-                        (x as f64 + (i as f64 + 0.5) / 16.0) / w as f64,
-                        (y as f64 + (j as f64 + 0.5) / 16.0) / h as f64,
-                        w,
-                        h,
-                    );
-                }
-            }
-            sum / 256.0
-        }
-    }
-}
-fn pattern_point(p: TestPattern, u: f64, v: f64, w: usize, h: usize) -> f64 {
-    match p {
-        TestPattern::Grid => {
-            if (u * 8.0).fract() < 0.1 || (v * 8.0).fract() < 0.1 {
-                0.0
-            } else {
-                1.0
-            }
-        }
-        TestPattern::SiemensStar => {
-            if ((v - 0.5).atan2(u - 0.5) * 24.0).cos() > 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        TestPattern::SlantedEdge => {
-            if u > 0.5 + 0.1 * (v - 0.5) {
-                1.0
-            } else {
-                0.0
-            }
-        }
         TestPattern::TextChart => {
             // Repeated 5x7 bitmap glyphs M K L, at three spatial scales.
             const FONT: [[u8; 7]; 3] = [
@@ -459,7 +432,7 @@ fn pattern_point(p: TestPattern, u: f64, v: f64, w: usize, h: usize) -> f64 {
                 [16, 16, 16, 16, 16, 16, 31],
             ];
             // Glyph bitmaps and scale bands are written top to bottom.
-            let (x, y) = ((u * w as f64) as usize, ((1.0 - v) * h as f64) as usize);
+            let y = h - 1 - y;
             let band = (y as f64 * 3.0 / h as f64) as usize;
             let scale = [4, 2, 1][band.min(2)];
             let (gx, gy) = (x / scale, y / scale);

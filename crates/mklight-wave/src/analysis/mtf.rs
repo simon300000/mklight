@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 
 use super::psf::{PsfMethod, check_huygens_grid, compute_psf};
 use super::{
-    check_pos, field_pupils, field_value, fields, linspace, run_info, system_field_pupils,
-    wavelengths,
+    FieldPupils, check_pos, field_pupils, field_value, fields, linspace, run_info,
+    system_field_pupils, wavelengths,
 };
 use crate::detector::{DetectorCurve, DetectorSettings};
 use crate::mtf::{MtfCurve, MtfMethod, MtfOrientation, mtf_from_psf, polychromatic_mtf};
@@ -117,13 +117,24 @@ pub(crate) fn field_mtf(
     }
 }
 
-fn frequencies(max: Option<f64>, samples: usize, cutoff: f64) -> MkResult<Vec<f64>> {
+/// Smallest system-derived useful frequency over the fields' pupils.
+fn useful_frequency<'a>(fields: impl Iterator<Item = &'a FieldPupils>) -> f64 {
+    fields
+        .map(|fp| crate::sampling::useful_frequency(&fp.weighted()))
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn frequencies(
+    max: Option<f64>,
+    samples: usize,
+    useful: impl FnOnce() -> f64,
+) -> MkResult<Vec<f64>> {
     if !(2..=100_001).contains(&samples) {
         return Err(MkError::InvalidParam(format!(
             "frequency samples {samples}"
         )));
     }
-    let fmax = max.unwrap_or(cutoff);
+    let fmax = max.unwrap_or_else(useful);
     check_pos("maximum frequency", fmax)?;
     Ok(linspace(0.0, fmax, samples))
 }
@@ -237,15 +248,9 @@ pub fn mtf_analysis_job(
     let wls = wavelengths(tracer, &settings.wavelengths)?;
     let (per, skipped) =
         system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.5))?;
-    let cutoff = per
-        .iter()
-        .map(|(_, _, fp)| fp.max_cutoff())
-        .fold(0.0, f64::max);
-    let useful = per
-        .iter()
-        .map(|(_, _, fp)| crate::sampling::useful_frequency(&fp.weighted()))
-        .fold(cutoff, f64::min);
-    let freqs = frequencies(settings.max_frequency, settings.frequency_samples, useful)?;
+    let freqs = frequencies(settings.max_frequency, settings.frequency_samples, || {
+        useful_frequency(per.iter().map(|(_, _, fp)| fp))
+    })?;
     let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
@@ -288,9 +293,9 @@ pub fn mtf_analysis_job(
 }
 
 /// Explicit frequencies or three distinct 1-2-5 values below the useful limit.
-fn fixed_frequencies(list: &[f64], cutoff: f64) -> MkResult<Vec<f64>> {
+fn fixed_frequencies(list: &[f64], useful: impl FnOnce() -> f64) -> MkResult<Vec<f64>> {
     if list.is_empty() {
-        let top = crate::sampling::round_frequency(cutoff);
+        let top = crate::sampling::round_frequency(useful());
         return Ok([0.25, 0.5, 1.0]
             .map(|x| crate::sampling::round_frequency(x * top))
             .to_vec());
@@ -422,12 +427,9 @@ pub fn mtf_vs_field_job(
     if pupils.iter().all(Option::is_none) {
         return Err(first_error.unwrap_or_else(|| MkError::InvalidParam("no field sample".into())));
     }
-    let useful = pupils
-        .iter()
-        .flatten()
-        .map(|fp| crate::sampling::useful_frequency(&fp.weighted()))
-        .fold(f64::INFINITY, f64::min);
-    let freqs = fixed_frequencies(&settings.frequencies, useful)?;
+    let freqs = fixed_frequencies(&settings.frequencies, || {
+        useful_frequency(pupils.iter().flatten())
+    })?;
     let mut per_field = Vec::new();
     for (k, fp) in pupils.iter().enumerate() {
         let Some(fp) = fp else {
@@ -567,11 +569,9 @@ pub fn through_focus_mtf_analysis_job(
     let wls = wavelengths(tracer, &settings.wavelengths)?;
     let (per, skipped) =
         system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
-    let useful = per
-        .iter()
-        .map(|(_, _, fp)| crate::sampling::useful_frequency(&fp.weighted()))
-        .fold(f64::INFINITY, f64::min);
-    let freqs = fixed_frequencies(&settings.frequencies, useful)?;
+    let freqs = fixed_frequencies(&settings.frequencies, || {
+        useful_frequency(per.iter().map(|(_, _, fp)| fp))
+    })?;
     let half = match settings.focus_range_mm {
         Some(r) => {
             check_pos("focus range", r)?;
@@ -596,18 +596,18 @@ pub fn through_focus_mtf_analysis_job(
     let mut out = Vec::new();
     let total = (per.len() * focus.len()).max(1) as f64;
     let mut done = 0.0;
-    for (f, value, fp) in &per {
+    for (f, value, mut fp) in per {
         warnings.extend(fp.warnings.iter().cloned());
-        let mut fp = fp.clone();
         if settings.pupil.grid == 0 {
+            // Automatic pupils also resolve the phase at both focus ends.
             for (_, _, tp) in &mut fp.pupils {
                 let p = &tp.pupil;
                 let step = [-half, half]
-                    .into_iter()
                     .map(|dz| {
                         p.with_focus_shift(dz / p.geometry().chief_ray[2])
                             .max_phase_step()
                     })
+                    .into_iter()
                     .fold(0.0, f64::max);
                 let n = ((p.n() as f64 * step / 0.35)
                     .max(p.n() as f64)
@@ -661,8 +661,8 @@ pub fn through_focus_mtf_analysis_job(
             }
         }
         out.push(ThroughFocusField {
-            field: *f,
-            field_value: *value,
+            field: f,
+            field_value: value,
             curves: freqs
                 .iter()
                 .enumerate()

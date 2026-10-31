@@ -201,10 +201,7 @@ pub fn grid_from_structured(
     let source: Vec<u32> = match mask {
         None => owner,
         Some(mask) => {
-            let inside: Vec<bool> = (0..ns * ns)
-                .into_par_iter()
-                .map(|k| mask.contains(sub_coord(k % ns), sub_coord(k / ns)))
-                .collect();
+            let inside = mask.contains_lattice(&(0..ns).map(sub_coord).collect::<Vec<_>>());
             ctx.check()?;
             // Multi-source BFS (8-neighbour) from every rasterised sub-point:
             // each reached sub-point inherits the triangle of its source.

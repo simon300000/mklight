@@ -290,9 +290,9 @@ impl FieldPupils {
             .map(|(_, _, p)| p.pupil.lambda_f_mm())
             .fold(f64::INFINITY, f64::min)
     }
-    /// Keep an automatically sampled pupil's alias-free field around the
-    /// requested image window. Explicit pupil grids remain untouched.
-    pub fn ensure_window(
+    /// Refine automatically sampled pupils until their alias-free field
+    /// `n λN` holds an image window of `side` mm; explicit grids are kept.
+    pub(crate) fn ensure_window(
         &mut self,
         side: f64,
         settings: &PupilSettings,
@@ -316,10 +316,6 @@ impl FieldPupils {
             )?);
         }
         Ok(warnings)
-    }
-    /// Largest incoherent cutoff over the pupils (cycles/mm).
-    pub fn max_cutoff(&self) -> f64 {
-        1.0 / self.min_lambda_f()
     }
 }
 
