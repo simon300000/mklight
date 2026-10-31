@@ -34,7 +34,8 @@
 //!   its first hit.
 //!
 //! A polyline is `in_section` when all of its points lie in the global
-//! section plane (x=0 for yz, y=0 for xz, to 10⁻⁹ of the scene size).
+//! section slab (x=0 for yz, y=0 for xz, within 1 % of the largest
+//! mechanical diameter). This admits tolerance-scale decentre and tilt.
 //! Optional polar triangle meshes carry the full Cartesian sag into 3-D.
 //!
 //! # Compact buffers
@@ -356,6 +357,15 @@ fn polyline(kind: PolylineKind, pts: Vec<[f64; 3]>, surface: Option<usize>) -> P
 
 fn is_air(m: &ResolvedMaterial) -> bool {
     matches!(m, ResolvedMaterial::Air | ResolvedMaterial::Vacuum { .. })
+}
+
+/// A section is a thin slab: one percent of the largest mechanical diameter.
+/// This admits tolerance-scale offsets without depending on track or lead-in.
+fn section_tolerance(surfaces: &[SurfaceInfo]) -> f64 {
+    0.02 * surfaces
+        .iter()
+        .map(|s| s.mechanical_semi_diameter)
+        .fold(0.0, f64::max)
 }
 
 /// Layout scene (module docs).
@@ -692,7 +702,7 @@ pub fn layout_job(
             max: [0.0; 3],
         };
     }
-    let tol = 1e-9 * (1.0 + bounds.size());
+    let tol = section_tolerance(&infos);
     for p in &mut polys {
         p.in_section = p
             .points
@@ -791,7 +801,7 @@ impl LayoutScene {
                 flags,
             );
         }
-        let tol = 1e-9 * (1.0 + self.bounds.size());
+        let tol = section_tolerance(&self.surfaces);
         for e in &self.elements {
             let in_section = e
                 .outline

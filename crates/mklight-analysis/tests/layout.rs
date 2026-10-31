@@ -226,3 +226,93 @@ fn doe_flag_covers_every_surface_of_an_element() {
     assert_eq!(b.surfaces[i], 1);
     assert_eq!(b.flags[i] & 4, 4);
 }
+
+#[test]
+fn decentered_cooke_section_survives_tolerance_motion() {
+    use mklight_core::param::{ParamPath, PlacementComponent};
+    for scale in [0.1, 1.0, 10.0] {
+        let mut system = samples::cooke_triplet();
+        // Scale the prescription too: the classification is a relative one.
+        for s in &mut system.surfaces {
+            s.thickness *= scale;
+            if let mklight_core::SurfaceShape::Conic { curvature, .. } = &mut s.shape {
+                *curvature /= scale;
+            }
+        }
+        if let mklight_core::ApertureSpec::EntrancePupilDiameter { value } = &mut system.aperture {
+            *value *= scale;
+        }
+        for (component, value) in [
+            (PlacementComponent::DecenterX, 0.03 * scale),
+            (PlacementComponent::TiltY, 0.05),
+        ] {
+            ParamPath::ElementPlacement {
+                surface: system.surfaces[1].id,
+                last: system.surfaces[2].id,
+                pivot: None,
+                component,
+            }
+            .set(&mut system, value)
+            .unwrap();
+        }
+        let t = tracer(system);
+        for section in [LayoutSection::Yz, LayoutSection::Xz] {
+            let scene = layout(
+                &t,
+                &LayoutSettings {
+                    section,
+                    edge_margin: 0.5 * scale,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let profiles: Vec<_> = scene
+                .polylines
+                .iter()
+                .filter(|p| p.kind == PolylineKind::SurfaceProfile && p.surface == Some(1))
+                .collect();
+            assert_eq!(profiles.iter().filter(|p| p.in_section).count(), 1);
+            assert!(
+                scene
+                    .polylines
+                    .iter()
+                    .any(|p| p.kind == PolylineKind::Ray && p.in_section && !p.vignetted)
+            );
+            assert!(
+                scene
+                    .polylines
+                    .iter()
+                    .filter(|p| p.kind == PolylineKind::SurfaceRim)
+                    .all(|p| !p.in_section)
+            );
+            let buffers = scene.to_buffers();
+            assert!(
+                buffers.flags[scene.polylines.len()..]
+                    .iter()
+                    .all(|f| f & 1 == 1)
+            );
+            // Lead-in is a drawing choice, not a section-width parameter.
+            let long = layout(
+                &t,
+                &LayoutSettings {
+                    section,
+                    edge_margin: 0.5 * scale,
+                    lead_in: Some(1e6),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                scene
+                    .polylines
+                    .iter()
+                    .map(|p| p.in_section)
+                    .collect::<Vec<_>>(),
+                long.polylines
+                    .iter()
+                    .map(|p| p.in_section)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
