@@ -407,6 +407,13 @@ gives 0.173/0.178). Far from focus (0.3 mm, about 4 waves at F/4) every
 field oscillates through zeros and the minimum is multimodal, so LM from
 there stops in a local maximum near 0.016.
 
+Those sampled values use the chief-normal projected MTF. With the
+sensor-spectrum transform (WAVE §5), the fixed 64-grid test improves the
+minimum from 0.101 to 0.168, versus 0.058 for field-weighted bounds. The
+regression checks the optimiser against an independent 0.005 mm focus
+sweep (within 0.002 MTF), as well as its improvement over the start and the
+field-weighted result.
+
 Symmetry uses the core system classification, including shape coefficients,
 placements and apertures. A system that is not meridionally symmetric
 (class `none`, x fields, or the field grid below) never uses a half pupil,

@@ -286,6 +286,8 @@ sensor-frequency lattice before its autocorrelation. Its frequency pitch
 comes from the mapped pupil bounds; on axis it remains `Δν = cutoff/n`.
 Pupils crossing the sensor horizon are rejected because this map ceases
 to be one-to-one. The on-axis calculation is unchanged.
+The off-axis FFT adds an interpolation step: refine the pupil grid as well
+as the traced-ray lattice when checking its convergence.
 
 This retains the full angular Debye kernel. Finite-distance propagation
 from the sphere still belongs to `huygens`; enlarge its PSF window and
