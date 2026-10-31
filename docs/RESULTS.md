@@ -421,7 +421,7 @@ Result (`result` in the envelope):
 | `surfaces[].is_stop` | boolean |  |  |
 | `surfaces[].label` | string |  |  |
 | `surfaces[].material` | string? |  |  |
-| `surfaces[].material_ref` | any |  | The model's MaterialRef. |
+| `surfaces[].material_ref` | object |  | The model's tagged material reference (air, vacuum, catalog, model, constant). Catalogue references may carry offset:{dn_d,dv_d}, both default zero; bounds ±0.05 and ±10 (MATERIALS.md). |
 | `surfaces[].n_after` | array<number> |  | Index after the surface at every system wavelength (relative to air). |
 | `surfaces[].nd_after` | nf |  |  |
 | `surfaces[].radius` | nf | mm | 1/curvature; "inf" for a plane. |
@@ -472,7 +472,7 @@ Result (`result` in the envelope):
 
 Category `materials`, result version 1.
 
-Catalog data of one glass and its index relative to air at chosen wavelengths and environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the glass's valid range.
+Catalog data of one glass, with optional index/Abbe offsets, and its index relative to air at chosen wavelengths and environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the glass's valid range.
 
 Settings:
 
@@ -481,6 +481,7 @@ Settings:
 | `catalog` | string\|null | `null` |  | Catalog to search; null searches all in load order. |
 | `curve_samples` | integer | `0` |  | 0 … 100000 |
 | `name` | string | **required** |  |  |
+| `offset` | object | `{"dn_d":0.0,"dv_d":0.0}` |  | d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios. |
 | `pressure_atm` | number\|null | `null` | atm | ≥ 0.0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `temperature_c` | number\|null | `null` | °C | null uses the system environment. |
@@ -496,7 +497,7 @@ Result (`result` in the envelope):
 | `comment` | any |  |  |
 | `cte` | any |  | Thermal expansion (1/K) or null. |
 | `density` | any |  | g/cm³ or null. |
-| `dispersion` | object |  | Dispersion formula and coefficients. |
+| `dispersion` | object |  | Nominal catalogue dispersion formula and coefficients; offsets apply separately. |
 | `environment` | object |  | Temperature and pressure used. |
 | `has_thermal_data` | boolean |  |  |
 | `indices` | array<object> |  |  |
@@ -508,8 +509,11 @@ Result (`result` in the envelope):
 | `max_um` | number | µm |  |
 | `min_um` | number | µm |  |
 | `name` | string |  |  |
-| `nd` | number |  | Computed at the d line (catalog conditions). |
+| `nd` | number |  | Computed at the d line with offsets (catalog conditions). |
 | `ne` | number |  |  |
+| `offset` | object |  | d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios. |
+| `offset.dn_d` (optional) | number |  | -0.05 … 0.05 |
+| `offset.dv_d` (optional) | number |  | -10.0 … 10.0 |
 | `pgf` | nf |  | Partial dispersion P_g,F. |
 | `relative_cost` | any |  |  |
 | `vd` | nf |  |  |
@@ -537,13 +541,16 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `coordinates` | string |  | Buffer name. |
-| `glasses` | array<object> |  | All loaded glasses in catalogue order, then model glasses in surface order. |
+| `glasses` | array<object> |  | All loaded glasses in catalogue order, then offset and model design glasses in surface order. Offset surfaces mark the shifted point only. |
 | `glasses[].catalog` | string? |  |  |
 | `glasses[].climate_resistance` | number? |  |  |
 | `glasses[].exclude_substitution` | boolean? |  |  |
-| `glasses[].kind` | string |  | one of `"catalog"`, `"model"` |
+| `glasses[].kind` | string |  | one of `"catalog"`, `"offset"`, `"model"` |
 | `glasses[].name` | string |  |  |
-| `glasses[].nd` | nf | 1 | Catalogue d-line index; model computed at reference conditions. |
+| `glasses[].nd` | nf | 1 | Catalogue d-line index; design offset and model glasses computed at catalogue reference conditions. |
+| `glasses[].offset` | object |  | d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios. |
+| `glasses[].offset.dn_d` (optional) | number |  | -0.05 … 0.05 |
+| `glasses[].offset.dv_d` (optional) | number |  | -10.0 … 10.0 |
 | `glasses[].pgf` | nf | 1 | (n_g-n_F)/(n_F-n_C), computed from dispersion. |
 | `glasses[].relative_cost` | number? |  |  |
 | `glasses[].stain_resistance` | number? |  |  |
@@ -2407,7 +2414,7 @@ Settings:
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `stop_key` | string\|null | `null` |  |  |
 | `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
-| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |
+| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |
 | `trials` | integer | `100` |  | ≥ 1 |
 
 Result (`result` in the envelope):

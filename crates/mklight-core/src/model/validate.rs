@@ -277,6 +277,11 @@ fn check_scatter(out: &mut Issues, path: &str, m: &ScatterModel) {
 
 fn check_material(out: &mut Issues, path: &str, m: &MaterialRef) {
     match *m {
+        MaterialRef::Catalog { offset, .. } => {
+            for (field, code, message) in offset.invalid_fields() {
+                out.push(code, format!("{path}.offset.{field}"), message);
+            }
+        }
         MaterialRef::Model { nd, vd, dpgf } => {
             out.positive("invalid_material", format!("{path}.nd"), nd);
             out.positive("invalid_material", format!("{path}.vd"), vd);

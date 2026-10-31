@@ -33,6 +33,49 @@ fn t(id: u64) -> ParamPath {
     }
 }
 
+#[test]
+fn index_and_abbe_tolerances_add_to_catalogue_offsets() {
+    use mklight_core::materials::{MaterialLibrary, MaterialOffset, lines};
+    let mut nominal = mklight_core::samples::singlet();
+    nominal.surfaces[1].material = MaterialRef::Catalog {
+        catalog: None,
+        name: "N-BK7".into(),
+        offset: MaterialOffset {
+            dn_d: 0.001,
+            dv_d: -1.0,
+        },
+    };
+    let dn = ParamPath::MaterialDnD {
+        surface: nominal.surfaces[1].id,
+    };
+    let dv = ParamPath::MaterialDvD {
+        surface: nominal.surfaces[1].id,
+    };
+    let spec = ToleranceSpec::new(vec![
+        ToleranceOperand::symmetric(dn.clone(), 0.002),
+        ToleranceOperand::symmetric(dn.clone(), 0.001),
+        ToleranceOperand::symmetric(dv.clone(), 2.0),
+    ]);
+    let s = spec.apply(&nominal, &[0.002, -0.001, 2.0]).unwrap();
+    assert_eq!(dn.get(&s).unwrap(), 0.002);
+    assert_eq!(dv.get(&s).unwrap(), 1.0);
+    let lib = MaterialLibrary::with_builtin();
+    let a = lib
+        .resolve(&nominal.surfaces[1].material, &nominal.environment)
+        .unwrap();
+    let b = lib
+        .resolve(&s.surfaces[1].material, &s.environment)
+        .unwrap();
+    assert!((b.index(lines::D) - a.index(lines::D) - 0.001).abs() < 1e-15);
+    let vd = |m: &mklight_core::materials::ResolvedMaterial| {
+        (m.index(lines::D) - 1.0) / (m.index(lines::F) - m.index(lines::C))
+    };
+    assert!((vd(&b) - vd(&a) - 2.0).abs() < 4e-12);
+    let json = serde_json::to_string(&spec).unwrap();
+    let restored: ToleranceSpec = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.apply(&nominal, &[0.002, -0.001, 2.0]).unwrap(), s);
+}
+
 fn track_spec() -> MeritFunctionSpec {
     MeritFunctionSpec::new(vec![
         Operand::new(OperandKind::TotalTrack {

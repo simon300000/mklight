@@ -1,7 +1,9 @@
 //! Catalogue and design glass coordinates at standard spectral lines.
 use mklight_core::job::{Precision, RunTimer};
 use mklight_core::materials::agf::GlassStatus;
-use mklight_core::materials::{MaterialLibrary, ResolvedMaterial, TransmittancePoint, lines};
+use mklight_core::materials::{
+    CATALOG_T_C, MaterialLibrary, MaterialOffset, ResolvedMaterial, TransmittancePoint, lines,
+};
 use mklight_core::{JobContext, MaterialRef, MkResult, RunInfo, Snapshot};
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +26,7 @@ pub struct GlassPoint {
     pub catalog: Option<String>,
     pub name: String,
     pub kind: String,
+    pub offset: MaterialOffset,
     #[serde(with = "crate::util::nf")]
     pub nd: f64,
     #[serde(with = "crate::util::nf")]
@@ -69,6 +72,7 @@ pub fn glass_map_job(
                 catalog: Some(cat.name.clone()),
                 name: g.name.clone(),
                 kind: "catalog".into(),
+                offset: MaterialOffset::default(),
                 nd: g.nd,
                 vd: g.vd,
                 pgf,
@@ -91,11 +95,15 @@ pub fn glass_map_job(
     for (i, surface) in snapshot.system().surfaces.iter().enumerate() {
         ctx.check()?;
         match &surface.material {
-            MaterialRef::Catalog { catalog, name } => {
+            MaterialRef::Catalog {
+                catalog,
+                name,
+                offset,
+            } => {
                 // The entry the design resolves to: the first loaded
                 // catalogue (optionally the named one) holding the glass.
                 let g = library.find_glass(catalog.as_deref(), name)?;
-                glasses[..count]
+                let point = glasses[..count]
                     .iter_mut()
                     .find(|v| {
                         v.name == g.name
@@ -105,9 +113,22 @@ pub fn glass_map_job(
                                     .is_some_and(|v| v.eq_ignore_ascii_case(c))
                             })
                     })
-                    .unwrap()
-                    .surfaces
-                    .push(i);
+                    .unwrap();
+                if offset.is_zero() {
+                    point.surfaces.push(i);
+                } else {
+                    let mut point = point.clone();
+                    let env = mklight_core::model::Environment {
+                        temperature_c: g.thermal.map_or(CATALOG_T_C, |t| t.t_ref_c),
+                        ..Default::default()
+                    };
+                    let m = library.resolve(&surface.material, &env)?;
+                    [point.nd, point.vd, point.pgf] = coordinates(&m);
+                    point.kind = "offset".into();
+                    point.offset = *offset;
+                    point.surfaces = vec![i];
+                    glasses.push(point);
+                }
             }
             MaterialRef::Model { .. } => {
                 let m = library.resolve(&surface.material, &Default::default())?;
@@ -116,6 +137,7 @@ pub fn glass_map_job(
                     catalog: None,
                     name: format!("Model at surface {i}"),
                     kind: "model".into(),
+                    offset: MaterialOffset::default(),
                     nd,
                     vd,
                     pgf,
@@ -234,6 +256,7 @@ IT 0.55 0.81 10
         lib.add_catalog(std::sync::Arc::new(other));
         let mut sys = mklight_core::samples::cooke_triplet();
         sys.surfaces[1].material = MaterialRef::Catalog {
+            offset: Default::default(),
             catalog: Some("other".into()),
             name: "n-sk16".into(),
         };

@@ -139,7 +139,7 @@ impl Analysis for GlassSubstitution {
             "window": {"type": ["object", "null"], "title": "Window",
                 "properties": {"nd": {"type": "number", "minimum": 0}, "vd": {"type": "number", "minimum": 0}},
                 "required": ["nd", "vd"],
-                "description": "Half-widths {nd, vd} around the current glass. null: no window."},
+                "description": "Half-widths {nd, vd} around the current glass including its offsets. Replacements clear offsets. null: no window."},
             "nearest": {"type": ["integer", "null"], "minimum": 1, "title": "Nearest",
                 "description": "Keep the K glasses nearest the current one in (nd, Vd/100, delta PgF), squared-distance weights 1, 1, 100. null: no limit."},
             "include": {"items": {"type": "string"}, "title": "Include",
@@ -356,6 +356,20 @@ impl Analysis for GlassSubstitution {
         let mut seen = std::collections::BTreeSet::new();
         if !s.material_variables.iter().all(|m| seen.insert(m.surface)) {
             return Err(invalid("'material_variables': a surface is listed twice"));
+        }
+        if s.variables.iter().any(|v| {
+            matches!(
+                v.param,
+                ParamPath::ModelNd { .. }
+                    | ParamPath::ModelVd { .. }
+                    | ParamPath::ModelDpgf { .. }
+                    | ParamPath::MaterialDnD { .. }
+                    | ParamPath::MaterialDvD { .. }
+            ) && v.param.surface().is_some_and(|id| seen.contains(&id))
+        }) {
+            return Err(invalid(
+                "a substituted surface cannot also have continuous material variables",
+            ));
         }
         let candidates = s
             .material_variables

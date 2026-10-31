@@ -118,6 +118,7 @@ fn kitchen_sink() -> OpticalSystem {
         },
         4.0,
         MaterialRef::Catalog {
+            offset: Default::default(),
             catalog: Some("BUILTIN".into()),
             name: "N-BK7".into(),
         },

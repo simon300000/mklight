@@ -31,6 +31,85 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
   When a catalog sets the "ignore thermal expansion" flag, `cte` is `None` and
   the raw value is kept in the AGF metadata.
 
+## Catalogue index and Abbe offsets
+
+A catalogue material reference may carry melt or revision offsets. Each
+component defaults to zero; omitting `offset` or using `{}` is equivalent:
+
+```json
+{"type":"catalog","catalog":"BUILTIN","name":"N-BK7",
+ "offset":{"dn_d":0.002,"dv_d":-3.0}}
+```
+
+Let `n(λ)` be the **unmodified resolved index at the requested temperature
+and pressure**, after the thermal/air correction above. Evaluate the d, F
+and C anchors from the dispersion formula, rather than rounded catalogue
+metadata, and define
+
+```
+n_d = n(d)                       V_d = (n_d − 1)/(n(F) − n(C))
+n'_d = n_d + Δn_d                 V'_d = V_d + ΔV_d
+s = (n'_d − 1)/(n_d − 1) · V_d/(V_d + ΔV_d)
+n'(λ) = n'_d + s · (n(λ) − n_d)
+      = n(λ) + Δn_d + Δ_disp(λ)
+Δ_disp(λ) = (s − 1) · (n(λ) − n_d)
+```
+
+Thus `n'(d) = n_d + Δn_d` and `(n'(d)−1)/(n'(F)−n'(C)) = V_d+ΔV_d`
+exactly in real arithmetic (to floating-point rounding in the engine).
+Scaling the original smooth dispersion about d preserves its spectral
+shape and every **relative partial dispersion**, such as
+`P_g,F = (n_g−n_F)/(n_F−n_C)`. Its anomaly relative to a normal-glass line
+does change because that line depends on the new V_d. At another environment
+the anchors are recomputed, so Δn_d and ΔV_d remain the same requested
+changes to the nominal glass there. Catalogue thermo-optic coefficients
+and absorption data are retained; no independent melt thermal or absorption
+data are inferred.
+
+`MaterialOffset` is stored on `MaterialRef::Catalog`, not on the shared
+catalogue entry. Different elements may use the same glass with different
+offsets. Model glasses already specify their own `nd`, `vd`, `dpgf`; air,
+vacuum and constant-index media do not take glass offsets. Structural
+validation reports `non_finite` at `material.offset.dn_d` / `.dv_d` for
+non-finite components, and `invalid_material` for `|Δn_d| > 0.05` or
+`|ΔV_d| > 10` (CONVENTIONS §13). Resolution also rejects a nonzero offset
+unless the nominal and changed glass have `n_d > 1` and finite `V_d > 0`;
+an Abbe offset has no meaning for a non-dispersive catalogue medium.
+Zero offsets bypass the transformation, giving bit-identical indices and
+the same canonical JSON/snapshot hash as a reference without an offset.
+
+All tracing, including paraxial and arbitrary-wavelength evaluation, uses
+the resolved material. GPU packing receives the same offset indices in its
+existing high/low f32 index arrays, so no device layout or coefficient-pool
+change is required. Coating layers using catalogue references also resolve
+through this path.
+
+`glass_map` retains each nominal catalogue point and adds an `offset` design
+point per offset surface, computed at that glass's catalogue reference
+temperature and 1 atm. Only the shifted point carries that surface marker;
+its `offset` field identifies the changes. `glass_substitution` measures
+windows and distances from the **offset** position at catalogue reference
+conditions, then installs a nominal candidate with **both offsets cleared**,
+even when the chosen catalogue/name is unchanged. A melt offset belongs to
+the original element's material data and is not transferred to a replacement.
+Continuous material variables on a substituted surface are rejected.
+`glass_info` accepts the same optional `offset` object: computed indices,
+d/V/partial-dispersion values and the curve include it, while
+`catalog_nd`, `catalog_vd` and dispersion coefficients remain nominal.
+
+Tolerance operands use the ordinary parameter mechanism:
+`{"param":"material_dn_d","surface":1}` and
+`{"param":"material_dv_d","surface":1}` address the offsets, with additive
+perturbations around any saved melt offset. `model_nd` / `model_vd` continue
+to address explicit model glasses. Configuration overrides and pickups use
+the same offset paths; structural bounds apply to the resulting total.
+
+Project JSON preserves offsets independently of catalogue files. Loading,
+saving and reopening a project referencing either an AGF or JSON catalogue
+retains both the nominal catalogue dispersion and the reference offsets.
+AGF catalogue export continues to write the nominal glass coefficients;
+it does not bake prescription offsets into or modify shared glass data.
+
 ## Dispersion formulas
 
 `Dispersion` variants (`dispersion.rs`), with the standard AGF formula numbers.

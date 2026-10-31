@@ -8,6 +8,9 @@ pub mod coating;
 pub mod diffraction;
 pub mod dispersion;
 
+#[cfg(test)]
+mod offset_tests;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -21,6 +24,46 @@ use crate::model::{Environment, MaterialRef};
 /// another reference temperature (`ThermalCoefficients::t_ref_c`) uses that one.
 pub const CATALOG_T_C: f64 = 20.0;
 pub const CATALOG_P_ATM: f64 = 1.0;
+
+/// Changes to the d-line index and Abbe number of a catalogue reference.
+/// Dispersion is scaled about d; partial-dispersion ratios are preserved.
+/// See MATERIALS.md for the formula and environmental convention.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MaterialOffset {
+    pub dn_d: f64,
+    pub dv_d: f64,
+}
+
+impl MaterialOffset {
+    pub fn is_zero(&self) -> bool {
+        self.dn_d == 0.0 && self.dv_d == 0.0
+    }
+
+    pub(crate) fn invalid_fields(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &'static str, String)> {
+        [("dn_d", self.dn_d, 0.05), ("dv_d", self.dv_d, 10.0)]
+            .into_iter()
+            .filter_map(|(field, value, limit)| {
+                if !value.is_finite() {
+                    Some((
+                        field,
+                        "non_finite",
+                        format!("{value} is not a finite number"),
+                    ))
+                } else if value.abs() > limit {
+                    Some((
+                        field,
+                        "invalid_material",
+                        format!("absolute offset must be ≤ {limit}"),
+                    ))
+                } else {
+                    None
+                }
+            })
+    }
+}
 
 /// Wavelengths of the standard spectral lines (µm).
 pub mod lines {
@@ -140,10 +183,25 @@ pub struct MaterialLibrary {
 #[derive(Clone, Debug)]
 pub enum ResolvedMaterial {
     Air,
-    Vacuum { env: Environment },
-    Glass { glass: Arc<Glass>, env: Environment },
-    Model { cauchy: [f64; 3] },
-    Constant { n: f64 },
+    Vacuum {
+        env: Environment,
+    },
+    Glass {
+        glass: Arc<Glass>,
+        env: Environment,
+    },
+    Model {
+        cauchy: [f64; 3],
+    },
+    Constant {
+        n: f64,
+    },
+    Offset {
+        base: Box<ResolvedMaterial>,
+        nd: f64,
+        dn_d: f64,
+        scale: f64,
+    },
 }
 
 impl ResolvedMaterial {
@@ -155,6 +213,12 @@ impl ResolvedMaterial {
                 1.0 / air_index(lambda_um, env.temperature_c, env.pressure_atm)
             }
             ResolvedMaterial::Constant { n } => *n,
+            ResolvedMaterial::Offset {
+                base,
+                nd,
+                dn_d,
+                scale,
+            } => nd + dn_d + scale * (base.index(lambda_um) - nd),
             ResolvedMaterial::Model { cauchy } => {
                 cauchy[0] + cauchy[1] / (lambda_um * lambda_um) + cauchy[2] / lambda_um.powi(4)
             }
@@ -180,6 +244,7 @@ impl ResolvedMaterial {
     pub fn absorption_per_mm(&self, lambda_um: f64) -> f64 {
         match self {
             ResolvedMaterial::Glass { glass, .. } => glass.absorption_per_mm(lambda_um),
+            ResolvedMaterial::Offset { base, .. } => base.absorption_per_mm(lambda_um),
             _ => 0.0,
         }
     }
@@ -188,6 +253,7 @@ impl ResolvedMaterial {
     pub fn range_um(&self) -> Option<(f64, f64)> {
         match self {
             ResolvedMaterial::Glass { glass, .. } => Some((glass.min_um, glass.max_um)),
+            ResolvedMaterial::Offset { base, .. } => base.range_um(),
             _ => None,
         }
     }
@@ -291,10 +357,42 @@ impl MaterialLibrary {
             MaterialRef::Model { nd, vd, dpgf } => ResolvedMaterial::Model {
                 cauchy: model_glass_cauchy(*nd, *vd, *dpgf)?,
             },
-            MaterialRef::Catalog { catalog, name } => ResolvedMaterial::Glass {
-                glass: self.find_glass(catalog.as_deref(), name)?,
-                env: *env,
-            },
+            MaterialRef::Catalog {
+                catalog,
+                name,
+                offset,
+            } => {
+                if let Some((field, code, message)) = offset.invalid_fields().next() {
+                    return Err(MkError::InvalidModel(format!(
+                        "[{code}] offset.{field}: {message}"
+                    )));
+                }
+                let base = ResolvedMaterial::Glass {
+                    glass: self.find_glass(catalog.as_deref(), name)?,
+                    env: *env,
+                };
+                if offset.is_zero() {
+                    return Ok(base);
+                }
+                let nd = base.index(lines::D);
+                let vd = (nd - 1.0) / (base.index(lines::F) - base.index(lines::C));
+                if !(nd > 1.0
+                    && vd.is_finite()
+                    && vd > 0.0
+                    && nd + offset.dn_d > 1.0
+                    && vd + offset.dv_d > 0.0)
+                {
+                    return Err(MkError::InvalidModel(
+                        "[invalid_material] offset glass needs n_d > 1 and finite V_d > 0 before and after the offset".into(),
+                    ));
+                }
+                ResolvedMaterial::Offset {
+                    scale: (nd + offset.dn_d - 1.0) / (nd - 1.0) * vd / (vd + offset.dv_d),
+                    base: Box::new(base),
+                    nd,
+                    dn_d: offset.dn_d,
+                }
+            }
         })
     }
 }

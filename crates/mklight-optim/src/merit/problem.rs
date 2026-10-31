@@ -102,8 +102,8 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
         // Coefficient of r^(2i+4): sag contributions ~1 µm at r ≈ 10 mm.
         Asphere { index, .. } => (0.1 * a).max(1e-3 * 10f64.powi(-(2 * *index as i32 + 4))),
         ParaxialFocalLength { .. } => (0.1 * a).max(1.0),
-        ModelNd { .. } => 0.01,
-        ModelVd { .. } => 1.0,
+        ModelNd { .. } | MaterialDnD { .. } => 0.01,
+        ModelVd { .. } | MaterialDvD { .. } => 1.0,
         ModelDpgf { .. } => 1e-3,
         DecenterX { .. } | DecenterY { .. } => 0.01,
         TiltX { .. } | TiltY { .. } | TiltZ { .. } => 0.01,

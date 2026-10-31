@@ -9,7 +9,8 @@
 //! both use this metric.
 
 use mklight_core::materials::{
-    Glass, MaterialLibrary, agf::GlassStatus, builtin::BUILTIN_CATALOG_NAME, lines, normal_pgf,
+    Glass, MaterialLibrary, ResolvedMaterial, agf::GlassStatus, builtin::BUILTIN_CATALOG_NAME,
+    lines, normal_pgf,
 };
 use mklight_core::{MaterialRef, MkError, MkResult, OpticalSystem, SurfaceId};
 use serde::{Deserialize, Serialize};
@@ -87,8 +88,10 @@ pub struct GlassChoice {
 }
 
 impl GlassChoice {
+    /// A replacement names the nominal catalogue glass: melt offsets are cleared.
     pub fn material(&self) -> MaterialRef {
         MaterialRef::Catalog {
+            offset: Default::default(),
             catalog: Some(self.catalog.clone()),
             name: self.name.clone(),
         }
@@ -144,8 +147,16 @@ impl CandidateSet {
         let sf = &system.surfaces[index];
         let origin = match &sf.material {
             MaterialRef::Model { nd, vd, dpgf } => [*nd, *vd / 100.0, *dpgf],
-            MaterialRef::Catalog { catalog, name } => {
-                coordinates(library.find_glass(catalog.as_deref(), name)?.as_ref())
+            MaterialRef::Catalog { catalog, name, .. } => {
+                let glass = library.find_glass(catalog.as_deref(), name)?;
+                let env = mklight_core::model::Environment {
+                    temperature_c: glass
+                        .thermal
+                        .map_or(mklight_core::materials::CATALOG_T_C, |t| t.t_ref_c),
+                    ..Default::default()
+                };
+                let m = library.resolve(&sf.material, &env)?;
+                resolved_coordinates(&m)
             }
             _ => {
                 return Err(MkError::InvalidParam(
@@ -275,6 +286,12 @@ impl CandidateSet {
         }
         Ok(result)
     }
+}
+
+fn resolved_coordinates(m: &ResolvedMaterial) -> [f64; 3] {
+    let [d, f, c, g] = [lines::D, lines::F, lines::C, lines::G].map(|l| m.index(l));
+    let vd = (d - 1.0) / (f - c);
+    [d, vd / 100.0, (g - f) / (f - c) - normal_pgf(vd)]
 }
 
 /// Empty material-variable settings snap every model-glass optical gap.
