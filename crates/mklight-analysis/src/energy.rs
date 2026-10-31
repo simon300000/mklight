@@ -712,7 +712,7 @@ pub fn best_focus_job(
     Ok(r)
 }
 
-fn validate_best_focus(settings: &BestFocusSettings) -> MkResult<()> {
+pub(crate) fn validate_best_focus(settings: &BestFocusSettings) -> MkResult<()> {
     check_finite("tolerance", settings.tolerance)?;
     if !(settings.tolerance > 0.0) {
         return Err(MkError::InvalidModel("tolerance must be positive".into()));

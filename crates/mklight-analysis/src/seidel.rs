@@ -256,7 +256,7 @@ impl SeidelResult {
     }
 }
 
-fn select_short_long(
+pub(crate) fn select_short_long(
     sys: &ResolvedSystem,
     s: Option<usize>,
     l: Option<usize>,
@@ -626,7 +626,7 @@ pub struct LongitudinalResult {
 }
 
 /// Paraxial focus of a first-order sweep, from the image surface along local z.
-fn paraxial_focus(fo: &FirstOrder) -> f64 {
+pub(crate) fn paraxial_focus(fo: &FirstOrder) -> f64 {
     let m = &fo.marginal;
     let img = m.y.len() - 1;
     -m.y[img] / m.u[img - 1]

@@ -24,7 +24,7 @@ pub fn radial<E: FpEnv>(p: [Df32; 2], centre: [Df32; 2]) -> [Df32; 2] {
     let ay = if y.hi() < 0.0 { -y } else { y };
     [
         (x * x + y * y).sqrt().0,
-        if (ax - ay).hi() >= 0.0 { ax.0 } else { ay.0 },
+        if (ax - ay).hi() > 0.0 { ax.0 } else { ay.0 },
     ]
 }
 /// Reduce turns in double-float before transcendental evaluation. CPU and

@@ -5,9 +5,27 @@ use mklight_gpu::{
     ComputeBackend, Df32, PackOptions, PackedSystem, SystemHandle, aiming::*, resident::*,
 };
 use mklight_trace::{FieldPoint, SequentialTracer};
+mod chromatic;
 mod energy;
+pub use chromatic::{lateral_colour_job, longitudinal_aberration_job};
+mod curvature;
+pub use curvature::{field_curvature_job, grid_distortion_job};
+mod layout;
+mod maps;
+pub use layout::layout_job;
+mod illumination;
+pub use illumination::{IlluminationBuffers, illumination_rows, relative_illumination_job};
+mod records;
+pub use records::{
+    GridResult, footprint_job, footprint_overlay_job, ray_grid_job, semi_diameters_job,
+};
+mod fans;
+pub use fans::{opd_fan_job, ray_fan_job};
+pub use maps::field_map_job;
 mod spot;
-pub use energy::{encircled_energy_job, geometric_mtf_job};
+pub use energy::{
+    best_focus_job, encircled_energy_job, encircled_energy_with_uncertainty_job, geometric_mtf_job,
+};
 pub use spot::spot_diagram_job;
 
 /// A reusable system upload. Host work is immutable resolution/packing and
@@ -35,8 +53,9 @@ impl<'a> Geometry<'a> {
         let mut packed = Vec::new();
         // Include the primary in every chunk: real-image-height fields use it
         // even when a different wavelength was selected for the analysis.
-        for start in (0..tracer.num_wavelengths()).step_by(15) {
-            let mut w: Vec<_> = (start..(start + 15).min(tracer.num_wavelengths())).collect();
+        let chunk = mklight_gpu::layout::MAX_WAVELENGTHS - 1;
+        for start in (0..tracer.num_wavelengths()).step_by(chunk) {
+            let mut w: Vec<_> = (start..(start + chunk).min(tracer.num_wavelengths())).collect();
             if !w.contains(&primary) {
                 w.push(primary);
             }
@@ -113,7 +132,7 @@ impl<'a> Geometry<'a> {
                 .iter()
                 .enumerate()
                 .find_map(|(s, ws)| ws.iter().position(|&v| v == w).map(|k| (s, k)))
-                .unwrap();
+                .ok_or_else(|| mklight_core::MkError::InvalidParam(format!("no wavelength {w}")))?;
             FieldSpec::new(
                 self.tracer.system(),
                 self.tracer.paraxial(),
@@ -171,6 +190,17 @@ impl<'a> Geometry<'a> {
             mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
             _ => 1e-10,
         };
+        let field_key = match &p.buffers[metadata.0] {
+            PlanBuffer::Import(v) => {
+                let view = self.backend.read_view(v.clone())?;
+                Some(
+                    blake3::hash(bytemuck::cast_slice(view.words()))
+                        .to_hex()
+                        .to_string(),
+                )
+            }
+            _ => None,
+        };
         p.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
                 systems: SystemSet::Uploaded(self.systems),
@@ -178,7 +208,7 @@ impl<'a> Geometry<'a> {
                 sampling: Sampling::Explicit,
                 unresolved: None,
                 field_wavelength: p.view(metadata)?,
-                field_key: None,
+                field_key,
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
@@ -251,6 +281,17 @@ impl<'a> Geometry<'a> {
         segment: usize,
         weighted: bool,
     ) -> MkResult<BufferId> {
+        self.moments_at(p, points, mask, segment, weighted, 0)
+    }
+    fn moments_at(
+        &self,
+        p: &mut ResidentPlan,
+        points: BufferId,
+        mask: BufferId,
+        segment: usize,
+        weighted: bool,
+        plane: usize,
+    ) -> MkResult<BufferId> {
         use mklight_gpu::collectives::*;
         let n = p.desc(mask)?.len()?;
         let ns = n / segment;
@@ -264,6 +305,7 @@ impl<'a> Geometry<'a> {
         let status = p.scratch(BufferDesc::new(ElementType::U32, [ns]));
         let mut values = p.view(points)?;
         values.desc.shape = vec![2, n];
+        values.offset = plane * n;
         let weights = if weighted {
             let mut w = p.view(points)?;
             w.offset = 4 * n;
@@ -309,6 +351,7 @@ fn stamp(
     warnings: Vec<String>,
 ) -> RunInfo {
     run.analysis = name.into();
+    run.settings["geometry_version"] = serde_json::json!(mklight_gpu::geometry::VERSION);
     // Preserve the plan's backend/probe/build/stage evidence under execution.
     let execution = run.settings;
     run.settings = serde_json::to_value(s).unwrap();

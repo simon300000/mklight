@@ -17,6 +17,7 @@ struct Params {
     systems: u32,
     reserved: u32,
     defocus: [f32; 2],
+    origin: [[f32; 2]; 3],
 }
 fn bind(e: &crate::context::Encoder<'_>, i: usize, x: &Execution<'_>, v: &PlanView) {
     let (b, o) = x.buffer(v);
@@ -25,7 +26,8 @@ fn bind(e: &crate::context::Encoder<'_>, i: usize, x: &Execution<'_>, v: &PlanVi
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
     let mut stage = StageStats {
-        name: "geometry".into(),
+        operation: x.stats.stages.last().map_or(0, |s| s.operation + 1),
+        name: String::new(),
         ..Default::default()
     };
     let (name, n, mut p) = match r {
@@ -49,9 +51,78 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         ),
         Request::Characteristic(r) => (
             "mkl_geometry_characteristic",
+            r.mask.desc.len()? * r.frequency.desc.shape[0],
+            Params {
+                segment: r.segment_len as u32,
+                chiefs: r.frequency.desc.shape[0] as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::FocusTerms(r) => (
+            "mkl_geometry_focus_terms",
             r.mask.desc.len()?,
             Params {
                 segment: r.segment_len as u32,
+                centroid: u32::from(r.centroid),
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::Opd(r) => (
+            "mkl_geometry_opd",
+            r.hits.rays.count,
+            Params {
+                centroid: u32::from(r.axial),
+                chiefs: r.chiefs.rays.count as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::Illumination(r) => (
+            "mkl_geometry_illumination",
+            r.nodes.desc.shape[0],
+            Params {
+                chiefs: r.chiefs.rays.count as u32,
+                segment: r.slots as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::CloseFocus(r) => (
+            "mkl_geometry_close",
+            r.hits.rays.count / 5,
+            Params {
+                chiefs: r.hits.rays.count as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::Coddington(r) => (
+            "mkl_geometry_coddington",
+            r.hits.rays.count,
+            Params {
+                segment: r.slots as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::Records(r) => (
+            "mkl_geometry_records",
+            r.slots * r.hits.rays.count,
+            Params {
+                centroid: u32::from(r.terminal),
+                chiefs: r.hits.rays.count as u32,
+                origin: r.origin.map(|v| [v.hi, v.lo]),
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::FieldData(r) => (
+            "mkl_geometry_fields",
+            r.hits.rays.count / if r.kind == 1 { 5 } else { 1 },
+            Params {
+                chiefs: r.hits.rays.count as u32,
+                centroid: r.kind,
+                defocus: [r.pupil_step.hi, r.pupil_step.lo],
+                segment: if r.kind != 1 {
+                    (r.record_slots - 1) as u32
+                } else {
+                    0
+                },
                 ..Zeroable::zeroed()
             },
         ),
@@ -60,6 +131,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             r.radii.desc.len()? + 4,
             Params {
                 segment: r.keys.desc.len()? as u32,
+                defocus: [r.uncertainty.hi, r.uncertainty.lo],
                 chiefs: r.radii.desc.len()? as u32,
                 ..Zeroable::zeroed()
             },
@@ -70,8 +142,17 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             Zeroable::zeroed(),
         ),
     };
+    stage.name = name.into();
     p.stride = n as u32;
     let uploaded = match r {
+        Request::Illumination(r) => match r.systems {
+            SystemSet::Uploaded(h) => Some(x.system(h)?),
+            _ => None,
+        },
+        Request::Coddington(r) => match r.systems {
+            SystemSet::Uploaded(h) => Some(x.system(h)?),
+            _ => None,
+        },
         Request::SurfaceSamples(r) => match r.systems {
             SystemSet::Uploaded(h) => Some(x.system(h)?),
             _ => None,
@@ -87,13 +168,58 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             |u| u.set.headers.len() as u32,
         );
     }
+    if let Request::Coddington(r) = r {
+        p.systems = uploaded.as_ref().map_or_else(
+            || match r.systems {
+                SystemSet::Resident { count, .. } => count as u32,
+                _ => 0,
+            },
+            |u| u.set.headers.len() as u32,
+        );
+    }
+    if let Request::Illumination(r) = r {
+        p.systems = uploaded.as_ref().map_or_else(
+            || match r.systems {
+                SystemSet::Resident { count, .. } => count as u32,
+                _ => 0,
+            },
+            |u| u.set.headers.len() as u32,
+        );
+    }
+    if let Request::SurfaceSamples(r) = r {
+        if let Some(v) = &r.projection {
+            p.centroid = 1;
+            p.segment = v.frames.desc.shape[0] as u32;
+            p.origin = v.origin.map(|v| [v.hi, v.lo]);
+        }
+    }
+    if let Request::Characteristic(r) = r {
+        p.stride = r.mask.desc.len()? as u32;
+        p.systems = n as u32;
+    }
     let a = mklight_gpu::geometry::accesses(r);
     let mut out: Vec<_> = a.writes.iter().map(|&id| x.take_output(id)).collect();
     let pso = x.gpu.pipeline(&PipelineKey::plain(name))?;
-    for offset in (0..n).step_by(1 << 18) {
+    let adaptive = matches!(r, Request::Illumination(_) | Request::Coddington(_));
+    // A Newton launch must occupy the device before its timing can predict
+    // throughput. Tiny launches measure a few lanes on one core and never
+    // grow to useful occupancy under a fixed time target.
+    let minimum = if matches!(r, Request::Illumination(_)) {
+        4096
+    } else {
+        16
+    };
+    let maximum = if matches!(r, Request::Illumination(_)) {
+        1 << 18
+    } else {
+        4096
+    };
+    let mut next = if adaptive { minimum } else { 1 << 18 };
+    let mut offset = 0;
+    while offset < n {
         ctl.check()?;
         p.offset = offset as u32;
-        p.count = (n - offset).min(1 << 18) as u32;
+        p.count = (n - offset).min(next) as u32;
         let t = Instant::now();
         // SAFETY: submission validates every view/output extent. The kernels
         // bound device-provided chief and system/surface indices before use.
@@ -131,11 +257,172 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         }
                         e.set_buffer_mut(3, &mut out[0], 0);
                     }
+                    Request::FocusTerms(r) => {
+                        for (i, v) in [&r.points, &r.mask, &r.position_moments, &r.slope_moments]
+                            .iter()
+                            .enumerate()
+                        {
+                            bind(e, i, x, v);
+                        }
+                        e.set_buffer_mut(4, &mut out[0], 0);
+                    }
+                    Request::Opd(r) => {
+                        for (i, v) in [
+                            view(r.hits.rays.floats, ElementType::F32, [0]),
+                            view(r.hits.status, ElementType::U32, [0]),
+                            view(r.chiefs.rays.floats, ElementType::F32, [0]),
+                            view(r.chiefs.status, ElementType::U32, [0]),
+                            r.chief_index.clone(),
+                            r.reference.clone(),
+                        ]
+                        .iter()
+                        .enumerate()
+                        {
+                            bind(e, i, x, v);
+                        }
+                        e.set_buffer_mut(6, &mut out[0], 0);
+                        e.set_buffer_mut(8, &mut out[1], 0);
+                    }
+                    Request::Illumination(r) => {
+                        if let Some(u) = &uploaded {
+                            e.set_buffer(0, &u.headers, 0);
+                            e.set_buffer(1, &u.surfaces, 0);
+                            e.set_buffer(2, &u.coefficients, 0);
+                        } else if let SystemSet::Resident {
+                            headers,
+                            surfaces,
+                            coefficients,
+                            ..
+                        } = r.systems
+                        {
+                            for (i, (id, ty)) in [
+                                (headers, ElementType::U32),
+                                (surfaces, ElementType::U32),
+                                (coefficients, ElementType::DoubleFloat),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                bind(e, i, x, &view(id, ty, [0]));
+                            }
+                        }
+                        bind(
+                            e,
+                            3,
+                            x,
+                            &view(r.chiefs.records.unwrap(), ElementType::F32, [0]),
+                        );
+                        bind(
+                            e,
+                            4,
+                            x,
+                            &view(r.chiefs.record_low.unwrap(), ElementType::F32, [0]),
+                        );
+                        bind(e, 5, x, &r.fields);
+                        bind(e, 6, x, &r.nodes);
+                        e.set_buffer_mut(8, &mut out[0], 0);
+                        e.set_buffer_mut(9, &mut out[1], 0);
+                        e.set_buffer_mut(12, &mut out[2], 0);
+                        let un = mklight_gpu::aiming::kernel::newton_params();
+                        let clipped = mklight_gpu::layout::TraceParams {
+                            flags: mklight_gpu::consts::MKL_TRACE_CLIP,
+                            ..un
+                        };
+                        e.set_bytes(10, &[un, clipped]);
+                        bind(e, 11, x, &view(r.chiefs.status, ElementType::U32, [0]));
+                    }
+                    Request::CloseFocus(r) => {
+                        bind(e, 0, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
+                        bind(e, 1, x, &view(r.hits.status, ElementType::U32, [0]));
+                        e.set_buffer_mut(2, &mut out[0], 0);
+                        e.set_buffer_mut(3, &mut out[1], 0);
+                    }
+                    Request::Coddington(r) => {
+                        if let Some(u) = &uploaded {
+                            e.set_buffer(0, &u.headers, 0);
+                            e.set_buffer(1, &u.surfaces, 0);
+                            e.set_buffer(2, &u.coefficients, 0);
+                        } else if let SystemSet::Resident {
+                            headers,
+                            surfaces,
+                            coefficients,
+                            ..
+                        } = r.systems
+                        {
+                            for (i, (id, ty)) in [
+                                (headers, ElementType::U32),
+                                (surfaces, ElementType::U32),
+                                (coefficients, ElementType::DoubleFloat),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                bind(e, i, x, &view(id, ty, [0]));
+                            }
+                        }
+                        for (i, (id, ty)) in [
+                            (r.hits.records.unwrap(), ElementType::F32),
+                            (r.hits.record_low.unwrap(), ElementType::F32),
+                            (r.hits.rays.indices, ElementType::U32),
+                            (r.hits.status, ElementType::U32),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            bind(e, i + 3, x, &view(id, ty, [0]));
+                        }
+                        e.set_buffer_mut(8, &mut out[0], 0);
+                        e.set_buffer_mut(9, &mut out[1], 0);
+                    }
+                    Request::Records(r) => {
+                        bind(
+                            e,
+                            0,
+                            x,
+                            &view(r.hits.records.unwrap(), ElementType::F32, [0]),
+                        );
+                        bind(
+                            e,
+                            1,
+                            x,
+                            &view(r.hits.record_low.unwrap(), ElementType::F32, [0]),
+                        );
+                        bind(e, 2, x, &r.frames);
+                        bind(e, 8, x, &view(r.hits.status, ElementType::U32, [0]));
+                        for (i, b) in out[..4].iter_mut().enumerate() {
+                            e.set_buffer_mut(i + 3, b, 0);
+                        }
+                        e.set_buffer_mut(9, &mut out[4], 0);
+                        bind(e, 10, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
+                    }
+                    Request::FieldData(r) => {
+                        bind(e, 0, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
+                        bind(e, 1, x, &view(r.hits.status, ElementType::U32, [0]));
+                        if r.kind != 1 {
+                            bind(
+                                e,
+                                2,
+                                x,
+                                &view(r.hits.records.unwrap(), ElementType::F32, [0]),
+                            );
+                            bind(
+                                e,
+                                3,
+                                x,
+                                &view(r.hits.record_low.unwrap(), ElementType::F32, [0]),
+                            );
+                        } else {
+                            bind(e, 2, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
+                            bind(e, 3, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
+                        }
+                        e.set_buffer_mut(4, &mut out[0], 0);
+                    }
                     Request::Distribution(r) => {
                         for (i, v) in [&r.keys, &r.cumulative, &r.radii].iter().enumerate() {
                             bind(e, i, x, v);
                         }
                         e.set_buffer_mut(3, &mut out[0], 0);
+                        e.set_buffer_mut(4, &mut out[1], 0);
                     }
                     Request::SurfaceSamples(r) => {
                         if let Some(u) = &uploaded {
@@ -161,6 +448,14 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             }
                         }
                         bind(e, 3, x, &r.samples);
+                        if let Some(v) = &r.projection {
+                            bind(e, 6, x, &v.frames);
+                            bind(e, 8, x, &v.xy);
+                        } else {
+                            bind(e, 6, x, &r.samples);
+                            bind(e, 8, x, &r.samples);
+                        }
+
                         for (i, b) in out.iter_mut().enumerate() {
                             e.set_buffer_mut(i + 4, b, 0);
                         }
@@ -177,6 +472,14 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;
         ctl.report((offset + p.count as usize) as f64 / n as f64, "geometry");
+        offset += p.count as usize;
+        if adaptive {
+            let fit = (p.count as f64 * 0.010 / cs.gpu_seconds.max(1e-6)) as usize;
+            next = fit.clamp(minimum, (p.count as usize * 8).clamp(minimum, maximum));
+        }
+        if matches!(r, Request::Illumination(_)) {
+            x.stats.parameter_bytes += 2 * size_of::<mklight_gpu::layout::TraceParams>() as u64;
+        }
     }
     for (id, b) in a.writes.into_iter().zip(out) {
         x.put_output(id, b);

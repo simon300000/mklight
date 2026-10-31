@@ -498,3 +498,106 @@ the radial curve and its chief-ray angle, catalogue/model spectral-line
 coordinates and markers, and global footprints against the local ones on
 the surface sag. The engine's `tests/analyses.rs` runs all new entries
 through strict result and buffer schema validation.
+
+## 6. Resident geometric adapters (P5)
+
+`mklight_analysis::gpu` exposes backend-neutral job adapters. Engine routes
+and capability/automatic-selection policy are unchanged; P11 owns their
+qualification and integration. The reference functions above remain available.
+Every adapter takes a `JobContext` and returns the existing result type with
+its actual backend and precision in `RunInfo`. `Geometry` pins an immutable
+system upload for a sequence of resident plans. Its `spot_diagram_job` method
+reuses uploaded systems, chief seeds and aim tables across repeated jobs;
+the free function includes that preparation in each call.
+
+| Adapter | Resident computation |
+|---|---|
+| `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | P1 generation/aiming and tracing; chief-relative double-float positions/slopes and reference-sphere OPD; P3 two-pass spot moments; optional requested points |
+| `encircled_energy_job` | Double-float radii/square half-widths; P3 stable distance/ID sort and inclusive weighted scan; device binary-search curve/quantile queries with a bin-uncertainty bound |
+| `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and P3 fixed reductions; frequency tiles bound scratch storage |
+| `best_focus_job` | Trace once; centred position/slope products form the quadratic bracket; every Brent trial reprojects and reduces the resident rays with two-pass moments |
+| `field_map_job`, `relative_illumination_job`, `illumination_rows` | Aiming-off pupil probes; real-aimed CRA against the image sag normal; the nested image-point RI solve and implicit direction Jacobian of §2.4, followed by P3 quadrature reductions |
+| `field_curvature_job`, `grid_distortion_job` | Resident chief/source tables, double-float Coddington pencils and independent close-ray pencils; host packs scalar first-order labels and distortion columns |
+| `longitudinal_aberration_job`, `lateral_colour_job` | Zonal chief crossings and chief-relative spectral offsets; small paraxial reference labels remain host work |
+| `semi_diameters_job`, `footprint_job`, `footprint_overlay_job`, `layout_job` | P1 all-surface records, device radii/extrema and global projection, sag/gradient samples and meshes; host assembles topology, hulls, labels and final result arrays |
+
+`semi_diameters_job` returns `(SemiDiameters, RunInfo)`, because the reference
+sizing record has no metadata field. `GridResult` contains selected fields,
+wavelengths, pupil coordinates and optional image hits in stable grid order.
+Footprint clouds keep passing records even when a ray later fails. Layout
+also retains terminal clipped/TIR points; invalid launches produce no ray
+polyline. CPU and resident layout providers share the same host topology,
+mechanical edge flats, domain filtering, surface flags and section slab test.
+Sag/vertex evaluation is tiled; global positions are computed in double-float
+relative to a display origin before final public f64 packing. The existing
+`LayoutScene::to_buffers` still supplies origin-relative f32 display buffers.
+Dense footprint overlays tile at at most 2²⁰ surface records, preserving
+field/wavelength/surface order while retaining requested public clouds. Extra
+plan statistics remain in RunInfo; final output storage scales with the
+requested cloud size. Through-focus spots retain one traced bundle and process focus planes in
+sequence, rather than allocating focus × ray scratch.
+
+The private `mklight_gpu::geometry` operation records are version 1, with
+numeric layouts in `include/mklight_geometry_types.h`. They consume P1
+`ResidentHits` and accept uploaded or P4 resident systems. `Coordinates`,
+`FocusTerms`, `Opd`, `Coddington`, `CloseFocus`, `Illumination`,
+`SurfaceSamples` and `Records` publish typed buffers for P6/P8 consumers;
+`Geometry::{coordinates,moments,coddington,image_source,illumination}` append
+these chains without an intermediate optical readback. `FieldData` kinds are
+0 (image x/y and incidence/x/y angles), 1 (stop x/y and pupil magnifications),
+and 2 (image x/y and launch-source x/y). Source coordinates are tangents at
+infinity and object x/y at finite conjugates. `FieldData::record_slots` is
+the logical record extent, including for a subview of a larger allocation.
+
+Coddington differentiates the shared Cartesian sag/phase gradient recurrence
+with a dual scalar, retaining mixed Hessians and the curved-base DOE
+connection term. The odd-cone vertex remains undefined. RI uses chord Newton
+with refresh for both the stop aim and the source-to-image solve. Failed
+image-point nodes retain a status and are counted in the result warnings;
+P3 compacts unresolved RI node indices, and the adapter evaluates only those
+nodes with the existing f64 image-point solver. `ri_polish` reports attempted,
+resolved and remaining failed nodes plus CPU time; successful device nodes
+are never retraced. `IlluminationBuffers` exposes provisional resident
+integrals, field data and the sparse unresolved list/count, so P6/P8 must
+handle that list before consuming a final map. EE also bounds the energy that can cross a
+requested bin within the geometry error budget. When that bound exceeds
+0.002, the complete reference EE result preserves its exact bins and automatic
+radius, records the attempted resident chain and counts the reference
+fallback; its actual result backend/precision are CPU f64. No requested bin
+is widened to hide classification error. A caller with an independently
+qualified, tighter full-grid position bound can pass it to
+`encircled_energy_with_uncertainty_job`; that bound must include its safety
+margin and is recorded in RunInfo. Singular distortion denominators use a
+small, explicitly counted f64 reference decision to preserve signed
+infinities. A cancellation discards the result and never starts a CPU
+replacement. First-order, chromatic paraxial reports and an isolated Seidel
+report remain the existing small host computations; this adapter does not
+supply a batched Seidel reduction.
+
+High-level `Geometry` metadata belongs to its nominal immutable snapshot.
+Changed candidates must use P4's updated first-order/field metadata through
+the numeric requests, rather than retaining nominal launch descriptors.
+
+Ray, field, quadrature and vertex inputs are written with `fill_buffer`; final buffers are borrowed with
+`read_view`. No staging ray/optical-intermediate upload/readback array is introduced.
+Immutable packed-system registration retains the existing validated upload
+API; its cold copied bytes are reported separately from the zero-copy resident
+plan counters. Result packing
+widens requested final values into the public result arrays. `RunInfo.settings`
+retains the resident execution evidence (build/probe, operation manifest,
+plan and stage statistics, seed), including additional plans for energy,
+focus, layout and RI tiles. `geometry_version` records the numeric recipe
+version inside that execution evidence. `adapter_fallbacks` records singular
+distortion reference decisions. These plan timings cover backend execution;
+end-to-end benchmark wall time also includes preparation and result packing.
+
+P5's owned harnesses are `tests/p5_geometry.rs` and the ignored
+`tests/p5_bench.rs` in `mklight-analysis`. They compare complete public arrays
+with f64 on all 16 samples; cover both shader origins, matched FTZ bits,
+analytic ideal-lens/disk answers, P4→P1→P5 chaining, concurrent jobs,
+cancellation and resource release. The benchmark compares unchanged f64,
+legacy trace-only Metal plus host statistics, and the resident chain at
+matched settings. Numerical maxima, hardware, raw runs, cold preparation,
+median/p95, copy/storage counters and any qualification gaps are retained
+in the task's `scratchpad/gpu/P5-evidence.md`. Performance routing must use
+those measurements, not a fixed ray-count assumption.
