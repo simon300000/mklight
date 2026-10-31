@@ -212,10 +212,29 @@ public enum SolveKind: Codable, Sendable, Hashable {
 extension OpticalSystem {
     /// Parameters controlled by solves (exclude them from optimisation; the
     /// editor marks them).
-    public var solvedParams: Set<ParamPath> { Set(solves.map(\.target)) }
+    public var solvedParams: Set<ParamPath> { Set(solves.map { canonical($0.target) }) }
 
-    /// The solve controlling `path`, if any.
-    public func solve(for path: ParamPath) -> Solve? { solves.first { $0.target == path } }
+    /// The solve controlling `path` (by any path naming the same
+    /// parameter), if any.
+    public func solve(for path: ParamPath) -> Solve? {
+        let p = canonical(path)
+        return solves.first { canonical($0.target) == p }
+    }
+
+    /// Whether a solve sets `path`. `optimize` applies solves first and
+    /// refuses such a parameter as a variable.
+    public func isSolved(_ path: ParamPath) -> Bool { solve(for: path) != nil }
+
+    /// One path per parameter: on a toroid or biconic the `curvature` path
+    /// is the y section's curvature, so `shape_param curvature_y` there
+    /// becomes `curvature`. Every other path is its own.
+    public func canonical(_ path: ParamPath) -> ParamPath {
+        guard case .shapeParam(let id, .curvatureY) = path, let i = surfaceIndex(of: id) else { return path }
+        switch surfaces[i].shape {
+        case .toroid, .biconic: return .curvature(surface: id)
+        default: return path
+        }
+    }
 
     /// Structural checks of the engine's solve validation that need no
     /// optics: every target and source exists, no parameter has two solves,

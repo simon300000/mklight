@@ -385,6 +385,20 @@ struct SeidelView: View {
         }
     }
 
+    /// The terms with subscripts, wrapped in narrow panes.
+    private func legend(_ terms: [String]) -> some View {
+        FlowLayout(spacing: Space.m, lineSpacing: 2) {
+            ForEach(Array(terms.enumerated()), id: \.offset) { k, term in
+                HStack(spacing: 4) {
+                    Circle().fill(Palette.fieldColor(k + (chromatic ? 5 : 0))).frame(width: 7, height: 7)
+                    Subscripted.text(term).font(.caption).foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Subscripted.spoken(term))
+            }
+        }
+    }
+
     private var bars: [Bar] {
         let terms = chromatic ? Self.colour : Self.terms
         var out: [Bar] = []
@@ -410,6 +424,9 @@ struct SeidelView: View {
                     petzval
                 }
             }
+            // Swift Charts draws legend labels as plain strings: this legend
+            // sets S_I … S_V and C_L, C_T with real subscripts.
+            legend(terms)
             Chart(bars) { b in
                 BarMark(x: .value("Surface", b.surface), y: .value("Coefficient (mm)", b.value))
                     .position(by: .value("Term", b.term))
@@ -417,7 +434,7 @@ struct SeidelView: View {
                     .cornerRadius(2)
             }
             .chartForegroundStyleScale(domain: terms, range: terms.indices.map { Palette.fieldColor($0 + (chromatic ? 5 : 0)) })
-            .chartLegend(position: .top, alignment: .leading)
+            .chartLegend(.hidden)
             .chartYAxisLabel("mm")
             .chartXAxisLabel("Surface", alignment: .center)
             .accessibilityLabel("Seidel coefficients per surface and their sum")

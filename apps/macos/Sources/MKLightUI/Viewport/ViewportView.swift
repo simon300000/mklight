@@ -59,7 +59,7 @@ final class ViewportInput {
         var c = ViewportMath.fit(r.camera, mode: r.mode, points: points, size: size)
         // A first fit of a section that would be a thin sliver turns on a
         // vertical stretch (shown on the scale bar; off in the menu).
-        if initial && r.mode != .orbit3D && c.stretch == 1 {
+        if initial && r.mode != .orbit3D && c.stretch == 1 && !c.stretchChosen {
             let h = ViewportMath.extent(c, mode: r.mode, points: points).height * c.pointsPerMM
             let s = ViewportCamera.automaticStretch(height: h, viewHeight: Double(size.height))
             if s != 1 {

@@ -269,6 +269,58 @@ import Testing
         #expect(s["optics"]?["pupil"]?["grid"]?.int == 96 && s["optics"]?["pupil"]?["amplitude"]?.string == "radiometric")
         #expect(ImageSimulationSettings.extentTitle(1) == "full field" && ImageSimulationSettings.extentTitle(0.1) == "centre 10 %")
     }
+
+    /// Image simulation panes saved with the engine's defaults (before the
+    /// starting settings existed) take the starting settings and wait for
+    /// Update; panes the user changed keep their settings.
+    @Test func oldImageSimulationPanesMigrate() async throws {
+        let defaults: JSONValue = .object(["size": .array([.integer(64), .integer(64)])])
+        #expect(ImageSimulationSettings.isEngineDefault([:], defaults: defaults))
+        #expect(ImageSimulationSettings.isEngineDefault(["size": .array([.integer(64), .integer(64)])], defaults: defaults))
+        #expect(!ImageSimulationSettings.isEngineDefault(["size": .array([.integer(512), .integer(512)])], defaults: defaults))
+        let old = AnalysisPane(id: "old", analysis: "image_simulation", settings: [:], autoUpdate: true)
+        let mine = AnalysisPane(id: "mine", analysis: "image_simulation", settings: ["size": .array([.integer(128), .integer(128)])], autoUpdate: true)
+        let w = Workspace(engine: MockEngine(simulatedLatency: .zero), panes: [old, mine])
+        await w.loadEngineMetadata()
+        #expect(old.settings == w.startingSettings("image_simulation") && !old.autoUpdate)
+        #expect(mine.settings["size"] == .array([.integer(128), .integer(128)]) && mine.autoUpdate)
+    }
+
+    // MARK: Leftovers of the review round
+
+    /// The section stretch is saved in the project's `views`; a stretch
+    /// chosen there (even ×1) is kept instead of the automatic one.
+    @Test func stretchIsSavedInTheViews() throws {
+        let w = Workspace(engine: MockEngine(simulatedLatency: .zero))
+        let window = WindowState()
+        #expect(WorkspaceLayout(workspace: w, window: window).stretch == nil, "never chosen: the first fit decides")
+        window.camera.stretch = 10
+        let layout = WorkspaceLayout(workspace: w, window: window)
+        let back = WorkspaceLayout(views: layout.views)
+        #expect(back.stretch == 10 && back == layout)
+        let restored = WindowState()
+        back.apply(to: restored)
+        #expect(restored.camera.stretch == 10 && restored.camera.stretchChosen)
+        // Turned off by hand: saved as ×1 and kept.
+        restored.camera.stretch = 1
+        let off = WorkspaceLayout(views: WorkspaceLayout(workspace: w, window: restored).views)
+        #expect(off.stretch == 1)
+        let again = WindowState()
+        off.apply(to: again)
+        #expect(again.camera.stretch == 1 && again.camera.stretchChosen)
+    }
+
+    /// Seidel terms and other `_` labels are set with real subscripts.
+    @Test func subscriptedLabels() {
+        typealias P = Subscripted.Piece
+        #expect(Subscripted.pieces("S_III astigmatism") == [P(text: "S", isSubscript: false), P(text: "III", isSubscript: true), P(text: " astigmatism", isSubscript: false)])
+        #expect(Subscripted.pieces("Σ S_I") == [P(text: "Σ S", isSubscript: false), P(text: "I", isSubscript: true)])
+        #expect(Subscripted.pieces("C_L axial").filter(\.isSubscript).map(\.text) == ["L"])
+        #expect(Subscripted.pieces("EFL") == [P(text: "EFL", isSubscript: false)])
+        #expect(Subscripted.pieces("_x") == [P(text: "_x", isSubscript: false)], "a leading underscore is text")
+        #expect(Subscripted.spoken("Σ S_II") == "Σ S II")
+        #expect(SeidelView.terms.map(\.1).allSatisfy { Subscripted.pieces($0).contains(where: \.isSubscript) })
+    }
 }
 
 extension Result {

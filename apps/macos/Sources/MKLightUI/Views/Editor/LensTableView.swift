@@ -33,8 +33,9 @@ struct LensTableView: View {
     private var rows: [LensRow] {
         LensRow.rows(
             for: system, autoSemiDiameters: EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output)),
-            variables: Set(design.variables.map(\.param)),
-            bounds: Dictionary(design.variables.map { ($0.param, $0.isPinned ? .pinned : $0.isBounded ? .bounded : .free) }, uniquingKeysWith: { a, _ in a }))
+            variables: Set(design.variables.map { system.canonical($0.param) }),
+            bounds: Dictionary(
+                design.variables.map { (system.canonical($0.param), $0.isPinned ? .pinned : $0.isBounded ? .bounded : .free) }, uniquingKeysWith: { a, _ in a }))
     }
 
     var body: some View {
@@ -190,7 +191,10 @@ struct LensTableView: View {
             Menu("Variables") {
                 ForEach([LensColumn.radius, .radiusX, .thickness, .conic, .conicX], id: \.self) { c in
                     if let p = c.param(for: system.surfaces[i]), p.resolves(in: system) {
+                        let refusal = design.isVariable(p) ? nil : design.variableRefusal(p)
                         Toggle(variableTitle(c, system.surfaces[i]), isOn: Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) }))
+                            .disabled(refusal != nil)
+                            .help(refusal ?? "")
                     }
                 }
             }
@@ -389,7 +393,16 @@ struct MarkerBadge: View {
                     .help("Solve: \(s.title)")
                     .accessibilityLabel("controlled by a \(s.title) solve")
             }
-            if marker.isVariable {
+            if marker.isVariable && marker.solve != nil {
+                // A solve sets it: the optimizer leaves the variable out.
+                Text("V")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(.orange)
+                    .frame(width: 13, height: 13)
+                    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(.orange.opacity(0.6), lineWidth: 1))
+                    .help("Variable on a solved value: the optimizer leaves it out. Remove the variable or the solve.")
+                    .accessibilityLabel("variable left out: a solve sets it")
+            } else if marker.isVariable {
                 Text("V")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .foregroundStyle(marker.bounds == .pinned ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))

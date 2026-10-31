@@ -300,7 +300,7 @@ public enum SurfaceTypes {
                 ParamSection(
                     title: "Y Profile",
                     params: [
-                        radius("curvature_y", "Radius y", path: { .shapeParam(surface: $0, parameter: .curvatureY) }),
+                        radius("curvature_y", "Radius y", path: { .curvature(surface: $0) }),
                         ShapeParam(
                             key: "conic_y", title: "Conic y", unit: "", help: "Conic constant of the y profile.",
                             path: { .shapeParam(surface: $0, parameter: .conicY) }),
@@ -328,7 +328,7 @@ public enum SurfaceTypes {
                 ParamSection(
                     title: "Y Section",
                     params: [
-                        radius("curvature_y", "Radius y", path: { .shapeParam(surface: $0, parameter: .curvatureY) }),
+                        radius("curvature_y", "Radius y", path: { .curvature(surface: $0) }),
                         ShapeParam(
                             key: "conic_y", title: "Conic y", unit: "", help: "Conic constant in y.",
                             path: { .shapeParam(surface: $0, parameter: .conicY) }),

@@ -188,7 +188,7 @@ struct OptimizePanel: View {
         .onChange(of: design.merit) { _, _ in session.load(design) }
         .task(id: evaluationKey) {
             session.load(design)
-            if case .setup = session.state { session.scheduleEvaluation(in: workspace, variables: design.variables) }
+            if case .setup = session.state { session.scheduleEvaluation(in: workspace, variables: design.variables, system: design.system) }
         }
     }
 
@@ -238,7 +238,7 @@ struct OptimizePanel: View {
                         Text("Mark values with V in the lens data or the inspector to choose them; each gets sensible bounds you can edit here.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    if let why = session.variableProblem(design.variables) {
+                    if let why = session.variableProblem(design.variables, system: design.system) {
                         Label(why, systemImage: "pin.fill").font(.caption).foregroundStyle(.orange)
                     }
                 }
@@ -378,7 +378,7 @@ struct OptimizePanel: View {
                 session.start(in: workspace, variables: design.variables)
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(blocked || session.variableProblem(design.variables) != nil)
+            .disabled(blocked || session.variableProblem(design.variables, system: design.system) != nil)
         case .running(let p):
             GlassProgress(progress: p, detail: session.trace.last.map { "Iteration \($0.iteration)" } ?? "", namespace: glass)
             GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }

@@ -141,8 +141,14 @@ struct MeritReadout: View {
 
     private var helpText: String {
         guard let e = session.evaluation else { return "The merit at the current design, before optimising." }
-        var s = "Merit \(Fmt.short(e.merit)) at the current design (CPU f64 reference)."
+        let on = e.reportedOn.hasPrefix("cpu") || e.reportedOn.isEmpty ? "CPU f64 reference" : e.reportedOn
+        var s = "Merit \(Fmt.short(e.merit)) at the current design (\(on))."
         if e.violation.isFinite && e.violation > 1e-9 { s += " Constraint violation \(Fmt.short(e.violation))." }
+        switch e.status {
+        case .ok: break
+        case .degraded(let n): s += " \(n) residual\(n == 1 ? "" : "s") carry penalty values (failed rays or operands)."
+        case .failed: s += " The evaluation failed: no meaningful merit."
+        }
         return s
     }
 }
@@ -353,7 +359,7 @@ struct OperandTable: View {
             } else {
                 List(selection: $selection) {
                     ForEach(Array(operands.enumerated()), id: \.element.id) { k, op in
-                        OperandRow(index: k, operand: op, evaluation: session.evaluation?.row(k), issues: issues(op))
+                        OperandRow(index: k, operand: op, evaluation: session.evaluation?.row(k, kind: op.type), issues: issues(op))
                             .tag(op.id)
                             .contextMenu {
                                 Button("Duplicate") { duplicate([op.id]) }
@@ -371,7 +377,7 @@ struct OperandTable: View {
                 .accessibilityLabel("Merit operands")
             }
             if selection.count == 1, let id = selection.first, let i = operands.firstIndex(where: { $0.id == id }) {
-                OperandDetail(index: i, operand: operands[i], system: design.system, evaluation: session.evaluation?.row(i)) { name, change in
+                OperandDetail(index: i, operand: operands[i], system: design.system, evaluation: session.evaluation?.row(i, kind: operands[i].type)) { name, change in
                     update(id, name, change)
                 }
                 .id(id)
@@ -937,7 +943,6 @@ struct VariableBoundsRow: View {
         let other = BoundsFormat.counterpart(lower: variable.lower, upper: variable.upper, shownAs: curvatureUnit).map { "Bounds as \($0). " } ?? ""
         if asRadius { return other + RadiusBounds.help }
         if path.isCurvature { return other + "Bounds on the curvature c = 1/R (1/mm)." }
-        if path.isCurvature { return "Bounds on the curvature c = 1/R (1/mm)." }
         return unit.isEmpty ? "Bounds of a dimensionless parameter." : "Bounds in \(unit)."
     }
 
@@ -961,6 +966,9 @@ struct VariableBoundsRow: View {
     /// Why the variable cannot be optimised as it is.
     private var problem: String? {
         if let rejection { return rejection }
+        if let s = design.system.solve(for: path) {
+            return "Set by a solve (\(s.kind.kind.title)): left out of the run. Remove the variable or the solve."
+        }
         if case .semiDiameter = path, design.system.surfaceIndex(of: path.surface ?? SurfaceID(0)).map({ design.system.surfaces[$0].semiDiameter == .auto }) ?? false {
             return "The semi-diameter is automatic: set a value in the lens data first."
         }

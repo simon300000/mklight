@@ -184,7 +184,10 @@ private struct DesignWindowContent: View {
             insertAfter: { insert(at: (selectedIndex ?? system.imageIndex - 1) + 1) },
             deleteSurface: { deleteSelected() },
             makeStop: { if let id = window.selection { editor.makeStop(id) } },
-            toggleVariable: { if let path { editor.toggleVariable(path) } },
+            toggleVariable: {
+                guard let path else { return }
+                if !design.isVariable(path), let why = design.variableRefusal(path) { window.flash(why) } else { editor.toggleVariable(path) }
+            },
             canToggleVariable: path.map { $0.resolves(in: system) } ?? false,
             hasSurfaceSelection: selectedIndex.map { $0 > 0 && $0 < system.imageIndex } ?? false,
             loadCatalog: { importingCatalog = true },

@@ -375,6 +375,13 @@ enum ImageSimulationSettings {
         ]
     }
 
+    /// Whether `settings` are the engine's defaults, as projects saved
+    /// before the starting settings existed hold them: nothing set, or only
+    /// values equal to the defaults.
+    static func isEngineDefault(_ settings: [String: JSONValue], defaults: JSONValue?) -> Bool {
+        settings.allSatisfy { k, v in defaults?[k] == v }
+    }
+
     static func fieldExtent(_ pane: AnalysisPane) -> Double { pane.value("optics")?["field_extent"]?.doubleValue ?? 1 }
 
     /// The run's field extent: the corner node of its field mapping.
