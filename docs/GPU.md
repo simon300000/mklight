@@ -1281,6 +1281,26 @@ interpolated FFT curve. Cache stencils across focus planes. Huygens uses
 the same phase/sum primitives with distance tiles. No approximate transform
 replaces the existing finite sum or discards sampling warnings.
 
+**Transforms, measured (P2).** Apple M2 Pro, release, precompiled library,
+idle host, warm medians of 15 runs; CPU is the f64 `wave/fft.rs` reference
+(rustfft + rayon), Metal end-to-end includes submission and final readback.
+
+| Case | CPU f64 | Metal end-to-end | Metal device |
+|---|---:|---:|---:|
+| FFT 64² / 128² | 0.25 / 0.29 ms | 0.29 / 0.30 ms | 0.07 / 0.08 ms |
+| FFT 256² / 512² | 0.38 / 0.79 ms | 0.33 / 0.84 ms | 0.09 / 0.23 ms |
+| FFT 1024² / 2048² | 2.7 / 10.2 ms | 1.7 / 4.7 ms | 0.5 / 2.5 ms |
+| MFT 256→512 / 1024→2048 | 1.5 / 22 ms | 1.2 / 11 ms | 0.4 / 9.2 ms |
+| Skew MFT 256→512 / 1024→2048 | 5.3 / 83 ms | 2.1 / 30 ms | 1.2 / 27 ms |
+| Optical correlation 256² / 1024², 64 frequencies | 11 / 170 ms | 3.4 / 37 ms | 2.8 / 33 ms |
+
+**CPU-preferred:** standalone host-fed FFTs up to 128², where the fixed
+≈0.25 ms Metal command latency plus readback exceeds the whole CPU
+transform; 256²–512² are at parity end-to-end. Inside resident chains only
+the device time applies. Accuracy against f64: FFT relative L2 ≤1.6e-7 on all
+144 default sample pupils, ≤1.5e-5 for dense 1024→2048 MFTs; optical MTF
+≤1.9e-6.
+
 **Collectives and RNG.** Extend §3.4's fixed tree to segments keyed by
 candidate/field/λ/path/pixel. Chunk boundaries partition work, not the
 mathematical reduction order. Use hi+lo totals, two-pass chief-relative
