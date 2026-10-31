@@ -972,3 +972,310 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   optimisation that does not change the interface's semantics.
 * Command buffers within a job run one after another (commit, wait); with
   the default 2²⁰ items per buffer the gap is negligible next to kernel time.
+
+## 9. GPU-first architecture
+
+**Accepted direction; implementation plan, not implemented capability.**
+MKLight is high-performance software: every GPU-efficient computation runs
+on qualified Metal when a device is available. CPU f64 remains the accuracy
+reference, fallback and small-work control path; there is no CPU speed-work
+programme. Vulkan is deferred. Solvers use the backend-neutral
+`ComputeBackend`, typed buffers and explicitly specified kernels, with Metal
+encoding confined to `mklight-metal`. This section governs new work; §§1–8
+describe the existing implementation and its measured limitations.
+
+### 9.1 Inventory and placement
+
+Source baseline: `mklight-engine/src/{gpu.rs,analysis/gpu.rs}`, the analysis
+registry, `mklight-optim/src/{deriv.rs,tolerance.rs,merit/gpu_eval.rs}` and
+the solver modules named below. Layout v5 and the existing double-float
+trace, reduction and Philox specifications are reused.
+
+Today the five ray-grid analyses and the optimiser evaluator accelerate
+**tracing only**. Host f64 generates/aims the rays and reads/reduces the
+results. `AUTO_MIN_GPU_RAYS` is exactly 65,536. FD evaluations already batch
+their candidate traces; uncompensated tolerance trials do too. Glass
+substitution's local refinements already share `GpuTraceEvaluator`
+(`analysis/glass.rs`), although `GPU_ANALYSES` omits that registry name.
+Jacobian assembly, candidate setup and the outer searches remain on the
+host. Wave optics, field maps, layout, ghost irradiance, stray transport and
+polarisation have no complete Metal path. These distinctions matter when
+measuring the baseline: batching is being extended, not introduced anew.
+
+Sizes below describe workloads to qualify/benchmark, not new input limits.
+Let S = surfaces (qualification domain ≤30, track ≤1000 mm), F = fields,
+W = wavelengths (packed in chunks of ≤16), P = pupil rays, B = systems,
+N = pupil side, M = image side, V = variables, O = operands. Larger domains
+need separate qualification; unqualified work retains reported fallback.
+Precision tags map to §9.4:
+G = geometry (§7 position/direction/survival), OPL = double-float paths and
+OPD (§7), R = compensated statistics (§7 RMS/MTF), E = energy/radiometry,
+T = transforms, D = derivative/conditioning gates. E/T/D add qualification
+tests; they do not relax §7.
+
+| Computation / source | Work size | Placement and reason | Precision |
+|---|---|---|---|
+| Sequential and path traces, all supported sags, DOE phase/order, refraction/reflection, clipping (`trace`, `trace_kernel`) | FWP, typically 10²–10⁶ rays × S; optional S records/ray | GPU: independent rays with shared surface data | G + OPL; local frames, double-float geometry/phase |
+| Field/pupil mapping, real-image-height field solve, chief/pupil Newton aiming (`trace/tracer`, `pupil`) | FW chiefs + FWP solves, up to configured iteration cap | GPU: many independent small Newton solves; cached chief seeds | G; double-float residual/Jacobian/update; preserve requested aim tolerance |
+| Automatic semi-diameters, surface profiles/meshes, layout rays (`trace/semidia`, `analysis/layout`) | FW × rim samples × S; 10²–10⁶ vertices | GPU for traces, sag samples and extrema; host for small topology/labels | G; double-float world-to-local differences, f32 display coordinates relative to origin |
+| Spot, ray grid/fans, OPD fans, footprint/overlays, longitudinal aberration, lateral colour (`analysis/{spot,fans,illumination,seidel}`) | FWP or 10²–10⁴ fan points; footprint records P×S | GPU trace and reductions; host assembles result metadata/small hull topology | G + OPL + R; chief-relative two-pass moments |
+| Geometric EE/ensquared energy, geometric MTF, best focus (`analysis/energy`) | P order statistics; P×frequencies; P×focus trials | GPU stable sort/scan, complex sums and focus merits; scalar Brent decisions may stay host | R; fixed trees, stable radius/index tie order |
+| RI curve/map, CRA, pupil aberration, grid distortion, field curvature (`analysis/{illumination,field_maps,curvature}`) | 5×5 default maps; 12×48 RI nodes/field, about 15 traces/node; dense 33²–129² field sweeps | GPU: fields, quadrature and differential pencils are parallel; include nested image-point aiming | G + D + E; double-float differences, sag Hessians and Coddington matrices |
+| First order, Seidel, chromatic focal shift, model/surface operands, solves/pickups (`trace/{paraxial,solves}`, `analysis/{system_data,seidel}`) | O(SW) for one design; BSW in searches | Host for a single small report/dependency walk; GPU across candidate/wavelength batches and dense sag extrema | f64 control/reference; double-float batched recurrences, G/D end-to-end |
+| Pupil lattice, rim, OPD, resampling, phase/amplitude, wavefront statistics and Zernike fit (`wave/{traced,interp,pupil,zernike}`) | default 65² trace lattice; N=64–1024 automatic, 16 subpoints/cell; ≈37 fit columns | GPU trace, boundary probes, triangulated-grid evaluation and tall-skinny QR; host may chain a small rim topology | OPL + G + R + D; no normal equations for ill-conditioned fits |
+| FFT PSF, chirp/affine MFT, OTF/MTF direct/FFT, field/through-focus MTF (`wave/{fft,psf,mtf}`) | N² pupils; M≤2048 automatic; F×W×focus/frequency batches | GPU: regular transforms, stencils and spectral sums, with resident pupils/stencils | T + OPL; phase formed/reduced in double-float, complex f32 arrays |
+| Huygens PSF/MTF (`wave/psf`) | image points × covered pupil samples; existing cap 2×10¹⁰ terms, M≤1024 | GPU tiled direct sums; bounded tiles preserve cancellation | OPL + T + E; rationalised distance differences, compensated complex sums |
+| Diffraction EE, line spread, Strehl, detector response (`wave/{energy,detector}`) | M² pixels, radii/frequencies and Bessel kernels | GPU shared radial-bin/stencil reductions; isolated scalar analytic reference curves may stay host | R + T + E; normalisation, Parseval and known answers |
+| Image simulation (`wave/image_simulation`) | field-grid PSFs; height×width×C samples, C∈{1,3}; haloed convolution tiles | GPU pattern generation, inverse distortion, resampling, RI, FFT convolution, pixel integration and noise; file decode/encode host | G + T + E; preserve linear light, low-y row zero, halo flux |
+| Coating TMM/tabulated response, absorption, transmission, PRT/Jones/Stokes pupil maps (`core/materials/coating`, `trace/{radiometry,polarization}`) | FWP×S; angle/wavelength/stack tables; 4 complex Jones entries/ray | GPU for rays and table batches; host for a tiny isolated lookup and reference table checks | E + G + OPL for phase; complex f32, double-float where conditioning needs it |
+| Ghost enumeration/paraxial ranking (`ghost/{path,paraxial}`) | two-bounce O(S²); filtered higher orders ≤8 reflections | Small branch-and-bound enumeration stays host; large path/wavelength ranking batches GPU | exact integer signatures/order; double-float first-order terms |
+| Ghost irradiance/focus (`ghost/{sequence,irradiance}`) | path×FW×pupil², refinement ≤4 levels; measured 0.3–4 M distinct probes on Double Gauss | GPU path probes, stable dedup/compaction and segmented maps; host controls refinement levels | G + E; separate s/p products, virtual-segment decisions and exact coverage |
+| Stray sources, BVH queries/intersections, BSDF/TIS, branch transport, tallies/errors (`stray/*`) | 20 k engine-default rays, benchmark 400 k; tens–hundreds of primitives, split path trees | GPU wavefront queues and deterministic tallies; small scene topology build host; GPU batched bounds/build when large | G + E + exact Philox; double-float close hits/ledger/moments |
+| Merit and constraints, FD Jacobians, LM/trust-region, global populations (`optim/*`) | B×O residuals, B=V or 2V for FD; e.g. V=8–100, O=10²–10⁴ | GPU candidate preparation, solver operands, residuals, differences, J products; batched/large QR solves GPU. Small serial trust-region/acceptance decisions stay host | underlying G/OPL/R/T/E plus D; residuals/differences retained as hi+lo |
+| Tolerance sensitivity/Monte Carlo and compensators (`optim/tolerance`) | 2×tolerances; 10²–10⁵ trials; nested compensator FD batches | GPU perturbations, trial evaluation, batched compensator work and statistics; host decisions per active trial | D + exact trial RNG; fixed trial order and per-trial outcomes |
+| Glass substitution (`optim/{glass,discrete,mixed}`, engine glass job) | catalogue filters, 10²–10⁴ choices; combinations × local optimisation | Host names/filters/search control; GPU numeric catalogue sweeps and all candidate/refinement batches | D; final f64 reference scores/ranking retained |
+| Material dispersion/thermal offsets, spectra, sensor tables, glass_info/glass_map (`core/materials`, `analysis/{spectrum,glass_map}`) | few SW values or 10³–10⁶ catalogue/λ/candidate values | Host small immutable resolution; GPU large numeric sweeps, reused tables and candidate updates | double-float indices/dispersion; require resulting G/OPL and E gates |
+| RNG stream, random pupils, optimiser/tolerance/image/stray draws | 1–10⁷ counter blocks | GPU where consumed; tiny diagnostic stream may stay host | exact u32 and specified f32 conversion, CONVENTIONS §6 |
+| Validation, catalogue/project parsing, snapshots/hashes, schemas, result packing, session/jobs/FFI | small irregular graphs/strings, bulk final copies | Host: authoritative boundary validation, I/O and control, no efficient optical GPU work | exact model/metadata; f64 reference values preserved |
+
+Memory planning is part of dispatch: v5 surfaces cost `176 + 624S` bytes
+plus coefficient pools per wavelength chunk; a resident ray with hi+lo
+position/direction/OPL already needs 56 bytes before weights/status. One
+million rays is therefore tens of MiB; all-surface records cost about
+`40P(S+1)` bytes even before extra residuals. A complex f32 2048² plane is
+32 MiB; chirp padding needs length ≥N+M−1 and multiple scratch planes.
+Batch/chunk by the device working-set limit, retaining logical indices and
+reduction trees. Do not materialise every candidate×ray×surface or every
+Huygens pair. Explicit larger grids are tiled or reported unsupported, not
+silently resized.
+
+### 9.2 Shared primitives and interfaces
+
+These are extensions of the existing trait, not a second backend API.
+P0 freezes the following typed contracts before the parallel wave. Names
+below are proposed Rust types; the C layout umbrella remains the authority.
+
+| Contract | Inputs → outputs | Owner |
+|---|---|---|
+| `ResidentPlan`, `BufferHandle`, `BufferView`, `PlanStats` | validated typed operations/views → pending resident outputs, explicit final readback and per-stage stats | P0 |
+| `GenerateAim`, `TraceResident`, `ProjectPupil` | system set + logical field/λ/pupil indices → hi+lo rays/status; trace → hi+lo hits/OPL; reference descriptor → OPD, pupil coordinates | P1 |
+| `TransformPlan`, `CorrelationStencil` | complex grids, dimensions/strides, sign/scale, affine map → complex grids or frequency values | P2 |
+| `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit` | indexed typed resident channels → moments, ordered records, segment outputs or fit factors | P3 |
+| `SystemBatchPlan`, `CandidateMap` | immutable topology/material tables + ordered parameter vectors/configurations → resident system set, derived first-order data, candidate status/index map | P4 |
+
+**Residency.** A backend owns its queue, pipelines, system cache and buffer
+pool for its lifetime. Views carry type, shape, stride, owner and generation;
+validate at upload/plan submission, not in every kernel. Leases pin buffers
+until all dependent command buffers finish, including cancelled jobs;
+mutable scratch is never shared between live jobs. Bounded caches use the
+derived snapshot, library, configuration/spectrum, layout and kernel build
+as keys; optical caches also include all sampling/radiometry settings.
+Warm calls reuse allocations, packed systems, aim seeds, transform plans,
+twiddles/chirps, pupil grids and stencils. Upload only changed candidate
+parameters; read back requested final buffers/scalars, never intermediate
+trace arrays just to upload them again. Keep current host `Job` calls as
+adapters. Solvers hold no Metal objects. A small ordered operation list
+suffices; this is not a general graph compiler.
+
+**Aiming and OPD.** Generate all current field kinds, finite/infinite and
+telecentric launches, vignetting and pupil patterns on device. Cache
+per-system/field/λ chief aims and Jacobians. Newton–Broyden uses double-float
+stop hits, finite differences, 2×2 solves and updates, the reference's
+continuation schedule and configured cap/tolerance (normally 1e-10 relative
+to stop radius). A rounded f32 stop hit cannot drive that solve. Compact
+only unresolved rays for optional CPU f64 polish; scatter them back at their
+original indices and record counts/reasons. A failed aim remains a failed
+aim; never silently accept an inaccurate ray or polish the whole grid by
+default.
+
+Keep hi+lo point/direction/OPL through pupil construction. Use the chief's
+unclipped trace and the signed exit-pupil distance for the reference sphere;
+support centroid references via the shared reduction, both sphere sheets,
+telecentric limit, finite conjugates and negative propagation. Evaluate
+`OPL_chief − OPL_ray` and the rationalised sphere correction of WAVE §3 in
+double-float before conversion to waves. Reference and ray states must use
+the same point convention: if exporting rounded geometry, apply the §12
+OPL correction once; internal unrounded geometry needs no such correction.
+Lattice/rim probes retain stable IDs; `ProjectPupil` accepts a reference
+descriptor so the wave consumer can build its centroid without another
+trace. P1 exposes shared trace/normal hooks; consumers do not fork
+`trace.metal`.
+
+**Multiple systems.** Reuse `upload_systems` and ray `system_index`, extending
+them to resident generated rays and parameter batches. A host-validated
+parameter plan maps stable surface IDs/ParamPaths to numeric slots, with
+bounds, configurations, pickup/solve dependencies and material choices.
+Across B candidates, GPU kernels apply parameters, recompute indices,
+frames, first-order/solve data and aperture/aim seeds; never reuse nominal
+values invalidated by a perturbation. Discrete topology/unsupported solves
+use the reference preparation path with a recorded reason. Batch by
+compatible topology, path program, clipping and last surface, preserving
+candidate/configuration/field/λ/pupil order. Source snapshots remain
+immutable; transient candidate IDs refer to the base hash plus parameter
+vectors, and published candidate systems receive their normal content hash.
+
+**Transforms.** Implement portable complex f32 1-D/2-D FFT kernels (radices
+2/3/5/7 and Bluestein for other lengths), tiled transpose, spectral products,
+chirp-z/separable MFT and symmetric affine MFT. Specify signs, normalisation,
+padding and bin order exactly as `wave/fft.rs`. Form large quadratic chirp
+and defocus phases in double-float, reduce modulo a turn before f32 sin/cos.
+Direct autocorrelation keeps the angular-spectrum sensor mapping, coverage
+and interpolation of `wave/mtf.rs`; it is not interchangeable with an
+interpolated FFT curve. Cache stencils across focus planes. Huygens uses
+the same phase/sum primitives with distance tiles. No approximate transform
+replaces the existing finite sum or discards sampling warnings.
+
+**Collectives and RNG.** Extend §3.4's fixed tree to segments keyed by
+candidate/field/λ/path/pixel. Chunk boundaries partition work, not the
+mathematical reduction order. Use hi+lo totals, two-pass chief-relative
+moments, stable radix sort/scan for EE and detector bins; never float
+atomics. Zernike/large least-squares work uses deterministic QR/TSQR with
+rank/condition reporting, not normal equations that square conditioning.
+Reuse Philox4x32-10 and the core stream namespaces. Logical item IDs, not
+thread/queue positions, address draws; preserve the reference draw order
+for tolerance trials and a stray source ray's depth-first split tree.
+Moving to a different RNG addressing scheme would require an explicit
+version and reference implementation, not an unnoticed backend difference.
+
+**Radiometry and non-sequential reuse.** One device coating service provides
+both powers and complex flux-normalised amplitudes, keyed by wavelength,
+incidence side/angle and material/stack. Batch TMM/table construction on GPU;
+qualify interpolation including grazing/critical angles against f64 and
+refine or use direct evaluation where needed. Preserve each solver's model:
+scalar primary/stray products of averages, ghost separate s/p products,
+and polarised PRT are different. Ghost transport adds virtual-segment,
+sensor and DOE-visit rules to shared geometry. Stray uses portable analytic
+intersections and a compute BVH on every Metal device; hardware RT is an
+optional qualified spatial-search implementation, not a requirement or a
+replacement of curved optics by triangles. Stable nearest-hit tie rules,
+shared apertures and exact coverage signatures preserve the solver partition.
+
+### 9.3 `auto`, determinism and jobs
+
+Change the engine's initial default from `CpuReference` to `Auto` when
+integration qualifies the paths; explicit CPU remains available. `auto`
+selects Metal for every supported, qualified operation chain. Remove the
+fixed 65,536-ray and old candidate-count crossovers after measuring the
+resident chains. CPU cost exceptions require reproducible end-to-end
+measurements for the operation/shape/device/build/residency state, with a
+clear win beyond measurement noise. Measure cold and warm separately;
+include qualification, setup, upload, dispatch, reductions and final result
+packing. Cache that decision with its evidence/version; do not time-race
+backends on every request. Unknown cost defaults to qualified Metal.
+Small serial control/I/O is inherently host work (§9.1), not an excuse to
+keep a large solver CPU-only. The goal of residency/fusion is to shrink
+the measured CPU-exception set; no CPU optimisation package is planned.
+
+An explicit Metal request bypasses cost exceptions, never accuracy gates.
+Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
+Unsupported work, failed qualification, resource or device failure produces
+a reported reference fallback; cancellation never triggers fallback. A
+partial solver fallback names stages/candidates, counts polished rays and
+records why. `RunInfo` and the backend report retain requested/used backend,
+precision, seed, base/derived hashes, device, build/probe, qualification,
+effective algorithm/plan versions, cost decision and stage timings. Do not
+label a GPU computation f64 just because its public buffer widens to f64.
+
+For fixed inputs, seed, device, kernel build and plan, outputs are bitwise
+repeatable; scheduling, worker count, chunk size and unrelated jobs cannot
+change them. Cross-device/build agreement for transforms/transcendentals is
+within the numerical gates, not a promise of bit identity. Version and record
+plan choices that affect operation order. Stable compaction preserves IDs;
+adaptive wave/rim/refinement and candidate decisions use fixed tie rules.
+Time-limited or manually stopped searches are reproducible only for the
+recorded completed prefix; elapsed-time stopping is not deterministic.
+
+Every long API takes `JobContext`. Use bounded command buffers/tiles with
+cancellation checks before encoding and after completion. Target ≤50 ms
+between checks on qualification hardware, measure worst cases including
+Huygens and split trees, and reduce tile size if needed. In-flight Metal
+commands finish before leases recycle; cancelled jobs discard outputs.
+Monotone progress belongs to the outer job: allocate stage subranges,
+aggregate completed logical tiles, reserve a tail for adaptive work, and
+emit 1 only after successful final assembly. Optimiser **Stop** still returns
+its best completed state; **Cancel** discards the result. Neither changes
+the existing solver semantics to a partial success by accident.
+
+### 9.4 Accuracy and qualification
+
+Qualification is per operation chain, system/domain and settings, not just
+the presence of a trace kernel. Cache keys additionally include radiometry,
+field/λ domain, shape/size family, precision/plan version and tolerances.
+Keep the §5.2 one-third safety margin for sampled optical error maxima;
+full-grid regression must meet the whole budget. Cancellation leaves no
+qualification verdict. A baseline-system pass does not qualify arbitrary
+perturbations: candidate plans need a tested parameter envelope and guard
+checks, sampled f64 sentinels within batches, and reference qualification
+when leaving that envelope. Without an established envelope, qualify the
+candidate itself. Recheck accepted/final designs and f64-score reported
+optimisation/glass finalists. Record unqualified candidate fallbacks.
+
+| Quantity / kernel | Acceptance against independent CPU f64 |
+|---|---|
+| G: geometry and statuses | §7: positions ≤2e-5 mm on each surface, directions ≤2e-6; identical survival except the 1e-5 mm aperture band. Count band cases and all failure classes; never compare only common survivors. Existing TIR-band diagnostics remain explicit, not a blanket status exemption. |
+| OPL: aiming/OPD/phase | Honour the requested aiming residual; OPD ≤5e-3 waves. Internal OPL/sphere target ≈1e-7 mm on 100+ mm paths (≈1.8e-4 waves at 0.55 µm); this is tighter than the external λ/200 budget (2.75e-6 mm there). Double-float must cover geometry and reference construction as well as the path sum. |
+| R: centroids/RMS/MTF | Position budget for centroids; differences of two positions ≤4e-5 mm. RMS ≤max(0.005×reference,2e-5 mm); MTF ≤2e-3 absolute, including direct/FFT/through-focus and detector multiplication. |
+| T: FFT/chirp/affine transforms | Proposed gates: relative L2 complex error ≤1e-4 and max absolute error ≤1e-4×reference L1 input norm (with declared transform scaling); inverse round-trip/Parseval ≤1e-4 relative. Small direct-DFT, skew-MFT and non-power-of-two known answers supplement large f64 comparisons. Final optical MTF still meets §7. |
+| E: PSF/EE/LSF/image | Proposed gates on matched sampling: integrated energy/flux ≤1e-3 relative, normalised PSF/image L1 error ≤2e-3, EE/ensquared fractions and Strehl ≤2e-3 absolute, LSF integral ≤1e-3. Centroids use G; r50/r80/r90 compare the energy curve and ≤one radial sample interval, tightening with sampling. Include Airy, annulus, tilt, defocus, Parseval and convolution conservation. |
+| E: coating, polarisation and ghosts | Retain GHOST §6 weight limit 1e-5 relative; proposed zero-safe comparison `abs(error) ≤1e-5×abs(reference)+1e-10×incident_weight`. Per-interface R+T+A residual ≤1e-6, integrated ledger ≤1e-5 of emitted power. Jones/PRT relative norm ≤1e-4 (absolute 1e-7 of incident field near zero), D/intensity ≤1e-4 absolute, retardance ≤1e-3 rad where conditioned; otherwise reported f64 fallback, preserving undefined-retarder rules. Ghost map L1/flux ≤1e-3 of incident-normalised reference flux; count pixel-edge migrations and also test fixed-hit binning separately. |
+| E: stray Monte Carlo | Identical raw counters and controlled-path tests first; same-sample f64 transport uses the same uniform mapping. Ledger ≤1e-5 of emitted power. Ensemble class flux/maps/moments agree within 5 combined standard errors plus deterministic quadrature error measured by refinement; test rare signatures and split-child correlations, not only total flux. Sampling error cannot excuse a biased ledger or wrong path ownership. |
+| D: RI/pupil maps/curvature | Proposed gates: RI ≤1e-3 absolute, CRA ≤2e-4 degrees, pupil magnification ≤1e-3 relative or 1e-5 absolute; curvature focus ≤1e-3×(1+abs(reference_mm)) mm, cross-checked by close rays. Double-float pencil/Jacobian arithmetic; singular/undefined values match the reference. |
+| D: material/first-order batches | Proposed index error ≤1e-10 absolute (1e-7 mm over a 1000 mm path); first-order lengths ≤1e-6 relative or 2e-5 mm absolute. Check thermal/dispersion offsets and solved constraints against f64, and resulting rays/OPD against §7; ill-conditioned afocal/solve cases preserve undefined values or fall back. |
+| D: fits, FD and optimisation | Proposed reconstructed Zernike OPD/RMS ≤5e-3 waves; coefficients and rank checked against f64 QR with condition-aware residual tests. Scaled FD column error ≤1e-3 vs f64 Richardson (column norm floor 1e-8 in scaled units), plus analytic thick-lens derivative and step sweeps. Keep evaluator-specific FD steps until remeasured. f64 final merit within 1% or 1e-8 absolute of device merit and same feasibility classification outside the recorded constraint uncertainty band; ambiguity gets a reference decision. |
+
+New E/T/D numbers are release gates to demonstrate, not measured claims.
+Compare identical settings/sampling/methods: the CPU's direct-versus-FFT MTF
+discrepancy is not GPU error. Keep wave sampling, truncation, conditioning
+and root-search warnings; increasing precision does not fix undersampling.
+For insufficient margin use double-float, a better-conditioned formulation
+or the reported reference fallback, never loosen the budget to pass.
+
+**Emulation policy.** Require matching-environment bit identity for integer
+RNG, layouts/status/IDs, existing trace/df/fmath, new aiming/system-update
+algebra, fixed collectives/sorts and specified coating/transport algebra.
+Preserve the existing probe-qualified division/sqrt exception. FFT,
+chirp/MFT, autocorrelation, QR and library transcendental-heavy BSDF/complex
+operations need tolerance-based CPU-f32 and independent f64 checks; they
+need not reproduce a different CPU FFT's bits. Their index/mask/branch
+contracts remain exact and repeated Metal runs must match. Test post-
+transcendental branches against the reference, particularly critical angles,
+Newton convergence and roulette thresholds. Hardware RT is qualified for
+hit accuracy and tie rules against the compute caster, not vendor traversal
+bits. A CPU-f32 match alone is never accuracy qualification.
+
+### 9.5 Delivery and measurement
+
+The task briefs and ownership ledger live in the task's `scratchpad/gpu/`
+directory (`PLAN.md`). P0 is a serial interface gate; the **first parallel
+wave is P1–P4**. Shared registration/layout files have one owner; subsequent
+packages use separately registered module/header/shader files. Final engine
+integration is deliberately last, so incomplete kernels never advertise
+production capability.
+
+| Package | Goal | Dependencies | Difficulty |
+|---|---|---|---|
+| P0 | Resident backend, buffer lifetimes, frozen interfaces and module seams | — | difficult |
+| P1 | Device generation, aiming, reusable trace state and reference-sphere OPD | P0 | hardest |
+| P2 | FFT, chirp/affine MFT and autocorrelation primitives | P0 | hardest |
+| P3 | Deterministic segmented reductions, sort/scan and QR | P0 | difficult |
+| P4 | Resident multi-system parameter/material/first-order preparation | P0 | hardest |
+| P5 | Geometric analyses, field maps, sizing and layout | P1, P3, P4 | difficult |
+| P7 | Shared coating/radiometry and polarisation | P1, P3, P4 | hardest |
+| P6 | Complete wave/image-simulation pipelines | P1, P2, P3, P5, P7 | hardest |
+| P9 | Ghost path probes, refinement and irradiance | P1, P3, P7 | difficult |
+| P10 | Stray transport, BVH, deterministic tallies | P1, P3, P7 | hardest |
+| P8 | Full merit/FD, optimisation, tolerance and glass batches | P4, P5, P6, P7, P9, P10 | hardest |
+| P11 | Engine routes, qualification, auto policy and release evidence | P5, P6, P7, P8, P9, P10 | difficult |
+
+Every package supplies f64/appropriate emulation tests, actual-Metal tests,
+determinism/cancellation/progress checks and before/after measurements on
+`mklight_core::samples::all()` (16 current samples). Emulation-only or skipped
+device tests cannot qualify a release. Run `source ~/.cargo/env` before
+Cargo, `cargo test --workspace`, and preserve the reference tests. Benchmark
+the unchanged CPU reference, old Metal path where present and new Metal
+path on identical inputs; retain raw settings, seeds, hardware/build,
+fallback counts, peak memory, cold/warm wall and device timings, and
+median/p95 after warm-up. Use the existing Metal trace, wave interactive,
+ghost/stray bench, optimiser gpu_bench and engine glass benchmarks as
+anchors. Include tiny/default/dense loads and end-to-end jobs; kernel-only
+speedups cannot justify `auto`. No production code is changed by this plan.
