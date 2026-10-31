@@ -2,6 +2,9 @@ import Foundation
 import MKLightEngine
 import MKLightModel
 import Observation
+#if DEBUG
+import os
+#endif
 
 /// One point of a running optimisation (from the job's stage text
 /// `"<algorithm> <iteration>: merit <best>"`).
@@ -51,9 +54,13 @@ public final class OptimizeSession {
     public private(set) var evaluation: MeritEvaluation?
     public private(set) var evaluating = false
     public private(set) var evaluationError: String?
+    /// How long the last evaluation took, submission to result.
+    public private(set) var lastEvaluationTime: Duration?
     @ObservationIgnored private var evaluationJob: AnalysisJob?
     @ObservationIgnored private var evaluationTask: Task<Void, Never>?
     @ObservationIgnored private var evaluatedKey: JSONValue?
+    /// The request scheduled or running, until it answers.
+    @ObservationIgnored private var pendingKey: JSONValue?
 
     public private(set) var state = JobState.setup
     public private(set) var trace: [MeritPoint] = []
@@ -133,8 +140,19 @@ public final class OptimizeSession {
         guard !isRunning, let snap = workspace.designSnapshot ?? workspace.snapshot else { return }
         let s = evaluationSettings(variables: variables, system: system ?? snap.system)
         let key = JSONValue.object(["settings": .object(s), "snapshot": .string(snap.hash.hex)])
-        guard key != evaluatedKey else { return }
+        guard key != pendingKey else { return }
         evaluationTask?.cancel()
+        guard key != evaluatedKey else {
+            // Back to what is shown (an edit undone): drop the newer request.
+            evaluationJob?.cancel()
+            evaluationJob = nil
+            pendingKey = nil
+            evaluating = false
+            return
+        }
+        pendingKey = key
+        // The shown merit is out of date from now on (the readout dims).
+        evaluating = true
         evaluationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
             guard let self, !Task.isCancelled else { return }
@@ -147,21 +165,38 @@ public final class OptimizeSession {
         evaluating = true
         var submitted: AnalysisJob?
         do {
+            let started = ContinuousClock.now
             let job = try workspace.submitJob("merit_evaluation", settings: s, key: "merit-evaluation")
+            #if DEBUG
+            Logger(subsystem: "com.mklight.app", category: "merit").notice("merit_evaluation submitted (\(s["merit"] == nil ? "default" : "custom", privacy: .public))")
+            #endif
             submitted = job
             evaluationJob = job
             let out = try await job.result()
             guard evaluationJob === job else { return }
             evaluation = MeritEvaluation(json: out.json)
+            lastEvaluationTime = ContinuousClock.now - started
+            #if DEBUG
+            Logger(subsystem: "com.mklight.app", category: "merit").notice(
+                "merit_evaluation \(String(describing: self.lastEvaluationTime ?? .zero), privacy: .public): merit \(self.evaluation?.merit ?? .nan, privacy: .public)")
+            #endif
             evaluatedKey = key
+            pendingKey = nil
             evaluationError = evaluation == nil ? "The engine returned no merit." : nil
             evaluating = false
         } catch EngineError.cancelled {
             // A newer evaluation replaced it.
+            #if DEBUG
+            Logger(subsystem: "com.mklight.app", category: "merit").notice("merit_evaluation cancelled")
+            #endif
         } catch {
+            #if DEBUG
+            Logger(subsystem: "com.mklight.app", category: "merit").notice("merit_evaluation failed: \(error.localizedDescription, privacy: .public)")
+            #endif
             if let submitted, evaluationJob !== submitted { return }
             evaluationError = error.localizedDescription
             evaluatedKey = key
+            pendingKey = nil
             evaluating = false
         }
     }
@@ -208,6 +243,7 @@ public final class OptimizeSession {
     public func start(in workspace: Workspace, variables: [DesignVariable]) {
         evaluationTask?.cancel()
         evaluationJob?.cancel()
+        pendingKey = nil
         evaluating = false
         let s = settings(variables: variables, system: workspace.designSnapshot?.system ?? workspace.snapshot?.system)
         do {

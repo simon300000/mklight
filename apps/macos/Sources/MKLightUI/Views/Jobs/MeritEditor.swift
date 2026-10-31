@@ -577,16 +577,20 @@ enum OperandSummary {
             case .number, .integer: parts.append("\(p.title.lowercased()) \(v.doubleValue.map(Fmt.short) ?? v.displayText)")
             }
         }
+        // Field and wavelength first: generated operands differ in them,
+        // and a long row truncates its end.
+        var selectors: [String] = []
         switch op.field["field"]?.string {
-        case "index": parts.append("F\((op.field["index"]?.int ?? 0) + 1)")
-        case "normalized": parts.append("H(\(Fmt.short(op.field["hx"]?.nf ?? 0)), \(Fmt.short(op.field["hy"]?.nf ?? 0)))")
+        case "index": selectors.append("F\((op.field["index"]?.int ?? 0) + 1)")
+        case "normalized": selectors.append("H(\(Fmt.short(op.field["hx"]?.nf ?? 0)), \(Fmt.short(op.field["hy"]?.nf ?? 0)))")
         default: break
         }
         switch op.wavelength["wavelength"]?.string {
-        case "all": parts.append("poly")
-        case "index": parts.append("λ\((op.wavelength["index"]?.int ?? 0) + 1)")
+        case "all": selectors.append("poly")
+        case "index": selectors.append("λ\((op.wavelength["index"]?.int ?? 0) + 1)")
         default: break
         }
+        parts = selectors + parts
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }
@@ -896,7 +900,7 @@ struct VariableBoundsRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .help(problem ?? help)
+            .help(solvedHelp ?? problem ?? help)
             OptionalNumberField(
                 title: "Minimum of \(label)" + (unit.isEmpty ? "" : " in \(unit)"), value: shown.min, prompt: "−∞", width: Self.fieldWidth,
                 format: BoundsFormat.compact, allowsInfinite: asRadius
@@ -963,12 +967,17 @@ struct VariableBoundsRow: View {
         }
     }
 
+    /// A variable on a parameter a solve sets, in full.
+    private var solvedHelp: String? {
+        design.system.solve(for: path).map {
+            "A \($0.kind.kind.title.lowercased()) solve sets this value, so the optimizer leaves the variable out of the run. Remove the variable, or remove the solve to vary it."
+        }
+    }
+
     /// Why the variable cannot be optimised as it is.
     private var problem: String? {
         if let rejection { return rejection }
-        if let s = design.system.solve(for: path) {
-            return "Set by a solve (\(s.kind.kind.title)): left out of the run. Remove the variable or the solve."
-        }
+        if design.system.isSolved(path) { return "Set by a solve: not varied" }
         if case .semiDiameter = path, design.system.surfaceIndex(of: path.surface ?? SurfaceID(0)).map({ design.system.surfaces[$0].semiDiameter == .auto }) ?? false {
             return "The semi-diameter is automatic: set a value in the lens data first."
         }

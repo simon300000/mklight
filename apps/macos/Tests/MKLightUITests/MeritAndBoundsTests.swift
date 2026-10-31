@@ -139,6 +139,38 @@ import Testing
         #expect(abs(custom.merit - e.merit) <= 1e-12 * max(e.merit, 1))
     }
 
+    /// An edit undone while its evaluation runs drops that evaluation: the
+    /// readout keeps the merit of the merit function shown.
+    @Test func undoneEditDoesNotLeaveAStaleMerit() async throws {
+        let system = SampleSystems.cookeTriplet()
+        let doc = DesignDocument(system: system)
+        let w = Workspace(engine: MockEngine(simulatedLatency: .seconds(2)))
+        w.debounce = .zero
+        await w.loadEngineMetadata()
+        w.update(system: system, immediately: true)
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(20)
+        while w.snapshot?.system != system && clock.now < end { try await Task.sleep(for: .milliseconds(5)) }
+        let session = OptimizeSession()
+        session.editMerit(doc, "Custom", undoManager: nil) { m in
+            m.mode = .custom
+            m.operands = [MeritOperand(kind: OperandCatalog.descriptor("rms_spot")!.newKind)]
+            m.holdEFL = false
+        }
+        session.scheduleEvaluation(in: w, variables: [], system: system, delay: .zero)
+        while session.evaluation == nil && clock.now < end { try await Task.sleep(for: .milliseconds(5)) }
+        let shown = try #require(session.evaluation).merit
+        session.editMerit(doc, "Weight", undoManager: nil) { $0.operands[0].weight = 4 }
+        session.scheduleEvaluation(in: w, variables: [], system: system, delay: .zero)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(session.evaluating)
+        session.editMerit(doc, "Weight", undoManager: nil) { $0.operands[0].weight = 1 }
+        session.scheduleEvaluation(in: w, variables: [], system: system, delay: .zero)
+        #expect(!session.evaluating)
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(session.evaluation?.merit == shown, "the weight-4 result never shows")
+    }
+
     /// A parameter a solve sets cannot become a variable; a variable left
     /// on one is flagged, left out of the run, and blocks it when it is the
     /// only one. `curvature` and `shape_param curvature_y` name the same
