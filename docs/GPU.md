@@ -1303,16 +1303,18 @@ candidate/configuration/field/λ/pupil order. Source snapshots remain
 immutable; transient candidate IDs refer to the base hash plus parameter
 vectors, and published candidate systems receive their normal content hash.
 
-*Measured (P4, Apple M2 Pro, warm end-to-end medians, 16 samples plus rigid,
-20-wavelength thermal and material-choice fixtures).* Resident preparation
-including final readback costs about 0.4–2.6 ms up to B=64, almost all
-command submission and per-candidate latency; parallel CPU f64 reference
-preparation costs 0.04–0.08 ms at B=1, 0.24–0.41 ms at B=16 and 0.55–1.1 ms
-at B=64, so it was faster on every workload up to B=64. B=128 is break-even
-(Metal faster on 10 of 19). Metal was faster on 17 of 19 at B=256
-(0.9–2.4 ms against 1.6–3.6 ms) and on all at B=1024 (1.3–4.8 ms against
-5.8–13 ms). Batches of fewer than 128 candidates are therefore
-CPU-preferred until P11 repeats this on a quiet host. This is a cost
+*Measured (P4, quiet Apple M2 Pro after zero-copy, warm end-to-end medians, best of two
+runs, 16 samples plus rigid, 20-wavelength thermal and material-choice fixtures).*
+Resident preparation including final readback costs about 0.4–1.7 ms up to
+B=64, almost all command submission and per-candidate latency; parallel CPU
+f64 reference preparation costs 0.04–0.07 ms at B=1, 0.22–0.35 ms at B=16
+and 0.52–0.92 ms at B=64, so it was faster on every workload up to B=64
+(Metal 0.53–0.78×). Metal was faster on 17 of 19 at B=128 (0.7–1.8 ms
+against 0.9–1.6 ms; the rigid and 20-wavelength thermal fixtures trail
+at 0.98× and 0.90×), on all at B=256 (0.5–2.0 ms against 1.7–3.1 ms) and
+on all at B=1024 (1.2–3.5 ms against 6.1–12 ms). Batches of fewer than ≈100
+candidates (≈150 for the rigid and thermal fixtures) are therefore
+CPU-preferred; the earlier 128-candidate break-even moves down to ≈100. This is a cost
 exception only; an explicit Metal request still runs on Metal.
 
 **Transforms.** Implement portable complex f32 1-D/2-D FFT kernels (radices
@@ -1326,22 +1328,24 @@ interpolated FFT curve. Cache stencils across focus planes. Huygens uses
 the same phase/sum primitives with distance tiles. No approximate transform
 replaces the existing finite sum or discards sampling warnings.
 
-**Transforms, measured (P2).** Apple M2 Pro, release, precompiled library,
-idle host, warm medians of 15 runs; CPU is the f64 `wave/fft.rs` reference
-(rustfft + rayon), Metal end-to-end includes submission and final readback.
+**Transforms, measured (P2).** Quiet Apple M2 Pro after zero-copy, release,
+precompiled library, warm medians of 15 runs, best of two; CPU is the f64
+`wave/fft.rs` reference (rustfft + rayon), Metal end-to-end includes
+submission and a copying final readback.
 
 | Case | CPU f64 | Metal end-to-end | Metal device |
 |---|---:|---:|---:|
-| FFT 64² / 128² | 0.25 / 0.29 ms | 0.29 / 0.30 ms | 0.07 / 0.08 ms |
-| FFT 256² / 512² | 0.38 / 0.79 ms | 0.33 / 0.84 ms | 0.09 / 0.23 ms |
-| FFT 1024² / 2048² | 2.7 / 10.2 ms | 1.7 / 4.7 ms | 0.5 / 2.5 ms |
-| MFT 256→512 / 1024→2048 | 1.5 / 22 ms | 1.2 / 11 ms | 0.4 / 9.2 ms |
-| Skew MFT 256→512 / 1024→2048 | 5.3 / 83 ms | 2.1 / 30 ms | 1.2 / 27 ms |
-| Optical correlation 256² / 1024², 64 frequencies | 11 / 170 ms | 3.4 / 37 ms | 2.8 / 33 ms |
+| FFT 64² / 128² | 0.21 / 0.26 ms | 0.35 / 0.32 ms | 0.06 / 0.04 ms |
+| FFT 256² / 512² | 0.40 / 0.78 ms | 0.36 / 0.82 ms | 0.08 / 0.15 ms |
+| FFT 1024² / 2048² | 2.8 / 10.8 ms | 1.4 / 4.2 ms | 0.5 / 2.7 ms |
+| MFT 256→512 / 1024→2048 | 1.5 / 23 ms | 1.4 / 9.3 ms | 0.4 / 7.7 ms |
+| Skew MFT 256→512 / 1024→2048 | 5.5 / 86 ms | 2.1 / 28 ms | 1.0 / 25 ms |
+| Optical correlation 256² / 1024², 64 frequencies | 11 / 174 ms | 3.2 / 41 ms | 2.3 / 35 ms |
 
-**CPU-preferred:** standalone host-fed FFTs up to 128², where the fixed
-≈0.25 ms Metal command latency plus readback exceeds the whole CPU
-transform; 256²–512² are at parity end-to-end. Inside resident chains only
+**CPU-preferred:** standalone host-fed FFTs up to 128² (0.6–0.8×), where the
+fixed ≈0.3 ms Metal command latency plus readback exceeds the whole CPU
+transform; 256²–512² (1.1×, 0.95×) and the 256→512 MFT (1.1×) are at parity
+end-to-end; 1024² and larger are Metal-preferred (2.0× and up). Inside resident chains only
 the device time applies. Accuracy against f64: FFT relative L2 ≤1.6e-7 on all
 144 default sample pupils, ≤1.5e-5 for dense 1024→2048 MFTs; optical MTF
 ≤1.9e-6.
@@ -1367,29 +1371,43 @@ pivoted QR are bit-identical to the matching CPU-f32 specification, so
 chunking, command boundaries, workers and concurrency change no bit. QR is
 equilibrated pivoted MGS with two projections per step plus one classical
 reorthogonalisation pass of each pivot column; Q stays orthogonal to
-rounding on ill-conditioned Jacobians (columns are not capped). Apple M2 Pro,
-release, precompiled library, warm medians of 10; inputs resident, outputs
-read through `read_view` (no copies); CPU is the serial f64 host reference.
+rounding on ill-conditioned Jacobians (columns are not capped). Quiet Apple M2 Pro
+after zero-copy, release, precompiled library, warm medians of 10, best of two;
+inputs resident, outputs read through `read_view` (no copies); CPU is the
+serial f64 host reference.
 
 | Case | 1e3 | 1e4 | 1e5 | 1e6 |
 |---|---:|---:|---:|---:|
-| Spot moments, 9 segments: CPU / Metal ms | 0.009 / 0.33 | 0.094 / 0.37 | 0.94 / 0.59 | 9.5 / 1.4 |
-| Summary, 17-record segments | 0.001 / 0.29 | 0.012 / 0.36 | 0.12 / 0.93 | 1.2 / 3.0 |
-| Stable sort, f32 keys + IDs | 0.015 / 0.57 | 0.22 / 0.76 | 2.8 / 0.64 | 37 / 4.5 |
-| Inclusive f32 scan to double-float | 0.001 / 0.27 | 0.009 / 0.27 | 0.089 / 0.29 | 0.92 / 0.68 |
-| Compaction of [n,2] double-float | 0.001 / 0.28 | 0.010 / 0.28 | 0.10 / 0.37 | 1.0 / 1.1 |
+| Spot moments, 9 segments: CPU / Metal ms | 0.009 / 0.31 | 0.092 / 0.28 | 0.95 / 0.29 | 9.4 / 1.4 |
+| Summary, 17-record segments | 0.001 / 0.25 | 0.011 / 0.27 | 0.12 / 0.46 | 1.2 / 2.4 |
+| Stable sort, f32 keys + IDs | 0.015 / 0.51 | 0.23 / 0.47 | 2.8 / 0.87 | 33 / 3.6 |
+| Inclusive f32 scan to double-float | 0.001 / 0.28 | 0.009 / 0.23 | 0.088 / 0.33 | 0.91 / 0.66 |
+| Compaction of [n,2] double-float | 0.001 / 0.28 | 0.010 / 0.26 | 0.10 / 0.36 | 1.1 / 1.1 |
 
-QR (rows×cols×batch), CPU f64 Householder / Metal ms: 200×20×1 0.05 / 0.97;
-200×20×256 14 / 7.7; 2000×60×1 4.2 / 4.4; 4225×37×1 3.7 / 3.3;
-20000×120×1 177 / 62 (50 device); 65536×37×1 67 / 21. Coefficient error
-≤6.2e-15. Small Metal timings vary up to 1.8× between runs (clock ramp).
+QR (rows×cols×batch), CPU f64 Householder / Metal ms: 200×20×1 0.05 / 0.93;
+200×20×256 13 / 7.8; 2000×60×1 4.2 / 5.1; 4225×37×1 3.7 / 3.3;
+20000×120×1 175 / 48 (46 device); 65536×37×1 66 / 20. Coefficient error
+≤6.2e-15. Small Metal timings vary up to 1.35× between runs.
 
 **CPU-preferred (standalone, host-fed):** spot moments below ≈3e4 records,
-sorts below ≈3e4, scans below ≈5e5, compactions up to 1e6, summaries of very
-short segments up to 1e6 (extrema terms dominate), and single QR fits up to
-about 2000×60. A plan costs ≈0.22 ms to submit and complete, which dominates
+sorts below ≈2e4, scans below ≈5e5, compactions up to 1e6 (parity there),
+summaries of very short segments at every measured size (0.49× at 1e6;
+extrema terms dominate), and single QR fits up to about 2000×60 (parity at
+4225×37). A plan costs ≈0.25 ms to submit and complete, which dominates
 small work; inside a resident chain only device time applies. Batched and tall
 fits are Metal-preferred. These are cost exceptions only.
+
+**Aiming and chains, measured (P0/P1).** Quiet Apple M2 Pro after zero-copy,
+warm end-to-end medians, best of two; CPU is the f64 rayon reference (aim +
+trace + OPD for P1, trace + compensated sums for P0), Metal includes final
+readback. **CPU-preferred (standalone, host-fed):** chief-only and
+marginal-only aiming (≤36 rays, 0.10–0.21×), 64² pupil grids (3,096 rays:
+0.63–0.67× with real aiming, 0.41–0.52× with aim off), and the trace→reduce
+chain below ≈3e4 rays on systems of three or more elements (0.25–0.83× at
+1e4; ≈1.6e5 for a singlet). Interpolated crossovers are ≈6e3 rays with real
+aiming (256² = 51,040 rays 2.3–2.9×, 1024² 3.9–4.7×) and ≈2e4 with aim off
+(256² 1.2–1.3×, 1024² 2.2–2.5×); 1e6 trace→reduce is 1.4–2.4×. These are
+cost exceptions only.
 
 **Radiometry and non-sequential reuse.** One device coating service provides
 both powers and complex flux-normalised amplitudes, keyed by wavelength,
