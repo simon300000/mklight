@@ -388,7 +388,7 @@ impl UploadedSystem {
             program: p.clone(),
             imports,
             parameter_count: self.compiled.parameter_count(),
-            tile_candidates: 64,
+            tile_candidates: 1024,
         };
         let entry = serde_json::json!({"version":VERSION,"program":self.compiled.fingerprint,"configuration":self.compiled.configuration,"candidate_vectors_hash":candidate_identity,"count":count,"qualification":"required_per_candidate_or_tested_envelope","dirty_flags":DIRTY_ALL});
         let settings = plan
@@ -481,8 +481,8 @@ pub struct DispatchParams {
 
 pub fn validate(request: &Request, plan: &ResidentPlan) -> MkResult<()> {
     let Request::Prepare(r) = request;
-    if r.tile_candidates == 0 || r.tile_candidates > 64 {
-        return Err(bad("system preparation tile must be 1..=64"));
+    if r.tile_candidates == 0 || r.tile_candidates > 1024 {
+        return Err(bad("system preparation tile must be 1..=1024"));
     }
     if r.parameters.desc
         != BufferDesc::new(ElementType::DoubleFloat, [r.map.count, r.parameter_count])

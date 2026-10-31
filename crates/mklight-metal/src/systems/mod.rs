@@ -2,6 +2,7 @@
 use crate::context::PipelineKey;
 use mklight_core::MkResult;
 use mklight_gpu::{pending::JobControl, resident::StageStats, systems::Request};
+use objc2_metal::MTLComputePipelineState;
 use std::time::Instant;
 
 pub(crate) fn execute(
@@ -44,7 +45,7 @@ pub(crate) fn execute(
             let wall = Instant::now();
             // SAFETY: the private host compiler owns the immutable instruction and
             // patch leases. Submission verifies their identity and every output
-            // extent. Scratch has one disjoint instruction plane per tile lane.
+            // extent. Scratch has a disjoint lane per candidate at each instruction.
             let cs = unsafe {
                 x.gpu.run("prepare systems", |e| {
                     e.set_pipeline(&pipeline);
@@ -56,7 +57,8 @@ pub(crate) fn execute(
                         e.set_buffer_mut(6 + i, out, 0);
                     }
                     e.set_bytes(14, &params);
-                    e.dispatch_1d(&pipeline, count);
+                    let width = pipeline.threadExecutionWidth();
+                    e.dispatch_groups([count.div_ceil(width), 1, 1], width);
                     Ok(())
                 })?
             };

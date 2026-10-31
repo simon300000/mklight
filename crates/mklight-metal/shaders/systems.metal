@@ -22,7 +22,8 @@ kernel void mkl_systems_prepare(
     uint tid [[thread_position_in_grid]]) {
     if (tid >= p.count) return;
     uint row = p.first + tid;
-    device float2 *v = scratch + tid * p.instructions;
+    // Instruction-major scratch coalesces each SIMD group's node accesses.
+    device float2 *v = scratch;
     device const float2 *params = parameters + row * p.parameters;
     uint status = slots[row*4+3];
     for (uint j=0; j<p.parameters; ++j) {
@@ -32,9 +33,9 @@ kernel void mkl_systems_prepare(
     }
     for (uint j=p.first_instruction; j<p.first_instruction+p.instruction_count; ++j) {
         uint op=program[4*j], ia=program[4*j+1], ib=program[4*j+2], ic=program[4*j+3];
-        if (op==0) { v[j]=float2(as_type<float>(ia),as_type<float>(ib)); continue; }
-        if (op==1) { v[j]=params[ia]; continue; }
-        float2 a=v[ia], b=v[ib], c=v[ic], value;
+        if (op==0) { v[j*p.count+tid]=float2(as_type<float>(ia),as_type<float>(ib)); continue; }
+        if (op==1) { v[j*p.count+tid]=params[ia]; continue; }
+        float2 a=v[ia*p.count+tid], b=v[ib*p.count+tid], c=v[ic*p.count+tid], value;
         switch(op) {
             case 2: value=mkl_df_add(a,b); break;
             case 3: value=mkl_df_sub(a,b); break;
@@ -43,12 +44,12 @@ kernel void mkl_systems_prepare(
             case 6: value=mkl_df_sqrt(a); break;
             default: value=mkl_p4_le(a,float2(0.0f)) ? b : c; break;
         }
-        v[j]=value;
+        v[j*p.count+tid]=value;
     }
     if (p.first_instruction+p.instruction_count<p.instructions) return;
     uint guard_start=4*(p.instructions+p.patches);
     for (uint j=0; j<p.guards; ++j) {
-        float2 value=v[program[guard_start+j]];
+        float2 value=v[program[guard_start+j]*p.count+tid];
         if (status==MKL_SYSTEMS_READY && (!all(isfinite(value)) || mkl_p4_le(value,float2(0.0f))))
             status=MKL_SYSTEMS_INVALID_NUMERIC;
     }
@@ -62,7 +63,7 @@ kernel void mkl_systems_prepare(
     for(uint j=0;j<p.coefficient_words;++j) c[j]=base[p.header_words+p.surface_words+j];
     for(uint j=0;j<p.patches;++j) {
         uint off=4*(p.instructions+j), dest=program[off];
-        uint hi=program[off+1],lo=program[off+2];float2 value=v[program[off+3]];
+        uint hi=program[off+1],lo=program[off+2];float2 value=v[program[off+3]*p.count+tid];
         if(dest<3 && status==MKL_SYSTEMS_READY && !all(isfinite(value))) status=MKL_SYSTEMS_INVALID_NUMERIC;
         device uint *out=dest==0?h:dest==1?s:dest==2?c:dest==3?f:m;
         out[hi]=as_type<uint>(value.x);

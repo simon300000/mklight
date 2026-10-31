@@ -177,6 +177,25 @@ fn host_metal_cancel_progress_release() {
         .fold(0f64, f64::max);
     eprintln!("P4 max_command_seconds={max:.6}");
     assert!(max < 0.05);
+    let single_tiles: Vec<_> = result
+        .outputs
+        .iter()
+        .map(|h| gpu.readback(h.view(), &JobContext::new()).unwrap().data)
+        .collect();
+    let (wide, stats) = run(&gpu, &c, &rows, 1024);
+    for (a, b) in single_tiles.iter().zip(&wide) {
+        assert_eq!(a.words(), b.words());
+    }
+    let max = stats
+        .stages
+        .iter()
+        .map(|s| s.max_command_seconds)
+        .fold(0.0f64, f64::max);
+    eprintln!(
+        "P4 wide_tile_max_command_seconds={max:.6} peak_bytes={}",
+        stats.peak_bytes
+    );
+    assert!(max < 0.05);
 }
 #[test]
 fn host_metal_resident_generated_rows() {

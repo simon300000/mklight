@@ -5,37 +5,40 @@ use common::*;
 use mklight_core::{JobContext, Snapshot};
 use mklight_gpu::{resident::*, systems::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
+use rayon::prelude::*;
 use std::{hint::black_box, time::Instant};
 
 fn reference(c: &CompiledSystem, rows: &[Candidate]) -> Vec<PackedSystem> {
-    let mut out = vec![];
-    for row in rows {
-        let rs = c.reference(row, &JobContext::new()).unwrap();
-        for w in 0..rs.wavelengths_um.len() {
-            for axis in [
-                mklight_trace::paraxial::ParaxialAxis::X,
-                mklight_trace::paraxial::ParaxialAxis::Y,
-            ] {
-                let model = mklight_trace::paraxial::ParaxialModel::for_axis(&rs, w, axis);
-                let a = model.trace(1.0, 0.0);
-                let b = model.trace(0.0, 1.0);
-                let last = rs.surfaces.len() - 2;
-                let summary = [
-                    -1.0 / a.nu[last],
-                    -a.y[last] / a.u[last],
-                    b.nu[last] / a.nu[last],
-                    model.thickness[1..=last].iter().sum(),
-                    a.y[last],
-                    b.y[last],
-                    a.nu[last],
-                    b.nu[last],
-                ];
-                black_box((model, a, b, summary));
+    let prepared: Vec<_> = rows
+        .par_iter()
+        .map(|row| {
+            let rs = c.reference(row, &JobContext::new()).unwrap();
+            for w in 0..rs.wavelengths_um.len() {
+                for axis in [
+                    mklight_trace::paraxial::ParaxialAxis::X,
+                    mklight_trace::paraxial::ParaxialAxis::Y,
+                ] {
+                    let model = mklight_trace::paraxial::ParaxialModel::for_axis(&rs, w, axis);
+                    let a = model.trace(1.0, 0.0);
+                    let b = model.trace(0.0, 1.0);
+                    let last = rs.surfaces.len() - 2;
+                    let summary = [
+                        -1.0 / a.nu[last],
+                        -a.y[last] / a.u[last],
+                        b.nu[last] / a.nu[last],
+                        model.thickness[1..=last].iter().sum(),
+                        a.y[last],
+                        b.y[last],
+                        a.nu[last],
+                        b.nu[last],
+                    ];
+                    black_box((model, a, b, summary));
+                }
             }
-        }
-        out.extend(PackedSystem::pack_chunks(&rs, None).unwrap());
-    }
-    out
+            PackedSystem::pack_chunks(&rs, None).unwrap()
+        })
+        .collect();
+    prepared.into_iter().flatten().collect()
 }
 fn new_run(
     gpu: &MetalBackend,
@@ -81,7 +84,7 @@ fn preparation_benchmark_all_samples() {
     .expect("host Metal required");
     eprintln!(
         "P4_BENCH_MACHINE {}",
-        serde_json::json!({"startup_probe_seconds":boot.elapsed().as_secs_f64(),"device":gpu.info(),"precision":gpu.precision(),"seed":0,"runs":10,"warmup":1})
+        serde_json::json!({"startup_probe_seconds":boot.elapsed().as_secs_f64(),"device":gpu.info(),"precision":gpu.precision(),"seed":0,"runs":10,"warmup":1,"cpu_threads":rayon::current_num_threads(),"cpu_scheduling":"parallel candidates as in existing evaluator"})
     );
     let mut cases = vec![];
     for (name, s) in mklight_core::samples::all() {
@@ -200,11 +203,11 @@ fn full_evaluation_benchmark() {
             for run_index in 0..11 {
                 let setup = Instant::now();
                 let systems: Vec<_> = rows
-                    .iter()
+                    .par_iter()
                     .map(|row| c.reference(row, &JobContext::new()).unwrap())
                     .collect();
                 let tracers: Vec<_> = systems
-                    .iter()
+                    .par_iter()
                     .cloned()
                     .map(|s| SequentialTracer::new(s.into()).unwrap())
                     .collect();
@@ -261,7 +264,7 @@ fn full_evaluation_benchmark() {
                 gpu.release_systems(h).unwrap();
                 let old_seconds = common + now.elapsed().as_secs_f64();
                 let now = Instant::now();
-                let (data, prep_stats) = run_uploaded(&gpu, &c, &u, &rows, 64);
+                let (data, prep_stats) = run_uploaded(&gpu, &c, &u, &rows, 1024);
                 let prepared: Vec<_> = systems
                     .iter()
                     .enumerate()
