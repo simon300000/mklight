@@ -351,39 +351,61 @@ fn bench_rays(t: &SequentialTracer, n: usize) -> (RayBatch, Vec<u32>) {
     }
     (rays, offsets)
 }
-fn host_moments(pts: &[[f64; 2]], offsets: &[u32]) -> Vec<[f64; 3]> {
+fn host_moments(pts: &[[f64; 2]], offsets: &[u32]) -> Vec<[f64; 10]> {
+    use mklight_core::math::KahanSum;
     offsets
         .windows(2)
-        .map(|r| {
-            let p = &pts[r[0] as usize..r[1] as usize];
-            let p: Vec<_> = p.iter().filter(|p| p[0].is_finite()).collect();
-            if p.is_empty() {
-                return [f64::NAN; 3];
+        .map(|range| {
+            let points = pts[range[0] as usize..range[1] as usize]
+                .iter()
+                .filter(|p| p[0].is_finite());
+            let (mut sw, mut sx, mut sy) = (
+                KahanSum::default(),
+                KahanSum::default(),
+                KahanSum::default(),
+            );
+            let mut count = 0;
+            for point in points.clone() {
+                sw.add(1.0);
+                sx.add(point[0]);
+                sy.add(point[1]);
+                count += 1;
             }
-            let n = p.len() as f64;
-            let mx = p
-                .iter()
-                .map(|p| p[0])
-                .collect::<mklight_core::math::KahanSum>()
-                .value()
-                / n;
-            let my = p
-                .iter()
-                .map(|p| p[1])
-                .collect::<mklight_core::math::KahanSum>()
-                .value()
-                / n;
-            let rr = p
-                .iter()
-                .map(|p| (p[0] - mx).powi(2) + (p[1] - my).powi(2))
-                .collect::<mklight_core::math::KahanSum>()
-                .value()
-                / n;
-            [mx, my, rr.sqrt()]
+            let weight = sw.value();
+            let mx = sx.value() / weight;
+            let my = sy.value() / weight;
+            let (mut sr, mut xx, mut xy, mut yy) = (
+                KahanSum::default(),
+                KahanSum::default(),
+                KahanSum::default(),
+                KahanSum::default(),
+            );
+            let (mut geo_origin, mut geo_centroid) = (0f64, 0f64);
+            for point in points {
+                let (dx, dy) = (point[0] - mx, point[1] - my);
+                sr.add(point[0].mul_add(point[0], point[1] * point[1]));
+                xx.add(dx * dx);
+                xy.add(dx * dy);
+                yy.add(dy * dy);
+                geo_origin = geo_origin.max(point[0].hypot(point[1]));
+                geo_centroid = geo_centroid.max(dx.hypot(dy));
+            }
+            [
+                count as f64,
+                weight,
+                mx,
+                my,
+                sr.value(),
+                xx.value(),
+                xy.value(),
+                yy.value(),
+                geo_origin * geo_origin,
+                geo_centroid * geo_centroid,
+            ]
         })
         .collect()
 }
-fn reference_moments(t: &SequentialTracer, rays: &RayBatch, offsets: &[u32]) -> Vec<[f64; 3]> {
+fn reference_moments(t: &SequentialTracer, rays: &RayBatch, offsets: &[u32]) -> Vec<[f64; 10]> {
     use mklight_core::Vec3;
     let pts: Vec<_> = (0..rays.len())
         .into_par_iter()
@@ -542,20 +564,22 @@ fn benchmark_trace_collectives() {
             let new_wall = wall.elapsed().as_secs_f64();
             let moments = cases::df(&out[0]);
             let mut error = 0f64;
+            let mut survival_count_mismatched_segments = 0;
             for (j, want) in ref_value.iter().enumerate() {
                 let a = &moments[j * 10..j * 10 + 10];
                 for (got, want) in [a[2], a[3], ((a[5] + a[7]) / a[1]).sqrt()]
                     .into_iter()
-                    .zip(want)
+                    .zip([want[2], want[3], ((want[5] + want[7]) / want[1]).sqrt()])
                 {
                     if want.is_finite() {
                         error = error.max((got - want).abs());
                     }
                 }
+                survival_count_mismatched_segments += usize::from(a[0] != want[0]);
             }
             eprintln!(
                 "{}",
-                serde_json::json!({"workload":name,"rays":n,"run":run,"phase":phase,"cpu_f64_ms":cpu_wall*1e3,"old_wall_ms":old_wall*1e3,"old_device_ms":old_device*1e3,"old_reduce_pack_ms":reduction*1e3,"new_wall_ms":new_wall*1e3,"final_readback_ms":readback_seconds*1e3,"final_readback_bytes":readback_bytes,"run_info":if run==0{Some(&stats.run_info)}else{None},"new_prepare_ms":prepare*1e3,"new_device_ms":stats.stats.device_seconds*1e3,"new_stats":stats.stats,"old_readback_bytes":n*52,"new_readback_bytes":offsets.len().saturating_sub(1)*84,"max_aggregate_error_mm":error})
+                serde_json::json!({"workload":name,"rays":n,"run":run,"phase":phase,"cpu_f64_ms":cpu_wall*1e3,"old_wall_ms":old_wall*1e3,"old_device_ms":old_device*1e3,"old_reduce_pack_ms":reduction*1e3,"new_wall_ms":new_wall*1e3,"final_readback_ms":readback_seconds*1e3,"final_readback_bytes":readback_bytes,"run_info":if run==0{Some(&stats.run_info)}else{None},"new_prepare_ms":prepare*1e3,"new_device_ms":stats.stats.device_seconds*1e3,"new_stats":stats.stats,"old_readback_bytes":n*52,"new_readback_bytes":offsets.len().saturating_sub(1)*84,"max_aggregate_error_mm":error,"survival_count_mismatched_segments":survival_count_mismatched_segments})
             );
             if run == 0 {
                 cold = [cpu_wall, old_wall, new_wall];
