@@ -649,6 +649,8 @@ pub struct GridDistortionSettings {
     pub grid_size: usize,
     /// Half-width `a` of the normalised field square.
     pub half_width: f64,
+    /// Normalised centre of the field square.
+    pub field_center: [f64; 2],
     /// System wavelength index; the primary when `None`.
     pub wavelength: Option<usize>,
 }
@@ -658,6 +660,7 @@ impl Default for GridDistortionSettings {
         GridDistortionSettings {
             grid_size: 11,
             half_width: std::f64::consts::FRAC_1_SQRT_2,
+            field_center: [0.0; 2],
             wavelength: None,
         }
     }
@@ -704,6 +707,9 @@ pub fn grid_distortion_job(
     settings: &GridDistortionSettings,
     ctx: &JobContext,
 ) -> MkResult<GridDistortionResult> {
+    for v in settings.field_center {
+        check_finite("grid field centre", v)?;
+    }
     let timer = RunTimer::start();
     check_count("grid size", settings.grid_size, 2, 1001)?;
     check_finite("grid half-width", settings.half_width)?;
@@ -724,6 +730,7 @@ pub fn grid_distortion_job(
         let row: Vec<GridPoint> = t
             .par_iter()
             .map(|&hx| {
+                let (hx, hy) = (hx + settings.field_center[0], hy + settings.field_center[1]);
                 let mut g = GridPoint {
                     field: [hx, hy],
                     real: [f64::NAN; 2],

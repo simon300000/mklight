@@ -98,6 +98,7 @@ impl Default for ImageSimulationSettings {
 pub struct ImageGridSettings {
     pub field_grid: usize,
     pub field_extent: f64,
+    pub field_center: [f64; 2],
     pub pupil: PupilSettings,
     pub psf_size: usize,
     pub psf_spacing_mm: Option<f64>,
@@ -108,14 +109,13 @@ impl Default for ImageGridSettings {
     fn default() -> Self {
         Self {
             field_grid: 3,
-            field_extent: 1.0,
+            field_extent: std::f64::consts::FRAC_1_SQRT_2,
+            field_center: [0.0; 2],
             pupil: PupilSettings {
-                grid: 32,
-                rays: 33,
                 amplitude: AmplitudeModel::Radiometric,
                 ..Default::default()
             },
-            psf_size: 33,
+            psf_size: 0,
             psf_spacing_mm: None,
             illumination_radial: 12,
             illumination_azimuth: 48,
@@ -167,8 +167,8 @@ pub fn build_psf_grid(
 ) -> MkResult<PsfGrid> {
     if !(2..=33).contains(&s.field_grid)
         || !(s.field_extent > 0.0 && s.field_extent.is_finite())
-        || !(3..=513).contains(&s.psf_size)
-        || s.psf_size.is_multiple_of(2)
+        || s.field_center.iter().any(|v| !v.is_finite())
+        || (s.psf_size != 0 && (!(3..=2047).contains(&s.psf_size) || s.psf_size.is_multiple_of(2)))
         || s.psf_spacing_mm
             .is_some_and(|x| !(x > 0.0 && x.is_finite()))
     {
@@ -179,6 +179,7 @@ pub fn build_psf_grid(
         &GridDistortionSettings {
             grid_size: s.field_grid,
             half_width: s.field_extent,
+            field_center: s.field_center,
             ..Default::default()
         },
         &ctx.subrange(0.0, 0.05),
@@ -211,41 +212,69 @@ pub fn build_psf_grid(
         }
         axial += weight * omega0;
     }
-    let mut kernels = Vec::new();
-    let mut mapping = Vec::new();
-    let mut spacing = s.psf_spacing_mm;
+    // All nodes set the common spacing; using only the first can undersample
+    // a slightly faster cone elsewhere in the patch.
+    let mut per = Vec::new();
     for (i, p) in d.points.iter().enumerate() {
-        ctx.check()?;
         let f = t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1]))?;
         let n = d.points.len() as f64;
-        let sub = ctx.subrange(0.2 + 0.8 * i as f64 / n, 0.2 + 0.8 * (i + 1) as f64 / n);
         let pupils = field_pupils(
             t,
             &f,
             "image simulation",
             &wls,
             &s.pupil,
-            &sub.subrange(0.0, 0.7),
+            &ctx.subrange(0.2 + 0.4 * i as f64 / n, 0.2 + 0.4 * (i + 1) as f64 / n),
         )?;
         warnings.extend(pupils.warnings.iter().cloned());
-        let dx = *spacing.get_or_insert_with(|| pupils.min_lambda_f() * 0.5);
-        let ps = PolyPsfSettings {
-            grid_size: s.psf_size,
-            spacing_mm: dx,
-            normalization: PsfNormalization::UnitEnergy,
-            transform: PsfTransform::Fft,
-        };
-        let psf = crate::polychromatic_psf(&pupils.weighted(), &ps, &sub.subrange(0.7, 1.0))?;
-        warnings.extend(psf.warnings.iter().map(ToString::to_string));
-        // Keep discrete convolution flux normalised. Truncation is explicit.
-        let sum: f64 = psf.data.iter().sum();
-        let energy = sum * dx * dx;
-        if energy < 0.95 {
-            warnings.push(format!(
-                "psf_truncated: field {:?}, sampled energy {energy:.5}",
-                p.field
-            ));
+        per.push(pupils);
+    }
+    let dx = s.psf_spacing_mm.unwrap_or_else(|| {
+        per.iter()
+            .map(|fp| fp.min_lambda_f() / 2.5)
+            .fold(f64::INFINITY, f64::min)
+    });
+    let size = if s.psf_size == 0 {
+        (per.iter()
+            .map(|fp| crate::sampling::image_grid(&fp.weighted(), dx))
+            .max()
+            .unwrap()
+            | 1)
+        .min(2047)
+    } else {
+        s.psf_size
+    };
+    let mut kernels = Vec::new();
+    let mut mapping = Vec::new();
+    for (i, (p, pupils)) in d.points.iter().zip(&mut per).enumerate() {
+        let n = d.points.len() as f64;
+        let sub = ctx.subrange(0.6 + 0.4 * i as f64 / n, 0.6 + 0.4 * (i + 1) as f64 / n);
+        warnings.extend(pupils.ensure_window(
+            size as f64 * dx,
+            &s.pupil,
+            &sub.subrange(0.0, 0.1),
+        )?);
+        let psf = crate::polychromatic_psf(
+            &pupils.weighted(),
+            &PolyPsfSettings {
+                grid_size: size,
+                spacing_mm: dx,
+                normalization: PsfNormalization::UnitEnergy,
+                transform: PsfTransform::Fft,
+            },
+            &sub.subrange(0.1, 1.0),
+        )?;
+        let energy = psf.energy_in_grid() / psf.total_energy;
+        if energy < crate::analysis::MIN_ENERGY_IN_GRID {
+            warnings.push(
+                crate::WaveWarning::PsfTruncated {
+                    energy_in_grid: energy,
+                }
+                .to_string(),
+            );
         }
+        warnings.extend(psf.warnings.iter().map(ToString::to_string));
+        let sum: f64 = psf.data.iter().sum();
         kernels.push(psf.data.iter().map(|v| v / sum).collect());
         mapping.push(FieldMapping {
             field: p.field,
@@ -257,8 +286,8 @@ pub fn build_psf_grid(
     Ok(PsfGrid {
         mapping,
         size: s.field_grid,
-        psf_size: s.psf_size,
-        spacing_mm: spacing.unwrap(),
+        psf_size: size,
+        spacing_mm: dx,
         kernels,
         warnings,
     })
@@ -361,7 +390,45 @@ fn read_png(path: &str) -> MkResult<Raster> {
     Ok(Raster { w, h, c, data })
 }
 fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 {
-    let (u, v) = ((x as f64 + 0.5) / w as f64, (y as f64 + 0.5) / h as f64);
+    match p {
+        TestPattern::Grid => {
+            // Integral of the white portion of the periodic bar pattern.
+            let white = |t: f64| {
+                let v = 8.0 * t;
+                (0.9 * v.floor() + (v.fract() - 0.1).max(0.0)) / 8.0
+            };
+            (white((x + 1) as f64 / w as f64) - white(x as f64 / w as f64))
+                * w as f64
+                * (white((y + 1) as f64 / h as f64) - white(y as f64 / h as f64))
+                * h as f64
+        }
+        TestPattern::SlantedEdge => {
+            // Exact area to the right of a line in this pixel rectangle.
+            let (lo, hi) = (x as f64 / w as f64, (x + 1) as f64 / w as f64);
+            let primitive = |v: f64| {
+                let edge = 0.45 + 0.1 * v;
+                ((hi - edge).max(0.0).powi(2) - (lo - edge).max(0.0).powi(2)) / -0.2
+            };
+            (primitive((y + 1) as f64 / h as f64) - primitive(y as f64 / h as f64)) * (w * h) as f64
+        }
+        _ => {
+            let mut sum = 0.0;
+            for j in 0..16 {
+                for i in 0..16 {
+                    sum += pattern_point(
+                        p,
+                        (x as f64 + (i as f64 + 0.5) / 16.0) / w as f64,
+                        (y as f64 + (j as f64 + 0.5) / 16.0) / h as f64,
+                        w,
+                        h,
+                    );
+                }
+            }
+            sum / 256.0
+        }
+    }
+}
+fn pattern_point(p: TestPattern, u: f64, v: f64, w: usize, h: usize) -> f64 {
     match p {
         TestPattern::Grid => {
             if (u * 8.0).fract() < 0.1 || (v * 8.0).fract() < 0.1 {
@@ -392,7 +459,7 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
                 [16, 16, 16, 16, 16, 16, 31],
             ];
             // Glyph bitmaps and scale bands are written top to bottom.
-            let y = h - 1 - y;
+            let (x, y) = ((u * w as f64) as usize, ((1.0 - v) * h as f64) as usize);
             let band = (y as f64 * 3.0 / h as f64) as usize;
             let scale = [4, 2, 1][band.min(2)];
             let (gx, gy) = (x / scale, y / scale);
@@ -838,6 +905,70 @@ mod tests {
         mklight_analysis::tracer_for(s).unwrap()
     }
     #[test]
+    fn built_in_pixels_integrate_area() {
+        for n in [1, 7, 31, 64] {
+            let mean = (0..n)
+                .flat_map(|y| (0..n).map(move |x| pattern_value(TestPattern::Grid, x, y, n, n)))
+                .sum::<f64>()
+                / (n * n) as f64;
+            assert!((mean - 0.81).abs() < 1e-12);
+            let edge = (0..n)
+                .flat_map(|y| {
+                    (0..n).map(move |x| pattern_value(TestPattern::SlantedEdge, x, y, n, n))
+                })
+                .sum::<f64>()
+                / (n * n) as f64;
+            assert!((edge - 0.5).abs() < 1e-10);
+        }
+        // The central pixel straddles both sides of the edge; point sampling
+        // would return black. The star also contains both colours in one pixel.
+        assert!((pattern_value(TestPattern::SlantedEdge, 3, 3, 7, 7) - 0.5).abs() < 1e-12);
+        assert!((pattern_value(TestPattern::SiemensStar, 0, 0, 1, 1) - 0.5).abs() < 0.04);
+    }
+
+    #[test]
+    fn off_axis_patch_maps_chiefs_and_illumination_at_its_own_fields() {
+        let t = ideal();
+        let s = ImageGridSettings {
+            field_center: [0.2, 0.5],
+            field_extent: 0.1,
+            psf_size: 65,
+            pupil: PupilSettings {
+                grid: 32,
+                rays: 33,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let grid = build_psf_grid(&t, &s, &JobContext::new()).unwrap();
+        for (k, m) in grid.mapping.iter().enumerate() {
+            let expected = [0.1 + 0.1 * (k % 3) as f64, 0.4 + 0.1 * (k / 3) as f64];
+            assert!((m.field[0] - expected[0]).hypot(m.field[1] - expected[1]) < 1e-14);
+            let f = t
+                .prepare_field(FieldPoint::normalized(m.field[0], m.field[1]))
+                .unwrap();
+            let c = t.chief(&f, 0).ray.pos;
+            assert!((m.real_mm[0] - c.x).hypot(m.real_mm[1] - c.y) < 1e-12);
+            let mut warnings = Vec::new();
+            let (row, axial) = illumination_rows(
+                &t,
+                &[m.field],
+                0,
+                s.illumination_radial,
+                s.illumination_azimuth,
+                &mut warnings,
+                &JobContext::new(),
+            )
+            .unwrap();
+            assert!((m.relative_illumination - row[0][0] / axial).abs() < 1e-12);
+        }
+        let origin = grid.mapping[0].real_mm;
+        let uv = inverse_field(&grid, grid.mapping[4].real_mm).unwrap();
+        assert!((uv[0] - 0.5).hypot(uv[1] - 0.5) < 1e-7, "{uv:?}");
+        assert!(origin[0] > 0.0 && origin[1] > 0.0);
+    }
+
+    #[test]
     fn fft_halo_convolution_matches_direct_sum() {
         let (w, h, k) = (17, 13, 5);
         let data: Vec<_> = (0..w * h).map(|i| (i as f64 * 0.37).sin()).collect();
@@ -1047,6 +1178,7 @@ mod tests {
     ) -> (SequentialTracer, ImageGridSettings, Arc<PsfGrid>) {
         let t = mklight_analysis::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
         let s = ImageGridSettings {
+            field_extent: 1.0,
             pupil: PupilSettings {
                 grid: 32,
                 rays: 33,
@@ -1096,7 +1228,9 @@ mod tests {
     fn psf_centre_is_its_reference_point() {
         let (t, s, grid) = cooke_grid(crate::ReferencePoint::Centroid);
         let m = &grid.mapping[8];
-        let f = t.prepare_field(FieldPoint::normalized(1.0, 1.0)).unwrap();
+        let f = t
+            .prepare_field(FieldPoint::normalized(s.field_extent, s.field_extent))
+            .unwrap();
         let wls = wavelengths(&t, &Default::default()).unwrap();
         let pupils = field_pupils(&t, &f, "", &wls, &s.pupil, &JobContext::new()).unwrap();
         assert_eq!(m.real_mm, pupils.reference_mm);

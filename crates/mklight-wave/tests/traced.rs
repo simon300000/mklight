@@ -989,7 +989,9 @@ fn registry_runs_every_analysis_from_json() {
         assert!(find(a.name).is_some());
     }
     // Bad settings are an error, not a panic.
-    assert!((find("psf").unwrap().run)(&t, &serde_json::json!({"grid_size": 0}), &ctx()).is_err());
+    assert!(
+        (find("psf").unwrap().run)(&t, &serde_json::json!({"grid_size": 4097}), &ctx()).is_err()
+    );
 }
 
 #[test]

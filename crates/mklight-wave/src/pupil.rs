@@ -734,6 +734,13 @@ impl PupilFunction {
     pub fn geometry(&self) -> &PupilGeometry {
         &self.geometry
     }
+    /// Same sampled pupil viewed on the chief-normal image plane.
+    pub(crate) fn on_normal_plane(&self) -> Self {
+        let mut p = self.clone();
+        p.geometry.chief_ray = [0.0, 0.0, 1.0];
+        p.image_offset_mm = [0.0, 0.0];
+        p
+    }
     pub fn image_offset_mm(&self) -> [f64; 2] {
         self.image_offset_mm
     }

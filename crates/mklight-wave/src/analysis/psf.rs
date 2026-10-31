@@ -60,9 +60,9 @@ impl Default for PsfAnalysisSettings {
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
             method: PsfMethod::Fft,
-            grid_size: 128,
+            grid_size: 0,
             spacing_mm: None,
-            padding: 4.0,
+            padding: 2.5,
             normalization: PsfNormalization::Strehl,
             polychromatic: true,
         }
@@ -180,6 +180,11 @@ pub(crate) fn compute_psf(
     normalization: PsfNormalization,
     ctx: &JobContext,
 ) -> MkResult<Psf> {
+    let grid = if grid == 0 {
+        crate::sampling::image_grid(pupils, spacing)
+    } else {
+        grid
+    };
     let mut psf = compute_psf_raw(pupils, method, grid, spacing, normalization, ctx)?;
     let e = psf.energy_in_grid() / psf.total_energy;
     if e.is_finite() && e < MIN_ENERGY_IN_GRID {
@@ -300,13 +305,13 @@ pub fn psf_analysis_job(
     ctx: &JobContext,
 ) -> MkResult<PsfResult> {
     let timer = RunTimer::start();
-    if !(1..=4096).contains(&settings.grid_size) {
+    if settings.grid_size != 0 && !(1..=4096).contains(&settings.grid_size) {
         return Err(MkError::InvalidParam(format!(
             "PSF grid size {}",
             settings.grid_size
         )));
     }
-    if settings.method == PsfMethod::Huygens {
+    if settings.method == PsfMethod::Huygens && settings.grid_size != 0 {
         check_huygens_grid(settings.grid_size)?;
     }
     let idx = fields(tracer, &settings.fields)?;
@@ -330,6 +335,17 @@ pub fn psf_analysis_job(
     for (f, value, fp) in &per {
         warnings.extend(fp.warnings.iter().cloned());
         let spacing = default_spacing(fp, settings.spacing_mm, settings.padding)?;
+        let mut fp = fp.clone();
+        let grid = if settings.grid_size == 0 {
+            crate::sampling::image_grid(&fp.weighted(), spacing)
+        } else {
+            settings.grid_size
+        };
+        warnings.extend(fp.ensure_window(
+            grid as f64 * spacing,
+            &settings.pupil,
+            &ctx.subrange(0.4, 0.4),
+        )?);
         // (wavelength, weighted pupils) of each PSF of this field.
         type Group<'a> = (Option<usize>, Vec<(&'a PupilFunction, f64)>);
         let groups: Vec<Group> = if settings.polychromatic {
@@ -349,7 +365,7 @@ pub fn psf_analysis_job(
             let psf = compute_psf(
                 &group,
                 settings.method,
-                settings.grid_size,
+                grid,
                 spacing,
                 settings.normalization,
                 &ctx.subrange(a, b),

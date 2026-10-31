@@ -290,6 +290,33 @@ impl FieldPupils {
             .map(|(_, _, p)| p.pupil.lambda_f_mm())
             .fold(f64::INFINITY, f64::min)
     }
+    /// Keep an automatically sampled pupil's alias-free field around the
+    /// requested image window. Explicit pupil grids remain untouched.
+    pub fn ensure_window(
+        &mut self,
+        side: f64,
+        settings: &PupilSettings,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<String>> {
+        if settings.grid != 0 {
+            return Ok(Vec::new());
+        }
+        let mut warnings = Vec::new();
+        let count = self.pupils.len() as f64;
+        for (i, (_, _, tp)) in self.pupils.iter_mut().enumerate() {
+            let n = ((side / tp.pupil.lambda_f_mm())
+                .max(tp.pupil.n() as f64)
+                .min(crate::sampling::MAX_AUTO_PUPIL as f64)
+                .ceil() as usize)
+                .next_power_of_two();
+            warnings.extend(tp.resample(
+                n,
+                settings.supersample,
+                &ctx.subrange(i as f64 / count, (i + 1) as f64 / count),
+            )?);
+        }
+        Ok(warnings)
+    }
     /// Largest incoherent cutoff over the pupils (cycles/mm).
     pub fn max_cutoff(&self) -> f64 {
         1.0 / self.min_lambda_f()

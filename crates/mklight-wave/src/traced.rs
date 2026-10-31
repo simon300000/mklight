@@ -130,7 +130,7 @@ pub enum AmplitudeModel {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PupilSettings {
-    /// Pupil-function samples `n` across `[−1, 1]`.
+    /// Pupil-function samples across `[−1, 1]`; zero selects from traced slopes.
     pub grid: usize,
     /// Lattice rays across the entrance-pupil diameter (`m`).
     pub rays: usize,
@@ -150,7 +150,7 @@ pub struct PupilSettings {
 impl Default for PupilSettings {
     fn default() -> Self {
         PupilSettings {
-            grid: 64,
+            grid: 0,
             rays: 65,
             supersample: 4,
             reference: ReferencePoint::Chief,
@@ -163,7 +163,7 @@ impl Default for PupilSettings {
 
 impl PupilSettings {
     pub fn validate(&self) -> MkResult<()> {
-        let ok = (8..=4096).contains(&self.grid)
+        let ok = (self.grid == 0 || (8..=4096).contains(&self.grid))
             && (8..=2048).contains(&self.rays)
             && (1..=32).contains(&self.supersample)
             && self.rim_tolerance > 0.0
@@ -238,6 +238,33 @@ pub struct TracedPupil {
     /// Lattice rays at their pupil positions (for Zernike fits).
     pub samples: StructuredSamples,
     pub warnings: Vec<String>,
+}
+
+impl TracedPupil {
+    /// Resample the original traced lattice, retaining its reference and mask.
+    pub(crate) fn resample(
+        &mut self,
+        n: usize,
+        supersample: usize,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<String>> {
+        if n == self.pupil.n() {
+            return Ok(Vec::new());
+        }
+        let p = &self.pupil;
+        let (mut refined, warnings) = grid_from_structured(
+            &self.samples,
+            n,
+            p.wavelength_um(),
+            *p.geometry(),
+            self.mask.as_ref(),
+            supersample,
+            ctx,
+        )?;
+        refined.set_image_offset_mm(p.image_offset_mm());
+        self.pupil = refined;
+        Ok(warnings.iter().map(ToString::to_string).collect())
+    }
 }
 
 /// A solved configuration `k` of `system` with its reference tracer
@@ -943,9 +970,14 @@ pub fn trace_pupil(
             }),
         )
     };
+    let grid = if settings.grid == 0 {
+        crate::sampling::pupil_grid(&samples)
+    } else {
+        settings.grid
+    };
     let (mut pupil, wv) = grid_from_structured(
         &samples,
-        settings.grid,
+        grid,
         sys.wavelengths_um[wl],
         geometry,
         mask.as_ref(),

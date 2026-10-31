@@ -887,6 +887,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
+| `field_center` | array | `[0.0,0.0]` |  | Normalised field [hx,hy] at the grid centre. |
 | `grid_size` | integer | `11` |  | 2 … 1001; Grid points per side. |
 | `half_width` | number | `0.7071067811865476` |  | 0.0 … 1.0; Half-width of the normalised field square. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
@@ -1698,11 +1699,11 @@ Settings:
 | `center` | object | `{"type":"centroid"}` |  | Tagged energy centre: {type: reference}, {type: centroid}, {type: peak}, or {type: point, x, y} in mm. |
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `grid_size` | integer | `0` |  | ≥ 0; Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024. |
 | `max_radius_mm` | number\|null | `null` | mm | > 0.0; Positive maximum radius; null uses the PSF window. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
-| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `samples` | integer | `51` |  | ≥ 2 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -1745,7 +1746,7 @@ Settings:
 | `detector_aperture_mm` | array\|null | `null` | mm | Optional positive [x,y] active aperture, at most four output pixels; 4x4 quadrature. |
 | `full_well_electrons` | number\|null | `null` |  | ≤ 1000000000000.0; > 0.0 |
 | `monochrome` | boolean | `true` |  |  |
-| `optics` | object | `{"field_extent":1.0,"field_grid":3,"illumination_azimuth":48,"illumination_radial":12,"psf_size":33,"psf_spacing_mm":null,"pupil":{"amplitude":"radiometric","grid":32,"rays":33,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}}` |  |  |
+| `optics` | object | `{"field_center":[0.0,0.0],"field_extent":0.7071067811865476,"field_grid":3,"illumination_azimuth":48,"illumination_radial":12,"psf_size":0,"psf_spacing_mm":null,"pupil":{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}}` |  |  |
 | `read_noise_sigma` | number | `0.0` |  | ≥ 0.0 |
 | `seed` | integer | `1` |  | ≥ 0 |
 | `size` | array | `[64,64]` |  | Output [width,height], 2..4096 each. |
@@ -1789,10 +1790,10 @@ Settings:
 |---|---|---|---|---|
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `grid_size` | integer | `256` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `grid_size` | integer | `0` |  | ≥ 0; Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
-| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1830,9 +1831,9 @@ Settings:
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `frequency_samples` | integer | `41` |  | ≥ 2 |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
-| `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null uses the largest optical cutoff. |
+| `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null uses min(100, cutoff/4, 1/(2 geometric RMS blur)). |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1885,10 +1886,10 @@ Settings:
 | `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
 | `direction` | [number; 2] | `[0.0,1.0]` |  | Nonzero direction in normalised field coordinates. |
 | `field_samples` | integer | `11` |  | 1 … 1001 |
-| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects round 1-2-5 frequencies spanning the useful blur-limited range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1926,12 +1927,12 @@ Settings:
 |---|---|---|---|---|
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `grid_size` | integer | `128` |  | ≥ 1; Image samples per axis; Huygens is limited to 1024. |
+| `grid_size` | integer | `0` |  | ≥ 0; Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `normalization` | string | `"strehl"` |  | one of `"strehl"`, `"unit_energy"`; strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2. |
-| `padding` | number | `4.0` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
+| `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `polychromatic` | boolean | `true` |  |  |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spacing_mm` | number\|null | `null` | mm | > 0.0; Positive explicit spacing; null uses padding. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -1978,12 +1979,12 @@ Settings:
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `detector` | object\|null | `null` |  | Optional detector pixel-aperture and diffusion MTF; null gives optical MTF only. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `focus_range_mm` | number\|null | `null` | mm | > 0.0; Positive half-range; null uses 4 wavelength × F/# squared. |
+| `focus_range_mm` | number\|null | `null` | mm | > 0.0; Positive half-range; null uses max(8 wavelength × F/# squared, 4 F/# × geometric RMS blur). |
 | `focus_samples` | integer | `21` |  | 1 … 1001 |
-| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2). |
+| `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects round 1-2-5 frequencies spanning the useful blur-limited range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -2022,7 +2023,7 @@ Settings:
 |---|---|---|---|---|
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `pupil` | object | `{"amplitude":"transmission","grid":64,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 | `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |

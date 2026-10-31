@@ -762,7 +762,7 @@ pub struct PolyPsfSettings {
     /// `Fft` computes each on-axis wavelength at a native spacing
     /// `≤ min(Δx, λF#/8)` and interpolates bicubically, with errors below
     /// about 10⁻³ of the peak; it is faster for large pupils and grids.
-    /// Off-axis pupils always use the matrix transform.
+    /// Off-axis pupils project that fine normal-plane raster onto the image surface.
     pub transform: PsfTransform,
 }
 
@@ -814,9 +814,7 @@ pub fn polychromatic_psf(
         let native = dx.min(0.125 * lf);
         let m_native =
             next_fast_len((pupil.alias_free_field_mm() / native).ceil() as usize).max(pupil.n());
-        let matrix = settings.transform == PsfTransform::Matrix
-            || !pupil.geometry().is_on_axis()
-            || m_native > MAX_FFT_LEN;
+        let matrix = settings.transform == PsfTransform::Matrix || m_native > MAX_FFT_LEN;
         let unit: Vec<f64> = if matrix {
             surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
                 .into_iter()
@@ -831,8 +829,29 @@ pub fn polychromatic_psf(
                 normalization: PsfNormalization::UnitEnergy,
                 transform: PsfTransform::Fft,
             };
-            let p = fft_psf(pupil, &s, &sub)?;
-            p.resampled(dx, size, [0.0, 0.0]).data
+            // Transform on the chief-normal plane, then project its fine
+            // intensity raster to the image surface. This also bounds the
+            // cost for diagonal fields (an exact skew MFT costs n² M²).
+            let normal = pupil.on_normal_plane();
+            let p = fft_psf(&normal, &s, &sub.subrange(0.0, 0.9))?;
+            let b = pupil.geometry().surface_to_normal();
+            let jac = pupil.geometry().projection_jacobian();
+            let mut data = Vec::with_capacity(size * size);
+            for j in 0..size {
+                sub.check()?;
+                let y = (j as f64 - (size / 2) as f64) * dx - off[1];
+                for i in 0..size {
+                    let x = (i as f64 - (size / 2) as f64) * dx - off[0];
+                    data.push(
+                        jac * p
+                            .interpolate(b[0][0] * x + b[0][1] * y, b[1][0] * x + b[1][1] * y)
+                            .max(0.0),
+                    );
+                }
+                sub.subrange(0.9, 1.0)
+                    .report((j + 1) as f64 / size as f64, "PSF projection");
+            }
+            data
         };
         for (a, v) in acc.iter_mut().zip(&unit) {
             *a += wn * v;

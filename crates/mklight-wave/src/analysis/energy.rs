@@ -48,8 +48,8 @@ impl Default for EncircledEnergySettings {
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
             method: PsfMethod::Fft,
-            grid_size: 256,
-            padding: 4.0,
+            grid_size: 0,
+            padding: 2.5,
             center: EnergyCenter::Centroid,
             max_radius_mm: None,
             samples: 51,
@@ -106,10 +106,10 @@ fn quantile(r: &[f64], e: &[f64], level: f64) -> f64 {
 }
 
 fn check_grid(grid: usize, padding: f64, method: PsfMethod) -> MkResult<()> {
-    if !(8..=4096).contains(&grid) {
+    if grid != 0 && !(8..=4096).contains(&grid) {
         return Err(MkError::InvalidParam(format!("PSF grid size {grid}")));
     }
-    if method == PsfMethod::Huygens {
+    if method == PsfMethod::Huygens && grid != 0 {
         check_huygens_grid(grid)?;
     }
     check_pos("padding", padding)
@@ -138,12 +138,20 @@ pub fn diffraction_encircled_energy_job(
         .map(|(_, _, fp)| fp.min_lambda_f())
         .fold(f64::INFINITY, f64::min);
     let spacing = lf / settings.padding;
+    let grid = if settings.grid_size == 0 {
+        per.iter()
+            .map(|(_, _, fp)| crate::sampling::image_grid(&fp.weighted(), spacing))
+            .max()
+            .unwrap()
+    } else {
+        settings.grid_size
+    };
     let rmax = match settings.max_radius_mm {
         Some(r) => {
             check_pos("maximum radius", r)?;
             r
         }
-        None => 0.5 * settings.grid_size as f64 * spacing,
+        None => 0.5 * grid as f64 * spacing,
     };
     let radius = linspace(0.0, rmax, settings.samples);
     let dense = linspace(0.0, rmax, 8 * settings.samples);
@@ -153,11 +161,22 @@ pub fn diffraction_encircled_energy_job(
     for (k, (f, value, fp)) in per.iter().enumerate() {
         warnings.extend(fp.warnings.iter().cloned());
         let sub = ctx.subrange(0.3 + 0.7 * k as f64 / nf, 0.3 + 0.7 * (k + 1) as f64 / nf);
+        let mut fp = fp.clone();
+        let grid = if settings.grid_size == 0 {
+            crate::sampling::image_grid(&fp.weighted(), spacing)
+        } else {
+            settings.grid_size
+        };
+        warnings.extend(fp.ensure_window(
+            grid as f64 * spacing,
+            &settings.pupil,
+            &sub.subrange(0.0, 0.0),
+        )?);
         let pupils = fp.weighted();
         let psf = compute_psf(
             &pupils,
             settings.method,
-            settings.grid_size,
+            grid,
             spacing,
             PsfNormalization::UnitEnergy,
             &sub.subrange(0.0, 0.5),
@@ -177,7 +196,7 @@ pub fn diffraction_encircled_energy_job(
         let dl_psf = compute_psf(
             &clean_w,
             PsfMethod::Fft,
-            settings.grid_size,
+            grid,
             spacing,
             PsfNormalization::UnitEnergy,
             &sub.subrange(0.5, 0.7),
@@ -247,8 +266,8 @@ impl Default for LineSpreadSettings {
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
             method: PsfMethod::Fft,
-            grid_size: 256,
-            padding: 4.0,
+            grid_size: 0,
+            padding: 2.5,
         }
     }
 }
@@ -296,11 +315,23 @@ pub fn line_spread_job(
     for (k, (f, value, fp)) in per.iter().enumerate() {
         warnings.extend(fp.warnings.iter().cloned());
         let sub = ctx.subrange(0.4 + 0.6 * k as f64 / nf, 0.4 + 0.6 * (k + 1) as f64 / nf);
+        let spacing = fp.min_lambda_f() / settings.padding;
+        let mut fp = fp.clone();
+        let grid = if settings.grid_size == 0 {
+            crate::sampling::image_grid(&fp.weighted(), spacing)
+        } else {
+            settings.grid_size
+        };
+        warnings.extend(fp.ensure_window(
+            grid as f64 * spacing,
+            &settings.pupil,
+            &sub.subrange(0.0, 0.0),
+        )?);
         let psf = compute_psf(
             &fp.weighted(),
             settings.method,
-            settings.grid_size,
-            fp.min_lambda_f() / settings.padding,
+            grid,
+            spacing,
             PsfNormalization::UnitEnergy,
             &sub,
         )?;
