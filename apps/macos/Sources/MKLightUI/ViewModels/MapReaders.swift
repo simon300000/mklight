@@ -109,7 +109,18 @@ struct FieldMapData: Sendable {
 
     /// A column as a grid over the normalised field (map layout).
     func grid(_ c: Int) -> Grid2D {
-        Grid2D(nx: nx, ny: ny, values: column(c), xRange: fieldRangeX, yRange: fieldRangeY)
+        var g = Grid2D(nx: nx, ny: ny, values: column(c), xRange: fieldRangeX, yRange: fieldRangeY)
+        if outsideFieldIsNoData { g.noData = .unitDisk }
+        return g
+    }
+
+    /// Whether the samples outside the normalised field (hypot(Hx, Hy) > 1)
+    /// carry no data (the engine reports them as null, image points
+    /// included), and there are some: they are drawn as no data, not as 0.
+    var outsideFieldIsNoData: Bool {
+        let outside = (0..<count).filter { Grid2D.NoData.unitDisk.excludes(field[$0].x, field[$0].y) }
+        guard !outside.isEmpty else { return false }
+        return outside.allSatisfy { k in (0..<columns.count).allSatisfy { !value(k, $0).isFinite } }
     }
 
     /// A column along the swept field axis, `(H, value)` in sample order.
@@ -209,6 +220,14 @@ enum Contours {
     /// The segments of the `level` iso-line of `grid`, in the grid's x / y
     /// units (samples at the nodes, spanning `xRange` × `yRange`). Cells
     /// with a non-finite corner are skipped.
+    /// The iso-line of a map as drawn: a map with no data outside the
+    /// field is traced on its finely interpolated grid, so the lines reach
+    /// the field's edge instead of stopping a cell short of it.
+    static func mapSegments(_ grid: Grid2D, level: Double) -> [Segment] {
+        guard grid.noData != nil else { return segments(grid, level: level) }
+        return segments(grid.upsampled(to: max(4 * max(grid.nx, grid.ny), 48)), level: level)
+    }
+
     static func segments(_ grid: Grid2D, level: Double) -> [Segment] {
         let nx = grid.nx, ny = grid.ny
         guard nx >= 2, ny >= 2, level.isFinite else { return [] }
@@ -347,10 +366,26 @@ extension Grid2D {
                 let i = min(Int(x), nx - 2), a = x - Double(i)
                 let v00 = values[j * nx + i], v10 = values[j * nx + i + 1]
                 let v01 = values[(j + 1) * nx + i], v11 = values[(j + 1) * nx + i + 1]
+                if let noData {
+                    let px = xRange.lowerBound + Double(col) / Double(w - 1) * (xRange.upperBound - xRange.lowerBound)
+                    let py = yRange.lowerBound + Double(row) / Double(h - 1) * (yRange.upperBound - yRange.lowerBound)
+                    if noData.excludes(px, py) { continue }
+                    // Interpolate from the finite corners only.
+                    let wts = [(1 - a) * (1 - b), a * (1 - b), (1 - a) * b, a * b], vs = [v00, v10, v01, v11]
+                    var sum = 0.0, wsum = 0.0
+                    for k in 0..<4 where vs[k].isFinite {
+                        sum += wts[k] * vs[k]
+                        wsum += wts[k]
+                    }
+                    if wsum > 1e-12 { out[row * w + col] = sum / wsum }
+                    continue
+                }
                 out[row * w + col] = (1 - b) * ((1 - a) * v00 + a * v10) + b * ((1 - a) * v01 + a * v11)
             }
         }
-        return Grid2D(nx: w, ny: h, values: out, xRange: xRange, yRange: yRange)
+        var g = Grid2D(nx: w, ny: h, values: out, xRange: xRange, yRange: yRange)
+        g.noData = noData
+        return g
     }
 }
 
@@ -665,6 +700,9 @@ struct ImageSimulationData: Sendable {
     var nodes: [Node]
     var fieldGrid: Int
     var source: Source
+    /// The PSF window the run used (samples per side) and its spacing (mm).
+    var psfSize: Int?
+    var psfSpacing: Double?
 
     init?(output: AnalysisOutput) {
         let j = output.json
@@ -679,6 +717,8 @@ struct ImageSimulationData: Sendable {
         fieldGrid = j["field_grid"]?.int ?? 0
         nodes = Self.nodes(j)
         source = Self.source(output.runInfo.settings["source"])
+        psfSize = j["psf_size"]?.int
+        psfSpacing = j["psf_spacing_mm"]?.nf
     }
 
     /// The field mapping nodes of a result.

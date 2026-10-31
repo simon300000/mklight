@@ -44,9 +44,14 @@ struct SettingsBar: View {
         return descriptor.settingsFields.compactMap { f -> String? in
             guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
             if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : "Spectrum \($0.summary)" } ?? "Spectrum custom" }
-            if f.name == "optics", pane.analysis == "image_simulation", let e = v["field_extent"]?.doubleValue {
-                return "View \(ImageSimulationSettings.extentTitle(e))"
+            if f.name == "optics", pane.analysis == "image_simulation" {
+                let e = v["field_extent"]?.doubleValue ?? ImageSimulationSettings.fullExtent
+                let c = v["field_center"]?.array?.compactMap(\.doubleValue) ?? []
+                let at = c.count == 2 && (c[0] != 0 || c[1] != 0) ? " at " + ImageSimulationSettings.coordinates(SIMD2(c[0], c[1])) : ""
+                return "View \(ImageSimulationSettings.extentTitle(e))" + at
             }
+            if f.name == "pupil", let g = v["grid"]?.int { return g == 0 ? nil : "Pupil \(g)" }
+            if let a = AutoSettings.sentinel(f.name, analysis: pane.analysis), AutoSettings.isAuto(v, a) { return "\(label(f)) auto" }
             if let t = arraySummary(f, v) { return "\(label(f)) \(t)" }
             let value: String =
                 switch v["type"]?.string {
@@ -96,6 +101,8 @@ struct SettingsBar: View {
         case fieldSelection, wavelengthSelection, fieldIndex, wavelengthIndex, surfaceIndex, enumeration, boolean, number, hidden, advanced
         // Array and object settings with compact controls (SettingsControls.swift).
         case pair, sensorLimit, imageSource, spectrum
+        // Automatic sampling: the pupil grid and rays, fixed MTF frequencies.
+        case pupil, frequencies, imageOptics
     }
 
     func kind(of f: SettingsField) -> Kind {
@@ -108,6 +115,8 @@ struct SettingsBar: View {
         if ["wavelength", "long_wavelength", "short_wavelength"].contains(f.name) && integer { return .wavelengthIndex }
         if f.name == "surface" && integer { return .surfaceIndex }
         if f.name == "spectrum" && types.contains("object") { return .spectrum }
+        if f.name == "pupil" && types.contains("object") && f.defaultValue?["grid"] != nil { return .pupil }
+        if f.name == "frequencies" && AutoSettings.sentinel(f.name, analysis: pane.analysis) == .empty { return .frequencies }
         switch f.name {
         case "configuration":
             return (system?.configurations.count ?? 0) > 0 ? .number : .hidden
@@ -160,8 +169,16 @@ struct SettingsBar: View {
             Toggle(label, isOn: Binding(get: { value?.bool ?? false }, set: { pane.set(f.name, .bool($0)) }))
                 .help(f.description)
         case .number:
-            SettingNumberField(field: f, label: label, value: value, set: { pane.set(f.name, $0) })
-        case .pair, .sensorLimit, .imageSource:
+            SettingNumberField(
+                field: f, label: label, value: value, auto: AutoSettings.sentinel(f.name, analysis: pane.analysis),
+                autoUsed: AutoSettings.used(f.name, analysis: pane.analysis, output: pane.output), set: { pane.set(f.name, $0) })
+        case .pupil:
+            PupilSamplingControl(pane: pane, field: f)
+        case .frequencies:
+            FrequencyListSetting(
+                field: f, value: value, autoUsed: AutoSettings.used(f.name, analysis: pane.analysis, output: pane.output),
+                set: { pane.set(f.name, $0) })
+        case .pair, .sensorLimit, .imageSource, .imageOptics:
             arrayControl(f, kind: kind(of: f))
         case .spectrum:
             if vertical {
@@ -292,10 +309,15 @@ struct IndexMenu: View {
 }
 
 /// A compact number setting; empty text restores the default (or null).
+/// An automatic setting (`auto`: 0 or null asks the engine to choose)
+/// shows "Auto (n)" with the value the last run used, never a bare 0;
+/// typing 0, "auto" or nothing makes it automatic again.
 struct SettingNumberField: View {
     let field: SettingsField
     let label: String
     let value: JSONValue?
+    var auto: AutoSettings.Sentinel? = nil
+    var autoUsed: String? = nil
     let set: (JSONValue?) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
@@ -307,30 +329,48 @@ struct SettingNumberField: View {
                 .textFieldStyle(.roundedBorder)
                 .numeric()
                 .multilineTextAlignment(.trailing)
-                .frame(width: 64)
+                .frame(width: isAuto ? max(64, CGFloat(placeholder.count) * 7 + 8) : 64)
                 .focused($focused)
                 .onSubmit(commit)
                 .onChange(of: focused) { _, f in if !f { commit() } }
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
-        .help(field.description.isEmpty ? field.title : field.description)
+        .help(helpText)
         .onAppear { text = display }
         .onChange(of: value) { _, _ in if !focused { text = display } }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
+        .accessibilityValue(isAuto ? placeholder : display)
     }
 
     private var isInteger: Bool { field.types.contains("integer") && !field.types.contains("number") }
     private var nullable: Bool { field.types.contains("null") }
-    private var placeholder: String { nullable ? "auto" : "" }
+    private var isAuto: Bool { auto.map { AutoSettings.isAuto(value, $0) } ?? false }
+    private var placeholder: String { auto != nil ? AutoSettings.display(used: autoUsed) : nullable ? "auto" : "" }
 
-    private var display: String {
+    private var helpText: String {
+        var h = field.description.isEmpty ? field.title : field.description
+        if auto != nil { h += isAuto ? "\nAutomatic: the engine chooses from the system." : "\nClear the field (or type 0) to let the engine choose." }
+        return h
+    }
+
+    static func display(_ value: JSONValue?, isInteger: Bool, auto: AutoSettings.Sentinel?) -> String {
+        if let auto, AutoSettings.isAuto(value, auto) { return "" }
         guard let v = value, let d = v.doubleValue else { return "" }
         return isInteger ? String(Int(d)) : Fmt.short(d)
     }
 
+    private var display: String { Self.display(value, isInteger: isInteger, auto: auto) }
+
     private func commit() {
         let t = text.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty {
-            set(nullable ? .null : nil)
+        if t.isEmpty || (auto != nil && (t.lowercased().hasPrefix("auto") || LensValueParser.number(t) == 0)) {
+            switch auto {
+            case .zero?: set(.integer(0))
+            case .null?: set(.null)
+            default: set(nullable ? .null : nil)
+            }
+            text = ""
             return
         }
         guard var d = LensValueParser.number(t), d.isFinite else {
@@ -341,6 +381,101 @@ struct SettingNumberField: View {
         if let hi = field.maximum { d = min(d, hi) }
         set(isInteger ? .integer(Int64(d.rounded())) : .number(d))
         text = isInteger ? String(Int(d.rounded())) : Fmt.short(d)
+    }
+}
+
+/// The pupil sampling of the wave analyses (`pupil`): the grid, automatic
+/// by default ("Auto (128)"), and the traced rays per diameter. The other
+/// pupil keys are kept as they are.
+struct PupilSamplingControl: View {
+    let pane: AnalysisPane
+    let field: SettingsField
+
+    private var pupil: [String: JSONValue] { pane.value(field.name)?.object ?? field.defaultValue?.object ?? [:] }
+
+    var body: some View {
+        HStack(spacing: Space.s) {
+            SettingNumberField(
+                field: Self.field("grid", "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024)."),
+                label: "Pupil", value: pupil["grid"], auto: .zero,
+                autoUsed: AutoSettings.used("pupil.grid", analysis: pane.analysis, output: pane.output)
+            ) { set("grid", $0) }
+            SettingNumberField(
+                field: Self.field("rays", "Rays traced per pupil diameter (the lattice the wavefront is interpolated from)."),
+                label: "Rays", value: pupil["rays"]
+            ) { set("rays", $0) }
+        }
+    }
+
+    static func field(_ name: String, _ help: String) -> SettingsField {
+        var f = SettingsField(name: name, schema: .object(["type": .string("integer"), "description": .string(help)]), required: false)
+        f.minimum = 0
+        return f
+    }
+
+    private func set(_ key: String, _ v: JSONValue?) {
+        var p = pupil
+        p[key] = v ?? field.defaultValue?[key]
+        pane.set(field.name, .object(p))
+    }
+}
+
+/// Fixed MTF frequencies (cycles/mm), comma separated; empty lets the
+/// engine choose three round 1-2-5 frequencies ("Auto (2, 5, 10)").
+struct FrequencyListSetting: View {
+    let field: SettingsField
+    let value: JSONValue?
+    let autoUsed: String?
+    let set: (JSONValue?) -> Void
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    private var values: [Double] { value?.array?.compactMap(\.doubleValue) ?? [] }
+    private var placeholder: String { AutoSettings.display(used: autoUsed) }
+
+    var body: some View {
+        HStack(spacing: Space.xs) {
+            Text("Frequencies").foregroundStyle(.secondary)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .numeric()
+                .frame(width: max(96, CGFloat(max(placeholder.count, text.count)) * 7 + 8))
+                .focused($focused)
+                .onSubmit(commit)
+                .onChange(of: focused) { _, f in if !f { commit() } }
+            Text(field.unit.isEmpty ? "cycles/mm" : field.unit).foregroundStyle(.secondary)
+        }
+        .help(field.description + "\nComma separated; empty lets the engine choose.")
+        .onAppear { text = Self.text(values) }
+        .onChange(of: value) { _, _ in if !focused { text = Self.text(values) } }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Frequencies")
+        .accessibilityValue(values.isEmpty ? placeholder : Self.text(values))
+    }
+
+    static func text(_ v: [Double]) -> String { v.map(Fmt.short).joined(separator: ", ") }
+
+    /// Parses "10, 20 30" (commas, semicolons or spaces), positive values, sorted.
+    static func parse(_ t: String) -> [Double]? {
+        let parts = t.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == " " })
+        let v = parts.compactMap { LensValueParser.number(String($0)) }
+        guard v.count == parts.count, v.allSatisfy({ $0.isFinite && $0 > 0 }) else { return nil }
+        return Array(Set(v)).sorted()
+    }
+
+    private func commit() {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty || t.lowercased().hasPrefix("auto") {
+            if !values.isEmpty { set(.array([])) }
+            text = ""
+            return
+        }
+        guard let v = Self.parse(t), !v.isEmpty else {
+            text = Self.text(values)
+            return
+        }
+        if v != values { set(.array(v.map(JSONValue.number))) }
+        text = Self.text(v)
     }
 }
 

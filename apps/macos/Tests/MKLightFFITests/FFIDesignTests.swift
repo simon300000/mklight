@@ -175,7 +175,9 @@ extension FFIDesignTests {
         #expect(abs(range.upperBound - 1) < 1e-6 && range.lowerBound > 0.3 && range.lowerBound < 1)
         #expect(rd.isRadial(c, tolerance: 1e-2))
         #expect(!Contours.illuminationLevels(in: range).isEmpty)
-        #expect(Contours.illuminationLevels(in: range).allSatisfy { !Contours.segments(rd.grid(c), level: $0).isEmpty })
+        #expect(Contours.illuminationLevels(in: range).allSatisfy { !Contours.mapSegments(rd.grid(c), level: $0).isEmpty })
+        // Corners outside the field carry no data (not 0), drawn as such.
+        #expect(rd.outsideFieldIsNoData && rd.grid(c).noData == .unitDisk)
         #expect(keys("relative_illumination_map", ri)["Min RI"] == String(format: "%.3f", range.lowerBound))
 
         // Chief ray angle against a sensor limit the corner exceeds.

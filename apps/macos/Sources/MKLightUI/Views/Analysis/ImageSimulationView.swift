@@ -3,6 +3,7 @@ import ImageIO
 import MKLightEngine
 import MKLightModel
 import SwiftUI
+import simd
 import UniformTypeIdentifiers
 
 // `image_simulation` (docs/RESULTS.md): the simulated sensor image next to
@@ -261,12 +262,31 @@ struct ImageSimulationView: View {
         return CGRect(x: (size.width - w) / 2, y: (size.height - h) / 2, width: w, height: h)
     }
 
+    /// The patch's field position and where it lands on the sensor.
+    private func patchHelp(_ c: SIMD2<Double>) -> String {
+        var t = "Patch centred at normalised field " + ImageSimulationSettings.coordinates(c)
+        if let n = data.nodes.min(by: { simd_distance($0.field, c) < simd_distance($1.field, c) }), n.real.x.isFinite {
+            t += ", image point (" + String(format: "%.3f, %.3f", n.real.x, n.real.y) + ") mm"
+        }
+        return t + "."
+    }
+
+    private var psfAuto: Bool { (pane?.value("optics")?["psf_size"]?.int ?? 0) == 0 }
+
     private var caption: some View {
         let clipped = cache.clipped
         return HStack(spacing: Space.l) {
             Text("\(data.image.width) × \(data.image.height) px" + (data.image.channels == 3 ? ", RGB" : ", monochrome"))
             if data.pixelSize.x.isFinite, abs(data.pixelSize.x - data.pixelSize.y) > 1e-9 * data.pixelSize.x {
                 Text("Pixel \(Fmt.length(data.pixelSize.x)) × \(Fmt.length(data.pixelSize.y))")
+            }
+            if let c = ImageSimulationSettings.fieldCenter(fromRun: data) {
+                Text("At " + ImageSimulationSettings.centerTitle(c, points: ImageSimulationSettings.fieldPoints(pane?.workspace?.snapshot?.system)))
+                    .help(patchHelp(c))
+            }
+            if let n = data.psfSize, let d = data.psfSpacing, d.isFinite {
+                Text("PSF \(n) × \(Fmt.length(d))")
+                    .help("The PSF window and sample spacing this run used\(psfAuto ? ", chosen by the engine from the blur and diffraction" : "").")
             }
             if clipped > 0.001 { Text(String(format: "%.1f%% clipped", clipped * 100)).foregroundStyle(.orange) }
             Spacer(minLength: 0)
@@ -284,15 +304,21 @@ struct ImageSimulationView: View {
     }
 }
 
-/// The simulated field of view (a centred square of the normalised field)
-/// and the resolution, with what they mean on the sensor: the patch's width
-/// and the pixel size, so blur and aberrations can be made visible.
+/// The simulated patch of the field (a square of the normalised field
+/// around a chosen centre: on axis, a design field point, or a point picked
+/// on a small field diagram) and the resolution, with what they mean on the
+/// sensor: the patch's width and the pixel size, so blur and aberrations
+/// can be made visible.
 struct ImageViewControls: View {
     let pane: AnalysisPane
     let data: ImageSimulationData
+    @State private var picking = false
 
     private var extent: Double { ImageSimulationSettings.fieldExtent(pane) }
     private var size: Int { ImageSimulationSettings.size(pane) }
+    private var center: SIMD2<Double> { ImageSimulationSettings.fieldCenter(pane) }
+    private var system: OpticalSystem? { pane.workspace?.designSnapshot?.system ?? pane.workspace?.snapshot?.system }
+    private var points: [ImageSimulationSettings.FieldPoint] { ImageSimulationSettings.fieldPoints(system) }
 
     /// Image-plane half-width (mm) per unit of field extent, from the result.
     private var mmPerExtent: Double? {
@@ -316,9 +342,31 @@ struct ImageViewControls: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("The simulated part of the field: a square centred on the axis, as a fraction of the full field. A smaller patch has finer pixels, so the blur shows.")
+            .help("The simulated part of the field: a square around the patch centre, as a fraction of the field. A smaller patch has finer pixels, so the blur shows.")
             .accessibilityLabel("Field of view")
             .accessibilityValue(ImageSimulationSettings.extentTitle(extent))
+            Menu {
+                Picker("Patch centre", selection: Binding(get: { center }, set: { ImageSimulationSettings.setFieldCenter($0, in: pane) })) {
+                    ForEach(points) { p in Text(p.title).tag(p.field) }
+                    if !points.contains(where: { $0.field == center }) {
+                        Text(ImageSimulationSettings.centerTitle(center, points: points)).tag(center)
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Button("Pick on the Field…") { picking = true }
+            } label: {
+                Text("At " + ImageSimulationSettings.centerTitle(center, points: points))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Where the patch is centred: on the axis, at a design field point, or anywhere you pick on the field.")
+            .accessibilityLabel("Patch centre")
+            .accessibilityValue(ImageSimulationSettings.centerTitle(center, points: points))
+            .popover(isPresented: $picking) {
+                FieldCenterPicker(center: center, extent: extent, points: points) { ImageSimulationSettings.setFieldCenter($0, in: pane) }
+                    .padding(Space.l)
+            }
             Menu {
                 Picker("Resolution", selection: Binding(get: { size }, set: { ImageSimulationSettings.setSize($0, in: pane) })) {
                     ForEach(ImageSimulationSettings.sizes, id: \.self) { n in Text("\(n) × \(n) px").tag(n) }
@@ -345,29 +393,98 @@ struct ImageViewControls: View {
     }
 }
 
+/// A small diagram of the normalised field: the field disk, the design's
+/// field points and the simulated patch. A click (or a drag) moves the
+/// patch centre; it snaps to a field point nearby and to the axis.
+struct FieldCenterPicker: View {
+    let center: SIMD2<Double>
+    let extent: Double
+    let points: [ImageSimulationSettings.FieldPoint]
+    let set: (SIMD2<Double>) -> Void
+    @State private var dragged: SIMD2<Double>?
+
+    private let side: CGFloat = 200
+    /// Normalised field units shown on each side of the axis.
+    private let span = 1.15
+
+    var body: some View {
+        let c = dragged ?? center
+        VStack(alignment: .leading, spacing: Space.s) {
+            Text("Patch Centre").font(.headline)
+            Canvas { ctx, size in
+                let k = size.width / 2 / span
+                func pt(_ f: SIMD2<Double>) -> CGPoint { CGPoint(x: size.width / 2 + f.x * k, y: size.height / 2 - f.y * k) }
+                let disk = Path(ellipseIn: CGRect(x: size.width / 2 - k, y: size.height / 2 - k, width: 2 * k, height: 2 * k))
+                ctx.fill(disk, with: .color(.secondary.opacity(0.12)))
+                ctx.stroke(disk, with: .color(.secondary.opacity(0.6)), lineWidth: 1)
+                var axes = Path()
+                axes.move(to: CGPoint(x: 0, y: size.height / 2))
+                axes.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+                axes.move(to: CGPoint(x: size.width / 2, y: 0))
+                axes.addLine(to: CGPoint(x: size.width / 2, y: size.height))
+                ctx.stroke(axes, with: .color(.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                for p in points {
+                    let q = pt(p.field)
+                    ctx.fill(Path(ellipseIn: CGRect(x: q.x - 3, y: q.y - 3, width: 6, height: 6)), with: .color(.secondary))
+                }
+                let lo = pt(c - SIMD2(extent, extent)), hi = pt(c + SIMD2(extent, extent))
+                let patch = CGRect(x: lo.x, y: hi.y, width: max(hi.x - lo.x, 3), height: max(lo.y - hi.y, 3))
+                ctx.fill(Path(patch), with: .color(.accentColor.opacity(0.25)))
+                ctx.stroke(Path(patch), with: .color(.accentColor), lineWidth: 1.5)
+                let m = pt(c)
+                ctx.fill(Path(ellipseIn: CGRect(x: m.x - 2.5, y: m.y - 2.5, width: 5, height: 5)), with: .color(.accentColor))
+            }
+            .frame(width: side, height: side)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in dragged = field(at: v.location) }
+                    .onEnded { v in
+                        dragged = nil
+                        set(field(at: v.location))
+                    }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("Field diagram")
+            .accessibilityValue("Patch centre " + ImageSimulationSettings.centerTitle(c, points: points))
+            Text(ImageSimulationSettings.centerTitle(c, points: points)).font(.callout.monospacedDigit())
+            if ImageSimulationSettings.outsideField(center: c, extent: extent) {
+                Label("Part of the patch lies outside the design's field.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            Text("Click to centre the patch; it snaps to the axis and the field points.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: side)
+    }
+
+    private func field(at p: CGPoint) -> SIMD2<Double> {
+        let k = Double(side) / 2 / span
+        let f = SIMD2((Double(p.x) - Double(side) / 2) / k, (Double(side) / 2 - Double(p.y)) / k)
+        return ImageSimulationSettings.snap(f, to: points.map(\.field), within: 0.06)
+    }
+}
+
 /// The app's settings of `image_simulation` panes: the starting settings
-/// (a centred patch at 256 px, PSF windows and pupil sampling large enough
-/// for the sample designs' spots), the field-of-view and resolution
-/// choices, and the antialiased built-in patterns sent as the source.
+/// (a patch of 10 % of the field at 256 px, with the engine's automatic PSF
+/// window and pupil sampling), the field-of-view, patch-centre and
+/// resolution choices, and the antialiased built-in patterns sent as the
+/// source.
 @MainActor
 enum ImageSimulationSettings {
-    /// Field extents offered (half-width of the centred square, in units of
-    /// the normalised field).
-    static let extents: [Double] = [1, 0.5, 0.25, 0.1, 0.05, 0.02]
+    /// Field extents offered (half-width of the square, in units of the
+    /// normalised field); 1/√2 inscribes the square in the field disk.
+    nonisolated static let fullExtent = 0.5.squareRoot()
+    static let extents: [Double] = [fullExtent, 0.5, 0.25, 0.1, 0.05, 0.02]
     static let sizes: [Int] = [128, 256, 512, 1024]
 
-    /// Starting settings: a centred patch of 10 % of the field at 256 px, a
-    /// 161-sample PSF window and a 96-sample pupil (the engine's defaults,
-    /// the full field at 64 px with a 33-sample PSF, show no blur: the PSF
-    /// is truncated and the pixels are far larger than the spot).
-    static func starting(defaults: JSONValue?) -> [String: JSONValue] {
+    /// Starting settings: a patch of 10 % of the field at 256 px on the
+    /// axis. The engine sizes the PSF window and the pupil grid itself;
+    /// its default view (the inscribed square at 64 px) has pixels larger
+    /// than the spot, so the blur would not show.
+    nonisolated static func starting(defaults: JSONValue?) -> [String: JSONValue] {
         var optics = defaults?["optics"]?.object ?? [:]
         optics["field_extent"] = .number(0.1)
-        optics["psf_size"] = .integer(161)
-        var pupil = optics["pupil"]?.object ?? ["amplitude": .string("radiometric")]
-        pupil["grid"] = .integer(96)
-        pupil["rays"] = .integer(97)
-        optics["pupil"] = .object(pupil)
         return [
             "size": .array([.integer(256), .integer(256)]),
             "optics": .object(optics),
@@ -378,20 +495,49 @@ enum ImageSimulationSettings {
     /// Whether `settings` are the engine's defaults, as projects saved
     /// before the starting settings existed hold them: nothing set, or only
     /// values equal to the defaults.
-    static func isEngineDefault(_ settings: [String: JSONValue], defaults: JSONValue?) -> Bool {
+    nonisolated static func isEngineDefault(_ settings: [String: JSONValue], defaults: JSONValue?) -> Bool {
         settings.allSatisfy { k, v in defaults?[k] == v }
     }
 
-    static func fieldExtent(_ pane: AnalysisPane) -> Double { pane.value("optics")?["field_extent"]?.doubleValue ?? 1 }
+    /// Settings saved with the earlier starting PSF window and pupil (161
+    /// samples, a 96 grid of 97 rays, chosen when the engine had no
+    /// automatic sampling) go back to automatic; anything else is kept.
+    nonisolated static func migrated(_ settings: [String: JSONValue]) -> [String: JSONValue]? {
+        guard var optics = settings["optics"]?.object, optics["psf_size"]?.int == 161,
+            var pupil = optics["pupil"]?.object, pupil["grid"]?.int == 96, pupil["rays"]?.int == 97
+        else { return nil }
+        optics["psf_size"] = .integer(0)
+        pupil["grid"] = .integer(0)
+        pupil["rays"] = .integer(65)
+        optics["pupil"] = .object(pupil)
+        var s = settings
+        s["optics"] = .object(optics)
+        return s
+    }
 
-    /// The run's field extent: the corner node of its field mapping.
-    static func fieldExtent(fromRun data: ImageSimulationData) -> Double? {
-        let e = data.nodes.map { max(abs($0.field.x), abs($0.field.y)) }.max()
-        return e.flatMap { $0 > 0 ? $0 : nil }
+    static func fieldExtent(_ pane: AnalysisPane) -> Double { pane.value("optics")?["field_extent"]?.doubleValue ?? fullExtent }
+
+    /// The run's field extent: half the span of its field mapping nodes.
+    nonisolated static func fieldExtent(fromRun data: ImageSimulationData) -> Double? {
+        let xs = data.nodes.map(\.field.x)
+        guard let lo = xs.min(), let hi = xs.max(), hi > lo else { return nil }
+        return (hi - lo) / 2
+    }
+
+    /// The run's patch centre: the middle of its field mapping nodes.
+    nonisolated static func fieldCenter(fromRun data: ImageSimulationData) -> SIMD2<Double>? {
+        let xs = data.nodes.map(\.field.x), ys = data.nodes.map(\.field.y)
+        guard let x0 = xs.min(), let x1 = xs.max(), let y0 = ys.min(), let y1 = ys.max() else { return nil }
+        return SIMD2((x0 + x1) / 2, (y0 + y1) / 2)
     }
 
     static func size(_ pane: AnalysisPane) -> Int {
         Int(pane.value("size")?.array?.first?.doubleValue ?? 64)
+    }
+
+    static func fieldCenter(_ pane: AnalysisPane) -> SIMD2<Double> {
+        let a = pane.value("optics")?["field_center"]?.array?.compactMap(\.doubleValue) ?? []
+        return a.count == 2 ? SIMD2(a[0], a[1]) : .zero
     }
 
     static func setFieldExtent(_ e: Double, in pane: AnalysisPane) {
@@ -400,12 +546,77 @@ enum ImageSimulationSettings {
         pane.set("optics", .object(optics))
     }
 
+    static func setFieldCenter(_ c: SIMD2<Double>, in pane: AnalysisPane) {
+        var optics = pane.value("optics")?.object ?? [:]
+        optics["field_center"] = centerJSON(c)
+        pane.set("optics", .object(optics))
+    }
+
+    /// `[hx, hy]`, rounded to 1e-4 so picked points read cleanly.
+    nonisolated static func centerJSON(_ c: SIMD2<Double>) -> JSONValue {
+        func r(_ v: Double) -> Double { let x = (v * 1e4).rounded() / 1e4; return x == 0 ? 0 : x }
+        return .array([.number(r(c.x)), .number(r(c.y))])
+    }
+
     static func setSize(_ n: Int, in pane: AnalysisPane) {
         pane.set("size", .array([.integer(Int64(n)), .integer(Int64(n))]))
     }
 
-    static func extentTitle(_ e: Double) -> String {
-        e >= 1 ? "full field" : String(format: "centre %g %%", e * 100)
+    nonisolated static func extentTitle(_ e: Double) -> String {
+        if e >= 1 { return "full square" }
+        if abs(e - fullExtent) < 1e-6 { return "full field" }
+        return String(format: "%g %%", e * 100)
+    }
+
+    /// A choice of patch centre: the axis or a design field point, in
+    /// normalised field coordinates.
+    struct FieldPoint: Identifiable, Hashable {
+        var title: String
+        var field: SIMD2<Double>
+        var id: String { title }
+    }
+
+    /// The axis and the design's field points (normalised by the largest
+    /// radial field, CONVENTIONS §3), each listed once.
+    nonisolated static func fieldPoints(_ system: OpticalSystem?) -> [FieldPoint] {
+        var out = [FieldPoint(title: "On axis", field: .zero)]
+        guard let s = system else { return out }
+        let f = s.fields.fields
+        let r = f.map { ($0.x * $0.x + $0.y * $0.y).squareRoot() }.max() ?? 0
+        guard r > 0 else { return out }
+        for (k, p) in f.enumerated() {
+            let h = SIMD2(p.x / r, p.y / r)
+            guard !out.contains(where: { simd_distance($0.field, h) < 1e-9 }) else { continue }
+            out.append(FieldPoint(title: "Field \(k + 1) " + coordinates(h), field: h))
+        }
+        return out
+    }
+
+    nonisolated static func coordinates(_ c: SIMD2<Double>) -> String {
+        func f(_ v: Double) -> String {
+            Fmt.signed(v, decimals: 2).trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "-", with: "−")
+        }
+        return "(" + f(c.x) + ", " + f(c.y) + ")"
+    }
+
+    /// "on axis", "Field 3 (0.00, 1.00)" or "(0.30, −0.45)".
+    nonisolated static func centerTitle(_ c: SIMD2<Double>, points: [FieldPoint]) -> String {
+        if c == .zero { return "on axis" }
+        if let p = points.first(where: { simd_distance($0.field, c) < 1e-4 }) { return p.title }
+        return coordinates(c)
+    }
+
+    /// The nearest of `targets` (and the axis) within `within`, else `p`.
+    nonisolated static func snap(_ p: SIMD2<Double>, to targets: [SIMD2<Double>], within d: Double) -> SIMD2<Double> {
+        let near = ([SIMD2<Double>.zero] + targets).min { simd_distance($0, p) < simd_distance($1, p) }
+        if let near, simd_distance(near, p) < d { return near }
+        return p
+    }
+
+    /// Whether a corner of the patch lies outside the unit field disk.
+    nonisolated static func outsideField(center c: SIMD2<Double>, extent e: Double) -> Bool {
+        let far = SIMD2(abs(c.x) + e, abs(c.y) + e)
+        return (far.x * far.x + far.y * far.y).squareRoot() > 1 + 1e-9
     }
 }
 

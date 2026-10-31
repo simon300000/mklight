@@ -167,6 +167,10 @@ public final class Workspace {
     /// starting patch, PSF and pupil sampling, and waits for Update.
     private func migrateSavedPanes() {
         for p in panes where p.analysis == "image_simulation" && p.output == nil && !p.isRunning {
+            if let m = ImageSimulationSettings.migrated(p.settings) {
+                p.setSettings(m)
+                continue
+            }
             guard ImageSimulationSettings.isEngineDefault(p.settings, defaults: descriptor(p.analysis)?.defaultSettings) else { continue }
             p.autoUpdate = Self.autoUpdateDefault(p.analysis)
             p.setSettings(startingSettings(p.analysis))
