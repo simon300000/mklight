@@ -198,10 +198,22 @@ final class SampleThumbnails {
 struct LayoutThumbnail: View {
     let scene: LayoutScene
 
+    /// The lens's profiles plus a margin along the axis, as frame points.
+    static func lensWindow(_ lines: [LayoutScene.Polyline]) -> [Point3] {
+        let lens = lines.filter { ![.ray, .axis, .imagePlane].contains($0.kind) }.flatMap(\.points)
+        guard let z0 = lens.map(\.z).min(), let z1 = lens.map(\.z).max(), let h = lens.map({ abs($0.y) }).max() else {
+            return lines.flatMap(\.points)
+        }
+        let m = max(z1 - z0, 4 * h)
+        return [Point3(0, -1.6 * h, z0 - m), Point3(0, 1.6 * h, z1 + m)]
+    }
+
     var body: some View {
         Canvas { ctx, size in
             let lines = scene.polylines.filter(\.inSection)
-            let pts = lines.flatMap(\.points)
+            let slim = SceneGeometry.isSlim(scene, mode: .section2D)
+            // A slim scene: the lens with a margin of rays, not the long focus.
+            let pts = slim ? Self.lensWindow(lines) : lines.flatMap(\.points)
             guard let zMin = pts.map(\.z).min(), let zMax = pts.map(\.z).max(),
                 let yMin = pts.map(\.y).min(), let yMax = pts.map(\.y).max()
             else { return }
@@ -235,6 +247,7 @@ struct LayoutThumbnail: View {
                 }
             }
         }
+        .clipped()
         .accessibilityHidden(true)
     }
 }

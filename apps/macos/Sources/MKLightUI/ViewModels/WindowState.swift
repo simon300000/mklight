@@ -91,6 +91,8 @@ public final class WindowState {
     public var rayColoring = RayColoring.field
     /// Incremented to ask the viewport to fit the scene.
     public var fitRequest = 0
+    /// Fit frames the lens only (surfaces), not the rays to the image.
+    public var fitLens = false
     /// Height fraction of the lens data editor.
     public var editorFraction = 0.36
     /// Width fraction of the viewport in the lower half.

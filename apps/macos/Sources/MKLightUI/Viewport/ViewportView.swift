@@ -20,6 +20,8 @@ struct ViewportContent: Equatable {
     var accent: SIMD3<Float>
     /// Beam footprints on every surface (3-D only), from `footprint`.
     var footprints: FootprintOverlay? = nil
+    /// Fit frames the lens only.
+    var fitLens = false
 }
 
 /// Camera gestures common to both platforms (in view points, y up).
@@ -27,6 +29,7 @@ struct ViewportContent: Equatable {
 final class ViewportInput {
     var renderer: ViewportRenderer?
     var onCamera: (ViewportCamera) -> Void = { _ in }
+    var fitLens = false
     var redraw: () -> Void = {}
 
     var camera: ViewportCamera { renderer?.camera ?? ViewportCamera() }
@@ -46,9 +49,13 @@ final class ViewportInput {
         set(ViewportMath.zoom(camera, mode: mode, factor: factor, about: p))
     }
 
-    func fit(size: CGSize) {
+    /// Fits the scene, or the lens alone. The first fit of a slim, long
+    /// scene (a slow lens far from its image) frames the lens, so its
+    /// surfaces are not lost in a thin line of rays.
+    func fit(size: CGSize, initial: Bool = false) {
         guard let r = renderer, let scene = r.scene else { return }
-        set(ViewportMath.fit(r.camera, mode: r.mode, points: SceneGeometry.fitPoints(scene, mode: r.mode), size: size))
+        let lensOnly = fitLens || (initial && SceneGeometry.isSlim(scene, mode: r.mode))
+        set(ViewportMath.fit(r.camera, mode: r.mode, points: SceneGeometry.fitPoints(scene, mode: r.mode, lensOnly: lensOnly), size: size))
     }
 }
 
@@ -93,15 +100,17 @@ enum ViewportBridge {
             mode: content.mode, coloring: content.coloring, selectedSurface: content.selectedSurface, stale: content.stale,
             dark: dark, scale: Float(scale), accent: content.accent, footprints: content.footprints)
         r.mode = content.mode
+        input.fitLens = content.fitLens
         r.setScene(content.scene, style: style)
         if r.camera != camera.wrappedValue { r.camera = camera.wrappedValue }
         let c = coordinator
         let needsFit =
             content.scene != nil && (!camera.wrappedValue.isFitted || c.lastFit != content.fitRequest || c.lastMode != content.mode)
         if needsFit, view.bounds.width > 1 {
+            let initial = !camera.wrappedValue.isFitted
             c.lastFit = content.fitRequest
             c.lastMode = content.mode
-            input.fit(size: view.bounds.size)
+            input.fit(size: view.bounds.size, initial: initial)
         }
         view.redraw()
     }

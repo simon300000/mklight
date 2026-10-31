@@ -251,9 +251,17 @@ struct PupilAberrationView: View {
         let c = min(column, data.columns.count - 1)
         let col = data.columns[c]
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                FieldColumnPicker(columns: data.columns, selection: $column)
-                Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            // The definition beside the picker when it fits, else below it.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                    FieldColumnPicker(columns: data.columns, selection: $column).fixedSize()
+                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    FieldColumnPicker(columns: data.columns, selection: $column)
+                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             FieldMapContent(data: data, column: c)
         }
@@ -313,9 +321,17 @@ struct RelativeIlluminationMapView: View {
         let col = data.columns[c]
         let isRI = col.name == "relative_illumination"
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-                FieldColumnPicker(columns: data.columns, selection: $column)
-                Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            // The definition beside the picker when it fits, else below it.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                    FieldColumnPicker(columns: data.columns, selection: $column).fixedSize()
+                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    FieldColumnPicker(columns: data.columns, selection: $column)
+                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if data.layout == .map {
                 ViewThatFits(in: .horizontal) {

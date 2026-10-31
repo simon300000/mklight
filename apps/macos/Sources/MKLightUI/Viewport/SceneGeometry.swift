@@ -257,7 +257,30 @@ enum SceneGeometry {
     }
 
     /// Points used to fit the camera (only what the mode shows).
-    static func fitPoints(_ scene: LayoutScene, mode: ViewportMode) -> [SIMD3<Double>] {
-        scene.polylines.filter { mode == .orbit3D || $0.inSection }.flatMap(\.points).map { SIMD3($0.x, $0.y, $0.z) }
+    /// Whether the whole scene is much longer than its lens is high and the
+    /// lens a small part of it (then the lens deserves the first fit).
+    static func isSlim(_ scene: LayoutScene, mode: ViewportMode) -> Bool {
+        let all = fitPoints(scene, mode: mode), lens = fitPoints(scene, mode: mode, lensOnly: true)
+        func extent(_ p: [SIMD3<Double>]) -> (z: Double, h: Double) {
+            guard let z0 = p.map(\.z).min(), let z1 = p.map(\.z).max() else { return (0, 0) }
+            let h = max(p.map { abs($0.y) }.max() ?? 0, p.map { abs($0.x) }.max() ?? 0)
+            return (z1 - z0, 2 * h)
+        }
+        let a = extent(all), l = extent(lens)
+        return a.h > 0 && a.z > 12 * a.h && l.z * 5 < a.z
+    }
+
+    static func fitPoints(_ scene: LayoutScene, mode: ViewportMode, lensOnly: Bool = false) -> [SIMD3<Double>] {
+        let lens: (LayoutScene.Polyline) -> Bool = { ![.ray, .axis, .imagePlane].contains($0.kind) }
+        let lines = scene.polylines.filter { (mode == .orbit3D || $0.inSection) && (!lensOnly || lens($0)) }
+        var pts = lines.flatMap(\.points).map { SIMD3($0.x, $0.y, $0.z) }
+        if pts.isEmpty && lensOnly { return fitPoints(scene, mode: mode) }
+        // The lens with room for the rays around it.
+        if lensOnly, let z0 = pts.map(\.z).min(), let z1 = pts.map(\.z).max() {
+            let h = pts.map { max(abs($0.x), abs($0.y)) }.max() ?? 0
+            let m = 0.6 * max(z1 - z0, 2 * h)
+            pts += [SIMD3(0, 0, z0 - m), SIMD3(0, 0, z1 + m), SIMD3(0, 1.3 * h, z0), SIMD3(0, -1.3 * h, z0)]
+        }
+        return pts
     }
 }

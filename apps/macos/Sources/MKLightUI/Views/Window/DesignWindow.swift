@@ -222,6 +222,8 @@ private struct DesignWindowContent: View {
         if d.string(forKey: "MKLightSidebar") == "hidden" { columns = .detailOnly }
         if d.string(forKey: "MKLightViewport") == "3D" { window.viewportMode = .orbit3D }
         if d.bool(forKey: "MKLightFootprints") { workspace.showFootprints = true }
+        if d.string(forKey: "MKLightFit") == "lens" { window.fitLens = true }
+        if let yaw = d.object(forKey: "MKLightYaw") as? Double ?? Double(d.string(forKey: "MKLightYaw") ?? "") { window.camera.yaw = yaw }
         if d.bool(forKey: "MKLightShowIssues") {
             Task {
                 try? await Task.sleep(for: .seconds(3))

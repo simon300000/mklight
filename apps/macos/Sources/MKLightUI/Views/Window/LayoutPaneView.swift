@@ -25,7 +25,7 @@ struct LayoutPaneView: View {
                 content: ViewportContent(
                     scene: scene, mode: window.viewportMode, coloring: window.rayColoring,
                     selectedSurface: window.selection.flatMap { system.surfaceIndex(of: $0) }, stale: pane.isStale,
-                    fitRequest: window.fitRequest, accent: accent, footprints: footprints),
+                    fitRequest: window.fitRequest, accent: accent, footprints: footprints, fitLens: window.fitLens),
                 camera: $window.camera, error: $error
             )
             .accessibilityLabel(accessibilityText(scene))
@@ -144,6 +144,15 @@ struct LayoutPaneView: View {
                             Button("All") { pane.set("wavelengths", .object(["type": .string("all")])) }
                         }
                         Divider()
+                        Button("Fit All") {
+                            window.fitLens = false
+                            window.fitRequest += 1
+                        }
+                        Button("Fit Lens") {
+                            window.fitLens = true
+                            window.fitRequest += 1
+                        }
+                        Divider()
                         Toggle("Surface Mesh in 3D", isOn: Binding(get: { meshOn }, set: { pane.set("mesh_rings", $0 ? .integer(16) : nil) }))
                         Toggle("Beam Footprints in 3D", isOn: Binding(get: { workspace.showFootprints }, set: { workspace.showFootprints = $0 }))
                     } label: {
@@ -152,16 +161,20 @@ struct LayoutPaneView: View {
                     .menuIndicator(.hidden)
                     .help("Ray colors and sampling")
                     if window.viewportMode == .orbit3D {
-                        Toggle(isOn: Binding(get: { workspace.showFootprints }, set: { workspace.showFootprints = $0 })) {
-                            Label("Footprints", systemImage: workspace.footprints.isRunning ? "circle.dotted" : "circle.dashed")
+                        Button {
+                            workspace.showFootprints.toggle()
+                        } label: {
+                            Label("Footprints", systemImage: workspace.showFootprints ? "circle.dashed.inset.filled" : "circle.dashed")
+                                .foregroundStyle(workspace.showFootprints ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                         }
-                        .toggleStyle(.button)
-                        .tint(.accentColor)
                         .help(workspace.showFootprints ? "Hide the beam footprints on the surfaces" : "Show the beam footprint of every field on every surface")
                         .accessibilityLabel("Beam footprints")
                         .accessibilityValue(workspace.showFootprints ? "on" : "off")
                     }
-                    Button("Fit", systemImage: "arrow.up.left.and.arrow.down.right") { window.fitRequest += 1 }
+                    Button("Fit", systemImage: "arrow.up.left.and.arrow.down.right") {
+                        window.fitLens = false
+                        window.fitRequest += 1
+                    }
                         .help("Fit the layout (⌘0, or double-click)")
                 }
                 .labelStyle(.iconOnly)
