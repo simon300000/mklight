@@ -331,18 +331,38 @@ fn batches_and_reordering_preserve_geometry() {
     let gpu = backend(LibraryChoice::Precompiled);
     let t = testutil::tracer(samples::cooke_triplet());
     let points = (PupilSampling::Grid { n: 9 }).points();
-    let (p, h) = make_plan(&gpu, &t, 2, 1, &points, false, 40, false);
-    let reference = read_all(
-        &gpu,
-        &gpu.submit_plan(p, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap(),
-    );
-    gpu.release_systems(h).unwrap();
+    let mut references = vec![];
+    for wl in 0..t.num_wavelengths() {
+        let (p, h) = make_plan(&gpu, &t, 2, wl, &points, false, 40, false);
+        references.push(read_all(
+            &gpu,
+            &gpu.submit_plan(p, &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap(),
+        ));
+        gpu.release_systems(h).unwrap();
+    }
     for batch in [1, 16, 256, 1024] {
-        let pack = PackedSystem::pack_all(t.system()).unwrap();
-        let handle = gpu.upload_systems(&vec![pack; batch]).unwrap();
+        // Each system maps packed wavelength zero to a different physical
+        // wavelength. Reading system zero for every ray would change its optics.
+        let packed: Vec<_> = (0..batch)
+            .map(|k| {
+                PackedSystem::pack(
+                    t.system(),
+                    &PackOptions {
+                        wavelengths: Some(
+                            (0..t.num_wavelengths())
+                                .map(|w| (w + k) % t.num_wavelengths())
+                                .collect(),
+                        ),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            })
+            .collect();
+        let handle = gpu.upload_systems(&packed).unwrap();
         let n = batch * points.len();
         for reverse in [false, true] {
             let (mut p, unused) = make_plan(&gpu, &t, 2, 1, &vec![[0., 0.]; n], false, 40, false);
@@ -354,7 +374,7 @@ fn batches_and_reordering_preserve_geometry() {
                         t.paraxial(),
                         t.field(2).point,
                         k as u32,
-                        1,
+                        0,
                         t.aiming(),
                     )
                     .unwrap()
@@ -393,6 +413,7 @@ fn batches_and_reordering_preserve_geometry() {
             let ids = uints(&data[2]);
             for i in 0..n {
                 let j = ids[i] as usize % points.len();
+                let reference = &references[(ids[i] as usize / points.len()) % t.num_wavelengths()];
                 for output in [0, 3] {
                     for plane in 0..15 {
                         assert_eq!(
