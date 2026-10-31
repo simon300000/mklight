@@ -11,12 +11,19 @@ use std::{
     time::{Duration, Instant},
 };
 fn backend(origin: LibraryChoice) -> MetalBackend {
-    MetalBackend::with_options(&MetalOptions {
+    let started = Instant::now();
+    let b = MetalBackend::with_options(&MetalOptions {
         library: origin,
         ..Default::default()
     })
     .unwrap()
-    .expect("actual host Metal required")
+    .expect("actual host Metal required");
+    eprintln!(
+        "backend_setup_probe_ms={:.6} build={}",
+        started.elapsed().as_secs_f64() * 1e3,
+        b.precision().kernel_build
+    );
+    b
 }
 fn grid(t: &SequentialTracer, side: usize) -> (RayBatch, Vec<u32>, Vec<Option<[f64; 2]>>, usize) {
     let mut rays = RayBatch::default();

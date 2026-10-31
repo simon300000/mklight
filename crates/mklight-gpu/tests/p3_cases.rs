@@ -201,17 +201,19 @@ pub fn sort_answers(b: &dyn ComputeBackend) {
     let keys = import(
         b,
         &mut p,
-        [4],
+        [6],
         BufferData::DoubleFloat(vec![
             Df32::new(f32::NAN, 3.),
             Df32::new(2., f32::NAN),
             Df32::from_f32(1.),
             Df32::new(f32::NAN, -2.),
+            Df32::new(1., 2e-8),
+            Df32::new(1., -2e-8),
         ]),
     );
-    let ids = import(b, &mut p, [4], BufferData::U32(vec![3, 1, 7, 2]));
-    let ok = scratch(&mut p, ElementType::DoubleFloat, [4]);
-    let oi = scratch(&mut p, ElementType::U32, [4]);
+    let ids = import(b, &mut p, [6], BufferData::U32(vec![3, 1, 7, 2, 0, 9]));
+    let ok = scratch(&mut p, ElementType::DoubleFloat, [6]);
+    let oi = scratch(&mut p, ElementType::U32, [6]);
     p.operations
         .push(ResidentOp::Collectives(Request::StableSort(StableSort {
             keys,
@@ -223,7 +225,7 @@ pub fn sort_answers(b: &dyn ComputeBackend) {
         })));
     p.outputs = vec![oi];
     let (v, _) = read(b, p);
-    assert_eq!(uint(&v[0]), &[7, 1, 2, 3]);
+    assert_eq!(uint(&v[0]), &[9, 7, 0, 1, 2, 3]);
 
     for n in [0, 1, 257, 10003] {
         for t in [ElementType::U32, ElementType::F32, ElementType::DoubleFloat] {

@@ -4,12 +4,17 @@ mod p3_cases;
 use mklight_gpu::{resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 fn backend(origin: LibraryChoice) -> MetalBackend {
+    let started = std::time::Instant::now();
     let b = MetalBackend::with_options(&MetalOptions {
         library: origin,
         ..Default::default()
     })
     .unwrap()
     .expect("P3 requires actual host Metal");
+    eprintln!(
+        "backend_setup_probe_ms={:.6}",
+        started.elapsed().as_secs_f64() * 1e3
+    );
     eprintln!(
         "device={} build={} probe={:?}",
         b.info().backend_id(),
