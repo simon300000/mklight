@@ -19,6 +19,9 @@ public enum ParamPath: Codable, Sendable, Hashable {
     case modelNd(surface: SurfaceID)
     case modelVd(surface: SurfaceID)
     case modelDpgf(surface: SurfaceID)
+    /// `Δn_d` / `ΔV_d` of a catalog glass's `MaterialOffset`.
+    case materialDnD(surface: SurfaceID)
+    case materialDvD(surface: SurfaceID)
     case decenterX(surface: SurfaceID)
     case decenterY(surface: SurfaceID)
     case tiltX(surface: SurfaceID)
@@ -43,6 +46,8 @@ public enum ParamPath: Codable, Sendable, Hashable {
         "model_nd": { .modelNd(surface: $0) },
         "model_vd": { .modelVd(surface: $0) },
         "model_dpgf": { .modelDpgf(surface: $0) },
+        "material_dn_d": { .materialDnD(surface: $0) },
+        "material_dv_d": { .materialDvD(surface: $0) },
         "decenter_x": { .decenterX(surface: $0) },
         "decenter_y": { .decenterY(surface: $0) },
         "tilt_x": { .tiltX(surface: $0) },
@@ -71,6 +76,8 @@ public enum ParamPath: Codable, Sendable, Hashable {
         case .modelNd(let s): ("model_nd", s, nil)
         case .modelVd(let s): ("model_vd", s, nil)
         case .modelDpgf(let s): ("model_dpgf", s, nil)
+        case .materialDnD(let s): ("material_dn_d", s, nil)
+        case .materialDvD(let s): ("material_dv_d", s, nil)
         case .decenterX(let s): ("decenter_x", s, nil)
         case .decenterY(let s): ("decenter_y", s, nil)
         case .tiltX(let s): ("tilt_x", s, nil)

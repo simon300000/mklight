@@ -448,6 +448,7 @@ pub fn absorbing_triplet() -> OpticalSystem {
             surf.material = MaterialRef::Catalog {
                 catalog: Some("TEST".into()),
                 name: "ABSORB".into(),
+                offset: Default::default(),
             };
         }
     }

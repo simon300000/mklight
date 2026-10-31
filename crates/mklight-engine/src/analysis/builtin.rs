@@ -7,10 +7,12 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use mklight_core::materials::coating::ResolvedCoating;
-use mklight_core::materials::{Glass, MaterialLibrary, ResolvedMaterial, lines};
+use mklight_core::materials::{Glass, MaterialLibrary, MaterialOffset, ResolvedMaterial, lines};
 use mklight_core::math::KahanSum;
 use mklight_core::rng::Philox;
-use mklight_core::{ApertureSpec, Interaction, JobContext, MkError, SemiDiameter, SurfaceShape};
+use mklight_core::{
+    ApertureSpec, Interaction, JobContext, MaterialRef, MkError, SemiDiameter, SurfaceShape,
+};
 
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -517,6 +519,7 @@ pub struct GlassInfo;
 struct GlassInfoSettings {
     name: String,
     catalog: Option<String>,
+    offset: MaterialOffset,
     wavelengths_um: Option<Vec<f64>>,
     temperature_c: Option<f64>,
     pressure_atm: Option<f64>,
@@ -557,9 +560,9 @@ impl Analysis for GlassInfo {
         "materials"
     }
     fn description(&self) -> &str {
-        "Catalog data of one glass and its index relative to air at chosen wavelengths and \
-         environment. Buffer `dispersion_curve` [samples × 2] holds (λ µm, n) over the \
-         glass's valid range."
+        "Catalog data of one glass, with an optional index/Abbe offset, and its index relative \
+         to air at chosen wavelengths and environment. Buffer `dispersion_curve` [samples × 2] \
+         holds (λ µm, n) over the glass's valid range."
     }
     fn result_schema(&self) -> Value {
         use super::schema::*;
@@ -569,14 +572,21 @@ impl Analysis for GlassInfo {
                 ("name", string("")),
                 ("catalog_nd", num("", "Catalog n_d.")),
                 ("catalog_vd", num("", "Catalog V_d.")),
+                ("offset", material_offset()),
                 (
                     "nd",
-                    num("", "Computed at the d line (catalog conditions)."),
+                    num(
+                        "",
+                        "Computed at the d line, offset included (catalog conditions).",
+                    ),
                 ),
                 ("ne", num("", "")),
                 ("vd", nf()),
                 ("pgf", nf_u("", "Partial dispersion P_g,F.")),
-                ("dispersion", opaque("Dispersion formula and coefficients.")),
+                (
+                    "dispersion",
+                    opaque("Nominal dispersion formula and coefficients, without the offset."),
+                ),
                 ("min_um", num("µm", "")),
                 ("max_um", num("µm", "")),
                 ("has_thermal_data", boolean("")),
@@ -615,6 +625,7 @@ impl Analysis for GlassInfo {
                 "name": {"type": "string", "title": "Glass"},
                 "catalog": {"type": ["string", "null"], "default": null,
                             "description": "Catalog to search; null searches all in load order."},
+                "offset": super::schema::material_offset(),
                 "wavelengths_um": {"type": ["array", "null"], "default": null,
                                    "items": {"type": "number", "minimum": 0.1, "maximum": 30.0},
                                    "unit": "µm",
@@ -651,10 +662,15 @@ impl Analysis for GlassInfo {
         if let Some(p) = s.pressure_atm {
             env.pressure_atm = p;
         }
-        let m = ResolvedMaterial::Glass {
-            glass: Arc::new(glass.clone()),
-            env,
+        let reference = MaterialRef::Catalog {
+            catalog: s.catalog.clone(),
+            name: s.name.clone(),
+            offset: s.offset,
         };
+        let m = input.library.resolve(&reference, &env)?;
+        let m_catalog = input
+            .library
+            .resolve(&reference, &glass.catalog_environment())?;
         let wls = s
             .wavelengths_um
             .unwrap_or_else(|| sys.wavelengths.wavelengths.iter().map(|w| w.um).collect());
@@ -672,13 +688,13 @@ impl Analysis for GlassInfo {
                 json!({
                     "wavelength_um": w,
                     "n": num(m.index(w)),
-                    "n_catalog": num(glass.catalog_index(w)),
+                    "n_catalog": num(m_catalog.index(w)),
                     "absorption_per_mm": glass.absorption_per_mm(w),
                     "in_range": in_range,
                 })
             })
             .collect();
-        let d = |l: f64| glass.catalog_index(l);
+        let d = |l: f64| m_catalog.index(l);
         let dfc = d(lines::F) - d(lines::C);
         let mut buffers = Vec::new();
         if s.curve_samples > 0 {
@@ -710,6 +726,7 @@ impl Analysis for GlassInfo {
                 "name": glass.name,
                 "catalog_nd": glass.nd,
                 "catalog_vd": glass.vd,
+                "offset": s.offset,
                 "nd": d(lines::D),
                 "ne": d(lines::E),
                 "vd": num((d(lines::D) - 1.0) / dfc),

@@ -1815,7 +1815,7 @@ impl Analysis for Tolerance {
             "type": "object",
             "properties": {
                 "tolerances": {"type": "array", "default": [], "title": "Tolerances",
-                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature."},
+                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature."},
                 "compensators": {"type": "array", "default": [], "title": "Compensators",
                     "description": "{\"param\": ParamPath, \"range\", \"scale\"}: re-optimised for every trial."},
                 "criterion": {"type": ["object", "null"], "default": null, "title": "Criterion",

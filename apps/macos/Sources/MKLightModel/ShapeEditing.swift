@@ -336,6 +336,9 @@ extension ParamPath {
             case .modelNd, .modelVd, .modelDpgf:
                 if case .model = s.material { return nil }
                 return "material is not a model glass"
+            case .materialDnD, .materialDvD:
+                if case .catalog = s.material { return nil }
+                return "material is not a catalogue glass"
             case .semiDiameter:
                 return s.semiDiameter == .auto ? "semi-diameter is automatic" : nil
             default:

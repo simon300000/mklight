@@ -120,6 +120,10 @@ fn kitchen_sink() -> OpticalSystem {
         MaterialRef::Catalog {
             catalog: Some("BUILTIN".into()),
             name: "N-BK7".into(),
+            offset: materials::MaterialOffset {
+                dn_d: 0.0012,
+                dv_d: -0.8,
+            },
         },
     );
     s1.semi_diameter = SemiDiameter::Fixed { value: 12.5 };
@@ -354,6 +358,8 @@ fn all_param_paths() -> Vec<ParamPath> {
         ParamPath::ModelNd { surface },
         ParamPath::ModelVd { surface },
         ParamPath::ModelDpgf { surface },
+        ParamPath::MaterialDnD { surface },
+        ParamPath::MaterialDvD { surface },
         ParamPath::DecenterX { surface },
         ParamPath::DecenterY { surface },
         ParamPath::TiltX { surface },
@@ -690,6 +696,16 @@ fn validation_cases() -> Vec<ValidationCase> {
         with(
             "dpgf on air",
             ParamPath::ModelDpgf { surface: id(2) },
+            &none,
+        ),
+        with(
+            "dv_d on catalog glass",
+            ParamPath::MaterialDvD { surface: id(1) },
+            &none,
+        ),
+        with(
+            "dn_d on model glass",
+            ParamPath::MaterialDnD { surface: id(3) },
             &none,
         ),
         with(

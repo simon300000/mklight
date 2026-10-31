@@ -30,6 +30,10 @@ extension OpticalSystem {
                 if case .modelNd = path { return nd }
                 if case .modelVd = path { return vd }
                 return dpgf
+            case .materialDnD, .materialDvD:
+                guard case .catalog(_, _, let o) = s.material else { return nil }
+                if case .materialDnD = path { return o.dnD }
+                return o.dvD
             case .decenterX: return s.placement?.decenterX ?? 0
             case .decenterY: return s.placement?.decenterY ?? 0
             case .tiltX: return s.placement?.tiltX ?? 0
@@ -87,6 +91,10 @@ extension OpticalSystem {
                 guard case .model(var nd, var vd, var dpgf) = s.material else { return false }
                 if case .modelNd = path { nd = v } else if case .modelVd = path { vd = v } else { dpgf = v }
                 s.material = .model(nd: nd, vd: vd, dpgf: dpgf)
+            case .materialDnD, .materialDvD:
+                guard case .catalog(let cat, let name, var o) = s.material else { return false }
+                if case .materialDnD = path { o.dnD = v } else { o.dvD = v }
+                s.material = .catalog(catalog: cat, name: name, offset: o)
             case .decenterX: placed { $0.decenterX = v }
             case .decenterY: placed { $0.decenterY = v }
             case .tiltX: placed { $0.tiltX = v }
@@ -145,6 +153,8 @@ extension ParamPath {
         case .modelNd: return "n_d \(n)"
         case .modelVd: return "V_d \(n)"
         case .modelDpgf: return "ΔP_g,F \(n)"
+        case .materialDnD: return "Δn_d \(n)"
+        case .materialDvD: return "ΔV_d \(n)"
         case .decenterX: return "Decenter X \(n)"
         case .decenterY: return "Decenter Y \(n)"
         case .tiltX: return "Tilt X \(n)"
@@ -179,7 +189,8 @@ extension ParamPath {
         switch self {
         case .curvature: return "1/mm"
         case .thickness, .decenterX, .decenterY, .semiDiameter, .paraxialFocalLength: return "mm"
-        case .conic, .modelNd, .modelVd, .modelDpgf, .fieldWeight, .wavelengthWeight: return ""
+        case .conic, .modelNd, .modelVd, .modelDpgf, .materialDnD, .materialDvD, .fieldWeight, .wavelengthWeight:
+            return ""
         case .asphere(_, let k): return Self.inverseMM(2 * k + 3)
         case .shapeCoefficient(_, let set, let k):
             switch set {

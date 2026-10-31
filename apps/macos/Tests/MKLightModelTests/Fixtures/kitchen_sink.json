@@ -84,7 +84,11 @@
       "material": {
         "type": "catalog",
         "catalog": "BUILTIN",
-        "name": "N-BK7"
+        "name": "N-BK7",
+        "offset": {
+          "dn_d": 0.0012,
+          "dv_d": -0.8
+        }
       },
       "interaction": "refract",
       "semi_diameter": {

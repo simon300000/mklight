@@ -111,6 +111,7 @@ fn absorbing_plate_bookkeeping() {
     sys.surfaces[2].material = MaterialRef::Catalog {
         catalog: Some("TEST".into()),
         name: "ABS".into(),
+        offset: Default::default(),
     };
     let m = GhostModel::from_system(resolve_with(sys, absorbing_library()), unclipped()).unwrap();
     let ray = m

@@ -79,6 +79,14 @@ pub enum ParamPath {
     ModelDpgf {
         surface: SurfaceId,
     },
+    /// `Δn_d` of a catalogue glass (`MaterialOffset`).
+    MaterialDnD {
+        surface: SurfaceId,
+    },
+    /// `ΔV_d` of a catalogue glass (`MaterialOffset`).
+    MaterialDvD {
+        surface: SurfaceId,
+    },
     DecenterX {
         surface: SurfaceId,
     },
@@ -156,6 +164,8 @@ impl ParamPath {
             | ModelNd { surface }
             | ModelVd { surface }
             | ModelDpgf { surface }
+            | MaterialDnD { surface }
+            | MaterialDvD { surface }
             | DecenterX { surface }
             | DecenterY { surface }
             | TiltX { surface }
@@ -228,6 +238,15 @@ impl ParamPath {
                 SurfaceShape::Paraxial { focal_length } => focal_length,
                 _ => return Err(bad(self, "surface is not paraxial")),
             },
+            MaterialDnD { surface } | MaterialDvD { surface } => {
+                match surf(s, *surface)?.material {
+                    MaterialRef::Catalog { offset, .. } => match self {
+                        MaterialDnD { .. } => offset.dn_d,
+                        _ => offset.dv_d,
+                    },
+                    _ => return Err(bad(self, "material is not a catalogue glass")),
+                }
+            }
             ModelNd { surface } | ModelVd { surface } | ModelDpgf { surface } => {
                 match surf(s, *surface)?.material {
                     MaterialRef::Model { nd, vd, dpgf } => match self {
@@ -391,6 +410,15 @@ impl ParamPath {
                 SurfaceShape::Paraxial { focal_length } => *focal_length = v,
                 _ => return Err(bad(self, "surface is not paraxial")),
             },
+            MaterialDnD { surface } | MaterialDvD { surface } => {
+                match &mut surf_mut(s, *surface)?.material {
+                    MaterialRef::Catalog { offset, .. } => match self {
+                        MaterialDnD { .. } => offset.dn_d = v,
+                        _ => offset.dv_d = v,
+                    },
+                    _ => return Err(bad(self, "material is not a catalogue glass")),
+                }
+            }
             ModelNd { surface } | ModelVd { surface } | ModelDpgf { surface } => {
                 match &mut surf_mut(s, *surface)?.material {
                     MaterialRef::Model { nd, vd, dpgf } => match self {

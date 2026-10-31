@@ -7,6 +7,50 @@ use mklight_optim::glass::{CandidateSet, GlassWindow, coordinates, model_variabl
 use std::sync::Arc;
 
 #[test]
+fn substitution_window_uses_offset_position_and_replacement_clears_it() {
+    use mklight_core::materials::MaterialOffset;
+    let mut cat = GlassCatalog {
+        name: "OFFSET".into(),
+        ..Default::default()
+    };
+    cat.glasses.insert(
+        "BASE".into(),
+        agf::model_glass("BASE", 1.52, 60.0, 0.0).unwrap(),
+    );
+    cat.glasses.insert(
+        "MATCH".into(),
+        agf::model_glass("MATCH", 1.53, 57.0, 0.0).unwrap(),
+    );
+    let mut lib = MaterialLibrary::new();
+    lib.add_catalog(Arc::new(cat));
+    let mut sys = samples::singlet();
+    sys.surfaces[1].material = MaterialRef::Catalog {
+        catalog: None,
+        name: "BASE".into(),
+        offset: MaterialOffset {
+            dn_d: 0.01,
+            dv_d: -3.0,
+        },
+    };
+    let candidates = CandidateSet {
+        window: Some(GlassWindow { nd: 1e-6, vd: 1e-6 }),
+        ..Default::default()
+    }
+    .resolve(&sys, sys.surfaces[1].id, &lib)
+    .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].name, "MATCH");
+    assert_eq!(
+        candidates[0].material(),
+        MaterialRef::Catalog {
+            catalog: Some("OFFSET".into()),
+            name: "MATCH".into(),
+            offset: MaterialOffset::default()
+        }
+    );
+}
+
+#[test]
 fn model_snaps_to_real_glass_first() {
     let lib = MaterialLibrary::with_builtin();
     let g = lib.find_glass(None, "N-BK7").unwrap();

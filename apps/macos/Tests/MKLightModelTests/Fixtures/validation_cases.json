@@ -4734,6 +4734,734 @@
     "error": "invalid model: [invalid_configuration] configurations[0].overrides[0]: invalid parameter path 'ModelDpgf { surface: SurfaceId(2) }: material is not a model glass'"
   },
   {
+    "name": "dv_d on catalog glass",
+    "system": {
+      "name": "dv_d on catalog glass",
+      "notes": "Classic three-element anastigmat, EFL ≈ 47.1 mm, F/4.7, image at the paraxial focus.",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 10.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 14.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 20.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.045426484276303865,
+            "conic": 0.0
+          },
+          "thickness": 3.25896,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-SK16"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "",
+          "shape": {
+            "type": "even_asphere",
+            "curvature": -0.0022948388798212154,
+            "conic": 0.0,
+            "coefficients": [
+              1e-6
+            ]
+          },
+          "thickness": 6.00755,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.04501811528959253,
+            "conic": 0.0
+          },
+          "thickness": 0.99997,
+          "material": {
+            "type": "model",
+            "nd": 1.62004,
+            "vd": 36.37,
+            "dpgf": 0.0
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 4,
+          "label": "",
+          "shape": {
+            "type": "paraxial",
+            "focal_length": 50.0
+          },
+          "thickness": 4.75041,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 5,
+          "label": "STOP",
+          "shape": {
+            "type": "coordinate_break"
+          },
+          "thickness": 2.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": {
+            "decenter_x": 0.0,
+            "decenter_y": 0.0,
+            "tilt_x": 0.0,
+            "tilt_y": 0.0,
+            "tilt_z": 0.0,
+            "order": "decenter_then_tilt",
+            "restore_after": false
+          },
+          "coating": null,
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 6,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.012549633801685667,
+            "conic": 0.0
+          },
+          "thickness": 2.95208,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-SK16"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "fixed",
+            "value": 7.0
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 7,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.05436162330330578,
+            "conic": 0.0
+          },
+          "thickness": 41.36144,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 8,
+          "label": "",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {
+        "AR": {
+          "type": "ideal",
+          "reflectance": 0.005,
+          "transmittance": 0.995
+        }
+      },
+      "mechanics": [],
+      "sensor": null,
+      "configurations": [
+        {
+          "name": "dv_d on catalog glass",
+          "overrides": [
+            [
+              {
+                "param": "material_dv_d",
+                "surface": 1
+              },
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    "error": null
+  },
+  {
+    "name": "dn_d on model glass",
+    "system": {
+      "name": "dn_d on model glass",
+      "notes": "Classic three-element anastigmat, EFL ≈ 47.1 mm, F/4.7, image at the paraxial focus.",
+      "aperture": {
+        "type": "entrance_pupil_diameter",
+        "value": 10.0
+      },
+      "fields": {
+        "kind": "object_angle",
+        "fields": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 14.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          },
+          {
+            "x": 0.0,
+            "y": 20.0,
+            "weight": 1.0,
+            "vignetting": {
+              "vdx": 0.0,
+              "vdy": 0.0,
+              "vcx": 0.0,
+              "vcy": 0.0
+            }
+          }
+        ]
+      },
+      "wavelengths": {
+        "wavelengths": [
+          {
+            "um": 0.4861327,
+            "weight": 1.0
+          },
+          {
+            "um": 0.5875618,
+            "weight": 1.0
+          },
+          {
+            "um": 0.6562725,
+            "weight": 1.0
+          }
+        ],
+        "primary": 1
+      },
+      "surfaces": [
+        {
+          "id": 0,
+          "label": "",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": "inf",
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 1,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.045426484276303865,
+            "conic": 0.0
+          },
+          "thickness": 3.25896,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-SK16"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 2,
+          "label": "",
+          "shape": {
+            "type": "even_asphere",
+            "curvature": -0.0022948388798212154,
+            "conic": 0.0,
+            "coefficients": [
+              1e-6
+            ]
+          },
+          "thickness": 6.00755,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 3,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.04501811528959253,
+            "conic": 0.0
+          },
+          "thickness": 0.99997,
+          "material": {
+            "type": "model",
+            "nd": 1.62004,
+            "vd": 36.37,
+            "dpgf": 0.0
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 4,
+          "label": "",
+          "shape": {
+            "type": "paraxial",
+            "focal_length": 50.0
+          },
+          "thickness": 4.75041,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 5,
+          "label": "STOP",
+          "shape": {
+            "type": "coordinate_break"
+          },
+          "thickness": 2.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": {
+            "decenter_x": 0.0,
+            "decenter_y": 0.0,
+            "tilt_x": 0.0,
+            "tilt_y": 0.0,
+            "tilt_z": 0.0,
+            "order": "decenter_then_tilt",
+            "restore_after": false
+          },
+          "coating": null,
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 6,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": 0.012549633801685667,
+            "conic": 0.0
+          },
+          "thickness": 2.95208,
+          "material": {
+            "type": "catalog",
+            "catalog": null,
+            "name": "N-SK16"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "fixed",
+            "value": 7.0
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 7,
+          "label": "",
+          "shape": {
+            "type": "conic",
+            "curvature": -0.05436162330330578,
+            "conic": 0.0
+          },
+          "thickness": 41.36144,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": "AR",
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        },
+        {
+          "id": 8,
+          "label": "",
+          "shape": {
+            "type": "plane"
+          },
+          "thickness": 0.0,
+          "material": {
+            "type": "air"
+          },
+          "interaction": "refract",
+          "semi_diameter": {
+            "mode": "auto"
+          },
+          "aperture": null,
+          "placement": null,
+          "coating": null,
+          "scatter": null,
+          "diffraction_efficiency": {
+            "type": "ideal"
+          },
+          "edge": {
+            "mechanical_semi_diameter": null,
+            "edge_scatter": null
+          }
+        }
+      ],
+      "stop": 1,
+      "ray_aiming": {
+        "mode": "off"
+      },
+      "environment": {
+        "temperature_c": 20.0,
+        "pressure_atm": 1.0
+      },
+      "coatings": {
+        "AR": {
+          "type": "ideal",
+          "reflectance": 0.005,
+          "transmittance": 0.995
+        }
+      },
+      "mechanics": [],
+      "sensor": null,
+      "configurations": [
+        {
+          "name": "dn_d on model glass",
+          "overrides": [
+            [
+              {
+                "param": "material_dn_d",
+                "surface": 3
+              },
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    "error": "invalid model: [invalid_configuration] configurations[0].overrides[0]: invalid parameter path 'MaterialDnD { surface: SurfaceId(3) }: material is not a catalogue glass'"
+  },
+  {
     "name": "tilt on any surface",
     "system": {
       "name": "tilt on any surface",

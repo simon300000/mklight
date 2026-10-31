@@ -33,6 +33,14 @@
     "surface": 7
   },
   {
+    "param": "material_dn_d",
+    "surface": 7
+  },
+  {
+    "param": "material_dv_d",
+    "surface": 7
+  },
+  {
     "param": "decenter_x",
     "surface": 7
   },

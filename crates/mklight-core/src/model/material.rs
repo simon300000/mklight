@@ -1,3 +1,4 @@
+use crate::materials::MaterialOffset;
 use serde::{Deserialize, Serialize};
 
 /// Reference to an optical medium. Resolution into numbers happens in
@@ -20,6 +21,8 @@ pub enum MaterialRef {
         #[serde(default)]
         catalog: Option<String>,
         name: String,
+        #[serde(default, skip_serializing_if = "MaterialOffset::is_zero")]
+        offset: MaterialOffset,
     },
     /// Model glass: `n_d`, Abbe `V_d` and an optional partial-dispersion
     /// deviation `ΔP_g,F`. Continuous, so it can be a variable during optimisation.
@@ -40,6 +43,7 @@ impl MaterialRef {
         MaterialRef::Catalog {
             catalog: None,
             name: name.to_string(),
+            offset: MaterialOffset::default(),
         }
     }
     pub fn is_air(&self) -> bool {

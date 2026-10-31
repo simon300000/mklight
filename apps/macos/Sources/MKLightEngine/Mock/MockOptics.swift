@@ -114,8 +114,8 @@ struct MockOptics {
         case .air, .vacuum: return 1
         case .constant(let n): return n
         case .model(let nd, let vd, _): return cauchy(nd: nd, vd: max(vd, 1), um: um)
-        case .catalog(_, let name):
-            if let g = catalog[name.uppercased()] { return cauchy(nd: g.nd, vd: g.vd, um: um) }
+        case .catalog(_, let name, let o):
+            if let g = catalog[name.uppercased()] { return cauchy(nd: g.nd + o.dnD, vd: g.vd + o.dvD, um: um) }
             warnings.insert("unknown glass '\(name)': mock uses n_d = 1.5, V_d = 50")
             return cauchy(nd: 1.5, vd: 50, um: um)
         }

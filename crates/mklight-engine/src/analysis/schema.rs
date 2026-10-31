@@ -118,6 +118,18 @@ pub fn any(description: &str) -> Value {
     v
 }
 
+/// `MaterialOffset` (MATERIALS.md); both components default to zero.
+pub fn material_offset() -> Value {
+    use mklight_core::materials::MaterialOffset as O;
+    json!({"type": "object", "additionalProperties": false,
+        "default": {"dn_d": 0.0, "dv_d": 0.0},
+        "properties": {
+            "dn_d": {"type": "number", "default": 0.0, "minimum": -O::MAX_DN_D, "maximum": O::MAX_DN_D},
+            "dv_d": {"type": "number", "default": 0.0, "minimum": -O::MAX_DV_D, "maximum": O::MAX_DV_D}
+        },
+        "description": "d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios."})
+}
+
 fn annotate(v: &mut Value, unit: &str, description: &str) {
     if let Value::Object(m) = v {
         if !unit.is_empty() {

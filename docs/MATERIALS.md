@@ -31,6 +31,55 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
   When a catalog sets the "ignore thermal expansion" flag, `cte` is `None` and
   the raw value is kept in the AGF metadata.
 
+## Catalogue index and Abbe offsets
+
+A catalogue reference may carry a melt offset; both components default to
+zero, and a zero offset is omitted from JSON:
+
+```json
+{"type":"catalog","catalog":"BUILTIN","name":"N-BK7",
+ "offset":{"dn_d":0.002,"dv_d":-3.0}}
+```
+
+With `n(λ)` the glass's resolved index at the system temperature and
+pressure (thermal and air corrections above), and `n_d`, `V_d` computed from
+it at d, F and C:
+
+```
+s     = (n_d + Δn_d − 1)/(n_d − 1) · V_d/(V_d + ΔV_d)
+n'(λ) = n_d + Δn_d + s · (n(λ) − n_d)
+```
+
+so `n'_d = n_d + Δn_d` and `V'_d = V_d + ΔV_d` exactly (to rounding). The
+dispersion is scaled about d, which keeps its shape and every relative
+partial dispersion such as `P_g,F`; `ΔP_g,F` against the normal line moves
+with `V_d`. The anchors are recomputed at each environment, so the offset is
+the same change to the nominal glass at any temperature; catalogue thermal
+and absorption data are kept. A zero offset resolves to the nominal glass
+bit for bit. Resolution refuses an offset unless `n_d > 1` and `V_d > 0`
+before and after it.
+
+Validation (CONVENTIONS §13) reports `non_finite` and, for
+`|Δn_d| > 0.05` or `|ΔV_d| > 10`, `invalid_material` at
+`….material.offset.dn_d` / `.dv_d`. Tracing (CPU, GPU, paraxial) sees the
+offset through the resolved indices; catalogue files are never modified.
+
+* `glass_map` keeps the nominal point and adds a `kind: "offset"` point per
+  offset surface (at the glass's catalogue conditions); only that point
+  lists the surface.
+* `glass_info` takes the same `offset`; computed indices, `nd`, `vd`,
+  `pgf` and the curve include it, while `catalog_nd`, `catalog_vd` and
+  `dispersion` stay nominal.
+* `glass_substitution` measures windows and distances from the offset
+  position and installs the replacement **without** an offset, even when it
+  is the same glass: a melt offset belongs to the original melt.
+  Configuration overrides and pickups still apply. Continuous material
+  variables on a substituted surface are refused.
+* `ParamPath` `material_dn_d` / `material_dv_d` (`{"param":"material_dn_d",
+  "surface":1}`) address the offset for variables, overrides, pickups and
+  tolerances; a tolerance adds to the saved offset. `model_nd` /
+  `model_vd` still address model glasses.
+
 ## Dispersion formulas
 
 `Dispersion` variants (`dispersion.rs`), with the standard AGF formula numbers.

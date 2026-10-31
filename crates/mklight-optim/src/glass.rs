@@ -87,10 +87,12 @@ pub struct GlassChoice {
 }
 
 impl GlassChoice {
+    /// The nominal catalogue glass: a replacement carries no offset.
     pub fn material(&self) -> MaterialRef {
         MaterialRef::Catalog {
             catalog: Some(self.catalog.clone()),
             name: self.name.clone(),
+            offset: Default::default(),
         }
     }
     pub fn coordinates(&self) -> Vec<f64> {
@@ -100,7 +102,10 @@ impl GlassChoice {
 
 /// `(n_d, V_d / 100, ΔP_g,F)` of a glass from its dispersion formula.
 pub fn coordinates(glass: &Glass) -> [f64; 3] {
-    let n = |l| glass.catalog_index(l);
+    index_coordinates(|l| glass.catalog_index(l))
+}
+
+fn index_coordinates(n: impl Fn(f64) -> f64) -> [f64; 3] {
     let dfc = n(lines::F) - n(lines::C);
     let nd = n(lines::D);
     let vd = (nd - 1.0) / dfc;
@@ -144,8 +149,11 @@ impl CandidateSet {
         let sf = &system.surfaces[index];
         let origin = match &sf.material {
             MaterialRef::Model { nd, vd, dpgf } => [*nd, *vd / 100.0, *dpgf],
-            MaterialRef::Catalog { catalog, name } => {
-                coordinates(library.find_glass(catalog.as_deref(), name)?.as_ref())
+            // The offset position, at catalogue conditions like the candidates.
+            MaterialRef::Catalog { catalog, name, .. } => {
+                let glass = library.find_glass(catalog.as_deref(), name)?;
+                let m = library.resolve(&sf.material, &glass.catalog_environment())?;
+                index_coordinates(|l| m.index(l))
             }
             _ => {
                 return Err(MkError::InvalidParam(

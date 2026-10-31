@@ -44,7 +44,7 @@ enum Fixtures {
 
     @Test func paramPathsRoundTrip() throws {
         let paths = try Fixtures.roundTrip([ParamPath].self, "param_paths")
-        #expect(paths.count == 22 + CoefficientSet.allCases.count + ShapeParameter.allCases.count)
+        #expect(paths.count == 24 + CoefficientSet.allCases.count + ShapeParameter.allCases.count)
         #expect(Set(paths).count == paths.count, "every variant decodes to a distinct case")
         #expect(paths[3] == .asphere(surface: SurfaceID(7), index: 2))
         #expect(paths.contains(.apertureValue) && paths.contains(.pressureAtm))
@@ -73,7 +73,7 @@ enum Fixtures {
         #expect(Set(s.surfaces.map(\.interaction)) == Set(Interaction.allCases))
         let materials = s.surfaces.map(\.material)
         #expect(materials.contains(.air) && materials.contains(.vacuum))
-        #expect(materials.contains(.catalog(catalog: "BUILTIN", name: "N-BK7")))
+        #expect(materials.contains(.catalog(catalog: "BUILTIN", name: "N-BK7", offset: MaterialOffset(dnD: 0.0012, dvD: -0.8))))
         #expect(materials.contains(.model(nd: 1.6, vd: 40, dpgf: 0.002)))
         #expect(materials.contains(.constant(n: 1.5)))
         let apertures = s.surfaces.compactMap(\.aperture)
