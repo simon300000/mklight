@@ -255,18 +255,20 @@ impl UploadedSystem {
     ) -> MkResult<SystemBatchPlan> {
         let count = candidates.len();
         let nparam = self.compiled.parameter_count();
-        let mut parameters = Vec::with_capacity(count * nparam);
-        let mut ids = Vec::with_capacity(count * 4);
+        let mut parameters = HostAllocation::new(count * nparam * 2)?;
+        let parameter_values: &mut [Df32] = bytemuck::cast_slice_mut(&mut parameters);
+        let mut ids = HostAllocation::new(count * 4)?;
         let mut hash = blake3::Hasher::new();
         hash.update(self.compiled.snapshot.hash().to_hex().as_bytes());
         let bounds = self.compiled.bounds();
-        for candidate in candidates {
+        for (row, candidate) in candidates.iter().enumerate() {
             ctx.check()?;
             if candidate.values.len() != nparam {
                 return Err(MkError::InvalidParam("candidate parameter width".into()));
             }
             let mut input_status = READY;
-            for (&v, &(lower, upper)) in candidate.values.iter().zip(&bounds) {
+            for (column, (&v, &(lower, upper))) in candidate.values.iter().zip(&bounds).enumerate()
+            {
                 let d = Df32::from_f64(v);
                 if !(lower..=upper).contains(&v) {
                     input_status = OUTSIDE_BOUNDS;
@@ -277,23 +279,20 @@ impl UploadedSystem {
                     input_status = INVALID_NUMERIC;
                 }
                 hash.update(&v.to_bits().to_le_bytes());
-                parameters.push(d);
+                parameter_values[row * nparam + column] = d;
             }
-            ids.extend([
+            ids[row * 4..(row + 1) * 4].copy_from_slice(&[
                 candidate.id as u32,
                 (candidate.id >> 32) as u32,
                 self.compiled.configuration.map_or(u32::MAX, |k| k as u32),
                 input_status,
             ]);
         }
-        let parameters = backend.upload_buffer(
+        let parameters = backend.import_buffer(
             BufferDesc::new(ElementType::DoubleFloat, [count, nparam]),
-            BufferData::DoubleFloat(parameters),
+            parameters,
         )?;
-        let slots = backend.upload_buffer(
-            BufferDesc::new(ElementType::U32, [count, 4]),
-            BufferData::U32(ids),
-        )?;
+        let slots = backend.import_buffer(BufferDesc::new(ElementType::U32, [count, 4]), ids)?;
         let parameters = plan.import(parameters.view());
         let slots = plan.import(slots.view());
         self.append_resident(

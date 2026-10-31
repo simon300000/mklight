@@ -1105,6 +1105,11 @@ empty public `gpu` adapter module for their package to fill in.
 `ComputeBackend` adds object-safe methods:
 
 ```rust
+fn fill_buffer(&self, desc: BufferDesc, ctx: &JobContext,
+    fill: &mut dyn FnMut(BufferFill<'_>) -> MkResult<()>) -> MkResult<BufferHandle>;
+fn import_buffer(&self, desc: BufferDesc, data: HostAllocation) -> MkResult<BufferHandle>;
+fn read_view(&self, view: BufferView, ctx: &JobContext) -> MkResult<ReadView>;
+// Explicit copying conveniences for existing owned arrays:
 fn upload_buffer(&self, desc: BufferDesc, data: BufferData) -> MkResult<BufferHandle>;
 fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback>;
 fn submit_plan(&self, plan: ResidentPlan, ctx: &JobContext) -> MkResult<Pending<PlanResult>>;
@@ -1112,6 +1117,66 @@ fn upload_systems_cached(&self, key: &SystemCacheKey, systems: &[PackedSystem])
     -> MkResult<SystemHandle>;
 fn resident_cache_stats(&self) -> ResidentCacheStats;
 ```
+
+**Unified-memory ownership and host access.** On Apple silicon,
+`fill_buffer` leases an exclusive `MTLStorageModeShared` allocation and invokes
+its callback once, synchronously. `BufferFill::as_mut_slice::<T>()` exposes
+`f32`, `u32`, `Df32` or `[f32; 2]`, checked against the descriptor at this
+boundary. Fill every element; pooled contents are unspecified. No device
+command can use the allocation until the callback ends and the immutable
+handle is published. The slice borrows the callback view and cannot escape
+it. Large fills check cancellation/report progress in bounded chunks using
+the supplied context; allocation/publication check cancellation as well.
+
+For data produced in host memory before submission, allocate a
+`HostAllocation` and fill its word slice (or a bytemuck typed slice). It owns
+initialized, system-page-aligned storage with page-multiple capacity.
+`import_buffer` consumes that owner and wraps the same pages using
+`newBufferWithBytesNoCopy:length:options:deallocator:`. The retained Metal
+deallocator block owns the allocation and releases it with its original
+Rust allocator/layout when Metal's last reference ends. No mutable alias
+survives the move. Imported pages are never inserted into the scratch pool;
+failed imports also release their owner. Arbitrary Vec allocations cannot
+be wrapped: their alignment, capacity and allocator contract do not meet
+this API's ownership requirements. CPU-f32 uses the same page-owned host
+storage and adopts it directly.
+
+`read_view` returns a `ReadView` guard after publication (all device writes
+have completed). `as_slice::<T>()` and `words()` borrow the guard without
+copying. The guard retains the immutable allocation even if the result,
+original handles or backend are dropped. Imported buffers are read-only in
+plans; all GPU destinations are exclusive unpublished leases. Consequently
+concurrent device reads may overlap a host read, but device writes cannot.
+The pool receives an allocation only after the last handle, import and
+read guard ends; slices cannot outlive their guard. No view of in-flight
+mutable scratch is exposed, including during cancellation. Empty views
+work for every element type; offsets preserve typed alignment.
+
+A contiguous view has stride 1. For a strided gather, or owned data that
+must survive dropping the guard, use `readback`: it copies once directly
+into `BufferData`, without an intermediate word Vec. `upload_buffer` is the
+explicit copying compatibility path. New bulk producers should fill in
+place or transfer a `HostAllocation`; a fill callback that itself copies
+existing host arrays is still doing a caller-side copy.
+
+`PlanStats.copied_bytes` counts bulk staging inside a plan (zero for the
+resident Metal trace/sum, aiming/OPD and transform paths, including cold
+path-program/twiddle/chirp construction). `ResidentCacheStats.copied_bytes`
+is a cumulative counter for explicit resident `upload_buffer`/`readback`
+copies, so differences measure those boundary copies. `ReadView.copied_bytes`
+is zero. Bytes populated directly, device reads of shared memory, scalar
+host loads and small `setBytes` parameter blocks are not staging copies;
+`uploaded_bytes`, `readback_bytes` and `parameter_bytes` retain their
+separate logical-traffic meanings. Immutable packed-system upload bytes
+remain separately reported by the system cache; legacy host jobs and
+caller-side preparation are outside these resident counters. Benchmarks
+must state their scope and count those separately when included.
+
+`DeviceInfo.unified_memory` remains authoritative. A future discrete backend
+may stage at fill publication and wait/map at read-view acquisition, keeping
+the same exclusive/pinned ownership API and charging actual copies there.
+No private-buffer/blit staging implementation is added here; non-unified
+Metal devices retain shared-storage behavior without a zero-transfer claim.
 
 `ResidentPlan::new(snapshot)` holds ordered `operations`, typed `buffers`,
 final `outputs`, `settings`, `seed` and `PlanIdentity` (library, derived
@@ -1132,7 +1197,7 @@ waits for its last committed command before releasing any resources.
 `BufferView { buffer, offset, desc, stride }` and plan-local `PlanView`
 measure offsets/strides in **typed elements**, with the stride applied to
 the flattened row-major index. P0 plan imports and sums require stride 1;
-explicit final readback accepts a strided view. Empty buffers are legal;
+copying final readback accepts a strided view; read guards require stride 1. Empty buffers are legal;
 a sum requires positive `[channels,count]`. Scratch destinations come from
 an exact-size pool and start with unspecified contents: an operation writes
 every element it publishes. Rust request structs contain host metadata/IDs
@@ -1198,11 +1263,12 @@ are resource/cancellation controls, not engine backend selection thresholds.
 
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
-uploaded/readback and parameter-block bytes, peak live plan storage and fallback/polish counts.
+uploaded/readback, copied and parameter-block bytes, peak live plan storage and fallback/polish counts.
 The run records the actual backend/precision/build/probe, version, identity,
 operation manifest, seed and stage stats. Domain-specific
 settings belong in `ResidentPlan.settings`. Explicit `Readback` reports its
-own copied bytes and wall time: plan execution has zero readback bytes. Worker wall time excludes caller-side
+own copied bytes and wall time. Direct scalar host reads may contribute logical
+readback bytes without staging copies. Worker wall time excludes caller-side
 submission/validation; benchmark end-to-end wall time includes them and final
 readback.
 System transfers/cache retention are reported separately by

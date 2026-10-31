@@ -8,12 +8,16 @@ pub fn upload<T: bytemuck::Pod>(
     rows: usize,
     values: &[T],
 ) -> PlanView {
-    let words = bytemuck::cast_slice::<T, u32>(values).to_vec();
     let width = size_of::<T>() / 4;
     let buf = b
-        .upload_buffer(
+        .fill_buffer(
             BufferDesc::new(ElementType::U32, [rows, width]),
-            BufferData::U32(words),
+            &JobContext::new(),
+            &mut |mut fill| {
+                bytemuck::cast_slice_mut::<u32, T>(fill.as_mut_slice::<u32>()?)
+                    .copy_from_slice(values);
+                Ok(())
+            },
         )
         .unwrap();
     let id = p.import(buf.view());
@@ -21,9 +25,13 @@ pub fn upload<T: bytemuck::Pod>(
 }
 pub fn df(b: &dyn ComputeBackend, p: &mut ResidentPlan, v: &[Df32]) -> PlanView {
     let buf = b
-        .upload_buffer(
+        .fill_buffer(
             BufferDesc::new(ElementType::DoubleFloat, [v.len()]),
-            BufferData::DoubleFloat(v.to_vec()),
+            &JobContext::new(),
+            &mut |mut fill| {
+                fill.as_mut_slice::<Df32>()?.copy_from_slice(v);
+                Ok(())
+            },
         )
         .unwrap();
     let id = p.import(buf.view());
@@ -56,12 +64,21 @@ pub fn make_plan(
     )
     .unwrap();
     let fw = upload(b, &mut p, 1, &[spec]);
-    let samples: Vec<_> = points
-        .iter()
-        .enumerate()
-        .map(|(i, &pt)| Sample::new(pt, 0, 0x100000000 + i as u64))
-        .collect();
-    let sv = upload(b, &mut p, samples.len(), &samples);
+    let sample_buffer = b
+        .fill_buffer(
+            BufferDesc::new(ElementType::U32, [points.len(), size_of::<Sample>() / 4]),
+            &JobContext::new(),
+            &mut |mut fill| {
+                let out: &mut [Sample] = bytemuck::cast_slice_mut(fill.as_mut_slice::<u32>()?);
+                for (i, (&pt, sample)) in points.iter().zip(out).enumerate() {
+                    *sample = Sample::new(pt, 0, 0x100000000 + i as u64);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    let si = p.import(sample_buffer.view());
+    let sv = p.view(si).unwrap();
     let generated = rays(&mut p, points.len());
     p.operations
         .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
@@ -75,19 +92,21 @@ pub fn make_plan(
             max_iterations: cap,
             output: generated.clone(),
         })));
-    let steps: Vec<u32> = (1..=t.system().image_index() as u32).collect();
+    let steps = t.system().image_index();
     let buf = b
-        .upload_buffer(
-            BufferDesc::new(ElementType::U32, [steps.len()]),
-            BufferData::U32(steps.clone()),
+        .fill_buffer(
+            BufferDesc::new(ElementType::U32, [steps]),
+            &JobContext::new(),
+            &mut |mut fill| {
+                for (i, word) in fill.as_mut_slice::<u32>()?.iter_mut().enumerate() {
+                    *word = (i + 1) as u32;
+                }
+                Ok(())
+            },
         )
         .unwrap();
     let si = p.import(buf.view());
-    let hit = hits(
-        &mut p,
-        points.len(),
-        if records { steps.len() + 1 } else { 0 },
-    );
+    let hit = hits(&mut p, points.len(), if records { steps + 1 } else { 0 });
     p.operations
         .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
             systems: SystemSet::Uploaded(handle),

@@ -119,17 +119,20 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
     // Immutable f64-derived tables: twiddles per row length, chirp factors per step.
     let table = |x: &mut Execution<'_>,
                  name: String,
-                 make: &dyn Fn() -> Vec<[f32; 2]>|
+                 len: usize,
+                 fill: &dyn Fn(&mut [[f32; 2]])|
      -> MkResult<Arc<SharedBuffer<u32>>> {
         let key = x.cache_key(name);
         if let Some(v) = x.cached::<SharedBuffer<u32>>(&key)? {
             return Ok(v);
         }
-        let t = make();
-        let v = Arc::new(x.gpu.buffer::<u32>(bytemuck::cast_slice(&t))?);
+        let v = Arc::new(
+            x.gpu
+                .buffer_filled::<u32>(len * 2, |out| fill(bytemuck::cast_slice_mut(out)))?,
+        );
         x.stats.allocations += 1;
-        x.stats.uploaded_bytes += t.len() as u64 * 8;
-        x.cache(key, (t.len() * 8).max(16), v.clone());
+        x.stats.uploaded_bytes += len as u64 * 8;
+        x.cache(key, (len * 8).max(16), v.clone());
         Ok(v)
     };
     let mut tables = HashMap::new();
@@ -139,12 +142,22 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
         if matches!(s.p.mode, MKL_TRANSFORM_FFT_ROWS | MKL_TRANSFORM_CHIRP_ROWS)
             && !tables.contains_key(&w)
         {
-            tables.insert(w, table(x, format!("p2-twiddles:{w}"), &|| twiddles(w))?);
+            tables.insert(
+                w,
+                table(x, format!("p2-twiddles:{w}"), w - 1, &|out| {
+                    fill_twiddles(w, out)
+                })?,
+            );
         }
         if s.p.mode == MKL_TRANSFORM_CHIRP_ROWS {
             chirps.insert(
                 i,
-                table(x, format!("{}:chirp", names[i]), &|| chirp_factors(&s.p))?,
+                table(
+                    x,
+                    format!("{}:chirp", names[i]),
+                    (s.p.nx + s.p.ox) as usize,
+                    &|out| fill_chirp_factors(&s.p, out),
+                )?,
             );
         }
     }

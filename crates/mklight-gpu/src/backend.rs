@@ -441,6 +441,34 @@ pub trait ComputeBackend: Send + Sync {
     ) -> MkResult<crate::resident::BufferHandle> {
         crate::resident::unsupported("buffer upload")
     }
+    /// Fill an exclusive shared allocation before publishing it. The callback is
+    /// called once; long fills should check the supplied job context in chunks.
+    fn fill_buffer(
+        &self,
+        _desc: crate::resident::BufferDesc,
+        _ctx: &JobContext,
+        _fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        crate::resident::unsupported("buffer fill")
+    }
+    /// Transfer a page-aligned allocation; no alias survives ownership transfer.
+    fn import_buffer(
+        &self,
+        _desc: crate::resident::BufferDesc,
+        _data: crate::resident::HostAllocation,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        crate::resident::unsupported("host allocation import")
+    }
+    /// Borrow completed contiguous storage without copying. Strided owned
+    /// gathering and data that must outlive the lease use `readback` instead.
+    fn read_view(
+        &self,
+        _view: crate::resident::BufferView,
+        _ctx: &JobContext,
+    ) -> MkResult<crate::resident::ReadView> {
+        crate::resident::unsupported("read view")
+    }
+    /// Explicit copying convenience, with exactly one gather into owned data.
     fn readback(
         &self,
         _view: crate::resident::BufferView,

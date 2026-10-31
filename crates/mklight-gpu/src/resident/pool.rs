@@ -43,7 +43,7 @@ impl<T> Pool<T> {
             Allocation {
                 value: Some(value),
                 words,
-                pool: pool.clone(),
+                pool: Some(pool.clone()),
             },
             reused,
         ))
@@ -52,9 +52,17 @@ impl<T> Pool<T> {
 pub struct Allocation<T> {
     value: Option<T>,
     words: usize,
-    pool: Arc<Mutex<Pool<T>>>,
+    pool: Option<Arc<Mutex<Pool<T>>>>,
 }
 impl<T> Allocation<T> {
+    /// Externally owned storage is released, never recycled into the scratch pool.
+    pub fn unpooled(value: T, words: usize) -> Self {
+        Self {
+            value: Some(value),
+            words,
+            pool: None,
+        }
+    }
     pub fn words(&self) -> usize {
         self.words
     }
@@ -73,7 +81,10 @@ impl<T> DerefMut for Allocation<T> {
 impl<T> Drop for Allocation<T> {
     fn drop(&mut self) {
         let bytes = self.words.max(4) * 4;
-        let mut p = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(pool) = &self.pool else {
+            return;
+        };
+        let mut p = pool.lock().unwrap_or_else(|e| e.into_inner());
         if bytes > p.limit {
             return;
         }

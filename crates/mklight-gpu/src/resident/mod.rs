@@ -1,5 +1,5 @@
 //! Ordered resident plans. Buffers become immutable leases on publication;
-//! only explicit readback crosses back to host arrays. Plan-local storage has
+//! host views pin those leases until their last borrow ends. Plan-local storage has
 //! one writer and cannot alias imported buffers or another live submission.
 use crate::{ComputeBackend, Df32, ReduceMode, TraceRequest};
 use mklight_core::job::{RunInfo, RunTimer};
@@ -166,6 +166,69 @@ impl BufferData {
             ),
             ElementType::Complex32 => Self::Complex32(bytemuck::cast_slice(words).to_vec()),
         }
+    }
+}
+/// Supported typed views. Sealed so layout and element identity cannot disagree.
+pub trait BufferElement: bytemuck::Pod + element::Sealed {
+    const ELEMENT: ElementType;
+}
+mod element {
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for u32 {}
+    impl Sealed for crate::Df32 {}
+    impl Sealed for [f32; 2] {}
+}
+impl BufferElement for f32 {
+    const ELEMENT: ElementType = ElementType::F32;
+}
+impl BufferElement for u32 {
+    const ELEMENT: ElementType = ElementType::U32;
+}
+impl BufferElement for Df32 {
+    const ELEMENT: ElementType = ElementType::DoubleFloat;
+}
+impl BufferElement for [f32; 2] {
+    const ELEMENT: ElementType = ElementType::Complex32;
+}
+
+/// Exclusive upload view; cannot escape the fill callback or overlap device work.
+pub struct BufferFill<'a> {
+    pub(crate) element: ElementType,
+    pub(crate) words: &'a mut [u32],
+}
+impl BufferFill<'_> {
+    pub fn as_mut_slice<T: BufferElement>(&mut self) -> MkResult<&mut [T]> {
+        if self.element != T::ELEMENT {
+            return Err(bad("upload view type"));
+        }
+        bytemuck::try_cast_slice_mut(self.words).map_err(|_| bad("upload view alignment"))
+    }
+}
+/// Type-erased immutable storage pinned by a host view.
+pub trait ReadStorage: Send + Sync {
+    fn words(&self) -> &[u32];
+}
+/// A contiguous, read-only view of completed shared storage. Dropping handles,
+/// plans or the backend cannot invalidate it. Slices borrow this guard; the pool
+/// receives the allocation only after every guard/import/handle is gone.
+pub struct ReadView {
+    pub(crate) storage: Arc<dyn ReadStorage>,
+    pub(crate) offset: usize,
+    pub(crate) len: usize,
+    pub(crate) element: ElementType,
+    pub copied_bytes: u64,
+    pub wall_seconds: f64,
+}
+impl ReadView {
+    pub fn words(&self) -> &[u32] {
+        &self.storage.words()[self.offset..self.offset + self.len]
+    }
+    pub fn as_slice<T: BufferElement>(&self) -> MkResult<&[T]> {
+        if self.element != T::ELEMENT {
+            return Err(bad("read view type"));
+        }
+        bytemuck::try_cast_slice(self.words()).map_err(|_| bad("read view alignment"))
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -462,6 +525,8 @@ pub struct StageStats {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanStats {
+    /// Actual bulk staging copies; excludes direct fills and small setBytes parameters.
+    pub copied_bytes: u64,
     pub stages: Vec<StageStats>,
     pub wall_seconds: f64,
     pub device_seconds: f64,
@@ -500,6 +565,8 @@ pub struct SystemCacheKey {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResidentCacheStats {
+    /// Cumulative explicit upload/readback copies outside plan execution.
+    pub copied_bytes: u64,
     pub system_uploads: u64,
     pub system_hits: u64,
     pub uploaded_bytes: u64,
@@ -545,6 +612,8 @@ pub fn unsupported<T>(name: &str) -> MkResult<T> {
         "resident {name} is not implemented"
     )))
 }
+pub mod host;
+pub use host::HostAllocation;
 pub mod cache;
 pub mod cpu;
 pub mod immutable;

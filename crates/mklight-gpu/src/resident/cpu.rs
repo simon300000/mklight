@@ -9,10 +9,10 @@ use crate::{
 use mklight_core::job::RunTimer;
 use std::{collections::HashMap, time::Instant};
 
-type Lease = Allocation<Vec<u32>>;
+type Lease = Allocation<HostAllocation>;
 
 pub fn execute<E: FpEnv>(
-    rt: &Runtime<Vec<u32>>,
+    rt: &Runtime<HostAllocation>,
     backend: &dyn ComputeBackend,
     plan: &ResidentPlan,
     systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
@@ -30,7 +30,7 @@ pub fn execute<E: FpEnv>(
     for b in &plan.buffers {
         let slot = match b {
             PlanBuffer::Scratch(d) => {
-                Slot::Owned(rt.take(d.byte_len()? / 4, &mut x.stats, |n| Ok(vec![0; n]))?)
+                Slot::Owned(rt.take(d.byte_len()? / 4, &mut x.stats, HostAllocation::new)?)
             }
             PlanBuffer::Import(v) => {
                 Slot::Import(rt.lease(&v.buffer)?, v.offset * v.desc.element.words())
