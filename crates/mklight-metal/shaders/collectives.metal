@@ -15,18 +15,18 @@ static inline float2 mkl_c_uint(uint i) {
 }
 // Order-preserving u32 of a float: signed zeros tie, NaNs sort last.
 static inline uint mkl_c_fkey(float x) {
-    uint b = as_type<uint>(x);
-    if ((b & 0x7fffffffu) == 0u) b = 0u;
-    if ((b & 0x7fffffffu) > 0x7f800000u) return 0xffffffffu;
-    return (b & 0x80000000u) != 0u ? ~b : (b ^ 0x80000000u);
+    uint b = as_type<uint>(x), m = b & 0x7fffffffu;
+    uint k = (b & 0x80000000u) != 0u && m != 0u ? 0x7fffffffu - m : m | 0x80000000u;
+    return m > 0x7f800000u ? 0xffffffffu : k;
 }
+// Three-way numeric order of double-float values; NaN in either word sorts last.
 static inline int mkl_c_cmp(float2 a, float2 b) {
     bool an = isnan(a.x) || isnan(a.y), bn = isnan(b.x) || isnan(b.y);
-    if (an || bn) return an == bn ? 0 : (an ? 1 : -1);
-    uint ah = mkl_c_fkey(a.x), bh = mkl_c_fkey(b.x);
-    if (ah != bh) return ah < bh ? -1 : 1;
-    uint al = mkl_c_fkey(a.y), bl = mkl_c_fkey(b.y);
-    return al == bl ? 0 : (al < bl ? -1 : 1);
+    uint2 ka = an ? uint2(0xffffffffu) : uint2(mkl_c_fkey(a.x), mkl_c_fkey(a.y));
+    uint2 kb = bn ? uint2(0xffffffffu) : uint2(mkl_c_fkey(b.x), mkl_c_fkey(b.y));
+    bool less = ka.x < kb.x || (ka.x == kb.x && ka.y < kb.y);
+    bool greater = ka.x > kb.x || (ka.x == kb.x && ka.y > kb.y);
+    return int(greater) - int(less);
 }
 // Extremum keeping the first operand on ties; the first NaN wins.
 static inline float2 mkl_c_ext(float2 a, float2 b, bool maximum) {

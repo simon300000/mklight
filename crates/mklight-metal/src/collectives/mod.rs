@@ -567,8 +567,9 @@ fn qr(r: &QrFit, x: &mut Execution<'_>, ctl: &JobControl, stats: &mut StageStats
         let p = QrParams { step: k as u32, ..p };
         let pivot = vec![work.clone(), factors.clone(), aux.clone(), diag.clone()];
         plan.push_threads(x, "mkl_c_qr_pivot", pivot, p, [b, 1, 1], threads, b * m)?;
-        // Classical Gram-Schmidt, twice, of the pivot column against earlier q.
-        for _ in 0..2 * usize::from(k > 0) {
+        // One classical Gram-Schmidt pass of the (already projected) pivot
+        // column against every earlier q restores orthogonality to rounding.
+        if k > 0 {
             let dot = vec![work.clone(), aux.clone(), diag.clone(), qcol.clone()];
             plan.push_threads(x, "mkl_c_qr_reorth_dot", dot, p, [k, b, 1], threads, b * k * m)?;
             let update = vec![work.clone(), factors.clone(), aux.clone(), diag.clone(), qcol.clone()];

@@ -227,8 +227,8 @@ pub fn qr<E: FpEnv>(
             f.swap(at(r, k), at(r, best));
         }
         v.swap(k, best);
-        // Classical Gram-Schmidt, twice, against every earlier q.
-        for _ in 0..2 * usize::from(k > 0) {
+        // One classical Gram-Schmidt pass against every earlier q.
+        if k > 0 {
             let c: Vec<D> = (0..k)
                 .map(|i| qr_sum::<E>(m, |r| qs[i][r].mul_in::<E>(v[k][r])))
                 .collect();
