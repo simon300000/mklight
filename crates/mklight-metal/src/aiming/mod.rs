@@ -195,10 +195,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     ChiefSeeds::Temporary(x.allocate(nf * MKL_AIM_CACHE_WORDS as usize)?)
                 };
                 let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_aim_chiefs"))?;
-                for offset in 0..nf {
+                for offset in (0..nf).step_by(16) {
                     ctl.check()?;
+                    let count = (nf - offset).min(16);
                     let p = AimParams {
-                        count: 1,
+                        count: count as u32,
                         offset: offset as u32,
                         stride: n as u32,
                         fields: nf as u32,
@@ -219,12 +220,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             bind(e, 3, x, &g.field_wavelength);
                             e.set_buffer_mut(4, seeds.buffer_mut(), 0);
                             e.set_bytes(5, &p);
-                            e.dispatch_1d(&pso, 1);
+                            e.dispatch_1d(&pso, count);
                             Ok(())
                         })?
                     };
                     account(x, &mut stage, cs, wall, size_of::<AimParams>());
-                    ctl.report(0.1 * (offset + 1) as f64 / nf as f64, "chief aiming");
+                    ctl.report(0.1 * (offset + count) as f64 / nf as f64, "chief aiming");
                 }
                 if let (Some(k), ChiefSeeds::Cached(b)) = (key, &seeds) {
                     x.cache(k, nf * MKL_AIM_CACHE_WORDS as usize * 4, b.clone());
