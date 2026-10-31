@@ -412,7 +412,7 @@ public struct FFIEngine: EngineClient {
     }
 
     /// Analyses `mk_job_stop` can stop (ABI 1.2).
-    static let stoppable: Set<String> = ["optimize", "tolerance"]
+    static let stoppable: Set<String> = ["optimize", "tolerance", "glass_substitution"]
 
     static func message(of error: EngineError) -> String {
         switch error {

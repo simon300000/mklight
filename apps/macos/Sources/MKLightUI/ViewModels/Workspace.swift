@@ -435,7 +435,7 @@ public final class Workspace {
     /// current snapshot. It does not belong to a pane.
     public func submitJob(_ analysis: String, settings: [String: JSONValue], key: String? = nil) throws -> AnalysisJob {
         // Jobs run on the design, also while a candidate is previewed.
-        guard let snapshot = isPreviewing ? designSnapshot : snapshot, modelErrors.isEmpty else {
+        guard let snapshot = designSnapshot ?? snapshot, modelErrors.isEmpty else {
             throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
         }
         if let d = descriptor(analysis), !d.available {
@@ -450,7 +450,7 @@ public final class Workspace {
 
     /// Solves the current design in the engine (`applySolves`).
     public func applySolves(settings: [String: JSONValue] = [:]) async throws -> SolveApplication {
-        guard let snapshot = isPreviewing ? designSnapshot : snapshot else { throw EngineError.invalidModel(modelErrors) }
+        guard let snapshot = designSnapshot ?? snapshot else { throw EngineError.invalidModel(modelErrors) }
         return try await documentEngine.applySolves(settings: settings, to: snapshot)
     }
 }

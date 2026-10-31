@@ -75,6 +75,8 @@ struct MKLightCommands: Commands {
             Group {
             Button("Optimize…") { actions?.designJob(.optimize) }
                 .keyboardShortcut("o", modifiers: [.command, .control])
+            Button("Glass Substitution…") { actions?.designJob(.glass) }
+                .keyboardShortcut("g", modifiers: [.command, .control])
             Button("Tolerance…") { actions?.designJob(.tolerance) }
                 .keyboardShortcut("t", modifiers: [.command, .control])
             Button("Apply Solves…") { actions?.designJob(.solves) }

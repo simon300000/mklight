@@ -48,6 +48,7 @@ struct DesignStatus: View {
     private func jobStatus(_ job: DesignJobKind) -> String {
         switch job {
         case .optimize: window.optimize.trace.last.map { "Optimizing · \($0.iteration)" } ?? "Optimizing"
+        case .glass: window.glass.progress.map { "Glasses · \($0.combinations)" } ?? "Substituting glasses"
         case .tolerance: "Tolerancing"
         case .solves: "Solving"
         }

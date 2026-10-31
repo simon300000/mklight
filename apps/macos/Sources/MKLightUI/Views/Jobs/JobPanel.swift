@@ -16,6 +16,7 @@ struct JobPanel: View {
     var body: some View {
         switch kind {
         case .optimize: OptimizePanel(design: design, workspace: workspace, window: window, session: window.optimize)
+        case .glass: GlassSubstitutionPanel(design: design, workspace: workspace, window: window, session: window.glass)
         case .tolerance: TolerancePanel(workspace: workspace, window: window, session: window.tolerance)
         case .solves: SolvesPanel(design: design, workspace: workspace, window: window, session: window.solves)
         }

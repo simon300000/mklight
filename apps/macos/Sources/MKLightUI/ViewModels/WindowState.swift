@@ -52,11 +52,12 @@ public struct ViewportCamera: Equatable, Sendable {
 
 /// Which design job panel is open in the inspector.
 public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
-    case optimize, tolerance, solves
+    case optimize, glass, tolerance, solves
     public var id: String { rawValue }
     public var title: String {
         switch self {
         case .optimize: "Optimize"
+        case .glass: "Glass Substitution"
         case .tolerance: "Tolerance"
         case .solves: "Apply Solves"
         }
@@ -64,6 +65,7 @@ public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
     public var symbol: String {
         switch self {
         case .optimize: "wand.and.sparkles"
+        case .glass: "swatchpalette"
         case .tolerance: "plusminus.circle"
         case .solves: "function"
         }
@@ -103,6 +105,7 @@ public final class WindowState {
     /// keeps running while its panel is closed.
     public let optimize = OptimizeSession()
     public let tolerance = ToleranceSession()
+    public let glass = GlassSubstitutionSession()
     public let solves = SolvesSession()
     /// The lens table's focused cell, for menu commands.
     public var focusedColumn: LensColumn?
@@ -117,7 +120,7 @@ public final class WindowState {
 
     /// The running design job, if any.
     public var runningJob: DesignJobKind? {
-        optimize.isRunning ? .optimize : tolerance.isRunning ? .tolerance : nil
+        optimize.isRunning ? .optimize : glass.isRunning ? .glass : tolerance.isRunning ? .tolerance : nil
     }
 
     /// Shows a transient message; it clears itself after a few seconds.

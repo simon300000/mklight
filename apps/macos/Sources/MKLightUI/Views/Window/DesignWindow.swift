@@ -97,6 +97,7 @@ private struct DesignWindowContent: View {
         .onDisappear {
             window.optimize.cancel()
             window.tolerance.cancel()
+            window.glass.cancel()
             workspace.cancelAll()
         }
         .onChange(of: design.system) { _, s in workspace.update(system: s) }
@@ -167,6 +168,7 @@ private struct DesignWindowContent: View {
     private func help(_ job: DesignJobKind) -> String {
         switch job {
         case .optimize: "Optimize the design (⌃⌘O)"
+        case .glass: "Replace glasses with catalogue glasses, re-optimising each combination (⌃⌘G)"
         case .tolerance: "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
         case .solves: "Preview and apply the design's solves (⌃⌘L)"
         }
