@@ -79,7 +79,7 @@ pub fn register(r: &mut AnalysisRegistry) {
 }
 
 // The `backend` record shared by both result schemas.
-fn evaluation_backend_schema() -> Value {
+pub(super) fn evaluation_backend_schema() -> Value {
     use super::schema::*;
     obj_opt(
         &[
@@ -100,7 +100,9 @@ fn evaluation_backend_schema() -> Value {
             ),
             (
                 "reported_on",
-                string("CPU reference for optimize; search evaluator for tolerance."),
+                string(
+                    "CPU reference for optimize; active evaluator for merit_evaluation and tolerance.",
+                ),
             ),
             (
                 "workload",
@@ -483,6 +485,17 @@ impl Evaluation {
         work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
+        Self::new_on(choice, input, batch, work, &input.snapshot, ctx)
+    }
+
+    fn new_on(
+        choice: BackendChoice,
+        input: &AnalysisInput<'_>,
+        batch: usize,
+        work: Workload,
+        snapshot: &Snapshot,
+        ctx: &JobContext,
+    ) -> EngineResult<Self> {
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
@@ -492,7 +505,7 @@ impl Evaluation {
                     batch: batch.max(1),
                     ..Default::default()
                 };
-                let (tracer, q) = qualify(&device, &cpu.trace, &input.snapshot, input, ctx)?;
+                let (tracer, q) = qualify(&device, &cpu.trace, snapshot, input, ctx)?;
                 let hints = tracer
                     .semi_diameters(&SemiDiameterSettings::default())
                     .values;
@@ -639,6 +652,7 @@ fn start_merit(
     spec: &MeritFunctionSpec,
     cpu: &BuiltinEvaluator,
     reg: &OperandRegistry,
+    ctx: &JobContext,
 ) -> EngineResult<f64> {
     let p = OpticalProblem::new(
         system.clone(),
@@ -648,7 +662,7 @@ fn start_merit(
         reg,
     )?;
     let x0 = p.start_point()?;
-    Ok(reference_values(&p, &[&x0])?.merit[0])
+    Ok(evaluation_values(&p, &[&x0], ctx)?.merit[0])
 }
 
 /// Thickness boundaries of the generated default merit that the start
@@ -827,12 +841,12 @@ fn operand_table(
         .map(|(i, op)| {
             let (v0, _) = value_json(&start[i]);
             let (v1, err) = value_json(&end[i]);
-            let (res, contrib) = match (&end[i], op.role) {
+            let (res, weighted, contrib) = match (&end[i], op.role) {
                 (Ok(v), OperandRole::Residual) if op.enabled => {
                     let r = op.residual(*v);
-                    (num(r), op.weight * r * r)
+                    (num(r), num(op.weight.sqrt() * r), op.weight * r * r)
                 }
-                _ => (Value::Null, f64::NAN),
+                _ => (Value::Null, Value::Null, f64::NAN),
             };
             json!({
                 "index": i,
@@ -848,6 +862,7 @@ fn operand_table(
                 "wavelength": op.wavelength,
                 "start": v0,
                 "value": v1,
+                "weighted_residual": weighted,
                 "residual": res,
                 "contribution": num(contrib),
                 "contribution_fraction": num(if end_merit > 0.0 { contrib / end_merit } else { f64::NAN }),
@@ -855,6 +870,51 @@ fn operand_table(
             })
         })
         .collect()
+}
+
+pub(super) fn operand_schema() -> Value {
+    use super::schema::*;
+    obj(&[
+        ("index", int("")),
+        ("kind", string("Operand name.")),
+        ("label", string("")),
+        ("enabled", boolean("")),
+        ("role", enumeration(&["residual", "constraint"], "")),
+        (
+            "comparison",
+            enumeration(&["equal", "less_than", "greater_than"], ""),
+        ),
+        ("target", nf()),
+        ("weight", nf()),
+        ("config", int("")),
+        ("field", opaque("FieldSelector.")),
+        ("wavelength", opaque("WavelengthSelector.")),
+        ("start", nf()),
+        ("value", nf()),
+        (
+            "residual",
+            nf_u(
+                "operand",
+                "Signed value - target for equal; one-sided violation otherwise.",
+            ),
+        ),
+        (
+            "contribution",
+            nf_u(
+                "merit",
+                "weight * residual squared; null for constraints/disabled operands.",
+            ),
+        ),
+        (
+            "weighted_residual",
+            nf_u(
+                "",
+                "sqrt(weight) * residual; null for constraints/disabled operands.",
+            ),
+        ),
+        ("contribution_fraction", nf()),
+        ("error", nullable(string("Operand failure."))),
+    ])
 }
 
 /// Merit, violation and operand values of `points` on the CPU reference.
@@ -869,17 +929,31 @@ fn reference_values(
     p: &OpticalProblem<BuiltinEvaluator>,
     points: &[&[f64]],
 ) -> EngineResult<Reference> {
+    evaluation_values(p, points, &JobContext::new())
+}
+
+fn evaluation_values<E: OperandEvaluator>(
+    p: &OpticalProblem<E>,
+    points: &[&[f64]],
+    ctx: &JobContext,
+) -> EngineResult<Reference> {
     let n = p.num_variables();
     let batch = CandidateBatch::from_points(n, points.iter().copied());
-    let ctx = JobContext::new();
-    let vals = p.operand_values(&batch, &ctx)?;
+    Ok(values_report(p, p.operand_values(&batch, ctx)?))
+}
+
+fn values_report<E: OperandEvaluator>(
+    p: &OpticalProblem<E>,
+    vals: Vec<Option<Vec<OperandValue>>>,
+) -> Reference {
+    let count = vals.len();
     let e = p.to_evaluation(vals.clone());
     let n_ops = p.spec().operands.len();
-    Ok(Reference {
-        merit: (0..points.len())
+    Reference {
+        merit: (0..count)
             .map(|k| merit(p.weights(), e.residuals(k), e.status[k]))
             .collect(),
-        violation: (0..points.len())
+        violation: (0..count)
             .map(|k| total_violation(p.constraints(), e.constraints(k), e.status[k]))
             .collect(),
         status: e.status.clone(),
@@ -896,7 +970,7 @@ fn reference_values(
                 })
             })
             .collect(),
-    })
+    }
 }
 
 fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
@@ -988,6 +1062,126 @@ struct OptimizeSettings {
     gpu_batch: usize,
     feasibility_tolerance: f64,
     stop_key: Option<String>,
+}
+
+/// Shared merit construction for optimisation and snapshot evaluation.
+struct PreparedMerit {
+    settings: OptimizeSettings,
+    system: OpticalSystem,
+    cpu: BuiltinEvaluator,
+    reg: OperandRegistry,
+    spec: MeritFunctionSpec,
+    warnings: Vec<String>,
+    efl_penalty: Option<usize>,
+}
+
+impl PreparedMerit {
+    fn new(input: &AnalysisInput<'_>, settings: &Value, ctx: &JobContext) -> EngineResult<Self> {
+        let mut s: OptimizeSettings = parse(settings, "settings")?;
+        let (system, solves) = mklight_trace::apply_solves_with(
+            input.snapshot.system(),
+            &input.library,
+            &Default::default(),
+            ctx,
+        )?;
+        let cpu = BuiltinEvaluator::new(input.library.clone());
+        let reg = OperandRegistry::builtin();
+        let mut warnings = solves.warnings;
+        let solved = system.solved_params();
+        if s.variables.is_empty() {
+            s.variables = auto_variables(&system);
+            s.variables.retain(|v| !solved.contains(&v.param));
+        }
+        if s.variables.iter().any(|v| solved.contains(&v.param)) {
+            return Err(invalid(
+                "'variables': a solve-controlled parameter cannot vary",
+            ));
+        }
+        let default_merit = patched(
+            &DefaultMeritSpec::default(),
+            &s.default_merit,
+            "default_merit",
+        )?;
+        let mut spec = build_merit(&system, &s.merit, &default_merit, &s.variables)?;
+        if s.merit.is_null() {
+            warnings.extend(relax_fixed_boundaries(
+                &system,
+                &mut spec,
+                &s.variables,
+                &cpu,
+                &reg,
+                ctx,
+            )?);
+        }
+        spec.operands.extend(s.operands.iter().cloned());
+        spec.operands
+            .extend(s.constraints.iter().cloned().map(|mut o| {
+                o.role = OperandRole::Constraint;
+                o
+            }));
+        let global = s.algorithm.derivative_free();
+        if global
+            && spec.enabled().any(|(_, o)| {
+                o.role == OperandRole::Constraint && o.comparison == Comparison::Equal
+            })
+        {
+            warnings.push(format!(
+                "{} rarely samples a point that meets an equality constraint exactly; such \
+                 constraints are better held by lm, dogleg or hammer, or by a weighted operand",
+                s.algorithm.name()
+            ));
+        }
+        let mut efl_penalty = None;
+        if s.hold_efl && !has_efl(&spec) {
+            match cpu
+                .evaluate_system(&system, &[&Operand::new(OperandKind::Efl)], ctx)?
+                .remove(0)
+            {
+                Ok(f) if f.is_finite() && f != 0.0 => {
+                    let o = if global {
+                        // Penalty: the derivative-free methods' random trial
+                        // points never meet an equality exactly, so Deb's
+                        // rule would rank them by EFL error alone.
+                        efl_penalty = Some(spec.operands.len());
+                        let mut o = Operand::new(OperandKind::Efl).target(f).weight(0.0);
+                        o.label = "hold EFL (penalty)".into();
+                        o
+                    } else {
+                        let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
+                        o.label = "hold EFL".into();
+                        o
+                    };
+                    spec.operands.push(o);
+                }
+                other => warnings.push(format!(
+                    "the focal length is not held: the start has no finite EFL ({other:?})"
+                )),
+            }
+        }
+        Ok(PreparedMerit {
+            settings: s,
+            system,
+            cpu,
+            reg,
+            spec,
+            warnings,
+            efl_penalty,
+        })
+    }
+
+    // Start with a zero-weight hold, then fill its weight from the baseline
+    // report without another operand evaluation.
+    fn weight_efl(&mut self, start_merit: f64) {
+        if let Some(i) = self.efl_penalty {
+            let op = &mut self.spec.operands[i];
+            let phi = if start_merit > 0.0 && start_merit.is_finite() {
+                start_merit
+            } else {
+                1.0
+            };
+            op.weight = phi / (EFL_PENALTY_RELATIVE * op.target).powi(2);
+        }
+    }
 }
 
 /// An optimiser with its settings.
@@ -1272,40 +1466,7 @@ impl Analysis for Optimize {
                 (
                     "operands",
                     arr(
-                        obj(&[
-                            ("index", int("")),
-                            ("kind", string("Operand name.")),
-                            ("label", string("")),
-                            ("enabled", boolean("")),
-                            ("role", enumeration(&["residual", "constraint"], "")),
-                            (
-                                "comparison",
-                                enumeration(&["equal", "less_than", "greater_than"], ""),
-                            ),
-                            ("target", nf()),
-                            ("weight", nf()),
-                            ("config", int("")),
-                            ("field", opaque("FieldSelector.")),
-                            ("wavelength", opaque("WavelengthSelector.")),
-                            ("start", nf()),
-                            ("value", nf()),
-                            (
-                                "residual",
-                                nf_u(
-                                    "operand",
-                                    "Signed value - target for equal; one-sided violation otherwise.",
-                                ),
-                            ),
-                            (
-                                "contribution",
-                                nf_u(
-                                    "merit",
-                                    "weight * residual squared; null for constraints/disabled operands.",
-                                ),
-                            ),
-                            ("contribution_fraction", nf()),
-                            ("error", nullable(string("Operand failure."))),
-                        ]),
+                        operand_schema(),
                         "Start/final values on the CPU f64 reference; operand units in OPTIMIZATION.md.",
                     ),
                 ),
@@ -1355,85 +1516,33 @@ impl Analysis for Optimize {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let mut s: OptimizeSettings = parse(settings, "settings")?;
-        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
-        let system = input.snapshot.system().clone();
-        let cpu = BuiltinEvaluator::new(input.library.clone());
-        let reg = OperandRegistry::builtin();
-        let mut warnings = Vec::new();
+        let mut prepared = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
+        if prepared.efl_penalty.is_some() {
+            let phi = start_merit(
+                &prepared.system,
+                &prepared.settings.variables,
+                &prepared.spec,
+                &prepared.cpu,
+                &prepared.reg,
+                &ctx.subrange(0.0, 0.0),
+            )?;
+            prepared.weight_efl(phi);
+        }
+        let PreparedMerit {
+            settings: s,
+            system,
+            cpu,
+            reg,
+            spec,
+            mut warnings,
+            ..
+        } = prepared;
         if s.variables.is_empty() {
-            s.variables = auto_variables(&system);
-            if s.variables.is_empty() {
-                return Err(invalid(
-                    "'variables': none given, and the system has nothing to vary",
-                ));
-            }
-        }
-        let default_merit = patched(
-            &DefaultMeritSpec::default(),
-            &s.default_merit,
-            "default_merit",
-        )?;
-        let mut spec = build_merit(&system, &s.merit, &default_merit, &s.variables)?;
-        if s.merit.is_null() {
-            warnings.extend(relax_fixed_boundaries(
-                &system,
-                &mut spec,
-                &s.variables,
-                &cpu,
-                &reg,
-                ctx,
-            )?);
-        }
-        spec.operands.extend(s.operands.iter().cloned());
-        spec.operands
-            .extend(s.constraints.iter().cloned().map(|mut o| {
-                o.role = OperandRole::Constraint;
-                o
-            }));
-        let global = s.algorithm.derivative_free();
-        if global
-            && spec.enabled().any(|(_, o)| {
-                o.role == OperandRole::Constraint && o.comparison == Comparison::Equal
-            })
-        {
-            warnings.push(format!(
-                "{} rarely samples a point that meets an equality constraint exactly; such \
-                 constraints are better held by lm, dogleg or hammer, or by a weighted operand",
-                s.algorithm.name()
+            return Err(invalid(
+                "'variables': none given, and the system has nothing to vary",
             ));
         }
-        if s.hold_efl && !has_efl(&spec) {
-            match cpu
-                .evaluate_system(&system, &[&Operand::new(OperandKind::Efl)], ctx)?
-                .remove(0)
-            {
-                Ok(f) if f.is_finite() && f != 0.0 => {
-                    let o = if global {
-                        // Penalty: the derivative-free methods' random trial
-                        // points never meet an equality exactly, so Deb's
-                        // rule would rank them by EFL error alone.
-                        let phi0 = start_merit(&system, &s.variables, &spec, &cpu, &reg)?;
-                        let w = if phi0 > 0.0 && phi0.is_finite() {
-                            phi0
-                        } else {
-                            1.0
-                        } / (EFL_PENALTY_RELATIVE * f).powi(2);
-                        let mut o = Operand::new(OperandKind::Efl).target(f).weight(w);
-                        o.label = "hold EFL (penalty)".into();
-                        o
-                    } else {
-                        let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
-                        o.label = "hold EFL".into();
-                        o
-                    };
-                    spec.operands.push(o);
-                }
-                other => warnings.push(format!(
-                    "the focal length is not held: the start has no finite EFL ({other:?})"
-                )),
-            }
-        }
+        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
         let (algo, max_iter) = Algo::new(&s)?;
         let reference = OpticalProblem::new(
             system.clone(),
@@ -1445,7 +1554,8 @@ impl Analysis for Optimize {
         let x0 = reference.start_point()?;
         let work = Workload::new(&cpu.trace, &system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "qualifying the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, s.gpu_batch, work, ctx)?;
+        let start_snapshot = Snapshot::new(system.clone())?;
+        let mut ev = Evaluation::new_on(s.backend, input, s.gpu_batch, work, &start_snapshot, ctx)?;
         ctx.check()?;
 
         // The search.
@@ -1632,6 +1742,86 @@ impl Analysis for Optimize {
             warnings: all_warnings,
         })
     }
+}
+
+/// Evaluate one snapshot without computing a Jacobian or running an optimiser.
+pub(super) fn evaluate_merit(
+    input: &AnalysisInput<'_>,
+    settings: &Value,
+    ctx: &JobContext,
+) -> EngineResult<AnalysisOutput> {
+    let mut prepared = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
+    let PreparedMerit {
+        settings: s,
+        system,
+        cpu,
+        spec,
+        ..
+    } = &prepared;
+    let work = Workload::new(&cpu.trace, system, spec, 1);
+    ctx.report(0.0, "qualifying the merit evaluator");
+    let start_snapshot = Snapshot::new(system.clone())?;
+    let mut ev = Evaluation::new_on(
+        s.backend,
+        input,
+        s.gpu_batch,
+        work,
+        &start_snapshot,
+        &ctx.subrange(0.0, 0.2),
+    )?;
+    ctx.report(0.2, "evaluating merit");
+    let backend = s.backend;
+    let evaluator = match ev.active_gpu() {
+        Some(g) => g.clone().composite().with(cpu.clone()),
+        None => mklight_optim::merit::CompositeEvaluator::new().with(cpu.clone()),
+    };
+    let values = snapshot_values(&mut prepared, evaluator, &ctx.subrange(0.2, 1.0))?;
+    ev.finish(input, backend, None, ctx)?;
+    let spec = &prepared.spec;
+    ev.warnings.extend(prepared.warnings);
+    Ok(AnalysisOutput {
+        json: json!({
+            "merit": num(values.merit[0]),
+            "violation": num(values.violation[0]),
+            "status": values.status[0],
+            "evaluations": 1,
+            "operands": operand_table(&spec, &values.values[0], &values.values[0], values.merit[0]),
+            "merit_spec": spec,
+            "backend": ev.report,
+        }),
+        warnings: ev.warnings,
+        ..Default::default()
+    })
+}
+
+fn snapshot_values<E: OperandEvaluator>(
+    prepared: &mut PreparedMerit,
+    evaluator: E,
+    ctx: &JobContext,
+) -> EngineResult<Reference> {
+    let p = OpticalProblem::new(
+        prepared.system.clone(),
+        prepared.settings.variables.clone(),
+        prepared.spec.clone(),
+        evaluator,
+        &prepared.reg,
+    )?;
+    let x0 = p.start_point()?;
+    let batch = CandidateBatch::from_points(x0.len(), [&x0[..]]);
+    let values = p.operand_values(&batch, ctx)?;
+    if prepared.efl_penalty.is_none() {
+        return Ok(values_report(&p, values));
+    }
+    let baseline = values_report(&p, values.clone()).merit[0];
+    prepared.weight_efl(baseline);
+    let p = OpticalProblem::new(
+        prepared.system.clone(),
+        prepared.settings.variables.clone(),
+        prepared.spec.clone(),
+        prepared.cpu.clone(),
+        &prepared.reg,
+    )?;
+    Ok(values_report(&p, values))
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,11 @@
 //! (Conn, Gould & Toint; Nocedal & Wright Alg. 17.4). Unlike a pure penalty,
 //! `μ` stays bounded, so the inner problems stay well conditioned, and the
 //! converged multipliers are returned as `OptimResult::multipliers`.
+//!
+//! **End-point restoration.** A constrained run finishes with up to three
+//! bounded, regularised constraint-only Gauss–Newton corrections before
+//! feasibility-first ranking. They consume the remaining evaluation budget,
+//! not optimiser iterations; see `docs/OPTIMIZATION.md`.
 
 use serde::{Deserialize, Serialize};
 
@@ -970,8 +975,113 @@ pub fn least_squares<P: Problem + ?Sized>(
             };
         }
     }
+    if termination != Termination::Cancelled {
+        match restore_feasibility(&mut c, &mut x, &mut e) {
+            Ok(()) => {}
+            Err(MkError::Cancelled) => termination = Termination::Cancelled,
+            Err(err) => return Err(err),
+        }
+    }
     let mult = aug.multipliers(k);
     Ok(finish(&c, x, Some(e), termination, Some(mult)))
+}
+
+/// Remove a small constraint defect before feasibility-first ranking. Solve
+/// only the constraint linearisation, in variable scales, with a tiny ridge
+/// selecting a minimum-norm correction even for dependent/underdetermined
+/// rows. QR avoids squaring its condition number. Each correction is local
+/// (at most 1e-3 variable scales) and backtracking must reduce total violation.
+fn restore_feasibility<P: Problem + ?Sized>(
+    c: &mut Ctx<'_, P>,
+    x: &mut Vec<f64>,
+    e: &mut Evaluation,
+) -> MkResult<()> {
+    let vars = c.p.variables();
+    let n = vars.len();
+    let aug = Aug::new(c.p, 1.0);
+    let tol = c.mon.feasibility_tol.min(c.s.constraints.tol);
+    for _ in 0..3 {
+        c.mon.job.check()?;
+        let violation = scalar(c.p, e).violation;
+        if !e.status.is_usable() || violation <= tol || !c.budget_left() {
+            break;
+        }
+        let budget = c.s.max_evaluations.saturating_sub(c.ctr.evaluations + 1);
+        let Some(jac) = jacobian_budget(c.p, x, e, &c.s.jacobian, &c.mon.job, budget)? else {
+            break;
+        };
+        c.ctr.evaluations += jac.evaluations;
+        let mut r = Vec::with_capacity(aug.rows.len());
+        let mut j = Matrix::zeros(aug.rows.len(), n);
+        for (i, row) in aug.rows.iter().enumerate() {
+            let g = Aug::g(row, &e.constraints);
+            let active = matches!(row.kind, RowKind::Eq) || g > 0.0;
+            r.push(if active { g } else { 0.0 });
+            if active {
+                let sign = if matches!(row.kind, RowKind::Lower) {
+                    -1.0
+                } else {
+                    1.0
+                };
+                for k in 0..n {
+                    j[(i, k)] =
+                        sign * row.inv_scale * jac.constraints[(row.k, k)] * vars[k].safe_scale();
+                }
+            }
+        }
+        let grad = j.tr_mul_vec(&r);
+        for k in 0..n {
+            if jac.failed_columns.contains(&k)
+                || (x[k] <= vars[k].lo() && grad[k] > 0.0)
+                || (x[k] >= vars[k].hi() && grad[k] < 0.0)
+            {
+                for i in 0..j.rows {
+                    j[(i, k)] = 0.0;
+                }
+            }
+        }
+        let scale = norm2(&j.data);
+        if !(scale > 0.0) || !scale.is_finite() {
+            break;
+        }
+        for v in &mut j.data {
+            *v /= scale;
+        }
+        for v in &mut r {
+            *v /= scale;
+        }
+        let sub = Sub::new(j, &r, vec![1.0; n]);
+        let step = sub.solve_lambda(f64::EPSILON.sqrt(), &sub.b0).0;
+        let mut alpha = (1e-3 / norm2(&step)).min(1.0);
+        let mut accepted = false;
+        for _ in 0..8 {
+            if !c.budget_left() {
+                break;
+            }
+            let trial: Vec<f64> = (0..n)
+                .map(|k| vars[k].clamp(x[k] + alpha * vars[k].safe_scale() * step[k]))
+                .collect();
+            let value = c.eval(&trial)?;
+            if scalar(c.p, &value).violation < violation {
+                *x = trial;
+                *e = value;
+                accepted = true;
+                let sc = scalar(c.p, e);
+                let mut rec = IterationRecord::new(c.s.name(), c.ctr.iterations, c.ctr.evaluations);
+                rec.stage = "feasibility restoration".into();
+                rec.merit = sc.merit;
+                rec.violation = sc.violation;
+                rec.best_merit = c.mon.best.get().map_or(sc.merit, |b| b.merit);
+                c.mon.record(&mut c.history, rec);
+                break;
+            }
+            alpha *= 0.5;
+        }
+        if !accepted {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn finish<P: Problem + ?Sized>(
