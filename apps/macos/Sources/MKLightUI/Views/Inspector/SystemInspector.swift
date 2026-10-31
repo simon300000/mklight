@@ -29,6 +29,7 @@ struct SystemInspector: View {
                     ) { nv in edit("Change Aperture") { $0.aperture = ApertureSpec(kind: $0.aperture.kind, value: nv) } }
                 }
             }
+            anamorphicSection
             fieldsSection
             wavelengthsSection
             Section("Environment") {
@@ -70,6 +71,34 @@ struct SystemInspector: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: First order
+
+    /// The x / y first order of a design that is not rotationally symmetric
+    /// (the engine's `paraxial_xy` at the primary wavelength).
+    @ViewBuilder private var anamorphicSection: some View {
+        let json = workspace.summary.output?.json
+        if ParaxialXYData.isAnamorphic(json, system: system) {
+            Section {
+                if let xy = ParaxialXYData(json), let p = xy.primary {
+                    LabeledContent("EFL x / y", value: Fmt.short(p.eflX) + " / " + Fmt.short(p.eflY) + " mm")
+                        .monospacedDigit()
+                    LabeledContent("BFL x / y", value: Fmt.short(p.bflX) + " / " + Fmt.short(p.bflY) + " mm")
+                        .monospacedDigit()
+                    LabeledContent("Squeeze", value: ParaxialXYData.squeezeText(p.squeeze))
+                        .monospacedDigit()
+                        .help("Squeeze: " + (xy.squeezeDefinition ?? "signed EFL y / EFL x"))
+                    if let s = xy.symmetry { LabeledContent("Symmetry", value: s.title) }
+                } else {
+                    Text("Not rotationally symmetric. The engine's first-order data covers the y section.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("First Order")
+            }
+            .opacity(workspace.summary.isStale ? 0.5 : 1)
+        }
     }
 
     // MARK: Fields
