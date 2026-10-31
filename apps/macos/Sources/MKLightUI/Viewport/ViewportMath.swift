@@ -42,7 +42,7 @@ enum ViewportMath {
         let r = frame.rotation.map { rc * $0.transpose } ?? rc  // frame axes → view axes
         let t = rc * (frame.origin - camera.center)  // translation in view space
         let sx = 2 * camera.pointsPerMM / max(Double(size.width), 1)
-        let sy = 2 * camera.pointsPerMM / max(Double(size.height), 1)
+        let sy = 2 * camera.pointsPerMM * camera.verticalScale(mode) / max(Double(size.height), 1)
         let sz = 0.5 / max(depthRadius, 1e-9)
         // clip = S · (R·q + t), z mapped from [−D, D] to [1, 0].
         let m = simd_double4x4(columns: (
@@ -69,17 +69,29 @@ enum ViewportMath {
         var c = camera
         let mid = (lo + hi) / 2
         c.center = r.transpose * mid
-        let w = max(hi.x - lo.x, 1e-6), h = max(hi.y - lo.y, 1e-6)
+        let w = max(hi.x - lo.x, 1e-6), h = max(hi.y - lo.y, 1e-6) * camera.verticalScale(mode)
         c.pointsPerMM = min(Double(size.width) / (w * 1.12), Double(size.height) / (h * 1.12))
         c.isFitted = true
         return c
+    }
+
+    /// Width and height (mm, true proportions) of `points` in the view.
+    static func extent(_ camera: ViewportCamera, mode: ViewportMode, points: [SIMD3<Double>]) -> (width: Double, height: Double) {
+        let r = rotation(camera, mode: mode)
+        var lo = SIMD3<Double>(repeating: .infinity), hi = SIMD3<Double>(repeating: -.infinity)
+        for p in points {
+            let v = r * p
+            lo = simd_min(lo, v)
+            hi = simd_max(hi, v)
+        }
+        return points.isEmpty ? (0, 0) : (hi.x - lo.x, hi.y - lo.y)
     }
 
     /// Pans by a screen delta in points.
     static func pan(_ camera: ViewportCamera, mode: ViewportMode, by delta: CGSize) -> ViewportCamera {
         let r = rotation(camera, mode: mode)
         var c = camera
-        c.center -= r.transpose * SIMD3(Double(delta.width) / c.pointsPerMM, Double(delta.height) / c.pointsPerMM, 0)
+        c.center -= r.transpose * SIMD3(Double(delta.width) / c.pointsPerMM, Double(delta.height) / (c.pointsPerMM * c.verticalScale(mode)), 0)
         return c
     }
 
@@ -89,7 +101,7 @@ enum ViewportMath {
         guard factor.isFinite, factor > 0 else { return camera }
         var c = camera
         let newZoom = min(max(c.pointsPerMM * factor, 1e-4), 1e6)
-        let o = SIMD3(Double(cursor.x), Double(cursor.y), 0)
+        let o = SIMD3(Double(cursor.x), Double(cursor.y) / c.verticalScale(mode), 0)
         let shift = o / c.pointsPerMM - o / newZoom
         c.center += rotation(camera, mode: mode).transpose * shift
         c.pointsPerMM = newZoom

@@ -65,6 +65,19 @@ public enum Palette {
         return interpolate(stops, t)
     }
 
+    /// The perceptual sequential ramp (viridis, from its 0.1 step so the
+    /// low end stays apart from a dark background): lightness rises
+    /// monotonically from violet through blue and green to yellow, readable
+    /// in light and dark appearance and by colour-vision deficiencies.
+    static let perceptualRamp: [UInt32] = [
+        0x482475, 0x414487, 0x355f8d, 0x2a788e, 0x21918c, 0x22a884, 0x44bf70, 0x7ad151, 0xbddf26, 0xfde725,
+    ]
+
+    /// A quantity `t` in 0…1 on the perceptual ramp (same in both appearances).
+    public static func perceptual(_ t: Double) -> SIMD3<Double> {
+        interpolate(perceptualRamp.map(rgb), t)
+    }
+
     /// Signed value `t` in −1…1: blue (negative) ↔ neutral ↔ red (positive).
     public static func diverging(_ t: Double, dark: Bool) -> SIMD3<Double> {
         let mid = dark ? rgb(0x383835) : rgb(0xf0efec)

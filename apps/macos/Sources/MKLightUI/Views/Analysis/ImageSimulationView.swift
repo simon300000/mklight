@@ -18,6 +18,10 @@ struct ImageSimulationView: View {
 
     let data: ImageSimulationData
     let source: LinearImage?
+    /// The pane, for the field of view and resolution controls.
+    let pane: AnalysisPane?
+    /// The built-in pattern the run's (antialiased) buffer was drawn from.
+    let pattern: String?
     /// Identifies the result (its start time and snapshot).
     let run: String
     @State private var compare = Compare.sideBySide
@@ -60,11 +64,25 @@ struct ImageSimulationView: View {
         }
     }
 
-    init?(output: AnalysisOutput) {
+    init?(output: AnalysisOutput, pane: AnalysisPane? = nil) {
         guard let d = ImageSimulationData(output: output) else { return nil }
         data = d
         source = d.sourceImage
+        self.pane = pane
+        // A buffer drawn from a built-in pattern (not an imported file) keeps the pattern's name.
+        if case .buffer = d.source, let p = pane, p.settings[ImageSourceImport.fileKey] == nil,
+            let name = p.value("source")?["pattern"]?.string
+        {
+            pattern = name
+        } else {
+            pattern = nil
+        }
         run = "\(output.runInfo.snapshotHash)-\(output.runInfo.startedUnixMs)-\(output.runInfo.durationMs)"
+    }
+
+    private var sourceTitle: String {
+        guard let pattern else { return data.sourceTitle }
+        return (ImageSimulationData.patterns.first { $0.id == pattern }?.title ?? pattern) + " pattern"
     }
 
     private var gain: Double { pow(2, exposure) }
@@ -96,6 +114,7 @@ struct ImageSimulationView: View {
 
     private var controls: some View {
         FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
+            if let pane { ImageViewControls(pane: pane, data: data) }
             Picker("Compare", selection: $compare) {
                 ForEach(Compare.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
@@ -150,7 +169,7 @@ struct ImageSimulationView: View {
             let wide = size.width / max(size.height, 1) > aspect * 1.2
             let layout = wide ? AnyLayout(HStackLayout(spacing: Space.m)) : AnyLayout(VStackLayout(spacing: Space.m))
             layout {
-                if let src { frame(src, title: data.sourceTitle, isSource: true) }
+                if let src { frame(src, title: sourceTitle, isSource: true) }
                 frame(simulated, title: "Simulated", isSource: false)
             }
         case .split:
@@ -166,7 +185,7 @@ struct ImageSimulationView: View {
             .gesture(zoomGesture)
             .simultaneousGesture(panGesture)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(isSource ? "Source: \(data.sourceTitle)" : "Simulated image, \(data.image.width) by \(data.image.height) pixels")
+            .accessibilityLabel(isSource ? "Source: \(sourceTitle)" : "Simulated image, \(data.image.width) by \(data.image.height) pixels")
             .accessibilityAddTraits(.isImage)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -180,7 +199,7 @@ struct ImageSimulationView: View {
                     .mask(alignment: .leading) {
                         Rectangle().frame(width: max(fit.minX + fit.width * split, 0)).frame(maxWidth: .infinity, alignment: .leading)
                     }
-                ImageTag(text: data.sourceTitle).offset(x: fit.minX, y: fit.minY)
+                ImageTag(text: sourceTitle).offset(x: fit.minX, y: fit.minY)
                 ImageTag(text: "Simulated").frame(width: fit.width, alignment: .trailing).offset(x: fit.minX, y: fit.minY)
                 // The divider and its handle.
                 let x = fit.minX + fit.width * split
@@ -212,13 +231,13 @@ struct ImageSimulationView: View {
     private func blinkView(simulated: CGImage?, source: CGImage?) -> some View {
         if reduceMotion {
             // No flashing: show one at a time, switched by a click.
-            frame(blinkSource ? source : simulated, title: blinkSource ? data.sourceTitle : "Simulated", isSource: blinkSource)
+            frame(blinkSource ? source : simulated, title: blinkSource ? sourceTitle : "Simulated", isSource: blinkSource)
                 .onTapGesture { blinkSource.toggle() }
                 .help("Click to switch between the source and the simulated image")
         } else {
             TimelineView(.periodic(from: .now, by: 0.8)) { t in
                 let showSource = Int(t.date.timeIntervalSinceReferenceDate / 0.8) % 2 == 0
-                frame(showSource ? source : simulated, title: showSource ? data.sourceTitle : "Simulated", isSource: showSource)
+                frame(showSource ? source : simulated, title: showSource ? sourceTitle : "Simulated", isSource: showSource)
             }
         }
     }
@@ -256,7 +275,10 @@ struct ImageSimulationView: View {
             }
             if clipped > 0.001 { Text(String(format: "%.1f%% clipped", clipped * 100)).foregroundStyle(.orange) }
             Spacer(minLength: 0)
-            if case .pattern = data.source {
+            if pattern != nil {
+                Text("Pattern area-sampled (antialiased)").help(
+                    "The built-in pattern is drawn by the app with the engine's definition, averaged over each pixel (4 × 4 samples), and sent to the engine as the source image.")
+            } else if case .pattern = data.source {
                 Text("Source drawn as the engine defines it").help(
                     "The engine does not return the source; built-in patterns are drawn here at the output size with the engine's definition, for comparison.")
             }
@@ -264,6 +286,124 @@ struct ImageSimulationView: View {
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
         .lineLimit(1)
+    }
+}
+
+/// The simulated field of view (a centred square of the normalised field)
+/// and the resolution, with what they mean on the sensor: the patch's width
+/// and the pixel size, so blur and aberrations can be made visible.
+struct ImageViewControls: View {
+    let pane: AnalysisPane
+    let data: ImageSimulationData
+
+    private var extent: Double { ImageSimulationSettings.fieldExtent(pane) }
+    private var size: Int { ImageSimulationSettings.size(pane) }
+
+    /// Image-plane half-width (mm) per unit of field extent, from the result.
+    private var mmPerExtent: Double? {
+        let w = data.pixelSize.x * Double(data.image.width)
+        let e = ImageSimulationSettings.fieldExtent(fromRun: data)
+        guard w.isFinite, w > 0, let e, e > 0 else { return nil }
+        return w / 2 / e
+    }
+
+    var body: some View {
+        HStack(spacing: Space.s) {
+            Menu {
+                Picker("Field of view", selection: Binding(get: { extent }, set: { ImageSimulationSettings.setFieldExtent($0, in: pane) })) {
+                    ForEach(ImageSimulationSettings.extents, id: \.self) { e in
+                        Text(label(e)).tag(e)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Text("View " + ImageSimulationSettings.extentTitle(extent))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("The simulated part of the field: a square centred on the axis, as a fraction of the full field. A smaller patch has finer pixels, so the blur shows.")
+            .accessibilityLabel("Field of view")
+            .accessibilityValue(ImageSimulationSettings.extentTitle(extent))
+            Menu {
+                Picker("Resolution", selection: Binding(get: { size }, set: { ImageSimulationSettings.setSize($0, in: pane) })) {
+                    ForEach(ImageSimulationSettings.sizes, id: \.self) { n in Text("\(n) × \(n) px").tag(n) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Text("\(size) px")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Output pixels per side")
+            .accessibilityLabel("Resolution")
+            .accessibilityValue("\(size) pixels")
+        }
+    }
+
+    private func label(_ e: Double) -> String {
+        var t = ImageSimulationSettings.extentTitle(e)
+        if let k = mmPerExtent {
+            let width = 2 * k * e
+            t += " · " + Fmt.length(width) + " wide, pixel " + Fmt.length(width / Double(size))
+        }
+        return t
+    }
+}
+
+/// The app's settings of `image_simulation` panes: the starting settings
+/// (a centred patch at 256 px, PSF windows and pupil sampling large enough
+/// for the sample designs' spots), the field-of-view and resolution
+/// choices, and the antialiased built-in patterns sent as the source.
+@MainActor
+enum ImageSimulationSettings {
+    /// Field extents offered (half-width of the centred square, in units of
+    /// the normalised field).
+    static let extents: [Double] = [1, 0.5, 0.25, 0.1, 0.05, 0.02]
+    static let sizes: [Int] = [128, 256, 512, 1024]
+
+    /// Starting settings: a centred patch of 10 % of the field at 256 px, a
+    /// 161-sample PSF window and a 96-sample pupil (the engine's defaults,
+    /// the full field at 64 px with a 33-sample PSF, show no blur: the PSF
+    /// is truncated and the pixels are far larger than the spot).
+    static func starting(defaults: JSONValue?) -> [String: JSONValue] {
+        var optics = defaults?["optics"]?.object ?? [:]
+        optics["field_extent"] = .number(0.1)
+        optics["psf_size"] = .integer(161)
+        var pupil = optics["pupil"]?.object ?? ["amplitude": .string("radiometric")]
+        pupil["grid"] = .integer(96)
+        pupil["rays"] = .integer(97)
+        optics["pupil"] = .object(pupil)
+        return [
+            "size": .array([.integer(256), .integer(256)]),
+            "optics": .object(optics),
+            "source": .object(["kind": .string("pattern"), "pattern": .string("siemens_star")]),
+        ]
+    }
+
+    static func fieldExtent(_ pane: AnalysisPane) -> Double { pane.value("optics")?["field_extent"]?.doubleValue ?? 1 }
+
+    /// The run's field extent: the corner node of its field mapping.
+    static func fieldExtent(fromRun data: ImageSimulationData) -> Double? {
+        let e = data.nodes.map { max(abs($0.field.x), abs($0.field.y)) }.max()
+        return e.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    static func size(_ pane: AnalysisPane) -> Int {
+        Int(pane.value("size")?.array?.first?.doubleValue ?? 64)
+    }
+
+    static func setFieldExtent(_ e: Double, in pane: AnalysisPane) {
+        var optics = pane.value("optics")?.object ?? [:]
+        optics["field_extent"] = .number(e)
+        pane.set("optics", .object(optics))
+    }
+
+    static func setSize(_ n: Int, in pane: AnalysisPane) {
+        pane.set("size", .array([.integer(Int64(n)), .integer(Int64(n))]))
+    }
+
+    static func extentTitle(_ e: Double) -> String {
+        e >= 1 ? "full field" : String(format: "centre %g %%", e * 100)
     }
 }
 
@@ -477,6 +617,33 @@ enum ImageSourceImport {
         pane.setSettings(s)
         return true
     }
+
+    private static var patternCache: [String: JSONValue] = [:]
+
+    /// The settings sent to the engine: a built-in pattern becomes its
+    /// antialiased (area-sampled) image at the run's size, as a buffer
+    /// source; the engine itself samples patterns at pixel centres.
+    static func engineSettings(_ analysis: String, _ settings: [String: JSONValue], defaults: JSONValue?) -> [String: JSONValue] {
+        guard analysis == "image_simulation" else { return settings }
+        let source = settings["source"] ?? defaults?["source"]
+        guard source?["kind"]?.string == "pattern", let name = source?["pattern"]?.string else { return settings }
+        let a = (settings["size"] ?? defaults?["size"])?.array?.compactMap(\.doubleValue) ?? []
+        let w = a.count == 2 ? Int(a[0]) : 64, h = a.count == 2 ? Int(a[1]) : 64
+        guard (2...maxPatternSide).contains(w), (2...maxPatternSide).contains(h) else { return settings }
+        let key = "\(name)-\(w)x\(h)"
+        var s = settings
+        if let cached = patternCache[key] {
+            s["source"] = cached
+        } else if let image = LinearImage.pattern(name, width: w, height: h, supersample: 4) {
+            let json = image.sourceJSON
+            patternCache[key] = json
+            s["source"] = json
+        }
+        return s
+    }
+
+    /// The largest pattern drawn by the app (the engine accepts buffers up to 8192).
+    nonisolated static let maxPatternSide = 4096
 
     /// Uses a built-in pattern (and forgets an imported file).
     static func use(pattern: String, in pane: AnalysisPane) {

@@ -58,7 +58,8 @@ struct SpotDiagramView: View {
         for cols in 1...max(count, 1) {
             let rows = Int(ceil(Double(count) / Double(cols)))
             let w = (size.width - CGFloat(cols - 1) * Space.m) / CGFloat(cols)
-            let h = (size.height - CGFloat(rows - 1) * Space.m) / CGFloat(rows) - 36
+            // Each cell: its title and two lines of RMS and GEO under the plot.
+            let h = (size.height - CGFloat(rows - 1) * Space.m) / CGFloat(rows) - 50
             let c = min(w, h)
             if c > best.1 { best = (cols, c) }
         }
@@ -74,9 +75,12 @@ struct SpotDiagramView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack {
-                WavelengthLegend(wavelengths: wavelengths, um: wavelengthsUm)
-                Spacer()
+            FlowLayout(spacing: Space.m) {
+                ForEach(wavelengths, id: \.self) { w in
+                    if wavelengthsUm.indices.contains(w) {
+                        LegendItem(color: Palette.wavelengthColor(wavelengthsUm[w]), label: String(format: "%.4f µm", wavelengthsUm[w]))
+                    }
+                }
                 if airy.isFinite {
                     LegendItem(color: .secondary, label: "Airy disk \(Fmt.length(airy))", dashed: true)
                 }
@@ -144,16 +148,21 @@ private struct SpotCell: View {
             }
             .frame(width: size, height: size)
             .accessibilityLabel("\(field.label) spot, RMS \(Fmt.length(field.rms)), GEO \(Fmt.length(field.geo))")
-            HStack(spacing: Space.m) {
-                Text("RMS \(Fmt.length(field.rms))")
-                Text("GEO \(Fmt.length(field.geo))")
+            // Side by side when they fit, else on two lines.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Space.m) { rms; geo }
+                VStack(spacing: 0) { rms; geo }
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .frame(width: size)
         }
     }
+}
+
+extension SpotCell {
+    fileprivate var rms: some View { Text("RMS \(Fmt.length(field.rms))").lineLimit(1).fixedSize() }
+    fileprivate var geo: some View { Text("GEO \(Fmt.length(field.geo))").lineLimit(1).fixedSize() }
 }
 
 // MARK: - Ray and OPD fans
@@ -201,9 +210,12 @@ struct FanView: View {
                 ScrollView {
                     VStack(spacing: Space.m) {
                         ForEach(fields) { f in
-                            HStack(spacing: Space.l) {
-                                PlotCell(title: f.label, subtitle: "Tangential") { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
-                                PlotCell(title: " ", subtitle: "Sagittal") { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
+                            VStack(alignment: .leading, spacing: Space.xxs) {
+                                Text(f.label).font(.caption.weight(.semibold)).lineLimit(1)
+                                HStack(spacing: Space.l) {
+                                    PlotCell(title: "Tangential") { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
+                                    PlotCell(title: "Sagittal") { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
+                                }
                             }
                             .frame(height: h)
                         }
@@ -248,9 +260,7 @@ struct FieldCurvatureView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(spacing: Space.l) {
-                WavelengthLegend(wavelengths: curves.map(\.wavelength), um: wavelengthsUm)
-                Spacer()
+            WavelengthLegend(wavelengths: curves.map(\.wavelength), um: wavelengthsUm) {
                 LegendItem(color: .secondary, label: "Tangential")
                 LegendItem(color: .secondary, label: "Sagittal", dashed: true)
             }
@@ -483,9 +493,7 @@ struct LateralColourView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack {
-                WavelengthLegend(wavelengths: curves.map(\.0), um: um)
-                Spacer()
+            WavelengthLegend(wavelengths: curves.map(\.0), um: um) {
                 if airy.isFinite { LegendItem(color: .secondary, label: "± Airy radius", dashed: true) }
             }
             Chart {

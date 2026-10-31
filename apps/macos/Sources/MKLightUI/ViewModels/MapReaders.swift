@@ -274,8 +274,52 @@ enum Contours {
     }
 
     /// Illumination levels 0.5…0.9 by 0.1 and 0.95, inside the data range.
+    /// Iso-illumination levels: round values strictly inside the data's
+    /// range, about five of them (0.88, 0.90, … for a map from 0.87 to 1).
     static func illuminationLevels(in r: ClosedRange<Double>) -> [Double] {
-        [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].filter { $0 > r.lowerBound && $0 < r.upperBound }
+        let span = r.upperBound - r.lowerBound
+        guard span > 1e-9, span.isFinite else { return [] }
+        let step = Nice.length(span / 5)
+        var out: [Double] = []
+        var k = (r.lowerBound / step).rounded(.down) + 1
+        while k * step < r.upperBound - step * 1e-6 {
+            let v = ((k * step) * 1e9).rounded() / 1e9
+            if v > r.lowerBound + step * 1e-6 { out.append(v) }
+            k += 1
+        }
+        return out
+    }
+}
+
+/// How a heat map's colours span its values.
+enum HeatRangeMode: String, CaseIterable, Sendable {
+    /// The data's own range: small variations stay visible.
+    case data
+    /// 0 to 1, for fractions compared across designs.
+    case unit
+}
+
+/// The colour scale of a heat map (one rule for every map of a quantity):
+/// signed data keeps the diverging scale centred on 0 and symmetric about
+/// it; other data takes the perceptual sequential ramp over the data's
+/// range by default, or 0…1 for fractions when asked.
+enum HeatMapScale {
+    static func scale(signed: Bool) -> HeatScale { signed ? .diverging : .perceptual }
+
+    static func range(_ data: ClosedRange<Double>, signed: Bool, mode: HeatRangeMode = .data, isFraction: Bool = false) -> ClosedRange<Double> {
+        if signed {
+            let m = max(abs(data.lowerBound), abs(data.upperBound), 1e-300)
+            return -m...m
+        }
+        if mode == .unit && isFraction { return 0...max(1, data.upperBound) }
+        let lo = data.lowerBound, hi = data.upperBound
+        // A flat map: a small band around its value (one mid colour).
+        let tiny = max(abs(lo), abs(hi), 1e-300) * 1e-9
+        if hi - lo <= tiny {
+            let d = max(abs(lo) * 1e-3, 1e-12)
+            return (lo - d)...(hi + d)
+        }
+        return lo...hi
     }
 }
 
@@ -539,34 +583,48 @@ struct LinearImage: Sendable, Equatable {
         if !isValid { return nil }
     }
 
-    /// One of the engine's built-in test patterns at `width × height`,
-    /// sample for sample as the engine draws it (`pattern_value` in
-    /// crates/mklight-wave/src/image_simulation.rs): display only, so the
-    /// source can be compared with the simulated image.
-    static func pattern(_ name: String, width w: Int, height h: Int) -> LinearImage? {
-        guard w > 0, h > 0, ImageSimulationData.patterns.contains(where: { $0.id == name }) else { return nil }
+    /// One of the engine's built-in test patterns at `width × height`, with
+    /// the engine's definition (`pattern_value` in
+    /// crates/mklight-wave/src/image_simulation.rs). With `supersample` 1
+    /// it is sampled at the pixel centres as the engine does (staircase
+    /// edges); with n > 1 each pixel is the mean of n × n samples, i.e. the
+    /// pattern's area average: antialiased, as a real target imaged onto
+    /// the sensor would be. The app sends the antialiased pattern as the
+    /// run's source (`ImageSourceImport.engineSettings`).
+    static func pattern(_ name: String, width w: Int, height h: Int, supersample n: Int = 1) -> LinearImage? {
+        guard w > 0, h > 0, n >= 1, ImageSimulationData.patterns.contains(where: { $0.id == name }) else { return nil }
         let font: [[Int]] = [[17, 27, 21, 17, 17, 17, 17], [17, 18, 20, 24, 20, 18, 17], [16, 16, 16, 16, 16, 16, 31]]
+        // The value at continuous pixel coordinates (px, py), 0…w × 0…h.
+        func value(_ px: Double, _ py: Double) -> Double {
+            let u = px / Double(w), v = py / Double(h)
+            switch name {
+            case "grid":
+                let fu = (u * 8).truncatingRemainder(dividingBy: 1), fv = (v * 8).truncatingRemainder(dividingBy: 1)
+                return fu < 0.1 || fv < 0.1 ? 0 : 1
+            case "siemens_star":
+                return cos(atan2(v - 0.5, u - 0.5) * 24) > 0 ? 1 : 0
+            case "slanted_edge":
+                return u > 0.5 + 0.1 * (v - 0.5) ? 1 : 0
+            default:  // text_chart: glyphs of whole output pixels
+                let x = min(Int(px), w - 1), y = min(Int(py), h - 1)
+                let band = min(Int((Double(y) + 0.5) / Double(h) * 3), 2)
+                let scale = [4, 2, 1][band]
+                let gx = x / scale, gy = y / scale
+                let glyph = (gx / 6) % 3
+                return gy % 9 < 7 && gx % 6 < 5 && font[glyph][gy % 9] & (1 << (4 - gx % 6)) != 0 ? 0 : 1
+            }
+        }
         var data = [Double](repeating: 1, count: w * h)
+        let inv = 1 / Double(n), norm = 1 / Double(n * n)
         for y in 0..<h {
             for x in 0..<w {
-                let u = (Double(x) + 0.5) / Double(w), v = (Double(y) + 0.5) / Double(h)
-                let value: Double
-                switch name {
-                case "grid":
-                    let fu = (u * 8).truncatingRemainder(dividingBy: 1), fv = (v * 8).truncatingRemainder(dividingBy: 1)
-                    value = fu < 0.1 || fv < 0.1 ? 0 : 1
-                case "siemens_star":
-                    value = cos(atan2(v - 0.5, u - 0.5) * 24) > 0 ? 1 : 0
-                case "slanted_edge":
-                    value = u > 0.5 + 0.1 * (v - 0.5) ? 1 : 0
-                default:  // text_chart
-                    let band = min(Int(v * 3), 2)
-                    let scale = [4, 2, 1][band]
-                    let gx = x / scale, gy = y / scale
-                    let glyph = (gx / 6) % 3
-                    value = gy % 9 < 7 && gx % 6 < 5 && font[glyph][gy % 9] & (1 << (4 - gx % 6)) != 0 ? 0 : 1
+                var sum = 0.0
+                for j in 0..<n {
+                    for i in 0..<n {
+                        sum += value(Double(x) + (Double(i) + 0.5) * inv, Double(y) + (Double(j) + 0.5) * inv)
+                    }
                 }
-                data[y * w + x] = value
+                data[y * w + x] = sum * norm
             }
         }
         return LinearImage(width: w, height: h, channels: 1, data: data)

@@ -22,11 +22,14 @@ public enum LensValueParser {
         }
     }
 
-    /// A number, accepting `∞`/`inf`/`infinity`, a Unicode minus sign and
-    /// surrounding whitespace. NaN is rejected.
+    /// A number, accepting `∞`/`inf`/`infinity`, a Unicode minus sign, a
+    /// decimal comma (`1,5`, as typed in regions that write one; the app
+    /// itself always shows a decimal point) and surrounding whitespace. NaN
+    /// is rejected.
     public static func number(_ text: String) -> Double? {
         var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         t = t.replacingOccurrences(of: "\u{2212}", with: "-").replacingOccurrences(of: "∞", with: "inf")
+        if !t.contains("."), t.filter({ $0 == "," }).count == 1 { t = t.replacingOccurrences(of: ",", with: ".") }
         guard !t.isEmpty, let v = ExtendedDouble.parse(t), !v.isNaN else { return nil }
         return v
     }

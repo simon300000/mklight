@@ -137,8 +137,8 @@ struct BufferPreview: View {
                 .frame(height: 110)
             } else if buffer.shape.count == 2, buffer.shape[1] > 3, buffer.count <= 4_000_000, let g = Grid2D(buffer) {
                 HStack(alignment: .top) {
-                    HeatMapImage(grid: g).aspectRatio(CGFloat(g.nx) / CGFloat(max(g.ny, 1)), contentMode: .fit).frame(maxHeight: 200)
-                    ColorBar(scale: .sequential(log: false), range: g.range).frame(height: 160)
+                    HeatMapImage(grid: g, scale: .perceptual).aspectRatio(CGFloat(g.nx) / CGFloat(max(g.ny, 1)), contentMode: .fit).frame(maxHeight: 200)
+                    ColorBar(scale: .perceptual, range: g.range).frame(height: 160)
                 }
             } else if buffer.count > 0, buffer.count <= 2_000_000 {
                 let f = buffer.doubles.filter(\.isFinite)

@@ -38,7 +38,9 @@ struct LayoutPaneView: View {
         }
         .overlay(alignment: .top) { controls }
         .overlay(alignment: .bottomLeading) {
-            if scene != nil { ScaleBar(pointsPerMM: window.camera.pointsPerMM).padding(Space.l) }
+            if scene != nil {
+                ScaleBar(pointsPerMM: window.camera.pointsPerMM, stretch: window.camera.verticalScale(window.viewportMode)).padding(Space.l)
+            }
         }
         .overlay(alignment: .bottomTrailing) {
             if pane.isStale && !pane.isRunning, scene != nil {
@@ -90,18 +92,34 @@ struct LayoutPaneView: View {
 
     private var meshOn: Bool { (pane.settings["mesh_rings"]?.int ?? 0) > 0 }
 
+    /// The vertical stretch of the section views; a change refits the view.
+    private var stretch: Binding<Double> {
+        Binding(
+            get: { window.camera.stretch },
+            set: { s in
+                window.camera.stretch = s
+                window.fitRequest += 1
+            })
+    }
+
     /// Title on the leading side; mode, display options and fit on the
     /// trailing side, each cluster one glass group whose selection morphs.
     private var controls: some View {
         GlassEffectContainer(spacing: Space.m) {
             HStack(spacing: Space.s) {
-                HStack(spacing: Space.s) {
-                    Text("Layout").font(.headline)
-                    if pane.isRunning { ProgressView().controlSize(.mini) }
+                // The title chip steps aside when the viewport is narrow.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Space.s) {
+                        Text("Layout").font(.headline)
+                        if pane.isRunning { ProgressView().controlSize(.mini) }
+                    }
+                    .fixedSize()
+                    .padding(.horizontal, Space.l)
+                    .padding(.vertical, Space.s)
+                    .glassEffect(.regular, in: .capsule)
+                    Color.clear.frame(width: 0, height: 0)
                 }
-                .padding(.horizontal, Space.l)
-                .padding(.vertical, Space.s)
-                .glassEffect(.regular, in: .capsule)
+                .layoutPriority(-1)
                 Spacer(minLength: Space.s)
                 HStack(spacing: 0) {
                     ForEach(modes) { mode in
@@ -110,6 +128,7 @@ struct LayoutPaneView: View {
                         } label: {
                             Text(title(mode))
                                 .font(.callout.weight(window.viewportMode == mode ? .semibold : .regular))
+                                .fixedSize()
                                 .padding(.horizontal, Space.m)
                                 .padding(.vertical, Space.xs + 1)
                                 .contentShape(Capsule())
@@ -153,6 +172,13 @@ struct LayoutPaneView: View {
                             window.fitRequest += 1
                         }
                         Divider()
+                        Picker("Vertical Stretch", selection: stretch) {
+                            ForEach(ViewportCamera.stretches, id: \.self) { s in
+                                Text(s == 1 ? "Off (true proportions)" : "×\(Int(s))").tag(s)
+                            }
+                        }
+                        .disabled(window.viewportMode == .orbit3D)
+                        Divider()
                         Toggle("Surface Mesh in 3D", isOn: Binding(get: { meshOn }, set: { pane.set("mesh_rings", $0 ? .integer(16) : nil) }))
                         Toggle("Beam Footprints in 3D", isOn: Binding(get: { workspace.showFootprints }, set: { workspace.showFootprints = $0 }))
                     } label: {
@@ -160,6 +186,28 @@ struct LayoutPaneView: View {
                     }
                     .menuIndicator(.hidden)
                     .help("Ray colors and sampling")
+                    if window.viewportMode != .orbit3D && window.camera.stretch != 1 {
+                        // A stretched section says so in the controls; the menu sets it.
+                        Menu {
+                            Picker("Vertical Stretch", selection: stretch) {
+                                ForEach(ViewportCamera.stretches, id: \.self) { s in
+                                    Text(s == 1 ? "Off (true proportions)" : "×\(Int(s))").tag(s)
+                                }
+                            }
+                            .pickerStyle(.inline)
+                        } label: {
+                            Label("Stretch ×\(Int(window.camera.stretch))", systemImage: "arrow.up.and.down")
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tint)
+                        }
+                        .menuIndicator(.hidden)
+                        .buttonBorderShape(.capsule)
+                        .fixedSize()
+                        .help("The section is drawn \(Int(window.camera.stretch)) times taller than true proportions. Click to change or turn off.")
+                        .accessibilityLabel("Vertical stretch")
+                        .accessibilityValue("\(Int(window.camera.stretch)) times")
+                    }
                     if window.viewportMode == .orbit3D {
                         Button {
                             workspace.showFootprints.toggle()
@@ -220,18 +268,40 @@ struct LayoutPaneView: View {
     }
 }
 
-/// A scale bar of a round length.
+/// A scale bar of a round length; with a vertical stretch, an upright bar
+/// of the same length drawn stretched, and the factor.
 struct ScaleBar: View {
     let pointsPerMM: Double
+    var stretch = 1.0
 
     var body: some View {
         let mm = Nice.length(90 / max(pointsPerMM, 1e-9))
-        VStack(alignment: .leading, spacing: 2) {
-            Rectangle().frame(width: max(mm * pointsPerMM, 1), height: 1.5)
-            Text(Nice.lengthLabel(mm)).font(.caption2.monospacedDigit())
+        let len = max(mm * pointsPerMM, 1)
+        // Upright: a round length as drawn (stretched), about 60 pt tall.
+        let up = Nice.length(60 / max(pointsPerMM * stretch, 1e-9))
+        HStack(alignment: .bottom, spacing: Space.s) {
+            if stretch != 1 {
+                HStack(alignment: .center, spacing: 3) {
+                    Rectangle().frame(width: 1.5, height: max(up * pointsPerMM * stretch, 1))
+                    Text(Nice.lengthLabel(up)).font(.caption2.monospacedDigit())
+                }
+                .foregroundStyle(.tint)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Rectangle().frame(width: len, height: 1.5)
+                HStack(spacing: Space.s) {
+                    Text(Nice.lengthLabel(mm))
+                    if stretch != 1 {
+                        Text("vertical ×\(Int(stretch))").foregroundStyle(.tint).fontWeight(.semibold)
+                    }
+                }
+                .font(.caption2.monospacedDigit())
+            }
         }
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Scale bar \(Nice.lengthLabel(mm))")
+        .accessibilityLabel(
+            "Scale bar \(Nice.lengthLabel(mm))"
+                + (stretch != 1 ? ", vertical stretch \(Int(stretch)) times, upright bar \(Nice.lengthLabel(Nice.length(60 / max(pointsPerMM * stretch, 1e-9))))" : ""))
     }
 }

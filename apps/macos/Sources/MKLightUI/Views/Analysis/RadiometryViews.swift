@@ -221,15 +221,15 @@ struct PolarizationView: View {
                         let cell = max(2 * r / CGFloat(max(sqrt(Double(pupil.count) * 4 / .pi), 1)), 2)
                         ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)), with: .color(.secondary.opacity(0.4)))
                         for (k, p) in pupil.enumerated() where v.indices.contains(k) && reached[k] && v[k].isFinite {
-                            let t = HeatMapImage.normalise(v[k], scale: .sequential(log: false), range: range)
-                            let rgb = Palette.sequential(t, dark: scheme == .dark)
+                            let t = HeatMapImage.normalise(v[k], scale: .perceptual, range: range)
+                            let rgb = Palette.perceptual(t)
                             let q = CGPoint(x: c.x + CGFloat(p.0) * r, y: c.y - CGFloat(p.1) * r)
                             ctx.fill(Path(CGRect(x: q.x - cell / 2, y: q.y - cell / 2, width: cell, height: cell)), with: .color(Color(.sRGB, red: rgb.x, green: rgb.y, blue: rgb.z)))
                         }
                     }
                     .accessibilityLabel("\(quantity.rawValue) over the pupil")
             } bar: {
-                ColorBar(scale: .sequential(log: false), range: range, unit: quantity == .retardance ? "rad" : "")
+                ColorBar(scale: .perceptual, range: range, unit: quantity == .retardance ? "rad" : "")
             } side: {
                 KeyValueGrid(rows: stats)
             }

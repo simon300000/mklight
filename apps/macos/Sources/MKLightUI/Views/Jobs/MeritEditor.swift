@@ -10,6 +10,8 @@ struct OptionalNumberField: View {
     var prompt = "none"
     var width: CGFloat = 76
     var format: (Double) -> String = Fmt.short
+    /// Accept `∞` / `inf` (radius bounds).
+    var allowsInfinite = false
     let commit: (Double?) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
@@ -39,7 +41,7 @@ struct OptionalNumberField: View {
             if value != nil { commit(nil) }
             return
         }
-        guard let v = LensValueParser.number(t), v.isFinite else {
+        guard let v = LensValueParser.number(t), v.isFinite || allowsInfinite else {
             text = formatted
             return
         }
@@ -802,26 +804,51 @@ struct OperandPicker: View {
 // MARK: - Variables and bounds
 
 /// The design's variables with their bounds, edited inline: min and max
-/// (empty is unbounded), pin (equal bounds: held at its value), remove.
+/// (empty is unbounded) in the parameter's unit, pin (equal bounds: held at
+/// its value), remove. Curvatures are bounded as a radius window in mm by
+/// default (`RadiusBounds`), or as curvatures.
 struct VariablesBoundsList: View {
     let design: DesignDocument
     let workspace: Workspace
+    @AppStorage("MKLightCurvatureBoundsUnit") private var curvatureUnit = CurvatureBoundsUnit.radius
     @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         let vars = design.variables
         VStack(alignment: .leading, spacing: 0) {
+            if vars.contains(where: { $0.param.isCurvature }) {
+                HStack(spacing: Space.s) {
+                    Text("Curvatures as").font(.caption).foregroundStyle(.secondary)
+                    Picker("Bound curvatures as", selection: $curvatureUnit) {
+                        Text("Radius mm").tag(CurvatureBoundsUnit.radius)
+                        Text("Curvature 1/mm").tag(CurvatureBoundsUnit.curvature)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimiser uses")
+                    Spacer(minLength: 0)
+                    Image(systemName: "questionmark.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .help(RadiusBounds.help)
+                        .accessibilityLabel("About radius bounds")
+                        .accessibilityValue(RadiusBounds.help)
+                }
+                .padding(.bottom, Space.s)
+            }
             HStack(spacing: Space.s) {
                 Text("Variable").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Min").frame(width: 70, alignment: .trailing)
-                Text("Max").frame(width: 70, alignment: .trailing)
+                Text("Min").frame(width: VariableBoundsRow.fieldWidth, alignment: .trailing)
+                Text("Max").frame(width: VariableBoundsRow.fieldWidth, alignment: .trailing)
+                Text("Unit").frame(width: VariableBoundsRow.unitWidth, alignment: .leading)
                 Color.clear.frame(width: 40)
             }
             .font(.caption).foregroundStyle(.secondary)
             .padding(.bottom, Space.xs)
             ForEach(Array(vars.enumerated()), id: \.element.param) { k, v in
                 if k > 0 { Divider() }
-                VariableBoundsRow(design: design, workspace: workspace, variable: v)
+                VariableBoundsRow(design: design, workspace: workspace, variable: v, curvatureUnit: curvatureUnit)
                     .padding(.vertical, 3)
             }
         }
@@ -832,34 +859,52 @@ struct VariableBoundsRow: View {
     let design: DesignDocument
     let workspace: Workspace
     let variable: DesignVariable
+    var curvatureUnit = CurvatureBoundsUnit.radius
     @Environment(\.undoManager) private var undoManager
+    @State private var rejection: String?
+
+    static let fieldWidth: CGFloat = 70
+    static let unitWidth: CGFloat = 40
 
     private var path: ParamPath { variable.param }
     private var value: Double? { design.system.value(at: path) }
-    private var isCurvature: Bool {
-        switch path {
-        case .curvature, .shapeParam(_, .curvatureX), .shapeParam(_, .curvatureY): true
-        default: false
-        }
+    private var asRadius: Bool { path.isCurvature && curvatureUnit == .radius }
+    private var label: String { path.label(in: design.system) }
+    private var unit: String { asRadius ? "mm" : path.unit(in: design.system) }
+
+    /// The min and max fields: a radius window for curvatures shown as radii.
+    private var shown: (min: Double?, max: Double?) {
+        asRadius ? RadiusBounds.radius(lower: variable.lower, upper: variable.upper) : (variable.lower, variable.upper)
     }
 
     var body: some View {
+        let shown = self.shown
         HStack(spacing: Space.s) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text(path.label(in: design.system)).font(.callout).lineLimit(1)
+                    Text(label).font(.callout).lineLimit(1)
                     if variable.isPinned { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.tint).accessibilityLabel("pinned") }
                 }
-                Text(caption).font(.caption.monospacedDigit()).foregroundStyle(problem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange)).lineLimit(1)
+                Text(caption).font(.caption.monospacedDigit()).foregroundStyle(problem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .help(problem ?? (isCurvature ? "Bounds on the curvature c = 1/R (1/mm)." : "Bounds in the parameter's units."))
-            OptionalNumberField(title: "Minimum of \(path.label(in: design.system))", value: variable.lower, prompt: "−∞", width: 70, format: Self.compact) { v in
-                design.setBounds(path, lower: v, upper: variable.upper, undoManager: undoManager)
-            }
-            OptionalNumberField(title: "Maximum of \(path.label(in: design.system))", value: variable.upper, prompt: "+∞", width: 70, format: Self.compact) { v in
-                design.setBounds(path, lower: variable.lower, upper: v, undoManager: undoManager)
-            }
+            .help(problem ?? help)
+            OptionalNumberField(
+                title: "Minimum of \(label)" + (unit.isEmpty ? "" : " in \(unit)"), value: shown.min, prompt: "−∞", width: Self.fieldWidth,
+                format: BoundsFormat.compact, allowsInfinite: asRadius
+            ) { v in setShown(min: v, max: shown.max) }
+            OptionalNumberField(
+                title: "Maximum of \(label)" + (unit.isEmpty ? "" : " in \(unit)"), value: shown.max, prompt: asRadius ? "∞" : "+∞", width: Self.fieldWidth,
+                format: BoundsFormat.compact, allowsInfinite: asRadius
+            ) { v in setShown(min: shown.min, max: v) }
+            Text(unit.isEmpty ? "–" : unit)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .frame(width: Self.unitWidth, alignment: .leading)
+                .help(unit.isEmpty ? "Dimensionless" : "The bounds are in \(unit)")
+                .accessibilityHidden(true)
             HStack(spacing: 2) {
                 Button {
                     if variable.isPinned {
@@ -888,24 +933,55 @@ struct VariableBoundsRow: View {
         .controlSize(.small)
     }
 
+    private var help: String {
+        let other = BoundsFormat.counterpart(lower: variable.lower, upper: variable.upper, shownAs: curvatureUnit).map { "Bounds as \($0). " } ?? ""
+        if asRadius { return other + RadiusBounds.help }
+        if path.isCurvature { return other + "Bounds on the curvature c = 1/R (1/mm)." }
+        if path.isCurvature { return "Bounds on the curvature c = 1/R (1/mm)." }
+        return unit.isEmpty ? "Bounds of a dimensionless parameter." : "Bounds in \(unit)."
+    }
+
+    /// Stores typed min / max in the shown unit (a radius window converts
+    /// to curvature bounds; a window through R = 0 is refused).
+    private func setShown(min: Double?, max: Double?) {
+        guard asRadius else {
+            rejection = nil
+            design.setBounds(path, lower: min, upper: max, undoManager: undoManager)
+            return
+        }
+        switch RadiusBounds.curvature(minRadius: min, maxRadius: max) {
+        case .success(let c):
+            rejection = nil
+            design.setBounds(path, lower: c.lower, upper: c.upper, undoManager: undoManager)
+        case .failure(let p):
+            rejection = p.description
+        }
+    }
+
     /// Why the variable cannot be optimised as it is.
     private var problem: String? {
+        if let rejection { return rejection }
         if case .semiDiameter = path, design.system.surfaceIndex(of: path.surface ?? SurfaceID(0)).map({ design.system.surfaces[$0].semiDiameter == .auto }) ?? false {
             return "The semi-diameter is automatic: set a value in the lens data first."
         }
         guard let value else { return "This parameter does not exist on the surface any more." }
         if let lo = variable.lower, let hi = variable.upper, lo > hi { return "The minimum is above the maximum." }
-        if variable.outOfBounds(value) { return "Now \(Self.compact(value)): outside its bounds" }
+        if variable.outOfBounds(value) { return "Now \(nowText(value)): outside its bounds" }
         return nil
     }
 
-    static func compact(_ v: Double) -> String { String(format: "%.4g", v) }
+    private func nowText(_ value: Double) -> String {
+        asRadius ? "R " + Fmt.short(RadiusDisplay.radius(fromCurvature: value)) + " mm" : Fmt.short(value) + (unit.isEmpty ? "" : " " + unit)
+    }
 
     private var caption: String {
         if let problem { return problem }
         guard let value else { return "" }
-        if isCurvature {
-            return "R \(Fmt.short(RadiusDisplay.radius(fromCurvature: value))) · c \(Fmt.short(value))"
+        // The value now, in the row's unit (the unit column names it); the
+        // bounds in the other unit are in the help.
+        if path.isCurvature {
+            let r = RadiusDisplay.radius(fromCurvature: value)
+            return asRadius ? "now R \(Fmt.short(r))" : "now c \(Fmt.short(value)) (R \(Fmt.short(r)))"
         }
         return "now \(Fmt.short(value))"
     }

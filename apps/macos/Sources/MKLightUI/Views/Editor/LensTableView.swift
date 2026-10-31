@@ -49,11 +49,12 @@ struct LensTableView: View {
                 }
                     .width(min: 90, ideal: 112, max: 150)
                 column(.comment, rows: rows).width(min: 70, ideal: 120)
-                column(.radius, rows: rows).width(min: 80, ideal: 104, max: 160)
+                // Anamorphic surfaces show both sections in the radius cell.
+                column(.radius, rows: rows).width(min: 80, ideal: 116, max: 220)
                 column(.thickness, rows: rows).width(min: 80, ideal: 104, max: 160)
                 column(.material, rows: rows).width(min: 80, ideal: 104, max: 160)
                 column(.semiDiameter, rows: rows).width(min: 80, ideal: 104, max: 160)
-                column(.conic, rows: rows).width(min: 64, ideal: 88, max: 140)
+                column(.conic, rows: rows).width(min: 64, ideal: 88, max: 180)
             }
             .tableStyle(.inset)
             .scrollEdgeEffectStyle(.hard, for: .top)
@@ -118,12 +119,25 @@ struct LensTableView: View {
 
     private func column(_ c: LensColumn, rows: [LensRow]) -> TableColumn<LensRow, Never, some View, Text> {
         TableColumn(c.title) { row in
-            LensCell(
-                row: row, column: c, focus: $focus,
-                completions: c == .material ? workspace.materialNames : [],
-                commit: { text in commit(row, c, text) },
-                move: { dir in move(from: CellID(row: row.id, column: c), dir, rows: rows) })
+            let shown = row.shown(c)
+            if shown.count > 1 {
+                // y and x sections side by side, each editable in place.
+                HStack(spacing: Space.s) {
+                    cell(row, shown[0], rows: rows)
+                    cell(row, shown[1], rows: rows)
+                }
+            } else {
+                cell(row, shown[0], rows: rows)
+            }
         }
+    }
+
+    private func cell(_ row: LensRow, _ c: LensColumn, rows: [LensRow]) -> some View {
+        LensCell(
+            row: row, column: c, focus: $focus,
+            completions: c == .material ? workspace.materialNames : [],
+            commit: { text in commit(row, c, text) },
+            move: { dir in move(from: CellID(row: row.id, column: c), dir, rows: rows) })
     }
 
     private func commit(_ row: LensRow, _ c: LensColumn, _ text: String) -> Bool {
@@ -141,13 +155,27 @@ struct LensTableView: View {
         let cols = LensColumn.editable
         switch dir {
         case .up, .down:
+            // An x section continues in the next row's x section, or its column.
+            func target(_ row: LensRow) -> LensColumn? {
+                row.editable.contains(cell.column) ? cell.column : row.editable.contains(cell.column.base) ? cell.column.base : nil
+            }
             var k = r + (dir == .up ? -1 : 1)
-            while rows.indices.contains(k), !rows[k].editable.contains(cell.column) { k += dir == .up ? -1 : 1 }
-            if rows.indices.contains(k) { focus = CellID(row: rows[k].id, column: cell.column) } else { focus = nil }
+            while rows.indices.contains(k), target(rows[k]) == nil { k += dir == .up ? -1 : 1 }
+            if rows.indices.contains(k), let c = target(rows[k]) { focus = CellID(row: rows[k].id, column: c) } else { focus = nil }
         case .left, .right:
             guard var c = cols.firstIndex(of: cell.column) else { return }
             repeat { c += dir == .left ? -1 : 1 } while cols.indices.contains(c) && !rows[r].editable.contains(cols[c])
             if cols.indices.contains(c) { focus = CellID(row: cell.row, column: cols[c]) }
+        }
+    }
+
+    /// "Radius", or "Radius y" / "Radius x" on anamorphic surfaces.
+    private func variableTitle(_ c: LensColumn, _ s: Surface) -> String {
+        guard s.shape.isAnamorphic else { return c.title }
+        switch c {
+        case .radius: return "Radius y"
+        case .conic: return "Conic y"
+        default: return c.title
         }
     }
 
@@ -160,9 +188,9 @@ struct LensTableView: View {
             Divider()
             Button("Make Aperture Stop") { editor.makeStop(id) }.disabled(i == 0 || i == system.imageIndex || i == system.stop)
             Menu("Variables") {
-                ForEach([LensColumn.radius, .thickness, .conic], id: \.self) { c in
-                    if let p = c.param(id), p.resolves(in: system) {
-                        Toggle(c.title, isOn: Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) }))
+                ForEach([LensColumn.radius, .radiusX, .thickness, .conic, .conicX], id: \.self) { c in
+                    if let p = c.param(for: system.surfaces[i]), p.resolves(in: system) {
+                        Toggle(variableTitle(c, system.surfaces[i]), isOn: Binding(get: { design.isVariable(p) }, set: { design.setVariable(p, $0, undoManager: undoManager) }))
                     }
                 }
             }
@@ -238,12 +266,18 @@ private struct LensCell: View {
     var body: some View {
         HStack(spacing: 3) {
             if let hint = row.hints[column] {
-                Text(hint).font(.caption2.weight(.medium)).foregroundStyle(.tertiary)
-                    .help("The \(hint) section's value (the surface is anamorphic; the other section is in the inspector)")
-                    .accessibilityLabel("\(hint) section")
+                // A section of an anamorphic surface: the axis right before its value.
+                Spacer(minLength: 0)
+                Text(hint).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .help(hintHelp(hint))
+                    .accessibilityHidden(true)
             }
             if row.editable.contains(column) {
-                field
+                if row.hints[column] != nil {
+                    field.fixedSize(horizontal: true, vertical: false).frame(minWidth: 14, alignment: .trailing)
+                } else {
+                    field
+                }
             } else {
                 Text(display)
                     .foregroundStyle(.secondary)
@@ -284,12 +318,25 @@ private struct LensCell: View {
                 return .handled
             }
             .materialSuggestions(column == .material && editing ? suggestions : [])
-            .accessibilityLabel(column.title)
+            .accessibilityLabel(accessibilityTitle)
             .accessibilityValue(display)
     }
 
-    /// Automatic semi-diameters (computed by the engine) are shown dimmed.
-    private var dimmed: Bool { column == .semiDiameter && row.semiDiameterIsAuto && !editing }
+    /// Automatic semi-diameters (computed by the engine) and a cylinder's
+    /// flat section are shown dimmed.
+    private var dimmed: Bool { ((column == .semiDiameter && row.semiDiameterIsAuto) || row.isFlatSection(column)) && !editing }
+
+    private func hintHelp(_ hint: String) -> String {
+        let what = column.base == .radius ? "radius" : "conic"
+        if row.isFlatSection(column) { return "The \(hint) section's \(what): flat (this cylinder has power in the other section)" }
+        return "The \(hint) section's \(what) (the surface is anamorphic: y and x sections)"
+    }
+
+    /// The cell's name for VoiceOver: "Radius, x section".
+    private var accessibilityTitle: String {
+        guard let hint = row.hints[column] else { return column.title }
+        return "\(column.base.title), \(hint) section"
+    }
 
     private var suggestions: [String] {
         let q = text.trimmingCharacters(in: .whitespaces).uppercased()

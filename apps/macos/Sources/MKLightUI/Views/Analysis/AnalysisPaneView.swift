@@ -6,6 +6,8 @@ import SwiftUI
 struct AnalysisContext {
     var system: OpticalSystem?
     var selectSurface: (Int) -> Void = { _ in }
+    /// The pane showing the result (views with in-place setting controls).
+    var pane: AnalysisPane?
 
     var fieldUnit: String { FieldLabel.unit(system) }
     var wavelengthsUm: [Double] { system?.wavelengths.wavelengths.map(\.um) ?? [] }
@@ -55,7 +57,7 @@ struct AnalysisPaneView: View {
             system: pane.output.flatMap { _ in workspace.snapshot?.system } ?? system,
             selectSurface: { i in
                 if system.surfaces.indices.contains(i) { window.selection = system.surfaces[i].id }
-            })
+            }, pane: pane)
     }
 
     var body: some View {
@@ -233,17 +235,33 @@ struct PaneHeader: View {
     @State private var showSettings = false
 
     var body: some View {
+        let full = AnalysisCatalog.title(of: pane.analysis), short = AnalysisCatalog.shortTitle(of: pane.analysis)
+        // As the pane narrows: the cluster folds into Run and More first,
+        // then the title takes a smaller type step, then its abbreviation
+        // (the full title stays in the help and the VoiceOver label).
+        ViewThatFits(in: .horizontal) {
+            row(full, .headline, compact: false)
+            row(full, .headline, compact: true)
+            row(full, .subheadline.weight(.semibold), compact: true)
+            row(short, .headline, compact: true)
+            row(short, .subheadline.weight(.semibold), compact: true)
+        }
+        .popover(isPresented: $showSettings, arrowEdge: .bottom) {
+            if let descriptor { SettingsPopover(pane: pane, descriptor: descriptor, system: system) }
+        }
+        .padding(.horizontal, Space.m)
+        .padding(.top, Space.s)
+        .padding(.bottom, Space.xs)
+    }
+
+    private func row(_ title: String, _ font: Font, compact: Bool) -> some View {
         HStack(alignment: .center, spacing: Space.s) {
             VStack(alignment: .leading, spacing: 0) {
-                Menu {
-                    AnalysisPickerItems(workspace: workspace) { pane.show($0) }
-                } label: {
-                    Label(AnalysisCatalog.title(of: pane.analysis), systemImage: AnalysisCatalog.symbol(for: pane.analysis))
-                        .font(.headline)
-                        .lineLimit(1)
-                }
-                .menuStyle(.borderlessButton)
-                .help(descriptor?.description ?? "")
+                titleMenu(title, font: font)
+                    .help(titleHelp)
+                    .accessibilityLabel(AnalysisCatalog.title(of: pane.analysis))
+                    .accessibilityHint("Choose another analysis for this pane")
+                // The state line truncates; it never decides the layout.
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -251,25 +269,33 @@ struct PaneHeader: View {
                     .truncationMode(.tail)
                     .padding(.leading, 2)
                     .contentTransition(.opacity)
+                    .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .help(subtitle)
             }
-            .frame(minWidth: 110, alignment: .leading)
             Spacer(minLength: Space.xs)
-            // The full cluster, or only Run and More when the pane is narrow.
-            ViewThatFits(in: .horizontal) {
-                cluster(compact: false)
-                cluster(compact: true)
-            }
-            .layoutPriority(1)
-            .popover(isPresented: $showSettings, arrowEdge: .bottom) {
-                if let descriptor { SettingsPopover(pane: pane, descriptor: descriptor, system: system) }
-            }
+            cluster(compact: compact)
         }
-        .padding(.horizontal, Space.m)
-        .padding(.top, Space.s)
-        .padding(.bottom, Space.xs)
     }
 
     private var hasSettings: Bool { descriptor.map { $0.available && !$0.settingsFields.isEmpty } ?? false }
+
+    private func titleMenu(_ title: String, font: Font) -> some View {
+        Menu {
+            AnalysisPickerItems(workspace: workspace) { pane.show($0) }
+        } label: {
+            Label(title, systemImage: AnalysisCatalog.symbol(for: pane.analysis))
+                .font(font)
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var titleHelp: String {
+        let t = AnalysisCatalog.title(of: pane.analysis)
+        guard let d = descriptor?.description, !d.isEmpty else { return t }
+        return t + ": " + d
+    }
 
     private func cluster(compact: Bool) -> some View {
         GlassEffectContainer(spacing: Space.s) {
@@ -349,9 +375,9 @@ struct SettingsPopover: View {
             HStack {
                 Text("\(AnalysisCatalog.title(of: pane.analysis)) Settings").font(.headline)
                 Spacer()
-                if !pane.settings.isEmpty {
-                    Button("Defaults") { pane.setSettings([:]) }
-                        .help("Restore the engine's default settings")
+                if pane.settings != pane.startingSettings {
+                    Button("Defaults") { pane.setSettings(pane.startingSettings) }
+                        .help("Restore the default settings")
                 }
             }
             ScrollView {
@@ -420,13 +446,24 @@ struct PaneFooter: View {
             }
             .buttonStyle(.plain)
             .layoutPriority(2)
-            .help("How this result was computed")
-            .popover(isPresented: $showDetails) { RunDetails(output: output).frame(width: 380) }
+            .help(badgeHelp)
+            .accessibilityHint("Shows how this result was computed" + (output.runInfo.warnings.isEmpty ? "" : ", and its warnings"))
+            .popover(isPresented: $showDetails) { RunDetails(output: output, pane: pane).frame(width: 400) }
         }
         .font(.caption)
         .padding(.horizontal, Space.m)
         .frame(height: 28)
         .opacity(pane.isStale ? 0.5 : 1)
+    }
+
+    /// The warnings themselves on hover; else what the badge is.
+    private var badgeHelp: String {
+        var parts: [String] = []
+        if let why = output.backend?.fallbackReason { parts.append("Fell back to the CPU: " + why) }
+        let groups = RunWarnings.group(output.runInfo.warnings)
+        parts += groups.prefix(3).map(\.line)
+        if groups.count > 3 { parts.append("… \(groups.count - 3) more") }
+        return parts.isEmpty ? "How this result was computed" : parts.joined(separator: "\n") + "\nClick for details."
     }
 
     private func numbersRow(_ numbers: ArraySlice<KeyNumber>) -> some View {
@@ -453,10 +490,15 @@ struct BackendBadge: View {
 
     var body: some View {
         let gpu = output.runInfo.precision != .f64Reference
-        let warned = !output.runInfo.warnings.isEmpty || output.backend?.fallbackReason != nil
+        let groups = RunWarnings.group(output.runInfo.warnings)
+        let warned = !groups.isEmpty || output.backend?.fallbackReason != nil
         HStack(spacing: Space.xs) {
             if warned {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                HStack(spacing: 2) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    if groups.count > 1 { Text("\(groups.count)") }
+                }
+                .foregroundStyle(.orange)
             }
             Image(systemName: gpu ? "cpu.fill" : "cpu")
             if !compact {
@@ -472,7 +514,16 @@ struct BackendBadge: View {
         .background(gpu ? AnyShapeStyle(.tint.opacity(0.16)) : AnyShapeStyle(.fill.tertiary), in: Capsule())
         .foregroundStyle(gpu ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)\(warned ? ", with warnings" : "")")
+        .accessibilityLabel(accessibilityText(groups))
+    }
+
+    private func accessibilityText(_ groups: [WarningGroup]) -> String {
+        var t = "Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)"
+        if let why = output.backend?.fallbackReason { t += ". Fell back: \(why)" }
+        if !groups.isEmpty {
+            t += ". \(groups.count) warning\(groups.count == 1 ? "" : "s"): " + groups.map(\.line).joined(separator: ". ")
+        }
+        return t
     }
 
     private var duration: String {
@@ -481,9 +532,13 @@ struct BackendBadge: View {
     }
 }
 
-/// Run information: backend, fallback, seed, snapshot, warnings.
+/// Run information: backend, fallback, seed, snapshot, and the warnings,
+/// grouped (one line per kind, with the fields it concerns), with a
+/// one-click remedy where the analysis has the setting for it.
 struct RunDetails: View {
     let output: AnalysisOutput
+    var pane: AnalysisPane?
+    @State private var showAll = false
 
     var body: some View {
         let info = output.runInfo
@@ -502,14 +557,85 @@ struct RunDetails: View {
             .font(.callout)
             if !info.warnings.isEmpty {
                 Divider()
-                Text("Warnings").font(.subheadline.weight(.medium))
-                ForEach(info.warnings, id: \.self) { w in
-                    Label(w, systemImage: "exclamationmark.triangle").font(.caption).fixedSize(horizontal: false, vertical: true)
+                let groups = RunWarnings.group(info.warnings)
+                Text(groups.count == 1 ? "Warning" : "\(groups.count) Warnings").font(.subheadline.weight(.medium))
+                ForEach(groups) { g in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label {
+                            Text(g.message).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                        .font(.callout)
+                        if !g.scopes.isEmpty {
+                            Text(g.scopes.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
+                                .padding(.leading, 22)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let fix = remedy(g) {
+                            Button(fix.title, action: fix.apply)
+                                .controlSize(.small)
+                                .buttonStyle(.glass)
+                                .padding(.leading, 22)
+                                .help(fix.help)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if info.warnings.count > groups.count {
+                    DisclosureGroup("All \(info.warnings.count) messages from the engine", isExpanded: $showAll) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(info.warnings.enumerated()), id: \.offset) { _, w in
+                                Text(w).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .font(.caption)
                 }
             }
         }
         .padding(Space.l)
         .textSelection(.enabled)
+    }
+
+    struct Fix {
+        var title: String
+        var help: String
+        var apply: () -> Void
+    }
+
+    /// A setting change that addresses the warning, when the analysis has it.
+    private func remedy(_ g: WarningGroup) -> Fix? {
+        guard let pane, let kind = g.remedy else { return nil }
+        switch kind {
+        case .pupilSampling:
+            // The pupil is a setting of its own, or part of the image simulation's optics.
+            let nested = pane.value("pupil") == nil
+            let container = nested ? pane.value("optics")?.object : nil
+            guard var pupil = (nested ? container?["pupil"] : pane.value("pupil"))?.object, let grid = pupil["grid"]?.int, grid < 512
+            else { return nil }
+            let new = min(grid * 2, 512)
+            pupil["grid"] = .integer(Int64(new))
+            if pupil["rays"] != nil { pupil["rays"] = .integer(Int64(new + 1)) }
+            let fixed = JSONValue.object(pupil)
+            return Fix(
+                title: "Sample the Pupil Finer (grid \(grid) → \(new))",
+                help: "Doubles the pupil grid of this pane and runs it again (slower, more accurate)"
+            ) {
+                if nested, var optics = container {
+                    optics["pupil"] = fixed
+                    pane.set("optics", .object(optics))
+                } else {
+                    pane.set("pupil", fixed)
+                }
+            }
+        case .imageGrid:
+            guard let size = pane.value("grid_size")?.int, size < 1024 else { return nil }
+            let new = min(size * 2, 1024)
+            return Fix(
+                title: "Enlarge the Image Grid (\(size) → \(new))",
+                help: "Doubles the image grid of this pane, so the PSF fits, and runs it again") { pane.set("grid_size", .integer(Int64(new))) }
+        }
     }
 
     private func row(_ k: String, _ v: String) -> some View {

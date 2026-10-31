@@ -55,7 +55,19 @@ final class ViewportInput {
     func fit(size: CGSize, initial: Bool = false) {
         guard let r = renderer, let scene = r.scene else { return }
         let lensOnly = fitLens || (initial && SceneGeometry.isSlim(scene, mode: r.mode))
-        set(ViewportMath.fit(r.camera, mode: r.mode, points: SceneGeometry.fitPoints(scene, mode: r.mode, lensOnly: lensOnly), size: size))
+        let points = SceneGeometry.fitPoints(scene, mode: r.mode, lensOnly: lensOnly)
+        var c = ViewportMath.fit(r.camera, mode: r.mode, points: points, size: size)
+        // A first fit of a section that would be a thin sliver turns on a
+        // vertical stretch (shown on the scale bar; off in the menu).
+        if initial && r.mode != .orbit3D && c.stretch == 1 {
+            let h = ViewportMath.extent(c, mode: r.mode, points: points).height * c.pointsPerMM
+            let s = ViewportCamera.automaticStretch(height: h, viewHeight: Double(size.height))
+            if s != 1 {
+                c.stretch = s
+                c = ViewportMath.fit(c, mode: r.mode, points: points, size: size)
+            }
+        }
+        set(c)
     }
 }
 

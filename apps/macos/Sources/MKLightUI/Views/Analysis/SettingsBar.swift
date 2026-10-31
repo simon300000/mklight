@@ -44,6 +44,9 @@ struct SettingsBar: View {
         return descriptor.settingsFields.compactMap { f -> String? in
             guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
             if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : "Spectrum \($0.summary)" } ?? "Spectrum custom" }
+            if f.name == "optics", pane.analysis == "image_simulation", let e = v["field_extent"]?.doubleValue {
+                return "View \(ImageSimulationSettings.extentTitle(e))"
+            }
             if let t = arraySummary(f, v) { return "\(label(f)) \(t)" }
             let value: String =
                 switch v["type"]?.string {
@@ -75,11 +78,11 @@ struct SettingsBar: View {
                     AdvancedSettings(pane: pane, fields: advanced).frame(width: 380)
                 }
             }
-            if !pane.settings.isEmpty {
-                Button("Defaults") { pane.setSettings([:]) }
+            if pane.settings != pane.startingSettings {
+                Button("Defaults") { pane.setSettings(pane.startingSettings) }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
-                    .help("Restore the engine's default settings")
+                    .help("Restore the default settings")
             }
         }
         .font(.callout)
@@ -415,7 +418,7 @@ struct FlowLayout: Layout {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, maxX: CGFloat = 0
         for s in subviews {
-            let size = s.sizeThatFits(.unspecified)
+            let size = Self.size(s, width: width)
             if x > 0 && x + size.width > width {
                 y += line + lineSpacing
                 x = 0
@@ -428,10 +431,18 @@ struct FlowLayout: Layout {
         return CGSize(width: proposal.width ?? maxX, height: y + line)
     }
 
+    /// The item's ideal size, or the line's width when it is wider (its
+    /// text then wraps instead of running out of the pane).
+    static func size(_ s: LayoutSubview, width: CGFloat) -> CGSize {
+        let ideal = s.sizeThatFits(.unspecified)
+        guard width.isFinite, ideal.width > width else { return ideal }
+        return s.sizeThatFits(ProposedViewSize(width: width, height: nil))
+    }
+
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, line: CGFloat = 0
         for s in subviews {
-            let size = s.sizeThatFits(.unspecified)
+            let size = Self.size(s, width: bounds.width)
             if x > bounds.minX && x + size.width > bounds.maxX {
                 y += line + lineSpacing
                 x = bounds.minX

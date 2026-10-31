@@ -46,8 +46,28 @@ public struct ViewportCamera: Equatable, Sendable {
     public var pitch = 0.35
     /// False until the camera has been fitted to a scene.
     public var isFitted = false
+    /// Vertical exaggeration of the section views (1 = true proportions):
+    /// slim designs are drawn `stretch` times taller than long. The 3-D
+    /// view always keeps true proportions.
+    public var stretch = 1.0
 
     public init() {}
+
+    /// The vertical scale factor in `mode`.
+    public func verticalScale(_ mode: ViewportMode) -> Double { mode == .orbit3D ? 1 : max(stretch, 1e-3) }
+
+    /// The stretches offered in the viewport controls.
+    public static let stretches: [Double] = [1, 2, 5, 10, 20, 50]
+
+    /// The stretch that makes a section of `height` points (at true
+    /// proportions) readable in a view `viewHeight` points tall: 1 unless
+    /// it fills less than an eighth of the view, else the smallest offered
+    /// stretch that brings it to a third (at most ×50).
+    public static func automaticStretch(height: Double, viewHeight: Double) -> Double {
+        guard height > 0, viewHeight > 0, height < viewHeight / 8 else { return 1 }
+        let want = viewHeight / 3 / height
+        return stretches.first { $0 >= want } ?? stretches.last!
+    }
 }
 
 /// Which design job panel is open in the inspector.

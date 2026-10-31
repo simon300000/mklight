@@ -350,15 +350,13 @@ struct OptimizePanel: View {
 
     private func delta(_ v: OptimizeResult.Variable) -> String {
         let d = displayed(v.value, v.param) - displayed(v.start, v.param)
-        return (d >= 0 ? "+" : "") + Fmt.short(d)
+        let unit = v.param.map { $0.isCurvature ? "mm" : $0.unit(in: design.system) } ?? ""
+        return (d >= 0 ? "+" : "") + Fmt.short(d) + (unit.isEmpty ? "" : " " + unit)
     }
 
     /// Curvatures are shown as radii.
     private func displayed(_ v: Double, _ p: ParamPath?) -> Double {
-        switch p {
-        case .curvature?, .shapeParam(_, .curvatureX)?, .shapeParam(_, .curvatureY)?: RadiusDisplay.radius(fromCurvature: v)
-        default: v
-        }
+        p?.isCurvature == true ? RadiusDisplay.radius(fromCurvature: v) : v
     }
 
     private func statusText(_ r: OptimizeResult) -> String {
@@ -582,7 +580,7 @@ struct Histogram: View {
             .foregroundStyle(Palette.fieldColor(0))
             .cornerRadius(2)
         }
-        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+        .environment(\.locale, NumberDisplay.locale)
         .chartXAxisLabel("Criterion", alignment: .center)
         .chartYAxisLabel("Trials")
         .font(.caption2)
