@@ -70,3 +70,6 @@ pub use scene::{Scene, SceneBuilder, SceneOptions};
 pub use source::SourceSpec;
 pub use tally::{DetectorResult, EnergyReport, ImageMoments, SignatureFlux, Sink};
 pub use tracer::{SplitMode, StrayResult, StraySettings, run, run_with};
+
+/// Resident GPU adapter seam (enabled by the solver package).
+pub mod gpu;

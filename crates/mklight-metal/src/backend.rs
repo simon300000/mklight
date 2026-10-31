@@ -36,12 +36,12 @@ use crate::context::{
 /// Default work items per command buffer.
 const DEFAULT_CHUNK: usize = 1 << 20;
 
-struct Uploaded {
-    headers: SharedBuffer<PackedHeader>,
-    surfaces: SharedBuffer<PackedSurface>,
-    coefficients: SharedBuffer<Df32>,
-    set: PackedSystemSet,
-    sag_overlays: bool,
+pub(crate) struct Uploaded {
+    pub(crate) headers: SharedBuffer<PackedHeader>,
+    pub(crate) surfaces: SharedBuffer<PackedSurface>,
+    pub(crate) coefficients: SharedBuffer<Df32>,
+    pub(crate) set: PackedSystemSet,
+    pub(crate) sag_overlays: bool,
 }
 
 struct Inner {
@@ -52,8 +52,11 @@ struct Inner {
     next_id: AtomicU64,
     chunk_items: AtomicUsize,
     systems: Mutex<HashMap<u64, Arc<Uploaded>>>,
+    resident: crate::resident::Runtime,
+    cache: Mutex<mklight_gpu::resident::cache::SystemCache<Uploaded>>,
 }
 
+#[derive(Clone)]
 pub struct MetalBackend {
     inner: Arc<Inner>,
 }
@@ -208,12 +211,15 @@ impl MetalBackend {
                 ctx.library_build()
             ),
         };
+        let instance = next_backend_instance();
         Ok(Some(MetalBackend {
             inner: Arc::new(Inner {
                 ctx,
                 info,
                 precision,
-                instance: next_backend_instance(),
+                instance,
+                resident: crate::resident::Runtime::new(instance),
+                cache: Mutex::new(mklight_gpu::resident::cache::SystemCache::new(64 << 20)),
                 next_id: AtomicU64::new(1),
                 chunk_items: AtomicUsize::new(DEFAULT_CHUNK),
                 systems: Mutex::new(HashMap::new()),
@@ -689,6 +695,127 @@ impl ComputeBackend for MetalBackend {
         Ok(())
     }
 
+    fn upload_buffer(
+        &self,
+        desc: mklight_gpu::resident::BufferDesc,
+        data: mklight_gpu::resident::BufferData,
+    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
+        self.inner.resident.upload(&self.inner.ctx, desc, data)
+    }
+    fn readback(
+        &self,
+        view: mklight_gpu::resident::BufferView,
+        ctx: &JobContext,
+    ) -> MkResult<mklight_gpu::resident::Readback> {
+        self.inner.resident.readback(view, ctx)
+    }
+    fn resident_cache_stats(&self) -> mklight_gpu::resident::ResidentCacheStats {
+        let mut s = self
+            .inner
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats();
+        s.pooled_bytes = self.inner.resident.pooled_bytes();
+        s
+    }
+    fn upload_systems_cached(
+        &self,
+        key: &mklight_gpu::resident::SystemCacheKey,
+        systems: &[PackedSystem],
+    ) -> MkResult<SystemHandle> {
+        let hash = mklight_gpu::resident::cache::fingerprint(
+            key,
+            systems,
+            &self.precision().kernel_build,
+        )?;
+        let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let up = if let Some(up) = cache.get(key, hash) {
+            up
+        } else {
+            let set = PackedSystemSet::new(systems)?;
+            let bytes = set.headers.len() * size_of::<PackedHeader>()
+                + set.surfaces.len() * size_of::<PackedSurface>()
+                + set.coefficients.len() * size_of::<Df32>();
+            let up = Arc::new(Uploaded {
+                headers: self.inner.ctx.buffer(&set.headers)?,
+                surfaces: self.inner.ctx.buffer(&set.surfaces)?,
+                coefficients: self.inner.ctx.buffer(&set.coefficients)?,
+                sag_overlays: set
+                    .surfaces
+                    .iter()
+                    .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
+                set,
+            });
+            cache.insert(key.clone(), hash, bytes, up.clone());
+            up
+        };
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let count = up.set.len() as u32;
+        self.inner
+            .systems
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, up);
+        Ok(SystemHandle::new(self.inner.instance, id, count))
+    }
+    fn submit_plan(
+        &self,
+        plan: mklight_gpu::resident::ResidentPlan,
+        ctx: &JobContext,
+    ) -> MkResult<Pending<mklight_gpu::resident::PlanResult>> {
+        use mklight_gpu::resident::{PlanBuffer, ResidentOp};
+        ctx.check()?;
+        plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
+        if !self.precision().probe.error_free_transforms() {
+            return Err(MkError::Unsupported(
+                "resident plan requires strict numerics".into(),
+            ));
+        }
+        let mut pinned = HashMap::new();
+        let mut prepared = vec![];
+        for b in &plan.buffers {
+            if let PlanBuffer::Import(v) = b {
+                self.inner.resident.validate_import(v)?;
+            }
+        }
+        for op in &plan.operations {
+            if let ResidentOp::TraceUpload(t) = op {
+                let up = self.inner.lookup(t.request.systems)?;
+                prepared.push(Some(PreparedTrace::new(&t.request, &up.set)?));
+                pinned.insert(t.request.systems, up);
+            } else {
+                prepared.push(None);
+            }
+        }
+        let bytes = plan.buffers.iter().try_fold(0u64, |a, b| {
+            a.checked_add(b.desc().byte_len()? as u64)
+                .ok_or_else(|| mklight_gpu::resident::bad("plan memory overflow"))
+        })?;
+        if self
+            .info()
+            .recommended_working_set_bytes
+            .is_some_and(|limit| bytes > limit)
+        {
+            return Err(MkError::Unsupported(
+                "resident plan exceeds device working set; tile the request".into(),
+            ));
+        }
+        let (p, c, ctl) = pending(ctx);
+        let b = self.clone();
+        let chunk = self.inner.chunk();
+        spawn_job(
+            "mklight-resident-metal",
+            "Metal resident plan".into(),
+            c,
+            move || {
+                b.inner
+                    .resident
+                    .execute(&b, &b.inner.ctx, plan, pinned, prepared, &ctl, chunk)
+            },
+        )?;
+        Ok(p)
+    }
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
         if !self.inner.supports(job.kind()) {

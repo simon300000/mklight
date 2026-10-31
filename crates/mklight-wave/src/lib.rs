@@ -69,3 +69,6 @@ pub use zernike::{
     SeidelTerms, ZernikeBasis, ZernikeFit, ZernikeFitSettings, ZernikeOrdering, ZernikeSet,
     ZernikeTerm, fit_zernike,
 };
+
+/// Resident GPU adapter seam (enabled by the solver package).
+pub mod gpu;

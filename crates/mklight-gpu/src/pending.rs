@@ -69,6 +69,12 @@ impl JobControl {
     pub fn report(&self, f: f64, stage: &str) {
         self.ctx.report(f, stage);
     }
+    pub fn subrange(&self, from: f64, to: f64) -> Self {
+        Self {
+            own: self.own.clone(),
+            ctx: self.ctx.subrange(from, to),
+        }
+    }
     pub fn context(&self) -> &JobContext {
         &self.ctx
     }

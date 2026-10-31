@@ -48,3 +48,6 @@ pub use problem::{
     BatchEvaluation, CandidateBatch, Constraint, EvalStatus, Evaluation, FnProblem, Problem,
     Variable,
 };
+
+/// Resident GPU adapter seam (enabled by the solver package).
+pub mod gpu;

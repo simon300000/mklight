@@ -62,3 +62,16 @@ pub const INCLUDE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/include");
 /// Shared fixtures for tests in this crate and in backend crates.
 #[doc(hidden)]
 pub mod testutil;
+
+// GPU-first package seams (implementation ownership: docs/GPU.md section 9.2).
+pub mod aiming;
+pub mod collectives;
+pub mod geometry;
+pub mod ghost_ops;
+pub mod optim_ops;
+pub mod radiometry;
+pub mod resident;
+pub mod stray_ops;
+pub mod systems;
+pub mod transforms;
+pub mod wave_ops;

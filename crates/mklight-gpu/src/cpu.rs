@@ -37,6 +37,7 @@ use crate::trace_kernel::{KRayIn, KRayOut, KState, trace_ray};
 /// Work items between cancellation checks / progress reports.
 const CHUNK: usize = 1 << 16;
 
+#[derive(Clone)]
 pub struct CpuF32Backend {
     inner: Arc<Inner>,
 }
@@ -47,6 +48,8 @@ struct Inner {
     instance: u64,
     next_id: AtomicU64,
     systems: Mutex<HashMap<u64, Arc<PackedSystemSet>>>,
+    resident: crate::resident::cpu::Runtime,
+    cache: Mutex<crate::resident::cache::SystemCache<PackedSystemSet>>,
 }
 
 impl Default for CpuF32Backend {
@@ -74,6 +77,7 @@ impl CpuF32Backend {
         } else {
             "flush-to-zero"
         };
+        let instance = next_backend_instance();
         let inner = Inner {
             info: DeviceInfo {
                 kind: BackendKind::CpuF32,
@@ -103,7 +107,9 @@ impl CpuF32Backend {
                     env!("CARGO_PKG_VERSION")
                 ),
             },
-            instance: next_backend_instance(),
+            instance,
+            resident: crate::resident::cpu::Runtime::new(instance),
+            cache: Mutex::new(crate::resident::cache::SystemCache::new(64 << 20)),
             next_id: AtomicU64::new(1),
             systems: Mutex::new(HashMap::new()),
         };
@@ -282,6 +288,118 @@ impl ComputeBackend for CpuF32Backend {
             .remove(&handle.id());
         Ok(())
     }
+    fn upload_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::BufferData,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner.resident.upload(desc, data)
+    }
+    fn readback(
+        &self,
+        view: crate::resident::BufferView,
+        ctx: &JobContext,
+    ) -> MkResult<crate::resident::Readback> {
+        self.inner.resident.readback(view, ctx)
+    }
+    fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
+        let mut s = self
+            .inner
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats();
+        s.pooled_bytes = self.inner.resident.pooled_bytes();
+        s
+    }
+    fn upload_systems_cached(
+        &self,
+        key: &crate::resident::SystemCacheKey,
+        systems: &[PackedSystem],
+    ) -> MkResult<SystemHandle> {
+        let hash =
+            crate::resident::cache::fingerprint(key, systems, &self.precision().kernel_build)?;
+        let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let up = if let Some(up) = cache.get(key, hash) {
+            up
+        } else {
+            let up = Arc::new(PackedSystemSet::new(systems)?);
+            let bytes = up.headers.len() * size_of::<crate::PackedHeader>()
+                + up.surfaces.len() * size_of::<crate::PackedSurface>()
+                + up.coefficients.len() * size_of::<Df32>();
+            cache.insert(key.clone(), hash, bytes, up.clone());
+            up
+        };
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let count = up.len() as u32;
+        self.inner
+            .systems
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, up);
+        Ok(SystemHandle::new(self.inner.instance, id, count))
+    }
+    fn submit_plan(
+        &self,
+        plan: crate::resident::ResidentPlan,
+        ctx: &JobContext,
+    ) -> MkResult<Pending<crate::resident::PlanResult>> {
+        use crate::resident::{PlanBuffer, ResidentOp};
+        ctx.check()?;
+        plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
+        let mut pinned = HashMap::new();
+        let mut prepared = vec![];
+        for b in &plan.buffers {
+            if let PlanBuffer::Import(v) = b {
+                v.buffer
+                    .lease::<crate::resident::pool::Allocation<Vec<u32>>>(self.inner.instance)?;
+            }
+        }
+        for op in &plan.operations {
+            if let ResidentOp::TraceUpload(t) = op {
+                let set = self.inner.lookup(t.request.systems)?;
+                prepared.push(Some(PreparedTrace::new(&t.request, &set)?));
+                pinned.insert(t.request.systems, set);
+            } else {
+                prepared.push(None);
+            }
+        }
+        let (p, c, ctl) = pending(ctx);
+        let b = self.clone();
+        spawn_job(
+            "mklight-resident-cpu",
+            "CPU resident plan".into(),
+            c,
+            move || {
+                let trace =
+                    |i: usize, req: &TraceRequest, sub: &JobControl, stats: &mut JobStats| {
+                        if b.precision().probe.subnormals {
+                            trace_job_prepared::<Ieee>(
+                                req,
+                                &pinned[&req.systems],
+                                prepared[i].as_ref().unwrap(),
+                                sub,
+                                stats,
+                            )
+                        } else {
+                            trace_job_prepared::<Ftz>(
+                                req,
+                                &pinned[&req.systems],
+                                prepared[i].as_ref().unwrap(),
+                                sub,
+                                stats,
+                            )
+                        }
+                    };
+                if b.precision().probe.subnormals {
+                    b.inner.resident.execute::<Ieee>(&b, plan, &ctl, trace)
+                } else {
+                    b.inner.resident.execute::<Ftz>(&b, plan, &ctl, trace)
+                }
+            },
+        )?;
+        Ok(p)
+    }
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
         if !self.supports(job.kind()) {
@@ -325,6 +443,15 @@ fn trace_job<E: FpEnv>(
     stats: &mut JobStats,
 ) -> MkResult<TraceResult> {
     let prep = PreparedTrace::new(req, set)?;
+    trace_job_prepared::<E>(req, set, &prep, ctl, stats)
+}
+fn trace_job_prepared<E: FpEnv>(
+    req: &TraceRequest,
+    set: &PackedSystemSet,
+    prep: &PreparedTrace,
+    ctl: &JobControl,
+    stats: &mut JobStats,
+) -> MkResult<TraceResult> {
     let rays = &req.rays;
     let n = rays.len();
     let slots = prep.record_slots;

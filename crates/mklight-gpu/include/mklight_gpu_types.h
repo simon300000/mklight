@@ -457,4 +457,17 @@ MKL_STATIC_ASSERT(sizeof(struct MklSagParams) == 16, "MklSagParams size");
 /* Numerics probe: number of result words written by mkl_numerics_probe. */
 #define MKL_PROBE_WORDS 8u
 
+/* Resident descriptors are additive; packed system v6 is unchanged. */
+#define MKL_RESIDENT_PLAN_VERSION 1u
+#include "mklight_aiming_types.h"
+#include "mklight_transforms_types.h"
+#include "mklight_collectives_types.h"
+#include "mklight_systems_types.h"
+#include "mklight_geometry_types.h"
+#include "mklight_radiometry_types.h"
+#include "mklight_wave_ops_types.h"
+#include "mklight_ghost_ops_types.h"
+#include "mklight_stray_ops_types.h"
+#include "mklight_optim_ops_types.h"
+
 #endif /* MKLIGHT_GPU_TYPES_H */

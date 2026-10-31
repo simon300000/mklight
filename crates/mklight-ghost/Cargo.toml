@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mklight-gpu.workspace = true
 mklight-core.workspace = true
 mklight-trace.workspace = true
 serde.workspace = true

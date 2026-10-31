@@ -64,3 +64,6 @@ pub use signature::{
     Event, GhostCoverage, InterfaceKind, Owner, PathClass, PathEvent, PathSignature, classify,
     interface_kinds,
 };
+
+/// Resident GPU adapter seam (enabled by the solver package).
+pub mod gpu;

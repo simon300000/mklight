@@ -433,6 +433,39 @@ pub trait ComputeBackend: Send + Sync {
     /// against the stored system set, never only against the handle.
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>>;
 
+    /// Immutable typed upload; the returned lease owns storage until its last use.
+    fn upload_buffer(
+        &self,
+        _desc: crate::resident::BufferDesc,
+        _data: crate::resident::BufferData,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        crate::resident::unsupported("buffer upload")
+    }
+    fn readback(
+        &self,
+        _view: crate::resident::BufferView,
+        _ctx: &JobContext,
+    ) -> MkResult<crate::resident::Readback> {
+        crate::resident::unsupported("readback")
+    }
+    fn submit_plan(
+        &self,
+        _plan: crate::resident::ResidentPlan,
+        _ctx: &JobContext,
+    ) -> MkResult<Pending<crate::resident::PlanResult>> {
+        crate::resident::unsupported("plan")
+    }
+    fn upload_systems_cached(
+        &self,
+        _key: &crate::resident::SystemCacheKey,
+        _systems: &[PackedSystem],
+    ) -> MkResult<SystemHandle> {
+        crate::resident::unsupported("system cache")
+    }
+    fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
+        Default::default()
+    }
+
     /// Upload a single system.
     fn upload_system(&self, system: &PackedSystem) -> MkResult<SystemHandle> {
         self.upload_systems(std::slice::from_ref(system))
