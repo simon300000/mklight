@@ -51,6 +51,7 @@ enum EngineLayout {
         let section = json["section"]?.string == "xz" ? "xz" : "yz"
         // The section's "up" coordinate: y for the y–z section, x for x–z.
         let up: (Point3) -> Double = section == "xz" ? { $0.x } : { $0.y }
+        markNearSection(&polylines, section: section)
         let surfaces: [LayoutScene.SurfaceInfo] = (json["surfaces"]?.array ?? []).compactMap { s in
             guard let index = s["index"]?.int, let id = s["id"]?.int, let v = s["vertex"]?.nfArray, v.count == 3 else { return nil }
             return LayoutScene.SurfaceInfo(
@@ -87,6 +88,24 @@ enum EngineLayout {
         scene.section = section
         scene.mesh = mesh(output, origin: origin)
         return scene
+    }
+
+    /// A slightly decentred or tilted system (a toleranced build) has no
+    /// polyline exactly in the section plane, so the engine flags none and
+    /// the section view would be empty. Then profiles, stops, edges and
+    /// rays that stay within 2 % of the scene's height of the plane count
+    /// as in the section (rims and skew rays stay out).
+    static func markNearSection(_ polylines: inout [LayoutScene.Polyline], section: String) {
+        let lens: Set<LayoutScene.PolylineKind> = [.surfaceProfile, .stop, .elementEdge, .ray]
+        guard !polylines.contains(where: { $0.inSection && lens.contains($0.kind) }) else { return }
+        let off: (Point3) -> Double = section == "xz" ? { abs($0.y) } : { abs($0.x) }
+        let up: (Point3) -> Double = section == "xz" ? { abs($0.x) } : { abs($0.y) }
+        let height = polylines.lazy.flatMap(\.points).map(up).filter(\.isFinite).max() ?? 0
+        guard height > 0 else { return }
+        let tol = 0.02 * height
+        for i in polylines.indices where !polylines[i].inSection && (lens.contains(polylines[i].kind) || polylines[i].kind == .axis) {
+            if polylines[i].points.allSatisfy({ off($0) <= tol }) { polylines[i].inSection = true }
+        }
     }
 
     /// The optional surface mesh: `surface_mesh` f32 `[T, 3, 3]` relative

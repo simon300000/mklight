@@ -451,9 +451,12 @@ enum GlassStatus: Hashable, Sendable, CaseIterable {
 
 /// One glass of a glass map.
 struct GlassMapPoint: Identifiable, Hashable, Sendable {
-    enum Kind: String, Sendable { case catalog, model }
+    /// A catalogue glass, a design's catalogue glass shifted by its melt
+    /// offset, or a design's model glass.
+    enum Kind: String, Sendable { case catalog, offset, model }
     /// `catalog/name` for catalogue glasses, `model:name` for model glasses
-    /// (with their first surface, as model names need not be unique).
+    /// and `offset:catalog/name` for offset glasses (with their first
+    /// surface, as these need not be unique).
     var id: String
     var catalog: String?
     var name: String
@@ -465,17 +468,32 @@ struct GlassMapPoint: Identifiable, Hashable, Sendable {
     /// Surface indices whose following medium is this glass.
     var surfaces: [Int]
     var excludeSubstitution: Bool?
+    /// The melt offset of an `.offset` point.
+    var offset: MaterialOffset? = nil
 
     /// Whether the design uses the glass.
-    var inDesign: Bool { kind == .model || !surfaces.isEmpty }
+    var inDesign: Bool { kind != .catalog || !surfaces.isEmpty }
 
     /// "S1, S3".
     var surfaceLabel: String { surfaces.map { "S\($0)" }.joined(separator: ", ") }
 
-    var displayName: String { kind == .model ? "\(name) (model)" : name }
+    var displayName: String {
+        switch kind {
+        case .catalog: name
+        case .model: "\(name) (model)"
+        case .offset: "\(name) \(offset?.compactText ?? "(melt)")"
+        }
+    }
+
+    /// The id of the catalogue point an offset glass is shifted from.
+    var nominalID: String { "\(catalog ?? "")/\(name)" }
 
     static func id(catalog: String?, name: String, kind: Kind, surfaces: [Int]) -> String {
-        kind == .model ? "model:\(name):\(surfaces.first ?? -1)" : "\(catalog ?? "")/\(name)"
+        switch kind {
+        case .catalog: "\(catalog ?? "")/\(name)"
+        case .model: "model:\(name):\(surfaces.first ?? -1)"
+        case .offset: "offset:\(catalog ?? "")/\(name):\(surfaces.first ?? -1)"
+        }
     }
 
     /// The deviation of P_g,F from the normal line through K7 and F2
@@ -514,7 +532,9 @@ struct GlassMapData: Sendable {
                 catalog: g["catalog"]?.string, name: name, kind: kind,
                 nd: coord(0, "nd"), vd: coord(1, "vd"), pgf: coord(2, "pgf"),
                 status: GlassStatus(json: g["status"]), surfaces: surfaces,
-                excludeSubstitution: g["exclude_substitution"]?.bool)
+                excludeSubstitution: g["exclude_substitution"]?.bool,
+                offset: kind == .offset
+                    ? MaterialOffset(dnD: g[path: "offset", "dn_d"]?.nf ?? 0, dvD: g[path: "offset", "dv_d"]?.nf ?? 0) : nil)
         }
     }
 

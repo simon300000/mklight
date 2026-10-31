@@ -87,6 +87,9 @@ extension MockEngine {
                     "trials": int(100, 1, 100000, "Trials"), "seed": int(0, 0, Int(Int32.max), "Seed"),
                     "stop_key": .object(["type": .array([.string("string"), .string("null")]), "default": .null]),
                 ]),
+            d(
+                "glass_info", "Glass data", "materials",
+                ["name": .object(["type": .string("string"), "default": .string("")])]),
             d("mtf", "MTF", "wave", available: false),
             d("psf", "Point spread function", "wave", available: false),
             d("wavefront_map", "Wavefront map", "wave", available: false),
@@ -194,6 +197,17 @@ extension MockEngine {
             return (.object(["entries": entries, "wavelength_um": .number(fo.wavelengthUm)]), [])
         case "solves":
             return (solvesReport(system), [])
+        case "glass_info":
+            let name = (s["name"]?.string ?? "").uppercased()
+            guard let g = MockOptics.catalog[name] else { throw EngineError.engine(.notFound, "unknown glass '\(name)'") }
+            let dn = s["offset"]?["dn_d"]?.nf ?? 0, dv = s["offset"]?["dv_d"]?.nf ?? 0
+            return (
+                .object([
+                    "name": .string(name), "catalog": .string(s["catalog"]?.string ?? "MOCK"), "catalog_nd": .number(g.nd),
+                    "catalog_vd": .number(g.vd), "nd": .number(g.nd + dn), "vd": .number(g.vd + dv),
+                    "offset": .object(["dn_d": .number(dn), "dv_d": .number(dv)]),
+                ]), []
+            )
         case "layout":
             var ls = LayoutSettings()
             if let r = s["rays_per_field"]?.int { ls.raysPerField = r }
@@ -554,6 +568,40 @@ extension MockEngine {
             return (p, system.value(at: p) ?? 0)
         }
         let nominalComps = JSONValue.array(comps.map { .number($0.1) })
+        // Trial `t`'s perturbations: uniform within the limits, from its own stream.
+        func draws(_ t: Int) -> [Double] {
+            var r = SplitMix64(seed: seed &+ 0x5EED &+ UInt64(t) &* 0x9E37_79B9)
+            return params.map { _, m, p, _ in -m + (m + p) * r.unit() }
+        }
+        func criterion(_ d: [Double]) -> Double {
+            nominal * (1 + zip(d, params).map { x, p in let lim = max(p.1, p.2, 1e-12); return 0.05 * (x / lim) * (x / lim) }.reduce(0, +))
+        }
+        if let c = s["preview_case"], c != .null {
+            let deltas: [Double]
+            switch c["type"]?.string {
+            case "trial": deltas = draws(c["trial"]?.int ?? 0)
+            default:
+                let k = c["operand"]?.int ?? 0
+                guard params.indices.contains(k) else { throw EngineError.invalidSettings(["preview operand out of range"]) }
+                deltas = params.indices.map { $0 == k ? (c["positive"]?.bool ?? true ? params[k].2 : -params[k].1) : 0 }
+            }
+            var built = system
+            for (d, p) in zip(deltas, params) where d != 0 {
+                if let v = built.value(at: p.0) { built.setValue(v + d, at: p.0) }
+            }
+            let compensated = comps.map { $0.1 + 0.01 * (deltas.first ?? 0) / max(params.first?.1 ?? 1, 1e-12) }
+            for (c, v) in zip(comps, compensated) { built.setValue(v, at: c.0) }
+            let preview: JSONValue = .object([
+                "system": (try? JSONValue.from(built)) ?? .null, "system_hash": .string("mock"), "criterion": .number(criterion(deltas)),
+                "compensators": .array(compensated.map(JSONValue.number)), "perturbations": .array(deltas.map(JSONValue.number)),
+            ])
+            return (
+                .object([
+                    "status": .string("complete"), "stopped": .bool(false), "sensitivity": .null, "monte_carlo": .null, "preview": preview,
+                    "compensators": s["compensators"] ?? .array([]),
+                ]), []
+            )
+        }
         for (k, (p, minus, plus, label)) in params.enumerated() {
             try reporter.checkCancelled()
             let dm = nominal * 0.05 * rng.unit(), dp = nominal * 0.05 * rng.unit()
@@ -572,7 +620,10 @@ extension MockEngine {
         }
         let rss = sqrt(worst.map { $0.1 * $0.1 }.reduce(0, +))
         var criteria: [Double] = []
+        var records: [JSONValue] = []
+        let recordTrials = s["record_trials"]?.int ?? 0
         var stopped = false
+        let mcStart = Date()
         if mode != "sensitivity" {
             for t in 0..<trials {
                 try reporter.checkCancelled()
@@ -580,16 +631,31 @@ extension MockEngine {
                     stopped = true
                     break
                 }
-                let g = sqrt(-2 * log(max(rng.unit(), 1e-12))) * cos(2 * .pi * rng.unit())
-                criteria.append(nominal + rss * (0.5 + 0.4 * g).magnitude)
+                let d = draws(t)
+                criteria.append(criterion(d))
+                if t < recordTrials {
+                    records.append(
+                        .object([
+                            "trial": .integer(Int64(t)), "criterion": .number(criteria[t]), "ok": .bool(true),
+                            "compensators": .array(comps.map { .number($0.1 + 0.001 * Double(t % 7)) }), "perturbations": .array(d.map(JSONValue.number)),
+                        ]))
+                }
                 if t % 10 == 0 {
-                    reporter.report(0.3 + 0.7 * Double(t) / Double(trials), stage: "monte carlo \(t)/\(trials)")
+                    reporter.report(0.3 + 0.7 * Double(t) / Double(trials), stage: "tolerance monte carlo")
                     if latency > .zero { try await Task.sleep(for: latency / 20) }
                 }
             }
         }
+        let seconds = criteria.isEmpty ? 0 : Date().timeIntervalSince(mcStart) / Double(criteria.count)
         let sorted = criteria.sorted()
-        func pct(_ p: Double) -> Double { sorted.isEmpty ? .nan : sorted[min(sorted.count - 1, Int(p / 100 * Double(sorted.count)))] }
+        // Linear between order statistics, as the engine.
+        func pct(_ p: Double) -> Double {
+            guard !sorted.isEmpty else { return .nan }
+            let x = min(max(p / 100, 0), 1) * Double(sorted.count - 1)
+            let i = Int(x.rounded(.down)), f = x - Double(i)
+            return i + 1 < sorted.count ? sorted[i] * (1 - f) + sorted[i + 1] * f : sorted[i]
+        }
+        let levels = s["percentiles"]?.nfArray ?? [50, 90, 97.7]
         let mean = criteria.isEmpty ? Double.nan : criteria.reduce(0, +) / Double(criteria.count)
         let sd = criteria.isEmpty ? Double.nan : sqrt(criteria.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(criteria.count))
         let mc: JSONValue =
@@ -597,8 +663,10 @@ extension MockEngine {
             ? .null
             : .object([
                 "trials": .integer(Int64(criteria.count)), "failures": .integer(0), "seed": .integer(Int64(seed)),
+                "nominal": .object(["criterion": .number(nominal), "ok": .bool(true), "compensators": nominalComps]),
+                "seconds_per_trial": .number(seconds), "records": .array(records),
                 "mean": num(mean), "std_dev": num(sd), "min": num(sorted.first ?? .nan), "max": num(sorted.last ?? .nan),
-                "percentiles": .array([50.0, 80, 90, 95, 98].map { .object(["percentile": .number($0), "value": num(pct($0))]) }),
+                "percentiles": .array(levels.map { .object(["percentile": .number($0), "value": num(pct($0))]) }),
                 "yield_fraction": .null, "threshold": .null, "cancelled": .bool(stopped), "criteria": nums(criteria),
                 "compensator_mean": .array(comps.map { .number($0.1 + 0.01) }), "compensator_std": .array(comps.map { _ in .number(0.05) }),
             ])

@@ -16,7 +16,8 @@ import Testing
     private var context: ToleranceContext {
         var sd: [SurfaceID: Double] = [:]
         for s in cooke.surfaces { sd[s.id] = 8 }
-        return ToleranceContext(system: cooke, semiDiameters: sd)
+        // The engine's V_d of N-SK16 and F2 (Abbe tolerances on catalogue glasses are in % of it).
+        return ToleranceContext(system: cooke, semiDiameters: sd, abbeNumbers: [id(1): 60.32, id(3): 36.37, id(6): 60.32])
     }
 
     private func id(_ i: Int) -> SurfaceID { cooke.surfaces[i].id }
@@ -40,14 +41,29 @@ import Testing
         let rows = ToleranceGenerator().rows(for: cooke)
         func count(_ k: ToleranceKind) -> Int { rows.filter { $0.kind == k }.count }
         #expect(count(.radius) == 6 && count(.decenterX) == 6 && count(.decenterY) == 6 && count(.tiltX) == 6 && count(.tiltY) == 6)
+        #expect(count(.irregularityAstigmatism) == 6 && count(.irregularitySpherical) == 6, "every powered lens surface")
         #expect(count(.thickness) == 6, "S1–S6 gaps (the stop's included); the back focus S7 is the compensator")
         #expect(!rows.contains { $0.kind == .thickness && $0.surface == id(7) })
-        #expect(count(.index) == 0 && count(.abbe) == 0, "the Cooke's glasses are catalogue glasses")
-        #expect(ToleranceGenerator.catalogueGlasses(cooke) == ["N-SK16", "F2"])
+        // Index and Abbe of every glass: catalogue glasses through their melt offset.
+        #expect(rows.filter { $0.kind == .index }.map(\.surface) == [id(1), id(3), id(6)] && count(.abbe) == 3)
+        #expect(rows.first { $0.kind == .index }?.path(in: cooke) == .materialDnD(surface: id(1)))
+        #expect(rows.first { $0.kind == .abbe }?.path(in: cooke) == .materialDvD(surface: id(1)))
+        // Each element moves as one: decentre and tilt in x and y.
+        for k in ToleranceKind.addableElement { #expect(count(k) == 3, "\(k)") }
+        let l2 = rows.filter { $0.kind.isElement && $0.surface == id(3) }
+        #expect(l2.count == 4 && l2.allSatisfy { $0.last == id(4) && $0.pivot == nil })
         var model = cooke
         model.surfaces[1].material = .model(nd: 1.62, vd: 60.3, dpgf: 0)
         let m = ToleranceGenerator().rows(for: model)
-        #expect(m.filter { $0.kind == .index }.map(\.surface) == [id(1)] && m.filter { $0.kind == .abbe }.count == 1)
+        #expect(m.filter { $0.kind == .index }.map(\.surface) == [id(1), id(3), id(6)])
+        #expect(m.first { $0.kind == .index }?.path(in: model) == .modelNd(surface: id(1)))
+        // A value of 0 leaves its kind out.
+        var g = ToleranceGenerator()
+        g.irregularityFringes = 0
+        g.elementTiltArcmin = 0
+        let fewer = g.rows(for: cooke)
+        #expect(!fewer.contains { $0.kind.isElement && $0.kind.component == .tiltX } && !fewer.contains { $0.kind == .irregularitySpherical })
+        #expect(fewer.contains { $0.kind == .elementDecenterX })
         // Grouped by element: L1 is S1–S2, the air after it its own group.
         let groups = LensElements.groups(cooke)
         #expect(groups.map(\.title) == ["L1", "L2", "L3"] && groups[0].surfaces == [1, 2] && groups[2].surfaces == [6, 7] && groups[0].glasses == ["N-SK16"])
@@ -77,11 +93,26 @@ import Testing
         #expect(try ToleranceRow(.tiltX, surface: id(1), minus: 1.5).engineLimits(in: c).get() == (0.025, 0.025))
         let op = try ToleranceRow(.decenterY, surface: id(3), minus: 0.02, plus: 0.03, distribution: .normal(sigmas: 2)).operand(in: c).get()
         #expect(op["param"] == .object(["param": .string("decenter_y"), "surface": .integer(Int64(id(3).rawValue))]))
-        #expect(op["minus"]?.nf == 0.02 && op["plus"]?.nf == 0.03 && op["label"]?.string == "Decentre y S3")
+        #expect(op["minus"]?.nf == 0.02 && op["plus"]?.nf == 0.03 && op["label"]?.string == "Surface decentre y S3")
         #expect(op["distribution"] == .object(["type": .string("truncated_normal"), "sigmas": .number(2)]))
+        // A catalogue glass's index moves its melt offset; its Abbe in % needs the engine's V_d.
+        let nd = try ToleranceRow(.index, surface: id(1), minus: 0.001).operand(in: c).get()
+        #expect(nd["param"] == .object(["param": .string("material_dn_d"), "surface": .integer(Int64(id(1).rawValue))]) && nd["minus"]?.nf == 0.001)
+        var noVd = c
+        noVd.abbeNumbers = [:]
+        if case .failure = ToleranceRow(.abbe, surface: id(1), minus: 0.5).engineLimits(in: noVd) {} else { Issue.record("V_d unknown") }
+        var withVd = c
+        withVd.abbeNumbers = [id(1): 60]
+        let vd = try ToleranceRow(.abbe, surface: id(1), minus: 0.5).engineLimits(in: withVd).get()
+        #expect(abs(vd.0 - 0.3) < 1e-12 && abs(vd.1 - 0.3) < 1e-12)
+        #expect(try ToleranceRow(.abbe, surface: id(1), minus: 0.4, unit: .abbe).engineLimits(in: c).get() == (0.4, 0.4))
+        // Air is no glass; a saved melt offset plus the limit stays within ±0.05.
+        if case .failure = ToleranceRow(.index, surface: id(2), minus: 0.001).engineLimits(in: c) {} else { Issue.record("air") }
+        var melt = c
+        melt.system.surfaces[1].material = .catalog(catalog: nil, name: "N-SK16", offset: MaterialOffset(dnD: 0.0495))
+        if case .failure = ToleranceRow(.index, surface: id(1), minus: 0.001).engineLimits(in: melt) {} else { Issue.record("offset cap") }
         // Problems stay with the row.
-        if case .failure(let e) = ToleranceRow(.index, surface: id(1), minus: 0.001).engineLimits(in: c) { #expect(e.isSkipped) } else { Issue.record("catalogue glass") }
-        if case .failure(let e) = ToleranceRow(.radius, surface: id(1), minus: -1).engineLimits(in: c) { #expect(!e.isSkipped) } else { Issue.record("negative") }
+        if case .failure = ToleranceRow(.radius, surface: id(1), minus: -1).engineLimits(in: c) {} else { Issue.record("negative") }
         if case .failure = ToleranceRow(.radius, surface: id(1), minus: abs(r) + 1, unit: .radiusMM).engineLimits(in: c) {} else { Issue.record("ΔR ≥ |R|") }
         var noAperture = c
         noAperture.semiDiameters = [:]
@@ -112,17 +143,111 @@ import Testing
         #expect(ToleranceRow(.radius, surface: id(1), minus: 3).converted(to: .radiusMM, in: ToleranceContext(system: flat, semiDiameters: c.semiDiameters)) == nil)
     }
 
-    /// Decentred and tilted surfaces get a placement that returns to the
-    /// axis after them, so the rest of the system stays in place.
-    @Test func placementsReturnAfterTheirSurface() {
+    /// Element rows move a surface range rigidly about a pivot: the
+    /// engine's `element_placement` path, labelled by element, the moving
+    /// surfaces shown; rows starting on one surface share range and pivot.
+    @Test func elementGroupsAndPivots() throws {
+        let c = context
         var t = ToleranceSettings()
-        t.rows = [ToleranceRow(.decenterY, surface: id(3), minus: 0.02), ToleranceRow(.radius, surface: id(1), minus: 3)]
-        let p = t.preparedSystem(cooke)
-        #expect(p.surfaces[3].placement == Placement(restoreAfter: true))
-        #expect(p.surfaces[1].placement == nil)
-        var tilted = cooke
-        tilted.surfaces[3].placement = Placement(tiltX: 2)
-        #expect(t.preparedSystem(tilted).surfaces[3].placement == Placement(tiltX: 2), "a placement of the design is left alone")
+        let dec = ToleranceRow(.elementDecenterX, surface: id(3), minus: 0.03, last: id(4))
+        let tilt = ToleranceRow(.elementTiltY, surface: id(3), minus: 1, last: id(4))
+        t.rows = [dec, tilt]
+        #expect(dec.label(in: cooke) == "Element decentre x L2" && dec.surfaceLabel(in: cooke) == "S3–4")
+        #expect(dec.movingSurfaces(in: cooke) == [3, 4] && dec.pivotIndex(in: cooke) == 3, "the pivot defaults to the first vertex")
+        let op = try tilt.operand(in: c).get()
+        #expect(op["param"]?["param"]?.string == "element_placement" && op["param"]?["last"]?.int == Int(id(4).rawValue))
+        #expect(op["param"]?["component"]?.string == "tilt_y" && (op["param"]?["pivot"] ?? .null) == .null)
+        #expect(abs((op["plus"]?.nf ?? 0) - 1.0 / 60) < 1e-15, "tilts are sent in degrees")
+        // Moving the pivot of one row moves it for the whole group.
+        t.setElement(dec.id, first: id(3), last: id(4), pivot: id(4))
+        #expect(t.rows.allSatisfy { $0.pivot == id(4) && $0.last == id(4) })
+        #expect(t.rows[1].pivotIndex(in: cooke) == 4)
+        let pivoted = try t.rows[1].operand(in: c).get()
+        #expect(pivoted["param"]?["pivot"]?.int == Int(id(4).rawValue))
+        // A cemented range: the doublet-like range S3–S5 moves three surfaces.
+        t.setElement(dec.id, first: id(3), last: id(5), pivot: nil)
+        #expect(t.rows.allSatisfy { $0.last == id(5) && $0.pivot == nil } && t.rows[0].movingSurfaces(in: cooke) == [3, 4, 5])
+        #expect(t.rows[0].label(in: cooke) == "Element decentre x S3–5", "no element spans S3–5")
+        #expect(t.issues(in: c).isEmpty)
+        // Rows of one first surface that disagree are flagged; a row added there joins the group.
+        t.rows[1].last = id(4)
+        #expect(t.issues(in: c).count == 2)
+        t.rows[1].last = id(5)
+        t.add([ToleranceRow(.elementTiltX, surface: id(3), minus: 1, last: id(4), pivot: id(4))])
+        #expect(t.rows[2].last == id(5) && t.rows[2].pivot == nil && t.issues(in: c).isEmpty)
+        // The range is interior, and the design's own element placement wins.
+        if case .failure = ToleranceRow(.elementDecenterX, surface: id(3), minus: 0.03, last: id(8)).engineLimits(in: c) {} else {
+            Issue.record("range through the image")
+        }
+        var placed = c
+        placed.system.surfaces[3].elementPlacement = ElementPlacement(last: id(4))
+        if case .failure(let e) = t.rows[0].engineLimits(in: placed) { #expect(e.text.contains("S3–4")) } else { Issue.record("design placement") }
+        // The saved form and an operand written elsewhere keep range and pivot.
+        let back = try #require(ToleranceRow(json: t.rows[0].json))
+        #expect(back == t.rows[0] && back.last == id(5))
+        let foreign = try #require(ToleranceRow(operand: pivoted, system: cooke))
+        #expect(foreign.kind == .elementTiltY && foreign.last == id(4) && foreign.pivot == id(4) && abs(foreign.minus - 1) < 1e-12)
+        // No return placements are added any more: the run sends the design as it is.
+        #expect(t.jobSettings(in: c, merit: MeritSettings()).rowIDs.count == 3)
+    }
+
+    /// Irregularity rows: test fringes (astigmatic and spherical) on the
+    /// engine's `irregularity` path, the test wavelength sent once.
+    @Test func irregularityRows() throws {
+        let c = context
+        let astig = ToleranceRow(.irregularityAstigmatism, surface: id(2), minus: 0.5)
+        let sph = ToleranceRow(.irregularitySpherical, surface: id(2), minus: 0.25, plus: 0.5)
+        #expect(astig.unit == .fringes && astig.limitsText == "±0.5 fr" && astig.label(in: cooke) == "Astig. irregularity S2")
+        let a = try astig.operand(in: c).get()
+        #expect(a["param"] == .object(["param": .string("irregularity"), "surface": .integer(Int64(id(2).rawValue)), "mode": .string("astigmatism")]))
+        #expect(a["minus"]?.nf == 0.5, "fringes go to the engine as they are")
+        let s = try sph.operand(in: c).get()
+        #expect(s["param"]?["mode"]?.string == "spherical" && s["minus"]?.nf == 0.25 && s["plus"]?.nf == 0.5)
+        if case .failure = ToleranceRow(.irregularityAstigmatism, surface: id(8), minus: 0.5).engineLimits(in: c) {} else { Issue.record("image") }
+        // The test wavelength is one setting: fringes of power and irregularity use it.
+        var t = ToleranceSettings()
+        t.rows = [astig, ToleranceRow(.radius, surface: id(1), minus: 3)]
+        t.testWavelengthUm = 0.5461
+        let (job, _) = t.jobSettings(in: c, merit: MeritSettings())
+        #expect(job["irregularity_wavelength_um"]?.nf == 0.5461)
+        let power = try #require(job["tolerances"]?.array?[1]["minus"]?.nf)
+        #expect(abs(power - 3 * 0.5461e-3 / 64) < 1e-15)
+        let back = ToleranceSettings(section: t.section(context: c), system: cooke)
+        #expect(back.testWavelengthUm == 0.5461 && back == t)
+        // A foreign spec's irregularity operand reads back as a row.
+        #expect(ToleranceRow(operand: a, system: cooke)?.kind == .irregularityAstigmatism)
+    }
+
+    /// The Monte-Carlo levels and recorded trials: sent, saved, validated.
+    @Test func percentilesSetting() throws {
+        var t = ToleranceSettings()
+        #expect(t.percentiles == [50, 90, 97.7] && t.recordTrials == 200)
+        t.rows = [ToleranceRow(.radius, surface: id(1), minus: 3)]
+        t.percentiles = [10, 50, 99]
+        t.trials = 120
+        let (job, _) = t.jobSettings(in: context, merit: MeritSettings())
+        #expect(job["percentiles"] == .array([.number(10), .number(50), .number(99)]))
+        #expect(job["record_trials"]?.int == 120, "at most every trial")
+        t.mode = .sensitivity
+        #expect(t.jobSettings(in: context, merit: MeritSettings()).settings["record_trials"]?.int == 0)
+        let section = t.section(context: context)
+        #expect(section[path: "monte_carlo", "percentiles"]?.nfArray == [10, 50, 99] && section[path: "monte_carlo", "record_trials"]?.int == 120)
+        #expect(ToleranceSettings(section: section, system: cooke).percentiles == [10, 50, 99])
+        #expect(ToleranceSettings.validPercentiles([97.7, 50, 50, 120, -1, .nan]) == [50, 97.7])
+        #expect(ToleranceSettings.validPercentiles([200]) == nil)
+        // Undoable through the session like any edit.
+        let doc = DesignDocument(system: cooke)
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        let session = ToleranceSession()
+        session.load(doc)
+        undo.beginUndoGrouping()
+        session.edit(doc, "Change Percentiles", context: context, undoManager: undo) { $0.percentiles = [25, 75] }
+        undo.endUndoGrouping()
+        #expect(doc.tolerances.percentiles == [25, 75])
+        undo.undo()
+        session.load(doc)
+        #expect(session.settings.percentiles == [50, 90, 97.7])
     }
 
     // MARK: Editing, undo and the document
@@ -256,6 +381,17 @@ import Testing
             "monte_carlo": .object([
                 "trials": .integer(5), "seed": .integer(3), "criteria": .array([4e-4, 5e-4, 6e-4, 8e-4, 1e-3].map(JSONValue.number)),
                 "mean": .number(6.6e-4), "std_dev": .number(2e-4), "min": .number(4e-4), "max": .number(1e-3),
+                "nominal": .object(["criterion": .number(4e-4), "ok": .bool(true), "compensators": .array([.number(42.1)])]),
+                "seconds_per_trial": .number(0.021),
+                "percentiles": .array([
+                    .object(["percentile": .number(50), "value": .number(6e-4)]), .object(["percentile": .number(90), "value": .number(9.2e-4)]),
+                ]),
+                "records": .array([
+                    .object([
+                        "trial": .integer(0), "criterion": .number(4e-4), "ok": .bool(true), "compensators": .array([.number(42.12)]),
+                        "perturbations": .array([.number(5e-5), .number(-0.01), .number(0)]),
+                    ])
+                ]),
                 "compensator_mean": .array([.number(42.15)]), "compensator_std": .array([.number(0.05)]),
             ]),
         ])
@@ -269,11 +405,37 @@ import Testing
         let shares = r.sensitivities.map { r.share($0) }
         #expect(abs(shares.reduce(0, +) - 1) < 1e-12 && shares[0] > 0.8)
         #expect(r.worstOffenders == [0])
-        #expect(r.percentile(50) == 6e-4 && abs(r.percentile(90) - 9.2e-4) < 1e-15 && r.percentile(100) == 1e-3)
+        // The engine's percentiles, nominal, timing and trial records.
+        #expect(r.percentiles.map(\.percentile) == [50, 90] && r.percentiles.map(\.value) == [6e-4, 9.2e-4])
+        #expect(r.nominal == 4e-4 && r.secondsPerTrial == 0.021 && r.records.count == 1 && r.record(0)?.compensators == [42.12])
         #expect(r.cumulative(6e-4) == 0.6)
+        #expect(r.trialsWorstFirst == [4, 3, 2, 1, 0])
+        #expect(r.trials(shownIn: 22...25) == [2, 1], "√5e-4 = 22.4 µm and √6e-4 = 24.5 µm")
         let range = r.compensatorRange(0)
         #expect(abs((range?.0 ?? 0) + 0.2) < 1e-9 && abs((range?.1 ?? 0) - 0.2) < 1e-9)
-        #expect(ToleranceResult.levels == [50, 90, 97.7])
+        // A Monte Carlo alone still has the nominal.
+        let mcOnly = ToleranceResult(json: .object(["monte_carlo": .object(["trials": .integer(2), "nominal": .object(["criterion": .number(3e-4)])])]), system: cooke)
+        #expect(mcOnly.hasNominal && mcOnly.nominal == 3e-4 && !mcOnly.hasSensitivity && mcOnly.trials == 2)
+    }
+
+    /// Timing: trials done and time left from the progress and the wall
+    /// time per trial.
+    @Test func timingEstimates() {
+        // Monte Carlo half done after 10 s of its own: 0.1 s per trial, 10 s left.
+        let mc = ToleranceSession.timing(
+            elapsed: 12, monteCarloElapsed: 10, fraction: 0.2 + 0.8 * 0.5, mode: .both, trials: 200, operands: 10, lastSecondsPerTrial: nil)
+        #expect(mc.trialsDone == 100 && abs((mc.secondsPerTrial ?? 0) - 0.1) < 1e-12 && abs((mc.secondsLeft ?? 0) - 10) < 1e-9)
+        // In the sensitivity: its own rest, then the trials at the last run's rate.
+        let s = ToleranceSession.timing(
+            elapsed: 2, monteCarloElapsed: nil, fraction: 0.1, mode: .both, trials: 100, operands: 10, lastSecondsPerTrial: 0.05)
+        #expect(s.trialsDone == nil && s.secondsPerTrial == 0.05 && abs((s.secondsLeft ?? 0) - (2 + 5)) < 1e-9)
+        // Without a last run, a trial costs about one sensitivity evaluation.
+        let first = ToleranceSession.timing(
+            elapsed: 2.1, monteCarloElapsed: nil, fraction: 0.1, mode: .both, trials: 100, operands: 10, lastSecondsPerTrial: nil)
+        #expect(abs((first.secondsPerTrial ?? 0) - 0.2) < 1e-9)
+        #expect(ToleranceProgress.seconds(0.0213) == "21.3 ms" && ToleranceProgress.seconds(1.234) == "1.23 s")
+        #expect(ToleranceProgress.duration(4.2) == "4 s" && ToleranceProgress.duration(600) == "10 min")
+        #expect(AnalysisSection.estimate(secondsPerTrial: 0.02, trials: 200) == "Last run: 20 ms per trial, so 200 trials take about 4 s.")
     }
 
     /// A preview is the build the sensitivity evaluated: the tolerance at
@@ -296,15 +458,26 @@ import Testing
         try await waitUntil { session.state == .finished }
         let r = try #require(session.result)
         #expect(r.sensitivities.count == 2 && session.resultRows.count == 2)
+        #expect(session.runSystem == cooke, "the design is sent as it is")
         let k = try #require(r.sensitivities.first { $0.param == .decenterY(surface: id(3)) })
-        let s = try #require(session.trialSystem(k.id, plus: true))
-        #expect(s.surfaces[3].placement?.decenterY == 0.02 && s.surfaces[3].placement?.restoreAfter == true)
-        #expect(s.value(at: .thickness(surface: id(7))) == k.compensatorsPlus.first)
-        session.preview(k.id, plus: true, in: w)
-        #expect(w.isPreviewing && w.previewTitle?.hasPrefix("Tolerance: Decentre y S3 at +0.02") == true)
+        // A sensitivity case, rebuilt by the engine.
+        session.preview(.sensitivity(operand: k.id, plus: true), in: w)
+        #expect(session.previewLoading)
+        try await waitUntil { session.preview != nil }
+        let p = try #require(session.preview)
+        #expect(p.system.surfaces[3].placement?.decenterY == 0.02 && p.system.surfaces[3].placement?.restoreAfter == true)
+        #expect(w.isPreviewing && w.previewTitle?.hasPrefix("Tolerance: Surface decentre y S3 at +0.02") == true)
+        let change = try #require(session.changes(p.perturbations).first)
+        #expect(change.text == "+0.02 mm" && change.fraction == 1 && session.changes(p.perturbations).count == 1)
         #expect(doc.system == cooke, "a preview never changes the design")
-        session.preview(nil, in: w)
-        #expect(!w.isPreviewing)
+        // A Monte-Carlo trial: the same build each time, read-only.
+        session.preview(.trial(3), in: w)
+        try await waitUntil { session.preview?.previewCase == .trial(3) }
+        let t3 = try #require(session.preview)
+        #expect(w.previewTitle == "Tolerance: trial 4, compensated" && t3.perturbations.count == 2)
+        #expect(t3.criterion == r.trialCriteria[3], "the rebuild is the trial the run evaluated")
+        session.endPreview(in: w)
+        #expect(!w.isPreviewing && session.previewed == nil)
         // Stop keeps what completed; Cancel discards.
         session.start(in: w, context: context, merit: doc.merit)
         session.cancel()
@@ -320,11 +493,28 @@ import Testing
         let text = ToleranceReport.summary(r, rows: rows, system: cooke, title: "Cooke")
         #expect(text.contains("Criterion: RMS spot (µm)") && text.contains("Nominal: 20.0") && text.contains("Radius S1 ±3 fr"))
         #expect(text.contains("50 % of builds at most: 24.5") && text.contains("Compensator Back focus: moved -0.2 to +0.2 mm of ±0.5"))
+        #expect(text.contains("90 % of builds at most: 30.3") && text.contains("0.021 s per trial"))
         let csv = ToleranceReport.sensitivityCSV(r, rows: rows, system: cooke).split(separator: "\n")
         #expect(csv.count == 4 && csv[0].hasPrefix("rank,tolerance,minus,plus,unit") && csv[1].hasPrefix("1,Radius S1,3,3,fr,Radius 1,"))
-        #expect(csv[2].hasPrefix("2,Decentre y S3,0.02,0.02,mm"))
-        let trials = ToleranceReport.trialsCSV(r).split(separator: "\n")
-        #expect(trials.count == 6 && trials[0] == "trial,criterion,rms_spot_um" && trials[1].hasPrefix("1,0.0004,20"))
+        #expect(csv[2].hasPrefix("2,Surface decentre y S3,0.02,0.02,mm"))
+        let trials = ToleranceReport.trialsCSV(r, rows: rows, system: cooke).split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(trials[0] == "trial,criterion,rms_spot_um,compensator_1,Radius S1,Thickness S1–2,Surface decentre y S3")
+        #expect(trials[1] == "1,0.0004,20,42.12,5e-05,-0.01,0" && trials[2].hasPrefix("2,0.0005,22.36") && trials[2].hasSuffix(",,,,"))
+    }
+
+    /// A toleranced build's layout: nothing lies exactly in the section, so
+    /// profiles and meridional rays near it are drawn; rims and skew rays
+    /// are not. A layout with in-section lines is left alone.
+    @Test func previewLayoutKeepsItsSection() {
+        func line(_ k: LayoutScene.PolylineKind, x: Double, _ inSection: Bool = false) -> LayoutScene.Polyline {
+            LayoutScene.Polyline(kind: k, points: [Point3(x, -10, 0), Point3(x, 10, 5)], inSection: inSection)
+        }
+        var lines = [line(.surfaceProfile, x: 0.03), line(.ray, x: 0.1), line(.ray, x: 2.1), line(.surfaceRim, x: 9), line(.imagePlane, x: 0, true)]
+        EngineLayout.markNearSection(&lines, section: "yz")
+        #expect(lines.map(\.inSection) == [true, true, false, false, true])
+        var nominal = [line(.surfaceProfile, x: 0, true), line(.ray, x: 0.1)]
+        EngineLayout.markNearSection(&nominal, section: "yz")
+        #expect(nominal.map(\.inSection) == [true, false])
     }
 
     @Test func runIsBlockedByBrokenRowsOnly() {
@@ -334,9 +524,9 @@ import Testing
         session.edit(doc, "Set", context: context, undoManager: nil) {
             $0.rows = [ToleranceRow(.radius, surface: id(1), minus: 3), ToleranceRow(.index, surface: id(1), minus: 0.001)]
         }
-        #expect(session.runProblem(context: context) == nil, "a catalogue glass's index is skipped, not an error")
+        #expect(session.runProblem(context: context) == nil, "a catalogue glass's index runs on its melt offset")
         let (s, ids) = session.settings.jobSettings(in: context, merit: MeritSettings())
-        #expect(s["tolerances"]?.array?.count == 1 && ids == [session.settings.rows[0].id])
+        #expect(s["tolerances"]?.array?.count == 2 && ids == session.settings.rows.map(\.id))
         session.edit(doc, "Break", context: context, undoManager: nil) { $0.rows[0].minus = -1 }
         #expect(session.runProblem(context: context) == "Fix the tolerance marked in red first.")
     }

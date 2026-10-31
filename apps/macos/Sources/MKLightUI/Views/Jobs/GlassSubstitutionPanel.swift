@@ -84,6 +84,10 @@ struct GlassSubstitutionPanel: View {
                         Text("With no glass ticked, every model glass (n_d, V_d) snaps to its nearest real glasses.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
+                    if let note = session.offsetNote(system: design.system) {
+                        Label(note, systemImage: "drop.halffull")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(Space.xs)
             } label: {
@@ -172,6 +176,10 @@ struct GlassSubstitutionPanel: View {
                         Text("S\(slot.index)").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                         Text(slot.material).font(.callout.weight(.medium))
                         if slot.isModel { Text("model").font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 4).background(.quaternary, in: Capsule()) }
+                        if let o = slot.offset, !o.isZero {
+                            Text(o.compactText).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                .help("Melt offset Δn_d / ΔV_d: a replacement glass is installed without it")
+                        }
                     }
                     if let o = session.overrides[slot.id] {
                         Text(o.summary).font(.caption).foregroundStyle(.tint).lineLimit(1)

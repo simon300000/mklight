@@ -164,9 +164,16 @@ struct SurfaceInspector: View {
                             suggestions: workspace.materialNames
                         ) { text in
                             switch LensValueParser.material(text) {
-                            case .success(let m): edit("Change Material") { s in s.interaction = m.interaction; if let mat = m.material { s.material = mat } }
+                            case .success(let m):
+                                edit("Change Material") { s in
+                                    s.interaction = m.interaction
+                                    if let mat = m.material { s.material = s.material.replaced(by: mat) }
+                                }
                             case .failure(let f): window.flash(f.description)
                             }
+                        }
+                        if case .catalog = surface.material {
+                            MeltOffsetRows(surface: surface, system: system, workspace: workspace, edit: edit, variable: variable)
                         }
                         if case .model(let nd, let vd, let dpgf) = surface.material {
                             NumberField(title: "n_d", value: nd, variable: variable(.modelNd(surface: surface.id))) { v in
@@ -482,6 +489,70 @@ private struct ApertureSection: View {
     }
 
     private func setAperture(_ a: ApertureShape?) { edit("Change Aperture") { $0.aperture = a } }
+}
+
+/// A catalogue glass's melt offset: Δn_d and ΔV_d (validated against the
+/// engine's ±0.05 and ±10), each a possible variable, and the glass's
+/// resulting n_d and V_d against the catalogue's. Hidden behind "Add Melt
+/// Offset…" while zero.
+struct MeltOffsetRows: View {
+    let surface: Surface
+    let system: OpticalSystem
+    let workspace: Workspace
+    let edit: (String, @escaping (inout Surface) -> Void) -> Void
+    let variable: (ParamPath) -> FieldVariable
+    @State private var expanded = false
+
+    private var offset: MaterialOffset { surface.material.catalogOffset ?? .zero }
+
+    var body: some View {
+        let dn = ParamPath.materialDnD(surface: surface.id), dv = ParamPath.materialDvD(surface: surface.id)
+        let showing = expanded || !offset.isZero || variable(dn).isOn.wrappedValue || variable(dv).isOn.wrappedValue
+        if showing {
+            NumberField(
+                title: "Δn_d", detail: "melt", value: offset.dnD,
+                help: "The melt's index offset from the catalogue n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape.",
+                parse: LensValueParser.offsetDnD, variable: variable(dn), solve: system.solve(for: dn)?.kind.kind.title
+            ) { v in set("Change Δn_d") { $0.dnD = v } }
+            NumberField(
+                title: "ΔV_d", detail: "melt", value: offset.dvD,
+                help: "The melt's Abbe-number offset from the catalogue V_d (within ±\(Fmt.short(MaterialOffset.maxDvD))).",
+                parse: LensValueParser.offsetDvD, variable: variable(dv), solve: system.solve(for: dv)?.kind.kind.title
+            ) { v in set("Change ΔV_d") { $0.dvD = v } }
+            if let g = workspace.glass(surface.material) {
+                LabeledContent("Melt glass") {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("n_d \(String(format: "%.5f", g.nd))  V_d \(String(format: "%.2f", g.vd))").numeric()
+                        if !offset.isZero {
+                            Text("catalogue \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))")
+                                .font(.caption).numeric().foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+            if !offset.isZero {
+                Button("Remove Melt Offset") {
+                    expanded = false
+                    set("Remove Melt Offset") { $0 = .zero }
+                }
+                .buttonStyle(.borderless)
+                .help("Back to the catalogue glass")
+            }
+        } else {
+            Button("Add Melt Offset…") { expanded = true }
+                .buttonStyle(.borderless)
+                .help("Give the catalogue glass a measured melt's Δn_d and ΔV_d")
+        }
+    }
+
+    private func set(_ name: String, _ change: @escaping (inout MaterialOffset) -> Void) {
+        edit(name) { s in
+            guard var o = s.material.catalogOffset else { return }
+            change(&o)
+            if let m = s.material.withOffset(o) { s.material = m }
+        }
+    }
 }
 
 /// Decenters and tilts before the surface.

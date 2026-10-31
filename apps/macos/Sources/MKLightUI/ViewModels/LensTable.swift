@@ -105,6 +105,9 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     /// A short axis hint before a value (`y` and `x` for the two sections
     /// of an anamorphic surface).
     public var hints: [LensColumn: String] = [:]
+    /// A subtle note after a value: a catalogue glass's melt offset
+    /// (`+0.0012/−0.8`).
+    public var notes: [LensColumn: String] = [:]
     /// The section with power of a cylinder (its other section is flat,
     /// shown dimmed).
     public var poweredAxis: SurfaceShape.CylinderAxis?
@@ -233,10 +236,24 @@ public struct LensRow: Identifiable, Equatable, Sendable {
                 if c == .radius, let k = solves[.paraxialFocalLength(surface: sf.id)] { m.solve = (k.letter, k.title) }
                 if !m.isEmpty { markers[c] = m }
             }
+            var notes: [LensColumn: String] = [:]
+            if sf.interaction == .refract, let o = sf.material.catalogOffset, !o.isZero {
+                notes[.material] = o.compactText
+                // Offset variables and solves mark the glass.
+                var m = CellMarker()
+                for p in [ParamPath.materialDnD(surface: sf.id), .materialDvD(surface: sf.id)] {
+                    if variables.contains(p) {
+                        m.isVariable = true
+                        m.bounds = bounds[p] ?? .free
+                    }
+                    if let k = solves[p] { m.solve = (k.letter, k.title) }
+                }
+                if !m.isEmpty { markers[.material] = m }
+            }
             return LensRow(
                 id: sf.id, index: i, role: role, kind: sf.shape.kind, typeTitle: Self.typeTitle(sf.shape),
                 isMirror: sf.interaction == .reflect, cells: cells, exact: exact, editable: editable, markers: markers,
-                semiDiameterIsAuto: sf.semiDiameter == .auto, hints: hints, poweredAxis: sf.shape.cylinderAxis)
+                semiDiameterIsAuto: sf.semiDiameter == .auto, hints: hints, notes: notes, poweredAxis: sf.shape.cylinderAxis)
         }
     }
 

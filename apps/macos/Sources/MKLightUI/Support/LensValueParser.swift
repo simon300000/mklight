@@ -10,9 +10,12 @@ public enum LensValueParser {
         case mustBeFinite
         case invalidMaterial(String)
         case mustBeWhole
+        /// Outside the allowed range: why.
+        case outOfRange(String)
 
         public var description: String {
             switch self {
+            case .outOfRange(let why): why
             case .notANumber(let s): "'\(s)' is not a number"
             case .mustBePositive: "Value must be greater than zero"
             case .mustBeFinite: "Value must be finite"

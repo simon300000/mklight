@@ -40,6 +40,7 @@ struct LensTableView: View {
 
     var body: some View {
         let rows = self.rows
+        let hasOffsets = rows.contains { $0.notes[.material] != nil }
         VStack(spacing: 0) {
             header
             Table(rows, selection: $window.selection) {
@@ -53,7 +54,7 @@ struct LensTableView: View {
                 // Anamorphic surfaces show both sections in the radius cell.
                 column(.radius, rows: rows).width(min: 80, ideal: 116, max: 220)
                 column(.thickness, rows: rows).width(min: 80, ideal: 104, max: 160)
-                column(.material, rows: rows).width(min: 80, ideal: 104, max: 160)
+                column(.material, rows: rows).width(min: hasOffsets ? 150 : 80, ideal: hasOffsets ? 168 : 104, max: 240)
                 column(.semiDiameter, rows: rows).width(min: 80, ideal: 104, max: 160)
                 column(.conic, rows: rows).width(min: 64, ideal: 88, max: 180)
             }
@@ -277,7 +278,10 @@ private struct LensCell: View {
                     .accessibilityHidden(true)
             }
             if row.editable.contains(column) {
-                if row.hints[column] != nil {
+                if row.notes[column] != nil && !editing {
+                    // The glass name in full; the melt offset after it.
+                    field.fixedSize(horizontal: true, vertical: false)
+                } else if row.hints[column] != nil {
                     field.fixedSize(horizontal: true, vertical: false).frame(minWidth: 14, alignment: .trailing)
                 } else {
                     field
@@ -286,6 +290,16 @@ private struct LensCell: View {
                 Text(display)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: column.isNumeric ? .trailing : .leading)
+            }
+            if let note = row.notes[column], !editing {
+                Text(note)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help("Melt offset Δn_d / ΔV_d on the catalogue glass; edit it in the inspector")
+                    .accessibilityLabel("offset \(note)")
             }
             if let m = row.markers[column] { MarkerBadge(marker: m) }
         }
