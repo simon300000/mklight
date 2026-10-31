@@ -224,10 +224,19 @@ pub fn field_map_job(
     // The chief ray passes the stop centre (real aiming), as in the radial
     // relative-illumination analysis, whatever the design's aiming.
     let rt = real_aimed(t)?;
+    // Relative illumination is only defined inside the radial field.
+    let skip = |p: &[f64; 2]| {
+        matches!(kind, FieldAnalysis::RelativeIllumination) && p[0].hypot(p[1]) > 1.0 + 1e-12
+    };
     let mut images = Vec::with_capacity(coords.len());
     let mut chiefs = Vec::with_capacity(coords.len());
-    for &p in &coords {
+    for p in &coords {
         ctx.check()?;
+        if skip(p) {
+            images.push([f64::NAN; 2]);
+            chiefs.push(None);
+            continue;
+        }
         let f = rt.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
         let mut records = Vec::new();
         let c = rt.trace_with(
@@ -249,17 +258,26 @@ pub fn field_map_job(
     }
     let values = match kind {
         FieldAnalysis::RelativeIllumination => {
+            let inside: Vec<_> = coords.iter().copied().filter(|p| !skip(p)).collect();
             let (rows, omega0) = illumination_rows(
                 t,
-                &coords,
+                &inside,
                 wl,
                 s.radial_samples,
                 s.azimuth_samples,
                 &mut warnings,
                 ctx,
             )?;
-            rows.iter()
-                .flat_map(|r| [r[0] / omega0, r[0], 1.0 - r[1]])
+            let mut rows = rows.iter();
+            coords
+                .iter()
+                .flat_map(|p| {
+                    if skip(p) {
+                        return [f64::NAN; 3];
+                    }
+                    let r = rows.next().unwrap();
+                    [r[0] / omega0, r[0], 1.0 - r[1]]
+                })
                 .collect()
         }
         FieldAnalysis::PupilAberration => {
@@ -411,6 +429,10 @@ mod tests {
                 * (1.0 - (q - 25.0) / ((q + 25.0).powi(2) - 100.0 * h * h).sqrt())
         };
         for (i, row) in r.values.chunks(3).enumerate() {
+            if r.field_coordinates[i][0].hypot(r.field_coordinates[i][1]) > 1.0 + 1e-12 {
+                assert!(row.iter().all(|v| v.is_nan()));
+                continue;
+            }
             let h = r.image_mm[i][0].hypot(r.image_mm[i][1]);
             let expected = disk(h);
             assert!((row[1] / expected - 1.0).abs() < 1e-8);

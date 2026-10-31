@@ -308,6 +308,11 @@ fn fft_intensity(
         .collect())
 }
 
+/// A diagonal surface-to-normal map: the matrix transform is separable.
+fn separable(b: &[[f64; 2]; 2]) -> bool {
+    b[0][1].abs() < 1e-15 && b[1][0].abs() < 1e-15
+}
+
 /// Raw `|U|²` at image-surface points
 /// `x_s = origin + ((k − c)·dx, (l − c)·dx)` relative to the pupil's
 /// reference point, evaluated at their normal-plane feet `B·x_s` (module
@@ -331,7 +336,7 @@ fn surface_intensity(
     let ys: Vec<f64> = (0..size).map(|k| origin[1] + (k as f64 - c) * dx).collect();
     let b = pupil.geometry().surface_to_normal();
     let field = pupil.debye_field();
-    if b[0][1].abs() < 1e-15 && b[1][0].abs() < 1e-15 {
+    if separable(&b) {
         let xn: Vec<f64> = xs.iter().map(|x| b[0][0] * x).collect();
         let yn: Vec<f64> = ys.iter().map(|y| b[1][1] * y).collect();
         let u = mft(&field, n, &nu, &nu, &xn, &yn, ctx)?;
@@ -759,10 +764,12 @@ pub struct PolyPsfSettings {
     pub normalization: PsfNormalization,
     /// `Matrix` (the default from [`PolyPsfSettings::new`]) evaluates every
     /// wavelength exactly on the common grid (band-limited resampling).
-    /// `Fft` computes each on-axis wavelength at a native spacing
-    /// `≤ min(Δx, λF#/8)` and interpolates bicubically, with errors below
-    /// about 10⁻³ of the peak; it is faster for large pupils and grids.
-    /// Off-axis pupils always use the matrix transform.
+    /// `Fft` keeps that separable transform where `B` is diagonal (on axis,
+    /// or a chief ray in the x–z or y–z plane), which is also the cheaper
+    /// one there. A skew pupil, whose exact transform costs `n²M²`, is
+    /// transformed by FFT on its chief-normal plane at a native spacing
+    /// `≤ min(Δx, λF#/8)` and projected bicubically onto the image surface,
+    /// with errors below about 10⁻³ of the peak.
     pub transform: PsfTransform,
 }
 
@@ -814,9 +821,9 @@ pub fn polychromatic_psf(
         let native = dx.min(0.125 * lf);
         let m_native =
             next_fast_len((pupil.alias_free_field_mm() / native).ceil() as usize).max(pupil.n());
-        let matrix = settings.transform == PsfTransform::Matrix
-            || !pupil.geometry().is_on_axis()
-            || m_native > MAX_FFT_LEN;
+        let b = pupil.geometry().surface_to_normal();
+        let matrix =
+            settings.transform == PsfTransform::Matrix || separable(&b) || m_native > MAX_FFT_LEN;
         let unit: Vec<f64> = if matrix {
             surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?
                 .into_iter()
@@ -831,8 +838,24 @@ pub fn polychromatic_psf(
                 normalization: PsfNormalization::UnitEnergy,
                 transform: PsfTransform::Fft,
             };
-            let p = fft_psf(pupil, &s, &sub)?;
-            p.resampled(dx, size, [0.0, 0.0]).data
+            let p = fft_psf(&pupil.on_normal_plane(), &s, &sub.subrange(0.0, 0.9))?;
+            let jac = pupil.geometry().projection_jacobian();
+            let mut data = Vec::with_capacity(size * size);
+            for j in 0..size {
+                sub.check()?;
+                let y = (j as f64 - (size / 2) as f64) * dx - off[1];
+                for i in 0..size {
+                    let x = (i as f64 - (size / 2) as f64) * dx - off[0];
+                    data.push(
+                        jac * p
+                            .interpolate(b[0][0] * x + b[0][1] * y, b[1][0] * x + b[1][1] * y)
+                            .max(0.0),
+                    );
+                }
+                sub.subrange(0.9, 1.0)
+                    .report((j + 1) as f64 / size as f64, "PSF projection");
+            }
+            data
         };
         for (a, v) in acc.iter_mut().zip(&unit) {
             *a += wn * v;

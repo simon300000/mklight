@@ -38,6 +38,7 @@ mod linalg;
 pub mod mtf;
 pub mod psf;
 pub mod pupil;
+mod sampling;
 pub mod special;
 pub mod traced;
 pub mod warnings;

@@ -146,7 +146,7 @@ settings are `#[serde(default)]` structs; results carry `run_info`
 (backend `cpu-f64`, precision `f64_reference`, tracer and analysis
 warnings, including the wave sampling warnings). Selections use
 `mklight_analysis::util::{FieldSelection, WavelengthSelection}` (same
-JSON). Every analysis takes `pupil: PupilSettings` (`grid` 64, `rays` 65,
+JSON). Every analysis takes `pupil: PupilSettings` (`grid` 0 = automatic, `rays` 65,
 `supersample` 4, `reference`, `amplitude`, `rim`, `rim_tolerance`).
 
 **Unusable fields.** A field whose pupil cannot be built (chief ray failed,
@@ -198,18 +198,73 @@ placed at its own reference point relative to the field's common reference
 (primary-wavelength chief point, or the weighted mean of the centroids),
 so lateral colour appears in the PSF and as OTF phase.
 
-**Sampling.** The default PSF spacing is `λ_min F#/padding` (`padding` 4).
-A PSF grid wider than the alias-free field `n·λF#` wraps (warning
-`field_wraps`); use `grid·spacing ≤ n·λF#` (e.g. 128 samples at padding 2
-for `n = 64`).
+**Automatic sampling and ranges.** `pupil.grid: 0` (the default) selects
+sampling from the traced exit pupil, independently for each field and wavelength.
+A positive grid is always used as supplied, as are explicit ray counts, image
+grid sizes, spacings, frequency lists/limits and focus ranges. Zero image
+`grid_size` (or image simulation `psf_size`) selects the automatic window.
+These sentinel settings remain in RunInfo; the deterministic rule below plus
+the snapshot and engine version reproduce the chosen grids. PSF and wavefront
+results report their actual grids and image spacing.
 
-The pupil grid must resolve the wavefront: where it steps by more than
-half a wave between samples (warning `pupil_undersampled`), the flare
-falls outside the alias-free field and wraps to the opposite side. The
-results are then not merely noisy: on the singlet sample at full field
-(0.67 waves per sample at `n = 128`) the PSF centroid comes out with the
-wrong sign, and it converges at `n = 256`. Raise `pupil.grid` until the
-warning disappears.
+* Trace the `rays × rays` entrance-pupil lattice and rim first (65 rays per
+  diameter by default). In its mapped exit-pupil triangles, find
+  `G = max(|∂W/∂u|, |∂W/∂v|)` in waves per normalised pupil unit.
+  Choose the next power of two at least `max(64, 2G/0.35)`. The phase
+  target 0.35 waves per sample leaves margin below the diagnostic's
+  0.5-wave limit.
+* Estimate geometric ray offsets from `ε_normal = −2 λN ∇W`, project them
+  onto the image surface with `B⁻¹`, and include the wavelengths' reference
+  offsets. The image half-width is the largest Cartesian offset plus
+  `16 λN`, maximised over the selected wavelengths. This holds the
+  aberrated flare and diffraction wings, rather than only an Airy core.
+  Spacing is `min(λN)/padding`, with default padding 2.5 (safely finer
+  than intensity Nyquist). Round the required image side up to whole pixels
+  (at least 64; Huygens at most 1024). Encircled energy uses the largest
+  field's window for all fields. Increase an automatic pupil grid further
+  if needed to keep the window within every wavelength's alias-free field
+  `n λN`.
+* `mtf` uses `min(100 cycles/mm, cutoff/4, 1/(2 r_rms))`, minimised over
+  the selected fields and wavelengths. Here `r_rms` is the coverage- and
+  amplitude-squared-weighted geometric RMS radius about its centroid,
+  estimated from those phase gradients using compensated two-pass moments.
+  `mtf_vs_field` uses the same limit over its sweep; `through_focus_mtf`
+  over its selected fields. For fixed-frequency plots, round that limit down
+  to a `1, 2, 5 × 10^k` value, then round its quarter, half and full value
+  down in the same sequence. The three frequencies are distinct and span
+  the useful low-frequency contrast, including poorly corrected lenses.
+* The default through-focus half-range is `max(8 λN², 4 N r_rms)` over
+  all selected pupils (λ in mm). Refine automatic pupil grids against
+  the phase steps at both focus endpoints before computing the curves.
+
+**Cost caps.** Automatic pupil grids stop at 1024 per side (1,048,576
+cells, up to 16 subpoints per cell at the default supersampling); automatic
+image grids stop at 2048 per side (2047, odd, in image simulation). The
+trace lattice remains the requested `rays` count. Image simulation
+evaluates pupils with a separable surface map (on axis, or a chief ray in
+the x–z or y–z plane) with the exact matrix transform; a skew pupil, whose
+exact transform costs `n²M²`, is transformed by FFT (at most 8192 per side)
+on its chief-normal plane at `≤ λN/8` and projected bicubically onto the
+image surface. The exact skew transform remains available through
+`PolyPsfSettings::transform`. Huygens retains its separate work/grid limits
+above.
+These are per pupil/PSF caps, not a wall-time guarantee for arbitrary numbers
+of fields or wavelengths. Cancellation and progress also cover refinements.
+
+Diagnostics are retained at the cap and for explicit coarse settings:
+`pupil_undersampled` above half a wave per pupil cell, `field_wraps` when
+`grid × spacing > n λN`, `image_undersampled` above intensity Nyquist, and
+`psf_truncated` below 95% energy. Automatic defaults pass those checks on
+all built-in samples, including the anamorphic, freeform and DOE designs;
+this is a sampling check, not a claim that those designs are corrected.
+
+**Anamorphic coverage.** The pupil mask is the actual traced boundary on
+the reference sphere, not an assumed circle. The sparse-ray diagnostic
+compares each extrapolation gap with the longer local lattice edge (the
+median triangle edge), rather than `sqrt(2 × triangle area)`. The latter
+is a geometric mean of unequal pitches and falsely flagged the ordinary
+rim of a squeezed pupil. A genuinely missing region still warns (tested
+with rays absent over half of a masked aperture).
 
 **MTF methods.** `direct` (default) evaluates the pupil autocorrelation at
 each requested frequency. `fft` is exact on its lattice `Δν = cutoff/n`
@@ -238,11 +293,9 @@ PSF inside its window (see `psf_truncated` above).
   vignetting).
 * Polarisation (vector pupils from `mklight_trace::vector_pupil`) and GPU
   pupil tracing are not wired in; the link is CPU f64.
-* Sampling is not adaptive: the pupil grid (`pupil.grid`) and the PSF or
-  Huygens window are fixed settings, and the analyses only warn
-  (`pupil_undersampled`, `field_wraps`, `psf_truncated`). Choosing the
-  pupil grid from the largest phase step and the window from the geometric
-  spot extent would remove the need to tune them.
+* The automatic grid resolves the phase interpolated from the traced lattice;
+  it does not adaptively discover features smaller than the `rays` spacing.
+  Increase `pupil.rays` for sharply localised wavefront structure.
 * The default amplitude model is `transmission` (§3); `radiometric` is
   more faithful for PSF energy placement but not yet the default.
 
@@ -250,7 +303,8 @@ PSF inside its window (see `psf_truncated` above).
 
 `image_simulation` (`image_simulation` module, registered by the engine)
 accepts built-in `grid`, `siemens_star`, `slanted_edge`, and `text_chart`
-patterns, `source:{kind:"buffer",width,height,channels:1|3,data:[…]}`
+patterns (grid and slanted-edge pixels are analytically area-averaged;
+star and text use deterministic 16×16 midpoint supersampling), `source:{kind:"buffer",width,height,channels:1|3,data:[…]}`
 (row-major interleaved, finite nonnegative linear-light samples), or
 `source:{kind:"path",path:"…"}` (an 8- or 16-bit grey or RGB PNG, alpha
 ignored, decoded from sRGB; other formats come as a buffer).
@@ -260,9 +314,14 @@ energy PSF; there is no implicit colour matching or separate channel response.
 Monochrome conversion of RGB uses linear-light Rec. 709 luminance weights.
 The shared engine `spectrum` setting is documented in ANALYSIS §4.
 
-`optics` controls the square Cartesian PSF grid, normalised field extent,
-traced pupil settings, odd `psf_size`, optional `psf_spacing_mm` and pupil
-quadrature for illumination. At each field node:
+`optics` controls the square Cartesian PSF grid, normalised field half-width
+`field_extent` and centre `field_center: [hx, hy]` (default `[0,0]`), traced
+pupil settings, odd `psf_size` (0 = automatic), optional `psf_spacing_mm` and
+pupil quadrature for illumination. The default half-width `1/√2` inscribes
+the square in the design's radial field. To simulate an off-axis patch, set
+its centre and a smaller half-width; its pupils, distortion and illumination
+are all evaluated at those absolute normalised fields, with illumination
+still referenced to the optical axis. At each field node:
 
 1. Trace the first-order chief image (separate x/y first-order scales); the
    real image point is the PSF reference (`pupil.reference`: the primary
@@ -270,7 +329,9 @@ quadrature for illumination. At each field node:
 2. Build pupils at all wavelengths, including lateral-colour offsets relative
    to the primary chief, using radiometric amplitude by default.
 3. Form the unit-energy polychromatic PSF on a common physical grid. Default
-   spacing is half the smallest λF/# at the first grid node. PSF warnings
+   spacing is the smallest λF/# across **all** grid nodes divided by 2.5;
+   its automatic window follows the largest blur-plus-diffraction extent
+   across those nodes, with automatic pupils refined to hold it. PSF warnings
    propagate; a sampled grid containing less than 95% energy warns
    `psf_truncated`. Discrete kernels are normalised to conserve image flux.
 4. Integrate each wavelength's projected exit-pupil solid angle, including
@@ -321,4 +382,9 @@ FFT halo convolution against a direct spatial sum, an ideal lens against
 the Airy pattern and its blurred impulse image (including flux), distorted
 grid nodes against real chief traces, tile-size independence, the PSF
 centre at its reference point, PNG sRGB decoding, and shot-noise
-mean/variance.
+mean/variance. `tests/defaults.rs` runs all seven wave analyses, image simulation
+and the relative-illumination map with untouched defaults on every built-in
+sample and rejects accuracy warnings. Additional closed-form tests pin
+quadratic-phase sampling/blur, ideal-cone frequency/depth defaults and explicit
+overrides; regression tests cross-check the projected FFT against the exact
+skew transform (0.1% of peak and energy).

@@ -270,9 +270,10 @@ impl Analysis for ImageSimulation {
             "size":{"description":"Output [width,height], 2..4096 each."},
             "optics":settings_from_default::<im::ImageGridSettings>(json!({
                 "field_grid":{"minimum":2,"maximum":33},"field_extent":{"exclusiveMinimum":0.0},
-                "pupil":{"description":"Traced pupil settings; radiometric amplitude by default."},
-                "psf_size":{"minimum":3,"maximum":513,"description":"Odd size. Increase until truncation warnings disappear."},
-                "psf_spacing_mm":{"type":["number","null"],"exclusiveMinimum":0.0,"unit":"mm","description":"Null: half the smallest lambda F/# at the first grid node."},
+                "field_center":{"description":"Normalised field [hx,hy] at the centre of the simulated patch."},
+                "pupil":{"description":"Traced pupil settings; automatic phase sampling and radiometric amplitude by default."},
+                "psf_size":{"minimum":0,"maximum":2047,"description":"Odd size, or 0 to choose from traced blur plus diffraction (cap 2047)."},
+                "psf_spacing_mm":{"type":["number","null"],"exclusiveMinimum":0.0,"unit":"mm","description":"Null: smallest lambda F/# across all grid nodes divided by 2.5."},
                 "illumination_radial":{"minimum":1,"maximum":512},"illumination_azimuth":{"minimum":4,"maximum":4096}
             })),
             "tile_size":{"minimum":4,"maximum":512},

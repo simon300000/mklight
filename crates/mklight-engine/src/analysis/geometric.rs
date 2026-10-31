@@ -385,6 +385,7 @@ fn all() -> Vec<Geo> {
                 settings_from_default::<curvature::GridDistortionSettings>(json!({
                     "grid_size": a_count(2, 1001, "Grid points per side."),
                     "half_width": {"minimum": 0.0, "maximum": 1.0, "description": "Half-width of the normalised field square."},
+                    "field_center": {"description": "Normalised field [hx,hy] at the grid centre."},
                     "wavelength": a_opt_wl()
                 }))
             },

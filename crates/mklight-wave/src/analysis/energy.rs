@@ -16,7 +16,7 @@ use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
 
-use super::psf::{PsfMethod, check_huygens_grid, compute_psf};
+use super::psf::{PsfMethod, check_huygens_grid, compute_psf, image_grid};
 use super::{check_pos, fields, linspace, run_info, system_field_pupils, wavelengths};
 use crate::energy::{
     EnergyCenter, LsfAxis, encircled_energy, ensquared_energy, line_spread_function,
@@ -48,8 +48,8 @@ impl Default for EncircledEnergySettings {
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
             method: PsfMethod::Fft,
-            grid_size: 256,
-            padding: 4.0,
+            grid_size: 0,
+            padding: 2.5,
             center: EnergyCenter::Centroid,
             max_radius_mm: None,
             samples: 51,
@@ -106,10 +106,10 @@ fn quantile(r: &[f64], e: &[f64], level: f64) -> f64 {
 }
 
 fn check_grid(grid: usize, padding: f64, method: PsfMethod) -> MkResult<()> {
-    if !(8..=4096).contains(&grid) {
+    if grid != 0 && !(8..=4096).contains(&grid) {
         return Err(MkError::InvalidParam(format!("PSF grid size {grid}")));
     }
-    if method == PsfMethod::Huygens {
+    if method == PsfMethod::Huygens && grid != 0 {
         check_huygens_grid(grid)?;
     }
     check_pos("padding", padding)
@@ -138,26 +138,37 @@ pub fn diffraction_encircled_energy_job(
         .map(|(_, _, fp)| fp.min_lambda_f())
         .fold(f64::INFINITY, f64::min);
     let spacing = lf / settings.padding;
+    // One window too: the largest automatic one over the fields.
+    let grid = per
+        .iter()
+        .map(|(_, _, fp)| image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing))
+        .max()
+        .unwrap_or(settings.grid_size);
     let rmax = match settings.max_radius_mm {
         Some(r) => {
             check_pos("maximum radius", r)?;
             r
         }
-        None => 0.5 * settings.grid_size as f64 * spacing,
+        None => 0.5 * grid as f64 * spacing,
     };
     let radius = linspace(0.0, rmax, settings.samples);
     let dense = linspace(0.0, rmax, 8 * settings.samples);
     let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
-    for (k, (f, value, fp)) in per.iter().enumerate() {
+    for (k, (f, value, mut fp)) in per.into_iter().enumerate() {
         warnings.extend(fp.warnings.iter().cloned());
         let sub = ctx.subrange(0.3 + 0.7 * k as f64 / nf, 0.3 + 0.7 * (k + 1) as f64 / nf);
+        warnings.extend(fp.ensure_window(
+            grid as f64 * spacing,
+            &settings.pupil,
+            &sub.subrange(0.0, 0.0),
+        )?);
         let pupils = fp.weighted();
         let psf = compute_psf(
             &pupils,
             settings.method,
-            settings.grid_size,
+            grid,
             spacing,
             PsfNormalization::UnitEnergy,
             &sub.subrange(0.0, 0.5),
@@ -177,7 +188,7 @@ pub fn diffraction_encircled_energy_job(
         let dl_psf = compute_psf(
             &clean_w,
             PsfMethod::Fft,
-            settings.grid_size,
+            grid,
             spacing,
             PsfNormalization::UnitEnergy,
             &sub.subrange(0.5, 0.7),
@@ -202,8 +213,8 @@ pub fn diffraction_encircled_energy_job(
             EnergyCenter::Point { x, y } => [x, y],
         };
         out.push(FieldEnergy {
-            field: *f,
-            field_value: *value,
+            field: f,
+            field_value: value,
             center_mm,
             encircled: enc,
             ensquared: sq,
@@ -247,8 +258,8 @@ impl Default for LineSpreadSettings {
             wavelengths: WavelengthSelection::All,
             pupil: PupilSettings::default(),
             method: PsfMethod::Fft,
-            grid_size: 256,
-            padding: 4.0,
+            grid_size: 0,
+            padding: 2.5,
         }
     }
 }
@@ -293,14 +304,21 @@ pub fn line_spread_job(
     let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
-    for (k, (f, value, fp)) in per.iter().enumerate() {
+    for (k, (f, value, mut fp)) in per.into_iter().enumerate() {
         warnings.extend(fp.warnings.iter().cloned());
         let sub = ctx.subrange(0.4 + 0.6 * k as f64 / nf, 0.4 + 0.6 * (k + 1) as f64 / nf);
+        let spacing = fp.min_lambda_f() / settings.padding;
+        let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
+        warnings.extend(fp.ensure_window(
+            grid as f64 * spacing,
+            &settings.pupil,
+            &sub.subrange(0.0, 0.0),
+        )?);
         let psf = compute_psf(
             &fp.weighted(),
             settings.method,
-            settings.grid_size,
-            fp.min_lambda_f() / settings.padding,
+            grid,
+            spacing,
             PsfNormalization::UnitEnergy,
             &sub,
         )?;
@@ -310,8 +328,8 @@ pub fn line_spread_job(
         let lx = line_spread_function(&psf, LsfAxis::X);
         let ly = line_spread_function(&psf, LsfAxis::Y);
         out.push(FieldLineSpread {
-            field: *f,
-            field_value: *value,
+            field: f,
+            field_value: value,
             positions_mm: lx.positions_mm,
             x: lx.values,
             y: ly.values,

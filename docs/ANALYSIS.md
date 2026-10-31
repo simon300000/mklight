@@ -127,7 +127,13 @@ the positive-x shortcut. `field_coordinates` gives normalised `[Hx,Hy]`
 for every scalar sample, and scalar heights/distortions use that sample's
 axis. Focal-line labels continue to follow image x/y. Grid distortion
 uses the separate x and y first-order image scales, with the tracer's
-warnings for mixed xy power.
+warnings for mixed xy power. `grid_distortion.field_center` shifts the grid
+in normalised coordinates (default `[0,0]`), also used by image simulation
+for off-axis patches. Relative-illumination maps retain their rectangular
+buffer shape but mark cells beyond the design's normalised radial domain
+(`hypot(Hx,Hy) > 1`) as no-data: NaN in buffers, null in JSON, including
+their image coordinates. Those cells are not traced or warned about;
+interior and boundary cells keep the same projected-solid-angle integral.
 
 The close-ray cross-check traces pairs at pupil offsets `(0, ±h)` and
 `(±h, 0)` and finds where the pencil `X + sT` of the pair differences

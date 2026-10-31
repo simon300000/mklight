@@ -658,3 +658,54 @@ fn scattered_rays_on_a_vignetted_cats_eye_pupil() {
     let inside = rays.iter().filter(|r| hull.contains(r.u, r.v)).count();
     assert!(inside >= rays.len() - 40);
 }
+
+#[test]
+fn squeezed_lattice_rim_is_not_a_missing_pupil_region() {
+    let mut rays = lattice_rays(65, |u, v| u * u + v * v <= 1.0, |u, v| 0.3 * u - 0.2 * v);
+    for r in rays.samples.iter_mut().flatten() {
+        r.u *= 0.25;
+    }
+    let mask = PupilMask::polygon(
+        (0..512)
+            .map(|i| {
+                let a = 2.0 * PI * i as f64 / 512.0;
+                [0.25 * a.cos(), a.sin()]
+            })
+            .collect(),
+    );
+    let (p, warnings) =
+        grid_from_structured(&rays, 64, LAM, slow(), Some(&mask), 4, &ctx()).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let area = p.coverage().iter().sum::<f64>() * p.spacing().powi(2);
+    assert!((area / (0.25 * PI) - 1.0).abs() < 0.003);
+    for k in 0..p.n() * p.n() {
+        if p.coverage()[k] > 0.999 {
+            let (u, v) = (p.coord(k % p.n()), p.coord(k / p.n()));
+            assert!((p.opd_waves()[k] - (1.2 * u - 0.2 * v)).abs() < 1e-12);
+        }
+    }
+}
+
+#[test]
+fn projected_fft_matches_exact_skew_transform() {
+    let g = fast()
+        .with_chief_ray([0.15, 0.2, (1.0f64 - 0.15 * 0.15 - 0.2 * 0.2).sqrt()])
+        .unwrap();
+    let mut p = PupilFunction::from_fn(
+        48,
+        LAM,
+        g,
+        4,
+        |u, v| u * u + v * v <= 1.0,
+        |u, v| (1.0, 0.4 * (u * u + v * v) + 0.3 * u),
+    )
+    .unwrap();
+    p.set_image_offset_mm([0.6 * p.lambda_f_mm(), -0.4 * p.lambda_f_mm()]);
+    let mut s = PolyPsfSettings::new(65, p.lambda_f_mm() / 3.0);
+    s.normalization = PsfNormalization::UnitEnergy;
+    let exact = polychromatic_psf(&[(&p, 1.0)], &s, &ctx()).unwrap();
+    s.transform = PsfTransform::Fft;
+    let fft = polychromatic_psf(&[(&p, 1.0)], &s, &ctx()).unwrap();
+    assert!(max_abs_diff(&fft.data, &exact.data) / exact.peak().0 < 0.001);
+    assert!((fft.energy_in_grid() / exact.energy_in_grid() - 1.0).abs() < 0.001);
+}

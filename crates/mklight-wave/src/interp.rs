@@ -96,9 +96,6 @@ impl Tri {
             l[0] * self.v[0].amplitude + l[1] * self.v[1].amplitude + l[2] * self.v[2].amplitude;
         (w, a.max(0.0))
     }
-    fn area(&self) -> f64 {
-        0.5 * self.det.abs()
-    }
 }
 
 /// Triangulated barycentric resampling of structured ray samples onto an
@@ -204,10 +201,7 @@ pub fn grid_from_structured(
     let source: Vec<u32> = match mask {
         None => owner,
         Some(mask) => {
-            let inside: Vec<bool> = (0..ns * ns)
-                .into_par_iter()
-                .map(|k| mask.contains(sub_coord(k % ns), sub_coord(k / ns)))
-                .collect();
+            let inside = mask.contains_lattice(&(0..ns).map(sub_coord).collect::<Vec<_>>());
             ctx.check()?;
             // Multi-source BFS (8-neighbour) from every rasterised sub-point:
             // each reached sub-point inherits the triangle of its source.
@@ -245,25 +239,31 @@ pub fn grid_from_structured(
                     }
                 }
             }
-            // Extrapolation distances against the ray spacing.
-            let mut max_gap: f64 = 0.0;
+            // Compare each gap with its source triangle's longer lattice
+            // edge, not sqrt(area): anamorphic pupils have unequal spacings.
+            let mut worst = (0.0, 1.0);
             for k in 0..ns * ns {
                 if inside[k] && owner[k] == NONE && src_pt[k] != usize::MAX {
                     let q = src_pt[k];
                     let gap = (sub_coord(k % ns) - sub_coord(q % ns))
                         .hypot(sub_coord(k / ns) - sub_coord(q / ns));
-                    max_gap = max_gap.max(gap);
+                    let t = &tris[from[k] as usize];
+                    let mut edges = [0, 1, 2].map(|i| {
+                        let (a, b) = (t.v[i], t.v[(i + 1) % 3]);
+                        (a.u - b.u).hypot(a.v - b.v)
+                    });
+                    edges.sort_by(f64::total_cmp);
+                    let h = edges[1]; // excludes the diagonal
+                    if gap / h > worst.0 / worst.1 {
+                        worst = (gap, h);
+                    }
                 }
             }
-            if !tris.is_empty() {
-                let mean_area = tris.iter().map(Tri::area).sum::<f64>() / tris.len() as f64;
-                let h = (2.0 * mean_area).sqrt();
-                if max_gap > 2.0 * h {
-                    warnings.push(WaveWarning::SparseRays {
-                        max_gap,
-                        typical_spacing: h,
-                    });
-                }
+            if worst.0 > 2.0 * worst.1 {
+                warnings.push(WaveWarning::SparseRays {
+                    max_gap: worst.0,
+                    typical_spacing: worst.1,
+                });
             }
             from.iter()
                 .zip(&inside)

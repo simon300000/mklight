@@ -89,7 +89,7 @@ fn settings_schema(name: &str) -> Value {
         }
         "psf" | "diffraction_encircled_energy" | "line_spread" => {
             annotations["method"] = json!({"enum": ["fft", "huygens"]});
-            annotations["grid_size"] = json!({"minimum": 1, "description": "Image samples per axis; Huygens is limited to 1024."});
+            annotations["grid_size"] = json!({"minimum": 0, "description": "Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024."});
             annotations["padding"] = json!({"exclusiveMinimum": 0.0, "description": "Positive factor: image spacing = smallest wavelength × working F/# / padding."});
             if name == "psf" {
                 annotations["spacing_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive explicit spacing; null uses padding."});
@@ -108,10 +108,10 @@ fn settings_schema(name: &str) -> Value {
                 "padding": {"exclusiveMinimum": 0.0, "description": "Positive image sampling factor."}
             }));
             if name == "mtf" {
-                annotations["max_frequency"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "cycles/mm", "description": "Positive maximum image-space frequency; null uses the largest optical cutoff."});
+                annotations["max_frequency"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "cycles/mm", "description": "Positive maximum image-space frequency; null uses min(100, cutoff/4, 1/(2 geometric RMS blur))."});
                 annotations["frequency_samples"] = json!({"minimum": 2});
             } else {
-                annotations["frequencies"] = json!({"items": {"type": "number", "minimum": 0.0}, "unit": "cycles/mm", "description": "Image-space frequencies; empty selects cutoff × (1/8, 1/4, 1/2)."});
+                annotations["frequencies"] = json!({"items": {"type": "number", "minimum": 0.0}, "unit": "cycles/mm", "description": "Image-space frequencies; empty selects round 1-2-5 frequencies spanning the useful blur-limited range."});
                 if name == "mtf_vs_field" {
                     annotations["field_samples"] = json!({"minimum": 1, "maximum": 1001});
                     annotations["direction"] = tuple(
@@ -120,7 +120,7 @@ fn settings_schema(name: &str) -> Value {
                         "Nonzero direction in normalised field coordinates.",
                     );
                 } else {
-                    annotations["focus_range_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive half-range; null uses 4 wavelength × F/# squared."});
+                    annotations["focus_range_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive half-range; null uses max(8 wavelength × F/# squared, 4 F/# × geometric RMS blur)."});
                     annotations["focus_samples"] = json!({"minimum": 1, "maximum": 1001});
                 }
             }
@@ -145,7 +145,7 @@ fn settings_schema(name: &str) -> Value {
 
 fn pupil_schema() -> Value {
     settings_from_default::<PupilSettings>(json!({
-        "grid": {"minimum": 8, "maximum": 4096, "description": "Cell-centred exit-pupil samples per axis over [-1, 1]."},
+        "grid": {"minimum": 0, "maximum": 4096, "description": "Cell-centred exit-pupil samples per axis over [-1, 1]; 0 selects from traced phase slope (64..1024)."},
         "rays": {"minimum": 8, "maximum": 2048, "description": "Traced entrance-pupil lattice rays per axis."},
         "supersample": {"minimum": 1, "maximum": 32},
         "reference": {"enum": ["chief", "centroid"]},

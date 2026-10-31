@@ -86,6 +86,7 @@ impl MtfEvaluator {
         Self {
             trace: TraceEvaluator::new(library),
             pupil: PupilSettings {
+                grid: 64,
                 rim: false,
                 ..Default::default()
             },
