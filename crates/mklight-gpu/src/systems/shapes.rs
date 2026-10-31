@@ -26,12 +26,6 @@ impl Compiler {
                 parameter: ShapeParameter::CurvatureX,
             })?;
         }
-        if let Some(y) = self.params.get(&ParamPath::ShapeParam {
-            surface: id,
-            parameter: ShapeParameter::CurvatureY,
-        }) {
-            out[1] = out[1].clone() - cy.clone() + y.clone();
-        }
         let changes: Vec<_> = self
             .params
             .keys()
@@ -49,30 +43,23 @@ impl Compiler {
                 out[axis] = out[axis].clone() + delta.clone() * (h1[axis * 2] - h0[axis * 2]);
             }
         }
-        if let Some(r) = self
-            .params
-            .get(&ParamPath::ShapeParam {
-                surface: id,
-                parameter: ShapeParameter::NormRadius,
-            })
-            .cloned()
-        {
-            if matches!(
+        let norm = ParamPath::ShapeParam {
+            surface: id,
+            parameter: ShapeParameter::NormRadius,
+        };
+        if let Some(r) = self.params.get(&norm).cloned()
+            && matches!(
                 shape,
                 SurfaceShape::QBfs { .. }
                     | SurfaceShape::XYPolynomial { .. }
                     | SurfaceShape::ZernikeSag { .. }
-            ) {
-                let nominal = ParamPath::ShapeParam {
-                    surface: id,
-                    parameter: ShapeParameter::NormRadius,
-                }
-                .get(&self.model)?;
-                self.positive(r.clone());
-                let scale = self.c(nominal * nominal) / (r.clone() * r);
-                for v in &mut out {
-                    *v = cy.clone() + (v.clone() - cy.clone()) * scale.clone();
-                }
+            )
+        {
+            let nominal = norm.get(&self.model)?;
+            self.positive(r.clone());
+            let scale = self.c(nominal * nominal) / (r.clone() * r);
+            for v in &mut out {
+                *v = cy.clone() + (v.clone() - cy.clone()) * scale.clone();
             }
         }
         Ok(out)
@@ -89,25 +76,9 @@ impl Compiler {
         let curvature = self
             .param(&ParamPath::Curvature { surface: id })
             .unwrap_or_else(|_| self.c(sf.shape.curvature()));
-        let curvature = self
-            .params
-            .get(&ParamPath::ShapeParam {
-                surface: id,
-                parameter: ShapeParameter::CurvatureY,
-            })
-            .cloned()
-            .unwrap_or(curvature);
         let conic = self
             .param(&ParamPath::Conic { surface: id })
             .unwrap_or_else(|_| self.c(sf.shape.conic()));
-        let conic = self
-            .params
-            .get(&ParamPath::ShapeParam {
-                surface: id,
-                parameter: ShapeParameter::ConicY,
-            })
-            .cloned()
-            .unwrap_or(conic);
         self.surf(
             row,
             std::mem::offset_of!(PackedSurface, curvature),

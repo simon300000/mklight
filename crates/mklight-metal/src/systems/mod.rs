@@ -1,7 +1,11 @@
 //! Bounded resident system preparation. No host reads of intermediate arrays.
 use crate::context::PipelineKey;
 use mklight_core::MkResult;
-use mklight_gpu::{pending::JobControl, resident::StageStats, systems::Request};
+use mklight_gpu::{
+    pending::JobControl,
+    resident::StageStats,
+    systems::{INSTRUCTIONS_PER_COMMAND, Request},
+};
 use objc2_metal::MTLComputePipelineState;
 use std::time::Instant;
 
@@ -11,7 +15,13 @@ pub(crate) fn execute(
     ctl: &JobControl,
 ) -> MkResult<()> {
     let Request::Prepare(r) = request;
-    let pipeline = x.gpu.pipeline(&PipelineKey::plain("mkl_systems_prepare"))?;
+    let [prepare, copy, patch] = [
+        "mkl_systems_prepare",
+        "mkl_systems_copy",
+        "mkl_systems_patch",
+    ]
+    .map(|k| x.gpu.pipeline(&PipelineKey::plain(k)));
+    let (prepare, copy, patch) = (prepare?, copy?, patch?);
     let mut scratch = x.allocate(r.scratch_words())?;
     let mut outputs: Vec<_> = r
         .outputs()
@@ -31,24 +41,24 @@ pub(crate) fn execute(
         ..Default::default()
     };
     for first in (0..r.map.count).step_by(r.tile_candidates) {
-        ctl.check()?;
         let count = r.tile_candidates.min(r.map.count - first);
         let mut params = r.dispatch_params(first, count);
-        for instruction in (0..params.instructions as usize)
-            .step_by(mklight_gpu::systems::INSTRUCTIONS_PER_COMMAND)
-        {
+        let words =
+            (params.header_words + params.surface_words + params.coefficient_words) as usize;
+        for instruction in (0..params.instructions as usize).step_by(INSTRUCTIONS_PER_COMMAND) {
             ctl.check()?;
             params.first_instruction = instruction as u32;
-            params.instruction_count = mklight_gpu::systems::INSTRUCTIONS_PER_COMMAND
-                .min(params.instructions as usize - instruction)
-                as u32;
+            params.instruction_count =
+                INSTRUCTIONS_PER_COMMAND.min(params.instructions as usize - instruction) as u32;
+            let last = instruction + INSTRUCTIONS_PER_COMMAND >= params.instructions as usize;
             let wall = Instant::now();
             // SAFETY: the private host compiler owns the immutable instruction and
             // patch leases. Submission verifies their identity and every output
-            // extent. Scratch has a disjoint lane per candidate at each instruction.
+            // extent. Scratch has a disjoint lane per candidate at each instruction,
+            // patch destinations are distinct words, and dispatches in one encoder
+            // run in order on tracked buffers.
             let cs = unsafe {
                 x.gpu.run("prepare systems", |e| {
-                    e.set_pipeline(&pipeline);
                     for (i, (b, off)) in inputs.iter().enumerate() {
                         e.set_buffer(i, *b, *off);
                     }
@@ -57,16 +67,21 @@ pub(crate) fn execute(
                         e.set_buffer_mut(6 + i, out, 0);
                     }
                     e.set_bytes(14, &params);
-                    let width = pipeline.threadExecutionWidth();
+                    e.set_pipeline(&prepare);
+                    let width = prepare.threadExecutionWidth();
                     e.dispatch_groups([count.div_ceil(width), 1, 1], width);
+                    if last {
+                        e.dispatch_1d(&copy, count * words);
+                        e.dispatch_1d(&patch, count * params.patches as usize);
+                    }
                     Ok(())
                 })?
             };
             stage.command_buffers += 1;
             stage.device_seconds += cs.gpu_seconds;
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
-            ctl.check()?;
         }
+        ctl.check()?;
         ctl.report(
             (first + count) as f64 / r.map.count as f64,
             "prepare systems",

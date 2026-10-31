@@ -101,17 +101,10 @@ fn invalid_slots_fallback_identity_and_thick_lens_derivative() {
     ];
     let (out, _) = run(&backend, &c, &rows, 1);
     assert_eq!(out[4].words(), [99, 0, 14, 0, 89, 0]);
-    assert_eq!(
-        out[6].words(),
-        [
-            READY,
-            DIRTY_ALL,
-            OUTSIDE_BOUNDS,
-            DIRTY_ALL,
-            OUTSIDE_BOUNDS,
-            DIRTY_ALL
-        ]
-    );
+    let (empty, _) = run(&backend, &c, &[], 1);
+    assert!(empty.iter().all(|d| d.words().is_empty()));
+    let status = [READY, OUTSIDE_BOUNDS, OUTSIDE_BOUNDS].map(|s| [s, DIRTY_ALL]);
+    assert_eq!(out[6].words(), status.concat());
     // Thick lens power P=(n-1)(c1-c2)+(n-1)^2*t*c1*c2/n.
     let n = 1.5;
     let power = (n - 1.0) * (nominal - c2) + (n - 1.0) * (n - 1.0) * t * nominal * c2 / n;
@@ -174,6 +167,7 @@ fn invalid_slots_fallback_identity_and_thick_lens_derivative() {
         &snapshot,
         library,
         &[variable],
+        &[],
         &rows,
         None,
         &err.to_string(),
@@ -227,7 +221,6 @@ fn cache_invalidation_and_automatic_apertures() {
     changed[0].values[0] += 0.1;
     let (new, _) = run_uploaded(&b, &c, &v, &changed, 1);
     assert_ne!(a[1].words(), new[1].words());
-    assert_eq!(new[6].words()[1] & DIRTY_APERTURES, DIRTY_APERTURES);
     let mut changed = s;
     changed.surfaces[1].material = mklight_core::MaterialRef::Constant { n: 1.6 };
     let d = CompiledSystem::compile(

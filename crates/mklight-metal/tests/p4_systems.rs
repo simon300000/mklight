@@ -236,18 +236,10 @@ fn host_metal_failed_candidates_keep_slots() {
         .collect();
     let (out, _) = run(&gpu, &c, &rows, 1024);
     assert_eq!(out[4].words(), [11, 0, 12, 0, 13, 0, 14, 0]);
-    assert_eq!(
-        out[6].words(),
-        [
-            READY,
-            DIRTY_ALL,
-            INVALID_NUMERIC,
-            DIRTY_ALL,
-            OUTSIDE_BOUNDS,
-            DIRTY_ALL,
-            OUTSIDE_BOUNDS,
-            DIRTY_ALL
-        ]
-    );
+    let status = [READY, INVALID_NUMERIC, OUTSIDE_BOUNDS, OUTSIDE_BOUNDS].map(|s| [s, DIRTY_ALL]);
+    assert_eq!(out[6].words(), status.concat());
     assert!(c.reference(&rows[1], &JobContext::new()).is_err());
+    // An empty batch reads back empty typed outputs.
+    let (out, _) = run(&gpu, &c, &[], 1024);
+    assert!(out.iter().all(|d| d.words().is_empty()));
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)] // axis/row indices address 2-D tables.
 use super::{
     algebra::{Algebra, Builder, E},
     frames::{mv, transpose},
@@ -607,6 +608,13 @@ pub(super) fn compile(
     for (i, e) in numeric.iter().enumerate() {
         c.patch(4, i * 2, Some(i * 2 + 1), e.clone());
     }
+    // Metal scatters patches in parallel; each destination word is written once.
+    debug_assert!({
+        let mut seen = std::collections::HashSet::new();
+        c.patches
+            .iter()
+            .all(|&[d, hi, lo, _]| seen.insert((d, hi)) && (lo == u32::MAX || seen.insert((d, lo))))
+    });
     let code = c.b.borrow().code.clone();
     let program = Program {
         code,

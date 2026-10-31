@@ -105,7 +105,9 @@ pub struct SystemBatchPlan {
     pub parameters: PlanView,
     pub slots: PlanView,
     pub bounds: PlanView,
+    /// Program: instructions, then patches, then guards.
     pub dependencies: PlanView,
+    /// Packed header/surface/coefficient template words.
     pub material_tables: PlanView,
     pub headers: BufferId,
     pub surfaces: BufferId,
@@ -118,7 +120,8 @@ pub struct SystemBatchPlan {
     pub model_data: BufferId,
     pub map: CandidateMap,
     program: Arc<Program>,
-    imports: Vec<(PlanView, BufferHandle)>,
+    /// Uploaded bounds, program and template behind the three input views.
+    imports: [BufferHandle; 3],
     parameter_count: usize,
     /// Fixed work partition; changes scheduling only, not arithmetic or IDs.
     pub tile_candidates: usize,
@@ -205,14 +208,9 @@ impl CompiledSystem {
         let code = upload(BufferData::U32(code))?;
         let template = upload(BufferData::U32(template))?;
         let bounds = upload(BufferData::DoubleFloat(
-            self.variables
-                .iter()
-                .flat_map(|p| [Df32::from_f64(p.lower), Df32::from_f64(p.upper)])
-                .chain(
-                    self.material_slots
-                        .iter()
-                        .flat_map(|s| [Df32::ZERO, Df32::from_f64((s.choices.len() - 1) as f64)]),
-                )
+            self.bounds()
+                .into_iter()
+                .flat_map(|(a, b)| [Df32::from_f64(a), Df32::from_f64(b)])
                 .collect(),
         ))?;
         let base = backend.upload_systems_cached(&key, &self.nominal)?;
@@ -223,6 +221,12 @@ impl CompiledSystem {
             template,
             bounds,
         })
+    }
+    /// Inclusive bounds of every candidate column; material columns are choice indices.
+    fn bounds(&self) -> Vec<(f64, f64)> {
+        let variables = self.variables.iter().map(|p| (p.lower, p.upper));
+        let materials = (self.material_slots.iter()).map(|s| (0.0, (s.choices.len() - 1) as f64));
+        variables.chain(materials).collect()
     }
     /// Boundary reconstruction for publishing/independent qualification. This
     /// applies configuration overrides after the candidate, then reference solves.
@@ -249,46 +253,27 @@ impl UploadedSystem {
         candidates: &[Candidate],
         ctx: &JobContext,
     ) -> MkResult<SystemBatchPlan> {
-        ctx.check()?;
-        if plan.snapshot.hash() != self.compiled.snapshot.hash() {
-            return Err(bad("system batch base snapshot mismatch"));
-        }
         let count = candidates.len();
         let nparam = self.compiled.parameter_count();
         let mut parameters = Vec::with_capacity(count * nparam);
         let mut ids = Vec::with_capacity(count * 4);
         let mut hash = blake3::Hasher::new();
         hash.update(self.compiled.snapshot.hash().to_hex().as_bytes());
+        let bounds = self.compiled.bounds();
         for candidate in candidates {
             ctx.check()?;
             if candidate.values.len() != nparam {
                 return Err(MkError::InvalidParam("candidate parameter width".into()));
             }
             let mut input_status = READY;
-            for (column, &v) in candidate.values.iter().enumerate() {
-                let (lower, upper) = if column < self.compiled.variables.len() {
-                    let p = &self.compiled.variables[column];
-                    (p.lower, p.upper)
-                } else {
-                    (
-                        0.0,
-                        (self.compiled.material_slots[column - self.compiled.variables.len()]
-                            .choices
-                            .len()
-                            - 1) as f64,
-                    )
-                };
-                if !v.is_finite() || v < lower || v > upper {
+            for (&v, &(lower, upper)) in candidate.values.iter().zip(&bounds) {
+                let d = Df32::from_f64(v);
+                if !(lower..=upper).contains(&v) {
                     input_status = OUTSIDE_BOUNDS;
-                }
-                let d = if v.is_finite() {
-                    Df32::from_f64(v)
-                } else {
-                    Df32::new(v as f32, 0.0)
-                };
-                if input_status == READY
+                } else if input_status == READY
                     && (!d.is_finite() || d.hi.is_subnormal() || (d.hi == 0.0 && v != 0.0))
                 {
+                    // Not representable as a normal double-float.
                     input_status = INVALID_NUMERIC;
                 }
                 hash.update(&v.to_bits().to_le_bytes());
@@ -315,7 +300,7 @@ impl UploadedSystem {
             plan,
             plan.view(parameters)?,
             plan.view(slots)?,
-            &hash.finalize().to_hex().to_string(),
+            &hash.finalize().to_hex(),
             ctx,
         )
     }
@@ -335,43 +320,23 @@ impl UploadedSystem {
         if plan.snapshot.hash() != self.compiled.snapshot.hash() {
             return Err(bad("system batch base snapshot mismatch"));
         }
-        let count = parameters
-            .desc
-            .shape
-            .first()
-            .copied()
-            .ok_or_else(|| bad("candidate parameter shape"))?;
+        let count = parameters.desc.shape.first().copied().unwrap_or(0);
         let p = &self.compiled.program;
-        let mut imports = vec![];
-        let mut import = |h: &BufferHandle| {
+        let imports = [&self.bounds, &self.code, &self.template].map(|h| h.clone());
+        let [bounds, dependencies, material_tables] = imports.clone().map(|h| {
             let id = plan.import(h.view());
-            let view = plan.view(id).unwrap();
-            imports.push((view.clone(), h.clone()));
-            view
-        };
-        let bounds = import(&self.bounds);
-        let dependencies = import(&self.code);
-        let material_tables = import(&self.template);
-        let headers = plan.scratch(BufferDesc::new(ElementType::U32, [count, p.headers.len()]));
-        let surfaces = plan.scratch(BufferDesc::new(ElementType::U32, [count, p.surfaces.len()]));
-        let coefficients = plan.scratch(BufferDesc::new(
-            ElementType::DoubleFloat,
-            [count, p.coefficients.len() / 2],
-        ));
-        let first_order = plan.scratch(BufferDesc::new(
-            ElementType::DoubleFloat,
-            [count, p.wavelength_count, 2, 8 + 7 * p.surface_count],
-        ));
-        let model_data = plan.scratch(BufferDesc::new(
-            ElementType::DoubleFloat,
-            [count, p.model_len],
-        ));
-        let map = CandidateMap {
-            candidate_ids: plan.scratch(BufferDesc::new(ElementType::U32, [count, 2])),
-            configuration_ids: plan.scratch(BufferDesc::new(ElementType::U32, [count])),
-            status: plan.scratch(BufferDesc::new(ElementType::U32, [count, 2])),
-            count,
-        };
+            plan.view(id).unwrap()
+        });
+        let [
+            headers,
+            surfaces,
+            coefficients,
+            first_order,
+            ids,
+            configurations,
+            status,
+            model_data,
+        ] = output_descs(p, count).map(|d| plan.scratch(d));
         let request = SystemBatchPlan {
             base: self.base,
             parameters,
@@ -384,23 +349,23 @@ impl UploadedSystem {
             coefficients,
             first_order,
             model_data,
-            map,
+            map: CandidateMap {
+                candidate_ids: ids,
+                configuration_ids: configurations,
+                status,
+                count,
+            },
             program: p.clone(),
             imports,
             parameter_count: self.compiled.parameter_count(),
             tile_candidates: 1024,
         };
         let entry = serde_json::json!({"version":VERSION,"program":self.compiled.fingerprint,"configuration":self.compiled.configuration,"candidate_vectors_hash":candidate_identity,"count":count,"qualification":"required_per_candidate_or_tested_envelope","dirty_flags":DIRTY_ALL});
-        let settings = plan
-            .settings
-            .as_object_mut()
-            .ok_or_else(|| bad("systems settings must be an object"))?;
-        settings
-            .entry("system_batches")
-            .or_insert_with(|| serde_json::json!([]))
-            .as_array_mut()
-            .ok_or_else(|| bad("system_batches settings must be an array"))?
-            .push(entry);
+        let batches = &mut plan.settings["system_batches"];
+        if batches.is_null() {
+            *batches = serde_json::json!([]);
+        }
+        batches.as_array_mut().unwrap().push(entry);
         plan.operations
             .push(ResidentOp::Systems(Request::Prepare(request.clone())));
         Ok(request)
@@ -492,47 +457,44 @@ pub fn validate(request: &Request, plan: &ResidentPlan) -> MkResult<()> {
     {
         return Err(bad("system preparation candidate shape"));
     }
+    // The kernel trusts the program's indices: only the compiler's own
+    // uploaded, unmodified buffers are accepted.
     let views = [&r.bounds, &r.dependencies, &r.material_tables];
-    for ((expected, handle), actual) in r.imports.iter().zip(views) {
-        let Some(PlanBuffer::Import(v)) = plan.buffers.get(actual.buffer.0) else {
-            return Err(bad(
-                "system preparation requires its immutable uploaded inputs",
-            ));
-        };
-        if actual.buffer != expected.buffer
-            || actual.offset != 0
-            || actual.stride != 1
-            || actual.desc != expected.desc
-            || v.offset != 0
-            || v.stride != 1
-            || v.desc != *handle.desc()
-            || v.buffer.owner() != handle.owner()
-            || v.buffer.generation() != handle.generation()
-        {
+    for (view, handle) in views.into_iter().zip(&r.imports) {
+        let full =
+            |offset, stride, desc: &BufferDesc| offset == 0 && stride == 1 && desc == handle.desc();
+        let ok = matches!(plan.buffers.get(view.buffer.0), Some(PlanBuffer::Import(v))
+            if full(v.offset, v.stride, &v.desc)
+                && v.buffer.owner() == handle.owner()
+                && v.buffer.generation() == handle.generation());
+        if !ok || !full(view.offset, view.stride, &view.desc) {
             return Err(bad("system preparation input identity changed"));
         }
     }
-    let p = &r.program;
-    let n = r.map.count;
-    let descs = [
-        BufferDesc::new(ElementType::U32, [n, p.headers.len()]),
-        BufferDesc::new(ElementType::U32, [n, p.surfaces.len()]),
-        BufferDesc::new(ElementType::DoubleFloat, [n, p.coefficients.len() / 2]),
-        BufferDesc::new(
-            ElementType::DoubleFloat,
-            [n, p.wavelength_count, 2, 8 + 7 * p.surface_count],
-        ),
-        BufferDesc::new(ElementType::U32, [n, 2]),
-        BufferDesc::new(ElementType::U32, [n]),
-        BufferDesc::new(ElementType::U32, [n, 2]),
-        BufferDesc::new(ElementType::DoubleFloat, [n, p.model_len]),
-    ];
-    for (id, desc) in r.outputs().into_iter().zip(descs) {
+    for (id, desc) in r
+        .outputs()
+        .into_iter()
+        .zip(output_descs(&r.program, r.map.count))
+    {
         if plan.desc(id)? != &desc || desc.len()? > u32::MAX as usize {
             return Err(bad("system preparation output extent"));
         }
     }
     Ok(())
+}
+fn output_descs(p: &Program, n: usize) -> [BufferDesc; 8] {
+    use ElementType::{DoubleFloat, U32};
+    let first_order = [n, p.wavelength_count, 2, 8 + 7 * p.surface_count];
+    [
+        BufferDesc::new(U32, [n, p.headers.len()]),
+        BufferDesc::new(U32, [n, p.surfaces.len()]),
+        BufferDesc::new(DoubleFloat, [n, p.coefficients.len() / 2]),
+        BufferDesc::new(DoubleFloat, first_order),
+        BufferDesc::new(U32, [n, 2]),
+        BufferDesc::new(U32, [n]),
+        BufferDesc::new(U32, [n, 2]),
+        BufferDesc::new(DoubleFloat, [n, p.model_len]),
+    ]
 }
 pub fn accesses(request: &Request) -> Access {
     let Request::Prepare(r) = request;
@@ -556,93 +518,81 @@ pub fn execute(
 ) -> MkResult<()> {
     let Request::Prepare(r) = request;
     let p = &r.program;
-    let width = r.parameters.desc.shape[1];
+    let df = |w: &[u32]| -> Vec<Df32> {
+        (w.as_chunks().0.iter())
+            .map(|&[hi, lo]| Df32::new(f32::from_bits(hi), f32::from_bits(lo)))
+            .collect()
+    };
+    let width = r.parameter_count;
+    let bounds = df(x.words(r.bounds.buffer));
     let mut values = vec![Df32::ZERO; p.code.len()];
     for row in 0..r.map.count {
         ctl.check()?;
-        let parameters: Vec<Df32> =
-            x.words(r.parameters.buffer)[(r.parameters.offset + row * width) * 2
-                ..(r.parameters.offset + (row + 1) * width) * 2]
-                .chunks_exact(2)
-                .map(|v| Df32::new(f32::from_bits(v[0]), f32::from_bits(v[1])))
-                .collect();
-        let bounds: Vec<Df32> = x
-            .words(r.bounds.buffer)
-            .chunks_exact(2)
-            .map(|v| Df32::new(f32::from_bits(v[0]), f32::from_bits(v[1])))
-            .collect();
-        let mut status = x.words(r.slots.buffer)[r.slots.offset + row * 4 + 3];
+        let start = (r.parameters.offset + row * width) * 2;
+        let parameters = df(&x.words(r.parameters.buffer)[start..start + width * 2]);
+        let le = |a: Df32, b: Df32| a.hi < b.hi || (a.hi == b.hi && a.lo <= b.lo);
+        let slot = r.slots.offset + row * 4;
+        let mut status = x.words(r.slots.buffer)[slot + 3];
         for (i, &v) in parameters.iter().enumerate() {
-            if !v.is_finite()
-                || v.to_f64() < bounds[2 * i].to_f64()
-                || v.to_f64() > bounds[2 * i + 1].to_f64()
-            {
+            if !v.is_finite() || !le(bounds[2 * i], v) || !le(v, bounds[2 * i + 1]) {
                 status = OUTSIDE_BOUNDS;
             }
         }
-        for first in (0..p.code.len()).step_by(INSTRUCTIONS_PER_COMMAND) {
-            ctl.check()?;
-            algebra::evaluate(
-                &p.code,
-                &parameters,
-                &mut values,
-                first..(first + INSTRUCTIONS_PER_COMMAND).min(p.code.len()),
-            );
-        }
+        algebra::evaluate(&p.code, &parameters, &mut values);
+        let invalid = |i: u32| !values[i as usize].is_finite();
         if status == READY
-            && p.guards
+            && (p
+                .guards
                 .iter()
-                .any(|&i| !values[i as usize].is_finite() || values[i as usize].to_f64() <= 0.0)
+                .any(|&i| invalid(i) || le(values[i as usize], Df32::ZERO))
+                || p.patches
+                    .iter()
+                    .any(|&[dest, _, _, i]| dest < 3 && invalid(i)))
         {
             status = INVALID_NUMERIC;
         }
-        for (id, template) in [
-            (r.headers, &p.headers),
-            (r.surfaces, &p.surfaces),
-            (r.coefficients, &p.coefficients),
-        ] {
-            x.words_mut(id)[row * template.len()..(row + 1) * template.len()]
+        let outputs = [
+            r.headers,
+            r.surfaces,
+            r.coefficients,
+            r.first_order,
+            r.model_data,
+        ];
+        let strides = [
+            p.headers.len(),
+            p.surfaces.len(),
+            p.coefficients.len(),
+            p.first_order_len * 2,
+            p.model_len * 2,
+        ];
+        for (k, template) in [&p.headers, &p.surfaces, &p.coefficients]
+            .into_iter()
+            .enumerate()
+        {
+            x.words_mut(outputs[k])[row * strides[k]..(row + 1) * strides[k]]
                 .copy_from_slice(template);
         }
         for &[dest, hi, lo, node] in &p.patches {
-            let id = [
-                r.headers,
-                r.surfaces,
-                r.coefficients,
-                r.first_order,
-                r.model_data,
-            ][dest as usize];
-            let stride = [
-                p.headers.len(),
-                p.surfaces.len(),
-                p.coefficients.len(),
-                p.first_order_len * 2,
-                p.model_len * 2,
-            ][dest as usize];
             let v = values[node as usize];
-            if dest < 3 && !v.is_finite() && status == READY {
-                status = INVALID_NUMERIC;
-            }
-            let out = x.words_mut(id);
-            out[row * stride + hi as usize] = v.hi.to_bits();
+            let out = &mut x.words_mut(outputs[dest as usize])[row * strides[dest as usize]..];
+            out[hi as usize] = v.hi.to_bits();
             if lo != u32::MAX {
-                out[row * stride + lo as usize] = v.lo.to_bits();
+                out[lo as usize] = v.lo.to_bits();
             }
         }
+        let header = size_of::<crate::PackedHeader>() / 4;
+        let surface = size_of::<crate::PackedSurface>() / 4;
+        let surface_offset = std::mem::offset_of!(crate::PackedHeader, surface_offset) / 4;
+        let coefficient_offset = std::mem::offset_of!(crate::PackedSurface, coefficient_offset) / 4;
         for chunk in 0..p.chunk_count {
-            let offset = row * p.headers.len()
-                + chunk * size_of::<crate::PackedHeader>() / 4
-                + std::mem::offset_of!(crate::PackedHeader, surface_offset) / 4;
-            x.words_mut(r.headers)[offset] += (row * p.chunk_count * p.surface_count) as u32;
+            x.words_mut(r.headers)[row * p.headers.len() + chunk * header + surface_offset] +=
+                (row * p.chunk_count * p.surface_count) as u32;
         }
         for j in 0..p.surface_count * p.chunk_count {
-            let offset = row * p.surfaces.len()
-                + j * size_of::<crate::PackedSurface>() / 4
-                + std::mem::offset_of!(crate::PackedSurface, coefficient_offset) / 4;
-            x.words_mut(r.surfaces)[offset] += (row * p.coefficients.len() / 2) as u32;
+            x.words_mut(r.surfaces)[row * p.surfaces.len() + j * surface + coefficient_offset] +=
+                (row * p.coefficients.len() / 2) as u32;
         }
-        let ids = x.words(r.slots.buffer)[r.slots.offset + row * 4..r.slots.offset + row * 4 + 3]
-            .to_vec();
+        let ids = x.words(r.slots.buffer)[slot..slot + 3].to_vec();
         x.words_mut(r.map.candidate_ids)[row * 2..row * 2 + 2].copy_from_slice(&ids[..2]);
         x.words_mut(r.map.configuration_ids)[row] = ids[2];
         x.words_mut(r.map.status)[row * 2..row * 2 + 2].copy_from_slice(&[status, DIRTY_ALL]);
@@ -709,10 +659,12 @@ fn reference_system(
     ctx.report(1.0, "resolve candidate");
     Ok(resolved)
 }
+#[allow(clippy::too_many_arguments)]
 pub fn reference_batch(
     snapshot: &Snapshot,
     library: Arc<MaterialLibrary>,
     variables: &[Parameter],
+    materials: &[MaterialSlot],
     candidates: &[Candidate],
     configuration: Option<usize>,
     reason: &str,
@@ -720,32 +672,24 @@ pub fn reference_batch(
 ) -> MkResult<ReferenceBatch> {
     let timer = mklight_core::job::RunTimer::start();
     let mut out = Vec::new();
+    let n = candidates.len() as f64;
     for (i, c) in candidates.iter().enumerate() {
-        ctx.check()?;
-        let sub = ctx.subrange(
-            0.95 * i as f64 / candidates.len() as f64,
-            0.95 * (i + 1) as f64 / candidates.len() as f64,
-        );
+        let sub = ctx.subrange(i as f64 / n, (i + 1) as f64 / n);
         let result = reference_system(
             snapshot,
             &library,
             variables,
-            &[],
+            materials,
             c,
             configuration,
-            &sub.subrange(0.0, 0.9),
+            &sub,
         )
         .and_then(|rs| PackedSystem::pack_chunks(&rs, None));
         if matches!(result, Err(MkError::Cancelled)) {
             return Err(MkError::Cancelled);
         }
         out.push((c.id, result));
-        ctx.report(
-            0.95 * (i + 1) as f64 / candidates.len() as f64,
-            "reference system preparation",
-        );
     }
-    ctx.check()?;
     let settings = serde_json::json!({"version":VERSION,"fallback_reason":reason,"fallback_count":candidates.len(),"configuration":configuration,"candidate_ids":candidates.iter().map(|c|c.id).collect::<Vec<_>>()});
     let run_info = timer.finish(
         snapshot,
@@ -756,7 +700,6 @@ pub fn reference_batch(
         None,
         vec![reason.into()],
     );
-    ctx.check()?;
     ctx.report(1.0, "reference system preparation");
     Ok(ReferenceBatch {
         candidates: out,

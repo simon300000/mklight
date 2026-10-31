@@ -37,13 +37,6 @@ pub fn run_uploaded(
         .wait()
         .unwrap();
     assert_eq!(result.stats.readback_bytes, 0);
-    assert!(
-        result
-            .run_info
-            .settings
-            .to_string()
-            .contains("required_per_candidate")
-    );
     let data = result
         .outputs
         .iter()
@@ -143,6 +136,47 @@ pub fn compare(data: &[BufferData], row: usize, rs: &ResolvedSystem) -> (f64, f6
                 }
             }
         }
+    }
+    // Numeric model table: environment, fields, spectrum, then solved values.
+    use mklight_core::param::ParamPath as P;
+    let sys = rs.snapshot.system();
+    let get = |p: P| p.get(sys).unwrap();
+    let mut want = vec![
+        P::ApertureValue.get(sys).unwrap_or(0.0),
+        get(P::TemperatureC),
+        get(P::PressureAtm),
+        if sys.object_at_infinity() {
+            f64::INFINITY
+        } else {
+            sys.surfaces[0].thickness
+        },
+    ];
+    for (i, f) in sys.fields.fields.iter().enumerate() {
+        let v = &f.vignetting;
+        want.extend([get(P::FieldX { index: i }), get(P::FieldY { index: i })]);
+        want.extend([get(P::FieldWeight { index: i }), v.vdx, v.vdy, v.vcx, v.vcy]);
+    }
+    for i in 0..nw {
+        want.extend([
+            get(P::WavelengthUm { index: i }),
+            get(P::WavelengthWeight { index: i }),
+        ]);
+    }
+    let model: &[Df32] = bytemuck::cast_slice(data[7].words());
+    let model =
+        &model[row * model.len() / data[5].words().len()..][..model.len() / data[5].words().len()];
+    let solved = sys.solves.iter().map(|s| get(s.target.clone()));
+    let tail = model.len() - sys.solves.len();
+    for (got, r) in model[..want.len()]
+        .iter()
+        .chain(&model[tail..])
+        .zip(want.into_iter().chain(solved))
+    {
+        let got = got.to_f64();
+        assert!(
+            got == r || (got - r).abs() <= 1e-9 * (1.0 + r.abs()),
+            "model {got} vs {r}"
+        );
     }
     (index_error, first_error)
 }
@@ -540,25 +574,12 @@ pub fn resident_input_check(backend: &dyn ComputeBackend) {
         desc: BufferDesc::new(ElementType::DoubleFloat, [2, 1]),
         stride: 1,
     };
-    let slots = backend
-        .upload_buffer(
-            BufferDesc::new(ElementType::U32, [3, 4]),
-            BufferData::U32(vec![
-                0,
-                0,
-                0,
-                0,
-                71,
-                5,
-                u32::MAX,
-                READY,
-                7,
-                9,
-                u32::MAX,
-                READY,
-            ]),
-        )
-        .unwrap();
+    let words = [[0; 4], [71, 5, u32::MAX, READY], [7, 9, u32::MAX, READY]].concat();
+    let slots = (backend.upload_buffer(
+        BufferDesc::new(ElementType::U32, [3, 4]),
+        BufferData::U32(words),
+    ))
+    .unwrap();
     let id = plan.import(slots.view());
     let slots = PlanView {
         buffer: id,

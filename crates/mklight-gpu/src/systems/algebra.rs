@@ -20,6 +20,7 @@ pub const SELECT: u32 = 7; // a <= 0 ? b : c
 pub(crate) struct Algebra {
     pub code: Vec<[u32; 4]>,
     constants: HashMap<u64, u32>,
+    nodes: HashMap<[u32; 4], u32>,
     values: Vec<Option<f64>>,
 }
 pub(crate) type Builder = Rc<RefCell<Algebra>>;
@@ -77,10 +78,25 @@ impl E {
         if let Some(v) = folded {
             return self.c(v);
         }
+        // Exact identities (up to the sign of a zero result).
+        match (op, self.value(), b.value()) {
+            (ADD, _, Some(0.0)) | (SUB, _, Some(0.0)) | (MUL | DIV, _, Some(1.0)) => return self,
+            (ADD, Some(0.0), _) | (MUL, Some(1.0), _) => return b,
+            _ => {}
+        }
+        // Identical operations share one node (common subexpressions).
+        let node = [op, self.1, b.1, c.1];
         let mut a = self.0.borrow_mut();
-        let id = a.code.len() as u32;
-        a.code.push([op, self.1, b.1, c.1]);
-        a.values.push(None);
+        let id = match a.nodes.get(&node) {
+            Some(&id) => id,
+            None => {
+                let id = a.code.len() as u32;
+                a.code.push(node);
+                a.values.push(None);
+                a.nodes.insert(node, id);
+                id
+            }
+        };
         drop(a);
         Self(self.0, id)
     }
@@ -162,13 +178,8 @@ impl Neg for E {
     }
 }
 
-pub(crate) fn evaluate(
-    code: &[[u32; 4]],
-    parameters: &[Df32],
-    values: &mut [Df32],
-    range: std::ops::Range<usize>,
-) {
-    for i in range {
+pub(crate) fn evaluate(code: &[[u32; 4]], parameters: &[Df32], values: &mut [Df32]) {
+    for i in 0..code.len() {
         let [op, a, b, c] = code[i];
         values[i] = match op {
             CONSTANT => Df32::new(f32::from_bits(a), f32::from_bits(b)),
