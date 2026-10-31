@@ -910,8 +910,11 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   `mklight.metallib`, embedded with `include_bytes!`. It finds the compiler
   via `MKLIGHT_METAL_TOOLCHAIN_BIN`, then `xcrun -sdk macosx metal`, then the
   system-mounted Metal toolchain component (which `xcrun` does not always
-  resolve). The include-inlined source is always embedded as a fallback;
-  `MKLIGHT_METAL_SKIP_OFFLINE=1` forces the fallback for testing.
+  resolve). Shaders are compiled offline: an offline compile error fails the
+  build, and so does a release build without the toolchain (install it with
+  `xcodebuild -downloadComponent MetalToolchain`); only a debug build on a
+  machine without it falls back. The include-inlined source is always embedded
+  for that fallback; `MKLIGHT_METAL_SKIP_OFFLINE=1` forces it for testing.
   `LibraryChoice::{Auto, Precompiled, RuntimeSource}` selects at run time.
   If the strict flag set fails, the build retries without `-Wall -Werror`, and
   then without the math-mode flags. Every set keeps `-fno-fast-math

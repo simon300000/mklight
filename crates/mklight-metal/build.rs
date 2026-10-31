@@ -1,8 +1,9 @@
 //! Compiles `shaders/*.metal` into one `.metallib` with the offline Metal
 //! toolchain (`xcrun -sdk macosx metal` → `.air` → `metallib`) and embeds it.
 //! The preprocessed-include source is always embedded too, so the backend can
-//! fall back to runtime compilation (`newLibraryWithSource`) when the offline
-//! compiler is missing or the metallib does not load.
+//! fall back to runtime compilation (`newLibraryWithSource`) when the metallib
+//! does not load. A shader that fails offline fails the build; only a debug
+//! build on a machine without the toolchain falls back to runtime compilation.
 //!
 //! Fast-math and FP contraction are disabled: they break the error-free
 //! transforms of the double-float arithmetic (see shaders/mklight_common.h).
@@ -257,6 +258,13 @@ fn main() {
             writeln!(generated, "pub const OFFLINE_FLAGS: &str = {flags:?};").unwrap();
         }
         Err(e) => {
+            // Shipped builds embed the offline metallib: with a working
+            // compiler a failure is a shader error, and a release build
+            // without one would silently ship runtime compilation.
+            let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
+            if !skipped && (find_toolchain().is_some() || env::var("PROFILE").as_deref() == Ok("release")) {
+                panic!("offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}");
+            }
             println!(
                 "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
                 e.lines().next().unwrap_or("")
