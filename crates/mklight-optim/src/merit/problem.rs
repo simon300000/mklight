@@ -91,6 +91,7 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
             match parameter {
                 CurvatureX | CurvatureY => (0.1 * a).max(1e-4),
                 ConicX | ConicY | NormRadius => (0.1 * a).max(0.1),
+                AstigmatismAngleDeg => 1.0,
                 DesignWavelengthUm => (0.01 * a).max(1e-3),
                 // Discrete: ParamPath rejects non-integral orders.
                 DesignOrder | TraceOrder => 1.0,

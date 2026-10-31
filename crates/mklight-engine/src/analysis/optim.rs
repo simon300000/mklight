@@ -1776,6 +1776,7 @@ struct ToleranceSettings {
     record_trials: usize,
     preview_case: Option<ToleranceCase>,
     irregularity_wavelength_um: Option<f64>,
+    random_irregularity_orientation: bool,
     trials: usize,
     seed: u64,
     threshold: Option<f64>,
@@ -1843,6 +1844,8 @@ impl Analysis for Tolerance {
                     "description": "Evaluate only this case and return its compensated system: {type:trial,trial} or {type:sensitivity,operand,positive}; zero-based."},
                 "irregularity_wavelength_um": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null, "unit": "µm",
                     "title": "Irregularity test wavelength", "description": "Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength."},
+                "random_irregularity_orientation": {"type":"boolean", "default":true,
+                    "title":"Random irregularity orientation", "description":"Monte Carlo: independent uniform astigmatism axes in [0,180) degrees per surface and trial, reproducible from the seed. False keeps the model angle; sensitivity always keeps it."},
                 "trials": {"type": "integer", "minimum": 1, "default": 100, "title": "Monte-Carlo trials"},
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "threshold": {"type": ["number", "null"], "default": null, "title": "Yield threshold",
@@ -2070,6 +2073,7 @@ impl Analysis for Tolerance {
             threshold: s.threshold,
             percentiles: s.percentiles.clone(),
             record_trials: s.record_trials,
+            random_irregularity_orientation: s.random_irregularity_orientation,
         };
         let mut spec = ToleranceSpec::new(s.tolerances.clone());
         spec.compensators = s.compensators.clone();
@@ -2147,20 +2151,7 @@ impl Analysis for Tolerance {
             batch,
         );
         ctx.report(0.0, "qualifying the merit evaluator");
-        // Sag overlays are not packed for the GPU: run on the CPU, and say so.
-        let has_overlay = (system.surfaces.iter())
-            .any(|sf| matches!(sf.shape.sag_shape(), SurfaceShape::SagOverlay { .. }));
-        let backend = if has_overlay {
-            BackendChoice::Cpu
-        } else {
-            s.backend
-        };
-        let mut ev = Evaluation::new(backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
-        if has_overlay && s.backend != BackendChoice::Cpu {
-            let reason = "surface irregularity runs on the CPU: the GPU has no sag overlays";
-            ev.warnings.push(reason.into());
-            ev.fallback_reason = Some(reason.into());
-        }
+        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
         if let Some(case) = &s.preview_case {
             let deltas = match case {
                 ToleranceCase::Trial { trial } => spec.sample_trial(s.seed, *trial),
@@ -2184,7 +2175,17 @@ impl Analysis for Tolerance {
                         registry: &reg,
                         lsq,
                     };
-                    evaluator.evaluate_batch(std::slice::from_ref(&deltas), inner)
+                    match case {
+                        ToleranceCase::Trial { trial } => evaluator.evaluate_trials(
+                            std::slice::from_ref(&deltas),
+                            &mc,
+                            *trial,
+                            inner,
+                        ),
+                        ToleranceCase::Sensitivity { .. } => {
+                            evaluator.evaluate_batch(std::slice::from_ref(&deltas), inner)
+                        }
+                    }
                 };
                 match ev.active_gpu() {
                     Some(g) => evaluate(&g.clone().composite().with(ev.cpu.clone())),
@@ -2193,11 +2194,19 @@ impl Analysis for Tolerance {
             });
             let preview = match outcome.map(|mut o| o.remove(0)) {
                 Ok(outcome) if outcome.ok => {
-                    let snapshot = Snapshot::new(spec.case_system(
-                        &system,
-                        &deltas,
-                        &outcome.compensators,
-                    )?)?;
+                    let model = match case {
+                        ToleranceCase::Trial { trial } => spec.trial_case_system(
+                            &system,
+                            &deltas,
+                            &outcome.compensators,
+                            &mc,
+                            *trial,
+                        )?,
+                        ToleranceCase::Sensitivity { .. } => {
+                            spec.case_system(&system, &deltas, &outcome.compensators)?
+                        }
+                    };
+                    let snapshot = Snapshot::new(model)?;
                     json!({"system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
                         "criterion": num(outcome.criterion), "compensators": outcome.compensators,
                         "perturbations": deltas})
@@ -2788,14 +2797,6 @@ mod tests {
                     "minus":0.25, "plus":0.25}]});
             let result = run(system.clone(), "tolerance", settings.clone()).unwrap();
             assert_eq!(result.json["monte_carlo"]["failures"], json!(0));
-            // The CPU fallback is reported, not silent.
-            assert!(
-                result
-                    .run_info
-                    .warnings
-                    .iter()
-                    .any(|w| w.contains("irregularity"))
-            );
             let sensitivity = &result.json["sensitivity"]["operands"][0];
             assert_eq!(sensitivity["ok"], json!(true));
             assert!(f(&sensitivity["worst"]) > 0.0);
@@ -2826,6 +2827,115 @@ mod tests {
             };
             assert_eq!(*test_wavelength_um, 0.55);
             assert_eq!(*astigmatism, 0.25);
+        }
+    }
+
+    #[test]
+    fn tolerance_irregularity_gpu_and_trial_replay() {
+        use mklight_core::param::IrregularityMode;
+        let mut backends: Vec<(&str, DeviceHandle)> = vec![(
+            "gpu_emulation",
+            Arc::new(GpuDevice::new(
+                "gpu:cpu_f32",
+                Arc::new(CpuF32Backend::new()),
+            )),
+        )];
+        if let Some(metal) = mklight_metal::MetalBackend::new().unwrap() {
+            backends.push((
+                "gpu",
+                Arc::new(GpuDevice::new("gpu:metal", Arc::new(metal))),
+            ));
+        }
+        for (backend, device) in backends {
+            for system in [
+                samples::cooke_triplet(),
+                samples::biconic_element(),
+                samples::hybrid_diffractive_achromat(),
+            ] {
+                let id = system.surfaces[2].id;
+                let settings = json!({"backend":backend,"mode":"monte_carlo","trials":4,"seed":71,"batch":3,
+                    "record_trials":4,"default_merit":{"fields":[0,2],"wavelengths":[1]},
+                    "tolerances":[{"param":ParamPath::Irregularity {surface:id,mode:IrregularityMode::Astigmatism},"minus":0.5,"plus":0.5},
+                        {"param":ParamPath::Irregularity {surface:id,mode:IrregularityMode::Spherical},"minus":0.25,"plus":0.25}]});
+                let registry = AnalysisRegistry::with_builtin();
+                let analysis = registry.get("tolerance").unwrap();
+                let inp = input(system.clone()).with_device(Some(device.clone()));
+                let execute = |settings: &Value| {
+                    run_analysis(
+                        analysis.as_ref(),
+                        &inp,
+                        settings,
+                        vec![],
+                        &JobContext::new(),
+                    )
+                    .unwrap()
+                };
+                let result = execute(&settings);
+                assert_eq!(
+                    result.json["backend"]["precision"], "f32_gpu",
+                    "{}",
+                    result.json["backend"]
+                );
+                assert_eq!(result.json["monte_carlo"]["failures"], 0);
+                assert!(
+                    result.json["backend"]["gpu_stats"]["gpu_candidates"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+                let mut rebatch = settings.clone();
+                rebatch["batch"] = json!(1);
+                assert_eq!(
+                    result.json["monte_carlo"]["criteria"],
+                    execute(&rebatch).json["monte_carlo"]["criteria"]
+                );
+                let mut preview_settings = settings.clone();
+                preview_settings["preview_case"] = json!({"type":"trial","trial":2});
+                let preview = execute(&preview_settings);
+                assert_eq!(
+                    preview.json["preview"]["criterion"],
+                    result.json["monte_carlo"]["criteria"][2]
+                );
+                let model: OpticalSystem =
+                    serde_json::from_value(preview.json["preview"]["system"].clone()).unwrap();
+                let SurfaceShape::SagOverlay {
+                    astigmatism_angle_deg,
+                    ..
+                } = model.surfaces[2].shape.sag_shape()
+                else {
+                    panic!("missing overlay")
+                };
+                assert!(
+                    (0.0..180.0).contains(astigmatism_angle_deg) && *astigmatism_angle_deg != 0.0
+                );
+                // The reconstructed system's f64 criterion agrees.
+                let reference = run(
+                    model,
+                    "merit_evaluation",
+                    json!({"backend":"cpu","merit":result.json["criterion_spec"],"hold_efl":false}),
+                )
+                .unwrap();
+                let (got, want) = (
+                    f(&preview.json["preview"]["criterion"]),
+                    f(&reference.json["merit"]),
+                );
+                assert!(
+                    (got - want).abs() <= 1e-3 * want.max(1e-12),
+                    "{backend}: {got} vs {want}"
+                );
+                preview_settings["random_irregularity_orientation"] = json!(false);
+                let fixed = execute(&preview_settings);
+                let model: OpticalSystem =
+                    serde_json::from_value(fixed.json["preview"]["system"].clone()).unwrap();
+                let SurfaceShape::SagOverlay {
+                    astigmatism_angle_deg,
+                    ..
+                } = model.surfaces[2].shape.sag_shape()
+                else {
+                    panic!("missing overlay")
+                };
+                assert_eq!(*astigmatism_angle_deg, 0.0);
+            }
         }
     }
 

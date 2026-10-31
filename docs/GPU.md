@@ -98,7 +98,8 @@ added; now 4: residuals of the ideal-lens power and vergences, the aperture
 sizes and the asphere coefficients, and the trace flag
 `MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`; now **5**: the coefficient-pool
 indices in the former final padding words, extended shape codes, and
-`MKL_RAY_EVANESCENT`); the header carries a magic word and
+`MKL_RAY_EVANESCENT`; now **6**: an optional sag-overlay suffix and
+`MKL_SURF_HAS_SAG_OVERLAY`); the header carries a magic word and
 the version, and backends validate both on upload.
 
 **Representability.** The packer rounds each model value once to f32 and
@@ -137,7 +138,7 @@ Systems with more than 16 wavelengths are packed in chunks
 | `shape` | `MKL_SHAPE_{PLANE, CONIC, EVEN_ASPHERE, PARAXIAL, COORD_BREAK, ODD_ASPHERE, Q_CON, Q_BFS, DIFFRACTIVE, TOROID, BICONIC, XY, ZERNIKE}` |
 | `interaction` | `MKL_INTERACT_{REFRACT, REFLECT, DUMMY}` |
 | `aperture`, `aperture_params[4]` (+`_lo`) | `MKL_APERTURE_*`; mm, including the CONVENTIONS §2 edge tolerance. A fixed semi-diameter becomes `CIRCULAR` with `MKL_SURF_APERTURE_FROM_SD`; an explicit aperture wins |
-| `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE` |
+| `flags` | `HAS_TO_NEXT`, `AXIAL`, `IS_STOP`, `COATED`, `APERTURE_FROM_SD`, `OBJECT`, `IMAGE`, `HAS_SAG_OVERLAY` |
 | `curvature` (+`_lo`), `conic` (+`_lo`) | 1/mm, dimensionless |
 | `paraxial_power` (+`_lo`) | 1/f (1/mm) for ideal thin lenses |
 | `vergence[16]` (+`_lo`) | ideal lens: paraxial object vergence 1/a (1/mm) per packed wavelength (`mklight_trace::paraxial::ideal_lens_object_vergence`), the conjugate at which it is perfect in phase |
@@ -186,6 +187,19 @@ normalization radius as hi + lo. QBfs uses the Forbes triangular conversion
 once in the packer, storing auxiliary-basis coefficients as hi + lo; the
 kernel evaluates the differentiated auxiliary Clenshaw recurrence directly.
 No conversion to monomials is involved.
+
+**Manufacturing overlays (v6).** `HAS_SAG_OVERLAY` keeps the base's shape
+code and pool entries (a DOE's phase included) and appends five pairs
+`inv_radius, cos, sin, s2, s4` (`MKL_OVERLAY_*`). With U = x·inv_radius,
+V = y·inv_radius, t = U² + V², the departure is
+`cos·(U−V)(U+V) + sin·2UV + t·(s2 + t·s4)`, its gradient written out on
+scalars. The host sums nested overlays, scales fringes to mm and rotates the
+astigmatism (sin/cos of 2θ) in f64; the radius is a power of two near the
+aperture, so U and V are exact. A zero departure adds nothing and keeps the
+base's exact intersection. The departure has no domain of its own. Systems
+with overlays run `mkl_trace_overlays`, the same kernel compiled with the
+overlay code in its own translation unit (`trace_overlays.metal`): in one
+unit, the overlay code slowed every surface of `mkl_trace` by 3–11 %.
 
 **Transforms** (CONVENTIONS §7.1). `to_next_origin` is the next vertex in this
 surface's local frame and `to_next_rot` maps this frame's axes to the next
@@ -427,6 +441,8 @@ refinements on the double-float line and a fresh double-float gradient
 produce the carried point and normal. Normalization-domain comparisons in
 the refinement use hi + lo and the reference's radial margin. A DOE first
 intersects its base using the legacy path, then checks the phase domain.
+An overlaid surface (a legacy or DOE base included) takes the general sag
+path; a DOE checks the phase domain at the refined hit.
 
 DOE interaction projects the phase gradient onto the actual base tangent
 plane. The selected order adds `m λ ∇surfaceΦ/(2π)` to tangential momentum
@@ -782,6 +798,13 @@ coordinate rounding). No f32 search can reproduce these decisions;
 qualification remains mandatory for steep systems, and the sample passes
 above do not claim exhaustive qualification of every ray.
 
+### 5.1.2 Manufacturing overlays (layout v6)
+
+`extended_shapes` adds rotated astigmatism plus spherical overlays on plane,
+even-asphere, QCon, XY, nested and DOE bases, and the pupil-grid set a
+tilted, decentred Cooke triplet with overlays on every lens surface. Metal is
+bit-identical to the FTZ emulation; against f64 the common hits stay within
+the budget above (Apple M2 Pro: position 1.9e-6 mm, direction 4.2e-8).
 ### 5.2 Precision qualification and CPU fallback
 
 `xval::qualify(backend, tracer, settings, ctx)` runs a small
@@ -871,6 +894,10 @@ relative rate is not a standalone phase cost.
 | Standard, 45 terms | 7.0 | 6.3 | 0.028 |
 | x cylinder | 122 | 46 | 0.495 |
 | y cylinder | 121 | 46 | 0.492 |
+
+Sag overlays (`mkl_trace_overlays`, 2026-10-31, same machine; `mkl_trace`
+rates unchanged): on a plane 140, even asphere 128, QCon 34, XY 32, nested
+on a sphere 140, DOE 111 M rays/s.
 
 The high-order Zernike path evaluates a differentiated Jacobi recurrence
 and Cartesian angular powers for each populated term at every Newton

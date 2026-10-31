@@ -40,9 +40,11 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
         curvature: Double, conic: Double, normRadius: Double, ordering: ZernikeOrdering, coefficients: [Double])
     /// Fringe irregularity on a geometric base (SURFACES §10): `astigmatism`
     /// and `spherical` in test fringes (λ_test/2 PV sag each) over
-    /// `normRadius` (mm), `testWavelengthUm` in µm. Its `kind` is the base's.
+    /// `normRadius` (mm), `testWavelengthUm` in µm; the astigmatism axis is
+    /// `astigmatismAngleDeg` from +x toward +y. Its `kind` is the base's.
     indirect case sagOverlay(
-        base: SurfaceShape, normRadius: Double, testWavelengthUm: Double, astigmatism: Double, spherical: Double)
+        base: SurfaceShape, normRadius: Double, testWavelengthUm: Double, astigmatism: Double,
+        astigmatismAngleDeg: Double = 0, spherical: Double)
     /// Ideal thin lens of the given focal length (mm).
     case paraxial(focalLength: Double)
     /// Changes the frame only (uses the surface's `placement`).
@@ -103,10 +105,13 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
                 normRadius: try c.value("norm_radius"), ordering: try c.value("ordering", default: .fringe),
                 coefficients: try c.value("coefficients"))
         case "sag_overlay":
-            try c.allowOnly("type", "base", "norm_radius", "test_wavelength_um", "astigmatism", "spherical")
+            try c.allowOnly(
+                "type", "base", "norm_radius", "test_wavelength_um", "astigmatism", "astigmatism_angle_deg",
+                "spherical")
             self = .sagOverlay(
                 base: try c.value("base"), normRadius: try c.value("norm_radius"),
                 testWavelengthUm: try c.value("test_wavelength_um"), astigmatism: try c.value("astigmatism"),
+                astigmatismAngleDeg: try c.value("astigmatism_angle_deg", default: 0),
                 spherical: try c.value("spherical"))
         case "paraxial":
             try c.allowOnly("type", "focal_length")
@@ -162,11 +167,12 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
             try c.put(r, "norm_radius")
             try c.put(o, "ordering")
             try c.put(a, "coefficients")
-        case .sagOverlay(let base, let r, let w, let astigmatism, let spherical):
+        case .sagOverlay(let base, let r, let w, let astigmatism, let angle, let spherical):
             try c.put(base, "base")
             try c.put(r, "norm_radius")
             try c.put(w, "test_wavelength_um")
             try c.put(astigmatism, "astigmatism")
+            try c.put(angle, "astigmatism_angle_deg")
             try c.put(spherical, "spherical")
         case .paraxial(let f):
             try c.put(f, "focal_length")

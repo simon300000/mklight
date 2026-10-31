@@ -363,8 +363,73 @@ fn pack_legacy(
 }
 
 /// Packs `shape`; extended shapes append their `MKL_COEFF_*` prefix and
-/// coefficients to `pool` (the record does not grow).
+/// coefficients to `pool` (the record does not grow), and a nonzero sag
+/// overlay appends its `MKL_OVERLAY_*` suffix.
 fn pack_shape(
+    p: &mut PackedSurface,
+    shape: &SurfaceShape,
+    bounding: Option<f64>,
+    what: &dyn Fn(&str) -> String,
+    wavelengths_um: &[f64],
+    pool: &mut Vec<Df32>,
+) -> MkResult<()> {
+    pack_geometry(p, shape, bounding, what, wavelengths_um, pool)?;
+    let Some(overlay) = overlay_polynomial(shape.sag_shape(), bounding) else {
+        return Ok(());
+    };
+    if p.coefficient_count == 0 {
+        p.coefficient_offset = u32::try_from(pool.len())
+            .map_err(|_| MkError::Unsupported(what("coefficient pool too large")))?;
+    }
+    for value in overlay {
+        let (hi, lo) = split_checked(value, &what("sag overlay coefficient"))?;
+        pool.push(Df32::new(hi, lo));
+    }
+    p.coefficient_count += MKL_OVERLAY_COUNT;
+    p.flags |= MKL_SURF_HAS_SAG_OVERLAY;
+    Ok(())
+}
+
+/// Nested overlays summed into one `MKL_OVERLAY_*` polynomial; `None` for
+/// no or zero departure. The radius is a power of two near the aperture, so
+/// U = x/radius is exact.
+fn overlay_polynomial(mut shape: &SurfaceShape, bounding: Option<f64>) -> Option<[f64; 5]> {
+    let SurfaceShape::SagOverlay { norm_radius, .. } = shape else {
+        return None;
+    };
+    let radius = 2f64.powi(bounding.unwrap_or(*norm_radius).log2().round() as i32);
+    let mut overlay = [1.0 / radius, 0.0, 0.0, 0.0, 0.0];
+    while let SurfaceShape::SagOverlay {
+        base,
+        norm_radius,
+        test_wavelength_um,
+        astigmatism,
+        astigmatism_angle_deg,
+        spherical,
+    } = shape
+    {
+        let r2 = (radius / norm_radius).powi(2);
+        let wave = test_wavelength_um * 1e-3;
+        let a = astigmatism * wave * r2 / 4.0;
+        let (sin, cos) = (2.0 * astigmatism_angle_deg.to_radians()).sin_cos();
+        overlay[MKL_OVERLAY_COS as usize] += a * cos;
+        overlay[MKL_OVERLAY_SIN as usize] += a * sin;
+        overlay[MKL_OVERLAY_S2 as usize] -= 2.0 * spherical * wave * r2;
+        overlay[MKL_OVERLAY_S4 as usize] += 2.0 * spherical * wave * r2 * r2;
+        shape = base;
+    }
+    overlay[1..].iter().any(|v| *v != 0.0).then_some(overlay)
+}
+
+/// The geometry beneath any sag overlays.
+fn without_overlay(mut shape: &SurfaceShape) -> &SurfaceShape {
+    while let SurfaceShape::SagOverlay { base, .. } = shape {
+        shape = base;
+    }
+    shape
+}
+
+fn pack_geometry(
     p: &mut PackedSurface,
     shape: &SurfaceShape,
     bounding: Option<f64>,
@@ -374,6 +439,7 @@ fn pack_shape(
 ) -> MkResult<()> {
     use SurfaceShape::*;
     use mklight_core::model::surface::ZernikeOrdering;
+    let shape = without_overlay(shape);
     if shape.is_legacy() {
         return pack_legacy(p, shape, bounding, what);
     }
@@ -384,11 +450,6 @@ fn pack_shape(
     (p.conic, p.conic_lo) = split_checked(shape.conic(), &what("conic"))?;
     let too_wide = || MkError::Unsupported(what("coefficients span too many decades for f32"));
     let (a, b) = match shape {
-        SagOverlay { .. } => {
-            return Err(MkError::Unsupported(what(
-                "sag overlay requires CPU reference",
-            )));
-        }
         OddAsphere { coefficients, .. } => {
             p.shape = MKL_SHAPE_ODD_ASPHERE;
             let c = trimmed(coefficients);
@@ -476,7 +537,7 @@ fn pack_shape(
             (normalise(x, e, 4, 2), normalise(y, e, 4, 2))
         }
         Diffractive { base, phase } => {
-            pack_legacy(p, base, bounding, what)?;
+            pack_legacy(p, without_overlay(base), bounding, what)?;
             data[MKL_COEFF_KIND as usize] = p.shape as f64;
             p.shape = MKL_SHAPE_DIFFRACTIVE;
             data[MKL_COEFF_RADIUS as usize] = phase.norm_radius;
@@ -491,8 +552,13 @@ fn pack_shape(
             }));
             (trimmed(&phase.coefficients).to_vec(), vec![])
         }
-        Plane | Conic { .. } | EvenAsphere { .. } | Paraxial { .. } | CoordinateBreak => {
-            unreachable!("legacy shape")
+        SagOverlay { .. }
+        | Plane
+        | Conic { .. }
+        | EvenAsphere { .. }
+        | Paraxial { .. }
+        | CoordinateBreak => {
+            unreachable!("legacy shape or overlay")
         }
     };
     data[MKL_COEFF_NA as usize] = a.len() as f64;
@@ -515,21 +581,37 @@ fn pack_shape(
 /// the shape's capacity that add up to `coefficient_count`. (Design order
 /// and wavelength are metadata no kernel reads.)
 fn validate_coefficients(s: &PackedSurface, pool: &[Df32]) -> Result<(), &'static str> {
-    if s.shape <= MKL_SHAPE_COORD_BREAK {
-        return match s.coefficient_count {
-            0 => Ok(()),
-            _ => Err("coefficients on a legacy shape"),
-        };
-    }
     let start = s.coefficient_offset as usize;
-    let d = pool
+    let mut d = pool
         .get(start..start + s.coefficient_count as usize)
-        .filter(|d| d.len() >= MKL_COEFF_PREFIX as usize)
         .ok_or("coefficient range")?;
     if d.iter().any(|v| {
         !(v.hi.is_finite() && v.lo.is_finite()) || v.hi.is_subnormal() || v.lo.is_subnormal()
     }) {
         return Err("coefficient value");
+    }
+    if s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0 {
+        let end = d
+            .len()
+            .checked_sub(MKL_OVERLAY_COUNT as usize)
+            .ok_or("overlay count")?;
+        if d[end + MKL_OVERLAY_INV_RADIUS as usize].hi <= 0.0 {
+            return Err("overlay radius");
+        }
+        if matches!(s.shape, MKL_SHAPE_PARAXIAL | MKL_SHAPE_COORD_BREAK) {
+            return Err("overlay base");
+        }
+        d = &d[..end];
+    }
+    if s.shape <= MKL_SHAPE_COORD_BREAK {
+        return if d.is_empty() {
+            Ok(())
+        } else {
+            Err("coefficients on a legacy shape")
+        };
+    }
+    if d.len() < MKL_COEFF_PREFIX as usize {
+        return Err("coefficient prefix");
     }
     if d[MKL_COEFF_RADIUS as usize].hi <= 0.0 {
         return Err("normalisation radius");
@@ -834,7 +916,8 @@ impl PackedSystem {
             | MKL_SURF_COATED
             | MKL_SURF_APERTURE_FROM_SD
             | MKL_SURF_OBJECT
-            | MKL_SURF_IMAGE;
+            | MKL_SURF_IMAGE
+            | MKL_SURF_HAS_SAG_OVERLAY;
         for (i, s) in self.surfaces.iter().enumerate() {
             let bad = |m: &str| bad(format!("surface {i}: {m}"));
             if s.shape > MKL_SHAPE_ZERNIKE {

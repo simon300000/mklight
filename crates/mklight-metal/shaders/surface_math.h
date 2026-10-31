@@ -125,7 +125,7 @@ template<typename R> static inline MklJet<R> mkl_phase(constant MklPackedSurface
     MklJet<R> u,v,t; mkl_scaled_jet(mkl_jvariable(x,true),mkl_jvariable(y,false),mkl_load<R>(data,0),u,v,t);
     return mkl_poly(data,MKL_COEFF_PREFIX+MKL_MAX_WAVELENGTHS,uint(data[2*MKL_COEFF_NA]),t)*t;
 }
-template<typename R> static inline bool mkl_surface_eval(constant MklPackedSurface& s,constant float* pool,R xv,R yv,thread MklJet<R>& out) {
+template<typename R> static inline bool mkl_extended_sag(constant MklPackedSurface& s,constant float* pool,R xv,R yv,thread MklJet<R>& out) {
     constant float* data=mkl_surface_data(s,pool);
     R radius=mkl_load<R>(data,0);
     uint na=uint(data[2*MKL_COEFF_NA]),nb=uint(data[2*MKL_COEFF_NB]);
@@ -182,6 +182,32 @@ template<typename R> static inline bool mkl_surface_eval(constant MklPackedSurfa
             out=z;
         } else out=base+mkl_zernike(coeff,na,data[2*MKL_COEFF_KIND]!=0.0f,u,v,t);
     }
+    return true;
+}
+// The base of an overlaid surface may be legacy (or a DOE's legacy base).
+template<typename R> static inline bool mkl_legacy_sag(constant MklPackedSurface& s,R xv,R yv,thread MklJet<R>& out) {
+    auto x=mkl_jvariable(xv,true),y=mkl_jvariable(yv,false),r2=x*x+y*y;
+    MklJet<R> base;
+    if (!mkl_conic_sag_jet(mkl_parts<R>(s.curvature,s.curvature_lo),mkl_parts<R>(s.conic,s.conic_lo),r2,base)) return false;
+    auto t=mkl_jscale(r2,mkl_c<R>(s.asphere_inv_norm2));
+    auto p=mkl_jconstant(mkl_c<R>(0));
+    for (int j=int(s.num_asphere)-1;j>=0;--j) p=mkl_jadd(p*t,mkl_parts<R>(s.asphere[j],s.asphere_lo[j]));
+    out=base+p*t*t; return true;
+}
+// Sag jet of an extended surface or, with OVERLAYS, of any surface with
+// MKL_SURF_HAS_SAG_OVERLAY. Code without OVERLAYS never sees the overlay.
+template<bool OVERLAYS,typename R> static inline bool mkl_surface_eval(constant MklPackedSurface& s,constant float* pool,R xv,R yv,thread MklJet<R>& out) {
+    if (!OVERLAYS || (s.flags&MKL_SURF_HAS_SAG_OVERLAY)==0u) return mkl_extended_sag(s,pool,xv,yv,out);
+    constant float* data=mkl_surface_data(s,pool);
+    uint shape=s.shape==MKL_SHAPE_DIFFRACTIVE?uint(data[2*MKL_COEFF_KIND]):s.shape;
+    MklJet<R> base;
+    if (!(shape<=MKL_SHAPE_EVEN_ASPHERE?mkl_legacy_sag(s,xv,yv,base):mkl_extended_sag(s,pool,xv,yv,base))) return false;
+    constant float* d=data+2ul*(s.coefficient_count-MKL_OVERLAY_COUNT);
+    R inv=mkl_load<R>(d,MKL_OVERLAY_INV_RADIUS),c=mkl_load<R>(d,MKL_OVERLAY_COS),sn=mkl_load<R>(d,MKL_OVERLAY_SIN);
+    R s4=mkl_load<R>(d,MKL_OVERLAY_S4),two=mkl_c<R>(2);
+    R u=xv*inv,v=yv*inv,t=u*u+v*v;
+    R q=mkl_load<R>(d,MKL_OVERLAY_S2)+t*s4,w=q+t*s4;
+    out=base+MklJet<R>{c*((u-v)*(u+v))+two*sn*(u*v)+t*q,two*inv*(u*(c+w)+sn*v),two*inv*(v*(w-c)+sn*u)};
     return true;
 }
 #endif

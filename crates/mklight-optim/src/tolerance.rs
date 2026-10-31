@@ -22,7 +22,7 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use mklight_core::param::{IrregularityMode, ParamPath, PlacementComponent};
@@ -175,7 +175,15 @@ pub struct MonteCarloSettings {
     /// Keep a `TrialRecord` for the first this many trials.
     #[serde(default)]
     pub record_trials: usize,
+    /// Draw a uniform astigmatism axis in [0, 180)° per astigmatism-
+    /// toleranced surface and trial; false keeps the model's angle.
+    #[serde(default = "yes")]
+    pub random_irregularity_orientation: bool,
 }
+fn yes() -> bool {
+    true
+}
+
 pub fn default_percentiles() -> Vec<f64> {
     vec![50.0, 90.0, 97.7]
 }
@@ -189,6 +197,7 @@ impl Default for MonteCarloSettings {
             threshold: None,
             percentiles: default_percentiles(),
             record_trials: 0,
+            random_irregularity_orientation: true,
         }
     }
 }
@@ -256,6 +265,58 @@ impl ToleranceSpec {
         let mut rng = Rng::new(seed, streams::TOLERANCE | trial);
         self.operands.iter().map(|o| o.sample(&mut rng)).collect()
     }
+    /// The perturbed system of Monte-Carlo trial `trial`. Random astigmatism
+    /// axes come from their own Philox stream (seed, trial), one draw per
+    /// surface in surface-id order, so the amplitude draws and batching are
+    /// unaffected.
+    pub fn trial_system(
+        &self,
+        nominal: &OpticalSystem,
+        deltas: &[f64],
+        settings: &MonteCarloSettings,
+        trial: u64,
+    ) -> MkResult<OpticalSystem> {
+        let mut system = self.apply(nominal, deltas)?;
+        if !settings.random_irregularity_orientation {
+            return Ok(system);
+        }
+        let surfaces: BTreeSet<_> = (self.operands.iter())
+            .filter_map(|o| match o.param {
+                ParamPath::Irregularity {
+                    surface,
+                    mode: IrregularityMode::Astigmatism,
+                } => Some(surface),
+                _ => None,
+            })
+            .collect();
+        let mut rng = Rng::new(settings.seed, streams::TOLERANCE_ORIENTATION | trial);
+        for id in surfaces {
+            let angle = rng.range(0.0, 180.0);
+            let Some(i) = system.surface_index(id) else {
+                continue;
+            };
+            if let mklight_core::SurfaceShape::SagOverlay {
+                astigmatism_angle_deg,
+                ..
+            } = system.surfaces[i].shape.sag_shape_mut()
+            {
+                *astigmatism_angle_deg = angle;
+            }
+        }
+        Ok(system)
+    }
+    /// The system of a reported Monte-Carlo case, with its final compensators.
+    pub fn trial_case_system(
+        &self,
+        nominal: &OpticalSystem,
+        deltas: &[f64],
+        compensators: &[f64],
+        settings: &MonteCarloSettings,
+        trial: u64,
+    ) -> MkResult<OpticalSystem> {
+        let system = self.trial_system(nominal, deltas, settings, trial)?;
+        self.with_compensators(system, compensators)
+    }
     /// The system of a reported case: perturbed, with its final compensators.
     pub fn case_system(
         &self,
@@ -263,10 +324,16 @@ impl ToleranceSpec {
         deltas: &[f64],
         compensators: &[f64],
     ) -> MkResult<OpticalSystem> {
+        self.with_compensators(self.apply(nominal, deltas)?, compensators)
+    }
+    fn with_compensators(
+        &self,
+        mut system: OpticalSystem,
+        compensators: &[f64],
+    ) -> MkResult<OpticalSystem> {
         if compensators.len() != self.compensators.len() {
             return Err(MkError::InvalidParam("compensator count differs".into()));
         }
-        let mut system = self.apply(nominal, deltas)?;
         for (c, value) in self.compensators.iter().zip(compensators) {
             c.param.set(&mut system, *value)?;
         }
@@ -320,6 +387,17 @@ pub trait ToleranceEvaluator: Sync {
         perturbations: &[Vec<f64>],
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>>;
+    /// Monte-Carlo trials `first_trial..`: as `evaluate_batch`, plus the
+    /// trials' random irregularity axes (`ToleranceSpec::trial_system`).
+    fn evaluate_trials(
+        &self,
+        perturbations: &[Vec<f64>],
+        _settings: &MonteCarloSettings,
+        _first_trial: u64,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<TrialOutcome>> {
+        self.evaluate_batch(perturbations, ctx)
+    }
 }
 
 type TolFn = dyn Fn(&[f64]) -> TrialOutcome + Send + Sync;
@@ -523,7 +601,7 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
         let pts: Vec<Vec<f64>> = (t..end)
             .map(|i| spec.sample_trial(s.seed, i as u64))
             .collect();
-        match evaluator.evaluate_batch(&pts, &mon.job) {
+        match evaluator.evaluate_trials(&pts, s, t as u64, &mon.job) {
             Ok(o) => {
                 if o.len() != pts.len() {
                     return Err(MkError::Numerical(
@@ -658,10 +736,7 @@ pub struct OpticalToleranceEvaluator<'a, E: OperandEvaluator> {
 }
 
 impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
-    fn one(&self, deltas: &[f64], ctx: &JobContext) -> MkResult<TrialOutcome> {
-        let Ok(sys) = self.spec.apply(self.nominal, deltas) else {
-            return Ok(TrialOutcome::failed());
-        };
+    fn one(&self, sys: OpticalSystem, ctx: &JobContext) -> MkResult<TrialOutcome> {
         // The compensator solve shares the cancellation but not the
         // progress bar: trials run in parallel, and their LM progress would
         // move the caller's bar back and forth.
@@ -762,16 +837,27 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
         perturbations: &[Vec<f64>],
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
-        if self.spec.compensators.is_empty() {
-            return self.uncompensated(perturbations, ctx);
-        }
-        perturbations
-            .par_iter()
-            .map(|d| {
-                ctx.check()?;
-                self.one(d, ctx)
+        let systems = perturbations
+            .iter()
+            .map(|d| self.spec.apply(self.nominal, d).ok())
+            .collect();
+        self.evaluate_systems(systems, ctx)
+    }
+    fn evaluate_trials(
+        &self,
+        perturbations: &[Vec<f64>],
+        settings: &MonteCarloSettings,
+        first_trial: u64,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<TrialOutcome>> {
+        let systems = (perturbations.iter().enumerate())
+            .map(|(i, d)| {
+                (self.spec)
+                    .trial_system(self.nominal, d, settings, first_trial + i as u64)
+                    .ok()
             })
-            .collect()
+            .collect();
+        self.evaluate_systems(systems, ctx)
     }
 }
 
@@ -779,15 +865,23 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
     /// Without compensators every trial is one evaluation: all perturbed
     /// systems go to the operand evaluator as one batch (one GPU dispatch
     /// for a batched backend). Same outcomes as trial by trial.
-    fn uncompensated(
+    fn evaluate_systems(
         &self,
-        perturbations: &[Vec<f64>],
+        systems: Vec<Option<OpticalSystem>>,
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
-        let systems: Vec<Option<OpticalSystem>> = perturbations
-            .iter()
-            .map(|d| self.spec.apply(self.nominal, d).ok())
-            .collect();
+        if !self.spec.compensators.is_empty() {
+            return systems
+                .into_par_iter()
+                .map(|s| {
+                    ctx.check()?;
+                    match s {
+                        Some(s) => self.one(s, ctx),
+                        None => Ok(TrialOutcome::failed()),
+                    }
+                })
+                .collect();
+        }
         let p = OpticalProblem::new(
             self.nominal.clone(),
             Vec::new(),

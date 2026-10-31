@@ -396,3 +396,7 @@ mm, `test_wavelength_um` µm, and `astigmatism`/`spherical` are test fringes
 (one fringe = λ_test/2 PV sag). The formula and RMS are in
 `OPTIMIZATION.md`, Irregularity and rigid elements. An overlay with zero
 fringes traces exactly as its base; others use the general sag intersection.
+`astigmatism_angle_deg` (default 0) turns the astigmatism axis from +x
+toward +y (period 180°; at 45° the departure is pure xy) and is the
+`ShapeParam` parameter of the same name. Angles other than multiples of 90°
+break meridional symmetry.

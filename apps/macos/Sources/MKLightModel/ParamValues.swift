@@ -41,7 +41,7 @@ extension OpticalSystem {
             case .tiltZ: return s.placement?.tiltZ ?? 0
             case .semiDiameter: return s.semiDiameter.fixedValue
             case .irregularity(_, let mode):
-                guard case .sagOverlay(_, _, _, let a, let sph) = s.shape.sagShape else { return 0 }
+                guard case .sagOverlay(_, _, _, let a, _, let sph) = s.shape.sagShape else { return 0 }
                 return mode == .astigmatism ? a : sph
             case .elementPlacement(_, _, _, let component):
                 return s.elementPlacement?.motion[keyPath: component.keyPath] ?? 0
@@ -222,6 +222,7 @@ extension ParamPath {
             case .curvatureX, .curvatureY: return "1/mm"
             case .conicX, .conicY, .designOrder, .traceOrder: return ""
             case .normRadius: return "mm"
+            case .astigmatismAngleDeg: return "°"
             case .designWavelengthUm: return "µm"
             }
         case .tiltX, .tiltY, .tiltZ: return "°"

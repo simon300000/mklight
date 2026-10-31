@@ -246,7 +246,13 @@ with edge flats at the sag of each clear edge. Planes between equal media
 
 `section` selects `yz` (default) or `xz`; profiles and element outlines
 use the true signed Cartesian sag in the corresponding local plane.
-`in_section` means every point has global `x=0` or `y=0`, respectively.
+`in_section` marks geometry drawn in the selected section (profiles, stop
+strokes, element edges and outlines, axis, the section's ray fan) whose
+points all lie within a slab about global `x=0` or `y=0`, respectively, of
+half-width 1 % of the largest mechanical diameter of the optics (object and
+image excluded). Tolerance-scale decentres and tilts thus stay in the
+section, independently of lead-in and track; rings, rims, the other
+section's profiles and sagittal fans never are.
 Rings and mechanical edge flats evaluate sag at each azimuth, rather than
 rotating a meridian. Clear radii stay inside the sag domain of both axes
 (toroids, biconics) and inside the normalisation radius. DOE surfaces carry `is_diffractive`, also bit 2 of

@@ -33,8 +33,12 @@
 //!   vignetted. For an object at infinity the ray starts `lead_in` mm before
 //!   its first hit.
 //!
-//! A polyline is `in_section` when all of its points lie in the global
-//! section plane (x=0 for yz, y=0 for xz, to 10⁻⁹ of the scene size).
+//! A polyline is `in_section` when it is drawn in the selected section
+//! (profiles, stop strokes, element edges, axis, the section's ray fan) and
+//! all of its points lie in the global section slab: x=0 for yz, y=0 for
+//! xz, within 1 % of the optics' largest mechanical diameter. The slab
+//! admits tolerance-scale decentre and tilt; rings, rims, the other
+//! section's profiles and sagittal fans are never in section.
 //! Optional polar triangle meshes carry the full Cartesian sag into 3-D.
 //!
 //! # Compact buffers
@@ -342,11 +346,18 @@ fn circle(f: &Frame, shape: &SurfaceShape, r: f64, clear: f64, m: usize) -> Vec<
         .collect()
 }
 
-fn polyline(kind: PolylineKind, pts: Vec<[f64; 3]>, surface: Option<usize>) -> Polyline {
+/// `in_section` marks geometry drawn in the selected section; the final
+/// slab test clears it for lines that leave the plane.
+fn polyline(
+    kind: PolylineKind,
+    pts: Vec<[f64; 3]>,
+    surface: Option<usize>,
+    in_section: bool,
+) -> Polyline {
     Polyline {
         kind,
         points: pts,
-        in_section: false,
+        in_section,
         surface,
         field: None,
         wavelength: None,
@@ -356,6 +367,18 @@ fn polyline(kind: PolylineKind, pts: Vec<[f64; 3]>, surface: Option<usize>) -> P
 
 fn is_air(m: &ResolvedMaterial) -> bool {
     matches!(m, ResolvedMaterial::Air | ResolvedMaterial::Vacuum { .. })
+}
+
+/// Half-width of the section slab: 1 % of the largest mechanical diameter
+/// of the optics (object and image excluded), so tolerance-scale decentres
+/// and tilts stay in the section independently of track and lead-in.
+fn section_tolerance(surfaces: &[SurfaceInfo]) -> f64 {
+    let optics = surfaces.split_last().map_or(&[][..], |(_, s)| s);
+    0.02 * optics
+        .iter()
+        .filter(|s| s.index > 0)
+        .map(|s| s.mechanical_semi_diameter)
+        .fold(0.0, f64::max)
 }
 
 /// Layout scene (module docs).
@@ -473,13 +496,13 @@ pub fn layout_job(
                 .into_iter()
                 .map(|y| arr(f.to_global_point(section_point(&s.shape, y, c, section))))
                 .collect();
-            polys.push(polyline(kind, pts, Some(j)));
+            polys.push(polyline(kind, pts, Some(j), true));
             if settings.include_3d {
                 let pts = linspace(-c, c, np)
                     .into_iter()
                     .map(|x| arr(f.to_global_point(section_point(&s.shape, x, c, section.other()))))
                     .collect();
-                polys.push(polyline(kind, pts, Some(j)));
+                polys.push(polyline(kind, pts, Some(j), false));
                 for k in 1..=settings.rings {
                     let r = c * k as f64 / settings.rings as f64;
                     let kk = if j == img {
@@ -487,7 +510,7 @@ pub fn layout_job(
                     } else {
                         PolylineKind::SurfaceRim
                     };
-                    polys.push(polyline(kk, ring(j, r), Some(j)));
+                    polys.push(polyline(kk, ring(j, r), Some(j), false));
                 }
             }
         }
@@ -522,10 +545,10 @@ pub fn layout_job(
                     arr(f.to_global_point(section_point(&s.shape, sgn * c, c, section))),
                     arr(f.to_global_point(section_point(&s.shape, sgn * ext, c, section))),
                 ];
-                polys.push(polyline(PolylineKind::Stop, pts, Some(j)));
+                polys.push(polyline(PolylineKind::Stop, pts, Some(j), true));
             }
             if settings.include_3d {
-                polys.push(polyline(PolylineKind::Stop, ring(j, c), Some(j)));
+                polys.push(polyline(PolylineKind::Stop, ring(j, c), Some(j), false));
             }
         }
         // Lens element (j, j+1).
@@ -563,12 +586,12 @@ pub fn layout_job(
                     p(&f2, &s2.shape, sgn * h, clear[next]),
                     p(&f2, &s2.shape, sgn * clear[next], clear[next]),
                 ];
-                polys.push(polyline(PolylineKind::ElementEdge, pts, Some(j)));
+                polys.push(polyline(PolylineKind::ElementEdge, pts, Some(j), true));
             }
             if settings.include_3d {
                 for (fr, sh, cl) in [(&f, &s.shape, clear[j]), (&f2, &s2.shape, clear[next])] {
                     let pts = circle(fr, sh, h, cl, m);
-                    polys.push(polyline(PolylineKind::ElementEdge, pts, Some(j)));
+                    polys.push(polyline(PolylineKind::ElementEdge, pts, Some(j), false));
                 }
             }
             elements.push(Element {
@@ -595,7 +618,7 @@ pub fn layout_job(
             .sqrt()
         })
         .sum::<f64>();
-    polys.push(polyline(PolylineKind::Axis, axis, None));
+    polys.push(polyline(PolylineKind::Axis, axis, None, true));
 
     ctx.check()?;
     ctx.report(0.3, "layout geometry");
@@ -612,13 +635,13 @@ pub fn layout_job(
         for &w in &wls {
             for &p in &fan {
                 let (px, py) = section.point(p);
-                jobs.push((f, w, px, py));
+                jobs.push((f, w, px, py, true));
             }
             if settings.include_3d {
                 for &p in &fan {
                     if p != 0.0 {
                         let (px, py) = section.other().point(p);
-                        jobs.push((f, w, px, py));
+                        jobs.push((f, w, px, py, false));
                     }
                 }
             }
@@ -627,7 +650,7 @@ pub fn layout_job(
     let opts = tracer.options();
     let rays: Vec<Polyline> = jobs
         .par_iter()
-        .map(|&(f, w, px, py)| {
+        .map(|&(f, w, px, py, in_section)| {
             let mut rec = Vec::with_capacity(n);
             let r = tracer.trace_with(tracer.field(f), w, px, py, &opts, Some(&mut rec));
             let mut pts = Vec::with_capacity(n + 1);
@@ -664,7 +687,7 @@ pub fn layout_job(
             Polyline {
                 kind: PolylineKind::Ray,
                 points: pts,
-                in_section: false,
+                in_section,
                 surface: None,
                 field: Some(f),
                 wavelength: Some(w),
@@ -692,9 +715,9 @@ pub fn layout_job(
             max: [0.0; 3],
         };
     }
-    let tol = 1e-9 * (1.0 + bounds.size());
+    let tol = section_tolerance(&infos);
     for p in &mut polys {
-        p.in_section = p
+        p.in_section &= p
             .points
             .iter()
             .all(|q| q[section.normal_axis()].abs() <= tol);
@@ -791,7 +814,7 @@ impl LayoutScene {
                 flags,
             );
         }
-        let tol = 1e-9 * (1.0 + self.bounds.size());
+        let tol = section_tolerance(&self.surfaces);
         for e in &self.elements {
             let in_section = e
                 .outline

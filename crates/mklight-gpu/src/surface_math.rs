@@ -316,7 +316,7 @@ pub(crate) fn phase<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> 
         t,
     ) * t
 }
-pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Option<Jet<R>> {
+fn extended_sag<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Option<Jet<R>> {
     let data = data(s, pool);
     let radius = load::<R>(data, 0);
     let na = data[MKL_COEFF_NA as usize].hi as usize;
@@ -424,6 +424,60 @@ pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) 
             }
         }
     })
+}
+
+/// The base of an overlaid surface may be legacy (or a DOE's legacy base).
+fn legacy_sag<R: Scalar>(s: &PackedSurface, x: R, y: R) -> Option<Jet<R>> {
+    let (x, y) = (Jet::variable(x, true), Jet::variable(y, false));
+    let r2 = x * x + y * y;
+    let base = conic(
+        R::parts(s.curvature, s.curvature_lo),
+        R::parts(s.conic, s.conic_lo),
+        r2,
+    )?;
+    let t = r2.scale(c(s.asphere_inv_norm2));
+    let mut p = Jet::constant(c(0.0));
+    for j in (0..s.num_asphere as usize).rev() {
+        p = (p * t).add(R::parts(s.asphere[j], s.asphere_lo[j]));
+    }
+    Some(base + p * t * t)
+}
+/// Sag jet of an extended surface, or of any surface with a sag overlay
+/// (its gradient written out on scalars, cheaper than jets).
+pub(crate) fn evaluate<R: Scalar>(s: &PackedSurface, pool: &[Df32], x: R, y: R) -> Option<Jet<R>> {
+    if s.flags & MKL_SURF_HAS_SAG_OVERLAY == 0 {
+        return extended_sag(s, pool, x, y);
+    }
+    let data = data(s, pool);
+    let shape = if s.shape == MKL_SHAPE_DIFFRACTIVE {
+        data[MKL_COEFF_KIND as usize].hi as u32
+    } else {
+        s.shape
+    };
+    let base = if shape <= MKL_SHAPE_EVEN_ASPHERE {
+        legacy_sag(s, x, y)?
+    } else {
+        extended_sag(s, pool, x, y)?
+    };
+    let d = &data[data.len() - MKL_OVERLAY_COUNT as usize..];
+    let at = |i: u32| load::<R>(d, i as usize);
+    let (inv, cos, sin) = (
+        at(MKL_OVERLAY_INV_RADIUS),
+        at(MKL_OVERLAY_COS),
+        at(MKL_OVERLAY_SIN),
+    );
+    let (s4, two) = (at(MKL_OVERLAY_S4), c::<R>(2.0));
+    let (u, v) = (x * inv, y * inv);
+    let t = u * u + v * v;
+    let q = at(MKL_OVERLAY_S2) + t * s4;
+    let w = q + t * s4;
+    Some(
+        base + Jet {
+            v: cos * ((u - v) * (u + v)) + two * sin * (u * v) + t * q,
+            x: two * inv * (u * (cos + w) + sin * v),
+            y: two * inv * (v * (w - cos) + sin * u),
+        },
+    )
 }
 
 #[cfg(test)]

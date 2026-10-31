@@ -32,7 +32,7 @@ public enum CoefficientSet: String, Codable, Sendable, Hashable, CaseIterable, I
     /// Number of coefficients `shape` allows in this set, or `nil` when the
     /// set does not belong to the shape.
     public func maxCount(for shape: SurfaceShape) -> Int? {
-        if case .sagOverlay(let base, _, _, _, _) = shape { return maxCount(for: base) }
+        if case .sagOverlay(let base, _, _, _, _, _) = shape { return maxCount(for: base) }
         return switch (shape, self) {
         case (.oddAsphere, .odd): Self.maxOddTerms
         case (.qCon, .q), (.qBfs, .q): Self.maxQTerms
@@ -67,6 +67,8 @@ public enum ShapeParameter: String, Codable, Sendable, Hashable, CaseIterable, I
     case curvatureY = "curvature_y"
     case conicY = "conic_y"
     case normRadius = "norm_radius"
+    /// A sag overlay's astigmatism axis (degrees from +x toward +y).
+    case astigmatismAngleDeg = "astigmatism_angle_deg"
     case designOrder = "design_order"
     case designWavelengthUm = "design_wavelength_um"
     case traceOrder = "trace_order"
@@ -83,6 +85,7 @@ public enum ShapeParameter: String, Codable, Sendable, Hashable, CaseIterable, I
         case .curvatureY: "R_y"
         case .conicY: "k_y"
         case .normRadius: "Norm radius"
+        case .astigmatismAngleDeg: "Astigmatism axis"
         case .designOrder: "Design order"
         case .designWavelengthUm: "Design λ"
         case .traceOrder: "Trace order"
@@ -186,7 +189,7 @@ extension SurfaceShape {
     /// missing trailing terms are zero), or `nil` when the set does not
     /// belong to the shape.
     public func coefficients(in set: CoefficientSet) -> [Double]? {
-        if case .sagOverlay(let base, _, _, _, _) = self { return base.coefficients(in: set) }
+        if case .sagOverlay(let base, _, _, _, _, _) = self { return base.coefficients(in: set) }
         return switch (self, set) {
         case (.oddAsphere(_, _, let a), .odd), (.qCon(_, _, _, let a), .q), (.qBfs(_, _, let a), .q),
             (.biconic(_, _, _, _, let a, _), .xAsphere), (.biconic(_, _, _, _, _, let a), .yAsphere),
@@ -229,7 +232,12 @@ extension SurfaceShape {
     /// The value of a scalar shape parameter (orders as `Double`), or `nil`
     /// when the parameter does not belong to the shape.
     public func shapeParameter(_ p: ShapeParameter) -> Double? {
-        if case .sagOverlay(let base, _, _, _, _) = self { return base.shapeParameter(p) }
+        // The angle belongs to the overlay of the sag shape (as in the engine).
+        if p == .astigmatismAngleDeg {
+            guard case .sagOverlay(_, _, _, _, let angle, _) = sagShape else { return nil }
+            return angle
+        }
+        if case .sagOverlay(let base, _, _, _, _, _) = self { return base.shapeParameter(p) }
         return switch (self, p) {
         case (.toroid(let cx, _, _, _), .curvatureX), (.biconic(let cx, _, _, _, _, _), .curvatureX): cx
         case (.toroid(_, let cy, _, _), .curvatureY), (.biconic(_, let cy, _, _, _, _), .curvatureY): cy
@@ -262,6 +270,16 @@ extension SurfaceShape {
     @discardableResult
     public mutating func setShapeParameter(_ p: ShapeParameter, _ v: Double) -> Bool {
         guard shapeParameter(p) != nil, Self.orderRejection(p, v) == nil else { return false }
+        if p == .astigmatismAngleDeg {
+            if case .diffractive(var base, let phase) = self {
+                base.setShapeParameter(p, v)
+                self = .diffractive(base: base, phase: phase)
+            } else if case .sagOverlay(let base, let r, let w, let a, _, let s) = self {
+                self = .sagOverlay(
+                    base: base, normRadius: r, testWavelengthUm: w, astigmatism: a, astigmatismAngleDeg: v, spherical: s)
+            }
+            return true
+        }
         if let done = editOverlayBase({ $0.setShapeParameter(p, v) }) { return done }
         switch self {
         case .toroid(var cx, var cy, var ky, let ya):

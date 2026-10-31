@@ -9,6 +9,12 @@
 // sheet, asphere Newton classification, TIR, clipping) and double-float
 // geometry (point, direction, unnormalised normal, indices, one Newton
 // refinement of every hit), with the optical path in double-float.
+//
+// trace_overlays.metal compiles this file again as mkl_trace_overlays, with
+// the sag-overlay code, in its own translation unit: that code costs
+// mkl_trace nothing (a few percent when it shares a unit with it).
+#ifndef MKLIGHT_TRACE_BODY
+#define MKLIGHT_TRACE_BODY
 #include "surface_math.h"
 
 // 2^-20: vertex-sheet tolerance (trace_kernel::SHEET_TOL).
@@ -363,7 +369,7 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
 // Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
 // the reference's bracket, backtracking and Miss / NoConvergence /
 // OutsideDomain decisions in f32.
-static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,constant MklTraceParams& prm,thread float& t) {
+template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,constant MklTraceParams& prm,thread float& t) {
     float3 seed_point;
     bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,t,seed_point);
     if (!seed_hit) t=0.0f;
@@ -372,7 +378,7 @@ static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* poo
         bool bracketed=have_pos&&have_neg;
         uint left_domain=!seed_hit&&!bracketed?MKL_RAY_MISS:MKL_RAY_OUTSIDE_DOMAIN;
         float3 pt=mkl_at(t,d,q); MklJet<float> v;
-        if (!mkl_surface_eval(s,pool,pt.x,pt.y,v)) return left_domain;
+        if (!mkl_surface_eval<OVERLAYS>(s,pool,pt.x,pt.y,v)) return left_domain;
         float g=pt.z-v.v,gp=d.z-v.x*d.x-v.y*d.y;
         if (g>0.0f) {positive=t;have_pos=true;} else if (g<0.0f) {negative=t;have_neg=true;}
         bool bracket=have_pos&&have_neg; float lo=min(positive,negative),hi=max(positive,negative);
@@ -380,7 +386,7 @@ static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* poo
         float tol=prm.tolerance_abs+prm.tolerance_rel*((fabs(t)+fabs(pt.z))+fabs(v.v));
         if (fabs(g)<=tol) {
             float3 corrected=mkl_at(t-g/gp,d,q); MklJet<float> vc;
-            if (mkl_surface_eval(s,pool,corrected.x,corrected.y,vc)) t=t-g/gp;
+            if (mkl_surface_eval<OVERLAYS>(s,pool,corrected.x,corrected.y,vc)) t=t-g/gp;
             return MKL_RAY_OK;
         }
         if (it==prm.max_iterations) return fabs(g)<=0.5f*previous || (prm.flags&MKL_TRACE_NEWTON_CAP_NOT_CONVERGED)!=0u ? MKL_RAY_NOT_CONVERGED:failure;
@@ -390,7 +396,7 @@ static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* poo
         bool outside=false,accepted=false;
         for (uint j=0;j<20;++j) {
             float3 p=mkl_at(next,d,q); MklJet<float> vn;
-            if (mkl_surface_eval(s,pool,p.x,p.y,vn)) {
+            if (mkl_surface_eval<OVERLAYS>(s,pool,p.x,p.y,vn)) {
                 if (bracket||fabs(p.z-vn.v)<fabs(g)) {accepted=true;break;}
             } else outside=true;
             next=t+0.5f*(next-t);
@@ -400,33 +406,35 @@ static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* poo
     }
     return MKL_RAY_NOT_CONVERGED;
 }
-static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,constant MklTraceParams& prm,thread MklHit& hit) {
-    if (s.shape<=MKL_SHAPE_COORD_BREAK) return mkl_intersect_legacy(s,s.shape,p,d,prm,hit);
+template<bool OVERLAYS> static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,constant MklTraceParams& prm,thread MklHit& hit) {
+    bool overlay=OVERLAYS && (s.flags&MKL_SURF_HAS_SAG_OVERLAY)!=0u;
+    if (s.shape<=MKL_SHAPE_COORD_BREAK && !overlay) return mkl_intersect_legacy(s,s.shape,p,d,prm,hit);
     constant float* data=mkl_surface_data(s,pool);
-    if (s.shape==MKL_SHAPE_DIFFRACTIVE) {
+    if (s.shape==MKL_SHAPE_DIFFRACTIVE && !overlay) {
         uint code=mkl_intersect_legacy(s,uint(data[2*MKL_COEFF_KIND]),p,d,prm,hit);
         if (code!=MKL_RAY_OK) return code;
         return mkl_surface_domain(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]})?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
     }
-    if (data[2*MKL_COEFF_EXACT_CONIC]!=0.0f) {
+    if (!overlay && data[2*MKL_COEFF_EXACT_CONIC]!=0.0f) {
         uint code=mkl_intersect_legacy(s,MKL_SHAPE_CONIC,p,d,prm,hit);
         if (code!=MKL_RAY_OK) return code;
         MklJet<MklDf> v;
-        return mkl_surface_eval(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
+        return mkl_surface_eval<OVERLAYS>(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
     }
     float2 ta=mkl_df_neg(mkl_ddot(p,d)); MklDv q=mkl_point_on(p,ta,d);
-    float t; uint code=mkl_sag_from(s,pool,mkl_hi3(q),mkl_hi3(d),prm,t);
+    float t; uint code=mkl_sag_from<OVERLAYS>(s,pool,mkl_hi3(q),mkl_hi3(d),prm,t);
     if (code!=MKL_RAY_OK) return code;
     MklDf tb={float2(t,0)};
     for (uint i=0;i<2;++i) {
         MklDv x=mkl_point_on(q,tb.v,d); MklJet<MklDf> v;
-        if (!mkl_surface_eval(s,pool,MklDf{x.v[0]},MklDf{x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
+        if (!mkl_surface_eval<OVERLAYS>(s,pool,MklDf{x.v[0]},MklDf{x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
         MklDf gp=MklDf{d.v[2]}-v.x*MklDf{d.v[0]}-v.y*MklDf{d.v[1]};
         MklDf step=(MklDf{x.v[2]}-v.v)/gp;
         if (isfinite(step.v.x)) tb=tb-step;
     }
     hit.x=mkl_point_on(q,tb.v,d); MklJet<MklDf> v;
-    if (!mkl_surface_eval(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
+    if (!mkl_surface_eval<OVERLAYS>(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)) return MKL_RAY_OUTSIDE_DOMAIN;
+    if (overlay && s.shape==MKL_SHAPE_DIFFRACTIVE && !mkl_surface_domain(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]})) return MKL_RAY_OUTSIDE_DOMAIN;
     hit.g.v[0]=mkl_df_neg(v.x.v);hit.g.v[1]=mkl_df_neg(v.y.v);hit.g.v[2]=float2(1,0);
     if (!mkl_finite3(mkl_hi3(hit.g))) return MKL_RAY_OUTSIDE_DOMAIN;
     hit.ta=ta;hit.tb=tb.v;hit.normal=mkl_normalized(mkl_hi3(hit.g)); return MKL_RAY_OK;
@@ -619,19 +627,12 @@ static inline float2 mkl_index(constant MklPackedSurface& s, uint w) {
 
 // One thread per ray. Planes are `stride` long and bound at the launch's
 // first ray (see mklight_gpu_types.h). The host has validated the program,
-// the systems and the wavelengths (PreparedTrace::new).
-kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
-                      constant MklPackedSurface* surfaces [[buffer(1)]],
-                      constant uint* steps [[buffer(2)]],
-                      constant MklTraceParams& prm [[buffer(3)]],
-                      device const float* in_f [[buffer(4)]],
-                      device const uint* in_u [[buffer(5)]],
-                      device float* out_f [[buffer(6)]],
-                      device uint* out_u [[buffer(7)]],
-                      device float* rec_f [[buffer(8)]],
-                      device uint* rec_u [[buffer(9)]],
-                      constant float* coefficients [[buffer(10)]],
-                      uint i [[thread_position_in_grid]]) {
+// the systems and the wavelengths (PreparedTrace::new). OVERLAYS: whether
+// the systems have sag overlays.
+template<bool OVERLAYS> static inline void mkl_trace_body(constant MklPackedHeader* headers,constant MklPackedSurface* surfaces,constant uint* steps,
+                                     constant MklTraceParams& prm,device const float* in_f,device const uint* in_u,
+                                     device float* out_f,device uint* out_u,device float* rec_f,device uint* rec_u,
+                                     constant float* coefficients,uint i) {
     if (i >= prm.num_rays) return;
     const uint S = prm.stride;
     const uint w = in_u[mkl_plane(MKL_TRACE_INU_WAVELENGTH, S, i)];
@@ -689,7 +690,7 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
         const uint fail_s = si << MKL_RAY_SURFACE_SHIFT;
         // 2. Intersect; optical path and absorption of the segment.
         MklHit hit;
-        uint code = mkl_intersect(surf, coefficients, pos, dir, prm, hit);
+        uint code = mkl_intersect<OVERLAYS>(surf, coefficients, pos, dir, prm, hit);
         if (code != MKL_RAY_OK) {
             status = code | fail_s;
             break;
@@ -819,3 +820,24 @@ kernel void mkl_trace(constant MklPackedHeader* headers [[buffer(0)]],
     out_u[mkl_plane(MKL_TRACE_OUTU_LAST_SURFACE, S, i)] = last;
     out_u[mkl_plane(MKL_TRACE_OUTU_STEPS, S, i)] = done;
 }
+#endif
+#ifndef MKL_TRACE_OVERLAYS
+#define MKL_TRACE_OVERLAYS false
+#define MKL_TRACE_KERNEL mkl_trace
+#endif
+kernel void MKL_TRACE_KERNEL(constant MklPackedHeader* headers [[buffer(0)]],
+                             constant MklPackedSurface* surfaces [[buffer(1)]],
+                             constant uint* steps [[buffer(2)]],
+                             constant MklTraceParams& prm [[buffer(3)]],
+                             device const float* in_f [[buffer(4)]],
+                             device const uint* in_u [[buffer(5)]],
+                             device float* out_f [[buffer(6)]],
+                             device uint* out_u [[buffer(7)]],
+                             device float* rec_f [[buffer(8)]],
+                             device uint* rec_u [[buffer(9)]],
+                             constant float* coefficients [[buffer(10)]],
+                             uint i [[thread_position_in_grid]]) {
+    mkl_trace_body<MKL_TRACE_OVERLAYS>(headers,surfaces,steps,prm,in_f,in_u,out_f,out_u,rec_f,rec_u,coefficients,i);
+}
+#undef MKL_TRACE_OVERLAYS
+#undef MKL_TRACE_KERNEL

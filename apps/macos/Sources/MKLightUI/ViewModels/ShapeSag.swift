@@ -42,11 +42,13 @@ public enum ShapeSag {
             return b + t * (1 - t) * qBfs(a, t) / w.squareRoot()
         case .diffractive(let base, _):
             return sag(base, x: x, y: y)
-        case .sagOverlay(let base, let r, let w, let a, let sph):
+        case .sagOverlay(let base, let r, let w, let a, let angle, let sph):
             // SURFACES §10: one fringe is λ/2 PV sag.
             guard let b = sag(base, x: x, y: y) else { return nil }
             let u = x / r, v = y / r, t = u * u + v * v
-            return b + w * 1e-3 * (a * (u * u - v * v) / 4 + 2 * sph * (t * t - t))
+            let theta = 2 * angle * .pi / 180
+            let astig = (u - v) * (u + v) * cos(theta) + 2 * u * v * sin(theta)
+            return b + w * 1e-3 * (a * astig / 4 + 2 * sph * (t * t - t))
         case .toroid(let cx, let cy, let ky, let b):
             let yy = y * y
             guard let zb = conic(cy, ky, yy) else { return nil }

@@ -316,6 +316,7 @@ fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
             norm_radius,
             test_wavelength_um,
             astigmatism,
+            astigmatism_angle_deg,
             spherical,
         } => {
             // One reflected fringe is λ/2 PV sag; PV(X²−Y²) = 2 and
@@ -323,8 +324,9 @@ fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
             let (u, v) = (x * norm_radius.recip(), y * norm_radius.recip());
             let s = u * u + v * v;
             let wave = test_wavelength_um * 1e-3;
+            let (sin, cos) = (2.0 * astigmatism_angle_deg.to_radians()).sin_cos();
             sag_jet(base, x, y)?
-                + (u * u - v * v) * (astigmatism * wave / 4.0)
+                + ((u - v) * (u + v) * cos + u * v * (2.0 * sin)) * (astigmatism * wave / 4.0)
                 + (s * s - s) * (spherical * wave * 2.0)
         }
         Plane | Paraxial { .. } | CoordinateBreak => Jet::ZERO,
@@ -618,11 +620,16 @@ pub fn shape_symmetry(shape: &SurfaceShape) -> Symmetry {
             symmetry
         }
         SagOverlay {
-            base, astigmatism, ..
+            base,
+            astigmatism,
+            astigmatism_angle_deg,
+            ..
         } => shape_symmetry(base).max(if *astigmatism == 0.0 {
             Symmetry::Rotational
-        } else {
+        } else if astigmatism_angle_deg.rem_euclid(90.0) == 0.0 {
             Symmetry::Meridional
+        } else {
+            Symmetry::None
         }),
         Diffractive { base, .. } => shape_symmetry(base),
         _ => Symmetry::Rotational,

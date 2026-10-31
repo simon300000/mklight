@@ -662,11 +662,12 @@ fn intersect<E: FpEnv>(
     prm: &TraceParams,
 ) -> Result<Hit<E>, u32> {
     use crate::surface_math::{data, domain, evaluate};
-    if s.shape <= MKL_SHAPE_COORD_BREAK {
+    let overlay = s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0;
+    if s.shape <= MKL_SHAPE_COORD_BREAK && !overlay {
         return intersect_legacy(s, s.shape, p, d, prm);
     }
     let data = data(s, pool);
-    if s.shape == MKL_SHAPE_DIFFRACTIVE {
+    if s.shape == MKL_SHAPE_DIFFRACTIVE && !overlay {
         let hit = intersect_legacy(s, data[MKL_COEFF_KIND as usize].hi as u32, p, d, prm)?;
         return if domain(s, pool, hit.x[0], hit.x[1]) {
             Ok(hit)
@@ -674,7 +675,7 @@ fn intersect<E: FpEnv>(
             Err(DOMAIN)
         };
     }
-    if data[MKL_COEFF_EXACT_CONIC as usize].hi != 0.0 {
+    if !overlay && data[MKL_COEFF_EXACT_CONIC as usize].hi != 0.0 {
         let hit = intersect_legacy(s, MKL_SHAPE_CONIC, p, d, prm)?;
         return evaluate(s, pool, hit.x[0], hit.x[1])
             .map(|_| hit)
@@ -697,6 +698,9 @@ fn intersect<E: FpEnv>(
     }
     let x = point_on(q, tb, d);
     let v = evaluate(s, pool, x[0], x[1]).ok_or(DOMAIN)?;
+    if s.shape == MKL_SHAPE_DIFFRACTIVE && !domain(s, pool, x[0], x[1]) {
+        return Err(DOMAIN);
+    }
     let g = [-v.x, -v.y, D::from_f(F::ONE)];
     if !finite3(hi3(g)) {
         return Err(DOMAIN);

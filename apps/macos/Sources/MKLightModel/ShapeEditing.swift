@@ -77,7 +77,7 @@ extension SurfaceShape {
         case .biconic: .biconic
         case .xyPolynomial: .xyPolynomial
         case .zernikeSag: .zernikeSag
-        case .sagOverlay(let base, _, _, _, _): base.kind
+        case .sagOverlay(let base, _, _, _, _, _): base.kind
         case .paraxial: .paraxial
         case .coordinateBreak: .coordinateBreak
         }
@@ -92,7 +92,7 @@ extension SurfaceShape {
 
     /// The base of a sag overlay, else the shape itself.
     var sagShapeBase: SurfaceShape {
-        if case .sagOverlay(let base, _, _, _, _) = self { return base }
+        if case .sagOverlay(let base, _, _, _, _, _) = self { return base }
         return self
     }
 
@@ -111,10 +111,10 @@ extension SurfaceShape {
         }
         switch self {
         case .paraxial, .coordinateBreak: return false
-        case .sagOverlay(let base, let r, let w, let a, let s):
+        case .sagOverlay(let base, let r, let w, let a, let angle, let s):
             self = .sagOverlay(
                 base: base, normRadius: r, testWavelengthUm: w, astigmatism: mode == .astigmatism ? v : a,
-                spherical: mode == .spherical ? v : s)
+                astigmatismAngleDeg: angle, spherical: mode == .spherical ? v : s)
         default:
             guard let clearRadius else { return false }
             self = .sagOverlay(
@@ -128,7 +128,7 @@ extension SurfaceShape {
     /// engine's `geometry`). Curvature, conic and asphere paths address it.
     public var geometry: SurfaceShape {
         switch self {
-        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): base.geometry
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _, _): base.geometry
         default: self
         }
     }
@@ -141,7 +141,7 @@ extension SurfaceShape {
         case .conic(let c, _), .evenAsphere(let c, _, _), .oddAsphere(let c, _, _), .qCon(let c, _, _, _),
             .qBfs(let c, _, _), .xyPolynomial(let c, _, _, _), .zernikeSag(let c, _, _, _, _):
             c
-        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): base.curvature
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _, _): base.curvature
         case .toroid(_, let cy, _, _), .biconic(_, let cy, _, _, _, _): cy
         default: 0
         }
@@ -155,7 +155,7 @@ extension SurfaceShape {
         case .conic(_, let k), .evenAsphere(_, let k, _), .oddAsphere(_, let k, _), .qCon(_, let k, _, _),
             .xyPolynomial(_, let k, _, _), .zernikeSag(_, let k, _, _, _):
             k
-        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): base.conicConstant
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _, _): base.conicConstant
         case .toroid(_, _, let ky, _), .biconic(_, _, _, let ky, _, _): ky
         default: 0
         }
@@ -198,9 +198,10 @@ extension SurfaceShape {
 
     /// Applies `edit` to the base of a sag overlay; `nil` when not an overlay.
     mutating func editOverlayBase(_ edit: (inout SurfaceShape) -> Bool) -> Bool? {
-        guard case .sagOverlay(var base, let r, let w, let a, let s) = self else { return nil }
+        guard case .sagOverlay(var base, let r, let w, let a, let angle, let s) = self else { return nil }
         guard edit(&base) else { return false }
-        self = .sagOverlay(base: base, normRadius: r, testWavelengthUm: w, astigmatism: a, spherical: s)
+        self = .sagOverlay(
+            base: base, normRadius: r, testWavelengthUm: w, astigmatism: a, astigmatismAngleDeg: angle, spherical: s)
         return true
     }
 

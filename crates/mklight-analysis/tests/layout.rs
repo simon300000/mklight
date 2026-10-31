@@ -226,3 +226,74 @@ fn doe_flag_covers_every_surface_of_an_element() {
     assert_eq!(b.surfaces[i], 1);
     assert_eq!(b.flags[i] & 4, 4);
 }
+
+#[test]
+fn tolerance_motion_stays_in_section_at_any_scale() {
+    use mklight_core::param::{ParamPath, PlacementComponent};
+    use mklight_core::{ApertureSpec, SurfaceShape};
+    for scale in [0.1, 1.0, 10.0] {
+        let mut system = samples::cooke_triplet();
+        for s in &mut system.surfaces {
+            s.thickness *= scale;
+            if let SurfaceShape::Conic { curvature, .. } = &mut s.shape {
+                *curvature /= scale;
+            }
+        }
+        if let ApertureSpec::EntrancePupilDiameter { value } = &mut system.aperture {
+            *value *= scale;
+        }
+        for (component, value) in [
+            (PlacementComponent::DecenterX, 0.03 * scale),
+            (PlacementComponent::TiltY, 0.05),
+        ] {
+            ParamPath::ElementPlacement {
+                surface: system.surfaces[1].id,
+                last: system.surfaces[2].id,
+                pivot: None,
+                component,
+            }
+            .set(&mut system, value)
+            .unwrap();
+        }
+        let t = tracer(system);
+        for section in [LayoutSection::Yz, LayoutSection::Xz] {
+            // Dense fans and rings put sagittal rays and inner rings close
+            // to the plane; they are still out of section.
+            let scene = layout(
+                &t,
+                &LayoutSettings {
+                    section,
+                    edge_margin: 0.5 * scale,
+                    rays_per_field: 201,
+                    rings: 100,
+                    lead_in: Some(1e6),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let count = |kind: PolylineKind| {
+                (scene.polylines.iter())
+                    .filter(|p| p.kind == kind && p.in_section)
+                    .count()
+            };
+            assert_eq!(count(PolylineKind::SurfaceProfile), 6);
+            assert_eq!(count(PolylineKind::SurfaceRim), 0);
+            // Per field, its whole section fan or nothing (an off-plane
+            // field); the on-axis fan always.
+            let mut fans = std::collections::BTreeMap::new();
+            for p in &scene.polylines {
+                if p.kind == PolylineKind::Ray && p.in_section {
+                    *fans.entry(p.field.unwrap()).or_insert(0) += 1;
+                }
+            }
+            assert_eq!(fans.get(&0), Some(&201), "{section:?}");
+            assert!(fans.values().all(|&n| n == 201), "{fans:?}");
+            let buffers = scene.to_buffers();
+            assert!(
+                buffers.flags[scene.polylines.len()..]
+                    .iter()
+                    .all(|f| f & 1 == 1)
+            );
+        }
+    }
+}

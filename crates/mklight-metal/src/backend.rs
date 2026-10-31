@@ -41,6 +41,7 @@ struct Uploaded {
     surfaces: SharedBuffer<PackedSurface>,
     coefficients: SharedBuffer<Df32>,
     set: PackedSystemSet,
+    sag_overlays: bool,
 }
 
 struct Inner {
@@ -473,7 +474,13 @@ impl Inner {
         let rec_floats = MKL_TRACE_RECORD_FLOATS as usize;
         let mut rec_f = gpu.buffer_filled::<f32>(prep.record_slots * n * rec_floats, |_| {})?;
         let mut rec_u = gpu.buffer_filled::<u32>(prep.record_slots * n, |_| {})?;
-        let pso = gpu.pipeline(&PipelineKey::plain("mkl_trace"))?;
+        // Overlay code costs every trace a few percent: only where needed.
+        let kernel = if up.sag_overlays {
+            "mkl_trace_overlays"
+        } else {
+            "mkl_trace"
+        };
+        let pso = gpu.pipeline(&PipelineKey::plain(kernel))?;
         let recording = prep.record_slots > 0;
         self.chunked(n, ctl, "trace", stats, |start, len| {
             let p = mklight_gpu::layout::TraceParams {
@@ -495,7 +502,7 @@ impl Inner {
             // MKL_MAX_WAVELENGTHS). Without records the kernel never touches
             // rec_f / rec_u (bound as 16-byte placeholders).
             unsafe {
-                gpu.run("mkl_trace", |e| {
+                gpu.run(kernel, |e| {
                     e.set_buffer(0, &up.headers, 0);
                     e.set_buffer(1, &up.surfaces, 0);
                     e.set_buffer(2, &steps, 0);
@@ -658,6 +665,7 @@ impl ComputeBackend for MetalBackend {
             headers: self.inner.ctx.buffer(&set.headers)?,
             surfaces: self.inner.ctx.buffer(&set.surfaces)?,
             coefficients: self.inner.ctx.buffer(&set.coefficients)?,
+            sag_overlays: (set.surfaces.iter()).any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
             set,
         };
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);

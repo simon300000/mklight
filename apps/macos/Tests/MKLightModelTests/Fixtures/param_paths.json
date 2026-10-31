@@ -182,6 +182,11 @@
   {
     "param": "shape_param",
     "surface": 7,
+    "parameter": "astigmatism_angle_deg"
+  },
+  {
+    "param": "shape_param",
+    "surface": 7,
     "parameter": "design_order"
   },
   {

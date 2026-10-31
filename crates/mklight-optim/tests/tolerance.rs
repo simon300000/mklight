@@ -685,3 +685,183 @@ fn zero_irregularity_traces_exactly_as_its_base() {
     let c = trace(spec.apply(&system, &[1.0]).unwrap());
     assert_ne!(a.ray.dir, c.ray.dir);
 }
+
+#[test]
+fn rotated_irregularity_has_known_sag_gradient_and_hessian() {
+    use mklight_core::param::{IrregularityMode, ShapeParameter};
+    use mklight_core::surface_math::{Symmetry, evaluate, shape_symmetry};
+    let mut s = sys();
+    s.surfaces[1].shape = SurfaceShape::Plane;
+    s.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 5.0 };
+    ParamPath::Irregularity {
+        surface: SurfaceId(10),
+        mode: IrregularityMode::Astigmatism,
+    }
+    .set(&mut s, 1.0)
+    .unwrap();
+    let angle = ParamPath::ShapeParam {
+        surface: SurfaceId(10),
+        parameter: ShapeParameter::AstigmatismAngleDeg,
+    };
+    angle.set(&mut s, 45.0).unwrap();
+    assert_eq!(angle.get(&s).unwrap(), 45.0);
+    let shape = &s.surfaces[1].shape;
+    let a = s.wavelengths.primary_um() * 1e-3 / (4.0 * 25.0);
+    // At 45 degrees the departure is 2*a*x*y, with pure mixed power.
+    let v = evaluate(shape, 2.0, 3.0).unwrap();
+    for (got, want) in [
+        (v.sag, 12.0 * a),
+        (v.gradient[0], 6.0 * a),
+        (v.gradient[1], 4.0 * a),
+        (v.hessian[0], 0.0),
+        (v.hessian[1], 2.0 * a),
+        (v.hessian[2], 0.0),
+    ] {
+        assert!((got - want).abs() < 1e-18, "{got} vs {want}");
+    }
+    assert_eq!(shape_symmetry(shape), Symmetry::None);
+    let before = v;
+    angle.set(&mut s, 225.0).unwrap();
+    assert!((evaluate(&s.surfaces[1].shape, 2.0, 3.0).unwrap().sag - before.sag).abs() < 1e-18);
+    angle.set(&mut s, 90.0).unwrap();
+    assert_eq!(shape_symmetry(&s.surfaces[1].shape), Symmetry::Meridional);
+    // Older JSON has a zero-degree axis; non-finite angles fail at the model boundary.
+    let mut json = serde_json::to_value(&s).unwrap();
+    json["surfaces"][1]["shape"]
+        .as_object_mut()
+        .unwrap()
+        .remove("astigmatism_angle_deg");
+    let back: OpticalSystem = serde_json::from_value(json).unwrap();
+    assert_eq!(angle.get(&back).unwrap(), 0.0);
+    if let SurfaceShape::SagOverlay {
+        astigmatism_angle_deg,
+        ..
+    } = &mut s.surfaces[1].shape
+    {
+        *astigmatism_angle_deg = f64::NAN;
+    }
+    assert!(
+        s.validation_issues()
+            .iter()
+            .any(|i| i.path.ends_with("astigmatism_angle_deg"))
+    );
+}
+
+#[test]
+fn irregularity_axes_are_uniform_independent_and_replayable() {
+    use mklight_core::param::IrregularityMode;
+    let mut nominal = sys();
+    for s in &mut nominal.surfaces[1..=2] {
+        s.semi_diameter = mklight_core::SemiDiameter::Fixed { value: 5.0 };
+    }
+    let spec = ToleranceSpec::new(
+        [10, 11]
+            .into_iter()
+            .map(|id| {
+                ToleranceOperand::symmetric(
+                    ParamPath::Irregularity {
+                        surface: SurfaceId(id),
+                        mode: IrregularityMode::Astigmatism,
+                    },
+                    0.5,
+                )
+            })
+            .collect(),
+    );
+    let settings = MonteCarloSettings {
+        seed: 42,
+        ..Default::default()
+    };
+    let axis = |s: &OpticalSystem, j: usize| match s.surfaces[j].shape {
+        SurfaceShape::SagOverlay {
+            astigmatism_angle_deg,
+            ..
+        } => astigmatism_angle_deg,
+        _ => panic!(),
+    };
+    let mut bins = [[0usize; 12]; 2];
+    for trial in 0..2400 {
+        let deltas = spec.sample_trial(settings.seed, trial);
+        let s = spec
+            .trial_case_system(&nominal, &deltas, &[], &settings, trial)
+            .unwrap();
+        assert_eq!(
+            s,
+            spec.trial_case_system(&nominal, &deltas, &[], &settings, trial)
+                .unwrap()
+        );
+        for (j, bins) in bins.iter_mut().enumerate() {
+            let a = axis(&s, j + 1);
+            assert!((0.0..180.0).contains(&a));
+            bins[(a / 15.0) as usize] += 1;
+        }
+        assert_ne!(axis(&s, 1), axis(&s, 2));
+    }
+    assert!(
+        bins.iter().flatten().all(|n| (140..260).contains(n)),
+        "{bins:?}"
+    );
+    let d = spec.sample_trial(42, 3);
+    let a = spec
+        .trial_case_system(&nominal, &d, &[], &settings, 3)
+        .unwrap();
+    let b = spec
+        .trial_case_system(
+            &nominal,
+            &d,
+            &[],
+            &MonteCarloSettings {
+                seed: 43,
+                ..settings.clone()
+            },
+            3,
+        )
+        .unwrap();
+    assert_ne!(axis(&a, 1), axis(&b, 1));
+    let fixed = spec
+        .trial_case_system(
+            &nominal,
+            &d,
+            &[],
+            &MonteCarloSettings {
+                random_irregularity_orientation: false,
+                ..settings
+            },
+            3,
+        )
+        .unwrap();
+    assert_eq!(axis(&fixed, 1), 0.0);
+}
+
+#[test]
+fn element_tilt_z_rotates_freeform_axes_and_returns_after_the_range() {
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::param::PlacementComponent;
+    use mklight_core::{ResolvedSystem, Snapshot, Vec3, samples};
+    use std::sync::Arc;
+    let nominal = samples::biconic_element();
+    let mut moved = nominal.clone();
+    let path = ParamPath::ElementPlacement {
+        surface: moved.surfaces[1].id,
+        last: moved.surfaces[2].id,
+        pivot: None,
+        component: PlacementComponent::TiltZ,
+    };
+    path.set(&mut moved, 90.0).unwrap();
+    assert_eq!(path.get(&moved).unwrap(), 90.0);
+    let resolve = |s| {
+        ResolvedSystem::new(
+            &Snapshot::new(s).unwrap(),
+            Arc::new(MaterialLibrary::with_builtin()),
+        )
+        .unwrap()
+    };
+    let (a, b) = (resolve(nominal), resolve(moved));
+    for j in 1..=2 {
+        let f = b.surfaces[j].frame;
+        assert!((f.to_global_dir(Vec3::X) - Vec3::Y).norm() < 1e-15);
+        assert!((f.to_global_dir(Vec3::Y) + Vec3::X).norm() < 1e-15);
+        assert_eq!(f.origin, a.surfaces[j].frame.origin);
+    }
+    assert_eq!(a.surfaces[3].frame, b.surfaces[3].frame);
+}
