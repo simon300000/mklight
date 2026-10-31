@@ -280,6 +280,15 @@ enum Contours {
 /// Bilinear upsampling of a node grid (samples at the nodes) for display,
 /// so the heat map and its linear contours agree. NaN where a corner is.
 extension Grid2D {
+    /// The position of node `k` (`j * nx + i`), samples at the nodes
+    /// spanning `xRange` × `yRange`.
+    func node(_ k: Int) -> SIMD2<Double> {
+        let i = k % nx, j = k / nx
+        let dx = nx > 1 ? (xRange.upperBound - xRange.lowerBound) / Double(nx - 1) : 0
+        let dy = ny > 1 ? (yRange.upperBound - yRange.lowerBound) / Double(ny - 1) : 0
+        return SIMD2(xRange.lowerBound + Double(i) * dx, yRange.lowerBound + Double(j) * dy)
+    }
+
     func upsampled(to n: Int) -> Grid2D {
         guard nx >= 2, ny >= 2, n > max(nx, ny) else { return self }
         let w = n, h = max(2, Int((Double(n) * Double(ny - 1) / Double(max(nx - 1, 1))).rounded()))
@@ -607,7 +616,13 @@ struct ImageSimulationData: Sendable {
         pixelSize = px.count == 2 ? SIMD2(px[0], px[1]) : SIMD2(.nan, .nan)
         origin = o.count == 2 ? SIMD2(o[0], o[1]) : SIMD2(.nan, .nan)
         fieldGrid = j["field_grid"]?.int ?? 0
-        nodes = (j["field_mapping"]?.array ?? []).compactMap { n in
+        nodes = Self.nodes(j)
+        source = Self.source(output.runInfo.settings["source"])
+    }
+
+    /// The field mapping nodes of a result.
+    static func nodes(_ j: JSONValue) -> [Node] {
+        (j["field_mapping"]?.array ?? []).compactMap { n in
             guard let f = n["field"]?.nfArray, let i = n["ideal_mm"]?.nfArray, let r = n["real_mm"]?.nfArray,
                 f.count == 2, i.count == 2, r.count == 2
             else { return nil }
@@ -615,7 +630,6 @@ struct ImageSimulationData: Sendable {
                 field: SIMD2(f[0], f[1]), ideal: SIMD2(i[0], i[1]), real: SIMD2(r[0], r[1]),
                 relativeIllumination: n["relative_illumination"]?.nf ?? .nan)
         }
-        source = Self.source(output.runInfo.settings["source"])
     }
 
     static func source(_ s: JSONValue?) -> Source {
@@ -627,11 +641,11 @@ struct ImageSimulationData: Sendable {
     }
 
     /// The largest node distortion (signed, percent, by magnitude).
-    var maxDistortionPercent: Double? {
+    static func maxDistortionPercent(_ nodes: [Node]) -> Double? {
         nodes.map(\.distortionPercent).filter(\.isFinite).max { abs($0) < abs($1) }
     }
 
-    var minRelativeIllumination: Double? { nodes.map(\.relativeIllumination).filter(\.isFinite).min() }
+    static func minRelativeIllumination(_ nodes: [Node]) -> Double? { nodes.map(\.relativeIllumination).filter(\.isFinite).min() }
 
     /// The source raster at the output size, as the engine samples it:
     /// patterns are drawn, buffers are the run's own.

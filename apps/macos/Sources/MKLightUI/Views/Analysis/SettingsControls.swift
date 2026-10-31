@@ -18,6 +18,25 @@ extension SettingsBar {
         return nil
     }
 
+    /// The summary text of a setting handled here ("9 × 9", "2 points").
+    static func arraySummary(_ f: SettingsField, _ v: JSONValue) -> String? {
+        if f.name == "sensor_limit" {
+            let n = FieldMapData.sensorLimit(v).count
+            return n == 0 ? "none" : n == 1 ? "1 point" : "\(n) points"
+        }
+        if f.name == "source", let kind = v["kind"]?.string {
+            switch kind {
+            case "pattern": return SettingsBar.title(v["pattern"] ?? .string("grid"))
+            case "buffer": return "image"
+            default: return ((v["path"]?.string ?? "") as NSString).lastPathComponent
+            }
+        }
+        if let a = v.array, a.count == 2, let x = a[0].doubleValue, let y = a[1].doubleValue {
+            return "\(Fmt.short(x)) × \(Fmt.short(y))"
+        }
+        return nil
+    }
+
     @ViewBuilder
     func arrayControl(_ f: SettingsField, kind: Kind) -> some View {
         switch kind {
@@ -282,6 +301,8 @@ struct ImageSourceControl: View {
 
     /// Re-derive the samples when the file or the output size changes.
     private var refreshKey: String {
-        (file ?? "") + "|" + ((try? MKLightJSON.encode(pane.value("size") ?? .null)).map { String(decoding: $0, as: UTF8.self) } ?? "")
+        let size = (try? MKLightJSON.encode(pane.value("size") ?? .null)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let aspect = ImageSourceImport.fieldAspect(pane).map { String(format: "%.6f", $0) } ?? ""
+        return (file ?? "") + "|" + size + "|" + aspect
     }
 }

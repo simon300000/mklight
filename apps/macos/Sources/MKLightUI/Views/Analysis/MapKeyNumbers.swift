@@ -30,7 +30,7 @@ extension AnalysisResultView {
             guard let d = FieldMapData(output: output), let c = d.columnIndex("incidence"), let k = d.argmax(c) else { return [] }
             var out = [
                 KeyNumber(label: "Max CRA", value: String(format: "%.2f°", d.value(k, c))),
-                KeyNumber(label: "at", value: Fmt.value(d.imageRadius[k], unit: "mm")),
+                KeyNumber(label: "at", value: String(format: "%.3g mm", d.imageRadius[k])),
             ]
             if let m = d.columnIndex("margin"), let r = d.range(m) {
                 out.append(KeyNumber(label: "Min margin", value: String(format: "%+.2f°", r.lowerBound)))
@@ -43,11 +43,15 @@ extension AnalysisResultView {
                 KeyNumber(label: "In design", value: "\(d.glasses.filter(\.inDesign).count)"),
             ]
         case "image_simulation":
-            guard let d = ImageSimulationData(output: output) else { return [] }
+            // From the JSON only: the image itself is not needed here.
+            let j = output.json
+            let nodes = ImageSimulationData.nodes(j)
             var out: [KeyNumber] = []
-            if d.pixelSize.x.isFinite { out.append(KeyNumber(label: "Pixel", value: Fmt.length(d.pixelSize.x))) }
-            if let m = d.maxDistortionPercent { out.append(KeyNumber(label: "Max distortion", value: String(format: "%+.3f %%", m))) }
-            if let r = d.minRelativeIllumination { out.append(KeyNumber(label: "Min RI", value: String(format: "%.3f", r))) }
+            if let p = j["pixel_size_mm"]?.nfArray, let x = p.first, x.isFinite { out.append(KeyNumber(label: "Pixel", value: Fmt.length(x))) }
+            if let m = ImageSimulationData.maxDistortionPercent(nodes) {
+                out.append(KeyNumber(label: "Max distortion", value: String(format: "%+.3f %%", m)))
+            }
+            if let r = ImageSimulationData.minRelativeIllumination(nodes) { out.append(KeyNumber(label: "Min RI", value: String(format: "%.3f", r))) }
             return out
         default:
             return []

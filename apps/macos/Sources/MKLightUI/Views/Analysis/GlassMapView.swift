@@ -14,7 +14,15 @@ enum GlassMapPlane: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 
     var title: String { self == .ndVd ? "n_d" : "P_g,F" }
-    var axisLabel: String { self == .ndVd ? "Refractive index n_d" : "Partial dispersion P_g,F" }
+    var segmentTitle: String { self == .ndVd ? "Index" : "Partial Dispersion" }
+
+    /// The y axis title with its subscript.
+    var axisLabel: Text {
+        self == .ndVd
+            ? Text("Refractive index n") + GlassMapPlane.sub("d") : Text("Partial dispersion P") + GlassMapPlane.sub("g,F")
+    }
+
+    static func sub(_ s: String) -> Text { Text(s).font(.caption2).baselineOffset(-3) }
 
     func y(_ g: GlassMapPoint) -> Double { self == .ndVd ? g.nd : g.pgf }
 }
@@ -69,8 +77,8 @@ struct GlassMapChart: View {
             }
         }
         .chartYAxis { AxisMarks(values: .automatic(desiredCount: 6)) }
-        .chartXAxisLabel("Abbe number V_d", alignment: .center)
-        .chartYAxisLabel(plane.axisLabel)
+        .chartXAxisLabel(alignment: .center) { Text("Abbe number V") + GlassMapPlane.sub("d") }
+        .chartYAxisLabel { plane.axisLabel }
         .chartOverlay { proxy in
             GeometryReader { geo in
                 if let f = proxy.plotFrame {
@@ -228,14 +236,14 @@ struct GlassCard: View {
                 .filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.caption2).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: Space.m, verticalSpacing: 1) {
-                row("n_d", String(format: "%.5f", glass.nd))
-                row("V_d", String(format: "%.2f", glass.vd))
-                row("P_g,F", glass.pgf.isFinite ? String(format: "%.4f", glass.pgf) : "—")
+                row(Text("n") + GlassMapPlane.sub("d"), String(format: "%.5f", glass.nd))
+                row(Text("V") + GlassMapPlane.sub("d"), String(format: "%.2f", glass.vd))
+                row(Text("P") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%.4f", glass.pgf) : "—")
                 if !compact {
-                    row("ΔP_g,F", glass.pgf.isFinite ? String(format: "%+.4f", glass.deltaPgF) : "—")
-                    if glass.status != .unknown { row("Status", glass.status.label) }
-                    if !glass.surfaces.isEmpty { row("Surfaces", glass.surfaceLabel) }
-                    if glass.excludeSubstitution == true { row("Substitution", "Excluded") }
+                    row(Text("ΔP") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%+.4f", glass.deltaPgF) : "—")
+                    if glass.status != .unknown { row(Text("Status"), glass.status.label) }
+                    if !glass.surfaces.isEmpty { row(Text("Surfaces"), glass.surfaceLabel) }
+                    if glass.excludeSubstitution == true { row(Text("Substitution"), "Excluded") }
                 }
             }
             .font(compact ? .caption2 : .callout)
@@ -243,9 +251,9 @@ struct GlassCard: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func row(_ k: String, _ v: String) -> some View {
+    private func row(_ k: Text, _ v: String) -> some View {
         GridRow {
-            Text(k).foregroundStyle(.secondary)
+            k.foregroundStyle(.secondary)
             Text(v).numeric().gridColumnAlignment(.trailing)
         }
     }
@@ -301,10 +309,11 @@ struct GlassMapView: View {
     @State private var selection: String?
     @State private var catalog: String?
 
-    init?(output: AnalysisOutput, context: AnalysisContext) {
+    init?(output: AnalysisOutput, context: AnalysisContext, selection: String? = nil) {
         guard let d = GlassMapData(output: output), !d.glasses.isEmpty else { return nil }
         data = d
         selectSurface = context.selectSurface
+        _selection = State(initialValue: selection)
     }
 
     private var shown: [GlassMapPoint] {
@@ -317,9 +326,9 @@ struct GlassMapView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.m) {
                 Picker("Plane", selection: $plane) {
-                    Text("n_d – V_d").tag(GlassMapPlane.ndVd)
-                    Text("P_g,F – V_d").tag(GlassMapPlane.pgfVd)
+                    ForEach(GlassMapPlane.allCases) { Text($0.segmentTitle).tag($0) }
                 }
+                .help("Refractive index n_d or partial dispersion P_g,F against Abbe number V_d")
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
@@ -355,13 +364,25 @@ struct GlassMapView: View {
     }
 
     private var side: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Space.m) {
+        VStack(alignment: .leading, spacing: Space.m) {
                 if let s = selection, let g = data.glasses.first(where: { $0.id == s }) {
-                    GlassCard(glass: g)
-                        .padding(Space.m)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.fill.quinary, in: .rect(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: Space.s) {
+                        GlassCard(glass: g)
+                        if !g.surfaces.isEmpty {
+                            HStack(spacing: Space.xs) {
+                                Text("Select").font(.caption).foregroundStyle(.secondary)
+                                ForEach(g.surfaces, id: \.self) { s in
+                                    Button("S\(s)") { selectSurface(s) }
+                                        .help("Select surface \(s) in the lens table")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                    }
+                    .padding(Space.m)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.fill.quinary, in: .rect(cornerRadius: 8))
                 } else {
                     Text("Click a glass to inspect it.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -386,7 +407,7 @@ struct GlassMapView: View {
                         }
                     }
                 }
-            }
+                Spacer(minLength: 0)
         }
     }
 }

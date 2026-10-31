@@ -38,22 +38,11 @@ struct FieldMapPlot: View {
     var scale: HeatScale = .sequential(log: false)
     var range: ClosedRange<Double>
     var contours: [Double] = []
-    /// A sample to ring (the worst one), as a node index.
-    var marked: Int?
     var title: String
     var format: (Double) -> String = { Fmt.short($0) }
-    @State private var hover: Int?
-    @Environment(\.colorScheme) private var colorScheme
 
     private var count: Int { grid.nx * grid.ny }
     private var showsNodes: Bool { count <= 441 }
-
-    private func node(_ k: Int) -> SIMD2<Double> {
-        let i = k % grid.nx, j = k / grid.nx
-        let dx = grid.nx > 1 ? (grid.xRange.upperBound - grid.xRange.lowerBound) / Double(grid.nx - 1) : 0
-        let dy = grid.ny > 1 ? (grid.yRange.upperBound - grid.yRange.lowerBound) / Double(grid.ny - 1) : 0
-        return SIMD2(grid.xRange.lowerBound + Double(i) * dx, grid.yRange.lowerBound + Double(j) * dy)
-    }
 
     var aspect: CGFloat {
         CGFloat((grid.xRange.upperBound - grid.xRange.lowerBound) / max(grid.yRange.upperBound - grid.yRange.lowerBound, 1e-9))
@@ -66,24 +55,29 @@ struct FieldMapPlot: View {
             PointMark(x: .value("Hx", grid.xRange.lowerBound), y: .value("Hy", grid.yRange.lowerBound)).opacity(0)
             if showsNodes {
                 ForEach(0..<count, id: \.self) { k in
-                    let p = node(k)
+                    let p = grid.node(k)
                     PointMark(x: .value("Hx", p.x), y: .value("Hy", p.y))
                         .symbolSize(count > 121 ? 4 : 9)
                         .foregroundStyle(Color.primary.opacity(grid.values[k].isFinite ? 0.35 : 0.15))
                 }
             }
-            if let m = marked, m < count {
-                let p = node(m)
-                PointMark(x: .value("Hx", p.x), y: .value("Hy", p.y))
-                    .symbol(Circle().strokeBorder(lineWidth: 1.5))
-                    .symbolSize(90)
-                    .foregroundStyle(Color.primary)
-            }
         }
         .chartXScale(domain: grid.xRange)
         .chartYScale(domain: grid.yRange)
-        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
-        .chartYAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
+        // The map is the content: ticks and labels, no grid over it; the y
+        // axis leading, so the colour bar sits next to the map.
+        .chartXAxis {
+            AxisMarks(preset: .aligned, values: Self.ticks(grid.xRange)) { _ in
+                AxisTick(length: 4, stroke: StrokeStyle(lineWidth: 0.6))
+                AxisValueLabel()
+            }
+        }
+        .chartYAxis {
+            AxisMarks(preset: .aligned, position: .leading, values: Self.ticks(grid.yRange)) { _ in
+                AxisTick(length: 4, stroke: StrokeStyle(lineWidth: 0.6))
+                AxisValueLabel()
+            }
+        }
         .chartXAxisLabel("Hx", alignment: .center)
         .chartYAxisLabel("Hy")
         .chartPlotStyle { $0.aspectRatio(aspect, contentMode: .fit) }
@@ -91,7 +85,7 @@ struct FieldMapPlot: View {
             GeometryReader { geo in
                 if let f = proxy.plotFrame {
                     let r = geo[f]
-                    // Pixels are centred on the nodes' interpolated values: extend by half a pixel.
+                    // Pixels are centred on the interpolated values: extend by half a pixel.
                     let px = r.width / CGFloat(max(display.nx - 1, 1)), py = r.height / CGFloat(max(display.ny - 1, 1))
                     HeatMapImage(grid: display, scale: scale, range: range)
                         .frame(width: r.width + px, height: r.height + py)
@@ -103,19 +97,7 @@ struct FieldMapPlot: View {
         .chartOverlay { proxy in
             GeometryReader { geo in
                 if let f = proxy.plotFrame {
-                    let r = geo[f]
-                    ZStack(alignment: .topLeading) {
-                        Canvas { ctx, _ in drawContours(segments, in: r, ctx: &ctx) }
-                            .allowsHitTesting(false)
-                        Rectangle().fill(.clear).contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                switch phase {
-                                case .active(let p): hover = nearest(to: p, in: r)
-                                case .ended: hover = nil
-                                }
-                            }
-                        if let h = hover { tooltip(h, in: r) }
-                    }
+                    FieldMapOverlay(grid: grid, frame: geo[f], contours: segments, format: format)
                 }
             }
         }
@@ -124,56 +106,95 @@ struct FieldMapPlot: View {
         .accessibilityValue(accessibilityValue)
     }
 
+    /// About five round ticks within a range, including its ends when round.
+    static func ticks(_ r: ClosedRange<Double>) -> [Double] {
+        let step = Nice.length((r.upperBound - r.lowerBound) / 4)
+        guard step > 0, step.isFinite else { return [r.lowerBound, r.upperBound] }
+        var out: [Double] = []
+        var v = (r.lowerBound / step).rounded(.up) * step
+        while v <= r.upperBound + step * 1e-9 {
+            out.append(abs(v) < step * 1e-9 ? 0 : v)
+            v += step
+        }
+        return out
+    }
+
     private var accessibilityValue: String {
         let f = grid.finite
         guard let lo = f.min(), let hi = f.max() else { return "No values" }
         return "From \(format(lo)) to \(format(hi))"
     }
+}
 
-    private func point(_ p: SIMD2<Double>, in r: CGRect) -> CGPoint {
-        let x = (p.x - grid.xRange.lowerBound) / (grid.xRange.upperBound - grid.xRange.lowerBound)
-        let y = (p.y - grid.yRange.lowerBound) / (grid.yRange.upperBound - grid.yRange.lowerBound)
-        return CGPoint(x: r.minX + CGFloat(x) * r.width, y: r.maxY - CGFloat(y) * r.height)
+/// The iso-lines, hover search and tooltip of a field map, over its plot
+/// area (its own view, so hovering does not redraw the chart).
+private struct FieldMapOverlay: View {
+    let grid: Grid2D
+    let frame: CGRect
+    let contours: [(level: Double, segments: [Contours.Segment])]
+    let format: (Double) -> String
+    @State private var hover: Int?
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Canvas { ctx, _ in drawContours(&ctx) }
+                .allowsHitTesting(false)
+            Rectangle().fill(.clear).contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let p): hover = nearest(to: p)
+                    case .ended: hover = nil
+                    }
+                }
+            if let h = hover { tooltip(h) }
+        }
     }
 
-    private func nearest(to p: CGPoint, in r: CGRect) -> Int? {
-        guard r.insetBy(dx: -6, dy: -6).contains(p) else { return nil }
+    private func point(_ p: SIMD2<Double>) -> CGPoint {
+        let x = (p.x - grid.xRange.lowerBound) / (grid.xRange.upperBound - grid.xRange.lowerBound)
+        let y = (p.y - grid.yRange.lowerBound) / (grid.yRange.upperBound - grid.yRange.lowerBound)
+        return CGPoint(x: frame.minX + CGFloat(x) * frame.width, y: frame.maxY - CGFloat(y) * frame.height)
+    }
+
+    private func nearest(to p: CGPoint) -> Int? {
+        guard frame.insetBy(dx: -6, dy: -6).contains(p) else { return nil }
         var best: (Int, CGFloat)?
-        for k in 0..<count {
-            let q = point(node(k), in: r)
+        for k in 0..<(grid.nx * grid.ny) {
+            let q = point(grid.node(k))
             let d = hypot(q.x - p.x, q.y - p.y)
             if best == nil || d < best!.1 { best = (k, d) }
         }
         return best?.0
     }
 
-    private func drawContours(_ levels: [(level: Double, segments: [Contours.Segment])], in r: CGRect, ctx: inout GraphicsContext) {
+    private func drawContours(_ ctx: inout GraphicsContext) {
         let ink = Color.primary.opacity(0.65)
-        for (level, segs) in levels where !segs.isEmpty {
+        for (level, segs) in contours where !segs.isEmpty {
             var path = Path()
             for s in segs {
-                path.move(to: point(s.a, in: r))
-                path.addLine(to: point(s.b, in: r))
+                path.move(to: point(s.a))
+                path.addLine(to: point(s.b))
             }
             ctx.stroke(path, with: .color(ink), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
             // Label each level once, at its segment nearest the upper right.
             if let s = segs.max(by: { ($0.a.x + $0.a.y + $0.b.x + $0.b.y) < ($1.a.x + $1.a.y + $1.b.x + $1.b.y) }) {
-                let mid = point((s.a + s.b) / 2, in: r)
+                let mid = point((s.a + s.b) / 2)
                 let text = ctx.resolve(Text(format(level)).font(.caption2.monospacedDigit()).foregroundStyle(Color.primary))
                 let size = text.measure(in: CGSize(width: 80, height: 20))
                 let box = CGRect(x: mid.x - size.width / 2 - 2, y: mid.y - size.height / 2, width: size.width + 4, height: size.height)
-                    .offsetBy(dx: min(0, r.maxX - (mid.x + size.width / 2 + 2)), dy: max(0, r.minY - (mid.y - size.height / 2)))
+                    .offsetBy(dx: min(0, frame.maxX - (mid.x + size.width / 2 + 2)), dy: max(0, frame.minY - (mid.y - size.height / 2)))
                 ctx.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(colorScheme == .dark ? .black.opacity(0.6) : .white.opacity(0.75)))
                 ctx.draw(text, at: CGPoint(x: box.midX, y: box.midY))
             }
         }
     }
 
-    @ViewBuilder private func tooltip(_ k: Int, in r: CGRect) -> some View {
-        let p = node(k)
-        let q = point(p, in: r)
+    private func tooltip(_ k: Int) -> some View {
+        let p = grid.node(k)
+        let q = point(p)
         let v = grid.values[k]
-        VStack(alignment: .leading, spacing: 1) {
+        return VStack(alignment: .leading, spacing: 1) {
             Text(v.isFinite ? format(v) : "No value").font(.caption.weight(.semibold))
             Text(String(format: "Hx %.3g  Hy %.3g", p.x, p.y)).font(.caption2).foregroundStyle(.secondary)
         }
@@ -183,7 +204,7 @@ struct FieldMapPlot: View {
         .background(.background, in: .rect(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.separator))
         .fixedSize()
-        .offset(x: min(q.x + 8, r.maxX - 90), y: max(q.y - 34, r.minY))
+        .offset(x: min(q.x + 8, frame.maxX - 90), y: max(q.y - 34, frame.minY))
         .allowsHitTesting(false)
     }
 }
@@ -194,7 +215,7 @@ struct FieldMapPanel: View {
     let unit: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: Space.s) {
+        HStack(alignment: .center, spacing: Space.xl) {
             plot
             ColorBar(scale: plot.scale, range: plot.range, unit: unit).frame(maxHeight: 220)
         }
@@ -251,11 +272,10 @@ struct FieldMapContent: View {
         if data.layout == .map {
             let signed = data.isSigned(column)
             let r = range ?? data.range(column) ?? 0...1
-            let marked = signed ? data.column(column).indices.max { abs(data.value($0, column)).nanToZero < abs(data.value($1, column)).nanToZero } : nil
             FieldMapPanel(
                 plot: FieldMapPlot(
                     grid: data.grid(column), scale: signed ? .diverging : .sequential(log: false), range: r, contours: contours,
-                    marked: marked, title: col.title, format: format),
+                    title: col.title, format: format),
                 unit: col.unitLabel)
         } else {
             LineChart(
@@ -264,10 +284,6 @@ struct FieldMapContent: View {
                 .accessibilityValue(data.range(column).map { "From \(format($0.lowerBound)) to \(format($0.upperBound))" } ?? "")
         }
     }
-}
-
-extension Double {
-    fileprivate var nanToZero: Double { isFinite ? self : 0 }
 }
 
 // MARK: - Relative illumination map
@@ -323,7 +339,7 @@ struct RelativeIlluminationMapView: View {
     private func radial(_ c: Int) -> some View {
         let col = data.columns[c]
         let pts = data.radial(c)
-        let line = data.isRadial(c)
+        let line = data.isRadial(c, tolerance: 1e-2)
         let format = fieldValueFormat(col)
         return VStack(alignment: .leading, spacing: Space.xs) {
             Text("\(col.title) vs image radius").font(.caption.weight(.semibold))
@@ -340,7 +356,6 @@ struct RelativeIlluminationMapView: View {
                 }
             }
             .chartXAxisLabel("Image radius (mm)", alignment: .center)
-            .chartYAxisLabel(col.titleWithUnit)
             .chartYScale(domain: isFraction ? 0...1.02 : FieldMapData.range(pts.map(\.1)))
             .chartYAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
             .accessibilityElement(children: .ignore)
@@ -422,7 +437,7 @@ struct ChiefRayAngleView: View {
             if !limit.isEmpty {
                 LegendItem(color: .secondary, label: "Sensor limit", dashed: true)
                 HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2).fill(Palette.fieldColor(5).opacity(0.3)).frame(width: 12, height: 8)
+                    RoundedRectangle(cornerRadius: 2).fill(Palette.fieldColor(5).opacity(0.25)).frame(width: 12, height: 8)
                     Text("Margin")
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -531,7 +546,7 @@ struct ChiefRayAngleView: View {
             ForEach(bands) { b in
                 ForEach(Array(b.points.enumerated()), id: \.offset) { _, p in
                     AreaMark(x: .value("h", p.x), yStart: .value("lo", p.lo), yEnd: .value("hi", p.hi), series: .value("band", "b\(b.id)"))
-                        .foregroundStyle(b.violated ? Palette.fieldColor(7).opacity(0.45) : Palette.fieldColor(5).opacity(0.22))
+                        .foregroundStyle(b.violated ? Palette.fieldColor(7).opacity(0.45) : Palette.fieldColor(5).opacity(0.16))
                         .interpolationMethod(.linear)
                 }
             }

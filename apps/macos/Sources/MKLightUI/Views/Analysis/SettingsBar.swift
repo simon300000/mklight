@@ -39,6 +39,7 @@ struct SettingsBar: View {
         guard let descriptor else { return "" }
         return descriptor.settingsFields.compactMap { f -> String? in
             guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
+            if let t = arraySummary(f, v) { return "\(label(f)) \(t)" }
             let value: String =
                 switch v["type"]?.string {
                 case "all": "all"

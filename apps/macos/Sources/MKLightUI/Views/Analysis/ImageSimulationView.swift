@@ -18,6 +18,8 @@ struct ImageSimulationView: View {
 
     let data: ImageSimulationData
     let source: LinearImage?
+    /// Identifies the result (its start time and snapshot).
+    let run: String
     @State private var compare = Compare.sideBySide
     @State private var exposure = 0.0
     @State private var zoom: CGFloat = 1
@@ -27,12 +29,42 @@ struct ImageSimulationView: View {
     @State private var split: CGFloat = 0.5
     @State private var blinkSource = false
     @State private var showMapping = false
+    @State private var cache = Rendered()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The display images, made once per exposure (not on every gesture frame).
+    final class Rendered {
+        var gain = Double.nan
+        var simulated: CGImage?
+        var source: CGImage?
+        var clipped = 0.0
+        var sourceMade = false
+        var run = ""
+
+        func update(_ data: ImageSimulationData, source: LinearImage?, gain g: Double, run r: String) {
+            if r != run {
+                // Another result in the same view: start again.
+                run = r
+                gain = .nan
+                sourceMade = false
+            }
+            if g != gain {
+                gain = g
+                simulated = data.image.cgImage(gain: g)
+                clipped = data.image.clippedFraction(gain: g)
+            }
+            if !sourceMade {
+                sourceMade = true
+                self.source = source?.cgImage()
+            }
+        }
+    }
 
     init?(output: AnalysisOutput) {
         guard let d = ImageSimulationData(output: output) else { return nil }
         data = d
         source = d.sourceImage
+        run = "\(output.runInfo.snapshotHash)-\(output.runInfo.startedUnixMs)-\(output.runInfo.durationMs)"
     }
 
     private var gain: Double { pow(2, exposure) }
@@ -46,9 +78,9 @@ struct ImageSimulationView: View {
     }
 
     var body: some View {
-        let simulated = data.image.cgImage(gain: gain)
         // The source is shown at unit exposure: it is the scene, not a sensor reading.
-        let src = source?.cgImage()
+        let _ = cache.update(data, source: source, gain: gain, run: run)
+        let simulated = cache.simulated, src = cache.source
         VStack(alignment: .leading, spacing: Space.s) {
             controls
             GeometryReader { geo in
@@ -130,8 +162,7 @@ struct ImageSimulationView: View {
 
     /// One image in a fitted frame with its title, zoomed and panned.
     private func frame(_ image: CGImage?, title: String, isSource: Bool) -> some View {
-        ZoomedImage(image: image, aspect: aspect, zoom: zoom, pan: pan)
-            .overlay(alignment: .topLeading) { ImageTag(text: title) }
+        ZoomedImage(image: image, aspect: aspect, zoom: zoom, pan: pan, title: title)
             .gesture(zoomGesture)
             .simultaneousGesture(panGesture)
             .accessibilityElement(children: .ignore)
@@ -217,13 +248,11 @@ struct ImageSimulationView: View {
     }
 
     private var caption: some View {
-        let clipped = data.image.clippedFraction(gain: gain)
+        let clipped = cache.clipped
         return HStack(spacing: Space.l) {
             Text("\(data.image.width) × \(data.image.height) px" + (data.image.channels == 3 ? ", RGB" : ", monochrome"))
-            if data.pixelSize.x.isFinite {
-                Text(
-                    abs(data.pixelSize.x - data.pixelSize.y) < 1e-12
-                        ? "Pixel \(Fmt.length(data.pixelSize.x))" : "Pixel \(Fmt.length(data.pixelSize.x)) × \(Fmt.length(data.pixelSize.y))")
+            if data.pixelSize.x.isFinite, abs(data.pixelSize.x - data.pixelSize.y) > 1e-9 * data.pixelSize.x {
+                Text("Pixel \(Fmt.length(data.pixelSize.x)) × \(Fmt.length(data.pixelSize.y))")
             }
             if clipped > 0.001 { Text(String(format: "%.1f%% clipped", clipped * 100)).foregroundStyle(.orange) }
             Spacer(minLength: 0)
@@ -260,11 +289,12 @@ struct ZoomedImage: View {
     let aspect: CGFloat
     let zoom: CGFloat
     let pan: CGSize
+    var title: String?
 
     var body: some View {
         GeometryReader { geo in
             let fit = ImageSimulationView.fitted(aspect: aspect, in: geo.size)
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 Rectangle().fill(.black)
                 if let image {
                     Image(decorative: image, scale: 1)
@@ -275,7 +305,9 @@ struct ZoomedImage: View {
                         .offset(pan)
                 } else {
                     Text("No preview").font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                if let title { ImageTag(text: title) }
             }
             .frame(width: fit.width, height: fit.height)
             .clipped()
@@ -340,6 +372,8 @@ enum ImageSourceImport {
     /// The app-only setting holding the imported file's path.
     nonisolated static let fileKey = "source_file"
     nonisolated static let maxSide = 512
+    /// The app-only setting recording the field aspect the samples were cropped to.
+    nonisolated static let aspectKey = "source_field_aspect"
 
     private static var decoded: [String: CGImage] = [:]
 
@@ -349,6 +383,7 @@ enum ImageSourceImport {
         guard settings[fileKey] != nil, settings["source"]?["kind"]?.string == "buffer" else { return settings }
         var s = settings
         s["source"] = nil
+        s[aspectKey] = nil
         return s
     }
 
@@ -376,10 +411,13 @@ enum ImageSourceImport {
         return image
     }
 
-    /// The image cropped to fill `width × height` and resampled in linear
-    /// light (Core Graphics colour-manages it to linear sRGB), row 0 at the
-    /// bottom; one channel for grey images, else three.
-    nonisolated static func linear(_ image: CGImage, width: Int, height: Int) -> LinearImage? {
+    /// The image cropped to the field's aspect (`aspect`, width / height in
+    /// mm; default the pixel grid's) and resampled in linear light to
+    /// `width × height` (Core Graphics colour-manages it to linear sRGB),
+    /// row 0 at the bottom; one channel for grey images, else three. The
+    /// engine stretches the source over the image field, so cropping to the
+    /// field's aspect keeps the picture's proportions.
+    nonisolated static func linear(_ image: CGImage, width: Int, height: Int, aspect: Double? = nil) -> LinearImage? {
         guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.linearSRGB) else { return nil }
         let grey = image.colorSpace?.model == .monochrome
         var buf = [Float](repeating: 0, count: width * height * 4)
@@ -391,11 +429,13 @@ enum ImageSourceImport {
                 space: space, bitmapInfo: info.rawValue)
             else { return false }
             ctx.interpolationQuality = .high
-            // Aspect fill: crop the image's longer side.
+            // Aspect fill: crop the image's longer side to the field's aspect,
+            // then stretch the crop over the pixel grid.
             let iw = CGFloat(image.width), ih = CGFloat(image.height)
-            let s = max(CGFloat(width) / iw, CGFloat(height) / ih)
-            let dw = iw * s, dh = ih * s
-            ctx.draw(image, in: CGRect(x: (CGFloat(width) - dw) / 2, y: (CGFloat(height) - dh) / 2, width: dw, height: dh))
+            let a = CGFloat(aspect.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? Double(width) / Double(height))
+            let cw = min(iw, ih * a), ch = cw / a
+            let sx = CGFloat(width) / cw, sy = CGFloat(height) / ch
+            ctx.draw(image, in: CGRect(x: -(iw - cw) / 2 * sx, y: -(ih - ch) / 2 * sy, width: iw * sx, height: ih * sy))
             return true
         }
         guard ok else { return nil }
@@ -416,14 +456,24 @@ enum ImageSourceImport {
         return LinearImage(width: width, height: height, channels: c, data: data)
     }
 
+    /// The field's aspect (width / height in mm) of the pane's last result.
+    static func fieldAspect(_ pane: AnalysisPane) -> Double? {
+        guard pane.analysis == "image_simulation", let j = pane.output?.json, let s = j["size"]?.nfArray,
+            let p = j["pixel_size_mm"]?.nfArray, s.count == 2, p.count == 2
+        else { return nil }
+        let a = s[0] * p[0] / (s[1] * p[1])
+        return a.isFinite && a > 0 ? a : nil
+    }
+
     /// Uses an image file as the pane's source.
     static func use(_ url: URL, in pane: AnalysisPane) -> Bool {
         guard let image = decode(url) else { return false }
         let (w, h) = targetSize(pane.value("size"))
-        guard let lin = linear(image, width: w, height: h) else { return false }
+        guard let lin = linear(image, width: w, height: h, aspect: fieldAspect(pane)) else { return false }
         var s = pane.settings
         s[fileKey] = .string(url.path)
         s["source"] = lin.sourceJSON
+        s[aspectKey] = fieldAspect(pane).map { .number($0) }
         pane.setSettings(s)
         return true
     }
@@ -432,6 +482,7 @@ enum ImageSourceImport {
     static func use(pattern: String, in pane: AnalysisPane) {
         var s = pane.settings
         s[fileKey] = nil
+        s[aspectKey] = nil
         s["source"] = .object(["kind": .string("pattern"), "pattern": .string(pattern)])
         pane.setSettings(s)
     }
@@ -444,12 +495,20 @@ enum ImageSourceImport {
     static func refresh(_ pane: AnalysisPane) -> Bool {
         guard let path = pane.settings[fileKey]?.string else { return true }
         let (w, h) = targetSize(pane.value("size"))
-        if let cur = LinearImage(source: pane.settings["source"]), cur.width == w, cur.height == h { return true }
-        guard let image = decode(URL(fileURLWithPath: path)), let lin = linear(image, width: w, height: h) else {
+        let aspect = fieldAspect(pane)
+        if let cur = LinearImage(source: pane.settings["source"]), cur.width == w, cur.height == h,
+            pane.settings[aspectKey]?.doubleValue == aspect
+        {
+            return true
+        }
+        guard let image = decode(URL(fileURLWithPath: path)), let lin = linear(image, width: w, height: h, aspect: aspect) else {
             if pane.settings["source"]?["kind"]?.string == "buffer" { pane.set("source", nil) }
             return false
         }
-        pane.set("source", lin.sourceJSON)
+        var s = pane.settings
+        s["source"] = lin.sourceJSON
+        s[aspectKey] = aspect.map { .number($0) }
+        pane.setSettings(s)
         return true
     }
 }
