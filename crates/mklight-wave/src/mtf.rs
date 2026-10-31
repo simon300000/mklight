@@ -6,10 +6,10 @@
 //! `OTF(ν) = Σ_u p(u + s)·p*(u) / Σ|p|²` with the pupil shift
 //! `s = 2ν·λF#` (normalised units; `s = 2` at the cutoff `ν_c = 1/(λF#)`).
 //! MTF = |OTF|, 1 at zero frequency. Frequencies are in cycles/mm on the
-//! image surface: for an off-axis chief ray the pupil's OTF (normal-plane
-//! frequencies) is evaluated at `B^{−T}·ν` (see the chief-ray frame in
-//! [`crate::pupil`]), so the tangential cutoff on the surface is
-//! `cosθ_c/(λF#)`.
+//! image surface. Off axis, correlation shifts are applied to the full
+//! transverse direction cosines on that surface, including the longitudinal
+//! component of the chief-frame sphere point. A linear projection by
+//! `B^{−T}` is only the small-pupil limit (see `docs/WAVE.md`).
 //!
 //! **Orientation** (CONVENTIONS §4): *tangential* frequencies run along the
 //! meridional direction of the field point (image +y on axis or for a field
@@ -19,8 +19,9 @@
 //! Three evaluation routes:
 //! * [`otf_fft`] / [`mtf_fft`]: the pupil is zero-padded to `≥ 2n`, Fourier
 //!   transformed to the PSF, squared, and transformed back. This yields the
-//!   exact discrete autocorrelation on the frequency lattice
-//!   `Δν = 1/(n·λF#)`; other frequencies are interpolated (see [`Otf::at`]).
+//!   exact discrete autocorrelation on its frequency lattice; off-axis
+//!   pupils are first resampled in sensor direction cosines. Other
+//!   frequencies are interpolated (see [`Otf::at`]).
 //! * [`mtf_direct`]: the autocorrelation evaluated directly for each
 //!   requested frequency, shifting the pupil by `s` with bilinear
 //!   interpolation of amplitude and OPD (no frequency lattice). An
@@ -28,7 +29,7 @@
 //! * [`mtf_from_psf`]: a direct DFT of a sampled PSF (any PSF: Huygens,
 //!   polychromatic, tilted planes).
 
-use mklight_core::{JobContext, MkError, MkResult};
+use mklight_core::{JobContext, MkError, MkResult, Vec3};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -151,10 +152,10 @@ pub fn circle_overlap(r1: f64, r2: f64, d: f64) -> f64 {
 /// lattice points it returns the lattice values exactly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Otf {
-    /// Grid side `M ≥ 2n`; bin `(i, j)` is the normal-plane frequency
+    /// Grid side `M ≥ 2n`; bin `(i, j)` is the stored-plane frequency
     /// `((i − M/2)·Δν, (j − M/2)·Δν)`.
     pub size: usize,
-    /// `Δν = 1/(n·λF#)` cycles/mm.
+    /// Frequency pitch in cycles/mm (`1/(n·λF#)` on axis).
     pub spacing: f64,
     /// Normalised OTF (`1` at zero frequency), row-major, centred, without
     /// the image-offset phase.
@@ -162,13 +163,14 @@ pub struct Otf {
     /// Lattice OTF of the same pupil without aberrations; `None` when the
     /// pupil has none (it then equals `data`).
     pub reference: Option<Vec<C64>>,
-    /// PSF centroid estimate (normal plane, mm, relative to the reference
+    /// PSF centroid estimate (stored plane, mm, relative to the reference
     /// point) whose linear phase is removed before interpolation.
     pub centroid_mm: [f64; 2],
     /// Image offset of the PSF reference point (mm); applied as the phase
     /// `e^{−2πiν·offset}` by [`Otf::at`].
     pub offset_mm: [f64; 2],
-    /// `B^{−T}`: image-surface frequency → normal-plane frequency.
+    /// Image-surface frequency → stored-plane frequency. Identity for
+    /// the sensor angular spectrum, including off-axis FFTs.
     pub surface_to_normal: [[f64; 2]; 2],
     /// Cutoff `1/(λF#)` (normal plane).
     pub cutoff: f64,
@@ -300,8 +302,16 @@ impl Otf {
 /// Normalised lattice OTF of `pupil` (`M = next_fast_len(2n)`, centred).
 fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<C64>)> {
     let n = pupil.n();
+    lattice_otf_samples(n, &pupil.debye_field(), pupil.energy(), ctx)
+}
+
+fn lattice_otf_samples(
+    n: usize,
+    field: &[C64],
+    energy: f64,
+    ctx: &JobContext,
+) -> MkResult<(usize, Vec<C64>)> {
     let m = next_fast_len(2 * n);
-    let field = pupil.debye_field();
     let mut buf = vec![C64::default(); m * m];
     for j in 0..n {
         buf[j * m..j * m + n].copy_from_slice(&field[j * n..(j + 1) * n]);
@@ -312,7 +322,7 @@ fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<
     fft2(&mut buf, m, Dir::Forward, m, &ctx.subrange(0.5, 1.0))?;
     // Σ_k I_k = M²·Σ|p|²; normalise by the area-weighted energy instead
     // (see `PupilFunction::energy`) and set the zero lag to exactly 1.
-    let o0 = (m * m) as f64 * pupil.energy();
+    let o0 = (m * m) as f64 * energy;
     if !(o0 > 0.0) {
         return Err(MkError::Numerical("pupil transmits no light".into()));
     }
@@ -333,6 +343,10 @@ fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<
 /// an aberrated pupil the lattice OTF without aberrations is computed too
 /// (for the interpolation, see [`Otf`]).
 pub fn otf_fft(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
+    let g = pupil.geometry();
+    if g.chief_ray[0] != 0.0 || g.chief_ray[1] != 0.0 {
+        return otf_fft_surface(pupil, ctx);
+    }
     let aberrated = pupil.opd_waves().iter().any(|&w| w != 0.0);
     let (m, data) = lattice_otf(pupil, &ctx.subrange(0.0, if aberrated { 0.5 } else { 1.0 }))?;
     let reference = if aberrated {
@@ -361,6 +375,98 @@ pub fn otf_fft(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
         offset_mm: pupil.image_offset_mm(),
         surface_to_normal: pupil.geometry().surface_to_normal_frequency(),
         cutoff: pupil.geometry().cutoff_frequency(pupil.wavelength_um()),
+    })
+}
+
+/// Resample the angular spectrum on a Cartesian sensor-frequency lattice.
+/// This makes the FFT use the same nonlinear sphere-to-sensor map as the
+/// direct integral. Translating the frequency origin only changes a PSF's
+/// carrier phase, so the bounding box may be centred independently of the
+/// chief ray.
+fn otf_fft_surface(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
+    let n = pupil.n();
+    let g = pupil.geometry();
+    let sm = g.sin_max();
+    let [eu, ev, ew] = g.chief_frame();
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    let mut min_gamma: f64 = 1.0;
+    for k in 0..n * n {
+        if pupil.coverage()[k] <= 0.0 {
+            continue;
+        }
+        let (a, b) = (sm * pupil.coord(k % n), sm * pupil.coord(k / n));
+        let gamma = (1.0 - a * a - b * b).sqrt();
+        let q = eu * a + ev * b - ew * gamma;
+        if q.z >= 0.0 {
+            return Err(MkError::InvalidParam(
+                "pupil crosses the image-surface horizon".into(),
+            ));
+        }
+        min_gamma = min_gamma.min(gamma);
+        for (axis, value) in [q.x, q.y].into_iter().enumerate() {
+            lo[axis] = lo[axis].min(value);
+            hi[axis] = hi[axis].max(value);
+        }
+    }
+    // Include the interpolation support beyond the outermost cell centres.
+    let margin = 2.0 * sm * pupil.spacing() / min_gamma;
+    let width = (hi[0] - lo[0]).max(hi[1] - lo[1]) + 2.0 * margin;
+    let pitch = width / n as f64;
+    let center = [0.5 * (hi[0] + lo[0]), 0.5 * (hi[1] + lo[1])];
+    let tau = 2.0 * std::f64::consts::PI;
+    let mut field = Vec::with_capacity(n * n);
+    let mut norm = mklight_core::math::KahanSum::default();
+    for j in 0..n {
+        ctx.check()?;
+        for i in 0..n {
+            let x = center[0] + 0.5 * width * pupil.coord(i);
+            let y = center[1] + 0.5 * width * pupil.coord(j);
+            let z2 = 1.0 - x * x - y * y;
+            if z2 <= 0.0 {
+                field.push(C64::default());
+                continue;
+            }
+            let q = Vec3::new(x, y, -z2.sqrt());
+            if q.dot(ew) >= 0.0 {
+                field.push(C64::default());
+                continue;
+            }
+            let ix = (q.dot(eu) / sm + 1.0) * n as f64 * 0.5 - 0.5;
+            let iy = (q.dot(ev) / sm + 1.0) * n as f64 * 0.5 - 0.5;
+            let (a, c, w) = sample_pupil(pupil, ix, iy);
+            let amplitude = a / -q.z;
+            field.push(C64::from_polar(amplitude, tau * w));
+            if c > 0.0 {
+                norm.add(amplitude * amplitude / c);
+            }
+        }
+        ctx.report(0.1 * (j + 1) as f64 / n as f64, "sensor angular spectrum");
+    }
+    let aberrated = pupil.opd_waves().iter().any(|&w| w != 0.0);
+    let split = if aberrated { 0.55 } else { 1.0 };
+    let (m, data) = lattice_otf_samples(n, &field, norm.value(), &ctx.subrange(0.1, split))?;
+    let reference = if aberrated {
+        field.iter_mut().for_each(|z| *z = C64::new(z.norm(), 0.0));
+        Some(lattice_otf_samples(n, &field, norm.value(), &ctx.subrange(split, 1.0))?.1)
+    } else {
+        None
+    };
+    let spacing = pitch * g.image_index / (pupil.wavelength_um() * 1e-3);
+    let c = m / 2;
+    let centroid = |z: C64| -z.arg() / (tau * spacing);
+    Ok(Otf {
+        size: m,
+        spacing,
+        centroid_mm: [
+            centroid(data[c * m + c + 1]),
+            centroid(data[(c + 1) * m + c]),
+        ],
+        data,
+        reference,
+        offset_mm: pupil.image_offset_mm(),
+        surface_to_normal: [[1.0, 0.0], [0.0, 1.0]],
+        cutoff: g.cutoff_frequency(pupil.wavelength_um()),
     })
 }
 
@@ -415,36 +521,125 @@ fn otf_and_reference(
             Ok((o, r))
         }
         MtfMethod::Direct => {
-            let t = pupil.geometry().surface_to_normal_frequency();
-            let normal: Vec<[f64; 2]> = nus
-                .iter()
-                .map(|v| {
-                    [
-                        t[0][0] * v[0] + t[0][1] * v[1],
-                        t[1][0] * v[0] + t[1][1] * v[1],
-                    ]
-                })
-                .collect();
             let sub = if with_reference { 0.5 } else { 1.0 };
             let off = pupil.image_offset_mm();
             let tau = 2.0 * std::f64::consts::PI;
-            let o = otf_direct(pupil, &normal, &ctx.subrange(0.0, sub))?
+            let o = otf_surface(pupil, nus, &ctx.subrange(0.0, sub))?
                 .into_iter()
                 .zip(nus)
                 .map(|(z, v)| z * C64::from_polar(1.0, -tau * (v[0] * off[0] + v[1] * off[1])))
                 .collect();
             let r = if with_reference {
-                otf_direct(
-                    &pupil.without_aberrations(),
-                    &normal,
-                    &ctx.subrange(0.5, 1.0),
-                )?
+                otf_surface(&pupil.without_aberrations(), nus, &ctx.subrange(0.5, 1.0))?
             } else {
                 Vec::new()
             };
             Ok((o, r))
         }
     }
+}
+
+/// Interpolate amplitude and phase separately, retaining fractional coverage.
+/// Coordinates are in lattice samples, with the first centre at zero.
+fn sample_pupil(pupil: &PupilFunction, x: f64, y: f64) -> (f64, f64, f64) {
+    let n = pupil.n() as i64;
+    let (i, j) = (x.floor() as i64, y.floor() as i64);
+    let (tx, ty) = (x - x.floor(), y - y.floor());
+    let (mut a, mut c, mut w) = (0.0, 0.0, 0.0);
+    for (dx, dy, weight) in [
+        (0, 0, (1.0 - tx) * (1.0 - ty)),
+        (1, 0, tx * (1.0 - ty)),
+        (0, 1, (1.0 - tx) * ty),
+        (1, 1, tx * ty),
+    ] {
+        let (x, y) = (i + dx, j + dy);
+        if x < 0 || y < 0 || x >= n || y >= n {
+            continue;
+        }
+        let k = (y * n + x) as usize;
+        let wc = weight * pupil.coverage()[k];
+        a += wc * pupil.amplitude()[k];
+        c += wc;
+        w += wc * pupil.opd_waves()[k];
+    }
+    (a, c, if c > 0.0 { w / c } else { 0.0 })
+}
+
+/// Autocorrelation in image-surface direction cosines. The sphere point is
+/// q = α e_u + β e_v − γ e_w. Its transverse coordinates, including −γ e_w,
+/// are the Fourier frequencies on the sensor. The Jacobian is
+/// |∂(q_x,q_y)/∂(α,β)| = |q_z|/γ, so the sensor spectrum is A/|q_z|.
+/// A constant linear projection would discard the longitudinal phase across
+/// an off-axis PSF, even when the pupil and phase are densely sampled.
+fn otf_surface(pupil: &PupilFunction, nus: &[[f64; 2]], ctx: &JobContext) -> MkResult<Vec<C64>> {
+    let g = pupil.geometry();
+    if g.chief_ray[0] == 0.0 && g.chief_ray[1] == 0.0 {
+        return otf_direct(pupil, nus, ctx);
+    }
+    let n = pupil.n();
+    let sm = g.sin_max();
+    let [eu, ev, ew] = g.chief_frame();
+    let scale = pupil.wavelength_um() * 1e-3 / g.image_index;
+    let tau = 2.0 * std::f64::consts::PI;
+    let mut norm = mklight_core::math::KahanSum::default();
+    let mut points = Vec::new();
+    for k in 0..n * n {
+        let c = pupil.coverage()[k];
+        if c <= 0.0 {
+            continue;
+        }
+        let (a, b) = (sm * pupil.coord(k % n), sm * pupil.coord(k / n));
+        let gamma = (1.0 - a * a - b * b).sqrt();
+        let q = eu * a + ev * b - ew * gamma;
+        if q.z >= 0.0 {
+            return Err(MkError::InvalidParam(
+                "pupil crosses the image-surface horizon".into(),
+            ));
+        }
+        let amp = pupil.amplitude()[k];
+        let energy = c * amp * amp / (gamma * -q.z);
+        norm.add(energy);
+        points.push((k, q, c * amp / gamma, (1.0 - c) * energy));
+    }
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    nus.par_iter()
+        .map(|nu| {
+            ctx.check()?;
+            let (mut re, mut im) = (
+                mklight_core::math::KahanSum::default(),
+                mklight_core::math::KahanSum::default(),
+            );
+            for &(k, q, weight, deficit) in &points {
+                let (x, y) = (q.x + scale * nu[0], q.y + scale * nu[1]);
+                let z2 = 1.0 - x * x - y * y;
+                if z2 <= 0.0 {
+                    continue;
+                }
+                let shifted = Vec3::new(x, y, -z2.sqrt());
+                // The inverse is on the forward hemisphere of both frames.
+                if shifted.dot(ew) >= 0.0 {
+                    continue;
+                }
+                let ix = (shifted.dot(eu) / sm + 1.0) * n as f64 * 0.5 - 0.5;
+                let iy = (shifted.dot(ev) / sm + 1.0) * n as f64 * 0.5 - 0.5;
+                let (a, _, w) = sample_pupil(pupil, ix, iy);
+                let (s, c) = (tau * (w - pupil.opd_waves()[k])).sin_cos();
+                let amplitude = weight * a / -shifted.z;
+                re.add(amplitude * c);
+                im.add(amplitude * s);
+                // The same fractional-cell zero-lag correction as the
+                // Cartesian correlation, with the local nonlinear shift.
+                re.add(
+                    deficit
+                        * (1.0 - (ix - (k % n) as f64).abs()).max(0.0)
+                        * (1.0 - (iy - (k / n) as f64).abs()).max(0.0),
+                );
+            }
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            ctx.report(d as f64 / nus.len() as f64, "image-surface OTF");
+            Ok(C64::new(re.value(), im.value()) / norm.value())
+        })
+        .collect()
 }
 
 /// Direct pupil autocorrelation `Σ_u p(u + s)·p*(u) / E` for each
