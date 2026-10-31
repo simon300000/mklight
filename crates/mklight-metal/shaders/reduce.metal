@@ -20,16 +20,21 @@ static inline float2 mkl_reduce_combine(float2 a, float2 b) {
 }
 
 // Binary tree over the group's MKL_REDUCE_THREADS values: for stride =
-// T/2 .. 1, v[i] <- v[i] (+) v[i + stride].
+// T/2 .. 1, v[i] <- v[i] (+) v[i + stride]. Strides below 32 run as SIMD
+// shuffles inside the first SIMD group, which is the same order.
 static inline float2 mkl_group_tree(threadgroup float2* v, uint tid) {
-    for (uint stride = MKL_REDUCE_THREADS / 2u; stride > 0u; stride >>= 1) {
+    for (uint stride = MKL_REDUCE_THREADS / 2u; stride >= 32u; stride >>= 1) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tid < stride) {
             v[tid] = mkl_reduce_combine(v[tid], v[tid + stride]);
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    return v[0];
+    float2 r = v[tid];
+    for (ushort stride = 16; stride > 0; stride >>= 1) {
+        r = mkl_reduce_combine(r, simd_shuffle_down(r, stride));
+    }
+    return r;
 }
 
 kernel void mkl_reduce_pass1(device const float* x [[buffer(0)]],

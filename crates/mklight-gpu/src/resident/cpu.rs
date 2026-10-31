@@ -26,6 +26,7 @@ pub fn execute<E: FpEnv>(
         systems,
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
         stats: PlanStats::default(),
+        flush_to_zero: E::FTZ,
     };
     for b in &plan.buffers {
         let slot = match b {
@@ -153,6 +154,9 @@ pub struct Execution {
     systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
     buffers: Vec<Option<Slot>>,
     pub stats: PlanStats,
+    /// The emulated f32 environment: handlers run `execute_in::<Ftz>` when
+    /// set, `execute_in::<Ieee>` otherwise.
+    pub flush_to_zero: bool,
 }
 impl Execution {
     /// Operation-cache key including the plan's full system/build/settings identity.
