@@ -1,4 +1,4 @@
-// Sequential / path ray-trace kernel (mkl_trace).
+// Local-frame trace helpers shared by trace.metal (mkl_trace) and aiming.metal.
 //
 // The MSL twin of crates/mklight-gpu/src/trace_kernel.rs, which documents
 // the algorithm and is the bit-exact CPU emulation: every function below has
@@ -9,10 +9,6 @@
 // sheet, asphere Newton classification, TIR, clipping) and double-float
 // geometry (point, direction, unnormalised normal, indices, one Newton
 // refinement of every hit), with the optical path in double-float.
-//
-// trace_overlays.metal compiles this file again as mkl_trace_overlays, with
-// the sag-overlay code, in its own translation unit: that code costs
-// mkl_trace nothing (a few percent when it shares a unit with it).
 #ifndef MKLIGHT_TRACE_SHARED
 #define MKLIGHT_TRACE_SHARED
 #include "surface_math.h"
@@ -212,7 +208,7 @@ static inline bool mkl_asphere_domain(constant MklPackedSurface& s, float3 p) {
 // Newton on the sag residual from q; 0 and t_out on success, else the
 // MKL_RAY_* failure code.
 static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, float3 d,
-                                    thread const MklTraceParams& p, thread float& t_out) {
+                                    constant MklTraceParams& p, thread float& t_out) {
     float c = s.curvature, k = s.conic;
     float st;
     float3 sp;
@@ -279,7 +275,7 @@ static inline float2 mkl_refine_t(float t1, float r, float rp) {
 
 // mklight_trace::surface::intersect from the double-float point p along d.
 static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape, MklDv p, MklDv d,
-                                 thread const MklTraceParams& prm, thread MklHit& hit) {
+                                 constant MklTraceParams& prm, thread MklHit& hit) {
     MklDv zg;
     zg.v[0] = float2(0.0f);
     zg.v[1] = float2(0.0f);
@@ -369,7 +365,7 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
 // Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
 // the reference's bracket, backtracking and Miss / NoConvergence /
 // OutsideDomain decisions in f32.
-template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,thread const MklTraceParams& prm,thread float& t) {
+template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,constant MklTraceParams& prm,thread float& t) {
     float3 seed_point;
     bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,t,seed_point);
     if (!seed_hit) t=0.0f;
@@ -406,7 +402,7 @@ template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurfac
     }
     return MKL_RAY_NOT_CONVERGED;
 }
-template<bool OVERLAYS> static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,thread const MklTraceParams& prm,thread MklHit& hit) {
+template<bool OVERLAYS> static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,constant MklTraceParams& prm,thread MklHit& hit) {
     bool overlay=OVERLAYS && (s.flags&MKL_SURF_HAS_SAG_OVERLAY)!=0u;
     if (s.shape<=MKL_SHAPE_COORD_BREAK && !overlay) return mkl_intersect_legacy(s,s.shape,p,d,prm,hit);
     constant float* data=mkl_surface_data(s,pool);
@@ -625,7 +621,11 @@ static inline float2 mkl_index(constant MklPackedSurface& s, uint w) {
     return float2(s.n_after[w], s.n_after_lo[w]);
 }
 
-// Unrounded geometry service shared by generation, tracing and later consumers.
+// Resident trace core (trace_kernel::trace_resident): unrounded hi+lo
+// position, direction and OPL, the unnormalised normal and the medium index
+// after every step. `rec.write(slot, state)` receives slot 0 (the input),
+// slot k+1 after step k, and the final state repeated for skipped slots of a
+// failed ray. steps == nullptr runs the sequential program start+1..start+n.
 struct MklRawState {
     MklDv pos, dir, normal;
     float2 opl, index;
@@ -633,22 +633,14 @@ struct MklRawState {
     uint status, last, done;
 };
 struct MklNoRecords { void write(uint, MklRawState) {} };
-struct MklLegacyRecords {
-    device float* rf; device uint* ru; uint stride, i; bool enabled;
-    void write(uint slot, MklRawState s) {
-        if (enabled) mkl_record(rf, ru, slot, stride, i,
-            mkl_report(s.pos,s.dir,s.opl,s.index,s.weight,s.status));
-    }
-};
 template<bool OVERLAYS, typename Recorder>
-static inline MklRawState mkl_trace_raw(constant MklPackedHeader& h,
+static __attribute__((always_inline)) MklRawState mkl_trace_raw(constant MklPackedHeader& h,
     constant MklPackedSurface* s, constant float* coefficients,
-    constant uint* steps, thread const MklTraceParams& prm, uint w,
+    constant uint* steps, constant MklTraceParams& prm, uint num_steps, uint w,
     MklRawState input, thread Recorder& rec) {
     const bool clip = (prm.flags & MKL_TRACE_CLIP) != 0u;
     const bool radiometry = (prm.flags & MKL_TRACE_RADIOMETRY) != 0u;
     const bool at_infinity = (h.flags & MKL_SYS_OBJECT_AT_INFINITY) != 0u;
-    const uint num_steps = prm.num_steps;
 
     MklDv pos = input.pos, dir = input.dir;
     float2 opl = input.opl;

@@ -20,6 +20,11 @@
 #define MKL_PUPIL_MISS 12u
 #define MKL_AIM_PRIMARY_UNAVAILABLE 13u
 #define MKL_AIM_RECORD_FLOATS 13u
+/* Seed table: a TABLE_SIDE² lattice of aim solves per real-aim field row over
+ * vignetted pupil coordinates [-1.125, 1.125]², node spacing 1/16; nodes
+ * beyond pupil radius 1.25 are not solved. */
+#define MKL_AIM_TABLE_SIDE 37u
+#define MKL_AIM_NODE_WORDS 6u
 /* Numeric layouts use scalar arrays: no vector ABI padding. */
 struct MklAimField {
     unsigned int system, wavelength, flags, reserved;
@@ -29,6 +34,10 @@ struct MklAimSample {
     float pupil[4];
     unsigned int field, id_lo, id_hi;
     float weight;
+};
+struct MklAimNode {
+    float aim[4];
+    unsigned int status, reserved;
 };
 struct MklAimCache {
     float source[6], chief[4], jacobian[8], residual[2];

@@ -29,6 +29,7 @@ pub fn df(b: &dyn ComputeBackend, p: &mut ResidentPlan, v: &[Df32]) -> PlanView 
     let id = p.import(buf.view());
     p.view(id).unwrap()
 }
+#[allow(clippy::too_many_arguments)]
 pub fn make_plan(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -69,7 +70,6 @@ pub fn make_plan(
             sampling: Sampling::Explicit,
             unresolved: None,
             field_wavelength: fw,
-            seed: 42,
             field_key: Some(format!("{field}:{wl}:{:?}", bytemuck::bytes_of(&spec))),
             tolerance: 1e-10,
             max_iterations: cap,

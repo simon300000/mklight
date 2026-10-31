@@ -69,16 +69,16 @@ fn write_ray(
         ray.dir_lo[1],
         ray.dir_lo[2],
     ];
-    for k in 0..15 {
-        f[k * n + i] = planes[k];
+    for (k, v) in planes.into_iter().enumerate() {
+        f[k * n + i] = v;
     }
     x.words_mut(r.indices)[i] = system;
     x.words_mut(r.indices)[n + i] = ray.wavelength;
-    for k in 0..2 {
-        x.words_mut(r.logical_ids)[k * n + i] = id[k];
+    for (k, v) in id.into_iter().enumerate() {
+        x.words_mut(r.logical_ids)[k * n + i] = v;
     }
-    for k in 0..4 {
-        x.words_mut(r.report)[k * n + i] = report[k];
+    for (k, v) in report.into_iter().enumerate() {
+        x.words_mut(r.report)[k * n + i] = v;
     }
 }
 pub(super) fn record_planes(s: ResidentState) -> ([f32; 13], [f32; 13]) {
@@ -146,14 +146,17 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
             if samples.iter().any(|s| s.field as usize >= fields.len()) {
                 return Err(bad("sample field index"));
             }
-            let key = g.field_key.as_ref().map(|k| {
-                x.cache_key(format!(
-                    "aim:{:?}:{k}:{}:{}",
-                    g.systems,
-                    g.tolerance.to_bits(),
-                    g.max_iterations
-                ))
-            });
+            let key = |what: &str| {
+                g.field_key.as_ref().map(|k| {
+                    x.cache_key(format!(
+                        "{what}:{:?}:{k}:{}:{}",
+                        g.systems,
+                        g.tolerance.to_bits(),
+                        g.max_iterations
+                    ))
+                })
+            };
+            let (seed_key, table_key) = (key("aim"), key("aim table"));
             let check = || ctl.check().is_ok();
             let make = |f| {
                 let f: &FieldSpec = f;
@@ -169,25 +172,54 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     env: Default::default(),
                 }
             };
-            let cached = if let Some(k) = &key {
-                x.cached::<Vec<ChiefSeed>>(k)?
+            let cached = match &seed_key {
+                Some(k) => x.cached::<Vec<ChiefSeed>>(k)?,
+                None => None,
+            };
+            let seeds = match cached {
+                Some(s) => s,
+                None => {
+                    let mut seeds = vec![];
+                    for (i, f) in fields.iter().enumerate() {
+                        ctl.check()?;
+                        seeds.push(make(f).prepare());
+                        ctl.report(0.05 * (i + 1) as f64 / fields.len() as f64, "chief aiming");
+                    }
+                    let seeds = Arc::new(seeds);
+                    if let Some(k) = seed_key {
+                        x.cache(k, seeds.len() * size_of::<ChiefSeed>(), seeds.clone());
+                    }
+                    seeds
+                }
+            };
+            let table = if uses_table(g) {
+                let cached = match &table_key {
+                    Some(k) => x.cached::<Vec<SeedNode>>(k)?,
+                    None => None,
+                };
+                Some(match cached {
+                    Some(t) => t,
+                    None => {
+                        let mut table = Vec::with_capacity(fields.len() * TABLE_NODES);
+                        for (row, f) in fields.iter().enumerate() {
+                            for k in 0..TABLE_NODES {
+                                ctl.check()?;
+                                table.push(make(f).node(&seeds[row], k));
+                            }
+                            ctl.report(
+                                0.05 + 0.05 * (row + 1) as f64 / fields.len() as f64,
+                                "seed table",
+                            );
+                        }
+                        let table = Arc::new(table);
+                        if let Some(k) = table_key {
+                            x.cache(k, table.len() * size_of::<SeedNode>(), table.clone());
+                        }
+                        table
+                    }
+                })
             } else {
                 None
-            };
-            let seeds = if let Some(s) = cached {
-                s
-            } else {
-                let mut seeds = vec![];
-                for (i, f) in fields.iter().enumerate() {
-                    ctl.check()?;
-                    seeds.push(make(f).prepare());
-                    ctl.report(0.1 * (i + 1) as f64 / fields.len() as f64, "chief aiming");
-                }
-                let seeds = Arc::new(seeds);
-                if let Some(k) = key {
-                    x.cache(k, seeds.len() * size_of::<ChiefSeed>(), seeds.clone());
-                }
-                seeds
             };
             for i in 0..g.output.count {
                 let sample = if matches!(g.sampling, Sampling::Explicit) {
@@ -196,8 +228,12 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     kernel::sample_at::<E>(samples[0], g.sampling, i, g.output.count)
                 };
                 ctl.check()?;
-                let f = &fields[sample.field as usize];
-                let (ray, report) = make(f).generate(&seeds[sample.field as usize], &sample);
+                let row = sample.field as usize;
+                let f = &fields[row];
+                let nodes = table
+                    .as_ref()
+                    .map(|t| &t[row * TABLE_NODES..][..TABLE_NODES]);
+                let (ray, report) = make(f).generate(&seeds[row], nodes, &sample);
                 if report[0] != 0 {
                     x.stats.fallback_count += 1;
                 }
@@ -354,9 +390,9 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                         lo: 0.0,
                     }; 4],
                 );
-                for k in 0..4 {
+                for (k, v) in values.into_iter().enumerate() {
                     x.words_mut(p.output)[(k * n + i) * 2..(k * n + i) * 2 + 2]
-                        .copy_from_slice(bytemuck::cast_slice(&[values[k]]));
+                        .copy_from_slice(bytemuck::cast_slice(&[v]));
                 }
                 if i % 128 == 0 {
                     ctl.report((i + 1) as f64 / n as f64, "pupil projection");

@@ -80,6 +80,44 @@ fn all_samples_both_libraries() {
     }
 }
 
+/// The seed-table path (plans with many rays per field row) on the device:
+/// bitwise equal to the CPU-f32 specification and within the f64 gates.
+#[test]
+fn seed_table_matches_specification_and_reference() {
+    let gpu = backend(LibraryChoice::Precompiled);
+    let cpu = CpuF32Backend::matching(&gpu.precision().probe);
+    let points = (PupilSampling::Grid { n: 64 }).points();
+    assert!(points.len() >= aiming::TABLE_MIN_RAYS_PER_ROW);
+    for model in [samples::cooke_triplet(), samples::double_gauss()] {
+        let mut model = model;
+        model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+        let t = testutil::tracer(model);
+        let field = t.fields().len() - 1;
+        let (p, h) = make_plan(&gpu, &t, field, 1, &points, false, 40, true);
+        let (pc, hc) = make_plan(&cpu, &t, field, 1, &points, false, 40, true);
+        let r = gpu
+            .submit_plan(p, &JobContext::new())
+            .unwrap()
+            .wait()
+            .unwrap();
+        let rc = cpu
+            .submit_plan(pc, &JobContext::new())
+            .unwrap()
+            .wait()
+            .unwrap();
+        let data = read_all(&gpu, &r);
+        bits(&data, &read_all(&cpu, &rc));
+        let e = check_f64(&t, field, 1, &points, &data, false, true);
+        assert_eq!(e.fallback, 0);
+        let n = points.len();
+        let iterations = uints(&data[1])[n..2 * n].iter().sum::<u32>() as f64 / n as f64;
+        assert!(iterations < 1.5, "mean Newton iterations {iterations}");
+        eprintln!("seed table f={field} iterations={iterations} {e:?}");
+        gpu.release_systems(h).unwrap();
+        cpu.release_systems(hc).unwrap();
+    }
+}
+
 #[test]
 fn fixtures_failures_and_cancellation() {
     use std::time::{Duration, Instant};
@@ -169,7 +207,7 @@ fn fixtures_failures_and_cancellation() {
         .unwrap();
     let data = read_all(&gpu, &r);
     let unresolved = aiming::unresolved(uints(&data[1]), uints(&data[2]));
-    assert!(unresolved.len() > 0 && unresolved.len() < points.len());
+    assert!(!unresolved.is_empty() && unresolved.len() < points.len());
     assert_eq!(r.stats.fallback_count, unresolved.len() as u64);
     eprintln!(
         "P1_FAILURES reason=iteration_cap count={} total={} polished={}",

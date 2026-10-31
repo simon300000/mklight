@@ -1,15 +1,18 @@
-//! Encoders for P1. Only a four-byte failure count crosses to host during
-//! generation; optical outputs and cached chief seeds remain device-resident.
+//! Encoders for P1. Generation copies only a four-byte failure count to the
+//! host; optical outputs, chief seeds and seed tables stay device-resident.
 use crate::{
     SharedBuffer,
     backend::Uploaded,
-    context::{Encoder, PipelineKey},
+    context::{CommandStats, Encoder, PipelineKey},
     resident::{Execution, Lease},
 };
 use bytemuck::{Pod, Zeroable};
 use mklight_core::MkResult;
-use mklight_gpu::{aiming::*, consts::*, layout::TraceParams, pending::JobControl, resident::*};
-use std::{sync::Arc, time::Instant};
+use mklight_gpu::{
+    aiming::*, consts::*, layout::TraceParams, pending::JobControl,
+    resident::immutable::OperationCacheKey, resident::*,
+};
+use std::{ops::Deref, sync::Arc, time::Instant};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct AimParams {
@@ -20,7 +23,7 @@ struct AimParams {
     systems: u32,
     cap: u32,
     tolerance: f32,
-    reserved: u32,
+    table: u32,
     pattern: u32,
     side: u32,
     extent: [f32; 2],
@@ -110,6 +113,19 @@ impl Systems {
             }
         }
     }
+    /// The kernel variant: the overlay code only for systems that have sag
+    /// overlays, or device-built systems whose surfaces the host cannot see.
+    fn kernel(&self, plain: &'static str, overlays: &'static str) -> PipelineKey {
+        let any = match self {
+            Self::Uploaded(u) => u
+                .set
+                .surfaces
+                .iter()
+                .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
+            Self::Resident { .. } => true,
+        };
+        PipelineKey::plain(if any { overlays } else { plain })
+    }
 }
 fn take_rays(x: &mut Execution<'_>, r: &ResidentRays) -> [Lease; 4] {
     [
@@ -127,28 +143,103 @@ fn put_rays(x: &mut Execution<'_>, r: &ResidentRays, b: [Lease; 4]) {
         x.put_output(id, b);
     }
 }
-enum ChiefSeeds {
+/// Per-field-row data (chief seeds, seed tables): cached across plans when
+/// the request names its immutable fields, otherwise plan-local.
+enum Rows {
     Cached(Arc<SharedBuffer<u32>>),
-    Temporary(Lease),
+    Local(Lease),
 }
-impl ChiefSeeds {
-    fn buffer(&self) -> &SharedBuffer<u32> {
+impl Deref for Rows {
+    type Target = SharedBuffer<u32>;
+    fn deref(&self) -> &SharedBuffer<u32> {
         match self {
             Self::Cached(b) => b,
-            Self::Temporary(b) => b,
+            Self::Local(b) => b,
         }
     }
-    fn buffer_mut(&mut self) -> &mut SharedBuffer<u32> {
-        match self {
-            Self::Cached(b) => Arc::get_mut(b).expect("unpublished chief buffer"),
-            Self::Temporary(b) => b,
-        }
+}
+fn rows(
+    x: &mut Execution<'_>,
+    key: Option<OperationCacheKey>,
+    words: usize,
+    build: impl FnOnce(&mut Execution<'_>, &mut SharedBuffer<u32>) -> MkResult<()>,
+) -> MkResult<Rows> {
+    if let Some(k) = &key
+        && let Some(b) = x.cached::<SharedBuffer<u32>>(k)?
+    {
+        return Ok(Rows::Cached(b));
     }
+    Ok(match key {
+        Some(k) => {
+            x.stats.allocations += 1;
+            let mut b = x.gpu.buffer_filled(words, |_| {})?;
+            build(x, &mut b)?;
+            let b = Arc::new(b);
+            x.cache(k, words * 4, b.clone());
+            Rows::Cached(b)
+        }
+        None => {
+            let mut b = x.allocate(words)?;
+            build(x, &mut b)?;
+            Rows::Local(b)
+        }
+    })
+}
+/// Device seconds aimed for per Newton command: commands stay well inside
+/// the cancellation budget while amortising submission latency.
+const AIM_COMMAND_SECONDS: f64 = 0.015;
+/// Rays per trace/projection command (bounded work per ray).
+const TRACE_CHUNK: usize = 1 << 18;
+const PROJECT_CHUNK: usize = 1 << 20;
+
+/// Newton work per thread varies by orders of magnitude between systems and
+/// pupil regions, so commands follow the measured device time: they start
+/// small, then grow at most eightfold towards [`AIM_COMMAND_SECONDS`].
+/// Threads are independent, so the split never changes a result.
+fn newton_commands(
+    x: &mut Execution<'_>,
+    stage: &mut StageStats,
+    ctl: &JobControl,
+    n: usize,
+    progress: (f64, f64, &str),
+    mut encode: impl FnMut(&Encoder<'_>, &Execution<'_>, AimParams),
+) -> MkResult<()> {
+    const MIN: usize = 4096;
+    const MAX: usize = 1 << 18;
+    let (mut offset, mut next) = (0, MIN);
+    while offset < n {
+        ctl.check()?;
+        let count = (n - offset).min(next);
+        let p = AimParams {
+            count: count as u32,
+            offset: offset as u32,
+            ..Zeroable::zeroed()
+        };
+        let wall = Instant::now();
+        // SAFETY: callers bind plan-validated extents; kernels check every
+        // device-provided field, system and wavelength index.
+        let cs = unsafe {
+            x.gpu.run(progress.2, |e| {
+                encode(e, x, p);
+                Ok(())
+            })?
+        };
+        account(x, stage, cs, wall, size_of::<AimParams>());
+        let fit = (count as f64 * AIM_COMMAND_SECONDS / cs.gpu_seconds.max(1e-6)) as usize;
+        next = fit.clamp(MIN, (8 * count).clamp(MIN, MAX));
+        offset += count;
+        ctl.check()?;
+        ctl.report(
+            progress.0 + progress.1 * offset as f64 / n as f64,
+            progress.2,
+        );
+    }
+    Ok(())
 }
 fn account(
     x: &mut Execution<'_>,
     stage: &mut StageStats,
-    cs: crate::CommandStats,
+    cs: CommandStats,
     start: Instant,
     bytes: usize,
 ) {
@@ -169,120 +260,123 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let systems = Systems::new(x, &g.systems)?;
             let nf = g.field_wavelength.desc.shape[0];
             let n = g.output.count;
-            let key = g.field_key.as_ref().map(|k| {
-                x.cache_key(format!(
-                    "aim:{:?}:{k}:{}:{}",
-                    g.systems,
-                    g.tolerance.to_bits(),
-                    g.max_iterations
-                ))
-            });
-            let cached = if let Some(k) = &key {
-                x.cached::<SharedBuffer<u32>>(k)?
-            } else {
-                None
+            let (pattern, side, extent) = g.sampling.parameters();
+            let params = |p: AimParams| AimParams {
+                stride: n as u32,
+                fields: nf as u32,
+                systems: systems.count(),
+                cap: g.max_iterations,
+                tolerance: g.tolerance,
+                pattern,
+                side,
+                extent: [extent.hi, extent.lo],
+                ..p
             };
-            let seeds = if let Some(seeds) = cached {
-                ChiefSeeds::Cached(seeds)
-            } else {
-                let mut seeds = if key.is_some() {
-                    x.stats.allocations += 1;
-                    ChiefSeeds::Cached(Arc::new(
-                        x.gpu
-                            .buffer_filled(nf * MKL_AIM_CACHE_WORDS as usize, |_| {})?,
+            let newton = kernel::newton_params();
+            let key = |x: &Execution<'_>, what: &str| {
+                g.field_key.as_ref().map(|k| {
+                    x.cache_key(format!(
+                        "{what}:{:?}:{k}:{}:{}",
+                        g.systems,
+                        g.tolerance.to_bits(),
+                        g.max_iterations
                     ))
-                } else {
-                    ChiefSeeds::Temporary(x.allocate(nf * MKL_AIM_CACHE_WORDS as usize)?)
-                };
-                let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_aim_chiefs"))?;
-                for offset in (0..nf).step_by(16) {
-                    ctl.check()?;
-                    let count = (nf - offset).min(16);
-                    let p = AimParams {
-                        count: count as u32,
-                        offset: offset as u32,
-                        stride: n as u32,
-                        fields: nf as u32,
-                        systems: systems.count(),
-                        cap: g.max_iterations,
-                        tolerance: g.tolerance,
-                        reserved: 0,
-                        pattern: g.sampling.parameters().0,
-                        side: g.sampling.parameters().1,
-                        extent: [g.sampling.parameters().2.hi, g.sampling.parameters().2.lo],
-                    };
-                    let wall = Instant::now();
-                    // SAFETY: field rows and destination extent were validated;
-                    // the kernel checks field system/wavelength indices.
-                    let cs = unsafe {
-                        x.gpu.run("aim chiefs", |e| {
+                })
+            };
+            let seed_key = key(x, "aim");
+            let seeds = rows(
+                x,
+                seed_key,
+                nf * MKL_AIM_CACHE_WORDS as usize,
+                |x, seeds| {
+                    let pso = x
+                        .gpu
+                        .pipeline(&systems.kernel("mkl_aim_chiefs", "mkl_aim_chiefs_overlays"))?;
+                    newton_commands(
+                        x,
+                        &mut stage,
+                        ctl,
+                        nf,
+                        (0.0, 0.05, "chief aiming"),
+                        |e, x, p| {
                             systems.bind(e, x);
                             bind(e, 3, x, &g.field_wavelength);
-                            e.set_buffer_mut(4, seeds.buffer_mut(), 0);
-                            e.set_bytes(5, &p);
-                            e.dispatch_1d(&pso, count);
-                            Ok(())
-                        })?
-                    };
-                    account(x, &mut stage, cs, wall, size_of::<AimParams>());
-                    ctl.report(0.1 * (offset + count) as f64 / nf as f64, "chief aiming");
-                }
-                if let (Some(k), ChiefSeeds::Cached(b)) = (key, &seeds) {
-                    x.cache(k, nf * MKL_AIM_CACHE_WORDS as usize * 4, b.clone());
-                }
-                seeds
+                            e.set_buffer_mut(4, seeds, 0);
+                            e.set_bytes(5, &params(p));
+                            e.set_bytes(6, &newton);
+                            e.dispatch_1d(&pso, p.count as usize);
+                        },
+                    )
+                },
+            )?;
+            let table = if uses_table(g) {
+                let table_key = key(x, "aim table");
+                let words = nf * TABLE_NODES * MKL_AIM_NODE_WORDS as usize;
+                Some(rows(x, table_key, words, |x, table| {
+                    let pso = x
+                        .gpu
+                        .pipeline(&systems.kernel("mkl_aim_table", "mkl_aim_table_overlays"))?;
+                    newton_commands(
+                        x,
+                        &mut stage,
+                        ctl,
+                        nf * TABLE_NODES,
+                        (0.05, 0.05, "seed table"),
+                        |e, x, p| {
+                            systems.bind(e, x);
+                            bind(e, 3, x, &g.field_wavelength);
+                            e.set_buffer(4, &seeds, 0);
+                            e.set_bytes(5, &params(p));
+                            e.set_bytes(6, &newton);
+                            e.set_buffer_mut(7, table, 0);
+                            e.dispatch_1d(&pso, p.count as usize);
+                        },
+                    )
+                })?)
+            } else {
+                None
             };
             let mut out = take_rays(x, &g.output);
             let mut failures = x.allocate(1)?;
             failures.as_mut_slice()[0] = 0;
             x.stats.uploaded_bytes += 4;
-            let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_generate_aim"))?;
-            // Bounded Newton commands. Independent rays make chunking exact.
-            for offset in (0..n).step_by(4096) {
-                ctl.check()?;
-                let count = (n - offset).min(4096);
-                let p = AimParams {
-                    count: count as u32,
-                    offset: offset as u32,
-                    stride: n as u32,
-                    fields: nf as u32,
-                    systems: systems.count(),
-                    cap: g.max_iterations,
-                    tolerance: g.tolerance,
-                    reserved: 0,
-                    pattern: g.sampling.parameters().0,
-                    side: g.sampling.parameters().1,
-                    extent: [g.sampling.parameters().2.hi, g.sampling.parameters().2.lo],
-                };
-                let wall = Instant::now();
-                let [ff, uu, ids, reports] = &mut out;
-                // SAFETY: all bindings are disjoint validated plan leases;
-                // sample field indices are checked in the kernel.
-                let cs = unsafe {
-                    x.gpu.run("generate aim", |e| {
-                        systems.bind(e, x);
-                        bind(e, 3, x, &g.field_wavelength);
-                        e.set_buffer(4, seeds.buffer(), 0);
-                        e.set_bytes(5, &p);
-                        bind(e, 6, x, &g.samples);
-                        e.set_buffer_mut(7, ff, 0);
-                        e.set_buffer_mut(8, uu, 0);
-                        e.set_buffer_mut(9, ids, 0);
-                        e.set_buffer_mut(10, reports, 0);
-                        e.set_buffer_mut(11, &mut failures, 0);
-                        e.dispatch_1d(&pso, count);
-                        Ok(())
-                    })?
-                };
-                account(x, &mut stage, cs, wall, size_of::<AimParams>());
-                ctl.check()?;
-                ctl.report(
-                    0.1 + 0.9 * (offset + count) as f64 / n as f64,
-                    "pupil aiming",
-                );
-            }
-            if let ChiefSeeds::Temporary(b) = seeds {
-                x.recycle(b);
+            let pso = x
+                .gpu
+                .pipeline(&systems.kernel("mkl_generate_aim", "mkl_generate_aim_overlays"))?;
+            newton_commands(
+                x,
+                &mut stage,
+                ctl,
+                n,
+                (0.1, 0.9, "pupil aiming"),
+                |e, x, p| {
+                    let [ff, uu, ids, reports] = &mut out;
+                    systems.bind(e, x);
+                    bind(e, 3, x, &g.field_wavelength);
+                    e.set_buffer(4, &seeds, 0);
+                    e.set_bytes(
+                        5,
+                        &AimParams {
+                            table: u32::from(table.is_some()),
+                            ..params(p)
+                        },
+                    );
+                    bind(e, 6, x, &g.samples);
+                    e.set_buffer_mut(7, ff, 0);
+                    e.set_buffer_mut(8, uu, 0);
+                    e.set_buffer_mut(9, ids, 0);
+                    e.set_buffer_mut(10, reports, 0);
+                    e.set_buffer_mut(11, &mut failures, 0);
+                    e.set_bytes(12, &newton);
+                    // Without a table the binding is never read.
+                    e.set_buffer(13, table.as_deref().unwrap_or(&seeds), 0);
+                    e.dispatch_1d(&pso, p.count as usize);
+                },
+            )?;
+            for b in [Some(seeds), table].into_iter().flatten() {
+                if let Rows::Local(b) = b {
+                    x.recycle(b);
+                }
             }
             x.stats.fallback_count += failures.as_slice()[0] as u64;
             x.stats.readback_bytes += 4;
@@ -319,10 +413,17 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             } else {
                 x.allocate(0)?
             };
-            let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_trace_resident"))?;
-            for offset in (0..n).step_by(65536) {
+            let pso = x.gpu.pipeline(&if t.output.records.is_some() {
+                systems.kernel(
+                    "mkl_trace_resident_records",
+                    "mkl_trace_resident_overlays_records",
+                )
+            } else {
+                systems.kernel("mkl_trace_resident", "mkl_trace_resident_overlays")
+            })?;
+            for offset in (0..n).step_by(TRACE_CHUNK) {
                 ctl.check()?;
-                let count = (n - offset).min(65536);
+                let count = (n - offset).min(TRACE_CHUNK);
                 let p = ResidentTraceParams {
                     trace: TraceParams {
                         num_rays: count as u32,
@@ -343,7 +444,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             } else {
                                 0
                             },
-                        ..Default::default()
                     },
                     offset: offset as u32,
                     systems: systems.count(),
@@ -396,9 +496,9 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let mut out = x.take_output(q.output);
             let mut status = x.take_output(q.status);
             let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_project_pupil"))?;
-            for offset in (0..n).step_by(65536) {
+            for offset in (0..n).step_by(PROJECT_CHUNK) {
                 ctl.check()?;
-                let count = (n - offset).min(65536);
+                let count = (n - offset).min(PROJECT_CHUNK);
                 let r = &q.reference;
                 let p = ProjectParams {
                     radius: [r.radius.hi, r.radius.lo],
@@ -441,6 +541,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     ctl.check()
 }
 
+/// Stable unresolved-index compaction: count, prefix and scatter as three
+/// serial dispatches of one command.
 fn compact(
     x: &mut Execution<'_>,
     report: BufferId,
@@ -449,35 +551,37 @@ fn compact(
     ctl: &JobControl,
     stage: &mut StageStats,
 ) -> MkResult<()> {
+    ctl.check()?;
     let groups = n.div_ceil(256);
     let mut counts = x.allocate(groups)?;
     let mut sparse = x.take_output(output);
-    for pass in 0..3 {
-        ctl.check()?;
-        let kernel = ["mkl_aim_count", "mkl_aim_prefix", "mkl_aim_scatter"][pass];
-        let pso = x.gpu.pipeline(&PipelineKey::plain(kernel))?;
-        let wall = Instant::now();
-        // SAFETY: plan validation fixes sparse size, and each group owns a
-        // disjoint source range and prefix-selected destination range.
-        let cs = unsafe {
-            x.gpu.run(kernel, |e| {
-                if pass == 1 {
-                    e.set_buffer_mut(0, &mut counts, 0);
-                    e.set_buffer_mut(1, &mut sparse, 0);
-                    e.set_bytes(2, &(groups as u32));
-                    e.dispatch_1d(&pso, 1);
-                } else {
-                    bind(e, 0, x, &view(report, ElementType::U32));
-                    e.set_buffer_mut(1, &mut counts, 0);
-                    e.set_buffer_mut(2, &mut sparse, 0);
-                    e.set_bytes(3, &(n as u32));
-                    e.dispatch_1d(&pso, groups.max(1));
-                }
-                Ok(())
-            })?
-        };
-        account(x, stage, cs, wall, 4);
-    }
+    let [count, prefix, scatter] = ["mkl_aim_count", "mkl_aim_prefix", "mkl_aim_scatter"]
+        .map(|k| x.gpu.pipeline(&PipelineKey::plain(k)));
+    let (count, prefix, scatter) = (count?, prefix?, scatter?);
+    let wall = Instant::now();
+    // SAFETY: plan validation fixes the sparse size; each group owns a
+    // disjoint source range and prefix-selected destination range, and the
+    // serial dispatches of one encoder complete in order.
+    let cs = unsafe {
+        x.gpu.run("aim compaction", |e| {
+            bind(e, 0, x, &view(report, ElementType::U32));
+            e.set_buffer_mut(1, &mut counts, 0);
+            e.set_buffer_mut(2, &mut sparse, 0);
+            e.set_bytes(3, &(n as u32));
+            e.dispatch_1d(&count, groups.max(1));
+            e.set_buffer_mut(0, &mut counts, 0);
+            e.set_buffer_mut(1, &mut sparse, 0);
+            e.set_bytes(2, &(groups as u32));
+            e.dispatch_1d(&prefix, 1);
+            bind(e, 0, x, &view(report, ElementType::U32));
+            e.set_buffer_mut(1, &mut counts, 0);
+            e.set_buffer_mut(2, &mut sparse, 0);
+            e.set_bytes(3, &(n as u32));
+            e.dispatch_1d(&scatter, groups.max(1));
+            Ok(())
+        })?
+    };
+    account(x, stage, cs, wall, 8);
     x.recycle(counts);
     x.put_output(output, sparse);
     Ok(())

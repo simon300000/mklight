@@ -76,6 +76,32 @@ fn extended_fixtures_and_failed_iterations() {
     cpu.release_systems(h).unwrap();
 }
 
+/// Plans with enough rays per field row aim from the interpolated seed table:
+/// the same rays as the f64 reference, in about two stop traces per ray
+/// (chief-seeded Newton needs four to six on this field).
+#[test]
+fn seed_table_reaches_reference_rays_in_fewer_iterations() {
+    let cpu = CpuF32Backend::new();
+    let mut model = samples::cooke_triplet();
+    model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+    let t = testutil::tracer(model);
+    let points = (PupilSampling::Grid { n: 64 }).points();
+    assert!(points.len() >= aiming::TABLE_MIN_RAYS_PER_ROW);
+    let (p, h) = make_plan(&cpu, &t, 2, 1, &points, false, 40, true);
+    let r = cpu
+        .submit_plan(p, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    let data = read_all(&cpu, &r);
+    let e = check_f64(&t, 2, 1, &points, &data, false, true);
+    assert_eq!(e.fallback, 0);
+    let n = points.len();
+    let iterations = uints(&data[1])[n..2 * n].iter().sum::<u32>() as f64 / n as f64;
+    assert!(iterations < 1.5, "mean Newton iterations {iterations}");
+    cpu.release_systems(h).unwrap();
+}
+
 #[test]
 fn projection_sheets_centroid_and_telecentric_known_answers() {
     use aiming::*;

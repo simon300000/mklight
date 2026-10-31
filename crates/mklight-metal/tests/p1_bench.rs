@@ -1,182 +1,363 @@
+//! P1 end-to-end benchmark: resident aiming + trace (+ OPD for pupil grids)
+//! against the unchanged CPU f64 reference on all cores, with matched
+//! systems, fields, wavelengths, pupil points and settings.
+//! `cargo test --release -p mklight-metal --test p1_bench -- --ignored --nocapture --test-threads=1`
+//! (`P1_BENCH_SAMPLES=cooke_triplet,...` and `P1_BENCH_RUNS` override defaults).
 #![cfg(target_os = "macos")]
 #[path = "../../mklight-gpu/tests/p1_support.rs"]
 mod support;
-use mklight_core::{JobContext, RayAiming, Vec3, samples};
-use mklight_gpu::{resident::*, *};
+use mklight_core::{JobContext, OpticalSystem, RayAiming, samples};
+use mklight_gpu::{aiming::*, resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use mklight_trace::{PupilSampling, SequentialTracer};
 use rayon::prelude::*;
 use std::{hint::black_box, time::Instant};
 use support::*;
-fn legacy_opd(r: &TraceResult, i: usize, reference: &mklight_trace::OpdReference) -> f64 {
-    if r.status[i] != 0 {
-        return f64::NAN;
-    }
-    let w = Vec3::new(r.x[i] as f64, r.y[i] as f64, r.z[i] as f64) - reference.center;
-    let d = Vec3::new(r.l[i] as f64, r.m[i] as f64, r.n[i] as f64);
-    let b = d.dot(w);
-    let p2 = w.cross(d).norm2();
-    let radius = reference.s_exit_pupil.abs();
-    let corr = if radius.is_finite() {
-        if p2 > radius * radius {
-            return f64::NAN;
-        }
-        reference.s_exit_pupil.signum() * p2 / (radius + (radius * radius - p2).sqrt())
-    } else {
-        0.
-    };
-    ((reference.chief_opl.hi - r.opl_hi[i] as f64)
-        + (reference.chief_opl.lo - r.opl_lo[i] as f64)
-        + reference.n_image * (b + corr))
-        / (reference.wavelength_um * 1e-3)
+
+/// Cooke triplet pushed from 20° to a 25° half field (`wide_field`), and to
+/// 28° (`wide_field_28`), where about a sixth of the edge-field pupil cannot
+/// reach the stop: every such ray exhausts the reference Newton schedule.
+fn wide_field(degrees: f64) -> OpticalSystem {
+    let mut m = samples::cooke_triplet();
+    m.fields.fields.last_mut().unwrap().y = degrees;
+    m
 }
-fn old(
+
+struct Case {
+    /// (field, wavelength) rows and their pupil points.
+    rows: Vec<(usize, usize)>,
+    points: Vec<[f64; 2]>,
+    opd: bool,
+}
+
+/// A plan generating `points` for every row (row-major), tracing to the image
+/// and, for one-row cases, projecting OPD. Returns the plan and the outputs to
+/// read back.
+fn plan(
     gpu: &MetalBackend,
     t: &SequentialTracer,
-    field: usize,
-    wl: usize,
-    points: &[[f64; 2]],
     h: SystemHandle,
-) -> (f64, f64, f64, usize) {
-    let total = Instant::now();
-    let generated: Vec<_> = points
-        .par_iter()
-        .map(|p| t.generate(t.field(field), wl, p[0], p[1]))
+    case: &Case,
+    key: Option<String>,
+) -> ResidentPlan {
+    let mut p =
+        ResidentPlan::new(mklight_core::Snapshot::new(t.system().system().clone()).unwrap());
+    let specs: Vec<_> = case
+        .rows
+        .iter()
+        .map(|&(f, w)| {
+            FieldSpec::new(
+                t.system(),
+                t.paraxial(),
+                t.field(f).point,
+                0,
+                w as u32,
+                t.aiming(),
+            )
+            .unwrap()
+        })
         .collect();
-    let mut rays = RayBatch::with_capacity(points.len());
-    let mut failed = 0;
-    for r in generated {
-        match r {
-            Ok(g) => {
-                let (p, d) = (g.ray.pos, g.ray.dir);
-                rays.push_f64([p.x, p.y, p.z], [d.x, d.y, d.z], wl as u32);
-            }
-            Err(_) => failed += 1,
-        }
-    }
-    let prep = total.elapsed().as_secs_f64();
-    let mut request = TraceRequest::new(h, rays, 0, t.system().image_index() as u32);
-    request.radiometry = Radiometry::Off;
-    let result = gpu
-        .run(Job::Trace(Box::new(request)), &JobContext::new())
+    let fw = upload(gpu, &mut p, specs.len(), &specs);
+    let samples: Vec<_> = (0..case.rows.len())
+        .flat_map(|r| case.points.iter().map(move |&pt| (r, pt)))
+        .enumerate()
+        .map(|(i, (r, pt))| Sample::new(pt, r as u32, i as u64))
+        .collect();
+    let n = samples.len();
+    let sv = upload(gpu, &mut p, n, &samples);
+    let generated = rays(&mut p, n);
+    p.operations
+        .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
+            systems: SystemSet::Uploaded(h),
+            samples: sv,
+            sampling: Sampling::Explicit,
+            unresolved: None,
+            field_wavelength: fw,
+            field_key: key,
+            tolerance: 1e-10,
+            max_iterations: 40,
+            output: generated.clone(),
+        })));
+    let steps: Vec<u32> = (1..=t.system().image_index() as u32).collect();
+    let buf = gpu
+        .upload_buffer(
+            BufferDesc::new(ElementType::U32, [steps.len()]),
+            BufferData::U32(steps),
+        )
         .unwrap();
-    let JobOutput::Trace(r) = result.output else {
-        panic!()
-    };
-    let reference = t.opd_reference(t.field(field), wl).unwrap();
-    let v: Vec<_> = (0..r.len())
-        .map(|i| legacy_opd(&r, i, &reference))
-        .collect();
-    black_box(v);
-    (
-        total.elapsed().as_secs_f64(),
-        result.stats.device_seconds,
-        prep,
-        failed,
-    )
+    let si = p.import(buf.view());
+    let hit = hits(&mut p, n, 0);
+    p.operations
+        .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
+            systems: SystemSet::Uploaded(h),
+            input: generated.clone(),
+            steps: p.view(si).unwrap(),
+            start_surface: 0,
+            apply_apertures: true,
+            radiometry: 0,
+            newton: Default::default(),
+            output: hit.clone(),
+        })));
+    p.outputs = vec![generated.report, hit.status];
+    if case.opd {
+        let (f, w) = case.rows[0];
+        let r = t.opd_reference(t.field(f), w).unwrap();
+        let cv = [
+            r.center.x,
+            r.center.y,
+            r.center.z,
+            r.chief_dir.x,
+            r.chief_dir.y,
+            r.chief_dir.z,
+            r.chief_opl.value(),
+        ]
+        .map(Df32::from_f64);
+        let chief = df(gpu, &mut p, &cv);
+        let centre = df(gpu, &mut p, &cv[..3]);
+        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [4, n]));
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        p.operations
+            .push(ResidentOp::Aiming(Request::ProjectPupil(ProjectPupil {
+                hits: hit,
+                reference: PupilReference {
+                    chief,
+                    centre,
+                    radius: Df32::from_f64(r.s_exit_pupil.abs()),
+                    image_index: Df32::from_f64(r.n_image),
+                    wavelength_um: Df32::from_f64(r.wavelength_um),
+                    sphere_sheet: if r.s_exit_pupil < 0.0 { -1 } else { 1 },
+                    telecentric: !r.s_exit_pupil.is_finite(),
+                },
+                output,
+                status,
+            })));
+        p.outputs = vec![generated.report, output, status];
+    }
+    p
 }
+
+/// CPU f64 reference: generate (aim) and trace every ray, plus OPD.
+fn cpu_run(t: &SequentialTracer, case: &Case) -> Vec<Option<f64>> {
+    let refs: Vec<_> = case
+        .rows
+        .iter()
+        .map(|&(f, w)| case.opd.then(|| t.opd_reference(t.field(f), w).unwrap()))
+        .collect();
+    let opts = t.options();
+    (0..case.rows.len() * case.points.len())
+        .into_par_iter()
+        .map(|i| {
+            let r = i / case.points.len();
+            let (f, w) = case.rows[r];
+            let p = case.points[i % case.points.len()];
+            let traced = t.trace(t.field(f), w, p[0], p[1], &opts);
+            match &refs[r] {
+                Some(reference) => reference.opd_waves(&traced),
+                None => traced.status.is_ok().then_some(0.0),
+            }
+        })
+        .collect()
+}
+
+fn stats(mut v: Vec<f64>) -> (f64, f64) {
+    v.sort_by(f64::total_cmp);
+    let p95 = v[((v.len() as f64 * 0.95).ceil() as usize).clamp(1, v.len()) - 1];
+    (v[v.len() / 2] * 1e3, p95 * 1e3)
+}
+
 #[test]
-#[ignore = "P1 matched end-to-end benchmark; host idle, release, one test thread"]
-fn matched_generation_trace_opd() {
-    let init = Instant::now();
+#[ignore = "P1 benchmark; idle host, release, one test thread"]
+fn aim_trace_opd_matrix() {
     let gpu = MetalBackend::with_options(&MetalOptions {
         library: LibraryChoice::Precompiled,
         ..Default::default()
     })
     .unwrap()
     .expect("benchmark requires host Metal");
+    let runs: usize = std::env::var("P1_BENCH_RUNS").map_or(10, |v| v.parse().unwrap());
+    let names =
+        std::env::var("P1_BENCH_SAMPLES").unwrap_or("double_gauss,cooke_triplet,wide_field".into());
     eprintln!(
-        "P1_SETUP {}",
-        serde_json::json!({"seconds":init.elapsed().as_secs_f64(),"device":gpu.info(),"precision":gpu.precision(),"threads":rayon::current_num_threads(),"seed":42})
+        "P1_SETUP device={} build={} threads={} runs={runs}",
+        gpu.info().name,
+        gpu.precision().kernel_build,
+        rayon::current_num_threads()
     );
-    let dense = std::env::var("P1_BENCH_DENSE").is_ok();
-    for (name, model) in samples::all() {
-        let mut sides = if dense { vec![] } else { vec![12, 113] };
-        if dense
-            && [
-                "singlet",
-                "cooke_triplet",
-                "double_gauss",
-                "newtonian",
-                "relay",
-                "hybrid_doe",
-            ]
-            .contains(&name)
-        {
-            sides.push(1129);
-        }
-        for side in sides {
-            for aiming in [RayAiming::Off, RayAiming::Real { tolerance: 1e-10 }] {
-                let setup = Instant::now();
-                let mut model = model.clone();
-                model.ray_aiming = aiming;
-                let t = testutil::tracer(model);
-                let field = t.fields().len() - 1;
-                let wl = t.system().primary_wavelength;
-                let points = (PupilSampling::Grid { n: side }).points();
-                let n = points.len();
-                let reference = t.opd_reference(t.field(field), wl).unwrap();
-                let reference_setup = setup.elapsed().as_secs_f64();
-                let setup = Instant::now();
-                let (mut p, h) = make_plan(&gpu, &t, field, wl, &points, false, 40, true);
-                p.outputs = p.outputs[5..].to_vec();
-                let prepare = setup.elapsed().as_secs_f64();
-                for run in 0..11 {
-                    let wall = Instant::now();
-                    let cpu: Vec<_> = points
-                        .par_iter()
-                        .map(|p| {
-                            let r = t.trace(t.field(field), wl, p[0], p[1], &t.options());
-                            reference.opd_waves(&r)
-                        })
-                        .collect();
-                    black_box(&cpu);
-                    let cpu_values = cpu;
-                    let cpu = wall.elapsed().as_secs_f64();
-                    let (old_wall, old_device, old_prepare, old_failed) =
-                        old(&gpu, &t, field, wl, &points, h);
-                    let wall = Instant::now();
-                    let result = gpu
-                        .submit_plan(p.clone(), &JobContext::new())
+    eprintln!(
+        "| sample | case | aim | rays | CPU f64 med/p95 ms | GPU med/p95 ms | GPU device ms | commands | speed-up | mean iterations | unresolved |"
+    );
+    for name in names.split(',') {
+        let base = match name {
+            "wide_field" => wide_field(25.0),
+            "wide_field_28" => wide_field(28.0),
+            n => samples::all().into_iter().find(|s| s.0 == n).unwrap().1,
+        };
+        for aiming in [RayAiming::Real { tolerance: 1e-10 }, RayAiming::Off] {
+            let mut model = base.clone();
+            model.ray_aiming = aiming;
+            let t = testutil::tracer(model);
+            let edge = t.fields().len() - 1;
+            let primary = t.system().primary_wavelength;
+            let all: Vec<_> = (0..t.fields().len())
+                .flat_map(|f| (0..t.num_wavelengths()).map(move |w| (f, w)))
+                .collect();
+            let mut cases = vec![];
+            if matches!(aiming, RayAiming::Real { .. }) {
+                cases.push((
+                    "chief".to_string(),
+                    Case {
+                        rows: all.clone(),
+                        points: vec![[0.0, 0.0]],
+                        opd: false,
+                    },
+                ));
+                cases.push((
+                    "marginal".to_string(),
+                    Case {
+                        rows: all.clone(),
+                        points: vec![[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]],
+                        opd: false,
+                    },
+                ));
+            }
+            for side in [64, 256, 1024] {
+                cases.push((
+                    format!("grid {side}²"),
+                    Case {
+                        rows: vec![(edge, primary)],
+                        points: PupilSampling::Grid { n: side }.points(),
+                        opd: true,
+                    },
+                ));
+            }
+            let h = gpu
+                .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
+                .unwrap();
+            for (label, case) in &cases {
+                let n = case.rows.len() * case.points.len();
+                let warm = plan(
+                    &gpu,
+                    &t,
+                    h,
+                    case,
+                    Some(format!("{name}:{label}:{aiming:?}")),
+                );
+                let (mut cpu, mut wall, mut device) = (vec![], vec![], vec![]);
+                let mut commands = 0;
+                let (mut iterations, mut unresolved) = (0.0, 0);
+                for run in 0..=runs {
+                    let start = Instant::now();
+                    let reference = cpu_run(&t, case);
+                    let cpu_s = start.elapsed().as_secs_f64();
+                    let start = Instant::now();
+                    let r = gpu
+                        .submit_plan(warm.clone(), &JobContext::new())
                         .unwrap()
                         .wait()
                         .unwrap();
-                    let read = Instant::now();
-                    let mut v = result.outputs[0].view();
-                    v.desc = BufferDesc::new(ElementType::DoubleFloat, [n]);
-                    let opd = gpu.readback(v, &JobContext::new()).unwrap();
-                    let status = gpu
-                        .readback(result.outputs[1].view(), &JobContext::new())
-                        .unwrap();
-                    black_box(&opd.data);
-                    black_box(&status.data);
-                    let read_seconds = read.elapsed().as_secs_f64();
-                    let new_wall = wall.elapsed().as_secs_f64();
-                    let mut max_opd = 0.0_f64;
+                    let data: Vec<_> = r.outputs[1..]
+                        .iter()
+                        .map(|o| gpu.readback(o.view(), &JobContext::new()).unwrap().data)
+                        .collect();
+                    black_box(&data);
+                    let gpu_s = start.elapsed().as_secs_f64();
                     if run == 0 {
-                        let values = doubles(&opd.data);
-                        let status = uints(&status.data);
+                        let report = gpu
+                            .readback(r.outputs[0].view(), &JobContext::new())
+                            .unwrap();
+                        let report = uints(&report.data);
+                        iterations =
+                            report[n..2 * n].iter().map(|&k| k as f64).sum::<f64>() / n as f64;
+                        unresolved = r.stats.fallback_count;
+                        let status = uints(data.last().unwrap());
+                        let mut max_opd = 0.0_f64;
                         for i in 0..n {
                             assert_eq!(
                                 status[i] == 0,
-                                cpu_values[i].is_some(),
-                                "{name} pupil {:?}",
-                                points[i]
+                                reference[i].is_some(),
+                                "{name} {label} ray {i}"
                             );
-                            if let Some(reference) = cpu_values[i] {
-                                max_opd = max_opd.max((values[i].to_f64() - reference).abs());
+                            if let (true, Some(v)) = (case.opd, reference[i]) {
+                                max_opd = max_opd.max((doubles(&data[0])[i].to_f64() - v).abs());
                             }
                         }
-                        assert!(max_opd <= 0.005, "{name} dense OPD error {max_opd}");
+                        assert!(max_opd <= 5e-3, "{name} {label} OPD error {max_opd}");
+                        eprintln!(
+                            "P1_ACCURACY {name} {label} {aiming:?} max_opd_waves={max_opd:e}"
+                        );
+                        continue;
                     }
-
-                    eprintln!(
-                        "P1_BENCH {}",
-                        serde_json::json!({"sample":name,"side":side,"rays":n,"field":field,"wl":wl,"aiming":aiming,"run":run,"cold":run==0,"cpu_wall":cpu,"old_wall":old_wall,"old_device":old_device,"old_prepare":old_prepare,"old_failed":old_failed,"new_wall":new_wall,"new_stats":result.stats,"read_seconds":read_seconds,"read_bytes":opd.copied_bytes+status.copied_bytes,"reference_setup":reference_setup,"resident_prepare":prepare,"seed":42,"max_opd_waves":if run==0{Some(max_opd)}else{None}})
-                    );
+                    if run == runs {
+                        let stages: Vec<_> = r
+                            .stats
+                            .stages
+                            .iter()
+                            .filter(|s| s.command_buffers > 0)
+                            .map(|s| {
+                                format!(
+                                    "{} {:.3}/{:.3} ms x{} max {:.3}",
+                                    s.name,
+                                    s.wall_seconds * 1e3,
+                                    s.device_seconds * 1e3,
+                                    s.command_buffers,
+                                    s.max_command_seconds * 1e3
+                                )
+                            })
+                            .collect();
+                        eprintln!("P1_STAGES {name} {label} {aiming:?}: {}", stages.join("; "));
+                    }
+                    cpu.push(cpu_s);
+                    wall.push(gpu_s);
+                    device.push(r.stats.device_seconds);
+                    commands = r.stats.command_buffers;
                 }
-                gpu.release_systems(h).unwrap();
+                // Cold: chief seeds prepared inside the plan (no cache key).
+                let cold: Vec<_> = (0..3)
+                    .map(|_| {
+                        let p = plan(&gpu, &t, h, case, None);
+                        let start = Instant::now();
+                        gpu.submit_plan(p, &JobContext::new())
+                            .unwrap()
+                            .wait()
+                            .unwrap();
+                        start.elapsed().as_secs_f64()
+                    })
+                    .collect();
+                let cpu_cold: Vec<_> = (0..3)
+                    .map(|_| {
+                        let start = Instant::now();
+                        let fields: Vec<_> = case
+                            .rows
+                            .iter()
+                            .map(|&(f, _)| f)
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .map(|f| t.prepare_field(t.field(f).point).unwrap())
+                            .collect();
+                        black_box(fields);
+                        start.elapsed().as_secs_f64() + stats(cpu.clone()).0 * 1e-3
+                    })
+                    .collect();
+                let (c, cp) = stats(cpu.clone());
+                let (g, gp) = stats(wall);
+                let mode = if matches!(aiming, RayAiming::Off) {
+                    "off"
+                } else {
+                    "real"
+                };
+                eprintln!(
+                    "| {name} | {label} | {mode} | {n} | {c:.3}/{cp:.3} | {g:.3}/{gp:.3} | {:.3} | {commands} | {:.2}x | {iterations:.2} | {unresolved} |",
+                    stats(device).0,
+                    c / g
+                );
+                eprintln!(
+                    "| {name} | {label} cold | {mode} | {n} | {:.3} | {:.3} | | | {:.2}x | | |",
+                    stats(cpu_cold.clone()).0,
+                    stats(cold.clone()).0,
+                    stats(cpu_cold).0 / stats(cold).0
+                );
             }
+            gpu.release_systems(h).unwrap();
         }
     }
 }

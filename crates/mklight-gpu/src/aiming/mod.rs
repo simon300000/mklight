@@ -1,36 +1,24 @@
 //! Resident ray generation, double-float aiming, trace and pupil projection.
-//! Numeric row layouts are in `mklight_aiming_types.h`; helpers pack only
-//! field/first-order metadata and explicit pupil probes. No per-ray CPU
-//! tracing is hidden in a Metal operation. Unresolved rays retain their IDs.
+//! Row layouts are in `mklight_aiming_types.h`; `kernel` is the CPU-f32
+//! specification of `aiming.metal`.
 //!
-//! `ResidentRays`: float [15,N] in legacy input-plane order, uint [2,N]
-//! (system,wavelength), uint [2,N] logical IDs, uint [4,N] aiming reports.
-//! Trace status is uint [3,N] (packed status,last surface,completed steps).
-//! Optional paired record planes are float [slots,N,13]: position (3),
-//! direction (3), uncorrected OPL, weight, unnormalised normal (3), medium
-//! index, status bits. The low plane carries residuals; weight/status lows
-//! are zero. No legacy point-rounding correction enters resident geometry.
+//! * `ResidentRays`: f32 [15,N] in legacy input-plane order (hi planes, then
+//!   position/direction lo), u32 [2,N] (system, wavelength), u32 [2,N]
+//!   logical IDs and u32 [4,N] reports (status, Newton iterations, relative
+//!   stop residual hi/lo bits). Unresolved rays keep their IDs; aim failures
+//!   name the stop in the status surface bits.
+//! * `ResidentHits`: trace status u32 [3,N] (status, last surface, steps) and
+//!   optional paired f32 records [slots,N,13]: position, direction, OPL
+//!   without the legacy rounding correction, weight, unnormalised normal,
+//!   medium index, status bits; the low plane holds the residuals.
+//! * `ProjectPupil`: chief DF [7] (position, direction, OPL) and centre DF
+//!   [3] in the image frame give DF [4,N]: OPD in waves and the unit-radius
+//!   sphere x/y/z (z mirrored for negative propagation).
 //!
-//! A pupil reference has DoubleFloat [7] chief (position,direction,OPL) and
-//! DoubleFloat [3] centre, in the image frame. Projection publishes
-//! DoubleFloat [4,N]: OPD in waves and the unit-radius sphere x/y/z, with z
-//! mirrored for negative propagation. P6 constructs the pupil basis, scale,
-//! mask and rim topology. Explicit probes support arbitrary/annular rims;
-//! Lattice and Fan generate regular probes without a per-ray input upload.
-//!
-//! Failure codes extend the shared low-byte code space; aim failures name
-//! the stop in the upper surface bits. Sparse output retains original order.
-//! There is no automatic f64 polish: adapters may read only that sparse
-//! subset, preserve its IDs, and report any later polish in their own run.
-//! Generation copies only a four-byte failure counter back to PlanStats;
-//! all optical intermediates remain resident. Cached seeds require an
-//! immutable field content key and the full plan identity; use no key for
-//! plan-local candidate fields. The uploaded system handle also keys seeds.
-//! Table-coating radiometry remains Unsupported pending the radiometry
-//! package; geometry-only tracing works with those systems. Real-image-height
-//! wavelength chunks must include the primary wavelength (up to 15 other
-//! wavelengths per chunk); a missing primary is an explicit unresolved reason,
-//! never a solve at another wavelength.
+//! There is no automatic f64 polish: `GenerateAim.unresolved` lists the
+//! unresolved indices for an adapter, and `PlanStats::fallback_count` counts
+//! them. Real-image-height fields need the primary wavelength in the packed
+//! chunk; a missing primary is reported, never replaced.
 
 use crate::{
     Df32,
@@ -89,7 +77,6 @@ pub struct GenerateAim {
     /// ascending original indices next, unused tail = u32::MAX.
     pub unresolved: Option<BufferId>,
     pub field_wavelength: PlanView,
-    pub seed: u64,
     /// Content identity of immutable field metadata, for chief-seed reuse.
     /// None for plan-local candidate fields (no cross-plan cache).
     pub field_key: Option<String>,
@@ -130,6 +117,17 @@ pub enum Request {
     GenerateAim(GenerateAim),
     TraceResident(TraceResident),
     ProjectPupil(ProjectPupil),
+}
+
+/// Seed-table nodes per field row.
+pub const TABLE_NODES: usize = (MKL_AIM_TABLE_SIDE * MKL_AIM_TABLE_SIDE) as usize;
+/// Generation aims from an interpolated seed table (built once per cached
+/// field row) when the plan has at least this many rays per field row;
+/// smaller plans aim from the chief seeds alone. Both reach the requested
+/// tolerance; their converged rays differ only within it.
+pub const TABLE_MIN_RAYS_PER_ROW: usize = 2 * TABLE_NODES;
+pub fn uses_table(g: &GenerateAim) -> bool {
+    g.output.count >= TABLE_MIN_RAYS_PER_ROW * g.field_wavelength.desc.shape[0]
 }
 
 pub fn rays(plan: &mut ResidentPlan, count: usize) -> ResidentRays {

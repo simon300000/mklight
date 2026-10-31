@@ -136,6 +136,16 @@ pub struct ChiefSeed {
     pub has_jacobian: u32,
     pub reserved: u32,
 }
+/// One converged (status 0) or failed seed-table node: the aim parameters of
+/// a lattice pupil point.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SeedNode {
+    pub aim: [Df32; 2],
+    pub status: u32,
+    pub reserved: u32,
+}
+const _: () = assert!(size_of::<SeedNode>() == MKL_AIM_NODE_WORDS as usize * 4);
 const _: () = assert!(size_of::<FieldSpec>() == MKL_AIM_FIELD_WORDS as usize * 4);
 const _: () = assert!(size_of::<Sample>() == MKL_AIM_SAMPLE_WORDS as usize * 4);
 const _: () = assert!(size_of::<ChiefSeed>() == MKL_AIM_CACHE_WORDS as usize * 4);

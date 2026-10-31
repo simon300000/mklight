@@ -162,11 +162,12 @@ fn newton<E: FpEnv>(
                 r = rr;
                 rn = nn;
                 fresh = false;
-                if slow && (rn - tol).hi() > 0.0 {
-                    if let Some(jn) = jacobian(&fun, x, r, h) {
-                        j = jn;
-                        fresh = true;
-                    }
+                if slow
+                    && (rn - tol).hi() > 0.0
+                    && let Some(jn) = jacobian(&fun, x, r, h)
+                {
+                    j = jn;
+                    fresh = true;
                 }
             }
             None => {
@@ -226,10 +227,7 @@ impl<E: FpEnv> FieldKernel<'_, E> {
     fn params(&self, last: u32) -> TraceParams {
         TraceParams {
             num_steps: last,
-            max_iterations: tr::DEFAULT_MAX_ITERATIONS,
-            tolerance_abs: tr::DEFAULT_TOL_ABS,
-            tolerance_rel: tr::DEFAULT_TOL_REL,
-            ..Default::default()
+            ..newton_params()
         }
     }
     fn local(&self, p: V3<E>, point: bool) -> V3<E> {
@@ -397,13 +395,13 @@ impl<E: FpEnv> FieldKernel<'_, E> {
                 j = sn.j;
                 if k == n {
                     s = sn;
-                } else if !self.finite() {
-                    if let Some(r) = self.trace(step, x, 1, wl) {
-                        let mut p = std::array::from_fn(|k| D::new(r.ray.pos[k], r.ray.pos_lo[k]));
-                        let mut d = [D::ZERO; 3];
-                        tr::xf_backward(&self.s[0], &mut p, &mut d);
-                        entrance = Some(p);
-                    }
+                } else if !self.finite()
+                    && let Some(r) = self.trace(step, x, 1, wl)
+                {
+                    let mut p = std::array::from_fn(|k| D::new(r.ray.pos[k], r.ray.pos_lo[k]));
+                    let mut d = [D::ZERO; 3];
+                    tr::xf_backward(&self.s[0], &mut p, &mut d);
+                    entrance = Some(p);
                 }
             }
         }
@@ -492,29 +490,82 @@ impl<E: FpEnv> FieldKernel<'_, E> {
             reserved: 0,
         }
     }
-    pub fn generate(&self, seed: &ChiefSeed, sample: &Sample) -> (KRayIn, [u32; 4]) {
+    /// Real-aim solve for the vignetted pupil point `p`. A covering seed
+    /// table supplies an interpolated start and local Jacobian; without one,
+    /// or if that solve fails, the reference schedule follows: linear
+    /// prediction from the chief, then continuation in the pupil radius.
+    fn aim(&self, seed: &ChiefSeed, table: Option<&[SeedNode]>, p: V2<E>) -> Solve<E> {
         let src = seed.source.map(D::from_df);
         let chief = seed.chief.map(D::from_df);
-        let p = std::array::from_fn(|k| {
-            D::from_df(self.field.vignette[k])
-                + (c(1.0) - D::from_df(self.field.vignette[k + 2])) * D::from_df(sample.pupil[k])
-        });
         let j = (seed.has_jacobian != 0).then(|| {
             std::array::from_fn(|row| {
                 std::array::from_fn(|col| D::from_df(seed.jacobian[row * 2 + col]))
             })
         });
-        let mut s = Solve {
-            x: scale(p, self.pupil(1)),
-            j: None,
-            residual: D::ZERO,
-            iterations: 0,
-            converged: true,
+        let wl = self.field.wavelength;
+        let target = scale(p, self.pupil(2));
+        let mut it = 0;
+        if let Some((x, jt)) = table.and_then(|t| table_seed(t, p, self.pupil(2))) {
+            let s = self.solve(src, wl, target, x, Some(jt));
+            if s.converged {
+                return s;
+            }
+            it = s.iterations;
+        }
+        let x = add(
+            chief,
+            j.and_then(|j| solve2(j, target))
+                .unwrap_or(scale(p, self.pupil(1))),
+        );
+        let mut s = self.solve(src, wl, target, x, j);
+        it += s.iterations;
+        if !s.converged {
+            let mut x = chief;
+            let mut j = j;
+            let mut prev = [D::ZERO; 2];
+            for frac in [0.25, 0.5, 0.75, 1.0] {
+                let t = scale(target, c(frac));
+                let seed = j
+                    .and_then(|j| solve2(j, sub(t, prev)))
+                    .map_or(x, |d| add(x, d));
+                s = self.solve(src, wl, t, seed, j);
+                it += s.iterations;
+                if !s.converged {
+                    break;
+                }
+                x = s.x;
+                j = s.j;
+                prev = t;
+            }
+        }
+        s.iterations = it;
+        s
+    }
+    /// Seed-table node `k` (row-major), solved without a table; nodes beyond
+    /// pupil radius 1.25 are left unsolved.
+    pub fn node(&self, seed: &ChiefSeed, k: usize) -> SeedNode {
+        let side = MKL_AIM_TABLE_SIDE as usize;
+        let at = |i: usize| D::from_f(f::<E>(i as f32) * TABLE_STEP - TABLE_EXTENT);
+        let mut node = SeedNode {
+            status: 1,
+            ..bytemuck::Zeroable::zeroed()
         };
-        if matches!(
-            seed.status,
-            MKL_AIM_FIELD_UNREACHABLE | MKL_AIM_PRIMARY_UNAVAILABLE
-        ) {
+        let p = [at(k % side), at(k / side)];
+        let r2 = p[0].hi() * p[0].hi() + p[1].hi() * p[1].hi();
+        if self.real() && !hard_failure(seed.status) && r2 <= TABLE_RADIUS2 {
+            let s = self.aim(seed, None, p);
+            node.aim = s.x.map(|x| x.0);
+            node.status = u32::from(!s.converged);
+        }
+        node
+    }
+    pub fn generate(
+        &self,
+        seed: &ChiefSeed,
+        table: Option<&[SeedNode]>,
+        sample: &Sample,
+    ) -> (KRayIn, [u32; 4]) {
+        if hard_failure(seed.status) {
             return (
                 KRayIn {
                     wavelength: self.field.wavelength,
@@ -523,37 +574,22 @@ impl<E: FpEnv> FieldKernel<'_, E> {
                 [seed.status, 0, 0, 0],
             );
         }
-        if self.real() {
-            let target = scale(p, self.pupil(2));
-            let x = add(
-                chief,
-                j.and_then(|j| solve2(j, target))
-                    .unwrap_or(scale(p, self.pupil(1))),
-            );
-            s = self.solve(src, self.field.wavelength, target, x, j);
-            let mut it = s.iterations;
-            if !s.converged {
-                let mut x = chief;
-                let mut j = j;
-                let mut prev = [D::ZERO; 2];
-                for frac in [0.25, 0.5, 0.75, 1.0] {
-                    let t = scale(target, c(frac));
-                    let seed = j
-                        .and_then(|j| solve2(j, sub(t, prev)))
-                        .map_or(x, |d| add(x, d));
-                    s = self.solve(src, self.field.wavelength, t, seed, j);
-                    it += s.iterations;
-                    if !s.converged {
-                        break;
-                    }
-                    x = s.x;
-                    j = s.j;
-                    prev = t;
-                }
+        let p = std::array::from_fn(|k| {
+            D::from_df(self.field.vignette[k])
+                + (c(1.0) - D::from_df(self.field.vignette[k + 2])) * D::from_df(sample.pupil[k])
+        });
+        let s = if self.real() {
+            self.aim(seed, table, p)
+        } else {
+            Solve {
+                x: scale(p, self.pupil(1)),
+                j: None,
+                residual: D::ZERO,
+                iterations: 0,
+                converged: true,
             }
-            s.iterations = it;
-        }
-        let Some(mut ray) = self.start(src, s.x) else {
+        };
+        let Some(mut ray) = self.start(seed.source.map(D::from_df), s.x) else {
             return (
                 KRayIn {
                     wavelength: self.field.wavelength,
@@ -587,6 +623,88 @@ impl<E: FpEnv> FieldKernel<'_, E> {
             ],
         )
     }
+}
+
+/// Seed statuses that leave every ray of the field unresolved.
+fn hard_failure(status: u32) -> bool {
+    matches!(
+        status,
+        MKL_AIM_FIELD_UNREACHABLE | MKL_AIM_PRIMARY_UNAVAILABLE | MKL_AIM_INVALID
+    )
+}
+
+/// Trace settings of every aiming intersection (the reference defaults).
+pub fn newton_params() -> TraceParams {
+    TraceParams {
+        max_iterations: tr::DEFAULT_MAX_ITERATIONS,
+        tolerance_abs: tr::DEFAULT_TOL_ABS,
+        tolerance_rel: tr::DEFAULT_TOL_REL,
+        ..Default::default()
+    }
+}
+
+const TABLE_STEP: f32 = 0.0625;
+const TABLE_EXTENT: f32 = 1.125;
+/// Corner nodes beyond this squared pupil radius are not solved: they only
+/// serve probes far outside the pupil and are often unreachable, which costs
+/// the full reference schedule.
+const TABLE_RADIUS2: f32 = 1.5625;
+
+/// Catmull–Rom weights at `t` in [0, 1) and their derivatives.
+fn spline<E: FpEnv>(t: F<E>) -> ([F<E>; 4], [F<E>; 4]) {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    (
+        [
+            (t2 * 2.0 - t3 - t) * 0.5,
+            (t3 * 3.0 - t2 * 5.0 + 2.0) * 0.5,
+            (t2 * 4.0 - t3 * 3.0 + t) * 0.5,
+            (t3 - t2) * 0.5,
+        ],
+        [
+            (t * 4.0 - t2 * 3.0 - 1.0) * 0.5,
+            (t2 * 9.0 - t * 10.0) * 0.5,
+            (t * 8.0 - t2 * 9.0 + 1.0) * 0.5,
+            (t2 * 3.0 - t * 2.0) * 0.5,
+        ],
+    )
+}
+
+/// Bicubic interpolation of the table's aims at `p` and the stop Jacobian
+/// `r_stop · (d aim/dp)⁻¹` of that interpolant; None unless all 16 nodes
+/// converged.
+fn table_seed<E: FpEnv>(table: &[SeedNode], p: V2<E>, r_stop: D<E>) -> Option<(V2<E>, Mat<E>)> {
+    let side = MKL_AIM_TABLE_SIDE as usize;
+    let fx = (p[0].hi() + TABLE_EXTENT) / TABLE_STEP;
+    let fy = (p[1].hi() + TABLE_EXTENT) / TABLE_STEP;
+    let (ix, iy) = (fx.v().floor(), fy.v().floor());
+    let last = (side - 3) as f32;
+    if !(ix >= 1.0 && iy >= 1.0 && ix <= last && iy <= last) {
+        return None;
+    }
+    let (wx, dx) = spline(fx - ix);
+    let (wy, dy) = spline(fy - iy);
+    let mut a = [D::ZERO; 2];
+    let mut ax = [D::ZERO; 2];
+    let mut ay = [D::ZERO; 2];
+    for j in 0..4 {
+        for i in 0..4 {
+            let n = &table[(iy as usize + j - 1) * side + ix as usize + i - 1];
+            if n.status != 0 {
+                return None;
+            }
+            for k in 0..2 {
+                let v = D::from_df(n.aim[k]);
+                a[k] = a[k] + v * (wx[i] * wy[j]);
+                ax[k] = ax[k] + v * (dx[i] * wy[j]);
+                ay[k] = ay[k] + v * (wx[i] * dy[j]);
+            }
+        }
+    }
+    let det = ax[0] * ay[1] - ay[0] * ax[1];
+    let q = r_stop / (det * (1.0 / TABLE_STEP));
+    let j = [[ay[1] * q, -(ay[0] * q)], [-(ax[1] * q), ax[0] * q]];
+    (j.iter().flatten().all(|v| v.hi().is_finite()) && det.hi() != 0.0).then_some((a, j))
 }
 
 /// Chief-relative reference sphere, including displaced-centre references.

@@ -964,14 +964,8 @@ fn index<E: FpEnv>(s: &PackedSurface, w: usize) -> D<E> {
     D::new(s.n_after[w], s.n_after_lo[w])
 }
 
-/// Trace one ray through the path program `steps` (`mkl_trace`).
-///
-/// `h`/`s` are the ray's system (`s` its `num_surfaces` records); the
-/// program, wavelength and surfaces must have been validated by the host
-/// (`PreparedTrace::new`). `records`, when given, has `steps.len() + 1`
-/// slots: slot 0 the input, slot `k + 1` the state after step `k` (a failed
-/// ray repeats its final state and status).
-/// Compatibility output: apply the point-rounding correction only here.
+/// The legacy (rounded) record of a resident state: the only place the
+/// point-rounding OPL correction is applied.
 pub fn rounded_state<E: FpEnv>(s: &ResidentState) -> KState {
     report::<E>(
         std::array::from_fn(|k| D::new(s.ray.pos[k], s.ray.pos_lo[k])),
@@ -983,6 +977,13 @@ pub fn rounded_state<E: FpEnv>(s: &ResidentState) -> KState {
     )
 }
 
+/// Trace one ray through the path program `steps` (`mkl_trace`).
+///
+/// `h`/`s` are the ray's system (`s` its `num_surfaces` records); the
+/// program, wavelength and surfaces must have been validated by the host
+/// (`PreparedTrace::new`). `records`, when given, has `steps.len() + 1`
+/// slots: slot 0 the input, slot `k + 1` the state after step `k` (a failed
+/// ray repeats its final state and status).
 pub fn trace_ray<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],
@@ -1005,6 +1006,9 @@ pub fn trace_ray<E: FpEnv>(
     }
 }
 
+/// [`trace_ray`] on unrounded state (`mkl_trace_raw`): `record(slot, state)`
+/// receives the same slots as `trace_ray`'s records, plus the normal, index
+/// and transmittance of each step.
 pub fn trace_resident<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],
