@@ -66,6 +66,10 @@ public final class Workspace {
     public private(set) var catalogWarnings: [String] = []
     /// Glass names for completion in the material column.
     public private(set) var materialNames: [String] = []
+    /// n_d and V_d of the design's catalogue glasses with their offsets
+    /// (the engine's `glass_info`), filled on request by `glass(_:)`.
+    public private(set) var glassNumbers: [MaterialRef: GlassNumbers] = [:]
+    @ObservationIgnored private var glassRequests: Set<MaterialRef> = []
     public private(set) var snapshot: ModelSnapshot?
     /// Why the engine refused the latest design (no snapshot, analyses wait).
     public private(set) var modelErrors: [String] = []
@@ -395,9 +399,39 @@ public final class Workspace {
 
     // MARK: Glass catalogs
 
+    /// The numbers of a catalogue glass with its offset, when the engine
+    /// has given them; asks for them otherwise (the dictionary fills in
+    /// later). `nil` for other materials.
+    public func glass(_ m: MaterialRef) -> GlassNumbers? {
+        guard case .catalog(let cat, let name, let o) = m else { return nil }
+        if let g = glassNumbers[m] { return g }
+        guard !glassRequests.contains(m), designSnapshot ?? snapshot != nil else { return nil }
+        glassRequests.insert(m)
+        var s: [String: JSONValue] = ["name": .string(name), "catalog": cat.map(JSONValue.string) ?? .null]
+        if !o.isZero { s["offset"] = .object(["dn_d": .number(o.dnD), "dv_d": .number(o.dvD)]) }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let job = try self.submitJob("glass_info", settings: s, key: "glass_info:\(name)")
+                let out = try await job.result()
+                if let g = GlassNumbers(json: out.json) { self.glassNumbers[m] = g }
+            } catch {
+                // Unknown to the engine: asked once.
+            }
+        }
+        return nil
+    }
+
+    /// Forgets the glass numbers (the catalogs changed).
+    private func resetGlassNumbers() {
+        glassNumbers = [:]
+        glassRequests = []
+    }
+
     /// Loads a user glass catalog into this document's session.
     public func loadCatalog(at url: URL) async throws -> CatalogInfo {
         let info = try await documentEngine.loadCatalog(at: url)
+        resetGlassNumbers()
         catalogs = await documentEngine.catalogs()
         materialNames = await documentEngine.materialNames()
         if snapshotsHeld == 0, let s = latestSystem { await openSnapshot(s) }
@@ -446,6 +480,7 @@ public final class Workspace {
             if !loaded { warnings.append("Glass catalog “\(ref.name)” could not be loaded (\(lastError ?? "file not found")).") }
         }
         catalogWarnings = warnings
+        resetGlassNumbers()
         catalogs = await documentEngine.catalogs()
         materialNames = await documentEngine.materialNames()
         snapshotsHeld -= 1

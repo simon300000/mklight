@@ -48,7 +48,7 @@ public enum LensEdit: Equatable, Sendable {
         case .setMaterial(let id, let m):
             at(id) {
                 $0.interaction = m.interaction
-                if let mat = m.material { $0.material = mat }
+                if let mat = m.material { $0.material = $0.material.replaced(by: mat) }
             }
         case .setLabel(let id, let l): at(id) { $0.label = l }
         case .setShapeKind(let id, let k): if let i = s.surfaceIndex(of: id) { s.setShapeKind(k, at: i) }

@@ -3,10 +3,11 @@ import MKLightEngine
 import MKLightModel
 
 // The tolerance set of a design (docs/OPTIMIZATION.md, `tolerance`):
-// rows in the units a lens designer thinks in (fringes of power, ΔR,
-// arc minutes, Δn, % of V_d), expanded to the engine's `ToleranceOperand`s
-// on parameter paths; compensators (`Compensator`); the criterion; and the
-// run's mode, trials and seed. Saved in the project's `tolerances` section.
+// rows in the units a lens designer thinks in (fringes of power and
+// irregularity, ΔR, arc minutes, Δn, % of V_d), expanded to the engine's
+// `ToleranceOperand`s on parameter paths; compensators (`Compensator`);
+// the criterion; and the run's mode, trials, seed, percentiles and
+// recorded trials. Saved in the project's `tolerances` section.
 
 // MARK: - Kinds and units
 
@@ -14,15 +15,25 @@ import MKLightModel
 public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
     /// Surface power: the curvature, in fringes, ΔR or % of R.
     case radius
+    /// Surface irregularity in test fringes: astigmatic (x² − y²) or
+    /// spherical (the engine's sag overlay).
+    case irregularityAstigmatism = "irregularity_astigmatism"
+    case irregularitySpherical = "irregularity_spherical"
     /// The axial gap after a surface (glass or air).
     case thickness
     /// Surface decentre in x / y, the rest of the system staying in place.
     case decenterX = "decenter_x", decenterY = "decenter_y"
     /// Surface tilt about x / y (a wedge), the rest staying in place.
     case tiltX = "tilt_x", tiltY = "tilt_y"
-    /// The refractive index n_d of the glass after a surface (model glasses).
+    /// A whole element (a surface range, a cemented group together) moved
+    /// rigidly about a pivot vertex; the rest stays in place.
+    case elementDecenterX = "element_decenter_x", elementDecenterY = "element_decenter_y"
+    case elementTiltX = "element_tilt_x", elementTiltY = "element_tilt_y"
+    /// The refractive index n_d of the glass after a surface: a model
+    /// glass's n_d, a catalogue glass's Δn_d (added to its melt offset).
     case index
-    /// The Abbe number V_d of the glass after a surface (model glasses).
+    /// The Abbe number V_d of the glass after a surface (model n_d / V_d,
+    /// catalogue ΔV_d).
     case abbe
     /// Any other parameter, in its own unit.
     case other
@@ -32,11 +43,17 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
     public var title: String {
         switch self {
         case .radius: "Radius"
+        case .irregularityAstigmatism: "Astig. irregularity"
+        case .irregularitySpherical: "Sph. irregularity"
         case .thickness: "Thickness"
-        case .decenterX: "Decentre x"
-        case .decenterY: "Decentre y"
-        case .tiltX: "Tilt x"
-        case .tiltY: "Tilt y"
+        case .decenterX: "Surface decentre x"
+        case .decenterY: "Surface decentre y"
+        case .tiltX: "Surface tilt x"
+        case .tiltY: "Surface tilt y"
+        case .elementDecenterX: "Element decentre x"
+        case .elementDecenterY: "Element decentre y"
+        case .elementTiltX: "Element tilt x"
+        case .elementTiltY: "Element tilt y"
         case .index: "Index"
         case .abbe: "Abbe"
         case .other: "Parameter"
@@ -46,12 +63,40 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
     public var symbol: String {
         switch self {
         case .radius: "circle.lefthalf.filled"
+        case .irregularityAstigmatism, .irregularitySpherical: "water.waves"
         case .thickness: "arrow.left.and.right"
         case .decenterX, .decenterY: "arrow.up.and.down.and.arrow.left.and.right"
         case .tiltX, .tiltY: "rotate.3d"
+        case .elementDecenterX, .elementDecenterY: "square.stack.3d.down.right"
+        case .elementTiltX, .elementTiltY: "rotate.3d.fill"
         case .index: "n.circle"
         case .abbe: "rainbow"
         case .other: "slider.horizontal.3"
+        }
+    }
+
+    /// An element's rigid motion (a surface range about a pivot).
+    public var isElement: Bool { component != nil }
+
+    /// The rigid-motion component of an element kind.
+    public var component: PlacementComponent? {
+        switch self {
+        case .elementDecenterX: .decenterX
+        case .elementDecenterY: .decenterY
+        case .elementTiltX: .tiltX
+        case .elementTiltY: .tiltY
+        default: nil
+        }
+    }
+
+    /// The element kind of a rigid-motion component (tilt z has none).
+    public static func element(_ c: PlacementComponent) -> ToleranceKind? {
+        switch c {
+        case .decenterX: .elementDecenterX
+        case .decenterY: .elementDecenterY
+        case .tiltX: .elementTiltX
+        case .tiltY: .elementTiltY
+        case .tiltZ: nil
         }
     }
 
@@ -59,21 +104,28 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
     public var units: [ToleranceUnit] {
         switch self {
         case .radius: [.fringes, .radiusMM, .percent]
-        case .thickness, .decenterX, .decenterY: [.mm]
-        case .tiltX, .tiltY: [.arcmin, .degrees]
+        case .irregularityAstigmatism, .irregularitySpherical: [.fringes]
+        case .thickness, .decenterX, .decenterY, .elementDecenterX, .elementDecenterY: [.mm]
+        case .tiltX, .tiltY, .elementTiltX, .elementTiltY: [.arcmin, .degrees]
         case .index: [.index]
         case .abbe: [.percent, .abbe]
         case .other: [.native]
         }
     }
 
-    /// Kinds offered when adding a row (other parameters come from a list).
-    static let addable: [ToleranceKind] = [.radius, .thickness, .decenterX, .decenterY, .tiltX, .tiltY, .index, .abbe]
+    /// Kinds offered when adding a row on a surface (other parameters come
+    /// from a list; element kinds from the elements).
+    static let addable: [ToleranceKind] = [
+        .radius, .irregularityAstigmatism, .irregularitySpherical, .thickness, .decenterX, .decenterY, .tiltX, .tiltY, .index, .abbe,
+    ]
+    /// Kinds offered when adding a row on an element.
+    static let addableElement: [ToleranceKind] = [.elementDecenterX, .elementDecenterY, .elementTiltX, .elementTiltY]
 }
 
 /// The unit a row's limits are written in.
 public enum ToleranceUnit: String, Sendable, CaseIterable {
-    /// Fringes of power at the test wavelength over the clear aperture.
+    /// Test fringes at the test wavelength: of power over the clear
+    /// aperture, or of irregularity.
     case fringes
     /// ΔR in mm.
     case radiusMM = "radius_mm"
@@ -105,7 +157,7 @@ public enum ToleranceUnit: String, Sendable, CaseIterable {
 
     public var title: String {
         switch self {
-        case .fringes: "Fringes of power"
+        case .fringes: "Test fringes"
         case .radiusMM: "ΔR (mm)"
         case .percent: "Percent"
         case .mm: "mm"
@@ -157,18 +209,26 @@ public enum ToleranceDistribution: Hashable, Sendable {
 // MARK: - Rows
 
 /// What a row needs to become an engine operand: the system, the clear
-/// semi-diameters (fringes are counted over them) and the test wavelength.
+/// semi-diameters (fringes of power are counted over them), the test
+/// wavelength and the Abbe numbers of catalogue glasses (for % of V_d).
 public struct ToleranceContext: Sendable {
     public var system: OpticalSystem
     /// Clear semi-diameters (mm), fixed or as the engine's layout resolved them.
     public var semiDiameters: [SurfaceID: Double]
-    /// Interferometer wavelength for fringes (µm): He–Ne.
-    public var testWavelengthUm = 0.6328
+    /// Interferometer wavelength for fringes (µm): He–Ne by default.
+    public var testWavelengthUm = ToleranceSettings.defaultTestWavelengthUm
+    /// V_d of the catalogue glass after a surface, its offset included
+    /// (the engine's `glass_info`).
+    public var abbeNumbers: [SurfaceID: Double]
 
-    public init(system: OpticalSystem, semiDiameters: [SurfaceID: Double] = [:], testWavelengthUm: Double = 0.6328) {
+    public init(
+        system: OpticalSystem, semiDiameters: [SurfaceID: Double] = [:], testWavelengthUm: Double = ToleranceSettings.defaultTestWavelengthUm,
+        abbeNumbers: [SurfaceID: Double] = [:]
+    ) {
         self.system = system
         self.semiDiameters = semiDiameters
         self.testWavelengthUm = testWavelengthUm
+        self.abbeNumbers = abbeNumbers
     }
 
     /// The clear semi-diameter of a surface: its fixed value, else the
@@ -177,15 +237,29 @@ public struct ToleranceContext: Sendable {
         if let i = system.surfaceIndex(of: id), let v = system.surfaces[i].semiDiameter.fixedValue { return v }
         return semiDiameters[id]
     }
+
+    /// V_d of the glass after a surface: a model glass's own, a catalogue
+    /// glass's from the engine.
+    public func abbeNumber(_ id: SurfaceID) -> Double? {
+        guard let i = system.surfaceIndex(of: id) else { return nil }
+        if case .model(_, let vd, _) = system.surfaces[i].material { return vd }
+        return abbeNumbers[id]
+    }
 }
 
-/// One tolerance: a kind on a surface (or any parameter), its − and +
-/// limits in the row's unit, and the distribution of Monte-Carlo trials.
+/// One tolerance: a kind on a surface (or an element's surface range, or
+/// any parameter), its − and + limits in the row's unit, and the
+/// distribution of Monte-Carlo trials.
 public struct ToleranceRow: Identifiable, Hashable, Sendable {
     /// Session identity (not saved).
     public var id = UUID()
     public var kind: ToleranceKind
+    /// The surface, or an element's first surface.
     public var surface: SurfaceID
+    /// An element's last surface (inclusive; `nil`: `surface` alone).
+    public var last: SurfaceID?
+    /// The vertex an element tilts about (`nil`: its first surface).
+    public var pivot: SurfaceID?
     /// The parameter of an `.other` row.
     public var param: ParamPath?
     /// Magnitudes of the limits (≥ 0), in `unit`.
@@ -196,7 +270,7 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
 
     public init(
         _ kind: ToleranceKind, surface: SurfaceID, minus: Double, plus: Double? = nil, unit: ToleranceUnit? = nil, param: ParamPath? = nil,
-        distribution: ToleranceDistribution = .uniform
+        last: SurfaceID? = nil, pivot: SurfaceID? = nil, distribution: ToleranceDistribution = .uniform
     ) {
         self.kind = kind
         self.surface = surface
@@ -204,32 +278,72 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         self.plus = plus ?? minus
         self.unit = unit ?? kind.units[0]
         self.param = param
+        self.last = kind.isElement ? last : nil
+        self.pivot = kind.isElement ? pivot : nil
         self.distribution = distribution
     }
 
-    /// The engine parameter the row perturbs.
-    public var path: ParamPath {
-        switch kind {
-        case .radius: .curvature(surface: surface)
-        case .thickness: .thickness(surface: surface)
-        case .decenterX: .decenterX(surface: surface)
-        case .decenterY: .decenterY(surface: surface)
-        case .tiltX: .tiltX(surface: surface)
-        case .tiltY: .tiltY(surface: surface)
-        case .index: .modelNd(surface: surface)
-        case .abbe: .modelVd(surface: surface)
-        case .other: param ?? .curvature(surface: surface)
+    /// Whether `m` is a glass (a medium with n_d and V_d).
+    static func hasGlass(_ m: MaterialRef) -> Bool {
+        switch m {
+        case .model, .catalog: true
+        default: false
         }
     }
 
-    /// Placement rows decentre or tilt one surface; the run gives the
-    /// surface a placement that returns to the axis after it.
-    public var isPlacement: Bool { [.decenterX, .decenterY, .tiltX, .tiltY].contains(kind) }
+    /// The engine parameter the row perturbs. Index and Abbe address a
+    /// model glass's n_d and V_d, a catalogue glass's offset (added to the
+    /// saved melt offset).
+    public func path(in system: OpticalSystem) -> ParamPath {
+        var catalogue: Bool {
+            guard let i = system.surfaceIndex(of: surface), case .catalog = system.surfaces[i].material else { return false }
+            return true
+        }
+        switch kind {
+        case .radius: return .curvature(surface: surface)
+        case .thickness: return .thickness(surface: surface)
+        case .decenterX: return .decenterX(surface: surface)
+        case .decenterY: return .decenterY(surface: surface)
+        case .tiltX: return .tiltX(surface: surface)
+        case .tiltY: return .tiltY(surface: surface)
+        case .elementDecenterX, .elementDecenterY, .elementTiltX, .elementTiltY:
+            return .elementPlacement(surface: surface, last: last ?? surface, pivot: pivot, component: kind.component ?? .decenterX)
+        case .irregularityAstigmatism: return .irregularity(surface: surface, mode: .astigmatism)
+        case .irregularitySpherical: return .irregularity(surface: surface, mode: .spherical)
+        case .index: return catalogue ? .materialDnD(surface: surface) : .modelNd(surface: surface)
+        case .abbe: return catalogue ? .materialDvD(surface: surface) : .modelVd(surface: surface)
+        case .other: return param ?? .curvature(surface: surface)
+        }
+    }
 
-    /// `S3`, `S3–4` (a thickness between two surfaces).
+    /// Surface indices that move together (an element's range, inclusive).
+    public func movingSurfaces(in system: OpticalSystem) -> [Int] {
+        guard let i = system.surfaceIndex(of: surface) else { return [] }
+        guard kind.isElement, let l = last.flatMap(system.surfaceIndex(of:)), l >= i else { return [i] }
+        return Array(i...l)
+    }
+
+    /// The pivot's surface index (the first surface by default).
+    public func pivotIndex(in system: OpticalSystem) -> Int? {
+        system.surfaceIndex(of: pivot ?? surface)
+    }
+
+    /// `S3`, `S3–4` (a thickness between two surfaces, or an element).
     public func surfaceLabel(in system: OpticalSystem) -> String {
         guard let i = system.surfaceIndex(of: surface) else { return "S?" }
-        return kind == .thickness ? "S\(i)–\(i + 1)" : "S\(i)"
+        if kind == .thickness { return "S\(i)–\(i + 1)" }
+        if kind.isElement {
+            let l = last.flatMap(system.surfaceIndex(of:)) ?? i
+            return l == i ? "S\(i)" : "S\(i)–\(l)"
+        }
+        return "S\(i)"
+    }
+
+    /// The element (`L2`) whose surfaces this row moves, if it is one.
+    public func elementTitle(in system: OpticalSystem) -> String? {
+        let moving = movingSurfaces(in: system)
+        guard kind.isElement, let f = moving.first, let l = moving.last else { return nil }
+        return LensElements.groups(system).first { $0.surfaces.first == f && $0.surfaces.last == l }?.title
     }
 
     /// The engine's limits `(minus, plus)` in parameter units, or why the
@@ -270,17 +384,38 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
             guard i < s.imageIndex else { return .failure(.message("The image surface has no thickness.")) }
             return .success((minus, plus))
         case .decenterX, .decenterY:
+            guard i > 0, i < s.imageIndex else { return .failure(.message("Decentre a surface between the object and the image.")) }
             return .success((minus, plus))
-        case .tiltX, .tiltY:
+        case .tiltX, .tiltY, .elementTiltX, .elementTiltY, .elementDecenterX, .elementDecenterY:
+            if kind.isElement, let why = elementProblem(in: s, first: i) { return .failure(.message(why)) }
+            if !kind.isElement, i == 0 || i >= s.imageIndex { return .failure(.message("Tilt a surface between the object and the image.")) }
             let k = unit == .arcmin ? 1.0 / 60 : 1
             return .success((minus * k, plus * k))
-        case .index, .abbe:
-            guard case .model(_, let vd, _) = sf.material else {
-                let name = sf.material.isAir ? "air" : sf.material.displayName
-                return .failure(.catalogueGlass("The \(kind == .index ? "index" : "Abbe number") of \(name) after surface \(i) cannot be perturbed: the engine tolerances model glasses only."))
+        case .irregularityAstigmatism, .irregularitySpherical:
+            guard i > 0, i < s.imageIndex, !sf.isCoordinateBreak, sf.shape.kind != .paraxial else {
+                return .failure(.message("Surface \(i) has no form to make irregular."))
             }
-            if kind == .abbe && unit == .percent { return .success((vd * minus / 100, vd * plus / 100)) }
             return .success((minus, plus))
+        case .index, .abbe:
+            guard Self.hasGlass(sf.material) else {
+                let name = sf.material.isAir ? "air" : sf.material.displayName
+                return .failure(.message("Surface \(i) is followed by \(name), not a glass with n_d and V_d."))
+            }
+            var lim = (minus, plus)
+            if kind == .abbe && unit == .percent {
+                guard let vd = c.abbeNumber(surface), vd > 0 else {
+                    return .failure(.message("The Abbe number of \(sf.material.displayName) is not known yet: give the limit as ΔV_d, or wait for the glass data."))
+                }
+                lim = (vd * minus / 100, vd * plus / 100)
+            }
+            if case .catalog(_, _, let o) = sf.material {
+                // A tolerance adds to the saved melt offset, which stays within the engine's bounds.
+                let (base, cap, what) = kind == .index ? (o.dnD, MaterialOffset.maxDnD, "Δn_d") : (o.dvD, MaterialOffset.maxDvD, "ΔV_d")
+                if abs(base - lim.0) > cap + 1e-12 || abs(base + lim.1) > cap + 1e-12 {
+                    return .failure(.message("With the melt offset (\(Fmt.short(base))), \(what) would pass ±\(Fmt.short(cap)), the engine's limit."))
+                }
+            }
+            return .success(lim)
         case .other:
             guard let p = param, p.resolves(in: s), s.value(at: p) != nil else {
                 return .failure(.message("The parameter no longer exists."))
@@ -289,19 +424,34 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         }
     }
 
+    /// Why an element row's range or pivot cannot be moved, if it cannot.
+    private func elementProblem(in s: OpticalSystem, first i: Int) -> String? {
+        guard let l = s.surfaceIndex(of: last ?? surface) else { return "The element's last surface no longer exists." }
+        guard i > 0, l >= i, l < s.imageIndex else { return "An element moves surfaces between the object and the image, first to last." }
+        if let p = pivot, s.surfaceIndex(of: p) == nil { return "The pivot surface no longer exists." }
+        if let e = s.surfaces[i].elementPlacement, e.last != (last ?? surface) || e.pivot != pivot {
+            let el = s.surfaceIndex(of: e.last).map(String.init) ?? "?"
+            let ep = s.surfaceIndex(of: e.pivot ?? surface).map(String.init) ?? "?"
+            return "The design already moves S\(i)–\(el) as an element about S\(ep): use that range and pivot."
+        }
+        return nil
+    }
+
     /// The engine's `ToleranceOperand`.
     public func operand(in c: ToleranceContext) -> Result<JSONValue, ToleranceIssue> {
         engineLimits(in: c).map { m, p in
             .object([
-                "param": (try? JSONValue.from(path)) ?? .null, "minus": .number(m), "plus": .number(p),
+                "param": (try? JSONValue.from(path(in: c.system))) ?? .null, "minus": .number(m), "plus": .number(p),
                 "distribution": distribution.json, "label": .string(label(in: c.system)),
             ])
         }
     }
 
-    /// `Radius S3`, `Thickness S3–4`, `Index S5`.
+    /// `Radius S3`, `Thickness S3–4`, `Element tilt x L2`, `Index S5`.
     public func label(in system: OpticalSystem) -> String {
-        kind == .other ? path.label(in: system) : "\(kind.title) \(surfaceLabel(in: system))"
+        if kind == .other { return path(in: system).label(in: system) }
+        if kind.isElement, let e = elementTitle(in: system) { return "\(kind.title) \(e)" }
+        return "\(kind.title) \(surfaceLabel(in: system))"
     }
 
     /// The limits as text: `±3 fr`, `−0.02 / +0.05 mm`.
@@ -309,6 +459,23 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         let u = unit.label.isEmpty ? "" : (unit == .arcmin ? unit.label : " " + unit.label)
         if minus == plus { return "±" + Fmt.short(minus) + u }
         return "−" + Fmt.short(minus) + " / +" + Fmt.short(plus) + u
+    }
+
+    /// One limit with its unit: `+0.8′`, `−0.02 mm`.
+    public func limitText(plus: Bool) -> String {
+        let u = unit.label.isEmpty ? "" : (unit == .arcmin ? unit.label : " " + unit.label)
+        return (plus ? "+" : "−") + Fmt.short(plus ? self.plus : minus) + u
+    }
+
+    /// A perturbation in parameter units written in the row's unit, when it
+    /// is a plain scale of it (mm, degrees ↔ arc minutes, fringes, Δn,
+    /// ΔV_d); `nil` for radii and % (they depend on the design).
+    public func displayValue(ofParameterDelta d: Double) -> Double? {
+        switch unit {
+        case .arcmin: d * 60
+        case .degrees, .mm, .fringes, .index, .abbe, .native: d
+        case .radiusMM, .percent: nil
+        }
     }
 
     // MARK: Saved form
@@ -319,6 +486,8 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
             "unit": .string(unit.rawValue), "distribution": distribution.json,
         ]
         if let param { o["param"] = (try? JSONValue.from(param)) ?? .null }
+        if let last { o["last"] = .integer(Int64(last.rawValue)) }
+        if let pivot { o["pivot"] = .integer(Int64(pivot.rawValue)) }
         return .object(o)
     }
 
@@ -331,6 +500,10 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         unit = json["unit"]?.string.flatMap(ToleranceUnit.init(rawValue:)).flatMap { k.units.contains($0) ? $0 : nil } ?? k.units[0]
         distribution = ToleranceDistribution(json: json["distribution"])
         param = json["param"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }
+        if k.isElement {
+            last = json["last"]?.int.flatMap { $0 >= 0 ? SurfaceID(UInt64($0)) : nil }
+            pivot = json["pivot"]?.int.flatMap { $0 >= 0 ? SurfaceID(UInt64($0)) : nil }
+        }
         if k == .other && param == nil { return nil }
     }
 
@@ -353,8 +526,17 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         case .decenterY: self.init(.decenterY, surface: id, minus: m, plus: pl, distribution: d)
         case .tiltX: self.init(.tiltX, surface: id, minus: m * 60, plus: pl * 60, distribution: d)
         case .tiltY: self.init(.tiltY, surface: id, minus: m * 60, plus: pl * 60, distribution: d)
-        case .modelNd: self.init(.index, surface: id, minus: m, plus: pl, distribution: d)
-        case .modelVd: self.init(.abbe, surface: id, minus: m, plus: pl, unit: .abbe, distribution: d)
+        case .modelNd, .materialDnD: self.init(.index, surface: id, minus: m, plus: pl, distribution: d)
+        case .modelVd, .materialDvD: self.init(.abbe, surface: id, minus: m, plus: pl, unit: .abbe, distribution: d)
+        case .irregularity(_, let mode):
+            self.init(mode == .astigmatism ? .irregularityAstigmatism : .irregularitySpherical, surface: id, minus: m, plus: pl, distribution: d)
+        case .elementPlacement(_, let last, let pivot, let component):
+            guard let k = ToleranceKind.element(component) else {
+                self.init(.other, surface: id, minus: m, plus: pl, param: p, distribution: d)
+                return
+            }
+            let tilt = k == .elementTiltX || k == .elementTiltY
+            self.init(k, surface: id, minus: tilt ? m * 60 : m, plus: tilt ? pl * 60 : pl, last: last, pivot: pivot, distribution: d)
         default: self.init(.other, surface: id, minus: m, plus: pl, param: p, distribution: d)
         }
     }
@@ -367,23 +549,19 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
 /// Why a row cannot run.
 public enum ToleranceIssue: Error, Hashable, Sendable {
     case message(String)
-    /// Index or Abbe on a catalogue glass: skipped, not an error.
-    case catalogueGlass(String)
 
     public var text: String {
         switch self {
-        case .message(let s), .catalogueGlass(let s): s
+        case .message(let s): s
         }
     }
-
-    /// Rows with this issue are left out of the run instead of blocking it.
-    public var isSkipped: Bool { if case .catalogueGlass = self { true } else { false } }
 }
 
 // MARK: - Default tolerances
 
 /// The "Default tolerances" generator: a preset class of manufacture and
-/// its values per kind, expanded over the design's elements.
+/// its values per kind, expanded over the design's elements. A value of 0
+/// leaves its kind out.
 public struct ToleranceGenerator: Hashable, Sendable {
     public enum Preset: String, CaseIterable, Sendable, Identifiable {
         case commercial, precision, highPrecision = "high_precision"
@@ -402,12 +580,17 @@ public struct ToleranceGenerator: Hashable, Sendable {
     /// Power, fringes at the test wavelength.
     public var radiusFringes = 3.0
     public var thicknessMM = 0.05
+    /// Surface decentre (one surface, the rest staying in place).
     public var decentreMM = 0.025
+    /// Surface tilt, a wedge.
     public var tiltArcmin = 1.0
+    /// Element decentre: the whole element (a cemented group together).
+    public var elementDecentreMM = 0.03
+    /// Element tilt about its first vertex.
+    public var elementTiltArcmin = 1.0
     public var index = 0.0005
     public var abbePercent = 0.5
-    /// Surface irregularity, fringes. The engine has no surface-form
-    /// perturbation yet, so it is kept with the set but not run.
+    /// Surface irregularity, test fringes: astigmatic and spherical, each.
     public var irregularityFringes = 0.5
     public var distribution = ToleranceDistribution.uniform
 
@@ -423,59 +606,66 @@ public struct ToleranceGenerator: Hashable, Sendable {
         switch p {
         case .commercial:
             (radiusFringes, thicknessMM, decentreMM, tiltArcmin, index, abbePercent, irregularityFringes) = (5, 0.2, 0.1, 3, 0.001, 1, 2)
+            (elementDecentreMM, elementTiltArcmin) = (0.1, 3)
         case .precision:
             (radiusFringes, thicknessMM, decentreMM, tiltArcmin, index, abbePercent, irregularityFringes) = (3, 0.05, 0.025, 1, 0.0005, 0.5, 0.5)
+            (elementDecentreMM, elementTiltArcmin) = (0.03, 1)
         case .highPrecision:
             (radiusFringes, thicknessMM, decentreMM, tiltArcmin, index, abbePercent, irregularityFringes) = (1, 0.025, 0.01, 0.5, 0.0002, 0.2, 0.25)
+            (elementDecentreMM, elementTiltArcmin) = (0.015, 0.5)
         }
     }
 
-    /// The tolerances of `system`: power of every refracting lens surface,
-    /// every glass thickness and air space between them (not the back
-    /// focus), decentre and tilt of every lens surface in x and y, and the
-    /// index and Abbe number of every model glass.
+    /// The tolerances of `system`: power and irregularity of every
+    /// refracting lens surface, every glass thickness and air space between
+    /// them (not the back focus), decentre and tilt of every lens surface
+    /// and of every element (a cemented group moving as one) in x and y,
+    /// and the index and Abbe number of every glass.
     public func rows(for system: OpticalSystem) -> [ToleranceRow] {
         var out: [ToleranceRow] = []
         let lens = LensElements.lensSurfaces(system)
         guard let first = lens.first, let last = lens.last else { return [] }
+        let elements = LensElements.groups(system)
+        func add(_ k: ToleranceKind, _ id: SurfaceID, _ v: Double, last: SurfaceID? = nil) {
+            guard v > 0 else { return }
+            out.append(ToleranceRow(k, surface: id, minus: v, last: last, distribution: distribution))
+        }
         for i in first...last {
             let s = system.surfaces[i]
             guard !s.isCoordinateBreak else { continue }
             let id = s.id
-            if lens.contains(i) {
-                if system.value(at: .curvature(surface: id)) != nil {
-                    out.append(ToleranceRow(.radius, surface: id, minus: radiusFringes, distribution: distribution))
+            if lens.contains(i) && system.value(at: .curvature(surface: id)) != nil {
+                add(.radius, id, radiusFringes)
+                if s.interaction != .dummy {
+                    add(.irregularityAstigmatism, id, irregularityFringes)
+                    add(.irregularitySpherical, id, irregularityFringes)
                 }
             }
             // Every gap inside the lens, glass or air (the back focus is the compensator).
-            if i < last { out.append(ToleranceRow(.thickness, surface: id, minus: thicknessMM, distribution: distribution)) }
+            if i < last { add(.thickness, id, thicknessMM) }
             if lens.contains(i) {
-                for k in [ToleranceKind.decenterX, .decenterY] { out.append(ToleranceRow(k, surface: id, minus: decentreMM, distribution: distribution)) }
-                for k in [ToleranceKind.tiltX, .tiltY] { out.append(ToleranceRow(k, surface: id, minus: tiltArcmin, distribution: distribution)) }
+                for k in [ToleranceKind.decenterX, .decenterY] { add(k, id, decentreMM) }
+                for k in [ToleranceKind.tiltX, .tiltY] { add(k, id, tiltArcmin) }
             }
-            if case .model = s.material, i < last {
-                out.append(ToleranceRow(.index, surface: id, minus: index, distribution: distribution))
-                out.append(ToleranceRow(.abbe, surface: id, minus: abbePercent, distribution: distribution))
+            if i < last, ToleranceRow.hasGlass(system.surfaces[i].material) {
+                add(.index, id, index)
+                add(.abbe, id, abbePercent)
+            }
+            // The element's own motion after its last surface's rows.
+            if let e = elements.first(where: { $0.surfaces.last == i }), let f = e.surfaces.first, f < i {
+                let start = system.surfaces[f].id
+                for k in [ToleranceKind.elementDecenterX, .elementDecenterY] { add(k, start, elementDecentreMM, last: id) }
+                for k in [ToleranceKind.elementTiltX, .elementTiltY] { add(k, start, elementTiltArcmin, last: id) }
             }
         }
         return out
     }
 
-    /// The catalogue glasses the generator cannot perturb (index, Abbe).
-    public static func catalogueGlasses(_ system: OpticalSystem) -> [String] {
-        var names: [String] = []
-        let lens = LensElements.lensSurfaces(system)
-        for i in lens.dropLast() {
-            let m = system.surfaces[i].material
-            if case .catalog = m, !names.contains(m.displayName) { names.append(m.displayName) }
-        }
-        return names
-    }
-
     public var json: JSONValue {
         .object([
             "preset": preset.map { .string($0.rawValue) } ?? .null, "radius_fringes": .number(radiusFringes), "thickness_mm": .number(thicknessMM),
-            "decentre_mm": .number(decentreMM), "tilt_arcmin": .number(tiltArcmin), "index": .number(index), "abbe_percent": .number(abbePercent),
+            "decentre_mm": .number(decentreMM), "tilt_arcmin": .number(tiltArcmin), "element_decentre_mm": .number(elementDecentreMM),
+            "element_tilt_arcmin": .number(elementTiltArcmin), "index": .number(index), "abbe_percent": .number(abbePercent),
             "irregularity_fringes": .number(irregularityFringes), "distribution": distribution.json,
         ])
     }
@@ -487,6 +677,8 @@ public struct ToleranceGenerator: Hashable, Sendable {
         thicknessMM = j["thickness_mm"]?.nf ?? thicknessMM
         decentreMM = j["decentre_mm"]?.nf ?? decentreMM
         tiltArcmin = j["tilt_arcmin"]?.nf ?? tiltArcmin
+        elementDecentreMM = j["element_decentre_mm"]?.nf ?? elementDecentreMM
+        elementTiltArcmin = j["element_tilt_arcmin"]?.nf ?? elementTiltArcmin
         index = j["index"]?.nf ?? index
         abbePercent = j["abbe_percent"]?.nf ?? abbePercent
         irregularityFringes = j["irregularity_fringes"]?.nf ?? irregularityFringes
@@ -611,7 +803,7 @@ public struct ToleranceCompensator: Identifiable, Hashable, Sendable {
         for i in 1..<max(s.imageIndex, 1) {
             let id = s.surfaces[i].id
             other += [.decenterX(surface: id), .decenterY(surface: id), .tiltX(surface: id), .tiltY(surface: id), .thickness(surface: id)]
-            if s.surfaces[i].shape.curvature != nil { other.append(.curvature(surface: id)) }
+            if s.surfaces[i].shape.hasCurvature { other.append(.curvature(surface: id)) }
         }
         out.append(("Surfaces", fresh(other.filter { s.value(at: $0) != nil })))
         return out.filter { !$0.1.isEmpty }
@@ -791,6 +983,13 @@ public struct ToleranceSettings: Hashable, Sendable {
         }
     }
 
+    /// He–Ne, the usual interferometer.
+    public static let defaultTestWavelengthUm = 0.6328
+    /// The engine's default levels: the median, 90 % and 97.7 % (2σ one-sided).
+    public static let defaultPercentiles: [Double] = [50, 90, 97.7]
+    /// The engine keeps at most this many trial records.
+    public static let maxRecordTrials = 10_000
+
     public var rows: [ToleranceRow] = []
     public var compensators: [ToleranceCompensator] = []
     public var generator = ToleranceGenerator()
@@ -798,6 +997,13 @@ public struct ToleranceSettings: Hashable, Sendable {
     public var mode = Mode.both
     public var trials = 200
     public var seed = 0
+    /// The interferometer wavelength (µm) fringes are counted at: power
+    /// and irregularity (the engine's `irregularity_wavelength_um`).
+    public var testWavelengthUm = ToleranceSettings.defaultTestWavelengthUm
+    /// Monte-Carlo levels the engine reports, in percent of the builds.
+    public var percentiles = ToleranceSettings.defaultPercentiles
+    /// Trials whose perturbations and compensators are kept for the list.
+    public var recordTrials = 200
     /// Whether the set was ever generated or edited (a new design starts
     /// from the generator's default set).
     public var isEmpty: Bool { rows.isEmpty && compensators.isEmpty }
@@ -828,11 +1034,31 @@ public struct ToleranceSettings: Hashable, Sendable {
         mode = app?["mode"]?.string.flatMap(Mode.init(rawValue:)) ?? .both
         trials = s[path: "monte_carlo", "trials"]?.int ?? trials
         seed = s[path: "monte_carlo", "seed"]?.int ?? seed
+        if let p = s[path: "monte_carlo", "percentiles"]?.nfArray, let v = Self.validPercentiles(p) { percentiles = v }
+        recordTrials = s[path: "monte_carlo", "record_trials"]?.int.map { min(max($0, 0), Self.maxRecordTrials) } ?? recordTrials
+        if let w = app?["test_wavelength_um"]?.nf, w > 0, w.isFinite { testWavelengthUm = w }
     }
+
+    /// Percent levels in [0, 100], sorted and without repeats; `nil` when
+    /// none is left.
+    public static func validPercentiles(_ v: [Double]) -> [Double]? {
+        let ok = Array(Set(v.filter { $0.isFinite && $0 >= 0 && $0 <= 100 })).sorted()
+        return ok.isEmpty ? nil : ok
+    }
+
+    /// `context` with this set's test wavelength.
+    public func context(_ c: ToleranceContext) -> ToleranceContext {
+        var out = c
+        out.testWavelengthUm = testWavelengthUm
+        return out
+    }
+
+    /// Records the engine keeps: at most every trial, at most its cap.
+    public var effectiveRecordTrials: Int { min(max(recordTrials, 0), trials, Self.maxRecordTrials) }
 
     /// The section: the engine's spec as expanded in `context`, and the rows.
     public func section(context: ToleranceContext?, merit: MeritSettings = MeritSettings()) -> JSONValue {
-        let ops: [JSONValue] = context.map { c in rows.compactMap { try? $0.operand(in: c).get() } } ?? []
+        let ops: [JSONValue] = context.map { c in rows.compactMap { try? $0.operand(in: self.context(c)).get() } } ?? []
         let threshold = criterion.threshold.map { criterion.display(merit: merit).criterion($0) }
         return .object([
             "schema_version": .integer(1),
@@ -842,9 +1068,12 @@ public struct ToleranceSettings: Hashable, Sendable {
             "monte_carlo": .object([
                 "trials": .integer(Int64(trials)), "seed": .integer(Int64(seed)), "batch": .integer(16),
                 "threshold": threshold.map(JSONValue.number) ?? .null,
+                "percentiles": .array(percentiles.map(JSONValue.number)),
+                "record_trials": .integer(Int64(effectiveRecordTrials)),
             ]),
             "app": .object([
                 "rows": .array(rows.map(\.json)), "generator": generator.json, "criterion": criterion.json, "mode": .string(mode.rawValue),
+                "test_wavelength_um": .number(testWavelengthUm),
             ]),
         ])
     }
@@ -860,6 +1089,17 @@ public struct ToleranceSettings: Hashable, Sendable {
     public mutating func add(_ new: [ToleranceRow], after id: UUID? = nil) -> [UUID] {
         let at = id.flatMap { i in rows.firstIndex { $0.id == i }.map { $0 + 1 } } ?? rows.count
         rows.insert(contentsOf: new, at: at)
+        // An element row joins the range and pivot of the rows already
+        // moving from its first surface.
+        let newIDs = Set(new.map(\.id))
+        for r in new where r.kind.isElement {
+            if let other = rows.first(where: { !newIDs.contains($0.id) && $0.kind.isElement && $0.surface == r.surface }),
+                let i = rows.firstIndex(where: { $0.id == r.id })
+            {
+                rows[i].last = other.last
+                rows[i].pivot = other.pivot
+            }
+        }
         return new.map(\.id)
     }
 
@@ -883,10 +1123,36 @@ public struct ToleranceSettings: Hashable, Sendable {
         rows = generator.rows(for: system)
     }
 
+    /// Moves element row `id` to the range `first…last` about `pivot`
+    /// (`nil`: the first vertex). Every element row starting on `first`
+    /// takes the same range and pivot, as the engine requires: they move
+    /// one rigid group.
+    public mutating func setElement(_ id: UUID, first: SurfaceID, last: SurfaceID, pivot: SurfaceID?) {
+        guard let k = rows.firstIndex(where: { $0.id == id }), rows[k].kind.isElement else { return }
+        rows[k].surface = first
+        rows[k].last = last
+        rows[k].pivot = pivot == first ? nil : pivot
+        for i in rows.indices where rows[i].kind.isElement && rows[i].surface == first {
+            rows[i].last = rows[k].last
+            rows[i].pivot = rows[k].pivot
+        }
+    }
+
     /// The rows of `rows` that cannot run, with why.
     public func issues(in c: ToleranceContext) -> [UUID: ToleranceIssue] {
+        let c = context(c)
         var out: [UUID: ToleranceIssue] = [:]
         for r in rows { if case .failure(let e) = r.engineLimits(in: c) { out[r.id] = e } }
+        // Element rows that start on one surface share their range and pivot.
+        let elements = rows.filter { $0.kind.isElement && out[$0.id] == nil }
+        for (first, group) in Dictionary(grouping: elements, by: \.surface) {
+            let ranges = Set(group.map { [$0.last ?? first, $0.pivot ?? first] })
+            guard ranges.count > 1 else { continue }
+            let at = c.system.surfaceIndex(of: first).map { "S\($0)" } ?? "one surface"
+            for r in group {
+                out[r.id] = .message("Element tolerances starting at \(at) move one group: give them the same last surface and pivot.")
+            }
+        }
         return out
     }
 
@@ -895,8 +1161,10 @@ public struct ToleranceSettings: Hashable, Sendable {
     /// The job settings in `context`, with the ids of the rows sent, in the
     /// engine's operand order (rows that cannot run are left out).
     public func jobSettings(in c: ToleranceContext, merit: MeritSettings) -> (settings: [String: JSONValue], rowIDs: [UUID]) {
+        let c = context(c)
         var ops: [JSONValue] = [], ids: [UUID] = []
-        for r in rows {
+        let blocked = issues(in: c)
+        for r in rows where blocked[r.id] == nil {
             if case .success(let o) = r.operand(in: c) {
                 ops.append(o)
                 ids.append(r.id)
@@ -905,25 +1173,12 @@ public struct ToleranceSettings: Hashable, Sendable {
         var s: [String: JSONValue] = [
             "tolerances": .array(ops), "compensators": .array(compensators.map(\.json)), "mode": .string(mode.rawValue),
             "trials": .integer(Int64(trials)), "seed": .integer(Int64(seed)),
+            "percentiles": .array(percentiles.map(JSONValue.number)),
+            "record_trials": .integer(Int64(mode == .sensitivity ? 0 : effectiveRecordTrials)),
+            "irregularity_wavelength_um": .number(testWavelengthUm),
         ]
         s.merge(criterion.jobSettings(merit: merit)) { _, b in b }
         if let t = criterion.threshold { s["threshold"] = .number(criterion.display(merit: merit).criterion(t)) }
         return (s, ids)
-    }
-
-    /// The system the job runs on: the design, with a placement that returns
-    /// to the axis after every surface that is decentred or tilted (and has
-    /// no placement of its own), so the tolerance moves that surface only.
-    public func preparedSystem(_ s: OpticalSystem) -> OpticalSystem {
-        var out = s
-        for r in rows where r.isPlacement {
-            guard let i = out.surfaceIndex(of: r.surface), !out.surfaces[i].isCoordinateBreak else { continue }
-            if out.surfaces[i].placement == nil {
-                out.surfaces[i].placement = Placement(restoreAfter: true)
-            } else if let p = out.surfaces[i].placement, p.isIdentity, !p.restoreAfter {
-                out.surfaces[i].placement?.restoreAfter = true
-            }
-        }
-        return out
     }
 }

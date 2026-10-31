@@ -80,13 +80,15 @@ public struct GlassSlot: Identifiable, Hashable, Sendable {
     public var index: Int
     public var material: String
     public var isModel: Bool
+    /// A catalogue glass's melt offset (zero when none).
+    public var offset: MaterialOffset?
 
     /// Every glass gap of a design (refracting surfaces followed by glass).
     public static func all(in system: OpticalSystem) -> [GlassSlot] {
         system.surfaces.enumerated().compactMap { i, s in
             guard i > 0, i < system.imageIndex, !s.isCoordinateBreak, s.interaction == .refract, !s.material.isAir else { return nil }
             if case .model = s.material { return GlassSlot(id: s.id, index: i, material: s.material.displayName, isModel: true) }
-            return GlassSlot(id: s.id, index: i, material: s.material.displayName, isModel: false)
+            return GlassSlot(id: s.id, index: i, material: s.material.displayName, isModel: false, offset: s.material.catalogOffset)
         }
     }
 }
@@ -279,7 +281,8 @@ public final class GlassSubstitutionSession {
         ]
         if let maxSeconds { s["max_seconds"] = .number(maxSeconds) }
         s.merge(merit.jobSettings) { _, b in b }
-        if let v = OptimizeSession.variableSettings(variables, useDesign: useDesignVariables, system: system) { s["variables"] = v }
+        let free = variables.filter { !isSubstitutedMaterialParam($0.param) }
+        if let v = OptimizeSession.variableSettings(free, useDesign: useDesignVariables, system: system) { s["variables"] = v }
         let order = GlassSlot.all(in: system).map(\.id).filter(selected.contains)
         s["material_variables"] = .array(
             order.map { id in .object(["surface": .integer(Int64(id.rawValue)), "candidates": (overrides[id] ?? candidates).json]) })

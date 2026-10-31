@@ -42,6 +42,9 @@ public struct DesignVariable: Codable, Sendable, Hashable {
         case .semiDiameter: return (0, nil)
         case .modelNd: return (1.4, 2.1)
         case .modelVd: return (15, 100)
+        // A melt offset stays within the engine's validation.
+        case .materialDnD: return (-MaterialOffset.maxDnD, MaterialOffset.maxDnD)
+        case .materialDvD: return (-MaterialOffset.maxDvD, MaterialOffset.maxDvD)
         case .shapeParam(_, .normRadius): return (1e-3, nil)
         default: return (nil, nil)
         }

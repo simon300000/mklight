@@ -188,6 +188,16 @@ private struct GlassMapLayer: View {
         var placed: [CGRect] = []
         let accent = Color.accentColor
         let marked = glasses.filter { labels[$0.id] != nil }
+        // An offset glass: a dotted line from its catalogue position.
+        for g in marked where g.kind == .offset {
+            guard let nominal = glasses.first(where: { $0.id == g.nominalID }) else { continue }
+            let a = point(nominal), b = point(g)
+            var line = Path()
+            line.move(to: a)
+            line.addLine(to: b)
+            ctx.stroke(line, with: .color(accent.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [2, 2]))
+            ctx.stroke(Path(ellipseIn: CGRect(x: a.x - 3.5, y: a.y - 3.5, width: 7, height: 7)), with: .color(accent.opacity(0.8)), lineWidth: 1)
+        }
         for g in marked {
             let p = point(g)
             let r: CGFloat = 5
@@ -232,12 +242,16 @@ struct GlassCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 1 : Space.xs) {
             Text(glass.displayName).font(compact ? .caption.weight(.semibold) : .headline)
-            Text([glass.catalog ?? (glass.kind == .model ? "Model glass" : ""), glass.status == .unknown ? "" : glass.status.label]
+            Text([glass.catalog ?? (glass.kind == .model ? "Model glass" : ""), glass.kind == .offset ? "melt offset" : "",
+                  glass.status == .unknown ? "" : glass.status.label]
                 .filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.caption2).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: Space.m, verticalSpacing: 1) {
                 row(Text("n") + GlassMapPlane.sub("d"), String(format: "%.5f", glass.nd))
                 row(Text("V") + GlassMapPlane.sub("d"), String(format: "%.2f", glass.vd))
+                if let o = glass.offset, !o.isZero {
+                    row(Text("Offset"), o.compactText)
+                }
                 row(Text("P") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%.4f", glass.pgf) : "—")
                 if !compact {
                     row(Text("ΔP") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%+.4f", glass.deltaPgF) : "—")
@@ -263,6 +277,7 @@ struct GlassCard: View {
 struct GlassStatusLegend: View {
     let statuses: [GlassStatus]
     var showsDesign = true
+    var showsOffset = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -285,6 +300,18 @@ struct GlassStatusLegend: View {
                         .frame(width: 12, height: 12)
                     Text("In the design")
                 }
+            }
+            if showsOffset {
+                HStack(spacing: 4) {
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: 5))
+                        p.addLine(to: CGPoint(x: 14, y: 5))
+                    }
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.2, dash: [2, 2]))
+                    .frame(width: 14, height: 10)
+                    Text("Melt offset")
+                }
+                .help("A design glass with a melt offset, dotted from its catalogue position")
             }
         }
         .font(.caption)
@@ -322,7 +349,7 @@ struct GlassMapView: View {
     }
 
     var body: some View {
-        let statuses = GlassStatus.allCases.filter { s in data.glasses.contains { $0.status.group == s && !($0.kind == .model) } }
+        let statuses = GlassStatus.allCases.filter { s in data.glasses.contains { $0.status.group == s && $0.kind == .catalog } }
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
                 Picker("Plane", selection: $plane) {
@@ -341,7 +368,7 @@ struct GlassMapView: View {
                     .labelsHidden()
                     .fixedSize()
                 }
-                GlassStatusLegend(statuses: statuses.isEmpty ? [.unknown] : statuses)
+                GlassStatusLegend(statuses: statuses.isEmpty ? [.unknown] : statuses, showsOffset: data.glasses.contains { $0.kind == .offset })
                     .fixedSize()
             }
             ViewThatFits(in: .horizontal) {

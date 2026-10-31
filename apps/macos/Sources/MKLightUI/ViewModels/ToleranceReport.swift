@@ -14,13 +14,13 @@ extension ToleranceRow {
         var out = self
         out.unit = unit
         switch kind {
-        case .tiltX, .tiltY:
+        case .tiltX, .tiltY, .elementTiltX, .elementTiltY:
             let k = unit == .arcmin ? 60.0 : 1.0 / 60
             out.minus = Self.tidy(minus * k)
             out.plus = Self.tidy(plus * k)
             return out
         case .abbe:
-            guard let i = c.system.surfaceIndex(of: surface), case .model(_, let vd, _) = c.system.surfaces[i].material, vd > 0 else { return nil }
+            guard let vd = c.abbeNumber(surface), vd > 0 else { return nil }
             let k = unit == .percent ? 100 / vd : vd / 100
             out.minus = Self.tidy(minus * k)
             out.plus = Self.tidy(plus * k)
@@ -78,8 +78,9 @@ public enum ToleranceReport {
         }
         if r.hasMonteCarlo {
             lines.append("Monte Carlo: \(r.trials) trials, seed \(r.seed)\(r.failures > 0 ? ", \(r.failures) failed" : "")")
-            for p in ToleranceResult.levels {
-                lines.append("  \(Fmt.short(p)) % of builds \(d.higherIsBetter ? "at least" : "at most"): \(d.format(d.value(r.percentile(p))))")
+            if let t = r.secondsPerTrial { lines.append("  \(Fmt.short(t)) s per trial") }
+            for p in r.percentiles {
+                lines.append("  \(Fmt.short(p.percentile)) % of builds \(d.higherIsBetter ? "at least" : "at most"): \(d.format(d.value(p.value)))")
             }
             if let y = r.yield { lines.append("  Yield: \(Fmt.percent(y))") }
         }
@@ -118,11 +119,24 @@ public enum ToleranceReport {
         return out.joined(separator: "\n") + "\n"
     }
 
-    /// One line per Monte-Carlo trial (completed ones, in order).
-    public static func trialsCSV(_ r: ToleranceResult) -> String {
+    /// One line per Monte-Carlo trial, in order (a failed trial's values
+    /// empty), with the compensators and perturbations (parameter units)
+    /// of the recorded trials.
+    public static func trialsCSV(_ r: ToleranceResult, rows: [ToleranceRow] = [], system: OpticalSystem? = nil) -> String {
         let d = r.display
-        var out = ["trial,criterion,\(name(d))"]
-        for (k, c) in r.criteria.enumerated() { out.append("\(k + 1),\(num(c)),\(num(d.value(c)))") }
+        let recorded = !r.records.isEmpty
+        let comps = recorded ? r.compensators.indices.map { "compensator_\($0 + 1)" } : []
+        let perts: [String] = recorded ? rows.map { row in csv(system.map { row.label(in: $0) } ?? row.kind.title) } : []
+        var out = [(["trial", "criterion", name(d)] + comps + perts).joined(separator: ",")]
+        for (k, c) in r.trialCriteria.enumerated() {
+            var f = ["\(k + 1)", num(c), num(d.value(c))]
+            if recorded {
+                let rec = r.record(k)
+                f += comps.indices.map { j in rec.flatMap { $0.compensators.indices.contains(j) ? num($0.compensators[j]) : nil } ?? "" }
+                f += perts.indices.map { j in rec.flatMap { $0.perturbations.indices.contains(j) ? num($0.perturbations[j]) : nil } ?? "" }
+            }
+            out.append(f.joined(separator: ","))
+        }
         return out.joined(separator: "\n") + "\n"
     }
 

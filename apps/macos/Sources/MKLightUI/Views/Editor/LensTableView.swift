@@ -287,6 +287,15 @@ private struct LensCell: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: column.isNumeric ? .trailing : .leading)
             }
+            if let note = row.notes[column], !editing {
+                Text(note)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help("Melt offset Δn_d / ΔV_d on the catalogue glass; edit it in the inspector")
+                    .accessibilityLabel("offset \(note)")
+            }
             if let m = row.markers[column] { MarkerBadge(marker: m) }
         }
         .onAppear { text = display }

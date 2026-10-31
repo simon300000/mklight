@@ -20,9 +20,13 @@ struct TolerancePanel: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The design with the clear apertures the layout resolved (fringes
-    /// are counted over them).
+    /// are counted over them), the Abbe numbers of its catalogue glasses
+    /// and the set's test wavelength.
     private var context: ToleranceContext {
-        ToleranceContext(system: design.system, semiDiameters: session.semiDiameters(from: workspace.layout.output))
+        session.settings.context(
+            ToleranceContext(
+                system: design.system, semiDiameters: session.semiDiameters(from: workspace.layout.output),
+                abbeNumbers: workspace.abbeNumbers(of: design.system)))
     }
 
     private var subtitle: String {
@@ -64,8 +68,8 @@ struct TolerancePanel: View {
         }
         .onChange(of: design.revision) { _, _ in session.load(design) }
         .onChange(of: design.project.sections["tolerances"]) { _, _ in session.load(design) }
-        .onChange(of: phase) { _, p in if p != 2 { session.preview(nil, in: workspace) } }
-        .onDisappear { if !session.isRunning, session.previewed != nil { session.preview(nil, in: workspace) } }
+        .onChange(of: phase) { _, p in if p != 2 { session.endPreview(in: workspace) } }
+        .onDisappear { if !session.isRunning, session.previewed != nil { session.endPreview(in: workspace) } }
     }
 
     private var phase: Int {
@@ -103,7 +107,10 @@ struct TolerancePanel: View {
                 .disabled(problem != nil)
                 .help(problem ?? "Run the sensitivity analysis and the Monte-Carlo trials")
         case .running(let p):
-            GlassProgress(progress: p, detail: ToleranceProgress.stageText(p.stage), namespace: glass)
+            GlassProgress(
+                progress: p,
+                detail: ToleranceProgress.stageText(p.stage, trialsDone: session.timing(at: Date(), progress: p).trialsDone, of: session.settings.trials),
+                namespace: glass)
             GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }
                 .help("End the run and discard it")
             GlassAction(title: "Stop", systemImage: "stop.fill", id: "primary", namespace: glass) { session.stop() }
@@ -119,7 +126,9 @@ struct TolerancePanel: View {
     }
 
     /// Debug builds: `-MKLightAutoRun tolerance` starts at once;
-    /// `-MKLightAutoStop s` presses Stop after s seconds.
+    /// `-MKLightAutoStop s` presses Stop after s seconds;
+    /// `-MKLightTolerancePreview k` previews the k-th largest sensitivity,
+    /// `trial` the worst trial (and selects its histogram bar).
     private func autoRun() {
         #if DEBUG
         let d = UserDefaults.standard
@@ -129,17 +138,21 @@ struct TolerancePanel: View {
         }
         let stopAfter = d.double(forKey: "MKLightAutoStop")
         Task {
+            // The layout's clear apertures and the glasses' Abbe numbers first.
             try? await Task.sleep(for: .seconds(1.5))
+            for _ in 0..<50 where problem != nil { try? await Task.sleep(for: .milliseconds(100)) }
             run()
             if stopAfter > 0 {
                 try? await Task.sleep(for: .seconds(stopAfter))
                 session.stop()
             }
-            if let k = d.string(forKey: "MKLightTolerancePreview").flatMap(Int.init) {
-                while session.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
+            if let p = d.string(forKey: "MKLightTolerancePreview") {
+                while session.isRunning || session.result == nil { try? await Task.sleep(for: .milliseconds(100)) }
                 try? await Task.sleep(for: .seconds(0.5))
-                if let s = session.result?.sensitivities.dropFirst(k).first {
-                    session.preview(s.id, plus: s.changePlus >= s.changeMinus, in: workspace)
+                if p == "trial", let k = session.result?.trialsWorstFirst.first {
+                    session.preview(.trial(k), in: workspace)
+                } else if let k = Int(p), let s = session.result?.sensitivities.dropFirst(k).first {
+                    session.preview(.sensitivity(operand: s.id, plus: s.worsePlus), in: workspace)
                 }
             }
         }
@@ -195,14 +208,8 @@ struct ToleranceTableSection: View {
         GroupBox {
             VStack(alignment: .leading, spacing: Space.s) {
                 toolbar
-                let skipped = issues.values.filter(\.isSkipped).count
-                let catalogue = ToleranceGenerator.catalogueGlasses(system)
-                if skipped > 0 {
-                    Label("\(skipped) index or Abbe tolerance\(skipped == 1 ? " is" : "s are") left out: the engine perturbs model glasses only.", systemImage: "info.circle")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                } else if !catalogue.isEmpty {
-                    Text("Index and Abbe tolerances apply to model glasses; \(catalogue.joined(separator: ", ")) \(catalogue.count == 1 ? "is a catalogue glass" : "are catalogue glasses").")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                TestWavelengthField(wavelength: session.settings.testWavelengthUm) { v in
+                    edit("Change Test Wavelength") { $0.testWavelengthUm = v }
                 }
                 if rows.isEmpty {
                     Text("No tolerances. Use Default Tolerances, or add them one by one.")
@@ -247,10 +254,21 @@ struct ToleranceTableSection: View {
             }
             Spacer(minLength: 0)
             Menu {
-                ForEach(ToleranceKind.addable) { k in
-                    Menu(k.title) {
-                        ForEach(surfaces(for: k), id: \.self) { i in
-                            Button(surfaceTitle(i)) { add(k, at: i) }
+                Section("Surface") {
+                    ForEach(ToleranceKind.addable) { k in
+                        Menu(k.title) {
+                            ForEach(surfaces(for: k), id: \.self) { i in
+                                Button(surfaceTitle(i)) { add(k, at: i) }
+                            }
+                        }
+                    }
+                }
+                Section("Element") {
+                    ForEach(ToleranceKind.addableElement) { k in
+                        Menu(k.title) {
+                            ForEach(LensElements.groups(system)) { g in
+                                Button(elementTitle(g)) { addElement(k, g) }
+                            }
                         }
                     }
                 }
@@ -335,10 +353,26 @@ struct ToleranceTableSection: View {
         guard system.imageIndex > 1 else { return [] }
         let all = Array(1..<system.imageIndex).filter { !system.surfaces[$0].isCoordinateBreak }
         switch k {
-        case .index, .abbe: return all.filter { LensElements.isSolid(system, $0) }
-        case .radius: return all.filter { system.value(at: .curvature(surface: system.surfaces[$0].id)) != nil }
+        case .index, .abbe: return all.filter { ToleranceRow.hasGlass(system.surfaces[$0].material) }
+        case .radius, .irregularityAstigmatism, .irregularitySpherical:
+            return all.filter { system.value(at: .curvature(surface: system.surfaces[$0].id)) != nil }
         default: return all
         }
+    }
+
+    /// `L2 · S3–5 · N-SK16, F2`.
+    private func elementTitle(_ g: LensElements.Group) -> String {
+        let range = g.surfaces.count > 1 ? "S\(g.surfaces[0])–\(g.surfaces[g.surfaces.count - 1])" : "S\(g.surfaces[0])"
+        return ([g.title, range] + (g.glasses.isEmpty ? [] : [g.glasses.joined(separator: ", ")])).joined(separator: " · ")
+    }
+
+    private func addElement(_ k: ToleranceKind, _ g: LensElements.Group) {
+        guard let f = g.surfaces.first, let l = g.surfaces.last else { return }
+        let row = ToleranceRow(
+            k, surface: system.surfaces[f].id, minus: value(for: k), last: system.surfaces[l].id, distribution: session.settings.generator.distribution)
+        let after = rows.last { (system.surfaceIndex(of: $0.surface) ?? 0) <= l }?.id
+        edit("Add Tolerance") { $0.add([row], after: after) }
+        selection = [row.id]
     }
 
     private func surfaceTitle(_ i: Int) -> String {
@@ -352,13 +386,19 @@ struct ToleranceTableSection: View {
 
     private func value(for k: ToleranceKind) -> Double {
         let g = session.settings.generator
+        // A kind the class leaves out (0) is added with the precision class's value.
+        let p = ToleranceGenerator(preset: .precision)
+        func or(_ v: Double, _ d: Double) -> Double { v > 0 ? v : d }
         switch k {
-        case .radius: return g.radiusFringes
-        case .thickness: return g.thicknessMM
-        case .decenterX, .decenterY: return g.decentreMM
-        case .tiltX, .tiltY: return g.tiltArcmin
-        case .index: return g.index
-        case .abbe: return g.abbePercent
+        case .radius: return or(g.radiusFringes, p.radiusFringes)
+        case .irregularityAstigmatism, .irregularitySpherical: return or(g.irregularityFringes, p.irregularityFringes)
+        case .thickness: return or(g.thicknessMM, p.thicknessMM)
+        case .decenterX, .decenterY: return or(g.decentreMM, p.decentreMM)
+        case .tiltX, .tiltY: return or(g.tiltArcmin, p.tiltArcmin)
+        case .elementDecenterX, .elementDecenterY: return or(g.elementDecentreMM, p.elementDecentreMM)
+        case .elementTiltX, .elementTiltY: return or(g.elementTiltArcmin, p.elementTiltArcmin)
+        case .index: return or(g.index, p.index)
+        case .abbe: return or(g.abbePercent, p.abbePercent)
         case .other: return 0
         }
     }
@@ -433,7 +473,10 @@ struct ToleranceRowView: View {
             HStack(spacing: Space.s) {
                 HStack(spacing: Space.xs) {
                     Image(systemName: row.kind.symbol).font(.caption).foregroundStyle(.secondary).frame(width: 14)
-                    Text(row.kind == .other ? row.path.label(in: system) : row.kind.title).lineLimit(1)
+                    Text(row.kind == .other ? row.path(in: system).label(in: system) : row.kind.title)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(row.label(in: system))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -442,11 +485,11 @@ struct ToleranceRowView: View {
                 limits.frame(width: Self.limitsWidth, alignment: .trailing)
                 unitMenu.frame(width: Self.unitWidth, alignment: .leading)
             }
-            .opacity(issue?.isSkipped == true ? 0.5 : 1)
+            if row.kind.isElement { elementLine }
             if let issue {
                 Text(issue.text)
                     .font(.caption2)
-                    .foregroundStyle(issue.isSkipped ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                    .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 18)
             }
@@ -484,24 +527,117 @@ struct ToleranceRowView: View {
 
     private var surfaceMenu: some View {
         Menu {
-            ForEach(Array(1..<max(system.imageIndex, 2)), id: \.self) { i in
-                Button("S\(i)" + (i == system.stop ? " (stop)" : "")) {
-                    set("Change Tolerance Surface") { $0.surface = system.surfaces[i].id }
+            if row.kind.isElement {
+                Section("Element") {
+                    ForEach(LensElements.groups(system)) { g in
+                        if let f = g.surfaces.first, let l = g.surfaces.last {
+                            Button("\(g.title) · S\(f)–\(l)") { setElement(first: f, last: l, pivot: nil) }
+                        }
+                    }
+                }
+                let moving = row.movingSurfaces(in: system)
+                Menu("First Surface") {
+                    ForEach(Array(1..<max(system.imageIndex, 2)), id: \.self) { i in
+                        Button("S\(i)") { setElement(first: i, last: max(i, moving.last ?? i), pivot: pivotChoice) }
+                            .disabled(i == moving.first)
+                    }
+                }
+                Menu("Last Surface") {
+                    ForEach(Array((moving.first ?? 1)..<max(system.imageIndex, 2)), id: \.self) { i in
+                        Button("S\(i)") { setElement(first: moving.first ?? i, last: i, pivot: pivotChoice) }
+                            .disabled(i == moving.last)
+                    }
+                }
+            } else {
+                ForEach(Array(1..<max(system.imageIndex, 2)), id: \.self) { i in
+                    Button("S\(i)" + (i == system.stop ? " (stop)" : "")) {
+                        set("Change Tolerance Surface") { $0.surface = system.surfaces[i].id }
+                    }
                 }
             }
         } label: {
-            Text(row.surfaceLabel(in: system)).monospacedDigit()
+            Text(row.kind.isElement ? (row.elementTitle(in: system) ?? row.surfaceLabel(in: system)) : row.surfaceLabel(in: system))
+                .monospacedDigit()
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(row.kind == .other)
-        .help("The surface (a thickness is the gap after it)")
+        .help(row.kind.isElement ? "The element: the surfaces that move together" : "The surface (a thickness is the gap after it)")
+    }
+
+    // MARK: Elements
+
+    /// Where the pivot sits relative to the range, kept when the range moves.
+    private enum PivotChoice { case first, last, surface(Int) }
+
+    private var pivotChoice: PivotChoice {
+        let moving = row.movingSurfaces(in: system)
+        guard let p = row.pivotIndex(in: system), p != moving.first else { return .first }
+        return p == moving.last ? .last : .surface(p)
+    }
+
+    /// "S3 S4 S5 move together · pivot S3, first vertex", the pivot a menu.
+    private var elementLine: some View {
+        let moving = row.movingSurfaces(in: system)
+        let pivot = row.pivotIndex(in: system)
+        return HStack(spacing: Space.xs) {
+            Image(systemName: "link").font(.caption2).foregroundStyle(.tertiary)
+            Text(moving.map { "S\($0)" }.joined(separator: " ") + (moving.count > 1 ? " move together" : " moves"))
+                .lineLimit(1)
+            Text("·").foregroundStyle(.tertiary)
+            Menu {
+                if let f = moving.first { Button("First Vertex (S\(f))") { setPivot(.first) } }
+                if let l = moving.last, l != moving.first { Button("Last Vertex (S\(l))") { setPivot(.last) } }
+                Menu("Surface") {
+                    ForEach(Array(1..<max(system.imageIndex, 2)), id: \.self) { i in
+                        Button("S\(i)" + (i == system.stop ? " (stop)" : "")) { setPivot(.surface(i)) }
+                    }
+                }
+            } label: {
+                Text("pivot " + pivotText(pivot, moving: moving))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("The vertex the element tilts about; every element tolerance starting on S\(moving.first ?? 0) uses it")
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.leading, 18)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Moves \(moving.map { "surface \($0)" }.joined(separator: ", ")), pivot \(pivotText(pivot, moving: moving))")
+    }
+
+    private func pivotText(_ p: Int?, moving: [Int]) -> String {
+        guard let p else { return "?" }
+        if p == moving.first { return "S\(p), first vertex" }
+        if p == moving.last { return "S\(p), last vertex" }
+        return "S\(p)"
+    }
+
+    private func setPivot(_ c: PivotChoice) {
+        let moving = row.movingSurfaces(in: system)
+        guard let f = moving.first, let l = moving.last else { return }
+        setElement(first: f, last: l, pivot: c, name: "Change Element Pivot")
+    }
+
+    private func setElement(first f: Int, last l: Int, pivot c: PivotChoice?, name: String = "Change Element") {
+        guard system.surfaces.indices.contains(f), system.surfaces.indices.contains(l) else { return }
+        let p: SurfaceID? =
+            switch c ?? .first {
+            case .first: nil
+            case .last: system.surfaces[l].id
+            case .surface(let i): system.surfaces.indices.contains(i) ? system.surfaces[i].id : nil
+            }
+        let id = row.id
+        edit(name) { $0.setElement(id, first: system.surfaces[f].id, last: system.surfaces[l].id, pivot: p) }
     }
 
     @ViewBuilder private var unitMenu: some View {
         if row.kind.units.count < 2 {
-            Text(row.unit.label.isEmpty ? row.path.unit(in: system) : row.unit.label)
+            Text(row.unit.label.isEmpty ? row.path(in: system).unit(in: system) : row.unit.label)
                 .foregroundStyle(.secondary)
                 .help(row.unit.title)
         } else {
@@ -520,7 +656,7 @@ struct ToleranceRowView: View {
                 .disabled(row.converted(to: u, in: context) == nil)
             }
         } label: {
-            Text(row.unit.label.isEmpty ? row.path.unit(in: system) : row.unit.label).foregroundStyle(.secondary)
+            Text(row.unit.label.isEmpty ? row.path(in: system).unit(in: system) : row.unit.label).foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -600,21 +736,26 @@ struct ToleranceGeneratorView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            let nm = Fmt.short(session.settings.testWavelengthUm * 1000)
             Grid(alignment: .leading, horizontalSpacing: Space.m, verticalSpacing: Space.xs) {
-                row("Radius (power)", \.radiusFringes, "fringes", help: "Power error in fringes at 632.8 nm over the clear aperture: Δc = N λ / h².")
+                header("Surfaces")
+                row("Radius (power)", \.radiusFringes, "fringes", help: "Power error in test fringes at \(nm) nm over the clear aperture: Δc = N λ / h².")
+                row("Irregularity", \.irregularityFringes, "fringes", help: "Astigmatic and spherical irregularity of every lens surface, each this many test fringes at \(nm) nm (peak to valley over the clear aperture).")
                 row("Thickness", \.thicknessMM, "mm", help: "Every glass and air thickness inside the lens; the back focus is the compensator.")
-                row("Decentre", \.decentreMM, "mm", help: "Every lens surface, in x and in y; the rest of the system stays on the axis.")
-                row("Tilt", \.tiltArcmin, "′", help: "Every lens surface about x and about y (a wedge), in arc minutes.")
-                row("Index", \.index, "Δn", help: "n_d of every model glass.")
-                row("Abbe number", \.abbePercent, "% of V_d", help: "V_d of every model glass.")
-                row("Irregularity", \.irregularityFringes, "fringes", help: "Kept with the set but not run: the engine cannot perturb a surface's form yet.")
-                    .foregroundStyle(.secondary)
+                row("Decentre", \.decentreMM, "mm", help: "Every lens surface alone, in x and in y; the rest of the system stays on the axis.")
+                row("Tilt (wedge)", \.tiltArcmin, "′", help: "Every lens surface alone about x and about y, in arc minutes.")
+                header("Elements")
+                row("Decentre", \.elementDecentreMM, "mm", help: "Every element as a rigid body (a cemented group together), in x and in y.")
+                row("Tilt", \.elementTiltArcmin, "′", help: "Every element as a rigid body about its first vertex, about x and about y; the pivot can be changed per element.")
+                header("Glasses")
+                row("Index", \.index, "Δn_d", help: "n_d of every glass: a model glass's n_d, a catalogue glass's melt offset Δn_d.")
+                row("Abbe number", \.abbePercent, "% of V_d", help: "V_d of every glass: a model glass's V_d, a catalogue glass's melt offset ΔV_d.")
             }
             Picker("Distribution", selection: Binding(get: { g.distribution }, set: { d in set("Change Distribution") { $0.distribution = d } })) {
                 ForEach(ToleranceDistribution.choices, id: \.self) { Text($0.title).tag($0) }
             }
             .help("How Monte-Carlo trials draw each perturbation within its limits")
-            Text("Irregularity is not run yet: the engine has no surface-form tolerance. Index and Abbe apply to model glasses only.")
+            Text("A value of 0 leaves that kind out.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
@@ -629,6 +770,14 @@ struct ToleranceGeneratorView: View {
             }
         }
         .controlSize(.small)
+    }
+
+    private func header(_ title: String) -> some View {
+        GridRow {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, Space.xs)
+                .gridCellColumns(3)
+                .accessibilityAddTraits(.isHeader)
+        }
     }
 
     private func row(_ title: String, _ key: WritableKeyPath<ToleranceGenerator, Double>, _ unit: String, help: String) -> some View {
@@ -648,6 +797,34 @@ struct ToleranceGeneratorView: View {
 
     private func set(_ name: String, _ change: @escaping (inout ToleranceGenerator) -> Void) {
         edit(name) { change(&$0.generator) }
+    }
+}
+
+/// The test wavelength fringes are counted at (power and irregularity),
+/// once for the whole set: "Test fringes at 632.8 nm".
+struct TestWavelengthField: View {
+    let wavelength: Double
+    let commit: (Double) -> Void
+
+    var body: some View {
+        HStack(spacing: Space.xs) {
+            Image(systemName: "water.waves").font(.caption).foregroundStyle(.secondary)
+            Text("Test fringes at")
+            OptionalNumberField(title: "Test wavelength", value: wavelength * 1000, prompt: "632.8", width: 58, compact: true) { v in
+                guard let v, v >= 200, v <= 20_000 else { return }
+                commit(v / 1000)
+            }
+            Text("nm").foregroundStyle(.secondary)
+            if abs(wavelength - ToleranceSettings.defaultTestWavelengthUm) > 1e-9 {
+                Button("He–Ne") { commit(ToleranceSettings.defaultTestWavelengthUm) }
+                    .buttonStyle(.link)
+                    .help("Back to 632.8 nm")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .controlSize(.small)
+        .help("The interferometer wavelength: one test fringe is half a wave of sag at it. Power and irregularity tolerances are counted in these fringes.")
     }
 }
 
@@ -888,14 +1065,79 @@ struct AnalysisSection: View {
                         }
                     }
                     .fixedSize()
+                    LabeledContent("Levels") {
+                        HStack(spacing: Space.xs) {
+                            PercentileListField(values: t.percentiles) { v in edit("Change Percentiles") { $0.percentiles = v } }
+                            Text("% of builds").foregroundStyle(.secondary)
+                        }
+                    }
+                    .help("The percentiles of the builds the results report, e.g. 50, 90, 97.7")
+                    LabeledContent("Keep") {
+                        HStack(spacing: Space.xs) {
+                            OptionalNumberField(title: "Recorded trials", value: Double(t.recordTrials), prompt: "0", width: 64, format: { String(Int($0)) }) { v in
+                                if let v, v >= 0 { edit("Change Recorded Trials") { $0.recordTrials = min(Int(v.rounded()), ToleranceSettings.maxRecordTrials) } }
+                            }
+                            Text("trials’ perturbations").foregroundStyle(.secondary)
+                        }
+                    }
+                    .help("The first trials keep their perturbations and compensator values for the trial list and the CSV export (at most 10 000). Any trial can be previewed.")
                     Text("Monte Carlo: every tolerance drawn at random per trial; the same seed gives the same trials.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let spt = session.lastSecondsPerTrial {
+                        Label(Self.estimate(secondsPerTrial: spt, trials: t.trials), systemImage: "clock")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .padding(Space.xs)
         } label: {
             Text("Analysis")
         }
+    }
+
+    /// "Last run: 0.021 s per trial, so 200 trials take about 4 s."
+    static func estimate(secondsPerTrial spt: Double, trials: Int) -> String {
+        "Last run: \(ToleranceProgress.seconds(spt)) per trial, so \(trials) trials take about \(ToleranceProgress.duration(spt * Double(trials)))."
+    }
+}
+
+/// Percent levels typed as a list: "50, 90, 97.7".
+struct PercentileListField: View {
+    let values: [Double]
+    let commit: ([Double]) -> Void
+    @State private var text = ""
+    @State private var invalid = false
+    @FocusState private var focused: Bool
+
+    private var formatted: String { values.map(Fmt.short).joined(separator: ", ") }
+
+    var body: some View {
+        TextField("Percentiles", text: $text, prompt: Text("50, 90, 97.7"))
+            .labelsHidden()
+            .multilineTextAlignment(.trailing)
+            .font(.body.monospacedDigit())
+            .frame(width: 110)
+            .focused($focused)
+            .onSubmit(finish)
+            .onChange(of: focused) { _, f in if !f { finish() } }
+            .onAppear { text = formatted }
+            .onChange(of: values) { _, _ in if !focused { text = formatted } }
+            .overlay(alignment: .bottomTrailing) {
+                if invalid { Text("0 to 100").font(.caption2).foregroundStyle(.red).offset(y: 12) }
+            }
+    }
+
+    private func finish() {
+        let parts = text.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == " " }).map(String.init)
+        let nums = parts.compactMap { LensValueParser.number($0.replacingOccurrences(of: "%", with: "")) }
+        guard nums.count == parts.count, let v = ToleranceSettings.validPercentiles(nums), nums.allSatisfy({ $0 >= 0 && $0 <= 100 }) else {
+            invalid = !text.trimmingCharacters(in: .whitespaces).isEmpty
+            text = formatted
+            return
+        }
+        invalid = false
+        if v != values { commit(v) }
+        text = v.map(Fmt.short).joined(separator: ", ")
     }
 }
 
@@ -905,41 +1147,62 @@ struct ToleranceProgress: View {
     let session: ToleranceSession
     let progress: JobProgress
 
-    /// "Monte Carlo 40 / 200", "Sensitivity", from the engine's stage text.
-    static func stageText(_ stage: String) -> String {
+    /// "Monte Carlo 40 / 200", "Sensitivity", from the engine's stage text
+    /// (or the trials counted from the progress).
+    static func stageText(_ stage: String, trialsDone: Int? = nil, of trials: Int? = nil) -> String {
         let s = stage.lowercased()
-        if s.hasPrefix("monte carlo") || s.contains("trial") {
+        if s.contains("monte carlo") || s.contains("trial") {
             let nums = stage.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
-            return nums.count >= 2 ? "Monte Carlo \(nums[0]) / \(nums[1])" : "Monte Carlo"
+            if nums.count >= 2 { return "Monte Carlo \(nums[0]) / \(nums[1])" }
+            if let d = trialsDone, let n = trials { return "Monte Carlo \(d) / \(n)" }
+            return "Monte Carlo"
         }
+        if s.contains("qualifying") { return "Preparing" }
         if s.contains("sensitiv") { return "Sensitivity" }
         if s.isEmpty || s == "queued" { return "Starting" }
         return stage.prefix(1).uppercased() + stage.dropFirst()
     }
 
-    /// "0:42 elapsed · about 2 min left" (the estimate once 5 % is done).
-    static func timing(elapsed: TimeInterval, fraction: Double) -> String {
+    /// "0.021 s", "12 ms", "1.4 s".
+    static func seconds(_ s: Double) -> String {
+        guard s.isFinite else { return "—" }
+        if s < 0.1 { return "\(Fmt.short((s * 1000 * 10).rounded() / 10)) ms" }
+        return "\(Fmt.short((s * 100).rounded() / 100)) s"
+    }
+
+    /// "4 s", "2 min", "1 h 5 min".
+    static func duration(_ s: Double) -> String {
+        guard s.isFinite else { return "—" }
+        if s < 1 { return "under a second" }
+        if s < 90 { return "\(Int(s.rounded())) s" }
+        let m = Int((s / 60).rounded())
+        return m < 90 ? "\(m) min" : "\(m / 60) h \(m % 60) min"
+    }
+
+    /// "0:42 elapsed · 0.021 s per trial · about 2 min left".
+    static func timing(elapsed: TimeInterval, _ t: ToleranceSession.Timing) -> String {
         func clock(_ s: TimeInterval) -> String { String(format: "%d:%02d", Int(s) / 60, Int(s) % 60) }
-        var t = clock(elapsed) + " elapsed"
-        if fraction >= 0.05 && fraction < 1 {
-            let left = elapsed * (1 - fraction) / fraction
-            t += left < 60 ? " · less than a minute left" : " · about \(Int((left / 60).rounded())) min left"
-        }
-        return t
+        var parts = [clock(elapsed) + " elapsed"]
+        if let spt = t.secondsPerTrial { parts.append(seconds(spt) + " per trial") }
+        if let left = t.secondsLeft { parts.append(left < 1 ? "almost done" : "about \(duration(left)) left") }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
         let t = session.settings
         VStack(alignment: .leading, spacing: Space.l) {
-            HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
-                BigNumber(label: "Progress", value: Fmt.percent(progress.fraction, digits: 0))
-                BigNumber(label: "Stage", value: Self.stageText(progress.stage))
-            }
-            ProgressView(value: min(max(progress.fraction, 0), 1))
-            if let start = session.startedAt {
-                TimelineView(.periodic(from: .now, by: 1)) { t in
-                    Text(Self.timing(elapsed: t.date.timeIntervalSince(start), fraction: progress.fraction))
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            TimelineView(.periodic(from: .now, by: 1)) { tl in
+                let timing = session.timing(at: tl.date, progress: progress)
+                VStack(alignment: .leading, spacing: Space.l) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
+                        BigNumber(label: "Progress", value: Fmt.percent(progress.fraction, digits: 0))
+                        BigNumber(label: "Stage", value: Self.stageText(progress.stage, trialsDone: timing.trialsDone, of: t.trials))
+                    }
+                    ProgressView(value: min(max(progress.fraction, 0), 1))
+                    if let start = session.startedAt {
+                        Text(Self.timing(elapsed: tl.date.timeIntervalSince(start), timing))
+                            .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    }
                 }
             }
             Text("\(t.rows.count) tolerances · \(t.compensators.count) compensator\(t.compensators.count == 1 ? "" : "s")"
@@ -962,6 +1225,8 @@ struct ToleranceResultView: View {
     @State private var showAll = false
     @State private var exporting: CSVFile?
     @State private var copied = false
+    /// The histogram bar whose trials the list shows (`nil`: the worst trials).
+    @State private var bin: ClosedRange<Double>?
 
     private var d: CriterionDisplay { result.display }
     private var system: OpticalSystem { design.system }
@@ -970,6 +1235,9 @@ struct ToleranceResultView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
             summary
+            if session.previewed != nil {
+                TolerancePreviewCard(session: session, result: result, workspace: workspace)
+            }
             if result.hasSensitivity { sensitivity }
             if result.hasMonteCarlo { monteCarlo }
             if !result.compensators.isEmpty { compensators }
@@ -978,6 +1246,16 @@ struct ToleranceResultView: View {
             isPresented: Binding(get: { exporting != nil }, set: { if !$0 { exporting = nil } }), document: exporting,
             contentType: .commaSeparatedText, defaultFilename: exporting?.name ?? "tolerance.csv"
         ) { _ in exporting = nil }
+        .onAppear(perform: selectPreviewedBin)
+        .onChange(of: session.previewed) { _, _ in selectPreviewedBin() }
+    }
+
+    /// A previewed trial shows its bar's trials.
+    private func selectPreviewedBin() {
+        guard case .trial(let k)? = session.previewed, result.trialCriteria.indices.contains(k) else { return }
+        let v = d.value(result.trialCriteria[k])
+        if let b = bin, b.contains(v) { return }
+        bin = MonteCarloChart.bins(result).first { $0.range.contains(v) }?.range
     }
 
     // MARK: Summary
@@ -991,18 +1269,22 @@ struct ToleranceResultView: View {
             }
             Grid(alignment: .leading, horizontalSpacing: Space.xl, verticalSpacing: Space.m) {
                 GridRow {
-                    if result.hasSensitivity {
+                    if result.hasNominal {
                         BigNumber(label: "Nominal", value: d.format(d.value(result.nominal)))
                             .help(result.compensators.isEmpty ? "The design as it is" : "The design as it is, with the compensators re-optimised")
+                    }
+                    if result.hasSensitivity {
                         BigNumber(label: "Predicted (RSS)", value: d.format(d.value(result.predicted)))
                             .help("Nominal plus the root-sum-square of every tolerance's worst change")
                     }
                 }
                 if result.hasMonteCarlo {
-                    GridRow {
-                        ForEach(ToleranceResult.levels, id: \.self) { p in
-                            BigNumber(label: "\(Fmt.short(p)) % of builds", value: d.format(d.value(result.percentile(p))))
-                                .help("\(Fmt.short(p)) % of the Monte-Carlo trials reach \(d.higherIsBetter ? "at least" : "at most") this value")
+                    ForEach(Array(stride(from: 0, to: result.percentiles.count, by: 3)), id: \.self) { start in
+                        GridRow {
+                            ForEach(Array(result.percentiles[start..<min(start + 3, result.percentiles.count)].enumerated()), id: \.offset) { _, p in
+                                BigNumber(label: "\(Fmt.short(p.percentile)) % of builds", value: d.format(d.value(p.value)))
+                                    .help("\(Fmt.short(p.percentile)) % of the Monte-Carlo trials reach \(d.higherIsBetter ? "at least" : "at most") this value")
+                            }
                         }
                     }
                 }
@@ -1014,16 +1296,6 @@ struct ToleranceResultView: View {
             if let note = statusNote {
                 Label(note, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if let title = workspace.previewTitle, session.previewed != nil {
-                HStack(spacing: Space.s) {
-                    Image(systemName: "eye").foregroundStyle(.tint)
-                    Text(title + " · not applied").font(.caption).lineLimit(2)
-                    Spacer(minLength: 0)
-                    Button("End Preview") { session.preview(nil, in: workspace) }.controlSize(.small)
-                }
-                .padding(Space.s)
-                .background(.tint.opacity(0.1), in: .rect(cornerRadius: 8))
-            }
         }
     }
 
@@ -1033,7 +1305,7 @@ struct ToleranceResultView: View {
             parts.append("Stopped early: " + (result.hasMonteCarlo ? "statistics of the \(result.trials) completed trials" : "the sensitivities completed so far") + ".")
         }
         if result.failures > 0 { parts.append("\(result.failures) trials failed (no image) and are left out.") }
-        if result.hasMonteCarlo && !result.hasSensitivity { parts.append("Run the sensitivity too to see the nominal and the largest contributors.") }
+        if result.hasMonteCarlo && !result.hasSensitivity { parts.append("Run the sensitivity too to see the largest contributors.") }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
@@ -1051,7 +1323,8 @@ struct ToleranceResultView: View {
             }
             if result.hasMonteCarlo {
                 Button("Save Monte-Carlo Trials as CSV…") {
-                    exporting = CSVFile(name: "\(system.name) trials.csv", text: ToleranceReport.trialsCSV(result))
+                    exporting = CSVFile(
+                        name: "\(system.name) trials.csv", text: ToleranceReport.trialsCSV(result, rows: rows, system: session.runSystem ?? system))
                 }
             }
         } label: {
@@ -1080,7 +1353,7 @@ struct ToleranceResultView: View {
             ForEach(Array(list.enumerated()), id: \.element.id) { k, s in
                 SensitivityRow(
                     rank: k + 1, s: s, row: rows.indices.contains(s.id) ? rows[s.id] : nil, result: result, system: system,
-                    isWorst: worst.contains(s.id), selected: session.previewed?.row == s.id,
+                    isWorst: worst.contains(s.id), selected: isPreviewed(s),
                     select: { selectSurface(s) },
                     preview: { togglePreview(s) })
             }
@@ -1094,36 +1367,51 @@ struct ToleranceResultView: View {
         }
     }
 
+    private func isPreviewed(_ s: ToleranceResult.Sensitivity) -> Bool {
+        if case .sensitivity(let k, _)? = session.previewed { return k == s.id }
+        return false
+    }
+
     private func selectSurface(_ s: ToleranceResult.Sensitivity) {
         guard let id = s.param?.surface else { return }
         window.selection = id
     }
 
     private func togglePreview(_ s: ToleranceResult.Sensitivity) {
-        if session.previewed?.row == s.id {
-            session.preview(nil, in: workspace)
+        if isPreviewed(s) {
+            session.endPreview(in: workspace)
         } else {
-            session.preview(s.id, plus: s.changePlus >= s.changeMinus, in: workspace)
+            session.preview(.sensitivity(operand: s.id, plus: s.worsePlus), in: workspace)
         }
     }
 
     // MARK: Monte Carlo
 
     private var monteCarlo: some View {
-        VStack(alignment: .leading, spacing: Space.s) {
+        let previewedTrial: Int? = if case .trial(let k)? = session.previewed { k } else { nil }
+        return VStack(alignment: .leading, spacing: Space.s) {
             Text("Monte Carlo").font(.headline)
-            MonteCarloChart(result: result).frame(height: 190)
+            MonteCarloChart(
+                result: result, selection: $bin,
+                marked: previewedTrial.flatMap { result.trialCriteria.indices.contains($0) ? d.value(result.trialCriteria[$0]) : nil }
+            )
+            .frame(height: 190)
             FlowLayout(spacing: Space.m, lineSpacing: Space.xxs) {
-                if result.hasSensitivity { LegendItem(color: .accentColor, label: "Nominal " + d.format(d.value(result.nominal))) }
-                LegendItem(color: .secondary, label: "50, 90, 97.7 % of builds", dashed: true)
+                if result.hasNominal { LegendItem(color: .accentColor, label: "Nominal " + d.format(d.value(result.nominal))) }
+                if !result.percentiles.isEmpty {
+                    LegendItem(color: .secondary, label: result.percentiles.map { Fmt.short($0.percentile) }.joined(separator: ", ") + " % of builds", dashed: true)
+                }
                 LegendItem(color: .primary.opacity(0.75), label: "Cumulative share (right axis)")
             }
             .font(.caption)
-            KeyValueGrid(rows: [
-                ("Trials", "\(result.trials), seed \(result.seed)"),
-                ("Mean", d.formatWithUnit(d.value(result.mean))),
-                ("Best", d.formatWithUnit(d.value(result.min))), ("Worst", d.formatWithUnit(d.value(result.max))),
-            ] + (result.failures > 0 ? [("Failed trials", "\(result.failures)")] : []))
+            TrialList(result: result, session: session, workspace: workspace, bin: $bin)
+            KeyValueGrid(
+                rows: [
+                    ("Trials", "\(result.trials), seed \(result.seed)"),
+                    ("Mean", d.formatWithUnit(d.value(result.mean))),
+                    ("Best", d.formatWithUnit(d.value(result.min))), ("Worst", d.formatWithUnit(d.value(result.max))),
+                ] + (result.secondsPerTrial.map { [("Time per trial", ToleranceProgress.seconds($0))] } ?? [])
+                    + (result.failures > 0 ? [("Failed trials", "\(result.failures)")] : []))
         }
     }
 
@@ -1137,6 +1425,197 @@ struct ToleranceResultView: View {
             }
         }
     }
+}
+
+/// The Monte-Carlo trials of the selected histogram bar (or the worst
+/// ones), each previewable: trial number, its value and, when recorded,
+/// its first compensator's move.
+struct TrialList: View {
+    let result: ToleranceResult
+    let session: ToleranceSession
+    let workspace: Workspace
+    @Binding var bin: ClosedRange<Double>?
+    @State private var limit = 6
+
+    private var d: CriterionDisplay { result.display }
+
+    var body: some View {
+        let trials = bin.map { result.trials(shownIn: $0) } ?? result.trialsWorstFirst
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title(trials.count)).font(.callout.weight(.medium))
+                Spacer()
+                if bin != nil {
+                    Button("Worst Trials") { bin = nil }
+                        .buttonStyle(.link).font(.caption)
+                        .help("List the worst trials instead of the selected bar's")
+                }
+            }
+            if trials.isEmpty {
+                Text("No trial in this bar.").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(trials.prefix(limit), id: \.self) { k in row(k) }
+            if trials.count > limit {
+                Button("Show \(min(trials.count - limit, 20)) more") { limit += 20 }
+                    .buttonStyle(.link).font(.caption)
+            }
+            Text(bin == nil ? "Click a bar of the histogram for its trials; the eye rebuilds a trial in the window." : "The eye rebuilds a trial in the window, read-only.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: bin) { _, _ in limit = 6 }
+    }
+
+    private func title(_ n: Int) -> String {
+        guard let b = bin else { return "Worst trials" }
+        return "\(n) trial\(n == 1 ? "" : "s") at \(d.format(b.lowerBound))–\(d.format(b.upperBound))\(d.unit.isEmpty ? "" : " " + d.unit)"
+    }
+
+    private func row(_ k: Int) -> some View {
+        let selected = session.previewed == .trial(k)
+        let rec = result.record(k)
+        let comp: String? = rec.flatMap { r in
+            guard let c = r.compensators.first, let n = result.nominalCompensators.first, let p = result.compensators.first,
+                let system = session.runSystem
+            else { return nil }
+            return ToleranceCompensator(p.param).title(in: system) + " " + Fmt.signed(c - n, decimals: 3)
+        }
+        return HStack(spacing: Space.s) {
+            Text("Trial \(k + 1)").monospacedDigit().frame(width: 72, alignment: .leading)
+            Text(d.formatWithUnit(d.value(result.trialCriteria[k]))).monospacedDigit()
+            if let comp { Text(comp).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
+            Spacer(minLength: Space.xs)
+            Image(systemName: selected ? "eye.fill" : "eye").foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+        }
+        .font(.callout)
+        .padding(.vertical, 2)
+        .padding(.horizontal, Space.xs)
+        .background(selected ? AnyShapeStyle(.tint.opacity(0.16)) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 5))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if selected { session.endPreview(in: workspace) } else { session.preview(.trial(k), in: workspace) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Trial \(k + 1), \(d.formatWithUnit(d.value(result.trialCriteria[k])))")
+        .accessibilityHint(selected ? "Ends the preview" : "Previews this build in the window")
+        .help(selected ? "End the preview" : "Preview trial \(k + 1) in the window: its perturbations\(result.compensators.isEmpty ? "" : " and re-optimised compensators"); not applied")
+    }
+}
+
+/// The previewed build: what it is, its criterion, its compensators and
+/// its perturbations (largest share of their limit first), read-only.
+struct TolerancePreviewCard: View {
+    let session: ToleranceSession
+    let result: ToleranceResult
+    let workspace: Workspace
+    @State private var showAll = false
+
+    private var d: CriterionDisplay { result.display }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                Image(systemName: "eye").foregroundStyle(.tint)
+                Text(title).font(.callout.weight(.semibold)).lineLimit(2)
+                Spacer(minLength: 0)
+                Button("End Preview") { session.endPreview(in: workspace) }.controlSize(.small)
+            }
+            if let error = session.previewError {
+                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let p = session.preview {
+                Text("\(d.title) \(d.formatWithUnit(d.value(p.criterion))) · shown in the layout and the analyses, not applied")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !p.compensators.isEmpty { compensators(p) }
+                perturbations(p)
+            } else {
+                HStack(spacing: Space.s) {
+                    ProgressView().controlSize(.small)
+                    Text("Rebuilding the build in the engine…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(Space.m)
+        .background(.tint.opacity(0.08), in: .rect(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.tint.opacity(0.25)))
+        .onChange(of: session.previewed) { _, _ in showAll = false }
+    }
+
+    private var title: String {
+        guard let c = session.previewed else { return "" }
+        return String(session.title(of: c).dropFirst("Tolerance: ".count)).capitalizedFirst
+    }
+
+    private func compensators(_ p: TolerancePreview) -> some View {
+        let system = session.runSystem ?? p.system
+        return VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(zip(result.compensators, p.compensators).enumerated()), id: \.offset) { j, pair in
+                let (c, v) = pair
+                let unit = c.param.unit(in: system)
+                let n = result.nominalCompensators.indices.contains(j) ? result.nominalCompensators[j] : nil
+                HStack(spacing: Space.s) {
+                    Text(ToleranceCompensator(c.param).title(in: system))
+                    Spacer(minLength: Space.xs)
+                    Text(Fmt.value(v, unit: unit)).monospacedDigit()
+                    if let n { Text("(" + Fmt.signed(v - n, decimals: 4).trimmingCharacters(in: .whitespaces) + ")").monospacedDigit().foregroundStyle(.secondary) }
+                }
+                .font(.caption)
+                .help("Re-optimised for this build\(n.map { "; nominal " + Fmt.value($0, unit: unit) } ?? "")")
+            }
+        }
+    }
+
+    @ViewBuilder private func perturbations(_ p: TolerancePreview) -> some View {
+        let changes = session.changes(p.perturbations)
+        if changes.isEmpty {
+            Text("No perturbation.").font(.caption).foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(changes.count == 1 ? "Perturbation" : "Perturbations, largest share of their limit first")
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                ForEach(showAll ? changes : Array(changes.prefix(6))) { c in
+                    HStack(spacing: Space.s) {
+                        Text(c.label).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: Space.xs)
+                        Text(c.text).monospacedDigit()
+                        LimitBar(fraction: c.fraction).frame(width: 44, height: 6)
+                    }
+                    .font(.caption)
+                    .help("\(c.label): \(c.text) of \(c.limits)")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(c.label), \(c.text) of \(c.limits)")
+                }
+                if changes.count > 6 {
+                    Button(showAll ? "Show the 6 largest" : "Show all \(changes.count)") { showAll.toggle() }
+                        .buttonStyle(.link).font(.caption)
+                }
+            }
+        }
+    }
+}
+
+/// A perturbation within its limits: a bar from the centre, to the right
+/// for +, to the left for −, full at the limit.
+struct LimitBar: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            let f = CGFloat(min(max(fraction, -1), 1))
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Rectangle().fill(.tint).frame(width: max(abs(f) * w / 2, 1), height: h).offset(x: f >= 0 ? w / 2 : w / 2 + f * w / 2)
+                Rectangle().fill(.primary.opacity(0.5)).frame(width: 1, height: h).offset(x: w / 2)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+extension String {
+    /// The first letter in upper case.
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
 /// One sensitivity: rank, tolerance, share bar and the change at each
@@ -1226,28 +1705,52 @@ struct ShareBar: View {
 }
 
 /// The trials' distribution: a histogram, the cumulative share of builds
-/// (right axis), the nominal design and the 50, 90 and 97.7 % levels.
+/// (right axis), the nominal design and the engine's percentile levels. A
+/// click on a bar selects it (its trials are listed); the previewed trial
+/// is marked under the axis.
 struct MonteCarloChart: View {
     let result: ToleranceResult
+    var selection: Binding<ClosedRange<Double>?> = .constant(nil)
+    /// The shown value of the previewed trial.
+    var marked: Double? = nil
 
     private var d: CriterionDisplay { result.display }
 
+    /// A bar: its centre, the trials in it and the values it spans.
+    struct Bin: Identifiable {
+        var center: Double
+        var count: Int
+        var range: ClosedRange<Double>
+        var id: Double { center }
+    }
+
+    /// The histogram of the shown values (10, 16 or 24 bars by trial count).
+    static func bins(_ result: ToleranceResult) -> [Bin] {
+        let shown = result.criteria.map(result.display.value).filter(\.isFinite)
+        let b = Histogram.bins(shown, count: shown.count >= 200 ? 24 : shown.count >= 60 ? 16 : 10)
+        let w = b.count > 1 ? b[1].0 - b[0].0 : 0
+        return b.map { Bin(center: $0.0, count: $0.1, range: ($0.0 - w / 2)...($0.0 + w / 2)) }
+    }
+
     var body: some View {
         let shown = result.criteria.map(d.value).filter(\.isFinite)
-        let bins = Histogram.bins(shown, count: shown.count >= 200 ? 24 : shown.count >= 60 ? 16 : 10)
-        let width = bins.count > 1 ? bins[1].0 - bins[0].0 : max(abs(bins.first?.0 ?? 1) * 0.1, 1e-9)
-        let peak = Double(bins.map(\.1).max() ?? 1)
+        let bins = Self.bins(result)
+        let width = bins.count > 1 ? bins[1].center - bins[0].center : max(abs(bins.first?.center ?? 1) * 0.1, 1e-9)
+        let peak = Double(bins.map(\.count).max() ?? 1)
         let curve = cumulative(shown)
-        let nominal = result.hasSensitivity ? d.value(result.nominal) : nil
+        let nominal = result.hasNominal ? d.value(result.nominal) : nil
         let dom = domain(shown, nominal: nominal)
-        let levels = Self.labelled(ToleranceResult.levels.map { (p: $0, v: d.value(result.percentile($0))) }, span: dom.upperBound - dom.lowerBound)
+        let levels = Self.labelled(result.percentiles.map { (p: $0.percentile, v: d.value($0.value)) }, span: dom.upperBound - dom.lowerBound)
+        let selected = selection.wrappedValue
         Chart {
-            ForEach(bins, id: \.0) { b in
+            ForEach(bins) { b in
+                let isSelected = selected.map { abs($0.lowerBound - b.range.lowerBound) < width * 1e-6 } ?? false
                 RectangleMark(
-                    xStart: .value(d.title, b.0 - 0.46 * width), xEnd: .value(d.title, b.0 + 0.46 * width),
-                    yStart: .value("Trials", 0), yEnd: .value("Trials", b.1)
+                    xStart: .value(d.title, b.center - 0.46 * width), xEnd: .value(d.title, b.center + 0.46 * width),
+                    yStart: .value("Trials", 0), yEnd: .value("Trials", b.count)
                 )
-                .foregroundStyle(Palette.fieldColor(0).opacity(0.75))
+                .foregroundStyle(
+                    isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Palette.fieldColor(0).opacity(selected == nil ? 0.75 : 0.4)))
                 .cornerRadius(1.5)
             }
             ForEach(Array(curve.enumerated()), id: \.offset) { _, p in
@@ -1271,6 +1774,12 @@ struct MonteCarloChart: View {
                     .foregroundStyle(Color.accentColor)
                     .lineStyle(StrokeStyle(lineWidth: 1.6))
             }
+            if let marked, marked.isFinite {
+                PointMark(x: .value(d.title, marked), y: .value("Trials", 0))
+                    .symbol(.triangle)
+                    .symbolSize(60)
+                    .foregroundStyle(Color.accentColor)
+            }
         }
         .environment(\.locale, NumberDisplay.locale)
         .chartXAxisLabel(d.title + (d.unit.isEmpty ? "" : " (\(d.unit))"), alignment: .center)
@@ -1287,12 +1796,29 @@ struct MonteCarloChart: View {
         }
         .chartYAxisLabel("Trials", position: .leading)
         .chartXScale(domain: dom)
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                if let f = proxy.plotFrame {
+                    let frame = geo[f]
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: frame.minX, y: frame.minY)
+                        .onTapGesture { p in
+                            guard let x: Double = proxy.value(atX: p.x) else { return }
+                            let hit = bins.first { $0.count > 0 && $0.range.contains(x) }?.range
+                            selection.wrappedValue = hit == selected ? nil : hit
+                        }
+                        .help("Click a bar to list its trials")
+                }
+            }
+        }
         .padding(.top, Space.l)
         .font(.caption2)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Distribution of \(shown.count) Monte-Carlo trials of the \(d.title)")
         .accessibilityValue(
             levels.map { "\(Fmt.short($0.p)) percent of builds \(d.higherIsBetter ? "at least" : "at most") \(d.formatWithUnit($0.v))" }.joined(separator: ", "))
+        .accessibilityHint("Select a bar to list its trials")
     }
 
     /// Percent levels with their labels; a level too close to the one
