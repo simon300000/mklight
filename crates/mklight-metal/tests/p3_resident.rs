@@ -5,6 +5,7 @@ use mklight_core::{JobContext, MkError};
 use mklight_gpu::{collectives::*, resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use mklight_trace::{PupilSampling, SequentialTracer, TraceOptions};
+use rayon::prelude::*;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -378,6 +379,7 @@ fn host_moments(pts: &[[f64; 2]], offsets: &[u32]) -> Vec<[f64; 3]> {
 fn reference_moments(t: &SequentialTracer, rays: &RayBatch, offsets: &[u32]) -> Vec<[f64; 3]> {
     use mklight_core::Vec3;
     let pts: Vec<_> = (0..rays.len())
+        .into_par_iter()
         .map(|i| {
             let v = |hi: &[f32], lo: &[f32]| hi[i] as f64 + lo[i] as f64;
             let r = mklight_trace::Ray::new(
@@ -424,7 +426,7 @@ fn benchmark_trace_collectives() {
     let g = backend(LibraryChoice::Precompiled);
     eprintln!(
         "{}",
-        serde_json::json!({"hardware":g.info(),"precision":g.precision(),"seed":0,"iterations":10,"warmup":1,"build":"release","scope":"P3 resident trace + moments; CPU-generated launch rays, no engine dispatch"})
+        serde_json::json!({"hardware":g.info(),"precision":g.precision(),"seed":0,"iterations":10,"warmup":1,"reference_workers":rayon::current_num_threads(),"build":"release","scope":"P3 resident trace + moments; CPU-generated launch rays, no engine dispatch"})
     );
     let mut workloads: Vec<_> = mklight_core::samples::all()
         .into_iter()
