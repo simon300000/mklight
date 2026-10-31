@@ -338,6 +338,7 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "mklight-core",
+ "mklight-gpu",
  "mklight-trace",
  "rayon",
  "serde",
@@ -409,6 +410,7 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "mklight-core",
+ "mklight-gpu",
  "mklight-trace",
  "rayon",
  "serde",
@@ -420,6 +422,7 @@ name = "mklight-gpu"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "blake3",
  "bytemuck",
  "mklight-core",
  "mklight-trace",
@@ -485,6 +488,7 @@ dependencies = [
  "blake3",
  "mklight-core",
  "mklight-ghost",
+ "mklight-gpu",
  "mklight-trace",
  "rayon",
  "serde",
@@ -509,6 +513,7 @@ dependencies = [
  "approx",
  "mklight-analysis",
  "mklight-core",
+ "mklight-gpu",
  "mklight-trace",
  "num-complex",
  "png",

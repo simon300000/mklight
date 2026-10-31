@@ -1,0 +1,4 @@
+/* transforms numeric records, owned by that package. Included by mklight_gpu_types.h. */
+#ifndef MKLIGHT_TRANSFORMS_TYPES_H
+#define MKLIGHT_TRANSFORMS_TYPES_H
+#endif

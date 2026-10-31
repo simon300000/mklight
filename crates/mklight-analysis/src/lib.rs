@@ -55,3 +55,6 @@ pub fn tracer_for(system: OpticalSystem) -> MkResult<SequentialTracer> {
     let sys = ResolvedSystem::new(&snap, Arc::new(MaterialLibrary::with_builtin()))?;
     SequentialTracer::new(Arc::new(sys))
 }
+
+/// Resident GPU adapter seam (enabled by the solver package).
+pub mod gpu;

@@ -302,6 +302,10 @@ impl MetalContext {
                 .newComputePipelineStateWithFunction_error(&function)
                 .map_err(|e| ns_error(&format!("pipeline '{}'", key.function), &e))
         })?;
+        // Jobs retain their own pipeline objects across cache eviction.
+        if cache.len() == 128 {
+            cache.clear();
+        }
         cache.insert(key.clone(), pso.clone());
         Ok(pso)
     }

@@ -51,3 +51,27 @@ pub fn is_available() -> bool {
         false
     }
 }
+
+// GPU-first package seams (implementation ownership: docs/GPU.md section 9.2).
+#[cfg(target_os = "macos")]
+mod aiming;
+#[cfg(target_os = "macos")]
+mod collectives;
+#[cfg(target_os = "macos")]
+mod geometry;
+#[cfg(target_os = "macos")]
+mod ghost_ops;
+#[cfg(target_os = "macos")]
+mod optim_ops;
+#[cfg(target_os = "macos")]
+mod radiometry;
+#[cfg(target_os = "macos")]
+mod resident;
+#[cfg(target_os = "macos")]
+mod stray_ops;
+#[cfg(target_os = "macos")]
+mod systems;
+#[cfg(target_os = "macos")]
+mod transforms;
+#[cfg(target_os = "macos")]
+mod wave_ops;

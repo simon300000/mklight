@@ -1090,6 +1090,123 @@ below are proposed Rust types; the C layout umbrella remains the authority.
 | `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit` | indexed typed resident channels → moments, ordered records, segment outputs or fit factors | P3 |
 | `SystemBatchPlan`, `CandidateMap` | immutable topology/material tables + ordered parameter vectors/configurations → resident system set, derived first-order data, candidate status/index map | P4 |
 
+#### Resident interface gate (P0)
+
+The compiling API is `mklight_gpu::resident` and the ten package modules
+in the table below. Engine dispatch is unchanged. Only the compatibility
+`TraceUpload` and `Sum` operations execute in P0; all domain handlers
+return `Unsupported` until their owners qualify them. The solver crates
+(analysis, wave, ghost, stray, optim) depend on `mklight-gpu` and declare an
+empty public `gpu` adapter module for their package to fill in.
+
+`ComputeBackend` adds object-safe methods:
+
+```rust
+fn upload_buffer(&self, desc: BufferDesc, data: BufferData) -> MkResult<BufferHandle>;
+fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback>;
+fn submit_plan(&self, plan: ResidentPlan, ctx: &JobContext) -> MkResult<Pending<PlanResult>>;
+fn upload_systems_cached(&self, key: &SystemCacheKey, systems: &[PackedSystem])
+    -> MkResult<SystemHandle>;
+fn resident_cache_stats(&self) -> ResidentCacheStats;
+```
+
+`ResidentPlan::new(snapshot)` holds ordered `operations`, typed `buffers`,
+final `outputs`, `settings`, `seed` and `PlanIdentity` (library, derived
+snapshot, configuration and spectrum identities, requested backend and optional
+qualification report). `import` adds an
+immutable lease view; `scratch` declares a plan-local destination. `BufferId`
+is an index into this plan, never a global resource ID. Submission validates
+shape/extent/type, ownership, dependencies and single writers. Imported
+buffers cannot be destinations. Uninitialised reads, duplicate writers,
+foreign handles and released system handles fail before encoding. Final
+IDs must be produced buffers; repeated final IDs share a lease. A lease
+cannot become stale while held, including by a pending submission; pooled
+allocations receive a new generation when republished. A cancelled worker
+waits for its last committed command before releasing any resources.
+
+`BufferDesc { element, shape }` is contiguous row-major. Element types are
+`F32`, `U32` (4 bytes), `DoubleFloat {hi,lo}` and `Complex32 {re,im}` (8 bytes).
+`BufferView { buffer, offset, desc, stride }` and plan-local `PlanView`
+measure offsets/strides in **typed elements**, with the stride applied to
+the flattened row-major index. P0 plan imports and sums require stride 1;
+explicit final readback accepts a strided view. Empty buffers are legal;
+a sum requires positive `[channels,count]`. Scratch destinations come from
+an exact-size pool and start with unspecified contents: an operation writes
+every element it publishes. Rust request structs contain host metadata/IDs
+and are never memcpy'd to a shader. The C header umbrella includes one empty
+`include/mklight_<module>_types.h` per package for its numeric records; its
+`MKL_*` defines join the generated Rust constants. Packed system layout v6
+and all existing trace/reduction layouts and constants remain unchanged.
+
+`TraceUpload::new(request, output)` shares its immutable host request between
+plan clones and adapts the existing host ray batch without altering the
+trace algorithm. The four
+outputs are f32 `[10,rays]`, u32 `[3,rays]`, f32
+`[record_slots,rays,9]`, and u32 `[record_slots,rays]`, using the existing
+`MKL_TRACE_*` plane order. No-record buffers have zero slots.
+`Sum { input: PlanView, mode: ReduceMode, output: BufferId }` reads a
+contiguous f32 `[channels,count]` view and writes `DoubleFloat [channels]`
+using the existing two-pass fixed tree. It sums every supplied value;
+masking/compaction belongs to P3. The proof chain selects trace planes by
+view offset, with no intermediate host array or upload. The legacy adapter
+still uploads its initial host rays on each call; P1 owns resident generation.
+
+| Package module | Frozen request variants / output records |
+|---|---|
+| `aiming` | `GenerateAim`, `TraceResident`, `ProjectPupil`; `ResidentRays`, `ResidentHits`, `PupilReference` |
+| `transforms` | `TransformPlan`, `CorrelationStencil`; explicit dimensions, sign, scale and double-float affine coefficients |
+| `collectives` | `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit`; explicit IDs/counts, factors and rank/condition destinations |
+| `systems` | `SystemBatchPlan`, `CandidateMap`; parameter/dependency/material views and numeric system/first-order sidecars |
+| `geometry`, `radiometry` | numeric geometry settings/samples and coating-stack/hit records, with status destinations |
+| `wave_ops`, `ghost_ops`, `stray_ops`, `optim_ops` | numeric solver records and settings views; ghost/stray share `ghost_ops::Coverage` |
+
+Exact field names and types are in each `src/<module>/mod.rs`; these are
+owned by the named package after P0. `SystemSet` accepts an uploaded handle
+or plan-local header/surface/coefficient sidecars, so P4 output can feed P1
+without host materialisation. `ResidentRays` uses the 15 existing input
+float planes (including position/direction residuals), two index planes and
+separate two-word logical IDs. `ResidentHits` adds status and optional
+record/residual sidecars; P1 must retain hi+lo geometry internally.
+The central routers invoke the frozen `validate(request, plan)`,
+`accesses(request) -> Access { reads, writes, systems }`, and
+`execute(request, execution, control)` hooks. Referenced immutable systems
+are pinned at submission, and both execution contexts provide a system
+lookup and the operation-cache hooks `cache_key(operation)`, `cached<T>` and
+`cache<T>` for package handlers. CPU execution exposes word
+slices; Metal execution exposes typed view bindings, exclusive output
+leases, pooled temporaries and the existing command encoder. New owners
+change these handlers without editing crate roots or central routers.
+
+The pool holds at most 256 MiB of idle storage per backend; immutable
+system caching holds at most 64 entries and 64 MiB. A separate immutable
+operation cache (64 entries / 64 MiB) serves aim seeds, transform plans,
+twiddles, pupils and stencils; `cache_key(operation)` combines the plan's
+snapshot/library/configuration/spectrum, layout, build and settings
+identity with the operation name and plan version. P0 uses it for path-program buffers. The pipeline cache
+holds at most 128 specialisations; live jobs retain evicted objects. Active leases/handles
+pin resources outside idle-cache limits. System cache identity includes
+snapshot/library/configuration/spectrum, layout, build and operation
+settings, plus a digest of the actual packed content. Cache hits issue
+independently releasable handles. P0 caps resident trace commands at 262,144
+rays; sums use the backend chunk and partition reduction groups without
+changing the tree. The idle pool reuses the most recently returned buffer
+of the exact size and evicts the oldest. Limits
+are resource/cancellation controls, not engine backend selection thresholds.
+
+`PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
+per-stage wall/device/max-command times, commands, allocations/reuse,
+uploaded/readback and parameter-block bytes, peak live plan storage and fallback/polish counts.
+The run records the actual backend/precision/build/probe, version, identity,
+operation manifest, seed and stage stats. Domain-specific
+settings belong in `ResidentPlan.settings`. Explicit `Readback` reports its
+own copied bytes and wall time: plan execution has zero readback bytes. Worker wall time excludes caller-side
+submission/validation; benchmark end-to-end wall time includes them and final
+readback.
+System transfers/cache retention are reported separately by
+`resident_cache_stats`; peak plan storage excludes cached systems, idle
+pool storage, immutable operation caches and host metadata. P0 returns errors for unsupported/resource
+failures and cancellation; fallback policy remains with the engine adapter.
+
 **Residency.** A backend owns its queue, pipelines, system cache and buffer
 pool for its lifetime. Views carry type, shape, stride, owner and generation;
 validate at upload/plan submission, not in every kernel. Leases pin buffers

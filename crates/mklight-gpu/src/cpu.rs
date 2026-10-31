@@ -37,6 +37,7 @@ use crate::trace_kernel::{KRayIn, KRayOut, KState, trace_ray};
 /// Work items between cancellation checks / progress reports.
 const CHUNK: usize = 1 << 16;
 
+#[derive(Clone)]
 pub struct CpuF32Backend {
     inner: Arc<Inner>,
 }
@@ -47,6 +48,8 @@ struct Inner {
     instance: u64,
     next_id: AtomicU64,
     systems: Mutex<HashMap<u64, Arc<PackedSystemSet>>>,
+    resident: crate::resident::runtime::Runtime<Vec<u32>>,
+    cache: Mutex<crate::resident::cache::SystemCache<PackedSystemSet>>,
 }
 
 impl Default for CpuF32Backend {
@@ -74,6 +77,7 @@ impl CpuF32Backend {
         } else {
             "flush-to-zero"
         };
+        let instance = next_backend_instance();
         let inner = Inner {
             info: DeviceInfo {
                 kind: BackendKind::CpuF32,
@@ -103,7 +107,9 @@ impl CpuF32Backend {
                     env!("CARGO_PKG_VERSION")
                 ),
             },
-            instance: next_backend_instance(),
+            instance,
+            resident: crate::resident::runtime::Runtime::new(instance),
+            cache: Mutex::new(crate::resident::cache::SystemCache::new(64 << 20)),
             next_id: AtomicU64::new(1),
             systems: Mutex::new(HashMap::new()),
         };
@@ -114,6 +120,12 @@ impl CpuF32Backend {
 }
 
 impl Inner {
+    fn register(&self, set: Arc<PackedSystemSet>) -> SystemHandle {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let count = set.len() as u32;
+        (self.systems.lock().unwrap_or_else(|e| e.into_inner())).insert(id, set);
+        SystemHandle::new(self.instance, id, count)
+    }
     fn lookup(&self, h: SystemHandle) -> MkResult<Arc<PackedSystemSet>> {
         if h.backend_instance() != self.instance {
             return Err(MkError::Backend(
@@ -263,15 +275,9 @@ impl ComputeBackend for CpuF32Backend {
         true
     }
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle> {
-        let set = PackedSystemSet::new(systems)?;
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let count = set.len() as u32;
-        self.inner
-            .systems
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, Arc::new(set));
-        Ok(SystemHandle::new(self.inner.instance, id, count))
+        Ok(self
+            .inner
+            .register(Arc::new(PackedSystemSet::new(systems)?)))
     }
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()> {
         self.inner.lookup(handle)?;
@@ -281,6 +287,115 @@ impl ComputeBackend for CpuF32Backend {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id());
         Ok(())
+    }
+    fn upload_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::BufferData,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner.resident.upload(desc, data, |n| Ok(vec![0; n]))
+    }
+    fn readback(
+        &self,
+        view: crate::resident::BufferView,
+        ctx: &JobContext,
+    ) -> MkResult<crate::resident::Readback> {
+        self.inner.resident.readback(view, ctx)
+    }
+    fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
+        let s = self
+            .inner
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats();
+        self.inner.resident.cache_stats(s)
+    }
+    fn upload_systems_cached(
+        &self,
+        key: &crate::resident::SystemCacheKey,
+        systems: &[PackedSystem],
+    ) -> MkResult<SystemHandle> {
+        let hash =
+            crate::resident::cache::fingerprint(key, systems, &self.precision().kernel_build)?;
+        let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let up = match cache.get(key, hash) {
+            Some(up) => up,
+            None => {
+                let up = Arc::new(PackedSystemSet::new(systems)?);
+                cache.insert(key.clone(), hash, up.byte_len(), up.clone());
+                up
+            }
+        };
+        drop(cache);
+        Ok(self.inner.register(up))
+    }
+    fn submit_plan(
+        &self,
+        plan: crate::resident::ResidentPlan,
+        ctx: &JobContext,
+    ) -> MkResult<Pending<crate::resident::PlanResult>> {
+        use crate::resident::ResidentOp;
+        ctx.check()?;
+        plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
+        let mut pinned = HashMap::new();
+        for h in plan.system_handles() {
+            pinned.insert(h, self.inner.lookup(h)?);
+        }
+        let prepared = plan
+            .operations
+            .iter()
+            .map(|op| match op {
+                ResidentOp::TraceUpload(t) => {
+                    PreparedTrace::new(t.request(), &pinned[&t.request().systems]).map(Some)
+                }
+                _ => Ok(None),
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        fn run<E: FpEnv>(
+            b: &CpuF32Backend,
+            plan: &crate::resident::ResidentPlan,
+            pinned: HashMap<SystemHandle, Arc<PackedSystemSet>>,
+            prepared: &[Option<PreparedTrace>],
+            ctl: &JobControl,
+        ) -> MkResult<crate::resident::PlanResult> {
+            let sets = pinned.clone();
+            crate::resident::cpu::execute::<E>(
+                &b.inner.resident,
+                b,
+                plan,
+                pinned,
+                ctl,
+                |i, sub, stats| {
+                    let crate::resident::ResidentOp::TraceUpload(t) = &plan.operations[i] else {
+                        unreachable!()
+                    };
+                    let req = t.request();
+                    trace_job_prepared::<E>(
+                        req,
+                        &sets[&req.systems],
+                        prepared[i].as_ref().unwrap(),
+                        sub,
+                        stats,
+                    )
+                },
+            )
+        }
+        let (p, c, ctl) = pending(ctx);
+        let b = self.clone();
+        spawn_job(
+            "mklight-resident-cpu",
+            "CPU resident plan".into(),
+            c,
+            move || {
+                if b.precision().probe.subnormals {
+                    run::<Ieee>(&b, &plan, pinned, &prepared, &ctl)
+                } else {
+                    run::<Ftz>(&b, &plan, pinned, &prepared, &ctl)
+                }
+            },
+        )?;
+        Ok(p)
     }
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
@@ -325,6 +440,15 @@ fn trace_job<E: FpEnv>(
     stats: &mut JobStats,
 ) -> MkResult<TraceResult> {
     let prep = PreparedTrace::new(req, set)?;
+    trace_job_prepared::<E>(req, set, &prep, ctl, stats)
+}
+fn trace_job_prepared<E: FpEnv>(
+    req: &TraceRequest,
+    set: &PackedSystemSet,
+    prep: &PreparedTrace,
+    ctl: &JobControl,
+    stats: &mut JobStats,
+) -> MkResult<TraceResult> {
     let rays = &req.rays;
     let n = rays.len();
     let slots = prep.record_slots;
