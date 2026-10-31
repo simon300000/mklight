@@ -247,13 +247,14 @@ pub fn build_psf_grid(
     };
     let mut kernels = Vec::new();
     let mut mapping = Vec::new();
-    // Bound simultaneous large PSF buffers while overlapping independent nodes.
-    for (block, pair) in per.chunks_mut(2).enumerate() {
+    // Overlap large nodes without adding task overhead to small transforms.
+    let nodes_per_batch = if size >= 1024 { 2 } else { 1 };
+    for (block, pair) in per.chunks_mut(nodes_per_batch).enumerate() {
         let computed: Vec<_> = pair
             .par_iter_mut()
             .enumerate()
             .map(|(j, pupils)| -> MkResult<_> {
-                let i = 2 * block + j;
+                let i = nodes_per_batch * block + j;
                 let p = &d.points[i];
                 let mut warnings = Vec::new();
                 let n = d.points.len() as f64;

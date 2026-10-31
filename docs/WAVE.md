@@ -259,7 +259,8 @@ These are per pupil/PSF caps, not a wall-time guarantee for arbitrary numbers
 of fields or wavelengths. Cancellation and progress also cover refinements.
 
 **Execution.** Fields, wavelength pupils and automatic refinements run in parallel;
-results and spectral reductions retain selection order. FFT plans are reused.
+results and spectral reductions retain selection order. Image simulation processes
+at most two large PSF nodes together to bound temporary memory. FFT plans are reused.
 Pupil rasterisation recognises triangle interiors and integrates an affine
 interpolant at the cell centre when every covered subpoint has the same
 source triangle; clipped/extrapolated cells retain subpoint integration.
@@ -361,11 +362,11 @@ is the slowest of the seven default wave analyses, including pupil setup.
 
 | sample | wave maximum before | after | image simulation before | after |
 |---|---:|---:|---:|---:|
-| Singlet | 8.325 | 1.599 | 3.334 | 1.420 |
-| Double Gauss | 0.887 | 0.182 | 1.247 | 0.521 |
-| Cooke triplet | 0.755 | 0.130 | 0.492 | 0.264 |
-| Petzval asphere | 0.142 | 0.053 | 0.151 | 0.105 |
-| Anamorphic | 0.109 | 0.046 | 0.166 | 0.122 |
+| Singlet | 8.325 | 1.679 | 3.334 | 1.526 |
+| Double Gauss | 0.887 | 0.251 | 1.247 | 0.922 |
+| Cooke triplet | 0.755 | 0.209 | 0.492 | 0.530 |
+| Petzval asphere | 0.142 | 0.092 | 0.151 | 0.362 |
+| Anamorphic | 0.109 | 0.098 | 0.166 | 0.291 |
 
 ## 7. Open points
 
