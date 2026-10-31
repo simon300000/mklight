@@ -1,6 +1,7 @@
 import Charts
 import CoreGraphics
 import MKLightEngine
+import MKLightModel
 import SwiftUI
 
 /// A row-major grid of values with its extent in plot units.
@@ -38,10 +39,14 @@ struct Grid2D: Sendable {
 }
 
 enum HeatScale: Equatable {
-    /// Magnitude from `lo` to `hi` (optionally logarithmic).
+    /// Magnitude from `lo` to `hi` (optionally logarithmic); zero recedes
+    /// into the plot surface (PSF, irradiance).
     case sequential(log: Bool)
     /// Signed values, symmetric about zero.
     case diverging
+    /// A quantity over its range: the perceptual multi-hue ramp, every
+    /// value visible (field maps, pupil maps).
+    case perceptual
 }
 
 /// A heat map drawn from a `Grid2D` (NaN cells transparent), with the
@@ -73,6 +78,8 @@ struct HeatMapImage: View {
         case .diverging:
             let m = max(abs(r.lowerBound), abs(r.upperBound), 1e-300)
             return v / m
+        case .perceptual:
+            return (v - r.lowerBound) / max(r.upperBound - r.lowerBound, 1e-300)
         }
     }
 
@@ -86,7 +93,12 @@ struct HeatMapImage: View {
                 let o = (row * grid.nx + i) * 4
                 guard v.isFinite else { continue }
                 let t = Self.normalise(v, scale: scale, range: r)
-                let c = scale == .diverging ? Palette.diverging(t, dark: dark) : Palette.sequential(t, dark: dark)
+                let c =
+                    switch scale {
+                    case .diverging: Palette.diverging(t, dark: dark)
+                    case .perceptual: Palette.perceptual(t)
+                    case .sequential: Palette.sequential(t, dark: dark)
+                    }
                 px[o] = UInt8(min(max(c.x, 0), 1) * 255)
                 px[o + 1] = UInt8(min(max(c.y, 0), 1) * 255)
                 px[o + 2] = UInt8(min(max(c.z, 0), 1) * 255)
@@ -159,17 +171,20 @@ struct LegendItem: View {
                 ctx.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: dashed ? [3, 2] : []))
             }
             .frame(width: 14, height: 8)
-            Text(label)
+            Text(label).lineLimit(1)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
     }
 }
 
-/// Legends for fields or wavelengths, wrapped.
-struct WavelengthLegend: View {
+/// Legends for fields or wavelengths, wrapped, with optional further
+/// entries (line styles, reference circles) in the same flow, so a narrow
+/// pane wraps them instead of clipping.
+struct WavelengthLegend<Extra: View>: View {
     let wavelengths: [Int]
     let um: [Double]
+    @ViewBuilder var extra: Extra
 
     var body: some View {
         FlowLayout(spacing: Space.m) {
@@ -178,7 +193,38 @@ struct WavelengthLegend: View {
                     LegendItem(color: Palette.wavelengthColor(um[w]), label: String(format: "%.4f µm", um[w]))
                 }
             }
+            extra
         }
+    }
+}
+
+extension WavelengthLegend where Extra == EmptyView {
+    init(wavelengths: [Int], um: [Double]) {
+        self.init(wavelengths: wavelengths, um: um) { EmptyView() }
+    }
+}
+
+/// A segmented control that becomes a pop-up menu when its pane is too
+/// narrow for the segments (narrow panes never overflow into their
+/// neighbours).
+struct SegmentedOrMenu<Value: Hashable>: View {
+    let title: String
+    let options: [(value: Value, label: String)]
+    @Binding var selection: Value
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            picker.pickerStyle(.segmented).fixedSize()
+            picker.pickerStyle(.menu).fixedSize()
+        }
+        .accessibilityLabel(title)
+    }
+
+    private var picker: some View {
+        Picker(title, selection: $selection) {
+            ForEach(options.indices, id: \.self) { k in Text(options[k].label).tag(options[k].value) }
+        }
+        .labelsHidden()
     }
 }
 
@@ -190,12 +236,23 @@ struct PlotCell<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).font(.caption.weight(.semibold))
-                if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+            // Title and subtitle on one line when they fit, else stacked.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) { titleText; subtitleText }
+                VStack(alignment: .leading, spacing: 0) { titleText; subtitleText }
             }
             content
         }
+    }
+}
+
+extension PlotCell {
+    fileprivate var titleText: some View {
+        Text(title).font(.caption.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+    }
+
+    @ViewBuilder fileprivate var subtitleText: some View {
+        if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
     }
 }
 
@@ -220,21 +277,31 @@ struct LineChart: View {
     var xTicks: [Double]?
 
     var body: some View {
+        // About one x label per 60 pt (at least three), so narrow panes do not overlap them.
+        GeometryReader { geo in
+            axes(chart, xCount: max(3, min(6, Int(geo.size.width / 60))))
+        }
+    }
+
+    private func axes(_ chart: some View, xCount: Int) -> some View {
         chart
             .chartXAxis {
+                // `.aligned` keeps the first and last labels inside the plot,
+                // so narrow panes do not drop the end labels.
                 if let xTicks {
-                    AxisMarks(values: xTicks) { _ in
+                    AxisMarks(values: xTicks) { v in
                         AxisGridLine()
                         AxisTick()
-                        AxisValueLabel()
+                        // End labels grow inwards, so neither is clipped.
+                        AxisValueLabel(anchor: v.index == 0 ? .topLeading : v.index == v.count - 1 ? .topTrailing : .top)
                     }
                 } else {
-                    AxisMarks()
+                    AxisMarks(preset: .aligned, values: .automatic(desiredCount: xCount))
                 }
             }
             // Few y labels: fan and profile plots are often short.
             .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
-            .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+            .environment(\.locale, NumberDisplay.locale)
     }
 
     private var chart: some View {
@@ -313,7 +380,7 @@ struct Sparkline: View {
             }
         }
         .chartYScale(domain: domain(logs))
-        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+        .environment(\.locale, NumberDisplay.locale)
         .accessibilityLabel("Merit history, \(values.count) iterations, logarithmic scale")
     }
 

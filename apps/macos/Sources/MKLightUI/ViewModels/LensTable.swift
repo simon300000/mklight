@@ -4,8 +4,13 @@ import MKLightModel
 
 /// Columns of the lens data table: the parameters every surface type has.
 /// Type-specific parameters live in the surface inspector.
+///
+/// `radiusX` and `conicX` are the x sections of anamorphic surfaces
+/// (toroid, biconic, cylinder): they have no column of their own but sit
+/// beside the y section in the Radius and Conic cells, so both sections
+/// show and edit in place.
 public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
-    case surface, type, comment, radius, thickness, material, semiDiameter, conic
+    case surface, type, comment, radius, radiusX, thickness, material, semiDiameter, conic, conicX
 
     public var id: String { rawValue }
 
@@ -15,17 +20,28 @@ public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
         case .type: "Type"
         case .comment: "Comment"
         case .radius: "Radius"
+        case .radiusX: "Radius x"
         case .thickness: "Thickness"
         case .material: "Material"
         case .semiDiameter: "Semi-Diameter"
         case .conic: "Conic"
+        case .conicX: "Conic x"
         }
     }
 
-    public var isNumeric: Bool { [.radius, .thickness, .semiDiameter, .conic].contains(self) }
+    public var isNumeric: Bool { [.radius, .radiusX, .thickness, .semiDiameter, .conic, .conicX].contains(self) }
+
+    /// The table column a value shows in (an x section in its y section's).
+    public var base: LensColumn {
+        switch self {
+        case .radiusX: .radius
+        case .conicX: .conic
+        default: self
+        }
+    }
 
     /// Columns a text field edits, in keyboard order.
-    public static let editable: [LensColumn] = [.comment, .radius, .thickness, .material, .semiDiameter, .conic]
+    public static let editable: [LensColumn] = [.comment, .radius, .radiusX, .thickness, .material, .semiDiameter, .conic, .conicX]
 
     /// The model parameter behind a numeric column (for variables and solves).
     public func param(_ id: SurfaceID) -> ParamPath? {
@@ -39,13 +55,15 @@ public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// The parameter behind the column for this surface's shape: radius and
-    /// conic of a toroid or biconic are its y section's.
+    /// conic of a toroid or biconic are its y section's, `radiusX` and
+    /// `conicX` its x section's (a toroid's x section has no conic).
     public func param(for surface: Surface) -> ParamPath? {
-        guard surface.shape.isAnamorphic else { return param(surface.id) }
+        guard surface.shape.isAnamorphic else { return self == .radiusX || self == .conicX ? nil : param(surface.id) }
         switch self {
         case .radius: return .shapeParam(surface: surface.id, parameter: .curvatureY)
-        case .conic: return surface.shape.kind == .biconic || surface.shape.kind == .toroid
-            ? .shapeParam(surface: surface.id, parameter: .conicY) : nil
+        case .radiusX: return .shapeParam(surface: surface.id, parameter: .curvatureX)
+        case .conic: return .shapeParam(surface: surface.id, parameter: .conicY)
+        case .conicX: return surface.shape.kind == .biconic ? .shapeParam(surface: surface.id, parameter: .conicX) : nil
         default: return param(surface.id)
         }
     }
@@ -84,9 +102,39 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     public var editable: Set<LensColumn>
     public var markers: [LensColumn: CellMarker]
     public var semiDiameterIsAuto: Bool
-    /// A short axis hint before a value (`y` for an anamorphic surface's
-    /// radius and conic, which are its y section's).
+    /// A short axis hint before a value (`y` and `x` for the two sections
+    /// of an anamorphic surface).
     public var hints: [LensColumn: String] = [:]
+    /// The section with power of a cylinder (its other section is flat,
+    /// shown dimmed).
+    public var poweredAxis: SurfaceShape.CylinderAxis?
+
+    /// The values shown in a table column's cell: the y and x sections of
+    /// an anamorphic surface (both, or a cylinder's powered conic alone),
+    /// else the column itself.
+    public func shown(_ column: LensColumn) -> [LensColumn] {
+        let candidates: [LensColumn] =
+            switch column.base {
+            case .radius: [.radius, .radiusX]
+            case .conic: [.conic, .conicX]
+            default: [column]
+            }
+        let present = candidates.filter { cells[$0] != nil }
+        return present.isEmpty ? [column.base] : present
+    }
+
+    /// Whether the row shows two sections in `column`'s cell.
+    public func hasSections(_ column: LensColumn) -> Bool { shown(column).count > 1 }
+
+    /// Whether `column` is the flat section of a cylinder (dimmed).
+    public func isFlatSection(_ column: LensColumn) -> Bool {
+        guard let a = poweredAxis else { return false }
+        switch column {
+        case .radius, .conic: return a == .x
+        case .radiusX, .conicX: return a == .y
+        default: return false
+        }
+    }
 
     public var surfaceText: String {
         switch role {
@@ -112,18 +160,43 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             // An object at infinity has no meaningful curvature.
             let hasCurvature = sf.shape.hasCurvature && !(role == .object && sf.thickness.isInfinite)
             var hints: [LensColumn: String] = [:]
-            if hasCurvature || sf.shape.isAnamorphic {
+            if case .biconic(let cx, let cy, let kx, let ky, _, _) = sf.shape {
+                // Both sections, y first (the meridional section).
+                for (c, v) in [(LensColumn.radius, RadiusDisplay.radius(fromCurvature: cy)), (.radiusX, RadiusDisplay.radius(fromCurvature: cx))] {
+                    cells[c] = RowFormat.compact(v)
+                    exact[c] = NumberDisplay.exact(v)
+                    editable.insert(c)
+                }
+                let axis = sf.shape.cylinderAxis
+                // A cylinder's flat section has no meaningful conic: only the powered one shows.
+                for (c, v, a) in [(LensColumn.conic, ky, SurfaceShape.CylinderAxis.y), (.conicX, kx, .x)] where axis == nil || axis == a {
+                    cells[c] = RowFormat.plain(v)
+                    exact[c] = NumberDisplay.exact(v)
+                    editable.insert(c)
+                    hints[c] = a.rawValue
+                }
+                hints[.radius] = "y"
+                hints[.radiusX] = "x"
+            } else if case .toroid(let cx, let cy, let ky, _) = sf.shape {
+                for (c, v) in [(LensColumn.radius, RadiusDisplay.radius(fromCurvature: cy)), (.radiusX, RadiusDisplay.radius(fromCurvature: cx))] {
+                    cells[c] = RowFormat.compact(v)
+                    exact[c] = NumberDisplay.exact(v)
+                    editable.insert(c)
+                }
+                cells[.conic] = RowFormat.plain(ky)
+                exact[.conic] = NumberDisplay.exact(ky)
+                editable.insert(.conic)
+                hints[.radius] = "y"
+                hints[.radiusX] = "x"
+                hints[.conic] = "y"
+            } else if hasCurvature {
                 cells[.radius] = RowFormat.length(sf.shape.radius)
                 exact[.radius] = NumberDisplay.exact(sf.shape.radius)
                 editable.insert(.radius)
-                if sf.shape.hasConic || sf.shape.isAnamorphic {
+                if sf.shape.hasConic {
                     cells[.conic] = RowFormat.plain(sf.shape.conicConstant)
                     exact[.conic] = NumberDisplay.exact(sf.shape.conicConstant)
                     editable.insert(.conic)
-                }
-                if sf.shape.isAnamorphic {
-                    hints[.radius] = "y"
-                    hints[.conic] = "y"
                 }
             } else if case .paraxial(let f) = sf.shape {
                 cells[.radius] = "f " + RowFormat.length(f)
@@ -163,7 +236,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             return LensRow(
                 id: sf.id, index: i, role: role, kind: sf.shape.kind, typeTitle: Self.typeTitle(sf.shape),
                 isMirror: sf.interaction == .reflect, cells: cells, exact: exact, editable: editable, markers: markers,
-                semiDiameterIsAuto: sf.semiDiameter == .auto, hints: hints)
+                semiDiameterIsAuto: sf.semiDiameter == .auto, hints: hints, poweredAxis: sf.shape.cylinderAxis)
         }
     }
 
@@ -184,8 +257,13 @@ public struct LensRow: Identifiable, Equatable, Sendable {
         case .comment: return .success(.setLabel(id, text))
         case .radius where kind == .toroid || kind == .biconic:
             return LensValueParser.curvature(fromRadiusText: text).map { .setShapeParameter(id, .curvatureY, $0) }
+        case .radiusX where kind == .toroid || kind == .biconic:
+            return LensValueParser.curvature(fromRadiusText: text).map { .setShapeParameter(id, .curvatureX, $0) }
         case .conic where kind == .toroid || kind == .biconic:
             return LensValueParser.finite(text).map { .setShapeParameter(id, .conicY, $0) }
+        case .conicX where kind == .biconic:
+            return LensValueParser.finite(text).map { .setShapeParameter(id, .conicX, $0) }
+        case .radiusX, .conicX: return nil
         case .radius: return LensValueParser.curvature(fromRadiusText: text).map { .setCurvature(id, $0) }
         case .thickness: return LensValueParser.thickness(text, allowInfinite: role == .object).map { .setThickness(id, $0) }
         case .conic: return LensValueParser.finite(text).map { .setConic(id, $0) }
@@ -219,6 +297,14 @@ enum RowFormat {
         let a = abs(v)
         if a != 0 && (a < 1e-4 || a >= 1e7) { return String(format: "%.4e", v) }
         return String(format: "%.\(decimals)f", v)
+    }
+
+    /// Up to 6 significant digits without trailing zeros, for the two
+    /// sections that share an anamorphic cell (the exact value edits).
+    static func compact(_ v: Double) -> String {
+        if v.isNaN { return "—" }
+        if v.isInfinite { return v > 0 ? "∞" : "−∞" }
+        return plain(v)
     }
 
     static func plain(_ v: Double) -> String {

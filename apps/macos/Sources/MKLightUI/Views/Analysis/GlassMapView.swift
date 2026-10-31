@@ -88,7 +88,7 @@ struct GlassMapChart: View {
                 }
             }
         }
-        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+        .environment(\.locale, NumberDisplay.locale)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Glass map, \(plane.title) against Abbe number, \(plotted.count) glasses")
         .accessibilityValue(accessibilityValue)

@@ -14,7 +14,7 @@ extension AnalysisResultView {
                 if let m = e.max() { out.append(KeyNumber(label: "Max stop error", value: Fmt.length(m))) }
             }
             let v = ["variation_x", "variation_y"].compactMap(d.columnIndex).flatMap { d.column($0) }.filter(\.isFinite)
-            if let m = v.max(by: { abs($0) < abs($1) }) { out.append(KeyNumber(label: "Max variation", value: String(format: "%+.2f %%", m * 100))) }
+            if let m = v.max(by: { abs($0) < abs($1) }) { out.append(KeyNumber(label: "Max variation", value: Fmt.signed(m * 100, decimals: 2) + " %")) }
             return out
         case "relative_illumination_map":
             guard let d = FieldMapData(output: output) else { return [] }
@@ -49,7 +49,7 @@ extension AnalysisResultView {
             var out: [KeyNumber] = []
             if let p = j["pixel_size_mm"]?.nfArray, let x = p.first, x.isFinite { out.append(KeyNumber(label: "Pixel", value: Fmt.length(x))) }
             if let m = ImageSimulationData.maxDistortionPercent(nodes) {
-                out.append(KeyNumber(label: "Max distortion", value: String(format: "%+.3f %%", m)))
+                out.append(KeyNumber(label: "Max distortion", value: Fmt.signed(m, decimals: 3) + " %"))
             }
             if let r = ImageSimulationData.minRelativeIllumination(nodes) { out.append(KeyNumber(label: "Min RI", value: String(format: "%.3f", r))) }
             return out

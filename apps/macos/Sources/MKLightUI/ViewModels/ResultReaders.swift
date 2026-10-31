@@ -65,10 +65,22 @@ public enum Fmt {
         return unit == "°" ? s + "°" : s + " " + unit
     }
 
-    /// A length in mm shown in µm below 0.1 mm.
+    /// A length in mm shown in µm below 0.1 mm (never "−0.00").
     public static func length(_ mm: Double) -> String {
         guard mm.isFinite else { return short(mm) }
-        return abs(mm) < 0.1 ? String(format: "%.2f µm", mm * 1000) : String(format: "%.4f mm", mm)
+        let s = abs(mm) < 0.1 ? String(format: "%.2f µm", mm * 1000) : String(format: "%.4f mm", mm)
+        if s.hasPrefix("-"), s.dropFirst().allSatisfy({ "0. µm".contains($0) }) { return String(s.dropFirst()) }
+        return s
+    }
+
+    /// A signed value with fixed decimals (`+0.0123`, `−1.2000`); a value
+    /// that rounds to zero is `0.0000` with a figure space for the sign, so
+    /// columns stay aligned and no "−0.0000" appears.
+    public static func signed(_ v: Double, decimals: Int = 4) -> String {
+        guard v.isFinite else { return "—" }
+        let s = String(format: "%+.\(decimals)f", v)
+        if s.dropFirst().allSatisfy({ $0 == "0" || $0 == "." }) { return "\u{2007}" + s.dropFirst() }
+        return s
     }
 
     public static func percent(_ f: Double, digits: Int = 1) -> String {

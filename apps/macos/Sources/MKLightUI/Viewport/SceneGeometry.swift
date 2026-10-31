@@ -82,7 +82,7 @@ enum SceneGeometry {
         if reach * camera.pointsPerMM * 0x1p-24 <= maxFloatErrorPoints {
             return GeometryFrame(origin: o, rotation: nil, clipHalfExtent: nil)
         }
-        let half = SIMD2(Double(max(size.width, 1)), Double(max(size.height, 1))) / camera.pointsPerMM
+        let half = SIMD2(Double(max(size.width, 1)), Double(max(size.height, 1)) / camera.verticalScale(mode)) / camera.pointsPerMM
         return GeometryFrame(origin: camera.center, rotation: ViewportMath.rotation(camera, mode: mode), clipHalfExtent: half)
     }
 

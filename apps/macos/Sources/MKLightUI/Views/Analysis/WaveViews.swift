@@ -126,7 +126,7 @@ struct ZernikeTable: View {
                             Text("Z\(k + 1)").foregroundStyle(.secondary)
                             Text(ordering == "fringe" && k < Self.fringeNames.count ? Self.fringeNames[k] : "")
                                 .foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                            Text(String(format: "%+.4f", coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
+                            Text(Fmt.signed(coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
                                 .foregroundStyle(abs(coefficients[k]) >= 0.05 ? .primary : .secondary)
                         }
                     }
@@ -264,15 +264,13 @@ struct ThroughFocusMTFView: View {
     var body: some View {
         let f = fields[min(selected, fields.count - 1)]
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack {
-                ItemPicker(titles: fields.map(\.title), selection: $selected)
-                Spacer()
-                FlowLayout(spacing: Space.m) {
-                    ForEach(Array(f.curves.enumerated()), id: \.offset) { k, c in
-                        LegendItem(color: Palette.fieldColor(k), label: String(format: "%.0f c/mm", c.0))
-                    }
+            // The field picker, then the legend in one flow (wraps in narrow panes).
+            ItemPicker(titles: fields.map(\.title), selection: $selected)
+            FlowLayout(spacing: Space.m) {
+                ForEach(Array(f.curves.enumerated()), id: \.offset) { k, c in
+                    LegendItem(color: Palette.fieldColor(k), label: String(format: "%.0f cycles/mm", c.0))
                 }
-                .fixedSize()
+                LegendItem(color: .secondary, label: "T solid, S dashed")
             }
             LineChart(
                 series: f.curves.enumerated().flatMap { k, c in

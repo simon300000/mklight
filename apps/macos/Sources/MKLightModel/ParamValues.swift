@@ -158,4 +158,54 @@ extension ParamPath {
         case .pressureAtm: return "Pressure"
         }
     }
+
+    /// Whether the value is a curvature `c = 1/R` (1/mm): shown and bounded
+    /// as a radius by default.
+    public var isCurvature: Bool {
+        switch self {
+        case .curvature, .shapeParam(_, .curvatureX), .shapeParam(_, .curvatureY): true
+        default: false
+        }
+    }
+
+    /// The unit of the parameter's value (and of its bounds), `""` when it
+    /// is dimensionless: `mm`, `1/mm`, `mm⁻³` (A₄), `°`, `µm`, `rad`, …
+    /// Polynomial coefficients carry the inverse powers that make their
+    /// term a length (docs/SURFACES.md).
+    public func unit(in system: OpticalSystem) -> String {
+        switch self {
+        case .curvature: return "1/mm"
+        case .thickness, .decenterX, .decenterY, .semiDiameter, .paraxialFocalLength: return "mm"
+        case .conic, .modelNd, .modelVd, .modelDpgf, .fieldWeight, .wavelengthWeight: return ""
+        case .asphere(_, let k): return Self.inverseMM(2 * k + 3)
+        case .shapeCoefficient(_, let set, let k):
+            switch set {
+            case .odd: return Self.inverseMM(k)
+            case .xAsphere, .yAsphere: return Self.inverseMM(2 * k + 3)
+            case .q, .xy, .zernike: return "mm"
+            case .phase: return "rad"
+            }
+        case .shapeParam(_, let p):
+            switch p {
+            case .curvatureX, .curvatureY: return "1/mm"
+            case .conicX, .conicY, .designOrder, .traceOrder: return ""
+            case .normRadius: return "mm"
+            case .designWavelengthUm: return "µm"
+            }
+        case .tiltX, .tiltY, .tiltZ: return "°"
+        case .apertureValue: return system.aperture.kind.unit
+        case .fieldX, .fieldY: return system.fields.kind.unit
+        case .wavelengthUm: return "µm"
+        case .temperatureC: return "°C"
+        case .pressureAtm: return "atm"
+        }
+    }
+
+    /// `mm⁻ⁿ` with a superscript exponent; `""` for n = 0, `1/mm` for n = 1.
+    static func inverseMM(_ n: Int) -> String {
+        if n <= 0 { return "" }
+        if n == 1 { return "1/mm" }
+        let sup: [Character] = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
+        return "mm⁻" + String(String(n).map { sup[$0.wholeNumberValue ?? 0] })
+    }
 }

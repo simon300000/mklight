@@ -130,8 +130,9 @@ import Testing
     }
 
     @Test func contourLevels() {
-        #expect(Contours.illuminationLevels(in: 0.42...1) == [0.5, 0.6, 0.7, 0.8, 0.9, 0.95])
-        #expect(Contours.illuminationLevels(in: 0.87...1) == [0.9, 0.95])
+        // About five round levels inside the data's range.
+        #expect(Contours.illuminationLevels(in: 0.42...1) == [0.5, 0.6, 0.7, 0.8, 0.9])
+        #expect(Contours.illuminationLevels(in: 0.87...1) == [0.88, 0.9, 0.92, 0.94, 0.96, 0.98])
         #expect(Contours.levels(in: 0...1) == [0.2, 0.4, 0.6, 0.8])
     }
 

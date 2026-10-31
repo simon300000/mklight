@@ -20,7 +20,7 @@ struct AnalysisResultView: View {
             if let v = dedicated { v } else { GenericResultView(output: output) }
         }
         // Plots use the same decimal point as the app's number formats.
-        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+        .environment(\.locale, NumberDisplay.locale)
     }
 
     private var dedicated: AnyView? {
@@ -56,7 +56,7 @@ struct AnalysisResultView: View {
         case "relative_illumination_map": return RelativeIlluminationMapView(output: o).map { AnyView($0) }
         case "chief_ray_angle": return ChiefRayAngleView(output: o).map { AnyView($0) }
         case "glass_map": return GlassMapView(output: o, context: c).map { AnyView($0) }
-        case "image_simulation": return ImageSimulationView(output: o).map { AnyView($0) }
+        case "image_simulation": return ImageSimulationView(output: o, pane: c.pane).map { AnyView($0) }
         default: return nil
         }
     }

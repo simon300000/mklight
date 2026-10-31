@@ -24,6 +24,19 @@ public enum AnalysisCatalog {
         "glass_substitution": "Glass Substitution",
     ]
 
+    /// Abbreviations for narrow panes (the full title stays in the help
+    /// and the VoiceOver label).
+    static let shortTitles: [String: String] = [
+        "first_order": "First Order", "system_summary": "System", "spot_diagram": "Spot",
+        "field_curvature_distortion": "Field Curv. & Dist.", "grid_distortion": "Grid Dist.", "seidel": "Seidel",
+        "longitudinal_aberration": "Long. Aberration", "chromatic_focal_shift": "Focal Shift",
+        "relative_illumination": "Rel. Illumination", "encircled_energy": "Encircled En.", "geometric_mtf": "Geom. MTF",
+        "wavefront_map": "Wavefront", "through_focus_mtf": "Thru-Focus MTF", "diffraction_encircled_energy": "Diffr. Enc. En.",
+        "ghost_irradiance": "Ghost Irrad.", "polarization_pupil_map": "Pol. Pupil Map", "system_transmission": "Transmission",
+        "pupil_aberration": "Pupil Aberr.", "relative_illumination_map": "RI Map", "chief_ray_angle": "CRA",
+        "image_simulation": "Image Sim.", "glass_substitution": "Glass Subst.",
+    ]
+
     static let symbols: [String: String] = [
         "first_order": "list.bullet.rectangle", "system_summary": "tablecells", "validate": "checkmark.seal",
         "spot_diagram": "circle.dotted", "ray_fan": "chart.xyaxis.line", "opd_fan": "waveform.path.ecg",
@@ -60,6 +73,8 @@ public enum AnalysisCatalog {
         }.joined(separator: " ")
     }
     public static func title(of name: String) -> String { titles[name] ?? name.replacingOccurrences(of: "_", with: " ").capitalized }
+    /// An abbreviated title for narrow panes; the full title when there is none.
+    public static func shortTitle(of name: String) -> String { shortTitles[name] ?? title(of: name) }
     public static func symbol(for name: String) -> String { symbols[name] ?? "chart.dots.scatter" }
     public static func categoryTitle(_ c: String) -> String { categoryTitles[c] ?? c.capitalized }
 

@@ -24,7 +24,7 @@ public enum MaterialRef: Codable, Sendable, Hashable {
         case .vacuum: "VACUUM"
         case .catalog(_, let name): name
         case .model(let nd, let vd, _): String(format: "%.5f/%.2f", nd, vd)
-        case .constant(let n): "n=\(n.formatted(.number.precision(.significantDigits(1...10))))"
+        case .constant(let n): "n=" + NumberDisplay.significant(n)
         }
     }
 

@@ -16,12 +16,15 @@ public struct MKLightScene: Scene {
         DocumentGroup(newDocument: { ProjectDocument() }) { config in
             DesignWindow(document: config.document, fileURL: config.fileURL, engine: engine)
                 .frame(minWidth: 960, minHeight: 620)
+                // One number format app-wide (NumberDisplay): a decimal point, no grouping.
+                .environment(\.locale, NumberDisplay.locale)
         }
         .defaultSize(width: 1520, height: 940)
         .commands { MKLightCommands() }
 
         Window("Welcome to MKLight", id: WelcomeView.windowID) {
             WelcomeView(engine: engine)
+                .environment(\.locale, NumberDisplay.locale)
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)

@@ -169,23 +169,31 @@ private struct FieldMapOverlay: View {
     }
 
     private func drawContours(_ ctx: inout GraphicsContext) {
-        let ink = Color.primary.opacity(0.65)
         for (level, segs) in contours where !segs.isEmpty {
             var path = Path()
             for s in segs {
                 path.move(to: point(s.a))
                 path.addLine(to: point(s.b))
             }
-            ctx.stroke(path, with: .color(ink), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
-            // Label each level once, at its segment nearest the upper right.
-            if let s = segs.max(by: { ($0.a.x + $0.a.y + $0.b.x + $0.b.y) < ($1.a.x + $1.a.y + $1.b.x + $1.b.y) }) {
+            // A white line on a dark halo stays readable over every colour of the ramp.
+            ctx.stroke(path, with: .color(.black.opacity(0.45)), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+            ctx.stroke(path, with: .color(.white.opacity(0.9)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+        }
+        // Label each level once, preferring the upper right, never on top of
+        // another level's label.
+        var placed: [CGRect] = []
+        for (level, segs) in contours where !segs.isEmpty {
+            let text = ctx.resolve(Text(format(level)).font(.caption2.monospacedDigit()).foregroundStyle(Color.primary))
+            let size = text.measure(in: CGSize(width: 80, height: 20))
+            let candidates = segs.sorted { ($0.a.x + $0.a.y + $0.b.x + $0.b.y) > ($1.a.x + $1.a.y + $1.b.x + $1.b.y) }
+            for s in candidates {
                 let mid = point((s.a + s.b) / 2)
-                let text = ctx.resolve(Text(format(level)).font(.caption2.monospacedDigit()).foregroundStyle(Color.primary))
-                let size = text.measure(in: CGSize(width: 80, height: 20))
                 let box = CGRect(x: mid.x - size.width / 2 - 2, y: mid.y - size.height / 2, width: size.width + 4, height: size.height)
-                    .offsetBy(dx: min(0, frame.maxX - (mid.x + size.width / 2 + 2)), dy: max(0, frame.minY - (mid.y - size.height / 2)))
+                guard frame.insetBy(dx: -2, dy: -2).contains(box), !placed.contains(where: { $0.insetBy(dx: -2, dy: -1).intersects(box) }) else { continue }
+                placed.append(box)
                 ctx.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(colorScheme == .dark ? .black.opacity(0.6) : .white.opacity(0.75)))
                 ctx.draw(text, at: CGPoint(x: box.midX, y: box.midY))
+                break
             }
         }
     }
@@ -215,7 +223,7 @@ struct FieldMapPanel: View {
     let unit: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: Space.xl) {
+        HStack(alignment: .center, spacing: Space.m) {
             plot
             ColorBar(scale: plot.scale, range: plot.range, unit: unit).frame(maxHeight: 220)
         }
@@ -274,7 +282,8 @@ struct FieldMapContent: View {
     let data: FieldMapData
     let column: Int
     var contours: [Double] = []
-    var range: ClosedRange<Double>?
+    var rangeMode: HeatRangeMode = .data
+    var isFraction = false
 
     var body: some View {
         let col = data.columns[column]
@@ -285,10 +294,10 @@ struct FieldMapContent: View {
                 description: Text("\(col.title) is undefined at every sample: \(col.definition)."))
         } else if data.layout == .map {
             let signed = data.isSigned(column)
-            let r = range ?? data.range(column) ?? 0...1
+            let r = HeatMapScale.range(data.range(column) ?? 0...1, signed: signed, mode: rangeMode, isFraction: isFraction)
             FieldMapPanel(
                 plot: FieldMapPlot(
-                    grid: data.grid(column), scale: signed ? .diverging : .sequential(log: false), range: r, contours: contours,
+                    grid: data.grid(column), scale: HeatMapScale.scale(signed: signed), range: r, contours: contours,
                     title: col.title, format: format),
                 unit: col.unitLabel)
         } else {
@@ -307,6 +316,7 @@ struct FieldMapContent: View {
 struct RelativeIlluminationMapView: View {
     let data: FieldMapData
     @State private var column: Int
+    @State private var rangeMode = HeatRangeMode.data
 
     init?(output: AnalysisOutput) {
         guard let d = FieldMapData(output: output) else { return nil }
@@ -333,6 +343,18 @@ struct RelativeIlluminationMapView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if data.layout == .map && isFraction {
+                Picker("Colour scale", selection: $rangeMode) {
+                    Text("Data range").tag(HeatRangeMode.data)
+                    Text("0 to 1").tag(HeatRangeMode.unit)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .help("Colours over the map's own range (small differences show), or over 0 to 1 (to compare designs)")
+                .accessibilityLabel("Colour scale")
+            }
             if data.layout == .map {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .center, spacing: Space.l) {
@@ -353,9 +375,8 @@ struct RelativeIlluminationMapView: View {
     }
 
     private func map(_ c: Int, isRI: Bool) -> some View {
-        let r = isFraction ? 0...1 : (data.range(c) ?? 0...1)
         let levels = isRI ? Contours.illuminationLevels(in: data.range(c) ?? 0...1) : []
-        return FieldMapContent(data: data, column: c, contours: levels, range: r)
+        return FieldMapContent(data: data, column: c, contours: levels, rangeMode: rangeMode, isFraction: isFraction)
     }
 
     private func radial(_ c: Int) -> some View {
@@ -378,7 +399,7 @@ struct RelativeIlluminationMapView: View {
                 }
             }
             .chartXAxisLabel("Image radius (mm)", alignment: .center)
-            .chartYScale(domain: isFraction ? 0...1.02 : FieldMapData.range(pts.map(\.1)))
+            .chartYScale(domain: isFraction && rangeMode == .unit ? 0...1.02 : FieldMapData.range(pts.map(\.1)))
             .chartYAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(col.title) versus image radius, \(pts.count) samples")
@@ -420,21 +441,17 @@ struct ChiefRayAngleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(spacing: Space.m) {
-                if data.layout == .map {
-                    Picker("Display", selection: $display) {
-                        ForEach(Display.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
+            // The picker and the legend side by side, or the legend below in narrow panes.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Space.m) {
+                    displayPicker
+                    controls.fixedSize()
+                    Spacer(minLength: 0)
                 }
-                if display == .map && data.layout == .map {
-                    FieldColumnPicker(columns: mapColumns.map { data.columns[$0] }, selection: filteredColumn)
-                } else {
-                    legend
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    displayPicker
+                    controls
                 }
-                Spacer(minLength: 0)
             }
             if display == .map && data.layout == .map {
                 FieldMapContent(data: data, column: column)
@@ -443,6 +460,25 @@ struct ChiefRayAngleView: View {
             }
         }
         .padding(Space.m)
+    }
+
+    @ViewBuilder private var displayPicker: some View {
+        if data.layout == .map {
+            Picker("Display", selection: $display) {
+                ForEach(Display.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder private var controls: some View {
+        if display == .map && data.layout == .map {
+            FieldColumnPicker(columns: mapColumns.map { data.columns[$0] }, selection: filteredColumn)
+        } else {
+            legend
+        }
     }
 
     /// The columns worth a map: not `limit` (it follows the radius), and
@@ -603,7 +639,7 @@ struct ChiefRayAngleView: View {
         .chartXAxisLabel(xLabel, alignment: .center)
         .chartYAxisLabel("Chief ray angle (°)")
         .chartYAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
-        .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+        .environment(\.locale, NumberDisplay.locale)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Chief ray angle versus image height" + (limit.isEmpty ? "" : ", with the sensor limit"))
         .accessibilityValue(accessibilitySummary(s))

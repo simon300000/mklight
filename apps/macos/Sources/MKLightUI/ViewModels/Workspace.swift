@@ -164,7 +164,8 @@ public final class Workspace {
 
     @discardableResult
     public func addPane(_ analysis: String, settings: [String: JSONValue] = [:], after: AnalysisPane? = nil) -> AnalysisPane {
-        let pane = AnalysisPane(analysis: analysis, settings: settings, autoUpdate: Self.autoUpdateDefault(analysis))
+        let pane = AnalysisPane(
+            analysis: analysis, settings: settings.isEmpty ? startingSettings(analysis) : settings, autoUpdate: Self.autoUpdateDefault(analysis))
         pane.workspace = self
         if let after, let i = panes.firstIndex(where: { $0 === after }) {
             panes.insert(pane, at: i + 1)
@@ -195,16 +196,22 @@ public final class Workspace {
         if !inNewPane, let p = panes.first(where: { $0.analysis == analysis }) {
             focusedPaneID = p.id
         } else if !inNewPane, let p = focusedPane {
-            p.show(analysis)
+            p.show(analysis, settings: startingSettings(analysis))
             p.autoUpdate = Self.autoUpdateDefault(analysis)
         } else {
             addPane(analysis, after: focusedPane)
         }
     }
 
+    /// The settings a new pane of `analysis` starts with: the engine's
+    /// defaults, except where they show nothing useful (image simulation).
+    public func startingSettings(_ analysis: String) -> [String: JSONValue] {
+        analysis == "image_simulation" ? ImageSimulationSettings.starting(defaults: descriptor(analysis)?.defaultSettings) : [:]
+    }
+
     /// Long-running analyses wait for an explicit re-run by default.
     static func autoUpdateDefault(_ analysis: String) -> Bool {
-        !["stray_light", "ghost_irradiance", "tolerance", "optimize", "through_focus_mtf", "mtf_vs_field"].contains(analysis)
+        !["stray_light", "ghost_irradiance", "tolerance", "optimize", "through_focus_mtf", "mtf_vs_field", "image_simulation"].contains(analysis)
     }
 
     func paneChanged(_ pane: AnalysisPane) { refreshPane(pane, force: true) }
@@ -279,7 +286,7 @@ public final class Workspace {
     // MARK: Running
 
     func request(for pane: AnalysisPane) -> EngineAnalysisRequest {
-        var settings = pane.settings
+        var settings = ImageSourceImport.engineSettings(pane.analysis, pane.settings, defaults: descriptor(pane.analysis)?.defaultSettings)
         if let d = descriptor(pane.analysis), !d.settingsFields.isEmpty { settings = d.acceptedSettings(settings) }
         return EngineAnalysisRequest(analysis: pane.analysis, settings: settings, execution: ExecutionSettings(backend: backend))
     }

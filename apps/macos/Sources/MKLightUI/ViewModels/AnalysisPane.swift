@@ -85,6 +85,9 @@ public final class AnalysisPane: Identifiable {
     }
 
     public func rerun() { workspace?.run(self, force: true) }
+
+    /// The settings a new pane of this analysis starts with (Defaults).
+    public var startingSettings: [String: JSONValue] { workspace?.startingSettings(analysis) ?? [:] }
     public func cancel() { job?.cancel() }
 
     /// The value of a setting: the pane's own, else the engine default.
