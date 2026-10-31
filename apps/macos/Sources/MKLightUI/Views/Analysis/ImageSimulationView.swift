@@ -115,13 +115,8 @@ struct ImageSimulationView: View {
     private var controls: some View {
         FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
             if let pane { ImageViewControls(pane: pane, data: data) }
-            Picker("Compare", selection: $compare) {
-                ForEach(Compare.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .disabled(source == nil)
+            SegmentedOrMenu(title: "Compare", options: Compare.allCases.map { ($0, $0.rawValue) }, selection: $compare)
+                .disabled(source == nil)
             HStack(spacing: Space.xs) {
                 Text("Exposure").foregroundStyle(.secondary)
                 Slider(value: $exposure, in: -4...4, step: 0.5).frame(width: 90).accessibilityLabel("Exposure")

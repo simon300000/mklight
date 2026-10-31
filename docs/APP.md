@@ -270,7 +270,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
     tangential and sagittal plots, chart axes take about one label per
     70 pt and keep their end labels inside, the CRA legend moves under
     its picker, the Seidel Petzval radius under its picker and the
-    wavefront coefficients wrap.
+    wavefront coefficients wrap; wide segmented controls (polarisation
+    quantity, image comparison) become pop-up menus (`SegmentedOrMenu`),
+    so no pane overflows into its neighbour.
   * *Warnings* (`RunWarnings`): the engine's run warnings are grouped by
     message (numbers masked), with the fields and wavelengths they
     concern numbered from 1 as everywhere in the app (`Field 1, Field 3`).
@@ -784,6 +786,13 @@ Remaining for an iPadOS target:
     spacing (λF/2 at the shortest wavelength) is itself flagged as
     coarser than Nyquist by a fraction of a percent ("4.948e-4 mm …
     limit 4.885e-4 mm"), a self-inconsistency of the engine.
+  * `mtf_vs_field` and `through_focus_mtf` default to frequencies of ⅛, ¼
+    and ½ of the diffraction cutoff (129, 259, 517 cycles/mm at F/2) and
+    a focus range of ±4λF² (±8 µm): sensible for diffraction-limited
+    optics, but on a camera lens such as the Double Gauss every curve
+    lies near zero. The app keeps the engine's defaults; the engine could
+    pick them from the system's aberrations (or a camera-lens preset of
+    10, 20 and 40 cycles/mm).
   * `glass_map` reports no glass status unless AGF metadata is passed, so
     catalogue glasses show as "Catalogue glass".
   * LM with the MTF weakest-field merit and the EFL hold can end slightly

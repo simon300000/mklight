@@ -208,12 +208,7 @@ struct PolarizationView: View {
         let finite = v.enumerated().filter { reached.indices.contains($0.offset) && reached[$0.offset] && $0.element.isFinite }.map(\.element)
         let range = (finite.min() ?? 0)...max(finite.max() ?? 1, (finite.min() ?? 0) + 1e-12)
         VStack(alignment: .leading, spacing: Space.s) {
-            Picker("Quantity", selection: $quantity) {
-                ForEach(Quantity.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            SegmentedOrMenu(title: "Quantity", options: Quantity.allCases.map { ($0, $0.rawValue) }, selection: $quantity)
             MapLayout {
                     Canvas { ctx, size in
                         let r = min(size.width, size.height) / 2

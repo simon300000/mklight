@@ -309,11 +309,10 @@ struct GridDistortionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            HStack(spacing: Space.l) {
+            FlowLayout(spacing: Space.l, lineSpacing: Space.xs) {
                 LegendItem(color: .secondary.opacity(0.5), label: "Paraxial grid", dashed: true)
                 LegendItem(color: .primary, label: "Real chief rays")
-                Spacer()
-                Text("Max \(String(format: "%.3f", maxDistortion)) %").font(.caption).foregroundStyle(.secondary).numeric()
+                Text("Max \(String(format: "%.3f", maxDistortion)) %").font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
             }
             Canvas { ctx, size in
                 let all = (paraxial + real).filter { $0.0.isFinite && $0.1.isFinite }

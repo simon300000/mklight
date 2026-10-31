@@ -173,7 +173,6 @@ struct LegendItem: View {
             .frame(width: 14, height: 8)
             Text(label).lineLimit(1)
         }
-        .fixedSize()
         .font(.caption)
         .foregroundStyle(.secondary)
     }
@@ -202,6 +201,30 @@ struct WavelengthLegend<Extra: View>: View {
 extension WavelengthLegend where Extra == EmptyView {
     init(wavelengths: [Int], um: [Double]) {
         self.init(wavelengths: wavelengths, um: um) { EmptyView() }
+    }
+}
+
+/// A segmented control that becomes a pop-up menu when its pane is too
+/// narrow for the segments (narrow panes never overflow into their
+/// neighbours).
+struct SegmentedOrMenu<Value: Hashable>: View {
+    let title: String
+    let options: [(value: Value, label: String)]
+    @Binding var selection: Value
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            picker.pickerStyle(.segmented).fixedSize()
+            picker.pickerStyle(.menu).fixedSize()
+        }
+        .accessibilityLabel(title)
+    }
+
+    private var picker: some View {
+        Picker(title, selection: $selection) {
+            ForEach(options.indices, id: \.self) { k in Text(options[k].label).tag(options[k].value) }
+        }
+        .labelsHidden()
     }
 }
 

@@ -164,6 +164,7 @@ import Testing
         #expect(RowFormat.compact(-50) == "-50" && RowFormat.compact(.infinity) == "∞")
         #expect(BoundsFormat.compact(1e-5) == "1e-05")
         // Signed columns: no "−0.0000", zero keeps the sign's place.
+        #expect(Fmt.length(-1e-7) == "0.00 µm" && Fmt.length(-0.02) == "-20.00 µm")
         #expect(Fmt.signed(-0.00001) == "\u{2007}0.0000" && Fmt.signed(0.0123) == "+0.0123" && Fmt.signed(-2) == "-2.0000")
         // Typed numbers accept a decimal comma too.
         #expect(LensValueParser.number("1,5") == 1.5)
