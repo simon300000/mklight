@@ -258,3 +258,41 @@ mod tests {
         }
     }
 }
+
+/// Fixed two-pass tree over generated double-float values. Used by resident
+/// collectives without materialising products or chief-relative coordinates.
+/// For f32 inputs (lo=0), the three modes reproduce the existing tree exactly.
+pub fn mapped_in<E: FpEnv>(
+    mode: ReduceMode,
+    count: usize,
+    value: impl Fn(usize) -> Df32,
+    ctl: &crate::pending::JobControl,
+) -> mklight_core::MkResult<Df32> {
+    let groups = num_groups(count);
+    let mut partials = Vec::with_capacity(groups);
+    for g in 0..groups {
+        ctl.check()?;
+        let mut v = vec![Df32::ZERO; THREADS];
+        for (t, acc) in v.iter_mut().enumerate() {
+            let mut k = NeumaierF32::default();
+            for i in (g * THREADS + t..count).step_by(groups * THREADS) {
+                let q = value(i);
+                match mode {
+                    ReduceMode::Plain => acc.hi = E::add(acc.hi, E::add(q.hi, q.lo)),
+                    ReduceMode::Kahan => {
+                        k.add_in::<E>(q.hi);
+                        if q.lo != 0.0 {
+                            k.add_in::<E>(q.lo);
+                        }
+                    }
+                    ReduceMode::DoubleFloat => *acc = acc.add_in::<E>(q),
+                }
+            }
+            if mode == ReduceMode::Kahan {
+                *acc = k.value_in::<E>();
+            }
+        }
+        partials.push(tree::<E>(mode, &mut v));
+    }
+    Ok(pass2_in::<E>(mode, &partials))
+}
