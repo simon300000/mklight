@@ -113,7 +113,7 @@ fn preparation_benchmark_all_samples() {
         let setup = Instant::now();
         let u = c.upload(&gpu, &JobContext::new()).unwrap();
         let upload_seconds = setup.elapsed().as_secs_f64();
-        for count in [1, 16, 256, 1024] {
+        for count in [1, 16, 64, 128, 256, 1024] {
             let rows: Vec<_> = (0..count)
                 .map(|i| Candidate {
                     id: i as u64,
