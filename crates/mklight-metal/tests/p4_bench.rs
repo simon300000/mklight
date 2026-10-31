@@ -186,13 +186,14 @@ fn full_evaluation_benchmark() {
         )
         .unwrap();
         let u = c.upload(&gpu, &JobContext::new()).unwrap();
-        let rows: Vec<_> = (0..16)
-            .map(|i| Candidate {
-                id: i as u64,
-                values: small[i % 3].values.clone(),
-            })
-            .collect();
         for target in [100usize, 10_000, 1_000_000] {
+            let batch_count = if target == 100 { 1 } else { 16 };
+            let rows: Vec<_> = (0..batch_count)
+                .map(|i| Candidate {
+                    id: i as u64,
+                    values: small[i % 3].values.clone(),
+                })
+                .collect();
             let mut cpu_raw = vec![];
             let mut old_raw = vec![];
             let mut new_raw = vec![];
@@ -212,7 +213,8 @@ fn full_evaluation_benchmark() {
                 let mut batch = RayBatch::default();
                 let nf = tracers[0].fields().len();
                 let nw = tracers[0].num_wavelengths();
-                let side = ((target as f64 / (16 * nf * nw) as f64 * 4.0 / std::f64::consts::PI)
+                let side = ((target as f64 / (batch_count * nf * nw) as f64 * 4.0
+                    / std::f64::consts::PI)
                     .sqrt()
                     .ceil() as usize)
                     .max(3);
@@ -274,6 +276,12 @@ fn full_evaluation_benchmark() {
                     .unwrap();
                 gpu.release_systems(h).unwrap();
                 let new_seconds = common + now.elapsed().as_secs_f64();
+                if run_index == 0 {
+                    eprintln!(
+                        "P4_FULL_COLD {}",
+                        serde_json::json!({"name":name,"batch":batch_count,"target_rays":target,"actual_rays":n,"cpu_wall":cpu_seconds,"old_wall":old_seconds,"new_wall":new_seconds,"common_setup":common,"preparation":prep_stats,"trace":new.stats})
+                    );
+                }
                 if run_index > 0 {
                     cpu_raw.push(serde_json::json!({"wall":cpu_seconds,"common_setup":common,"resolution":resolution}));
                     old_raw.push(serde_json::json!({"wall":old_seconds,"packing":pack_seconds,"stats":old.stats}));
@@ -282,7 +290,7 @@ fn full_evaluation_benchmark() {
                 if run_index == 10 {
                     eprintln!(
                         "P4_FULL_BENCH {}",
-                        serde_json::json!({"name":name,"batch":16,"target_rays":target,"actual_rays":n,"pupil_side":side,"fields":nf,"wavelengths":nw,"seed":0,"radiometry":"off","reference_generated_rays":true,"compatibility_readback_reupload":true,"cpu_summary":summary(&cpu_raw,"wall"),"old_summary":summary(&old_raw,"wall"),"new_summary":summary(&new_raw,"wall"),"cpu_raw":cpu_raw,"old_raw":old_raw,"new_raw":new_raw})
+                        serde_json::json!({"name":name,"batch":batch_count,"target_rays":target,"actual_rays":n,"pupil_side":side,"fields":nf,"wavelengths":nw,"seed":0,"radiometry":"off","reference_generated_rays":true,"compatibility_readback_reupload":true,"cpu_summary":summary(&cpu_raw,"wall"),"old_summary":summary(&old_raw,"wall"),"new_summary":summary(&new_raw,"wall"),"cpu_raw":cpu_raw,"old_raw":old_raw,"new_raw":new_raw})
                     );
                 }
             }
