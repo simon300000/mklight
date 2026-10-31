@@ -40,7 +40,6 @@ pub fn pupil_plan(
     ctx: &JobContext,
 ) -> MkResult<ResidentPlan> {
     ctx.check()?;
-    state.validate()?;
     if wl >= t.num_wavelengths() || points.is_empty() || points.len() > u32::MAX as usize {
         return Err(bad("polarization wavelength or empty pupil"));
     }
@@ -130,29 +129,63 @@ pub fn pupil(
     clip: bool,
     ctx: &JobContext,
 ) -> MkResult<PupilResult> {
+    pupil_mode(b, t, field, wl, points, state, clip, false, true, ctx)
+}
+#[allow(clippy::too_many_arguments)]
+fn pupil_mode(
+    b: &dyn ComputeBackend,
+    t: &SequentialTracer,
+    field: FieldPoint,
+    wl: usize,
+    points: &[[f64; 2]],
+    state: &PolarizationState,
+    clip: bool,
+    scalar: bool,
+    retain_values: bool,
+    ctx: &JobContext,
+) -> MkResult<PupilResult> {
     ctx.check()?;
     let field = t.prepare_field(field)?;
     let prepared = PreparedRadiometry::new(b, t.system(), &ctx.subrange(0.0, 0.05))?;
     let packed = PackedSystem::pack_all(t.system())?;
     let handle = b.upload_system(&packed)?;
     let result = (|| {
-        let p = pupil_plan(
+        let mut p = pupil_plan(
             b, t, &prepared, handle, &field, wl, points, state, clip, ctx,
         )?;
+        if scalar {
+            for op in &mut p.operations {
+                if let ResidentOp::Radiometry(Request::Polarization(r)) = op {
+                    r.scalar = true;
+                }
+            }
+            p.settings["scalar"] = serde_json::json!(true);
+        }
         b.submit_plan(p, &ctx.subrange(0.05, 0.9))?.wait()
     })();
     b.release_systems(handle)?;
     let mut result = result?;
     ctx.check()?;
+    let sum = b.read_view(result.outputs[2].view())?;
+    let sums = sum.as_slice::<Df32>()?;
+    let mut summary = std::array::from_fn(|c| std::array::from_fn(|k| sums[4 * c + k].to_f64()));
+    if !retain_values && result.stats.fallback_count == 0 {
+        ctx.check()?;
+        ctx.report(1., "transmission summary complete");
+        return Ok(PupilResult {
+            values: vec![],
+            trace_status: vec![],
+            summary,
+            run_info: result.run_info,
+            stats: result.stats,
+        });
+    }
     let guard = b.read_view(result.outputs[0].view())?;
     let rows: &[PolarizationValue] = bytemuck::cast_slice(guard.words());
     let mut values = Vec::with_capacity(rows.len());
     let status_view = b.read_view(result.outputs[1].view())?;
     let status = status_view.as_slice::<u32>()?;
     let mut trace_status = status[..points.len()].to_vec();
-    let sum = b.read_view(result.outputs[2].view())?;
-    let sums = sum.as_slice::<Df32>()?;
-    let mut summary = std::array::from_fn(|c| std::array::from_fn(|k| sums[4 * c + k].to_f64()));
     let mut fallback = 0;
     for (i, v) in rows.iter().enumerate() {
         if i % 256 == 0 {
@@ -175,7 +208,19 @@ pub fn pupil(
                     ..t.options()
                 },
             );
-            values.push(reference_value(&ray, state));
+            let value = reference_value(&ray, state);
+            if !value
+                .jones
+                .iter()
+                .chain(&value.proper)
+                .chain(&value.fields)
+                .chain(&value.power)
+                .chain(&value.properties)
+                .all(|v| v.is_finite())
+            {
+                return Err(bad("nonfinite f64 polarization fallback"));
+            }
+            values.push(value);
             trace_status[i] = reference_status(&ray.trace.status);
             fallback += 1;
         } else {
@@ -231,7 +276,18 @@ fn reference_status(s: &mklight_trace::TraceStatus) -> u32 {
         TraceStatus::Miss { surface } => MKL_RAY_MISS | (*surface as u32) << 8,
         TraceStatus::Clipped { surface } => MKL_RAY_VIGNETTED | (*surface as u32) << 8,
         TraceStatus::TotalInternalReflection { surface } => MKL_RAY_TIR | (*surface as u32) << 8,
-        TraceStatus::Failed { surface, .. } => MKL_RAY_NONFINITE | (*surface as u32) << 8,
+        TraceStatus::Failed { surface, reason } => {
+            use mklight_trace::FailReason::*;
+            let code = match reason {
+                EvanescentOrder => MKL_RAY_EVANESCENT,
+                NoConvergence => MKL_RAY_NOT_CONVERGED,
+                OutsideDomain => MKL_RAY_OUTSIDE_DOMAIN,
+                NonFinite => MKL_RAY_NONFINITE,
+                Degenerate => MKL_RAY_DEGENERATE,
+                AimNotConverged | FieldUnreachable => MKL_AIM_FAILED,
+            };
+            code | (*surface as u32) << 8
+        }
     }
 }
 fn reference_value(
@@ -326,7 +382,6 @@ pub fn system_transmission(
         RadiometryModel::Unpolarized => PolarizationState::Unpolarized,
         RadiometryModel::Polarized { state } => state,
     };
-    state.validate()?;
     let samples = settings.pupil.points();
     if samples.is_empty() {
         return Err(bad("transmission empty pupil"));
@@ -343,7 +398,7 @@ pub fn system_transmission(
         for (wi, &wl) in wavelengths.iter().enumerate() {
             let index = f * wavelengths.len() + wi;
             let total = fields.len() * wavelengths.len();
-            let r = pupil(
+            let r = pupil_mode(
                 b,
                 t,
                 *field,
@@ -351,6 +406,8 @@ pub fn system_transmission(
                 &samples,
                 &state,
                 settings.clip,
+                matches!(settings.model, RadiometryModel::Unpolarized),
+                false,
                 &ctx.subrange(
                     index as f64 / total as f64 * 0.99,
                     (index + 1) as f64 / total as f64 * 0.99,
@@ -421,4 +478,139 @@ pub fn system_transmission(
         polychromatic,
         run_info,
     })
+}
+
+/// Assemble the reference pupil-map schema from device matrices/properties and
+/// P3 statistics. This only widens/repackages final values; retarder extraction
+/// and all pupil reductions have already run on the backend.
+pub fn polarization_pupil_map(
+    b: &dyn ComputeBackend,
+    t: &SequentialTracer,
+    settings: &mklight_trace::PolarizationMapSettings,
+    ctx: &JobContext,
+) -> MkResult<mklight_trace::PolarizationPupilMap> {
+    use crate::consts::*;
+    use mklight_core::materials::coating::Complex64 as C;
+    use mklight_trace::{
+        FailReason, JonesMatrix, PolarizationProperties, PolarizationPupilMap, TraceStatus,
+        radiometry::PupilPolarization,
+    };
+    let timer = mklight_core::job::RunTimer::start();
+    let points = mklight_trace::PupilSamples::Grid { n: settings.grid }.points();
+    let r = pupil(
+        b,
+        t,
+        settings.field,
+        settings.wavelength,
+        &points,
+        &settings.state,
+        settings.clip,
+        &ctx.subrange(0., 0.95),
+    )?;
+    let eta = mklight_trace::radiometry::diffraction_product(t.system(), settings.wavelength);
+    let amp = eta.sqrt();
+    let mut samples = Vec::with_capacity(points.len());
+    for (i, (v, point)) in r.values.iter().zip(points).enumerate() {
+        if i % 256 == 0 {
+            ctx.check()?;
+        }
+        let complex = |a: &[Df32; 8], k: usize| C::new(a[2 * k].to_f64(), a[2 * k + 1].to_f64());
+        let jones = JonesMatrix {
+            m: std::array::from_fn(|row| {
+                std::array::from_fn(|col| complex(&v.jones, 2 * row + col) * amp)
+            }),
+        };
+        let u = v.power[3].to_f64() * eta;
+        let d = v.properties[0].to_f64();
+        let top = u * (1. + d);
+        let det = (complex(&v.proper, 0) * complex(&v.proper, 3)
+            - complex(&v.proper, 1) * complex(&v.proper, 2))
+            * eta;
+        let props = PolarizationProperties {
+            t_unpolarized: u,
+            t_max: top,
+            t_min: if top > 0. { det.norm_sqr() / top } else { 0. },
+            diattenuation: d,
+            diattenuation_axis: std::array::from_fn(|k| v.properties[2 + k].to_f64()),
+            retardance: v.properties[1].to_f64(),
+            fast_axis: std::array::from_fn(|k| v.properties[5 + k].to_f64()),
+            retarder_defined: v.defined & 1 != 0 && eta > 0.,
+        };
+        let props = if eta > 0. {
+            props
+        } else {
+            JonesMatrix {
+                m: [[C::new(0., 0.); 2]; 2],
+            }
+            .properties()
+        };
+        let word = r.trace_status[i];
+        let surface = (word >> MKL_RAY_SURFACE_SHIFT) as usize;
+        let status = match word & MKL_RAY_CODE_MASK {
+            MKL_RAY_OK => TraceStatus::Ok,
+            MKL_RAY_MISS => TraceStatus::Miss { surface },
+            MKL_RAY_TIR => TraceStatus::TotalInternalReflection { surface },
+            MKL_RAY_VIGNETTED => TraceStatus::Clipped { surface },
+            code => TraceStatus::Failed {
+                surface,
+                reason: match code {
+                    MKL_RAY_NOT_CONVERGED => FailReason::NoConvergence,
+                    MKL_RAY_OUTSIDE_DOMAIN => FailReason::OutsideDomain,
+                    MKL_RAY_DEGENERATE => FailReason::Degenerate,
+                    MKL_RAY_EVANESCENT => FailReason::EvanescentOrder,
+                    MKL_AIM_FAILED => FailReason::AimNotConverged,
+                    _ => FailReason::NonFinite,
+                },
+            },
+        };
+        samples.push(PupilPolarization {
+            pupil: point,
+            status,
+            jones,
+            intensity: v.power[2].to_f64() * eta,
+            properties: props,
+            retardance_jones: if eta > 0. {
+                v.properties[8].to_f64()
+            } else {
+                0.
+            },
+        });
+    }
+    let ok = r.summary[6][0];
+    let defined = if eta > 0. { r.summary[7][0] } else { 0. };
+    let undefined = (ok - defined) as usize;
+    let mut warnings = r.run_info.warnings;
+    if undefined > 0 {
+        warnings.push(format!("{undefined} pupil samples have a singular Jones matrix (no defined retarder) and are excluded from retardance statistics"));
+    }
+    let mut run_info = timer.finish(
+        &t.system().snapshot,
+        "polarization_pupil_map",
+        settings,
+        &r.run_info.backend,
+        r.run_info.precision,
+        None,
+        warnings,
+    );
+    run_info.settings["p7_plan"] = r.run_info.settings;
+    let out = PolarizationPupilMap {
+        samples,
+        mean_intensity: r.summary[1][0] / ok.max(1.) * eta,
+        max_diattenuation: if eta > 0. { r.summary[3][3] } else { 0. },
+        max_retardance: if defined > 0. {
+            r.summary[4][3].sqrt()
+        } else {
+            0.
+        },
+        rms_retardance: if defined > 0. {
+            (r.summary[4][0] / defined).sqrt()
+        } else {
+            0.
+        },
+        undefined_retarder: undefined,
+        run_info,
+    };
+    ctx.check()?;
+    ctx.report(1., "polarization map complete");
+    Ok(out)
 }

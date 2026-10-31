@@ -91,6 +91,29 @@ fn determinism_concurrency_and_cancellation() {
             }
         }
     }
+    let t = testutil::tracer(samples::cooke_triplet());
+    let points = (mklight_trace::PupilSampling::Grid { n: 65 }).points();
+    let (small, hs) = support::transport_plan(&b, &t, 2, 1, &points, 64);
+    let (large, hl) = support::transport_plan(&b, &t, 2, 1, &points, 4096);
+    let pa = b.submit_plan(small.clone(), &JobContext::new()).unwrap();
+    let pb = b.submit_plan(large, &JobContext::new()).unwrap();
+    let a = pa.wait().unwrap();
+    let z = pb.wait().unwrap();
+    assert_eq!(
+        b.read_view(a.outputs[0].view()).unwrap().words(),
+        b.read_view(z.outputs[0].view()).unwrap().words()
+    );
+    let repeated = b
+        .submit_plan(small, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    assert_eq!(
+        b.read_view(a.outputs[0].view()).unwrap().words(),
+        b.read_view(repeated.outputs[0].view()).unwrap().words()
+    );
+    b.release_systems(hs).unwrap();
+    b.release_systems(hl).unwrap();
     let huge: Vec<_> = (0..65536)
         .map(|i| CoatingQuery::new(4, 0.1 + 0.9 * i as f64 / 65536.).unwrap())
         .collect();
@@ -149,4 +172,25 @@ fn malus_and_vector_channels() {
         .unwrap()
         .expect("P7 requires host Metal");
     support::malus_and_channels(&b);
+}
+#[test]
+fn geometric_and_dim_fixtures() {
+    let b = MetalBackend::new()
+        .unwrap()
+        .expect("P7 requires host Metal");
+    support::geometric_and_dim_fixtures(&b);
+}
+#[test]
+fn singular_retarder() {
+    let b = MetalBackend::new()
+        .unwrap()
+        .expect("P7 requires host Metal");
+    support::singular_retarder(&b);
+}
+#[test]
+fn scalar_reference() {
+    let b = MetalBackend::new()
+        .unwrap()
+        .expect("P7 requires host Metal");
+    support::scalar_reference(&b);
 }

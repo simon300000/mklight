@@ -98,7 +98,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                                 end as u32,
                                 offset as u32,
                                 (std::mem::size_of::<CoatingValue>() / 4) as u32,
-                                28u32,
+                                (std::mem::offset_of!(CoatingValue, status) / 4) as u32,
                             ],
                         );
                         e.dispatch_groups([(end - offset).div_ceil(256), 1, 1], 256);
@@ -122,9 +122,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
         Request::Polarization(r) => {
             let n = r.records.desc.shape[1];
-            let pso = x
-                .gpu
-                .pipeline(&PipelineKey::plain("mkl_radiometry_polarization"))?;
+            let pso = x.gpu.pipeline(&PipelineKey::plain(if r.scalar {
+                "mkl_radiometry_scalar"
+            } else {
+                "mkl_radiometry_polarization"
+            }))?;
             let mut out = x.take_output(r.output);
             let count_pso = x
                 .gpu
@@ -177,7 +179,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                                 end as u32,
                                 offset as u32,
                                 (std::mem::size_of::<PolarizationValue>() / 4) as u32,
-                                94u32,
+                                (std::mem::offset_of!(PolarizationValue, status) / 4) as u32,
                             ],
                         );
                         e.dispatch_groups([(end - offset).div_ceil(256), 1, 1], 256);

@@ -29,18 +29,60 @@ fn fill<T: bytemuck::Pod>(
         Ok(())
     })
 }
+fn fill_tables<T: bytemuck::Pod>(
+    b: &dyn ComputeBackend,
+    rows: usize,
+    count: usize,
+    produce: &mut impl FnMut(&mut [T], &mut [CoatingLayer]) -> MkResult<()>,
+) -> MkResult<(BufferHandle, BufferHandle)> {
+    let mut layers = None;
+    let specs = b.fill_buffer(record_desc::<T>(rows), &mut |mut f| {
+        let specs: &mut [T] = bytemuck::cast_slice_mut(f.as_mut_slice::<u32>()?);
+        layers = Some(
+            b.fill_buffer(record_desc::<CoatingLayer>(count), &mut |mut l| {
+                produce(specs, bytemuck::cast_slice_mut(l.as_mut_slice::<u32>()?))
+            })?,
+        );
+        Ok(())
+    })?;
+    Ok((specs, layers.unwrap()))
+}
 impl PreparedRadiometry {
     pub fn new(b: &dyn ComputeBackend, sys: &ResolvedSystem, ctx: &JobContext) -> MkResult<Self> {
         ctx.check()?;
-        let mut layers = vec![];
-        let surfaces = surface_specs(sys, &mut layers)?;
+        let rows = sys.surfaces.len() * sys.wavelengths_um.len();
+        let count = sys
+            .surfaces
+            .iter()
+            .map(|s| records::layer_count(&s.coating))
+            .sum::<usize>()
+            * sys.wavelengths_um.len();
         let mut hash = blake3::Hasher::new();
-        hash.update(bytemuck::cast_slice(&surfaces));
-        hash.update(bytemuck::cast_slice(&layers));
+        let (surfaces, layers) =
+            fill_tables::<SurfaceSpec>(b, rows, count, &mut |surfaces, layers| {
+                let mut i = 0;
+                let mut j = 0;
+                records::visit_surface_specs(
+                    sys,
+                    0,
+                    |v| {
+                        surfaces[i] = v;
+                        i += 1;
+                    },
+                    |v| {
+                        layers[j] = v;
+                        j += 1;
+                    },
+                )?;
+                ctx.check()?;
+                hash.update(bytemuck::cast_slice(surfaces));
+                hash.update(bytemuck::cast_slice(layers));
+                Ok(())
+            })?;
         Ok(Self {
             identity: hash.finalize().to_hex().to_string(),
-            surfaces: fill(b, &surfaces, ctx)?,
-            layers: fill(b, &layers, ctx)?,
+            surfaces,
+            layers,
             wavelengths: sys.wavelengths_um.len(),
         })
     }
@@ -53,7 +95,6 @@ impl PreparedRadiometry {
         hits: &ResidentHits,
         state: &mklight_trace::PolarizationState,
     ) -> MkResult<BufferId> {
-        state.validate()?;
         let st = state.stokes();
         let surfaces = p.import(self.surfaces.view());
         let layers = p.import(self.layers.view());
@@ -67,6 +108,7 @@ impl PreparedRadiometry {
         p.operations
             .push(ResidentOp::Radiometry(Request::Polarization(
                 PolarizationRequest {
+                    scalar: false,
                     surfaces: p.view(surfaces)?,
                     layers: p.view(layers)?,
                     records: p.view(records)?,
@@ -77,12 +119,13 @@ impl PreparedRadiometry {
                     stokes: [st.s0, st.s1, st.s2, st.s3].map(Df32::from_f64),
                     output,
                     tile: 65536,
-                },
+                }
+                .into(),
             )));
         Ok(output)
     }
 }
-/// Sum/count/min/max for seven channels: scalar, polarised, exact unpolarised,
+/// Sum/count/min/max for ten channels: scalar, polarised, exact unpolarised,
 /// diattenuation, retardance², usable count, unvignetted count. Failed numerical
 /// traces and reference-required records are excluded, physical clipping counts
 /// as zero. Reference rows must be resolved before presenting a total.
@@ -152,22 +195,35 @@ impl PreparedCoatings {
         domains: &[CoatingDomain],
         ctx: &JobContext,
     ) -> MkResult<Self> {
-        let mut layers = vec![];
-        let mut specs = vec![];
-        for domain in domains {
-            ctx.check()?;
-            specs.push(CoatingSpec::resolve(
-                &domain.coating,
-                domain.wavelength,
-                domain.n_in,
-                domain.n_out,
-                domain.mirror,
-                &mut layers,
-            )?);
-        }
+        let count = domains
+            .iter()
+            .map(|d| records::layer_count(&d.coating))
+            .sum();
+        let (specs, layers) =
+            fill_tables::<CoatingSpec>(b, domains.len(), count, &mut |specs, layers| {
+                let mut offset = 0;
+                for (spec, d) in specs.iter_mut().zip(domains) {
+                    ctx.check()?;
+                    let mut j = offset;
+                    *spec = CoatingSpec::resolve_with(
+                        &d.coating,
+                        d.wavelength,
+                        d.n_in,
+                        d.n_out,
+                        d.mirror,
+                        offset as u32,
+                        |v| {
+                            layers[j] = v;
+                            j += 1;
+                        },
+                    )?;
+                    offset = j;
+                }
+                Ok(())
+            })?;
         Ok(Self {
-            specs: fill(b, &specs, ctx)?,
-            layers: fill(b, &layers, ctx)?,
+            specs,
+            layers,
             domains: domains.to_vec(),
         })
     }
@@ -242,6 +298,9 @@ impl PreparedCoatings {
                     1. - rt.rp - rt.tp,
                 ]
                 .map(Df32::from_f64);
+                if !v.amplitudes.iter().chain(&v.powers).all(|v| v.is_finite()) {
+                    return Err(bad("nonfinite f64 coating fallback"));
+                }
                 v.status = 0;
             }
             values.push(v);

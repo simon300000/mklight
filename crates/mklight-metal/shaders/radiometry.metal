@@ -365,6 +365,23 @@ static RD renergy(thread RE *e, constant MklPolarizationParams &p) {
 }
 static void rproperties(RM j, thread float2 *out, thread bool &defined,
                         thread bool &fallback) {
+  float scale = max(abs(rv(j.a.re)), abs(rv(j.a.im)));
+  scale = max(scale, max(abs(rv(j.b.re)), abs(rv(j.b.im))));
+  scale = max(scale, max(abs(rv(j.c.re)), abs(rv(j.c.im))));
+  scale = max(scale, max(abs(rv(j.d.re)), abs(rv(j.d.im))));
+  if (scale < 0x1p-126f) {
+    for (uint i = 0; i < 8; i++)
+      out[i] = float2(0);
+    defined = false;
+    fallback = true;
+    return;
+  }
+  RD scale_df(scale);
+  j = {RC(j.a.re / scale_df, j.a.im / scale_df),
+       RC(j.b.re / scale_df, j.b.im / scale_df),
+       RC(j.c.re / scale_df, j.c.im / scale_df),
+       RC(j.d.re / scale_df, j.d.im / scale_df)};
+
   RD aa = rnorm2(j.a) + rnorm2(j.c), bb = rnorm2(j.b) + rnorm2(j.d);
   RC b = rconj(j.a) * j.b + rconj(j.c) * j.d;
   RD t = aa + bb;
@@ -469,7 +486,9 @@ mkl_radiometry_polarization(device const MklRadSurface *surfaces [[buffer(0)]],
       pp.a[a] = pp.a[a] + RD(s.translation[a]);
     RV delta = rsub(rrecord(hi, lo, j, n, i, 0), pp);
     RD tau = rv(RD(s.alpha)) > 0
-                 ? rexp(-RD(s.alpha) * rsqrt(rdot(delta, delta)))
+                 ? rexp(-RD(s.alpha) *
+                        rdot(delta,
+                             rrot(s.transfer, rrecord(hi, lo, j - 1, n, i, 3))))
                  : RD(1);
     loss[2] = loss[2] + renergy(e, p) * (RD(1) - tau);
     RC at(rsqrt(tau));
@@ -624,4 +643,75 @@ kernel void mkl_radiometry_pupil_channels(
     output[c * n + i] = v.status ? float2(0) : float2(re.x + re.y, im.x + im.y);
   }
   status[i] = v.status;
+}
+kernel void
+mkl_radiometry_scalar(device const MklRadSurface *surfaces [[buffer(0)]],
+                      device const MklCoatingLayer *layers [[buffer(1)]],
+                      device const float *hi [[buffer(2)]],
+                      device const float *lo [[buffer(3)]],
+                      device const uint *indices [[buffer(4)]],
+                      device const uint *statuses [[buffer(5)]],
+                      device MklPolarizationValue *output [[buffer(6)]],
+                      constant MklPolarizationParams &p [[buffer(7)]],
+                      uint tid [[thread_position_in_grid]]) {
+  uint i = p.offset + tid, n = p.count;
+  if (i >= p.reserved)
+    return;
+  MklPolarizationValue out = {};
+  if (statuses[i]) {
+    out.status = MKL_RAD_BLOCKED;
+    output[i] = out;
+    return;
+  }
+  uint wl = indices[n + i];
+  if (wl >= p.wavelengths) {
+    out.status = MKL_RAD_REFERENCE;
+    output[i] = out;
+    return;
+  }
+  MklRadSurface first = surfaces[wl];
+  RV ki = runit(rrot(first.rotation, rrecord(hi, lo, 0, n, i, 3)));
+  RD product(1), sp[2] = {RD(1), RD(1)};
+  for (uint j = 1; j < p.slots; j++) {
+    MklRadSurface s = surfaces[j * p.wavelengths + wl];
+    if (s.coating.offset > p.layers ||
+        s.coating.count > p.layers - s.coating.offset ||
+        s.coating.count > MKL_RAD_MAX_LAYERS) {
+      out.status = MKL_RAD_REFERENCE;
+      output[i] = out;
+      return;
+    }
+    if (rv(RD(s.alpha)) > 0) {
+      RV pp = rrot(s.transfer, rrecord(hi, lo, j - 1, n, i, 0));
+      for (uint a = 0; a < 3; a++)
+        pp.a[a] = pp.a[a] + RD(s.translation[a]);
+      RV delta = rsub(rrecord(hi, lo, j, n, i, 0), pp);
+      RD tau =
+          rexp(-RD(s.alpha) *
+               rdot(delta, rrot(s.transfer, rrecord(hi, lo, j - 1, n, i, 3))));
+      product = product * tau;
+      sp[0] = sp[0] * tau;
+      sp[1] = sp[1] * tau;
+    }
+    if (s.kind != 0 && s.kind != 3) {
+      RV normal = runit(rrot(s.rotation, rrecord(hi, lo, j, n, i, 8)));
+      RD ci = rdot(ki, normal);
+      ci = rmin(RD(1), rv(ci) < 0 ? -ci : ci);
+      MklCoatingValue a = revaluate(s.coating, layers, ci);
+      if (a.status) {
+        out.status = a.status;
+        output[i] = out;
+        return;
+      }
+      uint offset = (s.kind == 2 || s.kind == 4) ? 0 : 2;
+      RD ps(a.powers[offset]), pp(a.powers[offset + 1]);
+      product = product * (ps + pp) * RD(0.5f);
+      sp[0] = sp[0] * ps;
+      sp[1] = sp[1] * pp;
+    }
+    ki = runit(rrot(s.rotation, rrecord(hi, lo, j, n, i, 3)));
+  }
+  out.power[0] = product.v;
+  out.power[1] = ((sp[0] + sp[1]) * RD(0.5f)).v;
+  output[i] = out;
 }

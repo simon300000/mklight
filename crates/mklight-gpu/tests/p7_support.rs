@@ -219,6 +219,7 @@ pub fn transport_plan(
     p.operations
         .push(ResidentOp::Radiometry(Request::Polarization(
             PolarizationRequest {
+                scalar: false,
                 surfaces,
                 layers,
                 records: p.view(hit.records.unwrap()).unwrap(),
@@ -229,7 +230,8 @@ pub fn transport_plan(
                 stokes: [1.0, 0.2, 0.3, 0.4].map(Df32::from_f64),
                 output,
                 tile,
-            },
+            }
+            .into(),
         )));
     p.outputs = vec![output, hit.status];
     p.settings = serde_json::json!({"package":"P7","field":field,"wavelength":wl,"tile":tile,"version":consts::MKL_RAD_VERSION});
@@ -617,6 +619,236 @@ pub fn malus_and_channels(b: &dyn ComputeBackend) {
             );
         }
     }
+    let settings = mklight_trace::PolarizationMapSettings {
+        field: t.field(0).point,
+        wavelength: 1,
+        grid: 7,
+        state: PolarizationState::Unpolarized,
+        clip: true,
+    };
+    let a = polarization_pupil_map(b, &t, &settings, &JobContext::new()).unwrap();
+    let c = mklight_trace::polarization_pupil_map(&t, &settings, &JobContext::new()).unwrap();
+    assert!((a.mean_intensity - c.mean_intensity).abs() < 1e-5);
+    assert!((a.max_diattenuation - c.max_diattenuation).abs() < 1e-4);
+    assert!((a.rms_retardance - c.rms_retardance).abs() < 1e-3);
+    assert_eq!(a.undefined_retarder, c.undefined_retarder);
     let expected = intensities[0] * 0.35f64.cos().powi(2) + intensities[1] * 0.35f64.sin().powi(2);
     assert!((intensities[2] - expected).abs() < 1e-12);
+}
+pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
+    use mklight_trace::PolarizationState;
+    let mut absorbing = samples::singlet();
+    absorbing.surfaces[1].material = MaterialRef::glass("ABSORB");
+    let mut long = samples::singlet();
+    long.surfaces[2].thickness = 900.;
+    let mut mirror = samples::newtonian_telescope();
+    mirror.coatings.insert(
+        "film".into(),
+        CoatingDef::ThinFilm {
+            reference_wavelength_um: 0.55,
+            layers: vec![],
+            mirror_substrate: Some((0.96, 6.69)),
+        },
+    );
+    for s in &mut mirror.surfaces {
+        if s.interaction == mklight_core::Interaction::Reflect {
+            s.coating = Some("film".into());
+        }
+    }
+    let mut dim = samples::singlet();
+    dim.coatings.insert(
+        "dim".into(),
+        CoatingDef::Ideal {
+            reflectance: 0.,
+            transmittance: 1e-12,
+        },
+    );
+    dim.surfaces[1].coating = Some("dim".into());
+    dim.surfaces[2].coating = Some("dim".into());
+    let systems = [
+        ("absorbing", absorbing),
+        ("long", long),
+        ("tilted", testutil::tilted_triplet()),
+        (
+            "vignetted",
+            testutil::vignetted(&samples::cooke_triplet(), 0.5),
+        ),
+        ("metal", mirror),
+        ("dim", dim),
+        ("ideal lenses", testutil::ideal_lenses()),
+        ("ideal relay", testutil::ideal_relay()),
+        ("TIR", testutil::tir_block()),
+    ];
+    let pts = (mklight_trace::PupilSampling::Grid { n: 17 }).points();
+    let mut blocked = 0;
+    let mut bulk = 0f64;
+    let tele = p1::special_systems()
+        .into_iter()
+        .filter(|(name, _)| name.contains("telecentric"));
+    for (name, model) in systems
+        .into_iter()
+        .map(|(n, s)| (n.to_string(), s))
+        .chain(tele)
+    {
+        let t = testutil::tracer(model);
+        let f = t.fields().len() - 1;
+        let state = PolarizationState::Unpolarized;
+        let r = pupil(
+            b,
+            &t,
+            t.field(f).point,
+            0,
+            &pts,
+            &state,
+            true,
+            &JobContext::new(),
+        )
+        .unwrap();
+        for (v, pt) in r.values.iter().zip(&pts) {
+            let reference = t.trace_polarized(t.field(f), 0, pt[0], pt[1], &Default::default());
+            if !reference.is_ok() {
+                assert_eq!(v.status, consts::MKL_RAD_BLOCKED);
+                blocked += 1;
+                continue;
+            }
+            assert_eq!(v.status, 0);
+            assert_eq!(
+                v.defined & 1 != 0,
+                reference.properties().retarder_defined,
+                "{name}"
+            );
+            assert!(
+                (v.power[2].to_f64() - reference.intensity(&state)).abs()
+                    < 1e-5 * reference.intensity(&state) + 1e-10,
+                "{name} point={pt:?} power={:?} reference={} tau={} records={:?}",
+                v.power,
+                reference.intensity(&state),
+                reference.internal_transmittance,
+                reference.records
+            );
+            assert!(
+                (v.properties[1].to_f64() - reference.properties().retardance).abs() < 1e-3,
+                "{name}"
+            );
+            let budget = reference.energy_budget(&state);
+            assert!(
+                (v.power[6].to_f64() - budget.bulk_absorbed).abs() < 1e-5,
+                "{name}"
+            );
+            bulk = bulk.max(v.power[6].to_f64());
+            let ledger = v.power[2].to_f64()
+                + v.power[4].to_f64()
+                + v.power[5].to_f64()
+                + v.power[6].to_f64();
+            assert!((ledger - 1.).abs() < 1e-5, "{name} ledger {ledger}");
+        }
+    }
+    assert!(blocked > 0);
+    assert!(bulk > 0.01);
+    eprintln!("P7 geometric fixtures blocked={blocked} max_bulk={bulk}");
+}
+#[path = "../../mklight-trace/tests/common/mod.rs"]
+mod optical_fixture;
+pub fn singular_retarder(b: &dyn ComputeBackend) {
+    use mklight_core::{Interaction, Placement, SurfaceShape};
+    use mklight_trace::PolarizationState;
+    for offset in [0., -1e-10, 1e-10, 1e-6] {
+        let angle = 1.5f64.atan().to_degrees() + offset;
+        let mut mirror = optical_fixture::surf(2, SurfaceShape::Plane, -20., MaterialRef::Air);
+        mirror.interaction = Interaction::Reflect;
+        mirror.placement = Some(Placement {
+            tilt_x: angle,
+            ..Default::default()
+        });
+        mirror.coating = Some("dielectric".into());
+        let mut s = optical_fixture::infinite_system(
+            4.,
+            vec![
+                optical_fixture::surf(1, SurfaceShape::Plane, 10., MaterialRef::Air),
+                mirror,
+            ],
+            3,
+        );
+        s.surfaces[3].placement = Some(Placement {
+            tilt_x: angle,
+            ..Default::default()
+        });
+        s.fields = optical_fixture::angle_fields(&[0.]);
+        s.coatings.insert(
+            "dielectric".into(),
+            CoatingDef::ThinFilm {
+                reference_wavelength_um: 0.55,
+                layers: vec![],
+                mirror_substrate: Some((1.5, 0.)),
+            },
+        );
+        let t = testutil::tracer(s);
+        let r = pupil(
+            b,
+            &t,
+            t.field(0).point,
+            0,
+            &[[0., 0.]],
+            &PolarizationState::Unpolarized,
+            false,
+            &JobContext::new(),
+        )
+        .unwrap();
+        let reference = t.trace_polarized(
+            t.field(0),
+            0,
+            0.,
+            0.,
+            &mklight_trace::TraceOptions::unclipped(),
+        );
+        assert!(reference.is_ok());
+        let props = reference.properties();
+        let v = r.values[0];
+        assert_eq!(
+            v.defined & 1 != 0,
+            props.retarder_defined,
+            "offset {offset}"
+        );
+        assert!(
+            (v.properties[1].to_f64() - props.retardance).abs() < 1e-3,
+            "offset {offset}"
+        );
+        if offset.abs() < 1e-9 {
+            assert!(r.stats.fallback_count > 0);
+        }
+    }
+}
+pub fn scalar_reference(b: &dyn ComputeBackend) {
+    for (name, model) in samples::all() {
+        let t = testutil::tracer(model);
+        let pts = (mklight_trace::PupilSampling::Grid { n: 17 }).points();
+        let f = t.fields().len() - 1;
+        let w = t.system().primary_wavelength;
+        let (mut p, h) = transport_plan(b, &t, f, w, &pts, 4096);
+        for op in &mut p.operations {
+            if let ResidentOp::Radiometry(Request::Polarization(r)) = op {
+                r.scalar = true;
+            }
+        }
+        let result = b
+            .submit_plan(p, &JobContext::new())
+            .unwrap()
+            .wait()
+            .unwrap();
+        let view = b.read_view(result.outputs[0].view()).unwrap();
+        let values: &[PolarizationValue] = bytemuck::cast_slice(view.words());
+        for (v, pt) in values.iter().zip(pts) {
+            let r = t.trace_polarized(t.field(f), w, pt[0], pt[1], &Default::default());
+            if !r.is_ok() {
+                assert_eq!(v.status, consts::MKL_RAD_BLOCKED);
+                continue;
+            }
+            let expected =
+                mklight_trace::polarization::unpolarized_path_product(t.system(), w, &r.records)
+                    * r.internal_transmittance;
+            let error = (v.power[0].to_f64() - expected).abs();
+            assert!(error <= 1e-5 * expected + 1e-10, "{name}: {error:e}");
+        }
+        b.release_systems(h).unwrap();
+    }
 }

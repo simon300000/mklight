@@ -91,6 +91,16 @@ fn energy(e: [E; 2], st: [D; 4]) -> D {
     (0..3).fold(D::ZERO, |s, i| s + intensity(e[0][i], e[1][i], st))
 }
 fn properties(j: Matrix) -> ([D; 8], bool, bool) {
+    // Polar decomposition is homogeneous. Scale first so an almost opaque
+    // pupil cannot underflow its determinant before the contrast test.
+    let peak = j.iter().fold(0.0f32, |s, z| {
+        s.max(value(z.re).abs()).max(value(z.im).abs())
+    });
+    if peak < f32::MIN_POSITIVE {
+        return ([D::ZERO; 8], false, true);
+    }
+    let j = j.map(|z| C::new(z.re / d(peak), z.im / d(peak)));
+
     let aa = j[0].norm2() + j[2].norm2();
     let bb = j[1].norm2() + j[3].norm2();
     let b = j[0].conj() * j[1] + j[2].conj() * j[3];
@@ -151,6 +161,7 @@ fn record(hi: &[f32], lo: &[f32], slot: usize, n: usize, i: usize, k: usize) -> 
 }
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate(
+    scalar_only: bool,
     surfaces: &[SurfaceSpec],
     layers: &[CoatingLayer],
     hi: &[f32],
@@ -161,6 +172,9 @@ pub fn evaluate(
     nw: usize,
     st: [D; 4],
 ) -> PolarizationValue {
+    if scalar_only {
+        return scalar(surfaces, layers, hi, lo, n, i, wl, nw);
+    }
     let slots = surfaces.len() / nw;
     let spec = |j: usize| surfaces[j * nw + wl];
     let vec = |j, k| std::array::from_fn(|a| record(hi, lo, j, n, i, k + a));
@@ -185,7 +199,7 @@ pub fn evaluate(
         let pp = rot(s.transfer, vec(j - 1, 0));
         let delta = sub(vec(j, 0), std::array::from_fn(|a| pp[a] + s.translation[a]));
         let tau = if value(s.alpha) > 0.0 {
-            exp(-s.alpha * dot(delta, delta).sqrt())
+            exp(-s.alpha * dot(delta, rot(s.transfer, vec(j - 1, 3))))
         } else {
             d(1.0)
         };
@@ -276,9 +290,9 @@ pub fn evaluate(
         out.proper[2 * k + 1] = proper[k].im;
     }
     let rt = tr(last.rotation);
-    for a in 0..2 {
+    for (a, e) in e.iter().enumerate() {
         for k in 0..3 {
-            let z = cdot([rt[3 * k], rt[3 * k + 1], rt[3 * k + 2]], e[a]);
+            let z = cdot([rt[3 * k], rt[3 * k + 1], rt[3 * k + 2]], *e);
             out.fields[6 * a + 2 * k] = z.re;
             out.fields[6 * a + 2 * k + 1] = z.im;
         }
@@ -301,5 +315,65 @@ pub fn evaluate(
     if ref1 || ref2 {
         out.status = MKL_RAD_REFERENCE;
     }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scalar(
+    surfaces: &[SurfaceSpec],
+    layers: &[CoatingLayer],
+    hi: &[f32],
+    lo: &[f32],
+    n: usize,
+    i: usize,
+    wl: usize,
+    nw: usize,
+) -> PolarizationValue {
+    let mut out = PolarizationValue::zeroed();
+    let slots = surfaces.len() / nw;
+    let spec = |j: usize| surfaces[j * nw + wl];
+    let vec = |j, k| std::array::from_fn(|a| record(hi, lo, j, n, i, k + a));
+    let mut ki = norm(rot(spec(0).rotation, vec(0, 3)));
+    let mut product = d(1.0);
+    let mut sp = [d(1.0); 2];
+    for j in 1..slots {
+        let s = spec(j);
+        if s.coating.offset as usize + s.coating.count as usize > layers.len()
+            || s.coating.count > MKL_RAD_MAX_LAYERS
+        {
+            out.status = MKL_RAD_REFERENCE;
+            return out;
+        }
+        if value(s.alpha) > 0.0 {
+            let pp = rot(s.transfer, vec(j - 1, 0));
+            let delta = sub(vec(j, 0), std::array::from_fn(|a| pp[a] + s.translation[a]));
+            let tau = exp(-s.alpha * dot(delta, rot(s.transfer, vec(j - 1, 3))));
+            product = product * tau;
+            sp = sp.map(|v| v * tau);
+        }
+        if s.kind != 0 && s.kind != 3 {
+            let normal = norm(rot(s.rotation, vec(j, 8)));
+            let ci = dot(ki, normal);
+            let ci = min(d(1.0), if value(ci) < 0.0 { -ci } else { ci });
+            let a = coating::evaluate(
+                s.coating,
+                &layers[s.coating.offset as usize..][..s.coating.count as usize],
+                ci,
+            );
+            if a.status != 0 {
+                out.status = a.status;
+                return out;
+            }
+            let offset = if s.kind == 2 || s.kind == 4 { 0 } else { 2 };
+            let ps = a.powers[offset];
+            let pp = a.powers[offset + 1];
+            product = product * (ps + pp) * d(0.5);
+            sp[0] = sp[0] * ps;
+            sp[1] = sp[1] * pp;
+        }
+        ki = norm(rot(s.rotation, vec(j, 3)));
+    }
+    out.power[0] = product;
+    out.power[1] = (sp[0] + sp[1]) * d(0.5);
     out
 }

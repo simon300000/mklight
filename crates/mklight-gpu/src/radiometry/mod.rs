@@ -42,6 +42,8 @@ pub enum Request {
 /// per request; wavelength IDs are the P1 [2,N] ray-index plane.
 #[derive(Clone, Debug)]
 pub struct PolarizationRequest {
+    /// Scalar transmission skips PRT/properties; only power[0..2] are populated.
+    pub scalar: bool,
     pub surfaces: PlanView,
     pub layers: PlanView,
     pub records: PlanView,
@@ -57,11 +59,15 @@ pub struct PolarizationRequest {
 pub fn record_desc<T>(count: usize) -> BufferDesc {
     BufferDesc::new(ElementType::U32, [count, std::mem::size_of::<T>() / 4])
 }
-fn check<T>(v: &PlanView) -> MkResult<usize> {
+fn check<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
+    let base = match p.buffers.get(v.buffer.0) {
+        Some(PlanBuffer::Import(input)) => input.offset,
+        _ => 0,
+    };
     let n = v.desc.shape.first().copied().unwrap_or(0);
     if v.desc != record_desc::<T>(n)
         || v.stride != 1
-        || !v.offset.is_multiple_of(2)
+        || !(base + v.offset).is_multiple_of(2)
         || v.desc.len()? > u32::MAX as usize
     {
         return Err(bad("radiometry record layout"));
@@ -76,7 +82,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             output,
             status,
         } => {
-            let n = check::<PolarizationValue>(values)?;
+            let n = check::<PolarizationValue>(values, p)?;
             if p.desc(*output)?
                 != &BufferDesc::new(ElementType::Complex32, [if *vector { 6 } else { 4 }, n])
                 || p.desc(*status)? != &BufferDesc::new(ElementType::U32, [n])
@@ -85,17 +91,17 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
         }
         Request::Coating(r) => {
-            check::<CoatingSpec>(&r.specs)?;
-            check::<CoatingLayer>(&r.layers)?;
-            let n = check::<CoatingQuery>(&r.queries)?;
+            check::<CoatingSpec>(&r.specs, p)?;
+            check::<CoatingLayer>(&r.layers, p)?;
+            let n = check::<CoatingQuery>(&r.queries, p)?;
             if p.desc(r.output)? != &record_desc::<CoatingValue>(n) || r.tile == 0 || r.tile > 65536
             {
                 return Err(bad("coating output or tile"));
             }
         }
         Request::Polarization(r) => {
-            let ns = check::<SurfaceSpec>(&r.surfaces)?;
-            check::<CoatingLayer>(&r.layers)?;
+            let ns = check::<SurfaceSpec>(&r.surfaces, p)?;
+            check::<CoatingLayer>(&r.layers, p)?;
             let shape = &r.records.desc.shape;
             if r.wavelengths == 0
                 || ns % r.wavelengths != 0
@@ -137,7 +143,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             trace_status,
             output,
         } => {
-            let n = check::<PolarizationValue>(values)?;
+            let n = check::<PolarizationValue>(values, p)?;
             if trace_status.desc != BufferDesc::new(ElementType::U32, [3, n])
                 || trace_status.stride != 1
                 || p.desc(*output)? != &BufferDesc::new(ElementType::DoubleFloat, [10, n])
@@ -274,6 +280,7 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
                     }
                 } else {
                     transport::evaluate(
+                        r.scalar,
                         rows(x, &r.surfaces),
                         rows(x, &r.layers),
                         &bytemuck::cast_slice::<u32, f32>(x.words(r.records.buffer))

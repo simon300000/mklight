@@ -382,18 +382,21 @@ numerically failed rays are excluded from the transmission denominator.
 
 `pupil_plan` builds P1 generation → recorded trace → P7 transport → P3
 summary with no intermediate optical readback. `pupil` is its cancellable
-host result adapter; `system_transmission` exposes the existing transmission
-result type for all requested fields/wavelengths. Reference-required pupil
+host result adapter; `system_transmission` and `polarization_pupil_map` expose the existing
+result types for all requested fields/wavelengths. Reference-required pupil
 rows and unresolved aims are evaluated with the f64 tracer and counted in
 metadata. Only when such rows change is the final summary rebuilt in f64,
 in original input order, with a warning. The physical undefined-retarder
 contrast remains 1e-24; the device requests f64 below a 1e-18 conditioning
-envelope, including the final mask decision. An exactly opaque matrix has
-an undefined retarder without division by zero. A P1 failure retains its
+envelope, including the final mask decision. Jones matrices are scaled before polar decomposition to prevent determinant
+underflow for nearly opaque pupils. An exactly opaque matrix is completed by
+the reference mask decision without division by zero. A P1 failure retains its
 original status alongside the zero pupil.
 
-Inputs use `fill_buffer`, outputs use `read_view`; there are no bulk staging
-copies. Numeric outputs are final result assembly, not f64-labelled GPU
+Immutable coating and surface tables are produced directly inside `fill_buffer`;
+outputs use `read_view`, with no bulk staging copies. Scalar transmission has
+a dedicated transport kernel that skips PRT and retardance, and reads only the
+P3 summary when no reference completion is needed. Numeric outputs are final result assembly, not f64-labelled GPU
 arithmetic. Per-ray operation order is independent of tile/command sizes;
 Metal uses adaptive bounded commands aiming at 10 ms and checks cancellation
 before and after each one. Only integer fallback counters return to the

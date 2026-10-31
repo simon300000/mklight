@@ -14,12 +14,54 @@ fn percentiles(mut x: Vec<f64>) -> (f64, f64) {
 #[test]
 #[ignore = "quiet host, real Metal release measurement"]
 fn grids() {
+    let initialization = Instant::now();
     let b = MetalBackend::new()
         .unwrap()
         .expect("P7 benchmark requires Metal");
-    eprintln!("P7 hardware={:?} build={:?}", b.info(), b.precision());
+    eprintln!(
+        "P7 backend_init_ms={} hardware={:?} build={:?}",
+        initialization.elapsed().as_secs_f64() * 1e3,
+        b.info(),
+        b.precision()
+    );
     let dense = std::env::var_os("P7_DENSE").is_some();
-    for (name, model) in samples::all() {
+    let mut models = samples::all();
+    for (name, count, metal) in [
+        ("cooke_film1", 1, false),
+        ("cooke_film4", 4, false),
+        ("newtonian_metal", 1, true),
+    ] {
+        use mklight_core::{CoatingDef, Layer, MaterialRef};
+        let mut model = if metal {
+            samples::newtonian_telescope()
+        } else {
+            samples::cooke_triplet()
+        };
+        model.coatings.insert(
+            "P7 bench".into(),
+            CoatingDef::ThinFilm {
+                reference_wavelength_um: 0.55,
+                layers: (0..count)
+                    .map(|i| Layer {
+                        material: MaterialRef::Constant {
+                            n: if i % 2 == 0 { 1.38 } else { 2.1 },
+                        },
+                        extinction: if i == 0 { 0.02 } else { 0. },
+                        thickness_um: 0.07,
+                        quarter_waves: None,
+                    })
+                    .collect(),
+                mirror_substrate: if metal { Some((0.96, 6.69)) } else { None },
+            },
+        );
+        for surface in &mut model.surfaces {
+            if !metal || surface.interaction == mklight_core::Interaction::Reflect {
+                surface.coating = Some("P7 bench".into());
+            }
+        }
+        models.push((name, model));
+    }
+    for (name, model) in models {
         let sizes = if dense
             && [
                 "singlet",
@@ -29,6 +71,9 @@ fn grids() {
                 "relay",
                 "hybrid_doe",
                 "anamorphic",
+                "cooke_film1",
+                "cooke_film4",
+                "newtonian_metal",
             ]
             .contains(&name)
         {
@@ -85,11 +130,25 @@ fn grids() {
                             pt[1],
                             &Default::default(),
                         );
+                        let j = r.jones_amplitude();
+                        let budget = r.energy_budget(&state);
+                        let losses = budget.surfaces.iter().fold([0., 0.], |mut v, s| {
+                            v[0] += s.diverted;
+                            v[1] += s.absorbed;
+                            v
+                        });
+                        let products = r.steps.iter().fold([1., 1., 1.], |v, s| {
+                            let (a, b) = s.path_sp();
+                            [v[0] * 0.5 * (a + b), v[1] * a, v[2] * b]
+                        });
                         (
-                            r.jones_amplitude(),
+                            j,
                             r.image_fields(),
                             r.properties(),
-                            r.energy_budget(&state),
+                            j.properties().retardance,
+                            products,
+                            [losses[0], losses[1], budget.bulk_absorbed],
+                            r.k_out,
                         )
                     })
                     .collect();
@@ -97,6 +156,35 @@ fn grids() {
                 start.elapsed().as_secs_f64() * 1e3
             };
             let (cold, first) = gpu();
+            let qualification = Instant::now();
+            let guard = b.read_view(first.outputs[0].view()).unwrap();
+            let values: &[PolarizationValue] = bytemuck::cast_slice(guard.words());
+            let mut max_jones = 0f64;
+            for i in (0..pts.len()).step_by((pts.len() / 128).max(1)) {
+                let pt = pts[i];
+                let r = t.trace_polarized(t.field(field), wl, pt[0], pt[1], &Default::default());
+                let v = values[i];
+                if !r.is_ok() {
+                    assert_eq!(v.status, consts::MKL_RAD_BLOCKED);
+                    continue;
+                }
+                assert_eq!(v.status, 0);
+                let j = r.jones_amplitude();
+                for k in 0..4 {
+                    let z = j.m[k / 2][k % 2];
+                    let err =
+                        (v.jones[2 * k].to_f64() - z.re).hypot(v.jones[2 * k + 1].to_f64() - z.im);
+                    max_jones = max_jones.max(err);
+                    assert!(err < 1e-4 * z.norm() + 1e-7, "{name} {side} {err:e}");
+                }
+                let ledger = v.power[2].to_f64()
+                    + v.power[4].to_f64()
+                    + v.power[5].to_f64()
+                    + v.power[6].to_f64();
+                assert!((ledger - 1.).abs() < 1e-5);
+            }
+            drop(guard);
+            let qualification_ms = qualification.elapsed().as_secs_f64() * 1e3;
             let cpu_cold = cpu();
             let mut walls = vec![];
             let mut devices = vec![];
@@ -114,7 +202,7 @@ fn grids() {
             let (cm, cp) = percentiles(cpus.clone());
             eprintln!(
                 "{}",
-                serde_json::json!({"raw_gpu_ms":walls,"raw_device_ms":devices,"raw_cpu_ms":cpus,"sample":name,"grid":side,"rays":pts.len(),"field":field,"wavelength":wl,"seed":null,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cpu_cold,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"speedup":cm/gm,"stats":last.stats,"table_bytes":prepared.surfaces.desc().byte_len().unwrap()+prepared.layers.desc().byte_len().unwrap(),"old_metal":"no PRT path"})
+                serde_json::json!({"qualification_ms":qualification_ms,"max_jones":max_jones,"raw_gpu_ms":walls,"raw_device_ms":devices,"raw_cpu_ms":cpus,"sample":name,"grid":side,"rays":pts.len(),"field":field,"wavelength":wl,"seed":null,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cpu_cold,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"speedup":cm/gm,"stats":last.stats,"table_bytes":prepared.surfaces.desc().byte_len().unwrap()+prepared.layers.desc().byte_len().unwrap(),"old_metal":"no PRT path"})
             );
             b.release_systems(h).unwrap();
         }
@@ -128,7 +216,14 @@ fn coating_stacks() {
         materials::{MaterialLibrary, coating::ResolvedCoating},
         model::{CoatingDef, Environment, Layer, MaterialRef},
     };
+    let initialization = Instant::now();
     let b = MetalBackend::new().unwrap().expect("P7 requires Metal");
+    eprintln!(
+        "P7 backend_init_ms={} hardware={:?} build={:?}",
+        initialization.elapsed().as_secs_f64() * 1e3,
+        b.info(),
+        b.precision()
+    );
     for count in [0, 1, 4, 16, 32] {
         let def = CoatingDef::ThinFilm {
             reference_wavelength_um: 0.55,
@@ -145,7 +240,7 @@ fn coating_stacks() {
             mirror_substrate: None,
         };
         let coating = ResolvedCoating::resolve(
-            Some(&def),
+            if count == 0 { None } else { Some(&def) },
             &MaterialLibrary::with_builtin(),
             &Environment::default(),
         )
@@ -183,12 +278,17 @@ fn coating_stacks() {
                     .par_iter()
                     .map(|q| {
                         let s = specs[q.coating as usize];
-                        coating.amplitudes(
+                        let a = coating.amplitudes(
                             s.wavelength.to_f64(),
                             s.n_in.to_f64(),
                             s.n_out.to_f64(),
                             q.cosine.to_f64(),
                             false,
+                        );
+                        let p = a.power();
+                        (
+                            [a.rs, a.rp, a.ts_flux(), a.tp_flux()],
+                            [p.rs, p.rp, p.ts, p.tp, 1. - p.rs - p.ts, 1. - p.rp - p.tp],
                         )
                     })
                     .collect();
@@ -196,6 +296,46 @@ fn coating_stacks() {
                 start.elapsed().as_secs_f64() * 1e3
             };
             let (cold, mut last) = gpu();
+            let guard = b.read_view(last.outputs[0].view()).unwrap();
+            let values: &[CoatingValue] = bytemuck::cast_slice(guard.words());
+            let mut maxima = [0f64; 3];
+            for (i, v) in values.iter().take(3000).enumerate() {
+                let q = q[i];
+                let spec = specs[q.coating as usize];
+                let a = coating.amplitudes(
+                    spec.wavelength.to_f64(),
+                    spec.n_in.to_f64(),
+                    spec.n_out.to_f64(),
+                    q.cosine.to_f64(),
+                    false,
+                );
+                let rt = a.power();
+                assert_eq!(v.status, 0);
+                for (k, z) in [a.rs, a.rp, a.ts_flux(), a.tp_flux()].iter().enumerate() {
+                    let err = (v.amplitudes[2 * k].to_f64() - z.re)
+                        .hypot(v.amplitudes[2 * k + 1].to_f64() - z.im);
+                    maxima[0] = maxima[0].max(err);
+                    assert!(err <= 1e-4 * z.norm() + 1e-7);
+                }
+                for (k, z) in [rt.rs, rt.rp, rt.ts, rt.tp].into_iter().enumerate() {
+                    let err = (v.powers[k].to_f64() - z).abs();
+                    maxima[1] = maxima[1].max(err);
+                    assert!(
+                        err <= 1e-5 * z.abs() + 1e-10,
+                        "stack {count} query {i} power {k}: {err:e}"
+                    );
+                }
+                for pol in 0..2 {
+                    let err = (v.powers[pol].to_f64()
+                        + v.powers[pol + 2].to_f64()
+                        + v.powers[pol + 4].to_f64()
+                        - 1.)
+                        .abs();
+                    maxima[2] = maxima[2].max(err);
+                    assert!(err <= 1e-6);
+                }
+            }
+            drop(guard);
             let cc = cpu();
             let mut walls = vec![];
             let mut cpus = vec![];
@@ -212,7 +352,67 @@ fn coating_stacks() {
             let (dm, dp) = percentiles(devices.clone());
             eprintln!(
                 "{}",
-                serde_json::json!({"layers":count,"queries":n,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"cpu_median_ms":cm,"cpu_p95_ms":cp,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"raw_device_ms":devices,"stats":last.stats,"table_bytes":specs.len()*size_of::<CoatingSpec>()+layers.len()*size_of::<CoatingLayer>(),"sampling":"cosine 0.8..1, three wavelengths, both sides","speedup":cm/gm})
+                serde_json::json!({"accuracy_amplitude_power_ledger":maxima,"layers":count,"queries":n,"setup_ms":setup_ms,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"cpu_median_ms":cm,"cpu_p95_ms":cp,"gpu_median_ms":gm,"gpu_p95_ms":gp,"device_median_ms":dm,"device_p95_ms":dp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"raw_device_ms":devices,"stats":last.stats,"table_bytes":specs.len()*size_of::<CoatingSpec>()+layers.len()*size_of::<CoatingLayer>(),"sampling":"cosine 0.8..1, three wavelengths, both sides","speedup":cm/gm})
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "quiet host end-to-end transmission jobs"]
+fn transmission_jobs() {
+    use mklight_trace::{PupilSamples, RadiometryModel, TransmissionSettings};
+    let initialization = Instant::now();
+    let b = MetalBackend::new().unwrap().expect("P7 requires Metal");
+    eprintln!(
+        "P7 backend_init_ms={} hardware={:?} build={:?}",
+        initialization.elapsed().as_secs_f64() * 1e3,
+        b.info(),
+        b.precision()
+    );
+    for (name, model) in [
+        ("singlet", samples::singlet()),
+        ("cooke", samples::cooke_triplet()),
+        ("double_gauss", samples::double_gauss()),
+    ] {
+        let t = testutil::tracer(model);
+        for n in [65, 256, 1024] {
+            let settings = TransmissionSettings {
+                fields: vec![t.field(t.fields().len() - 1).point],
+                wavelengths: vec![t.system().primary_wavelength],
+                pupil: PupilSamples::Grid { n },
+                model: RadiometryModel::Unpolarized,
+                clip: true,
+            };
+            let gpu = || {
+                let start = Instant::now();
+                let r = system_transmission(&b, &t, &settings, &JobContext::new()).unwrap();
+                (start.elapsed().as_secs_f64() * 1e3, r)
+            };
+            let cpu = || {
+                let start = Instant::now();
+                let r =
+                    mklight_trace::system_transmission(&t, &settings, &JobContext::new()).unwrap();
+                (start.elapsed().as_secs_f64() * 1e3, r)
+            };
+            let (cold, mut result) = gpu();
+            let (cc, reference) = cpu();
+            assert!(
+                (result.points[0].transmission - reference.points[0].transmission).abs() < 1e-5
+            );
+            let mut walls = vec![];
+            let mut cpus = vec![];
+            for _ in 0..10 {
+                cpus.push(cpu().0);
+                let (w, r) = gpu();
+                walls.push(w);
+                result = r;
+            }
+            let (cm, cp) = percentiles(cpus.clone());
+            let (gm, gp) = percentiles(walls.clone());
+            eprintln!(
+                "{}",
+                serde_json::json!({"job":"scalar_transmission","sample":name,"grid":n,"cold_gpu_ms":cold,"cold_cpu_ms":cc,"gpu_median_ms":gm,"gpu_p95_ms":gp,"cpu_median_ms":cm,"cpu_p95_ms":cp,"raw_gpu_ms":walls,"raw_cpu_ms":cpus,"speedup":cm/gm,"metadata":result.run_info.settings})
             );
         }
     }

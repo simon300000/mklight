@@ -66,6 +66,20 @@ impl CoatingSpec {
         mirror: bool,
         layers: &mut Vec<CoatingLayer>,
     ) -> MkResult<Self> {
+        let offset = layers.len() as u32;
+        Self::resolve_with(c, wavelength, n_in, n_out, mirror, offset, |l| {
+            layers.push(l)
+        })
+    }
+    pub(super) fn resolve_with(
+        c: &ResolvedCoating,
+        wavelength: f64,
+        n_in: f64,
+        n_out: f64,
+        mirror: bool,
+        offset: u32,
+        mut layer: impl FnMut(CoatingLayer),
+    ) -> MkResult<Self> {
         if ![wavelength, n_in, n_out]
             .iter()
             .all(|v| v.is_finite() && *v > 0.0)
@@ -104,7 +118,7 @@ impl CoatingSpec {
                 if ls.len() > MKL_RAD_MAX_LAYERS as usize {
                     return crate::resident::unsupported("coating stack exceeds 32 layers");
                 }
-                s.offset = layers.len() as u32;
+                s.offset = offset;
                 s.count = ls.len() as u32;
                 if mirror {
                     let (n, k) = mirror_substrate.unwrap_or((1e-9, 1e9));
@@ -118,7 +132,7 @@ impl CoatingSpec {
                         j
                     };
                     let l = &ls[i];
-                    layers.push(CoatingLayer {
+                    layer(CoatingLayer {
                         n: Df32::from_f64(l.material.index(wavelength)),
                         k: Df32::from_f64(l.extinction),
                         thickness: Df32::from_f64(l.thickness_um),
@@ -166,8 +180,28 @@ pub fn surface_specs(
     sys: &mklight_core::ResolvedSystem,
     layers: &mut Vec<CoatingLayer>,
 ) -> MkResult<Vec<SurfaceSpec>> {
-    use mklight_trace::polarization::StepKind;
     let mut out = vec![];
+    visit_surface_specs(
+        sys,
+        layers.len() as u32,
+        |v| out.push(v),
+        |v| layers.push(v),
+    )?;
+    Ok(out)
+}
+pub(super) fn layer_count(c: &ResolvedCoating) -> usize {
+    match c {
+        ResolvedCoating::ThinFilm { layers, .. } => layers.len(),
+        _ => 0,
+    }
+}
+pub(super) fn visit_surface_specs(
+    sys: &mklight_core::ResolvedSystem,
+    mut offset: u32,
+    mut surface: impl FnMut(SurfaceSpec),
+    mut layer: impl FnMut(CoatingLayer),
+) -> MkResult<()> {
+    use mklight_trace::polarization::StepKind;
     for i in 0..sys.surfaces.len() {
         let s = &sys.surfaces[i];
         let frame = if i == 0 {
@@ -180,17 +214,26 @@ pub fn surface_specs(
         } else if i == 1 {
             mklight_trace::trace::start_frame(sys).relative_to(&frame)
         } else {
-            sys.surfaces[i - 1].to_next.unwrap()
+            {
+                let f = sys.surfaces[i - 1].to_next.unwrap();
+                let rot = f.rot.transpose();
+                mklight_core::math::Frame {
+                    rot,
+                    origin: rot.mul_vec(-f.origin),
+                }
+            }
         };
         for w in 0..sys.wavelengths_um.len() {
-            let coating = CoatingSpec::resolve(
+            let coating = CoatingSpec::resolve_with(
                 &s.coating,
                 sys.wavelengths_um[w],
                 sys.n_before(i, w),
                 s.n_after[w],
                 s.is_mirror(),
-                layers,
+                offset,
+                &mut layer,
             )?;
+            offset += coating.count;
             let kind = if i == 0 || i == sys.image_index() {
                 0
             } else {
@@ -202,7 +245,7 @@ pub fn surface_specs(
                     Some(StepKind::IdealMirror) => 4,
                 }
             };
-            out.push(SurfaceSpec {
+            surface(SurfaceSpec {
                 coating,
                 rotation: std::array::from_fn(|k| Df32::from_f64(frame.rot.m[k / 3][k % 3])),
                 transfer: std::array::from_fn(|k| Df32::from_f64(transfer.rot.m[k / 3][k % 3])),
@@ -218,5 +261,5 @@ pub fn surface_specs(
             });
         }
     }
-    Ok(out)
+    Ok(())
 }
