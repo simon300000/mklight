@@ -127,6 +127,19 @@ pub struct KState {
     pub status: u32,
 }
 
+/// Unrounded local-frame state for resident consumers. OPL has no legacy
+/// point-rounding correction; normals are the unnormalised sag gradients.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ResidentState {
+    pub ray: KRayIn,
+    pub normal: [Df32; 3],
+    pub index: Df32,
+    pub status: u32,
+    pub last_surface: u32,
+    pub steps: u32,
+    pub transmittance: f32,
+}
+
 /// Kernel output for one ray.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct KRayOut {
@@ -151,7 +164,7 @@ pub fn dot<E: FpEnv>(a: V<E>, b: V<E>) -> F<E> {
 
 /// `mkl_ddot`: double-float dot product, `((a2b2 + a1b1) + a0b0)`.
 #[inline(always)]
-fn ddot<E: FpEnv>(a: DV<E>, b: DV<E>) -> D<E> {
+pub fn ddot<E: FpEnv>(a: DV<E>, b: DV<E>) -> D<E> {
     let mut s = a[2] * b[2];
     s = s + a[1] * b[1];
     s + a[0] * b[0]
@@ -449,12 +462,12 @@ pub fn asphere_from<E: FpEnv>(
 /// double-float parts, the hit point, the unnormalised normal `G` (double-
 /// float) and the f32 unit normal.
 #[derive(Clone, Copy)]
-struct Hit<E: FpEnv> {
-    ta: D<E>,
-    tb: D<E>,
-    x: DV<E>,
-    g: DV<E>,
-    normal: V<E>,
+pub struct Hit<E: FpEnv> {
+    pub ta: D<E>,
+    pub tb: D<E>,
+    pub x: DV<E>,
+    pub g: DV<E>,
+    pub normal: V<E>,
 }
 
 /// `mkl_point_on`: `q + t·d` in double-float.
@@ -654,7 +667,7 @@ fn sag_from<E: FpEnv>(
     unreachable!()
 }
 
-fn intersect<E: FpEnv>(
+pub fn intersect<E: FpEnv>(
     s: &PackedSurface,
     pool: &[Df32],
     p: DV<E>,
@@ -795,13 +808,13 @@ pub fn reflect<E: FpEnv>(k: V<E>, n: V<E>) -> (V<E>, F<E>) {
 
 /// `mkl_dnorm`: `|v|` of a double-float vector.
 #[inline(always)]
-fn dnorm<E: FpEnv>(v: DV<E>) -> D<E> {
+pub fn dnorm<E: FpEnv>(v: DV<E>) -> D<E> {
     ddot(v, v).sqrt()
 }
 
 /// `mkl_dabs`: `|x|` (by the sign of `hi`).
 #[inline(always)]
-fn dabs<E: FpEnv>(x: D<E>) -> D<E> {
+pub fn dabs<E: FpEnv>(x: D<E>) -> D<E> {
     if x.hi() < 0.0 { -x } else { x }
 }
 
@@ -958,6 +971,18 @@ fn index<E: FpEnv>(s: &PackedSurface, w: usize) -> D<E> {
 /// (`PreparedTrace::new`). `records`, when given, has `steps.len() + 1`
 /// slots: slot 0 the input, slot `k + 1` the state after step `k` (a failed
 /// ray repeats its final state and status).
+/// Compatibility output: apply the point-rounding correction only here.
+pub fn rounded_state<E: FpEnv>(s: &ResidentState) -> KState {
+    report::<E>(
+        std::array::from_fn(|k| D::new(s.ray.pos[k], s.ray.pos_lo[k])),
+        std::array::from_fn(|k| D::new(s.ray.dir[k], s.ray.dir_lo[k])),
+        D::from_df(s.ray.opl),
+        D::from_df(s.index),
+        f(s.ray.weight),
+        s.status,
+    )
+}
+
 pub fn trace_ray<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],
@@ -967,6 +992,28 @@ pub fn trace_ray<E: FpEnv>(
     ray: &KRayIn,
     mut records: Option<&mut [KState]>,
 ) -> KRayOut {
+    let out = trace_resident::<E>(h, s, pool, steps, prm, ray, |k, state| {
+        if let Some(r) = records.as_deref_mut() {
+            r[k] = rounded_state::<E>(&state);
+        }
+    });
+    KRayOut {
+        state: rounded_state::<E>(&out),
+        transmittance: out.transmittance,
+        last_surface: out.last_surface,
+        steps: out.steps,
+    }
+}
+
+pub fn trace_resident<E: FpEnv>(
+    h: &PackedHeader,
+    s: &[PackedSurface],
+    pool: &[Df32],
+    steps: &[u32],
+    prm: &TraceParams,
+    ray: &KRayIn,
+    mut record: impl FnMut(usize, ResidentState),
+) -> ResidentState {
     let w = ray.wavelength as usize;
     let clip = prm.flags & MKL_TRACE_CLIP != 0;
     let radiometry = prm.flags & MKL_TRACE_RADIOMETRY != 0;
@@ -992,6 +1039,33 @@ pub fn trace_ray<E: FpEnv>(
     let mut last = start as u32;
     let mut status = MKL_RAY_OK;
     let mut done = 0usize;
+    let mut normal = [D::<E>::ZERO; 3];
+    let state = |pos: DV<E>,
+                 dir: DV<E>,
+                 opl: D<E>,
+                 normal: DV<E>,
+                 index: D<E>,
+                 weight: F<E>,
+                 status,
+                 last_surface,
+                 steps,
+                 transmittance| ResidentState {
+        ray: KRayIn {
+            pos: raw(hi3(pos)),
+            pos_lo: raw(lo3(pos)),
+            dir: raw(hi3(dir)),
+            dir_lo: raw(lo3(dir)),
+            opl: opl.0,
+            weight: weight.v(),
+            wavelength: ray.wavelength,
+        },
+        normal: normal.map(|n| n.0),
+        index: index.0,
+        status,
+        last_surface,
+        steps,
+        transmittance,
+    };
 
     let weight_now = |tw: F<E>, absorb: F<E>| {
         if radiometry {
@@ -1000,9 +1074,10 @@ pub fn trace_ray<E: FpEnv>(
             w_in
         }
     };
-    if let Some(r) = records.as_deref_mut() {
-        r[0] = report(pos, dir, opl, n_cur, w_in, MKL_RAY_OK);
-    }
+    record(
+        0,
+        state(pos, dir, opl, normal, n_cur, w_in, MKL_RAY_OK, last, 0, 1.0),
+    );
     if finite3(hi3(pos)) && finite3(hi3(dir)) && finite3(lo3(pos)) && finite3(lo3(dir)) {
         dir = renorm(dir);
     } else {
@@ -1055,6 +1130,7 @@ pub fn trace_ray<E: FpEnv>(
             absorb = alpha.fma(hit.ta.hi() + hit.tb.hi(), absorb);
         }
         pos = hit.x;
+        normal = hit.g;
         if !finite3(hi3(pos)) {
             status = fail(MKL_RAY_NONFINITE);
             break;
@@ -1215,9 +1291,21 @@ pub fn trace_ray<E: FpEnv>(
         }
         k += 1;
         done = k;
-        if let Some(r) = records.as_deref_mut() {
-            r[k] = report(pos, dir, opl, n_cur, weight_now(tw, absorb), MKL_RAY_OK);
-        }
+        record(
+            k,
+            state(
+                pos,
+                dir,
+                opl,
+                normal,
+                n_cur,
+                weight_now(tw, absorb),
+                MKL_RAY_OK,
+                last,
+                done as u32,
+                exp_in::<E>((-absorb).v()),
+            ),
+        );
     }
 
     let transmittance = f::<E>(exp_in::<E>((-absorb).v()));
@@ -1226,16 +1314,20 @@ pub fn trace_ray<E: FpEnv>(
     } else {
         w_in
     };
-    let state = report(pos, dir, opl, n_cur, weight, status);
-    if let Some(r) = records {
-        for slot in r.iter_mut().take(num_steps + 1).skip(done + 1) {
-            *slot = state;
-        }
+    let out = state(
+        pos,
+        dir,
+        opl,
+        normal,
+        n_cur,
+        weight,
+        status,
+        last,
+        done as u32,
+        transmittance.v(),
+    );
+    for slot in done + 1..=num_steps {
+        record(slot, out);
     }
-    KRayOut {
-        state,
-        transmittance: transmittance.v(),
-        last_surface: last,
-        steps: done as u32,
-    }
+    out
 }
