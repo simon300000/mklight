@@ -4,10 +4,23 @@ import MKLightModel
 import Observation
 
 public enum ViewportMode: String, CaseIterable, Identifiable, Sendable, Codable {
+    /// The meridional (y–z) section.
     case section2D = "2D"
+    /// The sagittal (x–z) section, for designs without rotational symmetry.
+    case sectionXZ = "2D-xz"
     case orbit3D = "3D"
     public var id: String { rawValue }
-    public var title: String { self == .section2D ? "Section" : "3D" }
+    public var title: String {
+        switch self {
+        case .section2D: "Section"
+        case .sectionXZ: "X–Z"
+        case .orbit3D: "3D"
+        }
+    }
+    /// A 2-D section (y–z or x–z).
+    public var isSection: Bool { self != .orbit3D }
+    /// The engine `layout` setting `section` for this mode.
+    public var engineSection: String { self == .sectionXZ ? "xz" : "yz" }
 }
 
 public enum RayColoring: String, CaseIterable, Identifiable, Sendable, Codable {
@@ -39,11 +52,12 @@ public struct ViewportCamera: Equatable, Sendable {
 
 /// Which design job panel is open in the inspector.
 public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
-    case optimize, tolerance, solves
+    case optimize, glass, tolerance, solves
     public var id: String { rawValue }
     public var title: String {
         switch self {
         case .optimize: "Optimize"
+        case .glass: "Glass Substitution"
         case .tolerance: "Tolerance"
         case .solves: "Apply Solves"
         }
@@ -51,6 +65,7 @@ public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
     public var symbol: String {
         switch self {
         case .optimize: "wand.and.sparkles"
+        case .glass: "swatchpalette"
         case .tolerance: "plusminus.circle"
         case .solves: "function"
         }
@@ -76,6 +91,8 @@ public final class WindowState {
     public var rayColoring = RayColoring.field
     /// Incremented to ask the viewport to fit the scene.
     public var fitRequest = 0
+    /// Fit frames the lens only (surfaces), not the rays to the image.
+    public var fitLens = false
     /// Height fraction of the lens data editor.
     public var editorFraction = 0.36
     /// Width fraction of the viewport in the lower half.
@@ -90,6 +107,7 @@ public final class WindowState {
     /// keeps running while its panel is closed.
     public let optimize = OptimizeSession()
     public let tolerance = ToleranceSession()
+    public let glass = GlassSubstitutionSession()
     public let solves = SolvesSession()
     /// The lens table's focused cell, for menu commands.
     public var focusedColumn: LensColumn?
@@ -104,7 +122,7 @@ public final class WindowState {
 
     /// The running design job, if any.
     public var runningJob: DesignJobKind? {
-        optimize.isRunning ? .optimize : tolerance.isRunning ? .tolerance : nil
+        optimize.isRunning ? .optimize : glass.isRunning ? .glass : tolerance.isRunning ? .tolerance : nil
     }
 
     /// Shows a transient message; it clears itself after a few seconds.
@@ -205,7 +223,7 @@ extension WorkspaceLayout {
     public init(workspace: Workspace, window: WindowState) {
         panes = workspace.panes.map {
             Pane(
-                key: $0.id, analysis: $0.analysis, settings: $0.settings, autoUpdate: $0.autoUpdate,
+                key: $0.id, analysis: $0.analysis, settings: ImageSourceImport.persistable($0.settings), autoUpdate: $0.autoUpdate,
                 showsSettings: $0.showsSettings, width: window.paneWidths[$0.id])
         }
         editorFraction = window.editorFraction

@@ -31,6 +31,9 @@ public final class AnalysisPane: Identifiable {
     public var showsSettings = true
     public internal(set) var output: AnalysisOutput?
     public internal(set) var phase = Phase.idle
+    /// The snapshot the output was computed for (as submitted: the engine
+    /// records a run-local snapshot's hash when a `spectrum` is set).
+    public internal(set) var outputSnapshot: ModelSnapshot?
     /// The request the current job (or the last finished one) ran.
     public internal(set) var lastRequest: EngineAnalysisRequest?
 

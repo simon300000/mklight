@@ -4,6 +4,7 @@ import Testing
 @testable import MKLightEngine
 @testable import MKLightFFI
 @testable import MKLightModel
+@testable import MKLightUI
 
 /// Integration tests against the real Rust engine (`libmklight_ffi.a`).
 /// They are skipped, with the reason below, when the library was not
@@ -205,25 +206,47 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(ok.result.analysisName == "validate")
     }
 
-    /// Extended surface shapes open and validate (every sample above), but
-    /// the engine's legacy-only solvers (layout, Seidel, field curvature,
-    /// ghosts, merit evaluation) refuse them with a clear error.
+    /// Extended surface shapes open, validate and now run through every
+    /// solver, including the layout (which draws their real profiles, marks
+    /// DOE surfaces and reports automatic semi-diameters) and Seidel.
     @Test(arguments: ["q_con", "hybrid_doe", "anamorphic", "zernike_sag"])
-    func legacyOnlyAnalysesRefuseExtendedShapes(id: String) async throws {
+    func extendedShapesRunThroughLayoutAndSeidel(id: String) async throws {
         let e = try engine()
         let system = try sample(id)
         let extended = system.surfaces.contains { !$0.shape.isLegacy }
         #expect(extended)
         let snap = try await e.openSnapshot(system)
         for analysis in ["seidel", "layout"] {
-            do {
-                _ = try await e.submit(EngineAnalysisRequest(analysis: analysis), on: snap).result()
-                Issue.record("\(id): \(analysis) accepted extended shapes")
-            } catch let error as EngineError {
-                let text = error.errorDescription ?? "\(error)"
-                #expect(text.contains("extended surface shapes"), "\(id) \(analysis): \(text)")
-            }
+            let out = try await e.submit(EngineAnalysisRequest(analysis: analysis), on: snap).result()
+            #expect(out.result.analysisName == analysis, "\(id) \(analysis)")
         }
+        let layout = try await e.submit(EngineAnalysisRequest(analysis: "layout"), on: snap).result()
+        let surfaces = layout.json["surfaces"]?.array ?? []
+        #expect(!surfaces.isEmpty)
+        let doe = surfaces.contains { $0["is_diffractive"]?.bool == true }
+        #expect(doe == system.surfaces.contains { if case .diffractive = $0.shape { true } else { false } }, "\(id)")
+        #expect(surfaces.allSatisfy { ($0["semi_diameter"]?.nf ?? .nan).isFinite || $0["index"]?.int == 0 }, "\(id)")
+        // The x–z section and the 3-D surface mesh, as the viewport asks for them.
+        let xz = try await e.submit(
+            EngineAnalysisRequest(analysis: "layout", settings: ["section": .string("xz"), "mesh_rings": .integer(6)]), on: snap
+        ).result()
+        let scene = try #require(EngineLayout.scene(from: xz))
+        #expect(scene.section == "xz")
+        #expect(!scene.mesh.isEmpty, "\(id): no surface mesh")
+        #expect(scene.mesh.allSatisfy { $0.surface >= 1 && $0.a.z.isFinite })
+        #expect(!scene.elements.isEmpty || id == "zernike_sag", "\(id): no glass fills in the x–z section")
+        if doe { #expect(scene.polylines.contains { $0.doe }, "\(id): DOE flag not read") }
+    }
+
+    /// Footprint overlays become closed beam outlines on every surface.
+    @Test func footprintOverlaysReadAsOutlines() async throws {
+        let e = try engine()
+        let snap = try await e.openSnapshot(try sample("double_gauss"))
+        let out = try await e.submit(EngineAnalysisRequest(analysis: "footprint", settings: ["rings": .integer(4)]), on: snap).result()
+        let overlay = try #require(FootprintOverlay(output: out))
+        #expect(overlay.outlines.count >= 10)
+        #expect(overlay.outlines.allSatisfy { $0.points.count >= 3 })
+        #expect(Set(overlay.outlines.map(\.surface)).count >= 10)
     }
 
     /// The fixture with every extended shape: the engine accepts the mirror's

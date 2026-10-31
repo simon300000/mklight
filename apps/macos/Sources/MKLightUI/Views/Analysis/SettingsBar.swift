@@ -21,10 +21,14 @@ struct SettingsBar: View {
     /// Every setting on its own row, the advanced ones as JSON below.
     private var list: some View {
         let fields = descriptor.settingsFields.filter { kind(of: $0) != .hidden }
-        let simple = fields.filter { kind(of: $0) != .advanced }
+        // The spectrum, the largest control, comes last.
+        let simple = fields.filter { ![.advanced, .spectrum].contains(kind(of: $0)) } + fields.filter { kind(of: $0) == .spectrum }
         let advanced = fields.filter { kind(of: $0) == .advanced }
         return VStack(alignment: .leading, spacing: Space.m) {
-            ForEach(simple) { f in control(f).frame(maxWidth: .infinity, alignment: .leading) }
+            ForEach(simple) { f in
+                if kind(of: f) == .spectrum { Divider() }
+                control(f).frame(maxWidth: .infinity, alignment: .leading)
+            }
             if !advanced.isEmpty {
                 Divider()
                 ForEach(advanced) { f in JSONSettingEditor(pane: pane, field: f) }
@@ -39,6 +43,8 @@ struct SettingsBar: View {
         guard let descriptor else { return "" }
         return descriptor.settingsFields.compactMap { f -> String? in
             guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
+            if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : "Spectrum \($0.summary)" } ?? "Spectrum custom" }
+            if let t = arraySummary(f, v) { return "\(label(f)) \(t)" }
             let value: String =
                 switch v["type"]?.string {
                 case "all": "all"
@@ -83,7 +89,11 @@ struct SettingsBar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    enum Kind { case fieldSelection, wavelengthSelection, fieldIndex, wavelengthIndex, surfaceIndex, enumeration, boolean, number, hidden, advanced }
+    enum Kind {
+        case fieldSelection, wavelengthSelection, fieldIndex, wavelengthIndex, surfaceIndex, enumeration, boolean, number, hidden, advanced
+        // Array and object settings with compact controls (SettingsControls.swift).
+        case pair, sensorLimit, imageSource, spectrum
+    }
 
     func kind(of f: SettingsField) -> Kind {
         let types = Set(f.types)
@@ -94,6 +104,7 @@ struct SettingsBar: View {
         if f.name == "field" && integer { return .fieldIndex }
         if ["wavelength", "long_wavelength", "short_wavelength"].contains(f.name) && integer { return .wavelengthIndex }
         if f.name == "surface" && integer { return .surfaceIndex }
+        if f.name == "spectrum" && types.contains("object") { return .spectrum }
         switch f.name {
         case "configuration":
             return (system?.configurations.count ?? 0) > 0 ? .number : .hidden
@@ -107,6 +118,7 @@ struct SettingsBar: View {
             }
         default: break
         }
+        if let k = arrayKind(of: f) { return k }
         if !f.enumValues.isEmpty { return .enumeration }
         if types.subtracting(["null"]) == ["boolean"] { return .boolean }
         if !types.subtracting(["null"]).isEmpty && types.subtracting(["null"]).isSubset(of: ["number", "integer"]) { return .number }
@@ -146,9 +158,38 @@ struct SettingsBar: View {
                 .help(f.description)
         case .number:
             SettingNumberField(field: f, label: label, value: value, set: { pane.set(f.name, $0) })
+        case .pair, .sensorLimit, .imageSource:
+            arrayControl(f, kind: kind(of: f))
+        case .spectrum:
+            if vertical {
+                SpectrumControl(
+                    value: spectrumBinding(f), systemWavelengths: systemSpectrum, systemPrimary: system?.wavelengths.primary,
+                    resolve: spectrumResolver)
+            } else {
+                SpectrumBarButton(
+                    value: spectrumBinding(f), systemWavelengths: systemSpectrum, systemPrimary: system?.wavelengths.primary,
+                    resolve: spectrumResolver)
+            }
         case .hidden, .advanced:
             EmptyView()
         }
+    }
+
+    /// The pane's `spectrum`: absent (or null) is the design's wavelengths.
+    func spectrumBinding(_ f: SettingsField) -> Binding<JSONValue?> {
+        Binding(get: { pane.settings[f.name].flatMap { $0 == .null ? nil : $0 } }, set: { pane.set(f.name, $0) })
+    }
+
+    var systemSpectrum: [SpectrumSample] {
+        system?.wavelengths.wavelengths.map { SpectrumSample(um: $0.um, weight: $0.weight) } ?? []
+    }
+
+    /// The engine's resolution of a spectrum on the pane's snapshot
+    /// (`system_summary`), for the preview.
+    var spectrumResolver: SpectrumResolver? {
+        guard let w = pane.workspace, let snapshot = w.snapshot else { return nil }
+        let engine = w.documentEngine
+        return { try await SpectrumSetting.resolve($0, engine: engine, snapshot: snapshot) }
     }
 
     var fieldOptions: [(Int, String)] {

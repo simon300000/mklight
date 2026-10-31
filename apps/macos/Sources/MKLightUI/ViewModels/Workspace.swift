@@ -82,12 +82,40 @@ public final class Workspace {
     /// First-order data for the status bar.
     public let summary = AnalysisPane(id: "summary", analysis: "first_order")
     let validation = AnalysisPane(id: "validation", analysis: "validate")
+    /// Beam footprints on every surface for the 3-D viewport; runs only
+    /// while `showFootprints` is on.
+    public let footprints = AnalysisPane(
+        id: "footprints", analysis: "footprint",
+        settings: ["pattern": .string("hexapolar"), "rings": .integer(6), "wavelengths": .object(["type": .string("primary")])])
+    public var showFootprints = false {
+        didSet {
+            guard showFootprints != oldValue else { return }
+            if showFootprints { refreshPane(footprints, force: true) } else { footprints.job?.cancel() }
+        }
+    }
     /// The pane that analysis commands act on.
     public var focusedPaneID: String?
 
     public var debounce: Duration = .milliseconds(150)
 
+    /// The system the next snapshot is taken of: the design, or the
+    /// previewed candidate.
     private var latestSystem: OpticalSystem?
+    /// The document's design (never a preview).
+    private var designSystem: OpticalSystem?
+    /// The latest snapshot of the document's design; design jobs run on it
+    /// even while a candidate is previewed.
+    public private(set) var designSnapshot: ModelSnapshot?
+    /// A candidate design (an optimisation or glass substitution result)
+    /// that the layout and the analyses show instead of the document's,
+    /// until it is applied or the preview ends. Never edited.
+    public private(set) var previewSystem: OpticalSystem?
+    /// What is previewed, e.g. "Candidate 2".
+    public private(set) var previewTitle: String?
+    public var isPreviewing: Bool { previewSystem != nil }
+    /// Results of the design just before a preview started, for before /
+    /// after comparisons: the layout and every pane's output by pane id.
+    public private(set) var baseline: [String: AnalysisOutput] = [:]
     private var snapshotTask: Task<Void, Never>?
     private var snapshotsHeld = 0
     @ObservationIgnored private let liveJobs = LiveJobs()
@@ -95,7 +123,7 @@ public final class Workspace {
     public init(engine: any EngineClient, panes: [AnalysisPane] = []) {
         self.engine = engine
         documentEngine = engine.makeDocumentEngine()
-        for p in [layout, summary, validation] + panes { p.workspace = self }
+        for p in [layout, summary, validation, footprints] + panes { p.workspace = self }
         self.panes = panes
         focusedPaneID = panes.first?.id
     }
@@ -103,7 +131,7 @@ public final class Workspace {
     deinit { liveJobs.cancelAll() }
 
     /// Every pane the workspace keeps current.
-    var allPanes: [AnalysisPane] { [validation, summary, layout] + panes }
+    var allPanes: [AnalysisPane] { [validation, summary, layout, footprints] + panes }
 
     public func descriptor(_ name: String) -> AnalysisDescriptor? { descriptors.first { $0.name == name } }
 
@@ -186,6 +214,12 @@ public final class Workspace {
 
     /// Call on every design change. Snapshots are taken after `debounce`.
     public func update(system: OpticalSystem, immediately: Bool = false) {
+        designSystem = system
+        if previewSystem != nil {
+            // A design change ends the preview: the panes follow the design again.
+            previewSystem = nil
+            previewTitle = nil
+        }
         latestSystem = system
         snapshotTask?.cancel()
         guard snapshotsHeld == 0 else { return }
@@ -199,6 +233,24 @@ public final class Workspace {
         }
     }
 
+    /// Shows `candidate` in the layout and the analyses instead of the
+    /// design (`nil` ends the preview). The document does not change.
+    public func preview(_ candidate: OpticalSystem?, title: String? = nil) {
+        guard candidate != previewSystem || title != previewTitle else { return }
+        if candidate != nil && previewSystem == nil {
+            var b: [String: AnalysisOutput] = [:]
+            for p in allPanes { if let o = p.output, !isStale(p) { b[p.id] = o } }
+            baseline = b
+        }
+        previewSystem = candidate
+        previewTitle = candidate == nil ? nil : title
+        guard let target = candidate ?? designSystem else { return }
+        latestSystem = target
+        snapshotTask?.cancel()
+        guard snapshotsHeld == 0 else { return }
+        snapshotTask = Task { [weak self] in await self?.openSnapshot(target) }
+    }
+
     /// Waits for the pending snapshot (tests, sheets that need it current).
     public func settle() async {
         await snapshotTask?.value
@@ -207,6 +259,7 @@ public final class Workspace {
     private func openSnapshot(_ system: OpticalSystem) async {
         do {
             let snap = try await documentEngine.openSnapshot(system)
+            if system == designSystem { designSnapshot = snap }
             guard system == latestSystem else { return }
             snapshot = snap
             modelErrors = []
@@ -236,7 +289,18 @@ public final class Workspace {
     public func isStale(_ pane: AnalysisPane) -> Bool {
         guard let out = pane.output else { return false }
         if !modelErrors.isEmpty { return true }
-        return !out.isCurrent(for: snapshot, request: request(for: pane))
+        return !Self.isCurrent(out, of: pane, for: snapshot, request: request(for: pane))
+    }
+
+    /// Whether `out` is current for `snapshot` and `request`. A run with a
+    /// run-local `spectrum` records the derived system's hash in its
+    /// `run_info` (an engine gap), so the snapshot the job was submitted
+    /// with also counts.
+    static func isCurrent(_ out: AnalysisOutput, of pane: AnalysisPane, for snapshot: ModelSnapshot?, request: EngineAnalysisRequest) -> Bool {
+        if out.isCurrent(for: snapshot, request: request) { return true }
+        guard let snapshot, let submitted = pane.outputSnapshot, submitted == snapshot else { return false }
+        if let own = out.engineRequest { return own == request }
+        return request.matches(out.runInfo)
     }
 
     private func refresh(forced: Bool) {
@@ -247,6 +311,7 @@ public final class Workspace {
     /// every change, manual ones only when asked or never run.
     private func refreshPane(_ pane: AnalysisPane, force: Bool = false) {
         guard pane.workspace === self, snapshot != nil, modelErrors.isEmpty else { return }
+        if pane === footprints && !showFootprints { return }
         let manualAndShown = !pane.autoUpdate && pane.output != nil && !force
         if manualAndShown { return }
         run(pane, force: false)
@@ -259,7 +324,7 @@ public final class Workspace {
         guard let snapshot, modelErrors.isEmpty else { return }
         let request = request(for: pane)
         if !force {
-            if let out = pane.output, out.isCurrent(for: snapshot, request: request) { return }
+            if let out = pane.output, Self.isCurrent(out, of: pane, for: snapshot, request: request) { return }
             if pane.isRunning, pane.lastRequest == request, pane.job?.snapshotHash == snapshot.hash { return }
         }
         if let d = descriptor(pane.analysis), !d.available {
@@ -273,14 +338,15 @@ public final class Workspace {
         }
         pane.job?.cancel()
         let job = documentEngine.submit(request, on: snapshot)
+        let submitted = snapshot
         liveJobs.set(pane.id, job)
         pane.job = job
         pane.lastRequest = request
         pane.phase = .running(JobProgress(fraction: 0, stage: "Queued"))
-        observe(job, pane)
+        observe(job, pane, snapshot: submitted)
     }
 
-    private func observe(_ job: AnalysisJob, _ pane: AnalysisPane) {
+    private func observe(_ job: AnalysisJob, _ pane: AnalysisPane, snapshot submitted: ModelSnapshot) {
         Task { @MainActor [weak pane] in
             for await p in job.progress {
                 guard let pane, pane.job === job, pane.isRunning else { continue }
@@ -295,6 +361,7 @@ public final class Workspace {
             switch outcome {
             case .success(let out):
                 pane.output = out
+                pane.outputSnapshot = submitted
                 pane.phase = .finished
                 if pane === self?.validation { self?.issues = ValidationIssue.from(validate: out.json) }
             case .failure(EngineError.cancelled):
@@ -308,7 +375,7 @@ public final class Workspace {
     }
 
     public func rerunVisible() {
-        for p in allPanes { run(p, force: true) }
+        for p in allPanes where p !== footprints || showFootprints { run(p, force: true) }
     }
 
     public func cancelAll() {
@@ -330,6 +397,7 @@ public final class Workspace {
     /// before the system is snapshotted.
     public func open(system: OpticalSystem, catalogs refs: [CatalogReference], projectDirectory: URL?) async {
         latestSystem = system
+        designSystem = system
         if await !syncCatalogs(refs, projectDirectory: projectDirectory) {
             update(system: latestSystem ?? system, immediately: true)
         }
@@ -378,8 +446,9 @@ public final class Workspace {
 
     /// Starts a design job (`optimize`, `tolerance`, `solves`) on the
     /// current snapshot. It does not belong to a pane.
-    public func submitJob(_ analysis: String, settings: [String: JSONValue]) throws -> AnalysisJob {
-        guard let snapshot, modelErrors.isEmpty else {
+    public func submitJob(_ analysis: String, settings: [String: JSONValue], key: String? = nil) throws -> AnalysisJob {
+        // Jobs run on the design, also while a candidate is previewed.
+        guard let snapshot = designSnapshot ?? snapshot, modelErrors.isEmpty else {
             throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
         }
         if let d = descriptor(analysis), !d.available {
@@ -388,13 +457,13 @@ public final class Workspace {
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)),
             on: snapshot)
-        liveJobs.set("job:" + analysis, job)
+        liveJobs.set("job:" + (key ?? analysis), job)
         return job
     }
 
     /// Solves the current design in the engine (`applySolves`).
     public func applySolves(settings: [String: JSONValue] = [:]) async throws -> SolveApplication {
-        guard let snapshot else { throw EngineError.invalidModel(modelErrors) }
+        guard let snapshot = designSnapshot ?? snapshot else { throw EngineError.invalidModel(modelErrors) }
         return try await documentEngine.applySolves(settings: settings, to: snapshot)
     }
 }

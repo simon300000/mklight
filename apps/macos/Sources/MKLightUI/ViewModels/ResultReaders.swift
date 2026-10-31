@@ -84,30 +84,107 @@ extension AnalysisOutput {
     }
 }
 
-/// Anamorphic first-order data: EFL in x and y and the signed squeeze
-/// `EFL_y / EFL_x` (SURFACES §8, the engine's `ParaxialXY`). Read from the
-/// first-order result when the engine reports it (`efl_x`, `efl_y`,
-/// `squeeze` entries, or a `paraxial_xy` object); `nil` otherwise.
-public struct AnamorphicFirstOrder: Sendable, Equatable {
-    public var eflX: Double?
-    public var eflY: Double?
-    public var squeeze: Double?
+/// The engine's first-order data of both sections (`paraxial_xy` of
+/// `first_order` and `system_summary`, docs/RESULTS.md): EFL and BFL in x
+/// and y, the signed squeeze `EFL_y / EFL_x` and DOE phase powers at every
+/// system wavelength, the design's symmetry class and the engine's
+/// warnings. `nil` when the result has no `paraxial_xy`.
+public struct ParaxialXYData: Sendable, Equatable {
+    /// The geometry's symmetry (placements and apertures included).
+    public enum Symmetry: String, Sendable {
+        case rotational, meridional, none
+
+        public var title: String {
+            switch self {
+            case .rotational: "Rotational"
+            case .meridional: "Meridional plane"
+            case .none: "None"
+            }
+        }
+    }
+
+    public struct DOEPower: Sendable, Equatable {
+        public var surface: Int
+        /// 1/mm, the selected order's phase power (base power excluded).
+        public var power: Double
+    }
+
+    public struct Row: Sendable, Equatable, Identifiable {
+        public var wavelength: Int
+        public var wavelengthUm: Double
+        public var eflX: Double
+        public var eflY: Double
+        public var bflX: Double
+        public var bflY: Double
+        public var squeeze: Double
+        public var doePower: [DOEPower]
+        public var id: Int { wavelength }
+    }
+
+    public var symmetry: Symmetry?
+    public var primaryWavelength: Int?
+    public var squeezeDefinition: String?
+    public var warnings: [String]
+    /// One row per system wavelength, in the engine's order.
+    public var rows: [Row]
 
     public init?(_ json: JSONValue?) {
-        guard let json else { return nil }
-        let entries = FirstOrderData(json)
-        let xy = json["paraxial_xy"]
-        eflX = entries?.entry(["efl_x"])?.value ?? xy?["efl_x"]?.nf
-        eflY = entries?.entry(["efl_y"])?.value ?? xy?["efl_y"]?.nf
-        squeeze = entries?.entry(["squeeze"])?.value ?? xy?["squeeze"]?.nf
-        if squeeze == nil, let x = eflX, let y = eflY, x != 0 { squeeze = y / x }
-        if eflX == nil && eflY == nil && squeeze == nil { return nil }
+        guard let xy = json?["paraxial_xy"], xy.object != nil else { return nil }
+        symmetry = (xy["symmetry"]?.string ?? json?["symmetry"]?.string).flatMap(Symmetry.init(rawValue:))
+        primaryWavelength = xy["primary_wavelength"]?.int
+        squeezeDefinition = xy["squeeze_definition"]?.string
+        warnings = xy["warnings"]?.array?.compactMap(\.string) ?? []
+        rows = (xy["wavelengths"]?.array ?? []).enumerated().compactMap { k, w in
+            guard let efly = w["efl_y"]?.nf else { return nil }
+            let eflx = w["efl_x"]?.nf ?? .nan
+            return Row(
+                wavelength: w["wavelength"]?.int ?? k,
+                wavelengthUm: w["wavelength_um"]?.nf ?? .nan,
+                eflX: eflx, eflY: efly,
+                bflX: w["bfl_x"]?.nf ?? .nan, bflY: w["bfl_y"]?.nf ?? .nan,
+                squeeze: w["squeeze"]?.nf ?? (eflx != 0 ? efly / eflx : .nan),
+                doePower: (w["doe_power"]?.array ?? []).compactMap { d in
+                    guard let s = d["surface"]?.int, let p = d["power"]?.nf else { return nil }
+                    return DOEPower(surface: s, power: p)
+                })
+        }
+    }
+
+    /// The primary wavelength's row (else the first).
+    public var primary: Row? { rows.first { $0.wavelength == primaryWavelength } ?? rows.first }
+
+    /// The other wavelengths' rows.
+    public var others: [Row] {
+        guard let p = primary else { return [] }
+        return rows.filter { $0.wavelength != p.wavelength }
+    }
+
+    /// Whether the design lacks rotational symmetry, so that its x and y
+    /// first order differ. `nil` when the engine does not say.
+    public var isAnamorphic: Bool? { symmetry.map { $0 != .rotational } }
+
+    /// Whether any DOE is listed.
+    public var hasDOEs: Bool { rows.contains { !$0.doePower.isEmpty } }
+
+    /// The engine's symmetry class when it reports one; otherwise the
+    /// surface kinds of `system` (toroid, biconic, freeform) decide.
+    public static func isAnamorphic(_ json: JSONValue?, system: OpticalSystem?) -> Bool {
+        if let a = ParaxialXYData(json)?.isAnamorphic { return a }
+        if let s = json?["symmetry"]?.string.flatMap(Symmetry.init(rawValue:)) { return s != .rotational }
+        return system?.hasNonRotationalSurfaces ?? false
+    }
+
+    /// `1.5000×`, signed.
+    public static func squeezeText(_ v: Double, digits: Int = 4) -> String {
+        v.isFinite ? String(format: "%.\(digits)f×", v) : Fmt.short(v)
     }
 }
 
 extension OpticalSystem {
     /// Whether any surface lacks rotational symmetry (toroid, biconic, XY
     /// or Zernike freeform): first-order data then differs between x and y.
+    /// Only a fallback for engines that do not report `symmetry`
+    /// (`ParaxialXYData.isAnamorphic(_:system:)`).
     public var hasNonRotationalSurfaces: Bool {
         surfaces.contains { [.toroid, .biconic, .xyPolynomial, .zernikeSag].contains($0.shape.kind) }
     }

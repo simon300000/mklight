@@ -27,7 +27,7 @@ struct AnalysisResultView: View {
         let o = output, c = context
         switch analysis {
         case "first_order":
-            return FirstOrderView(output: o, nonRotational: c.system?.hasNonRotationalSurfaces ?? false).map { AnyView($0) }
+            return FirstOrderView(output: o, system: c.system).map { AnyView($0) }
         case "validate": return AnyView(ValidateResultView(output: o, context: c))
         case "spot_diagram": return SpotDiagramView(output: o, context: c).map { AnyView($0) }
         case "ray_fan", "opd_fan": return FanView(output: o, context: c).map { AnyView($0) }
@@ -52,6 +52,11 @@ struct AnalysisResultView: View {
         case "polarization_pupil_map": return PolarizationView(output: o).map { AnyView($0) }
         case "system_transmission": return TransmissionView(output: o, context: c).map { AnyView($0) }
         case "best_focus": return BestFocusView(output: o, context: c).map { AnyView($0) }
+        case "pupil_aberration": return PupilAberrationView(output: o).map { AnyView($0) }
+        case "relative_illumination_map": return RelativeIlluminationMapView(output: o).map { AnyView($0) }
+        case "chief_ray_angle": return ChiefRayAngleView(output: o).map { AnyView($0) }
+        case "glass_map": return GlassMapView(output: o, context: c).map { AnyView($0) }
+        case "image_simulation": return ImageSimulationView(output: o).map { AnyView($0) }
         default: return nil
         }
     }
@@ -97,6 +102,8 @@ struct AnalysisResultView: View {
             return j["stray_fraction"]?.nf.map { [KeyNumber(label: "Stray fraction", value: Fmt.short($0))] } ?? []
         case "best_focus":
             return j["defocus"]?.nf.map { [KeyNumber(label: "Best defocus", value: Fmt.length($0))] } ?? []
+        case "pupil_aberration", "relative_illumination_map", "chief_ray_angle", "glass_map", "image_simulation":
+            return extendedKeyNumbers(analysis: analysis, output: output)
         case "validate":
             return [KeyNumber(label: "Errors", value: "\(j["errors"]?.int ?? 0)"), KeyNumber(label: "Warnings", value: "\(j["warnings"]?.int ?? 0)")]
         default:
@@ -109,23 +116,35 @@ struct AnalysisResultView: View {
 struct FirstOrderView: View {
     let data: FirstOrderData
     let json: JSONValue
-    /// The design is not rotationally symmetric: show its x / y first-order
-    /// data, or say that the engine reports the y section only.
-    var nonRotational = false
+    let xy: ParaxialXYData?
+    /// The design is not rotationally symmetric (the engine's `symmetry`;
+    /// the surface kinds of `system` only when it does not say): show its
+    /// x / y first-order data.
+    let anamorphic: Bool
 
-    init?(output: AnalysisOutput, nonRotational: Bool = false) {
+    init?(output: AnalysisOutput, system: OpticalSystem? = nil) {
         guard let d = FirstOrderData(output.json) else { return nil }
         data = d
         json = output.json
-        self.nonRotational = nonRotational
+        xy = ParaxialXYData(output.json)
+        anamorphic = ParaxialXYData.isAnamorphic(output.json, system: system)
     }
 
     var body: some View {
         ScrollView {
-            if nonRotational {
+            if anamorphic {
                 VStack(alignment: .leading, spacing: Space.s) {
                     Text("Anamorphic").font(.subheadline.weight(.semibold))
-                    AnamorphicSummary(json: json)
+                    AnamorphicSummary(json: json, detailed: true)
+                }
+                .padding(Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.fill.quinary, in: .rect(cornerRadius: 10))
+                .padding([.horizontal, .top], Space.l)
+            } else if let p = xy?.primary, !p.doePower.isEmpty {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    Text("Diffractive").font(.subheadline.weight(.semibold))
+                    DOEPowerGrid(row: p)
                 }
                 .padding(Space.m)
                 .frame(maxWidth: .infinity, alignment: .leading)

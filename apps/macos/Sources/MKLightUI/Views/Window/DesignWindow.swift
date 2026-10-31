@@ -80,7 +80,7 @@ private struct DesignWindowContent: View {
             .overlay(alignment: .bottom) { toast }
             .inspector(isPresented: $window.showInspector) {
                 InspectorView(design: design, workspace: workspace, window: window)
-                    .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
+                    .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
             }
         }
         .navigationSubtitle(system.name)
@@ -97,6 +97,7 @@ private struct DesignWindowContent: View {
         .onDisappear {
             window.optimize.cancel()
             window.tolerance.cancel()
+            window.glass.cancel()
             workspace.cancelAll()
         }
         .onChange(of: design.system) { _, s in workspace.update(system: s) }
@@ -167,6 +168,7 @@ private struct DesignWindowContent: View {
     private func help(_ job: DesignJobKind) -> String {
         switch job {
         case .optimize: "Optimize the design (⌃⌘O)"
+        case .glass: "Replace glasses with catalogue glasses, re-optimising each combination (⌃⌘G)"
         case .tolerance: "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
         case .solves: "Preview and apply the design's solves (⌃⌘L)"
         }
@@ -219,6 +221,9 @@ private struct DesignWindowContent: View {
         if let t = d.string(forKey: "MKLightInspector") { window.inspectorTab = t == "system" ? .system : .surface }
         if d.string(forKey: "MKLightSidebar") == "hidden" { columns = .detailOnly }
         if d.string(forKey: "MKLightViewport") == "3D" { window.viewportMode = .orbit3D }
+        if d.bool(forKey: "MKLightFootprints") { workspace.showFootprints = true }
+        if d.string(forKey: "MKLightFit") == "lens" { window.fitLens = true }
+        if let yaw = d.object(forKey: "MKLightYaw") as? Double ?? Double(d.string(forKey: "MKLightYaw") ?? "") { window.camera.yaw = yaw }
         if d.bool(forKey: "MKLightShowIssues") {
             Task {
                 try? await Task.sleep(for: .seconds(3))

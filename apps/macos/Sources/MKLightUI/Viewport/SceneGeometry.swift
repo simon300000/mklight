@@ -29,6 +29,8 @@ struct ViewportStyle: Equatable {
     var scale: Float
     /// Selection highlight (the system accent colour), sRGB.
     var accent: SIMD3<Float> = SIMD3(0.16, 0.47, 0.84)
+    /// Beam footprints drawn on the surfaces in 3-D.
+    var footprints: FootprintOverlay? = nil
 }
 
 /// The coordinate frame vertex positions are uploaded in. Positions are
@@ -143,6 +145,7 @@ enum SceneGeometry {
         let ink: SIMD3<Float> = style.dark ? SIMD3(0.88, 0.89, 0.91) : SIMD3(0.13, 0.14, 0.16)
         let faint: SIMD3<Float> = style.dark ? SIMD3(0.55, 0.56, 0.60) : SIMD3(0.55, 0.56, 0.58)
         let accent = style.accent
+        let doeInk = SIMD3<Float>(Palette.slotRGB(6, dark: style.dark))
         let s = style.scale
 
         var segs: [SegmentInstance] = []
@@ -173,6 +176,8 @@ enum SceneGeometry {
                     dark: style.dark)
             var a: Float = line.vignetted ? 0.35 : 0.9
             if style.stale { a *= 0.35 }
+            // Footprints are the subject: the rays step back.
+            if style.mode == .orbit3D && style.footprints != nil { a *= 0.35 }
             add(line, color: SIMD4(SIMD3<Float>(rgb), a), width: 1.1)
         }
         for line in scene.polylines where line.kind != .ray && (style.mode == .orbit3D || line.inSection) {
@@ -181,6 +186,10 @@ enum SceneGeometry {
             case .axis: add(line, color: SIMD4(faint, 0.8), width: 0.8, dash: 10)
             case .surfaceProfile, .elementEdge:
                 add(line, color: SIMD4(selected ? accent : ink, 1), width: selected ? 2.4 : 1.4)
+                // A diffractive surface: a fine violet hatch along its profile.
+                if line.doe && line.kind == .surfaceProfile {
+                    add(line, color: SIMD4(doeInk, 0.85), width: selected ? 4.2 : 3.4, dash: 3)
+                }
             case .surfaceRim: add(line, color: SIMD4(selected ? accent : faint, 0.8), width: selected ? 1.8 : 1)
             case .stop: add(line, color: SIMD4(selected ? accent : ink, 1), width: selected ? 2.8 : 2.2)
             case .imagePlane: add(line, color: SIMD4(selected ? accent : ink, 1), width: selected ? 2.4 : 1.8)
@@ -188,9 +197,49 @@ enum SceneGeometry {
             }
         }
 
-        // Glass fill between matched front/back profiles (section view only).
+        // Beam footprints (3-D): each surface's convex beam outline, filled
+        // translucently and outlined, in the field's colour.
         var fills: [FillVertex] = []
-        if style.mode == .section2D {
+        if style.mode == .orbit3D, let fp = style.footprints {
+            for o in fp.outlines where o.points.count >= 3 {
+                let rgb = SIMD3<Float>(Palette.fieldRGB(o.field, dark: style.dark))
+                let closed = LayoutScene.Polyline(kind: .surfaceRim, points: o.points + [o.points[0]], inSection: false, surface: o.surface)
+                add(closed, color: SIMD4(rgb, style.stale ? 0.35 : 0.9), width: 1.2)
+                let pts = o.points.map(frame.apply)
+                for j in 1..<(pts.count - 1) {
+                    let tri = [pts[0], pts[j], pts[j + 1]]
+                    let poly = frame.clipHalfExtent.map { clip(polygon: tri, to: $0) } ?? tri
+                    guard poly.count >= 3 else { continue }
+                    for k in 1..<(poly.count - 1) {
+                        fills += [poly[0], poly[k], poly[k + 1]].map { FillVertex(position: f4($0), color: SIMD4(rgb, 0.16)) }
+                    }
+                }
+            }
+        }
+        // Surface mesh (3-D): the engine's triangulated surfaces, flat
+        // shaded so freeform and anamorphic shapes read as solids.
+        if style.mode == .orbit3D, !scene.mesh.isEmpty {
+            let base: SIMD3<Double> = style.dark ? SIMD3(0.42, 0.62, 0.95) : SIMD3(0.40, 0.62, 0.92)
+            let light = simd_normalize(SIMD3<Double>(-0.35, 0.75, 0.55))
+            for t in scene.mesh {
+                let a = SIMD3(t.a.x, t.a.y, t.a.z), b = SIMD3(t.b.x, t.b.y, t.b.z), c = SIMD3(t.c.x, t.c.y, t.c.z)
+                let n = simd_cross(b - a, c - a)
+                let len = simd_length(n)
+                guard len > 0 else { continue }
+                let shade = 0.55 + 0.45 * abs(simd_dot(n / len, light))
+                let selected = t.surface == style.selectedSurface
+                let rgb = selected ? SIMD3<Double>(accent) : base * shade
+                let color = SIMD4(SIMD3<Float>(rgb), selected ? 0.32 : 0.2)
+                let tri = [frame.apply(t.a), frame.apply(t.b), frame.apply(t.c)]
+                let poly = frame.clipHalfExtent.map { clip(polygon: tri, to: $0) } ?? tri
+                guard poly.count >= 3 else { continue }
+                for k in 1..<(poly.count - 1) {
+                    fills += [poly[0], poly[k], poly[k + 1]].map { FillVertex(position: f4($0), color: color) }
+                }
+            }
+        }
+        // Glass fill between matched front/back profiles (section view only).
+        if style.mode.isSection {
             let glass: SIMD4<Float> = style.dark ? SIMD4(0.35, 0.60, 0.95, 0.22) : SIMD4(0.45, 0.68, 0.95, 0.25)
             for e in scene.elements where e.front.count == e.back.count && e.front.count >= 2 {
                 for k in 0..<(e.front.count - 1) {
@@ -210,7 +259,30 @@ enum SceneGeometry {
     }
 
     /// Points used to fit the camera (only what the mode shows).
-    static func fitPoints(_ scene: LayoutScene, mode: ViewportMode) -> [SIMD3<Double>] {
-        scene.polylines.filter { mode == .orbit3D || $0.inSection }.flatMap(\.points).map { SIMD3($0.x, $0.y, $0.z) }
+    /// Whether the whole scene is much longer than its lens is high and the
+    /// lens a small part of it (then the lens deserves the first fit).
+    static func isSlim(_ scene: LayoutScene, mode: ViewportMode) -> Bool {
+        let all = fitPoints(scene, mode: mode), lens = fitPoints(scene, mode: mode, lensOnly: true)
+        func extent(_ p: [SIMD3<Double>]) -> (z: Double, h: Double) {
+            guard let z0 = p.map(\.z).min(), let z1 = p.map(\.z).max() else { return (0, 0) }
+            let h = max(p.map { abs($0.y) }.max() ?? 0, p.map { abs($0.x) }.max() ?? 0)
+            return (z1 - z0, 2 * h)
+        }
+        let a = extent(all), l = extent(lens)
+        return a.h > 0 && a.z > 12 * a.h && l.z * 5 < a.z
+    }
+
+    static func fitPoints(_ scene: LayoutScene, mode: ViewportMode, lensOnly: Bool = false) -> [SIMD3<Double>] {
+        let lens: (LayoutScene.Polyline) -> Bool = { ![.ray, .axis, .imagePlane].contains($0.kind) }
+        let lines = scene.polylines.filter { (mode == .orbit3D || $0.inSection) && (!lensOnly || lens($0)) }
+        var pts = lines.flatMap(\.points).map { SIMD3($0.x, $0.y, $0.z) }
+        if pts.isEmpty && lensOnly { return fitPoints(scene, mode: mode) }
+        // The lens with room for the rays around it.
+        if lensOnly, let z0 = pts.map(\.z).min(), let z1 = pts.map(\.z).max() {
+            let h = pts.map { max(abs($0.x), abs($0.y)) }.max() ?? 0
+            let m = 0.6 * max(z1 - z0, 2 * h)
+            pts += [SIMD3(0, 0, z0 - m), SIMD3(0, 0, z1 + m), SIMD3(0, 1.3 * h, z0), SIMD3(0, -1.3 * h, z0)]
+        }
+        return pts
     }
 }

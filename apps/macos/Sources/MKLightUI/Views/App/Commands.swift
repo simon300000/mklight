@@ -75,6 +75,8 @@ struct MKLightCommands: Commands {
             Group {
             Button("Optimize…") { actions?.designJob(.optimize) }
                 .keyboardShortcut("o", modifiers: [.command, .control])
+            Button("Glass Substitution…") { actions?.designJob(.glass) }
+                .keyboardShortcut("g", modifiers: [.command, .control])
             Button("Tolerance…") { actions?.designJob(.tolerance) }
                 .keyboardShortcut("t", modifiers: [.command, .control])
             Button("Apply Solves…") { actions?.designJob(.solves) }
@@ -113,6 +115,8 @@ struct MKLightCommands: Commands {
                 .keyboardShortcut("l", modifiers: [.command, .option])
             Button("Section View") { actions?.setMode(.section2D) }
                 .keyboardShortcut("2", modifiers: [.command])
+            Button("X–Z Section") { actions?.setMode(.sectionXZ) }
+                .keyboardShortcut("2", modifiers: [.command, .option])
             Button("3D View") { actions?.setMode(.orbit3D) }
                 .keyboardShortcut("3", modifiers: [.command])
             Button("Fit Layout") { actions?.fit() }

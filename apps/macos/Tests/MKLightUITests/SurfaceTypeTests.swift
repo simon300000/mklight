@@ -155,10 +155,4 @@ import Testing
         let q = LensRow.rows(for: s)[1]
         #expect(q.editable.contains(.radius) && !q.editable.contains(.conic))
     }
-
-    @Test func anamorphicFirstOrderReadsWhatTheEngineReports() {
-        #expect(AnamorphicFirstOrder(.object(["entries": .array([])])) == nil, "today's first_order has no x data")
-        let future: JSONValue = .object(["paraxial_xy": .object(["efl_x": .number(50), "efl_y": .number(100)])])
-        #expect(AnamorphicFirstOrder(future)?.squeeze == 2)
-    }
 }

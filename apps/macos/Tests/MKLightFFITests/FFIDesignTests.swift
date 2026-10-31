@@ -135,3 +135,105 @@ import Testing
         #expect(abs((doc.system.value(at: back) ?? 0) - solved) < 1e-9)
     }
 }
+
+extension FFIDesignTests {
+    /// The field maps, the glass map and the image simulation read the
+    /// real engine's results, and their key numbers are sane.
+    @Test func mapViewsReadEngineResults() async throws {
+        let e = try engine()
+        func run(_ sample: String, _ analysis: String, _ settings: [String: JSONValue] = [:]) async throws -> AnalysisOutput {
+            let snap = try await e.openSnapshot(try #require(SampleSystems.bundled(sample)))
+            return try await e.submit(EngineAnalysisRequest(analysis: analysis, settings: settings), on: snap).result()
+        }
+        func keys(_ analysis: String, _ out: AnalysisOutput) -> [String: String] {
+            Dictionary(
+                AnalysisResultView.keyNumbers(analysis: analysis, output: out, context: AnalysisContext()).map { ($0.label, $0.value) },
+                uniquingKeysWith: { a, _ in a })
+        }
+
+        // Pupil aberration: a 5 × 5 map on three samples, and a y sweep.
+        for sample in ["cooke_triplet", "double_gauss", "anamorphic"] {
+            let out = try await run(sample, "pupil_aberration")
+            #expect(PupilAberrationView(output: out) != nil, "\(sample)")
+            let d = try #require(FieldMapData(output: out))
+            #expect(d.layout == .map && d.nx == 5 && d.ny == 5)
+            let x = try #require(d.columnIndex("stop_error_x"))
+            #expect(abs(d.value(12, x)) < 1e-9, "no stop error on axis")
+            #expect(keys("pupil_aberration", out)["Max stop error"] != nil)
+        }
+        let sweep = try #require(
+            FieldMapData(output: try await run("cooke_triplet", "pupil_aberration", ["mode": .string("y"), "grid": .array([.integer(5), .integer(9)])])))
+        #expect(sweep.layout == .sweepY && sweep.count == 9)
+        #expect(sweep.sweep(0).map(\.0) == [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1])
+
+        // Relative illumination: 1 on axis, falling off, rotationally symmetric.
+        let ri = try await run("double_gauss", "relative_illumination_map", ["grid": .array([.integer(7), .integer(7)])])
+        #expect(RelativeIlluminationMapView(output: ri) != nil)
+        let rd = try #require(FieldMapData(output: ri))
+        let c = try #require(rd.columnIndex("relative_illumination"))
+        let range = try #require(rd.range(c))
+        #expect(abs(range.upperBound - 1) < 1e-6 && range.lowerBound > 0.3 && range.lowerBound < 1)
+        #expect(rd.isRadial(c, tolerance: 1e-2))
+        #expect(!Contours.illuminationLevels(in: range).isEmpty)
+        #expect(Contours.illuminationLevels(in: range).allSatisfy { !Contours.segments(rd.grid(c), level: $0).isEmpty })
+        #expect(keys("relative_illumination_map", ri)["Min RI"] == String(format: "%.3f", range.lowerBound))
+
+        // Chief ray angle against a sensor limit the corner exceeds.
+        let limit: JSONValue = .array([.array([.number(0), .number(5)]), .array([.number(20), .number(24)])])
+        let cra = try await run("cooke_triplet", "chief_ray_angle", ["sensor_limit": limit])
+        #expect(ChiefRayAngleView(output: cra) != nil)
+        let cd = try #require(FieldMapData(output: cra))
+        let inc = try #require(cd.columnIndex("incidence")), margin = try #require(cd.columnIndex("margin"))
+        #expect(abs(cd.value(12, inc)) < 1e-9 && abs(cd.value(12, margin) - 5) < 1e-9)
+        let worst = try #require(cd.argmax(inc))
+        #expect(cd.value(worst, inc) > 10 && cd.value(worst, inc) < 45)
+        #expect(abs(cd.value(worst, margin) - (FieldMapData.limit(FieldMapData.sensorLimit(limit), at: cd.imageRadius[worst]) - cd.value(worst, inc))) < 1e-9)
+        #expect(cd.isRadial(inc))
+        let curve = cd.radial(inc)
+        #expect(ChiefRayAngleView.bands(curve: curve, limit: FieldMapData.sensorLimit(limit)).contains { $0.violated })
+        let ck = keys("chief_ray_angle", cra)
+        #expect(ck["Max CRA"] != nil && ck["Min margin"]?.hasPrefix("-") == true)
+        // The anamorphic sample is not rotationally symmetric: shown as a map.
+        let ana = try #require(FieldMapData(output: try await run("anamorphic", "chief_ray_angle")))
+        #expect(!ana.isRadial(try #require(ana.columnIndex("incidence"))))
+
+        // Glass map of the built-in catalogue with the design's glasses.
+        let gm = try await run("double_gauss", "glass_map")
+        #expect(GlassMapView(output: gm, context: AnalysisContext()) != nil)
+        let g = try #require(GlassMapData(output: gm))
+        #expect(g.glasses.count >= 10)
+        #expect(g.glasses.allSatisfy { $0.nd > 1.3 && $0.nd < 2.2 && $0.vd > 15 && $0.vd < 100 })
+        let sk16 = try #require(g.glasses.first { $0.name == "N-SK16" })
+        let f2 = try #require(g.glasses.first { $0.name == "F2" })
+        #expect(sk16.surfaces == [1, 3, 8, 10] && f2.surfaces == [4, 7])
+        #expect(Set(g.designHighlights.map(\.id)) == [sk16.id, f2.id])
+        #expect(abs(f2.deltaPgF) < 0.005, "F2 defines the normal line")
+        #expect(keys("glass_map", gm)["In design"] == "2")
+
+        // Image simulation of the default grid pattern.
+        let sim = try await run("cooke_triplet", "image_simulation")
+        #expect(ImageSimulationView(output: sim) != nil)
+        let s = try #require(ImageSimulationData(output: sim))
+        #expect(s.image.width == 64 && s.image.height == 64 && s.image.channels == 1)
+        #expect(s.nodes.count == s.fieldGrid * s.fieldGrid && s.pixelSize.x > 0)
+        #expect(s.source == .pattern("grid") && s.sourceImage?.width == 64)
+        #expect(keys("image_simulation", sim).count == 3)
+        // An imported buffer, bright in its upper half (row 0 is the low-y
+        // edge): the image keeps that orientation, and the run's settings
+        // carry the samples the source view shows.
+        let w = 32, h = 32
+        let samples: [Double] = (0..<(w * h)).map { k -> Double in k / w >= h / 2 ? 1 : 0.05 }
+        let src = LinearImage(width: w, height: h, channels: 1, data: samples)
+        let size: JSONValue = .array([.integer(32), .integer(32)])
+        let imported = try await run("cooke_triplet", "image_simulation", ["source": src.sourceJSON, "size": size])
+        let id = try #require(ImageSimulationData(output: imported))
+        #expect(id.source == ImageSimulationData.Source.buffer(src))
+        let out = id.image.data
+        func mean(_ rows: Range<Int>) -> Double {
+            var total = 0.0
+            for y in rows { for x in 0..<w { total += out[y * w + x] } }
+            return total / Double(rows.count * w)
+        }
+        #expect(mean(20..<30) > 3 * mean(2..<12), "high rows are the bright upper half")
+    }
+}

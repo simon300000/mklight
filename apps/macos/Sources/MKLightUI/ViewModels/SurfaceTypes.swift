@@ -109,6 +109,9 @@ public struct SurfaceTypeDescriptor: Identifiable, Sendable {
     /// Placement (decenters, tilts) is the type's main content.
     public var placementFirst = false
     public var preview = ShapePreviewKind.radial
+    /// The surface's diffraction order efficiency model (ideal, kinoform,
+    /// multilevel) applies: a property of the surface, not of its shape.
+    public var orderEfficiency = false
 }
 
 /// An entry of the type menus: a model type, or a preset of one (a
@@ -370,7 +373,7 @@ public enum SurfaceTypes {
                     ],
                     footer: "Orders are discrete and never optimisation variables."),
             ],
-            preview: .diffractive),
+            preview: .diffractive, orderEfficiency: true),
         SurfaceTypeDescriptor(
             id: "paraxial", kind: .paraxial, title: "Ideal Lens", symbol: "lines.measurement.horizontal", group: .special,
             summary: "A thin, aberration-free lens of the given focal length.",

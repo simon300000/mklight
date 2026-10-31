@@ -23,7 +23,7 @@ and uses its SwiftUI APIs without availability checks (docs/APP.md,
 
 | target | contents |
 |---|---|
-| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius. Every surface shape of `docs/SURFACES.md` is mirrored (odd asphere, Q-con/Q-bfs, diffractive on a plane/conic/even-asphere base, toroid, biconic with its cylinder preset, XY polynomial, Zernike sag), with the `shape_coefficient`/`shape_param` parameter paths, their limits and term numbering (`CoefficientSet`, `ShapeParameter`, `XYTerm`, `ZernikeTerm`), checked against `extended_shapes.json`. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
+| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius, and every surface field (including the DOE order-efficiency model `diffraction_efficiency`: ideal, kinoform, multilevel N). Every surface shape of `docs/SURFACES.md` is mirrored (odd asphere, Q-con/Q-bfs, diffractive on a plane/conic/even-asphere base, toroid, biconic with its cylinder preset, XY polynomial, Zernike sag), with the `shape_coefficient`/`shape_param` parameter paths, their limits and term numbering (`CoefficientSet`, `ShapeParameter`, `XYTerm`, `ZernikeTerm`), checked against `extended_shapes.json`. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; plus errors for values JSON cannot carry and warnings for mechanics on missing surfaces), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
 | `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests and settings, result types, `RunInfo`, the `AnalysisJob` handle and `MockEngine`. |
 | `MKLightUI` | The document app. `Document/` (`ProjectDocument` file adapter, `DesignDocument` design state with undo), `ViewModels/` (`Workspace` snapshots and panes, `AnalysisPane`, `WindowState` and the saved `WorkspaceLayout`, `LensTable`, the data-driven `SurfaceTypes` and the display sags of their previews (`ShapeSag`), design-job sessions, result readers; platform-neutral), `Views/` (window, toolbar status, sidebar, lens table, inspectors with shape previews, analysis panes and dedicated plots in Swift Charts, design-job inspector panels, welcome window with layout thumbnails), `Viewport/` (Metal renderer, engine layout reader, NS/UIViewRepresentable wrappers), `Support/` (palette, parsers, platform adapters). See docs/APP.md for the design. |
 | `CMKLight` | System-library module over `crates/mklight-ffi/include/mklight.h`; present only when `Frameworks/libmklight_ffi.a` exists. |
@@ -132,7 +132,10 @@ settings change.
 `{"format": "mklight-project", "schema_version": 1, "metadata", "system",
 "catalogs", "views", "merit", "variables", "tolerances"}`. The app edits the
 system and the catalog list and keeps every other section, including
-unknown keys, verbatim. The system is decoded strictly, like the engine's
+unknown keys, verbatim. It also writes `merit` (the merit editor's
+default-generator settings or custom operands as an engine
+`MeritFunctionSpec`, plus the EFL hold) and `variables` (`VariableSpec`s
+with their bounds); both are undoable design changes. The system is decoded strictly, like the engine's
 model: an unknown field in it is an error rather than silently dropped. Bare `OpticalSystem` JSON and the app's early
 `{"format", "version": 1, "system"}` files open too (as the engine's
 version-0 migration does); newer schema versions are refused. The exported
@@ -154,8 +157,9 @@ surface inspector, built from `SurfaceTypes` descriptors.
   dimmed with the engine's computed value). The material column accepts
   glass names (completed from the session's catalogs), `AIR`, `MIRROR`,
   `DUMMY`, `nd/vd`, `n=…` and `CATALOG:NAME`.
-* Inline markers: `V` for a variable, a letter for the solve controlling
-  the value; validation issues badge the surface number.
+* Inline markers: `V` for a variable (a small bar under it when it has
+  bounds, a dot when it is pinned by equal bounds), a letter for the solve
+  controlling the value; validation issues badge the surface number.
 * ⇧⌘I / ⌥⌘I insert, ⌘⌫ deletes, ⇧⌘T makes the stop, ⌃⌘V toggles the
   focused value's variable; the same commands are in the header buttons,
   the context menu and the Lens menu.
@@ -168,15 +172,24 @@ handling differs). The scene is the engine's `layout` result
 (`EngineLayout` reads its buffers). It draws on
 demand only, with 4× MSAA. Polylines become instanced screen-space quads with
 analytic anti-aliasing and round caps. Lens elements get translucent glass
-fills in the section view. There are two modes:
+fills in the section view. The engine draws every surface type. There are
+three modes:
 
 * the y-z section (2-D);
+* the x-z section (2-D, offered for designs without rotational symmetry;
+  the layout's `section` setting follows the mode, ⌥⌘2);
 * an orthographic 3-D orbit view, which adds sagittal profiles, rims and
-  skew rays.
+  skew rays, and optionally the engine's triangulated surface mesh
+  (`mesh_rings`, flat shaded) and the beam footprint of every field on
+  every surface (the `footprint` analysis' global outlines, filled
+  translucently in the field colours).
 
-Controls are drag (pan or orbit), scroll or pinch to zoom about the cursor,
-and double-click (or ⌘0) to fit. Rays are coloured by field or by
-wavelength.
+DOE surfaces carry a fine violet hatch (layout flag bit 2). Controls are
+drag (pan or orbit), scroll or pinch to zoom about the cursor, and
+double-click (or ⌘0) to fit; Fit Lens frames the elements only, and the
+first fit of a slim, long scene does so by itself. Rays are coloured by
+field or by wavelength. A previewed candidate design (optimisation or
+glass substitution) is labelled under the controls.
 
 Precision: positions are transformed in double precision before rounding to
 float, and the view matrix is built in double precision. A float32 vertex at

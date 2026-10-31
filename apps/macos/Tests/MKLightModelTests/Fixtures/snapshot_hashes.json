@@ -1,7 +1,7 @@
 {
-  "cooke_triplet.json": "b7a3f3dd4659107fba71cdd2dd495ac5819031a0f5e4bd68586a8c45505af1bf",
-  "empty.json": "1a1476b6d8ab2de6883dbfc2cc784abf296f0807e79a4b56ab5f70379612a5ff",
-  "extended_shapes.json": "9321036d6b4957460d332134c5c8108e2a2c10d65ce983c2a92ba37a5af79fcb",
-  "kitchen_sink.json": "a72ea5ea15d9d166aa2cb2b7cc1bdf109947b5b4c695f96830800f3c5fe3f71a",
-  "solved_triplet.json": "b793bb153e09bd8e09b1cae8ef9c4a38354995a20ef91c76485915d1f643e12c"
+  "cooke_triplet.json": "66e1efd1f0f3a439bde1973b79c165b742ad96163613c7929c8c7ddaa604bc7b",
+  "empty.json": "b02421f830a9b336d74c8618e0e857d613b6bac5842aa5841464b79c356eb3ff",
+  "extended_shapes.json": "695fa89c1e3ed2bed3093c9ba2aec7dc37324f0b1e3edf52ccac0ab1e2a3e487",
+  "kitchen_sink.json": "58d888970e08c768a53aa0de1185356d8754be95686db8ed2c80eef6aab2ade7",
+  "solved_triplet.json": "bd85598e54fb9322b44bfbc4576da91ffee4357b6a76cec042b4c04923a0fadf"
 }

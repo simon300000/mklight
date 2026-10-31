@@ -53,13 +53,16 @@ public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
 
 /// A small inline marker next to a value: variable, or controlled by a solve.
 public struct CellMarker: Equatable, Sendable {
+    public enum Bounds: Sendable, Equatable { case free, bounded, pinned }
     public var isVariable = false
+    /// A variable's bounds: none, a range, or pinned (equal bounds).
+    public var bounds = Bounds.free
     /// Short letter of the solve kind (`M` marginal, `C` chief, `F` F/#,
     /// `P` pickup, …) and its title.
     public var solve: (letter: String, title: String)?
 
     public static func == (a: CellMarker, b: CellMarker) -> Bool {
-        a.isVariable == b.isVariable && a.solve?.letter == b.solve?.letter && a.solve?.title == b.solve?.title
+        a.isVariable == b.isVariable && a.bounds == b.bounds && a.solve?.letter == b.solve?.letter && a.solve?.title == b.solve?.title
     }
     public var isEmpty: Bool { !isVariable && solve == nil }
 }
@@ -97,7 +100,8 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     public func text(_ c: LensColumn) -> String { c == .surface ? surfaceText : c == .type ? typeTitle : cells[c] ?? "" }
 
     public static func rows(
-        for s: OpticalSystem, autoSemiDiameters: [SurfaceID: Double] = [:], variables: Set<ParamPath> = []
+        for s: OpticalSystem, autoSemiDiameters: [SurfaceID: Double] = [:], variables: Set<ParamPath> = [],
+        bounds: [ParamPath: CellMarker.Bounds] = [:]
     ) -> [LensRow] {
         let solves = Dictionary(s.solves.map { ($0.target, $0.kind.kind) }, uniquingKeysWith: { a, _ in a })
         return s.surfaces.enumerated().map { i, sf in
@@ -151,6 +155,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
             for c in LensColumn.allCases {
                 guard let p = c.param(for: sf) else { continue }
                 var m = CellMarker(isVariable: variables.contains(p))
+                if m.isVariable { m.bounds = bounds[p] ?? .free }
                 if let k = solves[p] { m.solve = (k.letter, k.title) }
                 if c == .radius, let k = solves[.paraxialFocalLength(surface: sf.id)] { m.solve = (k.letter, k.title) }
                 if !m.isEmpty { markers[c] = m }

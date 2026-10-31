@@ -13,6 +13,8 @@ enum ViewportMath {
     static func rotation(_ camera: ViewportCamera, mode: ViewportMode) -> simd_double3x3 {
         // Columns are the images of world x, y, z: x → −view z, y → view y, z → view x.
         let basis = simd_double3x3(columns: (SIMD3(0, 0, -1), SIMD3(0, 1, 0), SIMD3(1, 0, 0)))
+        // The x–z section: world z to the right, world x up, world y towards the viewer.
+        if mode == .sectionXZ { return simd_double3x3(columns: (SIMD3(0, 1, 0), SIMD3(0, 0, 1), SIMD3(1, 0, 0))) }
         guard mode == .orbit3D else { return basis }
         let (cy, sy) = (cos(camera.yaw), sin(camera.yaw))
         let (cp, sp) = (cos(camera.pitch), sin(camera.pitch))
