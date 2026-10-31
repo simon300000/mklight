@@ -24,7 +24,7 @@ fn all_samples_both_libraries() {
     for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
         let gpu = backend(library);
         let cpu = CpuF32Backend::matching(&gpu.precision().probe);
-        for (name, model) in samples::all() {
+        for (name, model) in testutil::xval_systems().into_iter().take(32) {
             for aiming in [RayAiming::Off, RayAiming::Real { tolerance: 1e-10 }] {
                 let mut model = model.clone();
                 model.ray_aiming = aiming;
@@ -190,12 +190,16 @@ fn fixtures_failures_and_cancellation() {
         let progress = ctx.progress.fraction();
         assert!(progress >= last);
         last = progress;
-        if progress > 0.04 {
+        if progress > 0.1 {
             break;
         }
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
+    assert!(
+        last < 0.5,
+        "cancellation must occur during pupil generation"
+    );
     let cancel = Instant::now();
     ctx.cancel.cancel();
     assert!(matches!(

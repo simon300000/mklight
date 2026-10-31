@@ -9,7 +9,7 @@ fn reference_all_samples() {
     let cpu = CpuF32Backend::new();
     let mut points = vec![[0., 0.]];
     points.extend((PupilSampling::Grid { n: 7 }).points());
-    for (name, model) in samples::all() {
+    for (name, model) in testutil::xval_systems().into_iter().take(32) {
         for aiming in [RayAiming::Off, RayAiming::Real { tolerance: 1e-10 }] {
             let mut model = model.clone();
             model.ray_aiming = aiming;
