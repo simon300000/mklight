@@ -175,7 +175,22 @@ struct OptimizePanel: View {
             actions
         }
         .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: phase)
-        .onAppear(perform: autoRun)
+        .onAppear {
+            session.load(design)
+            autoRun()
+        }
+        .onChange(of: design.revision) { _, _ in session.load(design) }
+        .onChange(of: design.merit) { _, _ in session.load(design) }
+        .task(id: evaluationKey) {
+            session.load(design)
+            if case .setup = session.state { session.scheduleEvaluation(in: workspace, variables: design.variables) }
+        }
+    }
+
+    /// Re-evaluates the merit when the design, its merit, the variables or
+    /// the engine snapshot change.
+    private var evaluationKey: [AnyHashable] {
+        [design.revision, design.merit, design.variables, workspace.designSnapshot?.hash.hex ?? "", session.useDesignVariables, phase]
     }
 
     /// A key for the morphing animation.
@@ -192,22 +207,8 @@ struct OptimizePanel: View {
 
     private var setup: some View {
         VStack(alignment: .leading, spacing: Space.l) {
-            GroupBox("Merit Function") {
-                VStack(alignment: .leading, spacing: Space.s) {
-                    Picker("Criterion", selection: $session.criterion) {
-                        ForEach(OptimizeSession.criteria, id: \.id) { Text($0.title).tag($0.id) }
-                    }
-                    Stepper("Pupil rings: \(session.rings)", value: $session.rings, in: 1...12)
-                    Stepper("Pupil arms: \(session.arms)", value: $session.arms, in: 3...24)
-                    Toggle("Hold the focal length", isOn: $session.holdEFL)
-                    Text(
-                        "The default merit: \(session.criterion == "rms_spot" ? "RMS spot radius" : "RMS wavefront") over every field and wavelength by their weights, with glass and air thickness boundaries."
-                    )
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(Space.xs)
-            }
-            GroupBox("Variables") {
+            MeritFunctionSection(design: design, workspace: workspace, session: session)
+            GroupBox {
                 VStack(alignment: .leading, spacing: Space.s) {
                     Picker("Vary", selection: $session.useDesignVariables) {
                         Text("Design variables (\(design.variables.count))").tag(true)
@@ -217,19 +218,18 @@ struct OptimizePanel: View {
                     .labelsHidden()
                     .disabled(design.variables.isEmpty)
                     if session.useDesignVariables && !design.variables.isEmpty {
-                        FlowLayout(spacing: Space.xs, lineSpacing: Space.xs) {
-                            ForEach(design.variables.map { $0.param.label(in: design.system) }, id: \.self) { label in
-                                Text(label).font(.caption)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(.tint.opacity(0.12), in: Capsule())
-                            }
-                        }
+                        VariablesBoundsList(design: design, workspace: workspace)
                     } else if design.variables.isEmpty {
-                        Text("Mark values with V in the lens data or the inspector to choose them.")
+                        Text("Mark values with V in the lens data or the inspector to choose them; each gets sensible bounds you can edit here.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let why = session.variableProblem(design.variables) {
+                        Label(why, systemImage: "pin.fill").font(.caption).foregroundStyle(.orange)
                     }
                 }
                 .padding(Space.xs)
+            } label: {
+                Text("Variables")
             }
             GroupBox("Algorithm") {
                 VStack(alignment: .leading, spacing: Space.s) {
@@ -351,7 +351,7 @@ struct OptimizePanel: View {
                 session.start(in: workspace, variables: design.variables)
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(blocked)
+            .disabled(blocked || session.variableProblem(design.variables) != nil)
         case .running(let p):
             GlassProgress(progress: p, detail: session.trace.last.map { "Iteration \($0.iteration)" } ?? "", namespace: glass)
             GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }

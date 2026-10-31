@@ -433,7 +433,7 @@ public final class Workspace {
 
     /// Starts a design job (`optimize`, `tolerance`, `solves`) on the
     /// current snapshot. It does not belong to a pane.
-    public func submitJob(_ analysis: String, settings: [String: JSONValue]) throws -> AnalysisJob {
+    public func submitJob(_ analysis: String, settings: [String: JSONValue], key: String? = nil) throws -> AnalysisJob {
         // Jobs run on the design, also while a candidate is previewed.
         guard let snapshot = isPreviewing ? designSnapshot : snapshot, modelErrors.isEmpty else {
             throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
@@ -444,7 +444,7 @@ public final class Workspace {
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)),
             on: snapshot)
-        liveJobs.set("job:" + analysis, job)
+        liveJobs.set("job:" + (key ?? analysis), job)
         return job
     }
 

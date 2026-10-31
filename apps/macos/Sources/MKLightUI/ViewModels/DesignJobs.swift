@@ -37,19 +37,23 @@ public final class OptimizeSession {
         ("lm", "Damped least squares (LM)"), ("dogleg", "Trust region (dogleg)"), ("de", "Differential evolution"),
         ("cma_es", "CMA-ES"), ("nelder_mead", "Nelder–Mead"), ("hammer", "Basin hopping"),
     ]
-    public static let criteria: [(id: String, title: String)] = [("rms_spot", "RMS spot radius"), ("wavefront", "RMS wavefront")]
-
     public var algorithm = "lm"
     /// `nil`: the algorithm's default.
     public var maxIterations: Int?
     public var seed = 0
-    public var holdEFL = true
-    public var criterion = "rms_spot"
-    public var rings = 3
-    public var arms = 6
     /// Use the design's variables (else the engine's automatic set: every
     /// curvature and the back focus).
     public var useDesignVariables = true
+    /// The merit function being edited: a working copy of the document's
+    /// `merit` section whose operands keep their identity while edited.
+    public private(set) var merit = MeritSettings()
+    /// The merit and every operand at the current design.
+    public private(set) var evaluation: MeritEvaluation?
+    public private(set) var evaluating = false
+    public private(set) var evaluationError: String?
+    @ObservationIgnored private var evaluationJob: AnalysisJob?
+    @ObservationIgnored private var evaluationTask: Task<Void, Never>?
+    @ObservationIgnored private var evaluatedKey: JSONValue?
 
     public private(set) var state = JobState.setup
     public private(set) var trace: [MeritPoint] = []
@@ -65,19 +69,128 @@ public final class OptimizeSession {
     public var canStop: Bool { isRunning && (job?.canStop ?? false) }
 
     public func settings(variables: [DesignVariable]) -> [String: JSONValue] {
-        var s: [String: JSONValue] = [
-            "algorithm": .string(algorithm), "seed": .integer(Int64(seed)), "hold_efl": .bool(holdEFL),
-            "default_merit": .object([
-                "criterion": .object(["type": .string(criterion)]),
-                "sampling": .object(["rings": .integer(Int64(rings)), "arms": .integer(Int64(arms))]),
-            ]),
-        ]
+        var s: [String: JSONValue] = ["algorithm": .string(algorithm), "seed": .integer(Int64(seed))]
+        s.merge(merit.jobSettings) { _, b in b }
         if let maxIterations { s["max_iterations"] = .integer(Int64(maxIterations)) }
-        if useDesignVariables, !variables.isEmpty { s["variables"] = (try? JSONValue.from(variables)) ?? .array([]) }
+        if let v = Self.variableSettings(variables, useDesign: useDesignVariables) { s["variables"] = v }
         return s
     }
 
+    /// The `variables` setting: the design's variables without the pinned
+    /// ones (equal bounds hold them), or `nil` for the engine's automatic set.
+    static func variableSettings(_ variables: [DesignVariable], useDesign: Bool) -> JSONValue? {
+        let free = variables.filter { !$0.isPinned }
+        guard useDesign, !free.isEmpty else { return nil }
+        return (try? JSONValue.from(free)) ?? .array([])
+    }
+
+    /// Why the run cannot start with these variables, if it cannot.
+    public func variableProblem(_ variables: [DesignVariable]) -> String? {
+        guard useDesignVariables, !variables.isEmpty, variables.allSatisfy(\.isPinned) else { return nil }
+        return "Every variable is pinned. Unpin one, or vary the automatic set."
+    }
+
+    // MARK: Merit function
+
+    /// Takes the document's merit function when it changed outside the
+    /// editor (open, undo, redo).
+    public func load(_ document: DesignDocument) {
+        let m = document.merit
+        if m != merit { merit = m }
+    }
+
+    /// Applies an edit to the merit function as one undoable step.
+    public func editMerit(_ document: DesignDocument, _ actionName: String, undoManager: UndoManager?, _ change: (inout MeritSettings) -> Void) {
+        load(document)
+        var next = merit
+        change(&next)
+        merit = next
+        document.setMerit(next, actionName: actionName, undoManager: undoManager)
+    }
+
+    /// The settings of a cheap evaluation: one LM iteration, whose `start`
+    /// values are the design's merit and operands (the engine has no
+    /// evaluate-only call).
+    func evaluationSettings(variables: [DesignVariable]) -> [String: JSONValue] {
+        var s = merit.jobSettings
+        s["algorithm"] = .string("lm")
+        s["max_iterations"] = .integer(1)
+        if let v = Self.variableSettings(variables, useDesign: useDesignVariables) { s["variables"] = v }
+        return s
+    }
+
+    /// Evaluates the merit at the current design, after a short pause, unless
+    /// the same design and merit were evaluated already.
+    public func scheduleEvaluation(in workspace: Workspace, variables: [DesignVariable], delay: Duration = .milliseconds(350)) {
+        guard !isRunning, let snap = workspace.designSnapshot ?? workspace.snapshot else { return }
+        let s = evaluationSettings(variables: variables)
+        let key = JSONValue.object(["settings": .object(s), "snapshot": .string(snap.hash.hex)])
+        guard key != evaluatedKey else { return }
+        evaluationTask?.cancel()
+        evaluationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            await self.evaluate(in: workspace, settings: s, key: key)
+        }
+    }
+
+    func evaluate(in workspace: Workspace, settings s: [String: JSONValue], key: JSONValue) async {
+        evaluationJob?.cancel()
+        evaluating = true
+        do {
+            let job = try workspace.submitJob("optimize", settings: s, key: "merit-evaluation")
+            evaluationJob = job
+            let out = try await job.result()
+            guard evaluationJob === job else { return }
+            evaluation = MeritEvaluation(json: out.json)
+            evaluatedKey = key
+            evaluationError = nil
+            evaluating = false
+        } catch EngineError.cancelled {
+            // A newer evaluation replaced it.
+        } catch {
+            evaluationError = error.localizedDescription
+            evaluatedKey = key
+            evaluating = false
+        }
+    }
+
+    /// Replaces the default merit by the operands the engine generates for
+    /// it, so they can be edited (one undoable step).
+    public func convertToCustom(in workspace: Workspace, document: DesignDocument, variables: [DesignVariable], undoManager: UndoManager?) async {
+        load(document)
+        var spec = evaluation?.specOperands ?? []
+        if spec.isEmpty || evaluatedKey == nil {
+            var defaults = merit
+            defaults.mode = .default
+            let saved = merit
+            merit = defaults
+            let s = evaluationSettings(variables: variables)
+            merit = saved
+            evaluating = true
+            defer { evaluating = false }
+            do {
+                let out = try await workspace.submitJob("optimize", settings: s, key: "merit-evaluation").result()
+                spec = MeritEvaluation(json: out.json)?.specOperands ?? []
+            } catch {
+                evaluationError = error.localizedDescription
+                return
+            }
+        }
+        guard !spec.isEmpty else {
+            evaluationError = "The engine generated no operands for this design."
+            return
+        }
+        editMerit(document, "Convert Merit to Custom", undoManager: undoManager) {
+            $0.operands = spec
+            $0.mode = .custom
+        }
+    }
+
     public func start(in workspace: Workspace, variables: [DesignVariable]) {
+        evaluationTask?.cancel()
+        evaluationJob?.cancel()
+        evaluating = false
         let s = settings(variables: variables)
         do {
             let job = try workspace.submitJob("optimize", settings: s)

@@ -33,7 +33,8 @@ struct LensTableView: View {
     private var rows: [LensRow] {
         LensRow.rows(
             for: system, autoSemiDiameters: EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output)),
-            variables: Set(design.variables.map(\.param)))
+            variables: Set(design.variables.map(\.param)),
+            bounds: Dictionary(design.variables.map { ($0.param, $0.isPinned ? .pinned : $0.isBounded ? .bounded : .free) }, uniquingKeysWith: { a, _ in a }))
     }
 
     var body: some View {
@@ -344,11 +345,20 @@ struct MarkerBadge: View {
             if marker.isVariable {
                 Text("V")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(marker.bounds == .pinned ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
                     .frame(width: 13, height: 13)
                     .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(.tint.opacity(0.6), lineWidth: 1))
-                    .help("Variable")
-                    .accessibilityLabel("variable")
+                    // A bounded variable: a small bar under the V; pinned: a dot.
+                    .overlay(alignment: .bottom) {
+                        if marker.bounds == .bounded {
+                            Capsule().fill(.tint).frame(width: 7, height: 1.5).offset(y: -1.5)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if marker.bounds == .pinned { Circle().fill(.tint).frame(width: 4, height: 4).offset(x: 1.5, y: -1.5) }
+                    }
+                    .help(marker.bounds == .pinned ? "Variable, pinned (equal bounds)" : marker.bounds == .bounded ? "Variable with bounds" : "Variable")
+                    .accessibilityLabel(marker.bounds == .pinned ? "pinned variable" : marker.bounds == .bounded ? "bounded variable" : "variable")
             }
         }
     }

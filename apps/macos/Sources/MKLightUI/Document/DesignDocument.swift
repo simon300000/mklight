@@ -18,6 +18,38 @@ public struct DesignVariable: Codable, Sendable, Hashable {
         self.upper = upper
     }
 
+    /// Held at one value (equal bounds): kept as a variable but not varied.
+    public var isPinned: Bool { lower != nil && lower == upper }
+    public var isBounded: Bool { lower != nil || upper != nil }
+
+    /// Whether `value` violates the bounds.
+    public func outOfBounds(_ value: Double) -> Bool {
+        (lower.map { value < $0 - 1e-12 } ?? false) || (upper.map { value > $0 + 1e-12 } ?? false)
+    }
+
+    /// Sensible bounds for a new variable: air gaps stay non-negative,
+    /// glass keeps a minimum centre thickness, model glasses stay in the
+    /// range of real glasses, semi-diameters and normalisation radii stay
+    /// positive. Curvatures, conics and coefficients are left free.
+    public static func defaultBounds(for param: ParamPath, in system: OpticalSystem) -> (lower: Double?, upper: Double?) {
+        switch param {
+        case .thickness(let id):
+            guard let i = system.surfaceIndex(of: id), i > 0, i < system.imageIndex else { return (nil, nil) }
+            let s = system.surfaces[i]
+            if s.isCoordinateBreak { return (nil, nil) }
+            if i == system.imageIndex - 1 { return (0, nil) }
+            return s.material.isAir ? (0, nil) : (glassMinimum, nil)
+        case .semiDiameter: return (0, nil)
+        case .modelNd: return (1.4, 2.1)
+        case .modelVd: return (15, 100)
+        case .shapeParam(_, .normRadius): return (1e-3, nil)
+        default: return (nil, nil)
+        }
+    }
+
+    /// The smallest glass centre thickness a new glass-thickness variable gets.
+    public static let glassMinimum = 1.0
+
     private enum CodingKeys: String, CodingKey { case param, lower, upper }
 
     public init(from decoder: any Decoder) throws {
@@ -128,11 +160,38 @@ public final class DesignDocument {
         var list = variables
         if on {
             guard !list.contains(where: { $0.param == path }) else { return }
-            list.append(DesignVariable(path))
+            let b = DesignVariable.defaultBounds(for: path, in: system)
+            list.append(DesignVariable(path, lower: b.lower, upper: b.upper))
         } else {
             list.removeAll { $0.param == path }
         }
         setSectionUndoable("variables", Self.encode(list), actionName: on ? "Make Variable" : "Remove Variable", undoManager: undoManager)
+    }
+
+    /// Sets a variable's bounds (`nil`: unbounded on that side), undoable.
+    public func setBounds(_ path: ParamPath, lower: Double?, upper: Double?, undoManager: UndoManager?) {
+        var list = variables
+        guard let i = list.firstIndex(where: { $0.param == path }) else { return }
+        guard list[i].lower != lower || list[i].upper != upper else { return }
+        let action = lower != nil && lower == upper ? "Pin Variable" : list[i].isPinned ? "Unpin Variable" : "Change Bounds"
+        list[i].lower = lower
+        list[i].upper = upper
+        setSectionUndoable("variables", Self.encode(list), actionName: action, undoManager: undoManager)
+    }
+
+    /// The variable of `path`, if it is one.
+    public func variable(_ path: ParamPath) -> DesignVariable? { variables.first { $0.param == path } }
+
+    // MARK: Merit function
+
+    /// The design's merit function (`merit` section): the default
+    /// generator's settings or custom operands.
+    public var merit: MeritSettings { MeritSettings(section: project.sections["merit"]) }
+
+    /// Replaces the merit function (undoable).
+    public func setMerit(_ value: MeritSettings, actionName: String, undoManager: UndoManager?) {
+        guard value != merit else { return }
+        setSectionUndoable("merit", value.section, actionName: actionName, undoManager: undoManager)
     }
 
     /// Removes every variable (undoable).

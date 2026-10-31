@@ -80,7 +80,7 @@ private struct DesignWindowContent: View {
             .overlay(alignment: .bottom) { toast }
             .inspector(isPresented: $window.showInspector) {
                 InspectorView(design: design, workspace: workspace, window: window)
-                    .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
+                    .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
             }
         }
         .navigationSubtitle(system.name)
