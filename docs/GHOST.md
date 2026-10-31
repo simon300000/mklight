@@ -275,7 +275,7 @@ grid of `pupil_samples²` cell centres over a disc of `overfill` entrance-pupil
 radii around the chief ray's aim point (ghost light may enter outside the
 pupil and still pass the stop after a reflection; the apertures decide).
 Starting rays come from the reference tracer (`SequentialTracer::start_ray`,
-including real ray aiming) and are shared by all paths. Each ray carries
+including real ray aiming). Each ray carries
 `w_f w_λ h²/π` (normalised field and wavelength weights, wavelength weights
 including the sensor's spectral response, `h` the cell size in pupil
 radii), so flux is relative to the flux entering the paraxial entrance
@@ -292,6 +292,17 @@ their own cell areas. The refinement is not a rigorous error bound: raise
 `pupil_samples` to resolve features smaller than a base cell and to check
 convergence. Pixel interiors still use point binning.
 
+Centres and corners lie on an integer lattice of 32 units per base cell;
+`irradiance::pupil` is the one place a lattice point becomes a pupil
+coordinate, so a point has one representation. Per path, a hash map from
+(field, wavelength, lattice point) to the traced result makes every point
+traced once: refinement runs level by level, tracing the level's new centres
+and then its cells' new corners in parallel batches. Neighbouring cells share
+corners, children reuse their parent's centre and corners, and a repeated
+wavelength reuses its probes. The leaves are then read from the map depth
+first, exactly as an uncached recursion would produce them (tested bit for
+bit, together with the traced set equalling the distinct lattice points).
+
 Detected rays are binned into `map_bins` in the image's local x, y, as flux
 per mm², over an explicit `map_half_size` if given, else the model `Sensor`
 rectangle, else the square of the image clear semi-diameter. The primary
@@ -302,84 +313,41 @@ fields of ghost peak/primary peak; meaningful for bins about a pixel and many
 rays per bin); both are 1 for the primary itself. Paths are ranked by `peak_ratio`; the total ghost map is the
 sum of path maps.
 
-Each path/field/wavelength uses a probe cache keyed by integer coordinates
-on the finest lattice (32 units per base cell, including the finest leaf
-centres). Neighbouring cells share corners, and descendants reuse ancestor
-centres and corners. Failed, virtual and outside-source probes are cached
-too. Base starting rays remain shared across paths. Repeated wavelength
-selections reuse the same cache; caches are released when the field finishes.
-
-A coarse array covers base centres and corners; lazily allocated 4 × 4 tiles
-hold finer points. Entries store the on-map/survival classification. Full
-centre outcomes live in contiguous buffers per level. A finer centre lies
-on an odd sublattice, while earlier probes lie on the even sublattice, so
-a corner-only outcome is never needed later as a weighted centre. Centre
-entries retain the buffer level/index for repeated selections.
-
-On dyadic grids every distinct requested lattice point is sampled once.
-On other grids, the old recursive arithmetic can reach the same corner
-with different rounded coordinates. At a boundary these can classify
-differently (for example, Double Gauss at 20² with overfill 1 changes the
-number of zero-flux leaves if they are merged). To preserve exact legacy
-output, each integer lattice key retains separate results for those bitwise
-coordinate variants; each variant is traced once. No floating-point map
-keys or coordinate requantisation are used. A table of coordinate bits only
-selects cache storage: every launch still uses the original recursive
-floating-point coordinates.
-
-Refinement proceeds level by level. Centres retain their original recursive
-floating-point coordinates and are requested before corners. Corners are
-checked in the original x-outer, y-inner order, in four rounds: a cell stops
-requesting corners after its first disagreement. Only cache misses enter
-contiguous rayon batches of at most 16384 probes. Leaves are then collected
-in the original (field, wavelength, base cell, depth-first child) order and
-binned sequentially with compensated sums. Thus caching changes tracing work
-without changing the accumulation order or leaf weights. Tests compare every
-weighted leaf bit-for-bit against the uncached recursive traversal on the
-Double Gauss (including non-dyadic grids), check the distinct probe set and
-trace count against that traversal, and compare complete results with rayon
-pools of 1 and 5 threads.
-The `JobContext` is checked before each refinement level and each registration
-or tracing block of at most 16384 probes. Progress is monotone and ends at 1.
-Results carry `RunInfo` (backend `cpu-f64`, settings of the model and of the
-analysis, no seed: nothing is random).
+Probes are traced with rayon in blocks of up to 16384; leaves are collected
+in the fixed order (field, wavelength, base cell, depth first) and binned
+sequentially with compensated sums, so maps are bit-identical between runs
+and thread counts (tested with rayon pools of 1 and 5 threads).
+The `JobContext` is checked before every block; progress is monotone and
+ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
+and of the analysis, no seed: nothing is random).
 
 ### Probe cache performance
 
-The ignored A/B benchmark compiles the original recursive traversal alongside
-the cache and alternates both in the same process/pool. Probe recording is
-compiled out of the original traversal for timing; both use the same map
-accumulation. Configuration: Double Gauss, 45 two-reflection ghosts plus the
-primary, fields 0 and 2, wavelength 1, overfill 1.5, default 64² map/bounds,
-path maps retained; macOS arm64, CPU f64, release profile, five Rayon threads.
-Medians of five runs per variant after one warm-up each:
+Double Gauss, 45 two-reflection ghosts plus the primary, fields 0 and 2,
+wavelength 1, overfill 1.5, 64² map, path maps kept; macOS arm64, release,
+five rayon threads; median of seven runs after a warm-up
+(`tests/bench.rs`):
 
-| pupil grid | original recursion (ms) | cached (ms) | speedup |
-|---|---:|---:|---:|
-| 20² | 181.293 | 278.344 | 0.65× |
-| 48² | 421.073 | 350.543 | 1.20× |
-| 128² | 1480.135 | 1006.449 | 1.47× |
-
-The 20² workload regresses by 54%; latency still depends on grid size and
-includes the cost of retaining non-dyadic rounding variants. These gains do
-not establish recovery of the reported pre-refinement performance.
-The independent probe-count regression (12², field 0, wavelength 1, path
-`[9,7]`, ±12 mm map) reduces 8491 evaluations to exactly 4645 distinct lattice
-points. Complete result JSON, except run start time and duration, matches the
-uncached traversal, including repeated wavelengths and the rounding-boundary
-case above. Weighted leaf bits and thread-count determinism are checked too.
+| pupil grid | probes before | probes cached | before (ms) | cached (ms) |
+|---|---:|---:|---:|---:|
+| 20² | 578,242 | 305,537 | 192 | 123 |
+| 48² | 1,908,374 | 946,211 | 439 | 273 |
+| 128² | 8,909,468 | 4,070,403 | 1552 | 914 |
 
 ```sh
-source ~/.cargo/env
-RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --lib bench_double_gauss_cached_vs_uncached -- --ignored --nocapture --test-threads=1
-```
-
-`tests/bench.rs` also provides a standalone current-implementation benchmark:
-
-```sh
-source ~/.cargo/env
 RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --test bench -- --ignored --nocapture
 ```
+
+Lattice coordinates round differently from the former recursive
+`p ± half` arithmetic. Against it, on the Double Gauss (20², 48², 128²;
+21² at overfill 1.3), Cooke triplet, Petzval and finite relay, totals,
+per-path and per-field flux, peaks, ratios, centroids, RMS radii and every
+map bin (relative to the map's peak) agree within 1e-12 relative; dyadic
+grids are bit-identical. The exception is a probe exactly on the sampled
+rim: at overfill 1 such points lie on the entrance-pupil edge, where an
+ulp decides whether a ray passes. Double Gauss at 20², overfill 1, changed
+by up to 1e-6 relative in on-map flux, peaks and map bins, and by up to 2e-4
+in a weak field's off-map flux and RMS radius.
 
 ### High-reflectance discrepancy: pupil quadrature, not transport
 
@@ -423,10 +391,9 @@ cargo test --release -p mklight-stray --test partition high_reflectance_ghost_fl
 
 ## 6. GPU port: per-ray kernel interface
 
-The work is independent rays indexed `(path, field, wavelength, pupil)`;
-starting rays depend only on `(field, wavelength, pupil)`. The host
-schedules the boundary-refinement probes and leaf rays per path (§5); only
-base starting rays are shared across paths. The kernel the
+The work is independent rays indexed `(path, field, wavelength, lattice
+point)`. The host schedules each path's probes level by level and dedupes
+them (§5). The kernel the
 ghost solver needs from `mklight-gpu` (a `Job::GhostTrace`, added additively
 by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
 
@@ -442,8 +409,8 @@ by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
   expands the steps itself from the alternation rule (`path::GhostPath::steps`),
   so no per-step arrays are needed.
 * **Start rays** as the existing `RayBatch` SoA in the starting frame, with
-  the wavelength index and flux weight; a launch covers
-  `paths × start rays` with `ray = gid % n_start`, `path = gid / n_start`.
+  the wavelength index; a launch covers one refinement level's new probes
+  of a path.
 * **Per-ray output**: status word (code incl. `VIRTUAL`, step index),
   image-local `(x, y)` and the unpolarised weight `½(w_s + w_p)·τ`
   (12 bytes + status). Binning stays on the host in fixed order (or a
