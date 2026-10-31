@@ -73,6 +73,8 @@
 //! interface needed from a GPU backend is described in `docs/GHOST.md`.
 
 use std::collections::{HashMap, hash_map::Entry};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use mklight_core::job::RunTimer;
 use mklight_core::math::KahanSum;
@@ -470,92 +472,337 @@ const BASE_HALF: usize = 1 << BOUNDARY_DEPTH;
 
 #[derive(Clone, Copy)]
 enum Launch {
-    Start(Option<Ray>),
+    Start(usize),
     Pupil([f64; 2]),
 }
 
-struct Probe {
+#[derive(Clone, Copy, Debug)]
+struct ProbeOutput {
+    ray: RayOut,
+    region: u8,
+}
+
+type SharedProbe = Arc<OnceLock<ProbeOutput>>;
+
+#[derive(Clone)]
+enum CentreValue<'a> {
+    Grid(&'a OnceLock<ProbeOutput>),
+    Variant(SharedProbe),
+}
+
+impl CentreValue<'_> {
+    fn output(&self) -> ProbeOutput {
+        *match self {
+            Self::Grid(value) => value.get().unwrap(),
+            Self::Variant(value) => value.get().unwrap(),
+        }
+    }
+}
+
+enum CornerValue<'a> {
+    Grid(&'a AtomicU64),
+    Variant(SharedProbe),
+}
+
+impl CornerValue<'_> {
+    fn try_region(&self) -> Option<u8> {
+        match self {
+            Self::Grid(value) => match value.load(Ordering::Acquire) & 15 {
+                ready @ 2..=5 => Some((ready - 2) as u8),
+                _ => None,
+            },
+            Self::Variant(value) => value.get().map(|output| output.region),
+        }
+    }
+
+    fn region(&self) -> u8 {
+        self.try_region().unwrap()
+    }
+}
+
+enum ProbeTarget<'a> {
+    Centre {
+        value: &'a OnceLock<ProbeOutput>,
+        state: &'a AtomicU64,
+        payload: u64,
+    },
+    Corner {
+        state: &'a AtomicU64,
+        cell: usize,
+        centre_region: u8,
+    },
+    Variant {
+        value: SharedProbe,
+        cell: usize,
+        centre_region: u8,
+    },
+}
+
+struct Probe<'a> {
+    #[cfg(test)]
     lattice: [usize; 2],
     launch: Launch,
+    target: ProbeTarget<'a>,
 }
 
-struct CachedProbe {
+struct VariantEntry {
     pupil_bits: [u64; 2],
-    previous: Option<usize>,
+    value: SharedProbe,
+    other: Vec<([u64; 2], SharedProbe)>,
 }
 
-#[derive(Default)]
+const PROBE_TILE: usize = 4;
+const TILES_PER_CELL: usize = BASE_HALF / PROBE_TILE;
+type ProbeTile = [AtomicU64; PROBE_TILE * PROBE_TILE];
+type ProbeTiles = [OnceLock<Box<ProbeTile>>; TILES_PER_CELL * TILES_PER_CELL];
+
+struct LatticeCell {
+    base: AtomicU64,
+    tiles: OnceLock<Box<ProbeTiles>>,
+}
+
 struct ProbeCache {
-    indices: HashMap<[usize; 2], usize>,
-    values: Vec<RayOut>,
-    coordinates: Vec<CachedProbe>,
-    pending: Vec<Probe>,
+    side: usize,
+    coordinates: Vec<u64>,
+    cells: Vec<LatticeCell>,
+    centres: [OnceLock<Box<[OnceLock<ProbeOutput>]>>; BOUNDARY_DEPTH as usize + 1],
+    variants: [Mutex<HashMap<[usize; 2], VariantEntry>>; 64],
 }
 
 impl ProbeCache {
-    fn request(&mut self, lattice: [usize; 2], pupil: [f64; 2], launch: Launch) -> usize {
-        let probe = Probe { lattice, launch };
+    fn new(n: usize, overfill: f64) -> Self {
+        let side = 2 * n + 1;
+        let h = 2.0 * overfill / n as f64;
+        Self {
+            side,
+            coordinates: (0..=2 * n * BASE_HALF)
+                .map(|i| (-overfill + h * (i as f64 / (2 * BASE_HALF) as f64)).to_bits())
+                .collect(),
+            cells: (0..side * side)
+                .map(|_| LatticeCell {
+                    base: AtomicU64::new(0),
+                    tiles: OnceLock::new(),
+                })
+                .collect(),
+            centres: std::array::from_fn(|_| OnceLock::new()),
+            variants: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn prepare_centres(&self, level: usize, count: usize) {
+        self.centres[level].get_or_init(|| {
+            (0..count)
+                .map(|_| OnceLock::new())
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        });
+    }
+
+    fn canonical(&self, p: [usize; 2], pupil: [f64; 2]) -> bool {
+        pupil[0].to_bits() == self.coordinates[p[0]] && pupil[1].to_bits() == self.coordinates[p[1]]
+    }
+
+    fn point(&self, p: [usize; 2]) -> &AtomicU64 {
+        let cell = &self.cells[p[1] / BASE_HALF * self.side + p[0] / BASE_HALF];
+        let (x, y) = (p[0] % BASE_HALF, p[1] % BASE_HALF);
+        if x == 0 && y == 0 {
+            return &cell.base;
+        }
+        let tiles = cell
+            .tiles
+            .get_or_init(|| Box::new(std::array::from_fn(|_| OnceLock::new())));
+        let tile = tiles[y / PROBE_TILE * TILES_PER_CELL + x / PROBE_TILE]
+            .get_or_init(|| Box::new(std::array::from_fn(|_| AtomicU64::new(0))));
+        &tile[y % PROBE_TILE * PROBE_TILE + x % PROBE_TILE]
+    }
+
+    fn variant(&self, p: [usize; 2], pupil: [f64; 2]) -> (SharedProbe, bool) {
+        let shard = (p[0] ^ (p[0] >> 5) ^ p[1].rotate_left(3)) % self.variants.len();
+        let mut entries = self.variants[shard].lock().unwrap();
         let pupil_bits = pupil.map(f64::to_bits);
-        let index = self.coordinates.len();
-        let previous = match self.indices.entry(probe.lattice) {
+        match entries.entry(p) {
             Entry::Occupied(mut e) => {
-                let mut candidate = Some(*e.get());
-                while let Some(i) = candidate {
-                    let cached = &self.coordinates[i];
-                    if cached.pupil_bits == pupil_bits {
-                        return i;
-                    }
-                    candidate = cached.previous;
+                let entry = e.get_mut();
+                if entry.pupil_bits == pupil_bits {
+                    return (entry.value.clone(), false);
                 }
-                Some(e.insert(index))
+                if let Some((_, value)) = entry.other.iter().find(|(bits, _)| *bits == pupil_bits) {
+                    return (value.clone(), false);
+                }
+                let value = Arc::new(OnceLock::new());
+                entry.other.push((pupil_bits, value.clone()));
+                (value, true)
             }
             Entry::Vacant(e) => {
-                e.insert(index);
-                None
+                let value = Arc::new(OnceLock::new());
+                e.insert(VariantEntry {
+                    pupil_bits,
+                    value: value.clone(),
+                    other: Vec::new(),
+                });
+                (value, true)
             }
-        };
-        // Non-dyadic grids can reach one lattice corner with different
-        // rounded coordinates, even on opposite sides of a boundary. Keep
-        // those variants separate to preserve the uncached subdivision.
-        self.coordinates.push(CachedProbe {
-            pupil_bits,
-            previous,
+        }
+    }
+
+    fn centre(
+        &self,
+        lattice: [usize; 2],
+        pupil: [f64; 2],
+        level: usize,
+        index: usize,
+        launch: Launch,
+    ) -> (CentreValue<'_>, Option<Probe<'_>>) {
+        if !self.canonical(lattice, pupil) {
+            let (value, new) = self.variant(lattice, pupil);
+            let probe = new.then(|| Probe {
+                #[cfg(test)]
+                lattice,
+                launch,
+                target: ProbeTarget::Variant {
+                    value: value.clone(),
+                    cell: 0,
+                    centre_region: 0,
+                },
+            });
+            return (CentreValue::Variant(value), probe);
+        }
+        let state = self.point(lattice);
+        // Low four bits hold pending/region state; the rest retain a centre's
+        // level and index, so repeated wavelength selections share its ray.
+        let payload = (((index + 1) as u64) << 7) | ((level as u64) << 4);
+        let (owner, new) =
+            match state.compare_exchange(0, payload | 8, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => (payload, true),
+                Err(owner) => (owner, false),
+            };
+        // Centres precede corners; coarser levels lie on an even sublattice.
+        let value =
+            &self.centres[((owner >> 4) & 7) as usize].get().unwrap()[((owner >> 7) - 1) as usize];
+        let probe = new.then(|| Probe {
+            #[cfg(test)]
+            lattice,
+            launch,
+            target: ProbeTarget::Centre {
+                value,
+                state,
+                payload,
+            },
         });
-        self.pending.push(probe);
-        index
+        (CentreValue::Grid(value), probe)
+    }
+
+    fn corner(
+        &self,
+        lattice: [usize; 2],
+        pupil: [f64; 2],
+        cell: usize,
+        centre_region: u8,
+    ) -> (CornerValue<'_>, Option<Probe<'_>>) {
+        if !self.canonical(lattice, pupil) {
+            let (value, new) = self.variant(lattice, pupil);
+            let probe = new.then(|| Probe {
+                #[cfg(test)]
+                lattice,
+                launch: Launch::Pupil(pupil),
+                target: ProbeTarget::Variant {
+                    value: value.clone(),
+                    cell: cell + 1,
+                    centre_region,
+                },
+            });
+            return (CornerValue::Variant(value), probe);
+        }
+        let state = self.point(lattice);
+        let new = state.load(Ordering::Acquire) == 0
+            && state
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+        let probe = new.then(|| Probe {
+            #[cfg(test)]
+            lattice,
+            launch: Launch::Pupil(pupil),
+            target: ProbeTarget::Corner {
+                state,
+                cell: cell + 1,
+                centre_region,
+            },
+        });
+        (CornerValue::Grid(state), probe)
     }
 
     fn flush(
-        &mut self,
+        pending: &[Probe],
         sample: &(impl Fn(&Probe) -> RayOut + Sync),
+        region: &(impl Fn(RayOut) -> u8 + Sync),
         ctx: &JobContext,
-    ) -> MkResult<()> {
-        for block in self.pending.chunks(BLOCK) {
+    ) -> MkResult<Vec<(usize, bool)>> {
+        let mut changes = Vec::new();
+        for block in pending.chunks(BLOCK) {
             ctx.check()?;
-            self.values
-                .par_extend(block.par_iter().with_min_len(64).map(sample));
+            changes.extend(
+                block
+                    .par_iter()
+                    .with_min_len(64)
+                    .filter_map(|probe| {
+                        let ray = sample(probe);
+                        let output = ProbeOutput {
+                            ray,
+                            region: region(ray),
+                        };
+                        let ready = 2 + output.region as u64;
+                        match &probe.target {
+                            ProbeTarget::Centre {
+                                value,
+                                state,
+                                payload,
+                            } => {
+                                value.set(output).unwrap();
+                                state.store(payload | ready, Ordering::Release);
+                                None
+                            }
+                            ProbeTarget::Corner {
+                                state,
+                                cell,
+                                centre_region,
+                            } => {
+                                state.store(ready, Ordering::Release);
+                                Some((cell - 1, *centre_region != output.region))
+                            }
+                            ProbeTarget::Variant {
+                                value,
+                                cell,
+                                centre_region,
+                            } => {
+                                value.set(output).unwrap();
+                                (*cell != 0).then(|| (cell - 1, *centre_region != output.region))
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            );
         }
-        self.pending.clear();
-        Ok(())
+        Ok(changes)
     }
 }
 
-struct Cell {
+struct Cell<'a> {
     pupil: [f64; 2],
     lattice: [usize; 2],
-    centre: usize,
+    centre: CentreValue<'a>,
+    region: u8,
     weight: f64,
     children: Option<usize>,
 }
 
-impl Cell {
-    fn leaves(&self, cells: &[Cell], probes: &[RayOut], out: &mut Vec<RayOut>) {
+impl Cell<'_> {
+    fn leaves(&self, cells: &[Cell], out: &mut Vec<RayOut>) {
         if let Some(first) = self.children {
             for child in &cells[first..first + 4] {
-                child.leaves(cells, probes, out);
+                child.leaves(cells, out);
             }
         } else {
-            out.push(match probes[self.centre] {
+            out.push(match self.centre.output().ray {
                 Ok(Some((x, y, w))) => Ok(Some((x, y, self.weight * w))),
                 Ok(None) => Ok(None),
                 Err(w) => Err(self.weight * w),
@@ -564,90 +811,158 @@ impl Cell {
     }
 }
 
+fn register_probes<T: Send, U: Sync>(
+    input: &[U],
+    probes_per_item: usize,
+    ctx: &JobContext,
+    register: impl Fn(usize, &U) -> T + Sync,
+) -> MkResult<Vec<T>> {
+    let width = BLOCK / probes_per_item;
+    let mut out = Vec::with_capacity(input.len());
+    for (batch, block) in input.chunks(width).enumerate() {
+        ctx.check()?;
+        out.par_extend(
+            block
+                .par_iter()
+                .enumerate()
+                .with_min_len(64 / probes_per_item)
+                .map(|(i, item)| register(batch * width + i, item)),
+        );
+    }
+    Ok(out)
+}
+
 /// Cache probes on the finest lattice, retaining the recursive leaf order.
 /// Scope is one path, selected field and wavelength. Centres are requested
 /// before corners so their original floating-point coordinates are retained.
 fn integrate_cells(
     starts: &[StartRay],
-    half: f64,
+    settings: &IrradianceSettings,
+    cache: &ProbeCache,
     ctx: &JobContext,
     sample: impl Fn(&Probe) -> RayOut + Sync,
-    region: impl Fn(RayOut) -> u8,
+    region: impl Fn(RayOut) -> u8 + Sync,
 ) -> MkResult<Vec<Vec<RayOut>>> {
-    let mut cache = ProbeCache::default();
-    let mut cells: Vec<Cell> = starts
-        .iter()
-        .map(|s| Cell {
-            pupil: s.pupil,
-            lattice: s.lattice,
-            centre: cache.request(s.lattice, s.pupil, Launch::Start(s.ray)),
-            weight: s.weight,
-            children: None,
-        })
-        .collect();
-    cache.flush(&sample, ctx)?;
+    ctx.check()?;
+    cache.prepare_centres(0, starts.len());
+    let initial = register_probes(starts, 1, ctx, |i, s| {
+        let (centre, probe) = cache.centre(s.lattice, s.pupil, 0, i, Launch::Start(i));
+        (
+            Cell {
+                pupil: s.pupil,
+                lattice: s.lattice,
+                centre,
+                region: 0,
+                weight: s.weight,
+                children: None,
+            },
+            probe,
+        )
+    })?;
+    let mut cells = Vec::with_capacity(initial.len());
+    let mut pending = Vec::new();
+    for (cell, probe) in initial {
+        cells.push(cell);
+        pending.extend(probe);
+    }
+    ProbeCache::flush(&pending, &sample, &region, ctx)?;
+    for cell in &mut cells {
+        cell.region = cell.centre.output().region;
+    }
     ctx.report(1.0 / (BOUNDARY_DEPTH + 1) as f64, "tracing ghost paths");
     let mut active: Vec<usize> = (0..cells.len()).collect();
     let mut radius = BASE_HALF;
-    let mut half = half;
+    let mut half = settings.overfill / settings.pupil_samples as f64;
     while radius > 1 && !active.is_empty() {
         ctx.check()?;
         let mut split = vec![false; active.len()];
-        // Preserve the original x-outer, y-inner short circuit: corners after
-        // the first disagreement are never requested.
+        // Preserve the original x-outer, y-inner short circuit.
         for x in [-1isize, 1] {
             for y in [-1isize, 1] {
-                let probes: Vec<_> = active
+                let candidates: Vec<_> = active
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| !split[*i])
-                    .map(|(i, &index)| {
-                        let c = &cells[index];
-                        let lattice = [
-                            c.lattice[0].wrapping_add_signed(x * radius as isize),
-                            c.lattice[1].wrapping_add_signed(y * radius as isize),
-                        ];
-                        let p = [c.pupil[0] + x as f64 * half, c.pupil[1] + y as f64 * half];
-                        (i, cache.request(lattice, p, Launch::Pupil(p)))
-                    })
                     .collect();
-                cache.flush(&sample, ctx)?;
-                for (i, probe) in probes {
-                    split[i] = region(cache.values[probe])
-                        != region(cache.values[cells[active[i]].centre]);
+                let probes = register_probes(&candidates, 1, ctx, |_, &(i, &index)| {
+                    let c = &cells[index];
+                    let lattice = [
+                        c.lattice[0].wrapping_add_signed(x * radius as isize),
+                        c.lattice[1].wrapping_add_signed(y * radius as isize),
+                    ];
+                    let p = [c.pupil[0] + x as f64 * half, c.pupil[1] + y as f64 * half];
+                    let (value, probe) = cache.corner(lattice, p, i, c.region);
+                    let change = value.try_region().map(|r| r != c.region);
+                    (i, value, probe, change)
+                })?;
+                pending.clear();
+                let mut deferred = Vec::new();
+                for (i, value, probe, change) in probes {
+                    if let Some(probe) = probe {
+                        pending.push(probe);
+                    } else if let Some(change) = change {
+                        split[i] = change;
+                    } else {
+                        deferred.push((i, value));
+                    }
+                }
+                for (i, change) in ProbeCache::flush(&pending, &sample, &region, ctx)? {
+                    split[i] = change;
+                }
+                for (i, value) in deferred {
+                    split[i] = value.region() != cells[active[i]].region;
                 }
             }
         }
         half *= 0.5;
         radius /= 2;
-        let mut next = Vec::new();
-        for (&index, split) in active.iter().zip(split) {
-            if !split {
-                continue;
-            }
+        let parents: Vec<_> = active
+            .iter()
+            .copied()
+            .zip(split)
+            .filter_map(|(index, split)| split.then_some(index))
+            .collect();
+        let first = cells.len();
+        for (i, &index) in parents.iter().enumerate() {
+            cells[index].children = Some(first + 4 * i);
+        }
+        let level = (BOUNDARY_DEPTH - radius.trailing_zeros()) as usize;
+        cache.prepare_centres(level, 4 * parents.len());
+        let children = register_probes(&parents, 4, ctx, |i, &index| {
             let c = &cells[index];
-            let (p, lattice, weight) = (c.pupil, c.lattice, c.weight * 0.25);
-            cells[index].children = Some(cells.len());
-            for y in [-1isize, 1] {
-                for x in [-1isize, 1] {
-                    let pupil = [p[0] + x as f64 * half, p[1] + y as f64 * half];
-                    let lattice = [
-                        lattice[0].wrapping_add_signed(x * radius as isize),
-                        lattice[1].wrapping_add_signed(y * radius as isize),
-                    ];
-                    next.push(cells.len());
-                    cells.push(Cell {
+            std::array::from_fn::<_, 4, _>(|j| {
+                let x = if j % 2 == 0 { -1isize } else { 1 };
+                let y = if j / 2 == 0 { -1isize } else { 1 };
+                let pupil = [c.pupil[0] + x as f64 * half, c.pupil[1] + y as f64 * half];
+                let lattice = [
+                    c.lattice[0].wrapping_add_signed(x * radius as isize),
+                    c.lattice[1].wrapping_add_signed(y * radius as isize),
+                ];
+                let (centre, probe) =
+                    cache.centre(lattice, pupil, level, 4 * i + j, Launch::Pupil(pupil));
+                (
+                    Cell {
                         pupil,
                         lattice,
-                        centre: cache.request(lattice, pupil, Launch::Pupil(pupil)),
-                        weight,
+                        centre,
+                        region: 0,
+                        weight: c.weight * 0.25,
                         children: None,
-                    });
-                }
-            }
+                    },
+                    probe,
+                )
+            })
+        })?;
+        pending.clear();
+        for (child, probe) in children.into_iter().flatten() {
+            cells.push(child);
+            pending.extend(probe);
         }
-        cache.flush(&sample, ctx)?;
-        active = next;
+        ProbeCache::flush(&pending, &sample, &region, ctx)?;
+        for cell in &mut cells[first..] {
+            cell.region = cell.centre.output().region;
+        }
+        active = (first..cells.len()).collect();
         let level = BOUNDARY_DEPTH - radius.trailing_zeros();
         ctx.report(
             (level + 1) as f64 / (BOUNDARY_DEPTH + 1) as f64,
@@ -660,7 +975,7 @@ fn integrate_cells(
         .iter()
         .map(|c| {
             let mut out = Vec::new();
-            c.leaves(&cells, &cache.values, &mut out);
+            c.leaves(&cells, &mut out);
             out
         })
         .collect())
@@ -678,6 +993,59 @@ fn run_path(
     ctx: &JobContext,
     progress: (f64, f64),
 ) -> MkResult<PathRun> {
+    let mut block = Vec::new();
+    let total: usize = starts.iter().map(Vec::len).sum();
+    let mut done = 0;
+    for (f, rays) in starts.iter().enumerate() {
+        let mut caches = HashMap::new();
+        for group in rays.chunk_by(|a, b| a.wl == b.wl) {
+            let cell = CellTrace {
+                model,
+                steps,
+                field: &fields[f].field,
+                wl: group[0].wl,
+                overfill: settings.overfill,
+                map: template,
+            };
+            let cache = caches
+                .entry(group[0].wl)
+                .or_insert_with(|| ProbeCache::new(settings.pupil_samples, settings.overfill));
+            let cells = rayon::scope(|_| {
+                integrate_cells(
+                    group,
+                    settings,
+                    cache,
+                    &ctx.subrange(
+                        progress.0 + done as f64 / total as f64 * (progress.1 - progress.0),
+                        progress.0
+                            + (done + group.len()) as f64 / total as f64
+                                * (progress.1 - progress.0),
+                    ),
+                    |probe| match probe.launch {
+                        Launch::Start(i) => cell.trace(group[i].ray),
+                        Launch::Pupil(p) => cell.sample(p),
+                    },
+                    |sample| cell.region(sample),
+                )
+            })?;
+            block.extend(cells);
+            done += group.len();
+            let f = done as f64 / total as f64;
+            ctx.report(
+                progress.0 + f * (progress.1 - progress.0),
+                "tracing ghost paths",
+            );
+        }
+    }
+    Ok(finish_path(starts, fields, template, block))
+}
+
+fn finish_path(
+    starts: &[Vec<StartRay>],
+    fields: &[SelectedField],
+    template: &IrradianceMap,
+    block: Vec<Vec<RayOut>>,
+) -> PathRun {
     let total: usize = starts.iter().map(Vec::len).sum();
     let offsets: Vec<usize> = starts
         .iter()
@@ -689,52 +1057,19 @@ fn run_path(
         .collect();
     let mut hits: Vec<Vec<Option<(f64, f64, f64)>>> = Vec::with_capacity(total);
     let (mut virtual_rays, mut virtual_flux) = (0usize, KahanSum::default());
-    let mut done = 0;
-    for (f, rays) in starts.iter().enumerate() {
-        for group in rays.chunk_by(|a, b| a.wl == b.wl) {
-            let cell = CellTrace {
-                model,
-                steps,
-                field: &fields[f].field,
-                wl: group[0].wl,
-                overfill: settings.overfill,
-                map: template,
-            };
-            let block = integrate_cells(
-                group,
-                settings.overfill / settings.pupil_samples as f64,
-                &ctx.subrange(
-                    progress.0 + done as f64 / total as f64 * (progress.1 - progress.0),
-                    progress.0
-                        + (done + group.len()) as f64 / total as f64 * (progress.1 - progress.0),
-                ),
-                |probe| match probe.launch {
-                    Launch::Start(ray) => cell.trace(ray),
-                    Launch::Pupil(p) => cell.sample(p),
-                },
-                |sample| cell.region(sample),
-            )?;
-            for cell in block {
-                hits.push(
-                    cell.into_iter()
-                        .map(|o| match o {
-                            Ok(h) => h,
-                            Err(w) => {
-                                virtual_rays += 1;
-                                virtual_flux.add(w);
-                                None
-                            }
-                        })
-                        .collect(),
-                );
-            }
-            done += group.len();
-            let f = done as f64 / total as f64;
-            ctx.report(
-                progress.0 + f * (progress.1 - progress.0),
-                "tracing ghost paths",
-            );
-        }
+    for cell in block {
+        hits.push(
+            cell.into_iter()
+                .map(|o| match o {
+                    Ok(h) => h,
+                    Err(w) => {
+                        virtual_rays += 1;
+                        virtual_flux.add(w);
+                        None
+                    }
+                })
+                .collect(),
+        );
     }
     let area = template.bin_area();
     let mut maps = Vec::with_capacity(fields.len());
@@ -793,12 +1128,12 @@ fn run_path(
         });
         maps.push(map);
     }
-    Ok(PathRun {
+    PathRun {
         maps,
         stats,
         virtual_rays,
         virtual_flux: virtual_flux.value(),
-    })
+    }
 }
 
 fn sum_maps(maps: &[IrradianceMap], template: &IrradianceMap) -> IrradianceMap {
@@ -818,6 +1153,26 @@ pub fn ghost_irradiance(
     model: &GhostModel,
     settings: &IrradianceSettings,
     ctx: &JobContext,
+) -> MkResult<GhostIrradiance> {
+    irradiance_with(model, settings, ctx, run_path)
+}
+
+type PathRunner = fn(
+    &GhostModel,
+    &[Step],
+    &[Vec<StartRay>],
+    &[SelectedField],
+    &IrradianceSettings,
+    &IrradianceMap,
+    &JobContext,
+    (f64, f64),
+) -> MkResult<PathRun>;
+
+fn irradiance_with(
+    model: &GhostModel,
+    settings: &IrradianceSettings,
+    ctx: &JobContext,
+    trace_path: PathRunner,
 ) -> MkResult<GhostIrradiance> {
     let timer = RunTimer::start();
     let sys = model.system();
@@ -884,7 +1239,7 @@ pub fn ghost_irradiance(
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
-    let prun = run_path(
+    let prun = trace_path(
         model,
         &pstep,
         &starts,
@@ -925,7 +1280,7 @@ pub fn ghost_irradiance(
     let mut ghosts = Vec::with_capacity(paths.len());
     for (k, (path, steps)) in paths.iter().zip(&path_steps).enumerate() {
         let span = ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs);
-        let PathRun { maps, stats, .. } = run_path(
+        let PathRun { maps, stats, .. } = trace_path(
             model, steps, &starts, &selected, settings, &template, ctx, span,
         )?;
         let map = sum_maps(&maps, &template);
@@ -975,7 +1330,7 @@ pub fn ghost_irradiance(
 #[cfg(test)]
 impl CellTrace<'_> {
     #[allow(clippy::too_many_arguments)]
-    fn uncached(
+    fn uncached<const RECORD: bool>(
         &self,
         p: [f64; 2],
         half: f64,
@@ -991,10 +1346,12 @@ impl CellTrace<'_> {
         if depth > 0
             && [-1.0, 1.0].iter().any(|x| {
                 [-1.0, 1.0].iter().any(|y| {
-                    probes.push([
-                        lattice[0].wrapping_add_signed(*x as isize * radius as isize),
-                        lattice[1].wrapping_add_signed(*y as isize * radius as isize),
-                    ]);
+                    if RECORD {
+                        probes.push([
+                            lattice[0].wrapping_add_signed(*x as isize * radius as isize),
+                            lattice[1].wrapping_add_signed(*y as isize * radius as isize),
+                        ]);
+                    }
                     self.region(self.sample([p[0] + x * half, p[1] + y * half])) != region
                 })
             })
@@ -1003,12 +1360,18 @@ impl CellTrace<'_> {
             for y in [-1.0, 1.0] {
                 for x in [-1.0, 1.0] {
                     let child = [p[0] + x * half, p[1] + y * half];
-                    let child_lattice = [
-                        lattice[0].wrapping_add_signed(x as isize * (radius / 2) as isize),
-                        lattice[1].wrapping_add_signed(y as isize * (radius / 2) as isize),
-                    ];
-                    probes.push(child_lattice);
-                    self.uncached(
+                    let child_lattice = if RECORD {
+                        [
+                            lattice[0].wrapping_add_signed(x as isize * (radius / 2) as isize),
+                            lattice[1].wrapping_add_signed(y as isize * (radius / 2) as isize),
+                        ]
+                    } else {
+                        [0; 2]
+                    };
+                    if RECORD {
+                        probes.push(child_lattice);
+                    }
+                    self.uncached::<RECORD>(
                         child,
                         half,
                         weight * 0.25,
@@ -1032,11 +1395,67 @@ impl CellTrace<'_> {
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn run_uncached(
+    model: &GhostModel,
+    steps: &[Step],
+    starts: &[Vec<StartRay>],
+    fields: &[SelectedField],
+    settings: &IrradianceSettings,
+    template: &IrradianceMap,
+    ctx: &JobContext,
+    progress: (f64, f64),
+) -> MkResult<PathRun> {
+    let flat: Vec<_> = starts
+        .iter()
+        .enumerate()
+        .flat_map(|(f, rays)| rays.iter().map(move |s| (f, s)))
+        .collect();
+    let mut out = Vec::with_capacity(flat.len());
+    for block in flat.chunks(BLOCK) {
+        ctx.check()?;
+        out.extend(
+            block
+                .par_iter()
+                .with_min_len(64)
+                .map(|&(f, s)| {
+                    let cell = CellTrace {
+                        model,
+                        steps,
+                        field: &fields[f].field,
+                        wl: s.wl,
+                        overfill: settings.overfill,
+                        map: template,
+                    };
+                    let mut out = Vec::new();
+                    cell.uncached::<false>(
+                        s.pupil,
+                        settings.overfill / settings.pupil_samples as f64,
+                        s.weight,
+                        cell.trace(s.ray),
+                        BOUNDARY_DEPTH,
+                        &mut out,
+                        &mut Vec::new(),
+                        [0; 2],
+                        0,
+                    );
+                    out
+                })
+                .collect::<Vec<_>>(),
+        );
+        ctx.report(
+            progress.0 + out.len() as f64 / flat.len() as f64 * (progress.1 - progress.0),
+            "tracing ghost paths",
+        );
+    }
+    Ok(finish_path(starts, fields, template, out))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::GhostSettings;
     use mklight_core::{ResolvedSystem, Snapshot, materials::MaterialLibrary, samples};
-    use std::sync::{Arc, Mutex};
 
     fn double_gauss() -> GhostModel {
         let snapshot = Snapshot::new(samples::double_gauss()).unwrap();
@@ -1092,10 +1511,11 @@ mod tests {
                     let half = settings.overfill / n as f64;
                     let cached = integrate_cells(
                         starts,
-                        half,
+                        &settings,
+                        &ProbeCache::new(n, settings.overfill),
                         &JobContext::new(),
                         |p| match p.launch {
-                            Launch::Start(ray) => cell.trace(ray),
+                            Launch::Start(i) => cell.trace(starts[i].ray),
                             Launch::Pupil(p) => cell.sample(p),
                         },
                         |s| cell.region(s),
@@ -1103,7 +1523,7 @@ mod tests {
                     .unwrap();
                     for (start, got) in starts.iter().zip(cached) {
                         let mut expected = Vec::new();
-                        cell.uncached(
+                        cell.uncached::<true>(
                             start.pupil,
                             half,
                             start.weight,
@@ -1150,12 +1570,13 @@ mod tests {
         let traced = Mutex::new(Vec::new());
         let leaves = integrate_cells(
             &starts[0],
-            settings.overfill / 12.0,
+            &settings,
+            &ProbeCache::new(settings.pupil_samples, settings.overfill),
             &JobContext::new(),
             |p| {
                 traced.lock().unwrap().push(p.lattice);
                 match p.launch {
-                    Launch::Start(ray) => cell.trace(ray),
+                    Launch::Start(i) => cell.trace(starts[0][i].ray),
                     Launch::Pupil(p) => cell.sample(p),
                 }
             },
@@ -1166,7 +1587,7 @@ mod tests {
         let mut uncached_leaves = Vec::new();
         for start in &starts[0] {
             requested.push(start.lattice);
-            cell.uncached(
+            cell.uncached::<true>(
                 start.pupil,
                 settings.overfill / 12.0,
                 start.weight,
@@ -1191,5 +1612,64 @@ mod tests {
         );
         assert!(leaves.iter().map(Vec::len).sum::<usize>() > starts[0].len());
         assert!(traced.len() > starts[0].len());
+    }
+    #[test]
+    fn complete_output_matches_uncached() {
+        let model = double_gauss();
+        let settings = IrradianceSettings {
+            fields: vec![0, 2],
+            wavelengths: vec![0, 1, 1, 0],
+            pupil_samples: 20,
+            overfill: 1.0,
+            keep_path_maps: true,
+            ..Default::default()
+        };
+        let mut cached = ghost_irradiance(&model, &settings, &JobContext::new()).unwrap();
+        let uncached =
+            irradiance_with(&model, &settings, &JobContext::new(), run_uncached).unwrap();
+        cached.run.started_unix_ms = uncached.run.started_unix_ms;
+        cached.run.duration_ms = uncached.run.duration_ms;
+        assert_eq!(
+            serde_json::to_vec(&cached).unwrap(),
+            serde_json::to_vec(&uncached).unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_double_gauss_cached_vs_uncached() {
+        let model = double_gauss();
+        for n in [20, 48, 128] {
+            let settings = IrradianceSettings {
+                fields: vec![0, 2],
+                wavelengths: vec![1],
+                pupil_samples: n,
+                keep_path_maps: true,
+                ..Default::default()
+            };
+            let mut times = [Vec::new(), Vec::new()];
+            for iteration in 0..6 {
+                for j in 0..2 {
+                    let index = (iteration + j) % 2;
+                    let runner = [run_uncached as PathRunner, run_path as PathRunner][index];
+                    let result =
+                        irradiance_with(&model, &settings, &JobContext::new(), runner).unwrap();
+                    if iteration > 0 {
+                        times[index].push(result.run.duration_ms);
+                    }
+                    std::hint::black_box(result);
+                }
+            }
+            for values in &mut times {
+                values.sort_by(f64::total_cmp);
+            }
+            println!(
+                "{n}²: uncached {:.3} ms; cached {:.3} ms; {:.2}x; samples {:?}",
+                times[0][2],
+                times[1][2],
+                times[0][2] / times[1][2],
+                times
+            );
+        }
     }
 }

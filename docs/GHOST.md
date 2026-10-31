@@ -306,8 +306,15 @@ Each path/field/wavelength uses a probe cache keyed by integer coordinates
 on the finest lattice (32 units per base cell, including the finest leaf
 centres). Neighbouring cells share corners, and descendants reuse ancestor
 centres and corners. Failed, virtual and outside-source probes are cached
-too. Base starting rays remain shared across paths. The cache is discarded
-after each wavelength.
+too. Base starting rays remain shared across paths. Repeated wavelength
+selections reuse the same cache; caches are released when the field finishes.
+
+A coarse array covers base centres and corners; lazily allocated 4 × 4 tiles
+hold finer points. Entries store the on-map/survival classification. Full
+centre outcomes live in contiguous buffers per level. A finer centre lies
+on an odd sublattice, while earlier probes lie on the even sublattice, so
+a corner-only outcome is never needed later as a weighted centre. Centre
+entries retain the buffer level/index for repeated selections.
 
 On dyadic grids every distinct requested lattice point is sampled once.
 On other grids, the old recursive arithmetic can reach the same corner
@@ -316,7 +323,9 @@ differently (for example, Double Gauss at 20² with overfill 1 changes the
 number of zero-flux leaves if they are merged). To preserve exact legacy
 output, each integer lattice key retains separate results for those bitwise
 coordinate variants; each variant is traced once. No floating-point map
-keys or coordinate requantisation are used.
+keys or coordinate requantisation are used. A table of coordinate bits only
+selects cache storage: every launch still uses the original recursive
+floating-point coordinates.
 
 Refinement proceeds level by level. Centres retain their original recursive
 floating-point coordinates and are requested before corners. Corners are
@@ -330,9 +339,47 @@ weighted leaf bit-for-bit against the uncached recursive traversal on the
 Double Gauss (including non-dyadic grids), check the distinct probe set and
 trace count against that traversal, and compare complete results with rayon
 pools of 1 and 5 threads.
-The `JobContext` is checked before every probe block and refinement level;
-progress is monotone and ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
-and of the analysis, no seed: nothing is random).
+The `JobContext` is checked before each refinement level and each registration
+or tracing block of at most 16384 probes. Progress is monotone and ends at 1.
+Results carry `RunInfo` (backend `cpu-f64`, settings of the model and of the
+analysis, no seed: nothing is random).
+
+### Probe cache performance
+
+The ignored A/B benchmark compiles the original recursive traversal alongside
+the cache and alternates both in the same process/pool. Probe recording is
+compiled out of the original traversal for timing; both use the same map
+accumulation. Configuration: Double Gauss, 45 two-reflection ghosts plus the
+primary, fields 0 and 2, wavelength 1, overfill 1.5, default 64² map/bounds,
+path maps retained; macOS arm64, CPU f64, release profile, five Rayon threads.
+Medians of five runs per variant after one warm-up each:
+
+| pupil grid | original recursion (ms) | cached (ms) | speedup |
+|---|---:|---:|---:|
+| 20² | 181.293 | 278.344 | 0.65× |
+| 48² | 421.073 | 350.543 | 1.20× |
+| 128² | 1480.135 | 1006.449 | 1.47× |
+
+The 20² workload regresses by 54%; latency still depends on grid size and
+includes the cost of retaining non-dyadic rounding variants. These gains do
+not establish recovery of the reported pre-refinement performance.
+The independent probe-count regression (12², field 0, wavelength 1, path
+`[9,7]`, ±12 mm map) reduces 8491 evaluations to exactly 4645 distinct lattice
+points. Complete result JSON, except run start time and duration, matches the
+uncached traversal, including repeated wavelengths and the rounding-boundary
+case above. Weighted leaf bits and thread-count determinism are checked too.
+
+```sh
+source ~/.cargo/env
+RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --lib bench_double_gauss_cached_vs_uncached -- --ignored --nocapture --test-threads=1
+```
+
+`tests/bench.rs` also provides a standalone current-implementation benchmark:
+
+```sh
+source ~/.cargo/env
+RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --test bench -- --ignored --nocapture
+```
 
 ### High-reflectance discrepancy: pupil quadrature, not transport
 
