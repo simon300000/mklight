@@ -209,3 +209,45 @@ fn host_metal_traced_fd() {
 fn host_metal_vignetted_tilted_long_track_and_telecentric() {
     domain_check(&backend(LibraryChoice::Precompiled), 64);
 }
+
+#[test]
+fn host_metal_failed_candidates_keep_slots() {
+    use mklight_core::param::ParamPath;
+    let gpu = backend(LibraryChoice::Precompiled);
+    let c = CompiledSystem::compile(
+        Snapshot::new(mklight_core::samples::singlet()).unwrap(),
+        testutil::library(),
+        vec![Parameter {
+            path: ParamPath::TemperatureC,
+            lower: -400.0,
+            upper: 100.0,
+        }],
+        None,
+        &JobContext::new(),
+    )
+    .unwrap();
+    let rows: Vec<_> = [20.0, -300.0, 150.0, f64::NAN]
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| Candidate {
+            id: 11 + i as u64,
+            values: vec![v],
+        })
+        .collect();
+    let (out, _) = run(&gpu, &c, &rows, 1024);
+    assert_eq!(out[4].words(), [11, 0, 12, 0, 13, 0, 14, 0]);
+    assert_eq!(
+        out[6].words(),
+        [
+            READY,
+            DIRTY_ALL,
+            INVALID_NUMERIC,
+            DIRTY_ALL,
+            OUTSIDE_BOUNDS,
+            DIRTY_ALL,
+            OUTSIDE_BOUNDS,
+            DIRTY_ALL
+        ]
+    );
+    assert!(c.reference(&rows[1], &JobContext::new()).is_err());
+}
