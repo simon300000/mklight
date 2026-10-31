@@ -315,20 +315,26 @@ pub enum ApertureShape {
 }
 
 impl ApertureShape {
-    /// Does the local point `(x, y)` pass the aperture?
+    /// Does the local point `(x, y)` pass the aperture? Include the boundary
+    /// to the default real-aiming accuracy (1e-10 of the aperture size), so
+    /// roundoff in an aimed rim ray does not create artificial vignetting.
     pub fn passes(&self, x: f64, y: f64) -> bool {
+        let outer = 1.0 + 1e-10;
+        let inner = 1.0 - 1e-10;
         match *self {
-            ApertureShape::Circular { radius } => x * x + y * y <= radius * radius,
+            ApertureShape::Circular { radius } => x * x + y * y <= (radius * outer).powi(2),
             ApertureShape::Annular {
                 inner_radius,
                 outer_radius,
             } => {
                 let r2 = x * x + y * y;
-                r2 >= inner_radius * inner_radius && r2 <= outer_radius * outer_radius
+                r2 >= (inner_radius * inner).powi(2) && r2 <= (outer_radius * outer).powi(2)
             }
-            ApertureShape::Rectangular { half_x, half_y } => x.abs() <= half_x && y.abs() <= half_y,
+            ApertureShape::Rectangular { half_x, half_y } => {
+                x.abs() <= half_x * outer && y.abs() <= half_y * outer
+            }
             ApertureShape::Elliptical { semi_x, semi_y } => {
-                (x / semi_x).powi(2) + (y / semi_y).powi(2) <= 1.0
+                (x / semi_x).powi(2) + (y / semi_y).powi(2) <= outer * outer
             }
         }
     }

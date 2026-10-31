@@ -15,6 +15,53 @@ use mklight_trace::{
     TraceOptions, TraceStatus, TracerSettings, fix_semi_diameters, trace_ray, trace_ray_recorded,
 };
 
+#[test]
+fn aimed_stop_rim_is_not_numerically_vignetted() {
+    let glass = MaterialRef::Constant { n: 1.5 };
+    let mut s = infinite_system(
+        4.0,
+        vec![
+            surf(1, SurfaceShape::sphere(30.0), 10.0, glass.clone()),
+            surf(2, SurfaceShape::Plane, 5.0, glass.clone()),
+        ],
+        3,
+    );
+    s.surfaces[3].material = glass;
+    s.stop = 2;
+    s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 2.0 };
+    s.aperture = ApertureSpec::FloatByStopSize;
+    s.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+    s.fields = angle_fields(&[0.0, 10.0, 20.0]);
+    for explicit in [false, true] {
+        if explicit {
+            s.surfaces[2].aperture = Some(mklight_core::ApertureShape::Circular { radius: 2.0 });
+        }
+        let t = tracer(s.clone());
+        for field in 0..3 {
+            for p in (PupilSampling::Ring { n: 32, radius: 1.0 }).points() {
+                let f = t.field(field);
+                let open = t.trace(f, 0, p[0], p[1], &TraceOptions::unclipped().to_surface(2));
+                assert!(open.status.is_ok());
+                assert!((open.ray.pos.x.hypot(open.ray.pos.y) - 2.0).abs() < 2e-10);
+                let rim = t.trace(f, 0, p[0], p[1], &TraceOptions::default());
+                assert!(
+                    rim.status.is_ok(),
+                    "field {field}, pupil {p:?}: {:?}",
+                    rim.status
+                );
+                let outside = t.trace(
+                    f,
+                    0,
+                    p[0] * 1.000001,
+                    p[1] * 1.000001,
+                    &TraceOptions::default(),
+                );
+                assert_eq!(outside.status, TraceStatus::Clipped { surface: 2 });
+            }
+        }
+    }
+}
+
 /// Independent backwards trace from the image to the starting frame, built
 /// only from the public intersection and interaction primitives and the
 /// inverse relative transforms.

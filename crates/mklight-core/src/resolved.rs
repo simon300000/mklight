@@ -51,7 +51,7 @@ impl ResolvedSurface {
             return a.passes(x, y);
         }
         match self.fixed_semi_diameter {
-            Some(r) => x * x + y * y <= r * r,
+            Some(radius) => ApertureShape::Circular { radius }.passes(x, y),
             None => true,
         }
     }
