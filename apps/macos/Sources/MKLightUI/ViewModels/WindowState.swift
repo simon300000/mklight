@@ -4,10 +4,23 @@ import MKLightModel
 import Observation
 
 public enum ViewportMode: String, CaseIterable, Identifiable, Sendable, Codable {
+    /// The meridional (y–z) section.
     case section2D = "2D"
+    /// The sagittal (x–z) section, for designs without rotational symmetry.
+    case sectionXZ = "2D-xz"
     case orbit3D = "3D"
     public var id: String { rawValue }
-    public var title: String { self == .section2D ? "Section" : "3D" }
+    public var title: String {
+        switch self {
+        case .section2D: "Section"
+        case .sectionXZ: "X–Z"
+        case .orbit3D: "3D"
+        }
+    }
+    /// A 2-D section (y–z or x–z).
+    public var isSection: Bool { self != .orbit3D }
+    /// The engine `layout` setting `section` for this mode.
+    public var engineSection: String { self == .sectionXZ ? "xz" : "yz" }
 }
 
 public enum RayColoring: String, CaseIterable, Identifiable, Sendable, Codable {

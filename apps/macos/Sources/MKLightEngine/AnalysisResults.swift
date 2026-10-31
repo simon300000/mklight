@@ -174,11 +174,14 @@ public struct LayoutScene: Codable, Sendable, Hashable {
         public var wavelength: Int?
         /// For rays: whether the ray was clipped before the image.
         public var vignetted: Bool
+        /// Belongs to a diffractive (DOE) surface (layout flag bit 2).
+        public var doe = false
 
         public init(
             kind: PolylineKind, points: [Point3], inSection: Bool, surface: Int? = nil, field: Int? = nil,
-            wavelength: Int? = nil, vignetted: Bool = false
+            wavelength: Int? = nil, vignetted: Bool = false, doe: Bool = false
         ) {
+            self.doe = doe
             self.kind = kind
             self.points = points
             self.inSection = inSection
@@ -219,7 +222,12 @@ public struct LayoutScene: Codable, Sendable, Hashable {
         /// Clear semi-diameter used for drawing (fixed, or computed from rays).
         public var semiDiameter: Double
         public var semiDiameterIsAuto: Bool
-        public init(index: Int, id: SurfaceID, vertex: Point3, semiDiameter: Double, semiDiameterIsAuto: Bool) {
+        /// The surface carries a DOE phase.
+        public var isDiffractive = false
+        public init(
+            index: Int, id: SurfaceID, vertex: Point3, semiDiameter: Double, semiDiameterIsAuto: Bool, isDiffractive: Bool = false
+        ) {
+            self.isDiffractive = isDiffractive
             self.index = index
             self.id = id
             self.vertex = vertex
@@ -237,6 +245,22 @@ public struct LayoutScene: Codable, Sendable, Hashable {
     public var bounds: Bounds3
     public var wavelengthsUm: [Double]
     public var fieldCount: Int
+    /// The 2-D section the in-section polylines lie in: `yz` or `xz`.
+    public var section = "yz"
+    /// The optional triangulated surfaces (`layout` with `mesh_rings`).
+    public var mesh: [MeshTriangle] = []
+
+    /// One triangle of the surface mesh, in global coordinates.
+    public struct MeshTriangle: Sendable, Hashable {
+        public var a, b, c: Point3
+        public var surface: Int
+        public init(a: Point3, b: Point3, c: Point3, surface: Int) {
+            self.a = a
+            self.b = b
+            self.c = c
+            self.surface = surface
+        }
+    }
 
     public init(
         polylines: [Polyline], elements: [Element], surfaces: [SurfaceInfo], bounds: Bounds3, wavelengthsUm: [Double],

@@ -113,6 +113,8 @@ struct MKLightCommands: Commands {
                 .keyboardShortcut("l", modifiers: [.command, .option])
             Button("Section View") { actions?.setMode(.section2D) }
                 .keyboardShortcut("2", modifiers: [.command])
+            Button("X–Z Section") { actions?.setMode(.sectionXZ) }
+                .keyboardShortcut("2", modifiers: [.command, .option])
             Button("3D View") { actions?.setMode(.orbit3D) }
                 .keyboardShortcut("3", modifiers: [.command])
             Button("Fit Layout") { actions?.fit() }

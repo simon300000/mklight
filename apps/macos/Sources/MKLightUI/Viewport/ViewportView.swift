@@ -18,6 +18,8 @@ struct ViewportContent: Equatable {
     var stale: Bool
     var fitRequest: Int
     var accent: SIMD3<Float>
+    /// Beam footprints on every surface (3-D only), from `footprint`.
+    var footprints: FootprintOverlay? = nil
 }
 
 /// Camera gestures common to both platforms (in view points, y up).
@@ -89,7 +91,7 @@ enum ViewportBridge {
         input.onCamera = { c in DispatchQueue.main.async { camera.wrappedValue = c } }
         let style = ViewportStyle(
             mode: content.mode, coloring: content.coloring, selectedSurface: content.selectedSurface, stale: content.stale,
-            dark: dark, scale: Float(scale), accent: content.accent)
+            dark: dark, scale: Float(scale), accent: content.accent, footprints: content.footprints)
         r.mode = content.mode
         r.setScene(content.scene, style: style)
         if r.camera != camera.wrappedValue { r.camera = camera.wrappedValue }
@@ -188,7 +190,7 @@ struct ViewportView: NSViewRepresentable {
     private var accessibilityText: String {
         guard let s = content.scene else { return "Lens layout, not computed yet" }
         let rays = s.polylines.filter { $0.kind == .ray }.count
-        return "Lens layout, \(content.mode == .section2D ? "meridional section" : "3D view"), \(s.surfaces.count) surfaces, \(rays) rays"
+        return "Lens layout, \(content.mode == .orbit3D ? "3D view" : content.mode == .sectionXZ ? "x–z section" : "meridional section"), \(s.surfaces.count) surfaces, \(rays) rays"
     }
 }
 

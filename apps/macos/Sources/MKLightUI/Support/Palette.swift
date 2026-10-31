@@ -31,6 +31,9 @@ public enum Palette {
 
     public static func fieldColor(_ i: Int) -> Color { dynamic { fieldRGB(i, dark: $0) } }
 
+    /// Categorical slot `i` as a colour (6 is violet: DOE marks).
+    public static func slotColor(_ i: Int) -> Color { dynamic { slotRGB(i, dark: $0) } }
+
     /// The slot nearest the wavelength's spectral colour: violet, blue,
     /// aqua, green, yellow, orange, red; infrared and ultraviolet take red
     /// and violet.

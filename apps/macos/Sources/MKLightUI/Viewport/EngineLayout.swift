@@ -46,25 +46,29 @@ enum EngineLayout {
             polylines.append(
                 LayoutScene.Polyline(
                     kind: names.indices.contains(Int(kinds[i])) ? byName[names[Int(kinds[i])]] ?? .elementEdge : .elementEdge, points: pts, inSection: f & 1 != 0, surface: idx(surf),
-                    field: idx(fld), wavelength: idx(wav), vignetted: f & 2 != 0))
+                    field: idx(fld), wavelength: idx(wav), vignetted: f & 2 != 0, doe: f & 4 != 0))
         }
+        let section = json["section"]?.string == "xz" ? "xz" : "yz"
+        // The section's "up" coordinate: y for the y–z section, x for x–z.
+        let up: (Point3) -> Double = section == "xz" ? { $0.x } : { $0.y }
         let surfaces: [LayoutScene.SurfaceInfo] = (json["surfaces"]?.array ?? []).compactMap { s in
             guard let index = s["index"]?.int, let id = s["id"]?.int, let v = s["vertex"]?.nfArray, v.count == 3 else { return nil }
             return LayoutScene.SurfaceInfo(
                 index: index, id: SurfaceID(UInt64(id)), vertex: Point3(v[0], v[1], v[2]),
-                semiDiameter: s["semi_diameter"]?.nf ?? .nan, semiDiameterIsAuto: s["semi_diameter_is_auto"]?.bool ?? false)
+                semiDiameter: s["semi_diameter"]?.nf ?? .nan, semiDiameterIsAuto: s["semi_diameter_is_auto"]?.bool ?? false,
+                isDiffractive: s["is_diffractive"]?.bool ?? false)
         }
         // Glass fills: the in-section profiles of each element's first and
         // last surface, ordered by height so their samples pair up.
         func profile(_ surface: Int) -> [Point3]? {
             polylines.first { $0.kind == .surfaceProfile && $0.inSection && $0.surface == surface }?.points
-                .sorted { $0.y < $1.y }
+                .sorted { up($0) < up($1) }
         }
         let elements: [LayoutScene.Element] = (json["elements"]?.array ?? []).compactMap { e in
             guard let first = e["first_surface"]?.int, let last = e["last_surface"]?.int,
                 let front = profile(first), let back = profile(last)
             else { return nil }
-            return LayoutScene.Element(firstSurface: first, lastSurface: last, front: front, back: resample(back, like: front))
+            return LayoutScene.Element(firstSurface: first, lastSurface: last, front: front, back: resample(back, like: front, up: up))
         }
         let lo = json[path: "bounds", "min"]?.nfArray ?? [], hi = json[path: "bounds", "max"]?.nfArray ?? []
         let bounds: Bounds3
@@ -77,23 +81,43 @@ enum EngineLayout {
                 min: Point3(all.map(\.x).min()!, all.map(\.y).min()!, all.map(\.z).min()!),
                 max: Point3(all.map(\.x).max()!, all.map(\.y).max()!, all.map(\.z).max()!))
         }
-        return LayoutScene(
+        var scene = LayoutScene(
             polylines: polylines, elements: elements, surfaces: surfaces, bounds: bounds,
             wavelengthsUm: json["wavelengths_um"]?.nfArray ?? [], fieldCount: json["field_count"]?.int ?? 1)
+        scene.section = section
+        scene.mesh = mesh(output, origin: origin)
+        return scene
+    }
+
+    /// The optional surface mesh: `surface_mesh` f32 `[T, 3, 3]` relative
+    /// to `origin`, `mesh_surfaces` u32 `[T]`.
+    static func mesh(_ output: AnalysisOutput, origin: [Double]) -> [LayoutScene.MeshTriangle] {
+        guard let m = output.buffer(named: "surface_mesh"), m.shape.count == 3, m.shape[1] == 3, m.shape[2] == 3 else { return [] }
+        let t = m.shape[0]
+        let ids = output.buffer(named: "mesh_surfaces")
+        let o = origin.count == 3 ? origin : [0, 0, 0]
+        guard t > 0, m.count >= t * 9 else { return [] }
+        return (0..<t).map { k in
+            func p(_ v: Int) -> Point3 {
+                let b = k * 9 + v * 3
+                return Point3(m[b] + o[0], m[b + 1] + o[1], m[b + 2] + o[2])
+            }
+            return LayoutScene.MeshTriangle(a: p(0), b: p(1), c: p(2), surface: ids.map { k < $0.count ? Int($0[k]) : -1 } ?? -1)
+        }
     }
 
     /// `points` resampled to the heights of `like` (linear in y), so a fill
     /// can pair them; heights outside its range clamp to the ends.
-    static func resample(_ points: [Point3], like: [Point3]) -> [Point3] {
+    static func resample(_ points: [Point3], like: [Point3], up: (Point3) -> Double = { $0.y }) -> [Point3] {
         guard points.count >= 2 else { return like.map { _ in points.first ?? Point3(0, 0, 0) } }
-        let lo = points.first!.y, hi = points.last!.y
+        let lo = up(points.first!), hi = up(points.last!)
         return like.map { q in
-            let y = min(max(q.y, lo), hi)
+            let y = min(max(up(q), lo), hi)
             var k = 0
-            while k < points.count - 2 && points[k + 1].y < y { k += 1 }
+            while k < points.count - 2 && up(points[k + 1]) < y { k += 1 }
             let a = points[k], b = points[k + 1]
-            let t = b.y == a.y ? 0 : (y - a.y) / (b.y - a.y)
-            return Point3(a.x + (b.x - a.x) * t, q.y, a.z + (b.z - a.z) * t)
+            let t = up(b) == up(a) ? 0 : (y - up(a)) / (up(b) - up(a))
+            return Point3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t)
         }
     }
 

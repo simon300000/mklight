@@ -133,12 +133,9 @@ private struct SampleCard: View {
                 switch thumbnail {
                 case .scene(let scene)?:
                     LayoutThumbnail(scene: scene).padding(Space.m)
-                case .schematic?:
-                    SchematicThumbnail(system: s)
-                        .padding(Space.m)
-                        .overlay(alignment: .bottomTrailing) {
-                            Text("Schematic").font(.caption2).foregroundStyle(.tertiary).padding(Space.s)
-                        }
+                case .unavailable?:
+                    Image(systemName: "eye.slash").font(.title2).foregroundStyle(.tertiary)
+                        .accessibilityLabel("No layout")
                 case nil:
                     ProgressView().controlSize(.small)
                 }
@@ -171,21 +168,20 @@ private struct SampleCard: View {
     }
 }
 
-/// The samples' layouts, computed once by the engine on its own session.
-/// Designs whose shapes the engine's layout does not draw yet get a
-/// schematic drawn from the model's sags.
+/// The samples' layouts, computed once by the engine on its own session
+/// (every surface type, extended shapes included).
 @MainActor
 @Observable
 final class SampleThumbnails {
     enum Item {
         case scene(LayoutScene)
-        case schematic
+        case unavailable
     }
     var items: [String: Item] = [:]
 
     func load(_ entries: [SampleSystems.Entry], engine: any EngineClient) async {
         for e in entries where items[e.id] == nil {
-            items[e.id] = await Self.scene(e.system, engine: engine).map(Item.scene) ?? .schematic
+            items[e.id] = await Self.scene(e.system, engine: engine).map(Item.scene) ?? .unavailable
         }
     }
 
@@ -224,6 +220,9 @@ struct LayoutThumbnail: View {
                 var path = Path()
                 path.move(to: p(l.points[0]))
                 for q in l.points.dropFirst() { path.addLine(to: p(q)) }
+                if l.doe && l.kind == .surfaceProfile {
+                    ctx.stroke(path, with: .color(Palette.slotColor(6).opacity(0.8)), style: StrokeStyle(lineWidth: 2.6, dash: [1.5, 1.5]))
+                }
                 switch l.kind {
                 case .ray:
                     ctx.stroke(path, with: .color(Palette.fieldColor(l.field ?? 0).opacity(0.75)), lineWidth: 0.6)
@@ -234,66 +233,6 @@ struct LayoutThumbnail: View {
                 default:
                     ctx.stroke(path, with: .color(.primary.opacity(0.85)), lineWidth: 1)
                 }
-            }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-/// A schematic section drawn from the model when the engine's layout does
-/// not support a design's surfaces yet: profiles from `ShapeSag` at the
-/// fixed semi-diameters (or a height from the entrance pupil).
-struct SchematicThumbnail: View {
-    let system: OpticalSystem
-
-    var body: some View {
-        Canvas { ctx, size in
-            let s = system
-            guard s.surfaces.count > 2 else { return }
-            let epd = s.aperture.kind == .entrancePupilDiameter ? (s.aperture.value ?? 10) : 10
-            var z = 0.0
-            var profiles: [(z: Double, h: Double, pts: [(Double, Double)], glass: Bool)] = []
-            for i in 1..<s.surfaces.count {
-                let sf = s.surfaces[i]
-                let h = sf.semiDiameter.fixedValue ?? sf.aperture?.boundingRadius ?? epd * 0.6
-                let pts = (0...24).compactMap { k -> (Double, Double)? in
-                    let y = -h + 2 * h * Double(k) / 24
-                    return ShapeSag.sag(sf.shape, x: 0, y: y).map { (z + $0, y) }
-                }
-                profiles.append((z, h, pts, !sf.material.isAir && sf.interaction == .refract && i < s.imageIndex))
-                if sf.thickness.isFinite { z += sf.thickness }
-            }
-            // The optical surfaces, with room around them; the image plane
-            // only when it is close (a schematic shows the lens, not the focus).
-            let optics = profiles.dropLast().flatMap(\.pts)
-            guard let oMin = optics.map(\.0).min(), let oMax = optics.map(\.0).max(), let hMax = profiles.map(\.h).max() else { return }
-            let margin = max((oMax - oMin) * 0.5, 2 * hMax)
-            let zMin = oMin - margin
-            let zMax = max(oMax + margin, min(profiles.last?.z ?? oMax, oMax + 3 * margin))
-            let scale = min(size.width / max(zMax - zMin, 1e-9), size.height * 0.8 / max(2 * hMax, 1e-9))
-            let yScale = scale
-            let ox = (size.width - (zMax - zMin) * scale) / 2
-            func p(_ q: (Double, Double)) -> CGPoint { CGPoint(x: ox + (q.0 - zMin) * scale, y: size.height / 2 - q.1 * yScale) }
-            for k in profiles.indices.dropLast() where profiles[k].glass {
-                let a = profiles[k].pts, b = profiles[k + 1].pts
-                guard a.count > 1, b.count > 1 else { continue }
-                var path = Path()
-                path.move(to: p(a[0]))
-                for q in a.dropFirst() { path.addLine(to: p(q)) }
-                for q in b.reversed() { path.addLine(to: p(q)) }
-                path.closeSubpath()
-                ctx.fill(path, with: .color(.accentColor.opacity(0.14)))
-                ctx.stroke(path, with: .color(.primary.opacity(0.85)), lineWidth: 1)
-            }
-            var axis = Path()
-            axis.move(to: CGPoint(x: 0, y: size.height / 2))
-            axis.addLine(to: CGPoint(x: size.width, y: size.height / 2))
-            ctx.stroke(axis, with: .color(.secondary.opacity(0.4)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-            if let last = profiles.last, last.z <= zMax, let a = last.pts.first, let b = last.pts.last {
-                var img = Path()
-                img.move(to: p(a))
-                img.addLine(to: p(b))
-                ctx.stroke(img, with: .color(.secondary), lineWidth: 1)
             }
         }
         .accessibilityHidden(true)
