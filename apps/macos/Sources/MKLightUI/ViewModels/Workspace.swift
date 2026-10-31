@@ -472,6 +472,24 @@ public final class Workspace {
         return job
     }
 
+    /// Starts a design job on `system`, a variant of the design (the
+    /// tolerance run's surfaces get placements that return to the axis),
+    /// on a snapshot of its own; the design's snapshot when they are equal.
+    public func submitJob(_ analysis: String, settings: [String: JSONValue], on system: OpticalSystem, key: String? = nil) async throws -> AnalysisJob {
+        guard let design = designSnapshot ?? snapshot, modelErrors.isEmpty else {
+            throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
+        }
+        guard system != design.system else { return try submitJob(analysis, settings: settings, key: key) }
+        if let d = descriptor(analysis), !d.available {
+            throw EngineError.unsupported(d.unavailableReason ?? "\(analysis) is not available")
+        }
+        let snap = try await documentEngine.openSnapshot(system)
+        let job = documentEngine.submit(
+            EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)), on: snap)
+        liveJobs.set("job:" + (key ?? analysis), job)
+        return job
+    }
+
     /// Solves the current design in the engine (`applySolves`).
     public func applySolves(settings: [String: JSONValue] = [:]) async throws -> SolveApplication {
         guard let snapshot = designSnapshot ?? snapshot else { throw EngineError.invalidModel(modelErrors) }

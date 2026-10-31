@@ -541,17 +541,32 @@ extension MockEngine {
         let nominal = 1e-3
         var ops: [JSONValue] = []
         var worst: [(Int, Double)] = []
-        let params = system.surfaces.dropFirst().dropLast().map { ParamPath.thickness(surface: $0.id) }
-        for (k, p) in params.enumerated() {
+        // The requested tolerances (else the engine's basic set: every thickness).
+        let requested: [(ParamPath, Double, Double, String)] = (s["tolerances"]?.array ?? []).compactMap { o in
+            guard let p = o["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }) else { return nil }
+            return (p, o["minus"]?.nf ?? 0.05, o["plus"]?.nf ?? 0.05, o["label"]?.string ?? "")
+        }
+        let params = requested.isEmpty
+            ? system.surfaces.dropFirst().dropLast().map { (ParamPath.thickness(surface: $0.id), 0.05, 0.05, "") } : requested
+        // Compensators sit at their nominal values and move a little per trial.
+        let comps: [(ParamPath, Double)] = (s["compensators"]?.array ?? []).compactMap { c in
+            guard let p = c["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }) else { return nil }
+            return (p, system.value(at: p) ?? 0)
+        }
+        let nominalComps = JSONValue.array(comps.map { .number($0.1) })
+        for (k, (p, minus, plus, label)) in params.enumerated() {
             try reporter.checkCancelled()
             let dm = nominal * 0.05 * rng.unit(), dp = nominal * 0.05 * rng.unit()
             worst.append((k, max(dm, dp)))
             ops.append(
                 .object([
-                    "index": .integer(Int64(k)), "label": .string(p.label(in: system)), "param": (try? JSONValue.from(p)) ?? .null,
-                    "minus": .number(0.05), "plus": .number(0.05), "criterion_minus": .number(nominal + dm),
+                    "index": .integer(Int64(k)), "label": .string(label.isEmpty ? p.label(in: system) : label),
+                    "param": (try? JSONValue.from(p)) ?? .null,
+                    "minus": .number(minus), "plus": .number(plus), "criterion_minus": .number(nominal + dm),
                     "criterion_plus": .number(nominal + dp), "change_minus": .number(dm), "change_plus": .number(dp),
                     "worst": .number(max(dm, dp)), "ok": .bool(true),
+                    "compensators_minus": .array(comps.map { .number($0.1 - 0.01 * Double(k + 1)) }),
+                    "compensators_plus": .array(comps.map { .number($0.1 + 0.02 * Double(k + 1)) }),
                 ]))
             reporter.report(0.3 * Double(k + 1) / Double(max(params.count, 1)), stage: "tolerance sensitivity")
         }
@@ -585,18 +600,19 @@ extension MockEngine {
                 "mean": num(mean), "std_dev": num(sd), "min": num(sorted.first ?? .nan), "max": num(sorted.last ?? .nan),
                 "percentiles": .array([50.0, 80, 90, 95, 98].map { .object(["percentile": .number($0), "value": num(pct($0))]) }),
                 "yield_fraction": .null, "threshold": .null, "cancelled": .bool(stopped), "criteria": nums(criteria),
+                "compensator_mean": .array(comps.map { .number($0.1 + 0.01) }), "compensator_std": .array(comps.map { _ in .number(0.05) }),
             ])
         let json = JSONValue.object([
             "status": .string(stopped ? "stopped" : "complete"), "stopped": .bool(stopped),
             "sensitivity": mode == "monte_carlo"
                 ? .null
                 : .object([
-                    "nominal": .object(["criterion": .number(nominal), "ok": .bool(true)]), "operands": .array(ops),
+                    "nominal": .object(["criterion": .number(nominal), "ok": .bool(true), "compensators": nominalComps]), "operands": .array(ops),
                     "ranking": .array(worst.sorted { $0.1 > $1.1 }.map { .integer(Int64($0.0)) }),
                     "rss_change": .number(rss), "predicted_criterion": .number(nominal + rss),
                     "evaluations": .integer(Int64(2 * ops.count + 1)), "cancelled": .bool(false),
                 ]),
-            "monte_carlo": mc, "compensators": .array([]),
+            "monte_carlo": mc, "compensators": s["compensators"] ?? .array([]),
         ])
         return (json, criteria.isEmpty ? [] : [ResultBuffer(name: "monte_carlo_criteria", doubles: criteria)])
     }
