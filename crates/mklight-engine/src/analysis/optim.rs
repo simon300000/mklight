@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use mklight_core::job::{CancelToken, Precision, Progress};
 use mklight_core::param::ParamPath;
-use mklight_core::{JobContext, MkError, OpticalSystem, Snapshot};
+use mklight_core::{JobContext, MkError, OpticalSystem, SemiDiameter, Snapshot, SurfaceShape};
 use mklight_gpu::xval::Qualification;
 use mklight_optim::deriv::{FdScheme, JacobianSettings};
 use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
@@ -57,7 +57,7 @@ use mklight_optim::problem::{
 };
 use mklight_optim::tolerance::{
     Compensator, MonteCarloSettings, OpticalToleranceEvaluator, SENSITIVITY_BATCH,
-    ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
+    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 use mklight_trace::{SemiDiameterSettings, SequentialTracer};
@@ -1773,8 +1773,7 @@ struct ToleranceSettings {
     default_merit: Value,
     mode: ToleranceMode,
     percentiles: Vec<f64>,
-    record_trials: bool,
-    record_limit: usize,
+    record_trials: usize,
     preview_case: Option<ToleranceCase>,
     irregularity_wavelength_um: Option<f64>,
     trials: usize,
@@ -1835,18 +1834,22 @@ impl Analysis for Tolerance {
                 "default_merit": default_merit_schema(default_merit),
                 "mode": {"type": "string", "enum": ["sensitivity", "monte_carlo", "both"],
                     "default": "both", "title": "Analysis"},
-                "percentiles": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 100}, "default": [50, 90, 97.7], "description": "Requested percentiles in [0,100], interpolated over successful trials in request order."},
-                "record_trials": {"type": "boolean", "default": false, "description": "Retain criterion, compensators, perturbations and seconds for the first record_limit trials."},
-                "record_limit": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
-                "preview_case": {"type": ["object", "null"], "default": null, "description": "Recompute only this case and return model JSON: {type:trial,trial} or {type:sensitivity,operand,positive}. Trial indices start at zero."},
-                "irregularity_wavelength_um": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null, "unit": "µm", "description": "Reflected fringe test wavelength; null uses the primary wavelength when creating an overlay."},
+                "percentiles": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 100},
+                    "default": [50, 90, 97.7], "title": "Percentiles",
+                    "description": "Monte Carlo percentiles of the successful criteria, linearly interpolated."},
+                "record_trials": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 0,
+                    "title": "Recorded trials", "description": "Keep perturbations and compensators of the first this many trials."},
+                "preview_case": {"type": ["object", "null"], "default": null, "title": "Preview case",
+                    "description": "Evaluate only this case and return its compensated system: {type:trial,trial} or {type:sensitivity,operand,positive}; zero-based."},
+                "irregularity_wavelength_um": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null, "unit": "µm",
+                    "title": "Irregularity test wavelength", "description": "Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength."},
                 "trials": {"type": "integer", "minimum": 1, "default": 100, "title": "Monte-Carlo trials"},
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "threshold": {"type": ["number", "null"], "default": null, "title": "Yield threshold",
                     "description": "Criterion value for the yield (criterion ≤ threshold)."},
                 "batch": {"type": "integer", "minimum": 1, "default": 16, "title": "Trials per batch"},
                 "compensator_iterations": {"type": "integer", "minimum": 1, "default": 20,
-                    "title": "Compensator iterations", "description": "Bracket refinement steps and maximum local LM iterations after the coarse criterion scan."},
+                    "title": "Compensator iterations"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation"},
                 "gpu_batch": {"type": "integer", "minimum": 1, "default": 512, "title": "GPU sub-batch"},
@@ -1944,12 +1947,8 @@ impl Analysis for Tolerance {
                         ),
                         (
                             "seconds_per_trial",
-                            arr(
-                                num("s", ""),
-                                "Elapsed per compensated trial; amortised batch wall time without compensation.",
-                            ),
+                            num("s", "Wall time over completed trials."),
                         ),
-                        ("mean_seconds_per_trial", num("s", "")),
                         (
                             "records",
                             arr(
@@ -1958,13 +1957,9 @@ impl Analysis for Tolerance {
                                     ("criterion", nf()),
                                     ("ok", boolean("")),
                                     ("compensators", arr(nf(), "")),
-                                    (
-                                        "perturbations",
-                                        arr(nf(), "In tolerance declaration order."),
-                                    ),
-                                    ("seconds", num("s", "")),
+                                    ("perturbations", arr(nf(), "In tolerance order.")),
                                 ]),
-                                "Capped by record_limit; empty unless record_trials.",
+                                "The first record_trials trials.",
                             ),
                         ),
                         ("trials", int("Completed trials.")),
@@ -2075,45 +2070,40 @@ impl Analysis for Tolerance {
             threshold: s.threshold,
             percentiles: s.percentiles.clone(),
             record_trials: s.record_trials,
-            record_limit: s.record_limit,
         };
         let mut spec = ToleranceSpec::new(s.tolerances.clone());
         spec.compensators = s.compensators.clone();
         spec.monte_carlo = mc.clone();
         spec.validate()?;
-        let irregularities: Vec<_> = spec
-            .operands
-            .iter()
-            .filter(|o| matches!(o.param, ParamPath::Irregularity { .. }))
+        // Freeze each irregular surface's nominal clear radius into a zero
+        // overlay: every trial then measures fringes over the same disk.
+        let irregular: Vec<&ParamPath> = (spec.operands.iter())
+            .map(|o| &o.param)
+            .filter(|p| matches!(p, ParamPath::Irregularity { .. }))
             .collect();
-        if !irregularities.is_empty() {
-            let trace = TraceEvaluator::new(input.library.clone());
-            let tr = trace
+        if !irregular.is_empty() {
+            let radii = TraceEvaluator::new(input.library.clone())
                 .tracer(&system)
-                .map_err(|e| invalid(format!("{e:?}")))?;
-            let radii = tr.semi_diameters_with(&Default::default(), &ctx.subrange(0.0, 0.0))?;
-            for o in irregularities {
-                let id = o.param.surface().unwrap();
-                let i = system.surfaces.iter().position(|sf| sf.id == id).unwrap();
+                .map_err(|e| invalid(format!("{e:?}")))?
+                .semi_diameters_with(&Default::default(), &ctx.subrange(0.0, 0.0))?;
+            for p in irregular {
+                let i = system.surface_index(p.surface().unwrap()).unwrap();
                 let semi = system.surfaces[i].semi_diameter;
-                if matches!(semi, mklight_core::SemiDiameter::Auto) {
-                    system.surfaces[i].semi_diameter = mklight_core::SemiDiameter::Fixed {
+                if semi == SemiDiameter::Auto {
+                    system.surfaces[i].semi_diameter = SemiDiameter::Fixed {
                         value: radii.values[i],
                     };
                 }
-                let v = o.param.get(&system)?;
-                o.param.set(&mut system, v)?;
-                system.surfaces[i].semi_diameter = semi;
-                let shape = match &mut system.surfaces[i].shape {
-                    mklight_core::SurfaceShape::Diffractive { base, .. } => &mut **base,
-                    shape => shape,
-                };
+                let fringes = p.get(&system)?;
+                p.set(&mut system, fringes)?;
+                let sf = &mut system.surfaces[i];
+                sf.semi_diameter = semi;
                 if let (
                     Some(w),
-                    mklight_core::SurfaceShape::SagOverlay {
+                    SurfaceShape::SagOverlay {
                         test_wavelength_um, ..
                     },
-                ) = (s.irregularity_wavelength_um, shape)
+                ) = (s.irregularity_wavelength_um, sf.shape.sag_shape_mut())
                 {
                     *test_wavelength_um = w;
                 }
@@ -2157,13 +2147,9 @@ impl Analysis for Tolerance {
             batch,
         );
         ctx.report(0.0, "qualifying the merit evaluator");
-        let has_overlay = system.surfaces.iter().any(|sf| match &sf.shape {
-            mklight_core::SurfaceShape::SagOverlay { .. } => true,
-            mklight_core::SurfaceShape::Diffractive { base, .. } => {
-                matches!(**base, mklight_core::SurfaceShape::SagOverlay { .. })
-            }
-            _ => false,
-        });
+        // Sag overlays are not packed for the GPU: run on the CPU, and say so.
+        let has_overlay = (system.surfaces.iter())
+            .any(|sf| matches!(sf.shape.sag_shape(), SurfaceShape::SagOverlay { .. }));
         let backend = if has_overlay {
             BackendChoice::Cpu
         } else {
@@ -2171,7 +2157,7 @@ impl Analysis for Tolerance {
         };
         let mut ev = Evaluation::new(backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
         if has_overlay && s.backend != BackendChoice::Cpu {
-            let reason = "Surface irregularity uses the CPU f64 reference; sag overlays are not packed for the GPU.";
+            let reason = "surface irregularity runs on the CPU: the GPU has no sag overlays";
             ev.warnings.push(reason.into());
             ev.fallback_reason = Some(reason.into());
         }
@@ -2189,7 +2175,7 @@ impl Analysis for Tolerance {
                 }
             };
             let (outcome, why) = interruptible(ctx, &stop, |inner| {
-                let evaluate = |e: &dyn OperandEvaluator| -> mklight_core::MkResult<_> {
+                let evaluate = |e: &dyn OperandEvaluator| {
                     let evaluator = OpticalToleranceEvaluator {
                         nominal: &system,
                         spec: &spec,
@@ -2198,17 +2184,14 @@ impl Analysis for Tolerance {
                         registry: &reg,
                         lsq,
                     };
-                    use mklight_optim::tolerance::ToleranceEvaluator;
-                    Ok(evaluator
-                        .evaluate_batch(&[deltas.clone()], inner)?
-                        .remove(0))
+                    evaluator.evaluate_batch(std::slice::from_ref(&deltas), inner)
                 };
                 match ev.active_gpu() {
                     Some(g) => evaluate(&g.clone().composite().with(ev.cpu.clone())),
                     None => evaluate(&ev.cpu),
                 }
             });
-            let preview = match outcome {
+            let preview = match outcome.map(|mut o| o.remove(0)) {
                 Ok(outcome) if outcome.ok => {
                     let snapshot = Snapshot::new(spec.case_system(
                         &system,
@@ -2216,7 +2199,8 @@ impl Analysis for Tolerance {
                         &outcome.compensators,
                     )?)?;
                     json!({"system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
-                        "criterion": num(outcome.criterion), "compensators": outcome.compensators, "perturbations": deltas})
+                        "criterion": num(outcome.criterion), "compensators": outcome.compensators,
+                        "perturbations": deltas})
                 }
                 Ok(_) | Err(MkError::Cancelled) => Value::Null,
                 Err(e) => return Err(e.into()),
@@ -2228,9 +2212,10 @@ impl Analysis for Tolerance {
             };
             ev.finish(input, s.backend, None, ctx)?;
             return Ok(AnalysisOutput {
-                json: json!({"status":status, "stopped":why == Interrupt::Stopped,
-                "sensitivity":null, "monte_carlo":null, "preview":preview,
-                "compensators":spec.compensators, "criterion_spec":criterion, "backend":ev.report}),
+                json: json!({"status": status, "stopped": why == Interrupt::Stopped,
+                    "sensitivity": null, "monte_carlo": null, "preview": preview,
+                    "compensators": spec.compensators, "criterion_spec": criterion,
+                    "backend": ev.report}),
                 warnings: ev.warnings,
                 ..Default::default()
             });
@@ -2328,13 +2313,13 @@ impl Analysis for Tolerance {
         let mc_json = mcr.as_ref().map(|r| {
             buffers.push(Buffer::f64_1d("monte_carlo_criteria", r.criteria.clone()));
             json!({
-                "nominal": {"criterion": num(r.nominal.criterion), "compensators": r.nominal.compensators.iter().map(|v|num(*v)).collect::<Vec<_>>(), "ok": r.nominal.ok},
+                "nominal": {"criterion": num(r.nominal.criterion), "ok": r.nominal.ok,
+                    "compensators": r.nominal.compensators},
                 "seconds_per_trial": r.seconds_per_trial,
-                "mean_seconds_per_trial": r.seconds_per_trial.iter().sum::<f64>() / r.trials.max(1) as f64,
-                "records": r.records.iter().map(|record| json!({"trial":record.trial,
-                    "criterion":num(record.outcome.criterion), "ok":record.outcome.ok,
-                    "compensators":record.outcome.compensators.iter().map(|v|num(*v)).collect::<Vec<_>>(),
-                    "perturbations":record.perturbations, "seconds":record.seconds})).collect::<Vec<_>>(),
+                "records": r.records.iter().map(|t| json!({"trial": t.trial,
+                    "criterion": num(t.outcome.criterion), "ok": t.outcome.ok,
+                    "compensators": t.outcome.compensators, "perturbations": t.perturbations}))
+                    .collect::<Vec<_>>(),
                 "trials": r.trials,
                 "failures": r.failures,
                 "seed": s.seed,
@@ -2736,14 +2721,14 @@ mod tests {
         }
     }
 
-    /// Sensitivity and Monte Carlo on the Cooke triplet with a back-focus
-    /// compensator: ranked sensitivities, reproducible Monte Carlo.
+    /// Index/Abbe offsets, records and percentiles; a trial preview
+    /// reproduces the recorded trial and its glass offsets.
     #[test]
     fn tolerance_catalogue_monte_carlo_and_preview() {
         use mklight_core::materials::lines;
         let system = samples::singlet();
         let settings = json!({"backend":"cpu", "mode":"monte_carlo", "trials":8, "seed":23,
-            "record_trials":true, "record_limit":3, "percentiles":[0,50,97.7,100],
+            "record_trials":3, "percentiles":[0,50,97.7,100],
             "tolerances":[
                 {"param":ParamPath::MaterialDnD {surface:SurfaceId(1)}, "minus":0.001,"plus":0.001},
                 {"param":ParamPath::MaterialDvD {surface:SurfaceId(1)}, "minus":0.5,"plus":0.5}],
@@ -2797,16 +2782,27 @@ mod tests {
             samples::hybrid_diffractive_achromat(),
         ] {
             let id = system.surfaces[2].id;
-            let settings = json!({"backend":"auto", "trials":3, "record_trials":true,
+            let settings = json!({"backend":"auto", "trials":3,
                 "irregularity_wavelength_um":0.55,
                 "tolerances":[{"param":ParamPath::Irregularity {surface:id,mode:IrregularityMode::Astigmatism},
                     "minus":0.25, "plus":0.25}]});
             let result = run(system.clone(), "tolerance", settings.clone()).unwrap();
             assert_eq!(result.json["monte_carlo"]["failures"], json!(0));
+            // The CPU fallback is reported, not silent.
+            assert!(
+                result
+                    .run_info
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("irregularity"))
+            );
             let sensitivity = &result.json["sensitivity"]["operands"][0];
             assert_eq!(sensitivity["ok"], json!(true));
             assert!(f(&sensitivity["worst"]) > 0.0);
-            assert!(!sensitivity["label"].as_str().unwrap().contains('{'));
+            assert_eq!(
+                sensitivity["label"],
+                json!(format!("Surface {}: Astigmatic irregularity", id.0))
+            );
             let mut settings = settings;
             settings["preview_case"] = json!({"type":"sensitivity","operand":0,"positive":true});
             let preview = run(system.clone(), "tolerance", settings).unwrap();
@@ -2833,6 +2829,8 @@ mod tests {
         }
     }
 
+    /// Sensitivity and Monte Carlo on the Cooke triplet with a back-focus
+    /// compensator: ranked sensitivities, reproducible Monte Carlo.
     #[test]
     fn tolerance_cooke_triplet() {
         let sys = samples::cooke_triplet();

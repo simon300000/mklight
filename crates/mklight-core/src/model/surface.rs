@@ -162,6 +162,19 @@ impl SurfaceShape {
         }
     }
 
+    /// The shape that carries the sag: a diffractive surface's base, else itself.
+    pub fn sag_shape(&self) -> &SurfaceShape {
+        match self {
+            SurfaceShape::Diffractive { base, .. } => base,
+            shape => shape,
+        }
+    }
+    pub fn sag_shape_mut(&mut self) -> &mut SurfaceShape {
+        match self {
+            SurfaceShape::Diffractive { base, .. } => base,
+            shape => shape,
+        }
+    }
     /// The serde `type` tag.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -513,6 +526,11 @@ impl Surface {
     }
     pub fn is_coordinate_break(&self) -> bool {
         matches!(self.shape, SurfaceShape::CoordinateBreak)
+    }
+    /// A tilt or decentre (own, or of a rigid range) starts here.
+    pub fn is_displaced(&self) -> bool {
+        self.placement.is_some_and(|p| !p.is_identity())
+            || (self.element_placement.as_ref()).is_some_and(|e| !e.motion.is_identity())
     }
 }
 

@@ -40,6 +40,11 @@ extension OpticalSystem {
             case .tiltY: return s.placement?.tiltY ?? 0
             case .tiltZ: return s.placement?.tiltZ ?? 0
             case .semiDiameter: return s.semiDiameter.fixedValue
+            case .irregularity(_, let mode):
+                guard case .sagOverlay(_, _, _, let a, let sph) = s.shape.sagShape else { return 0 }
+                return mode == .astigmatism ? a : sph
+            case .elementPlacement(_, _, _, let component):
+                return s.elementPlacement?.motion[keyPath: component.keyPath] ?? 0
             default: return nil
             }
         }
@@ -68,7 +73,7 @@ extension OpticalSystem {
             guard let i = surfaceIndex(of: id) else { return false }
             var s = surfaces[i]
             func placed(_ f: (inout Placement) -> Void) {
-                var p = s.placement ?? Placement()
+                var p = s.placement ?? Placement(restoreAfter: true)
                 f(&p)
                 s.placement = p
             }
@@ -101,6 +106,15 @@ extension OpticalSystem {
             case .tiltY: placed { $0.tiltY = v }
             case .tiltZ: placed { $0.tiltZ = v }
             case .semiDiameter: s.semiDiameter = .fixed(v)
+            case .irregularity(_, let mode):
+                let radius = s.aperture?.boundingRadius ?? s.semiDiameter.fixedValue
+                guard s.shape.setIrregularity(mode, v, clearRadius: radius, testWavelengthUm: primaryWavelengthUm)
+                else { return false }
+            case .elementPlacement(_, let last, let pivot, let component):
+                guard path.resolves(in: self) else { return false }
+                var e = s.elementPlacement ?? ElementPlacement(last: last, pivot: pivot)
+                e.motion[keyPath: component.keyPath] = v
+                s.elementPlacement = e
             default: return false
             }
             surfaces[i] = s
@@ -169,6 +183,10 @@ extension ParamPath {
         case .wavelengthWeight(let i): return "λ\(i + 1) weight"
         case .temperatureC: return "Temperature"
         case .pressureAtm: return "Pressure"
+        case .irregularity(_, let mode): return mode == .astigmatism ? "Astig. irregularity \(n)" : "Sph. irregularity \(n)"
+        case .elementPlacement(_, let last, _, let component):
+            let m = system.surfaceIndex(of: last).map(String.init) ?? "?"
+            return "\(component.title) \(n)–\(m)"
         }
     }
 
@@ -207,6 +225,9 @@ extension ParamPath {
             case .designWavelengthUm: return "µm"
             }
         case .tiltX, .tiltY, .tiltZ: return "°"
+        case .irregularity: return "fringes"
+        case .elementPlacement(_, _, _, let component):
+            return component == .decenterX || component == .decenterY ? "mm" : "°"
         case .apertureValue: return system.aperture.kind.unit
         case .fieldX, .fieldY: return system.fields.kind.unit
         case .wavelengthUm: return "µm"

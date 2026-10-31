@@ -65,6 +65,8 @@ pub enum ParamPath {
         surface: SurfaceId,
         mode: IrregularityMode,
     },
+    /// Rigid decentre (mm) or tilt (°) of the range `surface..=last` about
+    /// the `pivot` vertex (default `surface`).
     ElementPlacement {
         surface: SurfaceId,
         last: SurfaceId,
@@ -210,7 +212,7 @@ impl ParamPath {
     pub fn get(&self, s: &OpticalSystem) -> MkResult<f64> {
         use ParamPath::*;
         Ok(match self {
-            Irregularity { surface, mode } => match overlay_geometry(&surf(s, *surface)?.shape) {
+            Irregularity { surface, mode } => match surf(s, *surface)?.shape.sag_shape() {
                 SurfaceShape::SagOverlay {
                     astigmatism,
                     spherical,
@@ -227,25 +229,23 @@ impl ParamPath {
                 pivot,
                 component,
             } => {
-                let first = s
-                    .surfaces
-                    .iter()
-                    .position(|sf| sf.id == *surface)
-                    .ok_or_else(|| bad(self, "missing first surface"))?;
-                let end = s
-                    .surfaces
-                    .iter()
-                    .position(|sf| sf.id == *last)
-                    .ok_or_else(|| bad(self, "missing last surface"))?;
-                if first == 0 || end < first || end + 1 == s.surfaces.len() {
-                    return Err(bad(self, "expected an interior, ordered surface range"));
+                let first = s.surface_index(*surface);
+                let end = s.surface_index(*last);
+                let interior = match (first, end) {
+                    (Some(first), Some(end)) => {
+                        first > 0 && first <= end && end + 1 < s.surfaces.len()
+                    }
+                    _ => false,
+                };
+                if !interior || pivot.is_some_and(|id| s.surface_index(id).is_none()) {
+                    return Err(bad(
+                        self,
+                        "expected an interior, ordered range and existing pivot",
+                    ));
                 }
-                if let Some(id) = pivot {
-                    surf(s, *id)?;
-                }
-                match &s.surfaces[first].element_placement {
+                match &s.surfaces[first.unwrap()].element_placement {
                     Some(e) if e.last == *last && e.pivot == *pivot => component.get(&e.motion),
-                    Some(_) => return Err(bad(self, "different range or pivot on this vertex")),
+                    Some(_) => return Err(bad(self, "another range or pivot starts here")),
                     None => 0.0,
                 }
             }
@@ -403,29 +403,26 @@ impl ParamPath {
         }
         match self {
             Irregularity { surface, mode } => {
-                let wavelength = s.wavelengths.wavelengths[s.wavelengths.primary].um;
+                let wavelength = s.wavelengths.primary_um();
                 let sf = surf_mut(s, *surface)?;
-                let radius = sf
-                    .aperture
-                    .as_ref()
-                    .map(|a| a.bounding_radius())
-                    .or_else(|| match sf.semi_diameter {
-                        crate::model::SemiDiameter::Fixed { value } => Some(value),
-                        _ => None,
-                    });
-                let shape = overlay_geometry_mut(&mut sf.shape);
+                let radius = match (&sf.aperture, sf.semi_diameter) {
+                    (Some(a), _) => Some(a.bounding_radius()),
+                    (None, crate::model::SemiDiameter::Fixed { value }) => Some(value),
+                    _ => None,
+                };
+                let shape = sf.shape.sag_shape_mut();
+                if matches!(
+                    shape,
+                    SurfaceShape::CoordinateBreak | SurfaceShape::Paraxial { .. }
+                ) {
+                    return Err(bad(self, "surface has no manufacturing sag"));
+                }
                 if !matches!(shape, SurfaceShape::SagOverlay { .. }) {
-                    if matches!(
-                        shape,
-                        SurfaceShape::CoordinateBreak | SurfaceShape::Paraxial { .. }
-                    ) {
-                        return Err(bad(self, "surface has no manufacturing sag"));
-                    }
-                    let radius =
-                        radius.ok_or_else(|| bad(self, "irregularity requires a clear radius"))?;
+                    let base = Box::new(std::mem::replace(shape, SurfaceShape::Plane));
                     *shape = SurfaceShape::SagOverlay {
-                        base: Box::new(shape.clone()),
-                        norm_radius: radius,
+                        base,
+                        norm_radius: radius
+                            .ok_or_else(|| bad(self, "irregularity needs a fixed clear radius"))?,
                         test_wavelength_um: wavelength,
                         astigmatism: 0.0,
                         spherical: 0.0,
@@ -437,10 +434,10 @@ impl ParamPath {
                     ..
                 } = shape
                 {
-                    match mode {
-                        IrregularityMode::Astigmatism => *astigmatism = v,
-                        IrregularityMode::Spherical => *spherical = v,
-                    }
+                    *match mode {
+                        IrregularityMode::Astigmatism => astigmatism,
+                        IrregularityMode::Spherical => spherical,
+                    } = v;
                 }
             }
             ElementPlacement {
@@ -450,14 +447,13 @@ impl ParamPath {
                 component,
             } => {
                 self.get(s)?;
-                let sf = surf_mut(s, *surface)?;
-                let e = sf.element_placement.get_or_insert_with(|| {
+                let e = surf_mut(s, *surface)?.element_placement.get_or_insert(
                     crate::model::surface::ElementPlacement {
                         last: *last,
                         pivot: *pivot,
                         motion: Placement::default(),
-                    }
-                });
+                    },
+                );
                 component.set(&mut e.motion, v);
             }
             ShapeCoefficient {
@@ -630,19 +626,6 @@ impl ParamPath {
             PressureAtm => s.environment.pressure_atm = v,
         }
         Ok(())
-    }
-}
-
-fn overlay_geometry(shape: &SurfaceShape) -> &SurfaceShape {
-    match shape {
-        SurfaceShape::Diffractive { base, .. } => base,
-        _ => shape,
-    }
-}
-fn overlay_geometry_mut(shape: &mut SurfaceShape) -> &mut SurfaceShape {
-    match shape {
-        SurfaceShape::Diffractive { base, .. } => base,
-        _ => shape,
     }
 }
 

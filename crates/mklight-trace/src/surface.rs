@@ -144,6 +144,13 @@ pub fn intersect(
             }
             Ok(hit)
         }
+        // A zero overlay traces exactly as its base.
+        SurfaceShape::SagOverlay {
+            base,
+            astigmatism: 0.0,
+            spherical: 0.0,
+            ..
+        } => intersect(base, p, d, settings),
         SurfaceShape::CoordinateBreak => Ok(Hit {
             t_transfer: 0.0,
             t_surface: 0.0,
@@ -330,7 +337,13 @@ pub fn surface_normal(shape: &SurfaceShape, p: Vec3) -> Option<Vec3> {
             conic,
             coefficients,
         } => asphere_normal(*curvature, *conic, coefficients, p),
-        SurfaceShape::Diffractive { base, .. } => surface_normal(base, p),
+        SurfaceShape::Diffractive { base, .. }
+        | SurfaceShape::SagOverlay {
+            base,
+            astigmatism: 0.0,
+            spherical: 0.0,
+            ..
+        } => surface_normal(base, p),
         _ => mklight_core::surface_math::normal(shape, p.x, p.y),
     }
 }

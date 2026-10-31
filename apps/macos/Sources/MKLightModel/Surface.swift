@@ -180,6 +180,37 @@ public struct Placement: Codable, Sendable, Hashable {
     }
 }
 
+/// Rigid motion of the surfaces from this one through `last`, in this
+/// surface's axes, about the `pivot` vertex (`nil`: this one). Surfaces
+/// after the range keep their place (CONVENTIONS §2). `motion.order` and
+/// `motion.restoreAfter` have no effect here.
+public struct ElementPlacement: Codable, Sendable, Hashable {
+    public var last: SurfaceID
+    public var pivot: SurfaceID?
+    public var motion: Placement
+
+    public init(last: SurfaceID, pivot: SurfaceID? = nil, motion: Placement = Placement()) {
+        self.last = last
+        self.pivot = pivot
+        self.motion = motion
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        try c.allowOnly("last", "pivot", "motion")
+        last = try c.value("last")
+        pivot = try c.optional("pivot")
+        motion = try c.value("motion")
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: AnyKey.self)
+        try c.put(last, "last")
+        try c.putOptional(pivot, "pivot")
+        try c.put(motion, "motion")
+    }
+}
+
 /// Mechanical description of a lens edge (stray-light geometry).
 public struct EdgeSpec: Codable, Sendable, Hashable {
     /// `nil` means the clear aperture plus the default edge margin.
@@ -286,6 +317,8 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
     public var semiDiameter: SemiDiameter
     public var aperture: ApertureShape?
     public var placement: Placement?
+    /// Rigid motion of a surface range starting here (tolerancing).
+    public var elementPlacement: ElementPlacement?
     /// Name of a coating in `OpticalSystem.coatings`; `nil` is a bare interface.
     public var coating: String?
     public var scatter: ScatterModel?
@@ -297,7 +330,8 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         id: SurfaceID, label: String = "", shape: SurfaceShape = .plane, thickness: Double = 0,
         material: MaterialRef = .air, interaction: Interaction = .refract, semiDiameter: SemiDiameter = .auto,
         aperture: ApertureShape? = nil, placement: Placement? = nil, coating: String? = nil,
-        scatter: ScatterModel? = nil, diffractionEfficiency: DiffractionEfficiency = .ideal, edge: EdgeSpec = EdgeSpec()
+        scatter: ScatterModel? = nil, diffractionEfficiency: DiffractionEfficiency = .ideal, edge: EdgeSpec = EdgeSpec(),
+        elementPlacement: ElementPlacement? = nil
     ) {
         self.id = id
         self.label = label
@@ -308,6 +342,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         self.semiDiameter = semiDiameter
         self.aperture = aperture
         self.placement = placement
+        self.elementPlacement = elementPlacement
         self.coating = coating
         self.scatter = scatter
         self.diffractionEfficiency = diffractionEfficiency
@@ -320,7 +355,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         try c.allowOnly(
             "id", "label", "shape", "thickness", "material", "interaction", "semi_diameter", "aperture", "placement",
-            "coating", "scatter", "diffraction_efficiency", "edge")
+            "element_placement", "coating", "scatter", "diffraction_efficiency", "edge")
         id = try c.value("id")
         label = try c.value("label", default: "")
         shape = try c.value("shape")
@@ -330,6 +365,7 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         semiDiameter = try c.value("semi_diameter", default: .auto)
         aperture = try c.optional("aperture")
         placement = try c.optional("placement")
+        elementPlacement = try c.optional("element_placement")
         coating = try c.optional("coating")
         scatter = try c.optional("scatter")
         diffractionEfficiency = try c.value("diffraction_efficiency", default: .ideal)
@@ -347,6 +383,8 @@ public struct Surface: Codable, Sendable, Hashable, Identifiable {
         try c.put(semiDiameter, "semi_diameter")
         try c.putOptional(aperture, "aperture")
         try c.putOptional(placement, "placement")
+        // The engine omits an absent element placement.
+        if let elementPlacement { try c.put(elementPlacement, "element_placement") }
         try c.putOptional(coating, "coating")
         try c.putOptional(scatter, "scatter")
         try c.put(diffractionEfficiency, "diffraction_efficiency")

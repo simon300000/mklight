@@ -162,30 +162,24 @@ impl ResolvedSystem {
             frames[0] = f;
         }
 
-        // Entry and returning placements are evaluated as a frame pair: only
-        // the inclusive range moves; the downstream baseline is preserved.
+        // Rigid range motion about the pivot vertex, in the first vertex's
+        // axes. Frames after the range keep their place (a returning pair).
         for (i, sf) in sys.surfaces.iter().enumerate() {
-            if let Some(e) = &sf.element_placement {
-                if e.motion.is_identity() {
-                    continue;
-                }
-                let end = sys.surfaces.iter().position(|s| s.id == e.last).unwrap();
-                let pivot = e
-                    .pivot
-                    .and_then(|id| sys.surfaces.iter().position(|s| s.id == id))
-                    .unwrap_or(i);
-                let anchor = frames[i];
-                let point = frames[pivot].origin;
-                let motion = placement_frame(&e.motion);
-                let rotation = anchor
-                    .rot
-                    .mul_mat(&motion.rot)
-                    .mul_mat(&anchor.rot.transpose());
-                let shift = anchor.rot.mul_vec(motion.origin);
-                for f in &mut frames[i..=end] {
-                    f.origin = point + rotation.mul_vec(f.origin - point) + shift;
-                    f.rot = rotation.mul_mat(&f.rot);
-                }
+            let Some(e) = sf.element_placement.as_ref() else {
+                continue;
+            };
+            if e.motion.is_identity() {
+                continue;
+            }
+            let end = sys.surface_index(e.last).expect("validated range");
+            let pivot = frames[e.pivot.and_then(|id| sys.surface_index(id)).unwrap_or(i)].origin;
+            let anchor = frames[i].rot;
+            let motion = placement_frame(&e.motion);
+            let rotation = anchor.mul_mat(&motion.rot).mul_mat(&anchor.transpose());
+            let shift = anchor.mul_vec(motion.origin);
+            for f in &mut frames[i..=end] {
+                f.origin = pivot + rotation.mul_vec(f.origin - pivot) + shift;
+                f.rot = rotation.mul_mat(&f.rot);
             }
         }
         // --- Media, indices, coatings.

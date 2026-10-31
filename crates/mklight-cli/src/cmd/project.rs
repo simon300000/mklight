@@ -439,7 +439,7 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
         if let SurfaceShape::EvenAsphere { coefficients, .. } = &s.shape {
             notes.push(format!("{} asphere coeff.", coefficients.len()));
         }
-        if s.placement.is_some_and(|p| !p.is_identity()) {
+        if s.is_displaced() {
             notes.push("decenter/tilt".into());
         }
         if let Some(c) = &s.coating {

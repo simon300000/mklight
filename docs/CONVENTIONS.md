@@ -52,16 +52,11 @@ document on purpose in the same change.
   by the right-hand rule, unless `order = TiltThenDecenter`. A `CoordinateBreak`
   surface only changes the frame. Any surface's placement can be `Restore`d after
   the surface. Rotations act on the frame, so all following surfaces move too.
-* **Tolerance motion and irregularity.** A new single-surface parameter
-  placement restores after that surface; an explicit existing placement keeps
-  its return rule. `element_placement` applies the same rigid motion to an
-  inclusive surface-ID range, about its first vertex or a chosen pivot
-  vertex, with a returning frame after the range. Decentres are mm, tilts
-  degrees. `sag_overlay` irregularity is measured in reflected test fringes
-  (one fringe = λ_test/2 PV sag), split into astigmatic and primary spherical
-  parts over its clear radius. Test wavelength is µm; actual tracing uses
-  the sag in mm. Formula and reflected RMS: `OPTIMIZATION.md`, Irregularity
-  and rigid elements.
+* **Rigid ranges.** `element_placement` on a surface moves the inclusive
+  range up to its `last` surface rigidly (decentres mm, tilts degrees), in
+  that surface's axes, about its first vertex or a `pivot` vertex. Surfaces
+  after the range keep their frames. A decentre or tilt `ParamPath` on a
+  surface without a placement creates one with `restore_after`.
 * **Field angle** `θy > 0` means the chief ray's direction has a positive y
   component in object space. Field heights are measured on the object (or
   image) surface, in mm along +y/+x.

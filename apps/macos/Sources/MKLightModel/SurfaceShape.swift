@@ -38,6 +38,11 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
     /// `ZernikeTerm` (SURFACES §6).
     case zernikeSag(
         curvature: Double, conic: Double, normRadius: Double, ordering: ZernikeOrdering, coefficients: [Double])
+    /// Fringe irregularity on a geometric base (SURFACES §10): `astigmatism`
+    /// and `spherical` in test fringes (λ_test/2 PV sag each) over
+    /// `normRadius` (mm), `testWavelengthUm` in µm. Its `kind` is the base's.
+    indirect case sagOverlay(
+        base: SurfaceShape, normRadius: Double, testWavelengthUm: Double, astigmatism: Double, spherical: Double)
     /// Ideal thin lens of the given focal length (mm).
     case paraxial(focalLength: Double)
     /// Changes the frame only (uses the surface's `placement`).
@@ -97,6 +102,12 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
                 curvature: try c.value("curvature"), conic: try c.value("conic", default: 0),
                 normRadius: try c.value("norm_radius"), ordering: try c.value("ordering", default: .fringe),
                 coefficients: try c.value("coefficients"))
+        case "sag_overlay":
+            try c.allowOnly("type", "base", "norm_radius", "test_wavelength_um", "astigmatism", "spherical")
+            self = .sagOverlay(
+                base: try c.value("base"), normRadius: try c.value("norm_radius"),
+                testWavelengthUm: try c.value("test_wavelength_um"), astigmatism: try c.value("astigmatism"),
+                spherical: try c.value("spherical"))
         case "paraxial":
             try c.allowOnly("type", "focal_length")
             self = .paraxial(focalLength: try c.value("focal_length"))
@@ -151,19 +162,31 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
             try c.put(r, "norm_radius")
             try c.put(o, "ordering")
             try c.put(a, "coefficients")
+        case .sagOverlay(let base, let r, let w, let astigmatism, let spherical):
+            try c.put(base, "base")
+            try c.put(r, "norm_radius")
+            try c.put(w, "test_wavelength_um")
+            try c.put(astigmatism, "astigmatism")
+            try c.put(spherical, "spherical")
         case .paraxial(let f):
             try c.put(f, "focal_length")
         }
     }
 
     /// The JSON `type` tag (the engine's `SurfaceShape::type_name`).
-    public var typeName: String { kind.typeName }
+    public var typeName: String {
+        if case .sagOverlay = self { return "sag_overlay" }
+        return kind.typeName
+    }
 
     /// Whether the shape belongs to the engine's original solver subset
     /// (plane, conic, even asphere, paraxial, coordinate break). The engine's
     /// layout, Seidel, field curvature, ghost and merit evaluation reject
     /// systems with other shapes (`OpticalSystem::require_legacy_shapes`).
-    public var isLegacy: Bool { kind.isLegacy }
+    public var isLegacy: Bool {
+        if case .sagOverlay = self { return false }
+        return kind.isLegacy
+    }
 
     // MARK: Cylinder preset
 

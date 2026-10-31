@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use mklight_core::param::ParamPath;
+use mklight_core::param::{IrregularityMode, ParamPath, PlacementComponent};
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 
 use crate::lsq::{LsqSettings, least_squares};
@@ -86,6 +86,7 @@ impl ToleranceOperand {
         self.distribution = d;
         self
     }
+    /// `label`, or a readable name for the parameter.
     pub fn display_label(&self) -> String {
         if !self.label.trim().is_empty() {
             return self.label.clone();
@@ -98,18 +99,18 @@ impl ToleranceOperand {
         } = self.param
         {
             let component = match component {
-                mklight_core::param::PlacementComponent::DecenterX => "Decentre X",
-                mklight_core::param::PlacementComponent::DecenterY => "Decentre Y",
-                mklight_core::param::PlacementComponent::TiltX => "Tilt X",
-                mklight_core::param::PlacementComponent::TiltY => "Tilt Y",
-                mklight_core::param::PlacementComponent::TiltZ => "Tilt Z",
+                PlacementComponent::DecenterX => "Decenter X",
+                PlacementComponent::DecenterY => "Decenter Y",
+                PlacementComponent::TiltX => "Tilt X",
+                PlacementComponent::TiltY => "Tilt Y",
+                PlacementComponent::TiltZ => "Tilt Z",
             };
             return format!("Surfaces {}–{}: {component}", surface.0, last.0);
         }
         if let ParamPath::Irregularity { surface, mode } = self.param {
             let kind = match mode {
-                mklight_core::param::IrregularityMode::Astigmatism => "Astigmatic",
-                mklight_core::param::IrregularityMode::Spherical => "Spherical",
+                IrregularityMode::Astigmatism => "Astigmatic",
+                IrregularityMode::Spherical => "Spherical",
             };
             return format!("Surface {}: {kind} irregularity", surface.0);
         }
@@ -168,19 +169,15 @@ pub struct MonteCarloSettings {
     /// Criterion value for the yield statistic (`criterion ≤ threshold`).
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Reported percentiles of the successful criteria, in [0, 100].
     #[serde(default = "default_percentiles")]
     pub percentiles: Vec<f64>,
-    /// Retain the first `record_limit` completed trials when enabled.
+    /// Keep a `TrialRecord` for the first this many trials.
     #[serde(default)]
-    pub record_trials: bool,
-    #[serde(default = "default_record_limit")]
-    pub record_limit: usize,
+    pub record_trials: usize,
 }
 pub fn default_percentiles() -> Vec<f64> {
     vec![50.0, 90.0, 97.7]
-}
-pub fn default_record_limit() -> usize {
-    1000
 }
 
 impl Default for MonteCarloSettings {
@@ -191,8 +188,7 @@ impl Default for MonteCarloSettings {
             batch: 64,
             threshold: None,
             percentiles: default_percentiles(),
-            record_trials: false,
-            record_limit: default_record_limit(),
+            record_trials: 0,
         }
     }
 }
@@ -230,10 +226,25 @@ impl ToleranceSpec {
                 self.schema_version
             )));
         }
+        let mut ranges = BTreeMap::new();
         for (i, o) in self.operands.iter().enumerate() {
             if !(o.minus >= 0.0 && o.plus >= 0.0 && o.minus.is_finite() && o.plus.is_finite()) {
                 return Err(MkError::InvalidParam(format!(
                     "tolerance {i}: limits must be finite and ≥ 0"
+                )));
+            }
+            // One rigid motion per first surface: every trial would fail.
+            if let ParamPath::ElementPlacement {
+                surface,
+                last,
+                pivot,
+                ..
+            } = o.param
+                && *ranges.entry(surface).or_insert((last, pivot)) != (last, pivot)
+            {
+                return Err(MkError::InvalidParam(format!(
+                    "tolerance {i}: another range or pivot starts at surface {}",
+                    surface.0
                 )));
             }
         }
@@ -245,7 +256,7 @@ impl ToleranceSpec {
         let mut rng = Rng::new(seed, streams::TOLERANCE | trial);
         self.operands.iter().map(|o| o.sample(&mut rng)).collect()
     }
-    /// Reconstruct a reported case, including the final compensator values.
+    /// The system of a reported case: perturbed, with its final compensators.
     pub fn case_system(
         &self,
         nominal: &OpticalSystem,
@@ -259,7 +270,6 @@ impl ToleranceSpec {
         for (c, value) in self.compensators.iter().zip(compensators) {
             c.param.set(&mut system, *value)?;
         }
-        system.validate()?;
         Ok(system)
     }
     /// Apply perturbations to a copy of `nominal`. Several operands on the
@@ -305,19 +315,6 @@ impl TrialOutcome {
 
 /// Batched criterion evaluation for perturbation vectors.
 pub trait ToleranceEvaluator: Sync {
-    /// Batched evaluators report amortised wall time; independent compensated
-    /// trials override this to report each trial's own elapsed time.
-    fn evaluate_timed_batch(
-        &self,
-        perturbations: &[Vec<f64>],
-        ctx: &JobContext,
-    ) -> MkResult<Vec<(TrialOutcome, f64)>> {
-        let start = Instant::now();
-        let outcomes = self.evaluate_batch(perturbations, ctx)?;
-        let seconds = start.elapsed().as_secs_f64() / outcomes.len().max(1) as f64;
-        Ok(outcomes.into_iter().map(|o| (o, seconds)).collect())
-    }
-
     fn evaluate_batch(
         &self,
         perturbations: &[Vec<f64>],
@@ -465,14 +462,15 @@ pub struct TrialRecord {
     pub trial: usize,
     pub outcome: TrialOutcome,
     pub perturbations: Vec<f64>,
-    pub seconds: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MonteCarloReport {
+    /// The unperturbed system, compensated like a trial.
     pub nominal: TrialOutcome,
     pub records: Vec<TrialRecord>,
-    pub seconds_per_trial: Vec<f64>,
+    /// Wall time over completed trials (parallel trials overlap).
+    pub seconds_per_trial: f64,
     pub trials: usize,
     pub failures: usize,
     pub criteria: Vec<f64>,
@@ -502,19 +500,15 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<MonteCarloReport> {
     spec.validate()?;
-    if s.percentiles
-        .iter()
-        .any(|p| !p.is_finite() || !(0.0..=100.0).contains(p))
-        || s.record_limit > 10_000
-    {
+    if !s.percentiles.iter().all(|p| (0.0..=100.0).contains(p)) {
         return Err(MkError::InvalidParam(
-            "percentiles must be in [0,100]; record_limit must be ≤ 10000".into(),
+            "percentiles must be in [0, 100]".into(),
         ));
     }
     let nominal = evaluator
         .evaluate_batch(&[vec![0.0; spec.operands.len()]], &mon.job)?
         .remove(0);
-    let mut seconds_per_trial = Vec::with_capacity(s.trials);
+    let start = Instant::now();
     let mut records = Vec::new();
     let mut outcomes: Vec<TrialOutcome> = Vec::with_capacity(s.trials);
     let batch = s.batch.max(1);
@@ -529,23 +523,21 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
         let pts: Vec<Vec<f64>> = (t..end)
             .map(|i| spec.sample_trial(s.seed, i as u64))
             .collect();
-        match evaluator.evaluate_timed_batch(&pts, &mon.job) {
+        match evaluator.evaluate_batch(&pts, &mon.job) {
             Ok(o) => {
                 if o.len() != pts.len() {
                     return Err(MkError::Numerical(
                         "tolerance evaluator returned the wrong count".into(),
                     ));
                 }
-                for ((outcome, seconds), perturbations) in o.into_iter().zip(pts) {
-                    if s.record_trials && records.len() < s.record_limit {
+                for (outcome, perturbations) in o.into_iter().zip(pts) {
+                    if outcomes.len() < s.record_trials {
                         records.push(TrialRecord {
                             trial: outcomes.len(),
                             outcome: outcome.clone(),
                             perturbations,
-                            seconds,
                         });
                     }
-                    seconds_per_trial.push(seconds);
                     outcomes.push(outcome);
                 }
             }
@@ -610,7 +602,7 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
     Ok(MonteCarloReport {
         nominal,
         records,
-        seconds_per_trial,
+        seconds_per_trial: start.elapsed().as_secs_f64() / outcomes.len().max(1) as f64,
         trials: outcomes.len(),
         failures: outcomes.len() - ok.len(),
         criteria: outcomes.iter().map(|o| o.criterion).collect(),
@@ -651,56 +643,6 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     }
 }
 
-// A focus refinement repeatedly visits its bracket points and LM revisits
-// its start. Retain exact evaluations within one trial, avoiding repeated
-// pupil tracing/FFT setup without approximating a changed prescription.
-struct TrialCache<'a, E> {
-    evaluator: &'a E,
-    values: std::sync::Mutex<Vec<(OpticalSystem, Vec<Operand>, Vec<OperandValue>)>>,
-}
-impl<E: OperandEvaluator> OperandEvaluator for TrialCache<'_, E> {
-    fn supports(&self, kind: &OperandKind) -> bool {
-        self.evaluator.supports(kind)
-    }
-    fn fd_relative_step(&self, kind: &OperandKind, scheme: crate::deriv::FdScheme) -> Option<f64> {
-        self.evaluator.fd_relative_step(kind, scheme)
-    }
-    fn evaluate_batch(
-        &self,
-        systems: &[OpticalSystem],
-        operands: &[&Operand],
-        ctx: &JobContext,
-    ) -> MkResult<Vec<Vec<OperandValue>>> {
-        ctx.check()?;
-        let ops: Vec<Operand> = operands.iter().map(|o| (*o).clone()).collect();
-        let mut rows = vec![None; systems.len()];
-        {
-            let cache = self.values.lock().unwrap();
-            for (i, system) in systems.iter().enumerate() {
-                if let Some((_, _, values)) =
-                    cache.iter().find(|(s, o, _)| s == system && *o == ops)
-                {
-                    rows[i] = Some(values.clone());
-                }
-            }
-        }
-        let missing: Vec<usize> = (0..systems.len()).filter(|i| rows[*i].is_none()).collect();
-        if !missing.is_empty() {
-            let batch: Vec<_> = missing.iter().map(|i| systems[*i].clone()).collect();
-            let values = self.evaluator.evaluate_batch(&batch, operands, ctx)?;
-            let mut cache = self.values.lock().unwrap();
-            for (i, values) in missing.into_iter().zip(values) {
-                if cache.len() == 64 {
-                    cache.remove(0);
-                }
-                cache.push((systems[i].clone(), ops.clone(), values.clone()));
-                rows[i] = Some(values);
-            }
-        }
-        Ok(rows.into_iter().map(Option::unwrap).collect())
-    }
-}
-
 /// Model-level tolerance evaluator: perturb `nominal` by the spec, then
 /// (with compensators) minimise the criterion merit over them by least
 /// squares; the criterion is the resulting merit `Σ w r²`. A trial is `ok`
@@ -717,7 +659,7 @@ pub struct OpticalToleranceEvaluator<'a, E: OperandEvaluator> {
 
 impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
     fn one(&self, deltas: &[f64], ctx: &JobContext) -> MkResult<TrialOutcome> {
-        let Ok(mut sys) = self.spec.apply(self.nominal, deltas) else {
+        let Ok(sys) = self.spec.apply(self.nominal, deltas) else {
             return Ok(TrialOutcome::failed());
         };
         // The compensator solve shares the cancellation but not the
@@ -744,20 +686,13 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
                 })
             })
             .collect::<MkResult<_>>()?;
-        for c in &self.spec.compensators {
-            c.param.set(&mut sys, c.param.get(self.nominal)?)?;
-        }
-        let cache = TrialCache {
-            evaluator: self.evaluator,
-            values: std::sync::Mutex::new(Vec::new()),
-        };
-        let has_mtf = self
-            .criterion
-            .operands
-            .iter()
-            .any(|o| matches!(o.kind, OperandKind::Mtf { .. }));
-        let evaluator: &dyn OperandEvaluator = if has_mtf { &cache } else { self.evaluator };
-        let p = OpticalProblem::new(sys, vars, self.criterion.clone(), evaluator, self.registry)?;
+        let p = OpticalProblem::new(
+            sys,
+            vars,
+            self.criterion.clone(),
+            self.evaluator,
+            self.registry,
+        )?;
         if p.num_variables() == 0 {
             let vals = p.system_values(&[Some(p.base().clone())], ctx)?;
             let e = p.to_evaluation(vals);
@@ -774,68 +709,40 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             });
         }
         let mut x0 = p.start_point()?;
-        // Scan the complete bounded window from the nominal point. MTF focus
-        // has side lobes: a local derivative alone cannot select its main peak.
-        for j in 0..x0.len() {
-            let variable = &p.variables()[j];
-            if let (Some(lo), Some(hi)) = (variable.lower, variable.upper) {
-                if lo == hi {
-                    continue;
-                }
-                const INTERVALS: usize = 32;
-                let mut points = vec![x0.clone()];
-                for k in 0..=INTERVALS {
+        // MTF is not unimodal in focus, so LM from the start can settle on a
+        // side lobe. Screen each bounded compensator on a uniform grid first.
+        let multimodal =
+            (self.criterion.operands.iter()).any(|o| matches!(o.kind, OperandKind::Mtf { .. }));
+        for j in (0..x0.len()).filter(|_| multimodal) {
+            let (Some(lo), Some(hi)) = (p.variables()[j].lower, p.variables()[j].upper) else {
+                continue;
+            };
+            const STEPS: usize = 32;
+            let points: Vec<Vec<f64>> = (0..=STEPS)
+                .map(|k| {
                     let mut x = x0.clone();
-                    x[j] = lo + (hi - lo) * k as f64 / INTERVALS as f64;
-                    points.push(x);
+                    x[j] = lo + (hi - lo) * k as f64 / STEPS as f64;
+                    x
+                })
+                .chain([x0.clone()])
+                .collect();
+            let e = p.evaluate_batch(
+                &CandidateBatch::from_points(x0.len(), points.iter().map(Vec::as_slice)),
+                ctx,
+            )?;
+            let score = |k: usize| {
+                if total_violation(p.constraints(), e.constraints(k), e.status[k])
+                    <= mon.feasibility_tol
+                {
+                    merit(p.weights(), e.residuals(k), e.status[k])
+                } else {
+                    f64::INFINITY
                 }
-                let values = p.evaluate_batch(
-                    &CandidateBatch::from_points(x0.len(), points.iter().map(Vec::as_slice)),
-                    ctx,
-                )?;
-                let score = |k| {
-                    if total_violation(p.constraints(), values.constraints(k), values.status[k])
-                        <= mon.feasibility_tol
-                    {
-                        merit(p.weights(), values.residuals(k), values.status[k])
-                    } else {
-                        f64::INFINITY
-                    }
-                };
-                let best = (0..points.len())
-                    .min_by(|&a, &b| score(a).total_cmp(&score(b)))
-                    .unwrap();
-                x0 = points[best].clone();
-                if x0.len() == 1 {
-                    let step = (hi - lo) / INTERVALS as f64;
-                    let (mut a, mut b) = ((x0[j] - step).max(lo), (x0[j] + step).min(hi));
-                    let mut best_score = score(best);
-                    for _ in 0..self.lsq.max_iterations {
-                        ctx.check()?;
-                        let u = b - (b - a) * 0.6180339887498949;
-                        let v = a + (b - a) * 0.6180339887498949;
-                        let batch = CandidateBatch::from_points(1, [&[u][..], &[v][..]]);
-                        let e = p.evaluate_batch(&batch, ctx)?;
-                        let mut scores = [f64::INFINITY; 2];
-                        for k in 0..2 {
-                            if total_violation(p.constraints(), e.constraints(k), e.status[k])
-                                <= mon.feasibility_tol
-                            {
-                                scores[k] = merit(p.weights(), e.residuals(k), e.status[k]);
-                            }
-                            if scores[k] < best_score {
-                                best_score = scores[k];
-                                x0[j] = [u, v][k];
-                            }
-                        }
-                        if scores[0] <= scores[1] {
-                            b = v;
-                        } else {
-                            a = u;
-                        }
-                    }
-                }
-            }
+            };
+            let best = (0..points.len())
+                .min_by(|&a, &b| score(a).total_cmp(&score(b)))
+                .expect("non-empty scan");
+            x0[j] = points[best][j];
         }
         let r = least_squares(&p, &x0, &self.lsq, &mon)?;
         if r.termination == Termination::Cancelled {
@@ -850,27 +757,6 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
 }
 
 impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E> {
-    fn evaluate_timed_batch(
-        &self,
-        perturbations: &[Vec<f64>],
-        ctx: &JobContext,
-    ) -> MkResult<Vec<(TrialOutcome, f64)>> {
-        if self.spec.compensators.is_empty() {
-            let start = Instant::now();
-            let outcomes = self.uncompensated(perturbations, ctx)?;
-            let seconds = start.elapsed().as_secs_f64() / outcomes.len().max(1) as f64;
-            return Ok(outcomes.into_iter().map(|o| (o, seconds)).collect());
-        }
-        perturbations
-            .par_iter()
-            .map(|d| {
-                ctx.check()?;
-                let start = Instant::now();
-                Ok((self.one(d, ctx)?, start.elapsed().as_secs_f64()))
-            })
-            .collect()
-    }
-
     fn evaluate_batch(
         &self,
         perturbations: &[Vec<f64>],

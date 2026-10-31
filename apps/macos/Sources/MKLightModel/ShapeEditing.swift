@@ -77,17 +77,60 @@ extension SurfaceShape {
         case .biconic: .biconic
         case .xyPolynomial: .xyPolynomial
         case .zernikeSag: .zernikeSag
+        case .sagOverlay(let base, _, _, _, _): base.kind
         case .paraxial: .paraxial
         case .coordinateBreak: .coordinateBreak
         }
     }
 
-    /// The geometric surface: a diffractive surface's base, otherwise the
-    /// shape itself (the engine's `geometry`, one level deep). Curvature,
-    /// conic and asphere parameter paths address it.
-    public var geometry: SurfaceShape {
+    /// The shape carrying the sag: a diffractive surface's base, else itself
+    /// (the engine's `sag_shape`).
+    public var sagShape: SurfaceShape {
         if case .diffractive(let base, _) = self { return base }
         return self
+    }
+
+    /// The base of a sag overlay, else the shape itself.
+    var sagShapeBase: SurfaceShape {
+        if case .sagOverlay(let base, _, _, _, _) = self { return base }
+        return self
+    }
+
+    /// Sets fringe irregularity `mode`, wrapping the sag shape in a zero
+    /// overlay over `clearRadius` first, like the engine's
+    /// `ParamPath::Irregularity` setter. False for a paraxial lens or
+    /// coordinate break, or when a new overlay has no clear radius.
+    mutating func setIrregularity(
+        _ mode: IrregularityMode, _ v: Double, clearRadius: Double?, testWavelengthUm: Double
+    ) -> Bool {
+        if case .diffractive(var base, let phase) = self {
+            guard base.setIrregularity(mode, v, clearRadius: clearRadius, testWavelengthUm: testWavelengthUm)
+            else { return false }
+            self = .diffractive(base: base, phase: phase)
+            return true
+        }
+        switch self {
+        case .paraxial, .coordinateBreak: return false
+        case .sagOverlay(let base, let r, let w, let a, let s):
+            self = .sagOverlay(
+                base: base, normRadius: r, testWavelengthUm: w, astigmatism: mode == .astigmatism ? v : a,
+                spherical: mode == .spherical ? v : s)
+        default:
+            guard let clearRadius else { return false }
+            self = .sagOverlay(
+                base: self, normRadius: clearRadius, testWavelengthUm: testWavelengthUm,
+                astigmatism: mode == .astigmatism ? v : 0, spherical: mode == .spherical ? v : 0)
+        }
+        return true
+    }
+
+    /// The geometric surface without a diffractive phase or sag overlay (the
+    /// engine's `geometry`). Curvature, conic and asphere paths address it.
+    public var geometry: SurfaceShape {
+        switch self {
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): base.geometry
+        default: self
+        }
     }
 
     /// Vertex curvature as the engine's `SurfaceShape::curvature()`: the y
@@ -98,7 +141,7 @@ extension SurfaceShape {
         case .conic(let c, _), .evenAsphere(let c, _, _), .oddAsphere(let c, _, _), .qCon(let c, _, _, _),
             .qBfs(let c, _, _), .xyPolynomial(let c, _, _, _), .zernikeSag(let c, _, _, _, _):
             c
-        case .diffractive(let base, _): base.curvature
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): base.curvature
         case .toroid(_, let cy, _, _), .biconic(_, let cy, _, _, _, _): cy
         default: 0
         }
@@ -112,7 +155,7 @@ extension SurfaceShape {
         case .conic(_, let k), .evenAsphere(_, let k, _), .oddAsphere(_, let k, _), .qCon(_, let k, _, _),
             .xyPolynomial(_, let k, _, _), .zernikeSag(_, let k, _, _, _):
             k
-        case .diffractive(let base, _): base.conicConstant
+        case .diffractive(let base, _), .sagOverlay(let base, _, _, _, _): base.conicConstant
         case .toroid(_, _, let ky, _), .biconic(_, _, _, let ky, _, _): ky
         default: 0
         }
@@ -153,14 +196,26 @@ extension SurfaceShape {
         return false
     }
 
-    /// Applies `edit` to the geometry (a diffractive surface's base).
+    /// Applies `edit` to the base of a sag overlay; `nil` when not an overlay.
+    mutating func editOverlayBase(_ edit: (inout SurfaceShape) -> Bool) -> Bool? {
+        guard case .sagOverlay(var base, let r, let w, let a, let s) = self else { return nil }
+        guard edit(&base) else { return false }
+        self = .sagOverlay(base: base, normRadius: r, testWavelengthUm: w, astigmatism: a, spherical: s)
+        return true
+    }
+
+    /// Applies `edit` to the geometry (inside a diffractive phase or overlay).
     private mutating func editGeometry(_ edit: (inout SurfaceShape) -> Bool) -> Bool {
-        if case .diffractive(var base, let phase) = self {
-            guard edit(&base) else { return false }
+        switch self {
+        case .diffractive(var base, let phase):
+            guard base.editGeometry(edit) else { return false }
             self = .diffractive(base: base, phase: phase)
             return true
+        case .sagOverlay:
+            return editOverlayBase { $0.editGeometry(edit) } ?? false
+        default:
+            return edit(&self)
         }
-        return edit(&self)
     }
 
     /// Sets the curvature of the geometry, promoting a plane to a sphere,
@@ -341,8 +396,16 @@ extension ParamPath {
                 return "material is not a catalogue glass"
             case .semiDiameter:
                 return s.semiDiameter == .auto ? "semi-diameter is automatic" : nil
+            case .elementPlacement(_, let last, let pivot, _):
+                guard let end = system.surfaceIndex(of: last), i > 0, i <= end, end + 1 < system.surfaces.count,
+                    pivot.map({ system.surfaceIndex(of: $0) != nil }) ?? true
+                else { return "expected an interior, ordered range and existing pivot" }
+                if let e = s.elementPlacement, e.last != last || e.pivot != pivot {
+                    return "another range or pivot starts here"
+                }
+                return nil
             default:
-                return nil  // thickness, decenters and tilts exist on every surface
+                return nil  // thickness, decenters, tilts and irregularity exist on every surface
             }
         }
         switch self {

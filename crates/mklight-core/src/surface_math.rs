@@ -318,11 +318,14 @@ fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
             astigmatism,
             spherical,
         } => {
-            let (u, v, r2) = normalized(x, y, *norm_radius)?;
-            // PV(Z5)=2; PV(Z9)=3/2. Each reflected fringe is λ/2 sag PV.
+            // One reflected fringe is λ/2 PV sag; PV(X²−Y²) = 2 and
+            // PV(6r⁴−6r²) = 3/2 on the unit disk. Defined beyond it, no piston.
+            let (u, v) = (x * norm_radius.recip(), y * norm_radius.recip());
+            let s = u * u + v * v;
+            let wave = test_wavelength_um * 1e-3;
             sag_jet(base, x, y)?
-                + (u * u - v * v) * (*astigmatism * *test_wavelength_um * 1e-3 / 4.0)
-                + (r2 * r2 * 6.0 - r2 * 6.0 + 1.0) * (*spherical * *test_wavelength_um * 1e-3 / 3.0)
+                + (u * u - v * v) * (astigmatism * wave / 4.0)
+                + (s * s - s) * (spherical * wave * 2.0)
         }
         Plane | Paraxial { .. } | CoordinateBreak => Jet::ZERO,
         Conic {
@@ -635,12 +638,11 @@ pub fn system_symmetry(system: &OpticalSystem) -> Symmetry {
         .iter()
         .fold(Symmetry::Rotational, |mut symmetry, s| {
             symmetry = symmetry.max(shape_symmetry(&s.shape));
-            if let Some(e) = &s.element_placement {
-                if !e.motion.is_identity() {
-                    symmetry = Symmetry::None;
-                }
-            }
-            if let Some(p) = s.placement {
+            for p in s
+                .placement
+                .iter()
+                .chain(s.element_placement.as_ref().map(|e| &e.motion))
+            {
                 if p.decenter_x != 0.0 || p.tilt_y != 0.0 || p.tilt_z != 0.0 {
                     return Symmetry::None;
                 }

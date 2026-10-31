@@ -476,10 +476,6 @@ fn merit_jobs_reuse_failed_provider_qualification_and_fall_back() {
         let (mut actual, mut expected) = (fallback.json[key].clone(), cpu.json[key].clone());
         for result in [&mut actual, &mut expected] {
             result.as_object_mut().unwrap().remove("seconds_per_trial");
-            result
-                .as_object_mut()
-                .unwrap()
-                .remove("mean_seconds_per_trial");
         }
         assert_eq!(actual, expected);
     }

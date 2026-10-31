@@ -389,12 +389,10 @@ their unsupported-analysis errors.
 
 ## 10. Manufacturing sag overlays
 
-`sag_overlay` wraps a geometric `base` without changing its coefficients.
-Its `norm_radius` is mm, `test_wavelength_um` is µm, and `astigmatism` /
-`spherical` are reflected test fringes. The sag, gradient and Hessian use
-the same Cartesian jets as other shapes. On a diffractive surface the
-geometric base is wrapped, preserving the outer phase interaction. The
-normalised disk domain and base domain both apply. See `OPTIMIZATION.md`,
-Irregularity and rigid elements, for the exact PV/RMS convention and the
-CPU backend selection. An ideal paraxial lens and a coordinate break have
-no manufacturing sag interpretation.
+`sag_overlay` adds fringe irregularity to a geometric `base` (any shape
+except a coordinate break, ideal lens or diffractive surface; on a
+diffractive surface it wraps the base inside the phase). `norm_radius` is
+mm, `test_wavelength_um` µm, and `astigmatism`/`spherical` are test fringes
+(one fringe = λ_test/2 PV sag). The formula and RMS are in
+`OPTIMIZATION.md`, Irregularity and rigid elements. An overlay with zero
+fringes traces exactly as its base; others use the general sag intersection.

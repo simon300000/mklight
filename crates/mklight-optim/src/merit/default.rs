@@ -40,7 +40,7 @@
 use serde::{Deserialize, Serialize};
 
 use mklight_core::model::SemiDiameter;
-use mklight_core::param::{CoefficientSet, ParamPath};
+use mklight_core::param::{CoefficientSet, ParamPath, PlacementComponent};
 use mklight_core::surface_math::{Symmetry, system_symmetry};
 use mklight_core::{MkError, MkResult, OpticalSystem};
 
@@ -195,11 +195,16 @@ pub fn is_meridionally_symmetric(s: &OpticalSystem) -> bool {
 pub fn breaks_meridional_symmetry(p: &ParamPath) -> bool {
     matches!(
         p,
-        ParamPath::ElementPlacement { .. }
-            | ParamPath::DecenterX { .. }
+        ParamPath::DecenterX { .. }
             | ParamPath::TiltY { .. }
             | ParamPath::TiltZ { .. }
             | ParamPath::FieldX { .. }
+            | ParamPath::ElementPlacement {
+                component: PlacementComponent::DecenterX
+                    | PlacementComponent::TiltY
+                    | PlacementComponent::TiltZ,
+                ..
+            }
             | ParamPath::ShapeCoefficient {
                 set: CoefficientSet::Xy | CoefficientSet::Zernike,
                 ..

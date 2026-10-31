@@ -284,7 +284,9 @@ fn domain_radius(shape: &SurfaceShape) -> f64 {
         }
     };
     match *shape {
-        SurfaceShape::Diffractive { ref base, .. } => domain_radius(base),
+        SurfaceShape::Diffractive { ref base, .. } | SurfaceShape::SagOverlay { ref base, .. } => {
+            domain_radius(base)
+        }
         SurfaceShape::QCon { norm_radius, .. }
         | SurfaceShape::QBfs { norm_radius, .. }
         | SurfaceShape::XYPolynomial { norm_radius, .. }

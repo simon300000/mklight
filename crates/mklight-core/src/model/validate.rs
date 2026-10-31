@@ -645,7 +645,7 @@ impl OpticalSystem {
                     &format!("{p}.element_placement.motion"),
                     &e.motion,
                 );
-                let end = self.surfaces.iter().position(|sf| sf.id == e.last);
+                let end = self.surface_index(e.last);
                 if i == 0 || end.is_none_or(|end| end < i || end + 1 == self.surfaces.len()) {
                     out.push(
                         "invalid_element_range",
@@ -653,9 +653,7 @@ impl OpticalSystem {
                         "expected an interior ordered range",
                     );
                 }
-                if e.pivot
-                    .is_some_and(|id| !self.surfaces.iter().any(|sf| sf.id == id))
-                {
+                if e.pivot.is_some_and(|id| self.surface_index(id).is_none()) {
                     out.push(
                         "missing_surface",
                         format!("{p}.element_placement.pivot"),
