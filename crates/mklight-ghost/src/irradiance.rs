@@ -56,8 +56,11 @@
 //!
 //! # Determinism, parallelism, cancellation
 //!
-//! Rays are traced in parallel (rayon) in blocks; results are collected in
-//! the fixed order `(field, wavelength, pupil)` and accumulated sequentially
+//! Probes are cached by integer coordinates on the finest pupil lattice,
+//! separately for each path, field and wavelength. New probes are traced in
+//! contiguous rayon batches per refinement level, checking corners in the
+//! original short-circuit order. Leaves are collected in the fixed order
+//! `(field, wavelength, base cell, depth-first child)` and accumulated sequentially
 //! with Neumaier compensation, so maps are bit-identical run to run. The
 //! [`JobContext`] is checked before every block; progress is monotone and
 //! ends at 1.
@@ -68,6 +71,8 @@
 //! `(path, field, wavelength, pupil)`; starting rays depend only on
 //! `(field, wavelength, pupil)` and are shared by all paths. The kernel
 //! interface needed from a GPU backend is described in `docs/GHOST.md`.
+
+use std::collections::{HashMap, hash_map::Entry};
 
 use mklight_core::job::RunTimer;
 use mklight_core::math::KahanSum;
@@ -247,6 +252,7 @@ pub struct GhostIrradiance {
 struct StartRay {
     ray: Option<Ray>,
     pupil: [f64; 2],
+    lattice: [usize; 2],
     wl: usize,
     weight: f64,
 }
@@ -381,6 +387,7 @@ fn start_rays(
                         rays.push(StartRay {
                             ray,
                             pupil: [px, py],
+                            lattice: [(2 * ix + 1) * BASE_HALF, (2 * iy + 1) * BASE_HALF],
                             wl: w,
                             weight,
                         });
@@ -456,46 +463,207 @@ impl CellTrace<'_> {
             Err(_) => 3,
         }
     }
+}
 
-    fn integrate(
-        &self,
-        p: [f64; 2],
-        half: f64,
-        weight: f64,
-        centre: RayOut,
-        depth: u32,
-        out: &mut Vec<RayOut>,
-    ) {
-        let region = self.region(centre);
-        if depth > 0
-            && [-1.0, 1.0].iter().any(|x| {
-                [-1.0, 1.0]
-                    .iter()
-                    .any(|y| self.region(self.sample([p[0] + x * half, p[1] + y * half])) != region)
-            })
-        {
-            let half = half * 0.5;
-            for y in [-1.0, 1.0] {
-                for x in [-1.0, 1.0] {
-                    let child = [p[0] + x * half, p[1] + y * half];
-                    self.integrate(
-                        child,
-                        half,
-                        weight * 0.25,
-                        self.sample(child),
-                        depth - 1,
-                        out,
-                    );
+// Finest leaf centres are odd lattice coordinates; the base cell width is 32.
+const BASE_HALF: usize = 1 << BOUNDARY_DEPTH;
+
+#[derive(Clone, Copy)]
+enum Launch {
+    Start(Option<Ray>),
+    Pupil([f64; 2]),
+}
+
+struct Probe {
+    lattice: [usize; 2],
+    launch: Launch,
+}
+
+struct CachedProbe {
+    pupil_bits: [u64; 2],
+    previous: Option<usize>,
+}
+
+#[derive(Default)]
+struct ProbeCache {
+    indices: HashMap<[usize; 2], usize>,
+    values: Vec<RayOut>,
+    coordinates: Vec<CachedProbe>,
+    pending: Vec<Probe>,
+}
+
+impl ProbeCache {
+    fn request(&mut self, lattice: [usize; 2], pupil: [f64; 2], launch: Launch) -> usize {
+        let probe = Probe { lattice, launch };
+        let pupil_bits = pupil.map(f64::to_bits);
+        let index = self.coordinates.len();
+        let previous = match self.indices.entry(probe.lattice) {
+            Entry::Occupied(mut e) => {
+                let mut candidate = Some(*e.get());
+                while let Some(i) = candidate {
+                    let cached = &self.coordinates[i];
+                    if cached.pupil_bits == pupil_bits {
+                        return i;
+                    }
+                    candidate = cached.previous;
                 }
+                Some(e.insert(index))
+            }
+            Entry::Vacant(e) => {
+                e.insert(index);
+                None
+            }
+        };
+        // Non-dyadic grids can reach one lattice corner with different
+        // rounded coordinates, even on opposite sides of a boundary. Keep
+        // those variants separate to preserve the uncached subdivision.
+        self.coordinates.push(CachedProbe {
+            pupil_bits,
+            previous,
+        });
+        self.pending.push(probe);
+        index
+    }
+
+    fn flush(
+        &mut self,
+        sample: &(impl Fn(&Probe) -> RayOut + Sync),
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        for block in self.pending.chunks(BLOCK) {
+            ctx.check()?;
+            self.values
+                .par_extend(block.par_iter().with_min_len(64).map(sample));
+        }
+        self.pending.clear();
+        Ok(())
+    }
+}
+
+struct Cell {
+    pupil: [f64; 2],
+    lattice: [usize; 2],
+    centre: usize,
+    weight: f64,
+    children: Option<usize>,
+}
+
+impl Cell {
+    fn leaves(&self, cells: &[Cell], probes: &[RayOut], out: &mut Vec<RayOut>) {
+        if let Some(first) = self.children {
+            for child in &cells[first..first + 4] {
+                child.leaves(cells, probes, out);
             }
         } else {
-            out.push(match centre {
-                Ok(Some((x, y, w))) => Ok(Some((x, y, weight * w))),
+            out.push(match probes[self.centre] {
+                Ok(Some((x, y, w))) => Ok(Some((x, y, self.weight * w))),
                 Ok(None) => Ok(None),
-                Err(w) => Err(weight * w),
+                Err(w) => Err(self.weight * w),
             });
         }
     }
+}
+
+/// Cache probes on the finest lattice, retaining the recursive leaf order.
+/// Scope is one path, selected field and wavelength. Centres are requested
+/// before corners so their original floating-point coordinates are retained.
+fn integrate_cells(
+    starts: &[StartRay],
+    half: f64,
+    ctx: &JobContext,
+    sample: impl Fn(&Probe) -> RayOut + Sync,
+    region: impl Fn(RayOut) -> u8,
+) -> MkResult<Vec<Vec<RayOut>>> {
+    let mut cache = ProbeCache::default();
+    let mut cells: Vec<Cell> = starts
+        .iter()
+        .map(|s| Cell {
+            pupil: s.pupil,
+            lattice: s.lattice,
+            centre: cache.request(s.lattice, s.pupil, Launch::Start(s.ray)),
+            weight: s.weight,
+            children: None,
+        })
+        .collect();
+    cache.flush(&sample, ctx)?;
+    ctx.report(1.0 / (BOUNDARY_DEPTH + 1) as f64, "tracing ghost paths");
+    let mut active: Vec<usize> = (0..cells.len()).collect();
+    let mut radius = BASE_HALF;
+    let mut half = half;
+    while radius > 1 && !active.is_empty() {
+        ctx.check()?;
+        let mut split = vec![false; active.len()];
+        // Preserve the original x-outer, y-inner short circuit: corners after
+        // the first disagreement are never requested.
+        for x in [-1isize, 1] {
+            for y in [-1isize, 1] {
+                let probes: Vec<_> = active
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !split[*i])
+                    .map(|(i, &index)| {
+                        let c = &cells[index];
+                        let lattice = [
+                            c.lattice[0].wrapping_add_signed(x * radius as isize),
+                            c.lattice[1].wrapping_add_signed(y * radius as isize),
+                        ];
+                        let p = [c.pupil[0] + x as f64 * half, c.pupil[1] + y as f64 * half];
+                        (i, cache.request(lattice, p, Launch::Pupil(p)))
+                    })
+                    .collect();
+                cache.flush(&sample, ctx)?;
+                for (i, probe) in probes {
+                    split[i] = region(cache.values[probe])
+                        != region(cache.values[cells[active[i]].centre]);
+                }
+            }
+        }
+        half *= 0.5;
+        radius /= 2;
+        let mut next = Vec::new();
+        for (&index, split) in active.iter().zip(split) {
+            if !split {
+                continue;
+            }
+            let c = &cells[index];
+            let (p, lattice, weight) = (c.pupil, c.lattice, c.weight * 0.25);
+            cells[index].children = Some(cells.len());
+            for y in [-1isize, 1] {
+                for x in [-1isize, 1] {
+                    let pupil = [p[0] + x as f64 * half, p[1] + y as f64 * half];
+                    let lattice = [
+                        lattice[0].wrapping_add_signed(x * radius as isize),
+                        lattice[1].wrapping_add_signed(y * radius as isize),
+                    ];
+                    next.push(cells.len());
+                    cells.push(Cell {
+                        pupil,
+                        lattice,
+                        centre: cache.request(lattice, pupil, Launch::Pupil(pupil)),
+                        weight,
+                        children: None,
+                    });
+                }
+            }
+        }
+        cache.flush(&sample, ctx)?;
+        active = next;
+        let level = BOUNDARY_DEPTH - radius.trailing_zeros();
+        ctx.report(
+            (level + 1) as f64 / (BOUNDARY_DEPTH + 1) as f64,
+            "tracing ghost paths",
+        );
+    }
+    ctx.check()?;
+    ctx.report(1.0, "tracing ghost paths");
+    Ok(cells[..starts.len()]
+        .iter()
+        .map(|c| {
+            let mut out = Vec::new();
+            c.leaves(&cells, &cache.values, &mut out);
+            out
+        })
+        .collect())
 }
 
 /// Trace one path for all start rays; per-field maps and statistics.
@@ -519,62 +687,54 @@ fn run_path(
             Some(o)
         })
         .collect();
-    let locate = |i: usize| {
-        let f = offsets.partition_point(|&o| o <= i) - 1;
-        (f, i - offsets[f])
-    };
     let mut hits: Vec<Vec<Option<(f64, f64, f64)>>> = Vec::with_capacity(total);
     let (mut virtual_rays, mut virtual_flux) = (0usize, KahanSum::default());
-    let mut start = 0;
-    while start < total {
-        ctx.check()?;
-        let end = (start + BLOCK).min(total);
-        let block: Vec<Vec<RayOut>> = (start..end)
-            .into_par_iter()
-            .with_min_len(64)
-            .map(|i| {
-                let (f, j) = locate(i);
-                let s = &starts[f][j];
-                let cell = CellTrace {
-                    model,
-                    steps,
-                    field: &fields[f].field,
-                    wl: s.wl,
-                    overfill: settings.overfill,
-                    map: template,
-                };
-                let mut out = Vec::new();
-                cell.integrate(
-                    s.pupil,
-                    settings.overfill / settings.pupil_samples as f64,
-                    s.weight,
-                    cell.trace(s.ray),
-                    BOUNDARY_DEPTH,
-                    &mut out,
+    let mut done = 0;
+    for (f, rays) in starts.iter().enumerate() {
+        for group in rays.chunk_by(|a, b| a.wl == b.wl) {
+            let cell = CellTrace {
+                model,
+                steps,
+                field: &fields[f].field,
+                wl: group[0].wl,
+                overfill: settings.overfill,
+                map: template,
+            };
+            let block = integrate_cells(
+                group,
+                settings.overfill / settings.pupil_samples as f64,
+                &ctx.subrange(
+                    progress.0 + done as f64 / total as f64 * (progress.1 - progress.0),
+                    progress.0
+                        + (done + group.len()) as f64 / total as f64 * (progress.1 - progress.0),
+                ),
+                |probe| match probe.launch {
+                    Launch::Start(ray) => cell.trace(ray),
+                    Launch::Pupil(p) => cell.sample(p),
+                },
+                |sample| cell.region(sample),
+            )?;
+            for cell in block {
+                hits.push(
+                    cell.into_iter()
+                        .map(|o| match o {
+                            Ok(h) => h,
+                            Err(w) => {
+                                virtual_rays += 1;
+                                virtual_flux.add(w);
+                                None
+                            }
+                        })
+                        .collect(),
                 );
-                out
-            })
-            .collect();
-        for cell in block {
-            hits.push(
-                cell.into_iter()
-                    .map(|o| match o {
-                        Ok(h) => h,
-                        Err(w) => {
-                            virtual_rays += 1;
-                            virtual_flux.add(w);
-                            None
-                        }
-                    })
-                    .collect(),
+            }
+            done += group.len();
+            let f = done as f64 / total as f64;
+            ctx.report(
+                progress.0 + f * (progress.1 - progress.0),
+                "tracing ghost paths",
             );
         }
-        start = end;
-        let f = start as f64 / total as f64;
-        ctx.report(
-            progress.0 + f * (progress.1 - progress.0),
-            "tracing ghost paths",
-        );
     }
     let area = template.bin_area();
     let mut maps = Vec::with_capacity(fields.len());
@@ -810,4 +970,226 @@ pub fn ghost_irradiance(
         truncated,
         coverage,
     })
+}
+
+#[cfg(test)]
+impl CellTrace<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn uncached(
+        &self,
+        p: [f64; 2],
+        half: f64,
+        weight: f64,
+        centre: RayOut,
+        depth: u32,
+        out: &mut Vec<RayOut>,
+        probes: &mut Vec<[usize; 2]>,
+        lattice: [usize; 2],
+        radius: usize,
+    ) {
+        let region = self.region(centre);
+        if depth > 0
+            && [-1.0, 1.0].iter().any(|x| {
+                [-1.0, 1.0].iter().any(|y| {
+                    probes.push([
+                        lattice[0].wrapping_add_signed(*x as isize * radius as isize),
+                        lattice[1].wrapping_add_signed(*y as isize * radius as isize),
+                    ]);
+                    self.region(self.sample([p[0] + x * half, p[1] + y * half])) != region
+                })
+            })
+        {
+            let half = half * 0.5;
+            for y in [-1.0, 1.0] {
+                for x in [-1.0, 1.0] {
+                    let child = [p[0] + x * half, p[1] + y * half];
+                    let child_lattice = [
+                        lattice[0].wrapping_add_signed(x as isize * (radius / 2) as isize),
+                        lattice[1].wrapping_add_signed(y as isize * (radius / 2) as isize),
+                    ];
+                    probes.push(child_lattice);
+                    self.uncached(
+                        child,
+                        half,
+                        weight * 0.25,
+                        self.sample(child),
+                        depth - 1,
+                        out,
+                        probes,
+                        child_lattice,
+                        radius / 2,
+                    );
+                }
+            }
+        } else {
+            out.push(match centre {
+                Ok(Some((x, y, w))) => Ok(Some((x, y, weight * w))),
+                Ok(None) => Ok(None),
+                Err(w) => Err(weight * w),
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::GhostSettings;
+    use mklight_core::{ResolvedSystem, Snapshot, materials::MaterialLibrary, samples};
+    use std::sync::{Arc, Mutex};
+
+    fn double_gauss() -> GhostModel {
+        let snapshot = Snapshot::new(samples::double_gauss()).unwrap();
+        let system =
+            ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+        GhostModel::from_system(Arc::new(system), GhostSettings::default()).unwrap()
+    }
+
+    fn bits(sample: RayOut) -> (u8, [u64; 3]) {
+        match sample {
+            Ok(Some((x, y, w))) => (0, [x.to_bits(), y.to_bits(), w.to_bits()]),
+            Ok(None) => (1, [0; 3]),
+            Err(w) => (2, [0, 0, w.to_bits()]),
+        }
+    }
+
+    #[test]
+    fn cached_leaves_match_uncached_double_gauss() {
+        let model = double_gauss();
+        for n in [12, 20, 24, 21] {
+            let settings = IrradianceSettings {
+                fields: vec![0, 2],
+                wavelengths: vec![1],
+                pupil_samples: n,
+                overfill: match n {
+                    20 => 1.0,
+                    21 => 1.3,
+                    _ => 1.5,
+                },
+                map_bins: [24, 24],
+                map_half_size: Some([12.0, 12.0]),
+                ..Default::default()
+            };
+            let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
+            let starts = start_rays(&model, &fields, &[1], &settings).unwrap();
+            let template = IrradianceMap::new(settings.map_bins, settings.map_half_size.unwrap());
+            for path in [
+                GhostPath::primary(),
+                GhostPath::new(vec![9, 7]),
+                GhostPath::new(vec![8, 7]),
+                GhostPath::new(vec![11, 1]),
+            ] {
+                let steps = model.check_path(&path).unwrap();
+                for (field, starts) in fields.iter().zip(&starts) {
+                    let cell = CellTrace {
+                        model: &model,
+                        steps: &steps,
+                        field: &field.field,
+                        wl: 1,
+                        overfill: settings.overfill,
+                        map: &template,
+                    };
+                    let half = settings.overfill / n as f64;
+                    let cached = integrate_cells(
+                        starts,
+                        half,
+                        &JobContext::new(),
+                        |p| match p.launch {
+                            Launch::Start(ray) => cell.trace(ray),
+                            Launch::Pupil(p) => cell.sample(p),
+                        },
+                        |s| cell.region(s),
+                    )
+                    .unwrap();
+                    for (start, got) in starts.iter().zip(cached) {
+                        let mut expected = Vec::new();
+                        cell.uncached(
+                            start.pupil,
+                            half,
+                            start.weight,
+                            cell.trace(start.ray),
+                            BOUNDARY_DEPTH,
+                            &mut expected,
+                            &mut Vec::new(),
+                            start.lattice,
+                            BASE_HALF,
+                        );
+                        assert_eq!(
+                            got.iter().copied().map(bits).collect::<Vec<_>>(),
+                            expected.iter().copied().map(bits).collect::<Vec<_>>(),
+                            "n={n}, path={path:?}, pupil={:?}",
+                            start.pupil
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_lattice_point_is_traced_once() {
+        let model = double_gauss();
+        let settings = IrradianceSettings {
+            fields: vec![0],
+            wavelengths: vec![1],
+            pupil_samples: 12,
+            ..Default::default()
+        };
+        let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
+        let starts = start_rays(&model, &fields, &[1], &settings).unwrap();
+        let steps = model.check_path(&GhostPath::new(vec![9, 7])).unwrap();
+        let template = IrradianceMap::new([24, 24], [12.0, 12.0]);
+        let cell = CellTrace {
+            model: &model,
+            steps: &steps,
+            field: &fields[0].field,
+            wl: 1,
+            overfill: settings.overfill,
+            map: &template,
+        };
+        let traced = Mutex::new(Vec::new());
+        let leaves = integrate_cells(
+            &starts[0],
+            settings.overfill / 12.0,
+            &JobContext::new(),
+            |p| {
+                traced.lock().unwrap().push(p.lattice);
+                match p.launch {
+                    Launch::Start(ray) => cell.trace(ray),
+                    Launch::Pupil(p) => cell.sample(p),
+                }
+            },
+            |s| cell.region(s),
+        )
+        .unwrap();
+        let mut requested = Vec::new();
+        let mut uncached_leaves = Vec::new();
+        for start in &starts[0] {
+            requested.push(start.lattice);
+            cell.uncached(
+                start.pupil,
+                settings.overfill / 12.0,
+                start.weight,
+                cell.trace(start.ray),
+                BOUNDARY_DEPTH,
+                &mut uncached_leaves,
+                &mut requested,
+                start.lattice,
+                BASE_HALF,
+            );
+        }
+        let traced = traced.into_inner().unwrap();
+        let distinct: std::collections::HashSet<_> = traced.iter().copied().collect();
+        let expected: std::collections::HashSet<_> = requested.iter().copied().collect();
+        assert_eq!(distinct, expected);
+        assert_eq!(traced.len(), expected.len());
+        assert!(requested.len() > traced.len());
+        println!(
+            "uncached probes: {}, cached/distinct probes: {}",
+            requested.len(),
+            traced.len()
+        );
+        assert!(leaves.iter().map(Vec::len).sum::<usize>() > starts[0].len());
+        assert!(traced.len() > starts[0].len());
+    }
 }

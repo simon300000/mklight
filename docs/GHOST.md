@@ -302,12 +302,36 @@ fields of ghost peak/primary peak; meaningful for bins about a pixel and many
 rays per bin); both are 1 for the primary itself. Paths are ranked by `peak_ratio`; the total ghost map is the
 sum of path maps.
 
-Rays are traced with rayon in blocks of 16384; results are collected in the
-fixed order (field, wavelength, pupil) and binned sequentially with
-compensated sums, so maps are bit-identical between runs and thread counts
-(tested with rayon pools of 1 and 5 threads).
-The `JobContext` is checked before every block; progress is monotone and
-ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
+Each path/field/wavelength uses a probe cache keyed by integer coordinates
+on the finest lattice (32 units per base cell, including the finest leaf
+centres). Neighbouring cells share corners, and descendants reuse ancestor
+centres and corners. Failed, virtual and outside-source probes are cached
+too. Base starting rays remain shared across paths. The cache is discarded
+after each wavelength.
+
+On dyadic grids every distinct requested lattice point is sampled once.
+On other grids, the old recursive arithmetic can reach the same corner
+with different rounded coordinates. At a boundary these can classify
+differently (for example, Double Gauss at 20² with overfill 1 changes the
+number of zero-flux leaves if they are merged). To preserve exact legacy
+output, each integer lattice key retains separate results for those bitwise
+coordinate variants; each variant is traced once. No floating-point map
+keys or coordinate requantisation are used.
+
+Refinement proceeds level by level. Centres retain their original recursive
+floating-point coordinates and are requested before corners. Corners are
+checked in the original x-outer, y-inner order, in four rounds: a cell stops
+requesting corners after its first disagreement. Only cache misses enter
+contiguous rayon batches of at most 16384 probes. Leaves are then collected
+in the original (field, wavelength, base cell, depth-first child) order and
+binned sequentially with compensated sums. Thus caching changes tracing work
+without changing the accumulation order or leaf weights. Tests compare every
+weighted leaf bit-for-bit against the uncached recursive traversal on the
+Double Gauss (including non-dyadic grids), check the distinct probe set and
+trace count against that traversal, and compare complete results with rayon
+pools of 1 and 5 threads.
+The `JobContext` is checked before every probe block and refinement level;
+progress is monotone and ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
 and of the analysis, no seed: nothing is random).
 
 ### High-reflectance discrepancy: pupil quadrature, not transport
