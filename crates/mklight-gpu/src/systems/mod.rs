@@ -1,5 +1,4 @@
 //! Frozen systems seam; unsupported until its package qualifies it.
-#[allow(unused_imports)]
 use crate::{
     SystemHandle,
     resident::{BufferId, PlanView},

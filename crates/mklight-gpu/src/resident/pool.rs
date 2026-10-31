@@ -1,4 +1,5 @@
 //! Exact-size scratch reuse. Only idle allocations count toward the bound.
+//! Reuse prefers the most recently returned allocation; eviction the oldest.
 use mklight_core::MkResult;
 use std::{
     ops::{Deref, DerefMut},
@@ -28,9 +29,9 @@ impl<T> Pool<T> {
     ) -> MkResult<(Allocation<T>, bool)> {
         let cached = {
             let mut p = pool.lock().unwrap_or_else(|e| e.into_inner());
-            p.idle.iter().position(|(n, _)| *n == words).map(|i| {
+            p.idle.iter().rposition(|(n, _)| *n == words).map(|i| {
                 p.bytes -= words.max(4) * 4;
-                p.idle.swap_remove(i).1
+                p.idle.remove(i).1
             })
         };
         let reused = cached.is_some();
@@ -76,12 +77,10 @@ impl<T> Drop for Allocation<T> {
         if bytes > p.limit {
             return;
         }
+        // Evict the least recently returned allocations first.
         while p.bytes + bytes > p.limit {
-            if let Some((n, _)) = p.idle.pop() {
-                p.bytes -= n.max(4) * 4;
-            } else {
-                break;
-            }
+            let (n, _) = p.idle.remove(0);
+            p.bytes -= n.max(4) * 4;
         }
         p.idle.push((self.words, self.value.take().unwrap()));
         p.bytes += bytes;

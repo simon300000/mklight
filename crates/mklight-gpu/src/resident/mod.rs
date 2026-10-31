@@ -1,7 +1,7 @@
 //! Ordered resident plans. Buffers become immutable leases on publication;
 //! only explicit readback crosses back to host arrays. Plan-local storage has
 //! one writer and cannot alias imported buffers or another live submission.
-use crate::{ComputeBackend, Df32, Pending, ReduceMode, TraceRequest};
+use crate::{ComputeBackend, Df32, ReduceMode, TraceRequest};
 use mklight_core::job::{RunInfo, RunTimer};
 use mklight_core::{JobContext, MkError, MkResult, Snapshot};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ impl BufferDesc {
             shape: shape.into(),
         }
     }
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> MkResult<usize> {
         if self.shape.is_empty() {
             return Err(bad("buffer needs a shape"));
@@ -196,21 +197,38 @@ pub struct TraceBuffers {
 #[derive(Clone, Debug)]
 pub struct TraceUpload {
     request: Arc<TraceRequest>,
-    manifest: serde_json::Value,
     pub output: TraceBuffers,
 }
 impl TraceUpload {
     pub fn new(request: TraceRequest, output: TraceBuffers) -> Self {
-        let manifest = trace_manifest(&request);
         Self {
             request: Arc::new(request),
-            manifest,
             output,
         }
     }
     pub fn request(&self) -> &TraceRequest {
         &self.request
     }
+}
+/// Output planes of a trace, in `MKL_TRACE_*` order: f32 `[10,rays]`, u32
+/// `[3,rays]`, f32 `[slots,rays,9]` and u32 `[slots,rays]`.
+fn trace_descs(request: &TraceRequest) -> [BufferDesc; 4] {
+    use crate::consts::*;
+    let n = request.rays.len();
+    let slots = if request.record == crate::RecordMode::AllSurfaces {
+        request.program().len() + 1
+    } else {
+        0
+    };
+    [
+        BufferDesc::new(ElementType::F32, [MKL_TRACE_OUT_FLOATS as usize, n]),
+        BufferDesc::new(ElementType::U32, [MKL_TRACE_OUT_UINTS as usize, n]),
+        BufferDesc::new(
+            ElementType::F32,
+            [slots, n, MKL_TRACE_RECORD_FLOATS as usize],
+        ),
+        BufferDesc::new(ElementType::U32, [slots, n]),
+    ]
 }
 #[derive(Clone, Debug)]
 pub struct Sum {
@@ -283,27 +301,12 @@ impl ResidentPlan {
     }
     /// Add the legacy trace adapter and allocate its precisely sized planes.
     pub fn trace(&mut self, request: TraceRequest) -> TraceBuffers {
-        use crate::consts::*;
-        let n = request.rays.len();
-        let slots = if request.record == crate::RecordMode::AllSurfaces {
-            request.program().len() + 1
-        } else {
-            0
-        };
+        let [f, u, r, rs] = trace_descs(&request);
         let out = TraceBuffers {
-            floats: self.scratch(BufferDesc::new(
-                ElementType::F32,
-                vec![MKL_TRACE_OUT_FLOATS as usize, n],
-            )),
-            indices: self.scratch(BufferDesc::new(
-                ElementType::U32,
-                vec![MKL_TRACE_OUT_UINTS as usize, n],
-            )),
-            records: self.scratch(BufferDesc::new(
-                ElementType::F32,
-                vec![slots, n, MKL_TRACE_RECORD_FLOATS as usize],
-            )),
-            record_status: self.scratch(BufferDesc::new(ElementType::U32, vec![slots, n])),
+            floats: self.scratch(f),
+            indices: self.scratch(u),
+            records: self.scratch(r),
+            record_status: self.scratch(rs),
         };
         self.operations
             .push(ResidentOp::TraceUpload(Box::new(TraceUpload::new(
@@ -358,41 +361,14 @@ impl ResidentPlan {
         for op in &self.operations {
             let writes = match op {
                 ResidentOp::TraceUpload(t) => {
-                    let n = t.request.rays.len();
-                    let slots = if t.request.record == crate::RecordMode::AllSurfaces {
-                        t.request.program().len() + 1
-                    } else {
-                        0
-                    };
-                    use crate::consts::*;
-                    for (id, ty, shape) in [
-                        (
-                            t.output.floats,
-                            ElementType::F32,
-                            vec![MKL_TRACE_OUT_FLOATS as usize, n],
-                        ),
-                        (
-                            t.output.indices,
-                            ElementType::U32,
-                            vec![MKL_TRACE_OUT_UINTS as usize, n],
-                        ),
-                        (
-                            t.output.records,
-                            ElementType::F32,
-                            vec![slots, n, MKL_TRACE_RECORD_FLOATS as usize],
-                        ),
-                        (t.output.record_status, ElementType::U32, vec![slots, n]),
-                    ] {
-                        if self.desc(id)? != &BufferDesc::new(ty, shape) {
+                    let o = &t.output;
+                    let ids = vec![o.floats, o.indices, o.records, o.record_status];
+                    for (&id, desc) in ids.iter().zip(trace_descs(&t.request)) {
+                        if self.desc(id)? != &desc {
                             return Err(bad("trace output layout"));
                         }
                     }
-                    vec![
-                        t.output.floats,
-                        t.output.indices,
-                        t.output.records,
-                        t.output.record_status,
-                    ]
+                    ids
                 }
                 ResidentOp::Sum(s) => {
                     let d = self.desc(s.input.buffer)?;
@@ -526,18 +502,13 @@ pub struct ResidentCacheStats {
     pub pooled_bytes: u64,
     pub operation_cache_bytes: u64,
 }
-pub fn stamp(
-    plan: &ResidentPlan,
-    backend: &dyn ComputeBackend,
-    timer: RunTimer,
-    stats: &PlanStats,
-) -> RunInfo {
+pub fn stamp(plan: &ResidentPlan, backend: &dyn ComputeBackend, timer: RunTimer) -> RunInfo {
     let operations: Vec<_> = plan.operations.iter().map(|op| match op {
-        ResidentOp::TraceUpload(t) => t.manifest.clone(),
+        ResidentOp::TraceUpload(t) => trace_manifest(&t.request),
         ResidentOp::Sum(s) => serde_json::json!({"kind":"sum","input":s.input.buffer.0,"offset":s.input.offset,"shape":s.input.desc.shape,"mode":s.mode,"output":s.output.0}),
         _ => serde_json::json!({"kind":"domain","settings":plan.settings}),
     }).collect();
-    let settings = serde_json::json!({"plan_version":plan.version,"identity":plan.identity,"requested_backend":plan.identity.requested_backend.as_deref().unwrap_or(&backend.info().backend_id()),"used_backend":backend.info().backend_id(),"cost_decision":"explicit_backend","operation_settings":plan.settings,"operations":operations,"buffers":plan.buffers.iter().map(PlanBuffer::desc).collect::<Vec<_>>(),"device":backend.info(),"precision":backend.precision(),"stages":stats.stages});
+    let settings = serde_json::json!({"plan_version":plan.version,"identity":plan.identity,"requested_backend":plan.identity.requested_backend.as_deref().unwrap_or(&backend.info().backend_id()),"used_backend":backend.info().backend_id(),"cost_decision":"explicit_backend","operation_settings":plan.settings,"operations":operations,"buffers":plan.buffers.iter().map(PlanBuffer::desc).collect::<Vec<_>>(),"device":backend.info(),"precision":backend.precision()});
     timer.finish(
         &plan.snapshot,
         "resident_plan",
@@ -569,13 +540,11 @@ pub fn unsupported<T>(name: &str) -> MkResult<T> {
         "resident {name} is not implemented"
     )))
 }
-/// Common signature used by solver GPU adapters, with no Metal dependency.
-pub type SubmitPlan =
-    fn(&dyn ComputeBackend, ResidentPlan, &JobContext) -> MkResult<Pending<PlanResult>>;
 pub mod cache;
 pub mod cpu;
 pub mod immutable;
 pub mod pool;
+pub mod runtime;
 
 #[derive(Default)]
 pub struct Access {
@@ -624,28 +593,5 @@ pub struct PlanIdentity {
 }
 
 fn trace_manifest(r: &TraceRequest) -> serde_json::Value {
-    let mut h = blake3::Hasher::new();
-    for v in [
-        &r.rays.x,
-        &r.rays.y,
-        &r.rays.z,
-        &r.rays.l,
-        &r.rays.m,
-        &r.rays.n,
-        &r.rays.opl_hi,
-        &r.rays.opl_lo,
-        &r.rays.weight,
-        &r.rays.x_lo,
-        &r.rays.y_lo,
-        &r.rays.z_lo,
-        &r.rays.l_lo,
-        &r.rays.m_lo,
-        &r.rays.n_lo,
-    ] {
-        h.update(&(v.len() as u64).to_le_bytes());
-        h.update(bytemuck::cast_slice(v));
-    }
-    h.update(bytemuck::cast_slice(&r.rays.wavelength));
-    h.update(bytemuck::cast_slice(&r.rays.system));
-    serde_json::json!({"kind":"trace_upload","rays":r.rays.len(),"input_hash":h.finalize().to_hex().to_string(),"start_surface":r.start_surface,"end_surface":r.end_surface,"path":r.program().iter().map(|p|p.encode()).collect::<Vec<_>>(),"clip":r.apply_apertures,"radiometry":r.radiometry,"record":r.record,"newton":r.newton})
+    serde_json::json!({"kind":"trace_upload","rays":r.rays.len(),"start_surface":r.start_surface,"end_surface":r.end_surface,"path":r.program().iter().map(|p|p.encode()).collect::<Vec<_>>(),"clip":r.apply_apertures,"radiometry":r.radiometry,"record":r.record,"newton":r.newton})
 }

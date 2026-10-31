@@ -1,250 +1,133 @@
 //! Resident Metal execution. Mutable buffers stay worker-local; immutable
-//! leases and system Arcs pin resources through every committed completion.
+//! leases and system Arcs pin resources through every committed completion
+//! (each command buffer completes before the worker continues or returns).
 use crate::{
     backend::Uploaded,
     buffer::SharedBuffer,
     context::{CommandStats, MetalContext, PipelineKey},
 };
-use mklight_core::{JobContext, MkResult, job::RunTimer};
-use mklight_gpu::resident::immutable as super_cache;
+use mklight_core::{MkResult, job::RunTimer};
 use mklight_gpu::resident::{
-    pool::{Allocation, Pool},
+    immutable::OperationCacheKey,
+    pool::Allocation,
+    runtime::{self, OperationCache},
     *,
 };
 use mklight_gpu::{
-    ComputeBackend, PreparedTrace,
+    ComputeBackend, PreparedTrace, SystemHandle,
     consts::*,
     layout::{ReduceParams, TraceParams},
     pending::JobControl,
     reduce,
 };
-use objc2_metal::{MTLComputePipelineState, MTLDevice};
+use objc2_metal::MTLComputePipelineState;
 use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    any::Any,
+    collections::{HashMap, HashSet},
+    sync::Arc,
     time::Instant,
 };
 
 pub(crate) type Lease = Allocation<SharedBuffer<u32>>;
-pub(crate) struct Runtime {
-    owner: u64,
-    cache: Arc<Mutex<super_cache::ImmutableCache>>,
-    next: AtomicU64,
-    pool: Arc<Mutex<Pool<SharedBuffer<u32>>>>,
+pub(crate) type Runtime = runtime::Runtime<SharedBuffer<u32>>;
+impl runtime::Storage for SharedBuffer<u32> {
+    fn words(&self) -> &[u32] {
+        self.as_slice()
+    }
+    fn words_mut(&mut self) -> &mut [u32] {
+        self.as_mut_slice()
+    }
 }
-impl Runtime {
-    pub(crate) fn new(owner: u64) -> Self {
-        Self {
-            owner,
-            cache: Arc::new(Mutex::new(super_cache::ImmutableCache::new(64 << 20))),
-            next: AtomicU64::new(1),
-            pool: Arc::new(Mutex::new(Pool::new(256 << 20))),
-        }
-    }
-    pub(crate) fn operation_cache_bytes(&self) -> u64 {
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).bytes() as u64
-    }
+/// Resident trace commands are capped for cancellation latency.
+const MAX_TRACE_CHUNK: usize = 1 << 18;
 
-    pub(crate) fn pooled_bytes(&self) -> u64 {
-        self.pool.lock().unwrap_or_else(|e| e.into_inner()).bytes() as u64
-    }
-    fn take(&self, ctx: &MetalContext, words: usize, stats: &mut PlanStats) -> MkResult<Lease> {
-        let (b, reuse) = Pool::take(&self.pool, words, |n| ctx.buffer_filled(n, |_| {}))?;
-        if reuse {
-            stats.reused_allocations += 1;
-        } else {
-            stats.allocations += 1;
-        }
-        Ok(b)
-    }
-    fn publish(&self, desc: BufferDesc, b: Lease) -> BufferHandle {
-        BufferHandle::from_lease(
-            self.owner,
-            self.next.fetch_add(1, Ordering::Relaxed),
-            desc,
-            Arc::new(b),
-        )
-    }
-    pub(crate) fn upload(
-        &self,
-        ctx: &MetalContext,
-        desc: BufferDesc,
-        data: BufferData,
-    ) -> MkResult<BufferHandle> {
-        if desc.element != data.element() || desc.byte_len()? != data.words().len() * 4 {
-            return Err(bad("upload type or length"));
-        }
-        if desc.byte_len()? as u64 > ctx.device().maxBufferLength() as u64 {
-            return Err(bad("upload exceeds device limit"));
-        }
-        let mut b = self.take(ctx, data.words().len(), &mut PlanStats::default())?;
-        b.as_mut_slice().copy_from_slice(data.words());
-        Ok(self.publish(desc, b))
-    }
-    pub(crate) fn validate_import(&self, view: &BufferView) -> MkResult<()> {
-        view.buffer.lease::<Lease>(self.owner)?;
-        if view.stride != 1 {
-            return mklight_gpu::resident::unsupported("strided plan import");
-        }
-        Ok(())
-    }
-    pub(crate) fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback> {
-        ctx.check()?;
-        view.validate()?;
-        let t = Instant::now();
-        let b = view.buffer.lease::<Lease>(self.owner)?;
-        let width = view.desc.element.words();
-        let mut words = Vec::with_capacity(view.desc.byte_len()? / 4);
-        for i in 0..view.desc.len()? {
-            if i % 65536 == 0 {
-                ctx.check()?;
-            }
-            let a = (view.offset + i * view.stride) * width;
-            words.extend_from_slice(&b.as_slice()[a..a + width]);
-        }
-        ctx.check()?;
-        ctx.report(1., "readback");
-        Ok(Readback {
-            copied_bytes: (words.len() * 4) as u64,
-            data: BufferData::from_words(view.desc.element, &words),
-            wall_seconds: t.elapsed().as_secs_f64(),
-        })
-    }
-    pub(crate) fn execute(
-        &self,
-        backend: &dyn ComputeBackend,
-        gpu: &MetalContext,
-        plan: ResidentPlan,
-        pinned: HashMap<mklight_gpu::SystemHandle, Arc<Uploaded>>,
-        prepared: Vec<Option<PreparedTrace>>,
-        ctl: &JobControl,
-        chunk: usize,
-    ) -> MkResult<PlanResult> {
-        let timer = RunTimer::start();
-        let start = Instant::now();
-        ctl.check()?;
-        let mut x = Execution {
-            gpu,
-            runtime: self,
-            buffers: vec![],
-            stats: PlanStats::default(),
-            live_bytes: 0,
-            chunk: chunk.min(1 << 18),
-            sum_scratch: None,
-            systems: pinned.clone(),
-            cache: self.cache.clone(),
-            cache_identity: mklight_gpu::resident::SystemCacheKey {
-                snapshot: plan.snapshot.hash().to_hex(),
-                library: plan.identity.library_hash.clone(),
-                configuration: plan.identity.configuration.clone(),
-                spectrum: plan.identity.spectrum.clone(),
-                layout: MKL_LAYOUT_VERSION,
-                kernel_build: backend.precision().kernel_build.clone(),
-                operation_settings: plan.settings.to_string(),
-            },
-        };
-        let mut imported = std::collections::HashSet::new();
-        for b in &plan.buffers {
-            ctl.check()?;
-            if let PlanBuffer::Import(v) = b {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute(
+    rt: &Runtime,
+    backend: &dyn ComputeBackend,
+    gpu: &MetalContext,
+    plan: &ResidentPlan,
+    systems: HashMap<SystemHandle, Arc<Uploaded>>,
+    prepared: &[Option<PreparedTrace>],
+    ctl: &JobControl,
+    chunk: usize,
+) -> MkResult<PlanResult> {
+    let timer = RunTimer::start();
+    let start = Instant::now();
+    let mut x = Execution {
+        gpu,
+        rt,
+        buffers: vec![],
+        stats: PlanStats::default(),
+        live_bytes: 0,
+        chunk,
+        sum_scratch: None,
+        systems,
+        cache: rt.operation_cache(plan, &backend.precision().kernel_build),
+    };
+    let mut imported = HashSet::new();
+    for b in &plan.buffers {
+        let slot = match b {
+            PlanBuffer::Scratch(d) => Slot::Owned(x.allocate(d.byte_len()? / 4)?),
+            PlanBuffer::Import(v) => {
                 if imported.insert(v.buffer.generation()) {
                     x.live_bytes += v.buffer.desc().byte_len()?.max(16) as u64;
                     x.stats.peak_bytes = x.stats.peak_bytes.max(x.live_bytes);
                 }
+                Slot::Import(rt.lease(&v.buffer)?, v.offset * v.desc.element.words())
             }
-            let slot = match b {
-                PlanBuffer::Scratch(d) => Slot::Owned(x.allocate(d.byte_len()? / 4)?),
-                PlanBuffer::Import(v) => Slot::Import(
-                    v.buffer.lease::<Lease>(self.owner)?,
-                    v.offset * v.desc.element.words(),
-                ),
-            };
-            x.buffers.push(Some(slot));
-        }
-        let sum_words = plan
-            .operations
-            .iter()
-            .filter_map(|op| match op {
-                ResidentOp::Sum(s) => {
-                    Some(reduce::num_groups(s.input.desc.shape[1]) * s.input.desc.shape[0] * 2)
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        if sum_words > 0 {
-            x.sum_scratch = Some(x.allocate(sum_words)?);
-        }
-        for (i, op) in plan.operations.iter().enumerate() {
-            ctl.check()?;
-            let sub = ctl.subrange(
-                i as f64 / plan.operations.len() as f64,
-                (i + 1) as f64 / plan.operations.len() as f64,
-            );
-            let t = Instant::now();
-            let mut stage = StageStats {
-                operation: i,
-                ..Default::default()
-            };
-            match op {
-                ResidentOp::TraceUpload(t) => {
-                    stage.name = "trace".into();
-                    let up = x.system(t.request().systems)?;
-                    x.trace(t, &up, prepared[i].as_ref().unwrap(), &sub, &mut stage)?;
-                }
-                ResidentOp::Sum(s) => {
-                    stage.name = "sum".into();
-                    x.sum(s, &sub, &mut stage)?;
-                }
-                _ => dispatch(op, &mut x, &sub)?,
-            }
-            ctl.check()?;
-            ctl.report(
-                (i + 1) as f64 / plan.operations.len() as f64,
-                "resident plan",
-            );
-            stage.wall_seconds = t.elapsed().as_secs_f64();
-            x.stats.device_seconds += stage.device_seconds;
-            x.stats.command_buffers += stage.command_buffers;
-            x.stats.stages.push(stage);
-        }
-        ctl.check()?;
-        let mut outputs = vec![];
-        let mut published: HashMap<BufferId, BufferHandle> = HashMap::new();
-        for id in &plan.outputs {
-            let h = if let Some(h) = published.get(id) {
-                h.clone()
-            } else {
-                let h = match x.buffers[id.0].take().unwrap() {
-                    Slot::Owned(b) => self.publish(plan.desc(*id)?.clone(), b),
-                    _ => unreachable!(),
-                };
-                published.insert(*id, h.clone());
-                h
-            };
-            outputs.push(h);
-        }
-        let pack = Instant::now();
-        let mut run_info = stamp(&plan, backend, timer, &x.stats);
-        x.stats.stages.push(StageStats {
-            operation: plan.operations.len(),
-            name: "metadata".into(),
-            wall_seconds: pack.elapsed().as_secs_f64(),
-            ..Default::default()
-        });
-        x.stats.wall_seconds = start.elapsed().as_secs_f64();
-        run_info.settings["plan_stats"] = serde_json::to_value(&x.stats).unwrap();
-        ctl.check()?;
-        ctl.report(1., "resident plan");
-        Ok(PlanResult {
-            outputs,
-            stats: x.stats,
-            run_info,
-        })
+        };
+        x.buffers.push(Some(slot));
     }
+    // One partial plane, sized for the largest sum, serves every sum in order.
+    let sum_words = plan
+        .operations
+        .iter()
+        .filter_map(|op| match op {
+            ResidentOp::Sum(s) => {
+                Some(reduce::num_groups(s.input.desc.shape[1]) * s.input.desc.shape[0] * 2)
+            }
+            _ => None,
+        })
+        .max();
+    if let Some(n) = sum_words {
+        x.sum_scratch = Some(x.allocate(n)?);
+    }
+    let ops = plan.operations.len() as f64;
+    for (i, op) in plan.operations.iter().enumerate() {
+        ctl.check()?;
+        let sub = ctl.subrange(i as f64 / ops, (i + 1) as f64 / ops);
+        let t = Instant::now();
+        let mut stage = StageStats {
+            operation: i,
+            ..Default::default()
+        };
+        match op {
+            ResidentOp::TraceUpload(t) => {
+                stage.name = "trace".into();
+                let up = x.system(t.request().systems)?;
+                x.trace(t, &up, prepared[i].as_ref().unwrap(), &sub, &mut stage)?;
+            }
+            ResidentOp::Sum(s) => {
+                stage.name = "sum".into();
+                x.sum(s, &sub, &mut stage)?;
+            }
+            _ => {
+                stage.name = "domain".into();
+                dispatch(op, &mut x, &sub)?;
+            }
+        }
+        ctl.check()?;
+        ctl.report((i + 1) as f64 / ops, "resident plan");
+        stage.wall_seconds = t.elapsed().as_secs_f64();
+        x.stats.device_seconds += stage.device_seconds;
+        x.stats.command_buffers += stage.command_buffers;
+        x.stats.stages.push(stage);
+    }
+    let stats = std::mem::take(&mut x.stats);
+    rt.finish(plan, backend, timer, start, stats, ctl, |id| {
+        x.take_output(id)
+    })
 }
 enum Slot {
     Owned(Lease),
@@ -270,47 +153,44 @@ impl Slot {
         }
     }
 }
+/// Execution state handed to Metal package encoders.
 pub(crate) struct Execution<'a> {
-    cache: Arc<Mutex<super_cache::ImmutableCache>>,
-    cache_identity: mklight_gpu::resident::SystemCacheKey,
     pub(crate) gpu: &'a MetalContext,
-    runtime: &'a Runtime,
+    rt: &'a Runtime,
+    cache: OperationCache,
     buffers: Vec<Option<Slot>>,
     pub(crate) stats: PlanStats,
     live_bytes: u64,
     chunk: usize,
     sum_scratch: Option<Lease>,
-    systems: HashMap<mklight_gpu::SystemHandle, Arc<Uploaded>>,
+    systems: HashMap<SystemHandle, Arc<Uploaded>>,
 }
 impl Execution<'_> {
-    pub(crate) fn cached<T: std::any::Any + Send + Sync>(
-        &self,
-        key: &super_cache::OperationCacheKey,
-    ) -> MkResult<Option<Arc<T>>> {
-        self.cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(key)
+    /// Operation-cache key including the plan's full system/build/settings identity.
+    pub(crate) fn cache_key(&self, operation: impl Into<String>) -> OperationCacheKey {
+        self.cache.key(operation)
     }
-    pub(crate) fn cache<T: std::any::Any + Send + Sync>(
+    pub(crate) fn cached<T: Any + Send + Sync>(
         &self,
-        key: super_cache::OperationCacheKey,
+        key: &OperationCacheKey,
+    ) -> MkResult<Option<Arc<T>>> {
+        self.cache.get(key)
+    }
+    pub(crate) fn cache<T: Any + Send + Sync>(
+        &self,
+        key: OperationCacheKey,
         bytes: usize,
         value: Arc<T>,
     ) {
-        self.cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, bytes, value);
+        self.cache.insert(key, bytes, value)
     }
-
-    pub(crate) fn system(&self, handle: mklight_gpu::SystemHandle) -> MkResult<Arc<Uploaded>> {
+    /// A system pinned at submission (declared in the operation's accesses).
+    pub(crate) fn system(&self, handle: SystemHandle) -> MkResult<Arc<Uploaded>> {
         self.systems
             .get(&handle)
             .cloned()
             .ok_or_else(|| bad("system not declared in operation accesses"))
     }
-
     pub(crate) fn buffer(&self, view: &PlanView) -> (&SharedBuffer<u32>, usize) {
         let slot = self.buffers[view.buffer.0].as_ref().unwrap();
         (
@@ -326,7 +206,10 @@ impl Execution<'_> {
     }
 
     pub(crate) fn allocate(&mut self, n: usize) -> MkResult<Lease> {
-        let b = self.runtime.take(self.gpu, n, &mut self.stats)?;
+        let gpu = self.gpu;
+        let b = self
+            .rt
+            .take(n, &mut self.stats, |n| gpu.buffer_filled(n, |_| {}))?;
         self.live_bytes += n.max(4) as u64 * 4;
         self.stats.peak_bytes = self.stats.peak_bytes.max(self.live_bytes);
         Ok(b)
@@ -356,11 +239,7 @@ impl Execution<'_> {
             bytemuck::cast_slice_mut(ff.as_mut_slice()),
             fu.as_mut_slice(),
         );
-        let key = super_cache::OperationCacheKey {
-            system: self.cache_identity.clone(),
-            operation: format!("trace_steps:{:?}", prep.steps),
-            plan_version: PLAN_VERSION,
-        };
+        let key = self.cache_key(format!("trace_steps:{:?}", prep.steps));
         let steps = if let Some(steps) = self.cached::<SharedBuffer<u32>>(&key)? {
             steps
         } else {
@@ -381,9 +260,10 @@ impl Execution<'_> {
             "mkl_trace"
         };
         let pso = self.gpu.pipeline(&PipelineKey::plain(kernel))?;
-        for start in (0..n).step_by(self.chunk) {
+        let chunk = self.chunk.min(MAX_TRACE_CHUNK);
+        for start in (0..n).step_by(chunk) {
             ctl.check()?;
-            let len = self.chunk.min(n - start);
+            let len = chunk.min(n - start);
             let p = TraceParams {
                 num_rays: len as u32,
                 stride: n as u32,
@@ -436,8 +316,9 @@ impl Execution<'_> {
         Ok(())
     }
     fn sum(&mut self, s: &Sum, ctl: &JobControl, stage: &mut StageStats) -> MkResult<()> {
-        let count = s.input.desc.shape[1];
-        let channels = s.input.desc.shape[0];
+        let [channels, count] = s.input.desc.shape[..] else {
+            unreachable!("validated sum shape")
+        };
         let groups = reduce::num_groups(count);
         let threads = reduce::THREADS;
         let p1 = self
@@ -543,6 +424,6 @@ fn dispatch(op: &ResidentOp, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         ResidentOp::Ghost(r) => crate::ghost_ops::execute(r, x, ctl),
         ResidentOp::Stray(r) => crate::stray_ops::execute(r, x, ctl),
         ResidentOp::Optim(r) => crate::optim_ops::execute(r, x, ctl),
-        _ => Ok(()),
+        ResidentOp::TraceUpload(_) | ResidentOp::Sum(_) => unreachable!(),
     }
 }

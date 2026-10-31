@@ -1,9 +1,5 @@
 //! Frozen ghost_ops seam; unsupported until its package qualifies it.
-#[allow(unused_imports)]
-use crate::{
-    SystemHandle,
-    resident::{BufferId, PlanView},
-};
+use crate::resident::{BufferId, PlanView};
 use mklight_core::MkResult;
 /// Exact ordered surface/interaction/order words, shared with stray.
 #[derive(Clone, Debug)]

@@ -1094,8 +1094,10 @@ below are proposed Rust types; the C layout umbrella remains the authority.
 
 The compiling API is `mklight_gpu::resident` and the ten package modules
 in the table below. Engine dispatch is unchanged. Only the compatibility
-`TraceUpload` and `Sum` operations execute in P0; all domain handlers and
-solver adapters return `Unsupported` until their owners qualify them.
+`TraceUpload` and `Sum` operations execute in P0; all domain handlers
+return `Unsupported` until their owners qualify them. The solver crates
+(analysis, wave, ghost, stray, optim) depend on `mklight-gpu` and declare an
+empty public `gpu` adapter module for their package to fill in.
 
 `ComputeBackend` adds object-safe methods:
 
@@ -1128,16 +1130,17 @@ waits for its last committed command before releasing any resources.
 measure offsets/strides in **typed elements**, with the stride applied to
 the flattened row-major index. P0 plan imports and sums require stride 1;
 explicit final readback accepts a strided view. Empty buffers are legal;
-a sum requires positive `[channels,count]`. Rust request structs contain
-host metadata/IDs and are never memcpy'd to a shader. The C header umbrella
-registers each package's 16-byte operation descriptor (`input`, `output`,
-`count`, `flags`, four u32 words, alignment 4); package-specific numeric
-sidecars belong in that package's header. Packed system layout v6 and all
-existing trace/reduction layouts and constants remain unchanged.
+a sum requires positive `[channels,count]`. Scratch destinations come from
+an exact-size pool and start with unspecified contents: an operation writes
+every element it publishes. Rust request structs contain host metadata/IDs
+and are never memcpy'd to a shader. The C header umbrella includes one empty
+`include/mklight_<module>_types.h` per package for its numeric records; its
+`MKL_*` defines join the generated Rust constants. Packed system layout v6
+and all existing trace/reduction layouts and constants remain unchanged.
 
-`TraceUpload::new(request, output)` keeps immutable shared host inputs and a
-manifest/digest computed once during plan construction. It adapts the
-existing host ray batch without altering the trace algorithm. The four
+`TraceUpload::new(request, output)` shares its immutable host request between
+plan clones and adapts the existing host ray batch without altering the
+trace algorithm. The four
 outputs are f32 `[10,rays]`, u32 `[3,rays]`, f32
 `[record_slots,rays,9]`, and u32 `[record_slots,rays]`, using the existing
 `MKL_TRACE_*` plane order. No-record buffers have zero slots.
@@ -1166,31 +1169,35 @@ separate two-word logical IDs. `ResidentHits` adds status and optional
 record/residual sidecars; P1 must retain hi+lo geometry internally.
 The central routers invoke the frozen `validate(request, plan)`,
 `accesses(request) -> Access { reads, writes, systems }`, and
-`execute(request, execution, control)` hooks. Referenced immutable systems are pinned at submission, and both execution
-contexts provide a system lookup for package handlers. CPU execution exposes word
+`execute(request, execution, control)` hooks. Referenced immutable systems
+are pinned at submission, and both execution contexts provide a system
+lookup and the operation-cache hooks `cache_key(operation)`, `cached<T>` and
+`cache<T>` for package handlers. CPU execution exposes word
 slices; Metal execution exposes typed view bindings, exclusive output
 leases, pooled temporaries and the existing command encoder. New owners
 change these handlers without editing crate roots or central routers.
 
 The pool holds at most 256 MiB of idle storage per backend; immutable
 system caching holds at most 64 entries and 64 MiB. A separate immutable
-operation cache (64 entries / 64 MiB) is available through execution
-`cached<T>` / `cache<T>` hooks for aim seeds, transform plans, twiddles,
-pupils and stencils, keyed by full system/build/settings identity and
-operation/version. P0 uses it for path-program buffers. The pipeline cache
+operation cache (64 entries / 64 MiB) serves aim seeds, transform plans,
+twiddles, pupils and stencils; `cache_key(operation)` combines the plan's
+snapshot/library/configuration/spectrum, layout, build and settings
+identity with the operation name and plan version. P0 uses it for path-program buffers. The pipeline cache
 holds at most 128 specialisations; live jobs retain evicted objects. Active leases/handles
 pin resources outside idle-cache limits. System cache identity includes
 snapshot/library/configuration/spectrum, layout, build and operation
 settings, plus a digest of the actual packed content. Cache hits issue
 independently releasable handles. P0 caps resident trace commands at 262,144
-rays and partitions reduction groups without changing the tree. Limits
+rays; sums use the backend chunk and partition reduction groups without
+changing the tree. The idle pool reuses the most recently returned buffer
+of the exact size and evicts the oldest. Limits
 are resource/cancellation controls, not engine backend selection thresholds.
 
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
 uploaded/readback and parameter-block bytes, peak live plan storage and fallback/polish counts.
 The run records the actual backend/precision/build/probe, version, identity,
-legacy operation manifest/input digest, seed and stage stats. Domain-specific
+operation manifest, seed and stage stats. Domain-specific
 settings belong in `ResidentPlan.settings`. Explicit `Readback` reports its
 own copied bytes and wall time: plan execution has zero readback bytes. Worker wall time excludes caller-side
 submission/validation; benchmark end-to-end wall time includes them and final

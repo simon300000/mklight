@@ -1046,6 +1046,12 @@ impl PackedSystemSet {
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty()
     }
+    /// Device bytes of the header, surface and coefficient tables.
+    pub fn byte_len(&self) -> usize {
+        size_of_val(self.headers.as_slice())
+            + size_of_val(self.surfaces.as_slice())
+            + size_of_val(self.coefficients.as_slice())
+    }
     pub fn header_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.headers)
     }

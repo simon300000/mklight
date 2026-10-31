@@ -1,9 +1,5 @@
 //! Frozen geometry seam; unsupported until its package qualifies it.
-#[allow(unused_imports)]
-use crate::{
-    SystemHandle,
-    resident::{BufferId, PlanView},
-};
+use crate::resident::{BufferId, PlanView};
 use mklight_core::MkResult;
 #[derive(Clone, Copy, Debug)]
 pub enum GeometryKind {

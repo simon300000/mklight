@@ -48,7 +48,7 @@ struct Inner {
     instance: u64,
     next_id: AtomicU64,
     systems: Mutex<HashMap<u64, Arc<PackedSystemSet>>>,
-    resident: crate::resident::cpu::Runtime,
+    resident: crate::resident::runtime::Runtime<Vec<u32>>,
     cache: Mutex<crate::resident::cache::SystemCache<PackedSystemSet>>,
 }
 
@@ -108,7 +108,7 @@ impl CpuF32Backend {
                 ),
             },
             instance,
-            resident: crate::resident::cpu::Runtime::new(instance),
+            resident: crate::resident::runtime::Runtime::new(instance),
             cache: Mutex::new(crate::resident::cache::SystemCache::new(64 << 20)),
             next_id: AtomicU64::new(1),
             systems: Mutex::new(HashMap::new()),
@@ -120,6 +120,12 @@ impl CpuF32Backend {
 }
 
 impl Inner {
+    fn register(&self, set: Arc<PackedSystemSet>) -> SystemHandle {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let count = set.len() as u32;
+        (self.systems.lock().unwrap_or_else(|e| e.into_inner())).insert(id, set);
+        SystemHandle::new(self.instance, id, count)
+    }
     fn lookup(&self, h: SystemHandle) -> MkResult<Arc<PackedSystemSet>> {
         if h.backend_instance() != self.instance {
             return Err(MkError::Backend(
@@ -269,15 +275,9 @@ impl ComputeBackend for CpuF32Backend {
         true
     }
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle> {
-        let set = PackedSystemSet::new(systems)?;
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let count = set.len() as u32;
-        self.inner
-            .systems
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, Arc::new(set));
-        Ok(SystemHandle::new(self.inner.instance, id, count))
+        Ok(self
+            .inner
+            .register(Arc::new(PackedSystemSet::new(systems)?)))
     }
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()> {
         self.inner.lookup(handle)?;
@@ -293,7 +293,7 @@ impl ComputeBackend for CpuF32Backend {
         desc: crate::resident::BufferDesc,
         data: crate::resident::BufferData,
     ) -> MkResult<crate::resident::BufferHandle> {
-        self.inner.resident.upload(desc, data)
+        self.inner.resident.upload(desc, data, |n| Ok(vec![0; n]))
     }
     fn readback(
         &self,
@@ -303,15 +303,13 @@ impl ComputeBackend for CpuF32Backend {
         self.inner.resident.readback(view, ctx)
     }
     fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
-        let mut s = self
+        let s = self
             .inner
             .cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .stats();
-        s.pooled_bytes = self.inner.resident.pooled_bytes();
-        s.operation_cache_bytes = self.inner.resident.operation_cache_bytes();
-        s
+        self.inner.resident.cache_stats(s)
     }
     fn upload_systems_cached(
         &self,
@@ -321,52 +319,67 @@ impl ComputeBackend for CpuF32Backend {
         let hash =
             crate::resident::cache::fingerprint(key, systems, &self.precision().kernel_build)?;
         let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let up = if let Some(up) = cache.get(key, hash) {
-            up
-        } else {
-            let up = Arc::new(PackedSystemSet::new(systems)?);
-            let bytes = up.headers.len() * size_of::<crate::PackedHeader>()
-                + up.surfaces.len() * size_of::<crate::PackedSurface>()
-                + up.coefficients.len() * size_of::<Df32>();
-            cache.insert(key.clone(), hash, bytes, up.clone());
-            up
+        let up = match cache.get(key, hash) {
+            Some(up) => up,
+            None => {
+                let up = Arc::new(PackedSystemSet::new(systems)?);
+                cache.insert(key.clone(), hash, up.byte_len(), up.clone());
+                up
+            }
         };
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let count = up.len() as u32;
-        self.inner
-            .systems
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, up);
-        Ok(SystemHandle::new(self.inner.instance, id, count))
+        drop(cache);
+        Ok(self.inner.register(up))
     }
     fn submit_plan(
         &self,
         plan: crate::resident::ResidentPlan,
         ctx: &JobContext,
     ) -> MkResult<Pending<crate::resident::PlanResult>> {
-        use crate::resident::{PlanBuffer, ResidentOp};
+        use crate::resident::ResidentOp;
         ctx.check()?;
         plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
         let mut pinned = HashMap::new();
-        let mut prepared = vec![];
-        for b in &plan.buffers {
-            if let PlanBuffer::Import(v) = b {
-                v.buffer
-                    .lease::<crate::resident::pool::Allocation<Vec<u32>>>(self.inner.instance)?;
-            }
-        }
         for h in plan.system_handles() {
             pinned.insert(h, self.inner.lookup(h)?);
         }
-        for op in &plan.operations {
-            if let ResidentOp::TraceUpload(t) = op {
-                let set = pinned[&t.request().systems].clone();
-                prepared.push(Some(PreparedTrace::new(t.request(), &set)?));
-                pinned.insert(t.request().systems, set);
-            } else {
-                prepared.push(None);
-            }
+        let prepared = plan
+            .operations
+            .iter()
+            .map(|op| match op {
+                ResidentOp::TraceUpload(t) => {
+                    PreparedTrace::new(t.request(), &pinned[&t.request().systems]).map(Some)
+                }
+                _ => Ok(None),
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        fn run<E: FpEnv>(
+            b: &CpuF32Backend,
+            plan: &crate::resident::ResidentPlan,
+            pinned: HashMap<SystemHandle, Arc<PackedSystemSet>>,
+            prepared: &[Option<PreparedTrace>],
+            ctl: &JobControl,
+        ) -> MkResult<crate::resident::PlanResult> {
+            let sets = pinned.clone();
+            crate::resident::cpu::execute::<E>(
+                &b.inner.resident,
+                b,
+                plan,
+                pinned,
+                ctl,
+                |i, sub, stats| {
+                    let crate::resident::ResidentOp::TraceUpload(t) = &plan.operations[i] else {
+                        unreachable!()
+                    };
+                    let req = t.request();
+                    trace_job_prepared::<E>(
+                        req,
+                        &sets[&req.systems],
+                        prepared[i].as_ref().unwrap(),
+                        sub,
+                        stats,
+                    )
+                },
+            )
         }
         let (p, c, ctl) = pending(ctx);
         let b = self.clone();
@@ -375,34 +388,10 @@ impl ComputeBackend for CpuF32Backend {
             "CPU resident plan".into(),
             c,
             move || {
-                let trace =
-                    |i: usize, req: &TraceRequest, sub: &JobControl, stats: &mut JobStats| {
-                        if b.precision().probe.subnormals {
-                            trace_job_prepared::<Ieee>(
-                                req,
-                                &pinned[&req.systems],
-                                prepared[i].as_ref().unwrap(),
-                                sub,
-                                stats,
-                            )
-                        } else {
-                            trace_job_prepared::<Ftz>(
-                                req,
-                                &pinned[&req.systems],
-                                prepared[i].as_ref().unwrap(),
-                                sub,
-                                stats,
-                            )
-                        }
-                    };
                 if b.precision().probe.subnormals {
-                    b.inner
-                        .resident
-                        .execute::<Ieee>(&b, plan, pinned.clone(), &ctl, trace)
+                    run::<Ieee>(&b, &plan, pinned, &prepared, &ctl)
                 } else {
-                    b.inner
-                        .resident
-                        .execute::<Ftz>(&b, plan, pinned.clone(), &ctl, trace)
+                    run::<Ftz>(&b, &plan, pinned, &prepared, &ctl)
                 }
             },
         )?;

@@ -342,7 +342,7 @@ fn ill_conditioned_resident_reduction() {
     }
 }
 #[test]
-fn bounded_snapshot_cache_and_pinned_outputs() {
+fn bounded_snapshot_cache() {
     let g = backend(LibraryChoice::Precompiled);
     let mut max_bytes = 0u64;
     for i in 0..160 {
@@ -459,16 +459,17 @@ fn benchmark_resident_chains() {
             q.radiometry = Radiometry::Off;
             q
         };
-        let plan_timer = Instant::now();
-        let mut p = plan(snap, req(), false);
-        p.identity.library_hash = "test-library-v1".into();
-        p.identity.qualification = Some(serde_json::to_value(&qualification).unwrap());
-        let plan_prepare_s = plan_timer.elapsed().as_secs_f64();
+        let qualification_json = serde_json::to_value(&qualification).unwrap();
         let mut records = vec![];
         for round in 0..12 {
+            // Like the legacy call below, each call builds its request and plan.
             let wall = Instant::now();
+            let mut p = plan(snap.clone(), req(), false);
+            p.identity.library_hash = "test-library-v1".into();
+            p.identity.qualification = Some(qualification_json.clone());
+            let plan_prepare_s = wall.elapsed().as_secs_f64();
             let mut result = g
-                .submit_plan(p.clone(), &JobContext::new())
+                .submit_plan(p, &JobContext::new())
                 .unwrap()
                 .wait()
                 .unwrap();

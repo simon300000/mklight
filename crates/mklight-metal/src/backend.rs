@@ -263,6 +263,21 @@ impl MetalBackend {
 }
 
 impl Inner {
+    fn upload(&self, set: PackedSystemSet) -> MkResult<Uploaded> {
+        Ok(Uploaded {
+            headers: self.ctx.buffer(&set.headers)?,
+            surfaces: self.ctx.buffer(&set.surfaces)?,
+            coefficients: self.ctx.buffer(&set.coefficients)?,
+            sag_overlays: (set.surfaces.iter()).any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
+            set,
+        })
+    }
+    fn register(&self, up: Arc<Uploaded>) -> SystemHandle {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let count = up.set.len() as u32;
+        (self.systems.lock().unwrap_or_else(|e| e.into_inner())).insert(id, up);
+        SystemHandle::new(self.instance, id, count)
+    }
     fn lookup(&self, h: SystemHandle) -> MkResult<Arc<Uploaded>> {
         if h.backend_instance() != self.instance {
             return Err(MkError::Backend(
@@ -666,22 +681,8 @@ impl ComputeBackend for MetalBackend {
 
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle> {
         // `PackedSystemSet::new` validates every record (kernels rely on it).
-        let set = PackedSystemSet::new(systems)?;
-        let up = Uploaded {
-            headers: self.inner.ctx.buffer(&set.headers)?,
-            surfaces: self.inner.ctx.buffer(&set.surfaces)?,
-            coefficients: self.inner.ctx.buffer(&set.coefficients)?,
-            sag_overlays: (set.surfaces.iter()).any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
-            set,
-        };
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let count = up.set.len() as u32;
-        self.inner
-            .systems
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, Arc::new(up));
-        Ok(SystemHandle::new(self.inner.instance, id, count))
+        let up = self.inner.upload(PackedSystemSet::new(systems)?)?;
+        Ok(self.inner.register(Arc::new(up)))
     }
 
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()> {
@@ -700,7 +701,13 @@ impl ComputeBackend for MetalBackend {
         desc: mklight_gpu::resident::BufferDesc,
         data: mklight_gpu::resident::BufferData,
     ) -> MkResult<mklight_gpu::resident::BufferHandle> {
-        self.inner.resident.upload(&self.inner.ctx, desc, data)
+        if desc.byte_len()? as u64 > self.info().max_buffer_bytes {
+            return Err(mklight_gpu::resident::bad("upload exceeds device limit"));
+        }
+        let ctx = &self.inner.ctx;
+        self.inner
+            .resident
+            .upload(desc, data, |n| ctx.buffer_filled(n, |_| {}))
     }
     fn readback(
         &self,
@@ -710,15 +717,13 @@ impl ComputeBackend for MetalBackend {
         self.inner.resident.readback(view, ctx)
     }
     fn resident_cache_stats(&self) -> mklight_gpu::resident::ResidentCacheStats {
-        let mut s = self
+        let s = self
             .inner
             .cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .stats();
-        s.pooled_bytes = self.inner.resident.pooled_bytes();
-        s.operation_cache_bytes = self.inner.resident.operation_cache_bytes();
-        s
+        self.inner.resident.cache_stats(s)
     }
     fn upload_systems_cached(
         &self,
@@ -731,41 +736,23 @@ impl ComputeBackend for MetalBackend {
             &self.precision().kernel_build,
         )?;
         let mut cache = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let up = if let Some(up) = cache.get(key, hash) {
-            up
-        } else {
-            let set = PackedSystemSet::new(systems)?;
-            let bytes = set.headers.len() * size_of::<PackedHeader>()
-                + set.surfaces.len() * size_of::<PackedSurface>()
-                + set.coefficients.len() * size_of::<Df32>();
-            let up = Arc::new(Uploaded {
-                headers: self.inner.ctx.buffer(&set.headers)?,
-                surfaces: self.inner.ctx.buffer(&set.surfaces)?,
-                coefficients: self.inner.ctx.buffer(&set.coefficients)?,
-                sag_overlays: set
-                    .surfaces
-                    .iter()
-                    .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
-                set,
-            });
-            cache.insert(key.clone(), hash, bytes, up.clone());
-            up
+        let up = match cache.get(key, hash) {
+            Some(up) => up,
+            None => {
+                let up = Arc::new(self.inner.upload(PackedSystemSet::new(systems)?)?);
+                cache.insert(key.clone(), hash, up.set.byte_len(), up.clone());
+                up
+            }
         };
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let count = up.set.len() as u32;
-        self.inner
-            .systems
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, up);
-        Ok(SystemHandle::new(self.inner.instance, id, count))
+        drop(cache);
+        Ok(self.inner.register(up))
     }
     fn submit_plan(
         &self,
         plan: mklight_gpu::resident::ResidentPlan,
         ctx: &JobContext,
     ) -> MkResult<Pending<mklight_gpu::resident::PlanResult>> {
-        use mklight_gpu::resident::{PlanBuffer, ResidentOp};
+        use mklight_gpu::resident::ResidentOp;
         ctx.check()?;
         plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
         if !self.precision().probe.error_free_transforms() {
@@ -773,29 +760,11 @@ impl ComputeBackend for MetalBackend {
                 "resident plan requires strict numerics".into(),
             ));
         }
-        let mut pinned = HashMap::new();
-        let mut prepared = vec![];
-        for b in &plan.buffers {
-            if let PlanBuffer::Import(v) = b {
-                self.inner.resident.validate_import(v)?;
-            }
-        }
-        for h in plan.system_handles() {
-            pinned.insert(h, self.inner.lookup(h)?);
-        }
-        for op in &plan.operations {
-            if let ResidentOp::TraceUpload(t) = op {
-                let up = pinned[&t.request().systems].clone();
-                prepared.push(Some(PreparedTrace::new(t.request(), &up.set)?));
-                pinned.insert(t.request().systems, up);
-            } else {
-                prepared.push(None);
-            }
-        }
-        let bytes = plan.buffers.iter().try_fold(0u64, |a, b| {
-            a.checked_add(b.desc().byte_len()? as u64)
-                .ok_or_else(|| mklight_gpu::resident::bad("plan memory overflow"))
-        })?;
+        let bytes: u64 = plan
+            .buffers
+            .iter()
+            .map(|b| b.desc().byte_len().map(|n| n as u64))
+            .sum::<MkResult<u64>>()?;
         if self
             .info()
             .recommended_working_set_bytes
@@ -805,6 +774,20 @@ impl ComputeBackend for MetalBackend {
                 "resident plan exceeds device working set; tile the request".into(),
             ));
         }
+        let mut pinned = HashMap::new();
+        for h in plan.system_handles() {
+            pinned.insert(h, self.inner.lookup(h)?);
+        }
+        let prepared = plan
+            .operations
+            .iter()
+            .map(|op| match op {
+                ResidentOp::TraceUpload(t) => {
+                    PreparedTrace::new(t.request(), &pinned[&t.request().systems].set).map(Some)
+                }
+                _ => Ok(None),
+            })
+            .collect::<MkResult<Vec<_>>>()?;
         let (p, c, ctl) = pending(ctx);
         let b = self.clone();
         let chunk = self.inner.chunk();
@@ -813,9 +796,17 @@ impl ComputeBackend for MetalBackend {
             "Metal resident plan".into(),
             c,
             move || {
-                b.inner
-                    .resident
-                    .execute(&b, &b.inner.ctx, plan, pinned, prepared, &ctl, chunk)
+                let i = &b.inner;
+                crate::resident::execute(
+                    &i.resident,
+                    &b,
+                    &i.ctx,
+                    &plan,
+                    pinned,
+                    &prepared,
+                    &ctl,
+                    chunk,
+                )
             },
         )?;
         Ok(p)
