@@ -54,14 +54,14 @@ struct LayoutPaneView: View {
                 .transition(.opacity)
             }
         }
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .top) {
             if let title = workspace.previewTitle {
                 Label("Previewing \(title) · not applied", systemImage: "eye")
                     .font(.callout.weight(.medium))
                     .padding(.horizontal, Space.l)
                     .padding(.vertical, Space.s)
                     .glassEffect(.regular.tint(.accentColor.opacity(0.25)), in: .capsule)
-                    .padding(.bottom, Space.l)
+                    .padding(.top, 56)
                     .accessibilityLabel("Previewing \(title). The design has not changed.")
                     .transition(.opacity)
             }

@@ -219,8 +219,8 @@ struct AnamorphicSummary: View {
         Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
             GridRow {
                 Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                Text("x").gridColumnAlignment(.trailing)
-                Text("y").gridColumnAlignment(.trailing)
+                Text("x (mm)").gridColumnAlignment(.trailing)
+                Text("y (mm)").gridColumnAlignment(.trailing)
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -251,8 +251,8 @@ struct AnamorphicSummary: View {
     private func xyRow(_ label: String, _ spoken: String, _ x: Double, _ y: Double) -> some View {
         GridRow {
             Text(label).foregroundStyle(.secondary)
-            Text(Fmt.value(x, unit: "mm")).numeric()
-            Text(Fmt.value(y, unit: "mm")).numeric()
+            Text(Fmt.short(x)).numeric().lineLimit(1).fixedSize()
+            Text(Fmt.short(y)).numeric().lineLimit(1).fixedSize()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spoken)

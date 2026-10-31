@@ -289,7 +289,18 @@ public final class Workspace {
     public func isStale(_ pane: AnalysisPane) -> Bool {
         guard let out = pane.output else { return false }
         if !modelErrors.isEmpty { return true }
-        return !out.isCurrent(for: snapshot, request: request(for: pane))
+        return !Self.isCurrent(out, of: pane, for: snapshot, request: request(for: pane))
+    }
+
+    /// Whether `out` is current for `snapshot` and `request`. A run with a
+    /// run-local `spectrum` records the derived system's hash in its
+    /// `run_info` (an engine gap), so the snapshot the job was submitted
+    /// with also counts.
+    static func isCurrent(_ out: AnalysisOutput, of pane: AnalysisPane, for snapshot: ModelSnapshot?, request: EngineAnalysisRequest) -> Bool {
+        if out.isCurrent(for: snapshot, request: request) { return true }
+        guard let snapshot, let submitted = pane.outputSnapshot, submitted == snapshot else { return false }
+        if let own = out.engineRequest { return own == request }
+        return request.matches(out.runInfo)
     }
 
     private func refresh(forced: Bool) {
@@ -313,7 +324,7 @@ public final class Workspace {
         guard let snapshot, modelErrors.isEmpty else { return }
         let request = request(for: pane)
         if !force {
-            if let out = pane.output, out.isCurrent(for: snapshot, request: request) { return }
+            if let out = pane.output, Self.isCurrent(out, of: pane, for: snapshot, request: request) { return }
             if pane.isRunning, pane.lastRequest == request, pane.job?.snapshotHash == snapshot.hash { return }
         }
         if let d = descriptor(pane.analysis), !d.available {
@@ -327,14 +338,15 @@ public final class Workspace {
         }
         pane.job?.cancel()
         let job = documentEngine.submit(request, on: snapshot)
+        let submitted = snapshot
         liveJobs.set(pane.id, job)
         pane.job = job
         pane.lastRequest = request
         pane.phase = .running(JobProgress(fraction: 0, stage: "Queued"))
-        observe(job, pane)
+        observe(job, pane, snapshot: submitted)
     }
 
-    private func observe(_ job: AnalysisJob, _ pane: AnalysisPane) {
+    private func observe(_ job: AnalysisJob, _ pane: AnalysisPane, snapshot submitted: ModelSnapshot) {
         Task { @MainActor [weak pane] in
             for await p in job.progress {
                 guard let pane, pane.job === job, pane.isRunning else { continue }
@@ -349,6 +361,7 @@ public final class Workspace {
             switch outcome {
             case .success(let out):
                 pane.output = out
+                pane.outputSnapshot = submitted
                 pane.phase = .finished
                 if pane === self?.validation { self?.issues = ValidationIssue.from(validate: out.json) }
             case .failure(EngineError.cancelled):

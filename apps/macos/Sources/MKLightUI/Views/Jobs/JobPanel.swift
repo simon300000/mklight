@@ -85,6 +85,7 @@ struct GlassAction: View {
     var id: String
     let namespace: Namespace.ID
     let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(role: role, action: action) {
@@ -92,7 +93,7 @@ struct GlassAction: View {
                 if let systemImage { Label(title, systemImage: systemImage) } else { Text(title) }
             }
             .font(.body.weight(prominent ? .semibold : .regular))
-            .foregroundStyle(prominent ? AnyShapeStyle(.white) : role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            .foregroundStyle(prominent && isEnabled ? AnyShapeStyle(.white) : role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
             .lineLimit(1)
             .padding(.horizontal, Space.xl)
             .padding(.vertical, Space.m)
@@ -100,7 +101,8 @@ struct GlassAction: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .glassEffect(prominent ? .regular.tint(.accentColor).interactive() : .regular.interactive(), in: .capsule)
+        .glassEffect(prominent && isEnabled ? .regular.tint(.accentColor).interactive() : .regular.interactive(), in: .capsule)
+        .opacity(isEnabled ? 1 : 0.55)
         .glassEffectID(id, in: namespace)
     }
 }
@@ -181,10 +183,22 @@ struct OptimizePanel: View {
             autoRun()
         }
         .onChange(of: design.revision) { _, _ in session.load(design) }
+        .onChange(of: phase) { _, p in syncPreview(p) }
+        .onDisappear { if !session.isRunning { workspace.preview(nil) } }
         .onChange(of: design.merit) { _, _ in session.load(design) }
         .task(id: evaluationKey) {
             session.load(design)
             if case .setup = session.state { session.scheduleEvaluation(in: workspace, variables: design.variables) }
+        }
+    }
+
+    /// A finished, unapplied result is previewed in the window (layout and
+    /// analyses) until it is applied or discarded.
+    private func syncPreview(_ p: Int) {
+        if p == 2, let s = session.result?.system, session.result?.improved == true {
+            workspace.preview(s, title: session.result?.stopped == true ? "Optimized design (stopped)" : "Optimized design")
+        } else if p != 1 {
+            workspace.preview(nil)
         }
     }
 
@@ -261,7 +275,10 @@ struct OptimizePanel: View {
         VStack(alignment: .leading, spacing: Space.l) {
             HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
                 BigNumber(label: "Iteration", value: session.trace.last.map { "\($0.iteration)" } ?? "—")
-                BigNumber(label: "Merit", value: session.trace.last.map { Fmt.short($0.merit) } ?? "—")
+                BigNumber(label: "Search merit", value: session.trace.last.map { Fmt.short($0.merit) } ?? "—")
+                    .help(["de", "cma_es", "nelder_mead"].contains(session.algorithm)
+                        ? "The search's merit, including the penalty that holds the focal length; the result reports the merit itself."
+                        : "The best merit so far, as the search evaluates it.")
             }
             if let first = session.trace.first, let last = session.trace.last, first.merit > 0 {
                 BigNumber(label: "Improvement", value: Fmt.percent(1 - last.merit / first.merit))
@@ -282,6 +299,17 @@ struct OptimizePanel: View {
                     BigNumber(label: "After", value: Fmt.short(r.finalMerit))
                 }
                 BigNumber(label: "Improvement", value: Fmt.percent(r.improvement))
+                if !session.applied, r.system != nil, r.improved {
+                    Toggle("Preview in the window", isOn: Binding(get: { workspace.isPreviewing }, set: { on in
+                        workspace.preview(on ? r.system : nil, title: "Optimized design")
+                    }))
+                    .help("Show the optimized design in the layout and analyses before applying it")
+                    if workspace.isPreviewing {
+                        LayoutComparison(
+                            before: EngineLayout.scene(from: workspace.baseline["layout"]),
+                            after: EngineLayout.scene(from: workspace.layout.output))
+                    }
+                }
                 Text(statusText(r)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if session.trace.count > 1 {
                     Sparkline(values: session.trace.map(\.merit)).frame(height: 64)
@@ -382,12 +410,27 @@ struct OptimizePanel: View {
     /// Debug builds: `-MKLightAutoRun lm` (or `de`) starts at once.
     private func autoRun() {
         #if DEBUG
-        guard let a = UserDefaults.standard.string(forKey: "MKLightAutoRun"), a != "tolerance", case .setup = session.state else { return }
+        let d = UserDefaults.standard
+        guard let a = d.string(forKey: "MKLightAutoRun"), ["lm", "dogleg", "de", "cma_es", "nelder_mead", "hammer"].contains(a),
+            case .setup = session.state
+        else { return }
         session.algorithm = a
         if a == "de" { session.maxIterations = 100_000 }
+        // `-MKLightAutoStop s` presses Stop after s seconds; `-MKLightAutoApply s`
+        // applies the result s seconds after it arrives (screenshots).
+        let stopAfter = d.double(forKey: "MKLightAutoStop"), applyAfter = d.double(forKey: "MKLightAutoApply")
         Task {
             try? await Task.sleep(for: .seconds(1))
             session.start(in: workspace, variables: design.variables)
+            if stopAfter > 0 {
+                try? await Task.sleep(for: .seconds(stopAfter))
+                session.stop()
+            }
+            if applyAfter > 0 {
+                while session.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
+                try? await Task.sleep(for: .seconds(applyAfter))
+                session.apply(to: design, undoManager: undoManager)
+            }
         }
         #endif
     }

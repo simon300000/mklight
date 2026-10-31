@@ -130,13 +130,17 @@ struct GlassSubstitutionPanel: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     Text(meritSummary).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Picker("Shape", selection: $session.useDesignVariables) {
-                        Text("Re-optimise the design variables (\(design.variables.filter { !$0.isPinned }.count))").tag(true)
-                        Text("Re-optimise every curvature and the back focus").tag(false)
+                    if design.variables.isEmpty {
+                        Text("Each combination re-optimises every curvature and the back focus.")
+                            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Picker("Shape", selection: $session.useDesignVariables) {
+                            Text("Re-optimise the design variables (\(design.variables.filter { !$0.isPinned }.count))").tag(true)
+                            Text("Re-optimise every curvature and the back focus").tag(false)
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
                     }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                    .disabled(design.variables.isEmpty)
                     Button("Edit Merit and Variables…") { window.open(.optimize) }
                         .buttonStyle(.link)
                         .controlSize(.small)
@@ -413,9 +417,17 @@ struct GlassSubstitutionPanel: View {
     private func autoRun() {
         #if DEBUG
         guard UserDefaults.standard.string(forKey: "MKLightAutoRun") == "glass", case .setup = session.state else { return }
+        let applyAfter = UserDefaults.standard.double(forKey: "MKLightAutoApply")
+        let pick = UserDefaults.standard.integer(forKey: "MKLightAutoPick")
         Task {
             try? await Task.sleep(for: .seconds(2))
             session.start(in: workspace, document: design)
+            while session.isRunning { try? await Task.sleep(for: .milliseconds(100)) }
+            if pick > 1 { session.select(pick, in: workspace) }
+            if applyAfter > 0 {
+                try? await Task.sleep(for: .seconds(applyAfter))
+                session.apply(to: design, workspace: workspace, undoManager: undoManager)
+            }
         }
         #endif
     }

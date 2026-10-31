@@ -14,7 +14,7 @@ enum GlassMapPlane: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 
     var title: String { self == .ndVd ? "n_d" : "P_g,F" }
-    var segmentTitle: String { self == .ndVd ? "Index" : "Partial Dispersion" }
+    var segmentTitle: String { self == .ndVd ? "n_d" : "P_g,F" }
 
     /// The y axis title with its subscript.
     var axisLabel: Text {

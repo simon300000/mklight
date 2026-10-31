@@ -9,6 +9,7 @@ struct OptionalNumberField: View {
     let value: Double?
     var prompt = "none"
     var width: CGFloat = 76
+    var format: (Double) -> String = Fmt.short
     let commit: (Double?) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
@@ -30,7 +31,7 @@ struct OptionalNumberField: View {
             .accessibilityLabel(title)
     }
 
-    private var formatted: String { value.map(Fmt.short) ?? "" }
+    private var formatted: String { value.map(format) ?? "" }
 
     private func finish() {
         let t = text.trimmingCharacters(in: .whitespaces)
@@ -43,7 +44,7 @@ struct OptionalNumberField: View {
             return
         }
         if v != value { commit(v) }
-        text = Fmt.short(v)
+        text = format(v)
     }
 }
 
@@ -849,10 +850,10 @@ struct VariableBoundsRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .help(problem ?? (isCurvature ? "Bounds on the curvature c = 1/R (1/mm)." : "Bounds in the parameter's units."))
-            OptionalNumberField(title: "Minimum of \(path.label(in: design.system))", value: variable.lower, prompt: "−∞", width: 70) { v in
+            OptionalNumberField(title: "Minimum of \(path.label(in: design.system))", value: variable.lower, prompt: "−∞", width: 70, format: Self.compact) { v in
                 design.setBounds(path, lower: v, upper: variable.upper, undoManager: undoManager)
             }
-            OptionalNumberField(title: "Maximum of \(path.label(in: design.system))", value: variable.upper, prompt: "+∞", width: 70) { v in
+            OptionalNumberField(title: "Maximum of \(path.label(in: design.system))", value: variable.upper, prompt: "+∞", width: 70, format: Self.compact) { v in
                 design.setBounds(path, lower: variable.lower, upper: v, undoManager: undoManager)
             }
             HStack(spacing: 2) {
@@ -890,9 +891,11 @@ struct VariableBoundsRow: View {
         }
         guard let value else { return "This parameter does not exist on the surface any more." }
         if let lo = variable.lower, let hi = variable.upper, lo > hi { return "The minimum is above the maximum." }
-        if variable.outOfBounds(value) { return "The current value \(Fmt.short(value)) is outside its bounds." }
+        if variable.outOfBounds(value) { return "Now \(Self.compact(value)): outside its bounds" }
         return nil
     }
+
+    static func compact(_ v: Double) -> String { String(format: "%.4g", v) }
 
     private var caption: String {
         if let problem { return problem }
