@@ -302,6 +302,21 @@ impl ComputeBackend for CpuF32Backend {
     ) -> MkResult<crate::resident::Readback> {
         self.inner.resident.readback(view, ctx)
     }
+    fn upload_buffer_with(
+        &self,
+        desc: crate::resident::BufferDesc,
+        fill: &mut dyn FnMut(&mut [u32]),
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner.resident.upload_with(desc, fill, |n| Ok(vec![0; n]))
+    }
+    fn read_in_place(
+        &self,
+        view: crate::resident::BufferView,
+        ctx: &JobContext,
+        read: &mut dyn FnMut(&[u32]),
+    ) -> MkResult<()> {
+        self.inner.resident.read_in_place(view, ctx, read)
+    }
     fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
         let s = self
             .inner

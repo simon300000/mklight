@@ -78,6 +78,32 @@ impl<T: Storage> Runtime<T> {
         b.words_mut().copy_from_slice(data.words());
         Ok(self.publish(desc, b))
     }
+    pub fn upload_with(
+        &self,
+        desc: BufferDesc,
+        fill: &mut dyn FnMut(&mut [u32]),
+        allocate: impl FnOnce(usize) -> MkResult<T>,
+    ) -> MkResult<BufferHandle> {
+        let mut b = self.take(desc.byte_len()? / 4, &mut PlanStats::default(), allocate)?;
+        fill(b.words_mut());
+        Ok(self.publish(desc, b))
+    }
+    pub fn read_in_place(
+        &self,
+        view: BufferView,
+        ctx: &JobContext,
+        read: &mut dyn FnMut(&[u32]),
+    ) -> MkResult<()> {
+        ctx.check()?;
+        view.validate()?;
+        if view.stride != 1 {
+            return Err(bad("in-place readback needs a contiguous view"));
+        }
+        let b = self.lease(&view.buffer)?;
+        let width = view.desc.element.words();
+        read(&T::words(&b)[view.offset * width..(view.offset + view.desc.len()?) * width]);
+        Ok(())
+    }
     pub fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback> {
         ctx.check()?;
         view.validate()?;
