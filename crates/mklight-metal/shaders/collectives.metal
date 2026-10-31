@@ -18,6 +18,8 @@ static inline uint mkl_c_fkey(float x) {
     return (b&0x80000000u)!=0u ? ~b : (b^0x80000000u);
 }
 static inline int mkl_c_cmp(float2 a,float2 b) {
+    bool an=isnan(a.x)||isnan(a.y),bn=isnan(b.x)||isnan(b.y);
+    if(an||bn)return an==bn?0:(an?1:-1);
     uint ah=mkl_c_fkey(a.x),bh=mkl_c_fkey(b.x);
     if(ah!=bh) return ah<bh?-1:1;
     uint al=mkl_c_fkey(a.y),bl=mkl_c_fkey(b.y);
@@ -107,7 +109,7 @@ static inline bool mkl_c_less(uint a,uint b,device const uint* keys,device const
 kernel void mkl_c_merge(device const uint* keys [[buffer(0)]],device const uint* ids [[buffer(1)]],
     device const uint* src [[buffer(2)]],device uint* dst [[buffer(3)]],constant uint* p [[buffer(4)]],uint t [[thread_position_in_grid]]) {
     if(t>=p[2]) return;uint i=p[1]+t;if(i>=p[0])return;
-    uint width=p[3],base=(i/(2u*width))*2u*width,mid=min(base+width,p[0]),end=min(base+2u*width,p[0]);
+    uint width=p[3],base=(i/width/2u)*width*2u,mid=base+min(width,p[0]-base),end=mid+min(width,p[0]-mid);
     bool left=i<mid;uint lo=left?mid:base,hi=left?end:mid,begin=lo;
     uint a=src[i];
     while(lo<hi) {uint j=lo+(hi-lo)/2u;if(mkl_c_less(src[j],a,keys,ids,p[4]))lo=j+1u;else hi=j;}
@@ -121,22 +123,30 @@ kernel void mkl_c_gather(device const uint* keys [[buffer(0)]],device const uint
     for(uint w=0u;w<p[3];++w)outkeys[j*p[3]+w]=keys[i*p[3]+w];
     for(uint w=0u;w<p[4];++w)outvals[j*p[4]+w]=vals[i*p[4]+w];
 }
-static inline uint mkl_c_groups(uint n) {return clamp((n+4095u)/4096u,1u,256u);}
+static inline uint mkl_c_groups(uint n) {return clamp(n/4096u+uint(n%4096u!=0u),1u,256u);}
 // Segment parameters: n,channels,segments,first segment,segment count,
 // max groups,terms,phase,kind,mode,value words,reference words,max length,
 // first group,first term,reserved.
 static inline uint mkl_c_extmode(constant uint* p,uint term) {
-    if(p[8]==MKL_COLLECT_SUMMARY) return term%3u;
+    if(p[8]==MKL_COLLECT_SUMMARY) return term%4u>=2u?term%4u-1u:0u;
     if(p[8]==MKL_COLLECT_MOMENTS2&&p[7]==1u&&term>=4u)return 2u;
     return 0u;
 }
+static inline uint mkl_c_mode(constant uint* p,uint term) {
+    bool count=(p[8]==MKL_COLLECT_SUMMARY&&term%4u==1u)||(p[8]==MKL_COLLECT_MOMENTS2&&p[7]==0u&&term==0u);
+    return count?MKL_REDUCE_DF:p[9];
+}
+static inline float2 mkl_c_identity(constant uint* p,uint ext) {
+    return float2(ext==1u?INFINITY:(ext==2u&&p[8]!=MKL_COLLECT_MOMENTS2?-INFINITY:0.0f),0.0f);
+}
 static inline float2 mkl_c_term(device const uint* vals,device const uint* refs,device const uint* out,
-    constant uint* p,uint seg,uint term,uint i) {
+    constant uint* p,uint seg,uint term,uint i,device const uint* mask,device const uint* weights,uint2 options) {
+    if(options.x!=0u&&mask[i]!=p[15]) {uint ext=mkl_c_extmode(p,term);return mkl_c_identity(p,ext);}
     if(p[8]==MKL_COLLECT_SUM||p[8]==MKL_COLLECT_SOURCE_PRODUCTS)return mkl_c_load(vals,term*p[0]+i,p[10]);
-    if(p[8]==MKL_COLLECT_SUMMARY)return mkl_c_load(vals,(term/3u)*p[0]+i,p[10]);
-    float2 x=mkl_c_load(vals,i,p[10]),y=mkl_c_load(vals,p[0]+i,p[10]),w=mkl_c_load(vals,2u*p[0]+i,p[10]);
+    if(p[8]==MKL_COLLECT_SUMMARY)return term%4u==1u?float2(1.0f,0.0f):mkl_c_load(vals,(term/4u)*p[0]+i,p[10]);
+    float2 x=mkl_c_load(vals,i,p[10]),y=mkl_c_load(vals,p[0]+i,p[10]),w=options.y!=0u?mkl_c_load(weights,i,options.y):(p[1]==3u?mkl_c_load(vals,2u*p[0]+i,p[10]):float2(1.0f,0.0f));
     if(p[11]!=0u){x=mkl_df_sub(x,mkl_c_load(refs,2u*seg,p[11]));y=mkl_df_sub(y,mkl_c_load(refs,2u*seg+1u,p[11]));}
-    if(p[7]==0u) {if(term==0u)return w;return mkl_df_mul(w,term==1u?x:y);}
+    if(p[7]==0u) {if(term==0u)return float2(1.0f,0.0f);if(term==1u)return w;return mkl_df_mul(w,term==2u?x:y);}
     if(term==0u||term==4u){float2 rr=mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y));return term==0u?mkl_df_mul(w,rr):(w.x>0.0f?rr:float2(0.0f));}
     x=mkl_df_sub(x,mkl_c_load(out,seg*10u+2u,2u));y=mkl_df_sub(y,mkl_c_load(out,seg*10u+3u,2u));
     if(term==5u)return w.x>0.0f?mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y)):float2(0.0f);
@@ -144,23 +154,23 @@ static inline float2 mkl_c_term(device const uint* vals,device const uint* refs,
 }
 kernel void mkl_c_seg1(device const uint* vals [[buffer(0)]],device const uint* offsets [[buffer(1)]],
     device const uint* refs [[buffer(2)]],device const uint* out [[buffer(3)]],device uint* partials [[buffer(4)]],
-    constant uint* p [[buffer(5)]],uint3 lid [[thread_position_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]]) {
+    constant uint* p [[buffer(5)]],device const uint* mask [[buffer(6)]],device const uint* weights [[buffer(7)]],constant uint2& options [[buffer(8)]],uint3 lid [[thread_position_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]]) {
     uint tid=lid.x;
     threadgroup float2 tree[256];
     uint seg=p[3]+group.z,term=p[14]+group.y,g=p[13]+group.x;
     uint a=offsets[seg],b=offsets[seg+1u];bool valid=a<=b&&b<=p[0]&&b-a<=p[12];
-    uint n=valid?b-a:0u,G=mkl_c_groups(n),ext=mkl_c_extmode(p,term);
-    float2 acc(ext==1u?INFINITY:(ext==2u?-INFINITY:0.0f),0.0f);
+    uint n=valid?b-a:0u,G=mkl_c_groups(n),ext=mkl_c_extmode(p,term),mode=mkl_c_mode(p,term);
+    float2 acc=mkl_c_identity(p,ext);
     float kh=0.0f,kc=0.0f;
     if(g<G)for(uint i=g*256u+tid;i<n;i+=G*256u) {
-        float2 v=mkl_c_term(vals,refs,out,p,seg,term,a+i);
+        float2 v=mkl_c_term(vals,refs,out,p,seg,term,a+i,mask,weights,options);
         if(ext!=0u)acc=mkl_c_ext(acc,v,ext==2u);
-        else if(p[9]==MKL_REDUCE_KAHAN){mkl_neumaier_add(kh,kc,v.x);if(v.y!=0.0f)mkl_neumaier_add(kh,kc,v.y);}
-        else if(p[9]==MKL_REDUCE_PLAIN)acc.x+=v.x+v.y;
+        else if(mode==MKL_REDUCE_KAHAN){mkl_neumaier_add(kh,kc,v.x);if(v.y!=0.0f)mkl_neumaier_add(kh,kc,v.y);}
+        else if(mode==MKL_REDUCE_PLAIN)acc.x+=v.x+v.y;
         else acc=mkl_df_add(acc,v);
     }
-    if(ext==0u&&p[9]==MKL_REDUCE_KAHAN)acc=mkl_two_sum(kh,kc);
-    tree[tid]=acc;float2 value=mkl_c_tree(tree,tid,p[9],ext);
+    if(ext==0u&&mode==MKL_REDUCE_KAHAN)acc=mkl_two_sum(kh,kc);
+    tree[tid]=acc;float2 value=mkl_c_tree(tree,tid,mode,ext);
     if(tid==0u)mkl_c_store(partials,((group.z*p[6]+term)*p[5]+g),value);
 }
 kernel void mkl_c_seg2(device const uint* partials [[buffer(0)]],device const uint* offsets [[buffer(1)]],
@@ -169,26 +179,24 @@ kernel void mkl_c_seg2(device const uint* partials [[buffer(0)]],device const ui
     uint tid=lid.x;
     threadgroup float2 tree[256];uint seg=p[3]+group.y,term=group.x;
     uint a=offsets[seg],b=offsets[seg+1u];bool valid=a<=b&&b<=p[0]&&b-a<=p[12];
-    uint G=mkl_c_groups(valid?b-a:0u),ext=mkl_c_extmode(p,term);
-    float2 acc(ext==1u?INFINITY:(ext==2u?-INFINITY:0.0f),0.0f);
-    if(tid<G) acc=mkl_c_combine(acc,mkl_c_load(partials,(group.y*p[6]+term)*p[5]+tid,2u),p[9],ext);
-    tree[tid]=acc;float2 v=mkl_c_tree(tree,tid,p[9],ext);
+    uint G=mkl_c_groups(valid?b-a:0u),ext=mkl_c_extmode(p,term),mode=mkl_c_mode(p,term);
+    float2 acc=mkl_c_identity(p,ext);
+    if(tid<G) acc=mkl_c_combine(acc,mkl_c_load(partials,(group.y*p[6]+term)*p[5]+tid,2u),mode,ext);
+    tree[tid]=acc;float2 v=mkl_c_tree(tree,tid,mode,ext);
     if(tid==0u) {
         if(term==0u)status[seg]=valid?0u:1u;
         if(!valid)v=float2(NAN,0.0f);
         if(p[8]==MKL_COLLECT_SUM)mkl_c_store(out,term*p[2]+seg,v);
         else if(p[8]==MKL_COLLECT_SUMMARY) {
-            uint base=((term/3u)*p[2]+seg)*4u;
-            mkl_c_store(out,base+(term%3u==0u?0u:(term%3u+1u)),v);
-            if(term%3u==0u)mkl_c_store(out,base+1u,valid?mkl_c_uint(b-a):float2(NAN,0.0f));
+            uint base=((term/4u)*p[2]+seg)*4u;
+            mkl_c_store(out,base+term%4u,v);
         } else if(p[8]==MKL_COLLECT_SOURCE_PRODUCTS) {
             uint width=p[1]+p[1]*(p[1]+1u)/2u;mkl_c_store(out,seg*width+term,v);
         } else {
             // Phase zero publishes weight and weighted coordinate sums; a
             // separate finaliser forms the means without intergroup races.
-            uint dest=p[7]==0u?(term==0u?1u:term+1u):term+4u;
+            uint dest=p[7]==0u?term:term+4u;
             mkl_c_store(out,seg*10u+dest,v);
-            if(p[7]==0u&&term==0u)mkl_c_store(out,seg*10u,valid?mkl_c_uint(b-a):float2(NAN,0.0f));
         }
     }
 }
@@ -312,14 +320,18 @@ kernel void mkl_c_qr_finish(device const uint* factors [[buffer(0)]],device uint
     mkl_c_store(diag,b*4u+2u,residual);
     if(!isfinite(residual.x))mkl_c_store(diag,b*4u+3u,float2(2.0f,0.0f));
     if(!mkl_c_qa(diag,b,p)) {for(uint j=0u;j<n;++j)mkl_c_store(solution,b*n+j,float2(NAN,0.0f));return;}
+    bool finite_solution=true;
     // aux first block is x; the second block becomes inverse row sums.
     for(uint ri=n;ri>0u;--ri) {
         uint i=ri-1u;float2 v=mkl_c_load(aux,off+2u*(n+1u)+i,2u);
         for(uint j=i+1u;j<n;++j)v=mkl_df_sub(v,mkl_df_mul(mkl_c_load(factors,mkl_c_qf(b,m+i,j,p),2u),mkl_c_load(aux,off+j,2u)));
         v=mkl_df_div(v,mkl_c_load(factors,mkl_c_qf(b,m+i,i,p),2u));mkl_c_store(aux,off+i,v);
         uint pivot=uint(mkl_c_load(factors,mkl_c_qf(b,m+n+1u,i,p),2u).x);
-        mkl_c_store(solution,b*n+pivot,mkl_df_div(v,mkl_c_load(factors,mkl_c_qf(b,m+n,pivot,p),2u)));
+        float2 coefficient=mkl_df_div(v,mkl_c_load(factors,mkl_c_qf(b,m+n,pivot,p),2u));
+        finite_solution=finite_solution&&isfinite(coefficient.x)&&isfinite(coefficient.y);
+        mkl_c_store(solution,b*n+pivot,coefficient);
     }
+    if(!finite_solution){mkl_c_store(diag,b*4u+3u,float2(2.0f,0.0f));for(uint j=0u;j<n;++j)mkl_c_store(solution,b*n+j,float2(NAN,0.0f));return;}
     float2 normr(0.0f),norminv(0.0f);
     for(uint i=0u;i<n;++i) {
         float2 row(0.0f);for(uint j=i;j<n;++j)row=mkl_df_add(row,mkl_c_absdf(mkl_c_load(factors,mkl_c_qf(b,m+i,j,p),2u)));

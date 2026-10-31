@@ -276,6 +276,9 @@ pub fn mapped_in<E: FpEnv>(
         for (t, acc) in v.iter_mut().enumerate() {
             let mut k = NeumaierF32::default();
             for i in (g * THREADS + t..count).step_by(groups * THREADS) {
+                if ((i - g * THREADS - t) / (groups * THREADS)) % 4096 == 0 {
+                    ctl.check()?;
+                }
                 let q = value(i);
                 match mode {
                     ReduceMode::Plain => acc.hi = E::add(acc.hi, E::add(q.hi, q.lo)),

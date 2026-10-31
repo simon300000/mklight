@@ -1,6 +1,9 @@
 //! Deterministic resident collectives. Layouts and fixed-order algorithms are
 //! part of the portable kernel contract; no solver-specific state lives here.
 //!
+//! Active numeric records are finite and double-float pairs are normalised;
+//! upstream producers own these invariants. Masks are applied before loading
+//! inactive coordinates (failed trace records may contain NaN).
 //! Views are contiguous. Segments are half-open ranges in a u32 offsets array;
 //! empty segments are legal. Device-produced offsets are checked on the device
 //! and publish status 1 for an invalid range (status 0 means success).
@@ -11,6 +14,8 @@
 //! totals, then add the preceding block prefix. U32 addition wraps modulo 2^32.
 //! F32 scans publish double-float; double-float scans retain both words.
 //!
+//! QR supports up to MKL_COLLECT_QR_MAX_COLUMNS (64) columns per fit.
+//! Larger solves return Unsupported for the adapter to report/fall back.
 //! QR is column-equilibrated, pivoted, twice-reorthogonalised modified
 //! Gram-Schmidt in double-float. Largest residual norm wins; ties use the
 //! original column index. Rank stops at norm <= tolerance * first pivot.
@@ -34,10 +39,11 @@ pub enum SegmentKind {
     Sum = crate::consts::MKL_COLLECT_SUM,
     /// Per channel: sum, count, minimum, maximum. Empty extrema are +/-inf.
     Summary = crate::consts::MKL_COLLECT_SUMMARY,
-    /// Values [3,n]: x, y, nonnegative weight. Reference [segments,2],
+    /// Values [2,n] or [3,n]: x, y, optional nonnegative weight. Reference [segments,2],
     /// default zero. Output [segments,10]: count, weight, chief-relative mean
     /// x/y, sum(w*r_origin^2), sum(w*dx^2), sum(w*dx*dy), sum(w*dy^2),
-    /// max(r_origin^2), max(r_centroid^2). Central moments use a second pass.
+    /// max(r_origin^2), max(r_centroid^2). Maxima are zero without positive
+    /// weights; means are NaN at zero total weight. Central moments use a second pass.
     Moments2 = crate::consts::MKL_COLLECT_MOMENTS2,
     /// First sum all split-child channels within each source segment, then
     /// publish those sums followed by their upper-triangular cross products.
@@ -49,6 +55,11 @@ pub struct SegmentReduce {
     /// Channel-major [channels,count], f32 or double-float.
     pub values: PlanView,
     pub offsets: PlanView,
+    /// Keep records whose mask equals mask_value; omitted means all records.
+    pub mask: Option<PlanView>,
+    pub mask_value: u32,
+    /// Optional separate moment weights [count]; otherwise third channel or 1.
+    pub weights: Option<PlanView>,
     /// Upper bound on a segment length; checked on device and used to tile scratch.
     pub max_segment_len: usize,
     pub reference: Option<PlanView>,
@@ -121,6 +132,7 @@ fn input(v: &PlanView, types: &[Ty], ndim: usize) -> MkResult<()> {
     if !types.contains(&v.desc.element)
         || v.desc.shape.len() != ndim
         || v.stride != 1
+        || v.desc.shape.iter().any(|&d| d > u32::MAX as usize)
         || v.desc.len()? > u32::MAX as usize / v.desc.element.words()
     {
         return Err(bad("collective input type, shape or stride"));
@@ -128,7 +140,8 @@ fn input(v: &PlanView, types: &[Ty], ndim: usize) -> MkResult<()> {
     Ok(())
 }
 fn output(p: &ResidentPlan, id: BufferId, t: Ty, shape: impl Into<Vec<usize>>) -> MkResult<()> {
-    if p.desc(id)? != &BufferDesc::new(t, shape) {
+    let expected = BufferDesc::new(t, shape);
+    if expected.len()? > u32::MAX as usize / t.words() || p.desc(id)? != &expected {
         return Err(bad("collective output layout"));
     }
     Ok(())
@@ -164,7 +177,21 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                     return Err(bad("segment reference layout"));
                 }
             }
-            if r.kind == SegmentKind::Moments2 && c != 3 {
+            for (v, types) in [
+                (r.mask.as_ref(), &[Ty::U32][..]),
+                (r.weights.as_ref(), numeric),
+            ] {
+                if let Some(v) = v {
+                    input(v, types, 1)?;
+                    if v.desc.shape != [r.values.desc.shape[1]] {
+                        return Err(bad("segment mask/weight length"));
+                    }
+                }
+            }
+            if r.weights.is_some() && r.kind != SegmentKind::Moments2 {
+                return Err(bad("weights require moments"));
+            }
+            if r.kind == SegmentKind::Moments2 && !(2..=3).contains(&c) {
                 return Err(bad("moments need x,y,weight"));
             }
             output(p, r.output, Ty::DoubleFloat, segment_shape(r))?;
@@ -229,6 +256,12 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             {
                 return Err(bad("QR dimensions or tolerance"));
             }
+            if n > crate::consts::MKL_COLLECT_QR_MAX_COLUMNS as usize {
+                return crate::resident::unsupported("QR exceeds 64 columns");
+            }
+            if b * (m * (n + 1)).max(3 * (n + 1) + 4) > u32::MAX as usize / 2 {
+                return Err(bad("QR work extent"));
+            }
             output(p, r.factors, Ty::DoubleFloat, [b, m + n + 2, n])?;
             output(p, r.solution, Ty::DoubleFloat, [b, n])?;
             output(p, r.rank_condition, Ty::DoubleFloat, [b, 4])?;
@@ -237,10 +270,12 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     Ok(())
 }
 pub fn accesses(r: &Request) -> Access {
-    let (mut reads, writes) = match r {
+    let (reads, writes) = match r {
         Request::SegmentReduce(r) => {
             let mut v = vec![r.values.clone(), r.offsets.clone()];
             v.extend(r.reference.clone());
+            v.extend(r.mask.clone());
+            v.extend(r.weights.clone());
             (v, vec![r.output, r.status])
         }
         Request::StableCompact(r) => (
@@ -261,7 +296,7 @@ pub fn accesses(r: &Request) -> Access {
         ),
     };
     Access {
-        reads: std::mem::take(&mut reads),
+        reads,
         writes,
         systems: vec![],
     }

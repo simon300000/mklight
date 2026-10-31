@@ -90,11 +90,16 @@ fn initialise(
     }
     Ok(())
 }
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    View(&'a PlanView),
+    Buffer(&'a crate::buffer::SharedBuffer<u32>, usize),
+}
 fn scan(
     x: &mut Execution<'_>,
     ctl: &JobControl,
     stats: &mut StageStats,
-    input: (&crate::buffer::SharedBuffer<u32>, usize),
+    input: Input<'_>,
     n: usize,
     ty: u32,
     out: &mut Lease,
@@ -125,116 +130,30 @@ fn scan(
             0,
             0,
         ];
-        launch(x, ctl, stats, "collective block scan", &p, |e, _| {
-            e.set_pipeline(&pso);
-            e.set_buffer(0, input.0, input.1);
-            e.set_buffer_mut(1, out, 0);
-            e.set_buffer_mut(2, &mut totals, 0);
-            e.set_bytes(3, &p);
-            e.dispatch_groups([count, 1, 1], 256);
-            Ok(())
-        })?;
-    }
-    if blocks > 1 {
-        let mut prefixes = x.allocate(blocks * words)?;
-        scan(
-            x,
-            ctl,
-            stats,
-            (&totals, 0),
-            blocks,
-            if ty == 0 { 0 } else { 2 },
-            &mut prefixes,
-        )?;
-        let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_c_scan_add"))?;
-        for (i, len) in ranges(n) {
-            let p = [
-                n as u32,
-                i as u32,
-                len as u32,
-                u32::from(ty == 0),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ];
-            launch(x, ctl, stats, "collective scan prefixes", &p, |e, _| {
-                e.set_buffer_mut(0, out, 0);
-                e.set_buffer(1, &prefixes, 0);
-                e.set_bytes(2, &p);
-                e.dispatch_1d(&pso, len);
-                Ok(())
-            })?;
-        }
-        x.recycle(prefixes);
-    }
-    x.recycle(totals);
-    Ok(())
-}
-// Imported inputs are pinned immutable buffers. Copying the binding (not its
-// contents) lets the worker allocate its scan temporaries without a borrow of x.
-fn scan_view(
-    x: &mut Execution<'_>,
-    ctl: &JobControl,
-    stats: &mut StageStats,
-    v: &PlanView,
-    out: &mut Lease,
-) -> MkResult<()> {
-    let (input, offset) = x.buffer(v);
-    // SharedBuffer is a retained Metal object plus an immutable host view.
-    // Use the scan's first-level encoder here; recursive levels use owned leases.
-    let n = v.desc.shape[0];
-    let ty = kind(v.desc.element);
-    let words = if ty == 0 { 1 } else { 2 };
-    let blocks = n.div_ceil(256);
-    let _ = (input, offset);
-    let mut totals = x.allocate(blocks * words)?;
-    let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_c_scan"))?;
-    for first in (0..blocks).step_by(CHUNK / 256) {
-        let count = (CHUNK / 256).min(blocks - first);
-        let p = [
-            n as u32,
-            first as u32,
-            ty,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
         launch(x, ctl, stats, "collective block scan", &p, |e, x| {
             e.set_pipeline(&pso);
-            bind(e, 0, x, v);
+            match input {
+                Input::View(v) => bind(e, 0, x, v),
+                Input::Buffer(b, o) => e.set_buffer(0, b, o),
+            }
             e.set_buffer_mut(1, out, 0);
             e.set_buffer_mut(2, &mut totals, 0);
             e.set_bytes(3, &p);
             e.dispatch_groups([count, 1, 1], 256);
             Ok(())
         })?;
+        ctl.report(
+            0.5 * (first + count) as f64 / blocks.max(1) as f64,
+            "scan blocks",
+        );
     }
     if blocks > 1 {
         let mut prefixes = x.allocate(blocks * words)?;
         scan(
             x,
-            ctl,
+            &ctl.subrange(0.5, 0.75),
             stats,
-            (&totals, 0),
+            Input::Buffer(&totals, 0),
             blocks,
             if ty == 0 { 0 } else { 2 },
             &mut prefixes,
@@ -266,6 +185,7 @@ fn scan_view(
                 e.dispatch_1d(&pso, len);
                 Ok(())
             })?;
+            ctl.report(0.75 + 0.25 * (i + len) as f64 / n as f64, "scan prefixes");
         }
         x.recycle(prefixes);
     }
@@ -289,7 +209,15 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             };
             let mut out = x.take_output(r.output);
             let mut tmp = x.allocate(n * words)?;
-            scan_view(x, ctl, &mut stats, &r.values, &mut tmp)?;
+            scan(
+                x,
+                &ctl.subrange(0.0, 0.9),
+                &mut stats,
+                Input::View(&r.values),
+                n,
+                kind(r.values.desc.element),
+                &mut tmp,
+            )?;
             initialise(x, ctl, &mut stats, &tmp, &mut out, n, 2, words, r.inclusive)?;
             x.recycle(tmp);
             x.put_output(r.output, out);
@@ -337,7 +265,15 @@ fn compact(
             Ok(())
         })?;
     }
-    scan(x, ctl, stats, (&mask, 0), n, 0, &mut prefix)?;
+    scan(
+        x,
+        &ctl.subrange(0.0, 0.4),
+        stats,
+        Input::Buffer(&mask, 0),
+        n,
+        0,
+        &mut prefix,
+    )?;
     let clear = x.gpu.pipeline(&PipelineKey::plain("mkl_c_compact_clear"))?;
     let scatter = x.gpu.pipeline(&PipelineKey::plain("mkl_c_compact"))?;
     // Empty output still publishes a defined count, through a device write.
@@ -379,7 +315,7 @@ fn compact(
             e.dispatch_1d(&clear, len);
             Ok(())
         })?;
-        ctl.report(0.5 * (i + len) as f64 / n as f64, "compact prefix");
+        ctl.report(0.4 + 0.1 * (i + len) as f64 / n as f64, "compact prefix");
     }
     for (i, len) in ranges(n) {
         let p = [
@@ -548,6 +484,9 @@ fn segments(
         unreachable!()
     };
     let s = r.offsets.desc.shape[0] - 1;
+    if s == 0 {
+        return Ok(());
+    }
     let maxg = reduce::num_groups(r.max_segment_len);
     let mut out = x.take_output(r.output);
     let mut status = x.take_output(r.status);
@@ -562,17 +501,17 @@ fn segments(
     for phase in 0..phases {
         let terms = match r.kind {
             SegmentKind::Sum | SegmentKind::SourceProducts => c,
-            SegmentKind::Summary => c * 3,
+            SegmentKind::Summary => c * 4,
             SegmentKind::Moments2 => {
                 if phase == 0 {
-                    3
+                    4
                 } else {
                     6
                 }
             }
         };
         // At most 16 MiB of partials, including detector maps with many bins.
-        let tile = (16 * 1024 * 1024 / (terms * maxg * 8)).clamp(1, 256);
+        let tile = (16 * 1024 * 1024 / (terms * maxg * 8)).clamp(1, (64 / maxg.min(64)).max(1));
         let mut partials = x.allocate(tile * terms * maxg * 2)?;
         for start in (0..s).step_by(tile) {
             let ns = tile.min(s - start);
@@ -597,12 +536,21 @@ fn segments(
                 0,
                 0,
             ];
+            p[15] = r.mask_value;
+            let options = [
+                u32::from(r.mask.is_some()),
+                r.weights
+                    .as_ref()
+                    .map(|v| v.desc.element.words() as u32)
+                    .unwrap_or(0),
+            ];
             // Partition group ranges without changing their logical indices.
             for term in 0..terms {
                 p[14] = term as u32;
                 for g in (0..maxg).step_by(64) {
                     p[13] = g as u32;
                     let ng = 64.min(maxg - g);
+                    x.stats.parameter_bytes += 8;
                     launch(x, ctl, stats, "segment tree pass1", &p, |e, x| {
                         e.set_pipeline(&p1);
                         bind(e, 0, x, &r.values);
@@ -615,6 +563,17 @@ fn segments(
                         e.set_buffer(3, &out, 0);
                         e.set_buffer_mut(4, &mut partials, 0);
                         e.set_bytes(5, &p);
+                        if let Some(v) = &r.mask {
+                            bind(e, 6, x, v);
+                        } else {
+                            e.set_buffer(6, &status, 0);
+                        }
+                        if let Some(v) = &r.weights {
+                            bind(e, 7, x, v);
+                        } else {
+                            e.set_buffer(7, &status, 0);
+                        }
+                        e.set_bytes(8, &options);
                         e.dispatch_groups([ng, 1, ns], 256);
                         Ok(())
                     })?;
@@ -678,11 +637,14 @@ fn qr_reduce(
     for b in (0..batch).step_by(tile) {
         let nb = tile.min(batch - b);
         p[8] = b as u32;
-        for col in first..first + cols {
+        let col_step = (64 / nb).max(1);
+        for col in (first..first + cols).step_by(col_step) {
+            let nc = col_step.min(first + cols - col);
             p[7] = col as u32;
-            for g in (0..groups).step_by(64) {
+            let group_step = (64 / (nb * nc)).max(1);
+            for g in (0..groups).step_by(group_step) {
                 p[6] = g as u32;
-                let ng = 64.min(groups - g);
+                let ng = group_step.min(groups - g);
                 launch(x, ctl, stats, "QR reduction pass1", p, |e, _| {
                     e.set_pipeline(&pass1);
                     e.set_buffer(0, work, 0);
@@ -690,7 +652,7 @@ fn qr_reduce(
                     e.set_buffer(2, aux, 0);
                     e.set_buffer_mut(3, partial, 0);
                     e.set_bytes(4, p);
-                    e.dispatch_groups([ng, 1, nb], 256);
+                    e.dispatch_groups([ng, nc, nb], 256);
                     Ok(())
                 })?;
             }
@@ -699,7 +661,7 @@ fn qr_reduce(
                 e.set_buffer(0, partial, 0);
                 e.set_buffer_mut(1, aux, 0);
                 e.set_bytes(2, p);
-                e.dispatch_groups([1, nb, 1], 256);
+                e.dispatch_groups([nc, nb, 1], 256);
                 Ok(())
             })?;
         }
@@ -710,6 +672,9 @@ fn qr(r: &QrFit, x: &mut Execution<'_>, ctl: &JobControl, stats: &mut StageStats
     let [b, m, n] = r.matrix.desc.shape[..] else {
         unreachable!()
     };
+    if b == 0 {
+        return Ok(());
+    }
     let groups = reduce::num_groups(m);
     let mut factors = x.take_output(r.factors);
     let mut solution = x.take_output(r.solution);
@@ -932,7 +897,10 @@ fn qr(r: &QrFit, x: &mut Execution<'_>, ctl: &JobControl, stats: &mut StageStats
         1,
     )?;
     let finish = x.gpu.pipeline(&PipelineKey::plain("mkl_c_qr_finish"))?;
-    for (i, len) in ranges(b) {
+    // Condition estimation is cubic only in this bounded small column count.
+    let fit_step = (CHUNK / (n * n * n)).max(1);
+    for i in (0..b).step_by(fit_step) {
+        let len = fit_step.min(b - i);
         p[8] = i as u32;
         p[13] = len as u32;
         launch(x, ctl, stats, "QR solve and condition", &p, |e, _| {

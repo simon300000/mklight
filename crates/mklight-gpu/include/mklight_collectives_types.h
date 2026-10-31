@@ -6,8 +6,10 @@
 #define MKL_COLLECT_MOMENTS2 2u
 #define MKL_COLLECT_SOURCE_PRODUCTS 3u
 #define MKL_COLLECT_THREADS 256u
+#define MKL_COLLECT_QR_MAX_COLUMNS 64u
 #define MKL_COLLECT_QR_FIELDS 4u
-/* All parameter blocks use sixteen u32 words, not Rust request structs.
+/* Main parameter blocks use sixteen u32 words, not Rust request structs.
+   Segmented mask/weight options use an additional two u32 words.
    The encoder documents the words per kernel. Numeric arrays use scalar
    loads so typed views need no additional float2 alignment. */
 #endif

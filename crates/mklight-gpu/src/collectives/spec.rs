@@ -32,14 +32,23 @@ fn scan<T: Copy>(
         }
         out[b * 256..b * 256 + block.len()].copy_from_slice(&a[..block.len()]);
         totals.push(a[255]);
+        ctl.report(
+            0.5 * (b + 1) as f64 / x.len().div_ceil(256).max(1) as f64,
+            "scan blocks",
+        );
     }
     if totals.len() > 1 {
-        let prefixes = scan(&totals, zero, add, ctl)?;
+        let prefixes = scan(&totals, zero, add, &ctl.subrange(0.5, 0.75))?;
         for (b, block) in out.chunks_mut(256).enumerate().skip(1) {
             ctl.check()?;
+            let block_len = block.len();
             for v in block {
                 *v = add(prefixes[b - 1], *v);
             }
+            ctl.report(
+                0.75 + 0.25 * (b * 256 + block_len) as f64 / x.len() as f64,
+                "scan prefixes",
+            );
         }
     }
     Ok(out)
@@ -54,6 +63,11 @@ pub fn float_cmp(a: f32, b: f32) -> Ordering {
     }
 }
 pub fn df_cmp(a: D, b: D) -> Ordering {
+    let an = a.hi.is_nan() || a.lo.is_nan();
+    let bn = b.hi.is_nan() || b.lo.is_nan();
+    if an || bn {
+        return an.cmp(&bn);
+    }
     float_cmp(a.hi, b.hi).then_with(|| float_cmp(a.lo, b.lo))
 }
 pub fn permutation(
@@ -70,7 +84,10 @@ pub fn permutation(
             let mid = (base + width).min(n);
             let end = (base + 2 * width).min(n);
             let (mut l, mut r) = (base, mid);
-            for dest in &mut b[base..end] {
+            for (index, dest) in b[base..end].iter_mut().enumerate() {
+                if index % 4096 == 0 {
+                    ctl.check()?;
+                }
                 if l < mid && (r == end || cmp(a[l], a[r]) != Ordering::Greater) {
                     *dest = a[l];
                     l += 1;
@@ -94,15 +111,18 @@ pub struct QrResult {
 /// Independent columns are scaled before orthogonalisation. Norms use a
 /// maximum scale before squaring, retaining finite very small/large columns.
 fn norm<E: FpEnv>(x: &[D], ctl: &JobControl) -> MkResult<D> {
-    if x.iter().any(|v| !v.is_finite()) {
-        return Ok(D::from_f32(f32::NAN));
+    let mut scale = 0f32;
+    for (i, v) in x.iter().enumerate() {
+        if i % 4096 == 0 {
+            ctl.check()?;
+        }
+        if !v.is_finite() {
+            return Ok(D::from_f32(f32::NAN));
+        }
+        scale = scale.max(v.hi.abs());
     }
-    let scale = x.iter().map(|v| v.hi.abs()).fold(0f32, f32::max);
-    if scale == 0.0 {
+    if E::eq(scale, 0.0) {
         return Ok(D::ZERO);
-    }
-    if !scale.is_finite() {
-        return Ok(D::from_f32(f32::NAN));
     }
     Ok(sum::<E>(
         x.len(),
@@ -140,7 +160,10 @@ pub fn qr<E: FpEnv>(
             status = 2.0;
         }
         if scales[j].hi != 0.0 {
-            for x in &mut v[j] {
+            for (index, x) in v[j].iter_mut().enumerate() {
+                if index % 4096 == 0 {
+                    ctl.check()?;
+                }
                 *x = x.div_in::<E>(scales[j]);
             }
         }
@@ -180,6 +203,9 @@ pub fn qr<E: FpEnv>(
         rank += 1;
         r[k][k] = d;
         for i in 0..m {
+            if i % 4096 == 0 {
+                ctl.check()?;
+            }
             q[k][i] = v[k][i].div_in::<E>(d);
         }
         // Two passes prevent loss of orthogonality on clipped/conditioned pupils.
@@ -188,12 +214,18 @@ pub fn qr<E: FpEnv>(
                 let dot = sum::<E>(m, |i| q[k][i].mul_in::<E>(v[j][i]), ctl)?;
                 r[k][j] = r[k][j].add_in::<E>(dot);
                 for i in 0..m {
+                    if i % 4096 == 0 {
+                        ctl.check()?;
+                    }
                     v[j][i] = v[j][i].add_in::<E>(-(q[k][i].mul_in::<E>(dot)));
                 }
             }
             let dot = sum::<E>(m, |i| q[k][i].mul_in::<E>(b[i]), ctl)?;
             y[k] = y[k].add_in::<E>(dot);
             for i in 0..m {
+                if i % 4096 == 0 {
+                    ctl.check()?;
+                }
                 b[i] = b[i].add_in::<E>(-(q[k][i].mul_in::<E>(dot)));
             }
         }
@@ -254,6 +286,11 @@ pub fn qr<E: FpEnv>(
         factors[(m + n + 1) * n + j] = D::from_f64(pivot[j] as f64);
     }
     let residual = norm::<E>(&b, ctl)?;
+    if !residual.is_finite() || status == 0.0 && solution.iter().any(|x| !x.is_finite()) {
+        status = 2.0;
+        condition = D::from_f32(f32::INFINITY);
+        solution.fill(nan);
+    }
     Ok(QrResult {
         factors,
         solution,

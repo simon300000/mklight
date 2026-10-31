@@ -28,6 +28,9 @@ fn actual_metal_known_answers_both_libraries() {
         p3_cases::compact_answers(&b);
         p3_cases::segment_answers(&b);
         p3_cases::qr_answers(&b);
+        p3_cases::energy_chain(&b);
+        p3_cases::conditioned_qr(&b);
+        p3_cases::nonfinite_qr(&b);
     }
 }
 #[test]

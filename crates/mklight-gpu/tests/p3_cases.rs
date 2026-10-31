@@ -20,6 +20,22 @@ pub fn scratch(p: &mut ResidentPlan, t: ElementType, s: impl Into<Vec<usize>>) -
     p.scratch(BufferDesc::new(t, s))
 }
 pub fn read(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanResult) {
+    let (v, out, _, _) = read_timed(b, p);
+    (v, out)
+}
+pub fn read_timed(
+    b: &dyn ComputeBackend,
+    mut p: ResidentPlan,
+) -> (Vec<BufferData>, PlanResult, f64, u64) {
+    p.settings["p3_requests"] = serde_json::json!(
+        p.operations
+            .iter()
+            .filter_map(|op| match op {
+                ResidentOp::Collectives(r) => Some(format!("{r:?}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
     let out = b
         .submit_plan(p, &JobContext::new())
         .unwrap()
@@ -27,10 +43,14 @@ pub fn read(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanRe
         .unwrap();
     assert_eq!(out.stats.readback_bytes, 0);
     assert_eq!(out.stats.fallback_count, 0);
+    let mut seconds = 0.0;
+    let mut bytes = 0;
     let v = out
         .outputs
         .iter()
         .map(|h| {
+            // Empty leases execute and publish. P0 empty DF readback has an
+            // alignment bug; the evidence records this separate runtime gap.
             if h.desc().len().unwrap() == 0 {
                 return match h.desc().element {
                     ElementType::U32 => BufferData::U32(vec![]),
@@ -39,10 +59,13 @@ pub fn read(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanRe
                     ElementType::Complex32 => BufferData::Complex32(vec![]),
                 };
             }
-            b.readback(h.view(), &JobContext::new()).unwrap().data
+            let r = b.readback(h.view(), &JobContext::new()).unwrap();
+            seconds += r.wall_seconds;
+            bytes += r.copied_bytes;
+            r.data
         })
         .collect();
-    (v, out)
+    (v, out, seconds, bytes)
 }
 pub fn df(v: &BufferData) -> Vec<f64> {
     let BufferData::DoubleFloat(v) = v else {
@@ -59,10 +82,11 @@ pub fn uint(v: &BufferData) -> &[u32] {
 pub fn assert_bits(a: &BufferData, b: &BufferData) {
     assert_eq!(a.element(), b.element());
     assert_eq!(a.words().len(), b.words().len());
+    let integer = a.element() == ElementType::U32;
     for (i, (&a, &b)) in a.words().iter().zip(b.words()).enumerate() {
         let (af, bf) = (f32::from_bits(a), f32::from_bits(b));
         assert!(
-            a == b || af.is_nan() && bf.is_nan(),
+            a == b || !integer && af.is_nan() && bf.is_nan(),
             "word {i}: {a:08x} != {b:08x}"
         );
     }
@@ -173,6 +197,34 @@ pub fn sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType) -> Res
     p
 }
 pub fn sort_answers(b: &dyn ComputeBackend) {
+    let mut p = plan();
+    let keys = import(
+        b,
+        &mut p,
+        [4],
+        BufferData::DoubleFloat(vec![
+            Df32::new(f32::NAN, 3.),
+            Df32::new(2., f32::NAN),
+            Df32::from_f32(1.),
+            Df32::new(f32::NAN, -2.),
+        ]),
+    );
+    let ids = import(b, &mut p, [4], BufferData::U32(vec![3, 1, 7, 2]));
+    let ok = scratch(&mut p, ElementType::DoubleFloat, [4]);
+    let oi = scratch(&mut p, ElementType::U32, [4]);
+    p.operations
+        .push(ResidentOp::Collectives(Request::StableSort(StableSort {
+            keys,
+            ids,
+            values: None,
+            output_keys: ok,
+            output_ids: oi,
+            output_values: None,
+        })));
+    p.outputs = vec![oi];
+    let (v, _) = read(b, p);
+    assert_eq!(uint(&v[0]), &[7, 1, 2, 3]);
+
     for n in [0, 1, 257, 10003] {
         for t in [ElementType::U32, ElementType::F32, ElementType::DoubleFloat] {
             let (v, _) = read(b, sort_case(b, n, t));
@@ -292,6 +344,9 @@ pub fn segment(
     let reference = reference.map(|d| import(b, &mut p, [s, 2], d));
     let status = scratch(&mut p, ElementType::U32, [s]);
     let mut r = SegmentReduce {
+        mask: None,
+        mask_value: 0,
+        weights: None,
         values,
         offsets,
         reference,
@@ -308,6 +363,37 @@ pub fn segment(
     p
 }
 pub fn segment_answers(b: &dyn ComputeBackend) {
+    let (v, _) = read(
+        b,
+        segment(
+            b,
+            BufferData::F32(vec![]),
+            1,
+            vec![0],
+            SegmentKind::Sum,
+            None,
+            0,
+        ),
+    );
+    assert!(df(&v[0]).is_empty() && uint(&v[1]).is_empty());
+
+    let (v, _) = read(
+        b,
+        segment(
+            b,
+            BufferData::F32(vec![0., 1., 0., 1., 1., 1.]),
+            3,
+            vec![0, 0, 2],
+            SegmentKind::Moments2,
+            None,
+            2,
+        ),
+    );
+    let empty = df(&v[0]);
+    assert_eq!(&empty[..2], &[0., 0.]);
+    assert!(empty[2].is_nan() && empty[3].is_nan());
+    assert_eq!(&empty[8..10], &[0., 0.]);
+
     let values: Vec<_> = (0..20003).map(|i| [1e8f32, 1., -1e8, 2.][i % 4]).collect();
     let offsets = vec![0, 0, 1, 257, 5003, 20003];
     let (v, _) = read(
@@ -534,10 +620,19 @@ pub fn qr_check(
                 .map(|k| f[i * n + k] * f[(m + k) * n + j])
                 .sum::<f64>()
                 * scale;
-            maxerr = maxerr.max((pred - a[i * n + pivot]).abs());
+            let error = (pred - a[i * n + pivot]).abs();
+            let colscale = (0..m)
+                .map(|r| a[r * n + pivot].abs())
+                .fold(0f64, f64::max)
+                .max(1.0);
+            assert!(
+                error < 1e-9 * colscale,
+                "QR scaled reconstruction {error:e}"
+            );
+            maxerr = maxerr.max(error);
         }
     }
-    assert!(maxerr < 1e-9, "QR reconstruction {maxerr:e}");
+
     let reference = reference_qr(&a, &rhs, m, n);
     let pred: Vec<_> = (0..m)
         .map(|i| (0..n).map(|j| a[i * n + j] * x[j]).sum::<f64>())
@@ -564,6 +659,22 @@ pub fn qr_check(
     maxerr
 }
 pub fn qr_answers(b: &dyn ComputeBackend) {
+    let (v, _) = read(
+        b,
+        qr_plan(
+            b,
+            3,
+            3,
+            1,
+            vec![1., 0., 0., 0., 1., 0., 0., 0., 1.],
+            vec![2., -3., 0.5],
+            1e-10,
+        ),
+    );
+    assert_eq!(df(&v[1]), vec![2., -3., 0.5]);
+    assert_eq!(&df(&v[0])[21..24], &[0., 1., 2.]);
+    assert_eq!(df(&v[2]), vec![3., 1., 0., 0.]);
+
     let m = 41;
     let n = 3;
     let a: Vec<_> = (0..m)
@@ -612,4 +723,100 @@ pub fn qr_answers(b: &dyn ComputeBackend) {
     }
     let max = qr_check(b, a, rhs, m, 6, 1e-10, 6);
     eprintln!("QR f64 reconstruction max={max:e}");
+}
+
+pub fn energy_chain(b: &dyn ComputeBackend) {
+    let mut p = plan();
+    let keys = import(
+        b,
+        &mut p,
+        [6],
+        BufferData::F32(vec![4., 1., 1., 0., 9., 4.]),
+    );
+    let ids = import(b, &mut p, [6], BufferData::U32(vec![2, 5, 1, 7, 0, 0]));
+    let values = import(
+        b,
+        &mut p,
+        [6],
+        BufferData::F32(vec![1., 2., 3., 4., 5., 6.]),
+    );
+    let ok = scratch(&mut p, ElementType::F32, [6]);
+    let oi = scratch(&mut p, ElementType::U32, [6]);
+    let ov = scratch(&mut p, ElementType::F32, [6]);
+    p.operations
+        .push(ResidentOp::Collectives(Request::StableSort(StableSort {
+            keys,
+            ids,
+            values: Some(values),
+            output_keys: ok,
+            output_ids: oi,
+            output_values: Some(ov),
+        })));
+    let prefix = scratch(&mut p, ElementType::DoubleFloat, [6]);
+    p.operations
+        .push(ResidentOp::Collectives(Request::Scan(Scan {
+            values: p.view(ov).unwrap(),
+            inclusive: true,
+            output: prefix,
+        })));
+    p.outputs = vec![oi, prefix];
+    let (v, _) = read(b, p);
+    assert_eq!(uint(&v[0]), &[7, 1, 5, 0, 2, 0]);
+    assert_eq!(df(&v[1]), vec![4., 7., 9., 15., 16., 21.]);
+    assert_eq!(df(&v[1])[5], 21.);
+}
+pub fn conditioned_qr(b: &dyn ComputeBackend) {
+    let (m, n) = (71, 3);
+    let a: Vec<_> = (0..m)
+        .flat_map(|i| {
+            let x = (i as f64 - 35.) / 35.;
+            [1e-20, x * 1e20, x * x]
+        })
+        .collect();
+    let rhs: Vec<_> = (0..m)
+        .map(|i| {
+            let x = (i as f64 - 35.) / 35.;
+            0.3 + 0.7 * x - 0.2 * x * x + 0.01 * (13. * x).sin()
+        })
+        .collect();
+    qr_check(b, a, rhs, m, n, 1e-10, 3);
+    let mut a = vec![];
+    let mut rhs = vec![];
+    for j in 0..31 {
+        for i in 0..3 {
+            let x = 0.7 + (i as f64 - 1.) * 1e-10;
+            let y = j as f64 / 30. - 0.5;
+            let row = [
+                1.,
+                2. * x,
+                2. * y,
+                3f64.sqrt() * (2. * (x * x + y * y) - 1.),
+                6f64.sqrt() * (x * x - y * y),
+                6f64.sqrt() * 2. * x * y,
+            ];
+            rhs.push(row.iter().sum());
+            a.extend(row);
+        }
+    }
+    let (v, _) = read(b, qr_plan(b, rhs.len(), 6, 1, a, rhs, 1e-8));
+    assert_eq!(df(&v[2])[0], 3.);
+    assert_eq!(df(&v[2])[3], 1.);
+    assert!(df(&v[1]).iter().all(|x| x.is_nan()));
+}
+
+pub fn nonfinite_qr(b: &dyn ComputeBackend) {
+    let (v, _) = read(
+        b,
+        qr_plan(
+            b,
+            3,
+            2,
+            1,
+            vec![1., 0., 1., 1., 1., 2.],
+            vec![1., f64::NAN, 2.],
+            1e-10,
+        ),
+    );
+    assert_eq!(df(&v[2])[3], 2.);
+    assert!(df(&v[1]).iter().all(|x| x.is_nan()));
 }

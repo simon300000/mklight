@@ -171,6 +171,8 @@ pub fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) ->
 fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
     let vals = Values::read(x, &r.values);
     let offsets = Values::read(x, &r.offsets);
+    let mask = r.mask.as_ref().map(|v| Values::read(x, v));
+    let weights = r.weights.as_ref().map(|v| Values::read(x, v));
     let refs = r.reference.as_ref().map(|v| Values::read(x, v));
     let [c, n] = r.values.desc.shape[..] else {
         unreachable!()
@@ -201,8 +203,37 @@ fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) ->
             }
             continue;
         }
-        let get = |ch: usize, i: usize| vals.d(ch * n + a + i);
-        let sum = |f: &dyn Fn(usize) -> D| reduce::mapped_in::<E>(r.mode, b - a, f, ctl);
+        let keep = |i: usize| {
+            mask.as_ref()
+                .map(|v| v.words[a + i] == r.mask_value)
+                .unwrap_or(true)
+        };
+        let get = |ch: usize, i: usize| {
+            if keep(i) {
+                vals.d(ch * n + a + i)
+            } else {
+                D::ZERO
+            }
+        };
+        let weight = |i: usize| {
+            if keep(i) {
+                weights
+                    .as_ref()
+                    .map(|v| v.d(a + i))
+                    .unwrap_or_else(|| if c == 3 { get(2, i) } else { D::from_f32(1.0) })
+            } else {
+                D::ZERO
+            }
+        };
+        let sum = |f: &dyn Fn(usize) -> D| {
+            reduce::mapped_in::<E>(r.mode, b - a, |i| if keep(i) { f(i) } else { D::ZERO }, ctl)
+        };
+        let count = reduce::mapped_in::<E>(
+            crate::ReduceMode::DoubleFloat,
+            b - a,
+            |i| D::from_f32(if keep(i) { 1.0 } else { 0.0 }),
+            ctl,
+        )?;
         match r.kind {
             SegmentKind::Sum | SegmentKind::Summary => {
                 for ch in 0..c {
@@ -213,6 +244,9 @@ fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) ->
                         let mut lo = D::from_f32(f32::INFINITY);
                         let mut hi = D::from_f32(f32::NEG_INFINITY);
                         for i in 0..b - a {
+                            if !keep(i) {
+                                continue;
+                            }
                             let v = get(ch, i);
                             if v.hi.is_nan() {
                                 lo = v;
@@ -226,12 +260,8 @@ fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) ->
                                 hi = v;
                             }
                         }
-                        out[(ch * s + z) * 4..(ch * s + z + 1) * 4].copy_from_slice(&[
-                            v,
-                            D::from_f64((b - a) as f64),
-                            lo,
-                            hi,
-                        ]);
+                        out[(ch * s + z) * 4..(ch * s + z + 1) * 4]
+                            .copy_from_slice(&[v, count, lo, hi]);
                     }
                 }
             }
@@ -255,9 +285,9 @@ fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) ->
                     refs.as_ref().map(|v| v.d(2 * z + 1)).unwrap_or(D::ZERO),
                 ];
                 let q = |ch: usize, i: usize| get(ch, i).add_in::<E>(-(origin[ch]));
-                let wt = sum(&|i| get(2, i))?;
-                let mx = sum(&|i| q(0, i).mul_in::<E>(get(2, i)))?;
-                let my = sum(&|i| q(1, i).mul_in::<E>(get(2, i)))?;
+                let wt = sum(&|i| weight(i))?;
+                let mx = sum(&|i| q(0, i).mul_in::<E>(weight(i)))?;
+                let my = sum(&|i| q(1, i).mul_in::<E>(weight(i)))?;
                 let mu = if wt.hi > 0.0 {
                     [mx.div_in::<E>(wt), my.div_in::<E>(wt)]
                 } else {
@@ -269,13 +299,13 @@ fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) ->
                     let b = if cent { central(1, i) } else { q(1, i) };
                     a.mul_in::<E>(a).add_in::<E>(b.mul_in::<E>(b))
                 };
-                let sr = sum(&|i| get(2, i).mul_in::<E>(radius(i, false)))?;
-                let xx = sum(&|i| get(2, i).mul_in::<E>(central(0, i).mul_in::<E>(central(0, i))))?;
-                let xy = sum(&|i| get(2, i).mul_in::<E>(central(0, i).mul_in::<E>(central(1, i))))?;
-                let yy = sum(&|i| get(2, i).mul_in::<E>(central(1, i).mul_in::<E>(central(1, i))))?;
+                let sr = sum(&|i| weight(i).mul_in::<E>(radius(i, false)))?;
+                let xx = sum(&|i| weight(i).mul_in::<E>(central(0, i).mul_in::<E>(central(0, i))))?;
+                let xy = sum(&|i| weight(i).mul_in::<E>(central(0, i).mul_in::<E>(central(1, i))))?;
+                let yy = sum(&|i| weight(i).mul_in::<E>(central(1, i).mul_in::<E>(central(1, i))))?;
                 let mut maxima = [D::ZERO; 2];
                 for i in 0..b - a {
-                    if get(2, i).hi > 0.0 {
+                    if weight(i).hi > 0.0 {
                         for (j, max) in maxima.iter_mut().enumerate() {
                             let v = radius(i, j == 1);
                             if spec::df_cmp(v, *max) == Ordering::Greater {
@@ -285,16 +315,7 @@ fn segments<E: FpEnv>(r: &SegmentReduce, x: &mut Execution, ctl: &JobControl) ->
                     }
                 }
                 out[z * 10..z * 10 + 10].copy_from_slice(&[
-                    D::from_f64((b - a) as f64),
-                    wt,
-                    mu[0],
-                    mu[1],
-                    sr,
-                    xx,
-                    xy,
-                    yy,
-                    maxima[0],
-                    maxima[1],
+                    count, wt, mu[0], mu[1], sr, xx, xy, yy, maxima[0], maxima[1],
                 ]);
             }
         }
