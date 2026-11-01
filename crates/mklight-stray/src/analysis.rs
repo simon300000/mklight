@@ -360,6 +360,8 @@ struct RunSettings<'a> {
     system_options: &'a SystemOptions,
     source: &'a Beam,
     scene_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resident: Option<&'a RunInfo>,
 }
 
 /// Runs a stray-light analysis on a resolved system (module docs).
@@ -388,7 +390,7 @@ pub fn analyze_with_signatures(
     settings.validate()?;
     let sys = StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
     ctx.report(0.1, "stray light: scene built");
-    analyze_system_impl(&sys, settings, true, &ctx.subrange(0.1, 1.0))
+    analyze_system_impl(&sys, settings, true, None, &ctx.subrange(0.1, 1.0))
 }
 
 /// Grid size of the per-source obstruction check.
@@ -402,15 +404,19 @@ pub fn analyze_system(
     settings: &StrayAnalysisSettings,
     ctx: &JobContext,
 ) -> MkResult<StrayAnalysisResult> {
-    analyze_system_impl(sys, settings, false, ctx).map(|r| r.0)
+    analyze_system_impl(sys, settings, false, None, ctx).map(|r| r.0)
 }
 
 /// [`analyze_system`]; with `all_signatures`, signature tallying is forced
 /// on and every tallied signature is returned too.
-fn analyze_system_impl(
+pub(crate) fn analyze_system_impl(
     sys: &StraySystem,
     settings: &StrayAnalysisSettings,
     all_signatures: bool,
+    resident: Option<(
+        &dyn mklight_gpu::ComputeBackend,
+        crate::gpu::TransportOptions,
+    )>,
     ctx: &JobContext,
 ) -> MkResult<(StrayAnalysisResult, Vec<SignatureFlux>)> {
     settings.validate()?;
@@ -430,7 +436,18 @@ fn analyze_system_impl(
     ctx.report(0.02, "stray light: transport");
     let mut ss = settings.stray_settings();
     ss.signatures |= all_signatures;
-    let mut r = run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?;
+    let mut r = match resident {
+        Some((b, options)) => crate::gpu::run(
+            b,
+            sys.resolved().snapshot.clone(),
+            &sys.scene,
+            &beam.spec,
+            &ss,
+            options,
+            &ctx.subrange(0.02, 0.98),
+        )?,
+        None => run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?,
+    };
     let owned = ss.owned_classes;
     let det = &r.detector;
     let area = det.spec.pixel_area();
@@ -502,6 +519,7 @@ fn analyze_system_impl(
         ));
     }
     let snapshot = &sys.resolved().snapshot;
+    let execution = resident.and(r.run_info.as_ref());
     let run_info = timer.finish(
         snapshot,
         "stray_light",
@@ -510,13 +528,13 @@ fn analyze_system_impl(
             system_options: &sys.options,
             source: &beam,
             scene_fingerprint: sys.scene.fingerprint(),
+            resident: execution,
         },
-        "cpu-f64",
-        Precision::F64Reference,
+        execution.map_or("cpu-f64", |i| i.backend.as_str()),
+        execution.map_or(Precision::F64Reference, |i| i.precision),
         Some(settings.seed),
         warnings.clone(),
     );
-    ctx.report(1.0, "stray light: done");
     let result = StrayAnalysisResult {
         emitted: e.emitted,
         classes: owned,
@@ -536,5 +554,7 @@ fn analyze_system_impl(
         warnings,
         source: beam,
     };
+    ctx.check()?;
+    ctx.report(1.0, "stray light: done");
     Ok((result, all))
 }

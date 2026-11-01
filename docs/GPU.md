@@ -1422,6 +1422,17 @@ optional qualified spatial-search implementation, not a requirement or a
 replacement of curved optics by triangles. Stable nearest-hit tie rules,
 shared apertures and exact coverage signatures preserve the solver partition.
 
+**Stray transport, measured (P10).** Busy shared M2 Pro, native analysis
+jobs, median of three warm runs. **CPU-preferred:** every measured workload
+except the Q-bfs sample at 20k rays (Metal 66 ms, CPU 79 ms). Metal/CPU is
+1.6–5.1× on the samples at 20k and 1M rays, 3.3–3.5× on split-heavy plates
+and 3.0–14.5× on the 36-primitive barrel (400k rays: 1.33/0.24 s on axis,
+0.70/0.05 s at 20°). Scheduling, plan sizing and estimator collection were
+optimised (3–8× faster than first delivery); the remaining limit is the
+double-float interaction megakernel at about 3–5 M events/s versus
+12–20 M events/s on the CPU, while the same BVH casts first hits at about
+37 M rays/s. A split closest-hit/interaction wavefront is the next lever.
+
 ### 9.3 `auto`, determinism and jobs
 
 Change the engine's initial default from `CpuReference` to `Auto` when

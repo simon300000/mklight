@@ -844,25 +844,12 @@ struct RunSettings<'a> {
     scene_fingerprint: String,
 }
 
-/// Runs the stray-light Monte Carlo with the scene's own BVH.
-pub fn run(
+/// Shared boundary checks for reference and resident adapters.
+pub(crate) fn validate_run(
     scene: &Scene,
     source: &SourceSpec,
     settings: &StraySettings,
-    ctx: &JobContext,
-) -> MkResult<StrayResult> {
-    run_with(scene, scene.bvh(), source, settings, ctx)
-}
-
-/// Runs the stray-light Monte Carlo with any [`RayCaster`] over the scene's
-/// primitives (for example a hardware ray-tracing backend).
-pub fn run_with<C: RayCaster>(
-    scene: &Scene,
-    caster: &C,
-    source: &SourceSpec,
-    settings: &StraySettings,
-    ctx: &JobContext,
-) -> MkResult<StrayResult> {
+) -> MkResult<()> {
     settings.validate()?;
     // A signature keeps MAX_DIFFRACTION_VISITS DOE visits: a covered path
     // with more could never be matched, so its flux would count twice.
@@ -896,6 +883,29 @@ pub fn run_with<C: RayCaster>(
     {
         return Err(MkError::InvalidModel("start medium does not exist".into()));
     }
+    Ok(())
+}
+
+/// Runs the stray-light Monte Carlo with the scene's own BVH.
+pub fn run(
+    scene: &Scene,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
+    run_with(scene, scene.bvh(), source, settings, ctx)
+}
+
+/// Runs the stray-light Monte Carlo with any [`RayCaster`] over the scene's
+/// primitives (for example a hardware ray-tracing backend).
+pub fn run_with<C: RayCaster>(
+    scene: &Scene,
+    caster: &C,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
+    validate_run(scene, source, settings)?;
     let timer = RunTimer::start();
     let total: f64 = scene.wavelength_weights.iter().sum();
     let mut acc = 0.0;

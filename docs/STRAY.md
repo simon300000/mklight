@@ -449,3 +449,130 @@ within MC and deterministic pupil-quadrature error. The hybrid DOE test in
 `tests/sequential.rs` compares Primary transmission, spot centroid and RMS
 with the obstruction-checked sequential reference on all extended samples,
 reporting z scores and checking quadrature convergence.
+
+## Resident GPU transport (P10)
+
+`gpu::{analyze, analyze_system, analyze_with_signatures}` return the native
+analysis result, including aperture/coverage checks and the obstruction-checked
+primary reference. The reference diagnostic remains CPU f64 and is distinct
+from the transport backend.
+
+`gpu::run` executes source generation, non-sequential transport and detector
+estimators through `ComputeBackend`, returning the existing `StrayResult`.
+`gpu::TransportScene` retains immutable scene/material leases across plans;
+`append` exposes raw device detections and per-source ledgers for composed
+jobs. `prepare_geometry`, `generate` and `first_hits` remain available for
+geometry diagnostics. Engine qualification, capability advertisement and
+`auto` routing belong to P11 and are unchanged here.
+
+The four source measures preserve wavelength-first Philox draws and the
+reference uniform conversion, including its lower half ulp. Every source
+keeps its own 64-bit logical ID and 64-bit transport draw cursor. Splitting
+applies branches in reference order, then traverses children depth first.
+Other sources, command boundaries and stack growth never consume its random
+stream. Rare-branch forcing, analog/weighted/split modes, roulette and the
+64-copy weight window retain the reference bookkeeping.
+
+The portable compute caster uses analytic planes, conics and cylinders,
+local-frame double-float roots/normals and stable original-primitive-ID ties.
+Extended sags reuse P1's packed bases and gradients. Their nearest-hit search
+clips to a conservative box/cylinder, scans signed residuals and derivative
+extrema, and refines brackets with safeguarded Newton/bisection; this also
+resolves close root pairs near tangency. Coefficient bounds enclose the
+whole sag domain, including asymmetric surfaces; sampled extrema do not
+stand in for a bound. Small scenes retain the median host topology. At 512
+primitives and above, device kernels transform bounds and build a balanced
+preorder tree by levels. Traversal is stackless on every Metal device,
+including devices without hardware ray tracing. Optics are never triangulated.
+
+Interactions call the P7 coating implementation directly (the shader includes
+P7's source and the CPU-f32 specification uses P7's module, so there is one
+coating algorithm). Angle-dependent TMM
+and powers run on device, with scalar products of unpolarised averages.
+Beer--Lambert attenuation, all absorption/leak/escape/truncation/failure
+sinks, backside rules, ideal lenses, repeated physical-interface passes,
+TIS interpolation and Lambertian/Gaussian/ABg rejection sampling follow the
+reference. TIS incidence and proposal log/exponential formulas retain
+double-float residuals, including grazing angles and uniform endpoints.
+DOE order draws retain the full ideal/kinoform/multilevel spectrum,
+the curved-surface grating equation and evanescent sink. Histories preserve
+all five classes, six non-designed events and 32 DOE visits. Coverage matches
+exact reflection and non-selected order overrides on device; overflow stays
+uncovered. Shared reference boundary checks reject unrepresentable coverage.
+
+Immutable mode/material/shape features specialize the transport shader so
+unused split, film, extended-sag and scatter state does not burden other
+scenes. This changes no physical decisions.
+
+Each source has a resident continuation stack, ledger, detection journal and
+draw cursor. Up to 16,384 persistent lanes claim fresh sources and paused
+sources from device queues (integer atomics only), so SIMD groups stay full
+while long split trees finish; claim order never changes a source's records.
+Several rounds share one command buffer. The lane event budget and rounds per
+command adapt towards 15 ms of device time, and cancellation is checked
+between commands. A plan holds as many 256-source numerical blocks as fit a
+160 MiB scratch budget (`TransportOptions::source_tile` caps it), and the next
+plan's transport overlaps host key enumeration of the current one.
+A full stack pauses before the next event consumes any draws, grows into a
+larger device allocation and resumes through a device spill copy of the paused
+sources. Stack storage is capped at 256 MiB per allocation. `TransportOptions`
+also controls initial stack capacity, detection-journal capacity and the
+maximum lane event budget. Journal rows past a source's count are unspecified.
+Exhausted journal/stack capacity or P7's reference-required precision domain
+returns `Unsupported`; non-ideal DOE blazes beyond 2^20 also use reference
+sampling so every rounded Cauchy proposal remains an exactly represented
+integer. Ideal selected orders retain all i32 bits in the grating equation.
+Unrepresentable numeric BSDF/DOE parameters and estimator-product power
+scales also use the reported reference route.
+The high-level adapter completes a labelled CPU-f64
+replacement with a fallback count and reason. Cancellation returns
+`Cancelled` and never starts replacement work. No partial GPU ledger is
+published as a completed result.
+
+Tallies use P3 source products and fixed source-block reductions. Moment
+channels combine each source's depth-first children in double-float before
+the one-record P3 source-product formula is fused into channel generation;
+scalar sink/class estimators keep only (sum, sum²), and one plan normally
+forms every estimator of a transport plan.
+Sparse pixel and signature groups gather the
+original device weights into P3 segments, sum each source's children, then
+form squares and reduce source blocks. Owned, uncovered and covered ghost
+quantities have separate source estimators. Integer pixel/signature/source
+keys are enumerated on the host (in parallel 256-source blocks) for sparse
+topology and labels; no optical weights or positions are reduced there. Final compact block summaries are
+folded in canonical source order using the existing compensated result
+assembler, which also derives scalar centroids, RMS radii and standard
+errors. This keeps public maps, signature ordering and error definitions
+compatible with the reference. There are no floating-point atomics.
+
+Inputs are produced with `fill_buffer`; output and integer-key metadata are
+borrowed with `read_view`. Device stack spill is an explicit device copy,
+not an upload/readback of path state. RunInfo records the actual backend,
+F32Gpu precision, seed, scene fingerprint, numeric recipe version, kernel
+build/probe, stage timings, command/allocation/storage/copy statistics and
+any reference replacement. Widening final values to f64 does not change the
+reported computation precision. Preparation and transport use progress
+subranges, and successful public assembly emits the final 1.
+
+Owned harnesses cover all 16 sample geometries and full transports, both
+shader origins, f64 and matching CPU-f32 comparisons, analytic plate and
+enclosure energy, BSDF integrals, split-child covariance, exact coverage and
+DOE overflow, concurrent/chunked jobs, cancellation/resource reuse and large
+device scene builds. The actual-Metal harnesses in `tests/p10_support` are
+macOS test targets of this crate; the paired benchmarks there are ignored by
+default. Provisional busy-host timings do not establish an engine routing
+threshold.
+
+The provisional Apple M2 Pro native-analysis benchmark (33 paired workloads,
+median of three warm runs, busy shared host) still prefers the CPU f64 route
+for 32 of them: Metal/CPU median wall time is 1.6–5.1× on the samples at 20k
+and 1M rays, 3.3–3.5× on the split-heavy plate and 3.0–14.5× on the
+36-primitive barrel (1.33/0.24 s at 400k rays on axis, 0.70/0.05 s at 20
+degrees). Only
+the Q-bfs sample at 20k rays is faster on Metal (66/79 ms). Command waits stay
+below 46 ms. The limit is the transport kernel itself: about 3–5 M events/s,
+against 12–20 M events/s for the multi-core reference. The same scenes cast
+first hits at about 37 M rays/s, so the double-float interaction code, not
+traversal or scheduling, dominates. These jobs include the primary-reference
+and public-result work, use default stray ownership, and report zero
+reference replacements and host-copied buffer bytes.
