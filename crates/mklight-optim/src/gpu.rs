@@ -6,7 +6,7 @@ use mklight_core::{JobContext, MkResult, RunInfo, Snapshot};
 use mklight_gpu::{ComputeBackend, Df32, optim_ops::Request, resident::*};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 mod evaluator;
 mod first_order;
@@ -25,6 +25,8 @@ pub struct GpuContext {
     pub identity: PlanIdentity,
     stats: Arc<Mutex<PlanStats>>,
     numeric_outputs_read: Arc<AtomicBool>,
+    traced_rays: Arc<AtomicU64>,
+    native_device_calls: Arc<AtomicU64>,
     samplings: Arc<Mutex<SamplingCache>>,
     native: Arc<Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
 }
@@ -36,9 +38,20 @@ impl GpuContext {
             identity: PlanIdentity::default(),
             stats: Arc::default(),
             numeric_outputs_read: Arc::default(),
+            traced_rays: Arc::default(),
+            native_device_calls: Arc::default(),
             samplings: Arc::default(),
             native: Arc::default(),
         }
+    }
+    pub(crate) fn native_device_calls(&self) -> u64 {
+        self.native_device_calls.load(Ordering::Relaxed)
+    }
+    pub(crate) fn record_traced_rays(&self, count: usize) {
+        self.traced_rays.fetch_add(count as u64, Ordering::Relaxed);
+    }
+    pub fn traced_rays(&self) -> u64 {
+        self.traced_rays.load(Ordering::Relaxed)
     }
     pub(crate) fn pupil_nodes(
         &self,
@@ -152,6 +165,9 @@ impl GpuContext {
         }
     }
     pub fn observe_run(&self, info: &RunInfo) {
+        if info.precision != mklight_core::job::Precision::F64Reference {
+            self.native_device_calls.fetch_add(1, Ordering::Relaxed);
+        }
         fn plans(g: &GpuContext, v: &serde_json::Value) {
             if v.get("command_buffers").is_some()
                 && v.get("stages").is_some()
@@ -336,7 +352,7 @@ impl GpuContext {
 
 /// Thin Q retained on device after a tall QR. Only the n×n unpermuted factor
 /// crosses to the host for the serial trust-region secular equation.
-pub(crate) struct ResidentQr {
+pub struct ResidentQr {
     context: GpuContext,
     q: BufferView,
     rows: usize,
@@ -360,7 +376,9 @@ impl ResidentQr {
     }
 }
 impl GpuContext {
-    pub(crate) fn reduce_qr(
+    /// Compress a tall system to its original-column-order factor and Qᵀr.
+    /// Thin Q remains resident; a deficient factor returns `None` for f64 QR.
+    pub fn reduce_qr(
         &self,
         j: &Matrix,
         r: &[f64],
@@ -400,6 +418,10 @@ impl GpuContext {
         if rank[3] != 0. {
             self.observe(PlanStats {
                 fallback_count: 1,
+                stages: vec![StageStats {
+                    name: "rank-deficient tall QR reference".into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             });
             return Ok(None);

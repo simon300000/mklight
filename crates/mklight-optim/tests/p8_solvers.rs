@@ -59,11 +59,7 @@ fn tall_qr_crossover_and_resident_lm() {
             .fold(0., f64::max);
         assert!(dx < 1e-6, "V={n}: {dx}");
         let stats = p.context.stats();
-        assert_eq!(
-            stats.command_buffers > 0,
-            m * n * n >= 1 << 24,
-            "V={n} M={m}"
-        );
+        assert_eq!(stats.command_buffers > 0, m * n >= 1 << 16, "V={n} M={m}");
         assert_eq!(stats.fallback_count, 0);
         eprintln!(
             "P8 V={n} M={m} merit={:e} dx={dx:e} stats={}",

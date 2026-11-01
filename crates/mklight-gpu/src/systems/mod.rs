@@ -551,7 +551,11 @@ pub fn execute(
                 status = OUTSIDE_BOUNDS;
             }
         }
-        algebra::evaluate(&p.code, &parameters, &mut values);
+        if x.flush_to_zero {
+            algebra::evaluate::<crate::Ftz>(&p.code, &parameters, &mut values);
+        } else {
+            algebra::evaluate::<crate::Ieee>(&p.code, &parameters, &mut values);
+        }
         let invalid = |i: u32| !values[i as usize].is_finite();
         if status == READY
             && (p

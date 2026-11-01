@@ -77,7 +77,10 @@ pub(crate) fn execute(
     let mut imported = HashSet::new();
     for b in &plan.buffers {
         let slot = match b {
-            PlanBuffer::Scratch(d) => Slot::Owned(x.allocate(d.byte_len()? / 4)?),
+            PlanBuffer::Scratch(_) => {
+                x.buffers.push(None);
+                continue;
+            }
             PlanBuffer::Import(v) => {
                 if imported.insert(v.buffer.generation()) {
                     x.live_bytes += v.buffer.desc().byte_len()?.max(16) as u64;
@@ -102,9 +105,28 @@ pub(crate) fn execute(
     if let Some(n) = sum_words {
         x.sum_scratch = Some(x.allocate(n)?);
     }
+    let accesses: Vec<_> = plan.operations.iter().map(accesses).collect();
+    let mut last_use = vec![0; plan.buffers.len()];
+    for (i, a) in accesses.iter().enumerate() {
+        for id in a
+            .reads
+            .iter()
+            .map(|v| v.buffer)
+            .chain(a.writes.iter().copied())
+        {
+            last_use[id.0] = i;
+        }
+    }
+    for id in &plan.outputs {
+        last_use[id.0] = plan.operations.len();
+    }
     let ops = plan.operations.len() as f64;
     for (i, op) in plan.operations.iter().enumerate() {
         ctl.check()?;
+        for id in &accesses[i].writes {
+            let words = plan.buffers[id.0].desc().byte_len()? / 4;
+            x.buffers[id.0] = Some(Slot::Owned(x.allocate(words)?));
+        }
         let sub = ctl.subrange(0.99 * i as f64 / ops, 0.99 * (i + 1) as f64 / ops);
         let t = Instant::now();
         let mut stage = StageStats {
@@ -126,11 +148,15 @@ pub(crate) fn execute(
                 dispatch(op, &mut x, &sub)?;
             }
         }
+        for (id, &last) in last_use.iter().enumerate() {
+            if last == i && matches!(x.buffers[id], Some(Slot::Owned(_))) {
+                let lease = x.buffers[id].take().unwrap().owned();
+                x.recycle(lease);
+            }
+        }
         ctl.check()?;
         ctl.report(0.99 * (i + 1) as f64 / ops, "resident plan");
         stage.wall_seconds = t.elapsed().as_secs_f64();
-        x.stats.device_seconds += stage.device_seconds;
-        x.stats.command_buffers += stage.command_buffers;
         x.stats.stages.push(stage);
     }
     ctl.check()?;
@@ -206,12 +232,12 @@ impl Execution<'_> {
         &self,
         label: &str,
         encode: impl FnOnce(&Encoder<'_>) -> MkResult<()>,
-    ) -> MkResult<CommandStats> {
+    ) -> MkResult<()> {
         // Stats are collected once at plan completion, rather than at encoding.
         unsafe {
             self.commands.borrow_mut().encode(self.gpu, label, encode)?;
         }
-        Ok(CommandStats::default())
+        Ok(())
     }
     pub(crate) fn flush(&mut self) -> MkResult<CommandStats> {
         let stats = self.commands.borrow_mut().flush()?;
@@ -313,6 +339,18 @@ impl Execution<'_> {
     }
 
     pub(crate) fn allocate(&mut self, n: usize) -> MkResult<Lease> {
+        // Work-bound completions settle their access guards even without an
+        // explicit flush. Return only those retired leases to the exact pool.
+        let mut freed = 0;
+        self.retired.retain(|b| {
+            if b.available() {
+                freed += b.words().max(4) as u64 * 4;
+                false
+            } else {
+                true
+            }
+        });
+        self.live_bytes -= freed;
         let gpu = self.gpu;
         let b = self
             .rt
@@ -324,9 +362,7 @@ impl Execution<'_> {
     pub(crate) fn recycle(&mut self, b: Lease) {
         self.retired.push(b);
     }
-    fn account(stage: &mut StageStats, cs: CommandStats, wall: f64) {
-        stage.device_seconds += cs.gpu_seconds;
-        stage.command_buffers += cs.command_buffers;
+    fn account(stage: &mut StageStats, wall: f64) {
         stage.max_command_seconds = stage.max_command_seconds.max(wall);
     }
     fn trace(
@@ -384,7 +420,7 @@ impl Execution<'_> {
             // SAFETY: PreparedTrace validated every system, wavelength and path
             // step. Plan validation fixed the output plane/record extents.
             // All ray pointers are advanced by start, preserving stride n.
-            let cs = unsafe {
+            unsafe {
                 self.run(kernel, |e| {
                     e.set_buffer(0, &up.headers, 0);
                     e.set_buffer(1, &up.surfaces, 0);
@@ -409,7 +445,7 @@ impl Execution<'_> {
                     Ok(())
                 })?
             };
-            Self::account(stage, cs, wall.elapsed().as_secs_f64());
+            Self::account(stage, wall.elapsed().as_secs_f64());
             ctl.check()?;
             ctl.report((start + len) as f64 / n as f64, "resident trace");
         }
@@ -475,7 +511,7 @@ impl Execution<'_> {
             let wall = Instant::now();
             // SAFETY: nc channels of count f32 values and ng fixed-tree groups
             // lie within the validated input and preallocated partial planes.
-            let cs = unsafe {
+            unsafe {
                 self.run("resident sum pass1", |e| {
                     e.set_pipeline(&p1);
                     e.set_buffer(0, input, input_offset + c * count);
@@ -485,7 +521,7 @@ impl Execution<'_> {
                     Ok(())
                 })?
             };
-            Self::account(stage, cs, wall.elapsed().as_secs_f64());
+            Self::account(stage, wall.elapsed().as_secs_f64());
             ctl.check()?;
             done += nc * ng;
             ctl.report(done as f64 / total as f64, "resident sum");
@@ -503,7 +539,7 @@ impl Execution<'_> {
             };
             let wall = Instant::now();
             // SAFETY: nc channels each read groups float2s and write one float2.
-            let cs = unsafe {
+            unsafe {
                 self.run("resident sum pass2", |e| {
                     e.set_pipeline(&p2);
                     e.set_buffer(0, &partials, c * groups * 2);
@@ -513,7 +549,7 @@ impl Execution<'_> {
                     Ok(())
                 })?
             };
-            Self::account(stage, cs, wall.elapsed().as_secs_f64());
+            Self::account(stage, wall.elapsed().as_secs_f64());
             ctl.check()?;
             done += nc;
             ctl.report(done as f64 / total as f64, "resident sum");

@@ -11,7 +11,7 @@ pub fn execute(r: &Spectral, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     let xr = &*x;
     // SAFETY: matching typed inputs and exclusively leased output; unused static
     // bindings alias the first immutable input and are never loaded.
-    let cs = unsafe {
+    unsafe {
         xr.run("spectral accumulation", |e| {
             for i in 0..16 {
                 let (b, o) = xr.buffer(&r.inputs[i.min(r.inputs.len() - 1)]);
@@ -28,14 +28,12 @@ pub fn execute(r: &Spectral, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     ctl.check()?;
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(r.output, out);
-    x.stats.command_buffers += cs.command_buffers;
-    x.stats.device_seconds += cs.gpu_seconds;
     x.stats.parameter_bytes += size_of::<Params>() as u64;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "spectral".into(),
-        command_buffers: cs.command_buffers,
-        device_seconds: cs.gpu_seconds,
+        command_buffers: 0,
+        device_seconds: 0.,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
     });

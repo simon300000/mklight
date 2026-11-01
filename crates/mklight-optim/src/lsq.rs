@@ -403,10 +403,10 @@ fn mul_free(j: &Matrix, free: &[usize], p_free: &[f64]) -> Vec<f64> {
     out
 }
 
-/// Tall-QR work `m·n²` from which the resident QR beats the host Householder
-/// QR in complete LM solves (measured, docs/OPTIMIZATION.md: 400×100 host
-/// 29 ms against 72 ms; 4000×32 parity; 4000×100 host 320 ms against 154 ms).
-const RESIDENT_QR_MIN_WORK: usize = 1 << 24;
+/// Jacobian size `m·n` from which the resident tall QR beats the host
+/// Householder QR (P11 quiet host, Apple M2 Pro, GPU.md §9.2: host faster up
+/// to 400×100, device from 1000×100, 4000×32 and 2000×60).
+const RESIDENT_QR_MIN_ELEMENTS: usize = 1 << 16;
 
 /// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
 /// `A₀ᵀA₀ = J_Fᵀ J_F`, `A₀ᵀ b₀ = J_Fᵀ r`.
@@ -465,7 +465,7 @@ impl Sub {
         ctx: &JobContext,
     ) -> MkResult<Sub> {
         if let Some(gpu) =
-            gpu.filter(|_| j.rows >= j.cols && j.rows * j.cols * j.cols >= RESIDENT_QR_MIN_WORK)
+            gpu.filter(|_| j.rows >= j.cols && j.rows * j.cols >= RESIDENT_QR_MIN_ELEMENTS)
             && let Some((resident_q, reduced, mut qtr)) = gpu.reduce_qr(&j, r, ctx)?
         {
             let g = reduced.tr_mul_vec(&qtr);

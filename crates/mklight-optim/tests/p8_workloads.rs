@@ -67,7 +67,7 @@ fn jacobians_and_solves() {
             let after = p.context.stats();
             assert_eq!(
                 after.command_buffers > before.command_buffers,
-                m * n * n >= 1 << 24
+                m * n >= 1 << 16
             );
             eprintln!(
                 "P8_WORKLOAD {}",

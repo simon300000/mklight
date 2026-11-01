@@ -480,9 +480,7 @@ impl Analysis for GlassSubstitution {
             // Every combination starts from the input shape.
             build: Box::new(move |a| {
                 let p: Box<dyn Problem + Send> = match &gpu {
-                    Some(g) => Box::new(
-                        build_space.problem(a, g.clone().composite().with(build_cpu.clone()))?,
-                    ),
+                    Some(g) => Box::new(build_space.problem(a, g.clone())?),
                     None => Box::new(build_space.problem(a, build_cpu.clone())?),
                 };
                 Ok((p, start_x.clone()))
@@ -991,7 +989,7 @@ mod tests {
             .unwrap();
             let backend = &r.json["backend"];
             assert_eq!(r.json["statistics"]["combinations"], 2);
-            assert_eq!(backend["precision"], "f32_gpu");
+            assert_eq!(backend["precision"], "f32_gpu", "{backend}");
             assert_eq!(backend["qualification"]["passed"], true);
             assert_eq!(backend["final_qualification"]["passed"], true);
             assert_eq!(backend["reported_on"], TraceEvaluator::BACKEND);

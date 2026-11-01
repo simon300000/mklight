@@ -86,7 +86,7 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         // SAFETY: validated grid extents size the owner raster and triangle
         // table; all writes target exclusive plan scratch, and each mask row
         // owns its edge-count stride and count slot.
-        let cs = unsafe {
+        unsafe {
             xr.run("wave resample", |e| {
                 let bind = |index, v| {
                     let (b, o) = xr.buffer(v);
@@ -133,8 +133,6 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
                 Ok(())
             })?
         };
-        stage.command_buffers += cs.command_buffers;
-        stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += (group.len() * size_of::<Params>()) as u64;
         ctl.report((done + 1) as f64 / groups.len() as f64, "pupil resampling");
@@ -159,8 +157,6 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     x.recycle(owner);
     x.recycle(tris);
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
     x.stats.stages.push(stage);
     Ok(())
 }

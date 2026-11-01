@@ -640,7 +640,7 @@ mod tests {
         let cfg = |v: Value| engine_config(v.as_object().unwrap().clone());
         let c = cfg(json!({})).unwrap();
         assert_eq!(c.max_retained_jobs, usize::MAX);
-        assert_eq!(c.default_backend, Backend::CpuReference);
+        assert_eq!(c.default_backend, Backend::Auto);
         let c = cfg(json!({"max_retained_jobs": 4, "default_backend": "gpu:metal"})).unwrap();
         assert_eq!(c.max_retained_jobs, 4);
         assert_eq!(c.default_backend, Backend::Gpu("metal".into()));

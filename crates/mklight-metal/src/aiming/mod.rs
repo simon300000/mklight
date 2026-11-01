@@ -3,7 +3,7 @@
 use crate::{
     SharedBuffer,
     backend::Uploaded,
-    context::{CommandStats, Encoder, PipelineKey},
+    context::{Encoder, PipelineKey},
     resident::{Execution, Lease},
 };
 use bytemuck::{Pod, Zeroable};
@@ -224,13 +224,7 @@ fn newton_commands(
                 Ok(())
             })?
         };
-        account(
-            x,
-            stage,
-            CommandStats::default(),
-            wall,
-            size_of::<AimParams>(),
-        );
+        account(x, stage, wall, size_of::<AimParams>());
         // Single-tile batches stay fused with their chief/table/pupil chain.
         // Otherwise the first tile completes to calibrate the next; later tiles
         // of mid-sized batches keep that rate. Every tile of a large batch
@@ -252,15 +246,7 @@ fn newton_commands(
     }
     Ok(())
 }
-fn account(
-    x: &mut Execution<'_>,
-    stage: &mut StageStats,
-    cs: CommandStats,
-    start: Instant,
-    bytes: usize,
-) {
-    stage.device_seconds += cs.gpu_seconds;
-    stage.command_buffers += cs.command_buffers;
+fn account(x: &mut Execution<'_>, stage: &mut StageStats, start: Instant, bytes: usize) {
     stage.max_command_seconds = stage.max_command_seconds.max(start.elapsed().as_secs_f64());
     x.stats.parameter_bytes += bytes as u64;
 }
@@ -435,9 +421,15 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             } else {
                 systems.kernel("mkl_trace_resident", "mkl_trace_resident_overlays")
             })?;
-            for offset in (0..n).step_by(TRACE_CHUNK) {
+            let recorded = t.output.records.is_some();
+            let chunk = if recorded {
+                TRACE_CHUNK / 2
+            } else {
+                TRACE_CHUNK
+            };
+            for offset in (0..n).step_by(chunk) {
                 ctl.check()?;
-                let count = (n - offset).min(TRACE_CHUNK);
+                let count = (n - offset).min(chunk);
                 let p = ResidentTraceParams {
                     trace: TraceParams {
                         num_rays: count as u32,
@@ -467,7 +459,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: extents are plan-validated; dynamic system/path and
                 // wavelength indices are checked before the shared trace core.
-                let cs = unsafe {
+                unsafe {
                     x.run("resident trace", |e| {
                         systems.bind(e, x);
                         bind(e, 3, x, &t.steps);
@@ -487,7 +479,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                account(x, &mut stage, cs, wall, size_of::<ResidentTraceParams>());
+                if recorded && n > chunk {
+                    // Full hi/lo surface records cost more than final-ray
+                    // output; complete each bounded record tile before reuse.
+                    x.measure()?;
+                }
+                account(x, &mut stage, wall, size_of::<ResidentTraceParams>());
                 ctl.check()?;
                 ctl.report((offset + count) as f64 / n as f64, "resident trace");
             }
@@ -527,7 +524,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 };
                 let wall = Instant::now();
                 // SAFETY: plan validation fixed all plane and reference sizes.
-                let cs = unsafe {
+                unsafe {
                     x.run("project pupil", |e| {
                         bind(e, 0, x, &view(q.hits.rays.floats, ElementType::F32));
                         bind(e, 1, x, &view(q.hits.status, ElementType::U32));
@@ -540,7 +537,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                account(x, &mut stage, cs, wall, size_of::<ProjectParams>());
+                account(x, &mut stage, wall, size_of::<ProjectParams>());
                 ctl.check()?;
                 ctl.report((offset + count) as f64 / n as f64, "pupil projection");
             }
@@ -549,8 +546,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.device_seconds += stage.device_seconds;
-    x.stats.command_buffers += stage.command_buffers;
     x.stats.stages.push(stage);
     ctl.check()
 }
@@ -576,7 +571,7 @@ fn compact(
     // SAFETY: plan validation fixes the sparse size; each group owns a
     // disjoint source range and prefix-selected destination range, and the
     // serial dispatches of one encoder complete in order.
-    let cs = unsafe {
+    unsafe {
         x.run("aim compaction", |e| {
             bind(e, 0, x, &view(report, ElementType::U32));
             e.set_buffer_mut(1, &mut counts, 0);
@@ -595,7 +590,7 @@ fn compact(
             Ok(())
         })?
     };
-    account(x, stage, cs, wall, 8);
+    account(x, stage, wall, 8);
     x.recycle(counts);
     x.put_output(output, sparse);
     Ok(())

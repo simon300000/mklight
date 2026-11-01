@@ -212,7 +212,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         let t = Instant::now();
         // SAFETY: submission validates every view/output extent. The kernels
         // bound device-provided chief and system/surface indices before use.
-        let cs = unsafe {
+        unsafe {
             x.run(name, |e| {
                 match r {
                     Request::Coordinates(r) => {
@@ -394,8 +394,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         };
         let more = offset + (p.count as usize) < n;
         let adaptive_seconds = if adaptive && more { x.measure()? } else { 0. };
-        stage.device_seconds += cs.gpu_seconds;
-        stage.command_buffers += cs.command_buffers;
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;
@@ -411,8 +409,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         x.put_output(id, b);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.device_seconds += stage.device_seconds;
-    x.stats.command_buffers += stage.command_buffers;
     x.stats.stages.push(stage);
     ctl.check()
 }

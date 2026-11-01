@@ -183,7 +183,7 @@ impl Plan {
             // SAFETY: request validation fixed every view's type and extent;
             // scratch and outputs are sized for their dispatches, whose kernels
             // bound all indices by the parameter extents. The encoder is serial.
-            let cs = unsafe {
+            unsafe {
                 xr.run("collectives", |e| {
                     for d in list {
                         e.set_pipeline(&d.pso);
@@ -202,8 +202,6 @@ impl Plan {
                     Ok(())
                 })?
             };
-            stats.device_seconds += cs.gpu_seconds;
-            stats.command_buffers += cs.command_buffers;
             stats.max_command_seconds = stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
             x.stats.parameter_bytes += 64 * (end - start) as u64;
             done += work;
@@ -261,8 +259,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         Request::QrFit(r) => qr(r, x, ctl, &mut stats)?,
     }
     stats.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.device_seconds += stats.device_seconds;
-    x.stats.command_buffers += stats.command_buffers;
     x.stats.stages.push(stats);
     Ok(())
 }

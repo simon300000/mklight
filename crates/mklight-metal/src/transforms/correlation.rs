@@ -21,9 +21,8 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let tile = (TILE / count).clamp(1, nf);
     let mut out = x.take_output(output);
     let mut max_command = 0f64;
-    let mut account = |x: &mut Execution<'_>, wall: Instant, gpu_seconds: f64, done: usize| {
+    let mut account = |x: &mut Execution<'_>, wall: Instant, done: usize| {
         max_command = max_command.max(wall.elapsed().as_secs_f64());
-        x.stats.device_seconds += gpu_seconds;
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.report(done as f64 / nf as f64, "correlation");
     };
@@ -36,7 +35,7 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let wall = Instant::now();
             // SAFETY: the validated stencil holds nf·count·5 floats; the grid
             // covers frequencies first..first+p.frequencies.
-            let cs = unsafe {
+            unsafe {
                 x.run("optical stencil", |e| {
                     e.set_pipeline(&pso);
                     e.set_buffer(0, a, ao);
@@ -46,7 +45,7 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     Ok(())
                 })?
             };
-            account(x, wall, cs.gpu_seconds, first + p.frequencies as usize);
+            account(x, wall, first + p.frequencies as usize);
         }
         x.put_output(output, out);
         return Ok(max_command);
@@ -96,7 +95,7 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         // SAFETY: validated views cover count samples (stencil nf·count·5);
         // term/partial/sum planes are sized for a whole tile; the output
         // holds nf complex values.
-        let cs = unsafe {
+        unsafe {
             x.run("correlation", |e| {
                 e.set_pipeline(&terms_pso);
                 for (i, (v, o)) in views.iter().enumerate() {
@@ -122,7 +121,7 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             })?
         };
         x.stats.parameter_bytes += size_of::<ReduceParams>() as u64;
-        account(x, wall, cs.gpu_seconds, first + p.frequencies as usize);
+        account(x, wall, first + p.frequencies as usize);
     }
     x.recycle(terms);
     x.recycle(partials);

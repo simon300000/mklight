@@ -59,7 +59,7 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
         let wall = Instant::now();
         // SAFETY: inputs and query extents are validated; each dispatch owns its
         // pixel range or its queries' block partials, finished in order.
-        let cs = unsafe {
+        unsafe {
             xr.run("wave image integral", |e| {
                 for (i, v) in access.reads.iter().enumerate() {
                     let (b, o) = xr.buffer(v);
@@ -85,8 +85,6 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
                 Ok(())
             })?
         };
-        stage.command_buffers += cs.command_buffers;
-        stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "image integral");
     }
@@ -96,8 +94,6 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
         x.recycle(a);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
     x.stats.stages.push(stage);
     Ok(())
 }
@@ -121,7 +117,7 @@ fn metrics(
     let start = Instant::now();
     let xr = &*x;
     // SAFETY: disjoint block rows, then a single writer for five summary scalars.
-    let cs = unsafe {
+    unsafe {
         xr.run("image metrics", |e| {
             let (v, o) = xr.buffer(input);
             e.set_buffer(0, v, o);
@@ -137,13 +133,11 @@ fn metrics(
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(output, out);
     x.recycle(part);
-    x.stats.command_buffers += cs.command_buffers;
-    x.stats.device_seconds += cs.gpu_seconds;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "image_metrics".into(),
-        command_buffers: cs.command_buffers,
-        device_seconds: cs.gpu_seconds,
+        command_buffers: 0,
+        device_seconds: 0.,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
     });

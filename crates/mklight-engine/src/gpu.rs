@@ -41,6 +41,7 @@ pub struct GpuDevice {
     /// does not disqualify it.
     pub qualification: XvalSettings,
     cache: Mutex<LruCache<String, Arc<Qualification>>>,
+    chains: Mutex<LruCache<String, serde_json::Value>>,
 }
 
 impl GpuDevice {
@@ -52,6 +53,7 @@ impl GpuDevice {
             backend,
             qualification: q,
             cache: Mutex::new(LruCache::new(QUALIFICATION_CACHE)),
+            chains: Mutex::new(LruCache::new(QUALIFICATION_CACHE)),
         }
     }
 
@@ -75,6 +77,12 @@ impl GpuDevice {
         tracer: &SequentialTracer,
         ctx: &JobContext,
     ) -> MkResult<Arc<Qualification>> {
+        ctx.check()?;
+        let key = format!(
+            "{key}:{}:{}",
+            serde_json::to_string(&self.qualification).unwrap(),
+            serde_json::to_string(self.backend.precision()).unwrap()
+        );
         let lock = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(q) = lock().get(&key.to_string()) {
             return Ok(q);
@@ -89,6 +97,19 @@ impl GpuDevice {
         )?);
         lock().insert(key.to_string(), q.clone());
         Ok(q)
+    }
+
+    pub(crate) fn chain_qualification(&self, key: &str) -> Option<serde_json::Value> {
+        self.chains
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key.to_string())
+    }
+    pub(crate) fn cache_chain_qualification(&self, key: String, report: serde_json::Value) {
+        self.chains
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, report);
     }
 
     /// Qualifications currently cached (diagnostics, tests).

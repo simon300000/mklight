@@ -356,7 +356,7 @@ impl ResidentPlan {
     pub fn new(snapshot: Snapshot) -> Self {
         Self {
             version: PLAN_VERSION,
-            command_work_budget: 1 << 20,
+            command_work_budget: 1 << 19,
             buffers: vec![],
             operations: vec![],
             outputs: vec![],
@@ -651,6 +651,20 @@ pub struct Access {
 }
 pub fn accesses(op: &ResidentOp) -> Access {
     match op {
+        ResidentOp::TraceUpload(t) => Access {
+            writes: vec![
+                t.output.floats,
+                t.output.indices,
+                t.output.records,
+                t.output.record_status,
+            ],
+            ..Default::default()
+        },
+        ResidentOp::Sum(s) => Access {
+            reads: vec![s.input.clone()],
+            writes: vec![s.output],
+            ..Default::default()
+        },
         ResidentOp::Aiming(r) => crate::aiming::accesses(r),
         ResidentOp::Transforms(r) => crate::transforms::accesses(r),
         ResidentOp::Collectives(r) => crate::collectives::accesses(r),
@@ -661,7 +675,6 @@ pub fn accesses(op: &ResidentOp) -> Access {
         ResidentOp::Ghost(r) => crate::ghost_ops::accesses(r),
         ResidentOp::Stray(r) => crate::stray_ops::accesses(r),
         ResidentOp::Optim(r) => crate::optim_ops::accesses(r),
-        _ => Access::default(),
     }
 }
 

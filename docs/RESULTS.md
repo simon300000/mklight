@@ -109,60 +109,66 @@ energy and MTF curves, through-focus) stay in the JSON.
 
 ## 5. Backends and GPU paths
 
-Requests name a backend (`{"kind": "cpu_reference"}`,
-`{"kind": "gpu", "name": "metal"}`) or `{"kind": "auto"}`; the engine
-default (initially the CPU reference, `mk_engine_set_default_backend`)
-applies when they name none (`backend.requested` = `default:<id>`).
+The engine initially uses `auto`. Explicit `cpu_reference` always uses the
+f64 reference. Explicit `gpu:metal` bypasses the cost rules, while retaining
+all accuracy gates and reported resource/unsupported fallbacks. Unavailable
+explicit providers keep the existing `allow_backend_fallback` behaviour.
+Cancellation discards the result and never runs a CPU replacement.
 
-* `auto` uses the first available GPU backend whose capabilities list the
-  analysis (those with `gpu_path: true`), else the CPU reference;
-  `backend.fallback_reason` then says why (no GPU path, no device). This is
-  not a warning. `auto` also keeps ray grids smaller than
-  `AUTO_MIN_GPU_RAYS` (65 536 rays: fields × wavelengths × pupil points) on
-  the CPU reference, where the GPU's fixed costs outweigh the trace it
-  saves (reason "below the GPU threshold", no warning). An explicitly named
-  GPU backend is used for any grid size.
-* An explicit GPU backend that is unavailable or has no path for the
-  analysis is an error, or with `allow_backend_fallback` the CPU reference
-  plus a `run_info` warning.
-* Before a GPU computes anything for a snapshot, its precision is
-  **qualified** for that system (docs/GPU.md §5.2: a small cross-validation
-  whose errors must stay within a third of the CONVENTIONS §7 budget;
-  cached per snapshot and glass library). A failed qualification, a system
-  the packer cannot represent, or a device error makes the CPU f64
-  reference compute the result: `run_info.backend` is then
-  `cpu_reference`, `backend.fallback_reason` holds the reason, a
-  `run_info` warning names the rejected backend (CONVENTIONS §12), and
-  `backend.qualification` holds the measured evidence. Cancelling is never
-  a fallback.
-* GPU paths today (`gpu_path: true`): `spot_diagram`, `encircled_energy`,
-  `geometric_mtf`, `best_focus`, `ray_grid`. The host generates and aims the
-  rays with the f64 reference, the GPU traces them (f32 with double-float
-  geometry), and the reduction is the same code as on the CPU, so results
-  agree within the CONVENTIONS §7 budget (tested on every sample system, on
-  the Metal device when present and on the CPU-f32 emulation everywhere:
-  hit positions and directions, spot statistics, MTF, encircled energy and
-  best focus). GPU hit points are f32 values widened to f64 in the buffers.
-* **Speed.** Only the trace runs on the device; the host generates (and,
-  with real ray aiming, aims) every ray with the f64 reference, in parallel
-  blocks of 65 536 rays with cancellation and progress between blocks, and
-  the reductions are the CPU's. Measured on Apple-silicon Metal with
-  double_gauss (best of 9, warm qualification cache): `ray_grid` at
-  98 829 rays 7.4 ms against 10.9 ms on the CPU, at 1 085 409 rays 67 ms
-  against 105 ms; at 11 349 rays the CPU is faster (1.3 ms against 2.7 ms),
-  hence the `auto` threshold. `spot_diagram` gains less (345 ms against
-  375 ms at 1 085 409 rays): its time goes mostly to the shared reduction
-  and result assembly. Moving ray aiming and the reductions to the device
-  is future work.
-* `MKLIGHT_DISABLE_GPU=1` makes every GPU backend unavailable.
-* `auto` has the same meaning in Rust, FFI, CLI and Python. Python `None`
-  (or an omitted backend) uses the engine default.
-* `optimize` and `tolerance` also use the selected provider and its cached
-  qualification. Automatic merit evaluation uses the candidate-batch
-  crossover in `docs/OPTIMIZATION.md`; an explicitly requested GPU bypasses
-  that threshold. The envelope and `RunInfo` name the search backend; the
-  optimiser's start/final operand tables are recomputed on the CPU f64
-  reference. Per-candidate CPU fallbacks are counted in `result.backend.gpu_stats`.
+The shared resident catalogue covers geometric analyses, field maps, layout,
+wave/image jobs, transmission/polarisation, ghosts, stray light and
+optimisation/merit/tolerance/glass substitution. Isolated first-order, Seidel,
+model, catalogue and I/O reports remain small host computations. A capability
+means a native adapter exists; each requested domain/settings combination must
+still qualify. The engine no longer uses the host-generated legacy Metal
+analysis route or its 65,536-ray/candidate-count heuristics.
+
+Before publication, native chains receive the sampled all-surface geometry/OPD
+qualification at the one-third margin plus an independent f64 comparison of
+the complete requested output. Exact-input verdicts are cached per operation,
+snapshot, material library, settings, gate version and device precision/build
+(including the shader-source digest). Undefined masks and discrete quantities
+are checked as well as numerical values. Candidate solvers qualify every new
+candidate and its complete operands; there is no assumed parameter envelope.
+Accepted/final designs retain independent reference scoring.
+
+`backend.qualification` retains the verdict and measured maxima.
+`backend.execution` preserves each adapter's native settings, device/build/probe,
+plan versions, identities, timings, commands, allocation/copy counters and
+partial/reference-completion reports. CPU completion and failed qualification
+name their reason in `backend.fallback_reason` and `run_info.warnings`.
+Polished rays and partial candidate/operand fallbacks remain counted in native
+execution metadata; a result widened into public f64 buffers remains labelled
+`f32_gpu` when computed by Metal.
+
+`backend.cost_decision` records automatic selection: `decision`
+(`cpu_reference` or `qualified_metal`), `rule`, `workload`, `threshold`,
+`evidence` and `version`. Each analysis measures its workload from the
+settings and the system (traced rays, wave pupil samples, …) and runs the CPU
+reference at or below a threshold derived from the end-to-end benchmark in
+GPU §9.2 (Apple M2 Pro; applied to Apple GPUs). At default settings that is
+the CPU for every analysis except `geometric_mtf`. Analyses without a rule
+and other devices prefer qualified Metal. An explicit backend records that the
+rules were bypassed. Deliberate CPU cost choices are reported without a
+warning; accuracy, unsupported and resource failures are warnings. A first
+Metal call on a new snapshot or settings includes the complete f64 chain
+qualification (`qualification.reference_seconds`).
+
+Native `encircled_energy` retains the conservative geometry-uncertainty bin
+check; when a requested bin could move more than the energy budget it returns
+and reports the f64 result. Ill-conditioned axes, differing adaptive sampling,
+unsupported settings and unqualified Monte Carlo outputs similarly retain a
+reported reference route. These are not GPU qualification passes.
+
+Optimisation's `result.backend.resident_evaluation` reports candidate reference
+checks, reuse, geometry failures, accepted device operands, host operands and
+fallback causes. `gpu_stats` retains its compatibility fields: candidate counts
+can overlap for partial completion, `rays` counts final ray-operand probes
+(native wave/ghost/stray counts remain in their stage reports), and `dispatches`
+counts completed commands. Start/final tables and published finalists are
+scored in f64. `MKLIGHT_DISABLE_GPU=1` disables provider selection.
+
+These rules and backend reports are shared by Rust, FFI, CLI and Python.
 
 ## 6. Cross-solver conventions
 
@@ -611,7 +617,7 @@ Result (`result` in the envelope):
 
 ### `chief_ray_angle` — Chief ray angle
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns.
 
@@ -715,7 +721,7 @@ Result (`result` in the envelope):
 
 ### `field_curvature_distortion` — Field curvature and distortion
 
-Category `geometric`, result version 2.
+Category `geometric`, result version 2, **GPU path**.
 
 Tangential and sagittal focus shifts along the real chief ray (generalised Coddington, cross-checked by close rays) and distortion (paraxial, f·tanθ, f·θ) versus field.
 
@@ -802,7 +808,7 @@ Result (`result` in the envelope):
 
 ### `footprint` — Surface footprint
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Hit points of a pupil pattern on one surface (local frame), with the points the surface's aperture clips, plus global hit points and convex outlines on every surface for a 3-D overlay. Points in typed buffers.
 
@@ -886,7 +892,7 @@ Result (`result` in the envelope):
 
 ### `grid_distortion` — Grid distortion
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Chief rays of a square grid of normalised field points against their paraxial image points. Grid in typed buffers.
 
@@ -919,7 +925,7 @@ Buffers:
 
 ### `lateral_colour` — Lateral colour
 
-Category `geometric`, result version 2.
+Category `geometric`, result version 2, **GPU path**.
 
 Real chief-ray image heights per wavelength versus field, relative to the primary wavelength, and the short−long difference.
 
@@ -952,7 +958,7 @@ Result (`result` in the envelope):
 
 ### `layout` — Layout
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 The viewport scene in global coordinates: surface profiles, rings and rims, element outlines, stop, image, axis and ray paths as polylines in typed buffers.
 
@@ -1024,7 +1030,7 @@ Buffers:
 
 ### `longitudinal_aberration` — Longitudinal aberration
 
-Category `geometric`, result version 2.
+Category `geometric`, result version 2, **GPU path**.
 
 On-axis zonal rays: where each crosses the axis, relative to the primary paraxial focus, versus pupil zone, per wavelength.
 
@@ -1053,7 +1059,7 @@ Result (`result` in the envelope):
 
 ### `opd_fan` — OPD fans
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Optical path difference (waves) against the exit-pupil reference sphere versus normalised pupil coordinate, tangential and sagittal.
 
@@ -1087,7 +1093,7 @@ Result (`result` in the envelope):
 
 ### `pupil_aberration` — Pupil aberration
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns.
 
@@ -1125,7 +1131,7 @@ Buffers:
 
 ### `ray_fan` — Ray aberration fans
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Transverse ray aberration εy (tangential fan, P_y) and εx (sagittal fan, P_x) on the image surface versus normalised pupil coordinate, per field and wavelength (mm).
 
@@ -1199,7 +1205,7 @@ Buffers:
 
 ### `relative_illumination` — Relative illumination
 
-Category `geometric`, result version 2.
+Category `geometric`, result version 2, **GPU path**.
 
 Image irradiance of a uniform Lambertian object versus field, from the projected solid angle of the real exit pupil seen from each image point (real ray aiming), with the vignetted fraction.
 
@@ -1231,7 +1237,7 @@ Result (`result` in the envelope):
 
 ### `relative_illumination_map` — Relative illumination map
 
-Category `geometric`, result version 1.
+Category `geometric`, result version 1, **GPU path**.
 
 Signed Cartesian field map or x/y sweep, with image heights and explicitly defined diagnostic columns.
 
@@ -1414,7 +1420,7 @@ Buffers:
 
 ### `system_transmission` — System transmission
 
-Category `radiometry`, result version 1.
+Category `radiometry`, result version 1, **GPU path**.
 
 Pupil-averaged primary-path transmission (selected DOE efficiency, coatings, Fresnel losses, bulk absorption, vignetting) per field and wavelength, and the spectrally weighted polychromatic transmission per field; unpolarised or by polarisation ray tracing.
 
@@ -1448,7 +1454,7 @@ Result (`result` in the envelope):
 
 ### `polarization_pupil_map` — Polarisation pupil map
 
-Category `polarization`, result version 1.
+Category `polarization`, result version 1, **GPU path**.
 
 Polarisation ray tracing over the pupil of one field and wavelength: amplitude Jones matrix (double-pole bases), transmitted intensity for an input state, diattenuation and retardance per sample, with pupil statistics.
 
@@ -1498,7 +1504,7 @@ Buffers:
 
 ### `ghost_irradiance` — Ghost irradiance
 
-Category `ghost`, result version 1.
+Category `ghost`, result version 1, **GPU path**.
 
 Real-ray ghost irradiance on the sensor: per-path flux and peak ratios against the primary image, per-field statistics, the total ghost map and the primary map (typed buffers).
 
@@ -1578,7 +1584,7 @@ Buffers:
 
 ### `ghost_paths` — Ghost paths
 
-Category `ghost`, result version 1.
+Category `ghost`, result version 1, **GPU path**.
 
 First-order ghost ranking: every enumerated two-reflection (or higher) ghost with its reflectance product, transmittance, focus from the sensor, blur diameter, image height and estimated irradiance relative to the signal.
 
@@ -1624,7 +1630,7 @@ Result (`result` in the envelope):
 
 ### `stray_light` — Stray light
 
-Category `stray`, result version 2.
+Category `stray`, result version 2, **GPU path**.
 
 Non-sequential Monte-Carlo stray light: detector irradiance per path class (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, the strongest path signatures and an energy balance. With `ghost_partition` the ghost paths the explicit ghost run covers are left to it, with identical apertures; uncovered ghost paths stay in the stray total.
 
@@ -1695,7 +1701,7 @@ Buffers:
 
 ### `diffraction_encircled_energy` — Diffraction encircled energy
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Encircled and ensquared energy of the diffraction PSF, with the diffraction-limited reference.
 
@@ -1747,7 +1753,7 @@ Buffers:
 
 ### `image_simulation` — Image simulation
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Linear-light image through field-dependent polychromatic PSFs, chief-ray distortion, relative illumination and optional pixel aperture / shot / read noise. RGB channels share the selected energy spectrum.
 
@@ -1795,7 +1801,7 @@ Buffers:
 
 ### `line_spread` — Line spread function
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Diffraction line-spread functions along the image axes.
 
@@ -1836,7 +1842,7 @@ Buffers:
 
 ### `mtf` — MTF
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Diffraction MTF (FFT, pupil autocorrelation or from the Huygens PSF) vs frequency, tangential and sagittal, with the diffraction limit and an optional detector (pixel) MTF.
 
@@ -1895,7 +1901,7 @@ Buffers:
 
 ### `mtf_vs_field` — MTF vs field
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Diffraction MTF at fixed frequencies across the field.
 
@@ -1939,7 +1945,7 @@ Buffers:
 
 ### `psf` — Point spread function
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Diffraction PSF by FFT or Huygens integration, monochromatic or polychromatic, with the Strehl ratio.
 
@@ -1993,7 +1999,7 @@ Buffers:
 
 ### `through_focus_mtf` — Through-focus MTF
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 Diffraction MTF at fixed frequencies vs image-plane defocus.
 
@@ -2041,7 +2047,7 @@ Buffers:
 
 ### `wavefront_map` — Wavefront map
 
-Category `wave`, result version 1.
+Category `wave`, result version 1, **GPU path**.
 
 OPD on the exit-pupil reference sphere from the reference tracer, with RMS/PV, Strehl estimate and Zernike fit.
 
@@ -2135,7 +2141,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `algorithm` | string | `"tabu"` |  | one of `"tabu"`, `"hammer"`; tabu: search glass combinations, every one re-optimised from the input shape. hammer: basin hopping over glasses and shape together, to escape local minima. |
-| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
@@ -2173,9 +2179,9 @@ Result (`result` in the envelope):
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
 | `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `candidate_sets` | array<object> |  | The resolved candidates of each material variable. |
 | `candidate_sets[].glasses` | array<object> |  | Nearest first. |
@@ -2235,7 +2241,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
-| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
@@ -2269,9 +2275,9 @@ Result (`result` in the envelope):
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
 | `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `merit` | nf |  |  |
 | `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands and the EFL hold. |
@@ -2307,7 +2313,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
-| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
@@ -2342,9 +2348,9 @@ Result (`result` in the envelope):
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
 | `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `evaluations` | integer |  | ≥ 0 |
 | `failed_variables` | array<integer> |  |  |
@@ -2460,9 +2466,9 @@ Result (`result` in the envelope):
 | `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
 | `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
+| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `compensators` | array<object> |  | Model parameter units. |
 | `criterion_spec` | object |  | Effective MeritFunctionSpec. |

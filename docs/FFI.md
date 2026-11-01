@@ -202,9 +202,10 @@ All keys optional:
 ```json
 { "worker_threads": 0, "max_retained_jobs": 256, "resolved_cache_capacity": 8,
   "progress_interval_ms": 50, "app_name": "MKLight", "app_version": "1.0",
-  "default_backend": {"kind": "cpu_reference"} }
+  "default_backend": {"kind": "auto"} }
 ```
 
+The initial `default_backend` is `auto`; explicit CPU remains available.
 `worker_threads: 0` picks `min(cores, 4)`. `app_name`/`app_version` are
 stamped into project metadata on save.
 
@@ -266,11 +267,14 @@ backend, the engine default (`default_backend` in the configuration, or
 default backend does not implement run on the CPU reference, with a
 `run_info.warnings` note for an explicit GPU default.
 
-A selected GPU first qualifies its precision for the snapshot
-(docs/GPU.md §5.2, cached per snapshot and library). If it fails, the CPU
-reference computes the result: `run_info.backend` is `cpu_reference`, a
-warning names the rejected backend and the reason, and the envelope's
-`backend` object carries the qualification (`docs/RESULTS.md` §5).
+A selected GPU qualifies both the system geometry and the complete operation
+chain for the requested settings. A failed gate or resource/unsupported stage
+uses the reported f64 reference; cancellation never starts a replacement.
+`backend.execution` retains native device/build/probe, algorithm and stage
+metadata; `backend.cost_decision` records the automatic choice (workload,
+threshold and rule). Explicit Metal bypasses the cost rules, never accuracy
+gates. See RESULTS §5 and GPU §9.2 for the qualification cache and the
+measured rules.
 
 ### Analysis request (`mk_session_submit_analysis_json`)
 

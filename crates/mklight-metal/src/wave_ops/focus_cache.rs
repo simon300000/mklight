@@ -31,8 +31,6 @@ fn stage(x: &Execution<'_>, name: &str) -> StageStats {
 }
 fn record(x: &mut Execution<'_>, mut s: StageStats, start: Instant) {
     s.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += s.command_buffers;
-    x.stats.device_seconds += s.device_seconds;
     x.stats.stages.push(s);
 }
 fn bind(x: &Execution<'_>, e: &crate::context::Encoder<'_>, r: &Request) {
@@ -68,7 +66,7 @@ pub fn prepare(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
         let xr = &*x;
         let wall = Instant::now();
         // SAFETY: one complete contiguous phase volume, with disjoint tiles.
-        let cs = unsafe {
+        unsafe {
             xr.run("focus phase cache", |e| {
                 bind(xr, e, r);
                 e.set_buffer_mut(4, &mut out, 0);
@@ -77,8 +75,6 @@ pub fn prepare(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
                 Ok(())
             })?
         };
-        s.command_buffers += cs.command_buffers;
-        s.device_seconds += cs.gpu_seconds;
         s.max_command_seconds = s.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.report(
@@ -119,7 +115,7 @@ pub fn steps(
         let xr = &*x;
         let wall = Instant::now();
         // SAFETY: block rows are disjoint and complete before the final maxima.
-        let cs = unsafe {
+        unsafe {
             xr.run("focus sampling", |e| {
                 bind(xr, e, r);
                 if let Some(c) = cache {
@@ -138,8 +134,6 @@ pub fn steps(
                 Ok(())
             })?
         };
-        s.command_buffers += cs.command_buffers;
-        s.device_seconds += cs.gpu_seconds;
         s.max_command_seconds = s.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.report(

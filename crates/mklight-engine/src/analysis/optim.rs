@@ -20,8 +20,8 @@
 //! * **Never worse than the start**: the result is the better of the start
 //!   and the optimiser's answer on the reference (feasibility first), with
 //!   a warning when the optimiser found nothing better.
-//! * **Backend `auto`** uses the engine's GPU device only past the measured
-//!   GPU/CPU crossover for the run's rays per candidate and batch size.
+//! * **Backend `auto`** prefers the qualified resident device; a matched
+//!   complete-chain cost record can choose the CPU reference.
 //! * The result carries the final system as model JSON (`"system"`), so a
 //!   front end can apply it as a new (undoable) snapshot.
 
@@ -42,15 +42,15 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
+use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
-use mklight_optim::merit::gpu_eval::{gpu_beats_cpu, gpu_rays_per_candidate};
+use mklight_optim::merit::gpu_eval::gpu_rays_per_candidate;
 use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
-    BuiltinEvaluator, Comparison, GpuEvalSettings, GpuTraceEvaluator, MeritFunctionSpec, Operand,
-    OperandEvaluator, OperandRegistry, OperandRole, OperandValue, OpticalProblem, TraceEvaluator,
-    VariableSpec,
+    BuiltinEvaluator, Comparison, MeritFunctionSpec, Operand, OperandEvaluator, OperandRegistry,
+    OperandRole, OperandValue, OpticalProblem, TraceEvaluator, VariableSpec,
 };
 use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
@@ -60,7 +60,7 @@ use mklight_optim::tolerance::{
     ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
-use mklight_trace::{SemiDiameterSettings, SequentialTracer};
+use mklight_trace::SequentialTracer;
 
 use super::BackendUse;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
@@ -109,7 +109,6 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 obj(&[
                     ("rays_per_candidate", nullable(int(""))),
                     ("batch", int("")),
-                    ("gpu_faster", boolean("")),
                 ]),
             ),
             (
@@ -119,6 +118,10 @@ pub(super) fn evaluation_backend_schema() -> Value {
             (
                 "final_qualification",
                 opaque("GPU qualification at the optimised system."),
+            ),
+            (
+                "resident_evaluation",
+                opaque("Per-candidate qualification, host-stage and fallback accounting."),
             ),
             (
                 "gpu_stats",
@@ -131,7 +134,12 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &["qualification", "final_qualification", "gpu_stats"],
+        &[
+            "qualification",
+            "final_qualification",
+            "gpu_stats",
+            "resident_evaluation",
+        ],
     )
 }
 
@@ -362,9 +370,8 @@ fn default_merit_schema(default: Value) -> Value {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BackendChoice {
-    /// The engine's GPU device when the run's work is past the measured
-    /// GPU/CPU crossover ([`gpu_beats_cpu`]: rays per candidate and batch
-    /// size), else the CPU reference.
+    /// The engine's qualified resident device, subject to recorded complete
+    /// workload cost evidence.
     Auto,
     Cpu,
     /// The engine's GPU device for this analysis; the CPU reference (with
@@ -385,8 +392,8 @@ impl BackendChoice {
     }
 }
 
-/// The work of a run, for `backend: "auto"`: rays the GPU evaluator would
-/// trace per candidate and the typical batch of candidates per evaluation.
+/// The work of a run, reported in `backend.workload`: rays the GPU evaluator
+/// would trace per candidate and the typical batch of candidates.
 #[derive(Clone, Copy, Debug)]
 struct Workload {
     rays_per_candidate: Option<usize>,
@@ -412,15 +419,10 @@ impl Workload {
             batch,
         }
     }
-    fn gpu_faster(&self) -> bool {
-        self.rays_per_candidate
-            .is_some_and(|r| gpu_beats_cpu(r, self.batch))
-    }
     fn report(&self) -> Value {
         json!({
             "rays_per_candidate": self.rays_per_candidate,
             "batch": self.batch,
-            "gpu_faster": self.gpu_faster(),
         })
     }
 }
@@ -429,14 +431,11 @@ impl Workload {
 fn gpu_backend(
     choice: BackendChoice,
     input: &AnalysisInput<'_>,
-    work: &Workload,
 ) -> Result<Option<Arc<GpuDevice>>, String> {
     let engine = super::gpu::device(input);
     match choice {
         BackendChoice::Cpu => Ok(None),
-        BackendChoice::Auto => Ok(engine.filter(|_| {
-            !crate::backend::Backend::is_auto_request(&input.requested_backend) || work.gpu_faster()
-        })),
+        BackendChoice::Auto => Ok(engine),
         BackendChoice::GpuEmulation => engine
             .filter(|d| d.id == "gpu:cpu_f32")
             .map(Some)
@@ -452,7 +451,8 @@ fn gpu_backend(
 struct Evaluation {
     cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
-    gpu: Option<(GpuTraceEvaluator, Arc<GpuDevice>)>,
+    gpu: Option<(ResidentEvaluator, Arc<GpuDevice>)>,
+    qualification: Option<Arc<Qualification>>,
     work: Workload,
     fallback_reason: Option<String>,
     /// `"backend"` block of the result.
@@ -483,40 +483,30 @@ impl Evaluation {
         choice: BackendChoice,
         input: &AnalysisInput<'_>,
         snapshot: &Snapshot,
-        batch: usize,
+        _batch: usize,
         work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
-        let gpu = match gpu_backend(choice, input, &work) {
+        let mut qualification = None;
+        let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
-                let settings = GpuEvalSettings {
-                    batch: batch.max(1),
-                    ..Default::default()
-                };
-                let (tracer, q) = qualify(&device, &cpu.trace, snapshot, input, ctx)?;
-                let hints = tracer
-                    .semi_diameters(&SemiDiameterSettings::default())
-                    .values;
-                let g = GpuTraceEvaluator::with_qualification(
-                    device.backend.clone(),
-                    cpu.trace.clone(),
-                    settings,
-                    q.as_ref().clone(),
-                    hints,
-                );
-                Some((g, device))
+                let (_, q) = qualify(&device, &cpu.trace, snapshot, input, ctx)?;
+                qualification = Some(q.clone());
+                if q.passed {
+                    let context = GpuContext::new(device.backend.clone(), snapshot.clone());
+                    let g = ResidentEvaluator::new(context, cpu.clone());
+                    Some((g, device))
+                } else {
+                    fallback_reason = q.reason.clone();
+                    None
+                }
             }
             Ok(None) => {
-                if super::gpu::device(input).is_some() {
-                    fallback_reason = Some(if choice == BackendChoice::Cpu {
-                        "merit evaluation requested the CPU reference".into()
-                    } else {
-                        "auto: merit workload below the GPU crossover; using the CPU reference"
-                            .into()
-                    });
+                if super::gpu::device(input).is_some() && choice == BackendChoice::Cpu {
+                    fallback_reason = Some("merit evaluation requested the CPU reference".into());
                 }
                 None
             }
@@ -531,6 +521,7 @@ impl Evaluation {
         Ok(Evaluation {
             cpu,
             gpu,
+            qualification,
             work,
             fallback_reason,
             report: Value::Null,
@@ -538,8 +529,8 @@ impl Evaluation {
         })
     }
 
-    fn active_gpu(&self) -> Option<&GpuTraceEvaluator> {
-        self.gpu.as_ref().map(|(g, _)| g).filter(|g| g.is_active())
+    fn active_gpu(&self) -> Option<&ResidentEvaluator> {
+        self.gpu.as_ref().map(|(g, _)| g)
     }
 
     /// The `"backend"` block: who evaluated the search, its qualification
@@ -562,14 +553,14 @@ impl Evaluation {
         // The GPU evaluated the search only if it traced candidates.
         let active = self
             .active_gpu()
-            .is_some_and(|g| g.stats().gpu_candidates > 0);
+            .is_some_and(|g| g.stats().device_operands > 0);
         if let Some((g, device)) = &self.gpu {
             if active {
                 self.warnings.push(format!(
                     "ray operands evaluated on {} (f32, precision-qualified)",
-                    g.backend_id()
+                    device.backend.info().backend_id()
                 ));
-                b["evaluated_on"] = json!(g.backend_id());
+                b["evaluated_on"] = json!(device.backend.info().backend_id());
                 b["precision"] = json!(Precision::F32Gpu);
                 // A qualification of the final design (the search moved
                 // away from the qualified start).
@@ -585,20 +576,39 @@ impl Evaluation {
                     b["final_qualification"] =
                         serde_json::to_value(q.as_ref()).unwrap_or(Value::Null);
                 } else {
-                    b["reported_on"] = json!(g.backend_id());
+                    b["reported_on"] = json!(device.backend.info().backend_id());
                 }
             }
-            b["qualification"] = serde_json::to_value(g.qualification()).unwrap_or(Value::Null);
-            b["gpu_stats"] = serde_json::to_value(g.stats()).unwrap_or(Value::Null);
+            let stats = g.stats();
+            let plans = g.context.stats();
+            b["gpu_stats"] = json!({
+                "gpu_candidates": stats.device_candidates,
+                "cpu_candidates": stats.cpu_candidates,
+                "rays": g.context.traced_rays(), "dispatches": plans.command_buffers, "device_seconds": plans.device_seconds,
+            });
+            let mut run = mklight_core::job::RunTimer::start().finish(
+                &input.snapshot,
+                "resident_merit",
+                &json!({}),
+                "cpu_reference",
+                Precision::F64Reference,
+                None,
+                vec![],
+            );
+            g.record(&mut run);
+            input.executions.borrow_mut().push(run.settings.clone());
+            b["resident_evaluation"] = serde_json::to_value(stats)?;
         }
         let used = self.gpu.as_ref().filter(|_| active);
-        let fallback_reason = match &self.gpu {
-            _ if active => None,
-            Some((g, _)) => g
-                .qualification()
-                .reason
-                .or_else(|| Some("no candidates traced on the GPU".into())),
-            None => self.fallback_reason.clone(),
+        if let Some(q) = &self.qualification {
+            b["qualification"] = serde_json::to_value(q)?;
+        }
+        let fallback_reason = if active {
+            None
+        } else {
+            self.fallback_reason
+                .clone()
+                .or_else(|| Some("no candidates evaluated on the GPU".into()))
         };
         input.report_backend(BackendUse {
             id: used.map_or("cpu_reference".into(), |(_, d)| d.id.clone()),
@@ -610,7 +620,7 @@ impl Evaluation {
             device: used.map(|(_, d)| d.device_name()),
             fallback_reason,
             qualification: b.get("qualification").cloned(),
-            deliberate: self.gpu.is_none(),
+            deliberate: self.gpu.is_none() && self.qualification.as_ref().is_none_or(|q| q.passed),
         });
         self.report = b;
         Ok(())
@@ -1353,7 +1363,7 @@ impl Analysis for Optimize {
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation",
-                    "description": "auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference."},
+                    "description": "auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device."},
                 "gpu_batch": {"type": "integer", "minimum": 1, "default": 512,
                     "title": "GPU sub-batch", "description": "Candidates per GPU dispatch."},
                 "feasibility_tolerance": {"type": "number", "minimum": 0, "default": 1e-6,
@@ -1548,7 +1558,7 @@ impl Analysis for Optimize {
                     system.clone(),
                     s.variables.clone(),
                     spec.clone(),
-                    g.clone().composite().with(cpu.clone()),
+                    g.clone(),
                     &reg,
                 )
                 .and_then(|p| algo.run(&p, &x0, &mon)),
@@ -1727,9 +1737,7 @@ pub(super) fn evaluate_merit(
     let x0 = CandidateBatch::from_points(x0.len(), [&x0[..]]);
     let eval_ctx = ctx.subrange(0.2, 1.0);
     let values = match ev.active_gpu() {
-        Some(g) => m
-            .problem(g.clone().composite().with(m.cpu.clone()))?
-            .operand_values(&x0, &eval_ctx)?,
+        Some(g) => m.problem(g.clone())?.operand_values(&x0, &eval_ctx)?,
         None => reference.operand_values(&x0, &eval_ctx)?,
     };
     let r = if m.efl_penalty.is_some() {
@@ -2188,7 +2196,7 @@ impl Analysis for Tolerance {
                     }
                 };
                 match ev.active_gpu() {
-                    Some(g) => evaluate(&g.clone().composite().with(ev.cpu.clone())),
+                    Some(g) => evaluate(&g.clone()),
                     None => evaluate(&ev.cpu),
                 }
             });
@@ -2255,7 +2263,7 @@ impl Analysis for Tolerance {
             };
             match ev.active_gpu() {
                 Some(g) => {
-                    let comp = g.clone().composite().with(ev.cpu.clone());
+                    let comp = g.clone();
                     run(&Runner {
                         nominal: &system,
                         criterion: &criterion,
@@ -2557,6 +2565,7 @@ mod tests {
     fn optimize_singlet_through_the_scheduler() {
         let engine = Engine::new(EngineConfig {
             worker_threads: 2,
+            default_backend: crate::backend::Backend::CpuReference,
             ..Default::default()
         });
         let mut session = engine.new_session();
@@ -3053,10 +3062,8 @@ mod tests {
             let (m0, m1) = (f(&r.json["start"]["merit"]), f(&r.json["final"]["merit"]));
             assert!(m1 < m0, "{backend}: {m0} -> {m1}");
         }
-        // `auto` with a device: the CPU reference below the measured
-        // crossover (the default merit's 38 rays per candidate, LM batches
-        // of 7), the GPU above it (12 × 24 pupil, every field and
-        // wavelength, DE populations of 16).
+        // Emulation has no measured cost exception. Unknown cost uses the
+        // qualified resident path at both candidate sizes.
         let auto = |s: Value| {
             let reg = AnalysisRegistry::with_builtin();
             let a = reg.get("optimize").unwrap();
@@ -3070,8 +3077,7 @@ mod tests {
         s["backend"] = json!("auto");
         let r = auto(s.clone());
         let b = &r.json["backend"];
-        assert_eq!(b["precision"], json!("f64_reference"), "{b}");
-        assert_eq!(b["workload"]["gpu_faster"], json!(false));
+        assert_eq!(b["precision"], json!("f32_gpu"), "{b}");
         assert_eq!(b["workload"]["batch"], json!(7));
         s["algorithm"] = json!("de");
         s["max_iterations"] = json!(1);
@@ -3317,9 +3323,11 @@ mod tests {
         let j = &out.json;
         assert_eq!(j["status"], json!("stopped"));
         let sens = &j["sensitivity"];
-        assert_eq!(sens["cancelled"], json!(true), "{sens}");
         let n = sens["operands"].as_array().unwrap().len();
-        assert!(n > 0 && n < 30, "{n} of 30 operands");
+        // The last batch may finish before the observing thread runs. A stop
+        // keeps every completed operand, including a just-completed full set.
+        assert!(n > 0 && n <= 30, "{n} of 30 operands");
+        assert_eq!(sens["cancelled"], json!(n < 30), "{sens}");
         assert_eq!(sens["ranking"].as_array().unwrap().len(), n);
     }
 

@@ -70,6 +70,10 @@ impl ComputeBackend for QualificationBackend<'_> {
             }
             _ => 0,
         };
+        let steps = match &j {
+            Job::Trace(t) => 4 * t.program().len() as u64,
+            _ => 0,
+        };
         let result = self.context.backend.run(j, ctx)?;
         let output = match &result.output {
             JobOutput::Trace(t) => {
@@ -82,7 +86,7 @@ impl ComputeBackend for QualificationBackend<'_> {
             wall_seconds: result.stats.wall_seconds,
             device_seconds: result.stats.device_seconds,
             command_buffers: result.stats.command_buffers,
-            copied_bytes: if copies { input + output } else { 0 },
+            copied_bytes: if copies { steps + output } else { 0 },
             uploaded_bytes: input,
             readback_bytes: output,
             allocations: if copies { 7 } else { 0 },

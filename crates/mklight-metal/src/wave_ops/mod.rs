@@ -117,7 +117,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     };
     // Huygens and correlation outputs sum all n² pupil samples: each thread
     // sums one fixed block, a finish dispatch adds the blocks in order.
-    let n2 = (p.n * p.n) as usize;
+    let n2 = p.n as usize * p.n as usize;
     let blocked = matches!(p.mode, 2 | 6);
     let blocks = n2.div_ceil(spec::SUM_BLOCK);
     let tile = if blocked {
@@ -159,7 +159,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         let xr = &*x;
         // SAFETY: request validation bounds each typed view; output leases are
         // exclusive. Dispatches serialize scratch reuse, including block sums.
-        let cs = unsafe {
+        unsafe {
             xr.run("wave", |e| {
                 let bind = |index, at| {
                     let (b, o) = xr.buffer(&access.reads[at]);
@@ -218,8 +218,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-        stage.command_buffers += cs.command_buffers;
-        stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes +=
             (group.len() * size_of::<Params>() * if blocked { 2 } else { 1 }) as u64;
@@ -236,8 +234,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     }
     ctl.check()?;
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
     x.stats.stages.push(stage);
     if matches!(p.mode, 3 | 6)
         && let Some(m) = moments.as_mut()

@@ -183,8 +183,8 @@ pub fn gpu_fd_relative_step(kind: &OperandKind, scheme: FdScheme) -> f64 {
 /// Rays the GPU evaluator traces per candidate for `operands` on `system`:
 /// the planned chief, pupil, single and real rays of the operands it
 /// accelerates (with `wavefront` as [`GpuEvalSettings::wavefront`]).
-/// `None` when the system cannot be traced. Used with [`gpu_beats_cpu`] to
-/// decide whether the GPU path pays off.
+/// `None` when the system cannot be traced. Cost policy belongs to the
+/// engine and uses complete resident workloads.
 pub fn gpu_rays_per_candidate(
     cpu: &TraceEvaluator,
     system: &OpticalSystem,
@@ -202,22 +202,6 @@ pub fn gpu_rays_per_candidate(
     }
     let p = prepare(cpu, &tr, &ops, cpu.settings().clip);
     Some(p.frags.iter().map(|f| f.rays.len()).sum())
-}
-
-/// Does a batch of `batch` candidates tracing `rays_per_candidate` rays each
-/// run faster on the GPU evaluator than on the CPU reference? The measured
-/// crossover (`docs/OPTIMIZATION.md`, Throughput: Double Gauss, Apple M2
-/// Pro), taken conservatively between the measured points: at 171 rays the
-/// GPU never wins (0.3–0.9×), at 657 rays from 256 candidates, at 2601 rays
-/// from 16. The per-candidate host work, not the device, sets it.
-pub fn gpu_beats_cpu(rays_per_candidate: usize, batch: usize) -> bool {
-    if rays_per_candidate >= 2600 {
-        batch >= 16
-    } else if rays_per_candidate >= 650 {
-        batch >= 256
-    } else {
-        false
-    }
 }
 
 /// Operand evaluator tracing ray-based operands on a GPU backend (module

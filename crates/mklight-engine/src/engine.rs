@@ -62,7 +62,7 @@ impl Default for EngineConfig {
             progress_interval_ms: s.progress_interval.as_millis() as u64,
             app_name: String::new(),
             app_version: String::new(),
-            default_backend: Backend::CpuReference,
+            default_backend: Backend::Auto,
         }
     }
 }

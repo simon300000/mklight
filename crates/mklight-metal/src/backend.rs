@@ -50,6 +50,7 @@ struct Inner {
     precision: PrecisionDescriptor,
     instance: u64,
     next_id: AtomicU64,
+    external_copied_bytes: AtomicU64,
     chunk_items: AtomicUsize,
     systems: Mutex<HashMap<u64, Arc<Uploaded>>>,
     resident: crate::resident::Runtime,
@@ -158,6 +159,7 @@ impl MetalBackend {
     /// numerics probe (e.g. built with weaker fallback flags) is replaced by
     /// the runtime-compiled source when that one passes.
     pub fn with_options(opts: &MetalOptions) -> MkResult<Option<Self>> {
+        let copied_before = crate::buffer::copied_bytes();
         let Some(mut ctx) = MetalContext::new(opts)? else {
             return Ok(None);
         };
@@ -206,9 +208,10 @@ impl MetalBackend {
             probe,
             budget: ErrorBudget::CONVENTIONS,
             kernel_build: format!(
-                "mklight-metal {}: {}",
+                "mklight-metal {}: {}; source {}",
                 env!("CARGO_PKG_VERSION"),
-                ctx.library_build()
+                ctx.library_build(),
+                crate::shaders::SOURCE_HASH
             ),
         };
         let instance = next_backend_instance();
@@ -221,6 +224,9 @@ impl MetalBackend {
                 resident: crate::resident::Runtime::new(instance),
                 cache: Mutex::new(mklight_gpu::resident::cache::SystemCache::new(64 << 20)),
                 next_id: AtomicU64::new(1),
+                external_copied_bytes: AtomicU64::new(
+                    crate::buffer::copied_bytes() - copied_before,
+                ),
                 chunk_items: AtomicUsize::new(DEFAULT_CHUNK),
                 systems: Mutex::new(HashMap::new()),
             }),
@@ -264,6 +270,7 @@ impl MetalBackend {
 
 impl Inner {
     fn upload(&self, set: PackedSystemSet) -> MkResult<Uploaded> {
+        let _copies = crate::buffer::meter(&self.external_copied_bytes);
         Ok(Uploaded {
             headers: self.ctx.buffer(&set.headers)?,
             surfaces: self.ctx.buffer(&set.surfaces)?,
@@ -330,6 +337,7 @@ impl Inner {
     }
 
     fn execute(&self, job: Job, ctl: &JobControl) -> MkResult<JobResult> {
+        let _copies = crate::buffer::meter(&self.external_copied_bytes);
         let t0 = Instant::now();
         let mut stats = JobStats::default();
         let gpu = &self.ctx;
@@ -545,6 +553,8 @@ impl Inner {
                 })
             }
         })?;
+        // Final SoA planes become the compatibility API's owned output.
+        crate::buffer::record_copy(13 * n * 4);
         Ok(TraceResult::from_planes(
             out_f.as_slice(),
             out_u.as_slice(),
@@ -746,7 +756,9 @@ impl ComputeBackend for MetalBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .stats();
-        self.inner.resident.cache_stats(s)
+        let mut stats = self.inner.resident.cache_stats(s);
+        stats.copied_bytes += self.inner.external_copied_bytes.load(Ordering::Relaxed);
+        stats
     }
     fn upload_systems_cached(
         &self,

@@ -35,7 +35,9 @@ fn last_error() -> String {
 fn a_long_synchronous_run_does_not_block_the_session() {
     unsafe {
         let mut engine = ptr::null_mut();
-        assert_eq!(mk_engine_create(ptr::null(), &mut engine), MK_OK);
+        // Keep the CPU lock probe independent of initial device creation.
+        let config = c(r#"{"default_backend":{"kind":"cpu_reference"}}"#);
+        assert_eq!(mk_engine_create(config.as_ptr(), &mut engine), MK_OK);
         let mut session = ptr::null_mut();
         assert_eq!(mk_session_new(engine, &mut session), MK_OK);
         let text = c(&serde_json::to_string(&samples::cooke_triplet()).unwrap());

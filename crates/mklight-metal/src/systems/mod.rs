@@ -58,7 +58,7 @@ pub(crate) fn execute(
             // extent. Scratch has a disjoint lane per candidate at each instruction,
             // patch destinations are distinct words, and dispatches in one encoder
             // run in order on tracked buffers.
-            let cs = unsafe {
+            unsafe {
                 x.run("prepare systems", |e| {
                     for (i, (b, off)) in inputs.iter().enumerate() {
                         e.set_buffer(i, *b, *off);
@@ -79,8 +79,6 @@ pub(crate) fn execute(
                 })?
             };
             parameter_blocks += 1;
-            stage.command_buffers += cs.command_buffers;
-            stage.device_seconds += cs.gpu_seconds;
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         }
         ctl.check()?;
@@ -91,8 +89,6 @@ pub(crate) fn execute(
     }
     x.stats.parameter_bytes +=
         parameter_blocks * size_of::<mklight_gpu::systems::DispatchParams>() as u64;
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
     // Package timings are retained separately; the router also records the
     // outer domain wall time without counting our commands a second time.
     x.stats.stages.push(stage);

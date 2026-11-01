@@ -24,3 +24,6 @@ dispatch2 = "0.3.0"
 approx.workspace = true
 mklight-trace.workspace = true
 rayon.workspace = true
+
+[build-dependencies]
+blake3.workspace = true

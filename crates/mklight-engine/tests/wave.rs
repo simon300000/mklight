@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 fn engine() -> Engine {
     Engine::new(EngineConfig {
         worker_threads: 2,
+        default_backend: mklight_engine::backend::Backend::CpuReference,
         ..Default::default()
     })
 }

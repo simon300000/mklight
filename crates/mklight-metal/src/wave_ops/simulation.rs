@@ -87,7 +87,7 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
             let wall = Instant::now();
             // SAFETY: validated stage layouts, immutable inputs, exclusive outputs
             // and deterministic scratch reused only after command completion.
-            let cs = unsafe {
+            unsafe {
                 xr.run("image simulation", |e| {
                     if p.mode == 6 {
                         let (b, o) = xr.buffer(&a.reads[round]);
@@ -137,8 +137,6 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
                     )));
                 }
             }
-            stage.command_buffers += cs.command_buffers;
-            stage.device_seconds += cs.gpu_seconds;
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
             x.stats.parameter_bytes += size_of::<Params>() as u64;
             ctl.report(
@@ -156,8 +154,6 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
         x.recycle(v);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
     x.stats.stages.push(stage);
     Ok(())
 }
@@ -214,7 +210,7 @@ fn detector_kernel(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> M
         let wall = Instant::now();
         // SAFETY: horizontal rows are exclusive, complete before the vertical
         // pass, and all output padding is explicitly cleared once.
-        let cs = unsafe {
+        unsafe {
             xr.run("detector kernel", |e| {
                 let (b, o) = xr.buffer(&a.reads[0]);
                 e.set_buffer(0, b, o);
@@ -231,8 +227,6 @@ fn detector_kernel(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-        stage.command_buffers += cs.command_buffers;
-        stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report(offset as f64 / dispatches.len() as f64, "detector kernel");
     }
@@ -240,8 +234,6 @@ fn detector_kernel(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> M
     x.put_output(a.writes[0], out);
     x.recycle(horizontal);
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
     x.stats.parameter_bytes += (dispatches.len() * size_of::<Params>()) as u64;
     x.stats.stages.push(stage);
     Ok(())

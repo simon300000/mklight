@@ -23,6 +23,8 @@ use std::{
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EvaluationStats {
     pub candidates: u64,
+    pub device_candidates: u64,
+    pub cpu_candidates: u64,
     pub device_operands: u64,
     pub host_operands: u64,
     pub reference_checks: u64,
@@ -49,6 +51,7 @@ struct ReferenceCache {
 }
 struct Template {
     base: OpticalSystem,
+    snapshot: Snapshot,
     params: Vec<ParamPath>,
     config: usize,
     uploaded: UploadedSystem,
@@ -60,6 +63,48 @@ impl Drop for Template {
     }
 }
 #[derive(Clone)]
+struct CheckedReference {
+    evaluator: BuiltinEvaluator,
+    cache: Arc<Mutex<ReferenceCache>>,
+}
+impl OperandEvaluator for CheckedReference {
+    fn supports(&self, kind: &OperandKind) -> bool {
+        self.evaluator.supports(kind)
+    }
+    fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
+        self.evaluator.fd_relative_step(kind, scheme)
+    }
+    fn evaluate_batch(
+        &self,
+        systems: &[OpticalSystem],
+        ops: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        ctx.check()?;
+        let cached: Option<Vec<_>> = {
+            let cache = self.cache.lock().unwrap();
+            if cache.ops.iter().eq(ops.iter().copied()) {
+                systems
+                    .iter()
+                    .map(|system| {
+                        cache
+                            .entries
+                            .values()
+                            .find(|entry| entry.system == *system)
+                            .map(|entry| entry.values.clone())
+                    })
+                    .collect()
+            } else {
+                None
+            }
+        };
+        if let Some(values) = cached {
+            return Ok(values);
+        }
+        self.evaluator.evaluate_batch(systems, ops, ctx)
+    }
+}
+#[derive(Clone)]
 pub struct ResidentEvaluator {
     pub context: GpuContext,
     pub(crate) reference: BuiltinEvaluator,
@@ -68,6 +113,7 @@ pub struct ResidentEvaluator {
     template: Arc<Mutex<Option<Arc<Template>>>>,
     stats: Arc<Mutex<EvaluationStats>>,
     references: Arc<Mutex<ReferenceCache>>,
+    checked_reference: CheckedReference,
 }
 impl ResidentEvaluator {
     pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
@@ -85,6 +131,11 @@ impl ResidentEvaluator {
         context.identity.qualification = Some(
             serde_json::json!({"mode":"per_candidate_geometry_and_full_operand_f64","publication":"after_reference_check"}),
         );
+        let references = Arc::default();
+        let checked_reference = CheckedReference {
+            evaluator: reference.clone(),
+            cache: Arc::clone(&references),
+        };
         Self {
             mtf: reference.mtf.clone().with_gpu(context.clone()),
             solvers: reference.solvers.clone().with_gpu(context.clone()),
@@ -92,7 +143,8 @@ impl ResidentEvaluator {
             reference,
             template: Arc::default(),
             stats: Arc::default(),
-            references: Arc::default(),
+            references,
+            checked_reference,
         }
     }
     pub fn run<T>(
@@ -150,6 +202,7 @@ impl ResidentEvaluator {
         let uploaded = compiled.upload(self.context.backend.as_ref(), ctx)?;
         let t = Arc::new(Template {
             base: batch.base.clone(),
+            snapshot: compiled.snapshot().clone(),
             params: batch.params.to_vec(),
             config: batch.config,
             uploaded,
@@ -162,7 +215,7 @@ impl ResidentEvaluator {
         &self,
         systems: &[OpticalSystem],
         ops: &[&Operand],
-        template: Option<(&UploadedSystem, &[Candidate])>,
+        template: Option<(&Template, &[Candidate])>,
         first: usize,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
@@ -205,30 +258,30 @@ impl ResidentEvaluator {
         if !missing.is_empty() {
             let pending: Vec<_> = missing.iter().map(|&i| systems[i].clone()).collect();
             let values = self.reference.evaluate_batch(&pending, ops, &inner)?;
-            let qualified: Vec<_> = pending
+            let prepared: Vec<_> = pending
                 .par_iter()
-                .map(|system| {
-                    let ctx = JobContext::with(ctx.cancel.clone(), Default::default());
-                    ctx.check()?;
-                    let tracer = match self.reference.trace.tracer(system) {
-                        Ok(t) => t,
-                        Err(_) => return Ok((false, None, None)),
-                    };
-                    let settings = mklight_gpu::xval::XvalSettings {
-                        clip: self.reference.trace.settings().clip,
-                        radiometry: mklight_gpu::Radiometry::Off,
-                        ..mklight_gpu::xval::XvalSettings::qualification()
-                    };
-                    let backend = super::qualification::QualificationBackend::new(&self.context);
-                    let qualification =
-                        mklight_gpu::xval::qualify(&backend, &tracer, Some(&settings), &ctx)?;
-                    Ok((
-                        qualification.passed,
-                        Some(Arc::new(tracer)),
-                        qualification.report,
-                    ))
+                .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
+                .collect();
+            let settings = mklight_gpu::xval::XvalSettings {
+                clip: self.reference.trace.settings().clip,
+                radiometry: mklight_gpu::Radiometry::Off,
+                ..mklight_gpu::xval::XvalSettings::qualification()
+            };
+            let backend = super::qualification::QualificationBackend::new(&self.context);
+            let validation_tracers: Vec<_> = prepared.iter().flatten().map(AsRef::as_ref).collect();
+            let qualifications =
+                mklight_gpu::xval::qualify_many(&backend, &validation_tracers, &settings, &inner)?;
+            let mut qualifications = qualifications.into_iter();
+            let qualified: Vec<_> = prepared
+                .into_iter()
+                .map(|tracer| match tracer {
+                    Some(t) => {
+                        let q = qualifications.next().unwrap();
+                        (q.passed, Some(t), q.report)
+                    }
+                    None => (false, None, None),
                 })
-                .collect::<MkResult<_>>()?;
+                .collect();
             let mut cache = self.references.lock().unwrap();
             // Another concurrent job may have changed the operand specification.
             let same = cache.ops.iter().eq(ops.iter().copied())
@@ -266,6 +319,8 @@ impl ResidentEvaluator {
         let ref_seconds = t.elapsed().as_secs_f64();
         ctx.report(0.5, "candidate reference qualification");
         let mut result = reference.clone();
+        let mut device_rows = vec![false; systems.len()];
+        let mut fallback_rows: Vec<_> = geometry.iter().map(|q| !q).collect();
         let mut stats = EvaluationStats {
             candidates: systems.len() as u64,
             reference_checks: missing.len() as u64,
@@ -306,13 +361,19 @@ impl ResidentEvaluator {
             let selected_rows: Vec<_> = template.map_or_else(Vec::new, |(_, rows)| {
                 active.iter().map(|&i| rows[i].clone()).collect()
             });
-            let selected_template = template.map(|(t, _)| (t, selected_rows.as_slice()));
+            let selected_template = template.map(|(t, _)| (&t.uploaded, selected_rows.as_slice()));
+            let mut context = self.context.clone();
+            if let Some((template, _)) = template {
+                context.snapshot = template.snapshot.clone();
+                context.identity.derived_snapshot_hash = Some(template.snapshot.hash().to_hex());
+            }
+            let native_before = self.context.native_device_calls();
             let attempt = if active.is_empty() && route != 3 {
                 Ok(vec![])
             } else {
                 match route {
                     0 => crate::merit::gpu_eval::resident::evaluate(
-                        &self.context,
+                        &context,
                         &self.reference.trace,
                         &selected_tracers,
                         &refs,
@@ -321,7 +382,11 @@ impl ResidentEvaluator {
                     ),
                     1 => self.mtf.evaluate_batch(&selected(), &refs, &inner),
                     2 => self.solvers.evaluate_batch(&selected(), &refs, &inner),
-                    4 => self.first_order(&selected(), &refs, selected_template, &inner),
+                    4 => {
+                        let mut evaluator = self.clone();
+                        evaluator.context = context;
+                        evaluator.first_order(&selected(), &refs, selected_template, &inner)
+                    }
                     _ => {
                         stats.host_operands += (systems.len() * indices.len()) as u64;
                         for &i in &indices {
@@ -329,6 +394,7 @@ impl ResidentEvaluator {
                                 ops[i].kind.capability(),
                                 Capability::Model | Capability::Paraxial
                             ) {
+                                fallback_rows.fill(true);
                                 stats.fallback_operands += systems.len() as u64;
                                 *stats
                                     .fallbacks
@@ -347,6 +413,7 @@ impl ResidentEvaluator {
             match attempt {
                 Err(MkError::Cancelled) => return Err(MkError::Cancelled),
                 Err(e) => {
+                    fallback_rows.fill(true);
                     let n = (systems.len() * indices.len()) as u64;
                     stats.fallback_operands += n;
                     *stats.fallbacks.entry(e.to_string()).or_default() += n;
@@ -373,8 +440,21 @@ impl ResidentEvaluator {
                             stats.maximum_absolute_error = stats.maximum_absolute_error.max(error);
                             if pass && geometry[row] {
                                 result[row][i] = value;
-                                stats.device_operands += 1;
+                                if route == 2 && self.context.native_device_calls() == native_before
+                                {
+                                    stats.host_operands += 1;
+                                    stats.fallback_operands += 1;
+                                    fallback_rows[row] = true;
+                                    *stats
+                                        .fallbacks
+                                        .entry("native solver completed with f64".into())
+                                        .or_default() += 1;
+                                } else {
+                                    stats.device_operands += 1;
+                                    device_rows[row] = true;
+                                }
                             } else {
+                                fallback_rows[row] = true;
                                 stats.fallback_operands += 1;
                                 *stats
                                     .fallbacks
@@ -389,7 +469,15 @@ impl ResidentEvaluator {
                 }
             }
         }
+        stats.device_candidates = device_rows.iter().filter(|&&v| v).count() as u64;
+        stats.cpu_candidates = device_rows
+            .iter()
+            .zip(&fallback_rows)
+            .filter(|(device, fallback)| !**device || **fallback)
+            .count() as u64;
         let mut total = self.stats.lock().unwrap();
+        total.device_candidates += stats.device_candidates;
+        total.cpu_candidates += stats.cpu_candidates;
         total.candidates += stats.candidates;
         total.device_operands += stats.device_operands;
         total.host_operands += stats.host_operands;
@@ -567,7 +655,7 @@ fn qualifies(
 }
 impl OperandEvaluator for ResidentEvaluator {
     fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
-        Some(&self.reference)
+        Some(&self.checked_reference)
     }
     fn gpu_context(&self) -> Option<&GpuContext> {
         Some(&self.context)
@@ -665,7 +753,7 @@ impl OperandEvaluator for ResidentEvaluator {
             values.extend(self.evaluate(
                 systems,
                 ops,
-                template.as_ref().map(|t| (&t.uploaded, rows)),
+                template.as_ref().map(|t| (t.as_ref(), rows)),
                 0,
                 &ctx.subrange(
                     0.05 + 0.95 * i as f64 / count as f64,

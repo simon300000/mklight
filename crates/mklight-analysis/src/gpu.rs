@@ -70,7 +70,24 @@ impl<'a> Geometry<'a> {
             )?);
             chunks.push(w);
         }
-        let systems = backend.upload_systems(&packed)?;
+        let mut numeric = blake3::Hasher::new();
+        for system in &packed {
+            numeric.update(bytemuck::bytes_of(&system.header));
+            numeric.update(bytemuck::cast_slice(&system.surfaces));
+            numeric.update(bytemuck::cast_slice(&system.coefficients));
+        }
+        let systems = backend.upload_systems_cached(
+            &SystemCacheKey {
+                snapshot: tracer.system().snapshot.hash().to_hex(),
+                library: numeric.finalize().to_hex().to_string(),
+                configuration: "resolved".into(),
+                spectrum: "all_chunks".into(),
+                layout: mklight_gpu::consts::MKL_LAYOUT_VERSION,
+                kernel_build: backend.precision().kernel_build.clone(),
+                operation_settings: "geometry-v1".into(),
+            },
+            &packed,
+        )?;
         Ok(Self {
             backend,
             tracer,
