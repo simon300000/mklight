@@ -11,15 +11,33 @@ use mklight_trace::{FieldPoint, SequentialTracer};
 use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub struct ResidentPsfGrid {
-    pub mapping: Vec<FieldMapping>,
-    pub size: usize,
-    pub psf_size: usize,
-    pub spacing_mm: f64,
-    pub kernels: Vec<BufferHandle>,
-    pub kernel_sums: Vec<f64>,
-    pub warnings: Vec<String>,
+    mapping: Vec<FieldMapping>,
+    size: usize,
+    psf_size: usize,
+    spacing_mm: f64,
+    kernels: Vec<BufferHandle>,
+    kernel_sums: Vec<f64>,
+    warnings: Vec<String>,
     identity: String,
 }
+impl ResidentPsfGrid {
+    pub fn mapping(&self) -> &[FieldMapping] {
+        &self.mapping
+    }
+    pub fn size(&self) -> usize {
+        self.size
+    }
+    pub fn psf_size(&self) -> usize {
+        self.psf_size
+    }
+    pub fn spacing_mm(&self) -> f64 {
+        self.spacing_mm
+    }
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+}
+
 fn invalid(s: &str) -> MkError {
     MkError::InvalidParam(format!("image simulation: {s}"))
 }

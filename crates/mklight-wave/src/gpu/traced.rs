@@ -633,9 +633,18 @@ impl<'a> PupilTracer<'a> {
                 accumulate(&mut stats, &s);
                 batch = Some(b);
             }
-            let state=self.backend.read_view(previous.as_ref().unwrap().view())?;
-            let unresolved=state.as_slice::<Df32>()?.chunks(8).filter(|v|v[7].hi==0.).count();
-            if unresolved>0{return Err(MkError::Unsupported(format!("{unresolved} rim edges did not reach tolerance {}; reference completion required",settings.rim_tolerance)));}
+            let state = self.backend.read_view(previous.as_ref().unwrap().view())?;
+            let unresolved = state
+                .as_slice::<Df32>()?
+                .chunks(8)
+                .filter(|v| v[7].hi == 0.)
+                .count();
+            if unresolved > 0 {
+                return Err(MkError::Unsupported(format!(
+                    "{unresolved} rim edges did not reach tolerance {}; reference completion required",
+                    settings.rim_tolerance
+                )));
+            }
             batch
         };
         let mut centre = cp;

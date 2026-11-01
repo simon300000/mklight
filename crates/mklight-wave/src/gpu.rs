@@ -200,8 +200,11 @@ impl ResidentPupil {
         let mut b = self.geometry.surface_to_normal();
         // Match the reference's negligible-skew rule, including its origin,
         // before satisfying P2's exactly diagonal ChirpZ contract.
-        let separable=b[0][1].abs()<1e-15&&b[1][0].abs()<1e-15;
-        if separable{b[0][1]=0.;b[1][0]=0.;}
+        let separable = b[0][1].abs() < 1e-15 && b[1][0].abs() < 1e-15;
+        if separable {
+            b[0][1] = 0.;
+            b[1][0] = 0.;
+        }
         let dnu = 1. / l;
         let c = (size / 2) as f64;
         let affine = [
@@ -398,45 +401,20 @@ impl ResidentPupil {
         p.settings = serde_json::json!({"p6":"through_focus_otf","frequencies":frequencies,"chief_shifts_mm":shifts,"pupil_grid":self.n});
         let f = p.import(fs.view());
         let z = p.import(zs.view());
-        let pupil = self.import(&mut p);
-        let stencil = p.scratch(BufferDesc::new(
-            ElementType::F32,
-            [frequencies.len(), self.n * self.n, 5],
-        ));
-        let frame = self
-            .geometry
-            .chief_frame()
-            .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
-        p.operations
-            .push(ResidentOp::Transforms(tr::Request::PrepareOpticalStencil(
-                tr::OpticalCorrelation {
-                    stencil: None,
-                    amplitude: pupil.amplitude.clone(),
-                    coverage: pupil.coverage.clone(),
-                    opd: pupil.opd.clone(),
-                    frequencies: p.view(f)?,
-                    frame,
-                    sin_max: self.wave_geometry().sin_max,
-                    wavelength_over_index: self.wave_geometry().wavelength,
-                    output: stencil,
-                },
-            )));
-        let output = p.scratch(BufferDesc::new(
-            ElementType::Complex32,
-            [shifts.len(), frequencies.len()],
-        ));
-        p.operations
-            .push(ResidentOp::Wave(w::Request::FocusCorrelation {
-                on_axis: self.geometry.is_on_axis(),
-                pupil,
-                geometry: self.wave_geometry(),
-                stencil: p.view(stencil)?,
-                shifts: Some(p.view(z)?),
-                output,
-            }));
-        p.outputs = vec![output];
+        let steps = p.scratch(BufferDesc::new(ElementType::F32, [shifts.len()]));
+        let output = self.append_focus_output(
+            &mut p,
+            p_view(f, fs.desc()),
+            p_view(z, zs.desc()),
+            Some(steps),
+        )?;
+        p.outputs = vec![output, steps];
         p.settings["pupil_input_hash"] = self.input_hash.clone().into();
         let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        focus::add_step_warning(
+            &mut r.run_info.warnings,
+            backend.read_view(r.outputs[1].view())?.as_slice::<f32>()?,
+        );
         r.run_info
             .warnings
             .extend(self.warnings.iter().map(ToString::to_string));
@@ -505,6 +483,7 @@ impl ResidentPupil {
                 )));
             p.operations
                 .push(ResidentOp::Wave(w::Request::FocusCorrelation {
+                    phase_steps: None,
                     on_axis: true,
                     pupil,
                     geometry: self.wave_geometry(),

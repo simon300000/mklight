@@ -505,7 +505,9 @@ snapshot and configuration identity.
   lattice, centroid phase removal, cubic aberration interpolation and bilinear
   diffraction reference as the f64 method. Huygens MTF uses the sampled-PSF DFT.
   A covered pupil crossing the sensor horizon is rejected.
-* Focus sweeps share correlation stencils; FFT/Huygens use bounded plane batches.
+* Focus sweeps share correlation stencils and cache exact defocus phases up to
+  256 MiB; larger requests evaluate the same phases on the fly. Per-plane GPU
+  reductions retain phase-step warnings. FFT/Huygens use bounded plane batches.
   Automatic pupils are refined from the phase steps at both focus endpoints.
   Polychromatic fields/OTFs accumulate on device before taking magnitudes.
   Clearing OPD preserves lateral-colour offsets for PSF/energy references; the
@@ -547,12 +549,16 @@ Shot/read noise uses the shared Philox raw stream `(seed, output_sample, draw)`
 and the specified open-interval f32 uniform conversion. The f64 reference uses
 its documented f64 conversion; compare moments and raw addressing, not an
 unqualified bitwise claim for transcendental/rejection arithmetic. Fixed-device
-replay is deterministic. Low-y row zero, RGB/monochrome conversion, unclipped
+replay is deterministic. Poisson rejection uses a cancellation-free double-float
+log probability; means above 1e12 electrons or nonfinite output explicitly request
+fallback. Matching-emulation branch tests and moment tests cover the qualified
+range. Low-y row zero, RGB/monochrome conversion, unclipped
 noise output and discrete convolution flux are preserved.
 
 ### Qualification and timing
 
-Host-required suites in `tests/p6_wave.rs` and `tests/p6_native.rs` cover the
+Host-required suites in `tests/p6_wave.rs`, `tests/p6_native.rs` and
+`tests/p6_boundaries.rs` cover the
 resident primitives and complete native results against matched f64 methods,
 including automatic sampling. The ignored `all_gpu_traced_pupils` suite checks
 all 144 built-in field/wavelength pupils, with actual P1/P7 work. The image unit
@@ -561,7 +567,8 @@ impulse deposition, including edge flux loss. Both shader origins and the
 numerics probe are exercised. No skipped test qualifies Metal.
 
 `tests/p6_bench.rs` measures complete native PSFs on all built-ins, explicit
-64/256/1024 pupils through a 2048 image, and complete/cached-grid image simulation.
+64/256/1024 pupils through a 2048 image, dense representative designs,
+11/101/1001-side traced lattices, and complete/cached-grid image simulation.
 It alternates unchanged CPU f64 and GPU runs, separates workload-cold/setup and
 warm-up, and records ten measured runs, median/p95, stages, copies, allocations,
 tracked peak plan bytes and fallback counts. The older prepared-pupil benchmark

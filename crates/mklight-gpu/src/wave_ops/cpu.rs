@@ -91,6 +91,7 @@ pub fn execute(
             stencil,
             shifts,
             output,
+            phase_steps,
             ..
         } => {
             let a = values::<f32>(x, &pupil.amplitude);
@@ -103,23 +104,43 @@ pub fn execute(
                 .unwrap_or(&[Df32::ZERO]);
             let fs = p.field_side as usize;
             let mut out = vec![[0.; 2]; fs * shifts.len()];
-            for (i, v) in out.iter_mut().enumerate() {
-                let mut sums = [Df32::ZERO; 3];
+            let mut steps = vec![0f32; shifts.len()];
+            for (plane, &dz) in shifts.iter().enumerate() {
+                let mut focused = vec![Df32::ZERO; count];
                 for k in 0..count {
                     if k % 4096 == 0 {
                         ctl.check()?;
                     }
-                    let q = ((i % fs) * count + k) * 5;
-                    let t = correlation_term(&p, k, a, c, w, &g[q..q + 5], shifts[i / fs]);
-                    for j in 0..3 {
-                        sums[j] = sums[j].add_f32(t[j]);
-                    }
+                    focused[k] = if c[k] > 0. {
+                        w[k] + focus(&p, k, dz)
+                    } else {
+                        w[k]
+                    };
                 }
-                *v = [scalar(sums[0] / sums[2]), scalar(sums[1] / sums[2])];
-                ctl.report(
-                    (i + 1) as f64 / (fs * shifts.len()) as f64,
-                    "focus correlation",
-                );
+                steps[plane] = phase_step(n, c, &focused);
+                for frequency in 0..fs {
+                    let mut sums = [Df32::ZERO; 3];
+                    for k in 0..count {
+                        if k % 4096 == 0 {
+                            ctl.check()?;
+                        }
+                        let q = (frequency * count + k) * 5;
+                        let t = correlation_term(&p, k, a, c, &focused, &g[q..q + 5], Df32::ZERO);
+                        for j in 0..3 {
+                            sums[j] = sums[j].add_f32(t[j]);
+                        }
+                    }
+                    out[plane * fs + frequency] =
+                        [scalar(sums[0] / sums[2]), scalar(sums[1] / sums[2])];
+                    ctl.report(
+                        (plane * fs + frequency + 1) as f64 / (fs * shifts.len()) as f64,
+                        "focus correlation",
+                    );
+                }
+            }
+            if let Some(id) = phase_steps {
+                x.words_mut(*id)
+                    .copy_from_slice(bytemuck::cast_slice(&steps));
             }
             x.words_mut(*output)
                 .copy_from_slice(bytemuck::cast_slice(&out));
@@ -209,9 +230,11 @@ pub fn execute(
             pupil,
             shifts,
             output,
+            phase_steps,
             ..
         } => {
             let w = values::<Df32>(x, &pupil.opd);
+            let coverage = values::<f32>(x, &pupil.coverage);
             let shifts = values::<Df32>(x, shifts);
             let mut out = Vec::with_capacity(count * shifts.len());
             for &dz in shifts {
@@ -219,8 +242,20 @@ pub fn execute(
                     if k % 4096 == 0 {
                         ctl.check()?;
                     }
-                    out.push(v + focus(&p, k, dz));
+                    out.push(if coverage[k] > 0. {
+                        v + focus(&p, k, dz)
+                    } else {
+                        v
+                    });
                 }
+            }
+            if let Some(id) = phase_steps {
+                let steps: Vec<f32> = out
+                    .chunks(count)
+                    .map(|a| phase_step(n, coverage, a))
+                    .collect();
+                x.words_mut(*id)
+                    .copy_from_slice(bytemuck::cast_slice(&steps));
             }
             x.words_mut(*output)
                 .copy_from_slice(bytemuck::cast_slice(&out));
@@ -253,4 +288,22 @@ pub fn execute(
     ctl.check()?;
     ctl.report(1., "wave");
     Ok(())
+}
+
+fn phase_step(n: usize, coverage: &[f32], opd: &[Df32]) -> f32 {
+    let mut step = 0f32;
+    for k in 0..n * n {
+        if coverage[k] <= 0. {
+            continue;
+        }
+        for j in [
+            if k % n + 1 < n { k + 1 } else { k },
+            if k / n + 1 < n { k + n } else { k },
+        ] {
+            if coverage[j] > 0. {
+                step = step.max(scalar(opd[j] - opd[k]).abs());
+            }
+        }
+    }
+    step
 }

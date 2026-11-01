@@ -165,6 +165,18 @@ pub fn polychromatic_psf(
                 output,
             })));
         p.outputs = vec![output];
+        if chunk + 1 == chunks {
+            let metrics = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [5]));
+            p.operations
+                .push(ResidentOp::Wave(w::Request::ImageIntegral(
+                    w::image_integrals::ImageIntegral::Metrics {
+                        input: p.view(output)?,
+                        output: metrics,
+                    },
+                )));
+            p.outputs.push(metrics);
+        }
+
         let r = b
             .submit_plan(
                 p,
@@ -175,8 +187,29 @@ pub fn polychromatic_psf(
             )?
             .wait()?;
         accumulate(&mut stats, &r.stats);
+        if chunk + 1 == chunks {
+            let sums = b.read_view(r.outputs[1].view())?;
+            let energy = sums.as_slice::<Df32>()?[0].to_f64()
+                * settings.spacing_mm.powi(2)
+                * if settings.normalization == PsfNormalization::Strehl {
+                    peak
+                } else {
+                    1.
+                };
+            if energy < crate::analysis::MIN_ENERGY_IN_GRID {
+                crate::warnings::push_unique(
+                    &mut warnings,
+                    WaveWarning::PsfTruncated {
+                        energy_in_grid: energy,
+                    },
+                );
+            }
+        }
         combined = Some(r.outputs[0].clone());
     }
+    run_info
+        .warnings
+        .extend(warnings.iter().map(ToString::to_string));
     run_info.settings = serde_json::json!({"p6":"polychromatic_psf","settings":settings,"huygens":huygens,"resident_stats":stats});
     Ok(WaveResult {
         value: ResidentPsf {

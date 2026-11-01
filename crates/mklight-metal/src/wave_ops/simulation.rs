@@ -14,6 +14,13 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
     } else {
         None
     };
+    let mut invalid = if p.mode == 7 {
+        let mut v = x.allocate(1)?;
+        v.as_mut_slice()[0] = 0;
+        Some(v)
+    } else {
+        None
+    };
     let names = [
         "mkl_wave_pattern",
         "mkl_wave_warp",
@@ -103,6 +110,9 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
                     if let Some(o) = aux.as_mut() {
                         e.set_buffer_mut(9, o, 0);
                     }
+                    if let Some(v) = invalid.as_mut() {
+                        e.set_buffer_mut(9, v, 0);
+                    }
                     e.set_bytes(10, &p);
                     if first == 0 && round == 0 {
                         if let Some(clear) = &clear {
@@ -113,6 +123,14 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
                     Ok(())
                 })?
             };
+            if let Some(v) = &invalid {
+                let count = v.as_slice()[0];
+                if count > 0 {
+                    return Err(mklight_core::MkError::Unsupported(format!(
+                        "{count} image samples exceed the qualified f32 noise domain (Poisson mean <= 1e12)"
+                    )));
+                }
+            }
             stage.command_buffers += 1;
             stage.device_seconds += cs.gpu_seconds;
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
@@ -127,6 +145,9 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
     x.put_output(a.writes[0], out);
     if let Some(o) = aux {
         x.put_output(a.writes[1], o);
+    }
+    if let Some(v) = invalid {
+        x.recycle(v);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
     x.stats.command_buffers += stage.command_buffers;

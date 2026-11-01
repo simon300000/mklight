@@ -1,12 +1,23 @@
 use super::*;
 use mklight_gpu::wave_ops::{fft_mtf::FftMtf, image_integrals::ImageIntegral, spectral::Spectral};
 impl ResidentPupil {
-    pub(super) fn append_sensor_guard(&self,p:&mut ResidentPlan)->MkResult<()> {
+    pub(super) fn append_sensor_guard(&self, p: &mut ResidentPlan) -> MkResult<()> {
         // The complete square is safely below the horizon in this cone. Other
         // cases inspect actual coverage, so a clipped high-NA pupil still works.
-        if std::f64::consts::SQRT_2*self.geometry.sin_max()<self.geometry.chief_ray[2]{return Ok(());}
-        let coverage=p.import(self.coverage.view());let status=p.scratch(BufferDesc::new(ElementType::U32,[1]));let normal=self.geometry.chief_frame().map(|v|Df32::from_f64(v.z));
-        p.operations.push(ResidentOp::Wave(w::Request::FftMtf(FftMtf::Domain{coverage:p.view(coverage)?,sin_max:self.wave_geometry().sin_max,normal,status})));Ok(())
+        if std::f64::consts::SQRT_2 * self.geometry.sin_max() < self.geometry.chief_ray[2] {
+            return Ok(());
+        }
+        let coverage = p.import(self.coverage.view());
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [1]));
+        let normal = self.geometry.chief_frame().map(|v| Df32::from_f64(v.z));
+        p.operations
+            .push(ResidentOp::Wave(w::Request::FftMtf(FftMtf::Domain {
+                coverage: p.view(coverage)?,
+                sin_max: self.wave_geometry().sin_max,
+                normal,
+                status,
+            })));
+        Ok(())
     }
 
     pub fn without_aberrations(&self, b: &dyn ComputeBackend, ctx: &JobContext) -> MkResult<Self> {
@@ -23,6 +34,8 @@ impl ResidentPupil {
                 },
             )?
             .view();
+        p.warnings
+            .retain(|w| !matches!(w, WaveWarning::PupilUndersampled { .. }));
         p.input_hash = format!("{}:zero_opd", self.input_hash);
         Ok(p)
     }

@@ -9,6 +9,7 @@ use mklight_gpu::{
 use std::time::Instant;
 mod diagnostics;
 mod fft_mtf;
+mod focus_cache;
 mod image_integrals;
 mod lattice;
 mod placement;
@@ -55,8 +56,10 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     if let Request::Shells(r) = r {
         return shells::execute(r, x, ctl);
     }
+    let cache = focus_cache::prepare(r, x, ctl)?;
     let access = accesses(r);
     let mut p = params(r);
+    p.reserved[0] = u32::from(cache.is_some());
     let mut output = x.take_output(access.writes[0]);
     let mut moments = if access.writes.len() > 1 {
         Some(x.take_output(access.writes[1]))
@@ -150,6 +153,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         bind(2, 2);
                         if p.mode == 6 {
                             bind(8, 3);
+                            if let Some(c) = &cache {
+                                e.set_buffer(10, c, 0);
+                            } else {
+                                bind(10, 2);
+                            }
                             bind(9, if access.reads.len() > 4 { 4 } else { 2 });
                         } else if p.mode != 0 {
                             bind(3, 3);
@@ -179,12 +187,43 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += (dispatches.len() * size_of::<Params>()) as u64;
+        let begin = if cache.is_some() { 0.08 } else { 0. };
+        let end = if moments.is_some() && matches!(p.mode, 3 | 6) {
+            0.95
+        } else {
+            1.
+        };
         ctl.report(
-            (first as f64 + sample as f64 / n2.max(1) as f64 * p.count as f64) / total as f64,
+            begin
+                + (end - begin)
+                    * (first as f64 + sample as f64 / n2.max(1) as f64 * p.count as f64)
+                    / total as f64,
             "wave",
         );
     }
     ctl.check()?;
+    stage.wall_seconds = start.elapsed().as_secs_f64();
+    x.stats.command_buffers += stage.command_buffers;
+    x.stats.device_seconds += stage.device_seconds;
+    x.stats.stages.push(stage);
+    if matches!(p.mode, 3 | 6) {
+        if let Some(m) = moments.as_mut() {
+            focus_cache::steps(
+                r,
+                x,
+                ctl,
+                if p.mode == 3 {
+                    Some(&*output)
+                } else {
+                    cache.as_deref()
+                },
+                m,
+            )?;
+        }
+    }
+    if let Some(c) = cache {
+        x.recycle(c);
+    }
     x.put_output(access.writes[0], output);
     if let Some(m) = moments {
         x.put_output(access.writes[1], m);
@@ -192,9 +231,5 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     if let Some(a) = acc {
         x.recycle(a);
     }
-    stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
-    x.stats.stages.push(stage);
     Ok(())
 }

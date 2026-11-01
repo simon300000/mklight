@@ -65,6 +65,7 @@ pub enum Request {
         stencil: PlanView,
         shifts: Option<PlanView>,
         output: BufferId,
+        phase_steps: Option<BufferId>,
     },
     /// Debye field padded at the low corner. The three scalar planes are
     /// c A/gamma, c A²/gamma², c A²/(gamma |k.normal|), for fixed-tree sums.
@@ -108,6 +109,7 @@ pub enum Request {
         geometry: Geometry,
         shifts: PlanView,
         output: BufferId,
+        phase_steps: Option<BufferId>,
     },
     /// Pixel-aperture and Gaussian diffusion MTF at arbitrary sensor frequencies.
     Detector {
@@ -200,6 +202,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             stencil,
             shifts,
             output,
+            phase_steps,
             ..
         } => {
             let n = pupil(v, *geometry)?;
@@ -217,6 +220,9 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
             let planes = shifts.as_ref().map_or(1, |s| s.desc.shape[0]);
             out(p, *output, Complex32, &[planes, s[0]])?;
+            if let Some(id) = phase_steps {
+                out(p, *id, F32, &[planes])?;
+            }
         }
         Request::Prepare {
             pupil: v,
@@ -320,6 +326,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             geometry,
             shifts,
             output,
+            phase_steps,
         } => {
             let n = pupil(v, *geometry)?;
             if shifts.desc.shape.len() != 1 {
@@ -327,6 +334,9 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
             view(shifts, DoubleFloat, &shifts.desc.shape)?;
             out(p, *output, DoubleFloat, &[shifts.desc.shape[0], n, n])?;
+            if let Some(id) = phase_steps {
+                out(p, *id, F32, &[shifts.desc.shape[0]])?;
+            }
         }
         Request::Detector {
             frequencies,
@@ -386,12 +396,13 @@ pub fn accesses(r: &Request) -> Access {
             stencil,
             shifts,
             output,
+            phase_steps,
             ..
         } => {
             let mut v = pv(pupil);
             v.push(stencil.clone());
             v.extend(shifts.clone());
-            (v, vec![*output])
+            (v, std::iter::once(*output).chain(*phase_steps).collect())
         }
         Request::Prepare {
             pupil,
@@ -419,11 +430,12 @@ pub fn accesses(r: &Request) -> Access {
             pupil,
             shifts,
             output,
+            phase_steps,
             ..
         } => {
             let mut v = pv(pupil);
             v.push(shifts.clone());
-            (v, vec![*output])
+            (v, std::iter::once(*output).chain(*phase_steps).collect())
         }
         Request::Detector {
             frequencies,

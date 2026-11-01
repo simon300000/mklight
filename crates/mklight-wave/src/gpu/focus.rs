@@ -8,6 +8,15 @@ impl ResidentPupil {
         frequencies: PlanView,
         shifts: PlanView,
     ) -> MkResult<BufferId> {
+        self.append_focus_output(p, frequencies, shifts, None)
+    }
+    pub(super) fn append_focus_output(
+        &self,
+        p: &mut ResidentPlan,
+        frequencies: PlanView,
+        shifts: PlanView,
+        phase_steps: Option<BufferId>,
+    ) -> MkResult<BufferId> {
         self.append_sensor_guard(p)?;
         let count = frequencies.desc.shape[0];
         let planes = shifts.desc.shape[0];
@@ -37,6 +46,7 @@ impl ResidentPupil {
         let output = p.scratch(BufferDesc::new(ElementType::Complex32, [planes, count]));
         p.operations
             .push(ResidentOp::Wave(w::Request::FocusCorrelation {
+                phase_steps,
                 on_axis: self.geometry.is_on_axis(),
                 pupil,
                 geometry: self.wave_geometry(),
@@ -61,14 +71,18 @@ impl ResidentPupil {
             ElementType::DoubleFloat,
             [shifts.len(), self.n, self.n],
         ));
+        let phase_steps = p.scratch(BufferDesc::new(ElementType::F32, [shifts.len()]));
         p.operations.push(ResidentOp::Wave(w::Request::Focus {
+            phase_steps: Some(phase_steps),
             pupil,
             geometry: self.wave_geometry(),
             shifts: p.view(z)?,
             output,
         }));
-        p.outputs = vec![output];
-        let r = b.submit_plan(p, ctx)?.wait()?;
+        p.outputs = vec![output, phase_steps];
+        let mut r = b.submit_plan(p, ctx)?.wait()?;
+        let steps = b.read_view(r.outputs[1].view())?;
+        let steps = steps.as_slice::<f32>()?;
         let value = shifts
             .iter()
             .enumerate()
@@ -77,10 +91,18 @@ impl ResidentPupil {
                 p.opd = r.outputs[0].view();
                 p.opd.offset = i * self.n * self.n;
                 p.opd.desc.shape = vec![self.n, self.n];
+                p.warnings
+                    .retain(|w| !matches!(w, WaveWarning::PupilUndersampled { .. }));
+                if steps[i] > 0.5 {
+                    p.warnings.push(WaveWarning::PupilUndersampled {
+                        max_step_waves: steps[i] as f64,
+                    });
+                }
                 p.input_hash = format!("{}:focus:{z}", self.input_hash);
                 p
             })
             .collect();
+        add_step_warning(&mut r.run_info.warnings, steps);
         Ok(WaveResult {
             value,
             run_info: r.run_info,
@@ -174,6 +196,7 @@ pub fn focus_otf(
     }
     let f = frequency_buffer(b, frequencies, ctx)?;
     let mut stats = PlanStats::default();
+    let mut warnings = Vec::new();
     if method == crate::analysis::MtfAnalysisMethod::Direct {
         let repeated = b.fill_buffer(
             BufferDesc::new(ElementType::F32, [focus.len() * frequencies.len(), 2]),
@@ -193,6 +216,7 @@ pub fn focus_otf(
             let mut inputs = vec![];
             let mut weights = vec![];
             let mut offsets = vec![];
+            let mut summaries = vec![];
             if let Some(h) = &previous {
                 let id = p.import(h.view());
                 inputs.push(p.view(id)?);
@@ -206,10 +230,13 @@ pub fn focus_otf(
                     .collect();
                 let z = shift_buffer(b, &z, ctx)?;
                 let z = p.import(z.view());
-                let output = pupil.append_focus_correlation(
+                let phase_steps = p.scratch(BufferDesc::new(ElementType::F32, [focus.len()]));
+                summaries.push(phase_steps);
+                let output = pupil.append_focus_output(
                     &mut p,
                     p_view(fi, f.desc()),
                     p_view(z, &BufferDesc::new(ElementType::DoubleFloat, [focus.len()])),
+                    Some(phase_steps),
                 )?;
                 let mut view = p.view(output)?;
                 view.desc.shape = vec![focus.len() * frequencies.len()];
@@ -230,7 +257,7 @@ pub fn focus_otf(
                     offsets,
                     output,
                 })));
-            p.outputs = vec![output];
+            p.outputs = std::iter::once(output).chain(summaries).collect();
             let r = b
                 .submit_plan(
                     p,
@@ -241,6 +268,9 @@ pub fn focus_otf(
                 )?
                 .wait()?;
             accumulate(&mut stats, &r.stats);
+            for h in &r.outputs[1..] {
+                add_step_warning(&mut warnings, b.read_view(h.view())?.as_slice::<f32>()?);
+            }
             previous = Some(r.outputs[0].clone());
             info = Some(r.run_info);
         }
@@ -250,9 +280,11 @@ pub fn focus_otf(
             .iter()
             .map(|v| v.map(f64::from))
             .collect();
+        let mut info = info.unwrap();
+        info.warnings.extend(warnings);
         return Ok(WaveResult {
             value,
-            run_info: info.unwrap(),
+            run_info: info,
             stats,
         });
     }
@@ -278,6 +310,7 @@ pub fn focus_otf(
                 .collect();
             let r = pupil.focus_batch(b, snapshot.clone(), &z, &sub.subrange(0., 0.1))?;
             accumulate(&mut stats, &r.stats);
+            warnings.extend(r.run_info.warnings);
             shifted.push(r.value);
         }
         let mut p = ResidentPlan::new(snapshot.clone());
@@ -306,6 +339,7 @@ pub fn focus_otf(
             .iter()
             .map(|(p, _)| p.lambda_f() / huygens.padding)
             .fold(f64::INFINITY, f64::min);
+        let mut energy_outputs = vec![];
         for plane in 0..planes.len() {
             let mut inputs = vec![];
             for (wi, (original, _)) in pupils.iter().enumerate() {
@@ -340,6 +374,16 @@ pub fn focus_otf(
                             plane: image_plane,
                         },
                     )?;
+                    warnings.extend(psf.warnings.iter().map(ToString::to_string));
+                    let metric = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [5]));
+                    p.operations
+                        .push(ResidentOp::Wave(w::Request::ImageIntegral(
+                            ImageIntegral::Metrics {
+                                input: p.view(psf.image)?,
+                                output: metric,
+                            },
+                        )));
+                    energy_outputs.push(metric);
                     p.operations
                         .push(ResidentOp::Wave(w::Request::ImageIntegral(
                             ImageIntegral::Query {
@@ -389,9 +433,43 @@ pub fn focus_otf(
             }
             p.outputs.push(combined.unwrap());
         }
+        p.outputs.extend(energy_outputs);
         let r = b.submit_plan(p, &sub.subrange(0.1, 1.))?.wait()?;
         accumulate(&mut stats, &r.stats);
-        for output in &r.outputs {
+        for summary in r.outputs[planes.len()..].chunks(pupils.len()) {
+            let mut energy = 0.;
+            for (h, (_, weight)) in summary.iter().zip(pupils) {
+                energy += b.read_view(h.view())?.as_slice::<Df32>()?[0].to_f64()
+                    * spacing.powi(2)
+                    * weight
+                    / sum;
+            }
+            if energy < crate::analysis::MIN_ENERGY_IN_GRID {
+                warnings.push(
+                    WaveWarning::PsfTruncated {
+                        energy_in_grid: energy,
+                    }
+                    .to_string(),
+                );
+            }
+        }
+        if method == crate::analysis::MtfAnalysisMethod::Huygens {
+            let nyquist = 0.5 / spacing;
+            if let Some(f) = frequencies
+                .iter()
+                .map(|f| f[0].hypot(f[1]))
+                .find(|f| *f > nyquist * (1. + 1e-12))
+            {
+                warnings.push(
+                    WaveWarning::FrequencyBeyondSampling {
+                        frequency: f,
+                        limit: nyquist,
+                    }
+                    .to_string(),
+                );
+            }
+        }
+        for output in &r.outputs[..planes.len()] {
             value.extend(
                 b.read_view(output.view())?
                     .as_slice::<[f32; 2]>()?
@@ -401,9 +479,25 @@ pub fn focus_otf(
         }
         info = Some(r.run_info);
     }
+    let mut info = info.ok_or_else(|| MkError::InvalidParam("no focus planes".into()))?;
+    warnings.sort();
+    warnings.dedup();
+    info.warnings.extend(warnings);
     Ok(WaveResult {
         value,
-        run_info: info.ok_or_else(|| MkError::InvalidParam("no focus planes".into()))?,
+        run_info: info,
         stats,
     })
+}
+
+pub(super) fn add_step_warning(warnings: &mut Vec<String>, steps: &[f32]) {
+    let step = steps.iter().copied().fold(0f32, f32::max);
+    if step > 0.5 {
+        warnings.push(
+            WaveWarning::PupilUndersampled {
+                max_step_waves: step as f64,
+            }
+            .to_string(),
+        );
+    }
 }

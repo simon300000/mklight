@@ -192,20 +192,35 @@ pub fn wavefront_map_job(
     )?;
     let total = fields.iter().map(|f| f.pupils.len()).sum::<usize>().max(1);
     let mut maps = vec![];
+    let mut first_error = None;
     for f in fields {
         for (wl, _, p) in f.pupils {
             let sub = ctx.subrange(
                 0.7 + 0.3 * maps.len() as f64 / total as f64,
                 0.7 + 0.3 * (maps.len() + 1) as f64 / total as f64,
             );
-            let fit = fit_resident_zernike(
+            let fit = match fit_resident_zernike(
                 b,
                 t.system().snapshot.clone(),
                 p.nodes.view(),
                 &basis,
                 &sub.subrange(0., 0.5),
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(e @ MkError::Numerical(_)) => {
+                    warnings.push(format!("field {}, wavelength {wl} skipped: {e}", f.index));
+                    first_error.get_or_insert(e);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             accumulate(&mut stats, &fit.stats);
+            warnings.extend(
+                fit.run_info
+                    .warnings
+                    .iter()
+                    .map(|w| format!("field {}, wavelength {wl}: {w}", f.index)),
+            );
             let st = p
                 .pupil
                 .statistics(b, t.system().snapshot.clone(), &sub.subrange(0.5, 0.9))?;
@@ -260,6 +275,11 @@ pub fn wavefront_map_job(
         }
     }
     warnings.push("Zernike condition is the equilibrated R infinity-norm estimate".into());
+    if maps.is_empty() {
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+    }
     ctx.report(1., "wavefront map");
     Ok(a::WavefrontResult {
         maps,
@@ -381,15 +401,6 @@ pub fn psf_analysis_job(
             if group.len() == 1 {
                 psf.wavelength_um = Some(group[0].0.wavelength_um);
             }
-            let energy = psf.energy_in_grid() / psf.total_energy;
-            if energy < a::MIN_ENERGY_IN_GRID {
-                crate::warnings::push_unique(
-                    &mut psf.warnings,
-                    WaveWarning::PsfTruncated {
-                        energy_in_grid: energy,
-                    },
-                );
-            }
             warnings.extend(psf.warnings.iter().map(ToString::to_string));
             let (_, i, j) = psf.peak();
             psfs.push(a::FieldPsf {
@@ -431,6 +442,10 @@ fn curve(
         .iter()
         .flat_map(|v| freqs.iter().map(move |f| [v[0] * f, v[1] * f]))
         .collect();
+    let mut curve_warnings: Vec<_> = pupils
+        .iter()
+        .flat_map(|(p, _)| p.warnings.clone())
+        .collect();
     let optical = if method == a::MtfAnalysisMethod::Huygens {
         let dx = pupils
             .iter()
@@ -450,6 +465,14 @@ fn curve(
             &ctx.subrange(0., 0.7),
         )?;
         accumulate(stats, &r.stats);
+        curve_warnings = r.value.warnings.clone();
+        let nyquist = 0.5 / dx;
+        if let Some(&f) = freqs.iter().find(|&&f| f > nyquist * (1. + 1e-12)) {
+            curve_warnings.push(WaveWarning::FrequencyBeyondSampling {
+                frequency: f,
+                limit: nyquist,
+            });
+        }
         r.value.otf(
             b,
             t.system().snapshot.clone(),
@@ -496,10 +519,7 @@ fn curve(
             .iter()
             .map(|(p, _)| 1. / p.lambda_f())
             .fold(0., f64::max),
-        warnings: pupils
-            .iter()
-            .flat_map(|(p, _)| p.warnings.clone())
-            .collect(),
+        warnings: curve_warnings,
     })
 }
 /// Complete native direct/FFT/Huygens MTF with the unchanged automatic frequency rule.
@@ -1243,6 +1263,7 @@ pub fn through_focus_mtf_analysis_job(
             &sub.subrange(0.2, 0.98),
         )?;
         accumulate(&mut stats, &r.stats);
+        warnings.extend(r.run_info.warnings);
         let detector = s.detector.map(|d| d.curve(&frequencies, &o));
         let nf = frequencies.len();
         let curves = frequencies

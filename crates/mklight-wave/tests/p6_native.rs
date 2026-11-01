@@ -58,7 +58,9 @@ fn all_default_native_analyses() {
     let mut maxima = [0f64; 8];
     let mut cases = 0;
     for (name, model) in samples::all() {
-        if std::env::var("P6_SAMPLE").is_ok_and(|v|v!=name){continue;}
+        if std::env::var("P6_SAMPLE").is_ok_and(|v| v != name) {
+            continue;
+        }
         let t = mklight_analysis::tracer_for(model).unwrap();
         let s = cpu::WavefrontSettings::default();
         let a = cpu::wavefront_map_job(&t, &s, &ctx).unwrap();
@@ -217,4 +219,77 @@ fn diffraction_reference_preserves_lateral_colour() {
             a.field
         );
     }
+}
+
+#[test]
+fn native_huygens_and_explicit_focus_diagnostics() {
+    let b = backend();
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    let ctx = JobContext::new();
+    let mut pupil = mklight_wave::PupilSettings::default();
+    pupil.grid = 16;
+    pupil.rays = 17;
+    let fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
+    let s = cpu::MtfSettings {
+        fields: fields.clone(),
+        pupil: pupil.clone(),
+        method: cpu::MtfAnalysisMethod::Huygens,
+        huygens: cpu::HuygensGrid {
+            grid_size: 32,
+            padding: 2.,
+        },
+        frequency_samples: 9,
+        max_frequency: Some(500.),
+        ..Default::default()
+    };
+    let a = cpu::mtf_analysis_job(&t, &s, &ctx).unwrap();
+    let z = gpu::analysis::mtf_analysis_job(&b, &t, &s, &ctx).unwrap();
+    mtf(&a, &z);
+    assert!(z.run_info.warnings.iter().any(|w| w.contains("PSF")));
+    assert!(z.run_info.warnings.iter().any(|w| w.contains("frequency")));
+    for method in [cpu::MtfAnalysisMethod::Fft, cpu::MtfAnalysisMethod::Huygens] {
+        let s = cpu::ThroughFocusSettings {
+            fields: fields.clone(),
+            pupil: pupil.clone(),
+            method,
+            huygens: cpu::HuygensGrid {
+                grid_size: 32,
+                padding: 2.,
+            },
+            frequencies: vec![0., 40.],
+            focus_samples: 5,
+            focus_range_mm: Some(2.),
+            ..Default::default()
+        };
+        let a = cpu::through_focus_mtf_analysis_job(&t, &s, &ctx).unwrap();
+        let z = gpu::analysis::through_focus_mtf_analysis_job(&b, &t, &s, &ctx).unwrap();
+        for (a, z) in a.fields.iter().zip(&z.fields) {
+            for (a, z) in a.curves.iter().zip(&z.curves) {
+                compare(&a.tangential, &z.tangential, 2e-3);
+                compare(&a.sagittal, &z.sagittal, 2e-3);
+            }
+        }
+        assert!(
+            z.run_info
+                .warnings
+                .iter()
+                .any(|w| w.contains("between pupil samples"))
+        );
+    }
+    let s = cpu::LineSpreadSettings {
+        fields,
+        pupil,
+        method: cpu::PsfMethod::Huygens,
+        grid_size: 32,
+        padding: 2.,
+        ..Default::default()
+    };
+    let a = cpu::line_spread_job(&t, &s, &ctx).unwrap();
+    let z = gpu::analysis::line_spread_job(&b, &t, &s, &ctx).unwrap();
+    for (a, z) in a.fields.iter().zip(&z.fields) {
+        let peak = a.x.iter().chain(&a.y).copied().fold(0f64, f64::max);
+        compare(&a.x, &z.x, 2e-3 * peak);
+        compare(&a.y, &z.y, 2e-3 * peak);
+    }
+    assert!(z.run_info.warnings.iter().any(|w| w.contains("PSF")));
 }

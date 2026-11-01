@@ -237,9 +237,23 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                         let qb = e[0] * dx + e[1] * dy;
                         let qc = e[0] * e[0] + e[1] * e[1] - one;
                         let disc = qb * qb - qa * qc;
-                        let root=if disc.hi<0.{Df32::ZERO}else{disc.sqrt()};
-                        let t=if qb.hi<=0.{(-qb+root)/qa}else{-qc/(qb+root)};
-                        a[5]=if t.to_f64()<0.{Df32::ZERO}else if t.to_f64()>1.{one}else{t};
+                        let root = if disc.hi < 0. {
+                            Df32::ZERO
+                        } else {
+                            disc.sqrt()
+                        };
+                        let t = if qb.hi <= 0. {
+                            (-qb + root) / qa
+                        } else {
+                            -qc / (qb + root)
+                        };
+                        a[5] = if t.to_f64() < 0. {
+                            Df32::ZERO
+                        } else if t.to_f64() > 1. {
+                            one
+                        } else {
+                            t
+                        };
                     }
                 }
                 for j in 0..width {

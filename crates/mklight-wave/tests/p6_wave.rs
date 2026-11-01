@@ -102,6 +102,7 @@ fn focus_and_lsf(b: &dyn ComputeBackend) {
         [shifts.len(), 9, 9],
     ));
     plan.operations.push(ResidentOp::Wave(w::Request::Focus {
+        phase_steps: None,
         pupil: v,
         geometry: rp.wave_geometry(),
         shifts: plan.view(z).unwrap(),
@@ -113,7 +114,7 @@ fn focus_and_lsf(b: &dyn ComputeBackend) {
     let data = data.as_slice::<Df32>().unwrap();
     for (j, dz) in shifts.into_iter().enumerate() {
         for k in 0..81 {
-            let reference = pupil.focus_shift_opd(dz, pupil.coord(k % 9), pupil.coord(k / 9));
+            let reference = pupil.with_focus_shift(dz).opd_waves()[k];
             assert!(
                 (data[j * 81 + k].to_f64() - reference).abs() < 1e-7,
                 "far-side focus {dz}/{k}"
@@ -992,9 +993,9 @@ fn full_image_simulation() {
             .unwrap()
             .value,
     );
-    assert_eq!(old.psf_size, new.psf_size);
-    assert!((old.spacing_mm - new.spacing_mm).abs() < 1e-9);
-    for (a, z) in old.mapping.iter().zip(&new.mapping) {
+    assert_eq!(old.psf_size, new.psf_size());
+    assert!((old.spacing_mm - new.spacing_mm()).abs() < 1e-9);
+    for (a, z) in old.mapping.iter().zip(new.mapping()) {
         assert_eq!(a.pupil_sampling, z.pupil_sampling);
         assert!((a.relative_illumination - z.relative_illumination).abs() < 1e-3);
     }

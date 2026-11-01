@@ -104,7 +104,7 @@ pub fn fit_resident_zernike(
             rank_condition,
         })));
     p.outputs = vec![solution, rank_condition, factors];
-    let r = backend.submit_plan(p, ctx)?.wait()?;
+    let mut r = backend.submit_plan(p, ctx)?.wait()?;
     let guard = backend.read_view(r.outputs[1].view())?;
     let info = guard.as_slice::<Df32>()?;
     if info[3].hi != 0. {
@@ -124,6 +124,16 @@ pub fn fit_resident_zernike(
         .iter()
         .map(|v| v.to_f64())
         .collect();
+    let limit = crate::ZernikeFitSettings::default().warn_condition;
+    if info[1].to_f64() > limit {
+        r.run_info.warnings.push(
+            WaveWarning::IllConditioned {
+                condition: info[1].to_f64(),
+                limit,
+            }
+            .to_string(),
+        );
+    }
     Ok(WaveResult {
         value: ZernikeSolution {
             set: ZernikeSet::new(basis.ordering(), coefficients)?,

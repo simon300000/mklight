@@ -2,7 +2,12 @@
 use super::*;
 #[derive(Clone, Debug)]
 pub enum FftMtf {
-    Domain { coverage: PlanView, sin_max: Df32, normal: [Df32;3], status: BufferId },
+    Domain {
+        coverage: PlanView,
+        sin_max: Df32,
+        normal: [Df32; 3],
+        status: BufferId,
+    },
     Sensor {
         pupil: Pupil,
         sin_max: Df32,
@@ -27,7 +32,22 @@ pub enum FftMtf {
 pub fn validate(r: &FftMtf, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::*;
     match r {
-        FftMtf::Domain{coverage,sin_max,normal,status}=>{square(coverage,F32)?;if !sin_max.is_finite()||sin_max.hi<=0.||sin_max.hi>=1.||normal.iter().any(|v|!v.is_finite()){return Err(bad("sensor domain"));}out(p,*status,U32,&[1])}
+        FftMtf::Domain {
+            coverage,
+            sin_max,
+            normal,
+            status,
+        } => {
+            square(coverage, F32)?;
+            if !sin_max.is_finite()
+                || sin_max.hi <= 0.
+                || sin_max.hi >= 1.
+                || normal.iter().any(|v| !v.is_finite())
+            {
+                return Err(bad("sensor domain"));
+            }
+            out(p, *status, U32, &[1])
+        }
         FftMtf::Sensor {
             pupil,
             sin_max,
@@ -86,7 +106,9 @@ pub fn validate(r: &FftMtf, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn access(r: &FftMtf) -> Access {
     let (reads, writes) = match r {
-        FftMtf::Domain{coverage,status,..}=>(vec![coverage.clone()],vec![*status]),
+        FftMtf::Domain {
+            coverage, status, ..
+        } => (vec![coverage.clone()], vec![*status]),
         FftMtf::Sensor {
             pupil,
             field,
@@ -138,7 +160,18 @@ pub fn params(r: &FftMtf) -> Params {
     use bytemuck::Zeroable;
     let mut p = Params::zeroed();
     match r {
-        FftMtf::Domain{coverage,sin_max,normal,..}=>{p.n=coverage.desc.shape[0]as u32;p.count=p.n*p.n;p.kind=3;p.sine=*sin_max;p.frame[0]=*normal;}
+        FftMtf::Domain {
+            coverage,
+            sin_max,
+            normal,
+            ..
+        } => {
+            p.n = coverage.desc.shape[0] as u32;
+            p.count = p.n * p.n;
+            p.kind = 3;
+            p.sine = *sin_max;
+            p.frame[0] = *normal;
+        }
         FftMtf::Sensor {
             pupil,
             sin_max,
@@ -299,7 +332,40 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
     let p = params(r);
     let n = p.n as usize;
     match r {
-        FftMtf::Domain{coverage,sin_max,normal,status}=>{let c=vals::<f32>(x,coverage);let mut count=0u32;for(k,&c)in c.iter().enumerate(){if k%4096==0{ctl.check()?;}if c<=0.{continue;}let coord=|i|Df32::from_f32((2*i+1)as f32)/Df32::from_f32(n as f32)-Df32::from_f32(1.);let a=*sin_max*coord(k%n);let b=*sin_max*coord(k/n);let gamma=(Df32::from_f32(1.)-a*a-b*b).sqrt();let z=normal[0]*a+normal[1]*b-normal[2]*gamma;if !z.is_finite()||z.hi>=0.{count+=1;}}x.words_mut(*status)[0]=count;if count>0{return Err(mklight_core::MkError::InvalidParam(format!("pupil crosses image-surface horizon at {count} covered cells")));}}
+        FftMtf::Domain {
+            coverage,
+            sin_max,
+            normal,
+            status,
+        } => {
+            let c = vals::<f32>(x, coverage);
+            let mut count = 0u32;
+            for (k, &c) in c.iter().enumerate() {
+                if k % 4096 == 0 {
+                    ctl.check()?;
+                }
+                if c <= 0. {
+                    continue;
+                }
+                let coord = |i| {
+                    Df32::from_f32((2 * i + 1) as f32) / Df32::from_f32(n as f32)
+                        - Df32::from_f32(1.)
+                };
+                let a = *sin_max * coord(k % n);
+                let b = *sin_max * coord(k / n);
+                let gamma = (Df32::from_f32(1.) - a * a - b * b).sqrt();
+                let z = normal[0] * a + normal[1] * b - normal[2] * gamma;
+                if !z.is_finite() || z.hi >= 0. {
+                    count += 1;
+                }
+            }
+            x.words_mut(*status)[0] = count;
+            if count > 0 {
+                return Err(mklight_core::MkError::InvalidParam(format!(
+                    "pupil crosses image-surface horizon at {count} covered cells"
+                )));
+            }
+        }
 
         FftMtf::Sensor {
             pupil,

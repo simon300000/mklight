@@ -665,9 +665,55 @@ pub fn tile_source(p: &Params, k: usize) -> Option<usize> {
     (sx >= 0 && sy >= 0 && sx < p.width as i64 && sy < p.height as i64)
         .then_some((sy * p.width as i64 + sx) as usize)
 }
+/// Fixed-series logarithm with power-of-two reduction. It avoids library-log
+/// branch differences in rejection decisions; all inputs here are positive normal.
+fn logarithm(x: Df32) -> Df32 {
+    let exponent = ((x.hi.to_bits() >> 23) & 255) as i32 - 127;
+    let scale = f32::from_bits(((127 - exponent) as u32) << 23);
+    let m = x.mul_f32(scale);
+    let y = (m - d(1.)) / (m + d(1.));
+    let yy = y * y;
+    let mut term = y;
+    let mut sum = y;
+    for k in 1..=16 {
+        term = term * yy;
+        sum = sum + term / d((2 * k + 1) as f32);
+    }
+    sum.mul_f32(2.)
+        + Df32::new(std::f32::consts::LN_2, -1.904654323148236e-9).mul_f32(exponent as f32)
+}
+/// Cancellation-free Stirling log probability around the mode.
+fn log_probability(mean: f32, k: f32) -> Df32 {
+    if k < 10. {
+        let mut factorial = Df32::ZERO;
+        for i in 2..=k as usize {
+            factorial = factorial + logarithm(d(i as f32));
+        }
+        return -d(mean) + d(k) * logarithm(d(mean)) - factorial;
+    }
+    let t = (d(mean) - d(k)) / d(k);
+    let deviance = if t.to_f64().abs() < 0.125 {
+        let mut term = t * t;
+        let mut sum = -term / d(2.);
+        for n in 3..=16 {
+            term = term * t;
+            sum = if n % 2 == 0 {
+                sum - term / d(n as f32)
+            } else {
+                sum + term / d(n as f32)
+            };
+        }
+        d(k) * sum
+    } else {
+        d(k) * (logarithm(d(1.) + t) - t)
+    };
+    let inv = d(1.) / d(k);
+    deviance - logarithm(d(k)).mul_f32(0.5) - Df32::from_f64(0.9189385332046727) - inv / d(12.)
+        + inv * inv * inv / d(360.)
+}
 pub fn poisson(mean: f32, next: &mut impl FnMut() -> f32) -> f32 {
     if mean < 30. {
-        let limit = (-mean).exp();
+        let limit = crate::fmath::exp(-mean);
         let mut product = 1.;
         let mut n = 0.;
         loop {
@@ -693,18 +739,16 @@ pub fn poisson(mean: f32, next: &mut impl FnMut() -> f32) -> f32 {
         if k < 0. || (us < 0.013 && v > us) {
             continue;
         }
-        let log = if k < 10. {
-            (2..=k as usize).map(|i| (i as f32).ln()).sum()
-        } else {
-            (k + 0.5) * k.ln() - k + 0.9189385332046727 + 1. / (12. * k) - 1. / (360. * k * k * k)
-        };
-        if (v * inv / (a / (us * us) + b)).ln() <= -mean + k * mean.ln() - log {
+        let lhs = logarithm(d(v * inv / (a / (us * us) + b)));
+        if (lhs - log_probability(mean, k)).hi <= 0. {
             return k;
         }
     }
 }
 pub fn noise(p: &Params, k: usize, value: f32) -> f32 {
-    if !value.is_finite() || (p.well > 0. && !(value.max(0.) * p.well).is_finite()) {
+    if !value.is_finite()
+        || (p.well > 0. && (!(value.max(0.) * p.well).is_finite() || value.max(0.) * p.well > 1e12))
+    {
         return f32::NAN;
     }
     let mut rng =
@@ -900,6 +944,9 @@ pub fn cpu(
                     ctl.check()?;
                 }
                 *v = noise(&p, k, *a);
+                if !v.is_finite() {
+                    return Err(mklight_core::MkError::Unsupported("image noise exceeds its qualified finite f32 domain (Poisson mean <= 1e12)".into()));
+                }
             }
             x.words_mut(*output)
                 .copy_from_slice(bytemuck::cast_slice(&a));

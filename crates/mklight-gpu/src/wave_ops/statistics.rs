@@ -116,9 +116,10 @@ pub fn cpu(
                 } else {
                     Df32::ZERO
                 };
-                rows[k] = [u, v, w[k], wt.sqrt()];
-                let z = spec::cis(w[k]);
-                let vals = [wt, wt * w[k], wt.mul_f32(z[0]), wt.mul_f32(z[1])];
+                let phase = if c[k] > 0. { w[k] } else { Df32::ZERO };
+                rows[k] = [u, v, phase, wt.sqrt()];
+                let z = spec::cis(phase);
+                let vals = [wt, wt * phase, wt.mul_f32(z[0]), wt.mul_f32(z[1])];
                 for j in 0..4 {
                     partial[k / 256][j] = partial[k / 256][j] + vals[j];
                 }
