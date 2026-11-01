@@ -310,7 +310,7 @@ fn consolidated_engine_benchmark() {
         engine.register_backend(std::sync::Arc::new(provider));
         println!(
             "P11_ENGINE_ENV {}",
-            json!({"device":device.backend.info(),"precision":device.backend.precision(),"setup_seconds":opened.elapsed().as_secs_f64(),"initial_copied_bytes":device.backend.resident_cache_stats().copied_bytes})
+            json!({"device":device.backend.info(),"precision":device.backend.precision(),"source_build":mklight_engine::analysis::gpu::cost_build(),"rayon_threads":rayon::current_num_threads(),"setup_seconds":opened.elapsed().as_secs_f64(),"initial_copied_bytes":device.backend.resident_cache_stats().copied_bytes})
         );
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for info in engine.analyses() {
@@ -412,7 +412,6 @@ fn host_batched_candidate_geometry() {
 #[test]
 #[ignore = "quiet-host forced resident QR comparison; bypasses the LM cost threshold"]
 fn qr_crossover_probe() {
-    use mklight_gpu::{ComputeBackend, Df32};
     use mklight_optim::{
         gpu::GpuContext,
         linalg::{Matrix, Qr},
@@ -443,7 +442,6 @@ fn qr_crossover_probe() {
         let rhs: Vec<_> = (0..m)
             .map(|i| (0..n).map(|j| a[i * n + j] * wanted[j]).sum::<f64>())
             .collect();
-        let residual: Vec<_> = rhs.iter().map(|v| -v).collect();
         for run in 0..12 {
             let cpu = || {
                 let t = Instant::now();
@@ -453,28 +451,27 @@ fn qr_crossover_probe() {
                 (t.elapsed().as_secs_f64(), x)
             };
             let metal = || {
+                let before = g.stats();
                 let t = Instant::now();
-                let r = g
-                    .least_squares(
-                        &a,
-                        &residual,
-                        &vec![1.; m],
-                        &vec![1.; n],
-                        1,
-                        m,
-                        n,
-                        0.,
+                let (_q, factor, qtr) = g
+                    .reduce_qr(
+                        &Matrix::from_row_major(m, n, a.clone()),
+                        &rhs,
                         &JobContext::new(),
                     )
-                    .unwrap();
-                let v = backend.read_view(r.outputs[0].view()).unwrap();
-                let x: Vec<_> = v
-                    .as_slice::<Df32>()
                     .unwrap()
-                    .iter()
-                    .map(|v| v.to_f64())
-                    .collect();
-                (t.elapsed().as_secs_f64(), x, r.stats)
+                    .unwrap();
+                let x = Qr::new(factor).solve_ls(&qtr).unwrap();
+                let wall = t.elapsed().as_secs_f64();
+                let after = g.stats();
+                let stats = json!({"command_buffers":after.command_buffers-before.command_buffers,
+                    "device_seconds":after.device_seconds-before.device_seconds,
+                    "copied_bytes":after.copied_bytes-before.copied_bytes,
+                    "allocations":after.allocations-before.allocations,
+                    "reused_allocations":after.reused_allocations-before.reused_allocations,
+                    "peak_bytes":after.peak_bytes,"fallback_count":after.fallback_count-before.fallback_count,
+                    "stages_cumulative":after.stages});
+                (wall, x, stats)
             };
             let ((cpu_seconds, c), (metal_seconds, x, stats)) = if run % 2 == 0 {
                 let c = cpu();
@@ -491,7 +488,7 @@ fn qr_crossover_probe() {
             assert!(error < 1e-8, "{m}x{n}: {error}");
             println!(
                 "P11_QR {}",
-                json!({"rows":m,"columns":n,"work":m*n*n,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"stats":stats,"maximum_solution_error":error,"forced_resident":true,"damping":0,"augmented_zero_rows":n})
+                json!({"rows":m,"columns":n,"work":m*n*n,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"stats":stats,"maximum_solution_error":error,"forced_resident":true,"operation":"trust_region_qr_compression"})
             );
         }
     }

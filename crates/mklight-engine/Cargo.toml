@@ -25,6 +25,9 @@ thiserror.workspace = true
 blake3.workspace = true
 rayon.workspace = true
 
+[build-dependencies]
+blake3.workspace = true
+
 [dev-dependencies]
 approx.workspace = true
 # The optimize job on the Metal device (skipped without one).

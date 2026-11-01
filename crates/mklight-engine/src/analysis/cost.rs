@@ -5,6 +5,8 @@ use crate::gpu::GpuDevice;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
+pub(crate) const BUILD: &str = env!("MKLIGHT_COST_BUILD");
+
 pub(crate) fn key(analysis: &str, snapshot: &str, library: &str, settings: &Value) -> String {
     blake3::hash(
         serde_json::to_string(
@@ -20,7 +22,7 @@ fn evidence() -> &'static Value {
     static DATA: OnceLock<Value> = OnceLock::new();
     DATA.get_or_init(|| serde_json::from_str(include_str!("cost-evidence.json")).unwrap())
 }
-fn host_build() -> &'static str {
+pub(crate) fn host_build() -> &'static str {
     static BUILD: OnceLock<String> = OnceLock::new();
     BUILD.get_or_init(|| {
         #[cfg(target_os = "macos")]
@@ -51,6 +53,8 @@ pub(crate) fn decision(
         settings,
     );
     let matching = !cfg!(debug_assertions)
+        && table["source_build"].as_str() == Some(BUILD)
+        && table["rayon_threads"].as_u64() == Some(rayon::current_num_threads() as u64)
         && table["os_build"].as_str() == Some(host_build())
         && table["device"].as_str() == Some(device.backend.info().name.as_str())
         && table["kernel_build"].as_str() == Some(device.backend.precision().kernel_build.as_str());
@@ -65,10 +69,10 @@ pub(crate) fn decision(
         .flatten();
     match row {
         Some(row) => {
-            json!({"version":table["version"],"evidence":table["evidence"],"key":key,"decision":row["decision"],"measurement":row})
+            json!({"version":table["version"],"source_build":BUILD,"evidence":table["evidence"],"key":key,"decision":row["decision"],"measurement":row})
         }
         None => {
-            json!({"version":table["version"],"key":key,"decision":"qualified_metal","reason":"unknown full-chain cost"})
+            json!({"version":table["version"],"source_build":BUILD,"key":key,"decision":"qualified_metal","reason":"unknown full-chain cost"})
         }
     }
 }

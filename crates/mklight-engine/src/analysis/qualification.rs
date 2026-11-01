@@ -155,6 +155,7 @@ struct Comparison {
     image_l1_relative: f64,
     energy_relative: f64,
     quantile_interval_mm: Option<f64>,
+    energy_flux: Option<f64>,
     reason: Option<String>,
 }
 impl Comparison {
@@ -176,7 +177,12 @@ impl Comparison {
         self.maximum = self.maximum.max(error);
         // GPU §9.4 publication budgets, with the sampled one-third margin.
         // Undefined masks and discrete values are compared separately.
-        let mut budget = if path.contains("direction") {
+        let mut budget = if let Some(flux) = self
+            .energy_flux
+            .filter(|_| path.starts_with("result.energy."))
+        {
+            1e-5 * flux + 1e-10
+        } else if path.contains("direction") {
             2e-6
         } else if path.contains("opd") || path.contains("wavefront") || path.contains("zernike") {
             5e-3
@@ -354,6 +360,7 @@ fn compare(
                 .unwrap_or_default()
         });
     let mut c = Comparison {
+        energy_flux: cpu.json["energy"]["emitted"].as_f64(),
         quantile_interval_mm: radius
             .windows(2)
             .map(|v| (v[1] - v[0]).abs())

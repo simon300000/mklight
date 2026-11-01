@@ -102,3 +102,8 @@ pub fn cost_key(
 ) -> String {
     super::cost::key(analysis, snapshot, library, settings)
 }
+
+/// Host source/compiler/profile identity for full-chain cost calibration.
+pub fn cost_build() -> &'static str {
+    super::cost::BUILD
+}

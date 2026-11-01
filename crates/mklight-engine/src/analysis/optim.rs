@@ -20,8 +20,8 @@
 //! * **Never worse than the start**: the result is the better of the start
 //!   and the optimiser's answer on the reference (feasibility first), with
 //!   a warning when the optimiser found nothing better.
-//! * **Backend `auto`** uses the engine's GPU device only past the measured
-//!   GPU/CPU crossover for the run's rays per candidate and batch size.
+//! * **Backend `auto`** prefers the qualified resident device; a matched
+//!   complete-chain cost record can choose the CPU reference.
 //! * The result carries the final system as model JSON (`"system"`), so a
 //!   front end can apply it as a new (undoable) snapshot.
 
@@ -502,10 +502,14 @@ impl Evaluation {
                 let (_, q) = qualify(&device, &cpu.trace, snapshot, input, ctx)?;
                 qualification = Some(q.clone());
                 if q.passed {
-                    let g = ResidentEvaluator::new(
-                        GpuContext::new(device.backend.clone(), snapshot.clone()),
-                        cpu.clone(),
-                    );
+                    let mut context = GpuContext::new(device.backend.clone(), snapshot.clone());
+                    if choice == BackendChoice::Auto
+                        && crate::backend::Backend::is_auto_request(&input.requested_backend)
+                    {
+                        context = context
+                            .with_auto_cost_build(super::cost::BUILD, super::cost::host_build());
+                    }
+                    let g = ResidentEvaluator::new(context, cpu.clone());
                     Some((g, device))
                 } else {
                     fallback_reason = q.reason.clone();
@@ -513,13 +517,8 @@ impl Evaluation {
                 }
             }
             Ok(None) => {
-                if super::gpu::device(input).is_some() {
-                    fallback_reason = Some(if choice == BackendChoice::Cpu {
-                        "merit evaluation requested the CPU reference".into()
-                    } else {
-                        "auto: merit workload below the GPU crossover; using the CPU reference"
-                            .into()
-                    });
+                if super::gpu::device(input).is_some() && choice == BackendChoice::Cpu {
+                    fallback_reason = Some("merit evaluation requested the CPU reference".into());
                 }
                 None
             }
@@ -1376,7 +1375,7 @@ impl Analysis for Optimize {
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation",
-                    "description": "auto: the engine's GPU device when the run is past the measured GPU/CPU crossover (rays per candidate and batch size, see backend.workload), else the CPU reference."},
+                    "description": "auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device."},
                 "gpu_batch": {"type": "integer", "minimum": 1, "default": 512,
                     "title": "GPU sub-batch", "description": "Candidates per GPU dispatch."},
                 "feasibility_tolerance": {"type": "number", "minimum": 0, "default": 1e-6,

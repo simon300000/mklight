@@ -29,6 +29,7 @@ pub struct GpuContext {
     native_device_calls: Arc<AtomicU64>,
     samplings: Arc<Mutex<SamplingCache>>,
     native: Arc<Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
+    auto_cost_build: Option<(&'static str, &'static str)>,
 }
 impl GpuContext {
     pub fn new(backend: Arc<dyn ComputeBackend>, snapshot: Snapshot) -> Self {
@@ -42,7 +43,34 @@ impl GpuContext {
             native_device_calls: Arc::default(),
             samplings: Arc::default(),
             native: Arc::default(),
+            auto_cost_build: None,
         }
+    }
+    /// Enable recorded cost choices for an automatic engine request. Explicit
+    /// adapters leave this unset and always attempt qualified device algebra.
+    pub fn with_auto_cost_build(mut self, source: &'static str, os: &'static str) -> Self {
+        self.auto_cost_build = Some((source, os));
+        self
+    }
+    pub(crate) fn reference_qr_preferred(&self, rows: usize, columns: usize) -> bool {
+        let Some((source, os)) = self.auto_cost_build else {
+            return false;
+        };
+        static DATA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+        let data = DATA.get_or_init(|| {
+            serde_json::from_str(include_str!("gpu/qr-cost-evidence.json")).unwrap()
+        });
+        !cfg!(debug_assertions)
+            && data["source_build"].as_str() == Some(source)
+            && data["rayon_threads"].as_u64() == Some(rayon::current_num_threads() as u64)
+            && data["os_build"].as_str() == Some(os)
+            && data["device"].as_str() == Some(self.backend.info().name.as_str())
+            && data["kernel_build"].as_str() == Some(self.backend.precision().kernel_build.as_str())
+            && data["observations"].as_array().unwrap().iter().any(|row| {
+                row["rows"].as_u64() == Some(rows as u64)
+                    && row["columns"].as_u64() == Some(columns as u64)
+                    && row["decision"] == "cpu_reference"
+            })
     }
     pub(crate) fn native_device_calls(&self) -> u64 {
         self.native_device_calls.load(Ordering::Relaxed)
@@ -352,7 +380,7 @@ impl GpuContext {
 
 /// Thin Q retained on device after a tall QR. Only the n×n unpermuted factor
 /// crosses to the host for the serial trust-region secular equation.
-pub(crate) struct ResidentQr {
+pub struct ResidentQr {
     context: GpuContext,
     q: BufferView,
     rows: usize,
@@ -376,7 +404,9 @@ impl ResidentQr {
     }
 }
 impl GpuContext {
-    pub(crate) fn reduce_qr(
+    /// Compress a tall system to its original-column-order factor and Qᵀr.
+    /// Thin Q remains resident; a deficient factor returns `None` for f64 QR.
+    pub fn reduce_qr(
         &self,
         j: &Matrix,
         r: &[f64],
@@ -416,6 +446,10 @@ impl GpuContext {
         if rank[3] != 0. {
             self.observe(PlanStats {
                 fallback_count: 1,
+                stages: vec![StageStats {
+                    name: "rank-deficient tall QR reference".into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             });
             return Ok(None);

@@ -403,11 +403,6 @@ fn mul_free(j: &Matrix, free: &[usize], p_free: &[f64]) -> Vec<f64> {
     out
 }
 
-/// Tall-QR work `m·n²` from which the resident QR beats the host Householder
-/// QR in complete LM solves (measured, docs/OPTIMIZATION.md: 400×100 host
-/// 29 ms against 72 ms; 4000×32 parity; 4000×100 host 320 ms against 154 ms).
-const RESIDENT_QR_MIN_WORK: usize = 1 << 24;
-
 /// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
 /// `A₀ᵀA₀ = J_Fᵀ J_F`, `A₀ᵀ b₀ = J_Fᵀ r`.
 struct Sub {
@@ -464,8 +459,8 @@ impl Sub {
         gpu: Option<&crate::gpu::GpuContext>,
         ctx: &JobContext,
     ) -> MkResult<Sub> {
-        if let Some(gpu) =
-            gpu.filter(|_| j.rows >= j.cols && j.rows * j.cols * j.cols >= RESIDENT_QR_MIN_WORK)
+        let cpu_cost = gpu.is_some_and(|gpu| gpu.reference_qr_preferred(j.rows, j.cols));
+        if let Some(gpu) = gpu.filter(|_| j.rows >= j.cols && !cpu_cost)
             && let Some((resident_q, reduced, mut qtr)) = gpu.reduce_qr(&j, r, ctx)?
         {
             let g = reduced.tr_mul_vec(&qtr);
@@ -485,17 +480,27 @@ impl Sub {
                 gn,
             });
         }
-        if let Some(gpu) = gpu.filter(|_| j.rows < j.cols) {
+        let reference_stage = if j.rows < j.cols {
+            Some("underdetermined trust region reference")
+        } else if cpu_cost {
+            Some("recorded CPU QR compression cost exception")
+        } else {
+            None
+        };
+        let started = reference_stage.and_then(|_| gpu.map(|_| std::time::Instant::now()));
+        let sub = Self::new(j, r, d);
+        if let (Some(gpu), Some(name), Some(started)) = (gpu, reference_stage, started) {
             gpu.observe(mklight_gpu::resident::PlanStats {
                 fallback_count: 1,
                 stages: vec![mklight_gpu::resident::StageStats {
-                    name: "underdetermined trust region reference".into(),
+                    name: name.into(),
+                    wall_seconds: started.elapsed().as_secs_f64(),
                     ..Default::default()
                 }],
                 ..Default::default()
             });
         }
-        Ok(Self::new(j, r, d))
+        Ok(sub)
     }
     fn transform(&self, v: &[f64], ctx: &JobContext) -> MkResult<Vec<f64>> {
         let projected = self
