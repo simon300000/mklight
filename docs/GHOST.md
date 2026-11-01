@@ -441,7 +441,8 @@ probe and retain that reference bin decision, including f64 rounding at an
 exact edge. This matters for a perfect image on a bin boundary: passing the
 geometry budget alone does not qualify its map. `RunInfo.settings.gpu`
 records boundary probes, observed pixel migrations, coating/reference
-completion counts and bytes copied when patching a mixed resident batch.
+completion counts. Reference values are filled into sparse shared records;
+unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.
 
@@ -458,7 +459,7 @@ f64 does not relabel device arithmetic as f64.
 batches in double-float. Small path enumeration, constitutive metadata,
 normal-incidence axial throughput and final ranking remain host work.
 `real_ghost_focus` shares P1's fully aimed meridional launch across paths,
-then runs the same ghost sequence transport.
+then runs the same ghost sequence geometry without unused coating work.
 
 Explicit jobs currently accept uploaded immutable systems with up to 16
 wavelengths and default reference intersection settings. Other wavelength

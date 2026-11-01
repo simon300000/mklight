@@ -29,7 +29,6 @@ pub struct GhostTransport<'a> {
     map_stats: std::cell::RefCell<Vec<PlanStats>>,
     pub(crate) resident_probes: Vec<BufferHandle>,
     resident_keys: Vec<BufferHandle>,
-    reference_copy_bytes: usize,
     pub distinct_probes: usize,
     pub fallback_probes: usize,
     pub(crate) boundary_probes: usize,
@@ -232,7 +231,6 @@ impl<'a> GhostTransport<'a> {
             map_stats: Default::default(),
             resident_probes: vec![],
             resident_keys: vec![],
-            reference_copy_bytes: 0,
             distinct_probes: 0,
             fallback_probes: 0,
             boundary_probes: 0,
@@ -249,7 +247,7 @@ impl<'a> GhostTransport<'a> {
         p.settings = serde_json::json!({"operation":"ghost","version":MKL_GHOST_VERSION,"max_steps":self.max_steps,"model":self.model.settings()});
         p
     }
-    fn append(&self, p: &mut ResidentPlan, probes: BufferId) -> MkResult<BufferId> {
+    fn append(&self, p: &mut ResidentPlan, probes: BufferId, powers: bool) -> MkResult<BufferId> {
         let n = p.desc(probes)?.shape[0];
         let offsets = p.import(self.offsets.view());
         let steps = p.import(self.steps.view());
@@ -282,6 +280,9 @@ impl<'a> GhostTransport<'a> {
             factors,
             max_steps: self.max_steps,
         }));
+        if !powers {
+            return Ok(values);
+        }
         let specs = p.import(self.coatings.specs.view());
         let layers = p.import(self.coatings.layers.view());
         let coatings = p.scratch(op::record_desc::<CoatingValue>(n * self.max_steps));
@@ -332,7 +333,7 @@ impl<'a> GhostTransport<'a> {
         let mut p = self.plan();
         p.settings["input_copy_bytes"] = serde_json::json!(std::mem::size_of_val(probes));
         let input = p.import(input.view());
-        let output = self.append(&mut p, input)?;
+        let output = self.append(&mut p, input, true)?;
         p.outputs = vec![output];
         let r = self.backend.submit_plan(p, ctx)?.wait()?;
         let v = self.backend.read_view(r.outputs[0].view())?;
@@ -417,6 +418,7 @@ impl<'a> GhostTransport<'a> {
         &mut self,
         n: usize,
         sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        powers: bool,
         ctx: &JobContext,
     ) -> MkResult<ProbeValues> {
         let (chiefs, fields) = self.chiefs.as_ref().unwrap();
@@ -433,7 +435,7 @@ impl<'a> GhostTransport<'a> {
             samples: p.view(samples_id)?,
             output: probes,
         }));
-        let output = self.append(&mut p, probes)?;
+        let output = self.append(&mut p, probes, powers)?;
         p.outputs = vec![output];
         let r = self.backend.submit_plan(p, ctx)?.wait()?;
         let v = self.backend.read_view(r.outputs[0].view())?;
@@ -449,7 +451,7 @@ impl<'a> GhostTransport<'a> {
             run.precision = r.precision;
             run.settings["resident_backend"] = r.settings.clone();
         }
-        run.settings["gpu"] = serde_json::json!({"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"reference_probes":self.fallback_probes,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"reference_copy_bytes":self.reference_copy_bytes,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        run.settings["gpu"] = serde_json::json!({"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"reference_probes":self.fallback_probes,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
                 "P9: {} probes completed by CPU f64 reference",
@@ -633,45 +635,37 @@ impl GhostTransport<'_> {
 }
 
 impl GhostTransport<'_> {
-    pub(crate) fn replace_last(
+    pub(crate) fn reference_batch(
         &mut self,
-        values: &[Value],
         replacements: &[(usize, Result<Option<(f64, f64, f64)>, f64>)],
         ctx: &JobContext,
-    ) -> MkResult<()> {
+    ) -> MkResult<usize> {
         use bytemuck::Zeroable;
-        let mut next = 0;
-        let handle = fill(self.backend, values.len(), |i| {
-            if i % 1024 == 0 {
+        let handle = fill(self.backend, replacements.len(), |i| {
+            if i % 256 == 0 {
                 ctx.check()?;
             }
-            if next < replacements.len() && replacements[next].0 == i {
-                let r = replacements[next].1;
-                next += 1;
-                let mut v = Value::zeroed();
-                v.internal = Df32::from_f32(1.);
-                match r {
-                    Ok(Some((x, y, w))) => {
-                        v.position[0] = Df32::from_f64(x);
-                        v.position[1] = Df32::from_f64(y);
-                        v.weight_s = Df32::from_f64(w);
-                        v.weight_p = v.weight_s;
-                    }
-                    Ok(None) => v.status = MKL_RAY_MISS,
-                    Err(w) => {
-                        v.status = MKL_GHOST_VIRTUAL;
-                        v.weight_s = Df32::from_f64(w);
-                        v.weight_p = v.weight_s;
-                    }
+            let mut v = Value::zeroed();
+            v.internal = Df32::from_f32(1.);
+            match replacements[i].1 {
+                Ok(Some((x, y, w))) => {
+                    v.position[0] = Df32::from_f64(x);
+                    v.position[1] = Df32::from_f64(y);
+                    v.weight_s = Df32::from_f64(w);
+                    v.weight_p = v.weight_s;
                 }
-                Ok(v)
-            } else {
-                Ok(values[i])
+                Ok(None) => v.status = MKL_RAY_MISS,
+                Err(w) => {
+                    v.status = MKL_GHOST_VIRTUAL;
+                    v.weight_s = Df32::from_f64(w);
+                    v.weight_p = v.weight_s;
+                }
             }
+            Ok(v)
         })?;
-        self.reference_copy_bytes += (values.len() - replacements.len()) * size_of::<Value>();
-        *self.resident_probes.last_mut().unwrap() = handle;
-        Ok(())
+        let batch = self.resident_probes.len();
+        self.resident_probes.push(handle);
+        Ok(batch)
     }
 }
 /// Batched real meridional ghost foci. P1 aims the requested pupil ray;
@@ -690,6 +684,7 @@ pub fn real_ghost_focus(
     rho: f64,
     ctx: &JobContext,
 ) -> MkResult<GhostFocus> {
+    let timer = mklight_core::job::RunTimer::start();
     if !rho.is_finite() {
         return Err(MkError::InvalidParam("ghost focus pupil height".into()));
     }
@@ -712,6 +707,7 @@ pub fn real_ghost_focus(
                 reserved: 0,
             })
         },
+        false,
         &ctx.subrange(0.2, 0.99),
     )?;
     let focus = v
@@ -730,9 +726,13 @@ pub fn real_ghost_focus(
         })
         .collect();
     let status = v.iter().map(|v| v.status).collect();
-    let mut run = g.run.clone().unwrap();
-    run.analysis = "ghost.real_focus".into();
-    run.settings["rho"] = serde_json::json!(rho);
+    let mut run = crate::paraxial::run_info(
+        model,
+        timer,
+        "ghost.real_focus",
+        &serde_json::json!({"paths":paths,"rho":rho}),
+        Vec::new(),
+    );
     g.stamp(&mut run);
     ctx.check()?;
     ctx.report(1., "ghost focus complete");
@@ -760,6 +760,7 @@ pub fn paraxial_batch(
     ctx: &JobContext,
 ) -> MkResult<ParaxialBatch> {
     use op::FirstOrderStep;
+    let timer = mklight_core::job::RunTimer::start();
     let programs = paths
         .iter()
         .map(|p| {
@@ -858,8 +859,17 @@ pub fn paraxial_batch(
         }));
     }
     ctx.report(1., "ghost paraxial batch complete");
+    let run = timer.finish(
+        &model.system().snapshot,
+        "ghost.paraxial_batch",
+        &r.run_info.settings,
+        &r.run_info.backend,
+        r.run_info.precision,
+        None,
+        r.run_info.warnings,
+    );
     Ok(ParaxialBatch {
-        run: r.run_info,
+        run,
         rays,
         stats: r.stats,
     })

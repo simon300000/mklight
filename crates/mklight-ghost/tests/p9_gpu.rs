@@ -19,7 +19,12 @@ fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
                     [0.7, -0.2],
                     [-0.9, 0.],
                 ] {
-                    let scale = m.tracer().pupil().r_ep;
+                    let geometry = m.tracer().pupil();
+                    let scale = if geometry.telecentric {
+                        geometry.u_marginal.abs()
+                    } else {
+                        geometry.r_ep
+                    };
                     let c = field.aims[w].chief;
                     let a = [c[0] + pupil[0] * scale, c[1] + pupil[1] * scale];
                     if let Some(ray) = m.tracer().start_ray(&field.source, a) {
@@ -35,6 +40,7 @@ fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
             }
         }
     }
+    assert!(!probes.is_empty());
     let result = g.trace(&probes, &JobContext::new()).unwrap();
     let again = g.trace(&probes, &JobContext::new()).unwrap();
     if b.info().kind == mklight_gpu::BackendKind::Metal {
@@ -479,4 +485,90 @@ fn virtual_backward_lens_and_reported_reference() {
                 < 1e-10 * c.relative_irradiance + 1e-14
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn absorption_long_track_and_telecentric_launches() {
+    use mklight_core::{
+        ApertureSpec, Field, FieldKind, FieldSet, MaterialRef, OpticalSystem, SurfaceShape,
+        materials::{GlassCatalog, MaterialLibrary, TransmittancePoint},
+    };
+    use std::sync::Arc;
+    let b = mklight_metal::MetalBackend::new()
+        .unwrap()
+        .expect("P9 requires host Metal");
+    let mut lib = MaterialLibrary::with_builtin();
+    let mut glass = (*lib.find_glass(None, "N-BK7").unwrap()).clone();
+    glass.name = "ABS".into();
+    glass.transmittance = vec![
+        TransmittancePoint {
+            um: 0.3,
+            tau: 0.8,
+            thickness_mm: 10.,
+        },
+        TransmittancePoint {
+            um: 2.,
+            tau: 0.8,
+            thickness_mm: 10.,
+        },
+    ];
+    let mut catalog = GlassCatalog {
+        name: "TEST".into(),
+        ..Default::default()
+    };
+    catalog.glasses.insert("ABS".into(), glass);
+    lib.add_catalog(Arc::new(catalog));
+    let mut s = plate(1.5, 10., 20., &[0., 20.], Some(quarter_wave(1.38, D_LINE)));
+    s.surfaces[2].material = MaterialRef::Catalog {
+        catalog: Some("TEST".into()),
+        name: "ABS".into(),
+        offset: Default::default(),
+    };
+    let m = GhostModel::from_system(resolve_with(s, lib), unclipped()).unwrap();
+    compare(&b, &m, &[GhostPath::primary(), GhostPath::new(vec![3, 2])]);
+    compare(
+        &b,
+        &model(plate(1.5, 10., 900., &[0., 5.], None), unclipped()),
+        &[GhostPath::primary(), GhostPath::new(vec![3, 2])],
+    );
+    let mut s = OpticalSystem::new_empty();
+    s.wavelengths = mono();
+    s.aperture = ApertureSpec::ObjectSpaceNa { value: 0.05 };
+    s.fields = FieldSet {
+        kind: FieldKind::ObjectHeight,
+        fields: vec![Field::new(0., 0.), Field::new(0., 5.)],
+    };
+    s.surfaces = vec![
+        surf(0, SurfaceShape::Plane, 100., MaterialRef::Air),
+        surf(
+            1,
+            SurfaceShape::Paraxial { focal_length: 50. },
+            50.,
+            MaterialRef::Air,
+        ),
+        surf(2, SurfaceShape::Plane, 50., MaterialRef::Air),
+        surf(3, SurfaceShape::Plane, 0., MaterialRef::Air),
+    ];
+    s.stop = 2;
+    let m = model(s, unclipped());
+    assert!(m.tracer().pupil().telecentric);
+    compare(&b, &m, &[GhostPath::primary()]);
+    let settings = IrradianceSettings {
+        pupil_samples: 8,
+        map_bins: [8, 8],
+        ..Default::default()
+    };
+    let c = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
+    let a = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
+    let cm = c.primary.map.unwrap();
+    let am = a.primary.map.unwrap();
+    let l1 = cm
+        .values
+        .iter()
+        .zip(am.values)
+        .map(|(c, a)| (c - a).abs())
+        .sum::<f64>()
+        * cm.bin_area();
+    assert!(l1 < 1e-3 * cm.flux());
 }

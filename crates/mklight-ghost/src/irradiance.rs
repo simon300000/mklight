@@ -1239,6 +1239,7 @@ fn refine_gpu(
                             reserved: 0,
                         })
                     },
+                    true,
                     &ctx.subrange(stage as f64 / 5., stage as f64 / 5.),
                 )?;
                 let mut replacements = Vec::new();
@@ -1269,7 +1270,11 @@ fn refine_gpu(
                     caches[*pi].locations[*id] = Some([gpu.resident_probes.len() - 1, row]);
                 }
                 if !replacements.is_empty() {
-                    gpu.replace_last(&values, &replacements, ctx)?;
+                    let batch = gpu.reference_batch(&replacements, ctx)?;
+                    for (row, &(original, _)) in replacements.iter().enumerate() {
+                        let (pi, _, id, _) = block[original];
+                        caches[pi].locations[id] = Some([batch, row]);
+                    }
                 }
             }
         }

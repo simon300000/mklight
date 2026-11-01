@@ -24,7 +24,7 @@ fn counters(r: &mklight_ghost::GhostIrradiance) -> serde_json::Value {
             max_command = max_command.max(s["max_command_seconds"].as_f64().unwrap());
         }
     }
-    serde_json::json!({"device_seconds":device,"commands":commands,"copied_bytes":copied,"peak_plan_bytes":peak,"retained_resident_bytes":g["resident_bytes"],"allocations":allocations,"max_command_seconds":max_command,"transport_probes":g["distinct_probes"],"reference_probes":g["reference_probes"]})
+    serde_json::json!({"device_seconds":device,"commands":commands,"copied_bytes":copied,"peak_plan_bytes":peak,"retained_resident_bytes":g["resident_bytes"],"allocations":allocations,"max_command_seconds":max_command,"transport_probes":g["distinct_probes"],"reference_probes":g["reference_probes"],"boundary_probes":g["boundary_probes"],"pixel_migrations":g["pixel_migrations"]})
 }
 #[test]
 #[ignore]
@@ -106,9 +106,31 @@ fn all_sample_default_maps() {
             .sum::<f64>()
             * c.total_ghost_map.bin_area();
         let primary = (g.primary.flux - c.primary.flux).abs() / c.primary.flux.max(1e-30);
+        let pm = c.primary.map.as_ref().unwrap();
+        let gm = g.primary.map.as_ref().unwrap();
+        let primary_l1 = pm
+            .values
+            .iter()
+            .zip(&gm.values)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>()
+            * pm.bin_area()
+            / pm.flux();
+        for ghost in &c.ghosts {
+            let actual = g.ghosts.iter().find(|g| g.path == ghost.path).unwrap();
+            for (a, c) in actual.fields.iter().zip(&ghost.fields) {
+                assert_eq!(a.rays_traced, c.rays_traced, "{name} leaf count");
+                assert_eq!(a.rays_detected, c.rays_detected, "{name} detected count");
+                assert!((a.rms_radius - c.rms_radius).abs() <= 0.005 * c.rms_radius + 2e-5);
+                for k in 0..2 {
+                    assert!((a.centroid[k] - c.centroid[k]).abs() <= 2e-5);
+                }
+            }
+        }
+        assert!(primary_l1 <= 1e-3, "{name} primary map L1 {primary_l1}");
         eprintln!(
             "{}",
-            serde_json::json!({"sample":name,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1/flux.max(1e-30),"primary_flux_error":primary,"counters":counters(&g)})
+            serde_json::json!({"sample":name,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1/flux.max(1e-30),"primary_flux_error":primary,"primary_map_l1_relative":primary_l1,"counters":counters(&g)})
         );
         assert!(
             l1 <= 1e-3 * flux + 1e-12,
