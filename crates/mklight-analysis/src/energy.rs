@@ -254,7 +254,7 @@ pub fn encircled_energy_job(
     Ok(r)
 }
 
-fn validate_ee(settings: &EncircledEnergySettings) -> MkResult<()> {
+pub(crate) fn validate_ee(settings: &EncircledEnergySettings) -> MkResult<()> {
     check_count("radius samples", settings.samples, 2, 100_001)?;
     check_finite("defocus", settings.defocus)
 }
@@ -471,7 +471,7 @@ pub fn geometric_mtf_job(
     )
 }
 
-fn validate_mtf(settings: &GeometricMtfSettings) -> MkResult<()> {
+pub(crate) fn validate_mtf(settings: &GeometricMtfSettings) -> MkResult<()> {
     check_count("frequency samples", settings.frequency_samples, 2, 100_001)?;
     check_finite("defocus", settings.defocus)?;
     if let Some(f) = settings.max_frequency
@@ -712,7 +712,7 @@ pub fn best_focus_job(
     Ok(r)
 }
 
-fn validate_best_focus(settings: &BestFocusSettings) -> MkResult<()> {
+pub(crate) fn validate_best_focus(settings: &BestFocusSettings) -> MkResult<()> {
     check_finite("tolerance", settings.tolerance)?;
     if !(settings.tolerance > 0.0) {
         return Err(MkError::InvalidModel("tolerance must be positive".into()));

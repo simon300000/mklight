@@ -85,7 +85,7 @@ impl FieldAnalysis {
             Self::ChiefRayAngle => "chief_ray_angle",
         }
     }
-    fn columns(self) -> Vec<Column> {
+    pub(crate) fn columns(self) -> Vec<Column> {
         let rows: &[(&str, &str, &str)] = match self {
             Self::PupilAberration => &[
                 (
@@ -173,13 +173,7 @@ fn pupil(t: &SequentialTracer, f: &PreparedField, wl: usize) -> Option<[f64; 4]>
     ])
 }
 
-pub fn field_map_job(
-    t: &SequentialTracer,
-    kind: FieldAnalysis,
-    s: &FieldMapSettings,
-    ctx: &JobContext,
-) -> MkResult<FieldMapResult> {
-    let timer = RunTimer::start();
+pub(crate) fn validate_map(s: &FieldMapSettings) -> MkResult<()> {
     for &n in &s.grid {
         check_count("field grid", n, 1, 101)?;
     }
@@ -197,7 +191,9 @@ pub fn field_map_job(
             "sensor limit needs increasing nonnegative heights and angles in [0,90]".into(),
         ));
     }
-    let wl = wavelength_or_primary(t, s.wavelength)?;
+    Ok(())
+}
+pub(crate) fn map_coordinates(s: &FieldMapSettings) -> ([usize; 2], Vec<[f64; 2]>) {
     let shape = match s.mode {
         MapMode::Grid => s.grid,
         MapMode::X => [s.grid[0], 1],
@@ -220,6 +216,19 @@ pub fn field_map_job(
             })
         })
         .collect();
+    (shape, coords)
+}
+
+pub fn field_map_job(
+    t: &SequentialTracer,
+    kind: FieldAnalysis,
+    s: &FieldMapSettings,
+    ctx: &JobContext,
+) -> MkResult<FieldMapResult> {
+    let timer = RunTimer::start();
+    validate_map(s)?;
+    let wl = wavelength_or_primary(t, s.wavelength)?;
+    let (shape, coords) = map_coordinates(s);
     let mut warnings = Vec::new();
     // The chief ray passes the stop centre (real aiming), as in the radial
     // relative-illumination analysis, whatever the design's aiming.
@@ -337,7 +346,7 @@ pub fn field_map_job(
     })
 }
 /// Linear interpolation, held constant outside the table; NaN when empty.
-fn interpolate_limit(table: &[[f64; 2]], r: f64) -> f64 {
+pub(crate) fn interpolate_limit(table: &[[f64; 2]], r: f64) -> f64 {
     let (Some(first), Some(last)) = (table.first(), table.last()) else {
         return f64::NAN;
     };

@@ -294,16 +294,12 @@ impl Probe<'_> {
     }
 }
 
-/// One field's integrals: `(Ω_p, surviving share of the pupil area, chief
-/// angle, cos⁴)` and the number of failed pupil nodes. `None` when the
-/// chief ray fails.
-fn integrate_field(
-    rt: &SequentialTracer,
-    field: &PreparedField,
+fn prepare_integral<'a>(
+    rt: &'a SequentialTracer,
+    field: &'a PreparedField,
     wl: usize,
-    nodes: &[(f64, f64, f64)],
     q_scale: f64,
-) -> Option<([f64; 4], usize)> {
+) -> Option<(Probe<'a>, f64, f64)> {
     let sys = rt.system();
     let img = sys.image_index();
     let mut rec = Vec::with_capacity(sys.num_surfaces());
@@ -333,6 +329,31 @@ fn integrate_field(
         t2: nrm.cross(t1),
         hq: 1e-5 * q_scale,
     };
+    let cra = chief.ray.dir.dot(nrm).abs().min(1.0).acos().to_degrees();
+    let cos4 = match rt.generate(field, wl, 0.0, 0.0) {
+        Ok(g) => {
+            let mut d = g.ray.dir;
+            if !sys.object_at_infinity {
+                d = sys.surfaces[0].frame.to_global_dir(d);
+            }
+            d.z.abs().powi(4)
+        }
+        Err(_) => f64::NAN,
+    };
+    Some((probe, cra, cos4))
+}
+
+/// One field's integrals: `(Ω_p, surviving share of the pupil area, chief
+/// angle, cos⁴)` and the number of failed pupil nodes. `None` when the
+/// chief ray fails.
+fn integrate_field(
+    rt: &SequentialTracer,
+    field: &PreparedField,
+    wl: usize,
+    nodes: &[(f64, f64, f64)],
+    q_scale: f64,
+) -> Option<([f64; 4], usize)> {
+    let (probe, cra, cos4) = prepare_integral(rt, field, wl, q_scale)?;
     let q0 = source_params(&field.source);
     let j0inv = probe.x_q_inverse(q0, [0.0, 0.0])?;
     let parts: Vec<(f64, f64, bool)> = nodes
@@ -347,21 +368,80 @@ fn integrate_field(
     let area: KahanSum = parts.iter().map(|p| p.1).collect();
     let total: KahanSum = nodes.iter().map(|n| n.2).collect();
     let failed = parts.iter().filter(|p| p.2).count();
-    let cra = chief.ray.dir.dot(nrm).abs().min(1.0).acos().to_degrees();
-    let cos4 = match rt.generate(field, wl, 0.0, 0.0) {
-        Ok(g) => {
-            let mut d = g.ray.dir;
-            if !sys.object_at_infinity {
-                d = sys.surfaces[0].frame.to_global_dir(d);
-            }
-            d.z.abs().powi(4)
-        }
-        Err(_) => f64::NAN,
-    };
     Some((
         [omega.value(), area.value() / total.value(), cra, cos4],
         failed,
     ))
+}
+
+/// Selective reference decisions for unresolved resident nodes. The result
+/// order is the sparse logical-node order; no successful device node is retraced.
+pub(crate) fn polish_illumination_nodes(
+    tracer: &SequentialTracer,
+    coordinates: &[[f64; 2]],
+    wl: usize,
+    radial: usize,
+    azimuth: usize,
+    indices: &[u32],
+    ctx: &JobContext,
+) -> MkResult<Vec<(u32, [f64; 2], bool)>> {
+    let rt = real_aimed(tracer)?;
+    let rt = rt.as_ref();
+    let q_scale = rt
+        .prepare_field(FieldPoint::normalized(0.0, 1.0))
+        .map(|f| {
+            let q = source_params(&f.source);
+            q[0].hypot(q[1])
+        })
+        .unwrap_or(0.0)
+        .max(1e-3);
+    let (rx, rw) = gauss_legendre_01(radial);
+    let per = radial * azimuth;
+    let dphi = 2.0 * PI / azimuth as f64;
+    let mut result = Vec::with_capacity(indices.len());
+    let mut start = 0;
+    while start < indices.len() {
+        ctx.check()?;
+        let fi = indices[start] as usize / per;
+        let mut end = start + 1;
+        while end < indices.len() && indices[end] as usize / per == fi {
+            end += 1;
+        }
+        let xy = coordinates[fi];
+        let field = rt.prepare_field(FieldPoint::normalized(xy[0], xy[1])).ok();
+        let prepared = field
+            .as_ref()
+            .and_then(|f| prepare_integral(rt, f, wl, q_scale));
+        let state = prepared.as_ref().and_then(|(probe, _, _)| {
+            let q0 = source_params(&probe.base.source);
+            Some((q0, probe.x_q_inverse(q0, [0.0; 2])?))
+        });
+        for &index in &indices[start..end] {
+            ctx.check()?;
+            let k = index as usize % per;
+            let r = k / azimuth;
+            let a = k % azimuth;
+            let (sn, cs) = (a as f64 * dphi).sin_cos();
+            let weight = (rw[r] * rx[r] * dphi) as f32 as f64;
+            let node = match (&prepared, &state) {
+                (Some((probe, _, _)), Some((q0, inverse))) => {
+                    probe.node(*q0, inverse, [rx[r] * cs, rx[r] * sn])
+                }
+                _ => Node::Failed,
+            };
+            result.push(match node {
+                Node::Ok(j) => (index, [weight * j, weight], false),
+                Node::Vignetted => (index, [0.0; 2], false),
+                Node::Failed => (index, [0.0; 2], true),
+            });
+            ctx.report(
+                result.len() as f64 / indices.len() as f64,
+                "RI reference polish",
+            );
+        }
+        start = end;
+    }
+    Ok(result)
 }
 
 /// Relative illumination and vignetting vs field (module docs).

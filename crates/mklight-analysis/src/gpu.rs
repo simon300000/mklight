@@ -1,1 +1,490 @@
-//! Resident GPU adapter, filled in by this solver's GPU package. Nothing is enabled yet.
+//! Backend-neutral resident geometric adapters. These are deliberately not
+//! wired into engine routing; qualification and automatic policy belong there.
+use mklight_core::{JobContext, MkResult, RunInfo};
+use mklight_gpu::{
+    ComputeBackend, Df32, PackOptions, PackedSystem, SystemHandle, aiming::*, resident::*,
+};
+use mklight_trace::{FieldPoint, SequentialTracer};
+mod chromatic;
+mod energy;
+pub use chromatic::{lateral_colour_job, longitudinal_aberration_job};
+mod curvature;
+pub use curvature::{field_curvature_job, grid_distortion_job};
+mod layout;
+mod maps;
+pub use layout::layout_job;
+mod illumination;
+pub use illumination::{
+    IlluminationBuffers, IlluminationRows, illumination_rows, relative_illumination_job,
+};
+mod records;
+pub use records::{
+    GridResult, footprint_job, footprint_overlay_job, ray_grid_job, semi_diameters_job,
+};
+mod fans;
+pub use fans::{opd_fan_job, ray_fan_job};
+pub use maps::field_map_job;
+mod spot;
+pub use energy::{
+    best_focus_job, encircled_energy_job, encircled_energy_with_uncertainty_job, geometric_mtf_job,
+};
+pub use spot::spot_diagram_job;
+
+/// A reusable system upload. Host work is immutable resolution/packing and
+/// small first-order field metadata; generation and tracing run on the backend.
+pub struct Geometry<'a> {
+    pub backend: &'a dyn ComputeBackend,
+    pub tracer: &'a SequentialTracer,
+    systems: SystemHandle,
+    wavelengths: Vec<Vec<usize>>,
+}
+impl Drop for Geometry<'_> {
+    fn drop(&mut self) {
+        let _ = self.backend.release_systems(self.systems);
+    }
+}
+impl<'a> Geometry<'a> {
+    pub fn new(
+        backend: &'a dyn ComputeBackend,
+        tracer: &'a SequentialTracer,
+        ctx: &JobContext,
+    ) -> MkResult<Self> {
+        ctx.check()?;
+        let primary = tracer.system().primary_wavelength;
+        let mut chunks = Vec::new();
+        let mut packed = Vec::new();
+        // Include the primary in every chunk: real-image-height fields use it
+        // even when a different wavelength was selected for the analysis.
+        let chunk = mklight_gpu::layout::MAX_WAVELENGTHS - 1;
+        for start in (0..tracer.num_wavelengths()).step_by(chunk) {
+            let mut w: Vec<_> = (start..(start + chunk).min(tracer.num_wavelengths())).collect();
+            if !w.contains(&primary) {
+                w.push(primary);
+            }
+            packed.push(PackedSystem::pack(
+                tracer.system(),
+                &PackOptions {
+                    wavelengths: Some(w.clone()),
+                    radius_hints: None,
+                },
+            )?);
+            chunks.push(w);
+        }
+        let systems = backend.upload_systems(&packed)?;
+        Ok(Self {
+            backend,
+            tracer,
+            systems,
+            wavelengths: chunks,
+        })
+    }
+    fn import<T: BufferElement>(
+        &self,
+        p: &mut ResidentPlan,
+        shape: impl Into<Vec<usize>>,
+        mut fill: impl FnMut(&mut [T]) -> MkResult<()>,
+    ) -> MkResult<BufferId> {
+        let h = self
+            .backend
+            .fill_buffer(BufferDesc::new(T::ELEMENT, shape), &mut |mut f| {
+                fill(f.as_mut_slice::<T>()?)
+            })?;
+        Ok(p.import(h.view()))
+    }
+    fn records<T: bytemuck::Pod>(
+        &self,
+        p: &mut ResidentPlan,
+        count: usize,
+        mut fill: impl FnMut(usize) -> MkResult<T>,
+    ) -> MkResult<BufferId> {
+        self.import::<u32>(p, [count, size_of::<T>() / 4], |words| {
+            for (i, v) in bytemuck::cast_slice_mut::<_, T>(words)
+                .iter_mut()
+                .enumerate()
+            {
+                *v = fill(i)?;
+            }
+            Ok(())
+        })
+    }
+    /// Append resident generation and trace for a field/wavelength/pupil grid.
+    /// Rows follow fields, wavelengths, then pupil. Chief rays (including the
+    /// primary wavelength) are traced only by [`Self::append_chiefs`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_grid(
+        &self,
+        p: &mut ResidentPlan,
+        fields: &[FieldPoint],
+        wls: &[usize],
+        pupil: &[[f64; 2]],
+        aiming: mklight_core::RayAiming,
+        last: usize,
+        clip: bool,
+        records: bool,
+        ctx: &JobContext,
+    ) -> MkResult<ResidentGrid> {
+        ctx.check()?;
+        let mut cw = wls.to_vec();
+        cw.push(self.tracer.system().primary_wavelength);
+        cw.sort_unstable();
+        cw.dedup();
+        let nf = fields.len() * cw.len();
+        let metadata = self.records::<FieldSpec>(p, nf, |i| {
+            let w = cw[i % cw.len()];
+            let (si, wi) = self.chunk(w)?;
+            FieldSpec::new(
+                self.tracer.system(),
+                self.tracer.paraxial(),
+                fields[i / cw.len()],
+                si,
+                wi,
+                aiming,
+            )
+        })?;
+        let steps = self.import::<u32>(p, [last], |out| {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = (i + 1) as u32;
+            }
+            Ok(())
+        })?;
+        // Wavelength rows of the metadata for each requested wavelength.
+        let rows: Vec<_> = wls
+            .iter()
+            .map(|w| cw.iter().position(|v| v == w).unwrap())
+            .collect();
+        let count = fields.len() * wls.len() * pupil.len();
+        let samples = self.records::<Sample>(p, count, |i| {
+            if i % 4096 == 0 {
+                ctx.check()?;
+            }
+            let row = i / pupil.len();
+            let wi = row % wls.len();
+            let index = row / wls.len() * cw.len() + rows[wi];
+            let mut s = Sample::new(pupil[i % pupil.len()], index as u32, i as u64);
+            s.weight = self.tracer.system().wavelength_weights[wls[wi]] as f32;
+            Ok(s)
+        })?;
+        let field_key = self.field_key(p, metadata)?;
+        let hits = self.append_trace(
+            p,
+            metadata,
+            field_key.clone(),
+            samples,
+            count,
+            steps,
+            aiming,
+            clip,
+            records,
+        )?;
+        Ok(ResidentGrid {
+            hits,
+            chiefs: None,
+            chief_wavelengths: cw,
+            fields: fields.len(),
+            wavelengths: wls.to_vec(),
+            pupil_count: pupil.len(),
+            chief_source: Some((metadata, field_key, steps, aiming)),
+        })
+    }
+    /// Append the unclipped chief traces of a grid, one per field and chief
+    /// wavelength (requested wavelengths plus the primary).
+    pub fn append_chiefs(&self, p: &mut ResidentPlan, g: &mut ResidentGrid) -> MkResult<()> {
+        let Some((metadata, key, steps, aiming)) = g.chief_source.clone() else {
+            return Err(mklight_core::MkError::InvalidParam(
+                "grid has no chief metadata".into(),
+            ));
+        };
+        let nf = g.fields * g.chief_wavelengths.len();
+        let samples =
+            self.records::<Sample>(p, nf, |i| Ok(Sample::new([0.0; 2], i as u32, i as u64)))?;
+        g.chiefs =
+            Some(self.append_trace(p, metadata, key, samples, nf, steps, aiming, false, false)?);
+        Ok(())
+    }
+    /// Packed wavelength chunk and slot of system wavelength `w`.
+    fn chunk(&self, w: usize) -> MkResult<(u32, u32)> {
+        self.wavelengths
+            .iter()
+            .enumerate()
+            .find_map(|(s, ws)| {
+                ws.iter()
+                    .position(|&v| v == w)
+                    .map(|k| (s as u32, k as u32))
+            })
+            .ok_or_else(|| mklight_core::MkError::InvalidParam(format!("no wavelength {w}")))
+    }
+    /// Content identity of imported field metadata, for chief-seed reuse.
+    fn field_key(&self, p: &ResidentPlan, metadata: BufferId) -> MkResult<Option<String>> {
+        Ok(match &p.buffers[metadata.0] {
+            PlanBuffer::Import(v) => {
+                let view = self.backend.read_view(v.clone())?;
+                Some(
+                    blake3::hash(bytemuck::cast_slice(view.words()))
+                        .to_hex()
+                        .to_string(),
+                )
+            }
+            _ => None,
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn append_trace(
+        &self,
+        p: &mut ResidentPlan,
+        metadata: BufferId,
+        field_key: Option<String>,
+        samples: BufferId,
+        n: usize,
+        steps: BufferId,
+        aiming: mklight_core::RayAiming,
+        clip: bool,
+        records: bool,
+    ) -> MkResult<ResidentHits> {
+        let generated = rays(p, n);
+        let tolerance = match aiming {
+            mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
+            _ => 1e-10,
+        };
+        p.operations
+            .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
+                systems: SystemSet::Uploaded(self.systems),
+                samples: p.view(samples)?,
+                sampling: Sampling::Explicit,
+                unresolved: None,
+                field_wavelength: p.view(metadata)?,
+                field_key,
+                tolerance,
+                max_iterations: 60,
+                output: generated.clone(),
+            })));
+        let out = hits(
+            p,
+            n,
+            if records {
+                p.desc(steps)?.len()? + 1
+            } else {
+                0
+            },
+        );
+        p.operations
+            .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
+                systems: SystemSet::Uploaded(self.systems),
+                input: generated,
+                steps: p.view(steps)?,
+                start_surface: 0,
+                apply_apertures: clip,
+                radiometry: 0,
+                newton: mklight_gpu::NewtonSettings::default(),
+                output: out.clone(),
+            })));
+        Ok(out)
+    }
+    pub fn coordinates(
+        &self,
+        p: &mut ResidentPlan,
+        g: &ResidentGrid,
+        delta: f64,
+        same_wavelength: bool,
+    ) -> MkResult<(BufferId, BufferId)> {
+        let n = g.hits.rays.count;
+        let map = self.chief_map(p, g, same_wavelength)?;
+        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [5, n]));
+        let mask = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        p.operations.push(ResidentOp::Geometry(
+            mklight_gpu::geometry::Request::Coordinates(mklight_gpu::geometry::Coordinates {
+                hits: g.hits.clone(),
+                chiefs: g.chiefs()?.clone(),
+                chief_index: p.view(map)?,
+                defocus: Df32::from_f64(delta),
+                output,
+                mask,
+            }),
+        ));
+        Ok((output, mask))
+    }
+    /// U32 [rays]: the chief row of each hit, at its own wavelength or the primary.
+    fn chief_map(
+        &self,
+        p: &mut ResidentPlan,
+        g: &ResidentGrid,
+        same_wavelength: bool,
+    ) -> MkResult<BufferId> {
+        let nc = g.chief_wavelengths.len();
+        let column = |w: usize| g.chief_wavelengths.iter().position(|&v| v == w).unwrap();
+        let primary = column(self.tracer.system().primary_wavelength);
+        let columns: Vec<_> = g
+            .wavelengths
+            .iter()
+            .map(|&w| if same_wavelength { column(w) } else { primary })
+            .collect();
+        self.import::<u32>(p, [g.hits.rays.count], |out| {
+            for (row, rays) in out.chunks_mut(g.pupil_count.max(1)).enumerate() {
+                let fi = row / g.wavelengths.len();
+                rays.fill((fi * nc + columns[row % g.wavelengths.len()]) as u32);
+            }
+            Ok(())
+        })
+    }
+    pub fn moments(
+        &self,
+        p: &mut ResidentPlan,
+        points: BufferId,
+        mask: BufferId,
+        segment: usize,
+        weighted: bool,
+    ) -> MkResult<BufferId> {
+        self.moments_at(p, points, mask, segment, weighted, 0)
+    }
+    fn moments_at(
+        &self,
+        p: &mut ResidentPlan,
+        points: BufferId,
+        mask: BufferId,
+        segment: usize,
+        weighted: bool,
+        plane: usize,
+    ) -> MkResult<BufferId> {
+        use mklight_gpu::collectives::*;
+        let n = p.desc(mask)?.len()?;
+        let ns = n / segment;
+        let offsets = self.offsets(p, ns, segment)?;
+        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [ns, 10]));
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [ns]));
+        let mut values = p.view(points)?;
+        values.desc.shape = vec![2, n];
+        values.offset = plane * n;
+        let weights = if weighted {
+            let mut w = p.view(points)?;
+            w.offset = 4 * n;
+            w.desc.shape = vec![n];
+            Some(w)
+        } else {
+            None
+        };
+        p.operations.push(ResidentOp::Collectives(
+            mklight_gpu::collectives::Request::SegmentReduce(SegmentReduce {
+                values,
+                offsets: p.view(offsets)?,
+                mask: Some(p.view(mask)?),
+                mask_value: 1,
+                weights,
+                max_segment_len: segment,
+                reference: None,
+                mode: mklight_gpu::ReduceMode::DoubleFloat,
+                kind: SegmentKind::Moments2,
+                output,
+                status,
+            }),
+        ));
+        Ok(output)
+    }
+    /// Weighted defocus quadratic per segment, DF [3, segments]: Σw|q|²,
+    /// Σw q·t and Σw|t|² of the image offsets q and slope differences t from
+    /// [`Self::coordinates`], centred on the segment means when `centroid`.
+    /// The mean square at defocus d is (a + 2bd + cd²)/Σw; with the slope
+    /// moments (also returned) the centroid moves as q̄ + d t̄.
+    pub fn focus_quadratic(
+        &self,
+        p: &mut ResidentPlan,
+        points: BufferId,
+        mask: BufferId,
+        moments: BufferId,
+        segment: usize,
+        centroid: bool,
+    ) -> MkResult<(BufferId, BufferId)> {
+        use mklight_gpu::collectives::*;
+        let n = p.desc(mask)?.len()?;
+        let ns = n / segment;
+        let slope = self.moments_at(p, points, mask, segment, true, 2)?;
+        let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, n]));
+        p.operations.push(ResidentOp::Geometry(
+            mklight_gpu::geometry::Request::FocusTerms(mklight_gpu::geometry::FocusTerms {
+                points: p.view(points)?,
+                mask: p.view(mask)?,
+                position_moments: p.view(moments)?,
+                slope_moments: p.view(slope)?,
+                segment_len: segment,
+                centroid,
+                output: terms,
+            }),
+        ));
+        let offsets = self.offsets(p, ns, segment)?;
+        let quad = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, ns]));
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [ns]));
+        p.operations.push(ResidentOp::Collectives(
+            mklight_gpu::collectives::Request::SegmentReduce(SegmentReduce {
+                values: p.view(terms)?,
+                offsets: p.view(offsets)?,
+                mask: None,
+                mask_value: 0,
+                weights: None,
+                max_segment_len: segment,
+                reference: None,
+                mode: mklight_gpu::ReduceMode::DoubleFloat,
+                kind: SegmentKind::Sum,
+                output: quad,
+                status,
+            }),
+        ));
+        Ok((quad, slope))
+    }
+    /// U32 [segments+1] offsets of equal-length segments.
+    fn offsets(&self, p: &mut ResidentPlan, segments: usize, len: usize) -> MkResult<BufferId> {
+        self.import::<u32>(p, [segments + 1], |out| {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = (i * len) as u32;
+            }
+            Ok(())
+        })
+    }
+    fn run(&self, p: ResidentPlan, ctx: &JobContext) -> MkResult<PlanResult> {
+        self.backend.submit_plan(p, ctx)?.wait()
+    }
+}
+#[derive(Clone, Debug)]
+pub struct ResidentGrid {
+    pub hits: ResidentHits,
+    /// Present after [`Geometry::append_chiefs`].
+    pub chiefs: Option<ResidentHits>,
+    pub chief_wavelengths: Vec<usize>,
+    pub fields: usize,
+    pub wavelengths: Vec<usize>,
+    pub pupil_count: usize,
+    /// Field metadata, its seed-cache key, trace steps and aiming.
+    chief_source: Option<(BufferId, Option<String>, BufferId, mklight_core::RayAiming)>,
+}
+impl ResidentGrid {
+    pub fn chiefs(&self) -> MkResult<&ResidentHits> {
+        self.chiefs.as_ref().ok_or_else(|| {
+            mklight_core::MkError::InvalidParam("grid chief rays were not appended".into())
+        })
+    }
+}
+fn stamp(
+    mut run: RunInfo,
+    name: &str,
+    s: &impl serde::Serialize,
+    warnings: Vec<String>,
+) -> RunInfo {
+    run.analysis = name.into();
+    run.settings["geometry_version"] = serde_json::json!(mklight_gpu::geometry::VERSION);
+    // Preserve the plan's backend/probe/build/stage evidence under execution.
+    let execution = run.settings;
+    run.settings = serde_json::to_value(s).unwrap();
+    run.settings
+        .as_object_mut()
+        .unwrap()
+        .insert("resident_execution".into(), execution);
+    run.warnings.extend(warnings);
+    run
+}
+fn value(f: &[f32], n: usize, i: usize, k: usize) -> f64 {
+    f[k * n + i] as f64 + f[(k + 9) * n + i] as f64
+}
+fn chief(f: &[f32], status: &[u32], n: usize, i: usize, delta: f64) -> [f64; 2] {
+    if status[i] != 0 {
+        return [f64::NAN; 2];
+    }
+    let dz = value(f, n, i, 5);
+    std::array::from_fn(|k| value(f, n, i, k) + delta * value(f, n, i, k + 3) / dz)
+}
