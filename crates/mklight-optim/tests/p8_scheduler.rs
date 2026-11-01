@@ -55,3 +55,60 @@ fn cancelled_workers_finish_without_replacement() {
     assert!(matches!(result, Err(mklight_core::MkError::Cancelled)));
     assert!(e.0.lock().unwrap().is_empty());
 }
+
+#[test]
+fn refined_archives_keep_reference_scores() {
+    use mklight_optim::{discrete::LocallyRefined, lsq::LsqSettings, problem::*};
+    struct Biased {
+        reference: FnProblem,
+    }
+    impl Problem for Biased {
+        fn variables(&self) -> &[Variable] {
+            self.reference.variables()
+        }
+        fn num_residuals(&self) -> usize {
+            1
+        }
+        fn weights(&self) -> &[f64] {
+            self.reference.weights()
+        }
+        fn evaluate_batch(
+            &self,
+            x: &CandidateBatch,
+            ctx: &JobContext,
+        ) -> MkResult<BatchEvaluation> {
+            let mut r = self.reference.evaluate_batch(x, ctx)?;
+            for v in &mut r.residuals {
+                *v += 1e-6;
+            }
+            Ok(r)
+        }
+        fn reference_evaluation(
+            &self,
+            x: &[f64],
+            ctx: &JobContext,
+        ) -> Option<MkResult<Evaluation>> {
+            Some(evaluate_one(&self.reference, x, ctx))
+        }
+    }
+    let local = LocallyRefined {
+        choices: vec![1],
+        settings: LsqSettings::default(),
+        build: Box::new(|_| {
+            Ok((
+                Box::new(Biased {
+                    reference: FnProblem::residuals(
+                        vec![Variable::bounded("x", -5., 5.)],
+                        1,
+                        |x, r| r[0] = x[0] - 1.,
+                    ),
+                }),
+                vec![0.],
+            ))
+        }),
+    };
+    let mut r = local.refine_batch(&[vec![0]], None, &JobContext::new(), 1e-8);
+    let r = r.remove(0).unwrap();
+    assert_eq!(r.merit, (r.x[0] - 1.).powi(2));
+    assert!(r.merit > 1e-13);
+}

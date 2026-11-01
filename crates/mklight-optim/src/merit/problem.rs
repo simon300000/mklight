@@ -338,6 +338,14 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
     }
 
     /// Current parameter values of the base system.
+    fn reference_fd(&self, scheme: crate::deriv::FdScheme) -> bool {
+        scheme == crate::deriv::FdScheme::Forward
+            && self.evaluator.reference_evaluator().is_some()
+            && self
+                .spec
+                .enabled()
+                .any(|(_, o)| matches!(o.kind, OperandKind::Mtf { .. }))
+    }
     pub fn start_point(&self) -> MkResult<Vec<f64>> {
         self.var_specs
             .iter()
@@ -530,6 +538,30 @@ fn combine(op: CombineOp, args: Vec<OperandValue>) -> OperandValue {
 }
 
 impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
+    fn fd_reference_batch(
+        &self,
+        x: &CandidateBatch,
+        scheme: crate::deriv::FdScheme,
+        ctx: &JobContext,
+    ) -> Option<MkResult<BatchEvaluation>> {
+        if !self.reference_fd(scheme) {
+            return None;
+        }
+        self.evaluator.reference_evaluator().map(|reference| {
+            ctx.check()?;
+            self.evaluator
+                .record_reference_stage("MTF forward FD reference", x.len());
+            OpticalProblem::new(
+                self.base.clone(),
+                self.var_specs.clone(),
+                self.spec.clone(),
+                reference,
+                &OperandRegistry::builtin(),
+            )?
+            .evaluate_batch(x, ctx)
+        })
+    }
+
     fn reference_evaluation(
         &self,
         x: &[f64],
@@ -568,7 +600,9 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
             let mut plan = gpu.plan();
             let m = self.residual_ops.len();
             if m == 0 {
-                return Ok(self.to_evaluation(vals));
+                let mut evaluated = self.to_evaluation(vals);
+                self.qualify_combined(x, &mut evaluated, gpu, ctx)?;
+                return Ok(evaluated);
             }
             let values = gpu.fill(
                 &mut plan,
@@ -621,6 +655,7 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
                     *host = device;
                 }
             }
+            self.qualify_combined(x, &mut evaluated, gpu, ctx)?;
             Ok(evaluated)
         } else {
             Ok(self.to_evaluation(vals))
@@ -630,15 +665,85 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
     /// large enough for the noisiest operand costs the others only `O(h)`
     /// truncation, far below their noise floor at these sizes).
     fn fd_relative_step(&self, scheme: crate::deriv::FdScheme) -> Option<f64> {
+        let evaluator: &dyn OperandEvaluator = if self.reference_fd(scheme) {
+            self.evaluator.reference_evaluator().unwrap()
+        } else {
+            &self.evaluator
+        };
         self.spec
             .enabled()
             .filter(|(_, o)| !matches!(o.kind, OperandKind::Combine { .. }))
-            .filter_map(|(_, o)| self.evaluator.fd_relative_step(&o.kind, scheme))
+            .filter_map(|(_, o)| evaluator.fd_relative_step(&o.kind, scheme))
             .reduce(f64::max)
     }
 }
 
 impl<E: OperandEvaluator> OpticalProblem<E> {
+    fn qualify_combined(
+        &self,
+        x: &CandidateBatch,
+        evaluated: &mut BatchEvaluation,
+        gpu: &crate::gpu::GpuContext,
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        let m = self.residual_ops.len();
+        // Arithmetic combinations can amplify otherwise qualified operand
+        // errors. Qualify their complete weighted merit and feasibility.
+        if self
+            .spec
+            .enabled()
+            .any(|(_, o)| matches!(o.kind, OperandKind::Combine { .. }))
+            && let Some(reference) = self.evaluator.reference_evaluator()
+        {
+            let reference = OpticalProblem::new(
+                self.base.clone(),
+                self.var_specs.clone(),
+                self.spec.clone(),
+                reference,
+                &OperandRegistry::builtin(),
+            )?
+            .evaluate_batch(x, ctx)?;
+            let mut fallbacks = 0;
+            for row in 0..evaluated.len() {
+                let score = |e: &BatchEvaluation| {
+                    crate::problem::merit(&self.weights, e.residuals(row), e.status[row])
+                };
+                let (a, b) = (score(evaluated), score(&reference));
+                let feasible = |e: &BatchEvaluation| {
+                    crate::problem::total_violation(
+                        &self.constraints,
+                        e.constraints(row),
+                        e.status[row],
+                    ) <= crate::monitor::DEFAULT_FEASIBILITY_TOL
+                };
+                let merit_ok = a == b
+                    || (a.is_finite()
+                        && b.is_finite()
+                        && (a - b).abs() <= (0.01 * b.abs()).max(1e-8));
+                if !merit_ok
+                    || feasible(evaluated) != feasible(&reference)
+                    || evaluated.status[row] != reference.status[row]
+                {
+                    let k = self.constraint_ops.len();
+                    evaluated.residuals[row * m..(row + 1) * m]
+                        .copy_from_slice(reference.residuals(row));
+                    evaluated.constraints[row * k..(row + 1) * k]
+                        .copy_from_slice(reference.constraints(row));
+                    evaluated.status[row] = reference.status[row];
+                    fallbacks += 1;
+                }
+            }
+            gpu.observe(mklight_gpu::resident::PlanStats {
+                fallback_count: fallbacks,
+                stages: vec![mklight_gpu::resident::StageStats {
+                    name: "combined merit f64 qualification".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+        Ok(())
+    }
     /// Residuals, constraints and status from operand values, applying the
     /// failure policy.
     pub fn to_evaluation(&self, vals: Vec<Option<Vec<OperandValue>>>) -> BatchEvaluation {

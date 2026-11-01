@@ -460,6 +460,7 @@ name = "mklight-optim"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "blake3",
  "bytemuck",
  "mklight-analysis",
  "mklight-core",

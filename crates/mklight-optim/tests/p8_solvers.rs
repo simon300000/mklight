@@ -81,7 +81,6 @@ fn host_wave_and_solver_operands() {
     let mut reference = BuiltinEvaluator::builtin();
     reference.solvers.ghost.pupil_samples = 8;
     let ops = vec![
-        Operand::new(OperandKind::RelativeIllumination).at_field(1),
         Operand::new(OperandKind::WavefrontRms {
             reference: WavefrontReference::Centroid,
             sampling: Default::default(),
@@ -209,4 +208,35 @@ fn one_sided_retry_and_thick_lens_derivative() {
         );
     }
     assert!(gpu.stats().device_operands > 0);
+}
+
+#[test]
+fn coefficient_scale_uses_reference_when_df_cannot_represent_it() {
+    let ctx = JobContext::new();
+    let mut v = Variable::bounded("coefficient", 0., 2e-45);
+    v.scale = 1e-45;
+    let cpu = FnProblem::new(vec![v], 1, |x, r, _| {
+        r[0] = x[0] * 1e45 - 1.;
+        EvalStatus::Ok
+    });
+    let p = ResidentProblem {
+        problem: cpu,
+        context: context(backend()),
+    };
+    let x = [0.5e-45];
+    let f = evaluate_one(&p, &x, &ctx).unwrap();
+    let j = fd_jacobian(
+        &p,
+        &x,
+        &f,
+        &JacobianSettings {
+            scheme: FdScheme::Central,
+            relative_step: Some(1e-4),
+            use_analytic: false,
+        },
+        &ctx,
+    )
+    .unwrap();
+    assert!((j.residuals[(0, 0)] / 1e45 - 1.).abs() < 1e-9);
+    assert!(p.context.stats().fallback_count > 0);
 }

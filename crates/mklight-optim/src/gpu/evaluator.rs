@@ -30,15 +30,22 @@ pub struct EvaluationStats {
     pub reference_cache_hits: u64,
     pub geometry_qualifications: u64,
     pub geometry_rejections: u64,
+    pub geometry_report: Option<mklight_gpu::xval::XvalReport>,
     pub fallback_operands: u64,
     pub fallbacks: BTreeMap<String, u64>,
     pub maximum_absolute_error: f64,
+}
+struct ReferenceEntry {
+    system: OpticalSystem,
+    values: Vec<OperandValue>,
+    geometry: bool,
+    tracer: Option<Arc<mklight_trace::SequentialTracer>>,
 }
 #[derive(Default)]
 struct ReferenceCache {
     ops: Vec<Operand>,
     backend: Option<Arc<dyn mklight_gpu::ComputeBackend>>,
-    entries: BTreeMap<u64, (OpticalSystem, Vec<OperandValue>, bool)>,
+    entries: BTreeMap<u64, ReferenceEntry>,
 }
 struct Template {
     base: OpticalSystem,
@@ -63,7 +70,21 @@ pub struct ResidentEvaluator {
     references: Arc<Mutex<ReferenceCache>>,
 }
 impl ResidentEvaluator {
-    pub fn new(context: GpuContext, reference: BuiltinEvaluator) -> Self {
+    pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
+        // Same length-prefixed catalogue identity as the engine; computed once.
+        let mut hash = blake3::Hasher::new();
+        for catalogue in reference.trace.library().catalogs() {
+            let bytes =
+                serde_json::to_vec(catalogue.as_ref()).expect("serializable material catalogue");
+            for part in [catalogue.name.as_bytes(), &bytes] {
+                hash.update(&(part.len() as u64).to_le_bytes());
+                hash.update(part);
+            }
+        }
+        context.identity.library_hash = hash.finalize().to_hex().to_string();
+        context.identity.qualification = Some(
+            serde_json::json!({"mode":"per_candidate_geometry_and_full_operand_f64","publication":"after_reference_check"}),
+        );
         Self {
             mtf: reference.mtf.clone().with_gpu(context.clone()),
             solvers: reference.solvers.clone().with_gpu(context.clone()),
@@ -103,7 +124,10 @@ impl ResidentEvaluator {
     fn template(&self, batch: &ParametricBatch<'_>, ctx: &JobContext) -> MkResult<Arc<Template>> {
         let mut cache = self.template.lock().unwrap();
         if let Some(t) = cache.as_ref().filter(|t| {
-            t.base == *batch.base && t.params == batch.params && t.config == batch.config
+            t.base == *batch.base
+                && t.params == batch.params
+                && t.config == batch.config
+                && Arc::ptr_eq(&t.backend, &self.context.backend)
         }) {
             return Ok(t.clone());
         }
@@ -149,6 +173,8 @@ impl ResidentEvaluator {
             .collect();
         let mut reference = vec![None; systems.len()];
         let mut geometry = vec![false; systems.len()];
+        let mut tracers = vec![None; systems.len()];
+        let mut geometry_report = None;
         {
             let mut cache = self.references.lock().unwrap();
             if cache.ops.iter().ne(ops.iter().copied())
@@ -162,10 +188,10 @@ impl ResidentEvaluator {
                 cache.entries.clear();
             }
             for (i, system) in systems.iter().enumerate() {
-                if let Some((_, v, q)) = cache.entries.get(&keys[i]).filter(|(s, _, _)| s == system)
-                {
-                    reference[i] = Some(v.clone());
-                    geometry[i] = *q;
+                if let Some(entry) = cache.entries.get(&keys[i]).filter(|e| e.system == *system) {
+                    reference[i] = Some(entry.values.clone());
+                    geometry[i] = entry.geometry;
+                    tracers[i] = entry.tracer.clone();
                 }
             }
         }
@@ -178,40 +204,57 @@ impl ResidentEvaluator {
         if !missing.is_empty() {
             let pending: Vec<_> = missing.iter().map(|&i| systems[i].clone()).collect();
             let values = self.reference.evaluate_batch(&pending, ops, &inner)?;
-            let qualified: Vec<bool> = pending
+            let qualified: Vec<_> = pending
                 .par_iter()
                 .map(|system| {
                     let ctx = JobContext::with(ctx.cancel.clone(), Default::default());
                     ctx.check()?;
                     let tracer = match self.reference.trace.tracer(system) {
                         Ok(t) => t,
-                        Err(_) => return Ok(false),
+                        Err(_) => return Ok((false, None, None)),
                     };
                     let settings = mklight_gpu::xval::XvalSettings {
                         clip: self.reference.trace.settings().clip,
                         radiometry: mklight_gpu::Radiometry::Off,
                         ..mklight_gpu::xval::XvalSettings::qualification()
                     };
-                    Ok(mklight_gpu::xval::qualify(
-                        self.context.backend.as_ref(),
-                        &tracer,
-                        Some(&settings),
-                        &ctx,
-                    )?
-                    .passed)
+                    let backend = super::qualification::QualificationBackend::new(&self.context);
+                    let qualification =
+                        mklight_gpu::xval::qualify(&backend, &tracer, Some(&settings), &ctx)?;
+                    Ok((
+                        qualification.passed,
+                        Some(Arc::new(tracer)),
+                        qualification.report,
+                    ))
                 })
                 .collect::<MkResult<_>>()?;
             let mut cache = self.references.lock().unwrap();
             // Another concurrent job may have changed the operand specification.
-            let same = cache.ops.iter().eq(ops.iter().copied());
-            for ((&i, value), qualified) in missing.iter().zip(values).zip(qualified) {
+            let same = cache.ops.iter().eq(ops.iter().copied())
+                && cache
+                    .backend
+                    .as_ref()
+                    .is_some_and(|b| Arc::ptr_eq(b, &self.context.backend));
+            for ((&i, value), (qualified, tracer, report)) in
+                missing.iter().zip(values).zip(qualified)
+            {
+                if let Some(report) = report {
+                    merge_geometry(&mut geometry_report, &report);
+                }
                 if same {
-                    cache
-                        .entries
-                        .insert(keys[i], (systems[i].clone(), value.clone(), qualified));
+                    cache.entries.insert(
+                        keys[i],
+                        ReferenceEntry {
+                            system: systems[i].clone(),
+                            values: value.clone(),
+                            geometry: qualified,
+                            tracer: tracer.clone(),
+                        },
+                    );
                 }
                 reference[i] = Some(value);
                 geometry[i] = qualified;
+                tracers[i] = tracer;
             }
             let limit = (1_048_576 / ops.len().max(1)).clamp(1, 1024);
             while cache.entries.len() > limit {
@@ -225,12 +268,13 @@ impl ResidentEvaluator {
             candidates: systems.len() as u64,
             reference_checks: missing.len() as u64,
             geometry_qualifications: missing.len() as u64,
+            geometry_report,
             geometry_rejections: missing.iter().filter(|&&i| !geometry[i]).count() as u64,
             reference_cache_hits: (systems.len() - missing.len()) as u64,
             reference_seconds: ref_seconds,
             ..Default::default()
         };
-        let routes: Vec<Vec<usize>> = (0..6)
+        let routes: Vec<Vec<usize>> = (0..5)
             .map(|route| {
                 ops.iter()
                     .enumerate()
@@ -251,6 +295,10 @@ impl ResidentEvaluator {
                 .map(|(i, _)| i)
                 .collect();
             let selected: Vec<_> = active.iter().map(|&i| systems[i].clone()).collect();
+            let selected_tracers: Vec<_> = active
+                .iter()
+                .map(|&i| tracers[i].as_ref().unwrap().clone())
+                .collect();
             let selected_rows: Vec<_> = template.map_or_else(Vec::new, |(_, rows)| {
                 active.iter().map(|&i| rows[i].clone()).collect()
             });
@@ -262,17 +310,31 @@ impl ResidentEvaluator {
                     0 => crate::merit::gpu_eval::resident::evaluate(
                         &self.context,
                         &self.reference.trace,
-                        &selected,
+                        &selected_tracers,
                         &refs,
                         selected_template,
                         &inner,
                     ),
                     1 => self.mtf.evaluate_batch(&selected, &refs, &inner),
                     2 => self.solvers.evaluate_batch(&selected, &refs, &inner),
-                    4 => self.illumination(&selected, &refs, &inner),
-                    5 => self.first_order(&selected, &refs, selected_template, &inner),
+                    4 => self.first_order(&selected, &refs, selected_template, &inner),
                     _ => {
                         stats.host_operands += (systems.len() * indices.len()) as u64;
+                        for &i in &indices {
+                            if !matches!(
+                                ops[i].kind.capability(),
+                                Capability::Model | Capability::Paraxial
+                            ) {
+                                stats.fallback_operands += systems.len() as u64;
+                                *stats
+                                    .fallbacks
+                                    .entry(format!(
+                                        "{}: no resident operand adapter",
+                                        ops[i].kind.name()
+                                    ))
+                                    .or_default() += systems.len() as u64;
+                            }
+                        }
                         continue;
                     }
                 }
@@ -298,7 +360,12 @@ impl ResidentEvaluator {
                     for (row, values) in active.iter().copied().zip(values) {
                         for (col, value) in values.into_iter().enumerate() {
                             let i = indices[col];
-                            let (pass, error) = qualifies(ops[i], &value, &reference[row][i]);
+                            let (pass, error) = qualifies(
+                                ops[i],
+                                &value,
+                                &reference[row][i],
+                                ops.len() * systems[row].configurations.len().max(1),
+                            );
                             stats.maximum_absolute_error = stats.maximum_absolute_error.max(error);
                             if pass && geometry[row] {
                                 result[row][i] = value;
@@ -326,6 +393,9 @@ impl ResidentEvaluator {
         total.reference_cache_hits += stats.reference_cache_hits;
         total.geometry_qualifications += stats.geometry_qualifications;
         total.geometry_rejections += stats.geometry_rejections;
+        if let Some(report) = &stats.geometry_report {
+            merge_geometry(&mut total.geometry_report, report);
+        }
         total.reference_seconds += stats.reference_seconds;
         total.fallback_operands += stats.fallback_operands;
         total.maximum_absolute_error = total
@@ -337,33 +407,78 @@ impl ResidentEvaluator {
         Ok(result)
     }
 }
+fn merge_geometry(
+    total: &mut Option<mklight_gpu::xval::XvalReport>,
+    r: &mklight_gpu::xval::XvalReport,
+) {
+    if let Some(t) = total {
+        t.rays += r.rays;
+        t.compared += r.compared;
+        t.opd_compared += r.opd_compared;
+        t.max_position_mm = t.max_position_mm.max(r.max_position_mm);
+        t.max_direction = t.max_direction.max(r.max_direction);
+        t.max_opd_waves = t.max_opd_waves.max(r.max_opd_waves);
+        t.max_transmittance_abs = t.max_transmittance_abs.max(r.max_transmittance_abs);
+        t.survival_mismatches += r.survival_mismatches;
+        t.band_mismatches += r.band_mismatches;
+        t.chief_mismatches += r.chief_mismatches;
+        t.notes.extend(r.notes.iter().cloned());
+        t.notes.truncate(8);
+    } else {
+        *total = Some(r.clone());
+    }
+}
 fn batch_limit(system: &OpticalSystem, ops: &[&Operand]) -> usize {
-    let mut samplings = Vec::new();
+    let mut groups = Vec::new();
     for op in ops {
         let sampling = match &op.kind {
             OperandKind::RmsSpot { sampling, .. } | OperandKind::WavefrontRms { sampling, .. } => {
-                Some(*sampling)
+                Some((*sampling, op.wavelength))
             }
             OperandKind::RayAberration { group: Some(g), .. }
-            | OperandKind::WavefrontAberration { group: Some(g), .. } => Some(g.sampling),
-            OperandKind::SpotCentroid { .. } => Some(PupilSampling::default()),
+            | OperandKind::WavefrontAberration { group: Some(g), .. } => Some((
+                g.sampling,
+                if g.scope == CentroidScope::Polychromatic {
+                    WavelengthSelector::All
+                } else {
+                    op.wavelength
+                },
+            )),
+            OperandKind::SpotCentroid { .. } => Some((PupilSampling::default(), op.wavelength)),
             _ => None,
         };
-        if let Some(s) = sampling
-            && !samplings.contains(&s)
-        {
-            samplings.push(s);
+        if let Some((sampling, wavelength)) = sampling {
+            let key = (sampling, op.field, wavelength);
+            if !groups.contains(&key) {
+                groups.push(key);
+            }
         }
     }
     let rays = ops.len()
-        + samplings
+        + groups
             .iter()
-            .map(|s| 2 * s.rings * s.arms)
-            .sum::<usize>()
-            * system.fields.fields.len()
-            * system.wavelengths.wavelengths.len();
+            .map(|(s, f, w)| {
+                let fields = if *f == FieldSelector::All {
+                    system.fields.fields.len()
+                } else {
+                    1
+                };
+                let wavelengths = if *w == WavelengthSelector::All {
+                    system.wavelengths.wavelengths.len()
+                } else {
+                    1
+                };
+                let mirrors = if s.symmetry == PupilSymmetry::Bilateral {
+                    2
+                } else {
+                    1
+                };
+                mirrors * s.rings * s.arms * fields * wavelengths
+            })
+            .sum::<usize>();
     (196_608 / rays.max(1)).clamp(1, 256)
 }
+
 fn route_for(kind: &OperandKind) -> usize {
     if matches!(
         kind,
@@ -374,8 +489,6 @@ fn route_for(kind: &OperandKind) -> usize {
             | OperandKind::BflX
             | OperandKind::BflY
     ) {
-        5
-    } else if matches!(kind, OperandKind::RelativeIllumination) {
         4
     } else if gpu_supports(kind, true) {
         0
@@ -387,7 +500,12 @@ fn route_for(kind: &OperandKind) -> usize {
         3
     }
 }
-fn qualifies(op: &Operand, value: &OperandValue, reference: &OperandValue) -> (bool, f64) {
+fn qualifies(
+    op: &Operand,
+    value: &OperandValue,
+    reference: &OperandValue,
+    terms: usize,
+) -> (bool, f64) {
     let (Ok(a), Ok(b)) = (value, reference) else {
         return (false, 0.);
     };
@@ -407,11 +525,15 @@ fn qualifies(op: &Operand, value: &OperandValue, reference: &OperandValue) -> (b
     };
     // Every merit residual must also pass the final-merit gate. Ambiguous
     // inequality decisions use the reference value, even if optics passed.
-    let near = op.comparison != Comparison::Equal && (b - op.target).abs() <= budget;
+    let near = (op.comparison != Comparison::Equal || op.role == OperandRole::Constraint)
+        && (b - op.target).abs() <= budget;
     let ar = op.residual(*a);
     let br = op.residual(*b);
     (
-        error <= budget && !near && (ar * ar - br * br).abs() <= (0.01 * br * br).max(1e-8),
+        error <= budget
+            && !near
+            && (op.weight * (ar * ar - br * br)).abs()
+                <= (0.005 * op.weight * br * br).max(0.5e-8 / terms.max(1) as f64),
         error,
     )
 }
@@ -532,6 +654,7 @@ impl ResidentEvaluator {
                 },
             )?);
         }
+        ctx.check()?;
         Ok(results)
     }
 }

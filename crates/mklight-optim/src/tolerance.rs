@@ -382,6 +382,9 @@ impl TrialOutcome {
 
 /// Batched criterion evaluation for perturbation vectors.
 pub trait ToleranceEvaluator: Sync {
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        None
+    }
     fn evaluate_batch(
         &self,
         perturbations: &[Vec<f64>],
@@ -626,12 +629,124 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
             Err(e) => return Err(e),
         }
         t = end;
-        mon.progress(t as f64 / s.trials as f64, "tolerance monte carlo");
+        mon.progress(0.9 * t as f64 / s.trials as f64, "tolerance monte carlo");
     }
     let ok: Vec<&TrialOutcome> = outcomes
         .iter()
         .filter(|o| o.ok && o.criterion.is_finite())
         .collect();
+    // A completed reference checkpoint preserves Stop semantics if a device
+    // summary is cancelled, without starting replacement work after cancellation.
+    let clock = Instant::now();
+    let reference = reference_statistics(&ok, &s.percentiles);
+    if let Some(gpu) = evaluator.gpu_context() {
+        gpu.observe(mklight_gpu::resident::PlanStats {
+            stages: vec![mklight_gpu::resident::StageStats {
+                name: "tolerance statistics f64 qualification".into(),
+                wall_seconds: clock.elapsed().as_secs_f64(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+    let statistics = if let Some(gpu) = evaluator
+        .gpu_context()
+        .filter(|_| !cancelled && !ok.is_empty())
+    {
+        match gpu.tolerance_statistics(&ok, &s.percentiles, &mon.job.subrange(0.9, 0.99)) {
+            Ok(v) if v.agrees(&reference) => v,
+            Ok(_) => {
+                gpu.observe(mklight_gpu::resident::PlanStats {
+                    fallback_count: 1,
+                    stages: vec![mklight_gpu::resident::StageStats {
+                        name: "tolerance statistics f64 gate".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+                reference
+            }
+            Err(MkError::Cancelled) => {
+                cancelled = true;
+                reference
+            }
+            Err(e) => {
+                gpu.observe(mklight_gpu::resident::PlanStats {
+                    fallback_count: 1,
+                    stages: vec![mklight_gpu::resident::StageStats {
+                        name: format!("tolerance statistics reference: {e}"),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+                reference
+            }
+        }
+    } else {
+        reference
+    };
+    let yield_fraction = s.threshold.map(|th| {
+        outcomes
+            .iter()
+            .filter(|o| o.ok && o.criterion <= th)
+            .count() as f64
+            / outcomes.len().max(1) as f64
+    });
+    let report = MonteCarloReport {
+        nominal,
+        records,
+        seconds_per_trial: start.elapsed().as_secs_f64() / outcomes.len().max(1) as f64,
+        trials: outcomes.len(),
+        failures: outcomes.len() - ok.len(),
+        criteria: outcomes.iter().map(|o| o.criterion).collect(),
+        mean: statistics.mean,
+        std_dev: statistics.std_dev,
+        min: statistics.min,
+        max: statistics.max,
+        percentiles: statistics.percentiles,
+        yield_fraction,
+        compensator_mean: statistics.compensator_mean,
+        compensator_std: statistics.compensator_std,
+        cancelled,
+    };
+    if !cancelled {
+        mon.progress(1., "tolerance complete");
+    }
+    Ok(report)
+}
+
+pub(crate) struct Statistics {
+    pub mean: f64,
+    pub std_dev: f64,
+    pub min: f64,
+    pub max: f64,
+    pub percentiles: Vec<(f64, f64)>,
+    pub compensator_mean: Vec<f64>,
+    pub compensator_std: Vec<f64>,
+}
+impl Statistics {
+    fn agrees(&self, r: &Self) -> bool {
+        let close = |a: f64, b: f64| {
+            a == b || (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-8_f64.max(1e-6 * b.abs())
+        };
+        [self.mean, self.std_dev, self.min, self.max]
+            .into_iter()
+            .zip([r.mean, r.std_dev, r.min, r.max])
+            .all(|(a, b)| close(a, b))
+            && self
+                .percentiles
+                .iter()
+                .zip(&r.percentiles)
+                .all(|(a, b)| close(a.1, b.1))
+            && self
+                .compensator_mean
+                .iter()
+                .chain(&self.compensator_std)
+                .zip(r.compensator_mean.iter().chain(&r.compensator_std))
+                .all(|(&a, &b)| close(a, b))
+    }
+}
+fn reference_statistics(ok: &[&TrialOutcome], percentiles: &[f64]) -> Statistics {
     let mut vals: Vec<f64> = ok.iter().map(|o| o.criterion).collect();
     let nok = vals.len() as f64;
     let mean: f64 = vals
@@ -670,33 +785,21 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
             / (xs.len() as f64 - 1.0).max(1.0))
         .sqrt();
     }
-    let yield_fraction = s.threshold.map(|th| {
-        outcomes
-            .iter()
-            .filter(|o| o.ok && o.criterion <= th)
-            .count() as f64
-            / outcomes.len().max(1) as f64
-    });
-    Ok(MonteCarloReport {
-        nominal,
-        records,
-        seconds_per_trial: start.elapsed().as_secs_f64() / outcomes.len().max(1) as f64,
-        trials: outcomes.len(),
-        failures: outcomes.len() - ok.len(),
-        criteria: outcomes.iter().map(|o| o.criterion).collect(),
+    Statistics {
         mean: if vals.is_empty() { f64::NAN } else { mean },
         std_dev: var.sqrt(),
         min: vals.first().copied().unwrap_or(f64::NAN),
         max: vals.last().copied().unwrap_or(f64::NAN),
-        percentiles: s.percentiles.iter().copied().map(|p| (p, pct(p))).collect(),
-        yield_fraction,
+        percentiles: percentiles.iter().copied().map(|p| (p, pct(p))).collect(),
         compensator_mean: cm,
         compensator_std: cs,
-        cancelled,
-    })
+    }
 }
 
 impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
+    fn record_reference_stage(&self, name: &str, count: usize) {
+        (**self).record_reference_stage(name, count)
+    }
     fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
         (**self).reference_evaluator()
     }
@@ -839,6 +942,9 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
 }
 
 impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E> {
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        self.evaluator.gpu_context()
+    }
     fn evaluate_batch(
         &self,
         perturbations: &[Vec<f64>],
@@ -869,6 +975,81 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
 }
 
 impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
+    /// Ordinary parameter trials retain the P4 path. Random irregularity
+    /// orientation can change extra model fields; those keep their complete
+    /// system representation and the reported host preparation route.
+    fn parametric_trials(
+        &self,
+        systems: &[Option<OpticalSystem>],
+        ctx: &JobContext,
+    ) -> MkResult<Option<crate::problem::BatchEvaluation>> {
+        let Some(gpu) = self.evaluator.gpu_context() else {
+            return Ok(None);
+        };
+        ctx.check()?;
+        let params: Vec<_> = self
+            .spec
+            .operands
+            .iter()
+            .map(|o| o.param.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if params.is_empty() {
+            return Ok(None);
+        }
+        let mut points = CandidateBatch::new(params.len());
+        let mut slots = Vec::new();
+        for (i, system) in systems.iter().enumerate() {
+            if let Some(system) = system {
+                let values = params
+                    .iter()
+                    .map(|p| p.get(system))
+                    .collect::<MkResult<Vec<_>>>()?;
+                let mut represented = self.nominal.clone();
+                for (p, &v) in params.iter().zip(&values) {
+                    p.set(&mut represented, v)?;
+                }
+                if represented != *system {
+                    gpu.observe(mklight_gpu::resident::PlanStats {
+                        fallback_count: systems.len() as u64,
+                        stages: vec![mklight_gpu::resident::StageStats {
+                            name: "tolerance orientation host preparation".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    return Ok(None);
+                }
+                points.push(&values);
+                slots.push(i);
+            }
+        }
+        let variables = params
+            .into_iter()
+            .map(|param| VariableSpec {
+                scale: Some(1.),
+                ..VariableSpec::new(param)
+            })
+            .collect();
+        let p = OpticalProblem::new(
+            self.nominal.clone(),
+            variables,
+            self.criterion.clone(),
+            self.evaluator,
+            self.registry,
+        )?;
+        let evaluated = p.evaluate_batch(&points, ctx)?;
+        let (m, k) = (p.num_residuals(), p.num_constraints());
+        let mut out = crate::problem::BatchEvaluation::zeros(systems.len(), m, k);
+        out.status.fill(crate::problem::EvalStatus::Failed);
+        for (row, &slot) in slots.iter().enumerate() {
+            out.status[slot] = evaluated.status[row];
+            out.residuals[slot * m..(slot + 1) * m].copy_from_slice(evaluated.residuals(row));
+            out.constraints[slot * k..(slot + 1) * k].copy_from_slice(evaluated.constraints(row));
+        }
+        Ok(Some(out))
+    }
     /// Without compensators every trial is one evaluation: all perturbed
     /// systems go to the operand evaluator as one batch (one GPU dispatch
     /// for a batched backend). Same outcomes as trial by trial.
@@ -891,7 +1072,7 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
                             criterion: self.criterion,
                             evaluator: worker,
                             registry: self.registry,
-                            lsq: self.lsq.clone(),
+                            lsq: self.lsq,
                         };
                         match &chunk[i] {
                             Some(s) => local.one(s.clone(), ctx),
@@ -921,7 +1102,10 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             self.evaluator,
             self.registry,
         )?;
-        let e = p.to_evaluation(p.system_values(&systems, ctx)?);
+        let e = match self.parametric_trials(&systems, ctx)? {
+            Some(e) => e,
+            None => p.to_evaluation(p.system_values(&systems, ctx)?),
+        };
         let tol = Monitor::new(ctx.clone()).feasibility_tol;
         Ok((0..systems.len())
             .map(|k| {

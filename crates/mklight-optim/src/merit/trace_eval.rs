@@ -781,7 +781,14 @@ impl<'a> Candidate<'a> {
         f: FieldKey,
         sampling: &PupilSampling,
     ) -> (Vec<PupilNode>, PupilSymmetry) {
-        let mut nodes = sampling.nodes();
+        self.group_nodes_from(f, sampling, sampling.nodes())
+    }
+    pub(super) fn group_nodes_from(
+        &self,
+        f: FieldKey,
+        sampling: &PupilSampling,
+        mut nodes: Vec<PupilNode>,
+    ) -> (Vec<PupilNode>, PupilSymmetry) {
         let mut symmetry = sampling.symmetry;
         if self.mirrored(f, sampling) {
             let mirrors: Vec<PupilNode> = nodes
@@ -803,8 +810,9 @@ impl<'a> Candidate<'a> {
         symmetry: PupilSymmetry,
         rays: Vec<NodeRay>,
     ) -> GroupRays {
-        // Small groups are scanned (`node_in`).
-        let index = if nodes.len() > 64 {
+        // Small groups are scanned (`node_in`). Resident aggregate-only
+        // groups carry sampling metadata but do not materialise host rays.
+        let index = if nodes.len() > 64 && !rays.is_empty() {
             nodes
                 .iter()
                 .enumerate()

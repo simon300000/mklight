@@ -1,5 +1,6 @@
 use super::*;
 use mklight_gpu::{collectives as col, optim_ops as op};
+type GroupSlice = (usize, GroupKey, usize);
 pub(super) struct Fit {
     groups: Vec<(usize, GroupKey)>,
     cols: usize,
@@ -13,7 +14,7 @@ pub(super) fn append(
     opd: BufferId,
     mask: BufferId,
 ) -> MkResult<Vec<Fit>> {
-    let mut batches: BTreeMap<(usize, usize), Vec<(usize, GroupKey, usize)>> = BTreeMap::new();
+    let mut batches: BTreeMap<(usize, usize), Vec<GroupSlice>> = BTreeMap::new();
     for (i, q) in probes.iter().enumerate() {
         if let Dest::Node(group, 0) = q.dest {
             let key = *candidates[q.candidate]

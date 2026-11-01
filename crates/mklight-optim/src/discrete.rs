@@ -464,6 +464,24 @@ impl LocallyRefined {
                 {
                     (r.x, r.merit, r.violation) = (best.x, best.merit, best.violation);
                 }
+                // Restoring a completed best point must not restore its device
+                // score over the independent final score used for glass ranking.
+                if r.termination != Termination::Cancelled
+                    && let Some(reference) = p.reference_evaluation(&r.x, ctx)
+                {
+                    match reference {
+                        Ok(e) => {
+                            r.merit = crate::problem::merit(p.weights(), &e.residuals, e.status);
+                            r.violation = crate::problem::total_violation(
+                                p.constraints(),
+                                &e.constraints,
+                                e.status,
+                            );
+                        }
+                        Err(MkError::Cancelled) => r.termination = Termination::Cancelled,
+                        Err(e) => return Err(e),
+                    }
+                }
                 Ok(r)
             })
             .collect()

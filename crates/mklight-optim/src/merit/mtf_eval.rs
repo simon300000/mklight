@@ -34,10 +34,11 @@ pub struct MtfEvaluator {
 
 /// One candidate's traced pupils by (field, wavelength) and OTFs by
 /// (field, wavelength, defocus), shared by all its MTF operands.
+type GpuOtfValue = (FieldSelector, usize, f64, f64, [[f64; 2]; 2]);
 struct Candidate<'a> {
     tr: &'a SequentialTracer,
     gpu: Option<&'a crate::gpu::GpuContext>,
-    gpu_values: Vec<(FieldSelector, usize, f64, f64, [[f64; 2]; 2])>,
+    gpu_values: Vec<GpuOtfValue>,
     settings: &'a PupilSettings,
     pupils: Vec<(FieldSelector, usize, TracedPupil)>,
     otfs: Vec<(FieldSelector, usize, f64, Otf)>,
@@ -354,7 +355,9 @@ impl Candidate<'_> {
         ops: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<()> {
-        let g = self.gpu.unwrap();
+        let mut context = self.gpu.unwrap().clone();
+        context.snapshot = self.tr.system().snapshot.clone();
+        let g = &context;
         let mut queries: Vec<(FieldSelector, usize, f64, Vec<f64>)> = Vec::new();
         for op in ops {
             if let OperandKind::Mtf {
@@ -433,7 +436,7 @@ impl Candidate<'_> {
                         .collect();
                 let result = p.fft_otf(g.backend.as_ref(), g.snapshot.clone(), &freqs, ctx)?;
                 g.observe(result.stats);
-                for (&f, v) in q.3.iter().zip(result.value.chunks_exact(2)) {
+                for (&f, v) in q.3.iter().zip(result.value.as_chunks::<2>().0.iter()) {
                     self.gpu_values.push((field, wl, q.2, f, [v[0], v[1]]));
                 }
             }

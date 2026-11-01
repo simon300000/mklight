@@ -252,6 +252,14 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
     let vars = p.variables();
     let n = vars.len();
     let (m, k) = (p.num_residuals(), p.num_constraints());
+    let reference_base = p
+        .fd_reference_batch(&CandidateBatch::from_points(n, [x]), settings.scheme, ctx)
+        .transpose()?;
+    if let Some(base) = &reference_base {
+        base.validate(1, m, k)?;
+    }
+    let reference_base = reference_base.map(|b| b.get(0));
+    let f0 = reference_base.as_ref().unwrap_or(f0);
     let eta = relative_step(p, settings);
     let mut jr = Matrix::zeros(m, n);
     let mut jc = Matrix::zeros(k, n);
@@ -277,7 +285,10 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
         if evaluations + batch.len() > budget {
             return Ok(None);
         }
-        let e = p.evaluate_batch(&batch, ctx)?;
+        let e = match p.fd_reference_batch(&batch, settings.scheme, ctx) {
+            Some(reference) => reference?,
+            None => p.evaluate_batch(&batch, ctx)?,
+        };
         e.validate(batch.len(), m, k)?;
         evaluations += batch.len();
         let probe_ok = |q: usize| {
@@ -297,7 +308,23 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
                 .filter(|&q| !probe_ok(row + q))
                 .map(|q| offs[q])
                 .collect();
-            if bad.is_empty() && p.gpu_context().is_some() {
+            let representable = |v: f64| {
+                v == 0. || (v.abs() >= f32::MIN_POSITIVE as f64 && v.abs() <= f32::MAX as f64)
+            };
+            let device_ready = p.gpu_context().is_some()
+                && representable(2.0 / h)
+                && f0
+                    .residuals
+                    .iter()
+                    .chain(&f0.constraints)
+                    .all(|&v| representable(v))
+                && (0..cnt).all(|q| {
+                    e.residuals(row + q)
+                        .iter()
+                        .chain(e.constraints(row + q))
+                        .all(|&v| representable(v))
+                });
+            if bad.is_empty() && device_ready {
                 device_columns.push(j);
                 device_rows.push([
                     0,
@@ -311,6 +338,16 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
                     Stencil::OneSided2(s) => [2.0 * s / h, -0.5 * s / h],
                 });
             } else if bad.is_empty() {
+                if let Some(gpu) = p.gpu_context() {
+                    gpu.observe(mklight_gpu::resident::PlanStats {
+                        fallback_count: 1,
+                        stages: vec![mklight_gpu::resident::StageStats {
+                            name: "FD step/value range reference".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
                 for i in 0..m {
                     let vals: Vec<f64> = (0..cnt).map(|q| e.residuals(row + q)[i]).collect();
                     jr[(i, j)] = st.combine(h, f0.residuals[i], &vals);

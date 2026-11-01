@@ -470,6 +470,19 @@ impl ParametricBatch<'_> {
 /// with a `Centroid` reference carry their [`RayGroup`],
 /// which says which rays define the reference.
 pub trait OperandEvaluator: Sync {
+    fn record_reference_stage(&self, name: &str, count: usize) {
+        if let Some(g) = self.gpu_context() {
+            g.observe(mklight_gpu::resident::PlanStats {
+                fallback_count: count as u64,
+                stages: vec![mklight_gpu::resident::StageStats {
+                    name: name.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+    }
+
     fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
         None
     }

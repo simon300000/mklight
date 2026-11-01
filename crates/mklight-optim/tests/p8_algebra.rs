@@ -156,3 +156,70 @@ fn all_algebra_metal_matches_emulation() {
         assert_eq!(raw_algebra(Arc::new(cpu)), raw_algebra(Arc::new(b)));
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn cancellation_during_device_product_releases_leases() {
+    use mklight_gpu::{Df32, optim_ops::Request, resident::*};
+    use std::time::{Duration, Instant};
+    let b = Arc::new(
+        mklight_metal::MetalBackend::new()
+            .unwrap()
+            .expect("P8 requires host Metal"),
+    );
+    let g = GpuContext::new(
+        b.clone(),
+        Snapshot::new(mklight_core::samples::singlet()).unwrap(),
+    );
+    let mut p = g.plan();
+    let (m, k, n) = (64, 32768, 64);
+    let left = g
+        .fill(&mut p, [1, m, k], |out: &mut [Df32]| {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = Df32::from_f64((i % 13) as f64 / 13.);
+            }
+        })
+        .unwrap();
+    let right = g
+        .fill(&mut p, [1, k, n], |out: &mut [Df32]| {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = Df32::from_f64((i % 17) as f64 / 17.);
+            }
+        })
+        .unwrap();
+    let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, m, n]));
+    p.operations.push(ResidentOp::Optim(Request::Product {
+        left,
+        right,
+        transpose_left: false,
+        output,
+    }));
+    p.outputs = vec![output];
+    let ctx = JobContext::new();
+    let pending = b.submit_plan(p, &ctx).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut prior = 0.;
+    while ctx.progress.fraction() == 0. && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+        let f = ctx.progress.fraction();
+        assert!(f >= prior);
+        prior = f;
+    }
+    assert!(
+        prior > 0. && prior < 1.,
+        "device progress must precede cancellation: {prior}"
+    );
+    let start = Instant::now();
+    ctx.cancel.cancel();
+    assert!(matches!(
+        pending.wait(),
+        Err(mklight_core::MkError::Cancelled)
+    ));
+    let elapsed = start.elapsed();
+    eprintln!(
+        "P8 cancellation observed_seconds={} progress={prior}",
+        elapsed.as_secs_f64()
+    );
+    assert!(elapsed < Duration::from_secs(2));
+    assert!(b.resident_cache_stats().pooled_bytes <= 256 * 1024 * 1024);
+}

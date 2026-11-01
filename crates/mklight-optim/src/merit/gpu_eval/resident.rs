@@ -21,12 +21,27 @@ impl Drop for Uploaded<'_> {
 fn records<T: bytemuck::Pod>(
     g: &GpuContext,
     p: &mut ResidentPlan,
-    rows: &[T],
+    count: usize,
+    mut value: impl FnMut(usize) -> MkResult<T>,
 ) -> MkResult<PlanView> {
-    g.fill(p, [rows.len(), size_of::<T>() / 4], |out: &mut [u32]| {
-        out.copy_from_slice(bytemuck::cast_slice(rows))
-    })
+    let buffer = g.backend.fill_buffer(
+        BufferDesc::new(ElementType::U32, [count, size_of::<T>() / 4]),
+        &mut |mut fill| {
+            if count > 0 {
+                for (i, out) in bytemuck::cast_slice_mut::<_, T>(fill.as_mut_slice::<u32>()?)
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *out = value(i)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    let id = p.import(buffer.view());
+    p.view(id)
 }
+#[allow(clippy::too_many_arguments)]
 fn append(
     g: &GpuContext,
     p: &mut ResidentPlan,
@@ -37,19 +52,19 @@ fn append(
     last: usize,
     clip: bool,
     tolerance: f32,
+    ctx: &JobContext,
 ) -> MkResult<a::ResidentHits> {
-    let samples: Vec<_> = probes
-        .iter()
-        .enumerate()
-        .map(|(i, q)| {
-            a::Sample::new(
-                q.pupil,
-                fields[&(q.candidate, q.field, q.wavelength)] as u32,
-                i as u64,
-            )
-        })
-        .collect();
-    let samples = records(g, p, &samples)?;
+    let samples = records(g, p, probes.len(), |i| {
+        if i % 4096 == 0 {
+            ctx.check()?;
+        }
+        let q = &probes[i];
+        Ok(a::Sample::new(
+            q.pupil,
+            fields[&(q.candidate, q.field, q.wavelength)] as u32,
+            i as u64,
+        ))
+    })?;
     let steps = g.fill(p, [last], |out: &mut [u32]| {
         for (i, v) in out.iter_mut().enumerate() {
             *v = (i + 1) as u32;
@@ -118,19 +133,27 @@ fn trace_result(
 pub(crate) fn evaluate(
     g: &GpuContext,
     cpu: &TraceEvaluator,
-    systems: &[OpticalSystem],
+    tracers: &[Arc<SequentialTracer>],
     operands: &[&Operand],
     template: Option<(&systems::UploadedSystem, &[systems::Candidate])>,
     ctx: &JobContext,
 ) -> MkResult<Vec<Vec<OperandValue>>> {
     ctx.check()?;
-    let tracers: Vec<_> = systems
-        .par_iter()
-        .map(|s| {
-            cpu.tracer(s)
-                .map_err(|e| MkError::Unsupported(format!("candidate tracer: {e:?}")))
-        })
-        .collect::<MkResult<_>>()?;
+    let preparation = std::time::Instant::now();
+    let wavefront = operands.iter().any(|o| {
+        matches!(
+            o.kind,
+            OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
+        )
+    });
+    let aggregates = operands.iter().all(|o| {
+        matches!(
+            o.kind,
+            OperandKind::RmsSpot { .. }
+                | OperandKind::SpotCentroid { .. }
+                | OperandKind::WavefrontRms { .. }
+        )
+    });
     if tracers.is_empty() {
         return Ok(vec![]);
     }
@@ -161,7 +184,6 @@ pub(crate) fn evaluate(
     let mut chiefs = Vec::new();
     let mut batches: BTreeMap<(bool, usize), Vec<Probe>> = BTreeMap::new();
     let mut fields = BTreeMap::new();
-    let mut metadata = Vec::new();
     let mut refs = Vec::new();
     for (ci, tr) in tracers.iter().enumerate() {
         let (mut c, plan) = Candidate::planned(cpu, tr, operands);
@@ -177,25 +199,8 @@ pub(crate) fn evaluate(
         for f in field_keys {
             all.insert((f, tr.system().primary_wavelength));
         }
-        let aiming = cpu
-            .settings()
-            .tracer
-            .aiming
-            .unwrap_or(tr.system().system().ray_aiming);
         for &(f, w) in &all {
-            let point = c
-                .field(f)
-                .map_err(|e| MkError::Unsupported(format!("field: {e:?}")))?
-                .point;
-            fields.insert((ci, f, w), metadata.len());
-            metadata.push(a::FieldSpec::new(
-                tr.system(),
-                tr.paraxial(),
-                point,
-                ci as u32,
-                w as u32,
-                aiming,
-            )?);
+            fields.insert((ci, f, w), fields.len());
             chiefs.push(Probe {
                 candidate: ci,
                 field: f,
@@ -210,8 +215,11 @@ pub(crate) fn evaluate(
             ]);
         }
         for (gi, (&key, sampling)) in plan.groups.iter().enumerate() {
-            let (nodes, symmetry) = c.group_nodes(key.0, sampling);
+            let (nodes, symmetry) = c.group_nodes_from(key.0, sampling, g.pupil_nodes(sampling));
             for (i, node) in nodes.iter().enumerate() {
+                if i % 4096 == 0 {
+                    ctx.check()?;
+                }
                 batches
                     .entry((cpu.settings().clip, last))
                     .or_default()
@@ -223,7 +231,11 @@ pub(crate) fn evaluate(
                         dest: Dest::Node(gi as u32, i as u32),
                     });
             }
-            let failed = vec![NodeRay::FAILED; nodes.len()];
+            let failed = if aggregates {
+                Vec::new()
+            } else {
+                vec![NodeRay::FAILED; nodes.len()]
+            };
             c.groups
                 .insert(key, Candidate::group_rays(nodes, symmetry, failed));
         }
@@ -259,7 +271,46 @@ pub(crate) fn evaluate(
         }
         candidates.push((c, plan));
     }
-    let metadata = records(g, &mut p, &metadata)?;
+    let field_keys: Vec<_> = fields.keys().copied().collect();
+    let field_spec = |(ci, f, w): (usize, FieldKey, usize)| {
+        ctx.check()?;
+        let tr = &tracers[ci];
+        let point = candidates[ci]
+            .0
+            .field(f)
+            .map_err(|e| MkError::Unsupported(format!("field: {e:?}")))?
+            .point;
+        a::FieldSpec::new(
+            tr.system(),
+            tr.paraxial(),
+            point,
+            ci as u32,
+            w as u32,
+            tr.aiming(),
+        )
+    };
+    let metadata = records(g, &mut p, field_keys.len(), |i| field_spec(field_keys[i]))?;
+    // P1's seed-table choice is per candidate, not a side effect of which
+    // other candidates share its command. Partition only at that boundary.
+    let mut field_counts = vec![0usize; tracers.len()];
+    for &(ci, _, _) in &field_keys {
+        field_counts[ci] += 1;
+    }
+    let mut partitions = Vec::new();
+    for (key, probes) in batches {
+        let mut counts = vec![0usize; tracers.len()];
+        for q in &probes {
+            counts[q.candidate] += 1;
+        }
+        let (table, chief): (Vec<_>, Vec<_>) = probes.into_iter().partition(|q| {
+            counts[q.candidate] >= a::TABLE_MIN_RAYS_PER_ROW * field_counts[q.candidate]
+        });
+        for probes in [chief, table] {
+            if !probes.is_empty() {
+                partitions.push((key, probes));
+            }
+        }
+    }
     let tolerance = tracers
         .iter()
         .map(|t| {
@@ -275,36 +326,69 @@ pub(crate) fn evaluate(
         })
         .fold(f32::INFINITY, f32::min);
     let ch = append(
-        g, &mut p, &set, &metadata, &chiefs, &fields, last, false, tolerance,
+        g, &mut p, &set, &metadata, &chiefs, &fields, last, false, tolerance, ctx,
     )?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
     let mut outputs = Vec::new();
     let mut moment_segments = Vec::new();
     let mut fit_inputs = Vec::new();
-    for (&(clip, last), probes) in &batches {
+    for (key, probes) in &partitions {
+        let (clip, last) = *key;
+        let selected: std::collections::BTreeSet<_> = probes.iter().map(|q| q.candidate).collect();
+        let subset: Vec<_> = field_keys
+            .iter()
+            .copied()
+            .filter(|k| selected.contains(&k.0))
+            .collect();
+        let (aim_metadata, aim_fields) = if selected.len() == tracers.len() {
+            (metadata.clone(), fields.clone())
+        } else {
+            (
+                records(g, &mut p, subset.len(), |i| field_spec(subset[i]))?,
+                subset
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, k)| (k, i))
+                    .collect(),
+            )
+        };
         let h = append(
-            g, &mut p, &set, &metadata, probes, &fields, last, clip, tolerance,
+            g,
+            &mut p,
+            &set,
+            &aim_metadata,
+            probes,
+            &aim_fields,
+            last,
+            clip,
+            tolerance,
+            ctx,
         )?;
         let index = g.fill(&mut p, [probes.len()], |out: &mut [u32]| {
             for (o, q) in out.iter_mut().zip(probes) {
                 *o = fields[&(q.candidate, q.field, q.wavelength)] as u32;
             }
         })?;
-        let opd = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [probes.len()]));
-        let status = p.scratch(BufferDesc::new(ElementType::U32, [probes.len()]));
-        p.operations
-            .push(ResidentOp::Geometry(mklight_gpu::geometry::Request::Opd(
-                mklight_gpu::geometry::Opd {
-                    axial: false,
-                    hits: h.clone(),
-                    chiefs: ch.clone(),
-                    chief_index: index.clone(),
-                    reference: reference.clone(),
-                    output: opd,
-                    status,
-                },
-            )));
+        let (opd, status) = if wavefront {
+            let opd = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [probes.len()]));
+            let status = p.scratch(BufferDesc::new(ElementType::U32, [probes.len()]));
+            p.operations
+                .push(ResidentOp::Geometry(mklight_gpu::geometry::Request::Opd(
+                    mklight_gpu::geometry::Opd {
+                        axial: false,
+                        hits: h.clone(),
+                        chiefs: ch.clone(),
+                        chief_index: index.clone(),
+                        reference: reference.clone(),
+                        output: opd,
+                        status,
+                    },
+                )));
+            (opd, status)
+        } else {
+            (h.status, h.status)
+        };
         p.outputs
             .extend([h.rays.floats, h.status, h.rays.report, opd, status]);
         let mut segments = Vec::new();
@@ -376,7 +460,11 @@ pub(crate) fn evaluate(
                     mask: Some(p.view(mask)?),
                     mask_value: 1,
                     weights: Some(weights),
-                    max_segment_len: probes.len(),
+                    max_segment_len: bounds
+                        .windows(2)
+                        .map(|w| (w[1] - w[0]) as usize)
+                        .max()
+                        .unwrap_or(0),
                     reference: None,
                     mode: mklight_gpu::ReduceMode::DoubleFloat,
                     kind: mklight_gpu::collectives::SegmentKind::Moments2,
@@ -404,11 +492,22 @@ pub(crate) fn evaluate(
     if let Some(status) = map {
         p.outputs.push(status);
     }
+    let seconds = preparation.elapsed().as_secs_f64();
+    g.observe(PlanStats {
+        wall_seconds: seconds,
+        stages: vec![StageStats {
+            name: "candidate preparation".into(),
+            wall_seconds: seconds,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
     let result = g.submit(p, ctx)?;
+    let assembly = std::time::Instant::now();
     let mut unresolved = std::collections::BTreeSet::new();
     if map.is_some() {
         let v = g.backend.read_view(result.outputs.last().unwrap().view())?;
-        for (ci, status) in v.as_slice::<u32>()?.chunks_exact(2).enumerate() {
+        for (ci, status) in v.as_slice::<u32>()?.as_chunks::<2>().0.iter().enumerate() {
             if status[0] != 0 {
                 unresolved.insert(ci);
             }
@@ -446,13 +545,20 @@ pub(crate) fn evaluate(
                 unresolved.insert(q.candidate);
             }
         }
-        let opd = views[offset + 3].as_slice::<Df32>()?;
+        if aggregates {
+            continue;
+        }
+        let opd = if wavefront {
+            Some(views[offset + 3].as_slice::<Df32>()?)
+        } else {
+            None
+        };
         let valid = views[offset + 4].as_slice::<u32>()?;
         for (i, q) in probes.iter().enumerate() {
             let hit = trace_result(f, status, probes.len(), i);
             let node = NodeRay {
                 pos: hit.as_ref().ok().map(|r| [r.ray.pos.x, r.ray.pos.y]),
-                opd: (valid[i] == 0).then(|| opd[i].to_f64()),
+                opd: opd.and_then(|v| (valid[i] == 0).then(|| v[i].to_f64())),
             };
             let (c, plan) = &mut candidates[q.candidate];
             match q.dest {
@@ -518,5 +624,15 @@ pub(crate) fn evaluate(
         })
         .collect();
     drop(uploaded);
+    let seconds = assembly.elapsed().as_secs_f64();
+    g.observe(PlanStats {
+        wall_seconds: seconds,
+        stages: vec![StageStats {
+            name: "operand assembly".into(),
+            wall_seconds: seconds,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
     Ok(values)
 }

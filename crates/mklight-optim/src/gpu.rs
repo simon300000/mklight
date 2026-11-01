@@ -4,18 +4,29 @@
 use crate::linalg::Matrix;
 use mklight_core::{JobContext, MkResult, RunInfo, Snapshot};
 use mklight_gpu::{ComputeBackend, Df32, optim_ops::Request, resident::*};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 mod evaluator;
 mod first_order;
-mod illumination;
+mod qualification;
 pub mod scheduler;
+mod tolerance;
 pub use evaluator::{EvaluationStats, ResidentEvaluator};
 
+type SamplingCache = Vec<(
+    crate::merit::PupilSampling,
+    Arc<Vec<crate::merit::PupilNode>>,
+)>;
 #[derive(Clone)]
 pub struct GpuContext {
     pub backend: Arc<dyn ComputeBackend>,
     pub snapshot: Snapshot,
+    pub identity: PlanIdentity,
     stats: Arc<Mutex<PlanStats>>,
+    numeric_outputs_read: Arc<AtomicBool>,
+    samplings: Arc<Mutex<SamplingCache>>,
     native: Arc<Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
 }
 impl GpuContext {
@@ -23,12 +34,42 @@ impl GpuContext {
         Self {
             backend,
             snapshot,
+            identity: PlanIdentity::default(),
             stats: Arc::default(),
+            numeric_outputs_read: Arc::default(),
+            samplings: Arc::default(),
             native: Arc::default(),
         }
     }
+    pub(crate) fn pupil_nodes(
+        &self,
+        sampling: &crate::merit::PupilSampling,
+    ) -> Vec<crate::merit::PupilNode> {
+        let mut cache = self.samplings.lock().unwrap();
+        if let Some((_, nodes)) = cache.iter().find(|(s, _)| s == sampling) {
+            return nodes.as_ref().clone();
+        }
+        let nodes = sampling.nodes();
+        let bytes = nodes.len() * size_of::<crate::merit::PupilNode>();
+        if bytes <= 64 * 1024 * 1024 {
+            while cache
+                .iter()
+                .map(|(_, n)| n.len() * size_of::<crate::merit::PupilNode>())
+                .sum::<usize>()
+                + bytes
+                > 64 * 1024 * 1024
+                || cache.len() >= 16
+            {
+                cache.remove(0);
+            }
+            cache.push((*sampling, Arc::new(nodes.clone())));
+        }
+        nodes
+    }
     pub fn plan(&self) -> ResidentPlan {
         let mut p = ResidentPlan::new(self.snapshot.clone());
+        p.identity = self.identity.clone();
+        p.identity.requested_backend = Some(self.backend.info().backend_id());
         p.settings = serde_json::json!({"optim_plan_version":mklight_gpu::optim_ops::VERSION});
         p
     }
@@ -73,11 +114,15 @@ impl GpuContext {
     }
     pub fn values(&self, r: &PlanResult, index: usize) -> MkResult<Vec<f64>> {
         let view = self.backend.read_view(r.outputs[index].view())?;
-        Ok(view
+        let values: Vec<_> = view
             .as_slice::<Df32>()?
             .iter()
             .map(|v| v.to_f64())
-            .collect())
+            .collect();
+        if values.iter().any(|v| v.is_finite()) {
+            self.numeric_outputs_read.store(true, Ordering::Relaxed);
+        }
+        Ok(values)
     }
     pub fn stats(&self) -> PlanStats {
         self.stats.lock().unwrap().clone()
@@ -151,11 +196,15 @@ impl GpuContext {
         entry["last_run"] = serde_json::to_value(info).unwrap();
     }
     pub fn record(&self, info: &mut RunInfo) {
+        if self.numeric_outputs_read.load(Ordering::Relaxed) {
+            info.backend = self.backend.info().backend_id();
+            info.precision = self.backend.precision().model;
+        }
         info.settings["optim_native_stages"] =
             serde_json::to_value(&*self.native.lock().unwrap()).unwrap();
         let stats = self.stats.lock().unwrap();
         info.settings["optim_resident"] = serde_json::json!({"version":mklight_gpu::optim_ops::VERSION,
-            "device":self.backend.info(),"precision":self.backend.precision(),"plans":*stats});
+            "device":self.backend.info(),"precision":self.backend.precision(),"identity":self.identity,"plans":*stats});
     }
     /// Difference a complete set of successful stencils in a single command.
     pub fn differences(
@@ -167,15 +216,19 @@ impl GpuContext {
         steps: &[[f64; 2]],
         ctx: &JobContext,
     ) -> MkResult<Matrix> {
+        ctx.check()?;
+        if o == 0 {
+            return Ok(Matrix::zeros(0, rows.len()));
+        }
         let mut p = self.plan();
         let v = self.df(&mut p, [b, o], values)?;
         let indices = self.fill(&mut p, [rows.len(), 3], |out: &mut [u32]| {
-            for (a, b) in out.chunks_exact_mut(3).zip(rows) {
+            for (a, b) in out.as_chunks_mut::<3>().0.iter_mut().zip(rows) {
                 a.copy_from_slice(b);
             }
         })?;
         let coeff = self.fill(&mut p, [rows.len(), 2], |out: &mut [Df32]| {
-            for (a, b) in out.chunks_exact_mut(2).zip(steps) {
+            for (a, b) in out.as_chunks_mut::<2>().0.iter_mut().zip(steps) {
                 a[0] = Df32::from_f64(b[0]);
                 a[1] = Df32::from_f64(b[1]);
             }
@@ -202,14 +255,29 @@ impl GpuContext {
                 "FD stencil row outside the batch".into(),
             ));
         }
-        Ok(Matrix::from_row_major(
-            o,
-            rows.len(),
-            self.values(&result, 0)?,
-        ))
+        let mut data = self.values(&result, 0)?;
+        if data.iter().any(|v| !v.is_finite()) {
+            self.observe(PlanStats {
+                fallback_count: rows.len() as u64,
+                stages: vec![StageStats {
+                    name: "FD output range reference".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            for i in 0..o {
+                for (j, (row, step)) in rows.iter().zip(steps).enumerate() {
+                    let base = values[row[0] as usize * o + i];
+                    data[i * rows.len() + j] = step[0] * (values[row[1] as usize * o + i] - base)
+                        + step[1] * (values[row[2] as usize * o + i] - base);
+                }
+            }
+        }
+        Ok(Matrix::from_row_major(o, rows.len(), data))
     }
     /// A batch of weighted damped QR solves, retaining factors for callers
     /// that want device products. Damping augments the matrix, never J^T J.
+    #[allow(clippy::too_many_arguments)]
     pub fn least_squares(
         &self,
         j: &[f64],
@@ -398,5 +466,56 @@ impl<P: crate::problem::Problem> crate::problem::Problem for ResidentProblem<P> 
         ctx: &JobContext,
     ) -> Option<MkResult<crate::problem::Evaluation>> {
         Some(crate::problem::evaluate_one(&self.problem, x, ctx))
+    }
+}
+
+impl GpuContext {
+    pub(crate) fn gradient(
+        &self,
+        j: &Matrix,
+        r: &[f64],
+        scales: &[f64],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<f64>> {
+        let mut p = self.plan();
+        if scales.iter().any(|v| !v.is_finite()) {
+            self.observe(PlanStats {
+                fallback_count: 1,
+                stages: vec![StageStats {
+                    name: "gradient range reference".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            return Ok(j.tr_mul_vec(r));
+        }
+        let norm = r.iter().map(|v| v.abs()).fold(0., f64::max);
+        let norm = if norm == 0. { 1. } else { norm };
+        let left = self.fill(&mut p, [1, j.rows, j.cols], |out: &mut [Df32]| {
+            for (i, o) in out.iter_mut().enumerate() {
+                let scale = scales[i % j.cols];
+                *o = Df32::from_f64(if scale == 0. { 0. } else { j.data[i] / scale });
+            }
+        })?;
+        let right = self.fill(&mut p, [1, j.rows, 1], |out: &mut [Df32]| {
+            for (o, &r) in out.iter_mut().zip(r) {
+                *o = Df32::from_f64(r / norm);
+            }
+        })?;
+        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, j.cols, 1]));
+        p.operations.push(ResidentOp::Optim(Request::Product {
+            left,
+            right,
+            transpose_left: true,
+            output,
+        }));
+        p.outputs = vec![output];
+        let result = self.submit(p, ctx)?;
+        Ok(self
+            .values(&result, 0)?
+            .into_iter()
+            .zip(scales)
+            .map(|(v, &s)| v * s * norm)
+            .collect())
     }
 }

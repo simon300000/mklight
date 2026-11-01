@@ -4,7 +4,7 @@
 use crate::{Df32, resident::*};
 use mklight_core::MkResult;
 mod cpu;
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = crate::consts::MKL_OPTIM_VERSION;
 
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -159,7 +159,10 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             input(values, D, 2)?;
             input(rows, U32, 2)?;
             input(steps, D, 2)?;
-            if values.desc.shape[1] == 0 || rows.desc.shape[1] != 3 || steps.desc.shape != [rows.desc.shape[0], 2] {
+            if values.desc.shape[1] == 0
+                || rows.desc.shape[1] != 3
+                || steps.desc.shape != [rows.desc.shape[0], 2]
+            {
                 return Err(bad("optim stencils"));
             }
             output(p, *o, D, [values.desc.shape[1], rows.desc.shape[0]])?;
@@ -213,7 +216,8 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             let [b, m, n] = jacobian.desc.shape[..] else {
                 unreachable!()
             };
-            if n == 0 || residuals.desc.shape != [b, m]
+            if n == 0
+                || residuals.desc.shape != [b, m]
                 || weights.desc.shape != [m]
                 || diagonal.desc.shape != [b, n]
                 || !damping.is_finite()

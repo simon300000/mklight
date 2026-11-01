@@ -479,6 +479,16 @@ impl Sub {
                 gn,
             });
         }
+        if let Some(gpu) = gpu.filter(|_| j.rows < j.cols) {
+            gpu.observe(mklight_gpu::resident::PlanStats {
+                fallback_count: 1,
+                stages: vec![mklight_gpu::resident::StageStats {
+                    name: "underdetermined trust region reference".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
         Ok(Self::new(j, r, d))
     }
     fn transform(&self, v: &[f64], ctx: &JobContext) -> MkResult<Vec<f64>> {
@@ -723,8 +733,16 @@ fn inner<P: Problem + ?Sized>(
             }
         }
         c.failed = failed;
-        let g = jm.tr_mul_vec(&r);
         let cn = jm.column_norms();
+        let g = if let Some(gpu) = c.p.gpu_context() {
+            match gpu.gradient(&jm, &r, &cn, &c.mon.job) {
+                Ok(g) => g,
+                Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
+                Err(e) => return Err(e),
+            }
+        } else {
+            jm.tr_mul_vec(&r)
+        };
         for j in 0..n {
             if cn[j] > c.d[j] {
                 c.d[j] = cn[j];
