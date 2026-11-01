@@ -1,1 +1,18 @@
-{"version":1,"evidence":"P11 consolidated quiet-host benchmark pending","source_build":null,"device":null,"os_build":null,"kernel_build":null,"observations":[]}
+{
+  "version": 1,
+  "evidence": "P11 consolidated quiet-host release measurements; docs/GPU.md section 9.2",
+  "measurement_commit": "11ac0764e490c495915050afea4b408ae7d5e697",
+  "source_build": "9c61ebcdfd6c0e95dc5367054a8ac981fe5d5a8d8dd59b5fe2898e6d04fb2b54",
+  "device": "Apple M2 Pro",
+  "os_build": "26A434",
+  "kernel_build": "mklight-metal 0.1.0: precompiled metallib, flags: -std=metal3.0 -mmacosx-version-min=13.0 -fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off -Wall -Werror; source 2393185f5bbd05c1fa7c7df45ab731660d1631755b228a959bf5e2258926200b",
+  "rayon_threads": 12,
+  "rule": "10 paired warm runs; CPU median <= 0.85 Metal median and CPU p75 < Metal p25; no extrapolation",
+  "measured_pairs": 10,
+  "residency": "warm exact-input session/device caches; paired first calls and isolated cold starts recorded separately",
+  "observations": [
+    {"rows":400,"columns":100,"work":4000000,"cpu_seconds":{"median":0.0040136875,"p95":0.004394125,"p75":0.004154333},"metal_seconds":{"median":0.010254708,"p95":0.010603208,"p25":0.009609541},"cold_cpu_seconds":0.003070333,"cold_metal_seconds":0.017043333,"maximum_solution_error":4.8183679268731794e-14,"decision":"cpu_reference"},
+    {"rows":32,"columns":8,"work":2048,"cpu_seconds":{"median":2.667e-06,"p95":3.25e-06,"p75":3e-06},"metal_seconds":{"median":0.0011659374999999999,"p95":0.001208208,"p25":0.001146291},"cold_cpu_seconds":7.208e-06,"cold_metal_seconds":0.001573792,"maximum_solution_error":7.424616477180734e-16,"decision":"cpu_reference"},
+    {"rows":128,"columns":32,"work":131072,"cpu_seconds":{"median":0.000130063,"p95":0.000145,"p75":0.000137584},"metal_seconds":{"median":0.004198604,"p95":0.004637167,"p25":0.003968875},"cold_cpu_seconds":0.000115292,"cold_metal_seconds":0.005104583,"maximum_solution_error":4.218847493575595e-15,"decision":"cpu_reference"}
+  ]
+}

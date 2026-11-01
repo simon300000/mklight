@@ -1415,6 +1415,13 @@ measured slower at every size (FD differences 0.35–4.7 ms against well under
 `Residuals`/`Difference` requests remain for resident chains whose inputs
 already live on the device.
 
+**P11 policy update:** the work threshold and timings in the next paragraph
+are historical. Explicit device adapters and unknown automatic shapes now
+attempt resident QR. Automatic engine jobs may use exact measured CPU rows,
+matched by host sources/compiler/profile, device, OS/kernel build and worker
+count (`GPU.md` §9.2). There is no scalar `m·n²` heuristic. CPU cost,
+underdetermined and deficient-factor compression stages are named and counted.
+
 The local solver hands its tall QR to P3 once the free-column work
 `m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order
 correction's projections and only the small unpermuted factor is reduced on

@@ -144,7 +144,8 @@ explicitly recorded as host work.
 
 `backend.cost_decision` records automatic selection and the versioned measured
 workload key. Known CPU advantages come from the consolidated end-to-end
-benchmark in GPU §9.2, matched to device, OS, kernel build and exact workload.
+benchmark in GPU §9.2, matched to device, OS/kernel build, host
+sources/compiler/profile, worker count and exact workload.
 Unknown cost prefers qualified Metal. An explicit backend records that cost
 exceptions were bypassed. Deliberate CPU cost choices are reported without a
 warning; accuracy, unsupported and resource failures are warnings. Cold setup

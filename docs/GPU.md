@@ -1393,9 +1393,131 @@ shared apertures and exact coverage signatures preserve the solver partition.
 
 #### Consolidated P11 measurements
 
-The final quiet-host release measurement and exact cost table are in progress;
-no provisional timing in an earlier package sets the engine's automatic policy.
-The P11 evidence records raw workloads, cold/warm status and actual device tests.
+Final release measurements: Apple M2 Pro, macOS build `26A434`, 12 CPU workers. Host sources/compiler/profile `9c61ebcdfd6c0e95dc5367054a8ac981fe5d5a8d8dd59b5fe2898e6d04fb2b54`; strict precompiled Metal `-fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off`. The shader source digest and complete compiler/device/probe records accompany every native run.
+
+The host passed a load/process idle gate before measurement; CPU/Metal calls alternate, with first calls and warm-up separated from ten measured pairs. Medians use both middle samples; p95 is nearest rank (the maximum of ten). The raw session manifest records executable hashes, source commit, environment, load, process inventory and sampled RSS. Earlier wave/fusion numbers and superseded P11 source epochs do not set this policy. Inherited literal `provisional` labels in some package harness headers are superseded by the enclosing final session manifest.
+
+Representative matched calls follow; times are **median / p95 in ms**. The transform row has resident inputs; only complete engine job observations below set engine `auto`. All raw old-Metal comparisons, preparation/transfers, readback/packing, device times, copies, allocations, peaks and fallback counts remain in the package rows.
+
+| Package and workload | CPU f64 | New Metal |
+|---|---:|---:|
+| P0 trace→reduce, Cooke 1M | 49.119 / 54.192 | 24.932 / 26.834 |
+| P1 real aim, Double Gauss 821,904 | 218.084 / 225.569 | 56.700 / 58.409 |
+| P2 skew MFT 1024→2048, resident input | 83.779 / 92.297 | 28.702 / 31.436 |
+| P3 trace→moments, Cooke 1M | 59.180 / 67.776 | 19.640 / 19.886 |
+| P4 prepare 1,024 Cooke candidates | 9.579 / 10.117 | 1.924 / 2.517 |
+| P5 Cooke footprint, 823,473 rays | 842.594 / 847.701 | 428.991 / 442.493 |
+| P6 PSF lattice 1001, pupil 1024, output 2048 | 443.304 / 453.256 | 230.371 / 242.783 |
+| P7 Double Gauss PRT, 1024 pupil | 343.401 / 362.102 | 233.677 / 239.567 |
+| P8 complete LM, 4000×100 | 303.818 / 314.618 | 135.959 / 140.026 |
+| P8 compensated 32-trial tolerance | 8.131 / 8.595 | 142.521 / 150.756 |
+| P9 Double Gauss ghost maps, 20² | 119.509 / 127.044 | 93.359 / 97.297 |
+| P9 Double Gauss ghost maps, 48² | 212.283 / 225.021 | 219.859 / 226.878 |
+| P9 Double Gauss ghost maps, 128² | 590.736 / 634.644 | 758.109 / 819.120 |
+| P10 barrel 400k, axis | 239.962 / 256.002 | 1223.196 / 1228.121 |
+| P10 barrel 400k, 20° | 46.203 / 53.033 | 680.495 / 687.638 |
+
+Where a predecessor exists, the same-input old/new complete calls are retained below. The old merit adapter had weaker candidate checking; this is a cost comparison, not a qualification of that predecessor.
+
+| Matched predecessor | Old Metal ms median / p95 | Resident ms median / p95 |
+|---|---:|---:|
+| P0 Cooke 1M | 31.229 / 32.372 | 24.932 / 26.834 |
+| P3 Cooke 1M moments | 42.634 / 45.511 | 19.640 / 19.886 |
+| P5 Cooke dense footprint | 482.950 / 492.125 | 428.991 / 442.493 |
+| P8 Cooke spot merit B=16 | 1.929 / 2.032 | 2.495 / 2.710 |
+
+**Complete engine policy.** The checked-in cost table retains only clear CPU wins: CPU median ≤85% of Metal median and CPU p75 < Metal p25. Each row matches the exact analysis, snapshot, library and effective settings, plus source/compiler/release profile, OS, device/kernel build and CPU worker count. No size, system or parameter extrapolation is implied. Explicit Metal bypasses costs; unknown combinations prefer qualified Metal. Accuracy-driven CPU completions never become CPU speed evidence or a passed device qualification.
+
+There are 634 measured engine keys: 454 CPU cost preferences, 77 accuracy-reference domains, and 103 retained Metal preferences. The matrix includes all 16 defaults, seven representative geometric sweeps through ~1M rays, all default optimisation/tolerancing jobs, and a configured Cooke search with three choices at each of three glasses, 12 combinations and eight local iterations. Default complete jobs carry schemas, effective settings, exact cost keys and execution evidence in the raw rows.
+
+| Analysis | Measured keys | CPU cost | Accuracy CPU | Retain Metal |
+|---|---:|---:|---:|---:|
+| `best_focus` | 37 | 27 | 0 | 10 |
+| `chief_ray_angle` | 16 | 16 | 0 | 0 |
+| `diffraction_encircled_energy` | 16 | 12 | 0 | 4 |
+| `encircled_energy` | 37 | 1 | 35 | 1 |
+| `field_curvature_distortion` | 16 | 15 | 1 | 0 |
+| `footprint` | 16 | 9 | 1 | 6 |
+| `geometric_mtf` | 37 | 7 | 0 | 30 |
+| `ghost_irradiance` | 16 | 9 | 4 | 3 |
+| `ghost_paths` | 16 | 15 | 1 | 0 |
+| `glass_substitution` | 1 | 1 | 0 | 0 |
+| `grid_distortion` | 16 | 15 | 0 | 1 |
+| `image_simulation` | 16 | 9 | 0 | 7 |
+| `lateral_colour` | 16 | 16 | 0 | 0 |
+| `layout` | 16 | 16 | 0 | 0 |
+| `line_spread` | 16 | 14 | 0 | 2 |
+| `longitudinal_aberration` | 16 | 16 | 0 | 0 |
+| `merit_evaluation` | 16 | 16 | 0 | 0 |
+| `mtf` | 16 | 15 | 0 | 1 |
+| `mtf_vs_field` | 16 | 16 | 0 | 0 |
+| `opd_fan` | 16 | 16 | 0 | 0 |
+| `optimize` | 16 | 16 | 0 | 0 |
+| `polarization_pupil_map` | 16 | 3 | 13 | 0 |
+| `psf` | 16 | 14 | 0 | 2 |
+| `pupil_aberration` | 16 | 16 | 0 | 0 |
+| `ray_fan` | 16 | 16 | 0 | 0 |
+| `ray_grid` | 37 | 30 | 0 | 7 |
+| `relative_illumination` | 16 | 7 | 0 | 9 |
+| `relative_illumination_map` | 16 | 8 | 0 | 8 |
+| `spot_diagram` | 37 | 30 | 0 | 7 |
+| `stray_light` | 16 | 9 | 6 | 1 |
+| `system_transmission` | 16 | 16 | 0 | 0 |
+| `through_focus_mtf` | 16 | 12 | 0 | 4 |
+| `tolerance` | 16 | 16 | 0 | 0 |
+| `wavefront_map` | 16 | 0 | 16 | 0 |
+
+Cold observations are separate: 496 independent CPU and Metal engines/sessions/providers prevent a prior CPU call from warming the Metal engine reference caches. They include construction, setup, qualification and result assembly; backend setup is also reported separately. The paired first calls in the repeat/candidate sweeps describe their initialized shared session, not an independent cold process. Cold individual observations and every warm median/p95 are retained in `engine-costs-all.json` and the raw `P11_COLD` rows.
+
+Representative independent Cooke cold starts below are single observations, not cold medians/p95. The Metal-request total includes its backend setup.
+
+| Cold engine job | CPU total ms | Metal-request total ms | Backend setup ms | Used backend |
+|---|---:|---:|---:|---|
+| `image_simulation` | 206.678 | 523.370 | 3.203 | gpu:metal |
+| `psf` | 47.259 | 140.741 | 2.952 | gpu:metal |
+| `spot_diagram` | 0.584 | 16.640 | 2.666 | gpu:metal |
+| `stray_light` | 14.249 | 73.753 | 2.683 | cpu_reference |
+| `wavefront_map` | 22.254 | 93.038 | 2.865 | cpu_reference |
+
+| Resident call | Peak live plan MiB | Reported warm copied bytes |
+|---|---:|---:|
+| Cooke footprint 823,473 | 172.501 | 0 |
+| PSF lattice 1001 / 1024 / 2048 | 1358.524 | 0 |
+| Double Gauss ghosts 128² | 278.099 | 0 |
+
+These are resident-plan/storage counters, not a zero-copy claim for qualification or public owned results. The engine candidate rows report the separate real validation/owned-output copy totals, candidate IDs/counts and reference time; cold immutable system/operation caches and explicit readback bytes remain separate.
+
+**QR policy.** The provisional 2²⁴ work switch is retired. The forced probe measures actual tall compression, retained Q, readout and the small f64 completion. It is not an augmented-solve proxy. Explicit GPU adapters and unknown automatic shapes attempt resident compression; only exact automatic shape records may prefer CPU.
+
+| Rows × columns | CPU ms median / p95 | Resident ms median / p95 | Automatic shape decision |
+|---|---:|---:|---|
+| 400 × 100 | 4.014 / 4.394 | 10.255 / 10.603 | cpu_reference |
+| 1000 × 100 | 8.654 / 8.689 | 9.854 / 10.332 | qualified_metal |
+| 1600 × 100 | 19.035 / 19.510 | 11.559 / 11.789 | qualified_metal |
+| 2000 × 100 | 24.669 / 25.067 | 12.433 / 20.034 | qualified_metal |
+| 4000 × 100 | 50.199 / 51.128 | 16.766 / 23.121 | qualified_metal |
+| 2000 × 60 | 9.311 / 9.462 | 6.410 / 6.608 | qualified_metal |
+| 4225 × 37 | 8.130 / 8.257 | 5.656 / 5.751 | qualified_metal |
+| 32 × 8 | 0.003 / 0.003 | 1.166 / 1.208 | cpu_reference |
+| 128 × 32 | 0.130 / 0.145 | 4.199 / 4.637 | cpu_reference |
+| 4000 × 32 | 6.827 / 7.507 | 6.129 / 7.524 | qualified_metal |
+| 65536 × 37 | 267.163 / 286.784 | 46.402 / 49.793 | qualified_metal |
+
+The different column counts rule out a universal `m·n²` crossover. Rank-deficient and underdetermined reference factors remain named, counted numerical fallbacks.
+
+**Qualification and limits.** Both precompiled and runtime-source libraries run the complete requested-result matrix. Default EE bin ambiguity, ill-conditioned on-axis Seidel/PRT axes and exact discrete/mask disagreements remain reported f64 domains. Those outputs are not counted as Metal results. No candidate envelope is assumed: changed systems receive all-surface geometry and complete operand f64 checks, and finalists are reference-scored. These checks and counted owned validation readbacks remain expensive; primary resident fill/read-view paths avoid staging copies, but the whole validation chain is not claimed zero-copy.
+
+Qualified default maxima: `max_direction` = 4.21012e-08, `max_opd_waves` = 8.01771e-05, `max_position_mm` = 1.89671e-06, `maximum_image_energy_relative` = 4.80666e-07, `maximum_image_l1_relative` = 4.90827e-07. Undefined masks and discrete outputs agree exactly; known answers, conservation, CPU-f32 emulation, f64 cross-checks, cancellation and concurrent repeats are separate tests.
+
+The stray wavefront split was implemented with source-local depth-first Philox state and passed the transport checks, then rejected after alternating A/B measurements showed queue/global-state overhead. Production transport is restored unchanged. Complete transport, not first-hit throughput, determines its cost exceptions. Bounded P1 aiming calibration and the per-candidate reference workload remain performance limits; no wider precision or parameter envelope is claimed.
+
+Peak sampled process RSS over the final tasks: 4.401 GiB. This is a one-second sample, not a process high-water guarantee. Per-plan live peaks exclude immutable caches, idle pools and host metadata; those counters remain separate. Owned final/validation copies and explicit readback are reported separately from in-place resident views; overlapping context/backend counters must not be summed.
+
+The binding scratchpad `P11-evidence.md` and final `P11-quiet/` directory contain commands, complete before/after rows, source/executable identities, numerical evidence, cold/warm distributions, copies/peaks, command maxima and the scope/gap ledger. Only the final frozen-source quiet session supplies the checked-in cost observations.
+
+Final reported warm command maxima: p7-radiometry.log: 38.548 ms, p7-dense-pupils.log: 43.250 ms, p9-ghosts.log: 16.540 ms. Dense film/PRT work calibrates above 16K items with a 32K tile cap; large full-record resident traces complete 128K-ray tiles. The cheap bare-coating path retains its larger fusion allowance. These controls change submission boundaries, not per-item arithmetic or RNG addressing.
+
+P9 has one 16.540 ms warm outlier above the 10–15 ms aim; its other largest samples are about 13 ms. All remain below the 50 ms cancellation target.
 
 ### 9.3 `auto`, determinism and jobs
 
@@ -1407,7 +1529,9 @@ must qualify. The legacy host-generated Metal analysis bridge and its ray and
 candidate-count heuristics are retired.
 
 The versioned `analysis/cost-evidence.json` table records measured complete-job
-choices for matched device, OS build, kernel/source build and exact workload.
+choices for matched device, OS/kernel build, host source/compiler/profile,
+worker count and exact workload. Host fingerprints exclude only calibration
+data, so recording observations does not invalidate the measured code.
 Unknown cost uses qualified Metal; requests do not time-race backends. Cold
 qualification and warm reuse are reported separately. An explicit CPU cost
 advantage is deliberate and reported without a warning. Small serial host
