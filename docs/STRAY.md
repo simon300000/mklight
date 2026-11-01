@@ -449,3 +449,61 @@ within MC and deterministic pupil-quadrature error. The hybrid DOE test in
 `tests/sequential.rs` compares Primary transmission, spot centroid and RMS
 with the obstruction-checked sequential reference on all extended samples,
 reporting z scores and checking quadrature convergence.
+
+## Resident GPU building blocks (P10, incomplete)
+
+`gpu::prepare_geometry`, `gpu::generate` and `gpu::first_hits` implement
+resident source generation and first-hit queries. They do **not** implement
+stray transport. The complete solver above remains CPU f64; engine dispatch
+and capability flags are unchanged. `stray_ops::Request::Transport` returns
+`Unsupported`. These building blocks cannot qualify a `stray_light` result.
+
+The four existing source measures use the same Philox stream `(seed, ray ID)`
+and the same draw order as the reference, including the wavelength draw
+before the source draws. A source record carries its 64-bit logical ID,
+wavelength and next draw index. Uniforms retain the f64 reference mapping as
+double-float, including the half-ulp that a single f32 uniform would lose.
+Angles are reduced and evaluated in double-float. Small immutable source
+frames and spectrum CDFs are host preparation; rays are generated on device.
+
+The portable compute BVH supports analytic planes, conics and open cylinders,
+including placed/tilted frames, annuli and inside/outside aperture masks.
+Topology is a host-built median tree in preorder with forward escape links;
+traversal is stackless. Coordinates, bounding tests, cancellation-free
+quadratic roots, normals and closest-distance comparisons use double-float.
+The ray origin is moved to the local box entry before evaluating a quadratic.
+Exact distance ties select the lowest original primitive ID. A miss has
+primitive ID `u32::MAX` and zero geometry. Hits carry local points and normals.
+No optical surface is replaced by triangles. Extended sags and scenes over
+4096 primitives return `Unsupported` before allocation: neither approximate
+bounds nor a CPU query hidden inside a GPU result is substituted.
+
+`Geometry` owns reusable immutable shared buffers; inputs are filled through
+`fill_buffer` and final outputs are borrowed through `read_view`.
+`first_hits` returns a `PlanResult` with `RunInfo` identifying the diagnostic
+pipeline, source, seed, ID range and scene fingerprint. It publishes ray and
+hit records, not class maps or an energy ledger. Commands contain up to
+65,536 independent rays and check cancellation between tiles. Output storage
+scales with the requested ray/hit records (128 bytes/ray); there is no
+per-ray host dispatch. Device/wall time, commands, allocations, peak storage
+and copied bytes are reported by the resident runtime.
+
+Owned tests compare same-draw sources and brute-force f64 hits, close
+interfaces, deterministic ties, translated/rotated primitives and all sample
+geometries. The sample scan accepts seven analytic scenes and explicitly
+rejects nine extended-sag scenes. Actual Metal tests require a device and
+exercise both shader origins, the numerics probe, matching FTZ bits, tile
+sizes, concurrent jobs and in-flight cancellation. The host integration and
+stage benchmark harnesses are in `tests/p10_support`; their external manifest
+and raw results are retained with `P10-evidence.md` in the task scratchpad,
+so no shared manifest or lockfile is changed.
+
+Still required for P10 acceptance: extended-sag closest-hit bracketing and
+honest bounds; interaction/BSDF/DOE transport using P7 powers; bounded
+per-source depth-first continuation and split queues; rare-branch forcing,
+roulette and weight windows; every path class, coverage/pass/visit rule and
+energy sink; P3 source-child reductions before variance/covariance, maps and
+signature tallies; and complete transport conservation, partition and
+end-to-end benchmarks. First-hit timings are stage measurements only and
+must not drive automatic solver selection or be compared with the complete
+400k-ray reference transport benchmark as a speedup.
