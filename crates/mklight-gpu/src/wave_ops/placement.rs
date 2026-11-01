@@ -9,7 +9,8 @@ pub enum Placement {
         count: usize,
         output: BufferId,
     },
-    /// Output DF [N,8]: alpha,beta,OPD,gamma,T,object x/y,start direction z.
+    /// Output DF [N,8]: alpha,beta,OPD,gamma,T,object x/y,start direction z;
+    /// `radius` DF [1] is the largest |alpha,beta|.
     Project {
         projection: PlanView,
         status: PlanView,
@@ -22,7 +23,7 @@ pub enum Placement {
         propagation: f32,
         sheet_factor: f32,
         output: BufferId,
-        radii: BufferId,
+        radius: BufferId,
     },
     /// Original lattice only; normalise amplitudes at its chief (or maximum).
     Nodes {
@@ -34,7 +35,8 @@ pub enum Placement {
         infinite: bool,
         output: BufferId,
     },
-    /// All four possible cell triangles participate in the automatic-grid rule.
+    /// Largest OPD slope (DF [1]) of all four possible triangles of every
+    /// cell, for the automatic-grid rule.
     Slopes {
         nodes: PlanView,
         valid: PlanView,
@@ -75,7 +77,7 @@ pub fn validate(r: &Placement, p: &ResidentPlan) -> MkResult<()> {
             propagation,
             sheet_factor,
             output,
-            radii,
+            radius,
             ..
         } => {
             let n = projection.desc.shape.get(1).copied().unwrap_or(0);
@@ -97,7 +99,7 @@ pub fn validate(r: &Placement, p: &ResidentPlan) -> MkResult<()> {
                 return Err(bad("wave placement frame"));
             }
             out(p, *output, DoubleFloat, &[n, 8])?;
-            out(p, *radii, DoubleFloat, &[n])
+            out(p, *radius, DoubleFloat, &[1])
         }
         Placement::Nodes {
             placed,
@@ -126,7 +128,7 @@ pub fn validate(r: &Placement, p: &ResidentPlan) -> MkResult<()> {
             }
             view(nodes, DoubleFloat, &[side, side, 4])?;
             view(valid, U32, &[side, side])?;
-            out(p, *output, DoubleFloat, &[(side - 1) * (side - 1)])
+            out(p, *output, DoubleFloat, &[1])
         }
     }
 }
@@ -149,7 +151,7 @@ pub fn access(r: &Placement) -> Access {
             hits,
             power,
             output,
-            radii,
+            radius,
             ..
         } => {
             let mut v = vec![
@@ -159,7 +161,7 @@ pub fn access(r: &Placement) -> Access {
                 hits.clone(),
             ];
             v.extend(power.clone());
-            (v, vec![*output, *radii])
+            (v, vec![*output, *radius])
         }
         Placement::Nodes {
             placed,
@@ -298,7 +300,7 @@ pub fn cpu(
             propagation,
             sheet_factor,
             output,
-            radii,
+            radius,
         } => {
             let n = projection.desc.shape[1];
             let q = vals::<Df32>(x, projection);
@@ -309,7 +311,7 @@ pub fn cpu(
                 bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(vals(x, v))
             });
             let mut rows = vec![[Df32::ZERO; 8]; n];
-            let mut radius = vec![Df32::ZERO; n];
+            let mut largest = Df32::ZERO;
             let get = |v: &[f32], k, j| Df32::new(v[j * n + k], v[(j + 9) * n + k]);
             for k in 0..n {
                 if k % 4096 == 0 {
@@ -339,12 +341,12 @@ pub fn cpu(
                     dot(source, object_axes[1]),
                     get(start, k, 5),
                 ];
-                radius[k] = (alpha * alpha + beta * beta).sqrt();
+                largest = spec::max(largest, (alpha * alpha + beta * beta).sqrt());
             }
             x.words_mut(*output)
                 .copy_from_slice(bytemuck::cast_slice(&rows));
-            x.words_mut(*radii)
-                .copy_from_slice(bytemuck::cast_slice(&radius));
+            x.words_mut(*radius)
+                .copy_from_slice(bytemuck::cast_slice(&[largest]));
         }
         Placement::Nodes {
             placed,
@@ -469,8 +471,8 @@ pub fn cpu(
             let a = vals::<Df32>(x, nodes).as_chunks::<4>().0;
             let mask = vals::<u32>(x, valid);
             let side = nodes.desc.shape[0];
-            let mut out = vec![Df32::ZERO; (side - 1) * (side - 1)];
-            for (k, g) in out.iter_mut().enumerate() {
+            let mut largest = Df32::ZERO;
+            for k in 0..(side - 1) * (side - 1) {
                 if k % 4096 == 0 {
                     ctl.check()?;
                 }
@@ -482,6 +484,7 @@ pub fn cpu(
                     (j + 1) * side + i + 1,
                     (j + 1) * side + i,
                 ];
+                let mut g = Df32::ZERO;
                 for tri in [[0, 1, 2], [0, 2, 3], [0, 1, 3], [1, 2, 3]] {
                     let [ia, ib, ic] = tri.map(|i| ids[i]);
                     if mask[ia] == 0 || mask[ib] == 0 || mask[ic] == 0 {
@@ -495,14 +498,15 @@ pub fn cpu(
                         for v in [(dw * vy - ew * uy) / det, (ew * ux - dw * vx) / det] {
                             let v = if v.hi < 0. { -v } else { v };
                             if v.to_f64() > g.to_f64() {
-                                *g = v;
+                                g = v;
                             }
                         }
                     }
                 }
+                largest = spec::max(largest, g);
             }
             x.words_mut(*output)
-                .copy_from_slice(bytemuck::cast_slice(&out));
+                .copy_from_slice(bytemuck::cast_slice(&[largest]));
         }
     }
     Ok(())

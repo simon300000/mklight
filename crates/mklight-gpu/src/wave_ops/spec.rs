@@ -184,6 +184,14 @@ pub fn direction(p: &Params, k: usize) -> [Df32; 3] {
 pub fn dot(a: [Df32; 3], b: [Df32; 3]) -> Df32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+/// The kernels' `wless` maximum: lexicographic (hi, lo); NaN never wins.
+pub fn max(a: Df32, b: Df32) -> Df32 {
+    if a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo) {
+        b
+    } else {
+        a
+    }
+}
 pub fn prepare(p: &Params, k: usize, a: f32, c: f32, w: Df32) -> ([f32; 2], [f32; 3]) {
     if c <= 0. {
         return ([0.; 2], [0.; 3]);

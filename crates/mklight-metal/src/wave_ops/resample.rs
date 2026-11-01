@@ -38,123 +38,106 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         None
     };
     let mut counts = if cache { Some(x.allocate(ns)?) } else { None };
-    if cache {
-        let pipeline = x.gpu.pipeline(&PipelineKey::plain("mkl_wave_mask_rows"))?;
-        let tile = ((1usize << 20) / p.edges as usize).max(1);
-        for first in (0..ns).step_by(tile) {
-            ctl.check()?;
-            let mut q = p;
-            q.first = first as u32;
-            q.count = (ns - first).min(tile) as u32;
-            let xr = &*x;
-            let wall = Instant::now();
-            // SAFETY: each row owns its edge-count stride and count slot.
-            let cs = unsafe {
-                xr.gpu.run("pupil mask crossings", |e| {
-                    let (b, o) = xr.buffer(&r.edges);
-                    e.set_buffer(2, b, o);
-                    e.set_buffer_mut(10, crossings.as_mut().unwrap(), 0);
-                    e.set_buffer_mut(11, counts.as_mut().unwrap(), 0);
-                    e.set_bytes(9, &q);
-                    e.dispatch_1d(&pipeline, q.count as usize);
-                    Ok(())
-                })?
-            };
-            stage.command_buffers += 1;
-            stage.device_seconds += cs.gpu_seconds;
-            stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
-            x.stats.parameter_bytes += size_of::<Params>() as u64;
-            ctl.report(
-                0.05 * (first + q.count as usize) as f64 / ns as f64,
-                "pupil mask",
-            );
-        }
-    }
     let names = [
+        "mkl_wave_mask_rows",
         "mkl_wave_owner_clear",
         "mkl_wave_triangles",
         "mkl_wave_raster",
         "mkl_wave_nearest_blocks",
         "mkl_wave_resample",
     ];
+    let pipelines = names
+        .iter()
+        .map(|n| x.gpu.pipeline(&PipelineKey::plain(n)))
+        .collect::<MkResult<Vec<_>>>()?;
+    let ss = r.supersample * r.supersample;
+    // (threads, tile, work units per thread) of each step.
     let sizes = [
-        ns * ns,
-        cells,
-        2 * cells,
-        ns * ns.div_ceil(256),
-        r.size * r.size,
+        (
+            ns,
+            ((1usize << 20) / p.edges.max(1) as usize).max(1),
+            p.edges.max(1) as usize,
+        ),
+        (ns * ns, 1 << 20, 1),
+        (cells, 1 << 20, 1),
+        (
+            2 * cells,
+            ((1 << 20) * cells / (ns * ns)).max(128),
+            (ns * ns).div_ceil(cells),
+        ),
+        (ns * ns.div_ceil(256), (1 << 20) / 256, 256),
+        (r.size * r.size, ((1 << 18) / ss).max(1), 4 * ss),
     ];
-    for step in 0..5 {
-        if step == 3 && nearest.is_none() {
+    let mut dispatches = vec![];
+    for (step, &(total, tile, cost)) in sizes.iter().enumerate() {
+        if (step == 0 && !cache) || (step == 4 && nearest.is_none()) {
             continue;
         }
-        let pipeline = x.gpu.pipeline(&PipelineKey::plain(names[step]))?;
-        let tile = match step {
-            2 => ((1 << 20) * cells / (ns * ns)).max(128),
-            3 => (1 << 20) / 256,
-            4 => ((1 << 18) / (r.supersample * r.supersample)).max(1),
-            _ => 1 << 20,
-        };
-        for first in (0..sizes[step]).step_by(tile) {
-            ctl.check()?;
-            let mut q = p;
-            q.first = first as u32;
-            q.count = (sizes[step] - first).min(tile) as u32;
-            let xr = &*x;
-            let wall = Instant::now();
-            // SAFETY: validated grid extents size the owner raster and triangle
-            // table; all writes target exclusive plan scratch.
-            let cs = unsafe {
-                xr.gpu.run("wave resample", |e| {
-                    let bind = |index, v| {
-                        let (b, o) = xr.buffer(v);
-                        e.set_buffer(index, b, o);
-                    };
-                    bind(0, &r.nodes);
-                    bind(1, &r.valid);
-                    bind(2, &r.edges);
-                    e.set_buffer_mut(3, &mut tris, 0);
-                    e.set_buffer_mut(4, &mut owner, 0);
-                    e.set_buffer_mut(5, &mut amp, 0);
-                    e.set_buffer_mut(6, &mut cov, 0);
-                    e.set_buffer_mut(7, &mut opd, 0);
-                    e.set_buffer_mut(8, &mut diag, 0);
-                    if let (Some(c), Some(n)) = (&crossings, &counts) {
-                        e.set_buffer(10, c, 0);
-                        e.set_buffer(11, n, 0);
-                    } else {
-                        bind(10, &r.nodes);
-                        bind(11, &r.valid);
-                    }
-                    if let Some(n) = nearest.as_mut() {
-                        e.set_buffer_mut(12, n, 0);
-                    } else {
-                        bind(12, &r.valid);
-                    }
-                    if let Some(n) = column_blocks.as_mut() {
-                        e.set_buffer_mut(13, n, 0);
-                    } else {
-                        bind(13, &r.valid);
-                    }
-                    e.set_bytes(9, &q);
-                    if step == 3 {
-                        e.set_pipeline(&pipeline);
-                        e.dispatch_groups([q.count as usize, 1, 1], 256);
-                    } else {
-                        e.dispatch_1d(&pipeline, q.count as usize);
-                    }
-                    Ok(())
-                })?
-            };
-            stage.command_buffers += 1;
-            stage.device_seconds += cs.gpu_seconds;
-            stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
-            x.stats.parameter_bytes += size_of::<Params>() as u64;
-            ctl.report(
-                (step as f64 + (first + q.count as usize) as f64 / sizes[step] as f64) / 5.,
-                "pupil resampling",
-            );
+        for first in (0..total).step_by(tile) {
+            let count = (total - first).min(tile);
+            dispatches.push(((step, first as u32, count as u32), count * cost));
         }
+    }
+    let groups = super::commands(dispatches);
+    for (done, group) in groups.iter().enumerate() {
+        ctl.check()?;
+        let xr = &*x;
+        let wall = Instant::now();
+        // SAFETY: validated grid extents size the owner raster and triangle
+        // table; all writes target exclusive plan scratch, and each mask row
+        // owns its edge-count stride and count slot.
+        let cs = unsafe {
+            xr.gpu.run("wave resample", |e| {
+                let bind = |index, v| {
+                    let (b, o) = xr.buffer(v);
+                    e.set_buffer(index, b, o);
+                };
+                bind(0, &r.nodes);
+                bind(1, &r.valid);
+                bind(2, &r.edges);
+                e.set_buffer_mut(3, &mut tris, 0);
+                e.set_buffer_mut(4, &mut owner, 0);
+                e.set_buffer_mut(5, &mut amp, 0);
+                e.set_buffer_mut(6, &mut cov, 0);
+                e.set_buffer_mut(7, &mut opd, 0);
+                e.set_buffer_mut(8, &mut diag, 0);
+                if let (Some(c), Some(n)) = (crossings.as_mut(), counts.as_mut()) {
+                    e.set_buffer_mut(10, c, 0);
+                    e.set_buffer_mut(11, n, 0);
+                } else {
+                    bind(10, &r.nodes);
+                    bind(11, &r.valid);
+                }
+                if let Some(n) = nearest.as_mut() {
+                    e.set_buffer_mut(12, n, 0);
+                } else {
+                    bind(12, &r.valid);
+                }
+                if let Some(n) = column_blocks.as_mut() {
+                    e.set_buffer_mut(13, n, 0);
+                } else {
+                    bind(13, &r.valid);
+                }
+                for &(step, first, count) in group {
+                    let mut q = p;
+                    q.first = first;
+                    q.count = count;
+                    e.set_bytes(9, &q);
+                    if step == 4 {
+                        e.set_pipeline(&pipelines[step]);
+                        e.dispatch_groups([count as usize, 1, 1], 256);
+                    } else {
+                        e.dispatch_1d(&pipelines[step], count as usize);
+                    }
+                }
+                Ok(())
+            })?
+        };
+        stage.command_buffers += 1;
+        stage.device_seconds += cs.gpu_seconds;
+        stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
+        x.stats.parameter_bytes += (group.len() * size_of::<Params>()) as u64;
+        ctl.report((done + 1) as f64 / groups.len() as f64, "pupil resampling");
     }
     ctl.check()?;
     x.put_output(r.amplitude, amp);

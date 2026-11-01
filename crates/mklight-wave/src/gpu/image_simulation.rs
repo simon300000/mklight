@@ -131,25 +131,30 @@ pub fn build_psf_grid(
         axial += weight * omega;
     }
     let service = PupilTracer::new(b, t, ctx)?;
-    let mut per = vec![];
-    for (i, p) in d.points.iter().enumerate() {
-        let field = t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1]))?;
-        per.push(super::analysis::trace_field(
-            &service,
-            t,
-            &field,
-            i,
-            p.field,
-            &wls,
-            &s.pupil,
-            &ctx.subrange(
-                0.2 + 0.4 * i as f64 / d.points.len() as f64,
-                0.2 + 0.4 * (i + 1) as f64 / d.points.len() as f64,
-            ),
-            &mut stats,
-            &mut warnings,
-        )?);
-    }
+    let prepared = d
+        .points
+        .iter()
+        .map(|p| t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1])))
+        .collect::<MkResult<Vec<_>>>()?;
+    let requests: Vec<_> = d
+        .points
+        .iter()
+        .zip(&prepared)
+        .enumerate()
+        .map(|(i, (p, f))| (i, p.field, f))
+        .collect();
+    let mut per = super::analysis::trace_fields(
+        &service,
+        t,
+        &requests,
+        &wls,
+        &s.pupil,
+        &ctx.subrange(0.2, 0.6),
+        &mut stats,
+        &mut warnings,
+    )?
+    .into_iter()
+    .collect::<MkResult<Vec<_>>>()?;
     let dx = s.psf_spacing_mm.unwrap_or_else(|| {
         per.iter()
             .flat_map(|f| &f.pupils)

@@ -264,17 +264,16 @@ kernel void mkl_wave_statistics_finish(device const float2 *s [[buffer(1)]],devi
     for(uint i=1;i<p[1];++i){device const float2 *b=part+6*i;a[0]=mkl_df_add(a[0],b[0]);a[1]=mkl_df_add(a[1],b[1]);for(uint j=2;j<6;j+=2){if(wless(b[j],a[j]))a[j]=b[j];if(wless(a[j+1],b[j+1]))a[j+1]=b[j+1];}}
     out[0]=mkl_df_sqrt(mkl_df_div(a[0],s[0]));out[1]=mkl_df_sub(a[3],a[2]);out[2]=mkl_df_sqrt(mkl_df_div(a[1],s[0]));out[3]=mkl_df_sub(a[5],a[4]);out[4]=mkl_df_div(mkl_df_add(mkl_df_mul(s[2],s[2]),mkl_df_mul(s[3],s[3])),mkl_df_mul(s[0],s[0]));
 }
-static void wsample(device uint *s,float2 x,float2 y,uint k){s[0]=as_type<uint>(x.x);s[1]=as_type<uint>(x.y);s[2]=as_type<uint>(y.x);s[3]=as_type<uint>(y.y);s[4]=0;s[5]=k;s[6]=0;s[7]=as_type<uint>(1.f);}
+static void wsample(device uint *s,float2 x,float2 y,uint field,uint k){s[0]=as_type<uint>(x.x);s[1]=as_type<uint>(x.y);s[2]=as_type<uint>(y.x);s[3]=as_type<uint>(y.y);s[4]=field;s[5]=k;s[6]=0;s[7]=as_type<uint>(1.f);}
 kernel void mkl_wave_lattice(device uint *samples [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
-    if(id>=p[7])return;uint k=p[6]+id,s=p[0],i,j;float off=0;
-    if(k<s*s){i=k%s;j=k/s;}else{uint t=k-s*s;i=t%(s-1);j=t/(s-1);off=.5f;}
+    if(id>=p[7])return;uint k=p[6]+id,s=p[0],per=s*s,i=k%per%s,j=k%per/s;
     float2 h=mkl_df_div(float2(2,0),float2(float(s-3),0));float c=float(s-1)*.5f;
-    wsample(samples+8*k,mkl_df_mul(mkl_df_sub(float2(float(i)+off,0),float2(c,0)),h),mkl_df_mul(mkl_df_sub(float2(float(j)+off,0),float2(c,0)),h),k);
+    wsample(samples+8*k,mkl_df_mul(mkl_df_sub(float2(float(i),0),float2(c,0)),h),mkl_df_mul(mkl_df_sub(float2(float(j),0),float2(c,0)),h),k/per,k);
 }
 kernel void mkl_wave_survival(device const float2 *samples [[buffer(0)]],device const uint *status [[buffer(1)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
     if(id>=p[7])return;uint k=p[6]+id;float2 x=samples[4*k],y=samples[4*k+1];float2 r=mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y));out[k]=uint(status[k]==0&&wless(r,float2(1,1.0001e-12f)));
 }
-kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const float2 *prev [[buffer(1)]],device const uint *status [[buffer(2)]],device float2 *state [[buffer(3)]],device uint *samples [[buffer(4)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
+kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const float2 *prev [[buffer(1)]],device const uint *status [[buffer(2)]],device float2 *state [[buffer(3)]],device uint *samples [[buffer(4)]],constant uint *p [[buffer(5)]],device const uint *fields [[buffer(6)]],uint id [[thread_position_in_grid]]){
     if(id>=p[7])return;uint k=p[6]+id;device const float2 *e=edges+4*k;float2 a[8]={e[0],e[1],e[2],e[3],float2(0),float2(1,0),float2(0),float2(0)};
     float2 dx=mkl_df_sub(e[2],e[0]),dy=mkl_df_sub(e[3],e[1]),qa=mkl_df_add(mkl_df_mul(dx,dx),mkl_df_mul(dy,dy)),len=mkl_df_sqrt(qa);
     if(p[2]){for(uint j=0;j<8;++j)a[j]=prev[8*k+j];if(a[7].x==0){if(status[16*k]==0)a[4]=a[5];else{float2 lo=a[4],span=mkl_df_sub(a[5],a[4]);uint l=0,h=16;for(uint t=0;t<4;++t){uint m=(l+h)/2;if(status[16*k+m]==0)l=m;else h=m;}a[4]=mkl_df_add(lo,mkl_df_mul_f32(span,float(l)/16));a[5]=mkl_df_add(lo,mkl_df_mul_f32(span,float(h)/16));}float2 span=mkl_df_mul(mkl_df_sub(a[5],a[4]),len),tol=float2(as_type<float>(p[4]),as_type<float>(p[5]));if(!wless(tol,span))a[7]=float2(1,0);}}
@@ -286,7 +285,7 @@ kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const f
     for(uint j=0;j<width;++j){float2 t=(p[3]||a[7].x>0)?a[4]:(j==0?a[5]:mkl_df_add(a[4],mkl_df_mul_f32(mkl_df_sub(a[5],a[4]),float(j)/16)));
         float2 xx=mkl_df_add(e[0],mkl_df_mul(dx,t)),yy=mkl_df_add(e[1],mkl_df_mul(dy,t));
         if(!p[2]){float2 rad=mkl_df_sqrt(mkl_df_add(mkl_df_mul(xx,xx),mkl_df_mul(yy,yy)));if(wless(float2(1,0),rad)){xx=mkl_df_div(xx,rad);yy=mkl_df_div(yy,rad);}}
-        wsample(samples+8*(width*k+j),xx,yy,width*k+j);
+        wsample(samples+8*(width*k+j),xx,yy,fields[k],width*k+j);
     }for(uint j=0;j<8;++j)state[8*k+j]=a[j];
 }
 static float2 wloadhit(device const float *v,uint n,uint k,uint j){return float2(v[j*n+k],v[(j+9)*n+k]);}
@@ -327,12 +326,19 @@ kernel void mkl_wave_nodes(device const float2 *raw [[buffer(0)]],device const u
     if(id>=p.count)return;uint k=p.first+id;for(uint j=0;j<4;++j)out[4*k+j]=0;if(!mask[k])return;
     out[4*k]=mkl_df_div(raw[8*k],wdf(p.sin_max));out[4*k+1]=mkl_df_div(raw[8*k+1],wdf(p.sin_max));out[4*k+2]=raw[8*k+2];out[4*k+3]=mkl_df_div(amp[k].x<0?norm[0]:amp[k],norm[1]);
 }
-kernel void mkl_wave_slopes(device const float2 *nodes [[buffer(0)]],device const uint *mask [[buffer(1)]],device float2 *out [[buffer(5)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+kernel void mkl_wave_slopes(device const float2 *nodes [[buffer(0)]],device const uint *mask [[buffer(1)]],device float2 *out [[buffer(6)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
     if(id>=p.count)return;uint k=p.first+id,s=p.side,i=k%(s-1),j=k/(s-1),ids[4]={j*s+i,j*s+i+1,(j+1)*s+i+1,(j+1)*s+i};uint tris[12]={0,1,2,0,2,3,0,1,3,1,2,3};float2 g=0;
     for(uint t=0;t<4;++t){uint ia=ids[tris[t*3]],ib=ids[tris[t*3+1]],ic=ids[tris[t*3+2]];if(!mask[ia]||!mask[ib]||!mask[ic])continue;
         device const float2 *a=nodes+4*ia,*b=nodes+4*ib,*c=nodes+4*ic;float2 ux=mkl_df_sub(b[0],a[0]),uy=mkl_df_sub(b[1],a[1]),vx=mkl_df_sub(c[0],a[0]),vy=mkl_df_sub(c[1],a[1]),det=mkl_df_sub(mkl_df_mul(ux,vy),mkl_df_mul(uy,vx));
         if(abs(det.x)>1e-20f){float2 dw=mkl_df_sub(b[2],a[2]),ew=mkl_df_sub(c[2],a[2]);float2 v[2]={wabs(mkl_df_div(mkl_df_sub(mkl_df_mul(dw,vy),mkl_df_mul(ew,uy)),det)),wabs(mkl_df_div(mkl_df_sub(mkl_df_mul(ew,ux),mkl_df_mul(dw,vx)),det))};for(uint q=0;q<2;++q)if(wless(g,v[q]))g=v[q];}
     }out[k]=g;
+}
+// Largest of n non-negative DF values (radii, slopes) in 256-value blocks.
+kernel void mkl_wave_max_blocks(device const float2 *v [[buffer(6)]],constant MklWavePlacementParams &p [[buffer(8)]],device float2 *partial [[buffer(9)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint block=p.first+id;float2 m=0;for(uint k=block*256;k<min(p.n,(block+1)*256);++k)if(wless(m,v[k]))m=v[k];partial[block]=m;
+}
+kernel void mkl_wave_max_finish(device float2 *out [[buffer(7)]],constant MklWavePlacementParams &p [[buffer(8)]],device const float2 *partial [[buffer(9)]],uint id [[thread_position_in_grid]]){
+    if(id)return;float2 m=0;for(uint i=0;i<(p.n+255)/256;++i)if(wless(m,partial[i]))m=partial[i];out[0]=m;
 }
 kernel void mkl_wave_centroid(device const float *hits [[buffer(0)]],device const MklPolarizationValue *power [[buffer(1)]],device float2 *out [[buffer(5)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
     if(id>=p.count)return;uint k=p.first+id;for(uint j=0;j<2;++j)out[j*p.n+k]=mkl_df_sub(wloadhit(hits,p.side,k,j),wdf(p.object_axes[0][j]));out[2*p.n+k]=p.power?power[k].power[0]:float2(1,0);
@@ -443,7 +449,8 @@ kernel void mkl_wave_shell_query(device const float2 *v0 [[buffer(0)]],device co
     for(uint j=0;j<p.fields;++j){acc[j*p.queries+query]=sums[j];if(p.finish)out[j*p.queries+query]=sums[j];}
 }
 
-kernel void mkl_wave_wavelength(device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id;out[k]=0;out[p[1]+k]=p[0];}
+kernel void mkl_wave_wavelength(device const uint *indices [[buffer(0)]],device const uint *table [[buffer(1)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id,n=p[1],t=indices[k]*MKL_MAX_WAVELENGTHS+indices[n+k];out[k]=0;out[n+k]=t<p[0]?table[t]:0xffffffffu;}
+kernel void mkl_wave_split(device const uint *in [[buffer(0)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id,j=k/p[3];out[k]=in[p[0]+j*p[1]+k%p[3]];}
 kernel void mkl_wave_sensor_domain_clear(device atomic_uint *out [[buffer(6)]],uint id [[thread_position_in_grid]]){if(id==0)atomic_store_explicit(out,0,memory_order_relaxed);}
 kernel void mkl_wave_sensor_domain(device const float *coverage [[buffer(0)]],device atomic_uint *out [[buffer(6)]],constant MklWaveFftMtfParams &p [[buffer(5)]],uint k [[thread_position_in_grid]]){if(k>=p.count||coverage[k]<=0)return;float2 a=mkl_df_mul(wdf(p.sine),mkl_df_add_f32(mkl_df_div(float2(float(2*(k%p.n)+1),0),float2(float(p.n),0)),-1)),b=mkl_df_mul(wdf(p.sine),mkl_df_add_f32(mkl_df_div(float2(float(2*(k/p.n)+1),0),float2(float(p.n),0)),-1)),gamma=mkl_df_sqrt(mkl_df_sub(mkl_df_sub(float2(1,0),mkl_df_mul(a,a)),mkl_df_mul(b,b)));float2 z=mkl_df_sub(mkl_df_add(mkl_df_mul(wdf(p.frame[0][0]),a),mkl_df_mul(wdf(p.frame[0][1]),b)),mkl_df_mul(wdf(p.frame[0][2]),gamma));if(!isfinite(z.x)||z.x>=0)atomic_fetch_add_explicit(out,1,memory_order_relaxed);}
 

@@ -152,6 +152,23 @@ fn physical_pupil_boundaries_and_wavelength_chunks() {
         for wl in [0, 15, 19] {
             compare_pupil(&b, &t, 1, wl, &settings);
         }
+        // One batch across wavelength chunks: the radiometric wavelength table,
+        // field rows and splits match the CPU-f32 twins bit for bit.
+        let ctx = JobContext::new();
+        let cpu = CpuF32Backend::matching(&b.precision().probe);
+        let pupils: Vec<_> = [0, 15, 19].map(|wl| (t.field(1), wl)).into();
+        let bits = |b: &dyn ComputeBackend| {
+            let service = gpu::PupilTracer::new(b, &t, &ctx).unwrap();
+            let (r, _) = service.trace_many(&pupils, &settings, &ctx).unwrap();
+            r.into_iter()
+                .map(|r| {
+                    let r = r.unwrap().value;
+                    [r.nodes.view(), r.valid.view(), r.pupil.opd.clone()]
+                        .map(|v| b.read_view(v).unwrap().words().to_vec())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&b), bits(&cpu));
         let s = analysis::ThroughFocusSettings {
             fields: mklight_analysis::util::FieldSelection::Index { index: 1 },
             pupil: settings,
@@ -163,7 +180,9 @@ fn physical_pupil_boundaries_and_wavelength_chunks() {
         let a = analysis::through_focus_mtf_analysis_job(&t, &s, &JobContext::new()).unwrap();
         let z =
             gpu::analysis::through_focus_mtf_analysis_job(&b, &t, &s, &JobContext::new()).unwrap();
+        assert_eq!(a.fields[0].curves.len(), z.fields[0].curves.len());
         for (a, z) in a.fields[0].curves.iter().zip(&z.fields[0].curves) {
+            assert_eq!(a.tangential.len(), z.tangential.len());
             for (x, y) in a
                 .tangential
                 .iter()

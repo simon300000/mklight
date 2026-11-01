@@ -1104,3 +1104,79 @@ fn resampling_masks_match_device_emulation() {
         );
     }
 }
+
+/// Bits of every resident channel of a traced pupil, plus its rim loops.
+fn traced_bits(b: &dyn ComputeBackend, r: &gpu::ResidentTracedPupil) -> (Vec<Vec<u32>>, String) {
+    let p = &r.pupil;
+    let words = |v: mklight_gpu::resident::BufferView| b.read_view(v).unwrap().words().to_vec();
+    (
+        vec![
+            words(r.nodes.view()),
+            words(r.valid.view()),
+            words(p.amplitude.view()),
+            words(p.coverage.view()),
+            words(p.opd.clone()),
+        ],
+        format!("{:?} {:?} {:?}", r.mask, r.entrance_rim, r.info),
+    )
+}
+
+/// Batched fields × wavelengths reproduce single-pupil tracing bit for bit
+/// (row indices, split ranges, rim offsets), and the CPU-f32 twins of the
+/// lattice, rim, split, wavelength and placement operations match Metal.
+#[cfg(target_os = "macos")]
+#[test]
+fn batched_pupils_match_single_and_emulation() {
+    let ctx = JobContext::new();
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let cpu = CpuF32Backend::matching(&b.precision().probe);
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    let settings = PupilSettings {
+        rays: 17,
+        amplitude: AmplitudeModel::Radiometric,
+        ..Default::default()
+    };
+    let fields: Vec<_> = (0..t.fields().len()).map(|f| t.field(f)).collect();
+    let pupils: Vec<_> = fields
+        .iter()
+        .flat_map(|&f| (0..t.num_wavelengths()).map(move |wl| (f, wl)))
+        .collect();
+    assert!(pupils.len() > 3);
+    let metal_tracer = gpu::PupilTracer::new(&b, &t, &ctx).unwrap();
+    let (batched, shared) = metal_tracer.trace_many(&pupils, &settings, &ctx).unwrap();
+    assert_eq!(batched.len(), pupils.len());
+    let cpu_tracer = gpu::PupilTracer::new(&cpu, &t, &ctx).unwrap();
+    let (emulated, _) = cpu_tracer.trace_many(&pupils, &settings, &ctx).unwrap();
+    assert_eq!(emulated.len(), pupils.len());
+    for (k, (&(f, wl), (r, e))) in pupils.iter().zip(batched.iter().zip(&emulated)).enumerate() {
+        let r = r.as_ref().unwrap();
+        let single = metal_tracer.trace(f, wl, &settings, &ctx).unwrap();
+        assert!(single.value.mask.is_some(), "pupil {k} has a traced rim");
+        assert_eq!(
+            traced_bits(&b, &single.value),
+            traced_bits(&b, &r.value),
+            "pupil {k}"
+        );
+        assert_eq!(
+            traced_bits(&b, &r.value),
+            traced_bits(&cpu, &e.as_ref().unwrap().value),
+            "pupil {k} CPU-f32"
+        );
+    }
+    // The chief/lattice/saddle/rim commands are shared by the whole batch.
+    let single = metal_tracer
+        .trace(pupils[0].0, pupils[0].1, &settings, &ctx)
+        .unwrap();
+    let total = shared.command_buffers
+        + batched
+            .iter()
+            .map(|r| r.as_ref().unwrap().stats.command_buffers)
+            .sum::<u32>();
+    eprintln!(
+        "P6_BATCH pupils={} commands={total} single={}",
+        pupils.len(),
+        single.stats.command_buffers
+    );
+    assert!(2 * total < pupils.len() as u32 * single.stats.command_buffers);
+    assert_eq!(shared.copied_bytes, 0);
+}

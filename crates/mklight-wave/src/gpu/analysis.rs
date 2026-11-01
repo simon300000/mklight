@@ -59,112 +59,123 @@ fn fields(
     warnings: &mut Vec<String>,
 ) -> MkResult<Vec<Field>> {
     let service = PupilTracer::new(b, t, ctx)?;
+    let requests: Vec<_> = indices
+        .iter()
+        .map(|&index| {
+            let f = &t.system().system().fields.fields[index];
+            (index, [f.x, f.y], t.field(index))
+        })
+        .collect();
+    let traced = trace_fields(&service, t, &requests, wls, settings, ctx, stats, warnings)?;
     let mut out = vec![];
     let mut first_error = None;
-    for (i, &index) in indices.iter().enumerate() {
-        let f = &t.system().system().fields.fields[index];
-        let sub = ctx.subrange(
-            i as f64 / indices.len() as f64,
-            (i + 1) as f64 / indices.len() as f64,
-        );
-        match trace_field(
-            &service,
-            t,
-            t.field(index),
-            index,
-            [f.x, f.y],
-            wls,
-            settings,
-            &sub,
-            stats,
-            warnings,
-        ) {
+    for (&index, f) in indices.iter().zip(traced) {
+        match f {
             Ok(f) => out.push(f),
-            Err(e @ (MkError::Trace(_) | MkError::Numerical(_))) => {
+            Err(e) => {
                 warnings.push(format!("field {index} skipped: {e}"));
                 first_error.get_or_insert(e);
             }
-            Err(e) => return Err(e),
         }
     }
-    if out.is_empty() {
-        if let Some(e) = first_error {
-            return Err(e);
-        }
+    if out.is_empty()
+        && let Some(e) = first_error
+    {
+        return Err(e);
     }
     Ok(out)
 }
+/// Trace every requested field at `wls` in shared batches. A field whose
+/// pupil fails with a Trace/Numerical error (first in wavelength order) is
+/// returned as that error; any other error fails the call.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn trace_field(
+pub(super) fn trace_fields(
     service: &PupilTracer<'_>,
     t: &SequentialTracer,
-    field: &mklight_trace::PreparedField,
-    index: usize,
-    value: [f64; 2],
+    requests: &[(usize, [f64; 2], &mklight_trace::PreparedField)],
     wls: &[(usize, f64)],
     settings: &PupilSettings,
     ctx: &JobContext,
     stats: &mut PlanStats,
     warnings: &mut Vec<String>,
-) -> MkResult<Field> {
-    let mut pupils = vec![];
-    for (j, &(wl, weight)) in wls.iter().enumerate() {
-        let r = service.trace(
-            field,
-            wl,
-            settings,
-            &ctx.subrange(
-                j as f64 / wls.len() as f64,
-                (j + 1) as f64 / wls.len() as f64,
-            ),
-        )?;
-        accumulate(stats, &r.stats);
-        warnings.extend(r.run_info.warnings);
-        pupils.push((wl, weight, r.value));
-    }
-    let reference = match settings.reference {
-        ReferencePoint::Chief => {
-            if let Some((_, _, p)) = pupils
-                .iter()
-                .find(|(wl, _, _)| *wl == t.system().primary_wavelength)
-            {
-                [p.info.chief_point_mm[0], p.info.chief_point_mm[1]]
-            } else {
-                let r = service.trace(
-                    field,
-                    t.system().primary_wavelength,
-                    settings,
-                    &ctx.subrange(1., 1.),
-                )?;
-                accumulate(stats, &r.stats);
-                [
-                    r.value.info.chief_point_mm[0],
-                    r.value.info.chief_point_mm[1],
-                ]
-            }
-        }
-        ReferencePoint::Centroid => {
-            let mut v = [0.; 2];
-            for (_, w, p) in &pupils {
-                for (j, x) in v.iter_mut().enumerate() {
-                    *x += w * p.info.reference_point_mm[j];
+) -> MkResult<Vec<MkResult<Field>>> {
+    let pupils: Vec<_> = requests
+        .iter()
+        .flat_map(|&(_, _, f)| wls.iter().map(move |&(wl, _)| (f, wl)))
+        .collect();
+    let (traced, shared) = service.trace_many(&pupils, settings, ctx)?;
+    accumulate(stats, &shared);
+    let mut traced = traced.into_iter();
+    let mut out = vec![];
+    for &(index, value, _) in requests {
+        let mut pupils = vec![];
+        let mut error = None;
+        for (&(wl, weight), r) in wls.iter().zip(traced.by_ref().take(wls.len())) {
+            match r {
+                Ok(r) => {
+                    accumulate(stats, &r.stats);
+                    warnings.extend(r.run_info.warnings);
+                    pupils.push((wl, weight, r.value));
+                }
+                Err(e) => {
+                    error.get_or_insert(e);
                 }
             }
-            v
         }
-    };
-    for (_, _, p) in &mut pupils {
-        p.pupil.image_offset_mm = [
-            p.info.reference_point_mm[0] - reference[0],
-            p.info.reference_point_mm[1] - reference[1],
-        ];
+        out.push(match error {
+            Some(e) => Err(e),
+            None => Ok(Field {
+                index,
+                value,
+                reference: [0.; 2],
+                pupils,
+            }),
+        });
     }
-    Ok(Field {
-        index,
-        value,
-        reference,
-        pupils,
-    })
+    // The chief reference is the primary wavelength's chief ray; when the
+    // primary is not traced (or its chief fails) the first pupil's reference.
+    let primary = t.system().primary_wavelength;
+    let missing: Vec<_> = requests
+        .iter()
+        .zip(&out)
+        .filter(|(_, f)| {
+            settings.reference == ReferencePoint::Chief
+                && f.as_ref()
+                    .is_ok_and(|f| f.pupils.iter().all(|(wl, _, _)| *wl != primary))
+        })
+        .map(|(r, _)| r.2)
+        .collect();
+    let mut chiefs = if missing.is_empty() {
+        vec![]
+    } else {
+        service.chief_points(&missing, &ctx.subrange(1., 1.), stats)?
+    }
+    .into_iter();
+    for f in out.iter_mut().flatten() {
+        let first = f.pupils[0].2.info.reference_point_mm;
+        f.reference = match settings.reference {
+            ReferencePoint::Chief => match f.pupils.iter().find(|(wl, _, _)| *wl == primary) {
+                Some((_, _, p)) => [p.info.chief_point_mm[0], p.info.chief_point_mm[1]],
+                None => chiefs.next().unwrap().unwrap_or([first[0], first[1]]),
+            },
+            ReferencePoint::Centroid => {
+                let mut v = [0.; 2];
+                for (_, w, p) in &f.pupils {
+                    for (j, x) in v.iter_mut().enumerate() {
+                        *x += w * p.info.reference_point_mm[j];
+                    }
+                }
+                v
+            }
+        };
+        for (_, _, p) in &mut f.pupils {
+            p.pupil.image_offset_mm = [
+                p.info.reference_point_mm[0] - f.reference[0],
+                p.info.reference_point_mm[1] - f.reference[1],
+            ];
+        }
+    }
+    Ok(out)
 }
 
 /// Complete GPU-traced wavefront maps, including the original lattice QR fit.
@@ -699,31 +710,33 @@ pub fn mtf_vs_field_job(
     let service = PupilTracer::new(b, t, ctx)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let mut per = vec![];
     let mut values = vec![];
-    let mut error = None;
-    for (i, &h) in hs.iter().enumerate() {
+    let mut prepared = vec![];
+    for &h in &hs {
         let point = mklight_trace::FieldPoint::normalized(h * o.tangential[0], h * o.tangential[1]);
-        let value = a::field_value(t, &point);
-        values.push(value);
-        let r = t.prepare_field(point).and_then(|f| {
-            trace_field(
-                &service,
-                t,
-                &f,
-                i,
-                value,
-                &wls,
-                &s.pupil,
-                &ctx.subrange(
-                    0.6 * i as f64 / hs.len() as f64,
-                    0.6 * (i + 1) as f64 / hs.len() as f64,
-                ),
-                &mut stats,
-                &mut warnings,
-            )
-        });
-        match r {
+        values.push(a::field_value(t, &point));
+        prepared.push(t.prepare_field(point));
+    }
+    let requests: Vec<_> = prepared
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| f.as_ref().ok().map(|f| (i, values[i], f)))
+        .collect();
+    let mut traced = trace_fields(
+        &service,
+        t,
+        &requests,
+        &wls,
+        &s.pupil,
+        &ctx.subrange(0., 0.6),
+        &mut stats,
+        &mut warnings,
+    )?
+    .into_iter();
+    let mut per = vec![];
+    let mut error = None;
+    for (&h, f) in hs.iter().zip(prepared) {
+        match f.and_then(|_| traced.next().unwrap()) {
             Ok(f) => per.push(Some(f)),
             Err(e @ (MkError::Trace(_) | MkError::Numerical(_))) => {
                 warnings.push(format!("field {h:.3} skipped: {e}"));

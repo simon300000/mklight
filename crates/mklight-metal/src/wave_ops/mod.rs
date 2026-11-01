@@ -19,6 +19,25 @@ mod shells;
 mod simulation;
 mod spectral;
 mod statistics;
+/// Work units (threads × relative per-thread cost) per command. Smaller
+/// operations run as one command; larger ones keep bounded commands for
+/// cancellation latency.
+const COMMAND_UNITS: usize = 1 << 22;
+/// Ordered dispatches grouped into commands of at most [`COMMAND_UNITS`]
+/// (a single larger dispatch gets its own command).
+fn commands<T>(dispatches: impl IntoIterator<Item = (T, usize)>) -> Vec<Vec<T>> {
+    let mut out: Vec<Vec<T>> = vec![];
+    let mut units = usize::MAX;
+    for (d, u) in dispatches {
+        if units.saturating_add(u) > COMMAND_UNITS {
+            out.push(vec![]);
+            units = 0;
+        }
+        units += u;
+        out.last_mut().unwrap().push(d);
+    }
+    out
+}
 const PIXELS: usize = 256;
 const SAMPLES: usize = 256;
 const COMMAND_TERMS: usize = 1 << 20;

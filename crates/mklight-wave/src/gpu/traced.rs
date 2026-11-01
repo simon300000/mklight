@@ -1,13 +1,21 @@
 //! P1 generation/trace/projection and P7 scalar transport, retaining lattice
 //! channels for resampling and fits. Only small rim-loop topology returns to host.
+//! Every pupil of a batch (fields × wavelengths) shares the chief, lattice,
+//! saddle and rim-bisection commands; placement and resampling stay per pupil.
 use super::*;
 use crate::{AmplitudeModel, ExitPupilInfo, PupilMask, PupilSettings, ReferencePoint};
 use mklight_core::Vec3;
 use mklight_gpu::{
-    PackOptions, PackedSystem, SystemHandle, aiming as aim, collectives as col, radiometry as rad,
+    PackOptions, PackedSystem, SystemHandle, aiming as aim, collectives as col,
+    layout::MAX_WAVELENGTHS,
+    radiometry as rad,
     wave_ops::{lattice::Lattice as Op, placement::Placement},
 };
 use mklight_trace::{PreparedField, SequentialTracer};
+
+/// Lattice rays per batch. Bounds the per-pupil split copies and the rim
+/// probe planes; larger lattices trace one pupil at a time.
+const BATCH_RAYS: usize = 1 << 16;
 
 #[derive(Clone, Debug)]
 pub struct ResidentTracedPupil {
@@ -48,12 +56,12 @@ impl ResidentTracedPupil {
         Ok(r)
     }
 }
+/// Probe rays: generated starts, the five hit channels, survival and power.
 struct Batch {
     starts: BufferHandle,
     hits: [BufferHandle; 5],
-    records: Option<[BufferHandle; 2]>,
     samples: BufferHandle,
-    mask: BufferHandle,
+    mask: Option<BufferHandle>,
     power: Option<BufferHandle>,
     count: usize,
 }
@@ -69,16 +77,70 @@ impl Batch {
                 count: self.count,
             },
             status: h[4],
-            records: self.records.as_ref().map(|r| p.import(r[0].view())),
-            record_low: self.records.as_ref().map(|r| p.import(r[1].view())),
+            records: None,
+            record_low: None,
         }
     }
+    fn mask(&self) -> &BufferHandle {
+        self.mask.as_ref().expect("survival mask of a final probe")
+    }
+    /// Channels that per-pupil projection reads, in `from_split` order.
+    fn channels(&self) -> Vec<(BufferHandle, bool)> {
+        let mut v: Vec<_> = self.hits.iter().map(|h| (h.clone(), false)).collect();
+        v.push((self.starts.clone(), false));
+        v.push((self.mask().clone(), false));
+        v.extend(self.power.clone().map(|h| (h, true)));
+        v
+    }
+    fn from_split(
+        parts: &mut impl Iterator<Item = BufferHandle>,
+        samples: &BufferHandle,
+        power: bool,
+        count: usize,
+    ) -> Self {
+        let mut next = || parts.next().unwrap();
+        let hits = std::array::from_fn(|_| next());
+        let starts = next();
+        let mask = Some(next());
+        Self {
+            hits,
+            starts,
+            mask,
+            power: power.then(next),
+            samples: samples.clone(),
+            count,
+        }
+    }
+}
+/// Field rows of one batch and their content key (chief-seed cache identity).
+struct Fields {
+    buffer: BufferHandle,
+    key: String,
+}
+/// Per-pupil state carried between the batched stages.
+struct Item<'f> {
+    position: usize,
+    /// Field row (and lattice copy) in the batch's lattice probe.
+    row: usize,
+    field: &'f PreparedField,
+    wl: usize,
+    spec: aim::FieldSpec,
+    chief: [Df32; 7],
+    inside: Vec<bool>,
+    survived: usize,
+    loops: Vec<Vec<usize>>,
+    ids: Vec<usize>,
+    /// First edge of this pupil in the shared rim batch.
+    rim_start: usize,
 }
 pub struct PupilTracer<'a> {
     backend: &'a dyn ComputeBackend,
     tracer: &'a SequentialTracer,
     systems: SystemHandle,
     wavelengths: Vec<Vec<usize>>,
+    /// [chunks, MAX_WAVELENGTHS] global wavelength of each chunk slot.
+    table: Option<BufferHandle>,
+    steps: BufferHandle,
     radiometry: rad::PreparedRadiometry,
 }
 impl Drop for PupilTracer<'_> {
@@ -95,9 +157,9 @@ fn fill<T: BufferElement>(
         f(a.as_mut_slice::<T>()?)
     })
 }
-fn record<T: bytemuck::Pod>(b: &dyn ComputeBackend, v: T) -> MkResult<BufferHandle> {
-    fill::<u32>(b, [1, size_of::<T>() / 4], |a| {
-        a.copy_from_slice(bytemuck::cast_slice(&[v]));
+fn rows<T: bytemuck::Pod>(b: &dyn ComputeBackend, v: &[T]) -> MkResult<BufferHandle> {
+    fill::<u32>(b, [v.len(), size_of::<T>() / 4], |a| {
+        a.copy_from_slice(bytemuck::cast_slice(v));
         Ok(())
     })
 }
@@ -125,6 +187,14 @@ fn subset(h: &BufferHandle, shape: impl Into<Vec<usize>>) -> BufferView {
     v.desc.shape = shape.into();
     v
 }
+/// Trace and Numerical errors make one pupil (and its field) unusable;
+/// every other error fails the whole batch, as it would the job.
+fn per_pupil(e: MkError) -> MkResult<MkError> {
+    match e {
+        MkError::Trace(_) | MkError::Numerical(_) => Ok(e),
+        e => Err(e),
+    }
+}
 impl<'a> PupilTracer<'a> {
     pub fn new(
         backend: &'a dyn ComputeBackend,
@@ -134,15 +204,13 @@ impl<'a> PupilTracer<'a> {
         ctx.check()?;
         let total = tracer.num_wavelengths();
         let primary = tracer.system().primary_wavelength;
-        let wavelengths: Vec<Vec<usize>> = if total <= mklight_gpu::layout::MAX_WAVELENGTHS {
+        let wavelengths: Vec<Vec<usize>> = if total <= MAX_WAVELENGTHS {
             vec![(0..total).collect()]
         } else {
             (0..total)
-                .step_by(mklight_gpu::layout::MAX_WAVELENGTHS - 1)
+                .step_by(MAX_WAVELENGTHS - 1)
                 .map(|start| {
-                    let mut w: Vec<_> = (start
-                        ..(start + mklight_gpu::layout::MAX_WAVELENGTHS - 1).min(total))
-                        .collect();
+                    let mut w: Vec<_> = (start..(start + MAX_WAVELENGTHS - 1).min(total)).collect();
                     if !w.contains(&primary) {
                         w.push(primary);
                     }
@@ -162,6 +230,29 @@ impl<'a> PupilTracer<'a> {
                 )
             })
             .collect::<MkResult<_>>()?;
+        let table = if wavelengths.len() > 1 {
+            Some(fill::<u32>(
+                backend,
+                [wavelengths.len() * MAX_WAVELENGTHS],
+                |a| {
+                    a.fill(u32::MAX);
+                    for (c, w) in wavelengths.iter().enumerate() {
+                        for (s, &wl) in w.iter().enumerate() {
+                            a[c * MAX_WAVELENGTHS + s] = wl as u32;
+                        }
+                    }
+                    Ok(())
+                },
+            )?)
+        } else {
+            None
+        };
+        let steps = fill::<u32>(backend, [tracer.system().image_index()], |a| {
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = (i + 1) as u32;
+            }
+            Ok(())
+        })?;
         let radiometry = rad::PreparedRadiometry::new(backend, tracer.system(), ctx)?;
         let key = SystemCacheKey {
             snapshot: tracer.system().snapshot.hash().to_hex(),
@@ -178,6 +269,8 @@ impl<'a> PupilTracer<'a> {
             tracer,
             systems,
             wavelengths,
+            table,
+            steps,
             radiometry,
         })
     }
@@ -186,24 +279,100 @@ impl<'a> PupilTracer<'a> {
         p.identity.library_hash = self.radiometry.identity.clone();
         p
     }
+    fn fields(&self, specs: &[aim::FieldSpec]) -> MkResult<Fields> {
+        Ok(Fields {
+            buffer: rows(self.backend, specs)?,
+            key: blake3::hash(bytemuck::cast_slice(specs))
+                .to_hex()
+                .to_string(),
+        })
+    }
+    fn spec(&self, field: &PreparedField, wl: usize) -> MkResult<aim::FieldSpec> {
+        let (chunk, slot) = self
+            .wavelengths
+            .iter()
+            .enumerate()
+            .find_map(|(i, w)| w.iter().position(|v| *v == wl).map(|j| (i, j)))
+            .unwrap();
+        aim::FieldSpec::new(
+            self.tracer.system(),
+            self.tracer.paraxial(),
+            field.point,
+            chunk as u32,
+            slot as u32,
+            self.tracer.aiming(),
+        )
+    }
+    /// Chief rays of every field row: hi+lo position, direction and OPL, or
+    /// None where the chief fails.
+    fn chief_rays(
+        &self,
+        specs: &[aim::FieldSpec],
+        ctx: &JobContext,
+        stats: &mut PlanStats,
+    ) -> MkResult<Vec<Option<[Df32; 7]>>> {
+        let fields = self.fields(specs)?;
+        let samples: Vec<_> = (0..specs.len())
+            .map(|q| aim::Sample::new([0.; 2], q as u32, q as u64))
+            .collect();
+        let samples = rows(self.backend, &samples)?;
+        let mut p = self.plan();
+        let s = p.import(samples.view());
+        let (chief, _, s) =
+            self.probe(p, s, specs.len(), &fields, false, false, false, &[], ctx)?;
+        accumulate(stats, &s);
+        let status = self.backend.read_view(chief.hits[4].view())?;
+        let status = status.as_slice::<u32>()?;
+        let c = self.backend.read_view(chief.hits[0].view())?;
+        let c = c.as_slice::<f32>()?;
+        let m = specs.len();
+        Ok((0..m)
+            .map(|q| {
+                (status[q] == 0).then(|| {
+                    std::array::from_fn(|j| {
+                        let (h, l) = if j < 6 { (j, j + 9) } else { (6, 7) };
+                        Df32::new(c[h * m + q], c[l * m + q])
+                    })
+                })
+            })
+            .collect())
+    }
+    /// Image-surface chief points of `fields` at the primary wavelength (the
+    /// chief reference when it is not traced); None where the chief fails.
+    pub fn chief_points(
+        &self,
+        fields: &[&PreparedField],
+        ctx: &JobContext,
+        stats: &mut PlanStats,
+    ) -> MkResult<Vec<Option<[f64; 2]>>> {
+        let primary = self.tracer.system().primary_wavelength;
+        let specs: Vec<_> = fields
+            .iter()
+            .map(|f| self.spec(f, primary))
+            .collect::<MkResult<_>>()?;
+        Ok(self
+            .chief_rays(&specs, ctx, stats)?
+            .into_iter()
+            .map(|c| c.map(|c| [c[0].to_f64(), c[1].to_f64()]))
+            .collect())
+    }
+    /// Aim, trace and (optionally) mask and P7-transport `count` samples of
+    /// plan `p`; `extra` plan buffers are published after the batch.
+    #[allow(clippy::too_many_arguments)]
     fn probe(
         &self,
         mut p: ResidentPlan,
         samples: BufferId,
         count: usize,
-        field: &BufferHandle,
+        fields: &Fields,
         clip: bool,
+        survival: bool,
         power: bool,
+        extra: &[BufferId],
         ctx: &JobContext,
-    ) -> MkResult<(Batch, PlanStats)> {
-        let metadata = p.import(field.view());
-        let steps = fill::<u32>(self.backend, [self.tracer.system().image_index()], |a| {
-            for (i, v) in a.iter_mut().enumerate() {
-                *v = (i + 1) as u32;
-            }
-            Ok(())
-        })?;
-        let steps = p.import(steps.view());
+    ) -> MkResult<(Batch, Vec<BufferHandle>, PlanStats)> {
+        let metadata = p.import(fields.buffer.view());
+        let steps = p.import(self.steps.view());
         let generated = aim::rays(&mut p, count);
         let tolerance = match self.tracer.aiming() {
             mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
@@ -217,13 +386,7 @@ impl<'a> PupilTracer<'a> {
                     sampling: aim::Sampling::Explicit,
                     unresolved: None,
                     field_wavelength: p.view(metadata)?,
-                    field_key: Some(
-                        blake3::hash(bytemuck::cast_slice(
-                            self.backend.read_view(field.view())?.words(),
-                        ))
-                        .to_hex()
-                        .to_string(),
-                    ),
+                    field_key: Some(fields.key.clone()),
                     tolerance,
                     max_iterations: 60,
                     output: generated.clone(),
@@ -251,73 +414,64 @@ impl<'a> PupilTracer<'a> {
                     output: hits.clone(),
                 },
             )));
-        let mask = p.scratch(BufferDesc::new(ElementType::U32, [count]));
-        p.operations
-            .push(ResidentOp::Wave(w::Request::Lattice(Op::Survival {
-                samples: p.view(samples)?,
-                status: p.view(hits.status)?,
-                output: mask,
-            })));
-        let power_id = if power {
-            let mut radiometric_hits = hits.clone();
-            if self.wavelengths.len() > 1 {
-                let guard = self.backend.read_view(field.view())?;
-                let spec: &[aim::FieldSpec] = bytemuck::cast_slice(guard.words());
-                let spec = spec[0];
-                let wavelength = self.wavelengths[spec.system as usize][spec.wavelength as usize];
-                let indices = p.scratch(BufferDesc::new(ElementType::U32, [2, count]));
-                p.operations
-                    .push(ResidentOp::Wave(w::Request::Lattice(Op::Wavelength {
-                        count,
-                        wavelength: wavelength as u32,
-                        output: indices,
-                    })));
-                radiometric_hits.rays.indices = indices;
-            }
-            let id = self.radiometry.append(
-                &mut p,
-                &radiometric_hits,
-                &mklight_trace::PolarizationState::Unpolarized,
-            )?;
-            if let Some(ResidentOp::Radiometry(rad::Request::Polarization(r))) =
-                p.operations.last_mut()
-            {
-                r.scalar = true;
-            }
-            Some(id)
-        } else {
-            None
-        };
-        p.outputs = vec![
+        let mut outputs = vec![
             generated.floats,
             hits.rays.floats,
             hits.rays.indices,
             hits.rays.logical_ids,
             hits.rays.report,
             hits.status,
-            mask,
         ];
+        if survival {
+            let mask = p.scratch(BufferDesc::new(ElementType::U32, [count]));
+            p.operations
+                .push(ResidentOp::Wave(w::Request::Lattice(Op::Survival {
+                    samples: p.view(samples)?,
+                    status: p.view(hits.status)?,
+                    output: mask,
+                })));
+            outputs.push(mask);
+        }
+        if power {
+            let mut radiometric_hits = hits.clone();
+            if let Some(table) = &self.table {
+                let table = p.import(table.view());
+                let indices = p.scratch(BufferDesc::new(ElementType::U32, [2, count]));
+                p.operations
+                    .push(ResidentOp::Wave(w::Request::Lattice(Op::Wavelength {
+                        indices: p.view(hits.rays.indices)?,
+                        table: p.view(table)?,
+                        output: indices,
+                    })));
+                radiometric_hits.rays.indices = indices;
+            }
+            outputs.push(self.radiometry.append(
+                &mut p,
+                &radiometric_hits,
+                &mklight_trace::PolarizationState::Unpolarized,
+            )?);
+            if let Some(ResidentOp::Radiometry(rad::Request::Polarization(r))) =
+                p.operations.last_mut()
+            {
+                r.scalar = true;
+            }
+        }
         // Imported sample leases already survive; generated samples must publish.
         let sample_handle = match &p.buffers[samples.0] {
             PlanBuffer::Import(v) => Some(v.buffer.clone()),
             _ => {
-                p.outputs.push(samples);
+                outputs.push(samples);
                 None
             }
         };
-        if let Some(id) = power_id {
-            p.outputs.push(id);
-        }
-        if let (Some(h), Some(l)) = (hits.records, hits.record_low) {
-            p.outputs.extend([h, l]);
-        }
+        outputs.extend(extra);
+        p.outputs = outputs;
         let r = self.backend.submit_plan(p, ctx)?.wait()?;
-        let mut i = 7;
-        let samples = sample_handle.unwrap_or_else(|| {
-            let h = r.outputs[i].clone();
-            i += 1;
-            h
-        });
+        let mut rest = r.outputs[6..].iter().cloned();
+        let mask = survival.then(|| rest.next().unwrap());
+        let power = power.then(|| rest.next().unwrap());
+        let samples = sample_handle.unwrap_or_else(|| rest.next().unwrap());
+        let extra = rest.collect();
         let sample_guard = self.backend.read_view(samples.view())?;
         let sample_rows: &[aim::Sample] = bytemuck::cast_slice(sample_guard.words());
         let reports = self.backend.read_view(r.outputs[4].view())?;
@@ -339,14 +493,6 @@ impl<'a> PupilTracer<'a> {
                 "P6 has {unresolved} unresolved in-pupil aims; reference completion required"
             )));
         }
-        let power = power_id.map(|_| {
-            let h = r.outputs[i].clone();
-            i += 1;
-            h
-        });
-        let records = hits
-            .records
-            .map(|_| [r.outputs[i].clone(), r.outputs[i + 1].clone()]);
         if let Some(power) = &power {
             let v = self.backend.read_view(power.view())?;
             let rows: &[rad::PolarizationValue] = bytemuck::cast_slice(v.words());
@@ -364,57 +510,73 @@ impl<'a> PupilTracer<'a> {
             Batch {
                 starts: r.outputs[0].clone(),
                 hits: std::array::from_fn(|i| r.outputs[i + 1].clone()),
-                records,
                 samples,
-                mask: r.outputs[6].clone(),
+                mask,
                 power,
                 count,
             },
+            extra,
             r.stats,
         ))
     }
-    fn summary(
+    /// Copy each pupil's range of a shared probe batch into its own channels.
+    /// A single pupil spanning the batch keeps the batch itself.
+    fn split(
         &self,
-        p: &mut ResidentPlan,
-        mut values: PlanView,
-        count: usize,
-        mask: Option<PlanView>,
-        kind: col::SegmentKind,
-    ) -> MkResult<BufferId> {
-        if values.desc.shape.len() == 1 {
-            values.desc.shape = vec![1, count];
+        batch: &Batch,
+        ranges: &[[usize; 2]],
+        ctx: &JobContext,
+        stats: &mut PlanStats,
+    ) -> MkResult<Vec<Batch>> {
+        let power = batch.power.is_some();
+        if let [[0, n]] = ranges
+            && *n == batch.count
+        {
+            let mut parts = batch.channels().into_iter().map(|(h, _)| h);
+            return Ok(vec![Batch::from_split(
+                &mut parts,
+                &batch.samples,
+                power,
+                *n,
+            )]);
         }
-        let offsets = fill::<u32>(self.backend, [2], |a| {
-            a.copy_from_slice(&[0, count as u32]);
-            Ok(())
-        })?;
-        let offsets = p.import(offsets.view());
-        let output = p.scratch(BufferDesc::new(
-            ElementType::DoubleFloat,
-            if kind == col::SegmentKind::Moments2 {
-                vec![1, 10]
-            } else {
-                vec![values.desc.shape[0], 1, 4]
-            },
-        ));
-        let status = p.scratch(BufferDesc::new(ElementType::U32, [1]));
+        let mut p = self.plan();
+        let channels: Vec<_> = batch
+            .channels()
+            .into_iter()
+            .map(|(h, rows)| (p.import(h.view()), rows))
+            .collect();
+        let mut views = vec![];
+        let mut outputs = vec![];
+        for &(id, rows) in &channels {
+            let v = p.view(id)?;
+            for &[_, len] in ranges {
+                let mut shape = v.desc.shape.clone();
+                let axis = if rows { 0 } else { shape.len() - 1 };
+                shape[axis] = len;
+                outputs.push(p.scratch(BufferDesc::new(v.desc.element, shape)));
+            }
+            views.push((v, rows));
+        }
         p.operations
-            .push(ResidentOp::Collectives(col::Request::SegmentReduce(
-                col::SegmentReduce {
-                    values,
-                    offsets: p.view(offsets)?,
-                    mask,
-                    mask_value: 1,
-                    weights: None,
-                    max_segment_len: count,
-                    reference: None,
-                    mode: ReduceMode::DoubleFloat,
-                    kind,
-                    output,
-                    status,
-                },
-            )));
-        Ok(output)
+            .push(ResidentOp::Wave(w::Request::Lattice(Op::Split {
+                channels: views,
+                ranges: ranges.to_vec(),
+                outputs: outputs.clone(),
+            })));
+        p.outputs = outputs;
+        let r = self.backend.submit_plan(p, ctx)?.wait()?;
+        accumulate(stats, &r.stats);
+        // Outputs are channel-major; regroup them per range.
+        let m = ranges.len();
+        Ok(ranges
+            .iter()
+            .enumerate()
+            .map(|(k, &[_, len])| {
+                let mut parts = (0..channels.len()).map(|c| r.outputs[c * m + k].clone());
+                Batch::from_split(&mut parts, &batch.samples, power, len)
+            })
+            .collect())
     }
     pub fn trace(
         &self,
@@ -423,231 +585,372 @@ impl<'a> PupilTracer<'a> {
         settings: &PupilSettings,
         ctx: &JobContext,
     ) -> MkResult<WaveResult<ResidentTracedPupil>> {
+        let (mut r, shared) = self.trace_many(&[(field, wl)], settings, ctx)?;
+        let mut r = r.pop().unwrap()?;
+        let mut stats = shared;
+        accumulate(&mut stats, &r.stats);
+        r.stats = stats;
+        Ok(r)
+    }
+    /// Trace every (field, wavelength) pupil with batched probes and rim
+    /// bisection. Trace/Numerical failures are returned per pupil; any other
+    /// error fails the batch. The second value holds the shared stages' stats.
+    #[allow(clippy::type_complexity)]
+    pub fn trace_many(
+        &self,
+        pupils: &[(&PreparedField, usize)],
+        settings: &PupilSettings,
+        ctx: &JobContext,
+    ) -> MkResult<(Vec<MkResult<WaveResult<ResidentTracedPupil>>>, PlanStats)> {
         settings.validate()?;
         ctx.check()?;
+        let side = settings.rays + 2;
+        let per = (BATCH_RAYS / (side * side)).max(1);
+        let mut results = Vec::with_capacity(pupils.len());
         let mut stats = PlanStats::default();
+        let chunks = pupils.len().div_ceil(per);
+        for (c, chunk) in pupils.chunks(per).enumerate() {
+            let sub = ctx.subrange(c as f64 / chunks as f64, (c + 1) as f64 / chunks as f64);
+            results.extend(self.trace_batch(chunk, settings, &sub, &mut stats)?);
+        }
+        Ok((results, stats))
+    }
+    fn trace_batch(
+        &self,
+        pupils: &[(&PreparedField, usize)],
+        settings: &PupilSettings,
+        ctx: &JobContext,
+        stats: &mut PlanStats,
+    ) -> MkResult<Vec<MkResult<WaveResult<ResidentTracedPupil>>>> {
         let sys = self.tracer.system();
-        if wl >= sys.wavelengths_um.len() {
-            return Err(MkError::InvalidParam(format!(
-                "wavelength {wl} does not exist"
-            )));
-        }
-        // A wavelength-only selected-order factor cancels in chief-normalized
-        // amplitudes and centroid weights. Zero throughput remains unusable.
-        if settings.amplitude != AmplitudeModel::Uniform
-            && mklight_trace::radiometry::diffraction_product(sys, wl) <= 0.
-        {
-            return Err(MkError::Numerical(
-                "pupil transmits no selected-order light".into(),
-            ));
-        }
         let side = settings.rays + 2;
         let n = side * side;
-        let (chunk, slot) = self
-            .wavelengths
-            .iter()
-            .enumerate()
-            .find_map(|(i, w)| w.iter().position(|v| *v == wl).map(|j| (i, j)))
-            .unwrap();
-        let field_spec = aim::FieldSpec::new(
-            sys,
-            self.tracer.paraxial(),
-            field.point,
-            chunk as u32,
-            slot as u32,
-            self.tracer.aiming(),
-        )?;
-        let metadata = record(self.backend, field_spec)?;
-        let chief_sample = record(self.backend, aim::Sample::new([0.; 2], 0, 0))?;
-        let mut p = self.plan();
-        let c = p.import(chief_sample.view());
-        let (chief, s) = self.probe(p, c, 1, &metadata, false, false, &ctx.subrange(0., 0.03))?;
-        accumulate(&mut stats, &s);
-        let st = self.backend.read_view(chief.hits[4].view())?;
-        if st.as_slice::<u32>()?[0] != 0 {
-            return Err(MkError::Trace("chief ray failed".into()));
-        }
-        let c = self.backend.read_view(chief.hits[0].view())?;
-        let c = c.as_slice::<f32>()?;
-        let chief_df: [Df32; 7] = std::array::from_fn(|j| {
-            if j < 6 {
-                Df32::new(c[j], c[j + 9])
-            } else {
-                Df32::new(c[6], c[7])
+        let mut results: Vec<Option<MkResult<_>>> = pupils.iter().map(|_| None).collect();
+        let mut items = vec![];
+        for (position, &(field, wl)) in pupils.iter().enumerate() {
+            if wl >= sys.wavelengths_um.len() {
+                return Err(MkError::InvalidParam(format!(
+                    "wavelength {wl} does not exist"
+                )));
             }
-        });
-        let v3 = |a: [f64; 3]| Vec3::new(a[0], a[1], a[2]);
-        let cp = v3(std::array::from_fn(|j| chief_df[j].to_f64()));
-        let dc = v3(std::array::from_fn(|j| chief_df[j + 3].to_f64()));
-        let sign = dc.z.signum();
-        if sign == 0. {
-            return Err(MkError::Trace("chief ray parallel to image".into()));
+            // A wavelength-only selected-order factor cancels in chief-normalized
+            // amplitudes and centroid weights. Zero throughput remains unusable.
+            if settings.amplitude != AmplitudeModel::Uniform
+                && mklight_trace::radiometry::diffraction_product(sys, wl) <= 0.
+            {
+                results[position] = Some(Err(MkError::Numerical(
+                    "pupil transmits no selected-order light".into(),
+                )));
+                continue;
+            }
+            match self.spec(field, wl) {
+                Ok(spec) => items.push(Item {
+                    position,
+                    field,
+                    wl,
+                    spec,
+                    row: 0,
+                    chief: [Df32::ZERO; 7],
+                    inside: vec![],
+                    survived: 0,
+                    loops: vec![],
+                    ids: vec![],
+                    rim_start: 0,
+                }),
+                Err(e) => results[position] = Some(Err(per_pupil(e)?)),
+            }
         }
-        let mut p = self.plan();
-        let count = n;
-        let probes = p.scratch(BufferDesc::new(ElementType::U32, [count, 8]));
-        p.operations
-            .push(ResidentOp::Wave(w::Request::Lattice(Op::Generate {
-                side,
-                centres: false,
-                samples: probes,
-            })));
-        let (lat, s) = self.probe(
-            p,
-            probes,
-            count,
-            &metadata,
-            true,
-            settings.amplitude != AmplitudeModel::Uniform,
-            &ctx.subrange(0.03, 0.25),
-        )?;
-        accumulate(&mut stats, &s);
-        let valid = self.backend.read_view(lat.mask.view())?;
-        let valid = valid.as_slice::<u32>()?;
-        let inside: Vec<bool> = valid[..n].iter().map(|v| *v != 0).collect();
-        let survived = inside.iter().filter(|&&v| v).count();
-        if survived == 0 {
-            return Err(MkError::Trace(
-                "no ray of pupil lattice reaches image".into(),
-            ));
+        // Chief rays, one per field row.
+        if !items.is_empty() {
+            let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
+            let chiefs = self.chief_rays(&specs, &ctx.subrange(0., 0.03), stats)?;
+            let mut kept = vec![];
+            for (mut item, chief) in items.into_iter().zip(chiefs) {
+                let error = match chief {
+                    None => "chief ray failed",
+                    Some(c) if c[5].to_f64() == 0. => {
+                        "chief ray runs parallel to the image surface"
+                    }
+                    Some(c) => {
+                        item.chief = c;
+                        kept.push(item);
+                        continue;
+                    }
+                };
+                results[item.position] = Some(Err(MkError::Trace(error.into())));
+            }
+            items = kept;
+        }
+        // Guard-ringed lattices; field row q is item q.
+        let mut lattice_batch = None;
+        if !items.is_empty() {
+            let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
+            let fields = self.fields(&specs)?;
+            let mut p = self.plan();
+            let probes = p.scratch(BufferDesc::new(ElementType::U32, [items.len() * n, 8]));
+            p.operations
+                .push(ResidentOp::Wave(w::Request::Lattice(Op::Generate {
+                    side,
+                    copies: items.len(),
+                    samples: probes,
+                })));
+            let (lat, _, s) = self.probe(
+                p,
+                probes,
+                items.len() * n,
+                &fields,
+                true,
+                true,
+                settings.amplitude != AmplitudeModel::Uniform,
+                &[],
+                &ctx.subrange(0.03, 0.25),
+            )?;
+            accumulate(stats, &s);
+            let valid = self.backend.read_view(lat.mask().view())?;
+            let valid = valid.as_slice::<u32>()?;
+            let mut kept = vec![];
+            for (q, mut item) in items.into_iter().enumerate() {
+                item.row = q;
+                item.inside = valid[q * n..(q + 1) * n].iter().map(|v| *v != 0).collect();
+                item.survived = item.inside.iter().filter(|&&v| v).count();
+                if item.survived == 0 {
+                    results[item.position] = Some(Err(MkError::Trace(
+                        "no ray of pupil lattice reaches image".into(),
+                    )));
+                } else {
+                    kept.push(item);
+                }
+            }
+            items = kept;
+            lattice_batch = Some((lat, fields));
         }
         let lattice = crate::traced::Lattice::new(settings.rays);
-        let loops = if settings.rim {
+        let mut rim_batch = None;
+        if let Some((_, fields)) = &lattice_batch
+            && settings.rim
+            && !items.is_empty()
+        {
+            // Saddle cells resolve their centre with one more probe each.
             let mut saddles = Vec::new();
-            for j in 0..side - 1 {
-                for i in 0..side - 1 {
-                    let k = j * side + i;
-                    let case = usize::from(inside[k])
-                        | (usize::from(inside[k + 1]) << 1)
-                        | (usize::from(inside[k + side + 1]) << 2)
-                        | (usize::from(inside[k + side]) << 3);
-                    if case == 5 || case == 10 {
-                        saddles.push((i, j));
+            for (t, item) in items.iter().enumerate() {
+                let inside = &item.inside;
+                for j in 0..side - 1 {
+                    for i in 0..side - 1 {
+                        let k = j * side + i;
+                        let case = usize::from(inside[k])
+                            | (usize::from(inside[k + 1]) << 1)
+                            | (usize::from(inside[k + side + 1]) << 2)
+                            | (usize::from(inside[k + side]) << 3);
+                        if case == 5 || case == 10 {
+                            saddles.push((t, i, j));
+                        }
                     }
                 }
             }
-            let mut centres = std::collections::BTreeMap::new();
+            let mut centres = vec![std::collections::BTreeMap::new(); items.len()];
             if !saddles.is_empty() {
-                let samples = fill::<u32>(self.backend, [saddles.len(), 8], |a| {
-                    for (k, (row, &(i, j))) in bytemuck::cast_slice_mut::<_, aim::Sample>(a)
-                        .iter_mut()
-                        .zip(&saddles)
-                        .enumerate()
-                    {
+                let h = 1. / (settings.rays - 1) as f64;
+                let samples: Vec<_> = saddles
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &(t, i, j))| {
                         let p = lattice.point(i, j);
-                        let h = 1. / (settings.rays - 1) as f64;
-                        *row = aim::Sample::new([p[0] + h, p[1] + h], 0, k as u64);
-                    }
-                    Ok(())
-                })?;
+                        aim::Sample::new([p[0] + h, p[1] + h], items[t].row as u32, k as u64)
+                    })
+                    .collect();
+                let samples = rows(self.backend, &samples)?;
                 let mut plan = self.plan();
                 let samples = plan.import(samples.view());
-                let (probes, s) = self.probe(
+                let (probes, _, s) = self.probe(
                     plan,
                     samples,
                     saddles.len(),
-                    &metadata,
+                    fields,
+                    true,
                     true,
                     false,
+                    &[],
                     &ctx.subrange(0.25, 0.25),
                 )?;
-                accumulate(&mut stats, &s);
-                let mask = self.backend.read_view(probes.mask.view())?;
-                for (&cell, &v) in saddles.iter().zip(mask.as_slice::<u32>()?) {
-                    centres.insert(cell, v != 0);
+                accumulate(stats, &s);
+                let mask = self.backend.read_view(probes.mask().view())?;
+                for (&(t, i, j), &v) in saddles.iter().zip(mask.as_slice::<u32>()?) {
+                    centres[t].insert((i, j), v != 0);
                 }
             }
-            crate::traced::chain_loops(&crate::traced::rim_segments(&lattice, &inside, |i, j| {
-                centres[&(i, j)]
-            }))
-        } else {
-            vec![]
-        };
-        let mut ids: Vec<usize> = loops.iter().flatten().copied().collect();
-        ids.sort_unstable();
-        ids.dedup();
-        let loops: Vec<Vec<usize>> = loops
-            .iter()
-            .map(|l| l.iter().map(|i| ids.binary_search(i).unwrap()).collect())
-            .collect();
-        let rim = if ids.is_empty() {
-            None
-        } else {
-            let edges = fill::<Df32>(self.backend, [ids.len(), 4], |a| {
-                for (row, &id) in a.chunks_mut(4).zip(&ids) {
+            let mut edges = vec![];
+            let mut rows_of = vec![];
+            for (t, item) in items.iter_mut().enumerate() {
+                let loops = crate::traced::chain_loops(&crate::traced::rim_segments(
+                    &lattice,
+                    &item.inside,
+                    |i, j| centres[t][&(i, j)],
+                ));
+                let mut ids: Vec<usize> = loops.iter().flatten().copied().collect();
+                ids.sort_unstable();
+                ids.dedup();
+                item.loops = loops
+                    .iter()
+                    .map(|l| l.iter().map(|i| ids.binary_search(i).unwrap()).collect())
+                    .collect();
+                item.rim_start = rows_of.len();
+                for &id in &ids {
                     let k = id / 2;
                     let q = k + if id % 2 == 0 { 1 } else { side };
-                    let (a, b) = if inside[k] { (k, q) } else { (q, k) };
+                    let (a, b) = if item.inside[k] { (k, q) } else { (q, k) };
                     let a = lattice.point(a % side, a / side);
                     let b = lattice.point(b % side, b / side);
-                    row.copy_from_slice(&[a[0], a[1], b[0], b[1]].map(Df32::from_f64));
+                    edges.extend([a[0], a[1], b[0], b[1]].map(Df32::from_f64));
+                    rows_of.push(item.row as u32);
                 }
-                Ok(())
-            })?;
-            let iterations = ((2. / (settings.rays - 1) as f64 / settings.rim_tolerance)
-                .log2()
-                .ceil() as usize)
-                .div_ceil(4)
-                + 1;
-            let mut previous = None;
-            let mut batch: Option<Batch> = None;
-            for iteration in 0..=iterations {
-                let mut p = self.plan();
-                let edge = p.import(edges.view());
-                let state_in = previous.as_ref().map(|h: &BufferHandle| p.import(h.view()));
-                let status = batch.as_ref().map(|b| p.import(b.hits[4].view()));
-                let state = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [ids.len(), 8]));
-                let probe_count = ids.len() * if iteration == iterations { 1 } else { 16 };
-                let samples = p.scratch(BufferDesc::new(ElementType::U32, [probe_count, 8]));
-                p.operations
-                    .push(ResidentOp::Wave(w::Request::Lattice(Op::Rim {
-                        edges: p.view(edge)?,
-                        previous: state_in.map(|i| p.view(i).unwrap()),
-                        status: status.map(|i| p.view(i).unwrap()),
-                        tolerance: Df32::from_f64(settings.rim_tolerance),
-                        final_point: iteration == iterations,
-                        state,
-                        samples,
-                    })));
-                p.outputs = vec![state, samples];
-                let range = ctx.subrange(
-                    0.25 + 0.35 * iteration as f64 / (iterations + 1) as f64,
-                    0.25 + 0.35 * (iteration + 1) as f64 / (iterations + 1) as f64,
-                );
-                let r = self
-                    .backend
-                    .submit_plan(p, &range.subrange(0., 0.1))?
-                    .wait()?;
-                accumulate(&mut stats, &r.stats);
-                previous = Some(r.outputs[0].clone());
-                let mut p = self.plan();
-                let samples = p.import(r.outputs[1].view());
-                let (b, s) = self.probe(
-                    p,
-                    samples,
-                    probe_count,
-                    &metadata,
-                    true,
-                    false,
-                    &range.subrange(0.1, 1.),
-                )?;
-                accumulate(&mut stats, &s);
-                batch = Some(b);
+                item.ids = ids;
             }
-            let state = self.backend.read_view(previous.as_ref().unwrap().view())?;
-            let unresolved = state
-                .as_slice::<Df32>()?
-                .chunks(8)
-                .filter(|v| v[7].hi == 0.)
-                .count();
+            if !rows_of.is_empty() {
+                rim_batch = Some(self.bisect(
+                    &edges,
+                    &rows_of,
+                    fields,
+                    settings,
+                    &items,
+                    &ctx.subrange(0.25, 0.6),
+                    stats,
+                )?);
+            }
+        }
+        // Per-pupil copies of the shared probes for placement.
+        let mut lats = vec![];
+        let mut rims = vec![];
+        if let Some((lat, _)) = &lattice_batch
+            && !items.is_empty()
+        {
+            let ranges: Vec<_> = items.iter().map(|i| [i.row * n, n]).collect();
+            lats = self.split(lat, &ranges, &ctx.subrange(0.6, 0.6), stats)?;
+            if let Some(rim) = &rim_batch {
+                let ranges: Vec<_> = items
+                    .iter()
+                    .filter(|i| !i.ids.is_empty())
+                    .map(|i| [i.rim_start, i.ids.len()])
+                    .collect();
+                rims = self.split(rim, &ranges, &ctx.subrange(0.6, 0.6), stats)?;
+            }
+        }
+        let total = items.len();
+        let mut rims = rims.into_iter();
+        for (k, (item, lat)) in items.iter().zip(lats).enumerate() {
+            let rim = (!item.ids.is_empty()).then(|| rims.next().unwrap());
+            let sub = ctx.subrange(
+                0.6 + 0.4 * k as f64 / total as f64,
+                0.6 + 0.4 * (k + 1) as f64 / total as f64,
+            );
+            results[item.position] = Some(
+                self.place(item, &lat, rim.as_ref(), settings, &sub)
+                    .or_else(|e| Err(per_pupil(e)?)),
+            );
+        }
+        Ok(results.into_iter().map(Option::unwrap).collect())
+    }
+    /// Batched rim bisection of every pupil's crossed lattice edges, four
+    /// levels (16 probes) per edge and command round, then the final points.
+    #[allow(clippy::too_many_arguments)]
+    fn bisect(
+        &self,
+        edges: &[Df32],
+        rows_of: &[u32],
+        fields: &Fields,
+        settings: &PupilSettings,
+        items: &[Item],
+        ctx: &JobContext,
+        stats: &mut PlanStats,
+    ) -> MkResult<Batch> {
+        let count = rows_of.len();
+        let edges = fill::<Df32>(self.backend, [count, 4], |a| {
+            a.copy_from_slice(edges);
+            Ok(())
+        })?;
+        let edge_rows = fill::<u32>(self.backend, [count], |a| {
+            a.copy_from_slice(rows_of);
+            Ok(())
+        })?;
+        let iterations = ((2. / (settings.rays - 1) as f64 / settings.rim_tolerance)
+            .log2()
+            .ceil() as usize)
+            .div_ceil(4)
+            + 1;
+        let mut previous: Option<BufferHandle> = None;
+        let mut batch: Option<Batch> = None;
+        for iteration in 0..=iterations {
+            let last = iteration == iterations;
+            let mut p = self.plan();
+            let edge = p.import(edges.view());
+            let edge_rows = p.import(edge_rows.view());
+            let state_in = previous.as_ref().map(|h| p.import(h.view()));
+            let status = batch.as_ref().map(|b| p.import(b.hits[4].view()));
+            let state = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [count, 8]));
+            let probe_count = count * if last { 1 } else { 16 };
+            let samples = p.scratch(BufferDesc::new(ElementType::U32, [probe_count, 8]));
+            p.operations
+                .push(ResidentOp::Wave(w::Request::Lattice(Op::Rim {
+                    edges: p.view(edge)?,
+                    fields: p.view(edge_rows)?,
+                    previous: state_in.map(|i| p.view(i)).transpose()?,
+                    status: status.map(|i| p.view(i)).transpose()?,
+                    tolerance: Df32::from_f64(settings.rim_tolerance),
+                    final_point: last,
+                    state,
+                    samples,
+                })));
+            let (b, extra, s) = self.probe(
+                p,
+                samples,
+                probe_count,
+                fields,
+                true,
+                last,
+                false,
+                &[state],
+                &ctx.subrange(
+                    iteration as f64 / (iterations + 1) as f64,
+                    (iteration + 1) as f64 / (iterations + 1) as f64,
+                ),
+            )?;
+            accumulate(stats, &s);
+            previous = extra.into_iter().next();
+            batch = Some(b);
+        }
+        let state = self.backend.read_view(previous.unwrap().view())?;
+        let state = state.as_slice::<Df32>()?;
+        for item in items {
+            let rows = &state[item.rim_start * 8..(item.rim_start + item.ids.len()) * 8];
+            let unresolved = rows.chunks(8).filter(|v| v[7].hi == 0.).count();
             if unresolved > 0 {
                 return Err(MkError::Unsupported(format!(
                     "{unresolved} rim edges did not reach tolerance {}; reference completion required",
                     settings.rim_tolerance
                 )));
             }
-            batch
-        };
+        }
+        Ok(batch.unwrap())
+    }
+    /// Reference sphere, projection, lattice nodes and automatic-grid resampling
+    /// of one traced pupil.
+    fn place(
+        &self,
+        item: &Item,
+        lat: &Batch,
+        rim: Option<&Batch>,
+        settings: &PupilSettings,
+        ctx: &JobContext,
+    ) -> MkResult<WaveResult<ResidentTracedPupil>> {
+        let sys = self.tracer.system();
+        let wl = item.wl;
+        let side = settings.rays + 2;
+        let n = side * side;
+        let mut stats = PlanStats::default();
+        let chief_df = item.chief;
+        let v3 = |a: [f64; 3]| Vec3::new(a[0], a[1], a[2]);
+        let cp = v3(std::array::from_fn(|j| chief_df[j].to_f64()));
+        let dc = v3(std::array::from_fn(|j| chief_df[j + 3].to_f64()));
+        let sign = dc.z.signum();
         let mut centre = cp;
         if settings.reference == ReferencePoint::Centroid {
             let mut p = self.plan();
@@ -663,15 +966,16 @@ impl<'a> PupilTracer<'a> {
                     output: points,
                 },
             )));
-            let mask = p.import(subset(&lat.mask, [n]));
+            let mask = p.import(subset(lat.mask(), [n]));
             let mut v = p.view(points)?;
             v.desc.shape = vec![3, n];
             v.stride = 1;
-            let summary = self.summary(
+            let summary = super::sampling::reduce(
+                self.backend,
                 &mut p,
                 v,
-                n,
                 Some(p_view(mask, &BufferDesc::new(ElementType::U32, [n]))),
+                None,
                 col::SegmentKind::Moments2,
             )?;
             p.outputs = vec![summary];
@@ -692,6 +996,9 @@ impl<'a> PupilTracer<'a> {
         let fo = self.tracer.paraxial().at(wl);
         let se = (fo.exit_pupil_position - cp.z) / dc.z;
         let tele = !se.is_finite();
+        if se == 0. {
+            return Err(MkError::Trace("exit pupil lies on the image".into()));
+        }
         let sheet = if tele { -1. } else { se.signum() };
         let e = cp + dc * se;
         let radius = if tele {
@@ -731,7 +1038,7 @@ impl<'a> PupilTracer<'a> {
             sphere_sheet: sheet as i32,
             telecentric: tele,
         };
-        let (obj1, obj2) = match field.source {
+        let (obj1, obj2) = match item.field.source {
             mklight_trace::ObjectSource::Direction { dir } => {
                 let a = if dir.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
                 let e = (a - dir * a.dot(dir)).normalized();
@@ -744,7 +1051,7 @@ impl<'a> PupilTracer<'a> {
             .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
         let object_axes = [obj1, obj2].map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
         let mut raw_ids = vec![];
-        for b in std::iter::once(&lat).chain(rim.as_ref()) {
+        for b in std::iter::once(lat).chain(rim) {
             let hits = b.import(&mut p);
             let projection = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [4, b.count]));
             let status = p.scratch(BufferDesc::new(ElementType::U32, [b.count]));
@@ -758,10 +1065,10 @@ impl<'a> PupilTracer<'a> {
                     },
                 )));
             let starts = p.import(b.starts.view());
-            let mask = p.import(b.mask.view());
+            let mask = p.import(subset(b.mask(), [b.count]));
             let power = b.power.as_ref().map(|h| p.import(h.view()));
             let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [b.count, 8]));
-            let radii = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [b.count]));
+            let radius = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1]));
             p.operations.push(ResidentOp::Wave(w::Request::Placement(
                 Placement::Project {
                     projection: p.view(projection)?,
@@ -775,23 +1082,10 @@ impl<'a> PupilTracer<'a> {
                     propagation: sign as f32,
                     sheet_factor: if tele { 1. } else { -sheet as f32 },
                     output,
-                    radii,
+                    radius,
                 },
             )));
-            let max = self.summary(
-                &mut p,
-                p_view(
-                    radii,
-                    &BufferDesc::new(
-                        ElementType::DoubleFloat,
-                        [if std::ptr::eq(b, &lat) { n } else { b.count }],
-                    ),
-                ),
-                if std::ptr::eq(b, &lat) { n } else { b.count },
-                None,
-                col::SegmentKind::Summary,
-            )?;
-            raw_ids.push((output, max, status));
+            raw_ids.push((output, radius, status));
         }
         p.outputs = raw_ids.iter().flat_map(|(a, b, c)| [*a, *b, *c]).collect();
         let r = self
@@ -802,11 +1096,11 @@ impl<'a> PupilTracer<'a> {
         let mut sin = 0f64;
         for i in (1..r.outputs.len()).step_by(3) {
             let v = self.backend.read_view(r.outputs[i].view())?;
-            sin = sin.max(v.as_slice::<Df32>()?[3].to_f64());
+            sin = sin.max(v.as_slice::<Df32>()?[0].to_f64());
         }
-        for (i, batch) in std::iter::once(&lat).chain(rim.as_ref()).enumerate() {
+        for (i, batch) in std::iter::once(lat).chain(rim).enumerate() {
             let failures = self.backend.read_view(r.outputs[i * 3 + 2].view())?;
-            let mask = self.backend.read_view(batch.mask.view())?;
+            let mask = self.backend.read_view(batch.mask().view())?;
             let failed = failures
                 .as_slice::<u32>()?
                 .iter()
@@ -828,12 +1122,12 @@ impl<'a> PupilTracer<'a> {
         .with_chief_ray([axis.x, axis.y, axis.z])?;
         let mut uv_loops = vec![];
         let mut ep_loops = vec![];
-        if let Some(b) = &rim {
+        if let Some(b) = rim {
             let raw = self.backend.read_view(r.outputs[3].view())?;
             let raw = raw.as_slice::<Df32>()?;
             let probes = self.backend.read_view(b.samples.view())?;
             let probes: &[aim::Sample] = bytemuck::cast_slice(probes.words());
-            for l in &loops {
+            for l in &item.loops {
                 uv_loops.push(
                     l.iter()
                         .map(|&k| [raw[k * 8].to_f64() / sin, raw[k * 8 + 1].to_f64() / sin])
@@ -841,7 +1135,7 @@ impl<'a> PupilTracer<'a> {
                 );
                 ep_loops.push(
                     l.iter()
-                        .map(|&k| probes[k].pupil.map(Df32::to_f64))
+                        .map(|&k| probes[item.rim_start + k].pupil.map(Df32::to_f64))
                         .collect(),
                 );
             }
@@ -854,7 +1148,7 @@ impl<'a> PupilTracer<'a> {
         });
         let mut p = self.plan();
         let placed = p.import(subset(&r.outputs[0], [n, 8]));
-        let valid = p.import(subset(&lat.mask, [side, side]));
+        let valid = p.import(subset(lat.mask(), [side, side]));
         let nodes = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [side, side, 4]));
         p.operations
             .push(ResidentOp::Wave(w::Request::Placement(Placement::Nodes {
@@ -870,26 +1164,13 @@ impl<'a> PupilTracer<'a> {
                 infinite: sys.object_at_infinity,
                 output: nodes,
             })));
-        let slopes = p.scratch(BufferDesc::new(
-            ElementType::DoubleFloat,
-            [(side - 1) * (side - 1)],
-        ));
+        let maximum = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1]));
         p.operations
             .push(ResidentOp::Wave(w::Request::Placement(Placement::Slopes {
                 nodes: p.view(nodes)?,
                 valid: p.view(valid)?,
-                output: slopes,
+                output: maximum,
             })));
-        let maximum = self.summary(
-            &mut p,
-            p_view(
-                slopes,
-                &BufferDesc::new(ElementType::DoubleFloat, [(side - 1) * (side - 1)]),
-            ),
-            (side - 1) * (side - 1),
-            None,
-            col::SegmentKind::Summary,
-        )?;
         p.outputs = vec![nodes, maximum];
         let r = self
             .backend
@@ -899,7 +1180,7 @@ impl<'a> PupilTracer<'a> {
         let gradient = self
             .backend
             .read_view(r.outputs[1].view())?
-            .as_slice::<Df32>()?[3]
+            .as_slice::<Df32>()?[0]
             .to_f64();
         let grid = if settings.grid == 0 {
             ((2. * gradient / 0.35).clamp(64., 1024.).ceil() as usize).next_power_of_two()
@@ -907,13 +1188,13 @@ impl<'a> PupilTracer<'a> {
             settings.grid
         };
         let nodes = r.outputs[0].clone();
-        let valid = lat.mask.clone();
+        let valid = lat.mask().clone();
         let identity = blake3::hash(
             &serde_json::to_vec(&(
                 sys.snapshot.hash().to_hex(),
                 &self.radiometry.identity,
                 wl,
-                field.point,
+                item.field.point,
                 settings,
             ))
             .unwrap(),
@@ -954,7 +1235,7 @@ impl<'a> PupilTracer<'a> {
             })
             .sum::<usize>();
         let fraction = if ep_loops.is_empty() {
-            survived as f64 / lattice_rays as f64
+            item.survived as f64 / lattice_rays as f64
         } else {
             crate::traced::even_odd_area(&ep_loops) / std::f64::consts::PI
         };
@@ -979,10 +1260,10 @@ impl<'a> PupilTracer<'a> {
             effective_f_number: 0.5
                 / (geometry.image_index * sin * (clear_area / std::f64::consts::PI).sqrt()),
             lattice_rays,
-            surviving_rays: survived,
-            rim_points: ids.len(),
+            surviving_rays: item.survived,
+            rim_points: item.ids.len(),
         };
-        result.run_info.settings = serde_json::json!({"p6":"traced_pupil","field":field.point,"wavelength":wl,"pupil":settings,"grid":grid,"resident_stats":stats});
+        result.run_info.settings = serde_json::json!({"p6":"traced_pupil","field":item.field.point,"wavelength":wl,"pupil":settings,"grid":grid,"resident_stats":stats});
         Ok(WaveResult {
             value: ResidentTracedPupil {
                 pupil: result.value,

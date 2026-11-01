@@ -3,14 +3,17 @@ use super::*;
 use crate::aiming::Sample;
 #[derive(Clone, Debug)]
 pub enum Lattice {
+    /// Radiometric [system 0, global wavelength] ray indices from chunk-local
+    /// [system, slot] indices through a [chunks, MAX_WAVELENGTHS] table.
     Wavelength {
-        count: usize,
-        wavelength: u32,
+        indices: PlanView,
+        table: PlanView,
         output: BufferId,
     },
+    /// `copies` consecutive guard-ringed lattices; copy q aims field row q.
     Generate {
         side: usize,
-        centres: bool,
+        copies: usize,
         samples: BufferId,
     },
     Survival {
@@ -18,9 +21,11 @@ pub enum Lattice {
         status: PlanView,
         output: BufferId,
     },
-    /// Edges are [inside x/y, outside x/y]. State stores a,b,lo,hi,trial,done.
+    /// Edges are [inside x/y, outside x/y], probed at field row `fields[k]`.
+    /// State stores a,b,lo,hi,trial,done.
     Rim {
         edges: PlanView,
+        fields: PlanView,
         previous: Option<PlanView>,
         status: Option<PlanView>,
         tolerance: Df32,
@@ -28,21 +33,41 @@ pub enum Lattice {
         state: BufferId,
         samples: BufferId,
     },
+    /// Copy ray ranges of batched word channels into per-range buffers.
+    /// Channels are [planes, N] (or [N, row] when `rows`); outputs are
+    /// channel-major: output `c * ranges.len() + r` holds range r of channel c.
+    Split {
+        channels: Vec<(PlanView, bool)>,
+        ranges: Vec<[usize; 2]>,
+        outputs: Vec<BufferId>,
+    },
 }
 pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::*;
     match r {
-        Lattice::Wavelength { count, output, .. } => out(p, *output, U32, &[2, *count]),
+        Lattice::Wavelength {
+            indices,
+            table,
+            output,
+        } => {
+            let n = indices.desc.shape.get(1).copied().unwrap_or(0);
+            view(indices, U32, &[2, n])?;
+            let t = table.desc.shape.first().copied().unwrap_or(0);
+            if t == 0 || t % crate::layout::MAX_WAVELENGTHS != 0 {
+                return Err(bad("wavelength table"));
+            }
+            view(table, U32, &[t])?;
+            out(p, *output, U32, &[2, n])
+        }
         Lattice::Generate {
             side,
-            centres,
+            copies,
             samples,
         } => {
-            if !(10..=2050).contains(side) {
+            if !(10..=2050).contains(side) || *copies == 0 {
                 return Err(bad("wave lattice side"));
             }
-            let n = side * side + if *centres { (side - 1) * (side - 1) } else { 0 };
-            out(p, *samples, U32, &[n, 8])
+            out(p, *samples, U32, &[copies * side * side, 8])
         }
         Lattice::Survival {
             samples,
@@ -56,6 +81,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
         }
         Lattice::Rim {
             edges,
+            fields,
             previous,
             status,
             tolerance,
@@ -65,6 +91,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
         } => {
             let n = edges.desc.shape[0];
             view(edges, DoubleFloat, &[n, 4])?;
+            view(fields, U32, &[n])?;
             if previous.is_some() != status.is_some()
                 || !tolerance.is_finite()
                 || tolerance.hi <= 0.
@@ -85,11 +112,44 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
                 &[if *final_point { n } else { 16 * n }, 8],
             )
         }
+        Lattice::Split {
+            channels,
+            ranges,
+            outputs,
+        } => {
+            if channels.is_empty() || outputs.len() != channels.len() * ranges.len() {
+                return Err(bad("split layout"));
+            }
+            for (c, (v, rows)) in channels.iter().enumerate() {
+                let s = &v.desc.shape;
+                if !(1..=2).contains(&s.len())
+                    || (*rows && s.len() != 2)
+                    || !matches!(v.desc.element, U32 | F32)
+                {
+                    return Err(bad("split channel"));
+                }
+                view(v, v.desc.element, s)?;
+                let n = if *rows { s[0] } else { s[s.len() - 1] };
+                for (r, &[start, len]) in ranges.iter().enumerate() {
+                    if len == 0 || start + len > n {
+                        return Err(bad("split range"));
+                    }
+                    let mut shape = s.clone();
+                    shape[if *rows { 0 } else { s.len() - 1 }] = len;
+                    out(p, outputs[c * ranges.len() + r], v.desc.element, &shape)?;
+                }
+            }
+            Ok(())
+        }
     }
 }
 pub fn access(r: &Lattice) -> Access {
     let (reads, writes) = match r {
-        Lattice::Wavelength { output, .. } => (vec![], vec![*output]),
+        Lattice::Wavelength {
+            indices,
+            table,
+            output,
+        } => (vec![indices.clone(), table.clone()], vec![*output]),
         Lattice::Generate { samples, .. } => (vec![], vec![*samples]),
         Lattice::Survival {
             samples,
@@ -98,22 +158,43 @@ pub fn access(r: &Lattice) -> Access {
         } => (vec![samples.clone(), status.clone()], vec![*output]),
         Lattice::Rim {
             edges,
+            fields,
             previous,
             status,
             state,
             samples,
             ..
         } => {
-            let mut reads = vec![edges.clone()];
+            let mut reads = vec![edges.clone(), fields.clone()];
             reads.extend(previous.clone());
             reads.extend(status.clone());
             (reads, vec![*state, *samples])
         }
+        Lattice::Split {
+            channels, outputs, ..
+        } => (
+            channels.iter().map(|(v, _)| v.clone()).collect(),
+            outputs.clone(),
+        ),
     };
     Access {
         reads,
         writes,
         systems: vec![],
+    }
+}
+/// Source word offset, source plane stride, plane count and words per plane
+/// of one split range.
+pub fn split_part(
+    v: &PlanView,
+    rows: bool,
+    [start, len]: [usize; 2],
+) -> (usize, usize, usize, usize) {
+    let s = &v.desc.shape;
+    match (rows, &s[..]) {
+        (true, &[_, w]) => (start * w, 0, 1, len * w),
+        (_, &[planes, n]) => (start, n, planes, len),
+        _ => (start, 0, 1, len),
     }
 }
 pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobControl) -> MkResult<()> {
@@ -124,37 +205,39 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
     let one = Df32::from_f32(1.);
     match r {
         Lattice::Wavelength {
-            count,
-            wavelength,
+            indices,
+            table,
             output,
         } => {
+            let i = vals::<u32>(x, indices).to_vec();
+            let t = vals::<u32>(x, table).to_vec();
+            let n = i.len() / 2;
             let out = x.words_mut(*output);
-            out[..*count].fill(0);
-            out[*count..].fill(*wavelength);
+            for k in 0..n {
+                let slot = i[k] as usize * crate::layout::MAX_WAVELENGTHS + i[n + k] as usize;
+                out[k] = 0;
+                out[n + k] = t.get(slot).copied().unwrap_or(u32::MAX);
+            }
         }
         Lattice::Generate {
             side,
-            centres,
+            copies,
             samples,
         } => {
-            let n = side * side + if *centres { (side - 1) * (side - 1) } else { 0 };
-            let mut a = vec![Sample::new([0.; 2], 0, 0); n];
+            let per = side * side;
+            let mut a = vec![Sample::new([0.; 2], 0, 0); copies * per];
             let h = Df32::from_f32(2.) / Df32::from_f32((side - 3) as f32);
             let c = Df32::from_f32((side - 1) as f32 * 0.5);
             for (k, s) in a.iter_mut().enumerate() {
                 if k % 4096 == 0 {
                     ctl.check()?;
                 }
-                let (i, j, offset) = if k < side * side {
-                    (k % side, k / side, 0.)
-                } else {
-                    let t = k - side * side;
-                    (t % (side - 1), t / (side - 1), 0.5)
-                };
+                let (i, j) = (k % per % side, k % per / side);
                 s.pupil = [
-                    (Df32::from_f32(i as f32 + offset) - c) * h,
-                    (Df32::from_f32(j as f32 + offset) - c) * h,
+                    (Df32::from_f32(i as f32) - c) * h,
+                    (Df32::from_f32(j as f32) - c) * h,
                 ];
+                s.field = (k / per) as u32;
                 s.id = [k as u32, 0];
             }
             x.words_mut(*samples)
@@ -182,6 +265,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
         }
         Lattice::Rim {
             edges,
+            fields,
             previous,
             status,
             tolerance,
@@ -190,6 +274,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             samples,
         } => {
             let e = vals::<Df32>(x, edges).as_chunks::<4>().0;
+            let fields = vals::<u32>(x, fields);
             let prev = previous
                 .as_ref()
                 .map(|v| vals::<Df32>(x, v).as_chunks::<8>().0);
@@ -266,6 +351,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                     };
                     let s = &mut probes[k * width + j];
                     s.pupil = [e[0] + dx * t, e[1] + dy * t];
+                    s.field = fields[k];
                     s.id = [(k * width + j) as u32, 0];
                     if prev.is_none() {
                         let rad = (s.pupil[0] * s.pupil[0] + s.pupil[1] * s.pupil[1]).sqrt();
@@ -279,6 +365,25 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                 .copy_from_slice(bytemuck::cast_slice(&a));
             x.words_mut(*samples)
                 .copy_from_slice(bytemuck::cast_slice(&probes));
+        }
+        Lattice::Split {
+            channels,
+            ranges,
+            outputs,
+        } => {
+            for (c, (v, rows)) in channels.iter().enumerate() {
+                for (r, &range) in ranges.iter().enumerate() {
+                    ctl.check()?;
+                    let (offset, stride, planes, len) = split_part(v, *rows, range);
+                    let src = &x.words(v.buffer)[v.offset..];
+                    let part: Vec<u32> = (0..planes)
+                        .flat_map(|j| &src[offset + j * stride..offset + j * stride + len])
+                        .copied()
+                        .collect();
+                    x.words_mut(outputs[c * ranges.len() + r])
+                        .copy_from_slice(&part);
+                }
+            }
         }
     }
     Ok(())
