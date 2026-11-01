@@ -286,6 +286,9 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
                 && e.constraints(q).iter().all(|v| v.is_finite())
         };
         let mut retry = Vec::new();
+        let mut device_columns = Vec::new();
+        let mut device_rows = Vec::new();
+        let mut device_steps = Vec::new();
         let mut row = 0;
         for &(j, st, h) in &pending {
             let offs = st.offsets();
@@ -294,7 +297,20 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
                 .filter(|&q| !probe_ok(row + q))
                 .map(|q| offs[q])
                 .collect();
-            if bad.is_empty() {
+            if bad.is_empty() && p.gpu_context().is_some() {
+                device_columns.push(j);
+                device_rows.push([
+                    0,
+                    (row + 1) as u32,
+                    if cnt == 2 { (row + 2) as u32 } else { 0 },
+                ]);
+                device_steps.push(match st {
+                    Stencil::Forward => [1.0 / h, 0.0],
+                    Stencil::Backward => [-1.0 / h, 0.0],
+                    Stencil::Central => [0.5 / h, -0.5 / h],
+                    Stencil::OneSided2(s) => [2.0 * s / h, -0.5 * s / h],
+                });
+            } else if bad.is_empty() {
                 for i in 0..m {
                     let vals: Vec<f64> = (0..cnt).map(|q| e.residuals(row + q)[i]).collect();
                     jr[(i, j)] = st.combine(h, f0.residuals[i], &vals);
@@ -311,6 +327,31 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
                 }
             }
             row += cnt;
+        }
+        if let Some(gpu) = p.gpu_context().filter(|_| !device_columns.is_empty()) {
+            let mut values = Vec::with_capacity((1 + e.len()) * (m + k));
+            values.extend_from_slice(&f0.residuals);
+            values.extend_from_slice(&f0.constraints);
+            for q in 0..e.len() {
+                values.extend_from_slice(e.residuals(q));
+                values.extend_from_slice(e.constraints(q));
+            }
+            let d = gpu.differences(
+                &values,
+                1 + e.len(),
+                m + k,
+                &device_rows,
+                &device_steps,
+                ctx,
+            )?;
+            for (c, &j) in device_columns.iter().enumerate() {
+                for i in 0..m {
+                    jr[(i, j)] = d[(i, c)];
+                }
+                for i in 0..k {
+                    jc[(i, j)] = d[(m + i, c)];
+                }
+            }
         }
         pending = retry;
     }

@@ -697,6 +697,10 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
 }
 
 impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        (**self).gpu_context()
+    }
+
     fn supports(&self, kind: &OperandKind) -> bool {
         (**self).supports(kind)
     }
@@ -870,6 +874,31 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
         systems: Vec<Option<OpticalSystem>>,
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
+        if !self.spec.compensators.is_empty() && self.evaluator.gpu_context().is_some() {
+            let mut outcomes = Vec::with_capacity(systems.len());
+            for chunk in systems.chunks(32) {
+                outcomes.extend(crate::gpu::scheduler::run(
+                    self.evaluator,
+                    chunk.len(),
+                    ctx,
+                    |i, worker| {
+                        let local = OpticalToleranceEvaluator {
+                            nominal: self.nominal,
+                            spec: self.spec,
+                            criterion: self.criterion,
+                            evaluator: worker,
+                            registry: self.registry,
+                            lsq: self.lsq.clone(),
+                        };
+                        match &chunk[i] {
+                            Some(s) => local.one(s.clone(), ctx),
+                            None => Ok(TrialOutcome::failed()),
+                        }
+                    },
+                )?);
+            }
+            return Ok(outcomes);
+        }
         if !self.spec.compensators.is_empty() {
             return systems
                 .into_par_iter()

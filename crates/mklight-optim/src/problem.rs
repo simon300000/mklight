@@ -314,6 +314,10 @@ pub struct Evaluation {
 /// passed in are always inside the bounds), so evaluators never see
 /// out-of-range values.
 pub trait Problem: Sync {
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        None
+    }
+
     fn variables(&self) -> &[Variable];
     fn num_residuals(&self) -> usize;
     /// Residual weights `w_i ≥ 0` (length `num_residuals`).

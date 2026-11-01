@@ -470,6 +470,11 @@ impl ParametricBatch<'_> {
 /// with a `Centroid` reference carry their [`RayGroup`],
 /// which says which rays define the reference.
 pub trait OperandEvaluator: Sync {
+    /// Explicit resident execution context, absent for the reference route.
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        None
+    }
+
     /// Can this evaluator compute operands of `kind`?
     fn supports(&self, kind: &OperandKind) -> bool;
 

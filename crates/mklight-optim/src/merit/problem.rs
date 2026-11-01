@@ -530,6 +530,10 @@ fn combine(op: CombineOp, args: Vec<OperandValue>) -> OperandValue {
 }
 
 impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        self.evaluator.gpu_context()
+    }
+
     fn variables(&self) -> &[Variable] {
         &self.vars
     }
