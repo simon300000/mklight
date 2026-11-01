@@ -8,6 +8,23 @@ pub const VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
 pub enum Request {
+    /// Gather weighted pupil-fit rows. Values/mask [K], indices [B,M],
+    /// basis [B,M,N] with sqrt(weight) in column zero; masked rows are zero.
+    FitRows {
+        values: PlanView,
+        mask: PlanView,
+        indices: PlanView,
+        basis: PlanView,
+        matrix: BufferId,
+        rhs: BufferId,
+    },
+    /// Squared weighted fit residual and weight, channel-major [2,B*M].
+    FitError {
+        matrix: PlanView,
+        rhs: PlanView,
+        coefficients: PlanView,
+        output: BufferId,
+    },
     /// Values [B,O], targets [O], comparison U32 [O]: equal=0, <=1, >=2,
     /// identity=3 (constraints). Nonfinite values remain nonfinite.
     Residuals {
@@ -78,6 +95,44 @@ fn output(
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::{DoubleFloat as D, U32};
     match r {
+        Request::FitRows {
+            values,
+            mask,
+            indices,
+            basis,
+            matrix,
+            rhs,
+        } => {
+            input(values, D, 1)?;
+            input(mask, U32, 1)?;
+            input(indices, U32, 2)?;
+            input(basis, D, 3)?;
+            if values.desc.shape != mask.desc.shape
+                || indices.desc.shape != basis.desc.shape[..2]
+                || basis.desc.shape[2] == 0
+            {
+                return Err(bad("optim pupil fit dimensions"));
+            }
+            output(p, *matrix, D, basis.desc.shape.clone())?;
+            output(p, *rhs, D, indices.desc.shape.clone())?;
+        }
+        Request::FitError {
+            matrix,
+            rhs,
+            coefficients,
+            output: o,
+        } => {
+            input(matrix, D, 3)?;
+            input(rhs, D, 2)?;
+            input(coefficients, D, 2)?;
+            let [b, m, n] = matrix.desc.shape[..] else {
+                unreachable!()
+            };
+            if n == 0 || rhs.desc.shape != [b, m] || coefficients.desc.shape != [b, n] {
+                return Err(bad("optim fit residual dimensions"));
+            }
+            output(p, *o, D, [2, b * m])?;
+        }
         Request::Residuals {
             values,
             targets,
@@ -104,7 +159,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             input(values, D, 2)?;
             input(rows, U32, 2)?;
             input(steps, D, 2)?;
-            if rows.desc.shape[1] != 3 || steps.desc.shape != [rows.desc.shape[0], 2] {
+            if values.desc.shape[1] == 0 || rows.desc.shape[1] != 3 || steps.desc.shape != [rows.desc.shape[0], 2] {
                 return Err(bad("optim stencils"));
             }
             output(p, *o, D, [values.desc.shape[1], rows.desc.shape[0]])?;
@@ -158,7 +213,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             let [b, m, n] = jacobian.desc.shape[..] else {
                 unreachable!()
             };
-            if residuals.desc.shape != [b, m]
+            if n == 0 || residuals.desc.shape != [b, m]
                 || weights.desc.shape != [m]
                 || diagonal.desc.shape != [b, n]
                 || !damping.is_finite()
@@ -174,6 +229,26 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn accesses(r: &Request) -> Access {
     let (reads, writes) = match r {
+        Request::FitRows {
+            values,
+            mask,
+            indices,
+            basis,
+            matrix,
+            rhs,
+        } => (
+            vec![values.clone(), mask.clone(), indices.clone(), basis.clone()],
+            vec![*matrix, *rhs],
+        ),
+        Request::FitError {
+            matrix,
+            rhs,
+            coefficients,
+            output,
+        } => (
+            vec![matrix.clone(), rhs.clone(), coefficients.clone()],
+            vec![*output],
+        ),
         Request::Residuals {
             values,
             targets,
@@ -255,6 +330,21 @@ pub fn params(r: &Request) -> Params {
         damping: Df32::ZERO,
     };
     match r {
+        Request::FitRows { values, basis, .. } => {
+            p.kind = 5;
+            p.b = basis.desc.shape[0] as u32;
+            p.m = basis.desc.shape[1] as u32;
+            p.n = basis.desc.shape[2] as u32;
+            p.k = values.desc.shape[0] as u32;
+            p.count = p.b * p.m * p.n;
+        }
+        Request::FitError { matrix, .. } => {
+            p.kind = 6;
+            p.b = matrix.desc.shape[0] as u32;
+            p.m = matrix.desc.shape[1] as u32;
+            p.n = matrix.desc.shape[2] as u32;
+            p.count = 2 * p.b * p.m;
+        }
         Request::Residuals { values, .. } => {
             p.m = values.desc.shape[1] as u32;
             p.count = values.desc.len().unwrap() as u32;

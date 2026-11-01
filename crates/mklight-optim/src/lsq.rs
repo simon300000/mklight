@@ -63,7 +63,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use mklight_core::{MkError, MkResult};
+use mklight_core::{JobContext, MkError, MkResult};
 
 use crate::deriv::{JacobianSettings, jacobian_budget};
 use crate::linalg::{Matrix, Qr, dot, norm_inf, norm2, solve_upper, solve_upper_transpose};
@@ -406,6 +406,7 @@ fn mul_free(j: &Matrix, free: &[usize], p_free: &[f64]) -> Vec<f64> {
 /// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
 /// `A₀ᵀA₀ = J_Fᵀ J_F`, `A₀ᵀ b₀ = J_Fᵀ r`.
 struct Sub {
+    resident_q: Option<crate::gpu::ResidentQr>,
     a0: Matrix,
     b0: Vec<f64>,
     qr: Option<Qr>,
@@ -431,6 +432,7 @@ impl Sub {
                 None
             };
             Sub {
+                resident_q: None,
                 a0: qr.r(),
                 b0: qtr,
                 qr: Some(qr),
@@ -440,6 +442,7 @@ impl Sub {
             }
         } else {
             Sub {
+                resident_q: None,
                 a0: jf,
                 b0: r.to_vec(),
                 qr: None,
@@ -449,15 +452,50 @@ impl Sub {
             }
         }
     }
-    fn transform(&self, v: &[f64]) -> Vec<f64> {
+    fn prepare(
+        j: Matrix,
+        r: &[f64],
+        d: Vec<f64>,
+        gpu: Option<&crate::gpu::GpuContext>,
+        ctx: &JobContext,
+    ) -> MkResult<Sub> {
+        if let Some(gpu) = gpu.filter(|_| j.rows >= j.cols && j.cols > 0)
+            && let Some((resident_q, reduced, mut qtr)) = gpu.reduce_qr(&j, r, ctx)?
+        {
+            let g = reduced.tr_mul_vec(&qtr);
+            let qr = Qr::new(reduced);
+            qr.apply_qt(&mut qtr);
+            let a0 = qr.r();
+            let gn = qr
+                .is_full_rank()
+                .then(|| solve_upper(&a0, &qtr.iter().map(|v| -v).collect::<Vec<_>>()));
+            return Ok(Sub {
+                resident_q: Some(resident_q),
+                a0,
+                b0: qtr,
+                qr: Some(qr),
+                d,
+                g,
+                gn,
+            });
+        }
+        Ok(Self::new(j, r, d))
+    }
+    fn transform(&self, v: &[f64], ctx: &JobContext) -> MkResult<Vec<f64>> {
+        let projected = self
+            .resident_q
+            .as_ref()
+            .map(|q| q.project(v, ctx))
+            .transpose()?;
+        let v = projected.as_deref().unwrap_or(v);
         match &self.qr {
             Some(q) => {
                 let mut t = v.to_vec();
                 q.apply_qt(&mut t);
                 t.truncate(self.a0.cols);
-                t
+                Ok(t)
             }
-            None => v.to_vec(),
+            None => Ok(v.to_vec()),
         }
     }
     fn dnorm(&self, p: &[f64]) -> f64 {
@@ -728,7 +766,17 @@ fn inner<P: Problem + ?Sized>(
             return out(x, e, c.certify(Termination::SmallGradient));
         }
         let df: Vec<f64> = free.iter().map(|&j| c.d[j]).collect();
-        let sub = Sub::new(jm.select_columns(&free), &r, df);
+        let sub = match Sub::prepare(
+            jm.select_columns(&free),
+            &r,
+            df,
+            c.p.gpu_context(),
+            &c.mon.job,
+        ) {
+            Ok(sub) => sub,
+            Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
+            Err(e) => return Err(e),
+        };
 
         // Inner loop: find an acceptable step with this Jacobian.
         loop {
@@ -764,7 +812,7 @@ fn inner<P: Problem + ?Sized>(
                         let rvv: Vec<f64> = (0..rv.len())
                             .map(|i| (2.0 / h) * ((rv[i] - r[i]) / h - jv[i]))
                             .collect();
-                        let rhs = sub.transform(&rvv);
+                        let rhs = sub.transform(&rvv, &c.mon.job)?;
                         let acc = if lambda > 0.0 {
                             sub.solve_lambda(lambda, &rhs).0
                         } else {
@@ -899,18 +947,18 @@ pub fn least_squares<P: Problem + ?Sized>(
     let mut e = match c.eval(&x) {
         Ok(e) => e,
         Err(MkError::Cancelled) => {
-            return Ok(finish(&c, x, None, Termination::Cancelled, None));
+            return finish(&c, x, None, Termination::Cancelled, None);
         }
         Err(err) => return Err(err),
     };
     if !e.status.is_usable() {
-        return Ok(finish(&c, x, Some(e), Termination::EvaluationFailure, None));
+        return finish(&c, x, Some(e), Termination::EvaluationFailure, None);
     }
     let al = settings.constraints;
     let mut aug = Aug::new(p, al.mu0);
     if aug.rows.is_empty() {
         let o = inner(&mut c, &aug, x, e, "", None)?;
-        return Ok(finish(&c, o.x, Some(o.e), o.termination, None));
+        return finish(&c, o.x, Some(o.e), o.termination, None);
     }
     let k = p.num_constraints();
     let mut eta = 1.0 / al.mu0.powf(0.1);
@@ -982,7 +1030,7 @@ pub fn least_squares<P: Problem + ?Sized>(
         }
     }
     let mult = aug.multipliers(k);
-    Ok(finish(&c, x, Some(e), termination, Some(mult)))
+    finish(&c, x, Some(e), termination, Some(mult))
 }
 
 /// End-point restoration (`docs/OPTIMIZATION.md`): while the end point is
@@ -1082,11 +1130,26 @@ fn finish<P: Problem + ?Sized>(
     c: &Ctx<'_, P>,
     x: Vec<f64>,
     e: Option<Evaluation>,
-    termination: Termination,
+    mut termination: Termination,
     multipliers: Option<Vec<f64>>,
-) -> OptimResult {
+) -> MkResult<OptimResult> {
+    // Cancellation never starts a replacement calculation; Stop scores the
+    // best completed state with the independent reference.
+    let e = if termination != Termination::Cancelled {
+        match c.p.reference_evaluation(&x, &c.mon.job) {
+            Some(Ok(reference)) => Some(reference),
+            Some(Err(MkError::Cancelled)) => {
+                termination = Termination::Cancelled;
+                e
+            }
+            Some(Err(error)) => return Err(error),
+            None => e,
+        }
+    } else {
+        e
+    };
     let sc = e.as_ref().map_or(ScalarEval::FAILED, |e| scalar(c.p, e));
-    OptimResult {
+    Ok(OptimResult {
         x,
         merit: sc.merit,
         violation: sc.violation,
@@ -1096,7 +1159,7 @@ fn finish<P: Problem + ?Sized>(
         multipliers,
         history: c.history.clone(),
         failed_variables: c.failed.clone(),
-    }
+    })
 }
 
 /// Max-norm of the scaled projected gradient `‖P(x − ∇Φ) − x‖∞`, a

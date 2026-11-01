@@ -314,6 +314,10 @@ pub struct Evaluation {
 /// passed in are always inside the bounds), so evaluators never see
 /// out-of-range values.
 pub trait Problem: Sync {
+    /// Independent final scoring for accelerated problems.
+    fn reference_evaluation(&self, _x: &[f64], _ctx: &JobContext) -> Option<MkResult<Evaluation>> {
+        None
+    }
     fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
         None
     }

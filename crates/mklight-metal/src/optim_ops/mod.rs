@@ -15,7 +15,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         ..Default::default()
     };
     // Bound the product's work, not just its output size, for cancellation.
-    let tile = (4_194_304usize / (p.k as usize).max(1)).clamp(256, 1 << 20);
+    let tile =
+        (4_194_304usize / (if p.kind == 2 { p.k as usize } else { 1 }).max(1)).clamp(256, 1 << 20);
     for first in (0..count).step_by(tile) {
         ctl.check()?;
         p.offset = first as u32;

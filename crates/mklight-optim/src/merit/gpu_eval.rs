@@ -1091,3 +1091,5 @@ impl OperandEvaluator for GpuTraceEvaluator {
         }
     }
 }
+
+pub(crate) mod resident;

@@ -461,9 +461,9 @@ pub(super) struct GroupRays {
     /// The sampling's nodes, followed by their mirrors `(−px, py)` when a
     /// half pupil is traced in full (asymmetric candidate); weights then
     /// halved.
-    nodes: Vec<PupilNode>,
+    pub(super) nodes: Vec<PupilNode>,
     /// Symmetry of the traced node set (`None` once mirrored).
-    symmetry: PupilSymmetry,
+    pub(super) symmetry: PupilSymmetry,
     pub(super) rays: Vec<NodeRay>,
     /// Node index by the bits of `(px, py)` (only for more than 64 nodes).
     index: HashMap<(u64, u64), usize>,
@@ -608,6 +608,9 @@ type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>, PupilSymmetry);
 type RefKey = (FieldKey, usize, SamplingKey, bool, bool);
 
 pub(super) struct Candidate<'a> {
+    /// Completed P3 moments; absent on the unchanged reference evaluator.
+    pub(super) resident_wavefits: BTreeMap<GroupKey, [[f64; 4]; 2]>,
+    pub(super) resident_moments: BTreeMap<GroupKey, [f64; 10]>,
     ev: &'a TraceEvaluator,
     pub(super) tr: &'a SequentialTracer,
     opts: TraceOptions,
@@ -657,6 +660,8 @@ impl<'a> Candidate<'a> {
             ..tr.options()
         };
         let c = Candidate {
+            resident_moments: BTreeMap::new(),
+            resident_wavefits: BTreeMap::new(),
             ev,
             tr,
             opts,
@@ -1408,6 +1413,25 @@ impl<'a> Candidate<'a> {
         wls: &[(usize, f64)],
         s: &PupilSampling,
     ) -> Result<[f64; 2], OperandError> {
+        if wls.iter().all(|&(w, _)| {
+            self.resident_moments
+                .contains_key(&(f, w, SamplingKey::of(s)))
+        }) {
+            let mut total = 0.;
+            let mut mean = [0.; 2];
+            for &(w, ww) in wls {
+                let m = self.resident_moments[&(f, w, SamplingKey::of(s))];
+                let weight = m[1] * ww;
+                total += weight;
+                mean[0] += weight * m[2];
+                mean[1] += weight * m[3];
+            }
+            return if total > 0. {
+                Ok([mean[0] / total, mean[1] / total])
+            } else {
+                Err(OperandError::RayFailure("spot centroid undefined".into()))
+            };
+        }
         let (wt, xs, ys, symmetry) = self.spot_rays(f, wls, s)?;
         spot_centroid(&wt, &xs, &ys, symmetry)
             .ok_or_else(|| OperandError::RayFailure("spot centroid undefined".into()))
@@ -1420,6 +1444,20 @@ impl<'a> Candidate<'a> {
         wls: &[(usize, f64)],
         s: &PupilSampling,
     ) -> Result<[f64; 3], OperandError> {
+        if wls.len() == 1
+            && let Some(fits) = self
+                .resident_wavefits
+                .get(&(f, wls[0].0, SamplingKey::of(s)))
+        {
+            let fit = fits[1];
+            return if fit[0].is_finite() {
+                Ok([fit[0], fit[1], fit[2]])
+            } else {
+                Err(OperandError::RayFailure(
+                    "too few rays for piston and tilt".into(),
+                ))
+            };
+        }
         let (mut px, mut py, mut wt, mut opd) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut symmetry = s.symmetry;
         for &(w, ww) in wls {
@@ -1671,6 +1709,39 @@ impl<'a> Candidate<'a> {
                 let fields = self.fields(op.field)?;
                 let wls = self.wavelengths(op.wavelength)?;
                 let ms = weighted_mean(&fields, |&f| {
+                    if wls.iter().all(|&(w, _)| {
+                        self.resident_moments
+                            .contains_key(&(f, w, SamplingKey::of(sampling)))
+                    }) {
+                        let centre = match reference {
+                            SpotReference::Centroid => self.centroid(f, &wls, sampling)?,
+                            SpotReference::Chief => {
+                                let r = self.chief(f, self.primary())?;
+                                [r.ray.pos.x, r.ray.pos.y]
+                            }
+                        };
+                        let mut sum = 0.;
+                        let mut weight = 0.;
+                        for &(w, ww) in &wls {
+                            let m = self.resident_moments[&(f, w, SamplingKey::of(sampling))];
+                            let x = m[5] + m[1] * (m[2] - centre[0]).powi(2);
+                            let y = m[7] + m[1] * (m[3] - centre[1]).powi(2);
+                            sum += ww
+                                * match component {
+                                    Some(Axis::X) => x,
+                                    Some(Axis::Y) => y,
+                                    None => x + y,
+                                };
+                            weight += ww * m[1];
+                        }
+                        return if weight > 0. {
+                            Ok(sum / weight)
+                        } else {
+                            Err(OperandError::RayFailure(
+                                "no pupil ray reached image".into(),
+                            ))
+                        };
+                    }
                     let (wt, xs, ys, symmetry) = self.spot_rays(f, &wls, sampling)?;
                     let c = match reference {
                         SpotReference::Centroid => spot_centroid(&wt, &xs, &ys, symmetry)
@@ -1779,6 +1850,14 @@ impl<'a> Candidate<'a> {
         reference: WavefrontReference,
         s: &PupilSampling,
     ) -> Result<f64, OperandError> {
+        if let Some(fits) = self.resident_wavefits.get(&(f, w, SamplingKey::of(s))) {
+            let v = fits[usize::from(reference == WavefrontReference::Centroid)][3];
+            return if v.is_finite() {
+                Ok(v)
+            } else {
+                Err(OperandError::RayFailure("no fitted OPD in pupil".into()))
+            };
+        }
         let g = self.group(f, w, s)?;
         let fit = match reference {
             WavefrontReference::Centroid => self.piston_tilt(f, &[(w, 1.0)], s)?,

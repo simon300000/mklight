@@ -697,6 +697,9 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
 }
 
 impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
+    fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
+        (**self).reference_evaluator()
+    }
     fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
         (**self).gpu_context()
     }

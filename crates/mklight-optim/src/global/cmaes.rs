@@ -285,5 +285,5 @@ pub fn cma_es<P: Problem + ?Sized>(
         }
     }
     let (bx, bf) = best;
-    Ok(ev.finish((&bx, bf), termination, generations))
+    ev.finish((&bx, bf), termination, generations)
 }

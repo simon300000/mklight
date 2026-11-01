@@ -26,6 +26,7 @@ pub const MTF_FD_CENTRAL: f64 = 1e-5;
 #[derive(Clone)]
 pub struct MtfEvaluator {
     trace: TraceEvaluator,
+    gpu: Option<crate::gpu::GpuContext>,
     /// Fixed entrance and exit grids, with no adaptive rim search, so the
     /// sampling never changes between candidates.
     pub pupil: PupilSettings,
@@ -35,6 +36,8 @@ pub struct MtfEvaluator {
 /// (field, wavelength, defocus), shared by all its MTF operands.
 struct Candidate<'a> {
     tr: &'a SequentialTracer,
+    gpu: Option<&'a crate::gpu::GpuContext>,
+    gpu_values: Vec<(FieldSelector, usize, f64, f64, [[f64; 2]; 2])>,
     settings: &'a PupilSettings,
     pupils: Vec<(FieldSelector, usize, TracedPupil)>,
     otfs: Vec<(FieldSelector, usize, f64, Otf)>,
@@ -85,6 +88,7 @@ impl MtfEvaluator {
     pub fn new(library: Arc<MaterialLibrary>) -> Self {
         Self {
             trace: TraceEvaluator::new(library),
+            gpu: None,
             pupil: PupilSettings {
                 grid: 64,
                 rim: false,
@@ -93,6 +97,10 @@ impl MtfEvaluator {
         }
     }
 
+    pub fn with_gpu(mut self, gpu: crate::gpu::GpuContext) -> Self {
+        self.gpu = Some(gpu);
+        self
+    }
     pub fn builtin() -> Self {
         Self::new(Arc::new(MaterialLibrary::with_builtin()))
     }
@@ -109,10 +117,24 @@ impl MtfEvaluator {
         };
         let mut cand = Candidate {
             tr: &tr,
+            gpu: self.gpu.as_ref(),
+            gpu_values: Vec::new(),
             settings: &self.pupil,
             pupils: Vec::new(),
             otfs: Vec::new(),
         };
+        if self.gpu.is_some() {
+            match cand.prepare_gpu(s, ops, ctx) {
+                Ok(()) => {}
+                Err(MkError::Cancelled) => return Err(MkError::Cancelled),
+                Err(e) => {
+                    return Ok(vec![
+                        Err(OperandError::RayFailure(e.to_string()));
+                        ops.len()
+                    ]);
+                }
+            }
+        }
         let n = ops.len() as f64;
         ops.iter()
             .enumerate()
@@ -155,16 +177,29 @@ fn value(cand: &mut Candidate, s: &OpticalSystem, op: &Operand, ctx: &JobContext
                 let dirs = [o.tangential, o.sagittal()];
                 let mut z = [(0.0_f64, 0.0_f64); 2];
                 for &(wl, w) in &wls {
-                    let otf = cand.otf(field, &prepared, wl, dz, ctx)?;
-                    for (z, d) in z.iter_mut().zip(dirs) {
-                        let v = otf.at(f * d[0], f * d[1]);
-                        z.0 += w * v.re;
-                        z.1 += w * v.im;
+                    if cand.gpu.is_some() {
+                        let values = &cand
+                            .gpu_values
+                            .iter()
+                            .find(|v| v.0 == field && v.1 == wl && v.2 == dz && v.3 == f)
+                            .expect("planned MTF query")
+                            .4;
+                        for (z, v) in z.iter_mut().zip(values) {
+                            z.0 += w * v[0];
+                            z.1 += w * v[1];
+                        }
+                    } else {
+                        let otf = cand.otf(field, &prepared, wl, dz, ctx)?;
+                        for (z, d) in z.iter_mut().zip(dirs) {
+                            let v = otf.at(f * d[0], f * d[1]);
+                            z.0 += w * v.re;
+                            z.1 += w * v.im;
+                        }
                     }
                 }
                 (z[0].0.hypot(z[0].1), z[1].0.hypot(z[1].1))
             }
-            MtfMethod::Geometric => geometric(cand.tr, field, &wls, f, dz, ctx)?,
+            MtfMethod::Geometric => geometric(cand.tr, field, &wls, f, dz, cand.gpu, ctx)?,
         };
         if let Some(d) = detector {
             let dc = d.curve(&[f], &o);
@@ -189,6 +224,7 @@ fn geometric(
     wls: &[(usize, f64)],
     frequency: f64,
     defocus: f64,
+    gpu: Option<&crate::gpu::GpuContext>,
     ctx: &JobContext,
 ) -> MkResult<(f64, f64)> {
     let (local, index) = match field {
@@ -209,7 +245,11 @@ fn geometric(
     settings.sampling.wavelengths = WavelengthSelection::List {
         indices: wls.iter().map(|x| x.0).collect(),
     };
-    let c = geometric_mtf_job(&local, &settings, ctx)?;
+    let c = if let Some(g) = gpu {
+        mklight_analysis::gpu::geometric_mtf_job(g.backend.as_ref(), &local, &settings, ctx)?
+    } else {
+        geometric_mtf_job(&local, &settings, ctx)?
+    };
     Ok((c.curves[0].modulation[1], c.curves[1].modulation[1]))
 }
 
@@ -302,5 +342,102 @@ pub(super) fn operand_result(value: MkResult<f64>) -> MkResult<OperandValue> {
         Err(MkError::Cancelled) => Err(MkError::Cancelled),
         Err(e) => Ok(Err(OperandError::RayFailure(e.to_string()))),
         Ok(v) => Ok(Ok(v)),
+    }
+}
+
+impl Candidate<'_> {
+    /// Every frequency of one focused pupil shares its FFT. P1/P7 probes for
+    /// all field/wavelength pupils share the native wave batch scheduler.
+    fn prepare_gpu(
+        &mut self,
+        s: &OpticalSystem,
+        ops: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        let g = self.gpu.unwrap();
+        let mut queries: Vec<(FieldSelector, usize, f64, Vec<f64>)> = Vec::new();
+        for op in ops {
+            if let OperandKind::Mtf {
+                frequency,
+                method: MtfMethod::Diffraction,
+                defocus_mm,
+                wavelengths: ref subset,
+                ..
+            } = op.kind
+            {
+                for (field, _) in fields(s, op.field) {
+                    for (wl, _) in wavelengths(self.tr, op.wavelength, subset)? {
+                        if let Some(q) = queries
+                            .iter_mut()
+                            .find(|q| q.0 == field && q.1 == wl && q.2 == defocus_mm)
+                        {
+                            if !q.3.contains(&frequency) {
+                                q.3.push(frequency);
+                            }
+                        } else {
+                            queries.push((field, wl, defocus_mm, vec![frequency]));
+                        }
+                    }
+                }
+            }
+        }
+        if queries.is_empty() {
+            return Ok(());
+        }
+        let mut keys = Vec::new();
+        for q in &queries {
+            if !keys.contains(&(q.0, q.1)) {
+                keys.push((q.0, q.1));
+            }
+        }
+        let prepared = keys
+            .iter()
+            .map(|&(f, _)| prepare(self.tr, f))
+            .collect::<MkResult<Vec<_>>>()?;
+        let trace = mklight_wave::gpu::PupilTracer::new(g.backend.as_ref(), self.tr, ctx)?;
+        let refs: Vec<_> = prepared.iter().zip(&keys).map(|(f, k)| (f, k.1)).collect();
+        let (pupils, stats) = trace.trace_many(&refs, self.settings, ctx)?;
+        g.observe(stats);
+        for ((pupil, &(field, wl)), prepared) in pupils.into_iter().zip(&keys).zip(&prepared) {
+            let mut pupil = pupil?;
+            g.observe(pupil.stats);
+            let chief = self.tr.chief(prepared, self.tr.system().primary_wavelength);
+            let r = pupil.value.info.reference_point_mm;
+            if chief.status.is_ok() {
+                pupil.value.pupil.image_offset_mm =
+                    [r[0] - chief.ray.pos.x, r[1] - chief.ray.pos.y];
+            }
+            let qs: Vec<_> = queries
+                .iter()
+                .filter(|q| q.0 == field && q.1 == wl)
+                .collect();
+            let shifts: Vec<_> = qs
+                .iter()
+                .map(|q| q.2 / pupil.value.pupil.geometry.chief_ray[2])
+                .collect();
+            let focused = pupil.value.pupil.focus_batch(
+                g.backend.as_ref(),
+                g.snapshot.clone(),
+                &shifts,
+                ctx,
+            )?;
+            g.observe(focused.stats);
+            let orientation = Orientation::from_field(prepared.point.hx, prepared.point.hy);
+            for (p, q) in focused.value.iter().zip(qs) {
+                let freqs: Vec<_> =
+                    q.3.iter()
+                        .flat_map(|f| {
+                            [orientation.tangential, orientation.sagittal()]
+                                .map(|d| [f * d[0], f * d[1]])
+                        })
+                        .collect();
+                let result = p.fft_otf(g.backend.as_ref(), g.snapshot.clone(), &freqs, ctx)?;
+                g.observe(result.stats);
+                for (&f, v) in q.3.iter().zip(result.value.chunks_exact(2)) {
+                    self.gpu_values.push((field, wl, q.2, f, [v[0], v[1]]));
+                }
+            }
+        }
+        Ok(())
     }
 }

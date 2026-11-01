@@ -79,10 +79,10 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
     pub fn finish(
         self,
         fallback: (&[f64], ScalarEval),
-        termination: Termination,
+        mut termination: Termination,
         iterations: usize,
-    ) -> OptimResult {
-        let (x, merit, violation) = match self.mon.best.get() {
+    ) -> MkResult<OptimResult> {
+        let (x, mut merit, mut violation) = match self.mon.best.get() {
             Some(b)
                 if b.x.len() == fallback.0.len()
                     && !fallback.1.better_than(
@@ -98,7 +98,24 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
             }
             _ => (fallback.0.to_vec(), fallback.1.merit, fallback.1.violation),
         };
-        OptimResult {
+        if termination != Termination::Cancelled
+            && merit.is_finite()
+            && let Some(result) = self.p.reference_evaluation(&x, &self.mon.job)
+        {
+            match result {
+                Ok(e) => {
+                    merit = crate::problem::merit(self.p.weights(), &e.residuals, e.status);
+                    violation = crate::problem::total_violation(
+                        self.p.constraints(),
+                        &e.constraints,
+                        e.status,
+                    );
+                }
+                Err(MkError::Cancelled) => termination = Termination::Cancelled,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(OptimResult {
             x,
             merit,
             violation,
@@ -108,7 +125,7 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
             multipliers: None,
             history: self.history,
             failed_variables: Vec::new(),
-        }
+        })
     }
 }
 

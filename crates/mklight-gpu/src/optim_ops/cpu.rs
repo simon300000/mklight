@@ -28,6 +28,9 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
     if p.kind == 1 {
         status.resize(p.n as usize, 0);
     }
+    if p.kind == 5 {
+        rhs.resize((p.b * p.m) as usize, Df32::ZERO);
+    }
     if p.kind == 4 {
         rhs.resize((p.b * (p.m + p.n)) as usize, Df32::ZERO);
     }
@@ -102,6 +105,34 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                     Df32::ZERO
                 }
             }
+            5 => {
+                let row = i / n;
+                let index = ins[2][row] as usize;
+                if index < k && ins[1][index] == 0 {
+                    if i % n == 0 {
+                        rhs[row] = d(ins[0], index).mul_in::<E>(d(ins[3], i));
+                    }
+                    d(ins[3], i)
+                } else {
+                    Df32::ZERO
+                }
+            }
+            6 => {
+                let count = (p.b * p.m) as usize;
+                let row = i % count;
+                let batch = row / m;
+                if i >= count {
+                    d(ins[0], row * n).mul_in::<E>(d(ins[0], row * n))
+                } else {
+                    let mut v = d(ins[1], row);
+                    for col in 0..n {
+                        v = v.add_in::<E>(
+                            -d(ins[0], row * n + col).mul_in::<E>(d(ins[2], batch * n + col)),
+                        );
+                    }
+                    v.mul_in::<E>(v)
+                }
+            }
             _ => unreachable!(),
         };
     }
@@ -110,7 +141,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
     if p.kind == 1 {
         x.words_mut(a.writes[1]).copy_from_slice(&status);
     }
-    if p.kind == 4 {
+    if p.kind == 4 || p.kind == 5 {
         x.words_mut(a.writes[1])
             .copy_from_slice(bytemuck::cast_slice(&rhs));
     }

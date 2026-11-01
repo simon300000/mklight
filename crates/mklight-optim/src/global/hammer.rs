@@ -99,7 +99,7 @@ pub fn hammer<P: Problem + ?Sized>(
         ..s.local
     };
     if ev.remaining() < min_local {
-        return Ok(ev.finish((x0, ScalarEval::FAILED), Termination::MaxEvaluations, 0));
+        return ev.finish((x0, ScalarEval::FAILED), Termination::MaxEvaluations, 0);
     }
     // Initial local solve.
     let first = least_squares(
@@ -112,7 +112,7 @@ pub fn hammer<P: Problem + ?Sized>(
     let mut cur = (first.x.clone(), first.scalar());
     let mut best = cur.clone();
     if first.termination == Termination::Cancelled {
-        return Ok(ev.finish((&best.0, best.1), Termination::Cancelled, 0));
+        return ev.finish((&best.0, best.1), Termination::Cancelled, 0);
     }
     let mut step = s.step;
     let mut stall = 0;
@@ -255,5 +255,5 @@ pub fn hammer<P: Problem + ?Sized>(
     {
         termination = Termination::TargetReached;
     }
-    Ok(ev.finish((&best.0, best.1), termination, done_rounds))
+    ev.finish((&best.0, best.1), termination, done_rounds)
 }

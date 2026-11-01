@@ -29,5 +29,14 @@ kernel void mkl_optim_algebra(device const uint *a [[buffer(0)]],device const ui
         else if(row-m==col) v=mkl_df_mul(mkl_df_sqrt(p.damping),mkl_o_load(d,batch*n+col));
         if(col==0u) {uint at=2*(batch*(m+n)+row);extra[at]=as_type<uint>(rhs.x);extra[at+1]=as_type<uint>(rhs.y);}
     }
+    if(p.kind==5u) {
+        uint row=i/n,index=c[row];float2 rhs=float2(0.0f);
+        if(index<k && b[index]==0u){v=mkl_o_load(d,i);rhs=mkl_df_mul(mkl_o_load(a,index),mkl_o_load(d,row*n));}
+        if(i%n==0u){extra[2*row]=as_type<uint>(rhs.x);extra[2*row+1]=as_type<uint>(rhs.y);}
+    } else if(p.kind==6u) {
+        uint count=p.batches*m,row=i%count,batch=row/m;
+        if(i>=count){float2 w=mkl_o_load(a,row*n);v=mkl_df_mul(w,w);}
+        else {v=mkl_o_load(b,row);for(uint col=0;col<n;++col)v=mkl_df_sub(v,mkl_df_mul(mkl_o_load(a,row*n+col),mkl_o_load(c,batch*n+col)));v=mkl_df_mul(v,v);}
+    }
     out[i]=v;
 }
