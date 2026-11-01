@@ -1321,3 +1321,163 @@ and synthetic catalogues.
   tests cover strongly perturbed candidates of every sample (worst 0.14 of
   the budget), and real rays on passive surfaces or far from their surface's
   origin, the one case found over budget, are traced on the CPU.
+
+## Resident optimisation adapter (P8)
+
+`gpu::ResidentEvaluator` is an explicit backend-taking alternative to the
+legacy `GpuTraceEvaluator`. Engine defaults and capability selection are
+unchanged; P11 owns those routes. Construct it with a `GpuContext` containing
+the base snapshot and backend, and the configured `BuiltinEvaluator` reference.
+Use it in `OpticalProblem`, or wrap a driver with `ResidentEvaluator::run` to
+retain actual-backend `RunInfo`, library identity, qualification, native solver
+metadata and cumulative plan/copy/allocation/fallback counters. Generic batched
+problems can opt into the numerical operations through `gpu::ResidentProblem`.
+
+The parametric path caches P4's immutable compiled template. It writes candidate
+rows directly into shared buffers, prepares their systems on device, and uses
+P1 generation/aiming and hi/lo tracing. Every candidate keeps its own current
+field and first-order metadata. P5 forms reference-sphere OPD and chief-relative
+coordinates. P3 supplies weighted two-pass spot moments and batched weighted
+piston/tilt QR fits, including the full mirrored pupil on asymmetric candidates.
+The final small field/spectral combinations and operand result packing remain
+host work. A polychromatic piston/tilt reference spanning several wavelength
+groups retains the existing host fit; monochromatic fits and wavefront RMS are
+resident. Unresolved aims and preparation failures select the affected
+candidate's reference values, without replacing neighbouring successful rows.
+The current raw-ray batch domain has common topology and at most 16 wavelengths.
+Pupil metadata and samples are filled directly; sampling patterns are cached.
+Candidates prepare their probes in parallel and merge in candidate order, so
+the plan is identical to a serial pass. A plan holds up to 1024 candidates
+within an estimated-ray budget (786,432 for spot-type merits, 196,608 when OPD
+and fit channels are needed), keeping measured peaks at 60 and 127 MiB.
+Aggregate-only spot queries do not construct host ray arrays or run OPD kernels.
+Aiming-table eligibility is decided per candidate, preserving the same policy
+when a full asymmetric pupil is batched with a symmetric half pupil.
+
+The evaluator routes fixed-sampling diffraction and geometric MTF through P6
+and P5, preserving complex spectral sums, detector response and focus sign.
+Within a candidate, every frequency of a focused pupil shares its FFT; all
+field/wavelength probes share P6's trace batches. Ghost and stray operands use the
+P9/P10 adapters and retain their native reference-completion reports. Their
+current public adapters prepare uploaded systems per candidate; they do not
+consume the P4 candidate sidecar. Native solver commands across different
+candidates are not fused into one resident plan. RI uses its existing chief-ray
+étendue definition: the initial radial visibility scans run through P1 in a
+candidate batch, then the reference adaptive boundary search and quadrature
+consume those decisions. This host completion is counted; `ri_visibility`
+records consumed and blocked device lookups. RI requires exact f64 scalar
+agreement before publication, so a changed visibility decision cannot silently
+introduce a derivative discontinuity. The measured forward/central RI steps
+are 1e-6/1e-5. P5's image-point irradiance has a different definition and is not
+substituted for this merit.
+Model scalars, unsupported paraxial quantities, and unimplemented
+operand adapters retain reported host evaluation.
+
+### Qualification and final decisions
+
+There is no assumed nominal parameter envelope. A previously unseen candidate
+receives the existing sampled geometry/OPD qualification at the one-third
+margin, plus an independent complete f64 operand evaluation. Only qualified
+candidates enter the resident optical path. Published values must also pass
+the operand-specific budget and the final squared-residual merit gate
+(1% or 1e-8 absolute). Inequality hinges and constraint values near their target
+use the reference decision. Geometry rejection, unresolved aiming, unsupported
+preparation and failed operand checks are counted separately from model-only
+host work. Cancellation propagates and never starts a replacement calculation.
+
+An exact-input cache retains at most 1024 reference entries and 1,048,576
+operand values. Its key includes the complete candidate system, operand list
+and backend instance; the material library and evaluator settings are immutable
+for the adapter. It also retains qualified tracer metadata, avoiding repeated
+snapshot hashing/resolution in the GPU preparation stage. Changed inputs receive
+new checks. This is reuse of an identical qualification, not an envelope for
+nearby candidates. Final local/global optimisation scores are independently
+recomputed in f64; cancelled results do not trigger final scoring.
+
+### Derivatives, linear algebra and independent solves
+
+`optim_ops` defines zero-copy double-float residual comparisons, stable
+finite-difference combinations, candidate perturbations, matrix products,
+weighted fit rows/errors and damped least-squares rows. Request shapes and
+indices are checked at the resident boundary. Integer stencil errors produce
+status values. The CPU-f32 specification follows the same arithmetic order as
+Metal; products and command tiles never change the summation order.
+
+`fd_jacobian` retains the existing forward/central/second-order one-sided
+stencils, bound handling, pinned columns, failed-probe retry and evaluation
+budgets; evaluator-specific FD steps are unchanged. Residual and Jacobian
+arrays cross the public `Problem` interface as owned f64 arrays, and every
+published operand value is a host f64 after its candidate check, so residual
+targets/hinges, stencil differences and `Jᵀr` are formed on the host: a device
+pass over host-owned values costs one fill of the same size plus a command and
+measured slower at every size (FD differences 0.35–4.7 ms against well under
+1 ms on the host up to 10000×100). `GpuContext::differences` and the
+`Residuals`/`Difference` requests remain for resident chains whose inputs
+already live on the device.
+
+The local solver hands its tall QR to P3 once the free-column work
+`m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order
+correction's projections and only the small unpermuted factor is reduced on
+the host for the existing serial trust-region secular equation. Below that
+the host Householder QR is faster (complete LM solves, provisional M2 Pro:
+400×100 host 29 ms against 72 ms resident; 4000×32 parity at 46 ms;
+4000×100 host 320 ms against 154 ms). Rank-deficient factorisations receive a
+counted reference factorisation. The separate batched
+`GpuContext::least_squares` API builds `[sqrt(w) J; sqrt(lambda) D]` and its RHS
+and calls P3 QR directly. Neither path forms normal equations.
+
+`gpu::scheduler::run` rendezvous-batches independent serial solvers: each active
+worker supplies its next optical evaluation, then one coordinator combines
+matching operand lists in stable worker order. Finished workers leave subsequent
+rounds. It uses no time window or search pruning. Compensated tolerance trials
+use this scheduler, preserving the 33-point MTF focus screen plus the current
+start. Ordinary uncompensated parameter trials retain P4 preparation; random
+irregularity orientations that change extra model fields use the counted
+complete-system preparation route. `ResidentEvaluator::refine_candidates`
+provides the same scheduling for independent glass/multistart refinements and
+returns independently scored f64 outcomes in input order. Catalogue filtering,
+trial RNG and population/search decisions retain the reference implementation.
+The low-level perturbation and batched QR operations are available to composed
+callers; trial RNG and independent workers' small local linear solves remain
+host stages. Trial summaries stay on the host: they must equal the f64
+reference summary, which costs 0.04 ms for 1000 trials and 0.9 ms for 100000,
+while a device summary (P3 moments plus stable sort) measured 1.9 and 4.9 ms.
+
+### Evidence and cost handoff
+
+Host-required tests are `p8_algebra`, `p8_candidates`, `p8_solvers`,
+`p8_scheduler` and `p8_tolerance`. They include both shader origins and numerics
+probes, exact emulation algebra, all 16 samples with perturbed spot/wavefront
+merits, asymmetric half pupils, an analytic thick-lens derivative, one-sided
+retry, LM solves on both sides of the tall-QR crossover, native mixed operands, MTF step sweeps, cancellation, trial
+replay, matched-method RI visibility with clipped pupils, and independent refinements. A fallback-only result cannot satisfy the
+device-work assertions. Existing CPU reference tests remain in force.
+
+The ignored `p8_bench` harness alternates unchanged f64, legacy Metal and the
+resident path at B=1/16/256/1024, with cold, warm-up and ten measured runs.
+It includes candidate qualification and records transfers, device/wall time,
+command counts, allocation reuse, peak plan storage and fallback proportions.
+Current default-workload measurements are CPU-preferred; no engine threshold is
+changed. Exact numerical maxima, provisional median/p95 results, raw records
+and unmeasured acceptance cases are in the task's `P8-evidence.md`. P11 must
+retain the distinction between cold candidate qualification, identical-input
+reuse and changing-candidate optimisation when deriving cost policy.
+
+The additional ignored `p8_workloads` harness measures complete synthetic LM
+solves on both sides of the tall-QR crossover, 32 Cooke tolerance trials with/without
+compensation, three built-in catalogue refinements, and hybrid RI at B=1/16.
+These include qualification and f64 final scoring, and currently remain
+CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
+`p8_bench`; its default is spot. Timing evidence remains provisional.
+
+Provisional M2 Pro measurements (2026-11-01), ten measured runs after warm-up,
+show why P11 should retain CPU-preferred small jobs. For an exact-input warm
+Cooke default spot evaluation at B=1, CPU / legacy Metal / resident medians were
+0.21 / 1.14 / 5.1 ms (about 3.5 ms on a quieter run); at B=1024, 28 / 32 /
+54 ms after parallel preparation and 1024-candidate spot plans (92 ms
+before). These warm rows exclude new candidate qualification. Complete
+changing-candidate workloads include it: 32 compensated Cooke trials took
+7.8 ms CPU versus 127 ms resident, and three catalogue refinements took 1.7
+versus 24 ms; per-candidate geometry qualification commands dominate both.
+Plan peaks are 60 MiB (spot) and 127 MiB (dense wavefront). Cold costs, p95, copies, fallback proportions and raw records are in
+`P8-evidence.md`; these numbers do not set a universal backend threshold.

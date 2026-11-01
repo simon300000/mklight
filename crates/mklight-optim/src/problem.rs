@@ -314,6 +314,25 @@ pub struct Evaluation {
 /// passed in are always inside the bounds), so evaluators never see
 /// out-of-range values.
 pub trait Problem: Sync {
+    /// A measured derivative stage may require reference operands while the
+    /// ordinary candidate merits remain accelerated.
+    fn fd_reference_batch(
+        &self,
+        _x: &CandidateBatch,
+        _scheme: crate::deriv::FdScheme,
+        _ctx: &JobContext,
+    ) -> Option<MkResult<BatchEvaluation>> {
+        None
+    }
+
+    /// Independent final scoring for accelerated problems.
+    fn reference_evaluation(&self, _x: &[f64], _ctx: &JobContext) -> Option<MkResult<Evaluation>> {
+        None
+    }
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        None
+    }
+
     fn variables(&self) -> &[Variable];
     fn num_residuals(&self) -> usize;
     /// Residual weights `w_i ≥ 0` (length `num_residuals`).

@@ -20,6 +20,8 @@ mklight-stray.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
+bytemuck.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

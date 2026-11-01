@@ -470,6 +470,27 @@ impl ParametricBatch<'_> {
 /// with a `Centroid` reference carry their [`RayGroup`],
 /// which says which rays define the reference.
 pub trait OperandEvaluator: Sync {
+    fn record_reference_stage(&self, name: &str, count: usize) {
+        if let Some(g) = self.gpu_context() {
+            g.observe(mklight_gpu::resident::PlanStats {
+                fallback_count: count as u64,
+                stages: vec![mklight_gpu::resident::StageStats {
+                    name: name.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+    }
+
+    fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
+        None
+    }
+    /// Explicit resident execution context, absent for the reference route.
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        None
+    }
+
     /// Can this evaluator compute operands of `kind`?
     fn supports(&self, kind: &OperandKind) -> bool;
 

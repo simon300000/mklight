@@ -98,7 +98,7 @@ pub fn nelder_mead<P: Problem + ?Sized>(
         sim
     };
     let cancelled = |ev: Evaluator<P>, x: &[f64], f: ScalarEval, it| {
-        Ok(ev.finish((x, f), Termination::Cancelled, it))
+        ev.finish((x, f), Termination::Cancelled, it)
     };
 
     let mut sim = build_simplex(&start);
@@ -106,7 +106,7 @@ pub fn nelder_mead<P: Problem + ?Sized>(
         // Not even the initial simplex fits: evaluate what does and stop.
         sim.truncate(ev.remaining());
         if sim.is_empty() {
-            return Ok(ev.finish((&start, ScalarEval::FAILED), Termination::MaxEvaluations, 0));
+            return ev.finish((&start, ScalarEval::FAILED), Termination::MaxEvaluations, 0);
         }
         return match ev.eval(&sim) {
             Ok(f) => {
@@ -114,7 +114,7 @@ pub fn nelder_mead<P: Problem + ?Sized>(
                     .min_by(|&a, &b| ev.cmp(&f[a], &f[b]))
                     .unwrap_or(0);
                 let (bx, bf) = (sim[bi].clone(), f[bi]);
-                Ok(ev.finish((&bx, bf), Termination::MaxEvaluations, 0))
+                ev.finish((&bx, bf), Termination::MaxEvaluations, 0)
             }
             Err(MkError::Cancelled) => cancelled(ev, &start, ScalarEval::FAILED, 0),
             Err(e) => Err(e),
@@ -288,5 +288,5 @@ pub fn nelder_mead<P: Problem + ?Sized>(
     }
     let bi = (0..=n).min_by(|&a, &b| ev.cmp(&f[a], &f[b])).unwrap_or(0);
     let (bx, bf) = (sim[bi].clone(), f[bi]);
-    Ok(ev.finish((&bx, bf), termination, it))
+    ev.finish((&bx, bf), termination, it)
 }

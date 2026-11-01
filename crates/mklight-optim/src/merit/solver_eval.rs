@@ -21,6 +21,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct SolverEvaluator {
     trace: TraceEvaluator,
+    gpu: Option<crate::gpu::GpuContext>,
     pub ghost: IrradianceSettings,
     pub stray: StrayAnalysisSettings,
 }
@@ -30,6 +31,7 @@ impl SolverEvaluator {
     pub fn new(library: Arc<MaterialLibrary>) -> Self {
         Self {
             trace: TraceEvaluator::new(library),
+            gpu: None,
             ghost: IrradianceSettings {
                 pupil_samples: 32,
                 ..Default::default()
@@ -39,6 +41,44 @@ impl SolverEvaluator {
                 top_signatures: 0,
                 ..Default::default()
             },
+        }
+    }
+    pub fn with_gpu(mut self, gpu: crate::gpu::GpuContext) -> Self {
+        self.gpu = Some(gpu);
+        self
+    }
+    fn irradiance(
+        &self,
+        model: &GhostModel,
+        settings: &IrradianceSettings,
+        ctx: &JobContext,
+    ) -> MkResult<mklight_ghost::GhostIrradiance> {
+        if let Some(g) = &self.gpu {
+            {
+                let r =
+                    mklight_ghost::gpu::ghost_irradiance(g.backend.as_ref(), model, settings, ctx)?;
+                g.observe_run(&r.run);
+                Ok(r)
+            }
+        } else {
+            ghost_irradiance(model, settings, ctx)
+        }
+    }
+    fn paraxial(
+        &self,
+        model: &GhostModel,
+        settings: &ParaxialGhostSettings,
+        ctx: &JobContext,
+    ) -> MkResult<mklight_ghost::ParaxialGhostReport> {
+        if let Some(g) = &self.gpu {
+            {
+                let r =
+                    mklight_ghost::gpu::paraxial_ghosts(g.backend.as_ref(), model, settings, ctx)?;
+                g.observe_run(&r.run);
+                Ok(r)
+            }
+        } else {
+            paraxial_ghosts(model, settings)
         }
     }
     pub fn builtin() -> Self {
@@ -98,7 +138,7 @@ impl SolverEvaluator {
                 };
                 let mut value = 0.0;
                 for (wl, weight) in ranking {
-                    let report = paraxial_ghosts(
+                    let report = self.paraxial(
                         model,
                         &ParaxialGhostSettings {
                             paths: paths.clone(),
@@ -109,6 +149,7 @@ impl SolverEvaluator {
                             },
                             ..Default::default()
                         },
+                        ctx,
                     )?;
                     let take = if paths.is_some() { usize::MAX } else { *worst };
                     let selected: Vec<_> = report.ghosts.iter().take(take).collect();
@@ -127,7 +168,7 @@ impl SolverEvaluator {
                                     wavelengths: wls.iter().map(|w| w.0).collect(),
                                     ..self.ghost.clone()
                                 };
-                                ghost_irradiance(model, &settings, ctx)?
+                                self.irradiance(model, &settings, ctx)?
                                     .ghosts
                                     .iter()
                                     .map(|g| g.peak_ratio)
@@ -165,7 +206,7 @@ impl SolverEvaluator {
                         settings.points = vec![FieldPoint::normalized(hx, hy)];
                     }
                 }
-                let r = ghost_irradiance(model, &settings, ctx)?;
+                let r = self.irradiance(model, &settings, ctx)?;
                 Ok(match metric {
                     GhostMetric::Peak => r.total_peak_ratio,
                     GhostMetric::Mean | GhostMetric::Power => r.total_flux_ratio,
@@ -223,7 +264,21 @@ impl SolverEvaluator {
                 source,
                 ..self.stray.clone()
             };
-            let fraction = analyze(rs.clone(), &settings, ctx)?
+            let report = if let Some(g) = &self.gpu {
+                mklight_stray::gpu::analyze(
+                    g.backend.as_ref(),
+                    rs.clone(),
+                    &settings,
+                    Default::default(),
+                    ctx,
+                )?
+            } else {
+                analyze(rs.clone(), &settings, ctx)?
+            };
+            if let Some(g) = &self.gpu {
+                g.observe_run(&report.run_info);
+            }
+            let fraction = report
                 .stray_fraction
                 .ok_or_else(|| MkError::Numerical("zero primary reference flux".into()))?;
             value += weight * fraction;

@@ -697,6 +697,16 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
 }
 
 impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
+    fn record_reference_stage(&self, name: &str, count: usize) {
+        (**self).record_reference_stage(name, count)
+    }
+    fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
+        (**self).reference_evaluator()
+    }
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        (**self).gpu_context()
+    }
+
     fn supports(&self, kind: &OperandKind) -> bool {
         (**self).supports(kind)
     }
@@ -862,6 +872,81 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
 }
 
 impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
+    /// Ordinary parameter trials retain the P4 path. Random irregularity
+    /// orientation can change extra model fields; those keep their complete
+    /// system representation and the reported host preparation route.
+    fn parametric_trials(
+        &self,
+        systems: &[Option<OpticalSystem>],
+        ctx: &JobContext,
+    ) -> MkResult<Option<crate::problem::BatchEvaluation>> {
+        let Some(gpu) = self.evaluator.gpu_context() else {
+            return Ok(None);
+        };
+        ctx.check()?;
+        let params: Vec<_> = self
+            .spec
+            .operands
+            .iter()
+            .map(|o| o.param.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if params.is_empty() {
+            return Ok(None);
+        }
+        let mut points = CandidateBatch::new(params.len());
+        let mut slots = Vec::new();
+        for (i, system) in systems.iter().enumerate() {
+            if let Some(system) = system {
+                let values = params
+                    .iter()
+                    .map(|p| p.get(system))
+                    .collect::<MkResult<Vec<_>>>()?;
+                let mut represented = self.nominal.clone();
+                for (p, &v) in params.iter().zip(&values) {
+                    p.set(&mut represented, v)?;
+                }
+                if represented != *system {
+                    gpu.observe(mklight_gpu::resident::PlanStats {
+                        fallback_count: systems.len() as u64,
+                        stages: vec![mklight_gpu::resident::StageStats {
+                            name: "tolerance orientation host preparation".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    return Ok(None);
+                }
+                points.push(&values);
+                slots.push(i);
+            }
+        }
+        let variables = params
+            .into_iter()
+            .map(|param| VariableSpec {
+                scale: Some(1.),
+                ..VariableSpec::new(param)
+            })
+            .collect();
+        let p = OpticalProblem::new(
+            self.nominal.clone(),
+            variables,
+            self.criterion.clone(),
+            self.evaluator,
+            self.registry,
+        )?;
+        let evaluated = p.evaluate_batch(&points, ctx)?;
+        let (m, k) = (p.num_residuals(), p.num_constraints());
+        let mut out = crate::problem::BatchEvaluation::zeros(systems.len(), m, k);
+        out.status.fill(crate::problem::EvalStatus::Failed);
+        for (row, &slot) in slots.iter().enumerate() {
+            out.status[slot] = evaluated.status[row];
+            out.residuals[slot * m..(slot + 1) * m].copy_from_slice(evaluated.residuals(row));
+            out.constraints[slot * k..(slot + 1) * k].copy_from_slice(evaluated.constraints(row));
+        }
+        Ok(Some(out))
+    }
     /// Without compensators every trial is one evaluation: all perturbed
     /// systems go to the operand evaluator as one batch (one GPU dispatch
     /// for a batched backend). Same outcomes as trial by trial.
@@ -870,6 +955,31 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
         systems: Vec<Option<OpticalSystem>>,
         ctx: &JobContext,
     ) -> MkResult<Vec<TrialOutcome>> {
+        if !self.spec.compensators.is_empty() && self.evaluator.gpu_context().is_some() {
+            let mut outcomes = Vec::with_capacity(systems.len());
+            for chunk in systems.chunks(32) {
+                outcomes.extend(crate::gpu::scheduler::run(
+                    self.evaluator,
+                    chunk.len(),
+                    ctx,
+                    |i, worker| {
+                        let local = OpticalToleranceEvaluator {
+                            nominal: self.nominal,
+                            spec: self.spec,
+                            criterion: self.criterion,
+                            evaluator: worker,
+                            registry: self.registry,
+                            lsq: self.lsq,
+                        };
+                        match &chunk[i] {
+                            Some(s) => local.one(s.clone(), ctx),
+                            None => Ok(TrialOutcome::failed()),
+                        }
+                    },
+                )?);
+            }
+            return Ok(outcomes);
+        }
         if !self.spec.compensators.is_empty() {
             return systems
                 .into_par_iter()
@@ -889,7 +999,10 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             self.evaluator,
             self.registry,
         )?;
-        let e = p.to_evaluation(p.system_values(&systems, ctx)?);
+        let e = match self.parametric_trials(&systems, ctx)? {
+            Some(e) => e,
+            None => p.to_evaluation(p.system_values(&systems, ctx)?),
+        };
         let tol = Monitor::new(ctx.clone()).feasibility_tol;
         Ok((0..systems.len())
             .map(|k| {

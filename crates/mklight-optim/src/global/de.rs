@@ -131,7 +131,7 @@ pub fn differential_evolution<P: Problem + ?Sized>(
     }
     if mon.cancelled() {
         let f = crate::problem::ScalarEval::FAILED;
-        return Ok(ev.finish((&pop[0], f), Termination::Cancelled, 0));
+        return ev.finish((&pop[0], f), Termination::Cancelled, 0);
     }
     // The initial population must fit the budget as a whole; otherwise only
     // its first members are evaluated and the run ends there.
@@ -143,16 +143,16 @@ pub fn differential_evolution<P: Problem + ?Sized>(
                 || vars.iter().map(|v| v.clamp(0.0)).collect(),
                 |x| x.to_vec(),
             );
-            return Ok(ev.finish((&x, f), Termination::MaxEvaluations, 0));
+            return ev.finish((&x, f), Termination::MaxEvaluations, 0);
         }
         return match ev.eval(&pop) {
             Ok(fit) => {
                 let b = best_index(&fit, &ev);
-                Ok(ev.finish((&pop[b].clone(), fit[b]), Termination::MaxEvaluations, 0))
+                ev.finish((&pop[b].clone(), fit[b]), Termination::MaxEvaluations, 0)
             }
             Err(MkError::Cancelled) => {
                 let f = crate::problem::ScalarEval::FAILED;
-                Ok(ev.finish((&pop[0].clone(), f), Termination::Cancelled, 0))
+                ev.finish((&pop[0].clone(), f), Termination::Cancelled, 0)
             }
             Err(e) => Err(e),
         };
@@ -161,7 +161,7 @@ pub fn differential_evolution<P: Problem + ?Sized>(
         Ok(f) => f,
         Err(MkError::Cancelled) => {
             let f = crate::problem::ScalarEval::FAILED;
-            return Ok(ev.finish((&pop[0], f), Termination::Cancelled, 0));
+            return ev.finish((&pop[0], f), Termination::Cancelled, 0);
         }
         Err(e) => return Err(e),
     };
@@ -271,5 +271,5 @@ pub fn differential_evolution<P: Problem + ?Sized>(
         }
     }
     let (bx, bf) = (pop[best].clone(), fit[best]);
-    Ok(ev.finish((&bx, bf), termination, gen_done))
+    ev.finish((&bx, bf), termination, gen_done)
 }

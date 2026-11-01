@@ -252,6 +252,14 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
     let vars = p.variables();
     let n = vars.len();
     let (m, k) = (p.num_residuals(), p.num_constraints());
+    let reference_base = p
+        .fd_reference_batch(&CandidateBatch::from_points(n, [x]), settings.scheme, ctx)
+        .transpose()?;
+    if let Some(base) = &reference_base {
+        base.validate(1, m, k)?;
+    }
+    let reference_base = reference_base.map(|b| b.get(0));
+    let f0 = reference_base.as_ref().unwrap_or(f0);
     let eta = relative_step(p, settings);
     let mut jr = Matrix::zeros(m, n);
     let mut jc = Matrix::zeros(k, n);
@@ -277,7 +285,10 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
         if evaluations + batch.len() > budget {
             return Ok(None);
         }
-        let e = p.evaluate_batch(&batch, ctx)?;
+        let e = match p.fd_reference_batch(&batch, settings.scheme, ctx) {
+            Some(reference) => reference?,
+            None => p.evaluate_batch(&batch, ctx)?,
+        };
         e.validate(batch.len(), m, k)?;
         evaluations += batch.len();
         let probe_ok = |q: usize| {

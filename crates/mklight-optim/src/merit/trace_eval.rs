@@ -461,9 +461,9 @@ pub(super) struct GroupRays {
     /// The sampling's nodes, followed by their mirrors `(−px, py)` when a
     /// half pupil is traced in full (asymmetric candidate); weights then
     /// halved.
-    nodes: Vec<PupilNode>,
+    pub(super) nodes: Vec<PupilNode>,
     /// Symmetry of the traced node set (`None` once mirrored).
-    symmetry: PupilSymmetry,
+    pub(super) symmetry: PupilSymmetry,
     pub(super) rays: Vec<NodeRay>,
     /// Node index by the bits of `(px, py)` (only for more than 64 nodes).
     index: HashMap<(u64, u64), usize>,
@@ -608,6 +608,13 @@ type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>, PupilSymmetry);
 type RefKey = (FieldKey, usize, SamplingKey, bool, bool);
 
 pub(super) struct Candidate<'a> {
+    /// Completed P3 moments; absent on the unchanged reference evaluator.
+    pub(super) resident_wavefits: BTreeMap<GroupKey, [[f64; 4]; 2]>,
+    pub(super) resident_moments: BTreeMap<GroupKey, [f64; 10]>,
+    /// Initial RI radial scans; adaptive boundaries retain the same reference method.
+    pub(super) resident_visibility: BTreeMap<SingleKey, Option<usize>>,
+    pub(super) visibility_lookups: [std::sync::atomic::AtomicU64; 2],
+    pub(super) cancel: Option<mklight_core::CancelToken>,
     ev: &'a TraceEvaluator,
     pub(super) tr: &'a SequentialTracer,
     opts: TraceOptions,
@@ -657,6 +664,11 @@ impl<'a> Candidate<'a> {
             ..tr.options()
         };
         let c = Candidate {
+            resident_visibility: BTreeMap::new(),
+            visibility_lookups: Default::default(),
+            cancel: None,
+            resident_moments: BTreeMap::new(),
+            resident_wavefits: BTreeMap::new(),
             ev,
             tr,
             opts,
@@ -776,7 +788,14 @@ impl<'a> Candidate<'a> {
         f: FieldKey,
         sampling: &PupilSampling,
     ) -> (Vec<PupilNode>, PupilSymmetry) {
-        let mut nodes = sampling.nodes();
+        self.group_nodes_from(f, sampling, sampling.nodes())
+    }
+    pub(super) fn group_nodes_from(
+        &self,
+        f: FieldKey,
+        sampling: &PupilSampling,
+        mut nodes: Vec<PupilNode>,
+    ) -> (Vec<PupilNode>, PupilSymmetry) {
         let mut symmetry = sampling.symmetry;
         if self.mirrored(f, sampling) {
             let mirrors: Vec<PupilNode> = nodes
@@ -798,8 +817,9 @@ impl<'a> Candidate<'a> {
         symmetry: PupilSymmetry,
         rays: Vec<NodeRay>,
     ) -> GroupRays {
-        // Small groups are scanned (`node_in`).
-        let index = if nodes.len() > 64 {
+        // Small groups are scanned (`node_in`). Resident aggregate-only
+        // groups carry sampling metadata but do not materialise host rays.
+        let index = if nodes.len() > 64 && !rays.is_empty() {
             nodes
                 .iter()
                 .enumerate()
@@ -853,7 +873,10 @@ impl<'a> Candidate<'a> {
     }
 
     /// `(wavelength, weight)` of a selector.
-    fn wavelengths(&self, sel: WavelengthSelector) -> Result<Vec<(usize, f64)>, OperandError> {
+    pub(super) fn wavelengths(
+        &self,
+        sel: WavelengthSelector,
+    ) -> Result<Vec<(usize, f64)>, OperandError> {
         let nw = self.tr.num_wavelengths();
         match sel {
             WavelengthSelector::Primary => Ok(vec![(self.primary(), 1.0)]),
@@ -888,7 +911,7 @@ impl<'a> Candidate<'a> {
     }
 
     /// `(field, weight)` of a selector.
-    fn fields(&self, sel: FieldSelector) -> Result<Vec<(FieldKey, f64)>, OperandError> {
+    pub(super) fn fields(&self, sel: FieldSelector) -> Result<Vec<(FieldKey, f64)>, OperandError> {
         let fs = &self.system().fields.fields;
         match sel {
             FieldSelector::Index { index } if index < fs.len() => {
@@ -1408,6 +1431,25 @@ impl<'a> Candidate<'a> {
         wls: &[(usize, f64)],
         s: &PupilSampling,
     ) -> Result<[f64; 2], OperandError> {
+        if wls.iter().all(|&(w, _)| {
+            self.resident_moments
+                .contains_key(&(f, w, SamplingKey::of(s)))
+        }) {
+            let mut total = 0.;
+            let mut mean = [0.; 2];
+            for &(w, ww) in wls {
+                let m = self.resident_moments[&(f, w, SamplingKey::of(s))];
+                let weight = m[1] * ww;
+                total += weight;
+                mean[0] += weight * m[2];
+                mean[1] += weight * m[3];
+            }
+            return if total > 0. {
+                Ok([mean[0] / total, mean[1] / total])
+            } else {
+                Err(OperandError::RayFailure("spot centroid undefined".into()))
+            };
+        }
         let (wt, xs, ys, symmetry) = self.spot_rays(f, wls, s)?;
         spot_centroid(&wt, &xs, &ys, symmetry)
             .ok_or_else(|| OperandError::RayFailure("spot centroid undefined".into()))
@@ -1420,6 +1462,20 @@ impl<'a> Candidate<'a> {
         wls: &[(usize, f64)],
         s: &PupilSampling,
     ) -> Result<[f64; 3], OperandError> {
+        if wls.len() == 1
+            && let Some(fits) = self
+                .resident_wavefits
+                .get(&(f, wls[0].0, SamplingKey::of(s)))
+        {
+            let fit = fits[1];
+            return if fit[0].is_finite() {
+                Ok([fit[0], fit[1], fit[2]])
+            } else {
+                Err(OperandError::RayFailure(
+                    "too few rays for piston and tilt".into(),
+                ))
+            };
+        }
         let (mut px, mut py, mut wt, mut opd) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut symmetry = s.symmetry;
         for &(w, ww) in wls {
@@ -1671,6 +1727,39 @@ impl<'a> Candidate<'a> {
                 let fields = self.fields(op.field)?;
                 let wls = self.wavelengths(op.wavelength)?;
                 let ms = weighted_mean(&fields, |&f| {
+                    if wls.iter().all(|&(w, _)| {
+                        self.resident_moments
+                            .contains_key(&(f, w, SamplingKey::of(sampling)))
+                    }) {
+                        let centre = match reference {
+                            SpotReference::Centroid => self.centroid(f, &wls, sampling)?,
+                            SpotReference::Chief => {
+                                let r = self.chief(f, self.primary())?;
+                                [r.ray.pos.x, r.ray.pos.y]
+                            }
+                        };
+                        let mut sum = 0.;
+                        let mut weight = 0.;
+                        for &(w, ww) in &wls {
+                            let m = self.resident_moments[&(f, w, SamplingKey::of(sampling))];
+                            let x = m[5] + m[1] * (m[2] - centre[0]).powi(2);
+                            let y = m[7] + m[1] * (m[3] - centre[1]).powi(2);
+                            sum += ww
+                                * match component {
+                                    Some(Axis::X) => x,
+                                    Some(Axis::Y) => y,
+                                    None => x + y,
+                                };
+                            weight += ww * m[1];
+                        }
+                        return if weight > 0. {
+                            Ok(sum / weight)
+                        } else {
+                            Err(OperandError::RayFailure(
+                                "no pupil ray reached image".into(),
+                            ))
+                        };
+                    }
                     let (wt, xs, ys, symmetry) = self.spot_rays(f, &wls, sampling)?;
                     let c = match reference {
                         SpotReference::Centroid => spot_centroid(&wt, &xs, &ys, symmetry)
@@ -1779,6 +1868,14 @@ impl<'a> Candidate<'a> {
         reference: WavefrontReference,
         s: &PupilSampling,
     ) -> Result<f64, OperandError> {
+        if let Some(fits) = self.resident_wavefits.get(&(f, w, SamplingKey::of(s))) {
+            let v = fits[usize::from(reference == WavefrontReference::Centroid)][3];
+            return if v.is_finite() {
+                Ok(v)
+            } else {
+                Err(OperandError::RayFailure("no fitted OPD in pupil".into()))
+            };
+        }
         let g = self.group(f, w, s)?;
         let fit = match reference {
             WavefrontReference::Centroid => self.piston_tilt(f, &[(w, 1.0)], s)?,
@@ -1954,7 +2051,7 @@ impl<'a> Candidate<'a> {
                 "field maps to no image area (afocal image space?)".into(),
             ));
         }
-        Ok(self.transmitted_etendue(field, w)? * object / image)
+        Ok(self.transmitted_etendue(f, field, w)? * object / image)
     }
 
     /// Étendue `G` of the rays of `field` that reach the image (see
@@ -1980,7 +2077,12 @@ impl<'a> Candidate<'a> {
     /// approximated by grid cells; what can still be missed are transmitted
     /// (or blocked) features narrower than the radial sample spacing, and
     /// corners formed by one surface's own non-circular aperture.
-    fn transmitted_etendue(&self, field: &PreparedField, w: usize) -> Result<f64, OperandError> {
+    fn transmitted_etendue(
+        &self,
+        f: FieldKey,
+        field: &PreparedField,
+        w: usize,
+    ) -> Result<f64, OperandError> {
         let nr = self.ev.settings.illumination_rings.max(2);
         let na = self.ev.settings.illumination_arms.max(8);
         let (e1, e2) = match field.source {
@@ -1993,6 +2095,9 @@ impl<'a> Candidate<'a> {
         };
         let at_inf = matches!(field.source, ObjectSource::Direction { .. });
         let q = |px: f64, py: f64| -> Result<[f64; 2], OperandError> {
+            if self.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(OperandError::Invalid("RI completion cancelled".into()));
+            }
             let g = self
                 .tr
                 .generate(field, w, px, py)
@@ -2010,8 +2115,24 @@ impl<'a> Candidate<'a> {
         };
         let (gx, gw) = super::quadrature::gauss_legendre(6);
         // `None` when the ray reaches the image, else the surface stopping it.
-        let blocked =
-            |px: f64, py: f64| self.tr.trace(field, w, px, py, &self.opts).status.surface();
+        let blocked = |px: f64, py: f64| {
+            if self.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return None;
+            }
+            if let Some(&by) = self
+                .resident_visibility
+                .get(&(f, w, px.to_bits(), py.to_bits()))
+            {
+                self.visibility_lookups[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.visibility_lookups[1].fetch_add(
+                    u64::from(by.is_some()),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                by
+            } else {
+                self.tr.trace(field, w, px, py, &self.opts).status.surface()
+            }
+        };
         let centre = blocked(0.0, 0.0);
         // Transmitted radial intervals along azimuth θ, and the surfaces
         // bounding them (a change of these is a kink of the integrand in θ).
