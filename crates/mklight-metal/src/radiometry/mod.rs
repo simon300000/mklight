@@ -42,7 +42,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 let wall = Instant::now();
                 // SAFETY: record extent, typed output and exclusive writers validated.
-                let cs = unsafe {
+                unsafe {
                     x.run("complex pupil channels", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(values);
@@ -54,8 +54,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 16;
@@ -89,7 +88,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ];
                 // SAFETY: validated typed extents and single-writer output. Query
                 // indices are checked in the kernel before dereferencing records.
-                let cs = unsafe {
+                unsafe {
                     x.run("coating", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [&r.specs, &r.layers, &r.queries].iter().enumerate() {
@@ -115,8 +114,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 32;
@@ -160,7 +158,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 params[13] = end as u32;
                 params[4..12].copy_from_slice(bytemuck::cast_slice(&r.stokes));
                 // SAFETY: P1 record extents and output ownership were validated.
-                let cs = unsafe {
+                unsafe {
                     x.run("polarization", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [
@@ -196,8 +194,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 72;
@@ -225,7 +222,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 let wall = Instant::now();
                 // SAFETY: validated channels and a single output writer.
-                let cs = unsafe {
+                unsafe {
                     x.run("radiometry channels", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [values, trace_status].iter().enumerate() {
@@ -238,8 +235,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 8;
@@ -249,8 +245,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
     }
     stats.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.device_seconds += stats.device_seconds;
-    x.stats.command_buffers += stats.command_buffers;
+
     x.stats.stages.push(stats);
     Ok(())
 }

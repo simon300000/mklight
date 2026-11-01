@@ -989,7 +989,7 @@ mod tests {
             .unwrap();
             let backend = &r.json["backend"];
             assert_eq!(r.json["statistics"]["combinations"], 2);
-            assert_eq!(backend["precision"], "f32_gpu");
+            assert_eq!(backend["precision"], "f32_gpu", "{backend}");
             assert_eq!(backend["qualification"]["passed"], true);
             assert_eq!(backend["final_qualification"]["passed"], true);
             assert_eq!(backend["reported_on"], TraceEvaluator::BACKEND);

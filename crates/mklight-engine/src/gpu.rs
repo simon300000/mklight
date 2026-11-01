@@ -77,6 +77,7 @@ impl GpuDevice {
         tracer: &SequentialTracer,
         ctx: &JobContext,
     ) -> MkResult<Arc<Qualification>> {
+        ctx.check()?;
         let key = format!(
             "{key}:{}:{}",
             serde_json::to_string(&self.qualification).unwrap(),

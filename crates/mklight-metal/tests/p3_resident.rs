@@ -620,47 +620,66 @@ fn median_p95(mut v: Vec<f64>) -> (f64, f64) {
     (v[v.len() / 2], v[(v.len() * 95).div_ceil(100) - 1])
 }
 /// Cold run, one warm-up, then ten measured runs of `f` (seconds, device seconds).
-fn runs(mut f: impl FnMut() -> (f64, f64)) -> (f64, (f64, f64), f64) {
-    let cold = f().0;
-    f();
-    let (wall, device): (Vec<_>, Vec<_>) = (0..10).map(|_| f()).unzip();
-    (cold, median_p95(wall), median_p95(device).0)
-}
-/// Inputs are imported once (resident, as in a GPU chain); every run submits,
-/// waits and reads every output in place from shared memory (no copy).
-fn bench_gpu(g: &MetalBackend, p: &ResidentPlan) -> serde_json::Value {
+// Complete matched pairs, with one cold pair, warm-up and ten measurements.
+fn bench_pair(
+    g: &MetalBackend,
+    p: &ResidentPlan,
+    mut cpu: impl FnMut(),
+) -> (serde_json::Value, serde_json::Value) {
+    let mut cpu_raw = vec![];
+    let mut gpu_raw = vec![];
+    let mut device = vec![];
+    let mut cold = (0., 0.);
     let mut stats = None;
-    let (cold, (median, p95), device) = runs(|| {
-        let t = Instant::now();
-        let out = g
-            .submit_plan(p.clone(), &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        let (mut sum, mut bytes) = (0u32, 0usize);
-        for h in &out.outputs {
-            let v = g.read_view(h.view()).unwrap();
-            sum = v.words().iter().fold(sum, |a, &b| a.wrapping_add(b));
-            bytes += 4 * v.words().len();
+    for run in 0..12 {
+        let mut host = || {
+            let t = Instant::now();
+            cpu();
+            t.elapsed().as_secs_f64()
+        };
+        let mut metal = || {
+            let t = Instant::now();
+            let out = g
+                .submit_plan(p.clone(), &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap();
+            let (mut sum, mut bytes) = (0u32, 0usize);
+            for h in &out.outputs {
+                let v = g.read_view(h.view()).unwrap();
+                sum = v.words().iter().fold(sum, |a, &b| a.wrapping_add(b));
+                bytes += v.words().len() * 4;
+            }
+            std::hint::black_box(sum);
+            let wall = t.elapsed().as_secs_f64();
+            stats = Some((out.stats.clone(), bytes));
+            (wall, out.stats.device_seconds)
+        };
+        let (c, (w, d)) = if run % 2 == 0 {
+            let c = host();
+            (c, metal())
+        } else {
+            let m = metal();
+            (host(), m)
+        };
+        if run == 0 {
+            cold = (c, w);
+        } else if run > 1 {
+            cpu_raw.push(c);
+            gpu_raw.push(w);
+            device.push(d);
         }
-        std::hint::black_box(sum);
-        let wall = t.elapsed().as_secs_f64();
-        stats = Some((out.stats.command_buffers, out.stats.peak_bytes, bytes));
-        (wall, out.stats.device_seconds)
-    });
-    let (commands, peak, read) = stats.unwrap();
-    serde_json::json!({"gpu_ms":median*1e3,"gpu_p95_ms":p95*1e3,"gpu_device_ms":device*1e3,
-        "gpu_cold_ms":cold*1e3,"commands":commands,"peak_bytes":peak,"read_view_bytes":read,"copied_bytes":0})
+    }
+    let cpu = median_p95(cpu_raw.clone());
+    let gpu = median_p95(gpu_raw.clone());
+    let dev = median_p95(device.clone());
+    let (s, bytes) = stats.unwrap();
+    (
+        serde_json::json!({"cpu_ms":cpu.0*1e3,"cpu_p95_ms":cpu.1*1e3,"cpu_cold_ms":cold.0*1e3,"cpu_raw_seconds":cpu_raw}),
+        serde_json::json!({"gpu_ms":gpu.0*1e3,"gpu_p95_ms":gpu.1*1e3,"gpu_device_ms":dev.0*1e3,"gpu_cold_ms":cold.1*1e3,"gpu_raw_seconds":gpu_raw,"device_raw_seconds":device,"commands":s.command_buffers,"peak_bytes":s.peak_bytes,"read_view_bytes":bytes,"copied_bytes":s.copied_bytes}),
+    )
 }
-fn bench_cpu(mut f: impl FnMut()) -> serde_json::Value {
-    let (_, (median, p95), _) = runs(|| {
-        let t = Instant::now();
-        f();
-        (t.elapsed().as_secs_f64(), 0.)
-    });
-    serde_json::json!({"cpu_ms":median*1e3,"cpu_p95_ms":p95*1e3})
-}
-fn report(workload: &str, size: &str, cpu: serde_json::Value, gpu: serde_json::Value) {
+fn report(workload: &str, size: &str, (cpu, gpu): (serde_json::Value, serde_json::Value)) {
     let mut v = serde_json::json!({"workload":workload,"size":size});
     for part in [cpu, gpu] {
         v.as_object_mut()
@@ -713,7 +732,7 @@ fn benchmark_collectives() {
         };
         r.mask = Some(mask);
         r.mask_value = 1;
-        let cpu = bench_cpu(|| {
+        let cpu = || {
             let pts: Vec<_> = (0..n)
                 .map(|i| {
                     if keep[i] {
@@ -724,8 +743,8 @@ fn benchmark_collectives() {
                 })
                 .collect();
             std::hint::black_box(host_moments(&pts, &offsets));
-        });
-        report("moments_9_segments", &size, cpu, bench_gpu(&g, &p));
+        };
+        report("moments_9_segments", &size, bench_pair(&g, &p, cpu));
 
         // Many short segments (detector bins / split children): length 17.
         let values: Vec<f64> = uniform(n, 4);
@@ -743,7 +762,7 @@ fn benchmark_collectives() {
             None,
             17,
         );
-        let cpu = bench_cpu(|| {
+        let cpu = || {
             let out: Vec<_> = offsets
                 .windows(2)
                 .map(|r| {
@@ -755,8 +774,8 @@ fn benchmark_collectives() {
                 })
                 .collect();
             std::hint::black_box(out);
-        });
-        report("summary_short_segments_17", &size, cpu, bench_gpu(&g, &p));
+        };
+        report("summary_short_segments_17", &size, bench_pair(&g, &p, cpu));
 
         // Radius sort with logical-ID ties.
         let keys: Vec<f32> = uniform(n, 5).iter().map(|&v| v as f32).collect();
@@ -776,7 +795,7 @@ fn benchmark_collectives() {
                 output_values: None,
             })));
         p.outputs = vec![ok, oi];
-        let cpu = bench_cpu(|| {
+        let cpu = || {
             let mut order: Vec<u32> = (0..n as u32).collect();
             order.sort_by(|&a, &b| {
                 keys[a as usize]
@@ -788,8 +807,8 @@ fn benchmark_collectives() {
                 .map(|&j| (keys[j as usize], ids[j as usize]))
                 .unzip();
             std::hint::black_box(out);
-        });
-        report("sort_f32_keys", &size, cpu, bench_gpu(&g, &p));
+        };
+        report("sort_f32_keys", &size, bench_pair(&g, &p, cpu));
 
         // Inclusive f32 scan (energy curves) published as double-float.
         let mut p = cases::plan();
@@ -802,7 +821,7 @@ fn benchmark_collectives() {
                 output: o,
             })));
         p.outputs = vec![o];
-        let cpu = bench_cpu(|| {
+        let cpu = || {
             let mut s = 0f64;
             let out: Vec<f64> = keys
                 .iter()
@@ -812,8 +831,8 @@ fn benchmark_collectives() {
                 })
                 .collect();
             std::hint::black_box(out);
-        });
-        report("scan_f32", &size, cpu, bench_gpu(&g, &p));
+        };
+        report("scan_f32", &size, bench_pair(&g, &p, cpu));
 
         // Stable compaction of [n,2] double-float records, two thirds kept.
         let mut p = cases::plan();
@@ -837,7 +856,7 @@ fn benchmark_collectives() {
                 },
             )));
         p.outputs = vec![out, oi, cnt];
-        let cpu = bench_cpu(|| {
+        let cpu = || {
             let mut out = Vec::with_capacity(2 * n);
             let mut oi = Vec::with_capacity(n);
             for i in 0..n {
@@ -847,8 +866,8 @@ fn benchmark_collectives() {
                 }
             }
             std::hint::black_box((out, oi));
-        });
-        report("compact_df_records", &size, cpu, bench_gpu(&g, &p));
+        };
+        report("compact_df_records", &size, bench_pair(&g, &p, cpu));
     }
     // Tall-skinny and batched least squares; known coefficients.
     for (m, n, batch) in [
@@ -879,7 +898,7 @@ fn benchmark_collectives() {
         let mut p = cases::qr_plan(&g, m, n, batch, a.clone(), rhs.clone(), 1e-10);
         p.outputs.remove(0);
         let size = format!("{m}x{n}x{batch}");
-        let cpu = bench_cpu(|| {
+        let cpu = || {
             for z in 0..batch {
                 std::hint::black_box(cases::reference_qr(
                     &a[z * m * n..(z + 1) * m * n],
@@ -888,7 +907,7 @@ fn benchmark_collectives() {
                     n,
                 ));
             }
-        });
+        };
         if g.submit_plan(p.clone(), &JobContext::new()).is_err() {
             eprintln!(
                 "{}",
@@ -901,8 +920,8 @@ fn benchmark_collectives() {
         let err = (0..batch * n)
             .map(|i| (x[i] - ((i % n) as f64 + 1.) / 100.).abs())
             .fold(0f64, f64::max);
-        let mut gpu = bench_gpu(&g, &p);
+        let (cpu, mut gpu) = bench_pair(&g, &p, cpu);
         gpu["coefficient_max_error"] = err.into();
-        report("qr", &size, cpu, gpu);
+        report("qr", &size, (cpu, gpu));
     }
 }

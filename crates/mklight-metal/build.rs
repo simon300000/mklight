@@ -192,6 +192,12 @@ fn main() {
     fs::write(&src_path, &source).unwrap();
     writeln!(
         generated,
+        "pub const SOURCE_HASH: &str = {:?};",
+        blake3::hash(source.as_bytes()).to_hex().to_string()
+    )
+    .unwrap();
+    writeln!(
+        generated,
         "pub const SOURCE: &str = include_str!({:?});",
         src_path.display().to_string()
     )
@@ -217,8 +223,8 @@ fn main() {
             // compiler a failure is a shader error, and a release build
             // without one would silently ship runtime compilation.
             let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
-            if !skipped
-                && (find_toolchain().is_some() || env::var("PROFILE").as_deref() == Ok("release"))
+            if env::var("PROFILE").as_deref() == Ok("release")
+                || (!skipped && find_toolchain().is_some())
             {
                 panic!(
                     "offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}"

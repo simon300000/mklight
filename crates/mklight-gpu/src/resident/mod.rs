@@ -356,7 +356,7 @@ impl ResidentPlan {
     pub fn new(snapshot: Snapshot) -> Self {
         Self {
             version: PLAN_VERSION,
-            command_work_budget: 1 << 20,
+            command_work_budget: 1 << 19,
             buffers: vec![],
             operations: vec![],
             outputs: vec![],

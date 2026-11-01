@@ -125,7 +125,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
   `settings["seed"]`. Equal seeds give bit-identical results (Philox,
   `docs/CONVENTIONS.md` §6); the seed is recorded in `run_info["seed"]`.
   It must be an integer in `0..2**64` (otherwise `InvalidSettingsError`).
-* `backend`: `None` (engine default, a preference), `"auto"` (engine automatic
+* `backend`: `None` (engine default, initially `auto`, a preference), `"auto"` (engine automatic
   selection, consistent with the CLI), `"cpu"`,
   `"metal"` / `"gpu:metal"`, or `{"kind": "gpu", "name": "metal"}`.
   Semantics as in `docs/FFI.md` (*Backends*).
@@ -308,3 +308,10 @@ numerical failure `ComputeError`.
   buffer requests refused; unknown engine keys and out-of-range seeds and
   indices raising `MKLightError` subclasses; afocal paraxial infinities as
   floats.
+
+Automatic selection uses the same complete-chain qualifications and recorded
+full-chain cost evidence as the engine (RESULTS §5, GPU §9.2). Unknown cost
+prefers qualified Metal; explicit Metal bypasses cost exceptions. The result
+envelope retains `backend.execution` and `backend.cost_decision`, including
+partial reference completion and actual precision. Public f64 buffer storage
+does not make GPU arithmetic f64.

@@ -253,7 +253,7 @@ def test_auto_selects_instead_of_using_engine_default(achromat):
     assert r.envelope()["backend"]["used"] == r.run_info["backend"]
     assert r.envelope()["result_version"] == 1
     default = achromat.run("ray_grid", {"rings": 2}, backend=None)
-    assert default.envelope()["backend"]["requested"] == "default:cpu_reference"
+    assert default.envelope()["backend"]["requested"] == "default:auto"
 
 
 def test_stop_retains_optimization_and_tolerance_results(achromat):

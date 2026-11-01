@@ -73,7 +73,7 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         let xr = &*x;
         let wall = Instant::now();
         // SAFETY: validated contiguous inputs; all mutable storage is plan-local.
-        let cs = unsafe {
+        unsafe {
             xr.run("wave placement", |e| {
                 for (i, v) in a.reads.iter().enumerate() {
                     let (b, o) = xr.buffer(v);
@@ -113,8 +113,7 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
                 Ok(())
             })?
         };
-        stage.command_buffers += cs.command_buffers;
-        stage.device_seconds += cs.gpu_seconds;
+
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "wave placement");
     }
@@ -137,8 +136,7 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         x.recycle(b);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
+
     x.stats.parameter_bytes +=
         groups.iter().map(Vec::len).sum::<usize>() as u64 * size_of::<Params>() as u64;
     x.stats.stages.push(stage);

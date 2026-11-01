@@ -23,6 +23,8 @@ use std::{
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EvaluationStats {
     pub candidates: u64,
+    pub device_candidates: u64,
+    pub cpu_candidates: u64,
     pub device_operands: u64,
     pub host_operands: u64,
     pub reference_checks: u64,
@@ -33,6 +35,8 @@ pub struct EvaluationStats {
     pub geometry_rejections: u64,
     pub geometry_report: Option<mklight_gpu::xval::XvalReport>,
     pub fallback_operands: u64,
+    pub fallback_candidate_count: u64,
+    pub fallback_candidates: BTreeMap<String, u64>,
     pub fallbacks: BTreeMap<String, u64>,
     pub maximum_absolute_error: f64,
 }
@@ -50,6 +54,7 @@ struct ReferenceCache {
 }
 struct Template {
     base: OpticalSystem,
+    snapshot: Snapshot,
     params: Vec<ParamPath>,
     config: usize,
     uploaded: UploadedSystem,
@@ -204,6 +209,7 @@ impl ResidentEvaluator {
         let uploaded = compiled.upload(self.context.backend.as_ref(), ctx)?;
         let t = Arc::new(Template {
             base: batch.base.clone(),
+            snapshot: compiled.snapshot().clone(),
             params: batch.params.to_vec(),
             config: batch.config,
             uploaded,
@@ -216,7 +222,7 @@ impl ResidentEvaluator {
         &self,
         systems: &[OpticalSystem],
         ops: &[&Operand],
-        template: Option<(&UploadedSystem, &[Candidate])>,
+        template: Option<(&Template, &[Candidate])>,
         first: usize,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
@@ -320,6 +326,8 @@ impl ResidentEvaluator {
         let ref_seconds = t.elapsed().as_secs_f64();
         ctx.report(0.5, "candidate reference qualification");
         let mut result = reference.clone();
+        let mut device_rows = vec![false; systems.len()];
+        let mut fallback_rows: Vec<_> = geometry.iter().map(|q| !q).collect();
         let mut stats = EvaluationStats {
             candidates: systems.len() as u64,
             reference_checks: missing.len() as u64,
@@ -360,13 +368,19 @@ impl ResidentEvaluator {
             let selected_rows: Vec<_> = template.map_or_else(Vec::new, |(_, rows)| {
                 active.iter().map(|&i| rows[i].clone()).collect()
             });
-            let selected_template = template.map(|(t, _)| (t, selected_rows.as_slice()));
+            let selected_template = template.map(|(t, _)| (&t.uploaded, selected_rows.as_slice()));
+            let mut context = self.context.clone();
+            if let Some((template, _)) = template {
+                context.snapshot = template.snapshot.clone();
+                context.identity.derived_snapshot_hash = Some(template.snapshot.hash().to_hex());
+            }
+            let native_before = self.context.native_device_calls();
             let attempt = if active.is_empty() && route != 3 {
                 Ok(vec![])
             } else {
                 match route {
                     0 => crate::merit::gpu_eval::resident::evaluate(
-                        &self.context,
+                        &context,
                         &self.reference.trace,
                         &selected_tracers,
                         &refs,
@@ -375,7 +389,11 @@ impl ResidentEvaluator {
                     ),
                     1 => self.mtf.evaluate_batch(&selected(), &refs, &inner),
                     2 => self.solvers.evaluate_batch(&selected(), &refs, &inner),
-                    4 => self.first_order(&selected(), &refs, selected_template, &inner),
+                    4 => {
+                        let mut evaluator = self.clone();
+                        evaluator.context = context;
+                        evaluator.first_order(&selected(), &refs, selected_template, &inner)
+                    }
                     _ => {
                         stats.host_operands += (systems.len() * indices.len()) as u64;
                         for &i in &indices {
@@ -383,6 +401,7 @@ impl ResidentEvaluator {
                                 ops[i].kind.capability(),
                                 Capability::Model | Capability::Paraxial
                             ) {
+                                fallback_rows.fill(true);
                                 stats.fallback_operands += systems.len() as u64;
                                 *stats
                                     .fallbacks
@@ -401,6 +420,7 @@ impl ResidentEvaluator {
             match attempt {
                 Err(MkError::Cancelled) => return Err(MkError::Cancelled),
                 Err(e) => {
+                    fallback_rows.fill(true);
                     let n = (systems.len() * indices.len()) as u64;
                     stats.fallback_operands += n;
                     *stats.fallbacks.entry(e.to_string()).or_default() += n;
@@ -427,8 +447,21 @@ impl ResidentEvaluator {
                             stats.maximum_absolute_error = stats.maximum_absolute_error.max(error);
                             if pass && geometry[row] {
                                 result[row][i] = value;
-                                stats.device_operands += 1;
+                                if route == 2 && self.context.native_device_calls() == native_before
+                                {
+                                    stats.host_operands += 1;
+                                    stats.fallback_operands += 1;
+                                    fallback_rows[row] = true;
+                                    *stats
+                                        .fallbacks
+                                        .entry("native solver completed with f64".into())
+                                        .or_default() += 1;
+                                } else {
+                                    stats.device_operands += 1;
+                                    device_rows[row] = true;
+                                }
                             } else {
+                                fallback_rows[row] = true;
                                 stats.fallback_operands += 1;
                                 *stats
                                     .fallbacks
@@ -443,7 +476,35 @@ impl ResidentEvaluator {
                 }
             }
         }
+        stats.device_candidates = device_rows.iter().filter(|&&v| v).count() as u64;
+        stats.cpu_candidates = device_rows
+            .iter()
+            .zip(&fallback_rows)
+            .filter(|(device, fallback)| !**device || **fallback)
+            .count() as u64;
+        for (row, &fallback) in fallback_rows.iter().enumerate() {
+            if fallback {
+                stats.fallback_candidate_count += 1;
+                let digest = blake3::hash(&serde_json::to_vec(&systems[row]).unwrap())
+                    .to_hex()
+                    .to_string();
+                *stats
+                    .fallback_candidates
+                    .entry(format!("{}:{digest}", keys[row]))
+                    .or_default() += 1;
+            }
+        }
         let mut total = self.stats.lock().unwrap();
+        total.device_candidates += stats.device_candidates;
+        total.cpu_candidates += stats.cpu_candidates;
+        total.fallback_candidate_count += stats.fallback_candidate_count;
+        for (candidate, count) in stats.fallback_candidates {
+            *total.fallback_candidates.entry(candidate).or_default() += count;
+        }
+        // Stable bounded diagnostic prefix; counts retain every fallback.
+        while total.fallback_candidates.len() > 64 {
+            total.fallback_candidates.pop_last();
+        }
         total.candidates += stats.candidates;
         total.device_operands += stats.device_operands;
         total.host_operands += stats.host_operands;
@@ -719,7 +780,7 @@ impl OperandEvaluator for ResidentEvaluator {
             values.extend(self.evaluate(
                 systems,
                 ops,
-                template.as_ref().map(|t| (&t.uploaded, rows)),
+                template.as_ref().map(|t| (t.as_ref(), rows)),
                 0,
                 &ctx.subrange(
                     0.05 + 0.95 * i as f64 / count as f64,

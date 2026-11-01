@@ -19,6 +19,7 @@ use mklight_trace::SequentialTracer;
 fn engine() -> Engine {
     Engine::new(EngineConfig {
         worker_threads: 2,
+        default_backend: mklight_engine::backend::Backend::CpuReference,
         ..Default::default()
     })
 }

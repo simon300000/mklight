@@ -595,9 +595,9 @@ impl Evaluation {
             let stats = g.stats();
             let plans = g.context.stats();
             b["gpu_stats"] = json!({
-                "gpu_candidates": if active { stats.candidates - stats.geometry_rejections } else { 0 },
-                "cpu_candidates": stats.geometry_rejections,
-                "rays": 0, "dispatches": plans.command_buffers, "device_seconds": plans.device_seconds,
+                "gpu_candidates": stats.device_candidates,
+                "cpu_candidates": stats.cpu_candidates,
+                "rays": g.context.traced_rays(), "dispatches": plans.command_buffers, "device_seconds": plans.device_seconds,
             });
             let mut run = mklight_core::job::RunTimer::start().finish(
                 &input.snapshot,
@@ -613,7 +613,9 @@ impl Evaluation {
             b["resident_evaluation"] = serde_json::to_value(stats)?;
         }
         let used = self.gpu.as_ref().filter(|_| active);
-        b["qualification"] = serde_json::to_value(&self.qualification)?;
+        if let Some(q) = &self.qualification {
+            b["qualification"] = serde_json::to_value(q)?;
+        }
         let fallback_reason = if active {
             None
         } else {
@@ -2576,6 +2578,7 @@ mod tests {
     fn optimize_singlet_through_the_scheduler() {
         let engine = Engine::new(EngineConfig {
             worker_threads: 2,
+            default_backend: crate::backend::Backend::CpuReference,
             ..Default::default()
         });
         let mut session = engine.new_session();

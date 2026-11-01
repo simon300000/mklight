@@ -407,6 +407,11 @@ pub(crate) fn evaluate(
             }
         }
     }
+    let traced_rays = chiefs.len()
+        + partitions
+            .iter()
+            .map(|(_, probes)| probes.len())
+            .sum::<usize>();
     let tolerance = tracers
         .iter()
         .map(|t| {
@@ -602,6 +607,7 @@ pub(crate) fn evaluate(
         ..Default::default()
     });
     let result = g.submit(p, ctx)?;
+    g.record_traced_rays(traced_rays);
     let assembly = std::time::Instant::now();
     let mut unresolved = std::collections::BTreeSet::new();
     if map.is_some() {

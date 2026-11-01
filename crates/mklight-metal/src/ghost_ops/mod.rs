@@ -72,7 +72,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 let wall = Instant::now();
                 // SAFETY: a pure transpose from validated leaf records.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost field moments", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(hits);
@@ -86,8 +86,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -105,7 +104,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 let wall = Instant::now();
                 // SAFETY: one flag per sorted key in validated storage.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost segment flags", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(keys);
@@ -124,8 +123,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -155,7 +153,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: prefix IDs give disjoint segment records; only
                 // integer maxima share an atomic counter.
-                let cmd = unsafe {
+                unsafe {
                     x.run("ghost pixel segments", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [keys, prefix].iter().enumerate() {
@@ -170,8 +168,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cmd.gpu_seconds;
-                stats.command_buffers += cmd.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -196,7 +193,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     ctl.check()?;
                     let wall = Instant::now();
                     // SAFETY: zero pass precedes unique pixel scatter writes.
-                    let cs = unsafe {
+                    unsafe {
                         x.run("ghost map scatter", |e| {
                             e.set_pipeline(&pso);
                             for (j, v) in [values, pixels].iter().enumerate() {
@@ -215,8 +212,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             Ok(())
                         })?
                     };
-                    stats.device_seconds += cs.gpu_seconds;
-                    stats.command_buffers += cs.command_buffers;
+
                     stats.max_command_seconds =
                         stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                     ctl.check()?;
@@ -253,7 +249,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     sensor: *sensor_reflectance,
                 };
                 // SAFETY: disjoint path records and independent radiometry folds.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost first order", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [steps, offsets, initial].iter().enumerate() {
@@ -270,8 +266,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -309,7 +304,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: stable leaves have distinct destination IDs; all
                 // sources remain pinned until this command completes.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost resident leaves", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(leaves);
@@ -327,8 +322,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -366,7 +360,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     half: *half,
                 };
                 // SAFETY: disjoint pixel-key and weight rows in validated outputs.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost pixel keys", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(hits);
@@ -379,8 +373,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -402,7 +395,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 let wall = Instant::now();
                 // SAFETY: immutable metadata and one writer per validated probe record.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost launch", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [chiefs, fields, samples].iter().enumerate() {
@@ -423,8 +416,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 16;
@@ -489,7 +481,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     sensor: *sensor,
                 };
                 // SAFETY: validated record extents, immutable imports, exclusive outputs.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost probes", |e| {
                         e.set_pipeline(&pso);
                         e.set_buffer(0, &up.headers, 0);
@@ -514,8 +506,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += size_of::<TraceParameters>() as u64;
@@ -562,7 +553,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     sensor: *sensor_reflectance,
                 };
                 // SAFETY: one output per probe; typed inputs validated at submission.
-                let cs = unsafe {
+                unsafe {
                     x.run("ghost weights", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [values, coatings, factors, offsets, steps, probes]
@@ -580,8 +571,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-                stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += cs.command_buffers;
+
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += size_of::<WeightParameters>() as u64;
@@ -591,8 +581,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
     }
     stats.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.device_seconds += stats.device_seconds;
-    x.stats.command_buffers += stats.command_buffers;
+
     x.stats.stages.push(stats);
     Ok(())
 }

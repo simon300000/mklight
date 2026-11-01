@@ -230,7 +230,7 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
         let mut dispatches = 0u64;
         // SAFETY: plan validation bounds every view; recipe extents size every
         // allocation; serial dispatch orders all reuse of scratch buffers.
-        let cs = unsafe {
+        unsafe {
             xr.run("transforms", |e| {
                 let bind = |bufs: &[Option<Buf>], index: usize, b: usize| match bufs[b]
                     .as_ref()
@@ -334,8 +334,7 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
             })?
         };
         max_command = max_command.max(wall.elapsed().as_secs_f64());
-        x.stats.command_buffers += cs.command_buffers;
-        x.stats.device_seconds += cs.gpu_seconds;
+
         x.stats.parameter_bytes += dispatches * size_of::<Params>() as u64;
         for s in first..i {
             let b = slot_buf[s + 2];

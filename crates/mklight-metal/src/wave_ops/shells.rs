@@ -76,7 +76,7 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
         let wall = Instant::now();
         // SAFETY: fixed typed extents and immutable radial order; only exclusive
         // accumulator/offset storage is written, with integer atomic max only.
-        let cs = unsafe {
+        unsafe {
             xr.run("radial energy", |e| {
                 if let Shells::Query {
                     values,
@@ -125,8 +125,7 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
                 Ok(())
             })?
         };
-        stage.command_buffers += cs.command_buffers;
-        stage.device_seconds += cs.gpu_seconds;
+
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "radial energy");
     }
@@ -139,8 +138,7 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
         x.recycle(o);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += stage.command_buffers;
-    x.stats.device_seconds += stage.device_seconds;
+
     x.stats.parameter_bytes += (count * size_of::<Params>()) as u64;
     x.stats.stages.push(stage);
     Ok(())

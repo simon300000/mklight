@@ -92,3 +92,13 @@ macro_rules! native_job {
     }};
 }
 pub(crate) use native_job;
+
+/// Reproducible workload identity used by the consolidated benchmark/table.
+pub fn cost_key(
+    analysis: &str,
+    snapshot: &str,
+    library: &str,
+    settings: &serde_json::Value,
+) -> String {
+    super::cost::key(analysis, snapshot, library, settings)
+}

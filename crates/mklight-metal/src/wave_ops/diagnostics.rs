@@ -17,7 +17,7 @@ pub fn execute(r: &Diagnostics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRe
     let start = Instant::now();
     let xr = &*x;
     // SAFETY: validated contiguous grids and exclusive block/output storage.
-    let cs = unsafe {
+    unsafe {
         xr.run("wave diagnostics", |e| {
             for (i, v) in [&r.coverage, &r.opd, &r.extrapolation].iter().enumerate() {
                 let (buf, off) = xr.buffer(v);
@@ -35,14 +35,13 @@ pub fn execute(r: &Diagnostics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRe
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(r.output, out);
     x.recycle(partial);
-    x.stats.command_buffers += cs.command_buffers;
-    x.stats.device_seconds += cs.gpu_seconds;
+
     x.stats.parameter_bytes += 8;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "wave_diagnostics".into(),
-        command_buffers: cs.command_buffers,
-        device_seconds: cs.gpu_seconds,
+        command_buffers: 0,
+        device_seconds: 0.,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
     });

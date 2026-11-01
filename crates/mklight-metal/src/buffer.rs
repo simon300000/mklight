@@ -15,7 +15,7 @@ use std::{
     ptr::NonNull,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -26,12 +26,35 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
 thread_local! {
-    // Bytes copied by `from_slice` on this thread. A resident plan encodes
+    // Bulk copies on this thread. A resident plan encodes
     // synchronously on one worker, so its delta excludes concurrent jobs.
     static COPIED_BYTES: Cell<u64> = const { Cell::new(0) };
 }
 pub(crate) fn copied_bytes() -> u64 {
     COPIED_BYTES.get()
+}
+
+/// Per-backend attribution of synchronous copies, including early errors.
+pub(crate) struct CopyMeter<'a> {
+    counter: &'a AtomicU64,
+    start: u64,
+    _thread: PhantomData<*mut ()>,
+}
+pub(crate) fn meter(counter: &AtomicU64) -> CopyMeter<'_> {
+    CopyMeter {
+        counter,
+        start: copied_bytes(),
+        _thread: PhantomData,
+    }
+}
+impl Drop for CopyMeter<'_> {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_add(copied_bytes() - self.start, Ordering::Relaxed);
+    }
+}
+pub(crate) fn record_copy(bytes: usize) {
+    COPIED_BYTES.set(COPIED_BYTES.get() + bytes as u64);
 }
 
 pub struct SharedBuffer<T: Pod> {
@@ -153,7 +176,9 @@ impl<T: Pod> SharedBuffer<T> {
     }
 
     pub fn to_vec(&self) -> Vec<T> {
-        self.as_slice().to_vec()
+        let out = self.as_slice().to_vec();
+        record_copy(self.byte_len());
+        out
     }
 
     pub(crate) fn available(&self) -> bool {

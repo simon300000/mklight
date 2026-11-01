@@ -278,8 +278,10 @@ fn time(case: &str, b: &dyn ComputeBackend, plan: &ResidentPlan, cpu: impl Fn())
         let v = read(b, &r);
         (t.elapsed().as_secs_f64(), r.stats, v, done)
     };
-    let (_, _, got, _) = run();
+    let (cold_wall, cold_stats, got, _) = run();
+    let cold_cpu = Instant::now();
     cpu();
+    let cold_cpu = cold_cpu.elapsed().as_secs_f64();
     let (mut wall, mut device, mut host, mut complete) = (vec![], vec![], vec![], vec![]);
     let mut commands = 0;
     let runs = std::env::var("P2_RUNS").map_or(RUNS, |v| v.parse().unwrap());
@@ -293,11 +295,18 @@ fn time(case: &str, b: &dyn ComputeBackend, plan: &ResidentPlan, cpu: impl Fn())
         cpu();
         host.push(t.elapsed().as_secs_f64());
     }
+    let p95 = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        v[(v.len() as f64 * 0.95).ceil() as usize - 1] * 1e3
+    };
+    let raw = json!({"cpu_seconds":host,"metal_seconds":wall,"device_seconds":device,"complete_seconds":complete});
+    let tails = json!({"cpu_p95_ms":p95(&host),"metal_p95_ms":p95(&wall)});
     let ms = |v: Vec<f64>| (median(v) * 1e5).round() / 100.;
     let min = device.iter().copied().fold(f64::INFINITY, f64::min);
     println!(
         "{}",
-        json!({"case":case,"cpu_f64_ms":ms(host),"metal_wall_ms":ms(wall),"metal_complete_ms":ms(complete),"metal_device_ms":ms(device),"metal_device_min_ms":(min * 1e5).round() / 100.,"commands":commands})
+        json!({"case":case,"raw":raw,"p95":tails,"cold":{"cpu_seconds":cold_cpu,"metal_seconds":cold_wall,"stats":cold_stats},"cpu_f64_ms":ms(host),"metal_wall_ms":ms(wall),"metal_complete_ms":ms(complete),"metal_device_ms":ms(device),"metal_device_min_ms":(min * 1e5).round() / 100.,"commands":commands})
     );
     got
 }

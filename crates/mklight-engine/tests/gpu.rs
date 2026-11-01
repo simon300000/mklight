@@ -116,8 +116,15 @@ fn cross_check(e: &Engine, backend: &str) {
             let c = run_on(&s, a, set.clone(), None);
             let g = run_on(&s, a, set.clone(), Some(b.clone()));
             if a == "encircled_energy" && g.run_info.backend == "cpu_reference" {
-                assert!(g.backend.fallback_reason.as_deref().is_some_and(|r| r.contains("completion") || r.contains("qualification")));
-            } else { assert_eq!(g.run_info.backend, backend, "{a}: {:?}",g.backend); }
+                assert!(
+                    g.backend
+                        .fallback_reason
+                        .as_deref()
+                        .is_some_and(|r| r.contains("completion") || r.contains("qualification"))
+                );
+            } else {
+                assert_eq!(g.run_info.backend, backend, "{a}: {:?}", g.backend);
+            }
             assert_eq!(c.run_info.backend, "cpu_reference", "{a}");
             (c.json, g.json)
         };
@@ -225,8 +232,8 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     let s = session(&e, samples::singlet());
     // Unknown cost on emulation uses qualified resident work at every size.
     let big = json!({"rings": 150});
-    let r = run_on(&s,"spot_diagram",big.clone(),Some(Backend::Auto));
-    assert_eq!(r.backend.requested,"auto");
+    let r = run_on(&s, "spot_diagram", big.clone(), Some(Backend::Auto));
+    assert_eq!(r.backend.requested, "auto");
     assert!(r.backend.qualification.is_some());
     // An explicit GPU request is honoured for any size.
     let r = run_on(
@@ -381,7 +388,7 @@ fn merit_jobs_share_provider_qualification_and_report_actual_backend() {
     let engine = engine_with(Some(provider));
     let session = session(&engine, samples::cooke_triplet());
     let backend = Some(Backend::Gpu("cpu_f32".into()));
-    let grid = run_on(&session, "ray_grid", json!({"rings": 2}), backend.clone());
+    run_on(&session, "ray_grid", json!({"rings": 2}), backend.clone());
     assert_eq!(device.cached_qualifications(), 1);
     for (name, settings) in [
         ("optimize", json!({"max_iterations": 2})),
@@ -392,7 +399,7 @@ fn merit_jobs_share_provider_qualification_and_report_actual_backend() {
         assert_eq!(gpu.run_info.backend, "gpu:cpu_f32");
         assert_eq!(gpu.backend.used, gpu.run_info.backend);
         assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
-        assert_eq!(gpu.backend.qualification.as_ref().unwrap()["passed"],true);
+        assert_eq!(gpu.backend.qualification.as_ref().unwrap()["passed"], true);
         if name == "tolerance" {
             assert_eq!(
                 gpu.json["backend"]["reported_on"],
@@ -475,10 +482,17 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
     let engine = engine_with(Some(GpuProvider::emulation()));
     let session = session(&engine, samples::singlet());
     let spec = MeritFunctionSpec {
-        operands: vec![Operand::new(OperandKind::Efl).target(100.0)],
+        operands: vec![
+            Operand::new(OperandKind::ParamValue {
+                param: mklight_core::param::ParamPath::Curvature {
+                    surface: mklight_core::SurfaceId(1),
+                },
+            })
+            .target(0.01),
+        ],
         ..Default::default()
     };
-    let settings = json!({"merit": spec, "max_iterations": 2});
+    let settings = json!({"merit": spec, "max_iterations": 2, "hold_efl": false});
     let cpu = run_on(
         &session,
         "optimize",
@@ -505,6 +519,6 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
         !gpu.run_info
             .warnings
             .iter()
-            .any(|w| w.contains("evaluated on"))
+            .any(|w| w.starts_with("ray operands evaluated on"))
     );
 }

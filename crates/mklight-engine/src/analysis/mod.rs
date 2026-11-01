@@ -23,6 +23,7 @@
 //! `RunInfo` naming the backend that actually computed it.
 
 pub mod builtin;
+mod cost;
 pub mod extended;
 pub mod geometric;
 pub mod ghost;
@@ -108,6 +109,7 @@ pub struct BackendReport {
     pub qualification: Option<Value>,
     /// Native execution evidence: device/build/probe, plan versions and stages.
     pub execution: Vec<Value>,
+    pub cost_decision: Option<Value>,
 }
 
 /// What an analysis tells the engine about the backend it actually used
@@ -208,6 +210,7 @@ pub struct AnalysisInput<'a> {
     resolver: Resolver<'a>,
     backend_used: RefCell<Option<BackendUse>>,
     executions: RefCell<Vec<Value>>,
+    cost_decision: RefCell<Option<Value>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
     library_hash: OnceCell<String>,
 }
@@ -241,6 +244,7 @@ impl<'a> AnalysisInput<'a> {
             resolver,
             backend_used: RefCell::new(None),
             executions: RefCell::new(Vec::new()),
+            cost_decision: RefCell::new(None),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
         }
@@ -414,6 +418,7 @@ pub fn run_analysis(
         fallback_reason: input.selection_note.clone(),
         qualification: None,
         execution: input.executions.borrow_mut().drain(..).collect(),
+        cost_decision: input.cost_decision.borrow_mut().take(),
     };
     let mut warnings = extra_warnings;
     if let Some(u) = input.backend_used.borrow_mut().take() {
