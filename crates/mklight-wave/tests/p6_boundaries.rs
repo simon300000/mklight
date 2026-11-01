@@ -433,6 +433,13 @@ fn full_focus_range_and_transform_cancellation() {
             )
             .unwrap();
         plan.outputs = vec![out.image];
+        let transform_end = (plan
+            .operations
+            .iter()
+            .position(|op| matches!(op, ResidentOp::Transforms(_)))
+            .unwrap()
+            + 1) as f64
+            / plan.operations.len() as f64;
         let ctx = JobContext::new();
         let pending = b.submit_plan(plan, &ctx).unwrap();
         let start = std::time::Instant::now();
@@ -448,6 +455,11 @@ fn full_focus_range_and_transform_cancellation() {
             assert!(start.elapsed().as_secs() < 30);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let fraction = ctx.progress.fraction();
+        assert!(
+            fraction < transform_end,
+            "cancellation must interrupt transform work: {fraction} >= {transform_end}"
+        );
         let cancellation = std::time::Instant::now();
         pending.cancel();
         assert!(matches!(
@@ -455,7 +467,7 @@ fn full_focus_range_and_transform_cancellation() {
             Err(mklight_core::MkError::Cancelled)
         ));
         eprintln!(
-            "P6_TRANSFORM_CANCEL latency_ms={}",
+            "P6_TRANSFORM_CANCEL fraction={fraction} transform_end={transform_end} latency_ms={}",
             cancellation.elapsed().as_secs_f64() * 1000.
         );
         let recovered = rp

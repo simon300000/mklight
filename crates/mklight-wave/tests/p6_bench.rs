@@ -227,3 +227,153 @@ fn native_pipeline_benchmark() {
         );
     }
 }
+
+fn analysis_case<S: serde::Serialize, T>(
+    b: &dyn ComputeBackend,
+    name: &str,
+    settings: &S,
+    cpu: impl Fn() -> mklight_core::MkResult<T>,
+    gpu: impl Fn() -> mklight_core::MkResult<T>,
+    info: impl Fn(&T) -> &mklight_core::RunInfo,
+) {
+    let mut ctimes = vec![];
+    let mut gtimes = vec![];
+    for run in -2i32..10 {
+        let before = b.resident_cache_stats();
+        let c = || {
+            let start = Instant::now();
+            let r = cpu().unwrap();
+            std::hint::black_box(&r);
+            (r, start.elapsed().as_secs_f64() * 1000.)
+        };
+        let g = || {
+            let start = Instant::now();
+            let r = gpu().unwrap();
+            std::hint::black_box(&r);
+            (r, start.elapsed().as_secs_f64() * 1000.)
+        };
+        let ((_a, ct), (z, gt)) = if run % 2 == 0 {
+            let a = c();
+            let z = g();
+            (a, z)
+        } else {
+            let z = g();
+            let a = c();
+            (a, z)
+        };
+        let after = b.resident_cache_stats();
+        let st = stats(info(&z));
+        assert_eq!(st["copied_bytes"], 0);
+        eprintln!(
+            "P6_BENCH_ROW {}",
+            serde_json::json!({"case":name,"run":run,"phase":if run==-2{"workload_cold"}else if run==-1{"warmup"}else{"measured"},"cpu_ms":ct,"gpu_ms":gt,"settings":settings,"stats":st,"boundary_copied_bytes":after.copied_bytes-before.copied_bytes,"cache":after})
+        );
+        if run >= 0 {
+            ctimes.push(ct);
+            gtimes.push(gt);
+        }
+    }
+    eprintln!(
+        "P6_BENCH_SUMMARY {}",
+        serde_json::json!({"case":name,"cpu_median_p95_ms":summary(&ctimes),"gpu_median_p95_ms":summary(&gtimes),"provisional":true})
+    );
+}
+#[test]
+#[ignore = "matched complete wave analysis timings on host Metal"]
+fn native_analysis_benchmark() {
+    let b = backend();
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    macro_rules! case {
+        ($name:expr,$settings:expr,$job:ident) => {{
+            let s = $settings;
+            analysis_case(
+                &b,
+                $name,
+                &s,
+                || cpu::$job(&t, &s, &JobContext::new()),
+                || gpu::analysis::$job(&b, &t, &s, &JobContext::new()),
+                |r| &r.run_info,
+            );
+        }};
+    }
+    case!(
+        "wavefront_cooke",
+        cpu::WavefrontSettings::default(),
+        wavefront_map_job
+    );
+    case!(
+        "mtf_direct_cooke",
+        cpu::MtfSettings::default(),
+        mtf_analysis_job
+    );
+    case!(
+        "mtf_fft_cooke",
+        cpu::MtfSettings {
+            method: cpu::MtfAnalysisMethod::Fft,
+            ..Default::default()
+        },
+        mtf_analysis_job
+    );
+    case!(
+        "mtf_field_cooke",
+        cpu::MtfVsFieldSettings::default(),
+        mtf_vs_field_job
+    );
+    case!(
+        "focus_direct_cooke",
+        cpu::ThroughFocusSettings::default(),
+        through_focus_mtf_analysis_job
+    );
+    case!(
+        "energy_cooke",
+        cpu::EncircledEnergySettings::default(),
+        diffraction_encircled_energy_job
+    );
+    case!(
+        "line_spread_cooke",
+        cpu::LineSpreadSettings::default(),
+        line_spread_job
+    );
+    let pupil = mklight_wave::PupilSettings {
+        grid: 16,
+        rays: 17,
+        ..Default::default()
+    };
+    let field = mklight_analysis::util::FieldSelection::Index { index: 2 };
+    let huygens = cpu::HuygensGrid {
+        grid_size: 32,
+        padding: 2.,
+    };
+    case!(
+        "mtf_huygens_cooke",
+        cpu::MtfSettings {
+            fields: field.clone(),
+            pupil: pupil.clone(),
+            method: cpu::MtfAnalysisMethod::Huygens,
+            huygens,
+            frequency_samples: 9,
+            max_frequency: Some(500.),
+            ..Default::default()
+        },
+        mtf_analysis_job
+    );
+    for (method, name) in [
+        (cpu::MtfAnalysisMethod::Fft, "focus_fft_cooke"),
+        (cpu::MtfAnalysisMethod::Huygens, "focus_huygens_cooke"),
+    ] {
+        case!(
+            name,
+            cpu::ThroughFocusSettings {
+                fields: field.clone(),
+                pupil: pupil.clone(),
+                method,
+                huygens,
+                frequencies: vec![0., 40.],
+                focus_samples: 5,
+                focus_range_mm: Some(2.),
+                ..Default::default()
+            },
+            through_focus_mtf_analysis_job
+        );
+    }
+}

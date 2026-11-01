@@ -476,9 +476,12 @@ for existing host data. `from_resident_lattice` consumes already resident nodes.
 Structured triangles, even-odd masks (including holes), supersampling, unwrapped
 OPD interpolation, nearest-triangle extrapolation, coverage counts, clear area,
 phase-step diagnostics and automatic-grid slopes run on device. The automatic
-0.35-wave rule and all existing grid/work caps are unchanged. Extrapolation
+0.35-wave rule and native-analysis grid/work caps are unchanged. The resident
+resampler bounds its supersample raster at 8192² subpoints; larger requests fail
+explicitly without reducing sampling. Extrapolation
 beyond 128 subpoints reports an unresolved diagnostic and requests the reference
-resampler. The aperture is never replaced by a disk or convex hull. Polygon edge crossings
+resampler. The aperture is never replaced by a disk or convex hull. Polygon edge
+crossings
 are shared per supersample row, preserving the original half-open even-odd
 arithmetic; this optional cache is bounded at 256 MiB. Exact left/right
 column neighbours replace repeated perimeter searches for missing raster points:
@@ -573,7 +576,8 @@ numerics probe are exercised. No skipped test qualifies Metal.
 
 `tests/p6_bench.rs` measures complete native PSFs on all built-ins, explicit
 64/256/1024 pupils through a 2048 image, dense representative designs,
-11/101/1001-side traced lattices, and complete/cached-grid image simulation.
+11/101/1001-side traced lattices, complete/cached-grid image simulation, and
+matched complete wavefront/MTF/field/focus/energy/line-spread methods.
 It alternates unchanged CPU f64 and GPU runs, separates workload-cold/setup and
 warm-up, and records ten measured runs, median/p95, stages, copies, allocations,
 tracked peak plan bytes and fallback counts. The older prepared-pupil benchmark
@@ -581,3 +585,10 @@ remains a distinct residency case. Timings during concurrent package work are
 provisional; P11 owns consolidated quiet-host cost thresholds. Detailed current
 acceptance status, raw logs, numerical maxima and outstanding qualifications
 are maintained in the task's `P6-evidence.md`.
+
+On the qualified M2 Pro measurements, small/default complete native jobs and
+64×64 image simulation are provisionally CPU-preferred. A million-ray native
+PSF favors GPU; a 1024 pupil with a sparse traced lattice is near parity. Dense
+256/1024 transforms with an already resident pupil favor GPU, a different cost
+state from tracing and resampling a complete job. P11 must retain that distinction
+when deriving backend policy. These measurements do not change engine dispatch.
