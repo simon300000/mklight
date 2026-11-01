@@ -42,7 +42,8 @@ impl TransportOptions {
             + 8
             + self.stack_capacity.max(4) * size_of::<ops::State>()
             + self.detections_per_source * (size_of::<ops::Detection>() + 16);
-        (PLAN_BYTES / per_source).min(self.source_tile.div_ceil(256) * 256) / 256 * 256
+        // At least one block; oversized stacks then take the reported reference route.
+        ((PLAN_BYTES / per_source).min(self.source_tile.div_ceil(256) * 256) / 256 * 256).max(256)
     }
 }
 impl Default for TransportOptions {
@@ -396,7 +397,6 @@ fn run_resident(
     crate::tracer::validate_run(scene, source, settings)?;
     if options.source_tile == 0
         || options.source_tile > 65536
-        || options.plan_sources() == 0
         || options.detections_per_source == 0
         || options.detections_per_source > 1024
         || options.stack_capacity == 0
@@ -449,11 +449,12 @@ fn run_resident(
     );
     let mut plans = Vec::new();
     let coverage = super::tally::coverage(b, settings, ctx)?;
+    let fingerprint = scene.fingerprint();
     let submit = |first: u64| {
         let count = (settings.rays - first).min(options.plan_sources() as u64) as usize;
         let mut plan = ResidentPlan::new(snapshot.clone());
         plan.seed = Some(settings.seed);
-        plan.settings = serde_json::json!({"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"scene":scene.fingerprint(),"first":first});
+        plan.settings = serde_json::json!({"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"scene":fingerprint,"first":first});
         let (hits, ledger) =
             prepared.append(&mut plan, scene, source, settings, first, count, options)?;
         let tags = super::tally::tags(
@@ -523,7 +524,7 @@ fn run_resident(
         ));
     }
     let packing_seconds = pack_started.elapsed().as_secs_f64();
-    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"resident_options":options,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans,"device":b.info(),"precision":b.precision(),"fallback_count":0,"scene_fingerprint":scene.fingerprint(),"timings":{"preparation_seconds":preparation_seconds,"transport_seconds":transport_seconds,"tally_seconds":tally_seconds,"packing_seconds":packing_seconds}}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
+    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"resident_options":options,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans,"device":b.info(),"precision":b.precision(),"fallback_count":0,"scene_fingerprint":fingerprint,"timings":{"preparation_seconds":preparation_seconds,"transport_seconds":transport_seconds,"tally_seconds":tally_seconds,"packing_seconds":packing_seconds}}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
     ctx.check()?;
     ctx.report(1., "stray complete");
     Ok(StrayResult {

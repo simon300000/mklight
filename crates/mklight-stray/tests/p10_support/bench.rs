@@ -1,4 +1,5 @@
 //! Matched source/first-hit stage benchmark, not a stray-transport benchmark.
+#![cfg(target_os = "macos")]
 #[path = "../common/mod.rs"]
 mod common;
 use mklight_core::{JobContext, rng::Philox};

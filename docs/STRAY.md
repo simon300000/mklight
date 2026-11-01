@@ -485,8 +485,9 @@ primitives and above, device kernels transform bounds and build a balanced
 preorder tree by levels. Traversal is stackless on every Metal device,
 including devices without hardware ray tracing. Optics are never triangulated.
 
-Interactions call the P7 coating implementation directly (the owned module
-imports its source, so there is one coating algorithm). Angle-dependent TMM
+Interactions call the P7 coating implementation directly (the shader includes
+P7's source and the CPU-f32 specification uses P7's module, so there is one
+coating algorithm). Angle-dependent TMM
 and powers run on device, with scalar products of unpolarised averages.
 Beer--Lambert attenuation, all absorption/leak/escape/truncation/failure
 sinks, backside rules, ideal lenses, repeated physical-interface passes,
@@ -503,15 +504,20 @@ Immutable mode/material/shape features specialize the transport shader so
 unused split, film, extended-sag and scatter state does not burden other
 scenes. This changes no physical decisions.
 
-Each source has a resident continuation stack. Commands process a bounded
-number of events for at most 1024 sources and check cancellation before
-encoding and after completion. Tally batches can span several transport
-tiles; the default is 4096 sources with 16 initial stack entries each.
+Each source has a resident continuation stack, ledger, detection journal and
+draw cursor. Up to 16,384 persistent lanes claim fresh sources and paused
+sources from device queues (integer atomics only), so SIMD groups stay full
+while long split trees finish; claim order never changes a source's records.
+Several rounds share one command buffer. The lane event budget and rounds per
+command adapt towards 15 ms of device time, and cancellation is checked
+between commands. A plan holds as many 256-source numerical blocks as fit a
+160 MiB scratch budget (`TransportOptions::source_tile` caps it), and the next
+plan's transport overlaps host key enumeration of the current one.
 A full stack pauses before the next event consumes any draws, grows into a
-larger device allocation and resumes through a device spill copy. Stack
-storage is capped at 256 MiB per allocation. `TransportOptions` controls
-source batches, initial stack capacity, detection-journal capacity and event
-budget. Source batches round up to complete 256-source numerical blocks.
+larger device allocation and resumes through a device spill copy of the paused
+sources. Stack storage is capped at 256 MiB per allocation. `TransportOptions`
+also controls initial stack capacity, detection-journal capacity and the
+maximum lane event budget. Journal rows past a source's count are unspecified.
 Exhausted journal/stack capacity or P7's reference-required precision domain
 returns `Unsupported`; non-ideal DOE blazes beyond 2^20 also use reference
 sampling so every rounded Cauchy proposal remains an exactly represented
@@ -525,13 +531,15 @@ published as a completed result.
 
 Tallies use P3 source products and fixed source-block reductions. Moment
 channels combine each source's depth-first children in double-float before
-the one-record P3 source-product formula is fused into channel generation.
+the one-record P3 source-product formula is fused into channel generation;
+scalar sink/class estimators keep only (sum, sum²), and one plan normally
+forms every estimator of a transport plan.
 Sparse pixel and signature groups gather the
 original device weights into P3 segments, sum each source's children, then
 form squares and reduce source blocks. Owned, uncovered and covered ghost
 quantities have separate source estimators. Integer pixel/signature/source
-keys are enumerated on the host for sparse topology and labels; no optical
-weights or positions are reduced there. Final compact block summaries are
+keys are enumerated on the host (in parallel 256-source blocks) for sparse
+topology and labels; no optical weights or positions are reduced there. Final compact block summaries are
 folded in canonical source order using the existing compensated result
 assembler, which also derives scalar centroids, RMS radii and standard
 errors. This keeps public maps, signature ordering and error definitions
@@ -550,16 +558,21 @@ Owned harnesses cover all 16 sample geometries and full transports, both
 shader origins, f64 and matching CPU-f32 comparisons, analytic plate and
 enclosure energy, BSDF integrals, split-child covariance, exact coverage and
 DOE overflow, concurrent/chunked jobs, cancellation/resource reuse and large
-device scene builds. The integration/benchmark tests in `tests/p10_support`
-use the external task manifest so shared manifests and Cargo.lock remain
-unchanged. Current acceptance, measured errors, actual hardware, and paired
-cold/warm end-to-end timings are in the task's `P10-evidence.md`. Provisional
-busy-host timings do not establish an engine routing threshold.
+device scene builds. The actual-Metal harnesses in `tests/p10_support` are
+macOS test targets of this crate; the paired benchmarks there are ignored by
+default. Provisional busy-host timings do not establish an engine routing
+threshold.
 
-The provisional Apple M2 Pro native-analysis benchmark retains the CPU route
-for the 36-primitive, 400k-ray barrel: paired CPU/Metal median wall times were
-0.382/5.474 seconds on axis and 0.064/3.177 seconds at 20 degrees. These jobs
-include the primary-reference and public-result work, use default stray
-ownership, and report zero reference replacements and host-copied buffer
-bytes. Cold setup, ten-run median/p95 tables, dense cases and the observed
-command-wait outliers are retained in the evidence for P11's cost policy.
+The provisional Apple M2 Pro native-analysis benchmark (33 paired workloads,
+median of three warm runs, busy shared host) still prefers the CPU f64 route
+for 32 of them: Metal/CPU median wall time is 1.6–5.1× on the samples at 20k
+and 1M rays, 3.3–3.5× on the split-heavy plate and 3.0–14.5× on the
+36-primitive barrel (1.33/0.24 s at 400k rays on axis, 0.70/0.05 s at 20
+degrees). Only
+the Q-bfs sample at 20k rays is faster on Metal (66/79 ms). Command waits stay
+below 46 ms. The limit is the transport kernel itself: about 3–5 M events/s,
+against 12–20 M events/s for the multi-core reference. The same scenes cast
+first hits at about 37 M rays/s, so the double-float interaction code, not
+traversal or scheduling, dominates. These jobs include the primary-reference
+and public-result work, use default stray ownership, and report zero
+reference replacements and host-copied buffer bytes.

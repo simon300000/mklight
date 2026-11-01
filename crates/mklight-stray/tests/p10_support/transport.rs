@@ -1,3 +1,5 @@
+//! Actual-Metal transport, estimator and analysis-adapter qualification.
+#![cfg(target_os = "macos")]
 #[path = "../common/mod.rs"]
 mod common;
 use mklight_core::{JobContext, Snapshot};
@@ -53,6 +55,7 @@ fn controlled_transport() {
                 cpu.energy.summary(),
                 got.energy.summary()
             );
+            assert_resident(&got);
             assert!((got.energy.emitted - cpu.energy.emitted).abs() < 1e-8);
             assert!(got.energy.is_balanced(), "{}", got.energy.summary());
             for (a, c) in got
@@ -62,7 +65,8 @@ fn controlled_transport() {
                 .map(|v| v.1)
                 .zip(cpu.energy.detected_by_class.iter().map(|v| v.1))
             {
-                assert!((a - c).abs() < 1e-7, "{a} != {c}");
+                // Same-draw paths: measured at most 8e-15 of emitted power.
+                assert!((a - c).abs() < 1e-12 * cpu.energy.emitted, "{a} != {c}");
             }
         }
     }
@@ -133,12 +137,16 @@ fn transport_specification_and_tiles() {
     assert_eq!(b, raw(&metal, 64), "event budget changed the records");
 }
 
-fn compare_results(a: &mklight_stray::StrayResult, b: &mklight_stray::StrayResult) {
+/// Identity comparisons are meaningful only between actual GPU transports.
+fn assert_resident(r: &mklight_stray::StrayResult) {
     assert_eq!(
-        b.run_info.as_ref().unwrap().settings["fallback_count"],
+        r.run_info.as_ref().unwrap().settings["fallback_count"],
         0,
         "comparison must use actual GPU transport"
     );
+}
+fn compare_results(a: &mklight_stray::StrayResult, b: &mklight_stray::StrayResult) {
+    assert_resident(b);
     let floor = 1e-8 * a.energy.emitted;
     assert!(
         b.energy.relative_residual() < 1e-5,
@@ -418,6 +426,7 @@ fn coverage_partition_and_repeated_passes() {
         &JobContext::new(),
     )
     .unwrap();
+    assert_resident(&tiled);
     assert_eq!(got.detector, tiled.detector);
     assert_eq!(got.energy, tiled.energy);
     assert_eq!(got.signatures, tiled.signatures);
@@ -633,6 +642,7 @@ fn split_tree_cancellation_and_release() {
         &JobContext::new(),
     )
     .unwrap();
+    assert_resident(&got);
     assert!(got.energy.is_balanced());
     // A genuinely too-small hit journal gives an explicitly labelled f64 result.
     let fallback = gpu::run(
@@ -712,6 +722,8 @@ fn full_pipeline_concurrency_and_chunk_identity() {
         .unwrap();
         (a.join().unwrap(), c)
     });
+    assert_resident(&a);
+    assert_resident(&c);
     assert_eq!(a.energy, c.energy);
     assert_eq!(a.detector, c.detector);
     assert_eq!(a.signatures, c.signatures);
@@ -776,6 +788,7 @@ fn controlled_film_bulk_weights() {
             )
             .unwrap();
             assert_eq!(got.run_info.as_ref().unwrap().settings["fallback_count"], 0);
+            assert_eq!(got.signatures.len(), cpu.signatures.len());
             for g in &got.signatures {
                 let c = cpu
                     .signatures
@@ -783,8 +796,9 @@ fn controlled_film_bulk_weights() {
                     .find(|c| c.class == g.class && c.signature == g.signature)
                     .expect("same controlled path signature");
                 assert_eq!(g.hits, c.hits);
+                // Same-draw paths: measured at most 7.3e-14 relative.
                 assert!(
-                    (g.flux - c.flux).abs() <= 1e-5 * c.flux.abs() + 1e-10,
+                    (g.flux - c.flux).abs() <= 1e-11 * c.flux.abs(),
                     "weight {} vs {}",
                     g.flux,
                     c.flux
@@ -900,6 +914,7 @@ fn explicit_ghost_partition() {
         &JobContext::new(),
     )
     .unwrap();
+    assert_resident(&gpu);
     let (p, g) = values[2];
     let quadrature = values[..2]
         .iter()

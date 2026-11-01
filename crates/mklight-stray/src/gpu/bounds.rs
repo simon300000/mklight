@@ -165,7 +165,9 @@ pub(super) fn local(p: &Primitive) -> MkResult<Aabb> {
         if !z.is_finite() {
             return Err(unsupported("sag bounds are unbounded at the domain rim"));
         }
-        let pad = 1e-12 * (1. + z);
+        // Normalised sags are defined to rho = 1 + 1e-12 (DOMAIN_MARGIN), where
+        // a degree-d term exceeds its unit-disk bound by about d * 1e-12.
+        let pad = 1e-9 * (1. + z);
         b.min.z = -z - pad;
         b.max.z = z + pad;
     }

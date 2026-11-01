@@ -1,3 +1,5 @@
+//! Paired CPU/Metal native-analysis benchmark (`--ignored`).
+#![cfg(target_os = "macos")]
 #[path = "../common/mod.rs"]
 mod common;
 use mklight_core::JobContext;

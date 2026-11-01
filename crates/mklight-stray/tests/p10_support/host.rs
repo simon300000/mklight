@@ -1,4 +1,5 @@
-//! Host-only harness: the external manifest avoids changing shared lockfiles.
+//! Actual-Metal geometry comparisons for the shared P10 cases.
+#![cfg(target_os = "macos")]
 #[path = "../p10_geometry.rs"]
 mod cases;
 use mklight_gpu::ComputeBackend;

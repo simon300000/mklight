@@ -492,6 +492,7 @@ dependencies = [
  "mklight-core",
  "mklight-ghost",
  "mklight-gpu",
+ "mklight-metal",
  "mklight-trace",
  "rayon",
  "serde",
