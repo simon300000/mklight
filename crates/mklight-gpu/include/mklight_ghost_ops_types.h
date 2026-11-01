@@ -1,8 +1,15 @@
 #ifndef MKLIGHT_GHOST_OPS_TYPES_H
 #define MKLIGHT_GHOST_OPS_TYPES_H
 #define MKL_GHOST_VERSION 1
+#define MKL_GHOST_AXIAL_NONE 0u
+#define MKL_GHOST_AXIAL_TRANSMIT 1u
+#define MKL_GHOST_AXIAL_REFLECT 2u
+#define MKL_GHOST_AXIAL_MIRROR 3u
+#define MKL_GHOST_AXIAL_DETECT 4u
+#define MKL_GHOST_AXIAL_SENSOR 5u
 #define MKL_GHOST_CRITICAL_BAND_BITS 0x358637bdu
 #define MKL_GHOST_MAX_SEGMENT_MM 1000u
+#define MKL_GHOST_FIRSTORDER_SLOPE_BITS 0x358637bdu
 #define MKL_GHOST_VIRTUAL 16
 #define MKL_GHOST_REFERENCE 17
 #ifdef __METAL_VERSION__
@@ -20,7 +27,7 @@ struct MklGhostValue {
 };
 struct MklGhostLaunchSample{float2 pupil[2];int2 lattice;uint field,path,wavelength,reserved;};
 struct MklGhostLeaf{uint row,destination;float2 weight;uint batch,map,pixel,reserved;};
-struct MklGhostFirstOrderStep{float2 power,index,distance;};
+struct MklGhostFirstOrderStep{float2 power,index,distance,efficiency,absorption;uint coating,channel;};
 struct MklGhostTraceParams {
   MklTraceParams trace;
   uint end, offset, paths, wavelengths;

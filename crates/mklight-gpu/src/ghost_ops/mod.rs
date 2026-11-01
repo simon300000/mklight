@@ -76,6 +76,10 @@ pub struct FirstOrderStep {
     pub power: Df32,
     pub index: Df32,
     pub distance: Df32,
+    pub efficiency: Df32,
+    pub absorption: Df32,
+    pub coating: u32,
+    pub channel: u32,
 }
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -105,7 +109,11 @@ pub enum Request {
         steps: PlanView,
         offsets: PlanView,
         initial: PlanView,
+        coatings: PlanView,
+        sensor_reflectance: Df32,
         output: BufferId,
+        throughput: BufferId,
+        status: BufferId,
     },
     Gather {
         sources: Vec<PlanView>,
@@ -241,15 +249,22 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             steps,
             offsets,
             initial,
+            coatings,
+            sensor_reflectance: _,
             output,
+            throughput,
+            status,
         } => {
             let ns = records::<FirstOrderStep>(steps, p)?;
+            records::<CoatingValue>(coatings, p)?;
             let n = offsets.desc.len()?.saturating_sub(1);
             if offsets.desc != BufferDesc::new(ElementType::U32, [n + 1])
                 || offsets.stride != 1
                 || initial.desc != BufferDesc::new(ElementType::DoubleFloat, [n, 4])
                 || initial.stride != 1
                 || p.desc(*output)? != &BufferDesc::new(ElementType::DoubleFloat, [ns, 4])
+                || p.desc(*throughput)? != &BufferDesc::new(ElementType::DoubleFloat, [n, 2])
+                || p.desc(*status)? != &BufferDesc::new(ElementType::U32, [n])
             {
                 return Err(bad("ghost first order layout"));
             }
@@ -415,10 +430,19 @@ pub fn accesses(r: &Request) -> Access {
             steps,
             offsets,
             initial,
+            coatings,
+            sensor_reflectance: _,
             output,
+            throughput,
+            status,
         } => Access {
-            reads: vec![steps.clone(), offsets.clone(), initial.clone()],
-            writes: vec![*output],
+            reads: vec![
+                steps.clone(),
+                offsets.clone(),
+                initial.clone(),
+                coatings.clone(),
+            ],
+            writes: vec![*output, *throughput, *status],
             systems: vec![],
         },
         Request::Gather {
@@ -589,7 +613,11 @@ fn execute_in<E: crate::FpEnv>(
             steps,
             offsets,
             initial,
+            coatings,
+            sensor_reflectance,
             output,
+            throughput,
+            status,
         } => {
             for i in 0..offsets.desc.len()? - 1 {
                 if i % 256 == 0 {
@@ -597,6 +625,14 @@ fn execute_in<E: crate::FpEnv>(
                 }
                 let offsets = rows::<u32>(x, offsets);
                 let (a, z) = (offsets[i] as usize, offsets[i + 1] as usize);
+                use crate::{
+                    consts::*,
+                    fx::{D, F, f},
+                };
+                let (mut reflectance, mut transmission, mut absorption) =
+                    (D::<E>::from_f(F::ONE), D::<E>::from_f(F::ONE), D::<E>::ZERO);
+                let sensor = D::from_df(*sensor_reflectance);
+                let mut reference = false;
                 let mut v: [crate::fx::D<E>; 4] = std::array::from_fn(|k| {
                     crate::fx::D::from_df(rows::<Df32>(x, initial)[4 * i + k])
                 });
@@ -605,6 +641,32 @@ fn execute_in<E: crate::FpEnv>(
                     let phi = crate::fx::D::from_df(st.power);
                     let index = crate::fx::D::from_df(st.index);
                     let dz = crate::fx::D::from_df(st.distance);
+                    transmission = transmission * D::from_df(st.efficiency);
+                    absorption = absorption + D::from_df(st.absorption);
+                    match st.channel {
+                        MKL_GHOST_AXIAL_SENSOR => reflectance = reflectance * sensor,
+                        MKL_GHOST_AXIAL_DETECT => {
+                            transmission = transmission * (D::from_f(F::ONE) - sensor)
+                        }
+                        MKL_GHOST_AXIAL_TRANSMIT
+                        | MKL_GHOST_AXIAL_REFLECT
+                        | MKL_GHOST_AXIAL_MIRROR => {
+                            let c = rows::<CoatingValue>(x, coatings)[st.coating as usize];
+                            if c.status != MKL_RAD_OK {
+                                reference = true;
+                            } else {
+                                let r = (D::from_df(c.powers[0]) + D::from_df(c.powers[1])) * 0.5;
+                                let t = (D::from_df(c.powers[2]) + D::from_df(c.powers[3])) * 0.5;
+                                match st.channel {
+                                    MKL_GHOST_AXIAL_REFLECT => reflectance = reflectance * r,
+                                    MKL_GHOST_AXIAL_MIRROR => transmission = transmission * r,
+                                    _ => transmission = transmission * t,
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+
                     v[1] = v[1] - v[0] * phi;
                     v[3] = v[3] - v[2] * phi;
                     let out = bytemuck::cast_slice_mut::<_, Df32>(x.words_mut(*output));
@@ -614,6 +676,17 @@ fn execute_in<E: crate::FpEnv>(
                     v[0] = v[0] + (dz / index) * v[1];
                     v[2] = v[2] + (dz / index) * v[3];
                 }
+                transmission = transmission
+                    * D::from_f(f::<E>(crate::fmath::exp_in::<E>((-absorption).hi().v())));
+                reference |= v[1].hi().abs() <= f32::from_bits(MKL_GHOST_FIRSTORDER_SLOPE_BITS);
+                reference |= !reflectance.0.is_finite()
+                    || !transmission.0.is_finite()
+                    || v.iter().any(|v| !v.0.is_finite());
+                let out = bytemuck::cast_slice_mut::<_, Df32>(x.words_mut(*throughput));
+                out[2 * i] = reflectance.0;
+                out[2 * i + 1] = transmission.0;
+                x.words_mut(*status)[i] = if reference { MKL_GHOST_REFERENCE } else { 0 };
+                x.stats.fallback_count += reference as u64;
             }
         }
         Request::Gather {

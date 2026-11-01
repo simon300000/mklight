@@ -178,3 +178,124 @@ pub fn fixed_hits(b: &dyn ComputeBackend) {
 fn fixed_hit_conservation() {
     fixed_hits(&CpuF32Backend::new());
 }
+
+pub fn first_order(b: &dyn ComputeBackend) -> Vec<u32> {
+    use bytemuck::Zeroable;
+    use mklight_gpu::{consts::*, radiometry::CoatingValue};
+    let mut bits = Vec::new();
+    for mirror in [false, true] {
+        let mut p = ResidentPlan::new(Snapshot::new(samples::singlet()).unwrap());
+        let steps = b
+            .fill_buffer(g::record_desc::<g::FirstOrderStep>(2), &mut |mut f| {
+                let rows =
+                    bytemuck::cast_slice_mut::<_, g::FirstOrderStep>(f.as_mut_slice::<u32>()?);
+                rows[0] = g::FirstOrderStep {
+                    power: Df32::from_f64(0.1),
+                    index: Df32::from_f32(1.),
+                    distance: Df32::from_f32(10.),
+                    efficiency: Df32::from_f32(1.),
+                    absorption: Df32::ZERO,
+                    coating: 0,
+                    channel: MKL_GHOST_AXIAL_TRANSMIT,
+                };
+                rows[1] = g::FirstOrderStep {
+                    power: Df32::from_f64(-0.2),
+                    index: Df32::from_f32(-1.),
+                    distance: Df32::ZERO,
+                    efficiency: Df32::from_f64(0.8),
+                    absorption: Df32::from_f64(0.1),
+                    coating: mirror as u32,
+                    channel: if mirror {
+                        MKL_GHOST_AXIAL_MIRROR
+                    } else {
+                        MKL_GHOST_AXIAL_REFLECT
+                    },
+                };
+                Ok(())
+            })
+            .unwrap();
+        let offsets = b
+            .fill_buffer(BufferDesc::new(ElementType::U32, [2]), &mut |mut f| {
+                f.as_mut_slice::<u32>()?.copy_from_slice(&[0, 2]);
+                Ok(())
+            })
+            .unwrap();
+        let initial = b
+            .fill_buffer(
+                BufferDesc::new(ElementType::DoubleFloat, [1, 4]),
+                &mut |mut f| {
+                    for (v, x) in f.as_mut_slice::<Df32>()?.iter_mut().zip([1., 0., 2., 0.1]) {
+                        *v = Df32::from_f64(x);
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let coats = b
+            .fill_buffer(g::record_desc::<CoatingValue>(2), &mut |mut f| {
+                for (i, v) in bytemuck::cast_slice_mut::<_, CoatingValue>(f.as_mut_slice::<u32>()?)
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *v = CoatingValue::zeroed();
+                    v.powers = [
+                        0.04,
+                        0.04,
+                        if i == 0 { 0.96 } else { 0. },
+                        if i == 0 { 0.96 } else { 0. },
+                        if i == 0 { 0. } else { 0.96 },
+                        if i == 0 { 0. } else { 0.96 },
+                    ]
+                    .map(Df32::from_f64);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let steps = p.import(steps.view());
+        let offsets = p.import(offsets.view());
+        let initial = p.import(initial.view());
+        let coats = p.import(coats.view());
+        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [2, 4]));
+        let throughput = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, 2]));
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [1]));
+        p.operations.push(ResidentOp::Ghost(g::Request::FirstOrder {
+            steps: p.view(steps).unwrap(),
+            offsets: p.view(offsets).unwrap(),
+            initial: p.view(initial).unwrap(),
+            coatings: p.view(coats).unwrap(),
+            sensor_reflectance: Df32::ZERO,
+            output,
+            throughput,
+            status,
+        }));
+        p.outputs = vec![output, throughput, status];
+        let r = b
+            .submit_plan(p, &JobContext::new())
+            .unwrap()
+            .wait()
+            .unwrap();
+        let data = b.read_view(r.outputs[0].view()).unwrap();
+        for (v, e) in data
+            .as_slice::<Df32>()
+            .unwrap()
+            .iter()
+            .zip([1., -0.1, 2., -0.1, 0., -0.1, 1., 0.1])
+        {
+            assert!((v.to_f64() - e).abs() < 1e-12);
+        }
+        let rt = b.read_view(r.outputs[1].view()).unwrap();
+        let v = rt.as_slice::<Df32>().unwrap();
+        assert!((v[0].to_f64() - if mirror { 1. } else { 0.04 }).abs() < 1e-13);
+        let expect = 0.96 * 0.8 * (-0.1f64).exp() * if mirror { 0.04 } else { 1. };
+        assert!((v[1].to_f64() - expect).abs() < 1e-6 * expect);
+        let flags = b.read_view(r.outputs[2].view()).unwrap();
+        assert_eq!(flags.as_slice::<u32>().unwrap(), &[0]);
+        bits.extend_from_slice(data.words());
+        bits.extend_from_slice(rt.words());
+    }
+    bits
+}
+#[test]
+fn first_order_known_answers() {
+    first_order(&CpuF32Backend::new());
+}

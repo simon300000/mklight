@@ -21,6 +21,7 @@ pub struct GhostTransport<'a> {
     offsets: BufferHandle,
     steps: BufferHandle,
     coatings: PreparedCoatings,
+    identity: String,
     max_steps: usize,
     wavelengths: usize,
     chiefs: Option<(BufferHandle, BufferHandle)>,
@@ -112,49 +113,10 @@ impl<'a> GhostTransport<'a> {
                 }
             }
         }
-        let mut offsets = vec![0u32];
-        for p in &programs {
-            offsets.push(offsets.last().unwrap() + p.len() as u32);
-        }
-        let plane = *offsets.last().unwrap() as usize;
-        // One transparent domain is shared by passive and sensor visits. Other
-        // domains retain incidence side, wavelength and the coating's layer order.
-        let mut domains = vec![CoatingDomain {
-            coating: mklight_core::materials::coating::ResolvedCoating::Ideal {
-                reflectance: 0.,
-                transmittance: 1.,
-            },
-            wavelength: sys.wavelengths_um[0],
-            n_in: 1.,
-            n_out: 1.,
-            mirror: false,
-        }];
+        let plane = programs.iter().map(Vec::len).sum::<usize>();
         let ns = sys.num_surfaces();
-        let mut coating_ids = vec![[0u32; 2]; nw * ns];
-        for w in 0..nw {
-            for i in 1..sys.image_index() {
-                let surface = &sys.surfaces[i];
-                if surface.is_passive() {
-                    continue;
-                }
-                for (side, direction) in [Direction::Forward, Direction::Backward]
-                    .into_iter()
-                    .enumerate()
-                {
-                    ctx.check()?;
-                    let (n1, n2) = model.media(i, direction, w);
-                    coating_ids[w * ns + i][side] = domains.len() as u32;
-                    domains.push(CoatingDomain {
-                        coating: surface.coating.clone(),
-                        wavelength: sys.wavelengths_um[w],
-                        n_in: n1,
-                        n_out: if surface.is_mirror() { n1 } else { n2 },
-                        mirror: surface.is_mirror(),
-                    });
-                }
-            }
-        }
-        let coatings = PreparedCoatings::new(backend, &domains, ctx)?;
+        let (coatings, coating_ids) =
+            prepare_coatings(backend, model, &(0..nw).collect::<Vec<_>>(), ctx)?;
         let steps = backend.fill_buffer(op::record_desc::<Step>(nw * plane), &mut |mut out| {
             let rows = bytemuck::cast_slice_mut::<_, Step>(out.as_mut_slice::<u32>()?);
             for (w, plane_rows) in rows.chunks_exact_mut(plane).enumerate() {
@@ -182,6 +144,7 @@ impl<'a> GhostTransport<'a> {
                 Ok(())
             },
         )?;
+        let identity = material_identity(backend, &coatings, &steps, ctx)?;
         let key = SystemCacheKey {
             snapshot: sys.snapshot.hash().to_hex(),
             library: coatings.identity.clone(),
@@ -199,6 +162,7 @@ impl<'a> GhostTransport<'a> {
             offsets,
             steps,
             coatings,
+            identity,
             max_steps,
             wavelengths: nw,
             chiefs: None,
@@ -219,7 +183,7 @@ impl<'a> GhostTransport<'a> {
     }
     fn plan(&self) -> ResidentPlan {
         let mut p = ResidentPlan::new(self.model.system().snapshot.clone());
-        p.identity.library_hash = self.coatings.identity.clone();
+        p.identity.library_hash = self.identity.clone();
         p.settings = serde_json::json!({"operation":"ghost","version":MKL_GHOST_VERSION,"max_steps":self.max_steps,"critical_discriminant_band":f32::from_bits(MKL_GHOST_CRITICAL_BAND_BITS),"max_segment_mm":MKL_GHOST_MAX_SEGMENT_MM,"model":self.model.settings()});
         p
     }
@@ -782,6 +746,7 @@ pub struct ParaxialBatch {
     pub run: RunInfo,
     /// Path-major, wavelength-minor; marginal and chief, with all step records.
     pub rays: Vec<[crate::ParaxialTrace; 2]>,
+    pub throughput: Vec<[f64; 2]>,
     pub stats: PlanStats,
 }
 /// Compile path/wavelength constitutive metadata once, then evaluate both
@@ -808,6 +773,7 @@ pub fn paraxial_batch(
     {
         return Err(MkError::InvalidParam("ghost paraxial wavelength".into()));
     }
+    let (coatings, coating_ids) = prepare_coatings(backend, model, wavelengths, ctx)?;
     let mut offsets = vec![0u32];
     for path in &programs {
         for _ in wavelengths {
@@ -815,13 +781,12 @@ pub fn paraxial_batch(
         }
     }
     let step_count = *offsets.last().unwrap() as usize;
-    // The signed indices are retained for the public ray records. Numeric
-    // GPU inputs themselves are produced directly in shared storage.
+    let rows = paths.len() * wavelengths.len();
     let mut indices = Vec::new();
     let steps = backend.fill_buffer(
         op::record_desc::<FirstOrderStep>(step_count),
         &mut |mut f| {
-            let rows = bytemuck::cast_slice_mut::<_, FirstOrderStep>(f.as_mut_slice::<u32>()?);
+            let output = bytemuck::cast_slice_mut::<_, FirstOrderStep>(f.as_mut_slice::<u32>()?);
             let mut at = 0;
             indices.clear();
             for path in &programs {
@@ -833,17 +798,59 @@ pub fn paraxial_batch(
                         let (no, power) = crate::paraxial::step_power(model, st, n, w);
                         n = no;
                         ns.push(n);
-                        let distance = path.get(k + 1).map_or(0., |next| {
-                            crate::paraxial::delta_z(
-                                model,
-                                st.surface as usize,
-                                next.surface as usize,
+                        let si = st.surface as usize;
+                        let surface = &model.system().surfaces[si];
+                        let back = st.direction == Direction::Backward;
+                        let reflected = surface.is_mirror() || st.action == Action::Reflect;
+                        let channel = if si == model.system().image_index() {
+                            if st.action == Action::Reflect {
+                                MKL_GHOST_AXIAL_SENSOR
+                            } else {
+                                MKL_GHOST_AXIAL_DETECT
+                            }
+                        } else if surface.is_passive() {
+                            MKL_GHOST_AXIAL_NONE
+                        } else if surface.is_mirror() {
+                            MKL_GHOST_AXIAL_MIRROR
+                        } else if st.action == Action::Reflect {
+                            MKL_GHOST_AXIAL_REFLECT
+                        } else {
+                            MKL_GHOST_AXIAL_TRANSMIT
+                        };
+                        let efficiency = if matches!(
+                            channel,
+                            MKL_GHOST_AXIAL_NONE | MKL_GHOST_AXIAL_SENSOR | MKL_GHOST_AXIAL_DETECT
+                        ) {
+                            1.
+                        } else {
+                            mklight_core::materials::diffraction::order_efficiency(
+                                model.system(),
+                                si,
+                                w,
+                                st.order,
+                                reflected,
+                                back,
                             )
+                        };
+                        let absorption = if k == 0 {
+                            0.
+                        } else {
+                            let gap = si.min(path[k - 1].surface as usize);
+                            model.system().surfaces[gap].alpha_after[w]
+                                * model.system().surfaces[gap].thickness.abs()
+                        };
+                        let distance = path.get(k + 1).map_or(0., |next| {
+                            crate::paraxial::delta_z(model, si, next.surface as usize)
                         });
-                        rows[at] = FirstOrderStep {
+                        output[at] = FirstOrderStep {
                             power: Df32::from_f64(power),
                             index: Df32::from_f64(n),
                             distance: Df32::from_f64(distance),
+                            efficiency: Df32::from_f64(efficiency),
+                            absorption: Df32::from_f64(absorption),
+                            coating: coating_ids[w * model.system().num_surfaces() + si]
+                                [back as usize],
+                            channel,
                         };
                         at += 1;
                     }
@@ -853,15 +860,15 @@ pub fn paraxial_batch(
             Ok(())
         },
     )?;
-    let offset_buffer = backend.fill_buffer(
+    let os = backend.fill_buffer(
         BufferDesc::new(ElementType::U32, [offsets.len()]),
         &mut |mut f| {
-            let rows = f.as_mut_slice::<u32>()?;
-            rows[0] = 0;
+            let output = f.as_mut_slice::<u32>()?;
+            output[0] = 0;
             let mut i = 0;
             for path in &programs {
                 for _ in wavelengths {
-                    rows[i + 1] = rows[i] + path.len() as u32;
+                    output[i + 1] = output[i] + path.len() as u32;
                     i += 1;
                 }
             }
@@ -869,10 +876,7 @@ pub fn paraxial_batch(
         },
     )?;
     let initial = backend.fill_buffer(
-        BufferDesc::new(
-            ElementType::DoubleFloat,
-            [paths.len() * wavelengths.len(), 4],
-        ),
+        BufferDesc::new(ElementType::DoubleFloat, [rows, 4]),
         &mut |mut f| {
             for (i, row) in f.as_mut_slice::<Df32>()?.chunks_exact_mut(4).enumerate() {
                 if i % 256 == 0 {
@@ -895,33 +899,87 @@ pub fn paraxial_batch(
         },
     )?;
     let mut p = ResidentPlan::new(model.system().snapshot.clone());
-    p.settings = serde_json::json!({"operation":"ghost.paraxial_batch","paths":paths,"wavelengths":wavelengths,"version":MKL_GHOST_VERSION});
+    p.identity.library_hash = material_identity(backend, &coatings, &steps, ctx)?;
+    p.settings = serde_json::json!({"operation":"ghost.paraxial_batch","paths":paths,"wavelengths":wavelengths,"version":MKL_GHOST_VERSION,"model":model.settings(),"minimum_reduced_slope":f32::from_bits(MKL_GHOST_FIRSTORDER_SLOPE_BITS)});
+    let nq = coatings.specs.desc().shape[0];
+    let queries = fill(backend, nq, |i| {
+        Ok(CoatingQuery {
+            coating: i as u32,
+            reserved: 0,
+            cosine: Df32::from_f32(1.),
+        })
+    })?;
+    let specs = p.import(coatings.specs.view());
+    let layers = p.import(coatings.layers.view());
+    let queries = p.import(queries.view());
+    let coating_values = p.scratch(op::record_desc::<CoatingValue>(nq));
+    p.operations
+        .push(ResidentOp::Radiometry(radiometry::Request::Coating(
+            CoatingRequest {
+                specs: p.view(specs)?,
+                layers: p.view(layers)?,
+                queries: p.view(queries)?,
+                output: coating_values,
+                tile: radiometry::MAX_TILE,
+            },
+        )));
     let steps = p.import(steps.view());
-    let os = p.import(offset_buffer.view());
-    let init = p.import(initial.view());
+    let os = p.import(os.view());
+    let initial = p.import(initial.view());
     let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [step_count, 4]));
+    let throughput = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [rows, 2]));
+    let status = p.scratch(BufferDesc::new(ElementType::U32, [rows]));
     p.operations
         .push(ResidentOp::Ghost(op::Request::FirstOrder {
             steps: p.view(steps)?,
             offsets: p.view(os)?,
-            initial: p.view(init)?,
+            initial: p.view(initial)?,
+            coatings: p.view(coating_values)?,
+            sensor_reflectance: Df32::from_f64(model.settings().sensor_reflectance.unwrap_or(0.)),
             output,
+            throughput,
+            status,
         }));
-    p.outputs = vec![output];
-    let r = backend.submit_plan(p, &ctx.subrange(0., 0.99))?.wait()?;
+    p.outputs = vec![output, throughput, status];
+    let mut r = backend.submit_plan(p, &ctx.subrange(0., 0.9))?.wait()?;
     let data = backend.read_view(r.outputs[0].view())?;
     let data = data.as_slice::<Df32>()?;
-    let mut rays = Vec::new();
+    let rt_view = backend.read_view(r.outputs[1].view())?;
+    let rt = rt_view.as_slice::<Df32>()?;
+    let flag_view = backend.read_view(r.outputs[2].view())?;
+    let flags = flag_view.as_slice::<u32>()?;
+    let (mut rays, mut throughputs, mut reference_rows) = (Vec::new(), Vec::new(), Vec::new());
+    let reference_start = std::time::Instant::now();
     for (i, ns) in indices.into_iter().enumerate() {
         ctx.check()?;
         let (a, z) = (offsets[i] as usize, offsets[i + 1] as usize);
-        rays.push(std::array::from_fn(|j| crate::ParaxialTrace {
-            y: (a..z).map(|k| data[4 * k + 2 * j].to_f64()).collect(),
-            nu: (a..z).map(|k| data[4 * k + 2 * j + 1].to_f64()).collect(),
-            n: ns.clone(),
-        }));
+        if flags[i] != 0 {
+            let path = &programs[i / wavelengths.len()];
+            let w = wavelengths[i % wavelengths.len()];
+            let fo = model.tracer().paraxial().at(w);
+            rays.push([
+                crate::paraxial::trace_steps(model, path, w, fo.marginal.y[1], fo.marginal.nu[0]),
+                crate::paraxial::trace_steps(model, path, w, fo.chief.y[1], fo.chief.nu[0]),
+            ]);
+            let (r, t) = crate::paraxial::axial_throughput(model, path, w);
+            throughputs.push([r, t]);
+            reference_rows.push(i);
+        } else {
+            rays.push(std::array::from_fn(|j| crate::ParaxialTrace {
+                y: (a..z).map(|k| data[4 * k + 2 * j].to_f64()).collect(),
+                nu: (a..z).map(|k| data[4 * k + 2 * j + 1].to_f64()).collect(),
+                n: ns.clone(),
+            }));
+            throughputs.push([rt[2 * i].to_f64(), rt[2 * i + 1].to_f64()]);
+        }
     }
-    ctx.report(1., "ghost paraxial batch complete");
+    r.stats.polished_rays += 2 * reference_rows.len() as u64;
+    r.run_info.settings["reference_rows"] = serde_json::json!(reference_rows);
+    r.run_info.settings["reference_and_result_seconds"] =
+        serde_json::json!(reference_start.elapsed().as_secs_f64());
+    if !reference_rows.is_empty() {
+        r.run_info.warnings.push(format!("P9 first order: {} path/wavelength rows completed by CPU f64 for coating, range or afocal conditioning",reference_rows.len()));
+    }
     let run = timer.finish(
         &model.system().snapshot,
         "ghost.paraxial_batch",
@@ -931,9 +989,12 @@ pub fn paraxial_batch(
         None,
         r.run_info.warnings,
     );
+    ctx.check()?;
+    ctx.report(1., "ghost paraxial batch complete");
     Ok(ParaxialBatch {
         run,
         rays,
+        throughput: throughputs,
         stats: r.stats,
     })
 }
@@ -1006,4 +1067,71 @@ fn pack_step(model: &GhostModel, st: &crate::Step, w: usize, coating: u32) -> St
         alpha: Df32::from_f64(alpha),
         power: Df32::from_f64(power),
     }
+}
+
+fn prepare_coatings(
+    backend: &dyn ComputeBackend,
+    model: &GhostModel,
+    wavelengths: &[usize],
+    ctx: &JobContext,
+) -> MkResult<(PreparedCoatings, Vec<[u32; 2]>)> {
+    let sys = model.system();
+    let nw = sys.wavelengths_um.len();
+    let mut domains = vec![CoatingDomain {
+        coating: mklight_core::materials::coating::ResolvedCoating::Ideal {
+            reflectance: 0.,
+            transmittance: 1.,
+        },
+        wavelength: sys.wavelengths_um[0],
+        n_in: 1.,
+        n_out: 1.,
+        mirror: false,
+    }];
+    let ns = sys.num_surfaces();
+    let mut coating_ids = vec![[0u32; 2]; nw * ns];
+    let mut selected = vec![false; nw];
+    for &w in wavelengths {
+        selected[w] = true;
+    }
+    for w in (0..nw).filter(|&w| selected[w]) {
+        for i in 1..sys.image_index() {
+            let surface = &sys.surfaces[i];
+            if surface.is_passive() {
+                continue;
+            }
+            for (side, direction) in [Direction::Forward, Direction::Backward]
+                .into_iter()
+                .enumerate()
+            {
+                ctx.check()?;
+                let (n1, n2) = model.media(i, direction, w);
+                coating_ids[w * ns + i][side] = domains.len() as u32;
+                domains.push(CoatingDomain {
+                    coating: surface.coating.clone(),
+                    wavelength: sys.wavelengths_um[w],
+                    n_in: n1,
+                    n_out: if surface.is_mirror() { n1 } else { n2 },
+                    mirror: surface.is_mirror(),
+                });
+            }
+        }
+    }
+    let coatings = PreparedCoatings::new(backend, &domains, ctx)?;
+    Ok((coatings, coating_ids))
+}
+
+fn material_identity(
+    backend: &dyn ComputeBackend,
+    coatings: &PreparedCoatings,
+    steps: &BufferHandle,
+    ctx: &JobContext,
+) -> MkResult<String> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(coatings.identity.as_bytes());
+    let view = backend.read_view(steps.view())?;
+    for block in bytemuck::cast_slice::<_, u8>(view.words()).chunks(65536) {
+        ctx.check()?;
+        hash.update(block);
+    }
+    Ok(hash.finalize().to_hex().to_string())
 }

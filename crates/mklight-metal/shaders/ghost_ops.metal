@@ -83,10 +83,16 @@ kernel void mkl_ghost_gather(device const MklGhostValue* values [[buffer(0)]],de
  if(tid>=p.x)return;MklGhostLeaf l=leaves[p.y+tid];MklGhostValue v=values[l.row];uint d=5*l.destination;output[d+3]=float2(float(l.map),0);output[d+4]=float2(float(l.pixel),0);output[d]=v.position[0];output[d+1]=v.position[1];output[d+2]=mkl_df_mul(mkl_df_mul(mkl_df_mul_f32(mkl_df_add(v.weight_s,v.weight_p),0.5f),v.internal),l.weight);
 }
 
-kernel void mkl_ghost_first_order(device const MklGhostFirstOrderStep* steps [[buffer(0)]],device const uint* offsets [[buffer(1)]],device const float2* initial [[buffer(2)]],device float2* output [[buffer(3)]],constant uint2& p [[buffer(4)]],uint tid [[thread_position_in_grid]]){
- uint i=p.y+tid;if(i>=p.x)return;float2 v[4];for(uint j=0;j<4;j++)v[j]=initial[4*i+j];
- for(uint k=offsets[i];k<offsets[i+1];k++){MklGhostFirstOrderStep s=steps[k];v[1]=mkl_df_sub(v[1],mkl_df_mul(v[0],s.power));v[3]=mkl_df_sub(v[3],mkl_df_mul(v[2],s.power));for(uint j=0;j<4;j++)output[4*k+j]=v[j];float2 t=mkl_df_div(s.distance,s.index);v[0]=mkl_df_add(v[0],mkl_df_mul(t,v[1]));v[2]=mkl_df_add(v[2],mkl_df_mul(t,v[3]));}
+struct MklGhostFirstOrderParams{uint end,offset;float2 sensor;};
+kernel void mkl_ghost_first_order(device const MklGhostFirstOrderStep* steps [[buffer(0)]],device const uint* offsets [[buffer(1)]],device const float2* initial [[buffer(2)]],device float2* output [[buffer(3)]],device const MklCoatingValue* coatings [[buffer(4)]],device float2* throughput [[buffer(5)]],device uint* status [[buffer(6)]],constant MklGhostFirstOrderParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]){
+ uint i=p.offset+tid;if(i>=p.end)return;float2 v[4];for(uint j=0;j<4;j++)v[j]=initial[4*i+j];float2 r=float2(1,0),t=r,absorption=float2(0);bool reference=false;
+ for(uint k=offsets[i];k<offsets[i+1];k++){MklGhostFirstOrderStep s=steps[k];t=mkl_df_mul(t,s.efficiency);absorption=mkl_df_add(absorption,s.absorption);
+  if(s.channel==MKL_GHOST_AXIAL_SENSOR)r=mkl_df_mul(r,p.sensor);else if(s.channel==MKL_GHOST_AXIAL_DETECT)t=mkl_df_mul(t,mkl_df_sub(float2(1,0),p.sensor));else if(s.channel!=MKL_GHOST_AXIAL_NONE){MklCoatingValue c=coatings[s.coating];if(c.status!=MKL_RAD_OK)reference=true;else{float2 cr=mkl_df_mul_f32(mkl_df_add(c.powers[0],c.powers[1]),0.5f),ct=mkl_df_mul_f32(mkl_df_add(c.powers[2],c.powers[3]),0.5f);if(s.channel==MKL_GHOST_AXIAL_REFLECT)r=mkl_df_mul(r,cr);else t=mkl_df_mul(t,s.channel==MKL_GHOST_AXIAL_MIRROR?cr:ct);}}
+  v[1]=mkl_df_sub(v[1],mkl_df_mul(v[0],s.power));v[3]=mkl_df_sub(v[3],mkl_df_mul(v[2],s.power));for(uint j=0;j<4;j++)output[4*k+j]=v[j];float2 distance=mkl_df_div(s.distance,s.index);v[0]=mkl_df_add(v[0],mkl_df_mul(distance,v[1]));v[2]=mkl_df_add(v[2],mkl_df_mul(distance,v[3]));
+ }
+ t=mkl_df_mul(t,float2(mkl_exp(-absorption.x),0));reference|=fabs(v[1].x)<=as_type<float>(MKL_GHOST_FIRSTORDER_SLOPE_BITS);reference|=!(all(isfinite(r))&&all(isfinite(t)));for(uint j=0;j<4;j++)reference|=!all(isfinite(v[j]));throughput[2*i]=r;throughput[2*i+1]=t;status[i]=reference?MKL_GHOST_REFERENCE:0;
 }
+
 kernel void mkl_ghost_segment_flags(device const uint* keys [[buffer(0)]],device uint* output [[buffer(1)]],constant uint4& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){
  uint i=p.y+tid;if(i>=p.x)return;output[i]=(keys[i]<p.z&&(i==0||keys[i]!=keys[i-1]))?1:0;
 }

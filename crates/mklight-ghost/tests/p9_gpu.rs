@@ -313,6 +313,21 @@ fn physical_fixtures_and_focus() {
         },
     );
     compare(&b, &m, &[GhostPath::primary(), GhostPath::new(vec![4, 2])]);
+    let newtonian = model(
+        samples::newtonian_telescope(),
+        GhostSettings {
+            sensor_reflectance: Some(0.3),
+            ..unclipped()
+        },
+    );
+    compare(
+        &b,
+        &newtonian,
+        &[
+            GhostPath::primary(),
+            GhostPath::new(vec![newtonian.system().image_index() as u32]),
+        ],
+    );
     let mut converging = plate(1.5, 10., 0., &[0.], None);
     converging.surfaces[1] = surf(
         1,
@@ -344,11 +359,14 @@ fn physical_fixtures_and_focus() {
     compare(&b, &doe, &p);
     for (_, s) in samples::all() {
         let m = model(s, GhostSettings::default());
-        let p = enumerate(&m, &EnumerationSettings::default())
-            .unwrap()
-            .paths
-            .into_iter()
-            .map(|p| p.path)
+        let p = std::iter::once(GhostPath::primary())
+            .chain(
+                enumerate(&m, &EnumerationSettings::default())
+                    .unwrap()
+                    .paths
+                    .into_iter()
+                    .map(|p| p.path),
+            )
             .collect::<Vec<_>>();
         if p.is_empty() {
             continue;
@@ -359,6 +377,11 @@ fn physical_fixtures_and_focus() {
             let wl = w[i % w.len()];
             let fo = m.tracer().paraxial().at(wl);
             let steps = m.check_path(&p[i / w.len()]).unwrap();
+            let (rp, tp) = mklight_ghost::paraxial::axial_throughput(&m, &steps, wl);
+            for (a, c) in r.throughput[i].into_iter().zip([rp, tp]) {
+                assert!((a - c).abs() <= 1e-5 * c.abs() + 1e-10);
+            }
+
             for (j, (y, nu)) in [
                 (fo.marginal.y[1], fo.marginal.nu[0]),
                 (fo.chief.y[1], fo.chief.nu[0]),
@@ -652,4 +675,57 @@ fn passive_and_sensor_surfaces_ignore_doe_phase_and_efficiency() {
             ],
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn paraxial_sensor_powers_and_afocal_completion() {
+    use mklight_core::{CoatingDef, MaterialRef, SurfaceShape};
+    let b = mklight_metal::MetalBackend::new()
+        .unwrap()
+        .expect("P9 requires host Metal");
+    let mut s = plate(
+        1.5,
+        10.,
+        0.,
+        &[0.],
+        Some(CoatingDef::Ideal {
+            reflectance: 0.3,
+            transmittance: 0.7,
+        }),
+    );
+    s.surfaces[1] = surf(
+        1,
+        SurfaceShape::Paraxial { focal_length: 100. },
+        20.,
+        MaterialRef::Air,
+    );
+    s.surfaces[3].thickness = 80. - 10. / 1.5;
+    let m = model(
+        s,
+        GhostSettings {
+            sensor_reflectance: Some(0.3),
+            ..unclipped()
+        },
+    );
+    let result = gpu::paraxial_batch(
+        &b,
+        &m,
+        &[GhostPath::primary(), GhostPath::new(vec![4, 2])],
+        &[0],
+        &JobContext::new(),
+    )
+    .unwrap();
+    for (a, c) in result
+        .throughput
+        .iter()
+        .flatten()
+        .zip([1., 0.7f64.powi(3), 0.09, 0.7f64.powi(5)])
+    {
+        assert!((a - c).abs() < 1e-12);
+    }
+    let m = model(plate(1.5, 10., 20., &[0.], None), unclipped());
+    let r = gpu::paraxial_batch(&b, &m, &[GhostPath::primary()], &[0], &JobContext::new()).unwrap();
+    assert_eq!(r.run.settings["reference_rows"], serde_json::json!([0]));
+    assert_eq!(r.rays[0][0].nu.last().copied(), Some(0.));
 }

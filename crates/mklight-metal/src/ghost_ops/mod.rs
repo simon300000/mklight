@@ -36,6 +36,13 @@ struct PixelParameters {
     reserved: u32,
     half: [mklight_gpu::Df32; 2],
 }
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct FirstOrderParameters {
+    end: u32,
+    offset: u32,
+    sensor: mklight_gpu::Df32,
+}
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
     let mut stats = StageStats {
@@ -210,17 +217,30 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             steps,
             offsets,
             initial,
+            coatings,
+            sensor_reflectance,
             output,
+            throughput,
+            status,
         } => {
             let pso = x
                 .gpu
                 .pipeline(&PipelineKey::plain("mkl_ghost_first_order"))?;
-            let mut out = x.take_output(*output);
+            let (mut out, mut rt, mut flags) = (
+                x.take_output(*output),
+                x.take_output(*throughput),
+                x.take_output(*status),
+            );
             let n = offsets.desc.shape[0] - 1;
             for offset in (0..n).step_by(2048) {
                 ctl.check()?;
                 let wall = Instant::now();
-                // SAFETY: each validated path owns a disjoint record range.
+                let params = FirstOrderParameters {
+                    end: (offset + 2048).min(n) as u32,
+                    offset: offset as u32,
+                    sensor: *sensor_reflectance,
+                };
+                // SAFETY: disjoint path records and independent radiometry folds.
                 let cs = unsafe {
                     x.gpu.run("ghost first order", |e| {
                         e.set_pipeline(&pso);
@@ -229,7 +249,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             e.set_buffer(j, b, o);
                         }
                         e.set_buffer_mut(3, &mut out, 0);
-                        e.set_bytes(4, &[(offset + 2048).min(n) as u32, offset as u32]);
+                        let (b, o) = x.buffer(coatings);
+                        e.set_buffer(4, b, o);
+                        e.set_buffer_mut(5, &mut rt, 0);
+                        e.set_buffer_mut(6, &mut flags, 0);
+                        e.set_bytes(7, &[params]);
                         e.dispatch_groups([(n - offset).min(2048).div_ceil(64), 1, 1], 64);
                         Ok(())
                     })?
@@ -240,7 +264,14 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
             }
+            for block in flags.as_slice()[..n].chunks(4096) {
+                ctl.check()?;
+                x.stats.fallback_count += block.iter().filter(|&&s| s != 0).count() as u64;
+            }
+            x.stats.readback_bytes += 4 * n as u64;
             x.put_output(*output, out);
+            x.put_output(*throughput, rt);
+            x.put_output(*status, flags);
         }
         Request::Gather {
             sources,

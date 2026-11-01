@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 mklight-gpu.workspace = true
 bytemuck.workspace = true
+blake3.workspace = true
 mklight-core.workspace = true
 mklight-trace.workspace = true
 serde.workspace = true

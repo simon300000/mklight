@@ -379,7 +379,11 @@ pub(crate) fn paraxial_ghosts_with_backend(
         ]
     };
     let last = pstep.len() - 1;
-    let (_, primary_t) = axial_throughput(model, &pstep, wl);
+    let primary_t = if let Some(b) = &batch {
+        b.throughput[0][1]
+    } else {
+        axial_throughput(model, &pstep, wl).1
+    };
     let lambda_mm = sys.wavelengths_um[wl] * 1e-3;
     let pixel = sys
         .system()
@@ -416,7 +420,12 @@ pub(crate) fn paraxial_ghosts_with_backend(
             ]
         };
         let k = steps.len() - 1;
-        let (r, t) = axial_throughput(model, &steps, wl);
+        let (r, t) = if let Some(b) = &batch {
+            let v = b.throughput[path_index + 1];
+            (v[0], v[1])
+        } else {
+            axial_throughput(model, &steps, wl)
+        };
         let ym = m.y[k];
         let d_g = 2.0 * ym.abs();
         let mut vig = 1.0f64;
@@ -458,6 +467,7 @@ pub(crate) fn paraxial_ghosts_with_backend(
         run.backend = b.run.backend;
         run.precision = b.run.precision;
         run.settings["resident_backend"] = b.run.settings;
+        run.warnings.extend(b.run.warnings);
         run.settings["gpu"] = serde_json::json!({"stats":b.stats});
     }
     let result = ParaxialGhostReport {

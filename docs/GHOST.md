@@ -423,7 +423,8 @@ reflection/detection and the expanded DOE visit/order metadata. It batches
 all incidences through P7's direct coating service, then multiplies the
 s and p channels separately and applies signed Beer–Lambert absorption.
 There is no independently interpolated coating table or second path
-enumerator. Probes flagged by P7 are completed with the reference and counted. Regular
+enumerator. Probes flagged by P7, and numerical trace failures, are completed with the
+reference and counted. Regular
 refraction also requests reference completion when the double-float Snell
 discriminant has magnitude at most 1e-6: the f32 TIR branch and grazing exit
 geometry are not qualified there. Default achromat probes exposed differing
@@ -468,9 +469,16 @@ precision, material identity, operation version, settings, stage timings,
 command counts, memory and fallback counters. Widening public numbers to
 f64 does not relabel device arithmetic as f64.
 
-`paraxial_batch` evaluates marginal/chief recurrences across path/wavelength
-batches in double-float. Small path enumeration, constitutive metadata,
-normal-incidence axial throughput and final ranking remain host work.
+`paraxial_batch` evaluates marginal/chief recurrences and axial throughput
+across path/wavelength batches in double-float. P7 evaluates the shared
+normal-incidence table once per surface/side/wavelength; device folds keep
+extra reflections separate from designed-mirror/pass factors, sensor
+detection, DOE efficiency and bulk absorption. Normal powers use the
+reference paraxial product-of-averages model. Non-finite or nearly afocal
+rows (reduced marginal slope <=1e-6 in magnitude), and rows with flagged
+coatings, receive counted f64 completion. Small path enumeration,
+constitutive metadata, vignetting/labels and the final ranking remain host
+work.
 `real_ghost_focus` shares P1's fully aimed meridional launch across paths,
 then runs the same ghost sequence geometry without unused coating work.
 
