@@ -464,7 +464,7 @@ struct PathRun {
 }
 
 /// Outcome of one ray: detected `(x, y, w)`, or lost as virtual with `w`.
-type RayOut = Result<Option<(f64, f64, f64)>, f64>;
+pub(crate) type RayOut = Result<Option<(f64, f64, f64)>, f64>;
 
 /// One path's probes on the pupil lattice.
 struct PathTrace<'a> {
@@ -477,45 +477,50 @@ struct PathTrace<'a> {
 }
 
 impl PathTrace<'_> {
+    /// Resident counterpart of [`Self::leaves`]: detected leaves keep their
+    /// resident probe location; virtual and lost leaves only count.
     fn resident_leaves(
         &self,
         probes: &Probes,
         centre: Probe,
         half: i32,
         weight: f64,
-        out: &mut Vec<mklight_gpu::ghost_ops::Leaf>,
-        summary: &mut LeafSummary,
+        map: u32,
+        out: &mut (Vec<mklight_gpu::ghost_ops::Leaf>, LeafSummary),
     ) {
         if self.splits(probes, centre, half) {
             for c in centre.around(half / 2) {
-                self.resident_leaves(probes, c, half / 2, weight * 0.25, out, summary);
+                self.resident_leaves(probes, c, half / 2, weight * 0.25, map, out);
             }
-        } else {
-            summary.traced += 1;
-            if let Err(w) = probes.get(centre) {
+            return;
+        }
+        let summary = &mut out.1;
+        summary.traced += 1;
+        let id = probes.index[&centre];
+        let (x, y) = match probes.outs[id] {
+            Ok(Some((x, y, _))) => (x, y),
+            Ok(None) => return,
+            Err(w) => {
                 summary.virtual_rays += 1;
                 summary.virtual_flux.add(weight * w);
-            }
-            if !matches!(probes.get(centre), Ok(Some(_))) {
                 return;
             }
-
-            let [batch, row] = probes.locations[probes.index[&centre]].unwrap();
-            out.push(mklight_gpu::ghost_ops::Leaf {
-                batch: batch as u32,
-                row: row as u32,
-                weight: mklight_gpu::Df32::from_f64(weight),
-                destination: 0,
-                map: 0,
-                pixel: match probes.get(centre) {
-                    Ok(Some((x, y, _))) if pixel_edge(self.map, x, y) => {
-                        self.map.bin_of(x, y).unwrap_or(self.map.values.len()) as u32 + 1
-                    }
-                    _ => 0,
-                },
-                reserved: 0,
-            });
-        }
+        };
+        let [batch, row] = probes.locations[id].unwrap();
+        out.0.push(mklight_gpu::ghost_ops::Leaf {
+            batch: batch as u32,
+            row: row as u32,
+            weight: mklight_gpu::Df32::from_f64(weight),
+            destination: 0,
+            map,
+            // The reference bin decides inside the pixel-edge band.
+            pixel: if pixel_edge(self.map, x, y) {
+                self.map.bin_of(x, y).unwrap_or(self.map.values.len()) as u32 + 1
+            } else {
+                0
+            },
+            reserved: 0,
+        });
     }
     fn trace(&self, probe: Probe) -> RayOut {
         let p = [probe.x, probe.y].map(|u| pupil(u, self.n, self.overfill));
@@ -668,7 +673,6 @@ fn run_path(
     template: &IrradianceMap,
     ctx: &JobContext,
     progress: (f64, f64),
-    cached: Option<&Probes>,
     gpu_maps: Option<(&crate::gpu::MapData, usize)>,
 ) -> MkResult<PathRun> {
     let path = PathTrace {
@@ -718,20 +722,13 @@ fn run_path(
         });
     }
     let all: Vec<Cell> = cells.iter().flatten().copied().collect();
-    let owned;
-    let probes = match cached {
-        Some(p) => p,
-        None => {
-            owned = Probes::refine(&all, &path, ctx, progress)?;
-            &owned
-        }
-    };
+    let probes = Probes::refine(&all, &path, ctx, progress)?;
     let leaves: Vec<Vec<RayOut>> = all
         .par_iter()
         .with_min_len(64)
         .map(|c| {
             let mut out = Vec::new();
-            path.leaves(probes, c.probe, HALF, c.weight, &mut out);
+            path.leaves(&probes, c.probe, HALF, c.weight, &mut out);
             out
         })
         .collect();
@@ -914,80 +911,18 @@ pub(crate) fn ghost_irradiance_with_backend(
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
-    let mut gpu = backend
-        .map(|b| {
-            let all_paths = std::iter::once(GhostPath::primary())
-                .chain(paths.iter().cloned())
+    let gpu = match backend {
+        Some(b) => {
+            let steps = std::iter::once(pstep.as_slice())
+                .chain(path_steps.iter().map(Vec::as_slice))
                 .collect::<Vec<_>>();
-            crate::gpu::GhostTransport::new(b, model, &all_paths, &ctx.subrange(0., 0.01))
-        })
-        .transpose()?;
-    let cached = if let Some(g) = &mut gpu {
-        let points = selected
-            .iter()
-            .map(|f| match f.id {
-                FieldRef::System { index } => FieldPoint::system(osys, index),
-                FieldRef::Point { point } => point,
-            })
-            .collect::<Vec<_>>();
-        g.prepare_fields(&points, &ctx.subrange(0.01, 0.03))?;
-        let steps = std::iter::once(pstep.as_slice())
-            .chain(path_steps.iter().map(Vec::as_slice))
-            .collect::<Vec<_>>();
-        Some(refine_gpu(
-            g,
-            model,
-            &steps,
-            &cells,
-            &selected,
-            settings,
-            &template,
-            &ctx.subrange(0.03, 0.8),
-        )?)
-    } else {
-        None
-    };
-    let gpu_maps = if let (Some(g), Some(caches)) = (&gpu, &cached) {
-        let all_steps =
-            std::iter::once(pstep.as_slice()).chain(path_steps.iter().map(Vec::as_slice));
-        let mut leaves = Vec::new();
-        let mut summaries = Vec::new();
-        for (pi, steps) in all_steps.enumerate() {
-            let path = PathTrace {
-                model,
-                steps,
-                fields: &selected,
-                n: settings.pupil_samples,
-                overfill: settings.overfill,
-                map: &template,
-            };
-            for (fi, field_cells) in cells.iter().enumerate() {
-                ctx.check()?;
-                let start = leaves.len();
-                let mut summary = LeafSummary::default();
-                for block in field_cells.chunks(1024) {
-                    ctx.check()?;
-                    for c in block {
-                        path.resident_leaves(
-                            &caches[pi],
-                            c.probe,
-                            HALF,
-                            c.weight,
-                            &mut leaves,
-                            &mut summary,
-                        );
-                    }
-                }
-                summaries.push(summary);
-                for l in &mut leaves[start..] {
-                    l.map = (pi * selected.len() + fi) as u32;
-                }
-            }
+            Some(resident_maps(
+                b, model, &paths, &steps, &cells, &selected, settings, &template, ctx,
+            )?)
         }
-        Some(g.map(leaves, &template, summaries, &ctx.subrange(0.8, 0.9))?)
-    } else {
-        None
+        None => None,
     };
+    let gpu_maps = gpu.as_ref().map(|(_, maps)| maps);
     let prun = run_path(
         model,
         &pstep,
@@ -1001,8 +936,7 @@ pub(crate) fn ghost_irradiance_with_backend(
         } else {
             (0.0, 1.0 / n_jobs)
         },
-        cached.as_ref().map(|v| &v[0]),
-        gpu_maps.as_ref().map(|v| (v, 0)),
+        gpu_maps.map(|v| (v, 0)),
     )?;
     let (pmaps, pstats) = (prun.maps, prun.stats);
     if prun.virtual_rays > 0 {
@@ -1049,8 +983,7 @@ pub(crate) fn ghost_irradiance_with_backend(
             &template,
             ctx,
             span,
-            cached.as_ref().map(|v| &v[k + 1]),
-            gpu_maps.as_ref().map(|v| (v, k + 1)),
+            gpu_maps.map(|v| (v, k + 1)),
         )?;
         if gpu.is_some() {
             ctx.report(
@@ -1090,7 +1023,7 @@ pub(crate) fn ghost_irradiance_with_backend(
     let total_flux_ratio = ratio(total.flux(), primary_flux);
     let total_peak_ratio = ratio(total.peak(), primary_map.peak());
     let mut run = run_info(model, timer, "ghost.irradiance", settings, warnings);
-    if let Some(g) = &gpu {
+    if let Some((g, _)) = &gpu {
         g.stamp(&mut run);
     }
     let result = GhostIrradiance {
@@ -1208,6 +1141,90 @@ mod tests {
     }
 }
 
+/// Explicit resident route: breadth-first refinement, then one batched map
+/// chain over every path and field. The transport keeps the run counters.
+#[allow(clippy::too_many_arguments)]
+fn resident_maps<'a>(
+    backend: &'a dyn mklight_gpu::ComputeBackend,
+    model: &'a GhostModel,
+    paths: &[GhostPath],
+    steps: &[&[Step]],
+    cells: &[Vec<Cell>],
+    fields: &[SelectedField],
+    settings: &IrradianceSettings,
+    template: &IrradianceMap,
+    ctx: &JobContext,
+) -> MkResult<(crate::gpu::GhostTransport<'a>, crate::gpu::MapData)> {
+    let sys = model.system();
+    // Every object segment would leave the qualified segment domain and
+    // need reference completion; that run belongs to the reference route.
+    if !sys.object_at_infinity
+        && sys.surfaces[0].thickness.abs() > mklight_gpu::consts::MKL_GHOST_MAX_SEGMENT_MM as f64
+    {
+        return Err(MkError::Unsupported(
+            "ghost object distance beyond the qualified segment length".into(),
+        ));
+    }
+    let all_paths = std::iter::once(GhostPath::primary())
+        .chain(paths.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut g =
+        crate::gpu::GhostTransport::new(backend, model, &all_paths, &ctx.subrange(0., 0.01))?;
+    let points = fields
+        .iter()
+        .map(|f| match f.id {
+            FieldRef::System { index } => FieldPoint::system(sys.system(), index),
+            FieldRef::Point { point } => point,
+        })
+        .collect::<Vec<_>>();
+    g.prepare_fields(&points, &ctx.subrange(0.01, 0.03))?;
+    let caches = refine_gpu(
+        &mut g,
+        model,
+        steps,
+        cells,
+        fields,
+        settings,
+        template,
+        &ctx.subrange(0.03, 0.8),
+    )?;
+    let (mut leaves, mut summaries) = (Vec::new(), Vec::new());
+    for (pi, (steps, cache)) in steps.iter().zip(&caches).enumerate() {
+        let path = PathTrace {
+            model,
+            steps,
+            fields,
+            n: settings.pupil_samples,
+            overfill: settings.overfill,
+            map: template,
+        };
+        for (fi, field_cells) in cells.iter().enumerate() {
+            ctx.check()?;
+            let map = (pi * fields.len() + fi) as u32;
+            let parts = field_cells
+                .par_chunks(256)
+                .map(|block| {
+                    let mut part = (Vec::new(), LeafSummary::default());
+                    for c in block {
+                        path.resident_leaves(cache, c.probe, HALF, c.weight, map, &mut part);
+                    }
+                    part
+                })
+                .collect::<Vec<_>>();
+            let mut summary = LeafSummary::default();
+            for (part, s) in parts {
+                leaves.extend(part);
+                summary.traced += s.traced;
+                summary.virtual_rays += s.virtual_rays;
+                summary.virtual_flux.add(s.virtual_flux.value());
+            }
+            summaries.push(summary);
+        }
+    }
+    let maps = g.map(leaves, template, summaries, &ctx.subrange(0.8, 0.9))?;
+    Ok((g, maps))
+}
+
 /// Host controls the five breadth-first levels; every batch spans paths,
 /// fields and wavelengths. Cache insertion and leaf traversal keep their
 /// original integer IDs and depth-first order.
@@ -1237,48 +1254,74 @@ fn refine_gpu(
     let all = cells.iter().flatten().map(|c| c.probe).collect::<Vec<_>>();
     let mut levels = vec![all; steps.len()];
     let mut caches = (0..steps.len())
-        .map(|_| Probes::default())
+        .map(|_| {
+            let mut p = Probes::default();
+            p.index.reserve(4 * levels[0].len());
+            p
+        })
         .collect::<Vec<_>>();
+    let nw = model.system().wavelengths_um.len() as u32;
     let mut half = HALF;
     for stage in 0..=BOUNDARY_DEPTH {
         for corners in [false, true] {
             if corners && half == 1 {
                 break;
             }
-            let mut new = Vec::new();
-            for (pi, level) in levels.iter().enumerate() {
-                let requested = level.iter().flat_map(|&p| {
-                    if corners {
-                        p.around(half).to_vec()
-                    } else {
-                        vec![p]
-                    }
-                });
-                for (request_index, p) in requested.enumerate() {
-                    if request_index % 4096 == 0 {
-                        ctx.check()?;
-                    }
-                    let cache = &mut caches[pi];
-                    if let Entry::Vacant(e) = cache.index.entry(p) {
-                        let id = cache.outs.len();
-                        e.insert(id);
-                        cache.outs.push(Ok(None));
-                        cache.locations.push(None);
-                        let xy =
-                            [p.x, p.y].map(|u| pupil(u, settings.pupil_samples, settings.overfill));
-                        if xy[0].mul_add(xy[0], xy[1] * xy[1])
-                            <= settings.overfill * settings.overfill
-                        {
-                            new.push((pi, p, id, xy));
+            // Paths own disjoint caches: deduplicate them in parallel, then
+            // order new keys by (path, field, wavelength, x, y). Keys are
+            // unique, so the unstable sort is the stable order.
+            ctx.check()?;
+            let new = levels
+                .par_iter()
+                .zip(&mut caches)
+                .enumerate()
+                .map(|(pi, (level, cache))| {
+                    let mut new = Vec::new();
+                    for &centre in level {
+                        let around = centre.around(half);
+                        let requested = if corners {
+                            &around[..]
+                        } else {
+                            std::slice::from_ref(&centre)
+                        };
+                        for &p in requested {
+                            if let Entry::Vacant(e) = cache.index.entry(p) {
+                                let id = cache.outs.len();
+                                e.insert(id);
+                                cache.outs.push(Ok(None));
+                                cache.locations.push(None);
+                                let xy = [p.x, p.y]
+                                    .map(|u| pupil(u, settings.pupil_samples, settings.overfill));
+                                if xy[0].mul_add(xy[0], xy[1] * xy[1])
+                                    <= settings.overfill * settings.overfill
+                                {
+                                    new.push((pi, p, id, xy));
+                                }
+                            }
                         }
                     }
-                }
-            }
-            new.sort_by_key(|&(pi, p, _, _)| (pi, p.field, p.wl, p.x, p.y));
-            // Bound the resident step tables and coating outputs as well as
+                    new.sort_unstable_by_key(|&(_, p, _, _)| (p.field, p.wl, p.x, p.y));
+                    new
+                })
+                .collect::<Vec<_>>()
+                .concat();
+            ctx.check()?;
+            // Bound the resident step rows and coating outputs as well as
             // cancellation latency. This is a memory tile, not a new plan per path.
-            for block in new.chunks(gpu.probe_tile()) {
+            let mut rest = &new[..];
+            while !rest.is_empty() {
                 ctx.check()?;
+                let mut rows = 0;
+                let size = rest
+                    .iter()
+                    .take_while(|&&(pi, ..)| {
+                        rows += gpu.path_rows(pi);
+                        rows <= crate::gpu::ROW_TILE
+                    })
+                    .count()
+                    .max(1);
+                let (block, tail) = rest.split_at(size);
+                rest = tail;
                 let values = gpu.lattice(
                     block.len(),
                     |i| {
@@ -1286,7 +1329,7 @@ fn refine_gpu(
                         Ok(LaunchSample {
                             pupil: xy.map(Df32::from_f64),
                             lattice: [p.x, p.y],
-                            field: p.field * model.system().wavelengths_um.len() as u32 + p.wl,
+                            field: p.field * nw + p.wl,
                             path: pi as u32,
                             wavelength: p.wl,
                             reserved: 0,
@@ -1295,36 +1338,53 @@ fn refine_gpu(
                     true,
                     &ctx.subrange(stage as f64 / 5., stage as f64 / 5.),
                 )?;
-                let mut replacements = Vec::new();
-                for (row, ((pi, p, id, _), v)) in block.iter().zip(values.iter()).enumerate() {
-                    if row % 64 == 0 {
-                        ctx.check()?;
-                    }
-                    let geometric = crate::gpu::ray_out(*v);
-                    let edge = matches!(geometric,Ok(Some((x,y,_))) if pixel_edge(template,x,y));
-                    let code = v.status & MKL_RAY_CODE_MASK;
-                    let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
-                    let result = if code == MKL_GHOST_REFERENCE || numerical || edge {
-                        gpu.fallback_probes += 1;
-                        let reference_start = std::time::Instant::now();
-                        let reference = paths[*pi].trace(*p);
-                        gpu.reference_seconds += reference_start.elapsed().as_secs_f64();
-                        if edge {
-                            gpu.boundary_probes += 1;
-                            if let (Ok(Some((x, y, _))), Ok(Some((rx, ry, _)))) =
-                                (geometric, reference)
-                            {
-                                gpu.pixel_migrations +=
-                                    (template.bin_of(x, y) != template.bin_of(rx, ry)) as usize;
-                            }
+                // Numerical failures, flagged conditioning and pixel-edge hits
+                // are completed with the f64 reference, in parallel.
+                let outcomes = block
+                    .par_iter()
+                    .zip(&values[..])
+                    .with_min_len(256)
+                    .map(|(&(pi, p, _, _), v)| {
+                        let geometric = crate::gpu::ray_out(*v);
+                        let edge =
+                            matches!(geometric, Ok(Some((x, y, _))) if pixel_edge(template, x, y));
+                        let code = v.status & MKL_RAY_CODE_MASK;
+                        let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
+                        if code == MKL_GHOST_REFERENCE || numerical || edge {
+                            let start = std::time::Instant::now();
+                            let reference = paths[pi].trace(p);
+                            (geometric, edge, Some((reference, start.elapsed())))
+                        } else {
+                            (geometric, false, None)
                         }
-                        replacements.push((row, reference));
-                        reference
-                    } else {
-                        crate::gpu::ray_out(*v)
+                    })
+                    .collect::<Vec<_>>();
+                ctx.check()?;
+                let batch = gpu.resident_probes.len() - 1;
+                let mut replacements = Vec::new();
+                for (row, (&(pi, _, id, _), (geometric, edge, reference))) in
+                    block.iter().zip(outcomes).enumerate()
+                {
+                    let result = match reference {
+                        Some((reference, seconds)) => {
+                            gpu.fallback_probes += 1;
+                            gpu.reference_seconds += seconds.as_secs_f64();
+                            if edge {
+                                gpu.boundary_probes += 1;
+                                if let (Ok(Some((x, y, _))), Ok(Some((rx, ry, _)))) =
+                                    (geometric, reference)
+                                {
+                                    gpu.pixel_migrations +=
+                                        (template.bin_of(x, y) != template.bin_of(rx, ry)) as usize;
+                                }
+                            }
+                            replacements.push((row, reference));
+                            reference
+                        }
+                        None => geometric,
                     };
-                    caches[*pi].outs[*id] = result;
-                    caches[*pi].locations[*id] = Some([gpu.resident_probes.len() - 1, row]);
+                    caches[pi].outs[id] = result;
+                    caches[pi].locations[id] = Some([batch, row]);
                 }
                 if !replacements.is_empty() {
                     let batch = gpu.reference_batch(&replacements, ctx)?;
@@ -1341,17 +1401,13 @@ fn refine_gpu(
             break;
         }
         for (pi, level) in levels.iter_mut().enumerate() {
-            let mut next = Vec::new();
-            for block in level.chunks(4096) {
-                ctx.check()?;
-                next.extend(
-                    block
-                        .iter()
-                        .filter(|&&p| paths[pi].splits(&caches[pi], p, half))
-                        .flat_map(|p| p.around(half / 2)),
-                );
-            }
-            *level = next;
+            *level = level
+                .par_iter()
+                .with_min_len(1024)
+                .filter(|&&p| paths[pi].splits(&caches[pi], p, half))
+                .flat_map_iter(|p| p.around(half / 2))
+                .collect();
+            ctx.check()?;
         }
         half /= 2;
     }

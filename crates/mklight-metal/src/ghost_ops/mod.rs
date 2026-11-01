@@ -22,7 +22,7 @@ struct WeightParameters {
     end: u32,
     offset: u32,
     paths: u32,
-    max_steps: u32,
+    reserved: u32,
     sensor: mklight_gpu::Df32,
 }
 #[repr(C)]
@@ -42,6 +42,17 @@ struct FirstOrderParameters {
     end: u32,
     offset: u32,
     sensor: mklight_gpu::Df32,
+}
+/// Kernels index step storage through these rows: they must be monotone and
+/// within the storage. Returns the end of the used rows.
+fn step_rows_end(x: &Execution<'_>, rows: &PlanView, capacity: usize) -> MkResult<usize> {
+    let (b, o) = x.buffer(rows);
+    let rows = &b.as_slice()[o..o + rows.desc.len()?];
+    let end = rows.last().copied().unwrap_or(0) as usize;
+    if rows.windows(2).any(|w| w[1] < w[0]) || end > capacity {
+        return Err(bad("ghost step rows"));
+    }
+    Ok(end)
 }
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
@@ -427,10 +438,10 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             reject_virtual,
             sensor,
             newton,
+            step_rows,
             output,
             queries,
             factors,
-            max_steps,
         } => {
             let SystemSet::Uploaded(handle) = systems else {
                 return unsupported("ghost resident candidates");
@@ -448,15 +459,18 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 x.take_output(*factors),
             );
             let n = probes.desc.shape[0];
+            // Spare pooled rows after the last probe are zeroed in place.
+            let spare = 4 * step_rows_end(x, step_rows, qs.as_slice().len() / 4)?;
+            qs.as_mut_slice()[spare..].fill(0);
+            fs.as_mut_slice()[spare..].fill(0);
             let mut offset = 0;
-            let mut tile = 2048;
+            let mut tile = 8192;
             while offset < n {
                 ctl.check()?;
                 let end = (offset + tile).min(n);
                 let wall = Instant::now();
                 let prm = TraceParameters {
                     trace: TraceParams {
-                        num_steps: *max_steps as u32,
                         max_iterations: newton.max_iterations,
                         tolerance_abs: newton.tolerance_abs,
                         tolerance_rel: newton.tolerance_rel,
@@ -485,6 +499,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(7, &mut qs, 0);
                         e.set_buffer_mut(8, &mut fs, 0);
                         e.set_bytes(9, &[prm]);
+                        let (b, o) = x.buffer(step_rows);
+                        e.set_buffer(10, b, o);
                         e.dispatch_groups([(end - offset).div_ceil(64), 1, 1], 64);
                         e.set_pipeline(&count_pso);
                         e.set_buffer(0, &out, 0);
@@ -502,11 +518,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "ghost probes");
-                if cs.gpu_seconds < 0.005 {
-                    tile = (tile * 2).min(16384);
-                } else if cs.gpu_seconds > 0.02 {
-                    tile = (tile / 2).max(64);
-                }
+                tile = crate::radiometry::next_tile(tile, 1 << 20, cs.gpu_seconds);
             }
             x.stats.fallback_count += counter.as_slice()[0] as u64;
             x.stats.readback_bytes += 4;
@@ -523,22 +535,23 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             steps,
             probes,
             wavelengths: _,
-            max_steps,
+            step_rows,
             sensor_reflectance,
             output,
         } => {
+            step_rows_end(x, step_rows, coatings.desc.shape[0])?;
             let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_ghost_weights"))?;
             let mut out = x.take_output(*output);
             let n = probes.desc.shape[0];
-            for offset in (0..n).step_by(16384) {
+            for offset in (0..n).step_by(262144) {
                 ctl.check()?;
-                let end = (offset + 16384).min(n);
+                let end = (offset + 262144).min(n);
                 let wall = Instant::now();
                 let prm = WeightParameters {
                     end: end as u32,
                     offset: offset as u32,
                     paths: (offsets.desc.shape[0] - 1) as u32,
-                    max_steps: *max_steps as u32,
+                    reserved: 0,
                     sensor: *sensor_reflectance,
                 };
                 // SAFETY: one output per probe; typed inputs validated at submission.
@@ -554,6 +567,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         }
                         e.set_buffer_mut(6, &mut out, 0);
                         e.set_bytes(7, &[prm]);
+                        let (b, o) = x.buffer(step_rows);
+                        e.set_buffer(8, b, o);
                         e.dispatch_groups([(end - offset).div_ceil(64), 1, 1], 64);
                         Ok(())
                     })?

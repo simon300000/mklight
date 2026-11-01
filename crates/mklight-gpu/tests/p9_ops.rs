@@ -1,8 +1,10 @@
 use mklight_core::{JobContext, Snapshot, samples};
 use mklight_gpu::{collectives as c, ghost_ops as g, resident::*, *};
 pub fn fixed_hits(b: &dyn ComputeBackend) {
+    // The first hit lies just inside bin 0: its scaled coordinate rounds to
+    // an integral hi with a negative lo.
     let data = [
-        [-0.5, -0.5, 0.1, 0., 0.],
+        [-1e-12, -0.5, 0.1, 0., 0.],
         [0.5, 0.5, 0.2, 0., 0.],
         [2., 0., 0.3, 0., 0.],
         [-0.5, -0.5, 0.4, 1., 0.],
@@ -151,17 +153,14 @@ pub fn fixed_hits(b: &dyn ComputeBackend) {
     let m = m.as_slice::<Df32>().unwrap();
     assert_eq!(m[0].to_f64(), 7.);
     assert!((m[1].to_f64() - 2.8).abs() < 1e-13);
-    assert!((m[2].to_f64() - 0.375).abs() < 1e-13);
+    assert!((m[2].to_f64() - 1.1 / 2.8).abs() < 1e-13);
     assert!((m[3].to_f64() + 0.25 / 2.8).abs() < 1e-13);
-    let central = 2.15 - 2.8 * (0.375f64.powi(2) + (0.25f64 / 2.8).powi(2));
+    let central = 2.125 - 2.8 * ((1.1f64 / 2.8).powi(2) + (0.25f64 / 2.8).powi(2));
     assert!((m[5].to_f64() + m[7].to_f64() - central).abs() < 1e-12);
     let map = b.read_view(r.outputs[0].view()).unwrap();
-    for (a, e) in map
-        .as_slice::<Df32>()
-        .unwrap()
-        .iter()
-        .zip([0.7, 0., 0., 0.2, 0.4, 0.7, 0., 0.5])
-    {
+    let map = map.as_slice::<Df32>().unwrap();
+    assert_eq!(map.len(), 8);
+    for (a, e) in map.iter().zip([0.7, 0., 0., 0.2, 0.4, 0.7, 0., 0.5]) {
         assert!((a.to_f64() - e).abs() < 1e-13);
     }
     let counts = b.read_view(r.outputs[1].view()).unwrap();
@@ -275,6 +274,7 @@ pub fn first_order(b: &dyn ComputeBackend) -> Vec<u32> {
             .wait()
             .unwrap();
         let data = b.read_view(r.outputs[0].view()).unwrap();
+        assert_eq!(data.as_slice::<Df32>().unwrap().len(), 8);
         for (v, e) in data
             .as_slice::<Df32>()
             .unwrap()

@@ -14,6 +14,9 @@ use mklight_gpu::{
     resident::*,
 };
 
+/// Step rows per lattice plan. This bounds the step, factor and coating
+/// storage of one plan to about 160 MB, which the scratch pool can retain.
+pub(crate) const ROW_TILE: usize = 1 << 20;
 pub struct GhostTransport<'a> {
     pub backend: &'a dyn ComputeBackend,
     model: &'a GhostModel,
@@ -22,6 +25,8 @@ pub struct GhostTransport<'a> {
     steps: BufferHandle,
     coatings: PreparedCoatings,
     identity: String,
+    /// Steps per path; each probe owns that many compact step rows.
+    lengths: Vec<u32>,
     max_steps: usize,
     wavelengths: usize,
     chiefs: Option<(BufferHandle, BufferHandle)>,
@@ -29,7 +34,6 @@ pub struct GhostTransport<'a> {
     pub stats: Vec<PlanStats>,
     map_stats: std::cell::RefCell<Vec<PlanStats>>,
     pub(crate) resident_probes: Vec<BufferHandle>,
-    resident_keys: Vec<BufferHandle>,
     pub distinct_probes: usize,
     pub(crate) lattice_keys: usize,
     pub fallback_probes: usize,
@@ -164,13 +168,13 @@ impl<'a> GhostTransport<'a> {
             steps,
             coatings,
             identity,
+            lengths: programs.iter().map(|p| p.len() as u32).collect(),
             max_steps,
             wavelengths: nw,
             chiefs: None,
             stats: vec![],
             map_stats: Default::default(),
             resident_probes: vec![],
-            resident_keys: vec![],
             distinct_probes: 0,
             lattice_keys: 0,
             fallback_probes: 0,
@@ -180,8 +184,8 @@ impl<'a> GhostTransport<'a> {
             run: None,
         })
     }
-    pub(crate) fn probe_tile(&self) -> usize {
-        ((1 << 21) / self.max_steps).clamp(1, 65536)
+    pub(crate) fn path_rows(&self, path: usize) -> usize {
+        self.lengths[path] as usize
     }
     fn plan(&self) -> ResidentPlan {
         let mut p = ResidentPlan::new(self.model.system().snapshot.clone());
@@ -189,16 +193,44 @@ impl<'a> GhostTransport<'a> {
         p.settings = serde_json::json!({"operation":"ghost","version":MKL_GHOST_VERSION,"max_steps":self.max_steps,"critical_discriminant_band":f32::from_bits(MKL_GHOST_CRITICAL_BAND_BITS),"max_segment_mm":MKL_GHOST_MAX_SEGMENT_MM,"model":self.model.settings()});
         p
     }
-    fn append(&self, p: &mut ResidentPlan, probes: BufferId, powers: bool) -> MkResult<BufferId> {
+    /// Prefix of the probes' path lengths: their compact step rows. Step
+    /// storage is rounded up to [`ROW_TILE`] (or a power of two below it) so
+    /// the exact-size pool reuses it across tiles; spare rows are zeroed.
+    fn step_rows(&self, n: usize, path: impl Fn(usize) -> u32) -> MkResult<(BufferHandle, usize)> {
+        let mut total = 0;
+        let rows = self.backend.fill_buffer(
+            BufferDesc::new(ElementType::U32, [n + 1]),
+            &mut |mut f| {
+                let out = f.as_mut_slice::<u32>()?;
+                out[0] = 0;
+                for i in 0..n {
+                    out[i + 1] = out[i] + self.lengths[path(i) as usize];
+                }
+                total = out[n] as usize;
+                Ok(())
+            },
+        )?;
+        let capacity = if total > ROW_TILE / 2 {
+            total.next_multiple_of(ROW_TILE)
+        } else {
+            total.next_power_of_two()
+        };
+        Ok((rows, capacity))
+    }
+    fn append(
+        &self,
+        p: &mut ResidentPlan,
+        probes: BufferId,
+        (rows, capacity): (BufferHandle, usize),
+        powers: bool,
+    ) -> MkResult<BufferId> {
         let n = p.desc(probes)?.shape[0];
         let offsets = p.import(self.offsets.view());
         let steps = p.import(self.steps.view());
+        let rows = p.import(rows.view());
         let values = p.scratch(op::record_desc::<Value>(n));
-        let queries = p.scratch(op::record_desc::<CoatingQuery>(n * self.max_steps));
-        let factors = p.scratch(BufferDesc::new(
-            ElementType::DoubleFloat,
-            [n, self.max_steps, 2],
-        ));
+        let queries = p.scratch(op::record_desc::<CoatingQuery>(capacity));
+        let factors = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [capacity, 2]));
         let sensor = self
             .model
             .system()
@@ -217,17 +249,17 @@ impl<'a> GhostTransport<'a> {
             reject_virtual: self.model.settings().reject_virtual,
             sensor,
             newton: NewtonSettings::default(),
+            step_rows: p.view(rows)?,
             output: values,
             queries,
             factors,
-            max_steps: self.max_steps,
         }));
         if !powers {
             return Ok(values);
         }
         let specs = p.import(self.coatings.specs.view());
         let layers = p.import(self.coatings.layers.view());
-        let coatings = p.scratch(op::record_desc::<CoatingValue>(n * self.max_steps));
+        let coatings = p.scratch(op::record_desc::<CoatingValue>(capacity));
         p.operations
             .push(ResidentOp::Radiometry(radiometry::Request::Coating(
                 CoatingRequest {
@@ -247,7 +279,7 @@ impl<'a> GhostTransport<'a> {
             steps: p.view(steps)?,
             probes: p.view(probes)?,
             wavelengths: self.wavelengths,
-            max_steps: self.max_steps,
+            step_rows: p.view(rows)?,
             sensor_reflectance: Df32::from_f64(
                 self.model.settings().sensor_reflectance.unwrap_or(0.),
             ),
@@ -272,10 +304,11 @@ impl<'a> GhostTransport<'a> {
             }
         }
         let input = fill(self.backend, probes.len(), |i| Ok(probes[i]))?;
+        let rows = self.step_rows(probes.len(), |i| probes[i].path)?;
         let mut p = self.plan();
         p.settings["input_copy_bytes"] = serde_json::json!(std::mem::size_of_val(probes));
         let input = p.import(input.view());
-        let output = self.append(&mut p, input, true)?;
+        let output = self.append(&mut p, input, rows, true)?;
         p.outputs = vec![output];
         let r = self.backend.submit_plan(p, ctx)?.wait()?;
         let v = self.backend.read_view(r.outputs[0].view())?;
@@ -365,11 +398,15 @@ impl<'a> GhostTransport<'a> {
     ) -> MkResult<ProbeValues> {
         let (chiefs, fields) = self.chiefs.as_ref().unwrap();
         let input = fill(self.backend, n, sample)?;
+        let rows = {
+            let samples = self.backend.read_view(input.view())?;
+            let samples = bytemuck::cast_slice::<_, LaunchSample>(samples.words());
+            self.step_rows(n, |i| samples[i].path)?
+        };
         let mut p = self.plan();
         let chiefs = p.import(chiefs.view());
         let fields = p.import(fields.view());
         let samples_id = p.import(input.view());
-        self.resident_keys.push(input);
         let probes = p.scratch(op::record_desc::<Probe>(n));
         p.operations.push(ResidentOp::Ghost(op::Request::Launch {
             chiefs: p.view(chiefs)?,
@@ -377,7 +414,7 @@ impl<'a> GhostTransport<'a> {
             samples: p.view(samples_id)?,
             output: probes,
         }));
-        let output = self.append(&mut p, probes, powers)?;
+        let output = self.append(&mut p, probes, rows, powers)?;
         p.outputs = vec![output];
         let r = self.backend.submit_plan(p, ctx)?.wait()?;
         let v = self.backend.read_view(r.outputs[0].view())?;
@@ -393,7 +430,7 @@ impl<'a> GhostTransport<'a> {
             run.precision = r.precision;
             run.settings["resident_backend"] = r.settings.clone();
         }
-        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
                 "P9: {} probes completed by CPU f64 reference",
@@ -403,7 +440,7 @@ impl<'a> GhostTransport<'a> {
     }
 }
 
-pub(crate) fn ray_out(v: Value) -> Result<Option<(f64, f64, f64)>, f64> {
+pub(crate) fn ray_out(v: Value) -> crate::irradiance::RayOut {
     let w = 0.5 * (v.weight_s.to_f64() + v.weight_p.to_f64()) * v.internal.to_f64();
     match v.status & MKL_RAY_CODE_MASK {
         0 => Ok(Some((v.position[0].to_f64(), v.position[1].to_f64(), w))),
@@ -573,8 +610,10 @@ impl GhostTransport<'_> {
         let moment_view = self.backend.read_view(prepared.outputs[4].view())?;
         let moments = moment_view
             .as_slice::<Df32>()?
-            .chunks_exact(10)
-            .map(|v| std::array::from_fn(|k| v[k].to_f64()))
+            .as_chunks::<10>()
+            .0
+            .iter()
+            .map(|v| v.map(|v| v.to_f64()))
             .collect();
         let counts = self.backend.read_view(prepared.outputs[3].view())?;
         let counts = counts.as_slice::<u32>()?;
@@ -636,7 +675,7 @@ impl GhostTransport<'_> {
 impl GhostTransport<'_> {
     pub(crate) fn reference_batch(
         &mut self,
-        replacements: &[(usize, Result<Option<(f64, f64, f64)>, f64>)],
+        replacements: &[(usize, crate::irradiance::RayOut)],
         ctx: &JobContext,
     ) -> MkResult<usize> {
         use bytemuck::Zeroable;
@@ -880,7 +919,13 @@ pub fn paraxial_batch(
     let initial = backend.fill_buffer(
         BufferDesc::new(ElementType::DoubleFloat, [rows, 4]),
         &mut |mut f| {
-            for (i, row) in f.as_mut_slice::<Df32>()?.chunks_exact_mut(4).enumerate() {
+            for (i, row) in f
+                .as_mut_slice::<Df32>()?
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 if i % 256 == 0 {
                     ctx.check()?;
                 }

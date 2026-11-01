@@ -66,7 +66,7 @@ fn matched_double_gauss() {
                 .sum::<f64>()
                 * c.total_ghost_map.bin_area()
                 / c.total_ghost_map.flux();
-            assert!(l1 < 1e-3, "map L1 {l1}");
+            assert!(l1 < 1e-9, "map L1 {l1}");
             eprintln!(
                 "{}",
                 serde_json::json!({"n":n,"run":run,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1,"counters":counters(&g,b.resident_cache_stats().uploaded_bytes-uploaded_before)})
@@ -123,8 +123,10 @@ fn all_sample_default_maps() {
             .sum::<f64>()
             * pm.bin_area()
             / pm.flux();
+        assert_eq!(g.ghosts.len(), c.ghosts.len());
         for ghost in &c.ghosts {
             let actual = g.ghosts.iter().find(|g| g.path == ghost.path).unwrap();
+            assert_eq!(actual.fields.len(), ghost.fields.len());
             for (a, c) in actual.fields.iter().zip(&ghost.fields) {
                 assert_eq!(a.rays_traced, c.rays_traced, "{name} leaf count");
                 assert_eq!(
@@ -132,23 +134,38 @@ fn all_sample_default_maps() {
                     "{name} {:?} {:?} detected count, flux {} vs {}",
                     ghost.path, c.field, a.flux, c.flux
                 );
-                assert!((a.rms_radius - c.rms_radius).abs() <= 0.005 * c.rms_radius + 2e-5);
+                // Device hits carry double-float geometry error (measured
+                // below 1e-8 mm in the moments).
+                let scale = c.rms_radius + c.centroid[0].abs() + c.centroid[1].abs();
+                assert!(
+                    (a.rms_radius - c.rms_radius).abs() <= 1e-9 * scale + 1e-7,
+                    "{name} {:?} rms {} vs {}",
+                    ghost.path,
+                    a.rms_radius,
+                    c.rms_radius
+                );
                 for k in 0..2 {
-                    assert!((a.centroid[k] - c.centroid[k]).abs() <= 2e-5);
+                    assert!(
+                        (a.centroid[k] - c.centroid[k]).abs() <= 1e-9 * scale + 1e-7,
+                        "{name} {:?} centroid {:?} vs {:?}",
+                        ghost.path,
+                        a.centroid,
+                        c.centroid
+                    );
                 }
             }
         }
-        assert!(primary_l1 <= 1e-3, "{name} primary map L1 {primary_l1}");
+        assert!(primary_l1 <= 1e-9, "{name} primary map L1 {primary_l1}");
         eprintln!(
             "{}",
             serde_json::json!({"sample":name,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1/flux.max(1e-30),"primary_flux_error":primary,"primary_map_l1_relative":primary_l1,"counters":counters(&g,b.resident_cache_stats().uploaded_bytes-uploaded_before)})
         );
         assert!(
-            l1 <= 1e-3 * flux + 1e-12,
+            l1 <= 1e-9 * flux + 1e-15,
             "{name} map L1 {}",
             l1 / flux.max(1e-30)
         );
-        assert!(primary <= 1e-3);
+        assert!(primary <= 1e-9);
     }
 }
 
@@ -239,9 +256,11 @@ fn paraxial_batches() {
                 let result =
                     gpu::paraxial_batch(&b, &m, paths, &wavelengths, &JobContext::new()).unwrap();
                 let gs = start.elapsed().as_secs_f64();
+                assert_eq!(result.rays.len(), reference.len());
                 for (i, (rays, (r, t))) in reference.iter().enumerate() {
-                    for j in 0..2 {
-                        for (a, c) in result.rays[i][j].y.iter().zip(&rays[j].y) {
+                    for (actual, expected) in result.rays[i].iter().zip(rays) {
+                        assert_eq!(actual.y.len(), expected.y.len());
+                        for (a, c) in actual.y.iter().zip(&expected.y) {
                             assert!((a - c).abs() <= 1e-6 * c.abs() + 2e-5);
                         }
                     }

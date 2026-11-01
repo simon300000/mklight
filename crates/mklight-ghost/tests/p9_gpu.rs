@@ -42,6 +42,7 @@ fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
     }
     assert!(!probes.is_empty());
     let result = g.trace(&probes, &JobContext::new()).unwrap();
+    assert_eq!(result.values.len(), probes.len());
     let again = g.trace(&probes, &JobContext::new()).unwrap();
     if b.info().kind == mklight_gpu::BackendKind::Metal {
         let emu = CpuF32Backend::matching(&b.precision().probe);
@@ -155,14 +156,22 @@ fn metal_transport_both_libraries() {
         samples_check(&b);
     }
 }
+fn assert_close(a: f64, c: f64, what: &str) {
+    assert!(
+        (a - c).abs() <= 1e-9 * c.abs() + 1e-15,
+        "{what}: {a} vs {c}"
+    );
+}
 #[cfg(target_os = "macos")]
 #[test]
-fn maps_and_progress() {
+fn maps_match_reference_and_emulation() {
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
         .expect("P9 requires host Metal");
+    let emu = CpuF32Backend::matching(&b.precision().probe);
     for (_, s) in samples::all() {
         let m = model(s, GhostSettings::default());
+        let name = &m.system().system().name;
         let settings = IrradianceSettings {
             pupil_samples: 12,
             map_bins: [16, 16],
@@ -173,48 +182,56 @@ fn maps_and_progress() {
         };
         let c = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
         let a = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
-        let flux = c.total_ghost_map.flux();
-        let l1 = a
-            .total_ghost_map
-            .values
-            .iter()
-            .zip(&c.total_ghost_map.values)
-            .map(|(a, c)| (a - c).abs())
-            .sum::<f64>()
-            * c.total_ghost_map.bin_area();
-        eprintln!(
-            "{} flux={flux:e} map_l1_relative={} primary_error={}",
-            m.system().system().name,
-            l1 / flux.max(1e-20),
-            (a.primary.flux - c.primary.flux).abs() / c.primary.flux
-        );
-        assert!(l1 <= 1e-3 * flux + 1e-12);
-        let pm = c.primary.map.as_ref().unwrap();
-        let gm = a.primary.map.as_ref().unwrap();
-        let pl1 = pm
-            .values
-            .iter()
-            .zip(&gm.values)
-            .map(|(c, g)| (c - g).abs())
-            .sum::<f64>()
-            * pm.bin_area();
-        assert!(
-            pl1 <= 1e-3 * pm.flux(),
-            "{} primary L1 {}",
-            m.system().system().name,
-            pl1 / pm.flux()
-        );
-        for (g, c) in a.ghosts.iter().zip(&c.ghosts) {
-            assert_eq!(g.path, c.path);
-            for (g, c) in g.fields.iter().zip(&c.fields) {
-                assert_eq!(g.rays_traced, c.rays_traced);
-                assert_eq!(g.rays_detected, c.rays_detected);
-                assert!((g.flux - c.flux).abs() < 1e-3 * c.flux + 1e-12);
-                assert!((g.rms_radius - c.rms_radius).abs() < 1e-3 * c.rms_radius + 2e-5);
+        // The whole resident chain, gather and map ops included, is the
+        // matching CPU-f32 algebra bit for bit.
+        let e = gpu::ghost_irradiance(&emu, &m, &settings, &JobContext::new()).unwrap();
+        assert_eq!(a.total_ghost_map, e.total_ghost_map, "{name} emulated map");
+        assert_eq!(a.primary, e.primary, "{name} emulated primary");
+        assert_eq!(a.ghosts, e.ghosts, "{name} emulated ghosts");
+        let maps = |r: &GhostIrradiance| {
+            std::iter::once(r.primary.map.clone().unwrap())
+                .chain(r.ghosts.iter().map(|g| g.map.clone().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let (am, cm) = (maps(&a), maps(&c));
+        assert_eq!(am.len(), cm.len());
+        for (am, cm) in am.iter().zip(&cm) {
+            assert_eq!(am.values.len(), cm.values.len());
+            let l1 = am
+                .values
+                .iter()
+                .zip(&cm.values)
+                .map(|(a, c)| (a - c).abs())
+                .sum::<f64>()
+                * cm.bin_area();
+            assert!(l1 <= 1e-9 * cm.flux() + 1e-15, "{name} map L1 {l1:e}");
+        }
+        assert_close(a.primary.flux, c.primary.flux, "primary flux");
+        assert_eq!(a.ghosts.len(), c.ghosts.len());
+        for (g, r) in
+            std::iter::once((&a.primary, &c.primary)).chain(a.ghosts.iter().zip(&c.ghosts))
+        {
+            assert_eq!(g.path, r.path);
+            assert_eq!(g.fields.len(), r.fields.len());
+            for (g, r) in g.fields.iter().zip(&r.fields) {
+                assert_eq!(g.rays_traced, r.rays_traced, "{name}");
+                assert_eq!(g.rays_detected, r.rays_detected, "{name}");
+                assert_close(g.flux, r.flux, "field flux");
+                assert_close(g.flux_on_map, r.flux_on_map, "on-map flux");
+                for k in 0..2 {
+                    assert!(
+                        (g.centroid[k] - r.centroid[k]).abs() <= 1e-9,
+                        "{name} centroid"
+                    );
+                }
+                assert!(
+                    (g.rms_radius - r.rms_radius).abs() <= 1e-7 * r.rms_radius + 1e-12,
+                    "{name} rms {} vs {}",
+                    g.rms_radius,
+                    r.rms_radius
+                );
             }
         }
-
-        assert!((a.primary.flux - c.primary.flux).abs() <= 1e-3 * c.primary.flux);
         assert_eq!(
             serde_json::to_value(&a.coverage).unwrap(),
             serde_json::to_value(&c.coverage).unwrap()
@@ -373,6 +390,8 @@ fn physical_fixtures_and_focus() {
         }
         let w = (0..m.system().wavelengths_um.len()).collect::<Vec<_>>();
         let r = gpu::paraxial_batch(&b, &m, &p, &w, &JobContext::new()).unwrap();
+        assert_eq!(r.rays.len(), p.len() * w.len());
+        assert_eq!(r.throughput.len(), r.rays.len());
         for (i, rays) in r.rays.iter().enumerate() {
             let wl = w[i % w.len()];
             let fo = m.tracer().paraxial().at(wl);
@@ -390,8 +409,14 @@ fn physical_fixtures_and_focus() {
             .enumerate()
             {
                 let reference = mklight_ghost::paraxial::trace_steps(&m, &steps, wl, y, nu);
+                assert_eq!(rays[j].y.len(), reference.y.len());
+                assert_eq!(rays[j].nu.len(), reference.nu.len());
+                assert_eq!(rays[j].n, reference.n);
                 for (a, c) in rays[j].y.iter().zip(&reference.y) {
                     assert!((a - c).abs() < 1e-6 * c.abs() + 2e-5);
+                }
+                for (a, c) in rays[j].nu.iter().zip(&reference.nu) {
+                    assert!((a - c).abs() < 1e-6 * c.abs() + 1e-7);
                 }
             }
         }
@@ -596,6 +621,19 @@ fn absorption_long_track_and_telecentric_launches() {
         surf(3, SurfaceShape::Plane, 0., MaterialRef::Air),
     ];
     s.stop = 2;
+    // Every object segment beyond the qualified length would need reference
+    // completion, so that run is left to the reference route.
+    let mut far = s.clone();
+    far.surfaces[0].thickness = 1500.;
+    assert!(matches!(
+        gpu::ghost_irradiance(
+            &b,
+            &model(far, unclipped()),
+            &IrradianceSettings::default(),
+            &JobContext::new()
+        ),
+        Err(mklight_core::MkError::Unsupported(m)) if m.contains("object distance")
+    ));
     let m = model(s, unclipped());
     assert!(m.tracer().pupil().telecentric);
     compare(&b, &m, &[GhostPath::primary()]);
@@ -615,7 +653,7 @@ fn absorption_long_track_and_telecentric_launches() {
         .map(|(c, a)| (c - a).abs())
         .sum::<f64>()
         * cm.bin_area();
-    assert!(l1 < 1e-3 * cm.flux());
+    assert!(l1 < 1e-9 * cm.flux());
 }
 
 #[cfg(target_os = "macos")]
@@ -716,6 +754,7 @@ fn paraxial_sensor_powers_and_afocal_completion() {
         &JobContext::new(),
     )
     .unwrap();
+    assert_eq!(result.throughput.len(), 2);
     for (a, c) in result
         .throughput
         .iter()

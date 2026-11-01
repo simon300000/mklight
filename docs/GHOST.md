@@ -453,7 +453,9 @@ Point binning is discontinuous at pixel edges. Hits within the 2e-5 mm
 geometry uncertainty band of a pixel edge receive a counted f64 reference
 probe and retain that reference bin decision, including f64 rounding at an
 exact edge. This matters for a perfect image on a bin boundary: passing the
-geometry budget alone does not qualify its map. `RunInfo.settings.gpu`
+geometry budget alone does not qualify its map. Outside the band, device
+binning floors the full double-float coordinate (an integral high word with
+a negative low word belongs to the bin below). `RunInfo.settings.gpu`
 records boundary probes, observed pixel migrations, coating/reference
 completion counts, cached lattice keys and transported probes. Reference
 values are filled into sparse shared records;
@@ -461,9 +463,14 @@ unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.
 
-Probe tiles bound coating/query storage to about two million step rows,
-with at most 65536 probes per plan. Geometry, coatings, gathers, scans and
-reductions use bounded command buffers. Progress reserves ranges for
+Each probe owns one compact step row per step of its path (no padding to
+the longest path) for its coating query, absorption/efficiency factors and
+P7 coating value. Lattice plans are tiled at 2²⁰ step rows (about 160 MB of
+step storage), rounded to a fixed size class so the scratch pool reuses it
+across tiles. Geometry, coatings, gathers, scans and reductions use bounded
+command buffers; the trace tile adapts toward 10 ms per command. Host
+deduplication, split decisions, reference completion and leaf traversal
+run in parallel per path or cell, in a fixed order. Progress reserves ranges for
 preparation, refinement, maps and final assembly, and reaches one only
 after a successful result. `RunInfo` retains backend/device/build/probe,
 precision, material identity, operation version, settings, stage timings,
@@ -485,14 +492,15 @@ then runs the same ghost sequence geometry without unused coating work.
 
 Explicit jobs currently accept uploaded immutable systems with up to 16
 wavelengths and default reference intersection settings. Other wavelength
-shapes, custom intersection settings and resident candidate systems return
-`Unsupported` for the caller's reported reference route. Qualification for
+shapes, custom intersection settings, resident candidate systems and
+irradiance runs whose finite object lies beyond the 1000 mm segment domain
+(every probe would need reference completion) return `Unsupported` for the
+caller's reported reference route. Qualification for
 new designs, candidate envelopes and automatic cost decisions belongs to
 P11. Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
 shader-library origins, physical fixtures, fixed-hit map conservation,
-pixel-edge reference handling, concurrent determinism and cancellation.
-Provisional timings and raw qualification evidence live in the package's
-`P9-evidence.md` handoff, outside the repository.
+pixel-edge reference handling, bitwise CPU-f32 emulation of the complete
+map chain, concurrent determinism and cancellation.
 
 ## 7. Limitations
 

@@ -6,15 +6,14 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
  device const MklGhostProbe* probes [[buffer(3)]], constant uint* offsets [[buffer(4)]],
  constant MklGhostStep* steps [[buffer(5)]], device MklGhostValue* output [[buffer(6)]],
  device MklCoatingQuery* queries [[buffer(7)]], device float2* factors [[buffer(8)]],
- constant MklGhostTraceParams& p [[buffer(9)]], uint tid [[thread_position_in_grid]]) {
+ constant MklGhostTraceParams& p [[buffer(9)]], device const uint* rows [[buffer(10)]], uint tid [[thread_position_in_grid]]) {
  uint i=p.offset+tid;if(i>=p.end)return;
  MklGhostProbe q=probes[i];MklGhostValue v={};v.weight_s=float2(1,0);v.weight_p=float2(1,0);v.internal=float2(1,0);
- uint plane=offsets[p.paths],a=offsets[q.path],z=offsets[q.path+1];
+ uint plane=offsets[p.paths],a=offsets[q.path],r0=rows[i],span=rows[i+1]-r0,len=min(offsets[q.path+1]-a,span);
  MklDv pos,dir;for(uint j=0;j<3;j++){pos.v[j]=q.position[j];dir.v[j]=q.direction[j];}
  float2 dn=mkl_dnorm(dir);for(uint j=0;j<3;j++)dir.v[j]=mkl_df_div(dir.v[j],dn);
  float2 since=float2(0);bool counting=(headers[0].flags&MKL_SYS_OBJECT_AT_INFINITY)==0;
- for(uint k=0;k<p.trace.num_steps;k++){queries[i*p.trace.num_steps+k]={};factors[2*(i*p.trace.num_steps+k)]=float2(0);factors[2*(i*p.trace.num_steps+k)+1]=float2(0);}
- for(uint k=0;k<z-a;k++){
+ for(uint k=0;k<len;k++){
   MklGhostStep st=steps[q.wavelength*plane+a+k];uint si=st.word&MKL_STEP_SURFACE_MASK;bool back=(st.word&MKL_STEP_BACKWARD)!=0;constant MklPackedSurface& surf=s[si];uint fail=si<<MKL_RAY_SURFACE_SHIFT;
   if(back)mkl_xf_backward(s[si],pos,dir);else mkl_xf_forward(s[si-1],pos,dir);
   MklHit hit;uint code=mkl_intersect<true>(surf,pool,pos,dir,p.trace,hit);if(code!=0){v.status=fail|code;break;}
@@ -45,15 +44,16 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
     for(uint j=0;j<3;j++)next.v[j]=mkl_df_add(mkl_df_mul(dir.v[j],mu),mkl_df_mul_f32(hit.g.v[j],b));next=mkl_renorm_along(mkl_renorm_along(next,hit.g),hit.g);
    }
   }
-  uint row=i*p.trace.num_steps+k;queries[row]={st.coating,0,cosine};factors[2*row]=mkl_df_mul(st.alpha,t);factors[2*row+1]=st.efficiency;dir=next;v.done++;
+  uint row=r0+k;queries[row]={st.coating,0,cosine};factors[2*row]=mkl_df_mul(st.alpha,t);factors[2*row+1]=st.efficiency;dir=next;v.done++;
  }
+ for(uint k=v.done;k<span;k++){uint row=r0+k;queries[row]={};factors[2*row]=float2(0);factors[2*row+1]=float2(0);}
  for(uint j=0;j<3;j++){v.position[j]=pos.v[j];v.direction[j]=dir.v[j];}output[i]=v;
 }
-struct MklGhostWeightParams{uint end,offset,paths,max_steps;float2 sensor;};
-kernel void mkl_ghost_weights(device const MklGhostValue* values [[buffer(0)]],device const MklCoatingValue* coatings [[buffer(1)]],device const float2* factors [[buffer(2)]],constant uint* offsets [[buffer(3)]],constant MklGhostStep* steps [[buffer(4)]],device const MklGhostProbe* probes [[buffer(5)]],device MklGhostValue* output [[buffer(6)]],constant MklGhostWeightParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]){
+struct MklGhostWeightParams{uint end,offset,paths,reserved;float2 sensor;};
+kernel void mkl_ghost_weights(device const MklGhostValue* values [[buffer(0)]],device const MklCoatingValue* coatings [[buffer(1)]],device const float2* factors [[buffer(2)]],constant uint* offsets [[buffer(3)]],constant MklGhostStep* steps [[buffer(4)]],device const MklGhostProbe* probes [[buffer(5)]],device MklGhostValue* output [[buffer(6)]],constant MklGhostWeightParams& p [[buffer(7)]],device const uint* rows [[buffer(8)]],uint tid [[thread_position_in_grid]]){
  uint i=p.offset+tid;if(i>=p.end)return;MklGhostValue v=values[i];MklGhostProbe q=probes[i];uint a=q.wavelength*offsets[p.paths]+offsets[q.path];float2 ws=float2(1,0),wp=ws,absorb=float2(0);
  for(uint k=0;k<v.done;k++){
-  uint row=i*p.max_steps+k,c=steps[a+k].channel;MklCoatingValue coat=coatings[row];if((c==1||c==2)&&coat.status!=MKL_RAD_OK){v.status=MKL_GHOST_REFERENCE;break;}
+  uint row=rows[i]+k,c=steps[a+k].channel;MklCoatingValue coat=coatings[row];if((c==1||c==2)&&coat.status!=MKL_RAD_OK){v.status=MKL_GHOST_REFERENCE;break;}
   float2 one=float2(1,0),x=one,y=one;
   if(c==1){x=coat.powers[2];y=coat.powers[3];}else if(c==2){x=coat.powers[0];y=coat.powers[1];}else if(c==3){x=mkl_df_sub(one,p.sensor);y=x;}else if(c==4){x=p.sensor;y=x;}
   float2 eta=factors[2*row+1];ws=mkl_df_mul(ws,mkl_df_mul(x,eta));wp=mkl_df_mul(wp,mkl_df_mul(y,eta));absorb=mkl_df_add(absorb,factors[2*row]);
@@ -74,8 +74,10 @@ kernel void mkl_ghost_launch(device const float* chiefs [[buffer(0)]],constant M
  MklGhostProbe out;for(uint k=0;k<3;k++){out.position[k]=pos.v[k];out.direction[k]=dir.v[k];}out.path=q.path;out.wavelength=q.wavelength;output[i]=out;
 }
 struct MklGhostPixelParams{uint end,offset,nx,ny,maps,reserved;float2 extent[2];};
+// Floor of hi+lo: an integral hi with a negative lo lies just below it.
+static float ghost_floor(float2 v){float f=floor(v.x);return f==v.x&&v.y<0?f-1:f;}
 kernel void mkl_ghost_pixel_keys(device const float2* hits [[buffer(0)]],device uint* keys [[buffer(1)]],device uint* ids [[buffer(2)]],device float2* weights [[buffer(3)]],constant MklGhostPixelParams& p [[buffer(4)]],uint tid [[thread_position_in_grid]]){
- uint i=p.offset+tid;if(i>=p.end)return;float2 x=mkl_df_mul_f32(mkl_df_div(mkl_df_add(hits[5*i],p.extent[0]),mkl_df_mul_f32(p.extent[0],2)),float(p.nx));float2 y=mkl_df_mul_f32(mkl_df_div(mkl_df_add(hits[5*i+1],p.extent[1]),mkl_df_mul_f32(p.extent[1],2)),float(p.ny));uint pixel=hits[5*i+4].x>0?uint(hits[5*i+4].x)-1:((x.x>=0&&y.x>=0&&x.x<float(p.nx)&&y.x<float(p.ny))?uint(y.x)*p.nx+uint(x.x):p.nx*p.ny);keys[i]=pixel==p.nx*p.ny?p.maps*p.nx*p.ny:uint(hits[5*i+3].x)*p.nx*p.ny+pixel;ids[i]=i;weights[i]=hits[5*i+2];
+ uint i=p.offset+tid;if(i>=p.end)return;float x=ghost_floor(mkl_df_mul_f32(mkl_df_div(mkl_df_add(hits[5*i],p.extent[0]),mkl_df_mul_f32(p.extent[0],2)),float(p.nx)));float y=ghost_floor(mkl_df_mul_f32(mkl_df_div(mkl_df_add(hits[5*i+1],p.extent[1]),mkl_df_mul_f32(p.extent[1],2)),float(p.ny)));uint pixel=hits[5*i+4].x>0?uint(hits[5*i+4].x)-1:((x>=0&&y>=0&&x<float(p.nx)&&y<float(p.ny))?uint(y)*p.nx+uint(x):p.nx*p.ny);keys[i]=pixel==p.nx*p.ny?p.maps*p.nx*p.ny:uint(hits[5*i+3].x)*p.nx*p.ny+pixel;ids[i]=i;weights[i]=hits[5*i+2];
 }
 
 

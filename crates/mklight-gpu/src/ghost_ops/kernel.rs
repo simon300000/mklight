@@ -289,12 +289,20 @@ pub(super) fn launch<E: FpEnv>(
 }
 pub(super) fn pixel<E: FpEnv>(xy: [Df32; 2], bins: [u32; 2], half: [Df32; 2]) -> u32 {
     let f = std::array::from_fn::<_, 2, _>(|k| {
-        (D::<E>::from_df(xy[k]) + D::from_df(half[k])) / (D::from_df(half[k]) * 2.) * bins[k] as f32
+        let v = (D::<E>::from_df(xy[k]) + D::from_df(half[k])) / (D::from_df(half[k]) * 2.)
+            * bins[k] as f32;
+        // Floor of hi+lo: an integral hi with a negative lo lies just below it.
+        let (hi, lo) = (v.hi().v(), v.lo().v());
+        if hi.floor() == hi && lo < 0. {
+            hi - 1.
+        } else {
+            hi.floor()
+        }
     });
-    if (0..2).any(|k| f[k].hi() < 0. || f[k].hi() >= bins[k] as f32) {
+    if (0..2).any(|k| !(f[k] >= 0. && f[k] < bins[k] as f32)) {
         return bins[0] * bins[1];
     }
-    (f[1].hi().v() as u32) * bins[0] + f[0].hi().v() as u32
+    f[1] as u32 * bins[0] + f[0] as u32
 }
 pub(super) fn leaf_weight<E: FpEnv>(v: Value, area: Df32) -> Df32 {
     (((D::<E>::from_df(v.weight_s) + D::from_df(v.weight_p)) * 0.5)
