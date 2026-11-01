@@ -502,13 +502,7 @@ impl Evaluation {
                 let (_, q) = qualify(&device, &cpu.trace, snapshot, input, ctx)?;
                 qualification = Some(q.clone());
                 if q.passed {
-                    let mut context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                    if choice == BackendChoice::Auto
-                        && crate::backend::Backend::is_auto_request(&input.requested_backend)
-                    {
-                        context = context
-                            .with_auto_cost_build(super::cost::BUILD, super::cost::host_build());
-                    }
+                    let context = GpuContext::new(device.backend.clone(), snapshot.clone());
                     let g = ResidentEvaluator::new(context, cpu.clone());
                     Some((g, device))
                 } else {

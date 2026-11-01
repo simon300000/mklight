@@ -22,55 +22,63 @@ fn capabilities_match_registry_routes() {
     assert!(advertised.contains(&"glass_substitution"));
 }
 
+/// Auto routes by the measured cost rules: a default singlet spot diagram to
+/// the CPU reference, a dense Cooke spot diagram to qualified Metal; an
+/// explicit backend bypasses the rules.
 #[test]
-#[ignore = "requires calibrated release evidence and actual Metal"]
-fn recorded_auto_cost_explicit_override_and_unknown_input() {
-    let data: Value =
-        serde_json::from_str(include_str!("../src/analysis/cost-evidence.json")).unwrap();
-    assert_eq!(
-        data["source_build"],
-        mklight_engine::analysis::gpu::cost_build()
-    );
-    let row = data["observations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["rings"] == 0 && row["decision"] == "cpu_reference")
-        .expect("a measured default CPU cost exception");
-    let system = samples::all()
-        .into_iter()
-        .find(|(name, _)| *name == row["sample"].as_str().unwrap())
-        .unwrap()
-        .1;
+fn auto_cost_rules_route_by_workload() {
     let engine = Engine::default();
-    let session = engine
-        .session_from_project(Project::new(system.clone()))
-        .unwrap();
-    let mut request = AnalysisRequest::new(row["analysis"].as_str().unwrap(), Value::Null);
-    let automatic = session.run_analysis(&request, &JobContext::new()).unwrap();
-    assert_eq!(automatic.backend.used, "cpu_reference");
+    if !engine
+        .backends()
+        .iter()
+        .any(|b| b.id == "gpu:metal" && b.available)
+    {
+        eprintln!("skipping: Metal unavailable");
+        return;
+    }
+    let run = |system, settings: Value, backend| {
+        let session = engine.session_from_project(Project::new(system)).unwrap();
+        let mut request = AnalysisRequest::new("spot_diagram", settings);
+        request.backend = backend;
+        let r = session.run_analysis(&request, &JobContext::new()).unwrap();
+        println!(
+            "P11_AUTO {} {}",
+            r.backend.used,
+            r.backend.cost_decision.as_ref().unwrap()
+        );
+        r
+    };
+    let small = run(samples::singlet(), Value::Null, None);
+    let cost = small.backend.cost_decision.as_ref().unwrap();
+    assert_eq!(small.backend.used, "cpu_reference");
+    assert_eq!(cost["decision"], "cpu_reference");
     assert_eq!(
-        automatic.backend.cost_decision.as_ref().unwrap()["decision"],
-        "cpu_reference"
+        (cost["workload"].as_f64(), cost["threshold"].as_f64()),
+        (Some(1143.), Some(32768.))
     );
-    assert!(automatic.backend.qualification.is_none());
-    request.backend = Some(Backend::Gpu("metal".into()));
-    let explicit = session.run_analysis(&request, &JobContext::new()).unwrap();
-    assert_eq!(explicit.backend.used, "gpu:metal");
+    assert!(small.backend.fallback_reason.unwrap().contains("faster"));
+    assert!(
+        small.run_info.warnings.is_empty(),
+        "{:?}",
+        small.run_info.warnings
+    );
+    let dense = json!({"pattern":"square","rings":512,"fields":{"type":"index","index":2},"wavelengths":{"type":"primary"}});
+    let large = run(samples::cooke_triplet(), dense, None);
+    assert_eq!(
+        large.backend.cost_decision.as_ref().unwrap()["decision"],
+        "qualified_metal"
+    );
+    assert_eq!(large.backend.used, "gpu:metal");
+    let explicit = run(
+        samples::singlet(),
+        Value::Null,
+        Some(Backend::Gpu("metal".into())),
+    );
     assert_eq!(
         explicit.backend.cost_decision.as_ref().unwrap()["decision"],
         "explicit_backend"
     );
-    let mut changed = system;
-    changed.surfaces[1].thickness += 1e-9;
-    let session = engine.session_from_project(Project::new(changed)).unwrap();
-    request.backend = None;
-    let unknown = session.run_analysis(&request, &JobContext::new()).unwrap();
-    assert_eq!(
-        unknown.backend.cost_decision.as_ref().unwrap()["decision"],
-        "qualified_metal"
-    );
-    assert_eq!(unknown.backend.used, "gpu:metal");
+    assert_eq!(explicit.backend.used, "gpu:metal");
 }
 
 #[test]
@@ -362,7 +370,7 @@ fn consolidated_engine_benchmark() {
         engine.register_backend(std::sync::Arc::new(provider));
         println!(
             "P11_ENGINE_ENV {}",
-            json!({"device":device.backend.info(),"precision":device.backend.precision(),"source_build":mklight_engine::analysis::gpu::cost_build(),"rayon_threads":rayon::current_num_threads(),"setup_seconds":opened.elapsed().as_secs_f64(),"initial_copied_bytes":device.backend.resident_cache_stats().copied_bytes})
+            json!({"device":device.backend.info(),"precision":device.backend.precision(),"rayon_threads":rayon::current_num_threads(),"setup_seconds":opened.elapsed().as_secs_f64(),"initial_copied_bytes":device.backend.resident_cache_stats().copied_bytes})
         );
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for info in engine.analyses() {
@@ -433,19 +441,11 @@ fn consolidated_engine_benchmark() {
                             let cpu = execute(Backend::CpuReference);
                             (cpu, gpu)
                         };
-                    let mut effective = cpu.run_info.settings.clone();
-                    effective.as_object_mut().unwrap().remove("spectrum");
-                    let key = mklight_engine::analysis::gpu::cost_key(
-                        &info.name,
-                        &cpu.run_info.snapshot_hash,
-                        &cpu.library_hash,
-                        &effective,
-                    );
                     println!(
                         "P11_ENGINE_BENCH {}",
                         json!({"sample":name,"analysis":info.name,"rings":rings,"run":run,
-                        "phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"key":key,
-                        "snapshot":cpu.run_info.snapshot_hash,"library":cpu.library_hash,"settings":effective,
+                        "phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},
+                        "snapshot":cpu.run_info.snapshot_hash,"library":cpu.library_hash,"settings":cpu.run_info.settings,
                         "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"copied_bytes":copied_bytes,"used":metal.backend.used,
                         "qualification":metal.backend.qualification,"reason":metal.backend.fallback_reason,
                         "execution":metal.backend.execution})
@@ -518,14 +518,11 @@ fn isolated_engine_cold_starts() {
             request.backend = Some(Backend::Gpu("metal".into()));
             let metal = session.run_analysis(&request, &JobContext::new()).unwrap();
             let metal_seconds = start.elapsed().as_secs_f64();
-            let mut effective = cpu.run_info.settings.clone();
-            effective.as_object_mut().unwrap().remove("spectrum");
             println!(
                 "P11_COLD {}",
-                json!({"sample":name,"analysis":info.name,
-                "key":mklight_engine::analysis::gpu::cost_key(&info.name,&cpu.run_info.snapshot_hash,&cpu.library_hash,&effective),
+                json!({"sample":name,"analysis":info.name,"settings":cpu.run_info.settings,
                 "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"metal_backend_setup_seconds":setup_seconds,
-                "source_build":mklight_engine::analysis::gpu::cost_build(),"used":metal.backend.used,
+                "used":metal.backend.used,
                 "qualification":metal.backend.qualification,"execution":metal.backend.execution,
                 "copied_bytes":device.backend.resident_cache_stats().copied_bytes,
                 "scope":"independent engines/sessions; CPU does not warm the Metal engine reference caches"})

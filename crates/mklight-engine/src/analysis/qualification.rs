@@ -25,17 +25,23 @@ pub(crate) fn run(
     .with_stop_token(input.stop.clone())
     .with_library_hash(input.library_hash().into());
     let cost = if crate::backend::Backend::is_auto_request(&input.requested_backend) {
-        super::cost::decision(input, analysis.name(), settings, &device)
+        super::cost::decision(
+            analysis.name(),
+            settings,
+            input.snapshot.system(),
+            device.backend.info(),
+        )
     } else {
-        json!({"decision":"explicit_backend","reason":"cost exceptions bypassed"})
+        json!({"decision":"explicit_backend","reason":"cost rules bypassed"})
     };
-    *input.cost_decision.borrow_mut() = Some(cost.clone());
-    if cost["decision"] == "cpu_reference" {
+    let cpu = cost["decision"] == "cpu_reference";
+    *input.cost_decision.borrow_mut() = Some(cost);
+    if cpu {
         input.report_backend(BackendUse {
             id: "cpu_reference".into(),
             precision: Precision::F64Reference,
             device: None,
-            fallback_reason: Some("auto: recorded full-chain CPU cost advantage".into()),
+            fallback_reason: Some("auto: the CPU reference is faster for this workload".into()),
             qualification: None,
             deliberate: true,
         });
