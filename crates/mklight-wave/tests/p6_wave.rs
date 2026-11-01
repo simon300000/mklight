@@ -13,11 +13,185 @@ fn error(a: &Psf, b: &Psf) -> f64 {
         .map(|(a, b)| (a - b).abs() / peak)
         .fold(0., f64::max)
 }
+fn resample_suite(b: &dyn ComputeBackend) {
+    let ctx = JobContext::new();
+    let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
+    let side = 17;
+    let rays = StructuredSamples {
+        nx: side,
+        ny: side,
+        samples: (0..side * side)
+            .map(|k| {
+                let u = 2. * (k % side) as f64 / (side - 1) as f64 - 1.;
+                let v = 2. * (k / side) as f64 / (side - 1) as f64 - 1.;
+                (u * u + v * v < 0.9 && u * u + v * v > 0.08).then_some(RaySample {
+                    u: u + 0.03 * v * v,
+                    v,
+                    opd_waves: 0.3 * u - 0.2 * v + 0.1 * u * u,
+                    amplitude: 1. + 0.2 * u,
+                })
+            })
+            .collect(),
+    };
+    let masks = [
+        None,
+        Some(PupilMask::from(Aperture::Annular { obscuration: 0.3 })),
+        Some(PupilMask::Polygons {
+            loops: vec![
+                vec![[-0.9, -0.9], [0.9, -0.9], [0.9, 0.9], [-0.9, 0.9]],
+                vec![[-0.2, -0.2], [-0.2, 0.2], [0.2, 0.2], [0.2, -0.2]],
+            ],
+        }),
+    ];
+    for mask in &masks {
+        let (reference, _) =
+            grid_from_structured(&rays, 32, 0.55, g, mask.as_ref(), 4, &ctx).unwrap();
+        let result =
+            gpu::from_structured(b, snapshot(), &rays, 32, 0.55, g, mask.as_ref(), 4, &ctx)
+                .unwrap();
+        let rp = result.value;
+        let cov = b.read_view(rp.coverage.view()).unwrap();
+        let cov = cov.as_slice::<f32>().unwrap();
+        let amp = b.read_view(rp.amplitude.view()).unwrap();
+        let amp = amp.as_slice::<f32>().unwrap();
+        let opd = b.read_view(rp.opd.view()).unwrap();
+        let opd = opd.as_slice::<mklight_gpu::Df32>().unwrap();
+        for k in 0..32 * 32 {
+            assert_eq!(
+                cov[k] as f64,
+                reference.coverage()[k],
+                "mask {mask:?} cell {k}"
+            );
+            assert!(
+                (amp[k] as f64 - reference.amplitude()[k]).abs() < 2e-6,
+                "amplitude {k}"
+            );
+            assert!(
+                (opd[k].to_f64() - reference.opd_waves()[k]).abs() < 1e-7,
+                "OPD {k}: {} {}",
+                opd[k].to_f64(),
+                reference.opd_waves()[k]
+            );
+        }
+        assert_eq!(result.stats.copied_bytes, 0);
+    }
+}
+fn focus_and_lsf(b: &dyn ComputeBackend) {
+    use mklight_gpu::{Df32, resident::*, wave_ops as w};
+    let ctx = JobContext::new();
+    let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
+    let pupil = PupilFunction::diffraction_limited(9, 0.55, g, Aperture::Circular, 4).unwrap();
+    let rp = ResidentPupil::from_pupil(b, &pupil, &ctx).unwrap();
+    let shifts = [-200., -100., -99., 0., 0.1];
+    let z = b
+        .fill_buffer(
+            BufferDesc::new(ElementType::DoubleFloat, [shifts.len()]),
+            &mut |mut a| {
+                for (v, z) in a.as_mut_slice::<Df32>()?.iter_mut().zip(shifts) {
+                    *v = Df32::from_f64(z);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    let mut plan = ResidentPlan::new(snapshot());
+    let v = rp.import(&mut plan);
+    let z = plan.import(z.view());
+    let out = plan.scratch(BufferDesc::new(
+        ElementType::DoubleFloat,
+        [shifts.len(), 9, 9],
+    ));
+    plan.operations.push(ResidentOp::Wave(w::Request::Focus {
+        pupil: v,
+        geometry: rp.wave_geometry(),
+        shifts: plan.view(z).unwrap(),
+        output: out,
+    }));
+    plan.outputs = vec![out];
+    let r = b.submit_plan(plan, &ctx).unwrap().wait().unwrap();
+    let data = b.read_view(r.outputs[0].view()).unwrap();
+    let data = data.as_slice::<Df32>().unwrap();
+    for (j, dz) in shifts.into_iter().enumerate() {
+        for k in 0..81 {
+            let reference = pupil.focus_shift_opd(dz, pupil.coord(k % 9), pupil.coord(k / 9));
+            assert!(
+                (data[j * 81 + k].to_f64() - reference).abs() < 1e-7,
+                "far-side focus {dz}/{k}"
+            );
+        }
+    }
+    let settings = PsfSettings {
+        grid_size: 31,
+        sampling: ImageSampling::Padding { factor: 2.5 },
+        normalization: PsfNormalization::UnitEnergy,
+        transform: PsfTransform::Matrix,
+    };
+    let reference = fft_psf(&pupil, &settings, &ctx).unwrap();
+    let mut plan = ResidentPlan::new(snapshot());
+    let psf = rp.append_psf(&mut plan, &settings, [0.; 2]).unwrap();
+    let out = plan.scratch(BufferDesc::new(ElementType::F32, [2, 31]));
+    plan.operations
+        .push(ResidentOp::Wave(w::Request::LineSpread {
+            image: plan.view(psf.image).unwrap(),
+            spacing: psf.spacing as f32,
+            output: out,
+        }));
+    plan.outputs = vec![out];
+    let r = b.submit_plan(plan, &ctx).unwrap().wait().unwrap();
+    let data = b.read_view(r.outputs[0].view()).unwrap();
+    let data = data.as_slice::<f32>().unwrap();
+    for (j, axis) in [LsfAxis::X, LsfAxis::Y].into_iter().enumerate() {
+        let expected = line_spread_function(&reference, axis);
+        let peak = expected.values.iter().copied().fold(0f64, f64::max);
+        for (k, v) in expected.values.iter().enumerate() {
+            assert!((data[j * 31 + k] as f64 - v).abs() / peak < 2e-5);
+        }
+    }
+}
 fn suite(b: &dyn ComputeBackend) {
+    resample_suite(b);
+    focus_and_lsf(b);
+    let detector = DetectorSettings::default();
+    let response = gpu::detector_mtf(
+        b,
+        snapshot(),
+        &detector,
+        &[[0., 0.], [100., 0.], [200., 0.]],
+        &JobContext::new(),
+    )
+    .unwrap();
+    assert_eq!(response.value[0], 1.);
+    assert!((response.value[1] - 2. / std::f64::consts::PI).abs() < 1e-6);
+    assert!(response.value[2] < 1e-6);
+
+    for ordering in [ZernikeOrdering::Fringe, ZernikeOrdering::Standard] {
+        let basis = ZernikeBasis::new(ordering, 37).unwrap();
+        let expected: Vec<_> = (0..37).map(|i| (i as f64 * 0.7).sin() * 0.1).collect();
+        let samples: Vec<_> = (0..33 * 33)
+            .filter_map(|k| {
+                let u = (k % 33) as f64 / 16. - 1.;
+                let v = (k / 33) as f64 / 16. - 1.;
+                (u * u + v * v < 1.).then(|| RaySample {
+                    u,
+                    v,
+                    amplitude: 1. + 0.1 * v,
+                    opd_waves: basis.eval(u, v, &expected),
+                })
+            })
+            .collect();
+        let fit = gpu::fit_zernike(b, snapshot(), &samples, &basis, &JobContext::new()).unwrap();
+        for (a, v) in fit.value.set.coefficients().iter().zip(expected) {
+            assert!((a - v).abs() < 1e-8, "Zernike {a} {v}");
+        }
+        assert_eq!(fit.value.rank, 37);
+        assert!(fit.value.residual_norm < 1e-8);
+    }
+
     let ctx = JobContext::new();
     for g in [
         PupilGeometry::from_working_f_number(4., 100., 1.).unwrap(),
         PupilGeometry::telecentric(0.2, 1.).unwrap(),
+        PupilGeometry::telecentric(0.85, 1.).unwrap(),
         PupilGeometry::from_working_f_number(3., 50., 1.)
             .unwrap()
             .with_chief_angle(17., 33.)
@@ -73,6 +247,21 @@ fn suite(b: &dyn ComputeBackend) {
         }
         let fs = [0., 5., 20., 50., 100.];
         let frequencies: Vec<_> = fs.iter().map(|f| [0., *f]).collect();
+        let shifts = [-0.01, 0., 0.02];
+        let batch = rp
+            .through_focus_otf(b, snapshot(), &frequencies, &shifts, &ctx)
+            .unwrap();
+        for (j, &z) in shifts.iter().enumerate() {
+            let focused = pupil.with_focus_shift(z);
+            let reference = mtf_direct(&focused, &fs, &MtfOrientation::default(), &ctx).unwrap();
+            for (a, z) in reference
+                .tangential
+                .iter()
+                .zip(&batch.value[j * fs.len()..(j + 1) * fs.len()])
+            {
+                assert!((a - z[0].hypot(z[1])).abs() < 3e-5, "focus {j}: {a} {z:?}");
+            }
+        }
         let reference = mtf_direct(&pupil, &fs, &MtfOrientation::default(), &ctx).unwrap();
         let result = rp.otf(b, snapshot(), &frequencies, &ctx).unwrap();
         for (a, z) in reference.tangential.iter().zip(result.value) {
@@ -109,5 +298,257 @@ fn metal_f64_both_libraries() {
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
         suite(&metal(library));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "host qualification across all default traced pupils"]
+fn all_sample_pupils() {
+    for library in [
+        mklight_metal::LibraryChoice::Precompiled,
+        mklight_metal::LibraryChoice::RuntimeSource,
+    ] {
+        let b = metal(library);
+        let ctx = JobContext::new();
+        let (mut cases, mut psf_max, mut mtf_max, mut opd_max) = (0, 0f64, 0f64, 0f64);
+        for (name, system) in samples::all() {
+            let snap = Snapshot::new(system.clone()).unwrap();
+            let tracer = mklight_analysis::tracer_for(system).unwrap();
+            for (fi, field) in tracer.fields().iter().enumerate() {
+                for wl in 0..tracer.num_wavelengths() {
+                    let traced =
+                        trace_pupil(&tracer, field, wl, &PupilSettings::default(), &ctx).unwrap();
+                    let p = &traced.pupil;
+                    let resident = gpu::from_structured(
+                        &b,
+                        snap.clone(),
+                        &traced.samples,
+                        p.n(),
+                        p.wavelength_um(),
+                        *p.geometry(),
+                        traced.mask.as_ref(),
+                        4,
+                        &ctx,
+                    )
+                    .unwrap();
+                    let mut rp = resident.value;
+                    rp.image_offset_mm = p.image_offset_mm();
+                    let cov = b.read_view(rp.coverage.view()).unwrap();
+                    let cov = cov.as_slice::<f32>().unwrap();
+                    let opd = b.read_view(rp.opd.view()).unwrap();
+                    let opd = opd.as_slice::<mklight_gpu::Df32>().unwrap();
+                    let mut mask_diff = 0;
+                    let mut opd_error = 0f64;
+                    for k in 0..p.n() * p.n() {
+                        mask_diff += usize::from(cov[k] as f64 != p.coverage()[k]);
+                        if cov[k] > 0. {
+                            opd_error = opd_error.max((opd[k].to_f64() - p.opd_waves()[k]).abs());
+                        }
+                    }
+                    assert_eq!(mask_diff, 0, "{name}/{fi}/{wl} masks");
+                    assert!(opd_error < 0.005, "{name}/{fi}/{wl} OPD {opd_error}");
+                    let settings = PsfSettings {
+                        grid_size: 127,
+                        sampling: ImageSampling::Padding { factor: 2.5 },
+                        normalization: PsfNormalization::UnitEnergy,
+                        transform: PsfTransform::Matrix,
+                    };
+                    let reference = fft_psf(p, &settings, &ctx).unwrap();
+                    let result = rp.psf(&b, snap.clone(), &settings, &ctx).unwrap();
+                    let pe = error(&reference, &result.value);
+                    assert!(pe < 1e-4, "{name}/{fi}/{wl} PSF {pe}");
+                    let fs = [0., 10., 20., 40.];
+                    let freq: Vec<_> = fs.iter().map(|f| [0., *f]).collect();
+                    let reference = mtf_direct(p, &fs, &MtfOrientation::default(), &ctx).unwrap();
+                    let result = rp.otf(&b, snap.clone(), &freq, &ctx).unwrap();
+                    let me = reference
+                        .tangential
+                        .iter()
+                        .zip(&result.value)
+                        .map(|(a, z)| (a - z[0].hypot(z[1])).abs())
+                        .fold(0f64, f64::max);
+                    assert!(me < 0.005, "{name}/{fi}/{wl} MTF {me}");
+                    psf_max = psf_max.max(pe);
+                    mtf_max = mtf_max.max(me);
+                    opd_max = opd_max.max(opd_error);
+                    cases += 1;
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"sample":name,"field":fi,"wavelength":wl,"pupil_grid":p.n(),"psf_peak_error":pe,"mtf_error":me,"opd_error":opd_error,"mask_differences":mask_diff,"resample_stats":resident.stats})
+                    );
+                }
+            }
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({"summary":"p6_all_pupils","cases":cases,"psf_peak_error":psf_max,"mtf_error":mtf_max,"opd_error":opd_max})
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn determinism_concurrency_and_cancel() {
+    use mklight_gpu::resident::*;
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
+    let p = PupilFunction::diffraction_limited(128, 0.55, g, Aperture::Circular, 4).unwrap();
+    let rp = ResidentPupil::from_pupil(&b, &p, &JobContext::new()).unwrap();
+    let settings = PsfSettings {
+        grid_size: 127,
+        sampling: ImageSampling::Padding { factor: 2.5 },
+        normalization: PsfNormalization::UnitEnergy,
+        transform: PsfTransform::Matrix,
+    };
+    let tilted = p.with_added_opd(|u, _| 0.3 * u);
+    let rt = ResidentPupil::from_pupil(&b, &tilted, &JobContext::new()).unwrap();
+    let make = |pupil: &ResidentPupil| {
+        let mut plan = ResidentPlan::new(snapshot());
+        let out = pupil.append_psf(&mut plan, &settings, [0.; 2]).unwrap();
+        plan.outputs = vec![out.image];
+        plan
+    };
+    let first = b.submit_plan(make(&rp), &JobContext::new()).unwrap();
+    let second = b.submit_plan(make(&rt), &JobContext::new()).unwrap();
+    let a = first.wait().unwrap();
+    let c = second.wait().unwrap();
+    assert_ne!(
+        b.read_view(a.outputs[0].view()).unwrap().words(),
+        b.read_view(c.outputs[0].view()).unwrap().words()
+    );
+    let expected = fft_psf(&tilted, &settings, &JobContext::new()).unwrap();
+    let actual = b.read_view(c.outputs[0].view()).unwrap();
+    let peak = expected.peak().0;
+    for (a, v) in actual.as_slice::<f32>().unwrap().iter().zip(&expected.data) {
+        assert!((*a as f64 - v).abs() / peak < 2e-5);
+    }
+
+    let ctx = JobContext::new();
+    let mut plan = ResidentPlan::new(snapshot());
+    let out = rp
+        .append_huygens(
+            &mut plan,
+            &HuygensSettings {
+                grid_size: 256,
+                spacing_mm: p.lambda_f_mm() / 2.,
+                plane: ImagePlane::default(),
+                normalization: PsfNormalization::Strehl,
+            },
+        )
+        .unwrap();
+    plan.outputs = vec![out.image];
+    let pending = b.submit_plan(plan, &ctx).unwrap();
+    let start = std::time::Instant::now();
+    let mut progress = 0.;
+    while ctx.progress.fraction() <= 0.667 {
+        let f = ctx.progress.fraction();
+        assert!(f >= progress);
+        progress = f;
+        assert!(
+            !pending.is_ready(),
+            "long device job ended before cancellation"
+        );
+        assert!(start.elapsed().as_secs() < 30);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    pending.cancel();
+    assert!(matches!(
+        pending.wait(),
+        Err(mklight_core::MkError::Cancelled)
+    ));
+    let again = b
+        .submit_plan(make(&rp), &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    assert_eq!(
+        b.read_view(a.outputs[0].view()).unwrap().words(),
+        b.read_view(again.outputs[0].view()).unwrap().words()
+    );
+    assert!(again.stats.reused_allocations > 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "provisional matched CPU/resident timing on host GPU"]
+fn benchmark_prepared_pupils() {
+    use std::time::Instant;
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let ctx = JobContext::new();
+    let mut cases = Vec::new();
+    for (name, system) in samples::all() {
+        let snap = Snapshot::new(system.clone()).unwrap();
+        let t = mklight_analysis::tracer_for(system).unwrap();
+        let field = t.fields().last().unwrap();
+        let p = trace_pupil(
+            &t,
+            field,
+            t.system().primary_wavelength,
+            &PupilSettings::default(),
+            &ctx,
+        )
+        .unwrap()
+        .pupil;
+        cases.push((name.to_owned(), snap, p, 127));
+    }
+    for n in [64, 256, 1024] {
+        let g = PupilGeometry::from_working_f_number(4., 100., 1.)
+            .unwrap()
+            .with_chief_angle(12., 31.)
+            .unwrap();
+        let p = PupilFunction::from_fn(
+            n,
+            0.55,
+            g,
+            4,
+            |u, v| u * u + v * v < 1.,
+            |u, v| (1., 0.2 * u + 0.1 * u * v),
+        )
+        .unwrap();
+        cases.push((
+            format!("dense_{n}"),
+            snapshot(),
+            p,
+            if n == 1024 { 2048 } else { 2 * n },
+        ));
+    }
+    for (name, snap, p, size) in cases {
+        let settings = PsfSettings {
+            grid_size: size,
+            sampling: ImageSampling::Padding { factor: 2.5 },
+            normalization: PsfNormalization::UnitEnergy,
+            transform: PsfTransform::Matrix,
+        };
+        let mut cpu = Vec::new();
+        let mut gpu = Vec::new();
+        let before = b.resident_cache_stats().copied_bytes;
+        let start = Instant::now();
+        let rp = ResidentPupil::from_pupil(&b, &p, &ctx).unwrap();
+        let prepare = start.elapsed().as_secs_f64();
+        for run in 0..=11 {
+            let t = Instant::now();
+            let a = fft_psf(&p, &settings, &ctx).unwrap();
+            let cpu_seconds = t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let v = rp.psf(&b, snap.clone(), &settings, &ctx).unwrap();
+            let gpu_seconds = t.elapsed().as_secs_f64();
+            let err = error(&a, &v.value);
+            assert!(err < 1e-4, "{name}: {err}");
+            if run >= 2 {
+                cpu.push(cpu_seconds);
+                gpu.push(gpu_seconds);
+            }
+            eprintln!(
+                "{}",
+                serde_json::json!({"case":name,"run":run,"cold":run==0,"warmup":run==1,"pupil_side":p.n(),"settings":settings,"host_pupil_fill_seconds":prepare,"cpu_seconds":cpu_seconds,"gpu_seconds":gpu_seconds,"stats":v.stats,"boundary_copied_bytes":b.resident_cache_stats().copied_bytes-before,"peak_error":err})
+            );
+        }
+        cpu.sort_by(f64::total_cmp);
+        gpu.sort_by(f64::total_cmp);
+        eprintln!(
+            "{}",
+            serde_json::json!({"summary":name,"cpu_median":(cpu[4]+cpu[5])*0.5,"cpu_p95":cpu[9],"gpu_median":(gpu[4]+gpu[5])*0.5,"gpu_p95":gpu[9]})
+        );
     }
 }

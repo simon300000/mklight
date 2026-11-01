@@ -1,5 +1,7 @@
 #ifndef MKLIGHT_WAVE_OPS_TYPES_H
 #define MKLIGHT_WAVE_OPS_TYPES_H
+/* Larger extrapolation gaps request the reference rather than monopolize a command. */
+#define MKL_WAVE_MAX_EXTRAPOLATION 128
 /* f32 pairs below are unevaluated hi+lo values. */
 typedef struct {
     unsigned int n, size, field_side, mode;
@@ -9,4 +11,8 @@ typedef struct {
     float origin[3][2], x_axis[3][2], y_axis[3][2], normal[3][2];
     float aperture[2], sigma, projection;
 } MklWaveParams;
+typedef struct {
+    unsigned int nx,ny,n,supersample,mask,edges,first,count;
+    float aperture[2]; unsigned int reserved[2];
+} MklWaveResampleParams;
 #endif

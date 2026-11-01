@@ -514,6 +514,7 @@ name = "mklight-wave"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "blake3",
  "mklight-analysis",
  "mklight-core",
  "mklight-gpu",

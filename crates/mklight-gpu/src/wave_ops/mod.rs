@@ -3,6 +3,7 @@
 use crate::{Df32, pending::JobControl, resident::*};
 use mklight_core::MkResult;
 mod cpu;
+pub mod resample;
 pub mod spec;
 
 /// Resident cell-centred pupil: amplitude and fractional coverage, with unwrapped
@@ -23,6 +24,27 @@ pub struct Geometry {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
+    /// Weighted Zernike design matrix for P3 QR. Samples are DF [rows,4]
+    /// (u,v,OPD,sqrt(weight)); zero weight masks a row. Terms are U32 [cols,2]
+    /// (n,m as signed bits), validated by the basis producer.
+    Zernike {
+        samples: PlanView,
+        terms: PlanView,
+        standard: bool,
+        matrix: BufferId,
+        rhs: BufferId,
+    },
+    Resample(resample::Resample),
+    /// Many focus planes and frequencies in one tiled operation. Geometry is
+    /// P2's reusable [frequencies,n*n,5] optical correlation stencil.
+    FocusCorrelation {
+        on_axis: bool,
+        pupil: Pupil,
+        geometry: Geometry,
+        stencil: PlanView,
+        shifts: Option<PlanView>,
+        output: BufferId,
+    },
     /// Debye field padded at the low corner. The three scalar planes are
     /// c A/gamma, c A²/gamma², c A²/(gamma |k.normal|), for fixed-tree sums.
     Prepare {
@@ -122,6 +144,49 @@ fn sums(v: &PlanView) -> MkResult<()> {
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::*;
     match r {
+        Request::Zernike {
+            samples,
+            terms,
+            matrix,
+            rhs,
+            ..
+        } => {
+            let a = &samples.desc.shape;
+            let t = &terms.desc.shape;
+            if a.len() != 2 || a[1] != 4 || t.len() != 2 || t[1] != 2 || t[0] == 0 || a[0] < t[0] {
+                return Err(bad("Zernike fit layout"));
+            }
+            view(samples, DoubleFloat, a)?;
+            view(terms, U32, t)?;
+            out(p, *matrix, DoubleFloat, &[1, a[0], t[0]])?;
+            out(p, *rhs, DoubleFloat, &[1, a[0]])?;
+        }
+
+        Request::Resample(r) => resample::validate(r, p)?,
+        Request::FocusCorrelation {
+            pupil: v,
+            geometry,
+            stencil,
+            shifts,
+            output,
+            ..
+        } => {
+            let n = pupil(v, *geometry)?;
+            let s = &stencil.desc.shape;
+            if s.len() != 3
+                || s[1] != n * n
+                || s[2] != 5
+                || shifts.as_ref().is_some_and(|v| v.desc.shape.len() != 1)
+            {
+                return Err(bad("focus correlation layout"));
+            }
+            view(stencil, F32, s)?;
+            if let Some(shifts) = shifts {
+                view(shifts, DoubleFloat, &shifts.desc.shape)?;
+            }
+            let planes = shifts.as_ref().map_or(1, |s| s.desc.shape[0]);
+            out(p, *output, Complex32, &[planes, s[0]])?;
+        }
         Request::Prepare {
             pupil: v,
             geometry,
@@ -187,14 +252,9 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             output,
             ..
         } => {
-            let n = pupil(v, *geometry)?;
+            pupil(v, *geometry)?;
             sums(s)?;
-            if *size == 0
-                || *size > 1024
-                || (n * n) as u64 * (*size as u64).pow(2) > 20_000_000_000
-                || !spacing.is_finite()
-                || spacing.hi <= 0.
-            {
+            if *size == 0 || *size > 1024 || !spacing.is_finite() || spacing.hi <= 0. {
                 return Err(bad("Huygens grid/work/spacing limit"));
             }
             if origin
@@ -272,6 +332,26 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 pub fn accesses(r: &Request) -> Access {
     let pv = |v: &Pupil| vec![v.amplitude.clone(), v.coverage.clone(), v.opd.clone()];
     let (reads, writes) = match r {
+        Request::Zernike {
+            samples,
+            terms,
+            matrix,
+            rhs,
+            ..
+        } => (vec![samples.clone(), terms.clone()], vec![*matrix, *rhs]),
+        Request::Resample(r) => return resample::access(r),
+        Request::FocusCorrelation {
+            pupil,
+            stencil,
+            shifts,
+            output,
+            ..
+        } => {
+            let mut v = pv(pupil);
+            v.push(stencil.clone());
+            v.extend(shifts.clone());
+            (v, vec![*output])
+        }
         Request::Prepare {
             pupil,
             field,

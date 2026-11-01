@@ -436,3 +436,71 @@ sample and rejects accuracy warnings. Additional closed-form tests pin
 quadratic-phase sampling/blur, ideal-cone frequency/depth defaults and explicit
 overrides; regression tests cross-check the projected FFT against the exact
 skew transform (0.1% of peak and energy).
+
+## 9. Resident wave service (P6, partial)
+
+The `gpu` module is an explicit backend-neutral service over supplied pupils
+and traced sample lattices. It does **not** enable engine routing, nor does it
+complete the P6 GPU-first work package. The reference analysis registry and
+its automatic sampling rules remain unchanged.
+
+Implemented operations in `mklight_gpu::wave_ops` have CPU-f32 specifications
+and strict Metal kernels:
+
+* `Resample`: structured cells split along their shorter diagonal, deterministic
+  first-triangle ownership, even-odd polygon masks (including holes), fractional
+  coverage and double-float interpolation. Integer minimum resolves overlapping
+  triangles deterministically. Missing masked subpoints choose the closest
+  raster source in the 8-neighbour metric, with row-major ties, reproducing the
+  reference breadth-first extension. Searches beyond 128 subpoints return an
+  explicit unresolved diagnostic; `from_structured` rejects that result and
+  requests the reference resampler. Sparse-ray diagnostics retain the source
+  triangle's median edge. The current final diagnostics/coverage count are read
+  in place and assembled on the host.
+* `Prepare`, `Intensity` and `Huygens`: Debye-weighted fields, compensated pupil
+  normalizations, P2 FFT/chirp/affine MFT, and direct scalar propagation with
+  rationalized distances and double-float complex accumulation. Sample and pixel
+  tiling preserves addition order across commands; no pair matrix is stored.
+  Telecentric, tilted-plane and high-NA cases retain their plane obliquity.
+* `Focus` and `FocusCorrelation`: exact chief-axis refocus on both sides of the
+  reference sphere. Many focus planes share P2's optical correlation geometry
+  and one tiled operation, including coverage-weighted unwrapped phase
+  interpolation. There is no plan or command per focus plane.
+* `Zernike`: Cartesian angular powers and a double-float Jacobi recurrence
+  produce the amplitude-weighted design matrix for P3's pivoted,
+  reorthogonalized QR. The returned `condition_inf` is the infinity-norm
+  estimate of equilibrated R; it is **not** the reference fit's spectral
+  condition number. Rank-deficient fits return an error.
+* `Detector` and `LineSpread`: pixel/diffusion response and compensated row and
+  column integration. The raw line-spread operation integrates the supplied
+  image; divide by its total energy for a normalized LSF.
+
+`ResidentPupil::from_pupil` writes a validated host pupil directly with
+`fill_buffer`; it is an explicit input conversion, not GPU tracing.
+`gpu::from_structured` resamples an existing traced lattice and returns resident
+amplitude/coverage/OPD channels. `append_psf`, `append_huygens` and
+`append_correlation` compose into a caller's plan. The `psf`, `huygens`, `otf`,
+`through_focus_otf`, `fit_zernike` and `detector_mtf` adapters return `WaveResult`
+with the actual backend's `RunInfo` and `PlanStats`. OTF curves retain the
+lateral-colour offset phase. PSF origins can be supplied when appending a
+common-grid transform. Host results use `read_view`; no bulk staging copy is
+introduced. Supplied pupil content identities and actual grid sizes are
+recorded. P8/P11 must retain their snapshot/library/qualification identities
+when composing these lower-level operations.
+
+Tests in `tests/p6_wave.rs` exercise both library origins on actual Metal,
+reference resampling masks, independent Zernike coefficients, matched f64
+PSF/MTF, cancellation, concurrent plans and buffer reuse. Ignored harnesses
+explicitly require host Metal: `all_sample_pupils` checks all 144 built-in
+field/wavelength pupils using unchanged default **CPU-traced** lattices;
+`benchmark_prepared_pupils` measures matched CPU and resident transforms,
+including 64/256/1024 pupils and a 2048 image. These are downstream subpath
+measurements, not complete GPU analysis timings. Raw evidence and the remaining
+acceptance matrix are in the task's `P6-evidence.md`.
+
+Still required to complete P6: resident P1 lattice/rim probing and sphere state,
+P7 transmission/radiometric amplitudes, automatic-grid analysis adapters,
+complete wavefront statistics and Strehl, GPU polychromatic accumulation,
+FFT/Huygens MTF result pipelines, diffraction energy integrals, and the full
+image-simulation pattern/warp/RI/convolution/pixel/noise chain. The existing
+CPU implementations supply these today; they are not relabelled as GPU work.

@@ -9,10 +9,82 @@ pub fn execute(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
+    if let Request::Resample(r) = r {
+        return resample::cpu(r, x, ctl);
+    }
     let p = params(r);
     let n = p.n as usize;
     let count = n * n;
     match r {
+        Request::Zernike {
+            samples,
+            terms,
+            standard,
+            matrix,
+            rhs,
+        } => {
+            let a = values::<Df32>(x, samples).as_chunks::<4>().0;
+            let t = values::<u32>(x, terms).as_chunks::<2>().0;
+            let mut design = vec![Df32::ZERO; a.len() * t.len()];
+            let mut b = vec![Df32::ZERO; a.len()];
+            for (i, row) in a.iter().enumerate() {
+                if i % 256 == 0 {
+                    ctl.check()?;
+                }
+                if row[3].hi <= 0. {
+                    continue;
+                }
+                b[i] = row[2] * row[3];
+                for (j, term) in t.iter().enumerate() {
+                    design[i * t.len() + j] =
+                        row[3] * zernike(row[0], row[1], term[0], term[1] as i32, *standard);
+                }
+            }
+            x.words_mut(*matrix)
+                .copy_from_slice(bytemuck::cast_slice(&design));
+            x.words_mut(*rhs).copy_from_slice(bytemuck::cast_slice(&b));
+        }
+
+        Request::Resample(_) => unreachable!(),
+        Request::FocusCorrelation {
+            pupil,
+            stencil,
+            shifts,
+            output,
+            ..
+        } => {
+            let a = values::<f32>(x, &pupil.amplitude);
+            let c = values::<f32>(x, &pupil.coverage);
+            let w = values::<Df32>(x, &pupil.opd);
+            let g = values::<f32>(x, stencil);
+            let shifts = shifts
+                .as_ref()
+                .map(|v| values::<Df32>(x, v))
+                .unwrap_or(&[Df32::ZERO]);
+            let fs = p.field_side as usize;
+            let mut out = vec![[0.; 2]; fs * shifts.len()];
+            for (i, v) in out.iter_mut().enumerate() {
+                let mut sums = [Df32::ZERO; 3];
+                for k in 0..count {
+                    if k % 4096 == 0 {
+                        ctl.check()?;
+                    }
+                    let q = ((i % fs) * count + k) * 5;
+                    let t = correlation_term(&p, k, a, c, w, &g[q..q + 5], shifts[i / fs]);
+                    for j in 0..3 {
+                        sums[j] = sums[j].add_f32(t[j]);
+                    }
+                }
+                *v = [scalar(sums[0] / sums[2]), scalar(sums[1] / sums[2])];
+                ctl.report(
+                    (i + 1) as f64 / (fs * shifts.len()) as f64,
+                    "focus correlation",
+                );
+            }
+            x.words_mut(*output)
+                .copy_from_slice(bytemuck::cast_slice(&out));
+        }
+
         Request::Prepare {
             pupil,
             field,
@@ -118,7 +190,7 @@ pub fn execute(
             output,
             ..
         } => {
-            let fs = values::<[f32; 2]>(x, frequencies);
+            let fs = values::<f32>(x, frequencies).as_chunks::<2>().0;
             let out: Vec<_> = fs.iter().map(|v| detector(&p, *v)).collect();
             x.words_mut(*output)
                 .copy_from_slice(bytemuck::cast_slice(&out));

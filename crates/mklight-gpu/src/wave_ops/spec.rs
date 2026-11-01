@@ -39,6 +39,35 @@ pub fn scalar(v: Df32) -> f32 {
 pub fn params(r: &Request) -> Params {
     let mut p = Params::zeroed();
     let g = match r {
+        Request::Zernike {
+            samples,
+            terms,
+            standard,
+            ..
+        } => {
+            p.mode = 7;
+            p.n = samples.desc.shape[0] as u32;
+            p.field_side = terms.desc.shape[0] as u32;
+            p.size = *standard as u32;
+            None
+        }
+        Request::Resample(_) => unreachable!("resample has separate parameters"),
+        Request::FocusCorrelation {
+            on_axis,
+            pupil,
+            geometry,
+            stencil,
+            shifts,
+            ..
+        } => {
+            p.shifted = *on_axis as u32;
+            p.mode = 6;
+            p.n = pupil.amplitude.desc.shape[0] as u32;
+            p.field_side = stencil.desc.shape[0] as u32;
+            p.size = shifts.as_ref().map_or(1, |s| s.desc.shape[0]) as u32;
+            p.unit_energy = shifts.is_some() as u32;
+            Some(geometry)
+        }
         Request::Prepare {
             pupil,
             geometry,
@@ -178,9 +207,14 @@ pub fn focus(p: &Params, k: usize, dz: Df32) -> Df32 {
     } else {
         let delta = (r * dz).mul_f32(2.) * gamma + dz * dz;
         let path = (r * r + delta).sqrt();
-        // (R+dz)-path, rationalized again to avoid subtracting two focus shifts.
+        // |R+dz|-path on either side of the sphere, rationalized again.
+        let axial = r + dz;
+        let axial = if axial.hi < 0. { -axial } else { axial };
+        if q[0].hi == 0. && q[1].hi == 0. {
+            return Df32::ZERO;
+        }
         (r * dz).mul_f32(2.) * (q[0] * q[0] + q[1] * q[1])
-            / ((Df32::from_f32(1.) + gamma) * (r + dz + path))
+            / ((Df32::from_f32(1.) + gamma) * (axial + path))
     };
     dr / df(p.wavelength)
 }
@@ -230,4 +264,94 @@ pub fn detector(p: &Params, nu: [f32; 2]) -> f32 {
     (sinc(p.aperture[0] * nu[0]) * sinc(p.aperture[1] * nu[1])).abs()
         * (-2. * std::f32::consts::PI.powi(2) * p.sigma * p.sigma * (nu[0] * nu[0] + nu[1] * nu[1]))
             .exp()
+}
+
+/// One optical-correlation contribution at a focus shift. Matches P2's
+/// unwrapped phase interpolation and fractional-cell zero-lag restoration.
+pub fn correlation_term(
+    p: &Params,
+    k: usize,
+    a: &[f32],
+    c: &[f32],
+    w: &[Df32],
+    g: &[f32],
+    dz: Df32,
+) -> [f32; 3] {
+    if c[k] <= 0. {
+        return [0.; 3];
+    }
+    let (ix, iy, qz, gamma, srcz) = (g[0], g[1], g[2], g[3], g[4]);
+    let energy = c[k] * a[k] * a[k] / (gamma * srcz);
+    if !ix.is_finite() || !iy.is_finite() {
+        return [0., 0., energy];
+    }
+    let n = p.n as usize;
+    let (fx, fy) = (ix.floor(), iy.floor());
+    let (tx, ty) = (ix - fx, iy - fy);
+    let (mut ar, mut cov, mut phase) = (0., 0., Df32::ZERO);
+    for (dx, dy, wt) in [
+        (0, 0, (1. - tx) * (1. - ty)),
+        (1, 0, tx * (1. - ty)),
+        (0, 1, (1. - tx) * ty),
+        (1, 1, tx * ty),
+    ] {
+        let (x, y) = (fx as i64 + dx, fy as i64 + dy);
+        if x < 0 || y < 0 || x >= n as i64 || y >= n as i64 {
+            continue;
+        }
+        let j = y as usize * n + x as usize;
+        let weight = wt * c[j];
+        if weight == 0. {
+            continue;
+        }
+        ar += weight * a[j]
+            / if p.shifted != 0 {
+                -scalar(direction(p, j)[2])
+            } else {
+                1.
+            };
+        cov += weight;
+        phase = phase + (w[j] + focus(p, j, dz)).mul_f32(weight);
+    }
+    let deficit = (1. - c[k])
+        * energy
+        * (1. - (ix - (k % n) as f32).abs()).max(0.)
+        * (1. - (iy - (k / n) as f32).abs()).max(0.);
+    if cov <= 0. {
+        return [deficit, 0., energy];
+    }
+    let z = cis(phase / Df32::from_f32(cov) - (w[k] + focus(p, k, dz)));
+    let m = c[k] * a[k] / gamma * ar / if p.shifted != 0 { 1. } else { qz };
+    [m * z[0] + deficit, m * z[1], energy]
+}
+
+/// Cartesian angular powers and Jacobi recurrence avoid polar-coordinate
+/// singularities at the origin and factorial cancellation at high order.
+pub fn zernike(x: Df32, y: Df32, n: u32, m: i32, standard: bool) -> Df32 {
+    let am = m.unsigned_abs();
+    let degree = (n - am) / 2;
+    let one = Df32::from_f32(1.);
+    let t = (x * x + y * y).mul_f32(2.) - one;
+    let b = am as f32;
+    let (mut prev, mut cur) = (one, one + (t - one).mul_f32((b + 2.) * 0.5));
+    for k in 1..degree {
+        let f = k as f32;
+        let s = 2. * f + b;
+        let a1 = 2. * (f + 1.) * (f + b + 1.) * s;
+        let a2 = (t.mul_f32((s + 2.) * s) - Df32::from_f32(b * b)).mul_f32(s + 1.);
+        let a3 = 2. * f * (f + b) * (s + 2.);
+        let next = (a2 * cur - prev.mul_f32(a3)) / Df32::from_f32(a1);
+        prev = cur;
+        cur = next;
+    }
+    let (mut re, mut im) = (one, Df32::ZERO);
+    for _ in 0..am {
+        (re, im) = (re * x - im * y, re * y + im * x);
+    }
+    let z = (if m >= 0 { re } else { im }) * if degree == 0 { one } else { cur };
+    if standard {
+        z * Df32::from_f32((n + 1) as f32 * if m == 0 { 1. } else { 2. }).sqrt()
+    } else {
+        z
+    }
 }

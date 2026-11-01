@@ -18,6 +18,9 @@ pub struct WaveResult<T> {
 /// PupilFunction; no pupil disk or aperture approximation is introduced here.
 #[derive(Clone, Debug)]
 pub struct ResidentPupil {
+    /// Content identity of the supplied samples and geometry (not a GPU generation).
+    pub input_hash: String,
+    pub covered_samples: usize,
     pub amplitude: BufferHandle,
     pub coverage: BufferHandle,
     pub opd: BufferHandle,
@@ -36,12 +39,18 @@ impl ResidentPupil {
         ctx: &JobContext,
     ) -> MkResult<Self> {
         let n = p.n();
-        let fill = |src: &[f64]| {
+        let mut hash = blake3::Hasher::new();
+        hash.update(
+            &serde_json::to_vec(&(n, p.wavelength_um(), p.geometry(), p.image_offset_mm()))
+                .unwrap(),
+        );
+        let mut fill = |src: &[f64]| {
             backend.fill_buffer(BufferDesc::new(ElementType::F32, [n, n]), &mut |mut b| {
                 for (i, (a, &v)) in b.as_mut_slice::<f32>()?.iter_mut().zip(src).enumerate() {
                     if i % 4096 == 0 {
                         ctx.check()?;
                     }
+                    hash.update(&v.to_le_bytes());
                     *a = v as f32;
                 }
                 Ok(())
@@ -61,12 +70,15 @@ impl ResidentPupil {
                     if i % 4096 == 0 {
                         ctx.check()?;
                     }
+                    hash.update(&v.to_le_bytes());
                     *a = Df32::from_f64(v);
                 }
                 Ok(())
             },
         )?;
         Ok(Self {
+            input_hash: hash.finalize().to_hex().to_string(),
+            covered_samples: p.coverage().iter().filter(|&&c| c > 0.).count(),
             amplitude,
             coverage,
             opd,
@@ -251,6 +263,13 @@ impl ResidentPupil {
         settings: &HuygensSettings,
     ) -> MkResult<PsfOutput> {
         settings.plane.validate()?;
+        if self.covered_samples as f64 * (settings.grid_size as f64).powi(2)
+            > crate::analysis::MAX_HUYGENS_WORK
+        {
+            return Err(MkError::InvalidParam(
+                "Huygens work exceeds MAX_HUYGENS_WORK".into(),
+            ));
+        }
         let v = self.import(p);
         let normal = settings.plane.normal();
         let (_, sums) = self.prepare(p, v.clone(), self.n, [normal.x, normal.y, normal.z])?;
@@ -296,8 +315,18 @@ impl ResidentPupil {
         p.settings = serde_json::json!({"p6":"psf","settings":settings,"pupil_grid":self.n});
         let output = self.append_psf(&mut p, settings, [0.; 2])?;
         p.outputs = vec![output.image, output.sums];
-        let r = backend.submit_plan(p, ctx)?.wait()?;
+        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
+        let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        r.run_info
+            .warnings
+            .extend(self.warnings.iter().map(ToString::to_string));
         let value = output.finish(self, backend, &r.outputs[0], &r.outputs[1])?;
+        for w in &value.warnings {
+            let w = w.to_string();
+            if !r.run_info.warnings.contains(&w) {
+                r.run_info.warnings.push(w);
+            }
+        }
         Ok(WaveResult {
             value,
             run_info: r.run_info,
@@ -315,8 +344,112 @@ impl ResidentPupil {
         p.settings = serde_json::json!({"p6":"huygens","settings":settings,"pupil_grid":self.n});
         let output = self.append_huygens(&mut p, settings)?;
         p.outputs = vec![output.image, output.sums];
-        let r = backend.submit_plan(p, ctx)?.wait()?;
+        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
+        let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        r.run_info
+            .warnings
+            .extend(self.warnings.iter().map(ToString::to_string));
         let value = output.finish(self, backend, &r.outputs[0], &r.outputs[1])?;
+        for w in &value.warnings {
+            let w = w.to_string();
+            if !r.run_info.warnings.contains(&w) {
+                r.run_info.warnings.push(w);
+            }
+        }
+        Ok(WaveResult {
+            value,
+            run_info: r.run_info,
+            stats: r.stats,
+        })
+    }
+    /// All requested chief-axis focus shifts share a P2 sensor stencil and one
+    /// tiled correlation operation; there is no plan or command per plane.
+    pub fn through_focus_otf(
+        &self,
+        backend: &dyn ComputeBackend,
+        snapshot: Snapshot,
+        frequencies: &[[f64; 2]],
+        shifts: &[f64],
+        ctx: &JobContext,
+    ) -> MkResult<WaveResult<Vec<[f64; 2]>>> {
+        let fs = frequency_buffer(backend, frequencies, ctx)?;
+        let zs = backend.fill_buffer(
+            BufferDesc::new(ElementType::DoubleFloat, [shifts.len()]),
+            &mut |mut b| {
+                for (i, (v, &z)) in b.as_mut_slice::<Df32>()?.iter_mut().zip(shifts).enumerate() {
+                    if i % 4096 == 0 {
+                        ctx.check()?;
+                    }
+                    if !z.is_finite() || !Df32::from_f64(z).is_finite() {
+                        return Err(MkError::InvalidParam("focus shift".into()));
+                    }
+                    *v = Df32::from_f64(z);
+                }
+                Ok(())
+            },
+        )?;
+        let mut p = ResidentPlan::new(snapshot);
+        p.settings = serde_json::json!({"p6":"through_focus_otf","frequencies":frequencies,"chief_shifts_mm":shifts,"pupil_grid":self.n});
+        let f = p.import(fs.view());
+        let z = p.import(zs.view());
+        let pupil = self.import(&mut p);
+        let stencil = p.scratch(BufferDesc::new(
+            ElementType::F32,
+            [frequencies.len(), self.n * self.n, 5],
+        ));
+        let frame = self
+            .geometry
+            .chief_frame()
+            .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
+        p.operations
+            .push(ResidentOp::Transforms(tr::Request::PrepareOpticalStencil(
+                tr::OpticalCorrelation {
+                    stencil: None,
+                    amplitude: pupil.amplitude.clone(),
+                    coverage: pupil.coverage.clone(),
+                    opd: pupil.opd.clone(),
+                    frequencies: p.view(f)?,
+                    frame,
+                    sin_max: self.wave_geometry().sin_max,
+                    wavelength_over_index: self.wave_geometry().wavelength,
+                    output: stencil,
+                },
+            )));
+        let output = p.scratch(BufferDesc::new(
+            ElementType::Complex32,
+            [shifts.len(), frequencies.len()],
+        ));
+        p.operations
+            .push(ResidentOp::Wave(w::Request::FocusCorrelation {
+                on_axis: self.geometry.is_on_axis(),
+                pupil,
+                geometry: self.wave_geometry(),
+                stencil: p.view(stencil)?,
+                shifts: Some(p.view(z)?),
+                output,
+            }));
+        p.outputs = vec![output];
+        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
+        let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        r.run_info
+            .warnings
+            .extend(self.warnings.iter().map(ToString::to_string));
+        let guard = backend.read_view(r.outputs[0].view())?;
+        let value = guard
+            .as_slice::<[f32; 2]>()?
+            .iter()
+            .enumerate()
+            .map(|(i, z)| {
+                let f = frequencies[i % frequencies.len()];
+                let t = -std::f64::consts::TAU
+                    * (f[0] * self.image_offset_mm[0] + f[1] * self.image_offset_mm[1]);
+                let (s, c) = t.sin_cos();
+                [
+                    z[0] as f64 * c - z[1] as f64 * s,
+                    z[0] as f64 * s + z[1] as f64 * c,
+                ]
+            })
+            .collect();
         Ok(WaveResult {
             value,
             run_info: r.run_info,
@@ -329,28 +462,55 @@ impl ResidentPupil {
         frequencies: PlanView,
     ) -> MkResult<BufferId> {
         let pupil = self.import(p);
+        let count = frequencies.desc.shape[0];
         let output = p.scratch(BufferDesc::new(
             ElementType::Complex32,
-            [frequencies.desc.shape[0]],
+            if self.geometry.is_on_axis() {
+                vec![1, count]
+            } else {
+                vec![count]
+            },
         ));
         let frame = self
             .geometry
             .chief_frame()
             .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
-        p.operations
-            .push(ResidentOp::Transforms(tr::Request::OpticalCorrelation(
-                tr::OpticalCorrelation {
-                    stencil: None,
-                    amplitude: pupil.amplitude,
-                    opd: pupil.opd,
-                    coverage: pupil.coverage,
-                    frequencies,
-                    frame,
-                    sin_max: self.wave_geometry().sin_max,
-                    wavelength_over_index: self.wave_geometry().wavelength,
+        let mut correlation = tr::OpticalCorrelation {
+            stencil: None,
+            amplitude: pupil.amplitude.clone(),
+            opd: pupil.opd.clone(),
+            coverage: pupil.coverage.clone(),
+            frequencies,
+            frame,
+            sin_max: self.wave_geometry().sin_max,
+            wavelength_over_index: self.wave_geometry().wavelength,
+            output,
+        };
+        if self.geometry.is_on_axis() {
+            let stencil = p.scratch(BufferDesc::new(
+                ElementType::F32,
+                [count, self.n * self.n, 5],
+            ));
+            correlation.output = stencil;
+            p.operations
+                .push(ResidentOp::Transforms(tr::Request::PrepareOpticalStencil(
+                    correlation,
+                )));
+            p.operations
+                .push(ResidentOp::Wave(w::Request::FocusCorrelation {
+                    on_axis: true,
+                    pupil,
+                    geometry: self.wave_geometry(),
+                    stencil: p.view(stencil)?,
+                    shifts: None,
                     output,
-                },
-            )));
+                }));
+        } else {
+            p.operations
+                .push(ResidentOp::Transforms(tr::Request::OpticalCorrelation(
+                    correlation,
+                )));
+        }
         Ok(output)
     }
     /// Complex sensor OTF at arbitrary frequencies. Lateral-colour placement is
@@ -369,7 +529,11 @@ impl ResidentPupil {
         let id = p.import(fs.view());
         let output = self.append_correlation(&mut p, p_view(id, fs.desc()))?;
         p.outputs = vec![output];
-        let r = backend.submit_plan(p, ctx)?.wait()?;
+        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
+        let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        r.run_info
+            .warnings
+            .extend(self.warnings.iter().map(ToString::to_string));
         let guard = backend.read_view(r.outputs[0].view())?;
         let value = guard
             .as_slice::<[f32; 2]>()?
@@ -485,4 +649,50 @@ impl PsfOutput {
             warnings: self.warnings.clone(),
         })
     }
+}
+
+mod resample;
+pub use resample::from_structured;
+mod zernike;
+pub use zernike::{ZernikeSolution, fit_zernike};
+
+/// Detector response for a sensor frequency batch, suitable for composing with
+/// the resident optical curves. Nyquist annotations remain small host metadata.
+pub fn detector_mtf(
+    backend: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    settings: &crate::DetectorSettings,
+    frequencies: &[[f64; 2]],
+    ctx: &JobContext,
+) -> MkResult<WaveResult<Vec<f64>>> {
+    settings.validate()?;
+    let fs = frequency_buffer(backend, frequencies, ctx)?;
+    let mut p = ResidentPlan::new(snapshot);
+    p.settings =
+        serde_json::json!({"p6":"detector_mtf","detector":settings,"frequencies":frequencies});
+    let f = p.import(fs.view());
+    let output = p.scratch(BufferDesc::new(ElementType::F32, [frequencies.len()]));
+    let aperture = settings
+        .aperture_mm
+        .unwrap_or(settings.pitch_mm.map(|v| v * settings.fill_factor.sqrt()))
+        .map(|v| v as f32);
+    p.operations.push(ResidentOp::Wave(w::Request::Detector {
+        frequencies: p.view(f)?,
+        aperture,
+        sigma: settings.diffusion_sigma_mm as f32,
+        output,
+    }));
+    p.outputs = vec![output];
+    let r = backend.submit_plan(p, ctx)?.wait()?;
+    let value = backend
+        .read_view(r.outputs[0].view())?
+        .as_slice::<f32>()?
+        .iter()
+        .map(|v| *v as f64)
+        .collect();
+    Ok(WaveResult {
+        value,
+        run_info: r.run_info,
+        stats: r.stats,
+    })
 }

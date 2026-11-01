@@ -7,10 +7,14 @@ use mklight_gpu::{
     wave_ops::{spec::*, *},
 };
 use std::time::Instant;
+mod resample;
 const PIXELS: usize = 256;
 const SAMPLES: usize = 256;
 const COMMAND_TERMS: usize = 1 << 20;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
+    if let Request::Resample(r) = r {
+        return resample::execute(r, x, ctl);
+    }
     let access = accesses(r);
     let mut p = params(r);
     let mut output = x.take_output(access.writes[0]);
@@ -19,8 +23,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     } else {
         None
     };
-    let mut acc = if matches!(r, Request::Huygens { .. }) {
-        Some(x.allocate(PIXELS * 4)?)
+    let mut acc = if matches!(
+        r,
+        Request::Huygens { .. } | Request::FocusCorrelation { .. }
+    ) {
+        Some(x.allocate(PIXELS * 6)?)
     } else {
         None
     };
@@ -32,6 +39,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         1 | 2 => (p.size * p.size) as usize,
         3 => (p.size * p.n * p.n) as usize,
         4 => p.size as usize,
+        6 => (p.size * p.field_side) as usize,
+        7 => p.n as usize,
         _ => 2 * p.n as usize,
     };
     let kernel = [
@@ -41,10 +50,13 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         "mkl_wave_focus",
         "mkl_wave_detector",
         "mkl_wave_lsf",
+        "mkl_wave_focus_correlation",
+        "mkl_wave_zernike",
     ][p.mode as usize];
     let pipeline = x.gpu.pipeline(&PipelineKey::plain(kernel))?;
     let start = Instant::now();
     let mut stage = StageStats {
+        operation: x.stats.stages.last().map_or(0, |s| s.operation + 1),
         name: "wave".into(),
         ..Default::default()
     };
@@ -55,10 +67,14 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         let mut dispatches = Vec::new();
         let mut work = 0;
         while first < total && work < COMMAND_TERMS {
-            let count = (total - first).min(if p.mode == 2 { PIXELS } else { 1 << 18 });
+            let count = (total - first).min(if matches!(p.mode, 2 | 6) {
+                PIXELS
+            } else {
+                1 << 18
+            });
             p.first = first as u32;
             p.count = count as u32;
-            if p.mode == 2 {
+            if matches!(p.mode, 2 | 6) {
                 p.sample_first = sample as u32;
                 p.sample_count = (n2 - sample).min(SAMPLES) as u32;
                 sample += p.sample_count as usize;
@@ -84,11 +100,18 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     e.set_buffer(index, b, o);
                 };
                 match p.mode {
-                    0 | 2 | 3 => {
+                    7 => {
+                        bind(0, 0);
+                        bind(1, 1);
+                    }
+                    0 | 2 | 3 | 6 => {
                         bind(0, 0);
                         bind(1, 1);
                         bind(2, 2);
-                        if p.mode != 0 {
+                        if p.mode == 6 {
+                            bind(8, 3);
+                            bind(9, if access.reads.len() > 4 { 4 } else { 2 });
+                        } else if p.mode != 0 {
                             bind(3, 3);
                         }
                     }
