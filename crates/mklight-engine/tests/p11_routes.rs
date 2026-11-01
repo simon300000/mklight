@@ -23,6 +23,57 @@ fn capabilities_match_registry_routes() {
 }
 
 #[test]
+#[ignore = "requires calibrated release evidence and actual Metal"]
+fn recorded_auto_cost_explicit_override_and_unknown_input() {
+    let data: Value =
+        serde_json::from_str(include_str!("../src/analysis/cost-evidence.json")).unwrap();
+    assert_eq!(
+        data["source_build"],
+        mklight_engine::analysis::gpu::cost_build()
+    );
+    let row = data["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["rings"] == 0 && row["decision"] == "cpu_reference")
+        .expect("a measured default CPU cost exception");
+    let system = samples::all()
+        .into_iter()
+        .find(|(name, _)| *name == row["sample"].as_str().unwrap())
+        .unwrap()
+        .1;
+    let engine = Engine::default();
+    let session = engine
+        .session_from_project(Project::new(system.clone()))
+        .unwrap();
+    let mut request = AnalysisRequest::new(row["analysis"].as_str().unwrap(), Value::Null);
+    let automatic = session.run_analysis(&request, &JobContext::new()).unwrap();
+    assert_eq!(automatic.backend.used, "cpu_reference");
+    assert_eq!(
+        automatic.backend.cost_decision.as_ref().unwrap()["decision"],
+        "cpu_reference"
+    );
+    assert!(automatic.backend.qualification.is_none());
+    request.backend = Some(Backend::Gpu("metal".into()));
+    let explicit = session.run_analysis(&request, &JobContext::new()).unwrap();
+    assert_eq!(explicit.backend.used, "gpu:metal");
+    assert_eq!(
+        explicit.backend.cost_decision.as_ref().unwrap()["decision"],
+        "explicit_backend"
+    );
+    let mut changed = system;
+    changed.surfaces[1].thickness += 1e-9;
+    let session = engine.session_from_project(Project::new(changed)).unwrap();
+    request.backend = None;
+    let unknown = session.run_analysis(&request, &JobContext::new()).unwrap();
+    assert_eq!(
+        unknown.backend.cost_decision.as_ref().unwrap()["decision"],
+        "qualified_metal"
+    );
+    assert_eq!(unknown.backend.used, "gpu:metal");
+}
+
+#[test]
 #[ignore = "requires real Metal; complete-chain release matrix"]
 fn all_sample_resident_routes() {
     let engine = Engine::new(EngineConfig {

@@ -13,10 +13,10 @@ fn backend() -> Arc<dyn ComputeBackend> {
 fn context(b: Arc<dyn ComputeBackend>) -> GpuContext {
     GpuContext::new(b, Snapshot::new(samples::singlet()).unwrap())
 }
-/// LM solves keep host QR below the measured crossover and use the resident
-/// tall QR (with retained Q projections) above it; both reach the optimum.
+/// Explicit resident LM uses device QR across sizes and reaches the same
+/// independently checked optimum as the f64 solve.
 #[test]
-fn tall_qr_crossover_and_resident_lm() {
+fn resident_lm_matches_reference_across_matrix_sizes() {
     let b = backend();
     let ctx = JobContext::new();
     for (n, m) in [(8, 32), (100, 400), (64, 4096)] {
@@ -59,11 +59,7 @@ fn tall_qr_crossover_and_resident_lm() {
             .fold(0., f64::max);
         assert!(dx < 1e-6, "V={n}: {dx}");
         let stats = p.context.stats();
-        assert_eq!(
-            stats.command_buffers > 0,
-            m * n * n >= 1 << 24,
-            "V={n} M={m}"
-        );
+        assert!(stats.command_buffers > 0, "V={n} M={m}");
         assert_eq!(stats.fallback_count, 0);
         eprintln!(
             "P8 V={n} M={m} merit={:e} dx={dx:e} stats={}",
