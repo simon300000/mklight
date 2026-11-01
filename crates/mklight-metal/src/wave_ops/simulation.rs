@@ -126,7 +126,9 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
                     Ok(())
                 })?
             };
-            if invalid.is_some() { x.flush()?; }
+            if invalid.is_some() {
+                x.flush()?;
+            }
             if let Some(v) = &invalid {
                 let count = v.as_slice()[0];
                 if count > 0 {

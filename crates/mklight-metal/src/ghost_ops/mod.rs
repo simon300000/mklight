@@ -522,7 +522,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.check()?;
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "ghost probes");
-                tile = crate::radiometry::next_tile(tile, 1 << 20, cs.gpu_seconds);
+                if offset < n {
+                    // Probes trace whole ghost paths (~0.1 µs each on the P9
+                    // Double Gauss), so calibrate beyond 2^16 items.
+                    tile = crate::radiometry::next_tile(x, tile, 1 << 20, n - offset, 1 << 16)?;
+                }
             }
             x.count_fallbacks(counter);
             x.put_output(*output, out);

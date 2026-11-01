@@ -1247,12 +1247,19 @@ bounds, not a promise of 10 ms device time for an arbitrary kernel. A genuine
 host read or publication flushes the buffer. Reporting-only fallback counters
 and pupil-normalisation checks are deferred to completion. Cache entries built
 by GPU work remain local to the executor until a flush; same-plan consumers can
-reuse them immediately. Large Newton batches retain timing-calibrated device
-checkpoints; small chief/table/pupil chains stay together. Tiny expensive
-instruction sequences are bounded by the dispatch charge as well as thread work. Recycled scratch stays pinned
-until completion; abandoned, uncommitted encoding is discarded on cancellation
-or error. Internal shared-storage guards reject host slices while a pending
-GPU write exists. No pending storage becomes a public `ReadView`.
+reuse them immediately. Time-calibrated tiles (Newton aiming, RI
+illumination, coating/polarization, ghost probes) still target 10–15 ms of
+measured device time: they calibrate from a submission the work bound
+completed, or complete the batch as a timing checkpoint only when another tile
+follows and it would exceed the operation's unmeasured size (aiming: the first
+of several tiles, and every tile of large batches). Single-tile operations and
+small chief/table/pupil chains stay fused. Tiny expensive instruction
+sequences are bounded by the dispatch charge as well as thread work. Recycled
+scratch stays pinned until completion; abandoned, uncommitted encoding is
+discarded on cancellation or error. Internal shared-storage guards reject host
+slices, and synchronous (non-batched) command bindings, while a conflicting
+pending device access exists, since such a command would run before the
+uncommitted batch. No pending storage becomes a public `ReadView`.
 `ResidentPlan.command_work_budget` selects that work bound (default 2²⁰);
 zero completes each encoder call separately for scheduling cross-checks. The
 CPU-f32 executor accepts the same plans and preserves its specified arithmetic.

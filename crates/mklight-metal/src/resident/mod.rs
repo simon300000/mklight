@@ -189,12 +189,11 @@ pub(crate) struct Execution<'a> {
     systems: HashMap<SystemHandle, Arc<Uploaded>>,
     commands: RefCell<CommandBatch>,
     retired: Vec<Lease>,
-    checks: Vec<(
-        Lease,
-        fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>,
-    )>,
+    checks: Vec<(Lease, CompletionCheck)>,
     cache_pending: RefCell<Vec<CachePublication>>,
 }
+/// Host validation of a buffer once the batch writing it has completed.
+type CompletionCheck = fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>;
 struct CachePublication {
     key: OperationCacheKey,
     value: Arc<dyn Any + Send + Sync>,
@@ -231,11 +230,20 @@ impl Execution<'_> {
         self.retired.clear();
         Ok(stats)
     }
-    pub(crate) fn check_buffer(
-        &mut self,
-        buffer: Lease,
-        check: fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>,
-    ) {
+    /// Device seconds of the submission holding the latest encoder call, if
+    /// the work bound already completed it (free timing feedback).
+    pub(crate) fn observed(&self) -> Option<f64> {
+        self.commands.borrow().observed
+    }
+    /// Completes all encoded work and returns the device seconds of the
+    /// submission holding the latest encoder call. Time-calibrated tiles use
+    /// it as feedback; it includes any earlier fused work, so it errs towards
+    /// smaller tiles.
+    pub(crate) fn measure(&mut self) -> MkResult<f64> {
+        self.flush()?;
+        Ok(self.observed().unwrap_or(0.))
+    }
+    pub(crate) fn check_buffer(&mut self, buffer: Lease, check: CompletionCheck) {
         self.checks.push((buffer, check));
     }
     pub(crate) fn count_fallbacks(&mut self, counter: Lease) {

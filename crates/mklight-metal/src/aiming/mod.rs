@@ -218,19 +218,30 @@ fn newton_commands(
         let wall = Instant::now();
         // SAFETY: callers bind plan-validated extents; kernels check every
         // device-provided field, system and wavelength index.
-        let mut cs = unsafe {
+        unsafe {
             x.run(progress.2, |e| {
                 encode(e, x, p);
                 Ok(())
             })?
         };
-        // Measure the first Newton tile only for large batches; small plans
-        // keep chief/table/pupil work together. Subsequent tiles use that rate.
-        if n > 65536 || (offset == 0 && n > MIN) { cs.gpu_seconds = x.flush()?.gpu_seconds; }
-        account(x, stage, CommandStats::default(), wall, size_of::<AimParams>());
-        if cs.gpu_seconds > 0. {
-            let fit = (count as f64 * AIM_COMMAND_SECONDS / cs.gpu_seconds) as usize;
-            next = fit.clamp(MIN, (8 * count).clamp(MIN, MAX));
+        account(
+            x,
+            stage,
+            CommandStats::default(),
+            wall,
+            size_of::<AimParams>(),
+        );
+        // Single-tile batches stay fused with their chief/table/pupil chain.
+        // Otherwise the first tile completes to calibrate the next; later tiles
+        // of mid-sized batches keep that rate. Every tile of a large batch
+        // (~15 ms each) completes, so progress follows device completion.
+        let more = offset + count < n;
+        if n > 65536 || (offset == 0 && more) {
+            let seconds = x.measure()?;
+            if seconds > 0. {
+                let fit = (count as f64 * AIM_COMMAND_SECONDS / seconds) as usize;
+                next = fit.clamp(MIN, (8 * count).clamp(MIN, MAX));
+            }
         }
         offset += count;
         ctl.check()?;

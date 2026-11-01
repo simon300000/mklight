@@ -119,12 +119,25 @@ impl<T: Pod> SharedBuffer<T> {
         self.raw.contents().cast()
     }
 
-    pub fn as_slice(&self) -> &[T] {
+    /// Panics if encoded, uncompleted device work may write this storage (or,
+    /// for `write`, access it at all). Host slices and synchronous commands
+    /// must not observe or race a deferred resident batch.
+    pub(crate) fn assert_settled(&self, write: bool) {
+        let pending = if write {
+            &self.access.users
+        } else {
+            &self.access.writers
+        };
         assert_eq!(
-            self.access.writers.load(Ordering::Acquire),
+            pending.load(Ordering::Acquire),
             0,
-            "host read before resident flush"
+            "buffer {} before resident flush",
+            if write { "write" } else { "read" }
         );
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        self.assert_settled(false);
         // SAFETY: `contents` points to at least `len * size_of::<T>()` bytes of
         // CPU-visible memory, suitably aligned (Metal buffers are page
         // aligned), and `T: Pod` accepts any bit pattern. GPU writes only
@@ -134,11 +147,7 @@ impl<T: Pod> SharedBuffer<T> {
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        assert_eq!(
-            self.access.users.load(Ordering::Acquire),
-            0,
-            "host write before resident flush"
-        );
+        self.assert_settled(true);
         // SAFETY: as above; `&mut self` guarantees unique host access.
         unsafe { std::slice::from_raw_parts_mut(self.ptr().as_ptr(), self.len) }
     }
@@ -201,24 +210,6 @@ impl SharedBuffer<u32> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn staging_counter_has_a_copying_control() {
-        let device = objc2_metal::MTLCreateSystemDefaultDevice().expect("host Metal required");
-        let before = copied_bytes();
-        let copied = SharedBuffer::from_slice(&device, &[1u32, 2, 3, 4]).unwrap();
-        assert_eq!(copied_bytes() - before, 16);
-        let filled = SharedBuffer::<u32>::filled(&device, 4, |v| v.fill(7)).unwrap();
-        let pages = SharedBuffer::from_host(&device, HostAllocation::new(4).unwrap()).unwrap();
-        assert_eq!(copied_bytes() - before, 16);
-        assert_eq!(copied.as_slice(), &[1, 2, 3, 4]);
-        assert_eq!(filled.as_slice(), &[7; 4]);
-        assert_eq!(pages.as_slice(), &[0; 4]);
-    }
-}
-
 #[derive(Default)]
 struct AccessState {
     users: AtomicUsize,
@@ -236,5 +227,45 @@ impl Drop for DeviceAccess {
             self.state.writers.fetch_sub(1, Ordering::AcqRel);
         }
         self.state.users.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn staging_counter_has_a_copying_control() {
+        let device = objc2_metal::MTLCreateSystemDefaultDevice().expect("host Metal required");
+        let before = copied_bytes();
+        let copied = SharedBuffer::from_slice(&device, &[1u32, 2, 3, 4]).unwrap();
+        assert_eq!(copied_bytes() - before, 16);
+        let filled = SharedBuffer::<u32>::filled(&device, 4, |v| v.fill(7)).unwrap();
+        let pages = SharedBuffer::from_host(&device, HostAllocation::new(4).unwrap()).unwrap();
+        assert_eq!(copied_bytes() - before, 16);
+        assert_eq!(copied.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(filled.as_slice(), &[7; 4]);
+        assert_eq!(pages.as_slice(), &[0; 4]);
+    }
+
+    /// Deferred device accesses exclude conflicting host slices and
+    /// synchronous bindings until their guards drop (completion/abandonment).
+    #[test]
+    fn pending_device_access_excludes_host_and_synchronous_use() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let device = objc2_metal::MTLCreateSystemDefaultDevice().expect("host Metal required");
+        let mut b = SharedBuffer::<u32>::filled(&device, 4, |v| v.fill(1)).unwrap();
+        let read = b.device_access(false);
+        assert!(!b.available());
+        assert_eq!(b.as_slice(), &[1; 4]);
+        b.assert_settled(false);
+        assert!(catch_unwind(AssertUnwindSafe(|| b.as_mut_slice()[0] = 2)).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| b.assert_settled(true))).is_err());
+        let write = b.device_access(true);
+        assert!(catch_unwind(AssertUnwindSafe(|| b.as_slice().len())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| b.assert_settled(false))).is_err());
+        drop((read, write));
+        assert!(b.available());
+        b.as_mut_slice()[0] = 2;
+        assert_eq!(b.as_slice(), &[2, 1, 1, 1]);
     }
 }

@@ -387,9 +387,12 @@ impl Encoder<'_> {
         };
     }
     /// Bind `buf`, which the kernel only reads, at element `offset`.
+    /// A synchronous command commits before any pending deferred batch, so it
+    /// must not read storage that batch writes (it would see stale data).
     pub(crate) fn set_buffer<T: Pod>(&self, index: usize, buf: &SharedBuffer<T>, offset: usize) {
-        if let Some(accesses) = self.deferred {
-            accesses.borrow_mut().push(buf.device_access(false));
+        match self.deferred {
+            Some(accesses) => accesses.borrow_mut().push(buf.device_access(false)),
+            None => buf.assert_settled(false),
         }
         self.bind(index, buf, offset);
     }
@@ -402,8 +405,9 @@ impl Encoder<'_> {
         buf: &mut SharedBuffer<T>,
         offset: usize,
     ) {
-        if let Some(accesses) = self.deferred {
-            accesses.borrow_mut().push(buf.device_access(true));
+        match self.deferred {
+            Some(accesses) => accesses.borrow_mut().push(buf.device_access(true)),
+            None => buf.assert_settled(true),
         }
         self.bind(index, buf, offset);
     }
@@ -461,6 +465,9 @@ pub(crate) struct CommandBatch {
     pending: Option<BatchEncoding>,
     work_budget: usize,
     pub(crate) completed: CommandStats,
+    /// Device seconds of a submission completed by the latest `encode` call
+    /// or a later `flush` (timing feedback for calibrated tiles).
+    pub(crate) observed: Option<f64>,
     pub(crate) max_seconds: f64,
 }
 struct BatchEncoding {
@@ -476,6 +483,7 @@ impl CommandBatch {
             pending: None,
             work_budget,
             completed: CommandStats::default(),
+            observed: None,
             max_seconds: 0.,
         }
     }
@@ -486,6 +494,7 @@ impl CommandBatch {
         label: &str,
         encode: impl FnOnce(&Encoder<'_>) -> MkResult<()>,
     ) -> MkResult<CommandStats> {
+        self.observed = None;
         if self.pending.is_none() {
             let cb = gpu
                 .queue
@@ -541,6 +550,7 @@ impl CommandBatch {
         };
         self.completed.gpu_seconds += stats.gpu_seconds;
         self.completed.command_buffers += 1;
+        self.observed = Some(stats.gpu_seconds);
         Ok(stats)
     }
 }

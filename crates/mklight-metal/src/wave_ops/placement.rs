@@ -123,7 +123,9 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         x.check_buffer(v, |v, _| {
             let a: &[mklight_gpu::Df32] = bytemuck::cast_slice(v.as_slice());
             if !a[1].is_finite() || a[1].hi <= 0. {
-                return Err(mklight_core::MkError::Numerical("pupil transmits no finite light".into()));
+                return Err(mklight_core::MkError::Numerical(
+                    "pupil transmits no finite light".into(),
+                ));
             }
             Ok(())
         });

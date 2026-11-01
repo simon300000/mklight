@@ -392,7 +392,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-        let adaptive_seconds = if adaptive { x.flush()?.gpu_seconds } else { 0. };
+        let more = offset + (p.count as usize) < n;
+        let adaptive_seconds = if adaptive && more { x.measure()? } else { 0. };
         stage.device_seconds += cs.gpu_seconds;
         stage.command_buffers += cs.command_buffers;
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
