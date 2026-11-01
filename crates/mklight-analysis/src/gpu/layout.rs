@@ -95,7 +95,7 @@ impl LayoutProvider for Provider<'_> {
                 ),
             )?;
             let v = self.backend.read_view(r.outputs[0].view())?;
-            for p in v.as_slice::<Df32>()?.chunks_exact(3) {
+            for p in v.as_slice::<Df32>()?.as_chunks::<3>().0 {
                 points.push(std::array::from_fn(|k| p[k].to_f64() + origin[k]));
             }
             self.evidence.borrow_mut().push(r.run_info);
@@ -116,18 +116,13 @@ impl LayoutProvider for Provider<'_> {
         // row, so arbitrary field/wavelength choices retain the original order.
         let metadata = geo.records::<FieldSpec>(&mut p, jobs.len(), |i| {
             let (f, w, _, _, _) = jobs[i];
-            let (si, wi) = geo
-                .wavelengths
-                .iter()
-                .enumerate()
-                .find_map(|(s, ws)| ws.iter().position(|&v| v == w).map(|k| (s, k)))
-                .unwrap();
+            let (si, wi) = geo.chunk(w)?;
             FieldSpec::new(
                 t.system(),
                 t.paraxial(),
                 t.field(f).point,
-                si as u32,
-                wi as u32,
+                si,
+                wi,
                 t.aiming(),
             )
         })?;
@@ -140,9 +135,11 @@ impl LayoutProvider for Provider<'_> {
             }
             Ok(())
         })?;
+        let key = geo.field_key(&p, metadata)?;
         let hits = geo.append_trace(
             &mut p,
             metadata,
+            key,
             samples,
             jobs.len(),
             steps,
@@ -150,19 +147,9 @@ impl LayoutProvider for Provider<'_> {
             true,
             true,
         )?;
-        let g = ResidentGrid {
-            hits: hits.clone(),
-            chiefs: hits,
-            chief_wavelengths: vec![],
-            fields: jobs.len(),
-            wavelengths: vec![],
-            pupil_count: 1,
-        };
-        let (points, _, mask, _, launch) = geo.global_records(&mut p, &g, slots, [0.0; 3])?;
-        if let Some(ResidentOp::Geometry(geometry::Request::Records(r))) = p.operations.last_mut() {
-            r.terminal = true;
-        }
-        p.outputs = vec![points, mask, launch, g.hits.status];
+        let (points, _, mask, _, launch) =
+            geo.global_records(&mut p, &hits, slots, [0.0; 3], true)?;
+        p.outputs = vec![points, mask, launch, hits.status];
         let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
         let views: Vec<_> = r
             .outputs

@@ -515,7 +515,7 @@ the free function includes that preparation in each call.
 | `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | P1 generation/aiming and tracing; chief-relative double-float positions/slopes and reference-sphere OPD; P3 two-pass spot moments; optional requested points |
 | `encircled_energy_job` | Double-float radii/square half-widths; P3 stable distance/ID sort and inclusive weighted scan; device binary-search curve/quantile queries with a bin-uncertainty bound |
 | `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and P3 fixed reductions; frequency tiles bound scratch storage |
-| `best_focus_job` | Trace once; centred position/slope products form the quadratic bracket; every Brent trial reprojects and reduces the resident rays with two-pass moments |
+| `best_focus_job` | Trace once; one two-pass reduction of centred position/slope products gives each field's exact defocus quadratic, which brackets and drives the host Brent search and the through-focus curve; the optimum is re-reduced two-pass, where the quadratic form could cancel |
 | `field_map_job`, `relative_illumination_job`, `illumination_rows` | Aiming-off pupil probes; real-aimed CRA against the image sag normal; the nested image-point RI solve and implicit direction Jacobian of §2.4, followed by P3 quadrature reductions |
 | `field_curvature_job`, `grid_distortion_job` | Resident chief/source tables, double-float Coddington pencils and independent close-ray pencils; host packs scalar first-order labels and distortion columns |
 | `longitudinal_aberration_job`, `lateral_colour_job` | Zonal chief crossings and chief-relative spectral offsets; small paraxial reference labels remain host work |
@@ -534,8 +534,10 @@ relative to a display origin before final public f64 packing. The existing
 Dense footprint overlays tile at at most 2²⁰ surface records, preserving
 field/wavelength/surface order while retaining requested public clouds. Extra
 plan statistics remain in RunInfo; final output storage scales with the
-requested cloud size. Through-focus spots retain one traced bundle and process focus planes in
-sequence, rather than allocating focus × ray scratch.
+requested cloud size. Through-focus spots evaluate the same per-field defocus
+quadratic (chief-relative RMS adds the moving centroid), so one reduction
+serves every plane without focus × ray scratch. Chief rays are traced only
+for adapters that reference them.
 
 The private `mklight_gpu::geometry` operation records are version 1, with
 numeric layouts in `include/mklight_geometry_types.h`. They consume P1
@@ -564,7 +566,9 @@ requested bin within the geometry error budget. When that bound exceeds
 0.002, the complete reference EE result preserves its exact bins and automatic
 radius, records the attempted resident chain and counts the reference
 fallback; its actual result backend/precision are CPU f64. No requested bin
-is widened to hide classification error. A caller with an independently
+is widened to hide classification error. The automatic outer radius is the
+largest arrived distance, so that bin holds every arrived ray by construction
+(as in the reference) and is not classified against a recomputed distance. A caller with an independently
 qualified, tighter full-grid position bound can pass it to
 `encircled_energy_with_uncertainty_job`; that bound must include its safety
 margin and is recorded in RunInfo. Singular distortion denominators use a

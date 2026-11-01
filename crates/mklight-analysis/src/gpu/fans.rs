@@ -26,7 +26,7 @@ pub fn ray_fan_job(
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
-    let g = geo.append_grid(
+    let mut g = geo.append_grid(
         &mut p,
         &points,
         &wls,
@@ -37,6 +37,7 @@ pub fn ray_fan_job(
         false,
         ctx,
     )?;
+    geo.append_chiefs(&mut p, &mut g)?;
     let (q, mask) =
         geo.coordinates(&mut p, &g, 0.0, s.reference == FanReference::SameWavelength)?;
     p.outputs = vec![q, mask];
@@ -51,7 +52,7 @@ pub fn ray_fan_job(
         ctx.check()?;
         let mut axes = [Vec::new(), Vec::new()];
         for (wi, &w) in wls.iter().enumerate() {
-            for axis in 0..2 {
+            for (axis, curves) in axes.iter_mut().enumerate() {
                 let component = 1 - axis;
                 let start = (fi * wls.len() + wi) * 2 * s.samples + axis * s.samples;
                 let val = |k: usize| {
@@ -65,7 +66,7 @@ pub fn ray_fan_job(
                         })
                         .collect()
                 };
-                axes[axis].push(FanCurve {
+                curves.push(FanCurve {
                     wavelength: w,
                     pupil: coords.clone(),
                     values: val(component),
@@ -113,7 +114,7 @@ pub fn opd_fan_job(
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
-    let g = geo.append_grid(
+    let mut g = geo.append_grid(
         &mut p,
         &pts,
         &wls,
@@ -124,20 +125,12 @@ pub fn opd_fan_job(
         false,
         ctx,
     )?;
+    geo.append_chiefs(&mut p, &mut g)?;
+    let chiefs = g.chiefs()?.clone();
     let n = g.hits.rays.count;
-    let map = geo.import::<u32>(&mut p, [n], |out| {
-        for (i, v) in out.iter_mut().enumerate() {
-            let row = i / pupil.len();
-            let fi = row / wls.len();
-            let w = wls[row % wls.len()];
-            *v = (fi * g.chief_wavelengths.len()
-                + g.chief_wavelengths.iter().position(|&v| v == w).unwrap())
-                as u32;
-        }
-        Ok(())
-    })?;
-    let reference = geo.import::<Df32>(&mut p, [g.chiefs.rays.count, 3], |out| {
-        for i in 0..g.chiefs.rays.count {
+    let map = geo.chief_map(&mut p, &g, true)?;
+    let reference = geo.import::<Df32>(&mut p, [chiefs.rays.count, 3], |out| {
+        for i in 0..chiefs.rays.count {
             let w = g.chief_wavelengths[i % g.chief_wavelengths.len()];
             let z = t.paraxial().at(w).exit_pupil_position;
             out[3 * i] = if z.is_finite() {
@@ -157,7 +150,7 @@ pub fn opd_fan_job(
             mklight_gpu::geometry::Opd {
                 axial: false,
                 hits: g.hits,
-                chiefs: g.chiefs,
+                chiefs,
                 chief_index: p.view(map)?,
                 reference: p.view(reference)?,
                 output,

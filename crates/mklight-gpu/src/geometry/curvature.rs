@@ -134,6 +134,7 @@ fn foci<E: FpEnv>(x: M<E>, t: M<E>, u: B<E>, k: V<E>) -> Option<[D<E>; 3]> {
     }
     Some([v[0], v[1], k[2]])
 }
+#[allow(clippy::too_many_arguments)]
 pub fn focus<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],

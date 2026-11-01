@@ -19,9 +19,33 @@ struct Params {
     defocus: [f32; 2],
     origin: [[f32; 2]; 3],
 }
+const _: () = assert!(size_of::<Params>() == 64, "MklGeometryParams");
 fn bind(e: &crate::context::Encoder<'_>, i: usize, x: &Execution<'_>, v: &PlanView) {
     let (b, o) = x.buffer(v);
     e.set_buffer(i, b, o);
+}
+/// Packed headers, surfaces and coefficients at slots 0-2.
+fn bind_systems(
+    e: &crate::context::Encoder<'_>,
+    x: &Execution<'_>,
+    uploaded: Option<&crate::backend::Uploaded>,
+    systems: &SystemSet,
+) {
+    if let Some(u) = uploaded {
+        e.set_buffer(0, &u.headers, 0);
+        e.set_buffer(1, &u.surfaces, 0);
+        e.set_buffer(2, &u.coefficients, 0);
+    } else if let SystemSet::Resident {
+        headers,
+        surfaces,
+        coefficients,
+        ..
+    } = *systems
+    {
+        bind(e, 0, x, &view(headers, ElementType::U32, [0]));
+        bind(e, 1, x, &view(surfaces, ElementType::U32, [0]));
+        bind(e, 2, x, &view(coefficients, ElementType::DoubleFloat, [0]));
+    }
 }
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
@@ -144,54 +168,23 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     };
     stage.name = name.into();
     p.stride = n as u32;
-    let uploaded = match r {
-        Request::Illumination(r) => match r.systems {
-            SystemSet::Uploaded(h) => Some(x.system(h)?),
-            _ => None,
-        },
-        Request::Coddington(r) => match r.systems {
-            SystemSet::Uploaded(h) => Some(x.system(h)?),
-            _ => None,
-        },
-        Request::SurfaceSamples(r) => match r.systems {
-            SystemSet::Uploaded(h) => Some(x.system(h)?),
-            _ => None,
-        },
+    let uploaded = match r.systems() {
+        Some(SystemSet::Uploaded(h)) => Some(x.system(*h)?),
         _ => None,
     };
-    if let Request::SurfaceSamples(r) = r {
-        p.systems = uploaded.as_ref().map_or_else(
-            || match r.systems {
-                SystemSet::Resident { count, .. } => count as u32,
-                _ => 0,
-            },
-            |u| u.set.headers.len() as u32,
-        );
-    }
-    if let Request::Coddington(r) = r {
-        p.systems = uploaded.as_ref().map_or_else(
-            || match r.systems {
-                SystemSet::Resident { count, .. } => count as u32,
-                _ => 0,
-            },
-            |u| u.set.headers.len() as u32,
-        );
-    }
-    if let Request::Illumination(r) = r {
-        p.systems = uploaded.as_ref().map_or_else(
-            || match r.systems {
-                SystemSet::Resident { count, .. } => count as u32,
-                _ => 0,
-            },
-            |u| u.set.headers.len() as u32,
-        );
-    }
-    if let Request::SurfaceSamples(r) = r {
-        if let Some(v) = &r.projection {
-            p.centroid = 1;
-            p.segment = v.frames.desc.shape[0] as u32;
-            p.origin = v.origin.map(|v| [v.hi, v.lo]);
-        }
+    p.systems = match (&uploaded, r.systems()) {
+        (Some(u), _) => u.set.headers.len() as u32,
+        (None, Some(SystemSet::Resident { count, .. })) => *count as u32,
+        _ => 0,
+    };
+    if let Request::SurfaceSamples(SurfaceSamples {
+        projection: Some(v),
+        ..
+    }) = r
+    {
+        p.centroid = 1;
+        p.segment = v.frames.desc.shape[0] as u32;
+        p.origin = v.origin.map(|v| [v.hi, v.lo]);
     }
     if let Request::Characteristic(r) = r {
         p.stride = r.mask.desc.len()? as u32;
@@ -200,21 +193,17 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let a = mklight_gpu::geometry::accesses(r);
     let mut out: Vec<_> = a.writes.iter().map(|&id| x.take_output(id)).collect();
     let pso = x.gpu.pipeline(&PipelineKey::plain(name))?;
-    let adaptive = matches!(r, Request::Illumination(_) | Request::Coddington(_));
-    // A Newton launch must occupy the device before its timing can predict
-    // throughput. Tiny launches measure a few lanes on one core and never
-    // grow to useful occupancy under a fixed time target.
-    let minimum = if matches!(r, Request::Illumination(_)) {
-        4096
-    } else {
-        16
+    // RI nodes run nested Newton solves: size those commands adaptively from
+    // measured throughput, starting large enough to occupy the device. The
+    // other kernels are closed-form per thread; fixed chunks only bound the
+    // command time (and so the cancellation latency).
+    let adaptive = matches!(r, Request::Illumination(_));
+    let (minimum, maximum) = (4096, 1 << 18);
+    let mut next = match r {
+        Request::Illumination(_) => minimum,
+        Request::Coddington(_) => 1 << 16,
+        _ => 1 << 22,
     };
-    let maximum = if matches!(r, Request::Illumination(_)) {
-        1 << 18
-    } else {
-        4096
-    };
-    let mut next = if adaptive { minimum } else { 1 << 18 };
     let mut offset = 0;
     while offset < n {
         ctl.check()?;
@@ -284,28 +273,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(8, &mut out[1], 0);
                     }
                     Request::Illumination(r) => {
-                        if let Some(u) = &uploaded {
-                            e.set_buffer(0, &u.headers, 0);
-                            e.set_buffer(1, &u.surfaces, 0);
-                            e.set_buffer(2, &u.coefficients, 0);
-                        } else if let SystemSet::Resident {
-                            headers,
-                            surfaces,
-                            coefficients,
-                            ..
-                        } = r.systems
-                        {
-                            for (i, (id, ty)) in [
-                                (headers, ElementType::U32),
-                                (surfaces, ElementType::U32),
-                                (coefficients, ElementType::DoubleFloat),
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            {
-                                bind(e, i, x, &view(id, ty, [0]));
-                            }
-                        }
+                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
                         bind(
                             e,
                             3,
@@ -338,28 +306,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(3, &mut out[1], 0);
                     }
                     Request::Coddington(r) => {
-                        if let Some(u) = &uploaded {
-                            e.set_buffer(0, &u.headers, 0);
-                            e.set_buffer(1, &u.surfaces, 0);
-                            e.set_buffer(2, &u.coefficients, 0);
-                        } else if let SystemSet::Resident {
-                            headers,
-                            surfaces,
-                            coefficients,
-                            ..
-                        } = r.systems
-                        {
-                            for (i, (id, ty)) in [
-                                (headers, ElementType::U32),
-                                (surfaces, ElementType::U32),
-                                (coefficients, ElementType::DoubleFloat),
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            {
-                                bind(e, i, x, &view(id, ty, [0]));
-                            }
-                        }
+                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
                         for (i, (id, ty)) in [
                             (r.hits.records.unwrap(), ElementType::F32),
                             (r.hits.record_low.unwrap(), ElementType::F32),
@@ -425,28 +372,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(4, &mut out[1], 0);
                     }
                     Request::SurfaceSamples(r) => {
-                        if let Some(u) = &uploaded {
-                            e.set_buffer(0, &u.headers, 0);
-                            e.set_buffer(1, &u.surfaces, 0);
-                            e.set_buffer(2, &u.coefficients, 0);
-                        } else if let SystemSet::Resident {
-                            headers,
-                            surfaces,
-                            coefficients,
-                            ..
-                        } = r.systems
-                        {
-                            for (i, (id, ty)) in [
-                                (headers, ElementType::U32),
-                                (surfaces, ElementType::U32),
-                                (coefficients, ElementType::DoubleFloat),
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            {
-                                bind(e, i, x, &view(id, ty, [0]));
-                            }
-                        }
+                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
                         bind(e, 3, x, &r.samples);
                         if let Some(v) = &r.projection {
                             bind(e, 6, x, &v.frames);
@@ -476,8 +402,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         if adaptive {
             let fit = (p.count as f64 * 0.010 / cs.gpu_seconds.max(1e-6)) as usize;
             next = fit.clamp(minimum, (p.count as usize * 8).clamp(minimum, maximum));
-        }
-        if matches!(r, Request::Illumination(_)) {
             x.stats.parameter_bytes += 2 * size_of::<mklight_gpu::layout::TraceParams>() as u64;
         }
     }

@@ -14,7 +14,9 @@ mod layout;
 mod maps;
 pub use layout::layout_job;
 mod illumination;
-pub use illumination::{IlluminationBuffers, illumination_rows, relative_illumination_job};
+pub use illumination::{
+    IlluminationBuffers, IlluminationRows, illumination_rows, relative_illumination_job,
+};
 mod records;
 pub use records::{
     GridResult, footprint_job, footprint_overlay_job, ray_grid_job, semi_diameters_job,
@@ -106,7 +108,9 @@ impl<'a> Geometry<'a> {
         })
     }
     /// Append resident generation and trace for a field/wavelength/pupil grid.
-    /// Rows follow fields, wavelengths, then pupil; chiefs include primary.
+    /// Rows follow fields, wavelengths, then pupil. Chief rays (including the
+    /// primary wavelength) are traced only by [`Self::append_chiefs`].
+    #[allow(clippy::too_many_arguments)]
     pub fn append_grid(
         &self,
         p: &mut ResidentPlan,
@@ -127,18 +131,13 @@ impl<'a> Geometry<'a> {
         let nf = fields.len() * cw.len();
         let metadata = self.records::<FieldSpec>(p, nf, |i| {
             let w = cw[i % cw.len()];
-            let (si, wi) = self
-                .wavelengths
-                .iter()
-                .enumerate()
-                .find_map(|(s, ws)| ws.iter().position(|&v| v == w).map(|k| (s, k)))
-                .ok_or_else(|| mklight_core::MkError::InvalidParam(format!("no wavelength {w}")))?;
+            let (si, wi) = self.chunk(w)?;
             FieldSpec::new(
                 self.tracer.system(),
                 self.tracer.paraxial(),
                 fields[i / cw.len()],
-                si as u32,
-                wi as u32,
+                si,
+                wi,
                 aiming,
             )
         })?;
@@ -148,8 +147,11 @@ impl<'a> Geometry<'a> {
             }
             Ok(())
         })?;
-        let c_samples =
-            self.records::<Sample>(p, nf, |i| Ok(Sample::new([0.0; 2], i as u32, i as u64)))?;
+        // Wavelength rows of the metadata for each requested wavelength.
+        let rows: Vec<_> = wls
+            .iter()
+            .map(|w| cw.iter().position(|v| v == w).unwrap())
+            .collect();
         let count = fields.len() * wls.len() * pupil.len();
         let samples = self.records::<Sample>(p, count, |i| {
             if i % 4096 == 0 {
@@ -157,27 +159,80 @@ impl<'a> Geometry<'a> {
             }
             let row = i / pupil.len();
             let wi = row % wls.len();
-            let fi = row / wls.len();
-            let index = fi * cw.len() + cw.iter().position(|&w| w == wls[wi]).unwrap();
+            let index = row / wls.len() * cw.len() + rows[wi];
             let mut s = Sample::new(pupil[i % pupil.len()], index as u32, i as u64);
             s.weight = self.tracer.system().wavelength_weights[wls[wi]] as f32;
             Ok(s)
         })?;
-        let chiefs = self.append_trace(p, metadata, c_samples, nf, steps, aiming, false, false)?;
-        let hits = self.append_trace(p, metadata, samples, count, steps, aiming, clip, records)?;
+        let field_key = self.field_key(p, metadata)?;
+        let hits = self.append_trace(
+            p,
+            metadata,
+            field_key.clone(),
+            samples,
+            count,
+            steps,
+            aiming,
+            clip,
+            records,
+        )?;
         Ok(ResidentGrid {
             hits,
-            chiefs,
+            chiefs: None,
             chief_wavelengths: cw,
             fields: fields.len(),
             wavelengths: wls.to_vec(),
             pupil_count: pupil.len(),
+            chief_source: Some((metadata, field_key, steps, aiming)),
         })
     }
+    /// Append the unclipped chief traces of a grid, one per field and chief
+    /// wavelength (requested wavelengths plus the primary).
+    pub fn append_chiefs(&self, p: &mut ResidentPlan, g: &mut ResidentGrid) -> MkResult<()> {
+        let Some((metadata, key, steps, aiming)) = g.chief_source.clone() else {
+            return Err(mklight_core::MkError::InvalidParam(
+                "grid has no chief metadata".into(),
+            ));
+        };
+        let nf = g.fields * g.chief_wavelengths.len();
+        let samples =
+            self.records::<Sample>(p, nf, |i| Ok(Sample::new([0.0; 2], i as u32, i as u64)))?;
+        g.chiefs =
+            Some(self.append_trace(p, metadata, key, samples, nf, steps, aiming, false, false)?);
+        Ok(())
+    }
+    /// Packed wavelength chunk and slot of system wavelength `w`.
+    fn chunk(&self, w: usize) -> MkResult<(u32, u32)> {
+        self.wavelengths
+            .iter()
+            .enumerate()
+            .find_map(|(s, ws)| {
+                ws.iter()
+                    .position(|&v| v == w)
+                    .map(|k| (s as u32, k as u32))
+            })
+            .ok_or_else(|| mklight_core::MkError::InvalidParam(format!("no wavelength {w}")))
+    }
+    /// Content identity of imported field metadata, for chief-seed reuse.
+    fn field_key(&self, p: &ResidentPlan, metadata: BufferId) -> MkResult<Option<String>> {
+        Ok(match &p.buffers[metadata.0] {
+            PlanBuffer::Import(v) => {
+                let view = self.backend.read_view(v.clone())?;
+                Some(
+                    blake3::hash(bytemuck::cast_slice(view.words()))
+                        .to_hex()
+                        .to_string(),
+                )
+            }
+            _ => None,
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
     fn append_trace(
         &self,
         p: &mut ResidentPlan,
         metadata: BufferId,
+        field_key: Option<String>,
         samples: BufferId,
         n: usize,
         steps: BufferId,
@@ -189,17 +244,6 @@ impl<'a> Geometry<'a> {
         let tolerance = match aiming {
             mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
             _ => 1e-10,
-        };
-        let field_key = match &p.buffers[metadata.0] {
-            PlanBuffer::Import(v) => {
-                let view = self.backend.read_view(v.clone())?;
-                Some(
-                    blake3::hash(bytemuck::cast_slice(view.words()))
-                        .to_hex()
-                        .to_string(),
-                )
-            }
-            _ => None,
         };
         p.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
@@ -243,28 +287,13 @@ impl<'a> Geometry<'a> {
         same_wavelength: bool,
     ) -> MkResult<(BufferId, BufferId)> {
         let n = g.hits.rays.count;
-        let map = self.import::<u32>(p, [n], |out| {
-            for (i, v) in out.iter_mut().enumerate() {
-                let row = i / g.pupil_count;
-                let wi = row % g.wavelengths.len();
-                let fi = row / g.wavelengths.len();
-                let w = if same_wavelength {
-                    g.wavelengths[wi]
-                } else {
-                    self.tracer.system().primary_wavelength
-                };
-                *v = (fi * g.chief_wavelengths.len()
-                    + g.chief_wavelengths.iter().position(|&v| v == w).unwrap())
-                    as u32;
-            }
-            Ok(())
-        })?;
+        let map = self.chief_map(p, g, same_wavelength)?;
         let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [5, n]));
         let mask = p.scratch(BufferDesc::new(ElementType::U32, [n]));
         p.operations.push(ResidentOp::Geometry(
             mklight_gpu::geometry::Request::Coordinates(mklight_gpu::geometry::Coordinates {
                 hits: g.hits.clone(),
-                chiefs: g.chiefs.clone(),
+                chiefs: g.chiefs()?.clone(),
                 chief_index: p.view(map)?,
                 defocus: Df32::from_f64(delta),
                 output,
@@ -272,6 +301,29 @@ impl<'a> Geometry<'a> {
             }),
         ));
         Ok((output, mask))
+    }
+    /// U32 [rays]: the chief row of each hit, at its own wavelength or the primary.
+    fn chief_map(
+        &self,
+        p: &mut ResidentPlan,
+        g: &ResidentGrid,
+        same_wavelength: bool,
+    ) -> MkResult<BufferId> {
+        let nc = g.chief_wavelengths.len();
+        let column = |w: usize| g.chief_wavelengths.iter().position(|&v| v == w).unwrap();
+        let primary = column(self.tracer.system().primary_wavelength);
+        let columns: Vec<_> = g
+            .wavelengths
+            .iter()
+            .map(|&w| if same_wavelength { column(w) } else { primary })
+            .collect();
+        self.import::<u32>(p, [g.hits.rays.count], |out| {
+            for (row, rays) in out.chunks_mut(g.pupil_count.max(1)).enumerate() {
+                let fi = row / g.wavelengths.len();
+                rays.fill((fi * nc + columns[row % g.wavelengths.len()]) as u32);
+            }
+            Ok(())
+        })
     }
     pub fn moments(
         &self,
@@ -295,12 +347,7 @@ impl<'a> Geometry<'a> {
         use mklight_gpu::collectives::*;
         let n = p.desc(mask)?.len()?;
         let ns = n / segment;
-        let offsets = self.import::<u32>(p, [ns + 1], |out| {
-            for (i, v) in out.iter_mut().enumerate() {
-                *v = (i * segment) as u32;
-            }
-            Ok(())
-        })?;
+        let offsets = self.offsets(p, ns, segment)?;
         let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [ns, 10]));
         let status = p.scratch(BufferDesc::new(ElementType::U32, [ns]));
         let mut values = p.view(points)?;
@@ -331,6 +378,65 @@ impl<'a> Geometry<'a> {
         ));
         Ok(output)
     }
+    /// Weighted defocus quadratic per segment, DF [3, segments]: Σw|q|²,
+    /// Σw q·t and Σw|t|² of the image offsets q and slope differences t from
+    /// [`Self::coordinates`], centred on the segment means when `centroid`.
+    /// The mean square at defocus d is (a + 2bd + cd²)/Σw; with the slope
+    /// moments (also returned) the centroid moves as q̄ + d t̄.
+    pub fn focus_quadratic(
+        &self,
+        p: &mut ResidentPlan,
+        points: BufferId,
+        mask: BufferId,
+        moments: BufferId,
+        segment: usize,
+        centroid: bool,
+    ) -> MkResult<(BufferId, BufferId)> {
+        use mklight_gpu::collectives::*;
+        let n = p.desc(mask)?.len()?;
+        let ns = n / segment;
+        let slope = self.moments_at(p, points, mask, segment, true, 2)?;
+        let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, n]));
+        p.operations.push(ResidentOp::Geometry(
+            mklight_gpu::geometry::Request::FocusTerms(mklight_gpu::geometry::FocusTerms {
+                points: p.view(points)?,
+                mask: p.view(mask)?,
+                position_moments: p.view(moments)?,
+                slope_moments: p.view(slope)?,
+                segment_len: segment,
+                centroid,
+                output: terms,
+            }),
+        ));
+        let offsets = self.offsets(p, ns, segment)?;
+        let quad = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, ns]));
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [ns]));
+        p.operations.push(ResidentOp::Collectives(
+            mklight_gpu::collectives::Request::SegmentReduce(SegmentReduce {
+                values: p.view(terms)?,
+                offsets: p.view(offsets)?,
+                mask: None,
+                mask_value: 0,
+                weights: None,
+                max_segment_len: segment,
+                reference: None,
+                mode: mklight_gpu::ReduceMode::DoubleFloat,
+                kind: SegmentKind::Sum,
+                output: quad,
+                status,
+            }),
+        ));
+        Ok((quad, slope))
+    }
+    /// U32 [segments+1] offsets of equal-length segments.
+    fn offsets(&self, p: &mut ResidentPlan, segments: usize, len: usize) -> MkResult<BufferId> {
+        self.import::<u32>(p, [segments + 1], |out| {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = (i * len) as u32;
+            }
+            Ok(())
+        })
+    }
     fn run(&self, p: ResidentPlan, ctx: &JobContext) -> MkResult<PlanResult> {
         self.backend.submit_plan(p, ctx)?.wait()
     }
@@ -338,11 +444,21 @@ impl<'a> Geometry<'a> {
 #[derive(Clone, Debug)]
 pub struct ResidentGrid {
     pub hits: ResidentHits,
-    pub chiefs: ResidentHits,
+    /// Present after [`Geometry::append_chiefs`].
+    pub chiefs: Option<ResidentHits>,
     pub chief_wavelengths: Vec<usize>,
     pub fields: usize,
     pub wavelengths: Vec<usize>,
     pub pupil_count: usize,
+    /// Field metadata, its seed-cache key, trace steps and aiming.
+    chief_source: Option<(BufferId, Option<String>, BufferId, mklight_core::RayAiming)>,
+}
+impl ResidentGrid {
+    pub fn chiefs(&self) -> MkResult<&ResidentHits> {
+        self.chiefs.as_ref().ok_or_else(|| {
+            mklight_core::MkError::InvalidParam("grid chief rays were not appended".into())
+        })
+    }
 }
 fn stamp(
     mut run: RunInfo,

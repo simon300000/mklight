@@ -21,7 +21,7 @@ pub fn lateral_colour_job(
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
-    let g = geo.append_grid(
+    let mut g = geo.append_grid(
         &mut p,
         &fields,
         &wls,
@@ -32,6 +32,7 @@ pub fn lateral_colour_job(
         false,
         ctx,
     )?;
+    geo.append_chiefs(&mut p, &mut g)?;
     let (q, mask) = geo.coordinates(&mut p, &g, 0.0, false)?;
     p.outputs = vec![q, mask];
     let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
@@ -112,7 +113,7 @@ pub fn longitudinal_aberration_job(
                 .map(move |&r| if a == 0 { [r, 0.0] } else { [0.0, r] })
         })
         .collect();
-    let g = geo.append_grid(
+    let mut g = geo.append_grid(
         &mut p,
         &[FieldPoint::normalized(0.0, 0.0)],
         &wls,
@@ -123,15 +124,11 @@ pub fn longitudinal_aberration_job(
         false,
         ctx,
     )?;
+    geo.append_chiefs(&mut p, &mut g)?;
+    let chiefs = g.chiefs()?.clone();
     let n = g.hits.rays.count;
-    let index = geo.import::<u32>(&mut p, [n], |out| {
-        for (i, v) in out.iter_mut().enumerate() {
-            let w = wls[i / pupil.len()];
-            *v = g.chief_wavelengths.iter().position(|&v| v == w).unwrap() as u32;
-        }
-        Ok(())
-    })?;
-    let reference = geo.import::<Df32>(&mut p, [g.chiefs.rays.count, 3], |out| {
+    let index = geo.chief_map(&mut p, &g, true)?;
+    let reference = geo.import::<Df32>(&mut p, [chiefs.rays.count, 3], |out| {
         out.fill(Df32::ZERO);
         Ok(())
     })?;
@@ -142,7 +139,7 @@ pub fn longitudinal_aberration_job(
             mklight_gpu::geometry::Opd {
                 axial: true,
                 hits: g.hits,
-                chiefs: g.chiefs,
+                chiefs,
                 chief_index: p.view(index)?,
                 reference: p.view(reference)?,
                 output,

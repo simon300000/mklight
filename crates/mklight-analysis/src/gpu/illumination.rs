@@ -54,19 +54,14 @@ impl Geometry<'_> {
             true,
             ctx,
         )?;
-        let (si, wi) = self
-            .wavelengths
-            .iter()
-            .enumerate()
-            .find_map(|(s, w)| w.iter().position(|&v| v == wl).map(|k| (s, k)))
-            .ok_or_else(|| mklight_core::MkError::InvalidParam(format!("no wavelength {wl}")))?;
+        let (si, wi) = self.chunk(wl)?;
         let metadata = self.records::<FieldSpec>(p, fields.len(), |i| {
             FieldSpec::new(
                 self.tracer.system(),
                 self.tracer.paraxial(),
                 fields[i],
-                si as u32,
-                wi as u32,
+                si,
+                wi,
                 real,
             )
         })?;
@@ -163,6 +158,8 @@ impl Geometry<'_> {
 }
 /// Matched RI rows `[solid angle, surviving area share, CRA, cos4]`, plus
 /// on-axis normalisation, image coordinates and reproducibility evidence.
+pub type IlluminationRows = (Vec<[f64; 4]>, f64, Vec<[f64; 2]>, RunInfo);
+/// Resident RI rows for field coordinates (see [`IlluminationRows`]).
 pub fn illumination_rows(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -171,7 +168,7 @@ pub fn illumination_rows(
     radial: usize,
     azimuth: usize,
     ctx: &JobContext,
-) -> MkResult<(Vec<[f64; 4]>, f64, Vec<[f64; 2]>, RunInfo)> {
+) -> MkResult<IlluminationRows> {
     check_count("radial samples", radial, 1, 512)?;
     check_count("azimuth samples", azimuth, 4, 4096)?;
     let geo = Geometry::new(b, t, ctx)?;

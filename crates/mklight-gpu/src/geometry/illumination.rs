@@ -136,8 +136,8 @@ impl<E: FpEnv> Probe<'_, E> {
             bb[k] = bb[k] - step;
             let ha = self.trace(q, aa, self.h.stop, false)?;
             let hb = self.trace(q, bb, self.h.stop, false)?;
-            for i in 0..2 {
-                j[i][k] = (D::new(ha.ray.pos[i], ha.ray.pos_lo[i])
+            for (i, row) in j.iter_mut().enumerate() {
+                row[k] = (D::new(ha.ray.pos[i], ha.ray.pos_lo[i])
                     - D::new(hb.ray.pos[i], hb.ray.pos_lo[i]))
                     / (c(2.0) * step);
             }
@@ -274,6 +274,7 @@ impl<E: FpEnv> Probe<'_, E> {
         Some((if det.hi() < 0.0 { -det } else { det }, true))
     }
 }
+#[allow(clippy::too_many_arguments)]
 pub fn node<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],

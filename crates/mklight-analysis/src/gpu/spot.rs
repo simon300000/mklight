@@ -39,7 +39,7 @@ impl Geometry<'_> {
             crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
         )
         .then_some(s.seed);
-        let g = geo.append_grid(
+        let mut g = geo.append_grid(
             &mut p,
             &points,
             &wls,
@@ -50,64 +50,24 @@ impl Geometry<'_> {
             false,
             ctx,
         )?;
+        geo.append_chiefs(&mut p, &mut g)?;
+        let chief_hits = g.chiefs()?.clone();
         let (q, mask) = geo.coordinates(&mut p, &g, s.defocus, false)?;
         let poly = geo.moments(&mut p, q, mask, wls.len() * pupil.len(), true)?;
         let (qw, mw) = geo.coordinates(&mut p, &g, s.defocus, true)?;
         let mono = geo.moments(&mut p, qw, mw, pupil.len(), false)?;
-        p.outputs = vec![poly, mono, g.chiefs.rays.floats, g.chiefs.status];
+        p.outputs = vec![poly, mono, chief_hits.rays.floats, chief_hits.status];
+        if s.through_focus.is_some() {
+            // Spot moments are exactly quadratic in defocus: one reduction
+            // serves every through-focus plane.
+            let (quad, slope) =
+                geo.focus_quadratic(&mut p, q, mask, poly, wls.len() * pupil.len(), true)?;
+            p.outputs.extend([quad, slope]);
+        }
         if s.include_points {
             p.outputs.extend([q, mask]);
         }
-        if s.through_focus.is_some() {
-            p.outputs.extend([g.hits.rays.floats, g.hits.status]);
-        }
-        let initial_end = if s.through_focus.is_some() { 0.6 } else { 0.95 };
-        let mut r = geo.run(p, &ctx.subrange(0.0, initial_end))?;
-        let mut focus = Vec::new();
-        if let Some(tf) = s.through_focus {
-            let raw = 4 + usize::from(s.include_points) * 2;
-            r.run_info.settings["through_focus_plans"] = serde_json::json!([]);
-            for (i, d) in linspace(tf.min, tf.max, tf.steps).into_iter().enumerate() {
-                let mut p = ResidentPlan::new(t.system().snapshot.clone());
-                let mut grid = g.clone();
-                grid.hits.rays.floats = p.import(r.outputs[raw].view());
-                grid.hits.status = p.import(r.outputs[raw + 1].view());
-                grid.chiefs.rays.floats = p.import(r.outputs[2].view());
-                grid.chiefs.status = p.import(r.outputs[3].view());
-                let (q, m) = geo.coordinates(&mut p, &grid, d, false)?;
-                let m = geo.moments(&mut p, q, m, pupil.len() * wls.len(), true)?;
-                p.outputs = vec![m];
-                let rr = geo.run(
-                    p,
-                    &ctx.subrange(
-                        0.6 + 0.3 * i as f64 / tf.steps as f64,
-                        0.6 + 0.3 * (i + 1) as f64 / tf.steps as f64,
-                    ),
-                )?;
-                let view = b.read_view(rr.outputs[0].view())?;
-                let m = view.as_slice::<Df32>()?;
-                let values: Vec<_> = m
-                    .chunks_exact(10)
-                    .map(|v| {
-                        let w = v[1].to_f64();
-                        if w > 0.0 {
-                            [
-                                ((v[5].to_f64() + v[7].to_f64()) / w).max(0.0).sqrt(),
-                                (v[4].to_f64() / w).max(0.0).sqrt(),
-                            ]
-                        } else {
-                            [f64::NAN; 2]
-                        }
-                    })
-                    .collect();
-                focus.push((d, values));
-                r.run_info.duration_ms += rr.run_info.duration_ms;
-                r.run_info.settings["through_focus_plans"]
-                    .as_array_mut()
-                    .unwrap()
-                    .push(rr.run_info.settings);
-            }
-        }
+        let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
         let views: Vec<_> = r
             .outputs
             .iter()
@@ -117,10 +77,36 @@ impl Geometry<'_> {
         let mono = views[1].as_slice::<Df32>()?;
         let chiefs = views[2].as_slice::<f32>()?;
         let cstatus = views[3].as_slice::<u32>()?;
-        let nc = g.chiefs.rays.count;
+        let nc = chief_hits.rays.count;
         let np = pupil.len();
         let nf = fields.len();
         let nw = wls.len();
+        let points = 4 + 2 * usize::from(s.through_focus.is_some());
+        let planes = s
+            .through_focus
+            .map_or(Vec::new(), |tf| linspace(tf.min, tf.max, tf.steps));
+        let (quad, slope) = if planes.is_empty() {
+            (&[][..], &[][..])
+        } else {
+            (views[4].as_slice::<Df32>()?, views[5].as_slice::<Df32>()?)
+        };
+        // Centroid- and chief-referenced RMS of field fi at absolute defocus d.
+        let focus = |fi: usize, d: f64| {
+            let m = &poly[10 * fi..];
+            let w = m[1].to_f64();
+            if !(w > 0.0) {
+                return [f64::NAN; 2];
+            }
+            let e = d - s.defocus;
+            let [a, b2, c] = [0, 1, 2].map(|k| quad[k * nf + fi].to_f64());
+            let var = ((a + e * (2.0 * b2 + e * c)) / w).max(0.0);
+            let centroid: [f64; 2] =
+                std::array::from_fn(|k| m[2 + k].to_f64() + e * slope[10 * fi + 2 + k].to_f64());
+            [
+                var.sqrt(),
+                (var + centroid[0] * centroid[0] + centroid[1] * centroid[1]).sqrt(),
+            ]
+        };
         let mut out = Vec::new();
         let mut warnings = t.warnings().to_vec();
         for (fi, &field) in fields.iter().enumerate() {
@@ -168,7 +154,13 @@ impl Geometry<'_> {
                 .map(|(wi, &w)| {
                     let ci = fi * g.chief_wavelengths.len()
                         + g.chief_wavelengths.iter().position(|&v| v == w).unwrap();
-                    let c = chief(chiefs, cstatus, nc, ci, s.defocus);
+                    // As in the reference, wavelength chiefs are reported
+                    // relative to a successful primary chief only.
+                    let c = if c[0].is_finite() {
+                        chief(chiefs, cstatus, nc, ci, s.defocus)
+                    } else {
+                        [f64::NAN; 2]
+                    };
                     WavelengthSpot {
                         wavelength: w,
                         wavelength_um: t.system().wavelengths_um[w],
@@ -185,8 +177,8 @@ impl Geometry<'_> {
                 .collect();
             let mut plotted = Vec::new();
             if s.include_points {
-                let q = views[4].as_slice::<Df32>()?;
-                let mask = views[5].as_slice::<u32>()?;
+                let q = views[points].as_slice::<Df32>()?;
+                let mask = views[points + 1].as_slice::<u32>()?;
                 let n = g.hits.rays.count;
                 for i in fi * nw * np..(fi + 1) * nw * np {
                     if mask[i] != 0 {
@@ -198,16 +190,15 @@ impl Geometry<'_> {
                     }
                 }
             }
-            let through_focus = focus
+            let through_focus = planes
                 .iter()
-                .map(|(d, values)| FocusSample {
-                    defocus: *d,
-                    rms_radius_centroid: values[fi][0],
-                    rms_radius_chief: if c[0].is_finite() {
-                        values[fi][1]
-                    } else {
-                        f64::NAN
-                    },
+                .map(|&d| {
+                    let [centroid, chief] = focus(fi, d);
+                    FocusSample {
+                        defocus: d,
+                        rms_radius_centroid: centroid,
+                        rms_radius_chief: if c[0].is_finite() { chief } else { f64::NAN },
+                    }
                 })
                 .collect();
             out.push(FieldSpot {

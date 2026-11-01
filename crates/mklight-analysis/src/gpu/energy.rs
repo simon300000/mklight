@@ -9,21 +9,23 @@ use mklight_gpu::{
     collectives::{self, Scan, SegmentKind, SegmentReduce, StableSort},
     geometry::{self, Characteristic, Distribution, Radial},
 };
+/// Traced grid with chief-relative image coordinates and their moments.
+struct Setup<'a> {
+    geo: Geometry<'a>,
+    plan: ResidentPlan,
+    grid: ResidentGrid,
+    points: BufferId,
+    mask: BufferId,
+    moments: BufferId,
+    fields: Vec<usize>,
+}
 fn setup<'a>(
     b: &'a dyn ComputeBackend,
     t: &'a SequentialTracer,
     s: &RaySampling,
     delta: f64,
     ctx: &JobContext,
-) -> MkResult<(
-    Geometry<'a>,
-    ResidentPlan,
-    ResidentGrid,
-    BufferId,
-    BufferId,
-    BufferId,
-    Vec<usize>,
-)> {
+) -> MkResult<Setup<'a>> {
     crate::spot::validate_sampling(s.pattern, s.rings)?;
     crate::util::check_finite("defocus", delta)?;
     let fields = s.fields.resolve(t.fields().len())?;
@@ -39,7 +41,7 @@ fn setup<'a>(
         crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
     )
     .then_some(s.seed);
-    let g = geo.append_grid(
+    let mut g = geo.append_grid(
         &mut p,
         &points,
         &wls,
@@ -50,9 +52,18 @@ fn setup<'a>(
         false,
         ctx,
     )?;
+    geo.append_chiefs(&mut p, &mut g)?;
     let (q, m) = geo.coordinates(&mut p, &g, delta, false)?;
     let moments = geo.moments(&mut p, q, m, g.pupil_count * wls.len(), true)?;
-    Ok((geo, p, g, q, m, moments, fields))
+    Ok(Setup {
+        geo,
+        plan: p,
+        grid: g,
+        points: q,
+        mask: m,
+        moments,
+        fields,
+    })
 }
 fn evidence(run: &mut RunInfo, r: &PlanResult) {
     run.duration_ms += r.run_info.duration_ms;
@@ -112,7 +123,15 @@ pub fn encircled_energy_with_uncertainty_job(
     }
     let augmented = default_fields(t, &s.sampling.fields)?;
     let t = augmented.as_ref();
-    let (geo, mut p, g, q, mask, moments, fields) = setup(b, t, &s.sampling, s.defocus, ctx)?;
+    let Setup {
+        geo,
+        plan: mut p,
+        grid: g,
+        points: q,
+        mask,
+        moments,
+        fields,
+    } = setup(b, t, &s.sampling, s.defocus, ctx)?;
     p.settings = serde_json::to_value(s).unwrap();
     p.settings["position_uncertainty_mm"] = serde_json::json!(position_uncertainty_mm);
     let n = g.hits.rays.count;
@@ -160,6 +179,13 @@ pub fn encircled_energy_with_uncertainty_job(
         let rid = geo.import::<Df32>(&mut p, [radii.len()], |out| {
             for (v, &r) in out.iter_mut().zip(&radii) {
                 *v = Df32::from_f64(r);
+            }
+            // The automatic outer bin is the largest arrived distance, so it
+            // holds every arrived ray by construction, as in the reference.
+            // Classifying it against that distance recomputed from moments
+            // would only add rounding (and a spurious straddle).
+            if s.max_radius.is_none() {
+                out[radii.len() - 1] = Df32::from_f32(f32::MAX);
             }
             Ok(())
         })?;
@@ -277,7 +303,15 @@ pub fn geometric_mtf_job(
     crate::energy::validate_mtf(s)?;
     let augmented = default_fields(t, &s.sampling.fields)?;
     let t = augmented.as_ref();
-    let (geo, mut p, g, q, mask, moments, fields) = setup(b, t, &s.sampling, s.defocus, ctx)?;
+    let Setup {
+        geo,
+        plan: mut p,
+        grid: g,
+        points: q,
+        mask,
+        moments,
+        fields,
+    } = setup(b, t, &s.sampling, s.defocus, ctx)?;
     p.settings = serde_json::to_value(s).unwrap();
     let n = g.hits.rays.count;
     let len = g.pupil_count * g.wavelengths.len();
@@ -412,8 +446,11 @@ pub fn geometric_mtf_job(
     })
 }
 
-/// Brent stays on the host; every trial reprojects and reduces resident
-/// image states, including the two-pass evaluation near a sharp minimum.
+/// Each field's spot mean square is exactly quadratic in defocus, with
+/// coefficients from one resident two-pass reduction (`FocusTerms`). Brent
+/// and the through-focus curve evaluate that quadratic on the host; the
+/// reported optimum is re-reduced two-pass at the chosen plane, where the
+/// quadratic form could cancel near a sharp focus.
 pub fn best_focus_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -423,65 +460,40 @@ pub fn best_focus_job(
     crate::energy::validate_best_focus(s)?;
     let aug = default_fields(t, &s.sampling.fields)?;
     let t = aug.as_ref();
-    let (geo, mut p, g, q, mask, m0, fields) = setup(b, t, &s.sampling, 0.0, ctx)?;
+    let Setup {
+        geo,
+        plan: mut p,
+        grid: g,
+        points: q,
+        mask,
+        moments: m0,
+        fields,
+    } = setup(b, t, &s.sampling, 0.0, ctx)?;
     p.settings = serde_json::to_value(s).unwrap();
     let len = g.pupil_count * g.wavelengths.len();
-    let n = g.hits.rays.count;
-    let slope = geo.moments_at(&mut p, q, mask, len, true, 2)?;
-    let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, n]));
-    p.operations
-        .push(ResidentOp::Geometry(geometry::Request::FocusTerms(
-            geometry::FocusTerms {
-                points: p.view(q)?,
-                mask: p.view(mask)?,
-                position_moments: p.view(m0)?,
-                slope_moments: p.view(slope)?,
-                segment_len: len,
-                centroid: s.reference == SpotReference::Centroid,
-                output: terms,
-            },
-        )));
-    let offsets = geo.import::<u32>(&mut p, [fields.len() + 1], |out| {
-        for (i, v) in out.iter_mut().enumerate() {
-            *v = (i * len) as u32;
-        }
-        Ok(())
-    })?;
-    let quad = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, fields.len()]));
-    let status = p.scratch(BufferDesc::new(ElementType::U32, [fields.len()]));
-    p.operations.push(ResidentOp::Collectives(
-        collectives::Request::SegmentReduce(SegmentReduce {
-            values: p.view(terms)?,
-            offsets: p.view(offsets)?,
-            mask: None,
-            mask_value: 0,
-            weights: None,
-            max_segment_len: len,
-            reference: None,
-            mode: ReduceMode::DoubleFloat,
-            kind: SegmentKind::Sum,
-            output: quad,
-            status,
-        }),
-    ));
+    let (quad, _) = geo.focus_quadratic(
+        &mut p,
+        q,
+        mask,
+        m0,
+        len,
+        s.reference == SpotReference::Centroid,
+    )?;
+    let chiefs = g.chiefs()?.clone();
     p.outputs = vec![
         g.hits.rays.floats,
         g.hits.status,
-        g.chiefs.rays.floats,
-        g.chiefs.status,
+        chiefs.rays.floats,
+        chiefs.status,
         m0,
         quad,
     ];
-    let r = geo.run(p, &ctx.subrange(0.0, 0.2))?;
+    let r = geo.run(p, &ctx.subrange(0.0, 0.8))?;
     let mut run = begin(r.run_info.clone());
-    let views: Vec<_> = r.outputs[4..]
-        .iter()
-        .map(|h| b.read_view(h.view()))
-        .collect::<MkResult<_>>()?;
-    let initial: Vec<_> = views
-        .iter()
-        .map(|v| v.as_slice::<Df32>())
-        .collect::<MkResult<_>>()?;
+    let m0 = b.read_view(r.outputs[4].view())?;
+    let m0 = m0.as_slice::<Df32>()?;
+    let quad = b.read_view(r.outputs[5].view())?;
+    let quad = quad.as_slice::<Df32>()?;
     let cstatus = b.read_view(r.outputs[3].view())?;
     let cstatus = cstatus.as_slice::<u32>()?;
     let mut used = Vec::new();
@@ -495,25 +507,28 @@ pub fn best_focus_job(
             v[4].to_f64() / w
         }
     };
+    let nf = fields.len();
+    let primary = g
+        .chief_wavelengths
+        .iter()
+        .position(|&w| w == t.system().primary_wavelength)
+        .unwrap();
     for (fi, &f) in fields.iter().enumerate() {
-        let ci = fi * g.chief_wavelengths.len()
-            + g.chief_wavelengths
-                .iter()
-                .position(|&w| w == t.system().primary_wavelength)
-                .unwrap();
-        if s.reference == SpotReference::Chief && cstatus[ci] != 0 {
+        if s.reference == SpotReference::Chief
+            && cstatus[fi * g.chief_wavelengths.len() + primary] != 0
+        {
             warnings.push(format!(
                 "field {f}: primary chief ray failed; skipped (chief reference)"
             ));
             continue;
         }
-        if initial[0][10 * fi + 1].to_f64() <= 0.0 {
+        let weight_sum = m0[10 * fi + 1].to_f64();
+        if weight_sum <= 0.0 {
             warnings.push(format!("field {f}: no rays arrived"));
             continue;
         }
-        let weight_sum = initial[0][10 * fi + 1].to_f64();
-        let bb = initial[1][fields.len() + fi].to_f64() / weight_sum;
-        let cc = initial[1][2 * fields.len() + fi].to_f64() / weight_sum;
+        // Mean square at defocus d: a + 2 b d + c d².
+        let [a, bb, cc] = [0, 1, 2].map(|k| quad[k * nf + fi].to_f64() / weight_sum);
         let weight = t
             .system()
             .system()
@@ -521,7 +536,7 @@ pub fn best_focus_job(
             .fields
             .get(f)
             .map_or(1.0, |f| f.weight);
-        used.push((fi, f, weight, bb, cc));
+        used.push((fi, f, weight, bb, cc, a));
     }
     let sw: f64 = used.iter().map(|u| u.2).sum();
     if used.is_empty() || sw <= 0.0 {
@@ -545,30 +560,6 @@ pub fn best_focus_job(
         let pad = (0.05 * (hi - lo)).max(1e-6 * (1.0 + lo.abs().max(hi.abs())));
         [lo - pad, hi + pad]
     });
-    let mut calls = 0;
-    let mut evaluate = |d: f64| -> MkResult<Vec<f64>> {
-        ctx.check()?;
-        let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        let mut g = g.clone();
-        g.hits.rays.floats = p.import(r.outputs[0].view());
-        g.hits.status = p.import(r.outputs[1].view());
-        g.chiefs.rays.floats = p.import(r.outputs[2].view());
-        g.chiefs.status = p.import(r.outputs[3].view());
-        let (q, m) = geo.coordinates(&mut p, &g, d, false)?;
-        let m = geo.moments(&mut p, q, m, len, true)?;
-        p.outputs = vec![m];
-        // A trial's internal progress cannot advance the whole search to 1.
-        let fraction = 0.2 + 0.7 * (1.0 - 1.0 / (calls as f64 + 1.0));
-        let rr = geo.run(p, &ctx.subrange(fraction, fraction))?;
-        evidence(&mut run, &rr);
-        calls += 1;
-        let v = b.read_view(rr.outputs[0].view())?;
-        let v = v.as_slice::<Df32>()?;
-        Ok(used
-            .iter()
-            .map(|u| sq(&v[10 * u.0..]).max(0.0).sqrt())
-            .collect())
-    };
     let weighted = |v: &[f64]| {
         v.iter()
             .zip(&used)
@@ -577,26 +568,51 @@ pub fn best_focus_job(
             .value()
             / sw
     };
+    let quadratic = |d: f64| -> Vec<f64> {
+        used.iter()
+            .map(|u| (u.5 + d * (2.0 * u.3 + d * u.4)).max(0.0).sqrt())
+            .collect()
+    };
+    ctx.check()?;
     let br = crate::util::brent_minimize(
-        |d| Ok(weighted(&evaluate(d)?)),
+        |d| Ok(weighted(&quadratic(d))),
         range[0],
         range[1],
         1e-12,
         s.tolerance,
         s.max_evaluations,
     )?;
-    let field_rms = evaluate(br.x)?;
-    let field_rms_at_zero = evaluate(0.0)?;
-    let at_zero = weighted(&field_rms_at_zero);
+    ctx.check()?;
+    // Two-pass moments at the optimum; δ = 0 reuses the initial reduction.
+    let mut p = ResidentPlan::new(t.system().snapshot.clone());
+    let mut g = g.clone();
+    g.hits.rays.floats = p.import(r.outputs[0].view());
+    g.hits.status = p.import(r.outputs[1].view());
+    let mut c = chiefs;
+    c.rays.floats = p.import(r.outputs[2].view());
+    c.status = p.import(r.outputs[3].view());
+    g.chiefs = Some(c);
+    let (q, m) = geo.coordinates(&mut p, &g, br.x, false)?;
+    let m = geo.moments(&mut p, q, m, len, true)?;
+    p.outputs = vec![m];
+    let rr = geo.run(p, &ctx.subrange(0.8, 0.99))?;
+    evidence(&mut run, &rr);
+    let v = b.read_view(rr.outputs[0].view())?;
+    let v = v.as_slice::<Df32>()?;
+    let field_rms: Vec<_> = used
+        .iter()
+        .map(|u| sq(&v[10 * u.0..]).max(0.0).sqrt())
+        .collect();
+    let field_rms_at_zero: Vec<_> = used
+        .iter()
+        .map(|u| sq(&m0[10 * u.0..]).max(0.0).sqrt())
+        .collect();
     let tfd = if s.through_focus_samples > 0 {
         linspace(range[0], range[1], s.through_focus_samples.max(2))
     } else {
         Vec::new()
     };
-    let mut tfm = Vec::new();
-    for &d in &tfd {
-        tfm.push(weighted(&evaluate(d)?));
-    }
+    let tfm = tfd.iter().map(|&d| weighted(&quadratic(d))).collect();
     if (br.x - range[0]).min(range[1] - br.x) <= 2.0 * s.tolerance {
         warnings.push(format!(
             "best focus is at the edge of the {} search range [{}, {}] mm",
@@ -619,8 +635,8 @@ pub fn best_focus_job(
     Ok(BestFocusResult {
         field_values: used.iter().map(|u| field_value(t, u.1)).collect(),
         defocus: br.x,
-        merit: br.fx,
-        merit_at_zero: at_zero,
+        merit: weighted(&field_rms),
+        merit_at_zero: weighted(&field_rms_at_zero),
         fields: used.iter().map(|u| u.1).collect(),
         field_rms,
         field_rms_at_zero,

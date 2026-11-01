@@ -81,12 +81,16 @@ pub struct FieldData {
     pub record_slots: usize,
     pub hits: ResidentHits,
     /// 0: chief incidence and signed x/y angles (one ray per field, records
-    /// required); 1: pupil error/magnification (five rays per field: 0,+x,-x,+y,-y).
+    /// required); 1: pupil error/magnification (five rays per field: 0,+x,-x,+y,-y);
+    /// 2: image x/y and launch source (one ray per field, records required).
     pub kind: u32,
-    /// Twice the physical entrance pupil difference step (mm).
+    /// Kind 1: twice the physical entrance pupil difference step (mm). Kind 2:
+    /// zero for a direction source (launch tangents), nonzero for a point
+    /// source (launch x/y).
     pub pupil_step: Df32,
-    /// DF [fields,5]: image x/y and three angles, or stop x/y, two
-    /// magnifications and zero. Invalid probes publish NaN.
+    /// DF [fields,5]: image x/y and three angles; stop x/y, two
+    /// magnifications and zero; or image x/y, source x/y and zero. Invalid
+    /// probes publish NaN.
     pub output: BufferId,
 }
 /// All-surface record projection, including hits whose rays later fail.
@@ -186,6 +190,17 @@ pub enum Request {
     Opd(Opd),
     FocusTerms(FocusTerms),
 }
+impl Request {
+    /// The packed systems a request evaluates surfaces of, if any.
+    pub fn systems(&self) -> Option<&SystemSet> {
+        match self {
+            Request::SurfaceSamples(r) => Some(&r.systems),
+            Request::Coddington(r) => Some(&r.systems),
+            Request::Illumination(r) => Some(&r.systems),
+            _ => None,
+        }
+    }
+}
 fn input(v: &PlanView, ty: ElementType, shape: &[usize]) -> MkResult<()> {
     if v.stride != 1
         || v.desc != BufferDesc::new(ty, shape)
@@ -218,12 +233,6 @@ pub fn view(id: BufferId, ty: ElementType, shape: impl Into<Vec<usize>>) -> Plan
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::{DoubleFloat as D, U32};
-    let systems = match r {
-        Request::SurfaceSamples(r) => Some(&r.systems),
-        Request::Coddington(r) => Some(&r.systems),
-        Request::Illumination(r) => Some(&r.systems),
-        _ => None,
-    };
     if let Some(SystemSet::Resident {
         headers,
         surfaces,
@@ -231,7 +240,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
         count,
         max_surfaces,
         max_wavelengths,
-    }) = systems
+    }) = r.systems()
     {
         if *count == 0
             || *count > u32::MAX as usize
@@ -446,12 +455,28 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 }
 fn points(v: &PlanView, mask: &PlanView, segment: usize) -> MkResult<usize> {
     let n = v.desc.shape.get(1).copied().unwrap_or(0);
-    input(v, ElementType::DoubleFloat, &[5, n])?;
+    let channels = crate::consts::MKL_GEOMETRY_POINT_CHANNELS as usize;
+    input(v, ElementType::DoubleFloat, &[channels, n])?;
     input(mask, ElementType::U32, &[n])?;
     if segment == 0 || n % segment != 0 {
         return Err(bad("geometry segment length"));
     }
     Ok(n)
+}
+fn system_reads(a: &mut Access, systems: &SystemSet) {
+    match systems {
+        SystemSet::Uploaded(h) => a.systems.push(*h),
+        SystemSet::Resident {
+            headers,
+            surfaces,
+            coefficients,
+            ..
+        } => a.reads.extend([
+            view(*headers, ElementType::U32, [0]),
+            view(*surfaces, ElementType::U32, [0]),
+            view(*coefficients, ElementType::DoubleFloat, [0]),
+        ]),
+    }
 }
 pub fn accesses(r: &Request) -> Access {
     let mut a = Access::default();
@@ -489,23 +514,15 @@ pub fn accesses(r: &Request) -> Access {
             a.reads = vec![
                 r.fields.clone(),
                 r.nodes.clone(),
-                view(r.chiefs.records.unwrap(), ElementType::F32, [0]),
-                view(r.chiefs.record_low.unwrap(), ElementType::F32, [0]),
                 view(r.chiefs.status, ElementType::U32, [0]),
             ];
-            match &r.systems {
-                SystemSet::Uploaded(h) => a.systems.push(*h),
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    ..
-                } => a.reads.extend([
-                    view(*headers, ElementType::U32, [0]),
-                    view(*surfaces, ElementType::U32, [0]),
-                    view(*coefficients, ElementType::DoubleFloat, [0]),
-                ]),
+            for id in [r.chiefs.records, r.chiefs.record_low]
+                .into_iter()
+                .flatten()
+            {
+                a.reads.push(view(id, ElementType::F32, [0]));
             }
+            system_reads(&mut a, &r.systems);
             a.writes = vec![r.output, r.status, r.ids];
         }
         Request::CloseFocus(r) => {
@@ -513,27 +530,13 @@ pub fn accesses(r: &Request) -> Access {
             a.writes = vec![r.output, r.status];
         }
         Request::Coddington(r) => {
-            for (id, ty) in [
-                (r.hits.records.unwrap(), ElementType::F32),
-                (r.hits.record_low.unwrap(), ElementType::F32),
-                (r.hits.rays.indices, ElementType::U32),
-                (r.hits.status, ElementType::U32),
-            ] {
-                a.reads.push(view(id, ty, [0]));
+            for id in [r.hits.records, r.hits.record_low].into_iter().flatten() {
+                a.reads.push(view(id, ElementType::F32, [0]));
             }
-            match &r.systems {
-                SystemSet::Uploaded(h) => a.systems.push(*h),
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    ..
-                } => a.reads.extend([
-                    view(*headers, ElementType::U32, [0]),
-                    view(*surfaces, ElementType::U32, [0]),
-                    view(*coefficients, ElementType::DoubleFloat, [0]),
-                ]),
+            for id in [r.hits.rays.indices, r.hits.status] {
+                a.reads.push(view(id, ElementType::U32, [0]));
             }
+            system_reads(&mut a, &r.systems);
             a.writes = vec![r.output, r.status];
         }
         Request::Records(r) => {
@@ -563,19 +566,7 @@ pub fn accesses(r: &Request) -> Access {
             }
             a.reads.push(r.samples.clone());
             a.writes = vec![r.output, r.status];
-            match &r.systems {
-                SystemSet::Uploaded(h) => a.systems.push(*h),
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    ..
-                } => a.reads.extend([
-                    view(*headers, ElementType::U32, [0]),
-                    view(*surfaces, ElementType::U32, [0]),
-                    view(*coefficients, ElementType::DoubleFloat, [0]),
-                ]),
-            }
+            system_reads(&mut a, &r.systems);
         }
     }
     a

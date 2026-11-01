@@ -49,6 +49,8 @@ impl<E: FpEnv> Sub for Dual<E> {
         self + -b
     }
 }
+// The product rule adds in `mul` and `div` by design.
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl<E: FpEnv> Mul for Dual<E> {
     type Output = Self;
     fn mul(self, b: Self) -> Self {
@@ -91,10 +93,9 @@ impl<E: FpEnv> Scalar for Dual<E> {
 pub fn evaluate<E: FpEnv>(s: &PackedSurface, pool: &[Df32], x: D<E>, y: D<E>) -> Option<[D<E>; 6]> {
     let xd = Dual::variable(x, 0);
     let yd = Dual::variable(y, 1);
-    let (z, gx, gy) = if s.shape <= MKL_SHAPE_COORD_BREAK && s.flags & MKL_SURF_HAS_SAG_OVERLAY == 0
-    {
-        legacy(s, xd, yd)?
-    } else if s.shape == MKL_SHAPE_DIFFRACTIVE && s.flags & MKL_SURF_HAS_SAG_OVERLAY == 0 {
+    // A DOE base is always a legacy (plane/conic/even-asphere) profile.
+    let legacy_base = s.shape <= MKL_SHAPE_COORD_BREAK || s.shape == MKL_SHAPE_DIFFRACTIVE;
+    let (z, gx, gy) = if legacy_base && s.flags & MKL_SURF_HAS_SAG_OVERLAY == 0 {
         legacy(s, xd, yd)?
     } else {
         let v = crate::surface_math::evaluate(s, pool, xd, yd)?;
