@@ -331,6 +331,7 @@ fn consolidated_engine_benchmark() {
     let filter = std::env::var("P11_BENCH_ANALYSES").ok();
     let sample = std::env::var("P11_BENCH_SAMPLE").ok();
     let dense = std::env::var_os("P11_BENCH_DENSE").is_some();
+    let candidates = std::env::var_os("P11_BENCH_CANDIDATES").is_some();
     for (name, system) in samples::all() {
         if sample.as_ref().is_some_and(|s| s != name) {
             continue;
@@ -366,10 +367,12 @@ fn consolidated_engine_benchmark() {
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for info in engine.analyses() {
             if !info.gpu_path
-                || matches!(
-                    info.name.as_str(),
-                    "optimize" | "tolerance" | "glass_substitution"
-                )
+                || candidates
+                    != matches!(
+                        info.name.as_str(),
+                        "optimize" | "tolerance" | "glass_substitution"
+                    )
+                || (info.name == "glass_substitution" && name != "cooke_triplet")
             {
                 continue;
             }
@@ -393,7 +396,15 @@ fn consolidated_engine_benchmark() {
             }
             let cases = if dense { vec![5, 56, 512] } else { vec![0] };
             for rings in cases {
-                let settings = if dense {
+                let settings = if candidates && info.name == "glass_substitution" {
+                    json!({"material_variables":[
+                        {"surface":1,"candidates":{"nearest":3}},
+                        {"surface":3,"candidates":{"nearest":3}},
+                        {"surface":5,"candidates":{"nearest":3}}],
+                        "max_combinations":12,"local_iterations":8,
+                        "default_merit":{"fields":[0,2],"wavelengths":[1]},
+                        "backend":"auto","seed":17})
+                } else if dense {
                     json!({"pattern":"square","rings":rings,"fields":{"type":"index","index":2},"wavelengths":{"type":"primary"}})
                 } else {
                     Value::Null
@@ -461,7 +472,70 @@ fn host_batched_candidate_geometry() {
 }
 
 #[test]
-#[ignore = "quiet-host forced resident QR comparison; bypasses the LM cost threshold"]
+#[ignore = "quiet-host independent engine/provider/cache cold starts"]
+fn isolated_engine_cold_starts() {
+    use mklight_engine::backend::BackendProvider;
+    use std::time::Instant;
+    let catalogue = Engine::default().analyses();
+    for (name, system) in samples::all() {
+        for info in &catalogue {
+            if !info.gpu_path
+                || matches!(
+                    info.name.as_str(),
+                    "optimize" | "tolerance" | "glass_substitution"
+                )
+            {
+                continue;
+            }
+            let start = Instant::now();
+            let cpu_engine = Engine::new(EngineConfig {
+                default_backend: Backend::CpuReference,
+                ..Default::default()
+            });
+            let cpu_session = cpu_engine
+                .session_from_project(Project::new(system.clone()))
+                .unwrap();
+            let mut request = AnalysisRequest::new(&info.name, Value::Null);
+            request.backend = Some(Backend::CpuReference);
+            let cpu = cpu_session
+                .run_analysis(&request, &JobContext::new())
+                .unwrap();
+            let cpu_seconds = start.elapsed().as_secs_f64();
+            let start = Instant::now();
+            let engine = Engine::new(EngineConfig {
+                default_backend: Backend::CpuReference,
+                ..Default::default()
+            });
+            let opened = Instant::now();
+            let provider = mklight_engine::gpu::GpuProvider::metal();
+            let device = provider.device().expect("actual Metal required");
+            let device = device.downcast::<mklight_engine::gpu::GpuDevice>().unwrap();
+            let setup_seconds = opened.elapsed().as_secs_f64();
+            engine.register_backend(std::sync::Arc::new(provider));
+            let session = engine
+                .session_from_project(Project::new(system.clone()))
+                .unwrap();
+            request.backend = Some(Backend::Gpu("metal".into()));
+            let metal = session.run_analysis(&request, &JobContext::new()).unwrap();
+            let metal_seconds = start.elapsed().as_secs_f64();
+            let mut effective = cpu.run_info.settings.clone();
+            effective.as_object_mut().unwrap().remove("spectrum");
+            println!(
+                "P11_COLD {}",
+                json!({"sample":name,"analysis":info.name,
+                "key":mklight_engine::analysis::gpu::cost_key(&info.name,&cpu.run_info.snapshot_hash,&cpu.library_hash,&effective),
+                "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"metal_backend_setup_seconds":setup_seconds,
+                "source_build":mklight_engine::analysis::gpu::cost_build(),"used":metal.backend.used,
+                "qualification":metal.backend.qualification,"execution":metal.backend.execution,
+                "copied_bytes":device.backend.resident_cache_stats().copied_bytes,
+                "scope":"independent engines/sessions; CPU does not warm the Metal engine reference caches"})
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "quiet-host explicit resident QR compression calibration"]
 fn qr_crossover_probe() {
     use mklight_optim::{
         gpu::GpuContext,
@@ -485,7 +559,15 @@ fn qr_crossover_probe() {
         (4000, 100),
         (2000, 60),
         (4225, 37),
+        (32, 8),
+        (128, 32),
+        (4000, 32),
+        (65536, 37),
     ] {
+        let extra = matches!((m, n), (32, 8) | (128, 32) | (4000, 32) | (65536, 37));
+        if extra != std::env::var_os("P11_QR_EXTRA_ONLY").is_some() {
+            continue;
+        }
         let a: Vec<_> = (0..m * n)
             .map(|i| ((i * 37 % 1009) as f64 / 1009. - 0.5) + if i / n == i % n { 2. } else { 0. })
             .collect();
