@@ -70,12 +70,14 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
         } else {
             total
         };
-        let tile = if p.mode == 0 && p.pattern == 1 {
-            4096
-        } else if p.mode == 1 || p.mode == 7 {
-            8192
-        } else {
-            1 << 18
+        // Bound actual arithmetic, rather than paying a command round trip
+        // for every small slice of simple raster work.
+        let tile = match p.mode {
+            0 if p.pattern == 1 => 16384,
+            1 => ((1usize << 18) / ((p.grid - 1) as usize).pow(2)).clamp(256, 65536),
+            3 => 1 << 18,
+            7 if p.well > 0. || p.sigma > 0. => 65536,
+            _ => 1 << 20,
         };
         for first in (0..count).step_by(tile) {
             ctl.check()?;

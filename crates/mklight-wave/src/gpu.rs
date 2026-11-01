@@ -22,6 +22,7 @@ pub struct ResidentPupil {
     pub input_hash: String,
     pub covered_samples: usize,
     pub clear_area: f64,
+    pub max_phase_step: f64,
     pub amplitude: BufferHandle,
     pub coverage: BufferHandle,
     pub opd: BufferView,
@@ -81,6 +82,7 @@ impl ResidentPupil {
             input_hash: hash.finalize().to_hex().to_string(),
             covered_samples: p.coverage().iter().filter(|&&c| c > 0.).count(),
             clear_area: p.coverage().iter().sum::<f64>() * p.spacing().powi(2),
+            max_phase_step: p.max_phase_step(),
             amplitude,
             coverage,
             opd: opd.view(),
@@ -424,16 +426,19 @@ impl ResidentPupil {
             .iter()
             .enumerate()
             .map(|(i, z)| {
+                if i % 4096 == 0 {
+                    ctx.check()?;
+                }
                 let f = frequencies[i % frequencies.len()];
                 let t = -std::f64::consts::TAU
                     * (f[0] * self.image_offset_mm[0] + f[1] * self.image_offset_mm[1]);
                 let (s, c) = t.sin_cos();
-                [
+                Ok([
                     z[0] as f64 * c - z[1] as f64 * s,
                     z[0] as f64 * s + z[1] as f64 * c,
-                ]
+                ])
             })
-            .collect();
+            .collect::<MkResult<Vec<_>>>()?;
         Ok(WaveResult {
             value,
             run_info: r.run_info,

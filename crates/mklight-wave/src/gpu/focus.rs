@@ -88,6 +88,7 @@ impl ResidentPupil {
             .enumerate()
             .map(|(i, z)| {
                 let mut p = self.clone();
+                p.max_phase_step = steps[i] as f64;
                 p.opd = r.outputs[0].view();
                 p.opd.offset = i * self.n * self.n;
                 p.opd.desc.shape = vec![self.n, self.n];
@@ -202,6 +203,9 @@ pub fn focus_otf(
             BufferDesc::new(ElementType::F32, [focus.len() * frequencies.len(), 2]),
             &mut |mut a| {
                 for (i, row) in a.as_mut_slice::<f32>()?.chunks_mut(2).enumerate() {
+                    if i % 4096 == 0 {
+                        ctx.check()?;
+                    }
                     row.copy_from_slice(&frequencies[i % frequencies.len()].map(|v| v as f32));
                 }
                 Ok(())
@@ -274,12 +278,8 @@ pub fn focus_otf(
             previous = Some(r.outputs[0].clone());
             info = Some(r.run_info);
         }
-        let value = b
-            .read_view(previous.unwrap().view())?
-            .as_slice::<[f32; 2]>()?
-            .iter()
-            .map(|v| v.map(f64::from))
-            .collect();
+        let mut value = Vec::with_capacity(focus.len() * frequencies.len());
+        append_values(&mut value, b, &previous.unwrap(), ctx)?;
         let mut info = info.unwrap();
         info.warnings.extend(warnings);
         return Ok(WaveResult {
@@ -470,12 +470,7 @@ pub fn focus_otf(
             }
         }
         for output in &r.outputs[..planes.len()] {
-            value.extend(
-                b.read_view(output.view())?
-                    .as_slice::<[f32; 2]>()?
-                    .iter()
-                    .map(|v| v.map(f64::from)),
-            );
+            append_values(&mut value, b, output, ctx)?;
         }
         info = Some(r.run_info);
     }
@@ -500,4 +495,18 @@ pub(super) fn add_step_warning(warnings: &mut Vec<String>, steps: &[f32]) {
             .to_string(),
         );
     }
+}
+
+fn append_values(
+    values: &mut Vec<[f64; 2]>,
+    b: &dyn ComputeBackend,
+    output: &BufferHandle,
+    ctx: &JobContext,
+) -> MkResult<()> {
+    let guard = b.read_view(output.view())?;
+    for rows in guard.as_slice::<[f32; 2]>()?.chunks(4096) {
+        ctx.check()?;
+        values.extend(rows.iter().map(|v| v.map(f64::from)));
+    }
+    Ok(())
 }

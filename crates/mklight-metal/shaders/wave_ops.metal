@@ -146,6 +146,11 @@ static bool wrinside(constant MklWaveResampleParams &p,device const float2 *edge
     }
     return inside;
 }
+// Cache the same half-open even-odd crossings once per supersample row.
+kernel void mkl_wave_mask_rows(device const float2 *edges [[buffer(2)]],constant MklWaveResampleParams &p [[buffer(9)]],device float2 *crossings [[buffer(10)]],device uint *counts [[buffer(11)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint row=p.first+id,count=0;float2 v=wrcoord(row,p.n*p.supersample);
+    for(uint i=0;i<p.edges;++i){float2 x0=edges[4*i],y0=edges[4*i+1],x1=edges[4*i+2],y1=edges[4*i+3];if((mkl_df_sub(y0,v).x>0)!=(mkl_df_sub(y1,v).x>0)){crossings[row*p.edges+count++]=mkl_df_add(x0,mkl_df_div(mkl_df_mul(mkl_df_sub(v,y0),mkl_df_sub(x1,x0)),mkl_df_sub(y1,y0)));}}counts[row]=count;
+}
 kernel void mkl_wave_owner_clear(device atomic_uint *owner [[buffer(4)]],constant MklWaveResampleParams &p [[buffer(9)]],uint id [[thread_position_in_grid]]) {
     if(id<p.count)atomic_store_explicit(owner+p.first+id,0xffffffffu,memory_order_relaxed);
 }
@@ -164,22 +169,24 @@ kernel void mkl_wave_raster(device const float2 *nodes [[buffer(0)]],device cons
     int2 a=int2(max(ceil((lo+1)*float(ns)*0.5f-0.5f),float2(0))),b=int2(min(floor((hi+1)*float(ns)*0.5f-0.5f),float2(float(ns)-1)));
     for(int y=a.y;y<=b.y;++y)for(int x=a.x;x<=b.x;++x){float2 l[3];if(wrbary(nodes,ids,wrcoord(uint(x),ns),wrcoord(uint(y),ns),l)&&l[0].x>=-1e-12f&&l[1].x>=-1e-12f&&l[2].x>=-1e-12f)atomic_fetch_min_explicit(owner+uint(y)*ns+uint(x),t,memory_order_relaxed);}
 }
-kernel void mkl_wave_resample(device const float2 *nodes [[buffer(0)]],device const float2 *edges [[buffer(2)]],device const uint *tris [[buffer(3)]],device const uint *owner [[buffer(4)]],device float *amp [[buffer(5)]],device float *cov [[buffer(6)]],device float2 *opd [[buffer(7)]],device float *diag [[buffer(8)]],constant MklWaveResampleParams &p [[buffer(9)]],uint id [[thread_position_in_grid]]) {
+// Exact row neighbours turn the reference Chebyshev search into at most 257
+// row queries. The final right-neighbour lookup retains row-major source ties.
+kernel void mkl_wave_nearest_columns(device const uint *owner [[buffer(4)]],constant MklWaveResampleParams &p [[buffer(9)]],device uint *nearest [[buffer(12)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint ns=p.n*p.supersample,row=p.first+id,last=0xffffffffu;
+    for(uint x=0;x<ns;++x){uint k=row*ns+x;if(owner[k]!=0xffffffffu)last=x;nearest[2*k]=last;}
+    last=0xffffffffu;for(uint x=ns;x-->0;){uint k=row*ns+x;if(owner[k]!=0xffffffffu)last=x;nearest[2*k+1]=last;}
+}
+kernel void mkl_wave_resample(device const float2 *nodes [[buffer(0)]],device const float2 *edges [[buffer(2)]],device const uint *tris [[buffer(3)]],device const uint *owner [[buffer(4)]],device float *amp [[buffer(5)]],device float *cov [[buffer(6)]],device float2 *opd [[buffer(7)]],device float *diag [[buffer(8)]],constant MklWaveResampleParams &p [[buffer(9)]],device const float2 *crossings [[buffer(10)]],device const uint *counts [[buffer(11)]],device const uint2 *nearest [[buffer(12)]],uint id [[thread_position_in_grid]]) {
     if(id>=p.count)return;uint k=p.first+id,s=p.supersample,ns=p.n*s,N=p.n*p.n;float2 a=0,w=0;uint count=0,unresolved=0;float gap=0,pitch=1;
     for(uint sy=0;sy<s;++sy)for(uint sx=0;sx<s;++sx) {
         uint x=(k%p.n)*s+sx,y=(k/p.n)*s+sy,q=y*ns+x;float2 u=wrcoord(x,ns),v=wrcoord(y,ns);
-        if(p.mask&& !wrinside(p,edges,u,v))continue;bool missing=owner[q]==0xffffffffu;
+        if(p.mask){bool inside;if(p.reserved[0]){inside=false;for(uint j=0;j<counts[y];++j)if(mkl_df_sub(u,crossings[y*p.edges+j]).x<0)inside=!inside;}else inside=wrinside(p,edges,u,v);if(!inside)continue;}bool missing=owner[q]==0xffffffffu;
         if(missing) {
-            if(!p.mask)continue;bool found=false;
-            for(uint d=1;d<min(ns,uint(MKL_WAVE_MAX_EXTRAPOLATION+1))&&!found;++d) {
-                uint ymin=y> d?y-d:0,ymax=min(y+d,ns-1),xmin=x>d?x-d:0,xmax=min(x+d,ns-1);
-                for(uint yy=ymin;yy<=ymax&&!found;++yy) {
-                    // Only the perimeter is searched, preserving row-major ties.
-                    if(abs(int(yy)-int(y))==int(d)) {for(uint xx=xmin;xx<=xmax;++xx)if(owner[yy*ns+xx]!=0xffffffffu){q=yy*ns+xx;found=true;break;}}
-                    else {if(x>=d&&owner[yy*ns+x-d]!=0xffffffffu){q=yy*ns+x-d;found=true;}else if(x+d<ns&&owner[yy*ns+x+d]!=0xffffffffu){q=yy*ns+x+d;found=true;}}
-                }
-            }
-            if(!found){++unresolved;continue;}
+            if(!p.mask)continue;uint2 same=nearest[y*ns+x];uint range=min(uint(MKL_WAVE_MAX_EXTRAPOLATION),min(same.x==0xffffffffu?0xffffffffu:x-same.x,same.y==0xffffffffu?0xffffffffu:same.y-x));uint best=range+1,bestrow=0xffffffffu;
+            uint lo=y>range?y-range:0,hi=min(y+range,ns-1);
+            for(uint yy=lo;yy<=hi;++yy){uint dy=uint(abs(int(yy)-int(y)));if(dy>best)continue;uint2 pair=nearest[yy*ns+x];uint dx=min(pair.x==0xffffffffu?0xffffffffu:x-pair.x,pair.y==0xffffffffu?0xffffffffu:pair.y-x),d=max(dx,dy);if(d<best){best=d;bestrow=yy;}}
+            if(bestrow==0xffffffffu){++unresolved;continue;}
+            q=bestrow*ns+nearest[bestrow*ns+(x>best?x-best:0)].y;
         }
         uint t=owner[q];uint3 ids=uint3(tris[3*t],tris[3*t+1],tris[3*t+2]);float2 l[3];if(!wrbary(nodes,ids,u,v,l))continue;
         float2 ww=0,aa=0;for(uint j=0;j<3;++j){ww=mkl_df_add(ww,mkl_df_mul(l[j],nodes[4*ids[j]+2]));aa=mkl_df_add(aa,mkl_df_mul(l[j],nodes[4*ids[j]+3]));}

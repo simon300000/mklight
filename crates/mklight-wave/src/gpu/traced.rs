@@ -350,13 +350,14 @@ impl<'a> PupilTracer<'a> {
         if let Some(power) = &power {
             let v = self.backend.read_view(power.view())?;
             let rows: &[rad::PolarizationValue] = bytemuck::cast_slice(v.words());
-            if rows
+            let count = rows
                 .iter()
-                .any(|v| v.status == mklight_gpu::consts::MKL_RAD_REFERENCE)
-            {
-                return Err(MkError::Unsupported(
-                    "P7 pupil transport requires reference completion".into(),
-                ));
+                .filter(|v| v.status == mklight_gpu::consts::MKL_RAD_REFERENCE)
+                .count();
+            if count > 0 {
+                return Err(MkError::Unsupported(format!(
+                    "P7 pupil transport requires reference completion for {count} rows"
+                )));
             }
         }
         Ok((
@@ -938,12 +939,20 @@ impl<'a> PupilTracer<'a> {
         } else {
             crate::traced::even_odd_area(&uv_loops)
         };
-        let lattice_rays = (0..n)
-            .filter(|&k| {
-                let p = lattice.point(k % side, k / side);
-                p[0] * p[0] + p[1] * p[1] <= 1. + 1e-12
+        // The validated integer lattice has no off-disk point within the
+        // 1e-12 inclusion tolerance. Count its rows without a host grid scan.
+        let lattice_radius = settings.rays - 1;
+        let lattice_rays = (0..settings.rays)
+            .map(|j| {
+                let y = (2 * j).abs_diff(lattice_radius);
+                let x = (lattice_radius * lattice_radius - y * y).isqrt();
+                if lattice_radius % 2 == 0 {
+                    2 * (x / 2) + 1
+                } else {
+                    2 * ((x + 1) / 2)
+                }
             })
-            .count();
+            .sum::<usize>();
         let fraction = if ep_loops.is_empty() {
             survived as f64 / lattice_rays as f64
         } else {

@@ -478,7 +478,11 @@ OPD interpolation, nearest-triangle extrapolation, coverage counts, clear area,
 phase-step diagnostics and automatic-grid slopes run on device. The automatic
 0.35-wave rule and all existing grid/work caps are unchanged. Extrapolation
 beyond 128 subpoints reports an unresolved diagnostic and requests the reference
-resampler. The aperture is never replaced by a disk or convex hull.
+resampler. The aperture is never replaced by a disk or convex hull. Polygon edge crossings
+are shared per supersample row, preserving the original half-open even-odd
+arithmetic; this optional cache is bounded at 256 MiB. Exact left/right
+column neighbours replace repeated perimeter searches for missing raster points:
+minimum Chebyshev distance and the lowest row-major source tie are preserved.
 
 ### Native results and composition
 

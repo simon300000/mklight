@@ -202,6 +202,7 @@ pub fn from_resident_lattice(
     let value = ResidentPupil {
         input_hash,
         covered_samples,
+        max_phase_step: step,
         clear_area: d[9].to_f64() * 4. / (n * n) as f64,
         amplitude: r.outputs[0].clone(),
         coverage: r.outputs[1].clone(),

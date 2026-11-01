@@ -662,6 +662,20 @@ mod tests {
     use super::*;
     #[test]
     fn tiled_and_whole_image_match_direct_impulse_deposition() {
+        impulse_suite(
+            32,
+            0.1,
+            &[[16, 16], [1, 16]],
+            &[(16, false), (23, false), (32, true)],
+        );
+    }
+    #[test]
+    #[ignore = "host image-size and halo-support caps"]
+    fn image_size_and_halo_caps() {
+        impulse_suite(4096, 0.001, &[[2048, 2048]], &[(512, true)]);
+        impulse_suite(64, 6.4, &[[32, 32]], &[(64, true)]);
+    }
+    fn impulse_suite(n: usize, spacing: f64, centres: &[[usize; 2]], partitions: &[(usize, bool)]) {
         for origin in [
             mklight_metal::LibraryChoice::Precompiled,
             mklight_metal::LibraryChoice::RuntimeSource,
@@ -675,7 +689,7 @@ mod tests {
             let ctx = JobContext::new();
             let t = mklight_analysis::tracer_for(mklight_core::samples::singlet()).unwrap();
             let mut s = ImageSimulationSettings {
-                size: [32, 32],
+                size: [n, n],
                 ..Default::default()
             };
             s.optics.field_grid = 2;
@@ -699,41 +713,50 @@ mod tests {
                 mapping,
                 size: 2,
                 psf_size: 5,
-                spacing_mm: 0.1,
+                spacing_mm: spacing,
                 kernels: vec![kernel; 4],
                 kernel_sums: vec![1.; 4],
                 warnings: vec![],
                 identity: identity(&t, &s.optics),
             });
-            for centre in [[16usize, 16], [1, 16]] {
-                let mut data = vec![0.; 32 * 32];
-                data[centre[1] * 32 + centre[0]] = 1.;
+            for &centre in centres {
+                let mut data = vec![0.; n * n];
+                data[centre[1] * n + centre[0]] = 1.;
                 s.source = ImageSource::Buffer {
-                    width: 32,
-                    height: 32,
+                    width: n,
+                    height: n,
                     channels: 1,
                     data,
                 };
-                let expected: Vec<_> = (0..32 * 32)
-                    .map(|k| {
-                        let x = (k % 32) as f64 - centre[0] as f64;
-                        let y = (k / 32) as f64 - centre[1] as f64;
-                        let mut sum = 0.;
-                        for j in 0..5 {
-                            for i in 0..5 {
-                                let px = (i as f64 - 2.) * 0.1 / 0.0625;
-                                let py = (j as f64 - 2.) * 0.1 / 0.0625;
-                                sum += 0.04
-                                    * (1. - (x - px).abs()).max(0.)
-                                    * (1. - (y - py).abs()).max(0.);
+                let mut expected = vec![0.; n * n];
+                let pitch = 2. / n as f64;
+                for j in 0..5 {
+                    for i in 0..5 {
+                        let x = centre[0] as f64 + (i as f64 - 2.) * spacing / pitch;
+                        let y = centre[1] as f64 + (j as f64 - 2.) * spacing / pitch;
+                        let ix = x.floor() as isize;
+                        let iy = y.floor() as isize;
+                        for dy in 0..2 {
+                            for dx in 0..2 {
+                                let a = ix + dx;
+                                let b = iy + dy;
+                                if a >= 0 && b >= 0 && a < n as isize && b < n as isize {
+                                    expected[b as usize * n + a as usize] += 0.04
+                                        * (1. - (x - a as f64).abs())
+                                        * (1. - (y - b as f64).abs());
+                                }
                             }
                         }
-                        sum
-                    })
-                    .collect();
-                for (tile, whole) in [(16, false), (23, false), (32, true)] {
+                    }
+                }
+                for &(tile, whole) in partitions {
                     s.tile_size = tile;
                     let result = render(&b, &t, &s, Some(grid.clone()), whole, &ctx).unwrap();
+                    eprintln!(
+                        "P6_IMAGE_CAP n={n} spacing={spacing} requested_tile={tile} effective_tile={} resident={}",
+                        result.run_info.settings["effective_tile_size"],
+                        result.run_info.settings["resident"]["plan_stats"]
+                    );
                     let error = result
                         .image
                         .iter()
@@ -741,12 +764,12 @@ mod tests {
                         .map(|(a, b)| (a - b).abs())
                         .sum::<f64>();
                     assert!(
-                        error < 2e-5,
+                        error < if n > 32 { 2e-3 } else { 2e-5 },
                         "impulse {centre:?}, tile {tile}, whole {whole}: {error}"
                     );
                     assert!(
                         (result.image.iter().sum::<f64>() - expected.iter().sum::<f64>()).abs()
-                            < 1e-5
+                            < if n > 32 { 1e-3 } else { 1e-5 }
                     );
                 }
             }

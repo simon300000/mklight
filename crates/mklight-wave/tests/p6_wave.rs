@@ -13,7 +13,8 @@ fn error(a: &Psf, b: &Psf) -> f64 {
         .map(|(a, b)| (a - b).abs() / peak)
         .fold(0., f64::max)
 }
-fn resample_suite(b: &dyn ComputeBackend) {
+fn resample_suite(b: &dyn ComputeBackend) -> Vec<Vec<u32>> {
+    let mut masks_bits = vec![];
     let ctx = JobContext::new();
     let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
     let side = 17;
@@ -27,7 +28,7 @@ fn resample_suite(b: &dyn ComputeBackend) {
                 (u * u + v * v < 0.9 && u * u + v * v > 0.08).then_some(RaySample {
                     u: u + 0.03 * v * v,
                     v,
-                    opd_waves: 0.3 * u - 0.2 * v + 0.1 * u * u,
+                    opd_waves: 0.3 * u - 0.2 * v + 0.1 * u * u + 0.01 * (17. * u + 3. * v).sin(),
                     amplitude: 1. + 0.2 * u,
                 })
             })
@@ -52,6 +53,7 @@ fn resample_suite(b: &dyn ComputeBackend) {
         let rp = result.value;
         let cov = b.read_view(rp.coverage.view()).unwrap();
         let cov = cov.as_slice::<f32>().unwrap();
+        masks_bits.push(cov.iter().map(|v| v.to_bits()).collect());
         let amp = b.read_view(rp.amplitude.view()).unwrap();
         let amp = amp.as_slice::<f32>().unwrap();
         let opd = b.read_view(rp.opd.clone()).unwrap();
@@ -75,6 +77,7 @@ fn resample_suite(b: &dyn ComputeBackend) {
         }
         assert_eq!(result.stats.copied_bytes, 0);
     }
+    masks_bits
 }
 fn focus_and_lsf(b: &dyn ComputeBackend) {
     use mklight_gpu::{Df32, resident::*, wave_ops as w};
@@ -1083,4 +1086,21 @@ fn full_image_simulation() {
     let z =
         gpu::image_simulation::image_simulation_job(&b, &t, &settings, Some(new), &ctx).unwrap();
     assert_eq!(a.image, z.image);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn resampling_masks_match_device_emulation() {
+    for origin in [
+        mklight_metal::LibraryChoice::Precompiled,
+        mklight_metal::LibraryChoice::RuntimeSource,
+    ] {
+        let b = metal(origin);
+        let cpu = CpuF32Backend::matching(&b.precision().probe);
+        assert_eq!(
+            resample_suite(&b),
+            resample_suite(&cpu),
+            "exact resampling coverage/branch masks"
+        );
+    }
 }

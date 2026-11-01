@@ -94,7 +94,8 @@ pub fn validate(r: &FftMtf, p: &ResidentPlan) -> MkResult<()> {
             view(reference, Complex32, &[n, n])?;
             let count = frequencies.desc.shape[0];
             view(frequencies, F32, &[count, 2])?;
-            if !spacing.is_finite()
+            if n < 4
+                || !spacing.is_finite()
                 || spacing.hi <= 0.
                 || mapping.iter().flatten().any(|v| !v.is_finite())
             {

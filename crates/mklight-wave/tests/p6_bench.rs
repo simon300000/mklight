@@ -103,47 +103,51 @@ fn psf_case(
 #[ignore = "provisional matched native CPU/GPU benchmarks, actual host Metal"]
 fn native_pipeline_benchmark() {
     let b = backend();
-    for (name, model) in samples::all() {
-        let start = Instant::now();
-        let t = mklight_analysis::tracer_for(model).unwrap();
-        eprintln!(
-            "P6_BENCH_SETUP {}",
-            serde_json::json!({"case":name,"shared_resolution_ms":start.elapsed().as_secs_f64()*1000.})
-        );
-        psf_case(&b, name, &t, &Default::default());
+    let image_only = std::env::var("P6_BENCH_IMAGE_ONLY").is_ok();
+    if !image_only {
+        for (name, model) in samples::all() {
+            let start = Instant::now();
+            let t = mklight_analysis::tracer_for(model).unwrap();
+            eprintln!(
+                "P6_BENCH_SETUP {}",
+                serde_json::json!({"case":name,"shared_resolution_ms":start.elapsed().as_secs_f64()*1000.})
+            );
+            psf_case(&b, name, &t, &Default::default());
+        }
+        let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+        for (n, m) in [(64, 128), (256, 512), (1024, 2048)] {
+            let mut s = cpu::PsfAnalysisSettings::default();
+            s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
+            s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
+            s.pupil.grid = n;
+            s.grid_size = m;
+            psf_case(&b, &format!("complete_dense_{n}_{m}"), &t, &s);
+        }
+        for (name, model) in samples::all().into_iter().filter(|(name, _)| {
+            matches!(
+                *name,
+                "singlet" | "double_gauss" | "newtonian" | "relay" | "hybrid_doe" | "anamorphic"
+            )
+        }) {
+            let t = mklight_analysis::tracer_for(model).unwrap();
+            let mut s = cpu::PsfAnalysisSettings::default();
+            s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
+            s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
+            s.pupil.grid = 256;
+            s.grid_size = 512;
+            psf_case(&b, &format!("dense_{name}_256_512"), &t, &s);
+        }
+        for (rays, n, m) in [(11, 64, 128), (101, 256, 512), (1001, 1024, 2048)] {
+            let mut s = cpu::PsfAnalysisSettings::default();
+            s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
+            s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
+            s.pupil.rays = rays;
+            s.pupil.grid = n;
+            s.grid_size = m;
+            psf_case(&b, &format!("lattice_{rays}_{n}_{m}"), &t, &s);
+        }
     }
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
-    for (n, m) in [(64, 128), (256, 512), (1024, 2048)] {
-        let mut s = cpu::PsfAnalysisSettings::default();
-        s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
-        s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
-        s.pupil.grid = n;
-        s.grid_size = m;
-        psf_case(&b, &format!("complete_dense_{n}_{m}"), &t, &s);
-    }
-    for (name, model) in samples::all().into_iter().filter(|(name, _)| {
-        matches!(
-            *name,
-            "singlet" | "double_gauss" | "newtonian" | "relay" | "hybrid_doe" | "anamorphic"
-        )
-    }) {
-        let t = mklight_analysis::tracer_for(model).unwrap();
-        let mut s = cpu::PsfAnalysisSettings::default();
-        s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
-        s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
-        s.pupil.grid = 256;
-        s.grid_size = 512;
-        psf_case(&b, &format!("dense_{name}_256_512"), &t, &s);
-    }
-    for (rays, n, m) in [(11, 64, 128), (101, 256, 512), (1001, 1024, 2048)] {
-        let mut s = cpu::PsfAnalysisSettings::default();
-        s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
-        s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
-        s.pupil.rays = rays;
-        s.pupil.grid = n;
-        s.grid_size = m;
-        psf_case(&b, &format!("lattice_{rays}_{n}_{m}"), &t, &s);
-    }
     let ctx = JobContext::new();
     let s = image::ImageSimulationSettings::default();
     let start = Instant::now();

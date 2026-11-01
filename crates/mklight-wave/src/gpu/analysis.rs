@@ -1221,13 +1221,11 @@ pub fn through_focus_mtf_analysis_job(
                     &sub.subrange(0., 0.05),
                 )?;
                 accumulate(&mut stats, &r.stats);
-                let mut step = 0f64;
-                for q in &r.value {
-                    let r =
-                        q.phase_step(b, t.system().snapshot.clone(), &sub.subrange(0.05, 0.1))?;
-                    accumulate(&mut stats, &r.stats);
-                    step = step.max(r.value);
-                }
+                let step = r
+                    .value
+                    .iter()
+                    .map(|p| p.max_phase_step)
+                    .fold(0f64, f64::max);
                 let n = ((p.pupil.n as f64 * step / 0.35)
                     .max(p.pupil.n as f64)
                     .min(1024.)

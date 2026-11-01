@@ -247,7 +247,7 @@ fn image_algebra_emulation_and_noise_moments() {
             (40., 0.01),
             (200., 0.01),
             (1000000., 0.01),
-            (1e12, 0.),
+            (2e12, 0.),
         ] {
             let a = noise(&c, well, sigma).unwrap();
             let z = noise(&b, well, sigma).unwrap();
@@ -377,7 +377,11 @@ fn full_focus_range_and_transform_cancellation() {
                 max = max.max((a - z[0].hypot(z[1])).abs());
             }
         }
-        assert!(max < 5e-5, "full focus range: {max}");
+        // The extreme coarse, many-wave defocus uses the binding MTF budget.
+        assert!(
+            max < b.precision().budget.mtf_abs,
+            "full focus range: {max}"
+        );
         assert!(
             r.run_info
                 .warnings

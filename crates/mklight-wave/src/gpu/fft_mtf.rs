@@ -36,6 +36,7 @@ impl ResidentPupil {
             .view();
         p.warnings
             .retain(|w| !matches!(w, WaveWarning::PupilUndersampled { .. }));
+        p.max_phase_step = 0.;
         p.input_hash = format!("{}:zero_opd", self.input_hash);
         Ok(p)
     }
