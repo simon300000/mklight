@@ -1460,3 +1460,15 @@ compensation, three built-in catalogue refinements, and hybrid RI at B=1/16.
 These include qualification and f64 final scoring, and currently remain
 CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
 `p8_bench`; its default is spot. Timing evidence remains provisional.
+
+Provisional M2 Pro measurements (2026-11-01), ten measured runs after warm-up,
+show why P11 should retain CPU-preferred small jobs. For an exact-input warm
+Cooke default spot evaluation at B=1, CPU / legacy Metal / resident medians were
+0.150 / 1.057 / 2.329 ms; at B=1024, 27.952 / 30.905 / 91.514 ms. A 10000-ray
+single-candidate spot used 5.448 / 2.412 / 3.312 ms. These warm rows exclude new
+candidate qualification. Complete changing-candidate workloads include it:
+32 compensated Cooke trials took 7.527 ms CPU versus 119.204 ms resident, and
+three catalogue refinements took 1.723 versus 23.966 ms. The full spot/wave
+sweeps observed 91.613 MiB peak plan storage and 131.981 MiB retained pool
+storage. Cold costs, p95, copies, fallback proportions and raw records are in
+`P8-evidence.md`; these numbers do not set a universal backend threshold.
