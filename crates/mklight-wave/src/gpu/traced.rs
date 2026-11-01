@@ -518,27 +518,7 @@ impl<'a> PupilTracer<'a> {
         let power = power.then(|| rest.next().unwrap());
         let samples = sample_handle.unwrap_or_else(|| rest.next().unwrap());
         let extra = rest.collect();
-        let sample_guard = self.backend.read_view(samples.view())?;
-        let sample_rows: &[aim::Sample] = bytemuck::cast_slice(sample_guard.words());
-        let reports = self.backend.read_view(r[4].view())?;
-        let reports = reports.as_slice::<u32>()?;
-        let mut unresolved = 0usize;
-        for (k, sample) in sample_rows.iter().enumerate() {
-            if k % 4096 == 0 {
-                ctx.check()?;
-            }
-            if reports[k] != 0
-                && (sample.pupil[0] * sample.pupil[0] + sample.pupil[1] * sample.pupil[1]).to_f64()
-                    <= 1. + 1e-12
-            {
-                unresolved += 1;
-            }
-        }
-        if unresolved > 0 {
-            return Err(MkError::Unsupported(format!(
-                "P6 has {unresolved} unresolved in-pupil aims; reference completion required"
-            )));
-        }
+        self.check_aim(&samples, &r[4], ctx)?;
         if let Some(power) = &power {
             let v = self.backend.read_view(power.view())?;
             let rows: &[rad::PolarizationValue] = bytemuck::cast_slice(v.words());
@@ -563,6 +543,35 @@ impl<'a> PupilTracer<'a> {
             },
             extra,
         ))
+    }
+    fn check_aim(
+        &self,
+        samples: &BufferHandle,
+        reports: &BufferHandle,
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        let sample_guard = self.backend.read_view(samples.view())?;
+        let sample_rows: &[aim::Sample] = bytemuck::cast_slice(sample_guard.words());
+        let reports = self.backend.read_view(reports.view())?;
+        let reports = reports.as_slice::<u32>()?;
+        let mut unresolved = 0usize;
+        for (k, sample) in sample_rows.iter().enumerate() {
+            if k % 4096 == 0 {
+                ctx.check()?;
+            }
+            if reports[k] != 0
+                && (sample.pupil[0] * sample.pupil[0] + sample.pupil[1] * sample.pupil[1]).to_f64()
+                    <= 1. + 1e-12
+            {
+                unresolved += 1;
+            }
+        }
+        if unresolved > 0 {
+            return Err(MkError::Unsupported(format!(
+                "P6 has {unresolved} unresolved in-pupil aims; reference completion required"
+            )));
+        }
+        Ok(())
     }
     /// Copy each pupil's range of a shared probe batch into its own channels.
     /// A single pupil spanning the batch keeps the batch itself.
@@ -927,6 +936,7 @@ impl<'a> PupilTracer<'a> {
         let mut previous = None;
         let mut status = None;
         let mut probes = vec![];
+        let mut final_probe = None;
         for iteration in 0..=iterations {
             ctx.check()?;
             let last = iteration == iterations;
@@ -949,17 +959,26 @@ impl<'a> PupilTracer<'a> {
             // Probe publication order: starts, four ray channels, trace status.
             status = Some(p.outputs[layout.first + 5]);
             previous = Some(state);
-            probes.push(layout);
+            if last {
+                final_probe = Some(layout);
+            } else {
+                // Intermediate rounds need only aim reports and input samples
+                // for the qualification checks. Keep hit/status IDs plan-local.
+                let reports = p.outputs[layout.first + 4];
+                let samples = *p.outputs.last().unwrap();
+                p.outputs.truncate(layout.first);
+                probes.push((p.outputs.len(), p.outputs.len() + 1));
+                p.outputs.extend([reports, samples]);
+            }
         }
         let state_output = p.outputs.len();
         p.outputs.push(previous.unwrap());
         let result = self.backend.submit_plan(p, ctx)?.wait()?;
         accumulate(stats, &result.stats);
-        let mut batch = None;
-        for layout in &probes {
-            let (b, _) = self.finish_probe(layout, &result, ctx)?;
-            batch = Some(b);
+        for &(reports, samples) in &probes {
+            self.check_aim(&result.outputs[samples], &result.outputs[reports], ctx)?;
         }
+        let (batch, _) = self.finish_probe(final_probe.as_ref().unwrap(), &result, ctx)?;
         let state = self
             .backend
             .read_view(result.outputs[state_output].view())?;
@@ -974,7 +993,7 @@ impl<'a> PupilTracer<'a> {
                 )));
             }
         }
-        Ok(batch.unwrap())
+        Ok(batch)
     }
     /// Reference sphere, projection, lattice nodes and automatic-grid resampling
     /// of one traced pupil.

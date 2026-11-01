@@ -77,7 +77,10 @@ pub(crate) fn execute(
     let mut imported = HashSet::new();
     for b in &plan.buffers {
         let slot = match b {
-            PlanBuffer::Scratch(d) => Slot::Owned(x.allocate(d.byte_len()? / 4)?),
+            PlanBuffer::Scratch(_) => {
+                x.buffers.push(None);
+                continue;
+            }
             PlanBuffer::Import(v) => {
                 if imported.insert(v.buffer.generation()) {
                     x.live_bytes += v.buffer.desc().byte_len()?.max(16) as u64;
@@ -102,9 +105,28 @@ pub(crate) fn execute(
     if let Some(n) = sum_words {
         x.sum_scratch = Some(x.allocate(n)?);
     }
+    let accesses: Vec<_> = plan.operations.iter().map(accesses).collect();
+    let mut last_use = vec![0; plan.buffers.len()];
+    for (i, a) in accesses.iter().enumerate() {
+        for id in a
+            .reads
+            .iter()
+            .map(|v| v.buffer)
+            .chain(a.writes.iter().copied())
+        {
+            last_use[id.0] = i;
+        }
+    }
+    for id in &plan.outputs {
+        last_use[id.0] = plan.operations.len();
+    }
     let ops = plan.operations.len() as f64;
     for (i, op) in plan.operations.iter().enumerate() {
         ctl.check()?;
+        for id in &accesses[i].writes {
+            let words = plan.buffers[id.0].desc().byte_len()? / 4;
+            x.buffers[id.0] = Some(Slot::Owned(x.allocate(words)?));
+        }
         let sub = ctl.subrange(0.99 * i as f64 / ops, 0.99 * (i + 1) as f64 / ops);
         let t = Instant::now();
         let mut stage = StageStats {
@@ -124,6 +146,12 @@ pub(crate) fn execute(
             _ => {
                 stage.name = "domain".into();
                 dispatch(op, &mut x, &sub)?;
+            }
+        }
+        for (id, &last) in last_use.iter().enumerate() {
+            if last == i && matches!(x.buffers[id], Some(Slot::Owned(_))) {
+                let lease = x.buffers[id].take().unwrap().owned();
+                x.recycle(lease);
             }
         }
         ctl.check()?;
@@ -313,6 +341,18 @@ impl Execution<'_> {
     }
 
     pub(crate) fn allocate(&mut self, n: usize) -> MkResult<Lease> {
+        // Work-bound completions settle their access guards even without an
+        // explicit flush. Return only those retired leases to the exact pool.
+        let mut freed = 0;
+        self.retired.retain(|b| {
+            if b.available() {
+                freed += b.words().max(4) as u64 * 4;
+                false
+            } else {
+                true
+            }
+        });
+        self.live_bytes -= freed;
         let gpu = self.gpu;
         let b = self
             .rt
