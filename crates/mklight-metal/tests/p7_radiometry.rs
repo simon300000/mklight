@@ -72,24 +72,10 @@ fn determinism_concurrency_and_cancellation() {
     let (chunk, _) = support::run(&b, support::plan(&b, &specs, &ls, &q, 256));
     assert_eq!(ar.words(), bytemuck::cast_slice::<_, u32>(&chunk));
     let (emulated, _) = support::run(&cpu, support::plan(&cpu, &specs, &ls, &q, 64));
+    // Bare, ideal, tabulated and thin-film algebra (including the reduced
+    // sin/cos/exp polynomials) is specified double-float: identical bits.
     for (i, (a, c)) in chunk.iter().zip(emulated).enumerate() {
-        assert_eq!(a.status, c.status);
-        if q[i].coating < 3 {
-            assert_eq!(
-                bytemuck::bytes_of(a),
-                bytemuck::bytes_of(&c),
-                "specified bare/ideal/table algebra {i}"
-            );
-        } else {
-            for (x, y) in a
-                .amplitudes
-                .iter()
-                .chain(&a.powers)
-                .zip(c.amplitudes.iter().chain(&c.powers))
-            {
-                assert!((x.to_f64() - y.to_f64()).abs() < 1e-10);
-            }
-        }
+        assert_eq!(bytemuck::bytes_of(a), bytemuck::bytes_of(&c), "query {i}");
     }
     let t = testutil::tracer(samples::cooke_triplet());
     let points = (mklight_trace::PupilSampling::Grid { n: 65 }).points();
@@ -193,4 +179,67 @@ fn scalar_reference() {
         .unwrap()
         .expect("P7 requires host Metal");
     support::scalar_reference(&b);
+}
+#[test]
+fn transport_matches_cpu_emulation() {
+    use mklight_core::{JobContext, samples};
+    use mklight_gpu::{radiometry::*, *};
+    let b = MetalBackend::new()
+        .unwrap()
+        .expect("P7 requires host Metal");
+    let cpu = CpuF32Backend::matching(&b.precision().probe);
+    let mut model = samples::cooke_triplet();
+    model.coatings.insert(
+        "film".into(),
+        mklight_core::CoatingDef::ThinFilm {
+            reference_wavelength_um: 0.55,
+            layers: vec![mklight_core::Layer {
+                material: mklight_core::MaterialRef::Constant { n: 1.38 },
+                extinction: 0.02,
+                thickness_um: 0.07,
+                quarter_waves: None,
+            }],
+            mirror_substrate: None,
+        },
+    );
+    for s in &mut model.surfaces[1..] {
+        s.coating = Some("film".into());
+    }
+    let points = (mklight_trace::PupilSampling::Grid { n: 17 }).points();
+    for (name, model) in [("cooke", samples::cooke_triplet()), ("film", model)] {
+        let t = testutil::tracer(model);
+        for scalar in [false, true] {
+            let run = |b: &dyn ComputeBackend| {
+                let (mut p, h) = support::transport_plan(b, &t, 2, 1, &points, 256);
+                for op in &mut p.operations {
+                    if let resident::ResidentOp::Radiometry(Request::Polarization(r)) = op {
+                        r.scalar = scalar;
+                    }
+                }
+                let r = b
+                    .submit_plan(p, &JobContext::new())
+                    .unwrap()
+                    .wait()
+                    .unwrap();
+                b.release_systems(h).unwrap();
+                let v = b.read_view(r.outputs[0].view()).unwrap();
+                bytemuck::cast_slice::<u32, PolarizationValue>(v.words()).to_vec()
+            };
+            for (i, (mut m, mut c)) in run(&b).into_iter().zip(run(&cpu)).enumerate() {
+                // Everything but the retardance angles (an f32 library atan2)
+                // is the specified double-float algebra: identical bits.
+                for k in [1, 8] {
+                    let (a, z) = (m.properties[k].to_f64(), c.properties[k].to_f64());
+                    assert!((a - z).abs() <= 1e-6 * z.abs(), "{name} {i} angle {a} {z}");
+                    m.properties[k] = Df32::ZERO;
+                    c.properties[k] = Df32::ZERO;
+                }
+                assert_eq!(
+                    bytemuck::bytes_of(&m),
+                    bytemuck::bytes_of(&c),
+                    "{name} scalar={scalar} row {i}"
+                );
+            }
+        }
+    }
 }

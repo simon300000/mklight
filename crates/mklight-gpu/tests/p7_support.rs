@@ -6,6 +6,13 @@ use mklight_core::{
     samples,
 };
 use mklight_gpu::{radiometry::*, resident::*, *};
+/// Regression bounds for the double-float path, far inside the GPU.md §9.4
+/// budget (Jones 1e-4 relative, intensity/D 1e-4, retardance 1e-3 rad, ledger
+/// 1e-5): observed maxima on every sample and fixture are about 1e-11.
+const FIELD_TOL: f64 = 1e-9;
+/// Retardance leaves double-float through an f32 atan2 (about 1e-7 relative).
+const RETARDANCE_TOL: f64 = 1e-6;
+const LEDGER_TOL: f64 = 1e-10;
 pub fn upload<T: bytemuck::Pod>(b: &dyn ComputeBackend, p: &mut ResidentPlan, v: &[T]) -> PlanView {
     let h = b
         .fill_buffer(record_desc::<T>(v.len()), &mut |mut f| {
@@ -259,10 +266,11 @@ pub fn check_samples(b: &dyn ComputeBackend) {
             .unwrap_or(7),
     })
     .points();
-    let mut maxima = [0f64; 4];
+    let mut totals = [0f64; 4];
     let mut count = 0;
     let mut blocked = 0;
     for (name, model) in samples::all() {
+        let mut maxima = [0f64; 4];
         let t = testutil::tracer(model);
         for f in 0..t.fields().len() {
             for w in 0..t.num_wavelengths() {
@@ -302,7 +310,7 @@ pub fn check_samples(b: &dyn ComputeBackend) {
                                 .hypot(array[2 * k + 1].to_f64() - z.im);
                             maxima[0] = maxima[0].max(err);
                             assert!(
-                                err < 1e-5,
+                                err < FIELD_TOL,
                                 "Jones {name} f={f} w={w} i={i} k={k}: {err:e} {array:?} ref={j:?}"
                             );
                         }
@@ -310,25 +318,26 @@ pub fn check_samples(b: &dyn ComputeBackend) {
                     let intensity = refp.intensity(&state);
                     let err = (v.power[2].to_f64() - intensity).abs();
                     maxima[1] = maxima[1].max(err);
-                    assert!(err < 1e-4, "intensity {name}: {err:e}");
+                    assert!(err < FIELD_TOL, "intensity {name}: {err:e}");
                     let props = refp.properties();
                     let err = (v.properties[1].to_f64() - props.retardance).abs();
                     maxima[2] = maxima[2].max(err);
-                    assert!(err < 1e-3, "retardance {name}: {err:e}");
-                    assert!((v.properties[0].to_f64() - props.diattenuation).abs() < 1e-4);
+                    assert!(err < RETARDANCE_TOL, "retardance {name}: {err:e}");
+                    assert!((v.properties[0].to_f64() - props.diattenuation).abs() < FIELD_TOL);
                     let ledger = v.power[2].to_f64()
                         + v.power[4].to_f64()
                         + v.power[5].to_f64()
                         + v.power[6].to_f64();
                     maxima[3] = maxima[3].max((ledger - 1.).abs());
-                    assert!((ledger - 1.).abs() < 1e-5, "ledger {name}: {ledger:e}");
+                    assert!(
+                        (ledger - 1.).abs() < LEDGER_TOL,
+                        "ledger {name}: {ledger:e}"
+                    );
                     let fields = refp.image_fields();
-                    for a in 0..2 {
-                        for k in 0..3 {
-                            let err = (v.fields[6 * a + 2 * k].to_f64() - fields[a][k].re)
-                                .hypot(v.fields[6 * a + 2 * k + 1].to_f64() - fields[a][k].im);
-                            assert!(err < 1e-5, "vector {name}: {err:e}");
-                        }
+                    for (k, z) in fields.iter().flatten().enumerate() {
+                        let err = (v.fields[2 * k].to_f64() - z.re)
+                            .hypot(v.fields[2 * k + 1].to_f64() - z.im);
+                        assert!(err < FIELD_TOL, "vector {name}: {err:e}");
                     }
                     let scalar = mklight_trace::polarization::unpolarized_path_product(
                         t.system(),
@@ -336,7 +345,7 @@ pub fn check_samples(b: &dyn ComputeBackend) {
                         &refp.records,
                     ) * refp.internal_transmittance;
                     assert!(
-                        (v.power[0].to_f64() - scalar).abs() < 1e-5 * scalar + 1e-10,
+                        (v.power[0].to_f64() - scalar).abs() <= FIELD_TOL * scalar.max(1.),
                         "scalar {name}"
                     );
                 }
@@ -346,9 +355,12 @@ pub fn check_samples(b: &dyn ComputeBackend) {
             }
         }
         eprintln!("sample {name} maxima={maxima:?}");
+        for (t, m) in totals.iter_mut().zip(maxima) {
+            *t = t.max(m);
+        }
     }
     eprintln!(
-        "P7 sample totals survivors={count} blocked={blocked} max Jones/intensity/retardance/ledger={maxima:?}"
+        "P7 sample totals survivors={count} blocked={blocked} max Jones/intensity/retardance/ledger={totals:?}"
     );
 }
 pub fn fixtures(b: &dyn ComputeBackend) {
@@ -404,13 +416,13 @@ pub fn fixtures(b: &dyn ComputeBackend) {
             let reference = t.trace_polarized(t.field(2), 1, pt[0], pt[1], &Default::default());
             if reference.is_ok() {
                 let err = (v.power[2].to_f64() - reference.intensity(&state)).abs();
-                assert!(err < 1e-5, "fixture {def:?} {err:e}");
+                assert!(err < FIELD_TOL, "fixture {def:?} {err:e}");
                 assert_eq!(v.defined & 1 != 0, reference.properties().retarder_defined);
                 let ledger = v.power[2].to_f64()
                     + v.power[4].to_f64()
                     + v.power[5].to_f64()
                     + v.power[6].to_f64();
-                assert!((ledger - 1.).abs() < 1e-5, "fixture ledger {ledger}");
+                assert!((ledger - 1.).abs() < LEDGER_TOL, "fixture ledger {ledger}");
             } else {
                 assert_eq!(v.status, consts::MKL_RAD_BLOCKED);
             }
@@ -446,7 +458,7 @@ pub fn fixtures(b: &dyn ComputeBackend) {
                 assert_eq!(a.samples, c.samples);
                 assert_eq!(a.failed, c.failed);
                 assert!(
-                    (a.transmission - c.transmission).abs() < 1e-5,
+                    (a.transmission - c.transmission).abs() < FIELD_TOL,
                     "transmission {:?} {a:?} {c:?}",
                     settings.model
                 );
@@ -651,9 +663,9 @@ pub fn malus_and_channels(b: &dyn ComputeBackend) {
             .unwrap();
         let view = b.read_view(r.outputs[0].view()).unwrap();
         let ch = view.as_slice::<[f32; 2]>().unwrap();
-        for i in 0..6 {
+        for (i, c) in ch.iter().enumerate() {
             assert_eq!(
-                ch[i],
+                *c,
                 [
                     v.fields[2 * i].hi + v.fields[2 * i].lo,
                     v.fields[2 * i + 1].hi + v.fields[2 * i + 1].lo
@@ -670,10 +682,31 @@ pub fn malus_and_channels(b: &dyn ComputeBackend) {
     };
     let a = polarization_pupil_map(b, &t, &settings, &JobContext::new()).unwrap();
     let c = mklight_trace::polarization_pupil_map(&t, &settings, &JobContext::new()).unwrap();
-    assert!((a.mean_intensity - c.mean_intensity).abs() < 1e-5);
-    assert!((a.max_diattenuation - c.max_diattenuation).abs() < 1e-4);
-    assert!((a.rms_retardance - c.rms_retardance).abs() < 1e-3);
+    assert!((a.mean_intensity - c.mean_intensity).abs() < FIELD_TOL);
+    assert!((a.max_diattenuation - c.max_diattenuation).abs() < FIELD_TOL);
+    assert!((a.rms_retardance - c.rms_retardance).abs() < RETARDANCE_TOL);
     assert_eq!(a.undefined_retarder, c.undefined_retarder);
+    // Per-sample map assembly, including the T_max/T_min reconstruction.
+    assert_eq!(a.samples.len(), c.samples.len());
+    for (x, y) in a.samples.iter().zip(&c.samples) {
+        assert_eq!((x.pupil, x.status), (y.pupil, y.status));
+        assert!((x.intensity - y.intensity).abs() < FIELD_TOL);
+        for (u, v) in x.jones.m.iter().flatten().zip(y.jones.m.iter().flatten()) {
+            assert!((u - v).norm() < FIELD_TOL);
+        }
+        let (p, q) = (x.properties, y.properties);
+        assert_eq!(p.retarder_defined, q.retarder_defined);
+        for (u, v) in [
+            (p.t_unpolarized, q.t_unpolarized),
+            (p.t_max, q.t_max),
+            (p.t_min, q.t_min),
+            (p.diattenuation, q.diattenuation),
+        ] {
+            assert!((u - v).abs() < FIELD_TOL, "{p:?} {q:?}");
+        }
+        assert!((p.retardance - q.retardance).abs() < RETARDANCE_TOL);
+        assert!((x.retardance_jones - y.retardance_jones).abs() < RETARDANCE_TOL);
+    }
     let expected = intensities[0] * 0.35f64.cos().powi(2) + intensities[1] * 0.35f64.sin().powi(2);
     assert!((intensities[2] - expected).abs() < 1e-12);
 }
@@ -681,6 +714,11 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
     use mklight_trace::PolarizationState;
     let mut absorbing = samples::singlet();
     absorbing.surfaces[1].material = MaterialRef::glass("ABSORB");
+    // Bulk path lengths through tilted/decentred elements exercise the local
+    // frame transfers, not only the axial case.
+    let mut tilted_absorbing = testutil::tilted_triplet();
+    tilted_absorbing.surfaces[3].material = MaterialRef::glass("ABSORB");
+    tilted_absorbing.surfaces[5].material = MaterialRef::glass("ABSORB");
     let mut long = samples::singlet();
     long.surfaces[2].thickness = 900.;
     let mut mirror = samples::newtonian_telescope();
@@ -711,6 +749,7 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
         ("absorbing", absorbing),
         ("long", long),
         ("tilted", testutil::tilted_triplet()),
+        ("tilted absorbing", tilted_absorbing),
         (
             "vignetted",
             testutil::vignetted(&samples::cooke_triplet(), 0.5),
@@ -723,7 +762,6 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
     ];
     let pts = (mklight_trace::PupilSampling::Grid { n: 17 }).points();
     let mut blocked = 0;
-    let mut bulk = 0f64;
     let tele = p1::special_systems()
         .into_iter()
         .filter(|(name, _)| name.contains("telecentric"));
@@ -746,6 +784,7 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
             &JobContext::new(),
         )
         .unwrap();
+        let mut bulk = 0f64;
         for (v, pt) in r.values.iter().zip(&pts) {
             let reference = t.trace_polarized(t.field(f), 0, pt[0], pt[1], &Default::default());
             if !reference.is_ok() {
@@ -760,21 +799,27 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
                 "{name}"
             );
             assert!(
-                (v.power[2].to_f64() - reference.intensity(&state)).abs()
-                    < 1e-5 * reference.intensity(&state) + 1e-10,
+                (v.power[2].to_f64() - reference.intensity(&state)).abs() < FIELD_TOL,
                 "{name} point={pt:?} power={:?} reference={} tau={} records={:?}",
                 v.power,
                 reference.intensity(&state),
                 reference.internal_transmittance,
                 reference.records
             );
+            // The f64 reference keeps a unit longitudinal PRT term, whose
+            // rounding is relative to 1, not to the transmitted amplitude: the
+            // dim pupil (|J|² ≈ 1e-24) carries ~1e-6 rad of reference noise.
+            let props = reference.properties();
+            let tolerance = RETARDANCE_TOL.max(1e-15 / props.t_unpolarized.sqrt());
             assert!(
-                (v.properties[1].to_f64() - reference.properties().retardance).abs() < 1e-3,
-                "{name}"
+                (v.properties[1].to_f64() - props.retardance).abs() < tolerance,
+                "{name} retardance {} reference {:?}",
+                v.properties[1].to_f64(),
+                props
             );
             let budget = reference.energy_budget(&state);
             assert!(
-                (v.power[6].to_f64() - budget.bulk_absorbed).abs() < 1e-5,
+                (v.power[6].to_f64() - budget.bulk_absorbed).abs() < FIELD_TOL,
                 "{name}"
             );
             bulk = bulk.max(v.power[6].to_f64());
@@ -782,12 +827,17 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
                 + v.power[4].to_f64()
                 + v.power[5].to_f64()
                 + v.power[6].to_f64();
-            assert!((ledger - 1.).abs() < 1e-5, "{name} ledger {ledger}");
+            assert!((ledger - 1.).abs() < LEDGER_TOL, "{name} ledger {ledger}");
         }
+        assert_eq!(
+            name.contains("absorbing"),
+            bulk > 0.01,
+            "{name} bulk {bulk}"
+        );
+        eprintln!("P7 geometric fixture {name} max_bulk={bulk}");
     }
     assert!(blocked > 0);
-    assert!(bulk > 0.01);
-    eprintln!("P7 geometric fixtures blocked={blocked} max_bulk={bulk}");
+    eprintln!("P7 geometric fixtures blocked={blocked}");
 }
 #[path = "../../mklight-trace/tests/common/mod.rs"]
 mod optical_fixture;
@@ -852,7 +902,7 @@ pub fn singular_retarder(b: &dyn ComputeBackend) {
             "offset {offset}"
         );
         assert!(
-            (v.properties[1].to_f64() - props.retardance).abs() < 1e-3,
+            (v.properties[1].to_f64() - props.retardance).abs() < RETARDANCE_TOL,
             "offset {offset}"
         );
         if offset.abs() < 1e-9 {
@@ -889,7 +939,7 @@ pub fn scalar_reference(b: &dyn ComputeBackend) {
                 mklight_trace::polarization::unpolarized_path_product(t.system(), w, &r.records)
                     * r.internal_transmittance;
             let error = (v.power[0].to_f64() - expected).abs();
-            assert!(error <= 1e-5 * expected + 1e-10, "{name}: {error:e}");
+            assert!(error <= FIELD_TOL * expected.max(1.), "{name}: {error:e}");
         }
         b.release_systems(h).unwrap();
     }

@@ -14,8 +14,7 @@ fn cross(a: V, b: V) -> V {
     ]
 }
 fn norm(a: V) -> V {
-    let n = dot(a, a).sqrt();
-    a.map(|v| v / n)
+    scale(a, d(1.0) / dot(a, a).sqrt())
 }
 fn sub(a: V, b: V) -> V {
     std::array::from_fn(|i| a[i] - b[i])
@@ -114,7 +113,7 @@ fn properties(j: Matrix) -> ([D; 8], bool, bool) {
         out[0] = min(d(1.0), d(2.0) * mn / t);
     }
     if value(mn) > 0.0 {
-        out[2..5].copy_from_slice(&scale(m, d(1.0) / mn));
+        out[2..5].copy_from_slice(&m.map(|v| v / mn));
     }
     if value(top) == 0.0 {
         return (out, false, false);
@@ -151,7 +150,7 @@ fn properties(j: Matrix) -> ([D; 8], bool, bool) {
     let vn = dot(v, v).sqrt();
     out[1] = d(2.0 * value(vn).atan2(value(c)));
     if value(vn) > 0.0 {
-        out[5..8].copy_from_slice(&scale(v, -d(1.0) / vn));
+        out[5..8].copy_from_slice(&v.map(|x| -x / vn));
     }
     (out, true, false)
 }
@@ -302,7 +301,9 @@ pub fn evaluate(
         scalar,
         (sp[0] + sp[1]) * d(0.5),
         energy(e, st),
-        energy(e, [d(1.0), D::ZERO, D::ZERO, D::ZERO]),
+        (0..3).fold(D::ZERO, |s, k| {
+            s + (e[0][k].norm2() + e[1][k].norm2()) * d(0.5)
+        }),
         loss[0],
         loss[1],
         loss[2],

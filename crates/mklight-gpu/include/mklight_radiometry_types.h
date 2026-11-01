@@ -1,3 +1,4 @@
+/* radiometry numeric records, owned by that package. Included by mklight_gpu_types.h. */
 #ifndef MKLIGHT_RADIOMETRY_TYPES_H
 #define MKLIGHT_RADIOMETRY_TYPES_H
 #define MKL_RAD_VERSION 1
@@ -36,13 +37,15 @@ struct MklPolarizationValue {
   float2 jones[8], proper[8], fields[12], direction[3], power[7], properties[9];
   uint status, defined;
 };
+/* Rows [offset, end) of count; records are [slots][count][13]. */
 struct MklPolarizationParams {
   uint count, offset, slots, wavelengths;
   float2 stokes[4];
-  uint layers, reserved;
+  uint layers, end;
 };
+/* Queries [offset, end). */
 struct MklRadParams {
-  uint count, offset, specs, layers;
+  uint end, offset, specs, layers;
 };
 #endif
 #endif

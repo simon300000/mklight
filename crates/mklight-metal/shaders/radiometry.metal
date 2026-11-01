@@ -264,7 +264,7 @@ mkl_radiometry_coating(device const MklCoatingSpec *specs [[buffer(0)]],
                        constant MklRadParams &p [[buffer(4)]],
                        uint tid [[thread_position_in_grid]]) {
   uint i = p.offset + tid;
-  if (i >= p.count)
+  if (i >= p.end)
     return;
   MklCoatingQuery q = queries[i];
   if (q.coating >= p.specs) {
@@ -309,9 +309,10 @@ static RV runit(RV a) { return rscale(a, RD(1) / rsqrt(rdot(a, a))); }
 static RV rrot(thread const float2 *m, RV v, bool transpose = false) {
   RV out;
   for (uint i = 0; i < 3; i++) {
-    out.a[i] = RD();
+    RV row;
     for (uint j = 0; j < 3; j++)
-      out.a[i] = out.a[i] + RD(m[transpose ? j * 3 + i : i * 3 + j]) * v.a[j];
+      row.a[j] = RD(m[transpose ? j * 3 + i : i * 3 + j]);
+    out.a[i] = rdot(row, v);
   }
   return out;
 }
@@ -446,7 +447,7 @@ mkl_radiometry_polarization(device const MklRadSurface *surfaces [[buffer(0)]],
                             constant MklPolarizationParams &p [[buffer(7)]],
                             uint tid [[thread_position_in_grid]]) {
   uint i = p.offset + tid, n = p.count;
-  if (i >= p.reserved)
+  if (i >= p.end)
     return;
   MklPolarizationValue out = {};
   if (statuses[i] != 0) {
@@ -655,7 +656,7 @@ mkl_radiometry_scalar(device const MklRadSurface *surfaces [[buffer(0)]],
                       constant MklPolarizationParams &p [[buffer(7)]],
                       uint tid [[thread_position_in_grid]]) {
   uint i = p.offset + tid, n = p.count;
-  if (i >= p.reserved)
+  if (i >= p.end)
     return;
   MklPolarizationValue out = {};
   if (statuses[i]) {

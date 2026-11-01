@@ -300,7 +300,10 @@ for s in &samples {
 ## 9. Resident GPU service (P7)
 
 `mklight_gpu::radiometry` implements backend-neutral resident requests with
-matching CPU-f32 code and strict Metal kernels. This is a service for the
+matching CPU-f32 code and strict Metal kernels. Coating and transport
+results are bit-identical between the two in a matching floating-point
+environment, except the retardance angles, which leave double-float through
+an f32 `atan2`. This is a service for the
 GPU-first solver packages; engine capability advertisement and `auto`
 selection remain with P11. No reference tracer or solver weighting rule is
 changed.
@@ -315,9 +318,10 @@ incident/exit index, incidence side, coating definition and layer indices;
 material resolution and spectral table interpolation use the existing host
 material service. All angle-dependent amplitudes, powers and thin-film
 matrix products run on the device. `PreparedCoatings` retains shared-memory
-leases for reuse; constructing changed domains produces new leases. Results
-record hashes of the actual specs, layers and queries, so changed material
-or wavelength data cannot silently reuse an old identity.
+leases for reuse; constructing changed domains produces new leases. Its
+`identity` is a digest of the actual spec and layer tables, computed once at
+construction and recorded as the plan's library identity, so changed
+material or wavelength data cannot silently reuse an old identity.
 
 The service evaluates angles directly, with **no angle interpolation**.
 Complex arithmetic, Brewster numerators, Snell discriminants, matrix
@@ -382,34 +386,37 @@ numerically failed rays are excluded from the transmission denominator.
 
 `pupil_plan` builds P1 generation → recorded trace → P7 transport → P3
 summary with no intermediate optical readback. `pupil` is its cancellable
-host result adapter; `system_transmission` and `polarization_pupil_map` expose the existing
-result types for all requested fields/wavelengths. Reference-required pupil
-rows and unresolved aims are evaluated with the f64 tracer and counted in
-metadata. Only when such rows change is the final summary rebuilt in f64,
-in original input order, with a warning. The physical undefined-retarder
-contrast remains 1e-24; the device requests f64 below a 1e-18 conditioning
-envelope, including the final mask decision. Jones matrices are scaled before polar decomposition to prevent determinant
+host result adapter; `system_transmission` and `polarization_pupil_map`
+expose the existing result types for all requested fields/wavelengths.
+Reference-required pupil rows and unresolved aims are evaluated with the f64
+tracer and counted in metadata. Only when such rows change is the final
+summary rebuilt in f64, in original input order, with a warning. The
+physical undefined-retarder contrast remains 1e-24; the device requests f64
+below a 1e-18 conditioning envelope, including the final mask decision.
+Jones matrices are scaled before polar decomposition to prevent determinant
 underflow for nearly opaque pupils. An exactly opaque matrix is completed by
-the reference mask decision without division by zero. A P1 failure retains its
-original status alongside the zero pupil.
+the reference mask decision without division by zero. A P1 failure retains
+its original status alongside the zero pupil.
 
-Immutable coating and surface tables are produced directly inside `fill_buffer`;
-outputs use `read_view`, with no bulk staging copies. `ResultSlice` keeps
-completed coating/pupil rows and statuses in place; only reference completion
-creates a mutable working copy (reported as `reference_read_copy_bytes`).
-Borrowed host coating-query arrays require one input copy, recorded as
-`input_copy_bytes`; direct producers can use `fill_buffer` and the raw request.
-The existing P0 system-cache API copies cold packed geometry once and reuses it
-on warm jobs; benchmarks report this separately from resident-plan copies. Scalar transmission has
-a dedicated transport kernel that skips PRT and retardance, and reads only the
-P3 summary when no reference completion is needed. Numeric outputs are final result assembly, not f64-labelled GPU
+Immutable coating and surface tables are produced directly inside
+`fill_buffer`; outputs use `read_view`, with no bulk staging copies.
+`ResultSlice` keeps completed coating/pupil rows and statuses in place; only
+reference completion creates a mutable working copy (reported as
+`reference_read_copy_bytes`). Borrowed host coating-query arrays require one
+input copy, validated while copying and recorded as `input_copy_bytes`;
+direct producers can use `fill_buffer` and the raw request. The existing P0
+system-cache API copies cold packed geometry once and reuses it on warm
+jobs; benchmarks report this separately from resident-plan copies. Scalar
+transmission has a dedicated transport kernel that skips PRT and
+retardance, and reads only the P3 summary when no reference completion is
+needed. Numeric outputs are final result assembly, not f64-labelled GPU
 arithmetic. Per-ray operation order is independent of tile/command sizes;
-Metal uses adaptive bounded commands aiming at 10 ms and checks cancellation
-before and after each one. Only integer fallback counters return to the
-host between resident stages. All jobs carry `RunInfo` with plan/build,
-material, sampling, backend and fallback metadata.
+Metal uses adaptive commands aiming at 10 ms (at most `MAX_TILE` rows) and
+checks cancellation before and after each one. Only integer fallback
+counters return to the host between resident stages. All jobs carry
+`RunInfo` with plan/build, material, sampling, backend and fallback
+metadata.
 
-Qualification and measurement evidence is in the task's `P7-evidence.md`.
 Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The
 ignored `p7_bench` harness records cold setup and at least ten warm samples

@@ -176,6 +176,14 @@ pub struct PolarizationValue {
     /// Bit 0 proper retarder defined, bit 1 pupil retarder defined.
     pub defined: u32,
 }
+// Byte sizes of the matching MSL structs in mklight_radiometry_types.h
+// (float2 members, 8-byte aligned).
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<CoatingSpec>() == 80 && size_of::<CoatingLayer>() == 24);
+    assert!(size_of::<CoatingQuery>() == 16 && size_of::<CoatingValue>() == 120);
+    assert!(size_of::<SurfaceSpec>() == 264 && size_of::<PolarizationValue>() == 384);
+};
 pub fn surface_specs(
     sys: &mklight_core::ResolvedSystem,
     layers: &mut Vec<CoatingLayer>,

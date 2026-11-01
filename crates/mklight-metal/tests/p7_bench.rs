@@ -270,7 +270,7 @@ fn coating_stacks() {
                 })
                 .collect();
             let setup = Instant::now();
-            let p = support::plan(&b, &specs, &layers, &q, 65536);
+            let p = support::plan(&b, &specs, &layers, &q, MAX_TILE);
             let setup_ms = setup.elapsed().as_secs_f64() * 1e3;
             let gpu = || {
                 let start = Instant::now();

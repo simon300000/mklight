@@ -90,7 +90,7 @@ pub fn pupil_plan(
     }
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.identity.library_hash = prepared.identity.clone();
-    p.settings = serde_json::json!({"operation":"radiometry_pupil","version":crate::consts::MKL_RAD_VERSION,"field":field.point,"wavelength":wl,"state":state,"clip":clip,"point_count":points.len(),"points_hash":blake3::hash(bytemuck::cast_slice(points)).to_hex().to_string()});
+    p.settings = serde_json::json!({"operation":"radiometry_pupil","version":crate::consts::MKL_RAD_VERSION,"field":field.point,"wavelength":wl,"state":state,"clip":clip,"point_count":points.len()});
     let spec = aiming::FieldSpec::new(
         t.system(),
         t.paraxial(),
@@ -225,11 +225,19 @@ fn pupil_mode(
     let sum = b.read_view(result.outputs[2].view())?;
     let sums = sum.as_slice::<Df32>()?;
     let mut summary = std::array::from_fn(|c| std::array::from_fn(|k| sums[4 * c + k].to_f64()));
-    if result.stats.fallback_count == 0 {
+    let status_view = b.read_view(result.outputs[1].view())?;
+    let status = &status_view.as_slice::<u32>()?[..points.len()];
+    let aim_failed =
+        |s: u32| (s & crate::consts::MKL_RAY_CODE_MASK) == crate::consts::MKL_AIM_FAILED;
+    // Unresolved device aiming is completed in f64 whether or not other rows
+    // need reference evaluation; the failed-count channel gates the scan.
+    if result.stats.fallback_count == 0
+        && (summary[9][0] == 0. || !status.iter().any(|&s| aim_failed(s)))
+    {
         let (values, trace_status) = if retain_values {
             (
                 ResultSlice::resident(b.read_view(result.outputs[0].view())?, points.len()),
-                ResultSlice::resident(b.read_view(result.outputs[1].view())?, points.len()),
+                ResultSlice::resident(status_view, points.len()),
             )
         } else {
             (ResultSlice::owned(vec![]), ResultSlice::owned(vec![]))
@@ -247,9 +255,7 @@ fn pupil_mode(
     let guard = b.read_view(result.outputs[0].view())?;
     let rows: &[PolarizationValue] = bytemuck::cast_slice(guard.words());
     let mut values = Vec::with_capacity(rows.len());
-    let status_view = b.read_view(result.outputs[1].view())?;
-    let status = status_view.as_slice::<u32>()?;
-    let mut trace_status = status[..points.len()].to_vec();
+    let mut trace_status = status.to_vec();
     let mut fallback = 0;
     for (i, v) in rows.iter().enumerate() {
         if i % 256 == 0 {
@@ -259,9 +265,7 @@ fn pupil_mode(
                 "polarization assembly",
             );
         }
-        let aim_failed =
-            (trace_status[i] & crate::consts::MKL_RAY_CODE_MASK) == crate::consts::MKL_AIM_FAILED;
-        if v.status == crate::consts::MKL_RAD_REFERENCE || aim_failed {
+        if v.status == crate::consts::MKL_RAD_REFERENCE || aim_failed(trace_status[i]) {
             ctx.check()?;
             let ray = t.trace_polarized(
                 &field,
@@ -655,7 +659,7 @@ pub fn polarization_pupil_map(
     let mut warnings = t.warnings().to_vec();
     warnings.extend(r.run_info.warnings);
     if undefined > 0 {
-        warnings.push(format!("{undefined} pupil samples have a singular Jones matrix (no defined retarder) and are excluded from retardance statistics"));
+        warnings.push(format!("{undefined} pupil samples have a singular Jones matrix (no defined retarder) and are excluded from the retardance statistics"));
     }
     let mut run_info = timer.finish(
         &t.system().snapshot,

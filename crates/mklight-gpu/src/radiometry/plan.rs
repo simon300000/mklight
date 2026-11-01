@@ -15,20 +15,6 @@ pub struct PreparedRadiometry {
     pub wavelengths: usize,
     pub identity: String,
 }
-fn fill<T: bytemuck::Pod>(
-    b: &dyn ComputeBackend,
-    values: &[T],
-    ctx: &JobContext,
-) -> MkResult<BufferHandle> {
-    b.fill_buffer(record_desc::<T>(values.len()), &mut |mut f| {
-        let output: &mut [T] = bytemuck::cast_slice_mut(f.as_mut_slice::<u32>()?);
-        for (a, z) in values.chunks(1024).zip(output.chunks_mut(1024)) {
-            ctx.check()?;
-            z.copy_from_slice(a);
-        }
-        Ok(())
-    })
-}
 fn fill_tables<T: bytemuck::Pod>(
     b: &dyn ComputeBackend,
     rows: usize,
@@ -119,7 +105,7 @@ impl PreparedRadiometry {
                     wavelengths: self.wavelengths,
                     stokes: [1.0, st.s1 / st.s0, st.s2 / st.s0, st.s3 / st.s0].map(Df32::from_f64),
                     output,
-                    tile: 65536,
+                    tile: MAX_TILE,
                 }
                 .into(),
             )));
@@ -183,6 +169,8 @@ pub struct CoatingDomain {
 pub struct PreparedCoatings {
     pub specs: BufferHandle,
     pub layers: BufferHandle,
+    /// Content digest of the spec and layer tables, computed once.
+    pub identity: String,
     domains: Vec<CoatingDomain>,
 }
 pub struct CoatingResult {
@@ -200,6 +188,7 @@ impl PreparedCoatings {
             .iter()
             .map(|d| records::layer_count(&d.coating))
             .sum();
+        let mut hash = blake3::Hasher::new();
         let (specs, layers) =
             fill_tables::<CoatingSpec>(b, domains.len(), count, &mut |specs, layers| {
                 let mut offset = 0;
@@ -220,11 +209,14 @@ impl PreparedCoatings {
                     )?;
                     offset = j;
                 }
+                hash.update(bytemuck::cast_slice(specs));
+                hash.update(bytemuck::cast_slice(layers));
                 Ok(())
             })?;
         Ok(Self {
             specs,
             layers,
+            identity: hash.finalize().to_hex().to_string(),
             domains: domains.to_vec(),
         })
     }
@@ -238,19 +230,28 @@ impl PreparedCoatings {
         ctx: &JobContext,
     ) -> MkResult<CoatingResult> {
         ctx.check()?;
-        for q in queries {
-            if q.coating as usize >= self.domains.len()
-                || !q.cosine.is_finite()
-                || !(0.0..=1.0).contains(&q.cosine.to_f64())
-            {
-                return Err(bad("coating query index or cosine"));
-            }
-        }
         let mut p = ResidentPlan::new(snapshot);
-        p.settings = serde_json::json!({"operation":"coating","input_copy_bytes":std::mem::size_of_val(queries),"version":crate::consts::MKL_RAD_VERSION,"specs_hash":blake3::hash(bytemuck::cast_slice(b.read_view(self.specs.view())?.words())).to_hex().to_string(),"layers_hash":blake3::hash(bytemuck::cast_slice(b.read_view(self.layers.view())?.words())).to_hex().to_string(),"query_hash":blake3::hash(bytemuck::cast_slice(queries)).to_hex().to_string()});
+        p.identity.library_hash = self.identity.clone();
+        p.settings = serde_json::json!({"operation":"coating","input_copy_bytes":std::mem::size_of_val(queries),"version":crate::consts::MKL_RAD_VERSION,"query_count":queries.len()});
         let specs = p.import(self.specs.view());
         let layers = p.import(self.layers.view());
-        let query = fill(b, queries, ctx)?;
+        // The only bulk copy: caller-owned queries, validated while copying.
+        let query = b.fill_buffer(record_desc::<CoatingQuery>(queries.len()), &mut |mut f| {
+            let output: &mut [CoatingQuery] = bytemuck::cast_slice_mut(f.as_mut_slice::<u32>()?);
+            for (a, z) in queries.chunks(4096).zip(output.chunks_mut(4096)) {
+                ctx.check()?;
+                for q in a {
+                    if q.coating as usize >= self.domains.len()
+                        || !q.cosine.is_finite()
+                        || !(0.0..=1.0).contains(&q.cosine.to_f64())
+                    {
+                        return Err(bad("coating query index or cosine"));
+                    }
+                }
+                z.copy_from_slice(a);
+            }
+            Ok(())
+        })?;
         let query = p.import(query.view());
         let output = p.scratch(record_desc::<CoatingValue>(queries.len()));
         p.operations
@@ -259,7 +260,7 @@ impl PreparedCoatings {
                 layers: p.view(layers)?,
                 queries: p.view(query)?,
                 output,
-                tile: 16384,
+                tile: MAX_TILE,
             })));
         p.outputs = vec![output];
         let mut r = b.submit_plan(p, &ctx.subrange(0., 0.9))?.wait()?;

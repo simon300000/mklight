@@ -13,6 +13,11 @@ use crate::{pending::JobControl, resident::*};
 use mklight_core::MkResult;
 pub use records::*;
 
+/// Largest command tile. Metal adapts each command towards 10 ms below it; the
+/// arithmetic is per row, so tiles never change results.
+pub const MAX_TILE: usize = 1 << 20;
+/// Cancellation/progress interval of the CPU emulation.
+const CPU_CHECK: usize = 4096;
 #[derive(Clone, Debug)]
 pub struct CoatingRequest {
     pub specs: PlanView,
@@ -67,7 +72,8 @@ fn check<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
     let n = v.desc.shape.first().copied().unwrap_or(0);
     if v.desc != record_desc::<T>(n)
         || v.stride != 1
-        || (base ^ v.offset) & 1 != 0
+        // MSL records hold float2 members: 8-byte (even word) alignment.
+        || !(base + v.offset).is_multiple_of(2)
         || v.desc.len()? > u32::MAX as usize
     {
         return Err(bad("radiometry record layout"));
@@ -94,7 +100,9 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             check::<CoatingSpec>(&r.specs, p)?;
             check::<CoatingLayer>(&r.layers, p)?;
             let n = check::<CoatingQuery>(&r.queries, p)?;
-            if p.desc(r.output)? != &record_desc::<CoatingValue>(n) || r.tile == 0 || r.tile > 65536
+            if p.desc(r.output)? != &record_desc::<CoatingValue>(n)
+                || r.tile == 0
+                || r.tile > MAX_TILE
             {
                 return Err(bad("coating output or tile"));
             }
@@ -123,7 +131,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 || r.trace_status.stride != 1
                 || p.desc(r.output)? != &record_desc::<PolarizationValue>(n)
                 || r.tile == 0
-                || r.tile > 65536
+                || r.tile > MAX_TILE
             {
                 return Err(bad("polarization output, indices or tile"));
             }
@@ -207,7 +215,7 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
         } => {
             let n = values.desc.shape[0];
             for i in 0..n {
-                if i % 4096 == 0 {
+                if i % CPU_CHECK == 0 {
                     ctl.check()?;
                 }
                 let v = rows::<PolarizationValue>(x, values)[i];
@@ -226,7 +234,7 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
         Request::Coating(r) => {
             let n = r.queries.desc.shape[0];
             for i in 0..n {
-                if i % r.tile == 0 {
+                if i % r.tile.min(CPU_CHECK) == 0 {
                     ctl.check()?;
                     ctl.report(i as f64 / n as f64, "coating");
                 }
@@ -262,7 +270,7 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
         Request::Polarization(r) => {
             let n = r.records.desc.shape[1];
             for i in 0..n {
-                if i % r.tile == 0 {
+                if i % r.tile.min(CPU_CHECK) == 0 {
                     ctl.check()?;
                     ctl.report(i as f64 / n as f64, "polarization");
                 }
@@ -307,7 +315,7 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
         } => {
             let n = values.desc.shape[0];
             for i in 0..n {
-                if i % 4096 == 0 {
+                if i % CPU_CHECK == 0 {
                     ctl.check()?;
                 }
                 let v = rows::<PolarizationValue>(x, values)[i];
