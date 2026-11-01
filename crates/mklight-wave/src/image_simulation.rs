@@ -300,11 +300,11 @@ pub fn build_psf_grid(
 }
 
 #[derive(Clone)]
-struct Raster {
-    w: usize,
-    h: usize,
-    c: usize,
-    data: Vec<f64>,
+pub(crate) struct Raster {
+    pub(crate) w: usize,
+    pub(crate) h: usize,
+    pub(crate) c: usize,
+    pub(crate) data: Vec<f64>,
 }
 fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
     match &s.source {
@@ -343,7 +343,7 @@ fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
 }
 /// Decode an 8- or 16-bit grey or RGB PNG (alpha dropped, palettes and low
 /// bit depths expanded) from sRGB code values to linear light.
-fn read_png(path: &str) -> MkResult<Raster> {
+pub(crate) fn read_png(path: &str) -> MkResult<Raster> {
     let io = |e: std::io::Error| MkError::Io(format!("{path}: {e}"));
     let bad = |e: png::DecodingError| invalid(&format!("{path}: {e}"));
     let file = std::io::BufReader::new(std::fs::File::open(path).map_err(io)?);

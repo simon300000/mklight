@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bytemuck.workspace = true
+blake3.workspace = true
 mklight-gpu.workspace = true
 mklight-core.workspace = true
 mklight-trace.workspace = true
@@ -20,3 +22,6 @@ png.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+mklight-metal.workspace = true

@@ -339,8 +339,9 @@ cargo test --release -p mklight-wave --test interactive -- --ignored --nocapture
 * `mtf_vs_field` sweeps normalised field points without the system
   fields' vignetting factors (the traced rim still models real
   vignetting).
-* Polarisation (vector pupils from `mklight_trace::vector_pupil`) and GPU
-  pupil tracing are not wired in; the link is CPU f64.
+* Vector diffraction is not implemented. The reference registry uses CPU f64;
+  the explicit resident scalar service is described in §9. Engine routing is
+  owned by the GPU integration package.
 * The automatic grid resolves the phase interpolated from the traced lattice;
   it does not adaptively discover features smaller than the `rays` spacing.
   Increase `pupil.rays` for sharply localised wavefront structure.
@@ -436,3 +437,169 @@ sample and rejects accuracy warnings. Additional closed-form tests pin
 quadratic-phase sampling/blur, ideal-cone frequency/depth defaults and explicit
 overrides; regression tests cross-check the projected FFT against the exact
 skew transform (0.1% of peak and energy).
+
+## 9. Resident scalar-wave service
+
+`mklight_wave::gpu` composes P1 aiming/tracing/projection, P2 transforms, P3
+collectives/QR, P5 field maps/illumination and P7 scalar throughput through the
+single `ComputeBackend` resident API. It does not enable engine routing or
+change the reference registry. P11 owns qualification policy and automatic
+selection; explicit solver calls report the actual backend and f32 precision.
+
+### Pupils and automatic sampling
+
+`PupilTracer::new(backend, tracer, ctx)` prepares reusable packed geometry and
+P7 material tables. `trace(field, wavelength, settings, ctx)` generates the
+requested entrance lattice and guard ring with P1, traces with hi/lo records,
+and uses P7's scalar product of unpolarised interface factors and bulk loss.
+Wavelength chunks always include the primary wavelength for real-image-height
+aiming; P7 receives the original wavelength indices. A wavelength-only DOE
+factor cancels in chief-normalised amplitudes and centroid weights; zero
+selected-order throughput remains unusable.
+
+The host chains the small boundary topology. Saddle-centre probes run only
+where marching squares needs them. All field × wavelength pupils of a job share
+the chief, lattice, saddle and rim commands (up to 2¹⁶ lattice rays per batch);
+each pupil's rays are then split into its own channels for placement and
+resampling, bit-identical to tracing it alone. Rim probes evaluate four
+bisection levels per round, retaining the same binary decisions and requested
+tolerance; the
+analytic disk root uses its cancellation-free form. Unresolved aims, rim
+brackets, sphere intersections and P7 reference-required rows explicitly return
+`Unsupported`, rather than turning into missing rays or silently zero amplitudes.
+
+The chief/centroid reference uses P1's unclipped chief and P3 weighted moments.
+Small reference-frame metadata remains host control. P1 sphere projection and
+resident amplitude/Jacobian work preserve both sheets, telecentric limits,
+negative propagation and finite conjugates. `ResidentTracedPupil` retains its
+original resident lattice, mask and `ExitPupilInfo`; resampling/refinement does
+not trace again or copy a host pupil back to the device.
+
+`from_structured` and `ResidentPupil::from_pupil` remain explicit input boundaries
+for existing host data. `from_resident_lattice` consumes already resident nodes.
+Structured triangles, even-odd masks (including holes), supersampling, unwrapped
+OPD interpolation, nearest-triangle extrapolation, coverage counts, clear area,
+phase-step diagnostics and automatic-grid slopes run on device. The automatic
+0.35-wave rule and native-analysis grid/work caps are unchanged. The resident
+resampler bounds its supersample raster at 8192² subpoints; larger requests fail
+explicitly without reducing sampling. Extrapolation
+beyond 128 subpoints reports an unresolved diagnostic and requests the reference
+resampler. The aperture is never replaced by a disk or convex hull. Polygon edge
+crossings
+are shared per supersample row, preserving the original half-open even-odd
+arithmetic; this optional cache is bounded at 256 MiB. Exact left/right
+column neighbours replace repeated perimeter searches for missing raster points:
+minimum Chebyshev distance and the lowest row-major source tie are preserved.
+
+### Native results and composition
+
+`gpu::analysis` exposes backend-taking job variants of all seven native wave
+analyses: wavefront, PSF, MTF, field MTF, through-focus MTF, diffraction energy
+and line spread. Results retain their existing types, selected sampling,
+references, warnings and `RunInfo`. `resident` metadata includes the device,
+probe/build, plan version and aggregated stage/copy/fallback statistics.
+Configured callers still apply `ConfiguredTracer::stamp` to retain the base
+snapshot and configuration identity.
+
+* Wavefront statistics use Debye weights, double-float reductions and a P3
+  three-column QR tilt fit. The original lattice Zernike fit uses device basis
+  evaluation and pivoted, reorthogonalised QR. Its reported condition is the
+  infinity-norm estimate of equilibrated R, distinct from the reference's
+  spectral condition number; rank failures remain errors.
+* `append_psf`, `append_huygens`, `append_correlation` and `append_fft_otf`
+  compose into caller plans. FFT/chirp/affine transforms
+  preserve the reference's negligible-skew rule before satisfying P2's exact
+  diagonal/symmetric contracts. Huygens sums use rationalised distances and
+  fixed 256-sample double-float blocks, one thread per pixel and block, added
+  in block order (as are direct-MTF correlations, image queries and radial
+  bins); no sample-by-pixel matrix is allocated.
+* Direct MTF keeps the angular-spectrum mapping and coverage-weighted phase
+  interpolation. FFT MTF builds the sensor spectrum and uses the same shifted
+  lattice, centroid phase removal, cubic aberration interpolation and bilinear
+  diffraction reference as the f64 method. Huygens MTF uses the sampled-PSF DFT.
+  A covered pupil crossing the sensor horizon is rejected.
+* Focus sweeps share correlation stencils and cache exact defocus phases up to
+  256 MiB; larger requests evaluate the same phases on the fly. Per-plane GPU
+  reductions retain phase-step warnings. FFT/Huygens use bounded plane batches.
+  Automatic pupils are refined from the phase steps at both focus endpoints.
+  Polychromatic fields/OTFs accumulate on device before taking magnitudes.
+  Clearing OPD preserves lateral-colour offsets for PSF/energy references; the
+  MTF diffraction reference deliberately omits the placement phase, as in f64.
+* `ResidentPsf` keeps images available to subsequent MTF, energy, line-spread
+  and image-simulation stages. Energy uses the band-limited spectral integrals,
+  not pixel bins. Stable integer-radius sorting/compaction and segmented sums
+  group equal Fourier radii; batched images share each Bessel kernel. Image
+  moments and line-spread reductions also remain resident.
+
+Published inputs are immutable shared allocations. Producers use `fill_buffer`,
+consumers use `read_view`, and final owned results widen directly from those
+views. `ResidentPupil::opd` is a `BufferView`, so focused planes share their batch
+allocation without copying. `WaveResult` retains `PlanStats` and actual-backend
+`RunInfo`; P8/P11 callers must preserve snapshot/library/qualification identity
+when composing lower-level operations. Cancellation discards outputs and never
+runs a replacement reference computation.
+
+### Image simulation
+
+`gpu::image_simulation::{build_psf_grid,image_simulation_job}` implements the
+same scalar, linear-light model as §8. `ResidentPsfGrid` is reusable across
+source/noise changes and checks snapshot, material-library and optical-settings
+identity. P5 supplies distortion and spectrally weighted RI; its explicitly
+reported sparse reference completions remain in the result evidence.
+
+Patterns, inverse bilinear distortion, source resampling, RI multiplication,
+node-weighted convolution, detector aperture integration and noise run on GPU.
+PNG decoding and final result assembly stay on the host. Pixel deposition is
+separable and compensated, preserving the reference's 4×4 aperture quadrature.
+Convolution is zero padded with the complete kernel halo. A whole-image tile is
+used when its estimated transform storage fits a quarter of the device working
+set; otherwise the requested tile partition is used. This changes only work
+partitioning, not sampling. RunInfo records `image_plan_version: 2` and
+`effective_tile_size`. Kernel-cache storage is bounded at 64 MiB, and optical
+grids exceeding half the recommended working set explicitly request fallback.
+
+Shot/read noise uses the shared Philox raw stream `(seed, output_sample, draw)`
+and the specified open-interval f32 uniform conversion. The f64 reference uses
+its documented f64 conversion; compare moments and raw addressing, not an
+unqualified bitwise claim for transcendental/rejection arithmetic. Fixed-device
+replay is deterministic. Poisson rejection uses a cancellation-free double-float
+log probability; means above 1e12 electrons or nonfinite output explicitly request
+fallback. Subnormal full-well parameters are rejected at the request boundary
+because FTZ would otherwise turn shot noise off. Matching-emulation branch tests and moment tests cover the qualified
+range. Low-y row zero, RGB/monochrome conversion, unclipped
+noise output and discrete convolution flux are preserved.
+
+### Qualification and timing
+
+Host-required suites in `tests/p6_wave.rs`, `tests/p6_native.rs` and
+`tests/p6_boundaries.rs` cover the
+resident primitives and complete native results against matched f64 methods,
+including automatic sampling. The ignored `all_gpu_traced_pupils` suite checks
+all 144 built-in field/wavelength pupils, with actual P1/P7 work. The image unit
+test checks forced halo tiles and whole-image convolution against independent
+impulse deposition, including edge flux loss. Both shader origins and the
+numerics probe are exercised. No skipped test qualifies Metal.
+
+`tests/p6_bench.rs` measures complete native PSFs on all built-ins, explicit
+64/256/1024 pupils through a 2048 image, dense representative designs,
+11/101/1001-side traced lattices, complete/cached-grid image simulation, and
+matched complete wavefront/MTF/field/focus/energy/line-spread methods.
+It alternates unchanged CPU f64 and GPU runs, separates workload-cold/setup and
+warm-up, and records ten measured runs, median/p95, stages, copies, allocations,
+tracked peak plan bytes and fallback counts. The older prepared-pupil benchmark
+remains a distinct residency case. Timings during concurrent package work are
+provisional; P11 owns consolidated quiet-host cost thresholds. Detailed current
+acceptance status, raw logs, numerical maxima and outstanding qualifications
+are maintained in the task's `P6-evidence.md`.
+
+On the qualified M2 Pro measurements (provisional), complete native jobs are
+bound by command round trips (about 0.2 ms each), not arithmetic: after
+batching, a default nine-pupil PSF job issues about 215 commands (it issued
+about 790), most of them per-pupil placement, resampling and PSF steps. GPU now wins the
+default singlet PSF, the 1024/2048 dense PSF and the million-ray lattice;
+other small/default jobs, the Huygens/FFT focus cases and 64×64 or default
+image simulation remain CPU-preferred because the f64 reference traces its
+pupils in parallel in 10–50 ms. Dense 256/1024 transforms with an already
+resident pupil favor GPU, a different cost state from tracing and resampling a
+complete job. P11 must retain that distinction
+when deriving backend policy. These measurements do not change engine dispatch.
