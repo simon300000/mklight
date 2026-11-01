@@ -13,6 +13,11 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     } else {
         None
     };
+    let mut column_blocks = if p.mask != 0 {
+        Some(x.allocate(ns * ns.div_ceil(256) * 2)?)
+    } else {
+        None
+    };
     let mut amp = x.take_output(r.amplitude);
     let mut cov = x.take_output(r.coverage);
     let mut opd = x.take_output(r.opd);
@@ -69,10 +74,16 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         "mkl_wave_owner_clear",
         "mkl_wave_triangles",
         "mkl_wave_raster",
-        "mkl_wave_nearest_columns",
+        "mkl_wave_nearest_blocks",
         "mkl_wave_resample",
     ];
-    let sizes = [ns * ns, cells, 2 * cells, ns, r.size * r.size];
+    let sizes = [
+        ns * ns,
+        cells,
+        2 * cells,
+        ns * ns.div_ceil(256),
+        r.size * r.size,
+    ];
     for step in 0..5 {
         if step == 3 && nearest.is_none() {
             continue;
@@ -80,7 +91,7 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         let pipeline = x.gpu.pipeline(&PipelineKey::plain(names[step]))?;
         let tile = match step {
             2 => ((1 << 20) * cells / (ns * ns)).max(128),
-            3 => ((1 << 20) / ns).max(1),
+            3 => (1 << 20) / 256,
             4 => ((1 << 18) / (r.supersample * r.supersample)).max(1),
             _ => 1 << 20,
         };
@@ -120,8 +131,18 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
                     } else {
                         bind(12, &r.valid);
                     }
+                    if let Some(n) = column_blocks.as_mut() {
+                        e.set_buffer_mut(13, n, 0);
+                    } else {
+                        bind(13, &r.valid);
+                    }
                     e.set_bytes(9, &q);
-                    e.dispatch_1d(&pipeline, q.count as usize);
+                    if step == 3 {
+                        e.set_pipeline(&pipeline);
+                        e.dispatch_groups([q.count as usize, 1, 1], 256);
+                    } else {
+                        e.dispatch_1d(&pipeline, q.count as usize);
+                    }
                     Ok(())
                 })?
             };
@@ -145,6 +166,9 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     }
     if let Some(c) = counts {
         x.recycle(c);
+    }
+    if let Some(n) = column_blocks {
+        x.recycle(n);
     }
     if let Some(n) = nearest {
         x.recycle(n);

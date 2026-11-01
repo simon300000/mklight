@@ -555,7 +555,8 @@ its documented f64 conversion; compare moments and raw addressing, not an
 unqualified bitwise claim for transcendental/rejection arithmetic. Fixed-device
 replay is deterministic. Poisson rejection uses a cancellation-free double-float
 log probability; means above 1e12 electrons or nonfinite output explicitly request
-fallback. Matching-emulation branch tests and moment tests cover the qualified
+fallback. Subnormal full-well parameters are rejected at the request boundary
+because FTZ would otherwise turn shot noise off. Matching-emulation branch tests and moment tests cover the qualified
 range. Low-y row zero, RGB/monochrome conversion, unclipped
 noise output and discrete convolution flux are preserved.
 

@@ -242,6 +242,10 @@ fn image_algebra_emulation_and_noise_moments() {
             noise(&b, 1e14, 0.),
             Err(mklight_core::MkError::Unsupported(_))
         ));
+        assert!(matches!(
+            noise(&b, 1e-40, 0.),
+            Err(mklight_core::MkError::Unsupported(_))
+        ));
         for (well, sigma) in [
             (2., 0.01),
             (40., 0.01),

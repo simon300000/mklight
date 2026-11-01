@@ -169,24 +169,25 @@ kernel void mkl_wave_raster(device const float2 *nodes [[buffer(0)]],device cons
     int2 a=int2(max(ceil((lo+1)*float(ns)*0.5f-0.5f),float2(0))),b=int2(min(floor((hi+1)*float(ns)*0.5f-0.5f),float2(float(ns)-1)));
     for(int y=a.y;y<=b.y;++y)for(int x=a.x;x<=b.x;++x){float2 l[3];if(wrbary(nodes,ids,wrcoord(uint(x),ns),wrcoord(uint(y),ns),l)&&l[0].x>=-1e-12f&&l[1].x>=-1e-12f&&l[2].x>=-1e-12f)atomic_fetch_min_explicit(owner+uint(y)*ns+uint(x),t,memory_order_relaxed);}
 }
-// Exact row neighbours turn the reference Chebyshev search into at most 257
-// row queries. The final right-neighbour lookup retains row-major source ties.
-kernel void mkl_wave_nearest_columns(device const uint *owner [[buffer(4)]],constant MklWaveResampleParams &p [[buffer(9)]],device uint *nearest [[buffer(12)]],uint id [[thread_position_in_grid]]){
-    if(id>=p.count)return;uint ns=p.n*p.supersample,row=p.first+id,last=0xffffffffu;
-    for(uint x=0;x<ns;++x){uint k=row*ns+x;if(owner[k]!=0xffffffffu)last=x;nearest[2*k]=last;}
-    last=0xffffffffu;for(uint x=ns;x-->0;){uint k=row*ns+x;if(owner[k]!=0xffffffffu)last=x;nearest[2*k+1]=last;}
+// Parallel exact neighbours within 256-column blocks. An extrapolation of at
+// most 128 subpoints can reach only an adjacent block; its summary is sufficient.
+kernel void mkl_wave_nearest_blocks(device const uint *owner [[buffer(4)]],constant MklWaveResampleParams &p [[buffer(9)]],device uint2 *nearest [[buffer(12)]],device uint2 *blocks [[buffer(13)]],uint3 gid [[threadgroup_position_in_grid]],uint lane [[thread_index_in_threadgroup]]){
+    uint ns=p.n*p.supersample,columns=(ns+255)/256,block=p.first+gid.x,row=block/columns,x=(block%columns)*256+lane;bool valid=x<ns&&owner[row*ns+x]!=0xffffffffu;threadgroup uint2 v[256];v[lane]=uint2(valid?x+1:0,valid?x:0xffffffffu);threadgroup_barrier(mem_flags::mem_threadgroup);
+    for(uint stride=1;stride<256;stride*=2){uint2 q=v[lane];if(lane>=stride)q.x=max(q.x,v[lane-stride].x);if(lane+stride<256)q.y=min(q.y,v[lane+stride].y);threadgroup_barrier(mem_flags::mem_threadgroup);v[lane]=q;threadgroup_barrier(mem_flags::mem_threadgroup);}
+    if(x<ns)nearest[row*ns+x]=uint2(v[lane].x?v[lane].x-1:0xffffffffu,v[lane].y);if(lane==0)blocks[block]=uint2(v[0].y,v[255].x?v[255].x-1:0xffffffffu);
 }
-kernel void mkl_wave_resample(device const float2 *nodes [[buffer(0)]],device const float2 *edges [[buffer(2)]],device const uint *tris [[buffer(3)]],device const uint *owner [[buffer(4)]],device float *amp [[buffer(5)]],device float *cov [[buffer(6)]],device float2 *opd [[buffer(7)]],device float *diag [[buffer(8)]],constant MklWaveResampleParams &p [[buffer(9)]],device const float2 *crossings [[buffer(10)]],device const uint *counts [[buffer(11)]],device const uint2 *nearest [[buffer(12)]],uint id [[thread_position_in_grid]]) {
+static uint2 wrpair(constant MklWaveResampleParams &p,device const uint2 *nearest,device const uint2 *blocks,uint x,uint y){uint ns=p.n*p.supersample,columns=(ns+255)/256,block=x/256;uint2 pair=nearest[y*ns+x];if(pair.x==0xffffffffu&&block>0)pair.x=blocks[y*columns+block-1].y;if(pair.y==0xffffffffu&&block+1<columns)pair.y=blocks[y*columns+block+1].x;return pair;}
+kernel void mkl_wave_resample(device const float2 *nodes [[buffer(0)]],device const float2 *edges [[buffer(2)]],device const uint *tris [[buffer(3)]],device const uint *owner [[buffer(4)]],device float *amp [[buffer(5)]],device float *cov [[buffer(6)]],device float2 *opd [[buffer(7)]],device float *diag [[buffer(8)]],constant MklWaveResampleParams &p [[buffer(9)]],device const float2 *crossings [[buffer(10)]],device const uint *counts [[buffer(11)]],device const uint2 *nearest [[buffer(12)]],device const uint2 *blocks [[buffer(13)]],uint id [[thread_position_in_grid]]) {
     if(id>=p.count)return;uint k=p.first+id,s=p.supersample,ns=p.n*s,N=p.n*p.n;float2 a=0,w=0;uint count=0,unresolved=0;float gap=0,pitch=1;
     for(uint sy=0;sy<s;++sy)for(uint sx=0;sx<s;++sx) {
         uint x=(k%p.n)*s+sx,y=(k/p.n)*s+sy,q=y*ns+x;float2 u=wrcoord(x,ns),v=wrcoord(y,ns);
         if(p.mask){bool inside;if(p.reserved[0]){inside=false;for(uint j=0;j<counts[y];++j)if(mkl_df_sub(u,crossings[y*p.edges+j]).x<0)inside=!inside;}else inside=wrinside(p,edges,u,v);if(!inside)continue;}bool missing=owner[q]==0xffffffffu;
         if(missing) {
-            if(!p.mask)continue;uint2 same=nearest[y*ns+x];uint range=min(uint(MKL_WAVE_MAX_EXTRAPOLATION),min(same.x==0xffffffffu?0xffffffffu:x-same.x,same.y==0xffffffffu?0xffffffffu:same.y-x));uint best=range+1,bestrow=0xffffffffu;
+            if(!p.mask)continue;uint2 same=wrpair(p,nearest,blocks,x,y);uint range=min(uint(MKL_WAVE_MAX_EXTRAPOLATION),min(same.x==0xffffffffu?0xffffffffu:x-same.x,same.y==0xffffffffu?0xffffffffu:same.y-x));uint best=range+1,bestrow=0xffffffffu;
             uint lo=y>range?y-range:0,hi=min(y+range,ns-1);
-            for(uint yy=lo;yy<=hi;++yy){uint dy=uint(abs(int(yy)-int(y)));if(dy>best)continue;uint2 pair=nearest[yy*ns+x];uint dx=min(pair.x==0xffffffffu?0xffffffffu:x-pair.x,pair.y==0xffffffffu?0xffffffffu:pair.y-x),d=max(dx,dy);if(d<best){best=d;bestrow=yy;}}
+            for(uint yy=lo;yy<=hi;++yy){uint dy=uint(abs(int(yy)-int(y)));if(dy>best)continue;uint2 pair=wrpair(p,nearest,blocks,x,yy);uint dx=min(pair.x==0xffffffffu?0xffffffffu:x-pair.x,pair.y==0xffffffffu?0xffffffffu:pair.y-x),d=max(dx,dy);if(d<best){best=d;bestrow=yy;}}
             if(bestrow==0xffffffffu){++unresolved;continue;}
-            q=bestrow*ns+nearest[bestrow*ns+(x>best?x-best:0)].y;
+            q=bestrow*ns+wrpair(p,nearest,blocks,x>best?x-best:0,bestrow).y;
         }
         uint t=owner[q];uint3 ids=uint3(tris[3*t],tris[3*t+1],tris[3*t+2]);float2 l[3];if(!wrbary(nodes,ids,u,v,l))continue;
         float2 ww=0,aa=0;for(uint j=0;j<3;++j){ww=mkl_df_add(ww,mkl_df_mul(l[j],nodes[4*ids[j]+2]));aa=mkl_df_add(aa,mkl_df_mul(l[j],nodes[4*ids[j]+3]));}

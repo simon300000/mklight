@@ -263,6 +263,11 @@ pub fn validate(r: &Simulation, p: &ResidentPlan) -> MkResult<()> {
             {
                 return Err(bad("image noise"));
             }
+            if well.is_some_and(|v| v < f32::MIN_POSITIVE) {
+                return Err(mklight_core::MkError::Unsupported(
+                    "shot-noise full well is below the normal f32 range on an FTZ device".into(),
+                ));
+            }
             out(p, *output, F32, &input.desc.shape)
         }
     }
