@@ -1275,6 +1275,18 @@ public pending-buffer view or implicit asynchronous import.
 zero commands at encode time and their timestamps/counts appear in the
 `fused completion` stage. Arithmetic and reduction trees are unchanged.
 
+Provisional M2 Pro fusion follow-up (same release workloads before/after):
+default Newtonian/Cooke/singlet PSF commands fall from 215/223/271 to
+58/64/94; Cooke spot/EE/best-focus from 9/29/12 to 1/12/2; Cooke candidate
+B=1/16/1024 from 9/9/14 to 1/1/8; 1M compatibility trace→sum from 8 to 2;
+20² Double Gauss ghost maps from 91 to 35. Warm plan copies remain zero.
+Default Cooke EE still returns its counted f64 bin-classification fallback;
+its command count describes the attempted resident work. Loaded-host wall
+measurements do not establish a changed CPU-preferred verdict; existing cost
+exceptions remain pending the consolidated quiet benchmark. Host-dependent
+pupil metadata, adaptive ghost refinement and the stray event loop still
+synchronise.
+
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
 uploaded/readback, copied and parameter-block bytes, peak live plan storage and fallback/polish counts.

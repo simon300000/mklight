@@ -89,7 +89,8 @@ pub(crate) fn execute(
             "prepare systems",
         );
     }
-    x.stats.parameter_bytes += parameter_blocks * size_of::<mklight_gpu::systems::DispatchParams>() as u64;
+    x.stats.parameter_bytes +=
+        parameter_blocks * size_of::<mklight_gpu::systems::DispatchParams>() as u64;
     x.stats.command_buffers += stage.command_buffers;
     x.stats.device_seconds += stage.device_seconds;
     // Package timings are retained separately; the router also records the
