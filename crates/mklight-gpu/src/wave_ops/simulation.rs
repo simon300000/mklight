@@ -237,7 +237,7 @@ pub fn validate(r: &Simulation, p: &ResidentPlan) -> MkResult<()> {
             output,
         } => {
             if *tile_size == 0
-                || size.iter().any(|v| *v == 0)
+                || size.contains(&0)
                 || ![1, 3].contains(channels)
                 || tiles.len() != size[0].div_ceil(*tile_size) * size[1].div_ceil(*tile_size)
             {
@@ -623,8 +623,8 @@ pub fn warp(p: &Params, k: usize, source: &[f32], nodes: &[Df32]) -> ([f32; 3], 
         .iter()
         .fold(Df32::ZERO, |a, (k, w)| a + nodes[k * 5 + 4] * *w);
     let mut out = [0.; 3];
-    for ch in 0..p.channels as usize {
-        out[ch] = raster_sample(p, source, coords[0], coords[1], ch) * f(ri);
+    for (ch, v) in out.iter_mut().enumerate().take(p.channels as usize) {
+        *v = raster_sample(p, source, coords[0], coords[1], ch) * f(ri);
     }
     (out, uv)
 }
@@ -684,8 +684,7 @@ fn logarithm(x: Df32) -> Df32 {
         term = term * yy;
         sum = sum + term / d((2 * k + 1) as f32);
     }
-    sum.mul_f32(2.)
-        + Df32::new(std::f32::consts::LN_2, -1.904654323148236e-9).mul_f32(exponent as f32)
+    sum.mul_f32(2.) + Df32::new(std::f32::consts::LN_2, -1.904_654_2e-9).mul_f32(exponent as f32)
 }
 /// Cancellation-free Stirling log probability around the mode.
 fn log_probability(mean: f32, k: f32) -> Df32 {
@@ -773,10 +772,6 @@ pub fn cpu(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
-    fn vals<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
     let p = params(r);
     match r {
         Simulation::Pattern { output, .. } => {
@@ -797,8 +792,8 @@ pub fn cpu(
             uv,
             ..
         } => {
-            let source = vals(x, source);
-            let mapping = vals(x, mapping);
+            let source = values(x, source);
+            let mapping = values(x, mapping);
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             let mut coords = vec![[Df32::ZERO; 2]; (p.width * p.height) as usize];
             for (k, v) in coords.iter_mut().enumerate() {
@@ -816,7 +811,7 @@ pub fn cpu(
                 .copy_from_slice(bytemuck::cast_slice(&coords));
         }
         Simulation::Kernel { psf, output, .. } => {
-            let psf = vals::<f32>(x, psf);
+            let psf = values::<f32>(x, psf);
             let side = (2 * p.radius + 1) as usize;
             let m = p.source_width as usize;
             let mut horizontal = vec![Df32::ZERO; m * side];
@@ -849,18 +844,18 @@ pub fn cpu(
                 .copy_from_slice(bytemuck::cast_slice(&out));
         }
         Simulation::Active { uv, output, .. } => {
-            let uv = vals::<Df32>(x, uv).as_chunks::<2>().0;
+            let uv = values::<Df32>(x, uv).as_chunks::<2>().0;
             let mut active = vec![0; (p.grid * p.grid) as usize];
             for k in 0..((p.tile[2] + 2 * p.radius) * (p.tile[3] + 2 * p.radius)) as usize {
                 if k % 4096 == 0 {
                     ctl.check()?;
                 }
-                if let Some(i) = tile_source(&p, k) {
-                    if uv[i][0].hi >= 0. {
-                        for (node, w) in weights(p.grid as usize, uv[i]) {
-                            if w.hi > 0. {
-                                active[node] = 1;
-                            }
+                if let Some(i) = tile_source(&p, k)
+                    && uv[i][0].hi >= 0.
+                {
+                    for (node, w) in weights(p.grid as usize, uv[i]) {
+                        if w.hi > 0. {
+                            active[node] = 1;
                         }
                     }
                 }
@@ -870,22 +865,21 @@ pub fn cpu(
         Simulation::Weighted {
             image, uv, output, ..
         } => {
-            let image = vals::<f32>(x, image);
-            let uv = vals::<Df32>(x, uv).as_chunks::<2>().0;
+            let image = values::<f32>(x, image);
+            let uv = values::<Df32>(x, uv).as_chunks::<2>().0;
             let mut a = vec![[0.; 2]; (p.canvas * p.canvas) as usize];
             for (k, v) in a.iter_mut().enumerate() {
                 if k % 4096 == 0 {
                     ctl.check()?;
                 }
-                if let Some(i) = tile_source(&p, k) {
-                    if uv[i][0].hi >= 0. {
-                        let weight = weights(p.grid as usize, uv[i])
-                            .iter()
-                            .filter(|(n, _)| *n == p.node as usize)
-                            .fold(Df32::ZERO, |a, (_, w)| a + *w);
-                        v[0] =
-                            f(weight.mul_f32(image[i * p.channels as usize + p.channel as usize]));
-                    }
+                if let Some(i) = tile_source(&p, k)
+                    && uv[i][0].hi >= 0.
+                {
+                    let weight = weights(p.grid as usize, uv[i])
+                        .iter()
+                        .filter(|(n, _)| *n == p.node as usize)
+                        .fold(Df32::ZERO, |a, (_, w)| a + *w);
+                    v[0] = f(weight.mul_f32(image[i * p.channels as usize + p.channel as usize]));
                 }
             }
             x.words_mut(*output)
@@ -897,8 +891,8 @@ pub fn cpu(
             output,
             ..
         } => {
-            let planes: Vec<&[[f32; 2]]> = planes.iter().map(|v| vals(x, v)).collect();
-            let prev = previous.as_ref().map(|v| vals::<f32>(x, v));
+            let planes: Vec<&[[f32; 2]]> = planes.iter().map(|v| values(x, v)).collect();
+            let prev = previous.as_ref().map(|v| values::<f32>(x, v));
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             for (k, v) in a.iter_mut().enumerate() {
                 if k % 4096 == 0 {
@@ -926,7 +920,7 @@ pub fn cpu(
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             for (i, v) in tiles.iter().enumerate() {
                 ctl.check()?;
-                let input = vals::<f32>(x, v);
+                let input = values::<f32>(x, v);
                 let w = v.desc.shape[1];
                 let h = v.desc.shape[0];
                 let c = p.channels as usize;
@@ -942,7 +936,7 @@ pub fn cpu(
                 .copy_from_slice(bytemuck::cast_slice(&a));
         }
         Simulation::Noise { input, output, .. } => {
-            let input = vals::<f32>(x, input);
+            let input = values::<f32>(x, input);
             let mut a = vec![0.; input.len()];
             for (k, (v, a)) in a.iter_mut().zip(input).enumerate() {
                 if k % 256 == 0 {

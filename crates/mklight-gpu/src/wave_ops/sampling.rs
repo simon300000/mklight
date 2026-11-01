@@ -65,13 +65,9 @@ pub fn params(r: &Blur) -> Params {
     }
 }
 pub fn cpu(r: &Blur, x: &mut crate::resident::cpu::Execution, ctl: &JobControl) -> MkResult<()> {
-    fn vals<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
-    let a = vals::<f32>(x, &r.pupil.amplitude);
-    let c = vals::<f32>(x, &r.pupil.coverage);
-    let w = vals::<Df32>(x, &r.pupil.opd);
+    let a = values::<f32>(x, &r.pupil.amplitude);
+    let c = values::<f32>(x, &r.pupil.coverage);
+    let w = values::<Df32>(x, &r.pupil.opd);
     let p = params(r);
     let count = p.count as usize;
     let n = p.n as usize;

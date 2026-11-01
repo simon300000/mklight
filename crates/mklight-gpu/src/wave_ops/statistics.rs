@@ -78,13 +78,6 @@ pub fn cpu(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
-    fn values<'a, T: bytemuck::Pod>(
-        x: &'a crate::resident::cpu::Execution,
-        v: &PlanView,
-    ) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
     match r {
         Statistics::Prepare {
             pupil,

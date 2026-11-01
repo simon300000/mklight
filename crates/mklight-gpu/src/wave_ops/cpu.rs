@@ -1,9 +1,4 @@
 use super::{spec::*, *};
-use bytemuck::Pod;
-fn values<'a, T: Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-    let a = bytemuck::cast_slice(x.words(v.buffer));
-    &a[v.offset..v.offset + v.desc.len().unwrap()]
-}
 pub fn execute(
     r: &Request,
     x: &mut crate::resident::cpu::Execution,

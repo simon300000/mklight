@@ -146,7 +146,6 @@ fn metrics(
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
-        ..Default::default()
     });
     Ok(())
 }

@@ -458,8 +458,12 @@ factor cancels in chief-normalised amplitudes and centroid weights; zero
 selected-order throughput remains unusable.
 
 The host chains the small boundary topology. Saddle-centre probes run only
-where marching squares needs them. Rim probes evaluate four bisection levels
-per batch, retaining the same binary decisions and requested tolerance; the
+where marching squares needs them. All field × wavelength pupils of a job share
+the chief, lattice, saddle and rim commands (up to 2¹⁶ lattice rays per batch);
+each pupil's rays are then split into its own channels for placement and
+resampling, bit-identical to tracing it alone. Rim probes evaluate four
+bisection levels per round, retaining the same binary decisions and requested
+tolerance; the
 analytic disk root uses its cancellation-free form. Unresolved aims, rim
 brackets, sphere intersections and P7 reference-required rows explicitly return
 `Unsupported`, rather than turning into missing rays or silently zero amplitudes.
@@ -502,11 +506,13 @@ snapshot and configuration identity.
   evaluation and pivoted, reorthogonalised QR. Its reported condition is the
   infinity-norm estimate of equilibrated R, distinct from the reference's
   spectral condition number; rank failures remain errors.
-* `append_psf`, `append_huygens`, `append_correlation`, `append_fft_otf` and
-  `append_focus_correlation` compose into caller plans. FFT/chirp/affine transforms
+* `append_psf`, `append_huygens`, `append_correlation` and `append_fft_otf`
+  compose into caller plans. FFT/chirp/affine transforms
   preserve the reference's negligible-skew rule before satisfying P2's exact
   diagonal/symmetric contracts. Huygens sums use rationalised distances and
-  bounded compensated tiles; no sample-by-pixel matrix is allocated.
+  fixed 256-sample double-float blocks, one thread per pixel and block, added
+  in block order (as are direct-MTF correlations, image queries and radial
+  bins); no sample-by-pixel matrix is allocated.
 * Direct MTF keeps the angular-spectrum mapping and coverage-weighted phase
   interpolation. FFT MTF builds the sensor spectrum and uses the same shifted
   lattice, centroid phase removal, cubic aberration interpolation and bilinear

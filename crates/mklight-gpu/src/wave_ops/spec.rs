@@ -82,7 +82,6 @@ pub fn params(r: &Request) -> Params {
             pupil,
             geometry,
             normal,
-            field: _,
             ..
         } => {
             p.mode = 0;
@@ -188,7 +187,10 @@ pub fn dot(a: [Df32; 3], b: [Df32; 3]) -> Df32 {
 /// partials are then added in block order.
 pub const SUM_BLOCK: usize = 256;
 /// Blocked double-float sum of `terms(k)` over `0..n` in the kernels' order.
-pub fn blocked_sum<const C: usize>(n: usize, mut terms: impl FnMut(usize) -> [f32; C]) -> [Df32; C] {
+pub fn blocked_sum<const C: usize>(
+    n: usize,
+    mut terms: impl FnMut(usize) -> [f32; C],
+) -> [Df32; C] {
     let mut total = [Df32::ZERO; C];
     for block in (0..n).step_by(SUM_BLOCK) {
         let mut partial = [Df32::ZERO; C];

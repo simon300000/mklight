@@ -326,10 +326,6 @@ pub fn sample(p: &Params, data: &[[f32; 2]], dl: &[[f32; 2]], nu: [f32; 2]) -> [
     )
 }
 pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl) -> MkResult<()> {
-    fn vals<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
     let p = params(r);
     let n = p.n as usize;
     match r {
@@ -339,7 +335,7 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             normal,
             status,
         } => {
-            let c = vals::<f32>(x, coverage);
+            let c = values::<f32>(x, coverage);
             let mut count = 0u32;
             for (k, &c) in c.iter().enumerate() {
                 if k % 4096 == 0 {
@@ -375,9 +371,9 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             ..
         } => {
             let side = (x.words(*field).len() / 2).isqrt();
-            let a = vals::<f32>(x, &pupil.amplitude);
-            let c = vals::<f32>(x, &pupil.coverage);
-            let w = vals::<Df32>(x, &pupil.opd);
+            let a = values::<f32>(x, &pupil.amplitude);
+            let c = values::<f32>(x, &pupil.coverage);
+            let w = values::<Df32>(x, &pupil.opd);
             let mut f = vec![[0.; 2]; side * side];
             let mut m = vec![0.; 3 * n * n];
             for k in 0..n * n {
@@ -398,8 +394,8 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             sums,
             output,
         } => {
-            let a = vals::<[f32; 2]>(x, input);
-            let e = vals::<Df32>(x, sums)[1].mul_f32((n * n) as f32);
+            let a = values::<[f32; 2]>(x, input);
+            let e = values::<Df32>(x, sums)[1].mul_f32((n * n) as f32);
             let mut out = vec![[0.; 2]; n * n];
             for (k, z) in out.iter_mut().enumerate() {
                 if k % 4096 == 0 {
@@ -420,9 +416,9 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             output,
             ..
         } => {
-            let a = vals(x, data);
-            let dl = vals(x, reference);
-            let fs = vals::<f32>(x, frequencies).as_chunks::<2>().0;
+            let a = values(x, data);
+            let dl = values(x, reference);
+            let fs = values::<f32>(x, frequencies).as_chunks::<2>().0;
             let mut out = vec![[0.; 2]; fs.len()];
             for (k, (z, f)) in out.iter_mut().zip(fs).enumerate() {
                 if k % 256 == 0 {

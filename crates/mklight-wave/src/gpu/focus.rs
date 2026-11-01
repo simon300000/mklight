@@ -2,14 +2,6 @@ use super::traced::accumulate;
 use super::*;
 use mklight_gpu::wave_ops::{fft_mtf::FftMtf, image_integrals::ImageIntegral, spectral::Spectral};
 impl ResidentPupil {
-    pub fn append_focus_correlation(
-        &self,
-        p: &mut ResidentPlan,
-        frequencies: PlanView,
-        shifts: PlanView,
-    ) -> MkResult<BufferId> {
-        self.append_focus_output(p, frequencies, shifts, None)
-    }
     pub(super) fn append_focus_output(
         &self,
         p: &mut ResidentPlan,
@@ -168,6 +160,7 @@ fn shift_buffer(
 }
 /// All focus planes share the direct correlation stencil. FFT/Huygens work is
 /// grouped in bounded plane batches; no per-plane plans or image readbacks.
+#[allow(clippy::too_many_arguments)]
 pub fn focus_otf(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,
@@ -340,6 +333,7 @@ pub fn focus_otf(
             .map(|(p, _)| p.lambda_f() / huygens.padding)
             .fold(f64::INFINITY, f64::min);
         let mut energy_outputs = vec![];
+        #[allow(clippy::needless_range_loop)]
         for plane in 0..planes.len() {
             let mut inputs = vec![];
             for (wi, (original, _)) in pupils.iter().enumerate() {

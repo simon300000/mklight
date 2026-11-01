@@ -125,6 +125,11 @@ pub enum Request {
         output: BufferId,
     },
 }
+/// Typed elements of a CPU-f32 plan view.
+fn values<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
+    let a = bytemuck::cast_slice(x.words(v.buffer));
+    &a[v.offset..v.offset + v.desc.len().unwrap()]
+}
 fn view(v: &PlanView, ty: ElementType, shape: &[usize]) -> MkResult<()> {
     if v.stride != 1 || v.desc != BufferDesc::new(ty, shape) {
         return Err(bad("wave input layout"));

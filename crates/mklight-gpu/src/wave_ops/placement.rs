@@ -1,6 +1,7 @@
 //! Reference-sphere samples and scalar radiometric amplitudes.
 use super::*;
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Placement {
     Centroid {
         hits: PlanView,
@@ -258,10 +259,6 @@ pub fn cpu(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
-    fn vals<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
     match r {
         Placement::Centroid {
             hits,
@@ -271,9 +268,9 @@ pub fn cpu(
             output,
         } => {
             let n = hits.desc.shape[1];
-            let h = vals::<f32>(x, hits);
+            let h = values::<f32>(x, hits);
             let power = power.as_ref().map(|v| {
-                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(vals(x, v))
+                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(values(x, v))
             });
             let mut a = vec![Df32::ZERO; 3 * count];
             for k in 0..*count {
@@ -303,12 +300,12 @@ pub fn cpu(
             radius,
         } => {
             let n = projection.desc.shape[1];
-            let q = vals::<Df32>(x, projection);
-            let status = vals::<u32>(x, status);
-            let start = vals::<f32>(x, starts);
-            let hit = vals::<f32>(x, hits);
+            let q = values::<Df32>(x, projection);
+            let status = values::<u32>(x, status);
+            let start = values::<f32>(x, starts);
+            let hit = values::<f32>(x, hits);
             let power = power.as_ref().map(|v| {
-                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(vals(x, v))
+                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(values(x, v))
             });
             let mut rows = vec![[Df32::ZERO; 8]; n];
             let mut largest = Df32::ZERO;
@@ -357,8 +354,8 @@ pub fn cpu(
             infinite,
             output,
         } => {
-            let raw = vals::<Df32>(x, placed).as_chunks::<8>().0;
-            let mask = vals::<u32>(x, valid);
+            let raw = values::<Df32>(x, placed).as_chunks::<8>().0;
+            let mask = values::<u32>(x, valid);
             let n = side * side;
             let mut amps = vec![None; n];
             let deriv = |k: usize, axis: usize, col: usize| -> Option<[Df32; 2]> {
@@ -468,8 +465,8 @@ pub fn cpu(
             valid,
             output,
         } => {
-            let a = vals::<Df32>(x, nodes).as_chunks::<4>().0;
-            let mask = vals::<u32>(x, valid);
+            let a = values::<Df32>(x, nodes).as_chunks::<4>().0;
+            let mask = values::<u32>(x, valid);
             let side = nodes.desc.shape[0];
             let mut largest = Df32::ZERO;
             for k in 0..(side - 1) * (side - 1) {

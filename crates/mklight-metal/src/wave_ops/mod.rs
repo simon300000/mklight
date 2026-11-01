@@ -239,20 +239,20 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     x.stats.command_buffers += stage.command_buffers;
     x.stats.device_seconds += stage.device_seconds;
     x.stats.stages.push(stage);
-    if matches!(p.mode, 3 | 6) {
-        if let Some(m) = moments.as_mut() {
-            focus_cache::steps(
-                r,
-                x,
-                ctl,
-                if p.mode == 3 {
-                    Some(&*output)
-                } else {
-                    cache.as_deref()
-                },
-                m,
-            )?;
-        }
+    if matches!(p.mode, 3 | 6)
+        && let Some(m) = moments.as_mut()
+    {
+        focus_cache::steps(
+            r,
+            x,
+            ctl,
+            if p.mode == 3 {
+                Some(&*output)
+            } else {
+                cache.as_deref()
+            },
+            m,
+        )?;
     }
     if let Some(c) = cache {
         x.recycle(c);

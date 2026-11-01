@@ -64,7 +64,6 @@ pub fn execute(r: &FftMtf, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
-        ..Default::default()
     });
     Ok(())
 }
@@ -112,7 +111,6 @@ fn domain(
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
-        ..Default::default()
     });
     if count > 0 {
         return Err(mklight_core::MkError::InvalidParam(format!(

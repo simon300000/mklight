@@ -67,6 +67,7 @@ fn psf_case(
             (a, z)
         };
         if run == -2 {
+            assert_eq!(a.psfs.len(), z.psfs.len());
             for (a, z) in a.psfs.iter().zip(&z.psfs) {
                 assert_eq!(a.psf.size, z.psf.size);
                 let norm = a.psf.data.iter().sum::<f64>();
@@ -115,13 +116,20 @@ fn native_pipeline_benchmark() {
             psf_case(&b, name, &t, &Default::default());
         }
         let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+        // One primary-wavelength field at explicit pupil/image sampling.
+        let dense = |rays: usize, n: usize, m: usize| cpu::PsfAnalysisSettings {
+            fields: mklight_analysis::util::FieldSelection::Index { index: 2 },
+            wavelengths: mklight_analysis::util::WavelengthSelection::Primary,
+            pupil: mklight_wave::PupilSettings {
+                rays,
+                grid: n,
+                ..Default::default()
+            },
+            grid_size: m,
+            ..Default::default()
+        };
         for (n, m) in [(64, 128), (256, 512), (1024, 2048)] {
-            let mut s = cpu::PsfAnalysisSettings::default();
-            s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
-            s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
-            s.pupil.grid = n;
-            s.grid_size = m;
-            psf_case(&b, &format!("complete_dense_{n}_{m}"), &t, &s);
+            psf_case(&b, &format!("complete_dense_{n}_{m}"), &t, &dense(65, n, m));
         }
         for (name, model) in samples::all().into_iter().filter(|(name, _)| {
             matches!(
@@ -130,21 +138,20 @@ fn native_pipeline_benchmark() {
             )
         }) {
             let t = mklight_analysis::tracer_for(model).unwrap();
-            let mut s = cpu::PsfAnalysisSettings::default();
-            s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
-            s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
-            s.pupil.grid = 256;
-            s.grid_size = 512;
-            psf_case(&b, &format!("dense_{name}_256_512"), &t, &s);
+            psf_case(
+                &b,
+                &format!("dense_{name}_256_512"),
+                &t,
+                &dense(65, 256, 512),
+            );
         }
         for (rays, n, m) in [(11, 64, 128), (101, 256, 512), (1001, 1024, 2048)] {
-            let mut s = cpu::PsfAnalysisSettings::default();
-            s.fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
-            s.wavelengths = mklight_analysis::util::WavelengthSelection::Primary;
-            s.pupil.rays = rays;
-            s.pupil.grid = n;
-            s.grid_size = m;
-            psf_case(&b, &format!("lattice_{rays}_{n}_{m}"), &t, &s);
+            psf_case(
+                &b,
+                &format!("lattice_{rays}_{n}_{m}"),
+                &t,
+                &dense(rays, n, m),
+            );
         }
     }
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
@@ -203,6 +210,7 @@ fn native_pipeline_benchmark() {
                 (a, z)
             };
             let norm = a.image.iter().sum::<f64>();
+            assert_eq!(a.image.len(), z.image.len());
             assert!(
                 a.image
                     .iter()
@@ -348,7 +356,7 @@ fn native_analysis_benchmark() {
         "mtf_huygens_cooke",
         cpu::MtfSettings {
             fields: field.clone(),
-            pupil: pupil.clone(),
+            pupil,
             method: cpu::MtfAnalysisMethod::Huygens,
             huygens,
             frequency_samples: 9,
@@ -365,7 +373,7 @@ fn native_analysis_benchmark() {
             name,
             cpu::ThroughFocusSettings {
                 fields: field.clone(),
-                pupil: pupil.clone(),
+                pupil,
                 method,
                 huygens,
                 frequencies: vec![0., 40.],

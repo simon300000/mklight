@@ -116,10 +116,11 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
                         e.set_buffer_mut(9, v, 0);
                     }
                     e.set_bytes(10, &p);
-                    if first == 0 && round == 0 {
-                        if let Some(clear) = &clear {
-                            e.dispatch_1d(clear, (p.grid * p.grid) as usize);
-                        }
+                    if first == 0
+                        && round == 0
+                        && let Some(clear) = &clear
+                    {
+                        e.dispatch_1d(clear, (p.grid * p.grid) as usize);
                     }
                     e.dispatch_1d(&pipe, p.count as usize);
                     Ok(())

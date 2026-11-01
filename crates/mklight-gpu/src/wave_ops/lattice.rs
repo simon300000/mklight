@@ -198,10 +198,6 @@ pub fn split_part(
     }
 }
 pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobControl) -> MkResult<()> {
-    fn vals<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
     let one = Df32::from_f32(1.);
     match r {
         Lattice::Wavelength {
@@ -209,8 +205,8 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             table,
             output,
         } => {
-            let i = vals::<u32>(x, indices).to_vec();
-            let t = vals::<u32>(x, table).to_vec();
+            let i = values::<u32>(x, indices).to_vec();
+            let t = values::<u32>(x, table).to_vec();
             let n = i.len() / 2;
             let out = x.words_mut(*output);
             for k in 0..n {
@@ -248,8 +244,8 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             status,
             output,
         } => {
-            let s: &[Sample] = bytemuck::cast_slice(vals::<u32>(x, samples));
-            let t = vals::<u32>(x, status);
+            let s: &[Sample] = bytemuck::cast_slice(values::<u32>(x, samples));
+            let t = values::<u32>(x, status);
             let a: Vec<u32> = s
                 .iter()
                 .enumerate()
@@ -273,12 +269,12 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             state,
             samples,
         } => {
-            let e = vals::<Df32>(x, edges).as_chunks::<4>().0;
-            let fields = vals::<u32>(x, fields);
+            let e = values::<Df32>(x, edges).as_chunks::<4>().0;
+            let fields = values::<u32>(x, fields);
             let prev = previous
                 .as_ref()
-                .map(|v| vals::<Df32>(x, v).as_chunks::<8>().0);
-            let st = status.as_ref().map(|v| vals::<u32>(x, v));
+                .map(|v| values::<Df32>(x, v).as_chunks::<8>().0);
+            let st = status.as_ref().map(|v| values::<u32>(x, v));
             let mut a = vec![[Df32::ZERO; 8]; e.len()];
             let width = if *final_point { 1 } else { 16 };
             let mut probes = vec![Sample::new([0.; 2], 0, 0); e.len() * width];

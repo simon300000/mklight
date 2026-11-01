@@ -226,13 +226,15 @@ fn native_huygens_and_explicit_focus_diagnostics() {
     let b = backend();
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     let ctx = JobContext::new();
-    let mut pupil = mklight_wave::PupilSettings::default();
-    pupil.grid = 16;
-    pupil.rays = 17;
+    let pupil = mklight_wave::PupilSettings {
+        grid: 16,
+        rays: 17,
+        ..Default::default()
+    };
     let fields = mklight_analysis::util::FieldSelection::Index { index: 2 };
     let s = cpu::MtfSettings {
         fields: fields.clone(),
-        pupil: pupil.clone(),
+        pupil,
         method: cpu::MtfAnalysisMethod::Huygens,
         huygens: cpu::HuygensGrid {
             grid_size: 32,
@@ -250,7 +252,7 @@ fn native_huygens_and_explicit_focus_diagnostics() {
     for method in [cpu::MtfAnalysisMethod::Fft, cpu::MtfAnalysisMethod::Huygens] {
         let s = cpu::ThroughFocusSettings {
             fields: fields.clone(),
-            pupil: pupil.clone(),
+            pupil,
             method,
             huygens: cpu::HuygensGrid {
                 grid_size: 32,

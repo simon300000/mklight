@@ -286,10 +286,10 @@ pub fn wavefront_map_job(
         }
     }
     warnings.push("Zernike condition is the equilibrated R infinity-norm estimate".into());
-    if maps.is_empty() {
-        if let Some(e) = first_error {
-            return Err(e);
-        }
+    if maps.is_empty()
+        && let Some(e) = first_error
+    {
+        return Err(e);
     }
     ctx.report(1., "wavefront map");
     Ok(a::WavefrontResult {
@@ -438,6 +438,7 @@ pub fn psf_analysis_job(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn curve(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -803,6 +804,7 @@ pub fn mtf_vs_field_job(
         run_info: info(b, t, timer, "mtf_vs_field", s, &stats, warnings),
     })
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn image_grid(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,

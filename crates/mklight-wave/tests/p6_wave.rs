@@ -5,6 +5,13 @@ use mklight_wave::{gpu::ResidentPupil, *};
 fn snapshot() -> Snapshot {
     Snapshot::new(samples::singlet()).unwrap()
 }
+/// Equal lengths and every |x - y| below `limit`.
+fn close(a: &[f64], b: &[f64], limit: f64) {
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(b) {
+        assert!((x - y).abs() < limit, "{x} {y}");
+    }
+}
 fn error(a: &Psf, b: &Psf) -> f64 {
     let peak = a.peak().0;
     a.data
@@ -662,8 +669,10 @@ fn resident_traced_pupil_matches_reference() {
                 result.stats.command_buffers,
                 result.stats.device_seconds * 1000.
             );
-            assert!(maximum < 5e-3);
-            assert!(amp_err < 1e-3);
+            // Gates are 5e-3 waves and 1e-3; measured maxima are ~2e-7 and
+            // ~6e-8, so regressions far inside the gates still fail here.
+            assert!(maximum < 1e-5, "OPD {maximum:e}");
+            assert!(amp_err < 1e-5, "amplitude {amp_err:e}");
             assert_eq!(mask_diff, 0);
             assert_eq!(result.stats.copied_bytes, 0);
         }
@@ -819,14 +828,7 @@ fn native_wavefront_and_psf() {
         assert!((a.rms_waves_tilt_removed - b.rms_waves_tilt_removed).abs() < 1e-5);
         assert!((a.strehl_at_reference - b.strehl_at_reference).abs() < 1e-5);
         assert!((a.zernike_residual_rms - b.zernike_residual_rms).abs() < 1e-5);
-        for (x, y) in a
-            .zernike
-            .coefficients()
-            .iter()
-            .zip(b.zernike.coefficients())
-        {
-            assert!((x - y).abs() < 5e-3);
-        }
+        close(a.zernike.coefficients(), b.zernike.coefficients(), 5e-3);
     }
     let settings = analysis::PsfAnalysisSettings::default();
     let reference = analysis::psf_analysis_job(&t, &settings, &ctx).unwrap();
@@ -941,42 +943,26 @@ fn native_mtf_and_focus() {
         let a = analysis::mtf_analysis_job(&t, &settings, &ctx).unwrap();
         let z = gpu::analysis::mtf_analysis_job(&b, &t, &settings, &ctx).unwrap();
         assert_eq!(a.frequencies, z.frequencies);
+        assert_eq!(a.fields.len(), z.fields.len());
         for (a, z) in a.fields.iter().zip(z.fields) {
             assert_eq!(a.pupil_sampling, z.pupil_sampling);
-            for (x, y) in a
-                .tangential
-                .iter()
-                .chain(&a.sagittal)
-                .chain(&a.diffraction_limit)
-                .zip(
-                    z.tangential
-                        .iter()
-                        .chain(&z.sagittal)
-                        .chain(&z.diffraction_limit),
-                )
-            {
-                assert!((x - y).abs() < 2e-3, "native {method:?}: {x} {y}");
-            }
+            close(&a.tangential, &z.tangential, 2e-3);
+            close(&a.sagittal, &z.sagittal, 2e-3);
+            close(&a.diffraction_limit, &z.diffraction_limit, 2e-3);
         }
     }
     let settings = analysis::ThroughFocusSettings::default();
     let a = analysis::through_focus_mtf_analysis_job(&t, &settings, &ctx).unwrap();
     let z = gpu::analysis::through_focus_mtf_analysis_job(&b, &t, &settings, &ctx).unwrap();
     assert_eq!(a.frequencies, z.frequencies);
-    for (x, y) in a.focus_mm.iter().zip(&z.focus_mm) {
-        assert!((x - y).abs() < 1e-7);
-    }
+    close(&a.focus_mm, &z.focus_mm, 1e-7);
+    assert_eq!(a.fields.len(), z.fields.len());
     for (a, z) in a.fields.iter().zip(z.fields) {
         assert_eq!(a.pupil_sampling, z.pupil_sampling);
+        assert_eq!(a.curves.len(), z.curves.len());
         for (a, z) in a.curves.iter().zip(z.curves) {
-            for (x, y) in a
-                .tangential
-                .iter()
-                .chain(&a.sagittal)
-                .zip(z.tangential.iter().chain(&z.sagittal))
-            {
-                assert!((x - y).abs() < 2e-3, "focus {x} {y}");
-            }
+            close(&a.tangential, &z.tangential, 2e-3);
+            close(&a.sagittal, &z.sagittal, 2e-3);
         }
     }
 }

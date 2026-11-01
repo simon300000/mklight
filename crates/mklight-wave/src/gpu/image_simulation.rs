@@ -53,10 +53,10 @@ fn identity(t: &SequentialTracer, s: &ImageGridSettings) -> String {
     h.finalize().to_hex().to_string()
 }
 fn p5_stats(v: &serde_json::Value, stats: &mut PlanStats) {
-    if let Some(s) = v.get("plan_stats") {
-        if let Ok(s) = serde_json::from_value::<PlanStats>(s.clone()) {
-            accumulate(stats, &s);
-        }
+    if let Some(s) = v.get("plan_stats")
+        && let Ok(s) = serde_json::from_value::<PlanStats>(s.clone())
+    {
+        accumulate(stats, &s);
     }
     if let Some(v) = v.get("resident_execution") {
         p5_stats(v, stats);
@@ -79,7 +79,7 @@ pub fn build_psf_grid(
         || !s.field_extent.is_finite()
         || s.field_extent <= 0.
         || s.field_center.iter().any(|v| !v.is_finite())
-        || (s.psf_size != 0 && (!(3..=2047).contains(&s.psf_size) || s.psf_size % 2 == 0))
+        || (s.psf_size != 0 && (!(3..=2047).contains(&s.psf_size) || s.psf_size.is_multiple_of(2)))
         || s.psf_spacing_mm.is_some_and(|v| !v.is_finite() || v <= 0.)
     {
         return Err(invalid("invalid field/PSF grid or spacing"));

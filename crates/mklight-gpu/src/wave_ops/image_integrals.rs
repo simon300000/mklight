@@ -131,18 +131,18 @@ pub fn j1(x: f32) -> f32 {
     if ax <= 3. {
         let t = (x / 3.) * (x / 3.);
         x * (0.5
-            + t * (-0.562_499_85
+            + t * (-0.562_499_8
                 + t * (0.210_935_73
                     + t * (-0.039_542_89
                         + t * (0.004_433_19 + t * (-0.000_317_61 + t * 0.000_011_09))))))
     } else {
         let y = 3. / ax;
-        let f = 0.797_884_56
+        let f = 0.797_884_6
             + y * (0.000_001_56
                 + y * (0.016_596_67
                     + y * (0.000_171_05
                         + y * (-0.002_495_11 + y * (0.001_136_53 - y * 0.000_200_33)))));
-        let th = ax - 2.356_194_49
+        let th = ax - 2.356_194_5
             + y * (0.124_996_12
                 + y * (0.000_056_50
                     + y * (-0.006_378_79
@@ -205,13 +205,9 @@ pub fn cpu(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
-    fn vals<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-        let a = bytemuck::cast_slice(x.words(v.buffer));
-        &a[v.offset..v.offset + v.desc.len().unwrap()]
-    }
     match r {
         ImageIntegral::Metrics { input, output } => {
-            let a = vals::<f32>(x, input);
+            let a = values::<f32>(x, input);
             let n = input.desc.shape[0];
             let mut partial = vec![[Df32::ZERO; 5]; a.len().div_ceil(256)];
             for (k, &v) in a.iter().enumerate() {
@@ -248,7 +244,7 @@ pub fn cpu(
             let n = input.desc.len()?;
             let mut out = vec![[0.; 2]; n];
             if *squared {
-                let a = vals::<[f32; 2]>(x, input);
+                let a = values::<[f32; 2]>(x, input);
                 for (k, (v, z)) in out.iter_mut().zip(a).enumerate() {
                     if k % 4096 == 0 {
                         ctl.check()?;
@@ -256,7 +252,7 @@ pub fn cpu(
                     v[0] = z[0] * z[0] + z[1] * z[1];
                 }
             } else {
-                let a = vals::<f32>(x, input);
+                let a = values::<f32>(x, input);
                 for (k, (v, z)) in out.iter_mut().zip(a).enumerate() {
                     if k % 4096 == 0 {
                         ctl.check()?;
@@ -274,12 +270,12 @@ pub fn cpu(
             ..
         } => {
             let p = params(r);
-            let q = vals::<Df32>(x, queries).as_chunks::<2>().0;
-            let a = vals::<f32>(x, input);
+            let q = values::<Df32>(x, queries).as_chunks::<2>().0;
+            let a = values::<f32>(x, input);
             let complex = if p.kind == 0 {
                 None
             } else {
-                Some(vals::<[f32; 2]>(x, input))
+                Some(values::<[f32; 2]>(x, input))
             };
             let mut out = vec![[0.; 2]; q.len()];
             for (i, q) in q.iter().enumerate() {

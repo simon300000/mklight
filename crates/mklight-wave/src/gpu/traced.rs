@@ -1227,10 +1227,10 @@ impl<'a> PupilTracer<'a> {
             .map(|j| {
                 let y = (2 * j).abs_diff(lattice_radius);
                 let x = (lattice_radius * lattice_radius - y * y).isqrt();
-                if lattice_radius % 2 == 0 {
+                if lattice_radius.is_multiple_of(2) {
                     2 * (x / 2) + 1
                 } else {
-                    2 * ((x + 1) / 2)
+                    2 * x.div_ceil(2)
                 }
             })
             .sum::<usize>();
