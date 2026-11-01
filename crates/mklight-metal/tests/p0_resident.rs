@@ -586,3 +586,51 @@ fn benchmark_snapshot_churn() {
         rows[9] * 1e3
     );
 }
+
+/// Many fixed-tree tiles and consecutive reductions share submissions. The
+/// alternating large terms catch reordering or a missing dispatch dependency.
+#[test]
+fn fused_reductions_match_known_answer_and_emulation() {
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let g = backend(origin);
+        let c = CpuF32Backend::matching(&g.precision().probe);
+        let mut answers = vec![];
+        for b in [&c as &dyn ComputeBackend, &g] {
+            let h = b
+                .fill_buffer(BufferDesc::new(ElementType::F32, [1, 513]), &mut |mut f| {
+                    for (i, v) in f.as_mut_slice::<f32>()?.iter_mut().enumerate() {
+                        *v = [1e8, 1., -1e8][i % 3];
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let mut p = ResidentPlan::new(Snapshot::new(testutil::singlet()).unwrap());
+            let input = p.import(h.view());
+            for _ in 0..8 {
+                let out = p.sum(p.view(input).unwrap(), ReduceMode::DoubleFloat);
+                p.outputs.push(out);
+            }
+            g.set_chunk_items(17);
+            let r = b
+                .submit_plan(p, &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap();
+            let values: Vec<_> = r
+                .outputs
+                .iter()
+                .map(|h| b.read_view(h.view()).unwrap().as_slice::<Df32>().unwrap()[0])
+                .collect();
+            assert!(values.iter().all(|v| v.to_f64() == 171.));
+            if b.info().backend_id() == g.info().backend_id() {
+                assert!(r.stats.command_buffers < 8, "{:?}", r.stats);
+                assert_eq!(
+                    r.stats.command_buffers,
+                    r.stats.stages.iter().map(|s| s.command_buffers).sum::<u32>()
+                );
+            }
+            answers.push(values);
+        }
+        assert_eq!(answers[0], answers[1]);
+    }
+}

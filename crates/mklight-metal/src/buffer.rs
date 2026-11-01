@@ -9,7 +9,15 @@
 //! exist while the GPU writes it.
 
 use mklight_gpu::resident::HostAllocation;
-use std::{cell::Cell, marker::PhantomData, ptr::NonNull};
+use std::{
+    cell::Cell,
+    marker::PhantomData,
+    ptr::NonNull,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use bytemuck::Pod;
 use mklight_core::{MkError, MkResult};
@@ -30,6 +38,7 @@ pub struct SharedBuffer<T: Pod> {
     raw: Retained<ProtocolObject<dyn MTLBuffer>>,
     len: usize,
     _t: PhantomData<T>,
+    access: Arc<AccessState>,
 }
 
 // SAFETY: Metal resource objects may be referenced from any thread (Apple's
@@ -73,6 +82,7 @@ impl<T: Pod> SharedBuffer<T> {
             raw,
             len,
             _t: PhantomData,
+            access: Arc::default(),
         })
     }
 
@@ -111,6 +121,11 @@ impl<T: Pod> SharedBuffer<T> {
     }
 
     pub fn as_slice(&self) -> &[T] {
+        assert_eq!(
+            self.access.writers.load(Ordering::Acquire),
+            0,
+            "host read before resident flush"
+        );
         // SAFETY: `contents` points to at least `len * size_of::<T>()` bytes of
         // CPU-visible memory, suitably aligned (Metal buffers are page
         // aligned), and `T: Pod` accepts any bit pattern. GPU writes only
@@ -120,6 +135,11 @@ impl<T: Pod> SharedBuffer<T> {
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
+        assert_eq!(
+            self.access.users.load(Ordering::Acquire),
+            0,
+            "host write before resident flush"
+        );
         // SAFETY: as above; `&mut self` guarantees unique host access.
         unsafe { std::slice::from_raw_parts_mut(self.ptr().as_ptr(), self.len) }
     }
@@ -128,6 +148,16 @@ impl<T: Pod> SharedBuffer<T> {
         self.as_slice().to_vec()
     }
 
+    pub(crate) fn device_access(&self, write: bool) -> DeviceAccess {
+        self.access.users.fetch_add(1, Ordering::AcqRel);
+        if write {
+            self.access.writers.fetch_add(1, Ordering::AcqRel);
+        }
+        DeviceAccess {
+            state: self.access.clone(),
+            write,
+        }
+    }
     pub fn raw(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.raw
     }
@@ -164,6 +194,7 @@ impl SharedBuffer<u32> {
             raw,
             len,
             _t: PhantomData,
+            access: Arc::default(),
         })
     }
 }
@@ -183,5 +214,25 @@ mod tests {
         assert_eq!(copied.as_slice(), &[1, 2, 3, 4]);
         assert_eq!(filled.as_slice(), &[7; 4]);
         assert_eq!(pages.as_slice(), &[0; 4]);
+    }
+}
+
+#[derive(Default)]
+struct AccessState {
+    users: AtomicUsize,
+    writers: AtomicUsize,
+}
+/// Prevents host slices while an encoded command may access storage. The
+/// command buffer retains the Metal allocation; the executor pins pool leases.
+pub(crate) struct DeviceAccess {
+    state: Arc<AccessState>,
+    write: bool,
+}
+impl Drop for DeviceAccess {
+    fn drop(&mut self) {
+        if self.write {
+            self.state.writers.fetch_sub(1, Ordering::AcqRel);
+        }
+        self.state.users.fetch_sub(1, Ordering::AcqRel);
     }
 }

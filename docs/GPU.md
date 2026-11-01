@@ -1238,6 +1238,20 @@ changing the tree. The idle pool reuses the most recently returned buffer
 of the exact size and evicts the oldest. Limits
 are resource/cancellation controls, not engine backend selection thresholds.
 
+**Resident command fusion.** The Metal executor owns a worker-local deferred
+command buffer. Trace tiles and fixed-tree sum passes share its serial compute
+encoder, with buffer memory barriers after dispatches. Existing tile boundaries
+remain cancellation checkpoints; accumulated dispatch work (2²⁰ threads) or
+10 ms of encoding triggers a commit and completion wait. These are work/encoding
+bounds, not a promise of 10 ms device time for an arbitrary kernel. A genuine
+host read or publication flushes the buffer. Recycled scratch stays pinned
+until completion; abandoned, uncommitted encoding is discarded on cancellation
+or error. Internal shared-storage guards reject host slices while a pending
+GPU write exists. No pending storage becomes a public `ReadView`.
+`PlanStats` counts actual completed command buffers; deferred dispatches have
+zero commands at encode time and their timestamps/counts appear in the
+`fused completion` stage. Arithmetic and reduction trees are unchanged.
+
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
 uploaded/readback, copied and parameter-block bytes, peak live plan storage and fallback/polish counts.

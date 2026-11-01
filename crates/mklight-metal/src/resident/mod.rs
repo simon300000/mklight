@@ -4,7 +4,7 @@
 use crate::{
     backend::Uploaded,
     buffer::SharedBuffer,
-    context::{CommandStats, MetalContext, PipelineKey},
+    context::{CommandBatch, CommandStats, Encoder, MetalContext, PipelineKey},
 };
 use mklight_core::{MkResult, job::RunTimer};
 use mklight_gpu::resident::{
@@ -23,6 +23,7 @@ use mklight_gpu::{
 use objc2_metal::MTLComputePipelineState;
 use std::{
     any::Any,
+    cell::RefCell,
     collections::{HashMap, HashSet},
     sync::Arc,
     time::Instant,
@@ -64,6 +65,8 @@ pub(crate) fn execute(
         chunk,
         sum_scratch: None,
         systems,
+        commands: RefCell::new(CommandBatch::new()),
+        retired: vec![],
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
     };
     let mut imported = HashSet::new();
@@ -114,6 +117,7 @@ pub(crate) fn execute(
                 x.sum(s, &sub, &mut stage)?;
             }
             _ => {
+                x.flush()?;
                 stage.name = "domain".into();
                 dispatch(op, &mut x, &sub)?;
             }
@@ -125,6 +129,18 @@ pub(crate) fn execute(
         x.stats.command_buffers += stage.command_buffers;
         x.stats.stages.push(stage);
     }
+    x.flush()?;
+    ctl.check()?;
+    let completed = x.commands.borrow().completed;
+    x.stats.command_buffers += completed.command_buffers;
+    x.stats.device_seconds += completed.gpu_seconds;
+    x.stats.stages.push(StageStats {
+        name: "fused completion".into(),
+        command_buffers: completed.command_buffers,
+        device_seconds: completed.gpu_seconds,
+        max_command_seconds: x.commands.borrow().max_seconds,
+        ..Default::default()
+    });
     x.stats.copied_bytes = crate::buffer::copied_bytes() - copied_before;
     let stats = std::mem::take(&mut x.stats);
     rt.finish(plan, backend, timer, start, stats, ctl, |id| {
@@ -166,8 +182,29 @@ pub(crate) struct Execution<'a> {
     chunk: usize,
     sum_scratch: Option<Lease>,
     systems: HashMap<SystemHandle, Arc<Uploaded>>,
+    commands: RefCell<CommandBatch>,
+    retired: Vec<Lease>,
 }
 impl Execution<'_> {
+    /// Deferred resident encoding. No host storage access until `flush`.
+    /// Safety: the kernel bounds/access contract is identical to MetalContext::run.
+    pub(crate) unsafe fn run(
+        &self,
+        label: &str,
+        encode: impl FnOnce(&Encoder<'_>) -> MkResult<()>,
+    ) -> MkResult<CommandStats> {
+        // Stats are collected once at plan completion, rather than at encoding.
+        unsafe {
+            self.commands.borrow_mut().encode(self.gpu, label, encode)?;
+        }
+        Ok(CommandStats::default())
+    }
+    pub(crate) fn flush(&mut self) -> MkResult<()> {
+        self.commands.borrow_mut().flush()?;
+        self.retired.clear();
+        Ok(())
+    }
+
     /// Operation-cache key including the plan's full system/build/settings identity.
     pub(crate) fn cache_key(&self, operation: impl Into<String>) -> OperationCacheKey {
         self.cache.key(operation)
@@ -218,11 +255,11 @@ impl Execution<'_> {
     }
     pub(crate) fn recycle(&mut self, b: Lease) {
         self.live_bytes -= b.words().max(4) as u64 * 4;
-        drop(b);
+        self.retired.push(b);
     }
     fn account(stage: &mut StageStats, cs: CommandStats, wall: f64) {
         stage.device_seconds += cs.gpu_seconds;
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.max_command_seconds = stage.max_command_seconds.max(wall);
     }
     fn trace(
@@ -281,7 +318,7 @@ impl Execution<'_> {
             // step. Plan validation fixed the output plane/record extents.
             // All ray pointers are advanced by start, preserving stride n.
             let cs = unsafe {
-                self.gpu.run(kernel, |e| {
+                self.run(kernel, |e| {
                     e.set_buffer(0, &up.headers, 0);
                     e.set_buffer(1, &up.surfaces, 0);
                     e.set_buffer(2, &steps, 0);
@@ -370,7 +407,7 @@ impl Execution<'_> {
             // SAFETY: nc channels of count f32 values and ng fixed-tree groups
             // lie within the validated input and preallocated partial planes.
             let cs = unsafe {
-                self.gpu.run("resident sum pass1", |e| {
+                self.run("resident sum pass1", |e| {
                     e.set_pipeline(&p1);
                     e.set_buffer(0, input, input_offset + c * count);
                     e.set_buffer_mut(1, &mut partials, c * groups * 2);
@@ -397,7 +434,7 @@ impl Execution<'_> {
             let wall = Instant::now();
             // SAFETY: nc channels each read groups float2s and write one float2.
             let cs = unsafe {
-                self.gpu.run("resident sum pass2", |e| {
+                self.run("resident sum pass2", |e| {
                     e.set_pipeline(&p2);
                     e.set_buffer(0, &partials, c * groups * 2);
                     e.set_buffer_mut(1, &mut out, c * 2);
