@@ -232,7 +232,10 @@ fn migrate_file_upgrades_with_a_backup() {
 
 #[test]
 fn parameter_values() {
-    let e = Engine::default();
+    let e = Engine::new(mklight_engine::EngineConfig {
+        default_backend: mklight_engine::backend::Backend::CpuReference,
+        ..Default::default()
+    });
     for system in [
         samples::singlet(),
         samples::toroidal_element(),

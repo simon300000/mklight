@@ -93,6 +93,24 @@ fn all_sample_resident_routes() {
                 a.name,
                 result.backend.fallback_reason
             );
+            mklight_engine::analysis::schema::validate(&a.result_schema, &result.json, true)
+                .unwrap_or_else(|e| panic!("{name}/{}: {e}", a.name));
+            let buffers: Vec<_> = result
+                .buffers
+                .iter()
+                .map(|b| {
+                    (
+                        b.name.clone(),
+                        serde_json::to_value(b.dtype())
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                        b.shape.len(),
+                    )
+                })
+                .collect();
+            mklight_engine::analysis::schema::check_buffers(&a.result_schema, &buffers).unwrap();
             assert_eq!(result.backend.used, result.run_info.backend);
             assert_eq!(result.backend.precision, result.run_info.precision);
             assert!(result.backend.qualification.is_some(), "{name}/{}", a.name);
@@ -381,5 +399,93 @@ fn host_batched_candidate_geometry() {
         .unwrap()
         .expect("real Metal required");
         check_candidate_geometry(&b);
+    }
+}
+
+#[test]
+#[ignore = "quiet-host forced resident QR comparison; bypasses the LM cost threshold"]
+fn qr_crossover_probe() {
+    use mklight_gpu::{ComputeBackend, Df32};
+    use mklight_optim::{
+        gpu::GpuContext,
+        linalg::{Matrix, Qr},
+    };
+    use std::{sync::Arc, time::Instant};
+    let backend = Arc::new(
+        mklight_metal::MetalBackend::new()
+            .unwrap()
+            .expect("real Metal required"),
+    );
+    let g = GpuContext::new(
+        backend.clone(),
+        mklight_core::Snapshot::new(samples::singlet()).unwrap(),
+    );
+    for (m, n) in [
+        (400, 100),
+        (1000, 100),
+        (1600, 100),
+        (2000, 100),
+        (4000, 100),
+        (2000, 60),
+        (4225, 37),
+    ] {
+        let a: Vec<_> = (0..m * n)
+            .map(|i| ((i * 37 % 1009) as f64 / 1009. - 0.5) + if i / n == i % n { 2. } else { 0. })
+            .collect();
+        let wanted: Vec<_> = (0..n).map(|i| (i + 1) as f64 / 100.).collect();
+        let rhs: Vec<_> = (0..m)
+            .map(|i| (0..n).map(|j| a[i * n + j] * wanted[j]).sum::<f64>())
+            .collect();
+        let residual: Vec<_> = rhs.iter().map(|v| -v).collect();
+        for run in 0..12 {
+            let cpu = || {
+                let t = Instant::now();
+                let x = Qr::new(Matrix::from_row_major(m, n, a.clone()))
+                    .solve_ls(&rhs)
+                    .unwrap();
+                (t.elapsed().as_secs_f64(), x)
+            };
+            let metal = || {
+                let t = Instant::now();
+                let r = g
+                    .least_squares(
+                        &a,
+                        &residual,
+                        &vec![1.; m],
+                        &vec![1.; n],
+                        1,
+                        m,
+                        n,
+                        0.,
+                        &JobContext::new(),
+                    )
+                    .unwrap();
+                let v = backend.read_view(r.outputs[0].view()).unwrap();
+                let x: Vec<_> = v
+                    .as_slice::<Df32>()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.to_f64())
+                    .collect();
+                (t.elapsed().as_secs_f64(), x, r.stats)
+            };
+            let ((cpu_seconds, c), (metal_seconds, x, stats)) = if run % 2 == 0 {
+                let c = cpu();
+                (c, metal())
+            } else {
+                let m = metal();
+                (cpu(), m)
+            };
+            let error = c
+                .iter()
+                .zip(&x)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0., f64::max);
+            assert!(error < 1e-8, "{m}x{n}: {error}");
+            println!(
+                "P11_QR {}",
+                json!({"rows":m,"columns":n,"work":m*n*n,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"stats":stats,"maximum_solution_error":error,"forced_resident":true,"damping":0,"augmented_zero_rows":n})
+            );
+        }
     }
 }

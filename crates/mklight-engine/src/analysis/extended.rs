@@ -259,6 +259,12 @@ impl Analysis for GlassMap {
 #[derive(Default)]
 struct ImageSimulation {
     cache: Mutex<Option<(String, Arc<im::PsfGrid>)>>,
+    gpu_cache: Mutex<Option<GpuGrid>>,
+}
+struct GpuGrid {
+    key: String,
+    backend: Arc<dyn mklight_gpu::ComputeBackend>,
+    grid: Arc<mklight_wave::gpu::image_simulation::ResidentPsfGrid>,
 }
 impl Analysis for ImageSimulation {
     fn name(&self) -> &str {
@@ -372,12 +378,38 @@ impl Analysis for ImageSimulation {
             .map(|(_, v)| v.clone());
         let t = SequentialTracer::new(input.resolved()?)?;
         let mut r = if let Some(d) = super::gpu::device(input) {
+            let cached = self
+                .gpu_cache
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|g| g.key == key && Arc::ptr_eq(&g.backend, &d.backend))
+                .map(|g| g.grid.clone());
+            let grid = match cached {
+                Some(grid) => grid,
+                None => {
+                    let built = mklight_wave::gpu::image_simulation::build_psf_grid(
+                        d.backend.as_ref(),
+                        &t,
+                        &s.optics,
+                        &ctx.subrange(0., 0.65),
+                    )?;
+                    super::gpu::record_native(input, &built.run_info);
+                    let grid = Arc::new(built.value);
+                    *self.gpu_cache.lock().unwrap() = Some(GpuGrid {
+                        key: key.clone(),
+                        backend: d.backend.clone(),
+                        grid: grid.clone(),
+                    });
+                    grid
+                }
+            };
             let r = mklight_wave::gpu::image_simulation::image_simulation_job(
                 d.backend.as_ref(),
                 &t,
                 &s,
-                None,
-                ctx,
+                Some(grid),
+                &ctx.subrange(0.65, 1.),
             )?;
             super::gpu::record_native(input, &r.run_info);
             r
