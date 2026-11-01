@@ -3,10 +3,11 @@ use crate::{context::PipelineKey, resident::Execution};
 use mklight_core::MkResult;
 use mklight_gpu::{pending::JobControl, radiometry::*, resident::StageStats};
 use std::time::Instant;
-/// Coating items measure a few ns of device time each (P9 Double Gauss), so
-/// whole 2^20-item tiles stay near the command target without a dedicated
-/// timing checkpoint; the work bound's completions still calibrate them.
-const RADIOMETRY_UNMEASURED: usize = 1 << 20;
+/// Bare coating queries are cheap; film stacks and PRT need an earlier timing
+/// checkpoint before their per-item cost is known.
+const CHEAP_COATING_UNMEASURED: usize = 1 << 20;
+const RADIOMETRY_UNMEASURED: usize = 1 << 14;
+const RADIOMETRY_TILE: usize = 1 << 15;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
     let mut stats = StageStats {
@@ -65,6 +66,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
         Request::Coating(r) => {
             let n = r.queries.desc.shape[0];
+            let (cap, unmeasured) = if r.layers.desc.shape[0] == 0 {
+                (r.tile, CHEAP_COATING_UNMEASURED)
+            } else {
+                (r.tile.min(RADIOMETRY_TILE), RADIOMETRY_UNMEASURED)
+            };
             let pso = x
                 .gpu
                 .pipeline(&PipelineKey::plain("mkl_radiometry_coating"))?;
@@ -75,7 +81,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let mut counter = x.allocate(1)?;
             counter.as_mut_slice()[0] = 0;
             let mut offset = 0;
-            let mut tile = r.tile.min(4096);
+            let mut tile = cap.min(4096);
             while offset < n {
                 let end = (offset + tile).min(n);
                 ctl.check()?;
@@ -122,7 +128,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "coating");
                 if offset < n {
-                    tile = next_tile(x, tile, r.tile, n - offset, RADIOMETRY_UNMEASURED)?;
+                    tile = next_tile(x, tile, cap, n - offset, unmeasured)?;
                 }
             }
             x.count_fallbacks(counter);
@@ -130,6 +136,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
         Request::Polarization(r) => {
             let n = r.records.desc.shape[1];
+            let cap = r.tile.min(RADIOMETRY_TILE);
             let pso = x.gpu.pipeline(&PipelineKey::plain(if r.scalar {
                 "mkl_radiometry_scalar"
             } else {
@@ -142,7 +149,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let mut counter = x.allocate(1)?;
             counter.as_mut_slice()[0] = 0;
             let mut offset = 0;
-            let mut tile = r.tile.min(4096);
+            let mut tile = cap.min(4096);
             while offset < n {
                 let end = (offset + tile).min(n);
                 ctl.check()?;
@@ -202,7 +209,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "polarization");
                 if offset < n {
-                    tile = next_tile(x, tile, r.tile, n - offset, RADIOMETRY_UNMEASURED)?;
+                    tile = next_tile(x, tile, cap, n - offset, RADIOMETRY_UNMEASURED)?;
                 }
             }
             x.count_fallbacks(counter);

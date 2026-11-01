@@ -421,9 +421,15 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             } else {
                 systems.kernel("mkl_trace_resident", "mkl_trace_resident_overlays")
             })?;
-            for offset in (0..n).step_by(TRACE_CHUNK) {
+            let recorded = t.output.records.is_some();
+            let chunk = if recorded {
+                TRACE_CHUNK / 2
+            } else {
+                TRACE_CHUNK
+            };
+            for offset in (0..n).step_by(chunk) {
                 ctl.check()?;
-                let count = (n - offset).min(TRACE_CHUNK);
+                let count = (n - offset).min(chunk);
                 let p = ResidentTraceParams {
                     trace: TraceParams {
                         num_rays: count as u32,
@@ -473,6 +479,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
+                if recorded && n > chunk {
+                    // Full hi/lo surface records cost more than final-ray
+                    // output; complete each bounded record tile before reuse.
+                    x.measure()?;
+                }
                 account(x, &mut stage, wall, size_of::<ResidentTraceParams>());
                 ctl.check()?;
                 ctl.report((offset + count) as f64 / n as f64, "resident trace");
