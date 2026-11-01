@@ -373,6 +373,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             };
             let up = x.system(*handle)?;
             let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_ghost_trace"))?;
+            let count_pso = x
+                .gpu
+                .pipeline(&PipelineKey::plain("mkl_ghost_reference_count"))?;
+            let mut counter = x.allocate(1)?;
+            counter.as_mut_slice()[0] = 0;
             let (mut out, mut qs, mut fs) = (
                 x.take_output(*output),
                 x.take_output(*queries),
@@ -417,6 +422,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(8, &mut fs, 0);
                         e.set_bytes(9, &[prm]);
                         e.dispatch_groups([(end - offset).div_ceil(64), 1, 1], 64);
+                        e.set_pipeline(&count_pso);
+                        e.set_buffer(0, &out, 0);
+                        e.set_buffer_mut(1, &mut counter, 0);
+                        e.set_bytes(2, &[end as u32, offset as u32]);
+                        e.dispatch_groups([(end - offset).div_ceil(256), 1, 1], 256);
                         Ok(())
                     })?
                 };
@@ -434,6 +444,9 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     tile = (tile / 2).max(64);
                 }
             }
+            x.stats.fallback_count += counter.as_slice()[0] as u64;
+            x.stats.readback_bytes += 4;
+            x.recycle(counter);
             x.put_output(*output, out);
             x.put_output(*queries, qs);
             x.put_output(*factors, fs);

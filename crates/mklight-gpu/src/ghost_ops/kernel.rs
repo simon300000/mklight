@@ -93,6 +93,10 @@ pub fn trace<E: FpEnv>(
             }
         };
         let t = hit.ta + hit.tb;
+        if t.hi().abs() > MKL_GHOST_MAX_SEGMENT_MM as f32 {
+            v.status = fail(MKL_GHOST_REFERENCE);
+            break;
+        }
         if counting {
             since = since + t;
         }
@@ -158,11 +162,19 @@ pub fn trace<E: FpEnv>(
                 let b = -2. * tr::dot(hi(dir), gh) / tr::dot(gh, gh);
                 next = renorm(std::array::from_fn(|j| dir[j] + hit.g[j] * b), hit.g);
             } else {
+                let mu = n1 / n2;
+                let one = D::<E>::from_f(F::ONE);
+                let disc = one - (mu * mu) * (one - cosine * cosine);
+                // The f32 TIR branch and grazing exit geometry are not
+                // qualified inside this critical-angle envelope.
+                if disc.hi().abs() <= f32::from_bits(MKL_GHOST_CRITICAL_BAND_BITS) {
+                    v.status = fail(MKL_GHOST_REFERENCE);
+                    break;
+                }
                 let Some((_, _, gamma)) = tr::refract(hi(dir), hit.normal, n1.hi(), n2.hi()) else {
                     v.status = fail(MKL_RAY_TIR);
                     break;
                 };
-                let mu = n1 / n2;
                 let b = gamma / tr::dnorm(hit.g).hi();
                 let d = std::array::from_fn(|j| dir[j] * mu + hit.g[j] * b);
                 next = renorm(renorm(d, hit.g), hit.g);

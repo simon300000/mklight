@@ -18,7 +18,7 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
   MklGhostStep st=steps[q.wavelength*plane+a+k];uint si=st.word&MKL_STEP_SURFACE_MASK;bool back=(st.word&MKL_STEP_BACKWARD)!=0;constant MklPackedSurface& surf=s[si];uint fail=si<<MKL_RAY_SURFACE_SHIFT;
   if(back)mkl_xf_backward(s[si],pos,dir);else mkl_xf_forward(s[si-1],pos,dir);
   MklHit hit;uint code=mkl_intersect<true>(surf,pool,pos,dir,p.trace,hit);if(code!=0){v.status=fail|code;break;}
-  float2 t=mkl_df_add(hit.ta,hit.tb);if(counting)since=mkl_df_add(since,t);
+  float2 t=mkl_df_add(hit.ta,hit.tb);if(fabs(t.x)>float(MKL_GHOST_MAX_SEGMENT_MM)){v.status=fail|MKL_GHOST_REFERENCE;break;}if(counting)since=mkl_df_add(since,t);
   if(st.physical!=0){if(counting&&p.reject_virtual!=0&&since.x< -1e-9f){v.status=fail|MKL_GHOST_VIRTUAL;break;}since=float2(0);counting=true;}
   pos=hit.x;
   if(!mkl_passes_aperture(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_RAY_VIGNETTED;break;}
@@ -38,8 +38,10 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
     float3 gh=mkl_hi3(hit.g);float b= -2.0f*mkl_dot3(mkl_hi3(dir),gh)/mkl_dot3(gh,gh);
     for(uint j=0;j<3;j++)next.v[j]=mkl_df_add(dir.v[j],mkl_df_mul_f32(hit.g.v[j],b));next=mkl_renorm_along(next,hit.g);
    }else{
+    float2 mu=mkl_df_div(n1,n2);float2 critical=mkl_df_sub(float2(1,0),mkl_df_mul(mkl_df_mul(mu,mu),mkl_df_sub(float2(1,0),mkl_df_mul(cosine,cosine))));
+    if(fabs(critical.x)<=as_type<float>(MKL_GHOST_CRITICAL_BAND_BITS)){v.status=fail|MKL_GHOST_REFERENCE;break;}
     float ci,gamma;if(!mkl_refract(mkl_hi3(dir),hit.normal,n1.x,n2.x,ci,gamma)){v.status=fail|MKL_RAY_TIR;break;}
-    float2 mu=mkl_df_div(n1,n2);float b=gamma/mkl_dnorm(hit.g).x;
+    float b=gamma/mkl_dnorm(hit.g).x;
     for(uint j=0;j<3;j++)next.v[j]=mkl_df_add(mkl_df_mul(dir.v[j],mu),mkl_df_mul_f32(hit.g.v[j],b));next=mkl_renorm_along(mkl_renorm_along(next,hit.g),hit.g);
    }
   }
@@ -95,3 +97,5 @@ kernel void mkl_ghost_pixel_segments(device const uint* keys [[buffer(0)]],devic
 kernel void mkl_ghost_map_scatter(device const float2* values [[buffer(0)]],device const uint* pixels [[buffer(1)]],device float2* output [[buffer(2)]],constant uint4& p [[buffer(3)]],uint tid [[thread_position_in_grid]]){
  uint i=p.y+tid;if(i>=p.x)return;if(p.z==0)output[i]=float2(0);else output[pixels[i]]=values[i];
 }
+
+kernel void mkl_ghost_reference_count(device const MklGhostValue* values [[buffer(0)]],device atomic_uint* count [[buffer(1)]],constant uint2& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){uint i=p.y+tid;if(i<p.x&&(values[i].status&MKL_RAY_CODE_MASK)==MKL_GHOST_REFERENCE)atomic_fetch_add_explicit(count,1u,memory_order_relaxed);}

@@ -719,6 +719,9 @@ fn execute_in<E: crate::FpEnv>(
                         fs[k] = f;
                     },
                 );
+                x.stats.fallback_count += (v.status & crate::consts::MKL_RAY_CODE_MASK
+                    == crate::consts::MKL_GHOST_REFERENCE)
+                    as u64;
                 bytemuck::cast_slice_mut::<_, Value>(x.words_mut(*output))[i] = v;
                 bytemuck::cast_slice_mut::<_, CoatingQuery>(x.words_mut(*queries))
                     [i * max_steps..(i + 1) * max_steps]
@@ -756,9 +759,6 @@ fn execute_in<E: crate::FpEnv>(
                     &rows::<[Df32; 2]>(x, factors)[i * max_steps..(i + 1) * max_steps],
                     *sensor_reflectance,
                 );
-                if v.status == crate::consts::MKL_GHOST_REFERENCE {
-                    x.stats.fallback_count += 1;
-                }
                 bytemuck::cast_slice_mut::<_, Value>(x.words_mut(*output))[i] = v;
             }
         }

@@ -88,6 +88,9 @@ fn all_sample_default_maps() {
         .unwrap()
         .expect("P9 requires host Metal");
     for (name, s) in samples::all() {
+        if std::env::var("P9_SAMPLE").is_ok_and(|selected| selected != name) {
+            continue;
+        }
         let m = model(s, GhostSettings::default());
         let settings = IrradianceSettings::default();
         let start = Instant::now();
@@ -120,7 +123,11 @@ fn all_sample_default_maps() {
             let actual = g.ghosts.iter().find(|g| g.path == ghost.path).unwrap();
             for (a, c) in actual.fields.iter().zip(&ghost.fields) {
                 assert_eq!(a.rays_traced, c.rays_traced, "{name} leaf count");
-                assert_eq!(a.rays_detected, c.rays_detected, "{name} detected count");
+                assert_eq!(
+                    a.rays_detected, c.rays_detected,
+                    "{name} {:?} {:?} detected count, flux {} vs {}",
+                    ghost.path, c.field, a.flux, c.flux
+                );
                 assert!((a.rms_radius - c.rms_radius).abs() <= 0.005 * c.rms_radius + 2e-5);
                 for k in 0..2 {
                     assert!((a.centroid[k] - c.centroid[k]).abs() <= 2e-5);

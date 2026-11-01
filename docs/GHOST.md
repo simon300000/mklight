@@ -423,7 +423,16 @@ reflection/detection and the expanded DOE visit/order metadata. It batches
 all incidences through P7's direct coating service, then multiplies the
 s and p channels separately and applies signed Beer–Lambert absorption.
 There is no independently interpolated coating table or second path
-enumerator. Probes flagged by P7 are completed with the reference and counted.
+enumerator. Probes flagged by P7 are completed with the reference and counted. Regular
+refraction also requests reference completion when the double-float Snell
+discriminant has magnitude at most 1e-6: the f32 TIR branch and grazing exit
+geometry are not qualified there. Default achromat probes exposed differing
+survival at this boundary despite negligible on-map flux error; they are
+completed rather than exempted from status and leaf-count checks. A segment
+longer than 1000 mm also requests reference completion: grazing ghost rays
+can travel tens of metres to the image plane even in a compact design,
+outside the qualified geometry domain. These envelopes are versioned and
+recorded in the operation settings.
 
 Completed probes remain resident. Gathered leaves carry their stable IDs,
 field/path map segment and quadrature area. One batched map chain computes

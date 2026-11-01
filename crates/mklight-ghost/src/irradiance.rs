@@ -1251,7 +1251,9 @@ fn refine_gpu(
                     let edge = matches!(geometric,Ok(Some((x,y,_))) if pixel_edge(template,x,y));
                     let result = if v.status & MKL_RAY_CODE_MASK == MKL_GHOST_REFERENCE || edge {
                         gpu.fallback_probes += 1;
+                        let reference_start = std::time::Instant::now();
                         let reference = paths[*pi].trace(*p);
+                        gpu.reference_seconds += reference_start.elapsed().as_secs_f64();
                         if edge {
                             gpu.boundary_probes += 1;
                             if let (Ok(Some((x, y, _))), Ok(Some((rx, ry, _)))) =
@@ -1310,4 +1312,139 @@ fn pixel_edge(map: &IrradianceMap, x: f64, y: f64) -> bool {
         let f = (x + map.half_size[k]) / width;
         f >= -1. && f <= map.bins[k] as f64 + 1. && (f - f.round()).abs() * width <= 2e-5
     })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn p9_dense_achromat_probe_accuracy() {
+    use mklight_core::{ResolvedSystem, Snapshot, materials::MaterialLibrary, samples};
+    use mklight_gpu::{ComputeBackend, Df32, consts::*, ghost_ops::Probe as Input};
+    use std::sync::Arc;
+    let snapshot = Snapshot::new(samples::achromatic_doublet()).unwrap();
+    let sys = ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+    let model = GhostModel::from_system(Arc::new(sys), crate::GhostSettings::default()).unwrap();
+    let settings = IrradianceSettings {
+        pupil_samples: 128,
+        fields: vec![1],
+        ..Default::default()
+    };
+    let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
+    let wls = (0..model.system().wavelengths_um.len()).collect::<Vec<_>>();
+    let cells = base_cells(&model, &fields, &wls, &settings)
+        .unwrap()
+        .concat();
+    let path = GhostPath::new(vec![2, 1]);
+    let steps = model.check_path(&path).unwrap();
+    let map = IrradianceMap::new([64, 64], [12.; 2]);
+    let trace = PathTrace {
+        model: &model,
+        steps: &steps,
+        fields: &fields,
+        n: 128,
+        overfill: 1.5,
+        map: &map,
+    };
+    let cache = Probes::refine(&cells, &trace, &JobContext::new(), (0., 1.)).unwrap();
+    let b = mklight_metal::MetalBackend::new()
+        .unwrap()
+        .expect("P9 requires host Metal");
+    let transport = crate::gpu::GhostTransport::new(
+        &b,
+        &model,
+        std::slice::from_ref(&path),
+        &JobContext::new(),
+    )
+    .unwrap();
+    let mut keys = cache
+        .index
+        .keys()
+        .copied()
+        .filter(|p| {
+            let xy = [p.x, p.y].map(|u| pupil(u, 128, 1.5));
+            xy[0].mul_add(xy[0], xy[1] * xy[1]) <= 2.25
+        })
+        .collect::<Vec<_>>();
+    keys.sort_by_key(|p| (p.wl, p.x, p.y));
+    let (mut max_position, mut max_weight, mut reference) = (0.0f64, 0.0f64, 0usize);
+    let mut flagged_inputs = Vec::new();
+    let mut flagged_values = Vec::new();
+    let mut by_surface = std::collections::BTreeMap::<u32, usize>::new();
+    for block in keys.chunks(8192) {
+        let inputs = block
+            .iter()
+            .map(|p| {
+                let xy = [p.x, p.y].map(|u| pupil(u, 128, 1.5));
+                let f = &fields[0].field;
+                let c = f.aims[p.wl as usize].chief;
+                let scale = model.tracer().pupil().r_ep;
+                let ray = model
+                    .tracer()
+                    .start_ray(
+                        &f.source,
+                        [xy[0].mul_add(scale, c[0]), xy[1].mul_add(scale, c[1])],
+                    )
+                    .unwrap();
+                Input {
+                    position: [ray.pos.x, ray.pos.y, ray.pos.z].map(Df32::from_f64),
+                    direction: [ray.dir.x, ray.dir.y, ray.dir.z].map(Df32::from_f64),
+                    path: 0,
+                    wavelength: p.wl,
+                }
+            })
+            .collect::<Vec<_>>();
+        let result = transport.trace(&inputs, &JobContext::new()).unwrap();
+        for (i, (&p, v)) in block.iter().zip(result.values.iter()).enumerate() {
+            if v.status & MKL_RAY_CODE_MASK == MKL_GHOST_REFERENCE {
+                reference += 1;
+                let count = by_surface
+                    .entry(v.status >> MKL_RAY_SURFACE_SHIFT)
+                    .or_default();
+                *count += 1;
+                if *count <= 16 {
+                    flagged_inputs.push(inputs[i]);
+                    flagged_values.push(*v);
+                }
+                continue;
+            }
+            let actual = crate::gpu::ray_out(*v);
+            let expected = cache.get(p);
+            assert_eq!(
+                matches!(actual, Ok(Some(_))),
+                matches!(expected, Ok(Some(_))),
+                "{p:?} code {}",
+                v.status
+            );
+            if let (Ok(Some((x, y, w))), Ok(Some((rx, ry, rw)))) = (actual, expected) {
+                let error = (x - rx).abs().max((y - ry).abs());
+                max_position = max_position.max(error);
+                max_weight = max_weight.max((w - rw).abs() / rw.max(1e-10));
+                assert!(error <= 2e-5, "{p:?} hit error {error:e}, hit ({rx},{ry})");
+                assert!(
+                    (w - rw).abs() <= 1e-5 * rw.abs() + 1e-10,
+                    "{p:?} weight error {}",
+                    w - rw
+                );
+            }
+        }
+    }
+    eprintln!(
+        "dense achromat probes={} reference={reference} max_position={max_position:e} max_weight_relative={max_weight:e}",
+        keys.len()
+    );
+    assert!(reference > 0);
+    let cpu = mklight_gpu::CpuF32Backend::matching(&b.precision().probe);
+    let emulated = crate::gpu::GhostTransport::new(
+        &cpu,
+        &model,
+        std::slice::from_ref(&path),
+        &JobContext::new(),
+    )
+    .unwrap()
+    .trace(&flagged_inputs, &JobContext::new())
+    .unwrap();
+    assert_eq!(
+        bytemuck::cast_slice::<_, u32>(&flagged_values),
+        bytemuck::cast_slice::<_, u32>(&emulated.values)
+    );
+    eprintln!("reference flags by surface={by_surface:?}");
 }

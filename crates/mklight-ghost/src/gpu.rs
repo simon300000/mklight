@@ -31,6 +31,7 @@ pub struct GhostTransport<'a> {
     resident_keys: Vec<BufferHandle>,
     pub distinct_probes: usize,
     pub fallback_probes: usize,
+    pub(crate) reference_seconds: f64,
     pub(crate) boundary_probes: usize,
     pub(crate) pixel_migrations: usize,
     pub run: Option<RunInfo>,
@@ -233,6 +234,7 @@ impl<'a> GhostTransport<'a> {
             resident_keys: vec![],
             distinct_probes: 0,
             fallback_probes: 0,
+            reference_seconds: 0.,
             boundary_probes: 0,
             pixel_migrations: 0,
             run: None,
@@ -244,7 +246,7 @@ impl<'a> GhostTransport<'a> {
     fn plan(&self) -> ResidentPlan {
         let mut p = ResidentPlan::new(self.model.system().snapshot.clone());
         p.identity.library_hash = self.coatings.identity.clone();
-        p.settings = serde_json::json!({"operation":"ghost","version":MKL_GHOST_VERSION,"max_steps":self.max_steps,"model":self.model.settings()});
+        p.settings = serde_json::json!({"operation":"ghost","version":MKL_GHOST_VERSION,"max_steps":self.max_steps,"critical_discriminant_band":f32::from_bits(MKL_GHOST_CRITICAL_BAND_BITS),"max_segment_mm":MKL_GHOST_MAX_SEGMENT_MM,"model":self.model.settings()});
         p
     }
     fn append(&self, p: &mut ResidentPlan, probes: BufferId, powers: bool) -> MkResult<BufferId> {
@@ -451,7 +453,7 @@ impl<'a> GhostTransport<'a> {
             run.precision = r.precision;
             run.settings["resident_backend"] = r.settings.clone();
         }
-        run.settings["gpu"] = serde_json::json!({"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"reference_probes":self.fallback_probes,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        run.settings["gpu"] = serde_json::json!({"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
                 "P9: {} probes completed by CPU f64 reference",
@@ -641,6 +643,7 @@ impl GhostTransport<'_> {
         ctx: &JobContext,
     ) -> MkResult<usize> {
         use bytemuck::Zeroable;
+        self.stats.last_mut().unwrap().polished_rays += replacements.len() as u64;
         let handle = fill(self.backend, replacements.len(), |i| {
             if i % 256 == 0 {
                 ctx.check()?;
