@@ -230,7 +230,7 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     // `auto` takes the first available GPU in registration order: Metal
     // where it qualifies as a device, else the emulation.
     let s = session(&e, samples::singlet());
-    // Unknown cost on emulation uses qualified resident work at every size.
+    // Large grids are past every cost threshold.
     let big = json!({"rings": 150});
     let r = run_on(&s, "spot_diagram", big.clone(), Some(Backend::Auto));
     assert_eq!(r.backend.requested, "auto");
@@ -257,8 +257,15 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     let r = run_on(&s, "ray_grid", big, None);
     assert_eq!(r.backend.requested, "default:auto");
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
+    // A small grid: on an Apple GPU the cost rule keeps the reference (no
+    // warning); the emulation has no cost evidence and qualifies.
     let r = run_on(&s, "ray_grid", json!({"rings": 2}), None);
-    assert!(r.backend.qualification.is_some());
+    let cost = &r.backend.cost_decision.as_ref().unwrap()["decision"];
+    assert_eq!(
+        r.run_info.backend == "cpu_reference",
+        cost == "cpu_reference"
+    );
+    assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
     // An explicit GPU request for an analysis without a GPU path fails
     // (or falls back when allowed, with a warning).
     let mut req = AnalysisRequest::new("seidel", Value::Null);
