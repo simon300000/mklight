@@ -19,7 +19,7 @@ fn unsupported(message: &str) -> MkError {
     MkError::Unsupported(format!("stray GPU: {message}"))
 }
 /// Small scene topology is built on the host. Unsupported sags are rejected
-/// before uploading anything; sampled bounds never stand in for a proof that
+/// before publishing geometry; sampled bounds never stand in for a proof that
 /// a freeform is enclosed.
 pub fn prepare_geometry(
     b: &dyn ComputeBackend,
@@ -30,11 +30,8 @@ pub fn prepare_geometry(
     if primitives.len() > mklight_gpu::consts::MKL_STRAY_MAX_PRIMITIVES as usize {
         return Err(unsupported("large scene device build is not implemented"));
     }
-    let mut packed = Vec::with_capacity(primitives.len());
-    for (i, p) in primitives.iter().enumerate() {
-        if i % 64 == 0 {
-            ctx.check()?;
-        }
+    let pack = |i: usize| {
+        let p = &primitives[i];
         let bounds = p.shape.local_bounds();
         let (kind, c, k, ri, ro, mask) = match &p.shape {
             Shape::Cylinder(c) => (2, 0., 0., 0., c.radius, None),
@@ -59,7 +56,7 @@ pub fn prepare_geometry(
             Some(Mask::Inside(a)) => aperture_record(a, false),
             Some(Mask::Outside(a)) => aperture_record(a, true),
         };
-        packed.push(ops::Primitive {
+        Ok(ops::Primitive {
             kind,
             mask,
             origin: df(p.frame.origin),
@@ -71,8 +68,8 @@ pub fn prepare_geometry(
             inner_radius: Df32::from_f64(ri),
             outer_radius: Df32::from_f64(ro),
             aperture: aperture.map(Df32::from_f64),
-        });
-    }
+        })
+    };
     fn build(prims: &[Primitive], ids: &mut [usize], nodes: &mut Vec<ops::Node>) {
         let bounds = ids
             .iter()
@@ -118,7 +115,7 @@ pub fn prepare_geometry(
         );
     }
     ctx.check()?;
-    ops::Geometry::new(b, &packed, &nodes, ctx)
+    ops::Geometry::from_fn(b, primitives.len(), &nodes, ctx, pack)
 }
 fn aperture_record(a: &ApertureShape, outside: bool) -> (u32, [f64; 2]) {
     let (kind, v) = match a.with_edge_tolerance() {

@@ -74,6 +74,15 @@ pub fn fill_records<T: Pod>(
     ctx: &JobContext,
     mut f: impl FnMut(usize) -> T,
 ) -> MkResult<BufferHandle> {
+    try_fill_records(b, n, ctx, |i| Ok(f(i)))
+}
+/// Fallible direct producer; errors return the unpublished allocation to the pool.
+pub fn try_fill_records<T: Pod>(
+    b: &dyn ComputeBackend,
+    n: usize,
+    ctx: &JobContext,
+    mut f: impl FnMut(usize) -> MkResult<T>,
+) -> MkResult<BufferHandle> {
     b.fill_buffer(record_desc::<T>(n), &mut |mut dst| {
         let words = dst.as_mut_slice::<u32>()?;
         for (i, row) in bytemuck::cast_slice_mut::<u32, T>(words)
@@ -83,7 +92,7 @@ pub fn fill_records<T: Pod>(
             if i % 256 == 0 {
                 ctx.check()?;
             }
-            *row = f(i);
+            *row = f(i)?;
         }
         Ok(())
     })

@@ -475,7 +475,7 @@ The ray origin is moved to the local box entry before evaluating a quadratic.
 Exact distance ties select the lowest original primitive ID. A miss has
 primitive ID `u32::MAX` and zero geometry. Hits carry local points and normals.
 No optical surface is replaced by triangles. Extended sags and scenes over
-4096 primitives return `Unsupported` before allocation: neither approximate
+4096 primitives return `Unsupported` before device dispatch: neither approximate
 bounds nor a CPU query hidden inside a GPU result is substituted.
 
 `Geometry` owns reusable immutable shared buffers; inputs are filled through

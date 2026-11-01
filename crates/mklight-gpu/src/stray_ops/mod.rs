@@ -21,22 +21,44 @@ impl Geometry {
         nodes: &[Node],
         ctx: &JobContext,
     ) -> MkResult<Self> {
-        if primitives.len() > crate::consts::MKL_STRAY_MAX_PRIMITIVES as usize
-            || nodes.len() > 2 * primitives.len()
-            || primitives.is_empty() != nodes.is_empty()
+        Self::from_fn(b, primitives.len(), nodes, ctx, |i| Ok(primitives[i]))
+    }
+    /// Pack directly into shared storage. Only the small BVH topology needs
+    /// a host collection; no packed-primitive staging array is required.
+    pub fn from_fn(
+        b: &dyn ComputeBackend,
+        count: usize,
+        nodes: &[Node],
+        ctx: &JobContext,
+        mut primitive: impl FnMut(usize) -> MkResult<Primitive>,
+    ) -> MkResult<Self> {
+        if count > crate::consts::MKL_STRAY_MAX_PRIMITIVES as usize
+            || nodes.len() > 2 * count
+            || (count == 0) != nodes.is_empty()
         {
             return unsupported("stray BVH capacity");
         }
+        let bounds_ok = |lower: [Df32; 3], upper: [Df32; 3]| {
+            (0..3).all(|i| {
+                lower[i].to_f64().is_finite()
+                    && upper[i].to_f64().is_finite()
+                    && lower[i].to_f64() <= upper[i].to_f64()
+            })
+        };
         for (i, n) in nodes.iter().enumerate() {
             if n.escape as usize <= i
                 || n.escape as usize > nodes.len()
                 || (n.primitive != u32::MAX
-                    && (n.primitive as usize >= primitives.len() || n.escape as usize != i + 1))
+                    && (n.primitive as usize >= count || n.escape as usize != i + 1))
             {
                 return Err(bad("stray BVH topology"));
             }
+            if !bounds_ok(n.lower, n.upper) {
+                return Err(bad("stray BVH bounds"));
+            }
         }
-        for p in primitives {
+        let primitives = try_fill_records(b, count, ctx, |i| {
+            let p = primitive(i)?;
             if p.origin
                 .iter()
                 .chain(p.rotation.iter())
@@ -46,28 +68,17 @@ impl Geometry {
                 || p.outer_radius.to_f64() <= 0.
                 || p.inner_radius.to_f64() < 0.
                 || p.inner_radius.to_f64() >= p.outer_radius.to_f64()
+                || !bounds_ok(p.lower, p.upper)
             {
                 return Err(bad("stray primitive numeric record"));
             }
             if p.kind > 2 || (p.mask & 255) > 4 || p.mask & !511 != 0 {
                 return Err(bad("stray primitive kind/mask"));
             }
-        }
-        for bounds in nodes
-            .iter()
-            .map(|n| (n.lower, n.upper))
-            .chain(primitives.iter().map(|p| (p.lower, p.upper)))
-        {
-            if !(0..3).all(|i| {
-                bounds.0[i].to_f64().is_finite()
-                    && bounds.1[i].to_f64().is_finite()
-                    && bounds.0[i].to_f64() <= bounds.1[i].to_f64()
-            }) {
-                return Err(bad("stray BVH bounds"));
-            }
-        }
+            Ok(p)
+        })?;
         Ok(Self {
-            primitives: fill_records(b, primitives.len(), ctx, |i| primitives[i])?,
+            primitives,
             nodes: fill_records(b, nodes.len(), ctx, |i| nodes[i])?,
         })
     }
