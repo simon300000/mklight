@@ -10,6 +10,7 @@ use mklight_core::{
     math::Vec3,
     model::{ApertureShape, SurfaceShape},
 };
+mod bounds;
 use mklight_gpu::{ComputeBackend, Df32, resident::*, stray_ops as ops};
 
 fn df(v: Vec3) -> [Df32; 3] {
@@ -32,7 +33,7 @@ pub fn prepare_geometry(
     }
     let pack = |i: usize| {
         let p = &primitives[i];
-        let bounds = p.shape.local_bounds();
+        let bounds = bounds::local(p)?;
         let (kind, c, k, ri, ro, mask) = match &p.shape {
             Shape::Cylinder(c) => (2, 0., 0., 0., c.radius, None),
             Shape::Sag(s) => {
@@ -41,11 +42,7 @@ pub fn prepare_geometry(
                     SurfaceShape::Conic { curvature, conic } => {
                         (if *curvature == 0. { 0 } else { 1 }, *curvature, *conic)
                     }
-                    _ => {
-                        return Err(unsupported(
-                            "extended sag closest-hit bracketing is not implemented",
-                        ));
-                    }
+                    _ => (3, s.shape().curvature(), s.shape().conic()),
                 };
                 (kind, c, k, s.r_inner(), s.r_outer(), s.mask())
             }
@@ -70,10 +67,8 @@ pub fn prepare_geometry(
             aperture: aperture.map(Df32::from_f64),
         })
     };
-    fn build(prims: &[Primitive], ids: &mut [usize], nodes: &mut Vec<ops::Node>) {
-        let bounds = ids
-            .iter()
-            .fold(Aabb::EMPTY, |a, &i| a.union(&prims[i].aabb()));
+    fn build(prims: &[Aabb], ids: &mut [usize], nodes: &mut Vec<ops::Node>) {
+        let bounds = ids.iter().fold(Aabb::EMPTY, |a, &i| a.union(&prims[i]));
         let index = nodes.len();
         nodes.push(ops::Node {
             lower: df(bounds.min),
@@ -93,8 +88,8 @@ pub fn prepare_geometry(
                 2
             };
             ids.sort_by(|&a, &b| {
-                let ca = prims[a].aabb().centroid();
-                let cb = prims[b].aabb().centroid();
+                let ca = prims[a].centroid();
+                let cb = prims[b].centroid();
                 [ca.x, ca.y, ca.z][axis]
                     .total_cmp(&[cb.x, cb.y, cb.z][axis])
                     .then(a.cmp(&b))
@@ -106,16 +101,75 @@ pub fn prepare_geometry(
         }
         nodes[index].escape = nodes.len() as u32;
     }
+    let boxes = primitives
+        .iter()
+        .map(|p| bounds::local(p).map(|b| b.transformed(&p.frame)))
+        .collect::<MkResult<Vec<_>>>()?;
     let mut nodes = Vec::with_capacity(primitives.len() * 2);
     if !primitives.is_empty() {
         build(
-            primitives,
+            &boxes,
             &mut (0..primitives.len()).collect::<Vec<_>>(),
             &mut nodes,
         );
     }
     ctx.check()?;
-    ops::Geometry::from_fn(b, primitives.len(), &nodes, ctx, pack)
+    let geometry = ops::Geometry::from_fn(b, primitives.len(), &nodes, ctx, pack)?;
+    if !primitives.iter().any(|p|matches!(&p.shape,Shape::Sag(s) if !matches!(s.shape(),SurfaceShape::Plane|SurfaceShape::Paraxial{..}|SurfaceShape::Conic{..}))) {return Ok(geometry);}
+    // Reuse P1's authoritative packing, without duplicating any surface basis.
+    use mklight_core::model::{MaterialRef, OpticalSystem, SemiDiameter, Surface};
+    let mut model = OpticalSystem::new_empty();
+    model.surfaces = vec![Surface::new(
+        0,
+        SurfaceShape::Plane,
+        f64::INFINITY,
+        MaterialRef::Air,
+    )];
+    for (i, p) in primitives.iter().enumerate() {
+        let shape = match &p.shape {
+            Shape::Sag(s) => s.shape().clone(),
+            Shape::Cylinder(_) => SurfaceShape::Plane,
+        };
+        let mut s = Surface::new(i as u64 + 1, shape, 1., MaterialRef::Air);
+        s.semi_diameter = SemiDiameter::Fixed {
+            value: match &p.shape {
+                Shape::Sag(s) => s.r_outer(),
+                Shape::Cylinder(c) => c.radius,
+            },
+        };
+        model.surfaces.push(s);
+    }
+    model.surfaces.push(Surface::new(
+        primitives.len() as u64 + 1,
+        SurfaceShape::Plane,
+        0.,
+        MaterialRef::Air,
+    ));
+    let snapshot = Snapshot::new(model)?;
+    let resolved = mklight_core::ResolvedSystem::new(
+        &snapshot,
+        std::sync::Arc::new(mklight_core::materials::MaterialLibrary::with_builtin()),
+    )?;
+    let packed = mklight_gpu::PackedSystem::pack_all(&resolved)?;
+    geometry.with_shapes(b, ctx, |i| {
+        let mut out = ops::SurfaceData::default();
+        let s = packed.surfaces[i + 1];
+        let data =
+            &packed.coefficients[s.coefficient_offset as usize..][..s.coefficient_count as usize];
+        if data.len() > out.coefficients.len() {
+            return Err(unsupported("sag coefficient capacity"));
+        }
+        out.surface = s;
+        out.surface.coefficient_offset = 0;
+        out.coefficients[..data.len()].copy_from_slice(data);
+        use mklight_gpu::consts::*;
+        if s.shape <= MKL_SHAPE_EVEN_ASPHERE && s.flags & MKL_SURF_HAS_SAG_OVERLAY == 0 {
+            out.surface.flags |= MKL_SURF_HAS_SAG_OVERLAY;
+            out.surface.coefficient_count = MKL_OVERLAY_COUNT;
+            out.coefficients[MKL_OVERLAY_INV_RADIUS as usize] = Df32::from_f32(1.);
+        }
+        Ok(out)
+    })
 }
 fn aperture_record(a: &ApertureShape, outside: bool) -> (u32, [f64; 2]) {
     let (kind, v) = match a.with_edge_tolerance() {
@@ -272,3 +326,6 @@ pub fn first_hits(
     plan.outputs = vec![rays, hits];
     b.submit_plan(plan, ctx)?.wait()
 }
+
+mod transport;
+pub use transport::{TransportOptions, TransportScene, run};

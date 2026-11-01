@@ -95,7 +95,7 @@ fn slab<E: FpEnv>(lo: [Df32; 3], hi: [Df32; 3], o: V<E>, d: V<E>, limit: D<E>) -
     }
     Some(a)
 }
-fn mask<E: FpEnv>(p: Primitive, q: V<E>) -> bool {
+pub(super) fn mask<E: FpEnv>(p: Primitive, q: V<E>) -> bool {
     let x = q[0];
     let y = q[1];
     let r = x * x + y * y;
@@ -198,7 +198,12 @@ fn intersect<E: FpEnv>(p: Primitive, ray: Ray, limit: D<E>) -> Option<Hit> {
 }
 /// Stackless preorder BVH. Equal distance selects the smaller primitive ID,
 /// independent of node order. Scene topology is validated at preparation.
-pub fn closest<E: FpEnv>(prims: &[Primitive], nodes: &[Node], ray: Ray) -> Hit {
+pub fn closest_shapes<E: FpEnv>(
+    prims: &[Primitive],
+    nodes: &[Node],
+    shapes: &[SurfaceData],
+    ray: Ray,
+) -> Hit {
     let mut out = Hit {
         primitive: u32::MAX,
         ..Hit::zeroed()
@@ -220,7 +225,13 @@ pub fn closest<E: FpEnv>(prims: &[Primitive], nodes: &[Node], ray: Ray) -> Hit {
             continue;
         }
         if node.primitive != u32::MAX {
-            if let Some(mut h) = intersect(prims[node.primitive as usize], ray, limit) {
+            let p = prims[node.primitive as usize];
+            let hit = if p.kind == 3 {
+                super::sag::intersect(p, &shapes[node.primitive as usize], ray, limit)
+            } else {
+                intersect(p, ray, limit)
+            };
+            if let Some(mut h) = hit {
                 let delta = (D::from(h.distance) - limit).v();
                 if out.primitive == u32::MAX
                     || delta < 0.

@@ -3,14 +3,20 @@
 mod kernel;
 mod math;
 mod records;
+mod sag;
+mod service;
+mod spec;
+mod transport;
 use crate::{ComputeBackend, Df32, FpEnv, pending::JobControl, resident::*};
 use mklight_core::{JobContext, MkResult};
 pub use records::*;
+pub use transport::*;
 
 #[derive(Clone, Debug)]
 pub struct Geometry {
     primitives: BufferHandle,
     nodes: BufferHandle,
+    shapes: BufferHandle,
 }
 impl Geometry {
     /// Numeric upload boundary. The builder uses preorder nodes with forward
@@ -72,7 +78,7 @@ impl Geometry {
             {
                 return Err(bad("stray primitive numeric record"));
             }
-            if p.kind > 2 || (p.mask & 255) > 4 || p.mask & !511 != 0 {
+            if p.kind > 3 || (p.mask & 255) > 4 || p.mask & !511 != 0 {
                 return Err(bad("stray primitive kind/mask"));
             }
             Ok(p)
@@ -80,15 +86,37 @@ impl Geometry {
         Ok(Self {
             primitives,
             nodes: fill_records(b, nodes.len(), ctx, |i| nodes[i])?,
+            shapes: fill_records(b, count, ctx, |_| SurfaceData::default())?,
         })
+    }
+    pub fn with_shapes(
+        mut self,
+        b: &dyn ComputeBackend,
+        ctx: &JobContext,
+        mut shape: impl FnMut(usize) -> MkResult<SurfaceData>,
+    ) -> MkResult<Self> {
+        self.shapes = try_fill_records(b, self.primitives.desc().shape[0], ctx, |i| shape(i))?;
+        Ok(self)
+    }
+    pub fn import(&self, plan: &mut ResidentPlan) -> (PlanView, PlanView, PlanView) {
+        let a = plan.import(self.primitives.view());
+        let b = plan.import(self.nodes.view());
+        let c = plan.import(self.shapes.view());
+        (
+            plan.view(a).unwrap(),
+            plan.view(b).unwrap(),
+            plan.view(c).unwrap(),
+        )
     }
     pub fn append(&self, plan: &mut ResidentPlan, rays: PlanView, tile: usize) -> BufferId {
         let primitives = plan.import(self.primitives.view());
         let nodes = plan.import(self.nodes.view());
+        let shapes = plan.import(self.shapes.view());
         let output = plan.scratch(record_desc::<Hit>(rays.desc.shape[0]));
         plan.operations.push(ResidentOp::Stray(Request::Cast(Cast {
             primitives: plan.view(primitives).unwrap(),
             nodes: plan.view(nodes).unwrap(),
+            shapes: plan.view(shapes).unwrap(),
             rays,
             output,
             tile,
@@ -98,6 +126,7 @@ impl Geometry {
 }
 #[derive(Clone, Debug)]
 pub struct Cast {
+    shapes: PlanView,
     primitives: PlanView,
     nodes: PlanView,
     rays: PlanView,
@@ -105,6 +134,9 @@ pub struct Cast {
     tile: usize,
 }
 impl Cast {
+    pub fn shapes(&self) -> &PlanView {
+        &self.shapes
+    }
     pub fn primitives(&self) -> &PlanView {
         &self.primitives
     }
@@ -130,21 +162,6 @@ pub struct Generate {
     pub ray_count: usize,
     pub output: BufferId,
     pub tile: usize,
-}
-/// Retained frozen transport seam. The operation does not publish partial
-/// transport as a completed stray result.
-#[derive(Clone, Debug)]
-pub struct Transport {
-    pub systems: SystemSet,
-    pub coverage: crate::ghost_ops::Coverage,
-    pub scene: PlanView,
-    pub sources: PlanView,
-    pub settings: PlanView,
-    pub seed: u64,
-    pub first_ray: u64,
-    pub ray_count: usize,
-    pub output: BufferId,
-    pub ledger: BufferId,
 }
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -202,13 +219,14 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
         Request::Cast(r) => {
             check::<Primitive>(&r.primitives, p)?;
             check::<Node>(&r.nodes, p)?;
+            check::<SurfaceData>(&r.shapes, p)?;
             let n = check::<Ray>(&r.rays, p)?;
             if p.desc(r.output)? != &record_desc::<Hit>(n) {
                 return Err(bad("stray hit output"));
             }
             (n, r.tile)
         }
-        Request::Transport(_) => return unsupported("stray split-tree transport is not qualified"),
+        Request::Transport(r) => return r.validate(p),
     };
     if n > u32::MAX as usize || tile == 0 || tile > crate::consts::MKL_STRAY_MAX_TILE as usize {
         return Err(bad("stray ray count or command tile"));
@@ -222,11 +240,20 @@ pub fn accesses(r: &Request) -> Access {
             ..Default::default()
         },
         Request::Cast(r) => Access {
-            reads: vec![r.primitives.clone(), r.nodes.clone(), r.rays.clone()],
+            reads: vec![
+                r.primitives.clone(),
+                r.nodes.clone(),
+                r.rays.clone(),
+                r.shapes.clone(),
+            ],
             writes: vec![r.output],
             ..Default::default()
         },
-        Request::Transport(_) => Access::default(),
+        Request::Transport(r) => Access {
+            reads: r.reads(),
+            writes: vec![r.output, r.ledger],
+            ..Default::default()
+        },
     }
 }
 pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
@@ -240,6 +267,9 @@ fn rows<'a, T: bytemuck::Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
     bytemuck::cast_slice(&x.words(v.buffer)[v.offset..v.offset + v.desc.len().unwrap()])
 }
 fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
+    if let Request::Transport(r) = r {
+        return spec::execute::<E>(r, x, ctl);
+    }
     let n = match r {
         Request::Generate(r) => r.ray_count,
         Request::Cast(r) => r.rays.desc.shape[0],
@@ -256,9 +286,10 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -
                 bytemuck::cast_slice_mut::<u32, Ray>(x.words_mut(r.output))[i] = ray;
             }
             Request::Cast(r) => {
-                let out = kernel::closest::<E>(
+                let out = kernel::closest_shapes::<E>(
                     rows(x, &r.primitives),
                     rows(x, &r.nodes),
+                    rows(x, &r.shapes),
                     rows::<Ray>(x, &r.rays)[i],
                 );
                 bytemuck::cast_slice_mut::<u32, Hit>(x.words_mut(r.output))[i] = out;

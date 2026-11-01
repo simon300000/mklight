@@ -223,6 +223,9 @@ pub enum SurfaceOp {
 }
 
 impl Signature {
+    pub(crate) fn mark_overflow(&mut self) {
+        self.overflow = true;
+    }
     pub fn diffraction(&self) -> impl Iterator<Item = DiffractionEvent> + '_ {
         let kept = &self.orders[..self.order_len as usize];
         kept.iter().enumerate().map(|(i, v)| DiffractionEvent {

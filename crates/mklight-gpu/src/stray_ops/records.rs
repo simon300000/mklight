@@ -101,3 +101,17 @@ pub fn try_fill_records<T: Pod>(
 pub fn read_records<T: Pod>(view: &ReadView) -> MkResult<&[T]> {
     bytemuck::try_cast_slice(view.as_slice::<u32>()?).map_err(|_| bad("stray record alignment"))
 }
+
+/// P1's packed sag representation, with a bounded coefficient sidecar.
+/// Geometry-only records never carry a second optical interaction model.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SurfaceData {
+    pub surface: crate::PackedSurface,
+    pub coefficients: [Df32; 256],
+}
+impl Default for SurfaceData {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}

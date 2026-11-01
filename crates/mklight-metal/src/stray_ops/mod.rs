@@ -3,7 +3,11 @@ use crate::{context::PipelineKey, resident::Execution};
 use mklight_core::MkResult;
 use mklight_gpu::{pending::JobControl, resident::StageStats, stray_ops::*};
 use std::time::Instant;
+mod transport;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
+    if let Request::Transport(r) = r {
+        return transport::execute(r, x, ctl);
+    }
     let (name, n, tile, output) = match r {
         Request::Generate(r) => ("mkl_stray_generate", r.ray_count, r.tile, r.output),
         Request::Cast(r) => (
@@ -69,6 +73,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         }
                         e.set_buffer_mut(3, &mut out, 0);
                         e.set_bytes(4, &p);
+                        let (b, o) = x.buffer(r.shapes());
+                        e.set_buffer(5, b, o);
                     }
                     Request::Transport(_) => unreachable!(),
                 }
