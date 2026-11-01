@@ -28,7 +28,7 @@ pub fn prepare_geometry(
 ) -> MkResult<ops::Geometry> {
     ctx.check()?;
     if primitives.len() > mklight_gpu::consts::MKL_STRAY_MAX_PRIMITIVES as usize {
-        return Err(unsupported("large scene device build is not implemented"));
+        return Err(unsupported("scene exceeds the resident primitive capacity"));
     }
     let pack = |i: usize| {
         let p = &primitives[i];
@@ -36,13 +36,20 @@ pub fn prepare_geometry(
         let (kind, c, k, ri, ro, mask) = match &p.shape {
             Shape::Cylinder(c) => (2, 0., 0., 0., c.radius, None),
             Shape::Sag(s) => {
-                let (kind, c, k) = match s.shape() {
-                    SurfaceShape::Plane | SurfaceShape::Paraxial { .. } => (0, 0., 0.),
-                    SurfaceShape::Conic { curvature, conic } => {
-                        (if *curvature == 0. { 0 } else { 1 }, *curvature, *conic)
-                    }
-                    _ => (3, s.shape().curvature(), s.shape().conic()),
+                let conic = match s.shape() {
+                    SurfaceShape::Plane | SurfaceShape::Paraxial { .. } => Some((0., 0.)),
+                    SurfaceShape::Conic { curvature, conic } => Some((*curvature, *conic)),
+                    SurfaceShape::EvenAsphere {
+                        curvature,
+                        conic,
+                        coefficients,
+                    } if coefficients.iter().all(|v| *v == 0.) => Some((*curvature, *conic)),
+                    _ => None,
                 };
+                let (kind, c, k) = conic
+                    .map_or((3, s.shape().curvature(), s.shape().conic()), |(c, k)| {
+                        (if c == 0. { 0 } else { 1 }, c, k)
+                    });
                 (kind, c, k, s.r_inner(), s.r_outer(), s.mask())
             }
         };
@@ -333,3 +340,66 @@ pub fn first_hits(
 mod tally;
 mod transport;
 pub use transport::{TransportOptions, TransportScene, run};
+
+/// Engine-facing analysis adapter, including coverage/aperture validation,
+/// obstruction reference, source measures, map rows and complete RunInfo.
+fn analyze_impl(
+    b: &dyn ComputeBackend,
+    rs: std::sync::Arc<mklight_core::ResolvedSystem>,
+    settings: &crate::StrayAnalysisSettings,
+    options: TransportOptions,
+    all_signatures: bool,
+    ctx: &JobContext,
+) -> MkResult<(crate::StrayAnalysisResult, Vec<crate::tally::SignatureFlux>)> {
+    settings.validate()?;
+    let timer = mklight_core::job::RunTimer::start();
+    let snapshot = rs.snapshot.clone();
+    let sys = crate::StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?;
+    let (mut result, signatures) = crate::analysis::analyze_system_impl(
+        &sys,
+        settings,
+        all_signatures,
+        Some((b, options)),
+        &ctx.subrange(0.1, 0.99),
+    )?;
+    result.run_info = timer.finish(
+        &snapshot,
+        "stray_light",
+        &result.run_info.settings,
+        &result.run_info.backend,
+        result.run_info.precision,
+        Some(settings.seed),
+        result.warnings.clone(),
+    );
+    ctx.check()?;
+    ctx.report(1., "stray light: done");
+    Ok((result, signatures))
+}
+pub fn analyze_system(
+    b: &dyn ComputeBackend,
+    sys: &crate::StraySystem,
+    settings: &crate::StrayAnalysisSettings,
+    options: TransportOptions,
+    ctx: &JobContext,
+) -> MkResult<crate::StrayAnalysisResult> {
+    crate::analysis::analyze_system_impl(sys, settings, false, Some((b, options)), ctx).map(|r| r.0)
+}
+pub fn analyze(
+    b: &dyn ComputeBackend,
+    rs: std::sync::Arc<mklight_core::ResolvedSystem>,
+    settings: &crate::StrayAnalysisSettings,
+    options: TransportOptions,
+    ctx: &JobContext,
+) -> MkResult<crate::StrayAnalysisResult> {
+    analyze_impl(b, rs, settings, options, false, ctx).map(|r| r.0)
+}
+
+pub fn analyze_with_signatures(
+    b: &dyn ComputeBackend,
+    rs: std::sync::Arc<mklight_core::ResolvedSystem>,
+    settings: &crate::StrayAnalysisSettings,
+    options: TransportOptions,
+    ctx: &JobContext,
+) -> MkResult<(crate::StrayAnalysisResult, Vec<crate::tally::SignatureFlux>)> {
+    analyze_impl(b, rs, settings, options, true, ctx)
+}

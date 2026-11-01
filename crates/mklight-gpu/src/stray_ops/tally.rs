@@ -44,6 +44,7 @@ pub enum Tally {
         output: BufferId,
     },
     Terms {
+        products: bool,
         hits: PlanView,
         ledger: PlanView,
         tags: PlanView,
@@ -133,6 +134,7 @@ impl Tally {
                 }
             }
             Self::Terms {
+                products,
                 hits,
                 ledger,
                 tags,
@@ -148,7 +150,15 @@ impl Tally {
                     || q != t.queries as usize
                     || n != s * t.capacity as usize
                     || tags.desc != BufferDesc::new(ElementType::U32, [n, 4])
-                    || p.desc(*output)? != &BufferDesc::new(ElementType::DoubleFloat, [4, q * s])
+                    || p.desc(*output)?
+                        != &BufferDesc::new(
+                            ElementType::DoubleFloat,
+                            if *products {
+                                vec![14 * q, s]
+                            } else {
+                                vec![4, q * s]
+                            },
+                        )
                 {
                     return Err(bad("stray tally terms"));
                 }
@@ -277,6 +287,7 @@ pub(super) fn execute(t: &Tally, x: &mut cpu::Execution, ctl: &JobControl) -> Mk
             }
         }
         Tally::Terms {
+            products,
             hits,
             ledger,
             tags,
@@ -345,9 +356,36 @@ pub(super) fn execute(t: &Tally, x: &mut cpu::Execution, ctl: &JobControl) -> Mk
                         sum[c] = sum[c] + values[c];
                     }
                 }
+                let ftz = x.flush_to_zero;
                 let out: &mut [Df32] = bytemuck::cast_slice_mut(x.words_mut(*output));
-                for c in 0..4 {
-                    out[c * len + i] = sum[c];
+                if *products {
+                    let sum = sum.map(|v| {
+                        if ftz {
+                            v.add_in::<crate::Ftz>(Df32::ZERO)
+                        } else {
+                            v
+                        }
+                    });
+                    let query = i / n;
+                    let source = i % n;
+                    for c in 0..4 {
+                        out[(14 * query + c) * n + source] = sum[c];
+                    }
+                    let mut c = 4;
+                    for a in 0..4 {
+                        for b in a..4 {
+                            out[(14 * query + c) * n + source] = if ftz {
+                                sum[a].mul_in::<crate::Ftz>(sum[b])
+                            } else {
+                                sum[a] * sum[b]
+                            };
+                            c += 1;
+                        }
+                    }
+                } else {
+                    for c in 0..4 {
+                        out[c * len + i] = sum[c];
+                    }
                 }
             }
         }

@@ -76,6 +76,9 @@ fn tau() -> D {
 }
 fn book(l: &mut Ledger, s: usize, w: D) {
     l.sums[s] = l.sums[s] + w;
+    if !l.sums[s].to_f64().is_finite() {
+        l.status = 4;
+    }
 }
 fn change(l: &mut Ledger, gain: usize, d: D) {
     book(
@@ -155,11 +158,15 @@ fn tis(m: Material, t: &[D], spec: V, n: V) -> D {
         return m.bsdf[0];
     }
     let c = min(f(1.), max(f(-1.), dot(spec, n)));
-    let beta = v(max(f(0.), (f(1.) - c) * (f(1.) + c)).sqrt());
-    let x = beta.clamp(0., 1.).asin() * (2. / std::f32::consts::PI) * (m.tis_count - 1) as f32;
-    let j = (x.floor() as usize).min(m.tis_count as usize - 2);
+    let beta = max(f(0.), (f(1.) - c) * (f(1.) + c)).sqrt();
+    let co = if v(c) < 0. { -c } else { c };
+    let angle = f(v(beta).atan2(v(co)));
+    let (sn, cs) = sincos(angle);
+    let theta = angle + (beta * cs - co * sn) / (beta * sn + co * cs);
+    let x = theta / D::new(std::f32::consts::FRAC_PI_2, -4.371139e-8) * f((m.tis_count - 1) as f32);
+    let j = (v(x).floor() as usize).min(m.tis_count as usize - 2);
     let t = &t[m.tis_start as usize..];
-    let ff = f(x - j as f32);
+    let ff = x - f(j as f32);
     let f2 = ff * ff;
     let f3 = f2 * ff;
     let (p1, p2) = (t[j], t[j + 1]);
@@ -175,132 +182,218 @@ fn tis(m: Material, t: &[D], spec: V, n: V) -> D {
         + (f3 - f2) * (p3 - p1) * f(0.5);
     min(f(1.), max(f(0.), z))
 }
-fn expm1(x: f32) -> f32 {
-    if x.abs() > 0.125 {
-        return x.exp() - 1.;
-    }
-    let (mut t, mut s) = (x, x);
-    for j in 2..=9 {
-        t = t * x / j as f32;
-        s += t;
-    }
-    s
+fn exp_d(x: D) -> D {
+    if v(x) < -87. { f(0.) } else { exp(x) }
 }
-fn log1p(x: f32) -> f32 {
-    let y = 1. + x;
-    if y == 1. { x } else { y.ln() * (x / (y - 1.)) }
-}
-fn abg(b: f32, g: f32, rm: f32, u: f32) -> (f32, f32) {
-    if g.abs() < 1e-12 {
-        return (rm * u.sqrt(), 1.);
+fn log_d(x: D) -> D {
+    if v(x) <= 0. {
+        return f(f32::NAN);
     }
-    if g < 0. {
+    let e = ((x.hi.to_bits() >> 23) & 255) as i32 - 127;
+    let m = x * f(2f32.powi(-e));
+    let a = f(v(m).ln());
+    let ea = exp(a);
+    let delta = (m - ea) / ea;
+    a + delta - delta * delta * f(0.5) + f(e as f32) * D::new(std::f32::consts::LN_2, -1.9046542e-9)
+}
+fn log1p_d(x: D) -> D {
+    if v(x).abs() > 0.125 {
+        return log_d(f(1.) + x);
+    }
+    let (mut term, mut sum) = (x, x);
+    for j in 2..=20 {
+        term = term * (-x);
+        sum = sum + term / f(j as f32);
+    }
+    sum
+}
+fn expm1_d(x: D) -> D {
+    if v(x).abs() > 0.125 {
+        return exp_d(x) - f(1.);
+    }
+    let (mut term, mut sum) = (x, x);
+    for j in 2..=14 {
+        term = term * x / f(j as f32);
+        sum = sum + term;
+    }
+    sum
+}
+fn logadd(a: D, b: D) -> D {
+    let hi = max(a, b);
+    hi + log1p_d(exp_d(min(a, b) - hi))
+}
+fn power_log(g: D, r: D) -> D {
+    let test = v(g) * v(r);
+    if test > 128. {
+        f(128.)
+    } else if test < -128. {
+        f(-128.)
+    } else {
+        g * r
+    }
+}
+fn logistic(x: D) -> D {
+    if v(x) > 40. {
+        f(0.)
+    } else if v(x) < -40. {
+        f(1.)
+    } else {
+        f(1.) / (f(1.) + exp_d(x))
+    }
+}
+fn abg(b: D, g: D, rm: D, u: D, flags: u32) -> (D, D) {
+    if flags & 1 != 0 {
+        return (rm * u.sqrt(), f(1.));
+    }
+    let lm = log_d(rm);
+    if flags & 2 != 0 {
         let r = rm * u.sqrt();
-        return (r, (b + rm.powf(g)) / (b + r.powf(g)));
+        let lr = log_d(r);
+        if v(b) == 0. {
+            return (r, exp_d(min(f(0.), power_log(g, lm - lr))));
+        }
+        let lb = log_d(b);
+        return (
+            r,
+            exp_d(min(
+                f(0.),
+                logadd(lb, power_log(g, lm)) - logadd(lb, power_log(g, lr)),
+            )),
+        );
     }
-    let e = 2. - g;
-    let rc = if b == 0. { 0. } else { (b.ln() / g).exp() };
-    if rc >= rm {
+    let e = f(2.) - g;
+    if v(b) == 0. {
+        let lr = lm + log_d(u) / e;
+        return (
+            exp_d(lr),
+            if v(g * lr) < -700. {
+                f(f32::NAN)
+            } else {
+                f(1.)
+            },
+        );
+    }
+    let lb = log_d(b);
+    let lc = lb / g;
+    if v(lc - lm) >= 0. {
         let r = rm * u.sqrt();
-        return (r, b / (b + r.powf(g)));
+        return (r, logistic(power_log(g, log_d(r)) - lb));
     }
-    let l = if rc > 0. {
-        (rm / rc).ln()
+    let l = lm - lc;
+    let el = e * l;
+    let p1 = if v(el) > 80. {
+        f(0.)
     } else {
-        f32::INFINITY
+        let w2 = if flags & 4 != 0 { l } else { expm1_d(el) / e };
+        f(0.5) / (f(0.5) + w2)
     };
-    let w2 = if e.abs() < 1e-9 { l } else { expm1(e * l) / e };
-    let p1 = if rc == 0. || !w2.is_finite() {
-        0.
-    } else {
-        0.5 / (0.5 + w2)
-    };
-    if u < p1 {
-        let r = rc * (u / p1).sqrt();
-        return (r, b / (b + r.powf(g)));
+    if v(u - p1) < 0. {
+        let r = exp_d(lc) * (u / p1).sqrt();
+        return (r, logistic(power_log(g, log_d(r)) - lb));
     }
-    let u = if p1 > 0. { (u - p1) / (1. - p1) } else { u };
-    let lr = if e > 1e-9 {
-        rm.ln() + (u + (1. - u) * if rc > 0. { (-e * l).exp() } else { 0. }).ln() / e
-    } else if e < -1e-9 {
-        rc.ln() + log1p(u * expm1(e * l)) / e
+    let u = if v(p1) > 0. {
+        (u - p1) / (f(1.) - p1)
     } else {
-        rc.ln() + u * l
+        u
     };
-    let r = lr.exp();
-    let rg = r.powf(g);
-    (r, rg / (b + rg))
+    let lr = if flags & 8 != 0 {
+        lm + if v(el) > 80. {
+            log_d(u) / e
+        } else {
+            log1p_d((f(1.) - u) * expm1_d(-el)) / e
+        }
+    } else if flags & 4 != 0 {
+        lc + u * l
+    } else {
+        lc + log1p_d(u * expm1_d(el)) / e
+    };
+    (exp_d(lr), logistic(lb - power_log(g, lr)))
 }
-fn scatter(m: Material, spec: V, n: V, rng: &mut Rng) -> Option<V> {
+fn scatter(m: Material, spec: V, n: V, rng: &mut Rng) -> Result<V, usize> {
     let (a, b) = onb(n);
     let (bx, by) = (dot(spec, a), dot(spec, b));
-    let rm = 1. + v((bx * bx + by * by).sqrt());
-    let sigma = v(m.bsdf[1]);
+    let rm = f(1.) + (bx * bx + by * by).sqrt();
+    let sigma = m.bsdf[1];
     for _ in 0..4096 {
         let u = rng.uniform();
         let (r, accept) = match m.bsdf_kind {
-            1 => (u.sqrt(), 1.),
-            2 => (
-                f(sigma
-                    * (-2. * log1p(-v(u) * (-expm1(-0.5 * (rm / sigma) * (rm / sigma))))).sqrt()),
-                1.,
-            ),
-            _ => (
-                {
-                    let (r, _) = abg(v(m.bsdf[1]), v(m.bsdf[2]), rm, v(u));
-                    f(r)
-                },
-                abg(v(m.bsdf[1]), v(m.bsdf[2]), rm, v(u)).1,
-            ),
+            1 => (u.sqrt(), f(1.)),
+            2 => {
+                let ratio = rm / sigma;
+                let mass = if v(ratio) > 10. {
+                    f(1.)
+                } else {
+                    -expm1_d(-f(0.5) * ratio * ratio)
+                };
+                (sigma * (-f(2.) * log1p_d(-u * mass)).sqrt(), f(1.))
+            }
+            _ => abg(m.bsdf[1], m.bsdf[2], rm, u, m.bsdf_flags),
         };
+        if !r.to_f64().is_finite() || !accept.to_f64().is_finite() {
+            return Err(usize::MAX);
+        }
         let (sn, cs) = sincos(tau() * rng.uniform());
         let (mut x, mut y) = (r * cs, r * sn);
         if m.bsdf_kind != 1 {
             x = x + bx;
             y = y + by;
         }
-        let ok = m.bsdf_kind != 3 || v(rng.uniform()) < accept;
+        let ok = m.bsdf_kind != 3 || v(rng.uniform() - accept) < 0.;
         let rad = x * x + y * y;
         if ok && (m.bsdf_kind == 1 || v(rad) < 1.) {
-            return Some(unit(add(
+            return Ok(unit(add(
                 add(scale(a, x), scale(b, y)),
                 scale(n, max(f(0.), f(1.) - rad).sqrt()),
             )));
         }
     }
-    None
+    Err(15)
 }
-fn kino(blaze: f32, rng: &mut Rng) -> i32 {
-    if blaze == blaze.round() {
-        return blaze as i32;
+fn integer(x: i32) -> D {
+    f((x >> 16) as f32) * f(65536.) + f((x as u32 & 65535) as f32)
+}
+fn nearest(x: D) -> f32 {
+    let mut c = v(x).round();
+    let d = x - f(c);
+    if v(d - f(0.5)) > 0. {
+        c += 1.;
+    } else if v(d + f(0.5)) < 0. {
+        c -= 1.;
     }
-    let center = blaze.round() as i32;
+    c
+}
+fn kino(blaze: D, rng: &mut Rng) -> i32 {
+    let center = nearest(blaze);
+    if v(blaze - f(center)) == 0. {
+        return center as i32;
+    }
+    let pi = D::new(std::f32::consts::PI, -8.742278e-8);
     loop {
-        let k = (std::f32::consts::PI * (v(rng.uniform()) - 0.5))
-            .tan()
-            .round();
-        if k + center as f32 > 2147483520. || k + (center as f32) < -2147483520. {
+        let (sn, cs) = sincos(pi * (rng.uniform() - f(0.5)));
+        let k = nearest(sn / cs);
+        let wide = center as i64 + k as i64;
+        if wide > i32::MAX as i64 || wide < i32::MIN as i64 {
             continue;
         }
-        let m = center + k as i32;
+        let m = wide as i32;
         let q = if k == 0. {
             2. * 0.5f32.atan() / std::f32::consts::PI
         } else {
             1f32.atan2((k - 0.5) * (k + 0.5) + 1.) / std::f32::consts::PI
         };
-        let z = m as f32 - blaze;
-        let rem = z - z.round();
-        let s = if z == 0. {
-            1.
+        let z = integer(m) - blaze;
+        let rem = z - f(nearest(z));
+        let s = if v(z) == 0. {
+            f(1.)
         } else {
-            (std::f32::consts::PI * rem).sin() / (std::f32::consts::PI * z)
+            sincos(pi * rem).0 / (pi * z)
         };
-        if v(rng.uniform()) * 4. * q < s * s {
+        if v(rng.uniform() * f(4.) * f(q) - s * s) < 0. {
             return m;
         }
     }
 }
-fn order(m: Material, blaze: f32, rng: &mut Rng) -> i32 {
+fn order(m: Material, blaze: D, rng: &mut Rng) -> i32 {
     if m.doe == 1 {
         return m.selected;
     }
@@ -311,9 +404,10 @@ fn order(m: Material, blaze: f32, rng: &mut Rng) -> i32 {
         let n = m.levels as i32;
         let a = kino(blaze, rng);
         let r = ((a % n) + n) % n;
-        let k = kino(-(r as f32) / n as f32, rng);
-        if (k as f32).abs() * n as f32 + (r as f32) < 2147483520. {
-            return k * n + r;
+        let k = kino(-f(r as f32) / f(n as f32), rng);
+        let v = k as i64 * n as i64 + r as i64;
+        if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
+            return v as i32;
         }
     }
 }
@@ -346,7 +440,7 @@ fn apply(
     let reflected = br < 2;
     let mut dir = if reflected { e.refl } else { e.trans };
     if m.doe != 0 {
-        let o = order(m, v(m.blaze[if reflected { 1 + e.side } else { 0 }]), rng);
+        let o = order(m, m.blaze[if reflected { 1 + e.side } else { 0 }], rng);
         let local = rotate(p.rotation, sub(e.point, p.origin));
         let inv = f(1.) / m.norm_radius;
         let r2 = (local[0] * local[0] + local[1] * local[1]) * inv * inv;
@@ -355,7 +449,7 @@ fn apply(
             grad = grad * r2 + f((j + 1) as f32) * m.phase[j];
         }
         let factor =
-            f(o as f32) * m.coatings[e.side].wavelength * D::new(0.001, -4.749745e-11) / tau();
+            integer(o) * m.coatings[e.side].wavelength * D::new(0.001, -4.749745e-11) / tau();
         let g = world(
             p.rotation,
             [
@@ -398,14 +492,16 @@ fn apply(
             h.flags |= 128;
         }
     }
+    if dir.iter().any(|v| !v.to_f64().is_finite()) {
+        return Err(usize::MAX);
+    }
     if br & 1 != 0 {
         dir = scatter(
             m,
             dir,
             scale(e.normal, f(if reflected { 1. } else { -1. })),
             rng,
-        )
-        .ok_or(15usize)?;
+        )?;
     }
     let h = &mut s.history;
     if br & 1 != 0 {
@@ -505,6 +601,9 @@ pub(super) fn execute<E: FpEnv>(
         let seq = rows::<u32>(x, &r.sequence);
         let layers = rows::<crate::radiometry::CoatingLayer>(x, &r.layers);
         while let Some(mut s) = stack.pop() {
+            if l.status == 4 {
+                return unsupported("stray f32 ledger range");
+            }
             if l.events % r.event_budget as u32 == 0 {
                 ctl.check()?;
             }
@@ -703,6 +802,10 @@ pub(super) fn execute<E: FpEnv>(
                     let cw = w * *pj;
                     match apply(&mut c, cw, j, &e, m, p, seq, &mut rng) {
                         Ok(()) => children.push(c),
+                        Err(usize::MAX) => {
+                            l.status = 4;
+                            break;
+                        }
                         Err(lost) => book(&mut l, lost, cw),
                     }
                 }
@@ -754,6 +857,9 @@ pub(super) fn execute<E: FpEnv>(
                 change(&mut l, 18, next - w * sum);
             }
             if let Err(lost) = apply(&mut s, next, pick, &e, m, p, seq, &mut rng) {
+                if lost == usize::MAX {
+                    return unsupported("stray sampling arithmetic requires reference");
+                }
                 book(&mut l, lost, next);
                 continue;
             }
@@ -767,6 +873,9 @@ pub(super) fn execute<E: FpEnv>(
             };
             s.weight = s.weight / f(copies as f32);
             stack.extend(std::iter::repeat_n(s, copies));
+        }
+        if l.status == 4 {
+            return unsupported("stray f32 ledger range");
         }
         l.draws = rng.draws;
         l.hits = hits.len() as u32;

@@ -68,14 +68,6 @@ pub(super) fn tags(
         })));
     Ok(output)
 }
-fn make_offsets(b: &dyn ComputeBackend, n: usize, stride: usize) -> MkResult<BufferHandle> {
-    b.fill_buffer(BufferDesc::new(ElementType::U32, [n]), &mut |mut out| {
-        for (i, v) in out.as_mut_slice::<u32>()?.iter_mut().enumerate() {
-            *v = (i * stride) as u32;
-        }
-        Ok(())
-    })
-}
 fn query(kind: u32, slot: u32, key: u32, other: u32) -> ops::Query {
     ops::Query {
         kind,
@@ -208,45 +200,19 @@ pub(super) fn collect(
         let qn = qs.len();
         let mut p = params(scene, s, n, cap);
         p.queries = qn as u32;
-        let values = plan.scratch(BufferDesc::new(ElementType::DoubleFloat, [4, qn * n]));
+        // Fuse P3's one-record SourceProducts case into channel generation;
+        // no reduction or transpose is needed after each source was combined.
+        let columns = plan.scratch(BufferDesc::new(ElementType::DoubleFloat, [14 * qn, n]));
         plan.operations
             .push(ResidentOp::Stray(ops::Request::Tally(ops::Tally::Terms {
+                products: true,
                 hits: plan.view(imports[0])?,
                 ledger: plan.view(imports[1])?,
                 tags: plan.view(imports[2])?,
                 queries: plan.view(qid)?,
                 params: p,
-                output: values,
-            })));
-        let offsets = make_offsets(b, qn * n + 1, 1)?;
-        let offsets = plan.import(offsets.view());
-        let products = plan.scratch(BufferDesc::new(ElementType::DoubleFloat, [qn * n, 14]));
-        let status = plan.scratch(BufferDesc::new(ElementType::U32, [qn * n]));
-        plan.operations.push(ResidentOp::Collectives(
-            collectives::Request::SegmentReduce(SegmentReduce {
-                values: plan.view(values)?,
-                offsets: plan.view(offsets)?,
-                mask: None,
-                mask_value: 0,
-                weights: None,
-                max_segment_len: 1,
-                reference: None,
-                mode: ReduceMode::DoubleFloat,
-                kind: SegmentKind::SourceProducts,
-                output: products,
-                status,
-            }),
-        ));
-        let columns = plan.scratch(BufferDesc::new(ElementType::DoubleFloat, [14 * qn, n]));
-        plan.operations.push(ResidentOp::Stray(ops::Request::Tally(
-            ops::Tally::Transpose {
-                input: plan.view(products)?,
-                sources: n,
-                queries: qn,
-                width: 14,
                 output: columns,
-            },
-        )));
+            })));
         let offsets = b.fill_buffer(
             BufferDesc::new(ElementType::U32, [blocks + 1]),
             &mut |mut out| {
@@ -282,6 +248,9 @@ pub(super) fn collect(
             for (k, chunk) in chunks.iter_mut().enumerate() {
                 let v =
                     std::array::from_fn::<_, 14, _>(|c| values[(j * 14 + c) * blocks + k].to_f64());
+                if v.iter().any(|v| !v.is_finite()) {
+                    return Err(unsupported("stray estimator overflow"));
+                }
                 let (sum, sq) = (v[0], v[4]);
                 match q.kind {
                     0 => {
@@ -493,6 +462,9 @@ fn collect_groups(
         for (k, chunk) in chunks.iter_mut().enumerate() {
             let index = i * blocks + k;
             let (sum, sq) = (values[index].to_f64(), values[2 * nb + index].to_f64());
+            if !(sum.is_finite() && sq.is_finite()) {
+                return Err(unsupported("stray estimator overflow"));
+            }
             if q.kind == 1 {
                 let slot = q.slot as usize;
                 if slot < 5 || slot == 6 {

@@ -30,7 +30,8 @@ pub struct Material {
     pub selected: i32,
     pub levels: u32,
     pub phase_count: u32,
-    pub reserved: u32,
+    /// Reference ABg proposal branches resolved from the original f64 g.
+    pub bsdf_flags: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -157,6 +158,10 @@ impl Transport {
     }
     pub fn validate(&self, p: &ResidentPlan) -> MkResult<()> {
         validate_source(self.source, &self.cdf, self.first_ray, self.ray_count)?;
+        if !self.settings.weight.to_f64().is_finite() || self.settings.weight.hi < f32::MIN_POSITIVE
+        {
+            return unsupported("stray source weight outside the normal f32 range");
+        }
         let primitives = check::<Primitive>(&self.primitives, p)?;
         check::<Node>(&self.nodes, p)?;
         check::<crate::radiometry::CoatingLayer>(&self.layers, p)?;
@@ -177,7 +182,9 @@ impl Transport {
         if self.ray_count == 0
             || self.ray_count > 65536
             || self.stack_capacity == 0
+            || self.stack_capacity > 8192
             || self.hit_capacity == 0
+            || self.hit_capacity > 1024
             || self.event_budget == 0
             || self.event_budget > 128
             || self.first_ray.checked_add(self.ray_count as u64).is_none()

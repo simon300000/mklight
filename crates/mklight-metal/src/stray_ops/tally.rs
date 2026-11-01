@@ -5,8 +5,17 @@ pub(super) fn execute(t: &Tally, x: &mut Execution<'_>, ctl: &JobControl) -> MkR
             indices, output, ..
         } => ("mkl_stray_gather", indices.desc.shape[0], *output),
         Tally::Tags { params, output, .. } => ("mkl_stray_tags", params.count as usize, *output),
-        Tally::Terms { params, output, .. } => (
-            "mkl_stray_terms",
+        Tally::Terms {
+            params,
+            output,
+            products,
+            ..
+        } => (
+            if *products {
+                "mkl_stray_moments"
+            } else {
+                "mkl_stray_terms"
+            },
             params.sources as usize * params.queries as usize,
             *output,
         ),

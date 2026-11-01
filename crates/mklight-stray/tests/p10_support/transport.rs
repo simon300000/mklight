@@ -133,6 +133,11 @@ fn transport_specification_and_tiles() {
 }
 
 fn compare_results(a: &mklight_stray::StrayResult, b: &mklight_stray::StrayResult) {
+    assert_eq!(
+        b.run_info.as_ref().unwrap().settings["fallback_count"],
+        0,
+        "comparison must use actual GPU transport"
+    );
     let floor = 1e-8 * a.energy.emitted;
     assert!(
         b.energy.relative_residual() < 1e-5,
@@ -177,25 +182,140 @@ fn compare_results(a: &mklight_stray::StrayResult, b: &mklight_stray::StrayResul
 }
 #[test]
 fn samples_all_fields_and_spectra() {
-    let b = MetalBackend::new()
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let b = MetalBackend::with_options(&MetalOptions {
+            library: origin,
+            ..Default::default()
+        })
         .unwrap()
         .expect("actual device required");
-    for (name, sys) in mklight_core::samples::all() {
-        let snapshot = Snapshot::new(sys.clone()).unwrap();
-        let fields = sys.fields.fields.len();
-        let system = StraySystem::new(Arc::new(common::resolve(sys)), &Default::default()).unwrap();
-        for field in 0..fields {
-            let source = system.system_field_source(field, 0.1, 1.).unwrap().spec;
+        for (name, sys) in mklight_core::samples::all() {
+            let snapshot = Snapshot::new(sys.clone()).unwrap();
+            let fields = sys.fields.fields.len();
+            let system =
+                StraySystem::new(Arc::new(common::resolve(sys)), &Default::default()).unwrap();
+            for field in 0..fields {
+                let source = system.system_field_source(field, 0.1, 1.).unwrap().spec;
+                let settings = StraySettings {
+                    rays: 2048,
+                    seed: 93 + field as u64,
+                    ..Default::default()
+                };
+                let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new())
+                    .unwrap();
+                let got = gpu::run(
+                    &b,
+                    snapshot.clone(),
+                    &system.scene,
+                    &source,
+                    &settings,
+                    gpu::TransportOptions {
+                        detections_per_source: 8,
+                        ..Default::default()
+                    },
+                    &JobContext::new(),
+                )
+                .unwrap_or_else(|e| panic!("{name} field {field}: {e}"));
+                compare_results(&cpu, &got);
+                eprintln!(
+                    "P10 full origin={origin:?} {name} field={field} events={} residual={:.3e}",
+                    got.energy.events,
+                    got.energy.relative_residual()
+                );
+            }
+        }
+    }
+}
+#[test]
+fn scatter_ensembles_and_doe() {
+    use mklight_core::materials::diffraction::DiffractionEfficiency;
+    use mklight_core::model::ScatterModel;
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let b = MetalBackend::with_options(&MetalOptions {
+            library: origin,
+            ..Default::default()
+        })
+        .unwrap()
+        .expect("actual device required");
+        for model in [
+            ScatterModel::Lambertian { tis: 0.2 },
+            ScatterModel::Gaussian {
+                tis: 0.2,
+                sigma_slope: 0.1,
+            },
+            ScatterModel::Abg {
+                a: 0.01,
+                b: 0.001,
+                g: 2.,
+            },
+        ] {
+            let mut sys = common::window(1.5, 2., 10.);
+            sys.surfaces[1].scatter = Some(model.clone());
+            let snapshot = Snapshot::new(sys.clone()).unwrap();
+            let system = StraySystem::new(
+                Arc::new(common::resolve(sys)),
+                &common::no_scatter_options(),
+            )
+            .unwrap();
+            let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
+            for seed in 13..17 {
+                let settings = StraySettings {
+                    rays: 2048,
+                    seed,
+                    mode: SplitMode::Split {
+                        max_splits: 2,
+                        rare_floor: 0.1,
+                    },
+                    ..Default::default()
+                };
+                let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new())
+                    .unwrap();
+                let got = gpu::run(
+                    &b,
+                    snapshot.clone(),
+                    &system.scene,
+                    &source,
+                    &settings,
+                    gpu::TransportOptions {
+                        detections_per_source: 32,
+                        ..Default::default()
+                    },
+                    &JobContext::new(),
+                )
+                .unwrap();
+                compare_results(&cpu, &got);
+                eprintln!(
+                    "P10 ensemble {model:?} seed={seed} CPU={} GPU={}",
+                    cpu.energy.detected, got.energy.detected
+                );
+            }
+        }
+        for efficiency in [
+            DiffractionEfficiency::Ideal,
+            DiffractionEfficiency::Kinoform,
+            DiffractionEfficiency::Multilevel {
+                levels: 4.try_into().unwrap(),
+            },
+        ] {
+            let mut sys = mklight_core::samples::hybrid_diffractive_achromat();
+            sys.surfaces[2].diffraction_efficiency = efficiency;
+            let snap = Snapshot::new(sys.clone()).unwrap();
+            let system = StraySystem::new(
+                Arc::new(common::resolve(sys)),
+                &common::no_scatter_options(),
+            )
+            .unwrap();
+            let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
             let settings = StraySettings {
-                rays: 2048,
-                seed: 93 + field as u64,
+                rays: 4096,
+                seed: 341,
                 ..Default::default()
             };
             let cpu =
                 mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
             let got = gpu::run(
                 &b,
-                snapshot.clone(),
+                snap,
                 &system.scene,
                 &source,
                 &settings,
@@ -205,118 +325,14 @@ fn samples_all_fields_and_spectra() {
                 },
                 &JobContext::new(),
             )
-            .unwrap_or_else(|e| panic!("{name} field {field}: {e}"));
-            compare_results(&cpu, &got);
-            eprintln!(
-                "P10 full {name} field={field} events={} residual={:.3e}",
-                got.energy.events,
-                got.energy.relative_residual()
-            );
-        }
-    }
-}
-#[test]
-fn scatter_ensembles_and_doe() {
-    use mklight_core::materials::diffraction::DiffractionEfficiency;
-    use mklight_core::model::ScatterModel;
-    let b = MetalBackend::new()
-        .unwrap()
-        .expect("actual device required");
-    for model in [
-        ScatterModel::Lambertian { tis: 0.2 },
-        ScatterModel::Gaussian {
-            tis: 0.2,
-            sigma_slope: 0.1,
-        },
-        ScatterModel::Abg {
-            a: 0.01,
-            b: 0.001,
-            g: 2.,
-        },
-    ] {
-        let mut sys = common::window(1.5, 2., 10.);
-        sys.surfaces[1].scatter = Some(model.clone());
-        let snapshot = Snapshot::new(sys.clone()).unwrap();
-        let system = StraySystem::new(
-            Arc::new(common::resolve(sys)),
-            &common::no_scatter_options(),
-        )
-        .unwrap();
-        let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
-        for seed in 13..17 {
-            let settings = StraySettings {
-                rays: 2048,
-                seed,
-                mode: SplitMode::Split {
-                    max_splits: 2,
-                    rare_floor: 0.1,
-                },
-                ..Default::default()
-            };
-            let cpu =
-                mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-            let got = gpu::run(
-                &b,
-                snapshot.clone(),
-                &system.scene,
-                &source,
-                &settings,
-                gpu::TransportOptions {
-                    detections_per_source: 32,
-                    ..Default::default()
-                },
-                &JobContext::new(),
-            )
             .unwrap();
             compare_results(&cpu, &got);
+            assert!(got.signatures.iter().any(|s| !s.diffraction.is_empty()));
             eprintln!(
-                "P10 ensemble {model:?} seed={seed} CPU={} GPU={}",
+                "P10 DOE {efficiency:?} CPU={} GPU={}",
                 cpu.energy.detected, got.energy.detected
             );
         }
-    }
-    for efficiency in [
-        DiffractionEfficiency::Ideal,
-        DiffractionEfficiency::Kinoform,
-        DiffractionEfficiency::Multilevel {
-            levels: 4.try_into().unwrap(),
-        },
-    ] {
-        let mut sys = mklight_core::samples::hybrid_diffractive_achromat();
-        sys.surfaces[2].diffraction_efficiency = efficiency;
-        let snap = Snapshot::new(sys.clone()).unwrap();
-        let system = StraySystem::new(
-            Arc::new(common::resolve(sys)),
-            &common::no_scatter_options(),
-        )
-        .unwrap();
-        let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
-        let settings = StraySettings {
-            rays: 4096,
-            seed: 341,
-            ..Default::default()
-        };
-        let cpu =
-            mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-        let got = gpu::run(
-            &b,
-            snap,
-            &system.scene,
-            &source,
-            &settings,
-            gpu::TransportOptions {
-                detections_per_source: 8,
-                ..Default::default()
-            },
-            &JobContext::new(),
-        )
-        .unwrap();
-        compare_results(&cpu, &got);
-        assert!(got.signatures.iter().any(|s| !s.diffraction.is_empty()));
-        eprintln!(
-            "P10 DOE {efficiency:?} CPU={} GPU={}",
-            cpu.energy.detected, got.energy.detected
-        );
     }
 }
 
@@ -366,7 +382,7 @@ fn coverage_partition_and_repeated_passes() {
     };
     let options = gpu::TransportOptions {
         detections_per_source: 64,
-        stack_capacity: 64,
+        stack_capacity: 4,
         event_budget: 8,
         ..Default::default()
     };
@@ -685,7 +701,7 @@ fn full_pipeline_concurrency_and_chunk_identity() {
             &source,
             &set,
             gpu::TransportOptions {
-                source_tile: 1024,
+                source_tile: 4096,
                 event_budget: 32,
                 detections_per_source: 8,
                 ..Default::default()
@@ -1100,4 +1116,317 @@ fn doe_visit_overflow_and_coverage_boundary() {
     assert!(
         matches!(result,Err(mklight_core::MkError::InvalidModel(ref s)) if s.contains("DOE visits"))
     );
+}
+
+#[test]
+fn doe_near_integer_preserves_draw_consumption() {
+    use mklight_core::materials::diffraction::DiffractionEfficiency;
+    use mklight_core::model::SurfaceShape;
+    use mklight_core::model::surface::DiffractivePhase;
+    let mut sys = common::window(1.5, 2., 10.);
+    for s in &mut sys.surfaces[1..3] {
+        s.shape = SurfaceShape::Diffractive {
+            base: Box::new(SurfaceShape::Plane),
+            phase: DiffractivePhase {
+                coefficients: vec![0.],
+                norm_radius: 10.,
+                design_wavelength_um: 0.55 * (1. + 1e-9),
+                design_order: 1,
+                trace_order: 1,
+            },
+        };
+        s.diffraction_efficiency = DiffractionEfficiency::Kinoform;
+    }
+    let snap = Snapshot::new(sys.clone()).unwrap();
+    let system = StraySystem::new(
+        Arc::new(common::resolve(sys)),
+        &common::no_scatter_options(),
+    )
+    .unwrap();
+    let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let b = MetalBackend::with_options(&MetalOptions {
+            library: origin,
+            ..Default::default()
+        })
+        .unwrap()
+        .expect("actual GPU required");
+        let set = StraySettings {
+            rays: 1024,
+            seed: 71,
+            mode: SplitMode::Analog,
+            ..Default::default()
+        };
+        let cpu = mklight_stray::run(&system.scene, &source, &set, &JobContext::new()).unwrap();
+        let got = gpu::run(
+            &b,
+            snap.clone(),
+            &system.scene,
+            &source,
+            &set,
+            gpu::TransportOptions::default(),
+            &JobContext::new(),
+        )
+        .unwrap();
+        assert_eq!(got.run_info.as_ref().unwrap().settings["fallback_count"], 0);
+        assert_eq!(got.energy.events, cpu.energy.events);
+        assert_eq!(
+            got.energy.detected_hits_by_class,
+            cpu.energy.detected_hits_by_class
+        );
+        assert!((got.energy.detected - cpu.energy.detected).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn wide_selected_order_keeps_integer_bits() {
+    use mklight_core::Vec3;
+    use mklight_core::model::surface::DiffractivePhase;
+    use mklight_core::model::{SemiDiameter, SurfaceShape};
+    let mut sys = common::window(1.5, 2., 998.);
+    sys.surfaces[1].shape = SurfaceShape::Diffractive {
+        base: Box::new(SurfaceShape::Plane),
+        phase: DiffractivePhase {
+            coefficients: vec![2e-4],
+            norm_radius: 10.,
+            design_wavelength_um: 0.55,
+            design_order: 1,
+            trace_order: (1 << 30) + 63,
+        },
+    };
+    sys.surfaces[3].semi_diameter = SemiDiameter::Fixed { value: 1000. };
+    let snapshot = Snapshot::new(sys.clone()).unwrap();
+    let scene = common::scene(sys);
+    let source = mklight_stray::SourceSpec::Collimated {
+        direction: Vec3::Z,
+        center: Vec3::new(1.5, 0., 0.),
+        radius: 1e-8,
+        start_distance: 5.,
+        power: 1.,
+    };
+    let set = StraySettings {
+        rays: 64,
+        mode: SplitMode::Weighted { rare_floor: 0. },
+        ..Default::default()
+    };
+    let reference = mklight_stray::run(&scene, &source, &set, &JobContext::new()).unwrap();
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let b = MetalBackend::with_options(&MetalOptions {
+            library: origin,
+            ..Default::default()
+        })
+        .unwrap()
+        .expect("actual GPU required");
+        let got = gpu::run(
+            &b,
+            snapshot.clone(),
+            &scene,
+            &source,
+            &set,
+            gpu::TransportOptions::default(),
+            &JobContext::new(),
+        )
+        .unwrap();
+        assert_eq!(got.run_info.as_ref().unwrap().settings["fallback_count"], 0);
+        let a = reference.detector.moments[0].centroid;
+        let g = got.detector.moments[0].centroid;
+        assert!(
+            (a[0] - g[0]).abs() < 2e-5,
+            "wide order position {a:?} vs {g:?}"
+        );
+        assert!(
+            got.signatures
+                .iter()
+                .flat_map(|s| &s.diffraction)
+                .any(|d| d.order == (1 << 30) + 63)
+        );
+    }
+}
+
+#[test]
+fn absolute_power_precision_fallback() {
+    let b = MetalBackend::new().unwrap().expect("actual GPU required");
+    let sys = common::window(1.5, 2., 10.);
+    let snap = Snapshot::new(sys.clone()).unwrap();
+    let scene = common::scene(sys);
+    for power in [1e-100, 1e100] {
+        let source = mklight_stray::SourceSpec::Collimated {
+            direction: mklight_core::Vec3::Z,
+            center: mklight_core::Vec3::ZERO,
+            radius: 1.,
+            start_distance: 5.,
+            power,
+        };
+        let set = StraySettings {
+            rays: 16,
+            ..Default::default()
+        };
+        let got = gpu::run(
+            &b,
+            snap.clone(),
+            &scene,
+            &source,
+            &set,
+            gpu::TransportOptions::default(),
+            &JobContext::new(),
+        )
+        .unwrap();
+        assert_eq!(got.run_info.as_ref().unwrap().backend, "cpu-f64");
+        assert_eq!(got.run_info.as_ref().unwrap().settings["fallback_count"], 1);
+        assert!((got.energy.emitted / power - 1.).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn grazing_tis_weights() {
+    use mklight_core::math::Frame;
+    use mklight_core::model::ScatterModel;
+    use mklight_core::{SurfaceShape, Vec3};
+    use mklight_stray::geom::{SagPatch, Shape};
+    use mklight_stray::scene::{Accept, Behavior, DetectorSpec, Opaque, OpaqueKind};
+    use mklight_stray::{Bsdf, SceneBuilder, SourceSpec};
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let b = MetalBackend::with_options(&MetalOptions {
+            library: origin,
+            ..Default::default()
+        })
+        .unwrap()
+        .expect("actual device required");
+        for model in [
+            ScatterModel::Gaussian {
+                tis: 0.4,
+                sigma_slope: 1e-5,
+            },
+            ScatterModel::Abg {
+                a: 0.0001,
+                b: 1e-8,
+                g: 2.,
+            },
+            ScatterModel::Abg {
+                a: 0.01,
+                b: 0.,
+                g: 1.9,
+            },
+        ] {
+            let mut builder = SceneBuilder::new(vec![0.55], vec![1.]);
+            builder.add_medium(vec![1.], vec![0.]);
+            let bsdf = Arc::new(Bsdf::new(&model).unwrap());
+            builder.add(
+                Frame::IDENTITY,
+                Shape::Sag(SagPatch::new(SurfaceShape::Plane, 0., 10., None).unwrap()),
+                Behavior::Opaque(Opaque {
+                    kind: OpaqueKind::Generic,
+                    surface: None,
+                    finish: Some(bsdf.clone()),
+                    specular_reflectance: 0.,
+                }),
+                "grazing",
+            );
+            builder.add(
+                Frame {
+                    origin: Vec3::new(0., 0., -1.),
+                    ..Frame::IDENTITY
+                },
+                Shape::Sag(SagPatch::new(SurfaceShape::Plane, 0., 10., None).unwrap()),
+                Behavior::Detector,
+                "detector",
+            );
+            builder.set_detector(DetectorSpec {
+                surface: usize::MAX,
+                accept: Accept::Plus,
+                half_x: 10.,
+                half_y: 10.,
+                nx: 4,
+                ny: 4,
+            });
+            let scene = builder.build().unwrap();
+            for z in [0.0005, 0.001, 0.01] {
+                let direction = Vec3::new(1., 0., z).normalized();
+                let expected = 1. - bsdf.tis(((1. - direction.z) * (1. + direction.z)).sqrt());
+                let source = SourceSpec::Collimated {
+                    direction,
+                    center: Vec3::ZERO,
+                    radius: 1e-7,
+                    start_distance: 0.5,
+                    power: 1.,
+                };
+                let set = StraySettings {
+                    rays: 64,
+                    seed: 19,
+                    ..Default::default()
+                };
+                let result = gpu::run(
+                    &b,
+                    Snapshot::new(mklight_core::samples::singlet()).unwrap(),
+                    &scene,
+                    &source,
+                    &set,
+                    gpu::TransportOptions {
+                        detections_per_source: 4,
+                        ..Default::default()
+                    },
+                    &JobContext::new(),
+                )
+                .unwrap();
+                assert_eq!(
+                    result.run_info.as_ref().unwrap().settings["fallback_count"],
+                    0
+                );
+                let absorbed = result
+                    .energy
+                    .absorbed_by_sink
+                    .iter()
+                    .find(|(k, _)| *k == mklight_stray::Sink::Generic)
+                    .unwrap()
+                    .1;
+                assert!(
+                    (absorbed - expected).abs() <= 1e-5 * expected.abs() + 1e-10,
+                    "{model:?} z={z} {absorbed} vs {expected}"
+                );
+                eprintln!(
+                    "P10 grazing TIS {model:?} cosine={} error={:.3e}",
+                    direction.z,
+                    (absorbed - expected).abs()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_analysis_result_adapter() {
+    let b = MetalBackend::new().unwrap().expect("actual GPU required");
+    let rs = Arc::new(common::resolve(mklight_core::samples::cooke_triplet()));
+    let settings = mklight_stray::StrayAnalysisSettings {
+        rays: 2048,
+        ..Default::default()
+    };
+    let ctx = JobContext::new();
+    let (got, signatures) = gpu::analyze_with_signatures(
+        &b,
+        rs.clone(),
+        &settings,
+        gpu::TransportOptions::default(),
+        &ctx,
+    )
+    .unwrap();
+    let reference = mklight_stray::analyze(rs, &settings, &JobContext::new()).unwrap();
+    assert!(got.run_info.backend.starts_with("metal:"));
+    assert_eq!(got.run_info.precision, mklight_core::job::Precision::F32Gpu);
+    assert_eq!(
+        got.run_info.settings["resident"]["settings"]["fallback_count"],
+        0
+    );
+    assert_eq!(ctx.progress.fraction(), 1.);
+    assert_eq!(got.primary_obstruction, reference.primary_obstruction);
+    assert_eq!(got.maps.len(), reference.maps.len());
+    assert!(!signatures.is_empty());
+    assert!(
+        (got.stray_flux - reference.stray_flux).abs()
+            <= 5. * got.stray_std_error.hypot(reference.stray_std_error) + 1e-8 * got.emitted
+    );
+    for i in 0..got.total_irradiance.len() {
+        let sum = got.maps.iter().map(|m| m.irradiance[i]).sum::<f64>();
+        assert!((sum - got.total_irradiance[i]).abs() < 1e-10 * got.emitted);
+    }
 }

@@ -289,6 +289,27 @@ pub fn tangents(b: &dyn ComputeBackend) {
             Ray::new(Vec3::new(1., 0., 5.), -Vec3::Z),
         ],
     );
+    let asphere = Primitive::new(
+        Frame::IDENTITY,
+        Shape::Sag(
+            SagPatch::new(
+                SurfaceShape::EvenAsphere {
+                    curvature: 0.1,
+                    conic: 0.,
+                    coefficients: vec![0.],
+                },
+                0.,
+                10.,
+                None,
+            )
+            .unwrap(),
+        ),
+    );
+    compare(
+        b,
+        &[asphere],
+        &[Ray::new(Vec3::new(-20., 0., 10.), Vec3::X)],
+    );
 }
 
 #[test]

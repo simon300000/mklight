@@ -452,6 +452,11 @@ reporting z scores and checking quadrature convergence.
 
 ## Resident GPU transport (P10)
 
+`gpu::{analyze, analyze_system, analyze_with_signatures}` return the native
+analysis result, including aperture/coverage checks and the obstruction-checked
+primary reference. The reference diagnostic remains CPU f64 and is distinct
+from the transport backend.
+
 `gpu::run` executes source generation, non-sequential transport and detector
 estimators through `ComputeBackend`, returning the existing `StrayResult`.
 `gpu::TransportScene` retains immutable scene/material leases across plans;
@@ -486,28 +491,42 @@ and powers run on device, with scalar products of unpolarised averages.
 Beer--Lambert attenuation, all absorption/leak/escape/truncation/failure
 sinks, backside rules, ideal lenses, repeated physical-interface passes,
 TIS interpolation and Lambertian/Gaussian/ABg rejection sampling follow the
-reference. DOE order draws retain the full ideal/kinoform/multilevel spectrum,
+reference. TIS incidence and proposal log/exponential formulas retain
+double-float residuals, including grazing angles and uniform endpoints.
+DOE order draws retain the full ideal/kinoform/multilevel spectrum,
 the curved-surface grating equation and evanescent sink. Histories preserve
 all five classes, six non-designed events and 32 DOE visits. Coverage matches
 exact reflection and non-selected order overrides on device; overflow stays
 uncovered. Shared reference boundary checks reject unrepresentable coverage.
 
+Immutable mode/material/shape features specialize the transport shader so
+unused split, film, extended-sag and scatter state does not burden other
+scenes. This changes no physical decisions.
+
 Each source has a resident continuation stack. Commands process a bounded
-number of events and check cancellation before encoding and after completion.
+number of events for at most 1024 sources and check cancellation before
+encoding and after completion. Tally batches can span several transport
+tiles; the default is 4096 sources with 16 initial stack entries each.
 A full stack pauses before the next event consumes any draws, grows into a
 larger device allocation and resumes through a device spill copy. Stack
 storage is capped at 256 MiB per allocation. `TransportOptions` controls
 source batches, initial stack capacity, detection-journal capacity and event
 budget. Source batches round up to complete 256-source numerical blocks.
 Exhausted journal/stack capacity or P7's reference-required precision domain
-returns `Unsupported`; the high-level adapter completes a labelled CPU-f64
+returns `Unsupported`; non-ideal DOE blazes beyond 2^20 also use reference
+sampling so every rounded Cauchy proposal remains an exactly represented
+integer. Ideal selected orders retain all i32 bits in the grating equation.
+Unrepresentable numeric BSDF/DOE parameters and estimator-product power
+scales also use the reported reference route.
+The high-level adapter completes a labelled CPU-f64
 replacement with a fallback count and reason. Cancellation returns
 `Cancelled` and never starts replacement work. No partial GPU ledger is
 published as a completed result.
 
 Tallies use P3 source products and fixed source-block reductions. Moment
 channels combine each source's depth-first children in double-float before
-P3 forms covariance products. Sparse pixel and signature groups gather the
+the one-record P3 source-product formula is fused into channel generation.
+Sparse pixel and signature groups gather the
 original device weights into P3 segments, sum each source's children, then
 form squares and reduce source blocks. Owned, uncovered and covered ghost
 quantities have separate source estimators. Integer pixel/signature/source

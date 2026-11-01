@@ -1,6 +1,7 @@
 #ifndef MKLIGHT_STRAY_OPS_TYPES_H
 #define MKLIGHT_STRAY_OPS_TYPES_H
-#define MKL_STRAY_VERSION 5
+#define MKL_STRAY_VERSION 6
+#define MKL_STRAY_FEATURES_CONSTANT 60
 #define MKL_STRAY_MAX_PRIMITIVES 1048576
 #define MKL_STRAY_MAX_TILE 65536
 #ifdef __METAL_VERSION__
@@ -36,7 +37,7 @@ struct MklStrayMaterial {
   float2 index[2], alpha, specular, focal, bsdf[3], phase[10], norm_radius, blaze[3];
   uint kind, media[2], sink, pass_start, pass_count, bsdf_kind, tis_start, tis_count, doe;
   int selected;
-  uint levels, phase_count, reserved;
+  uint levels, phase_count, bsdf_flags;
 };
 struct MklStrayPass { uint surface, side, mask, reserved; float2 aperture[2]; };
 struct MklStrayMedium { float2 alpha; uint ambient, reserved; };

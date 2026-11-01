@@ -9,8 +9,17 @@ use crate::{
 use mklight_core::materials::{coating::ResolvedCoating, diffraction::DiffractionEfficiency};
 use mklight_gpu::radiometry::{CoatingLayer, CoatingSpec};
 
+fn numeric(value: f64, name: &str) -> MkResult<Df32> {
+    let out = Df32::from_f64(value);
+    if !out.hi.is_finite() || !out.lo.is_finite() || (value != 0. && !out.hi.is_normal()) {
+        return Err(unsupported(&format!(
+            "{name} is outside the normal f32 parameter range"
+        )));
+    }
+    Ok(out)
+}
 /// Memory/command choices do not alter source IDs or their random streams.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct TransportOptions {
     pub source_tile: usize,
     pub stack_capacity: usize,
@@ -20,8 +29,8 @@ pub struct TransportOptions {
 impl Default for TransportOptions {
     fn default() -> Self {
         Self {
-            source_tile: 1024,
-            stack_capacity: 128,
+            source_tile: 4096,
+            stack_capacity: 16,
             detections_per_source: 32,
             event_budget: 32,
         }
@@ -61,7 +70,7 @@ impl TransportScene {
                 }
                 Behavior::Opaque(o) => {
                     m.sink = Sink::of(o.kind) as u32;
-                    m.specular = Df32::from_f64(o.specular_reflectance);
+                    m.specular = numeric(o.specular_reflectance, "opaque reflectance")?;
                     o.finish.as_deref()
                 }
                 Behavior::Interface(i) => {
@@ -69,7 +78,7 @@ impl TransportScene {
                         InterfaceKind::Refract => 1,
                         InterfaceKind::Mirror => 2,
                         InterfaceKind::IdealLens { focal_length } => {
-                            m.focal = Df32::from_f64(focal_length);
+                            m.focal = numeric(focal_length, "ideal-lens focal length")?;
                             3
                         }
                     };
@@ -112,23 +121,35 @@ impl TransportScene {
                             }
                         };
                         m.selected = d.phase.trace_order;
-                        m.norm_radius = Df32::from_f64(d.phase.norm_radius);
+                        m.norm_radius = numeric(d.phase.norm_radius, "DOE normalization radius")?;
+                        numeric(scene.wavelengths_um[wl], "DOE wavelength")?;
                         m.phase_count = d.phase.coefficients.len() as u32;
                         for (to, from) in m.phase.iter_mut().zip(&d.phase.coefficients) {
-                            *to = Df32::from_f64(*from);
+                            *to = numeric(*from, "DOE coefficient")?;
                         }
-                        m.blaze = [
+                        let blazes = [
                             d.transmitted_blaze[wl],
                             d.reflected_blaze_minus[wl],
                             d.reflected_blaze_plus[wl],
-                        ]
-                        .map(Df32::from_f64);
+                        ];
+                        if m.doe > 1 {
+                            for (out, v) in m.blaze.iter_mut().zip(blazes) {
+                                *out = numeric(v, "DOE blaze")?;
+                            }
+                        }
+                        // The bounded Philox uniform gives |Cauchy proposal| <
+                        // 2^24 - 2^20. Keep every sampled integer exactly f32.
+                        if m.doe > 1 && m.blaze.iter().any(|v| v.to_f64().abs() > 1048576.) {
+                            return Err(unsupported(
+                                "non-ideal DOE blaze exceeds the exact-integer sampling envelope",
+                            ));
+                        }
                     }
                     i.scatter.as_deref()
                 }
             };
             if let Some(bsdf) = bsdf {
-                m.bsdf = match bsdf.lobe_params() {
+                let parameters = match bsdf.lobe_params() {
                     LobeParams::Lambertian { .. } => {
                         m.bsdf_kind = 1;
                         [bsdf.tis(0.), 0., 0.]
@@ -138,14 +159,22 @@ impl TransportScene {
                         [k, s, 0.]
                     }
                     LobeParams::Abg { a, b, g } => {
+                        m.bsdf_flags = (g.abs() < 1e-12) as u32
+                            | (((g < 0.) as u32) << 1)
+                            | ((((2. - g).abs() < 1e-9) as u32) << 2)
+                            | ((((2. - g) > 1e-9) as u32) << 3);
                         m.bsdf_kind = 3;
                         [a, b, g]
                     }
+                };
+                for (out, value) in m.bsdf.iter_mut().zip(parameters) {
+                    *out = numeric(value, "BSDF parameter")?;
                 }
-                .map(Df32::from_f64);
                 m.tis_start = tis.len() as u32;
                 m.tis_count = bsdf.tis_table().len() as u32;
-                tis.extend(bsdf.tis_table().iter().copied().map(Df32::from_f64));
+                for &v in bsdf.tis_table() {
+                    tis.push(numeric(v, "BSDF TIS")?);
+                }
             }
             Ok(m)
         })?;
@@ -318,14 +347,16 @@ pub fn run(
                 scene,
                 source,
                 settings,
-                &ctx.subrange(ctx.progress.fraction(), 1.),
+                &ctx.subrange(ctx.progress.fraction(), 0.99),
             )?;
             let warning = format!(
                 "{} stray transport fell back to CPU reference: {reason}",
                 b.info().backend_id()
             );
             result.warnings.push(warning);
-            result.run_info=Some(timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"requested_backend":b.info().backend_id(),"fallback_count":1,"fallback_reason":reason}),"cpu-f64",mklight_core::job::Precision::F64Reference,Some(settings.seed),result.warnings.clone()));
+            result.run_info=Some(timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"resident_options":options,"requested_backend":b.info().backend_id(),"fallback_count":1,"fallback_reason":reason}),"cpu-f64",mklight_core::job::Precision::F64Reference,Some(settings.seed),result.warnings.clone()));
+            ctx.check()?;
+            ctx.report(1., "stray reference replacement complete");
             Ok(result)
         }
         other => other,
@@ -352,6 +383,36 @@ fn run_resident(
             .is_some_and(|m| m as usize >= scene.media.len())
     {
         return Err(MkError::InvalidModel("stray transport settings".into()));
+    }
+    // P3 forms per-source second products and sums at most 256 sources.
+    // Reject absolute power scales that cannot represent those products;
+    // the reference result keeps the requested physical units unchanged.
+    let w = source.power() / settings.rays as f64;
+    let floor = match settings.mode {
+        SplitMode::Analog => 0.,
+        SplitMode::Weighted { rare_floor } | SplitMode::Split { rare_floor, .. } => rare_floor,
+    };
+    let growth = (1. + 3. * floor)
+        .powf(settings.max_events as f64)
+        .min(settings.split_ceiling);
+    let radius = scene
+        .primitives()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| matches!(scene.behavior(*i), Behavior::Detector))
+        .map(|(_, p)| match &p.shape {
+            Shape::Sag(s) => s.r_outer(),
+            Shape::Cylinder(c) => c.radius,
+        })
+        .fold(0f64, f64::max);
+    let term = w * options.detections_per_source as f64 * growth * radius.powi(2).max(1.);
+    if w < (f32::MIN_POSITIVE as f64).sqrt()
+        || !term.is_finite()
+        || term * term * 256. > f32::MAX as f64 / 16.
+    {
+        return Err(unsupported(
+            "source power is outside the f32 estimator-product range",
+        ));
     }
     let timer = mklight_core::job::RunTimer::start();
     let prep_started = std::time::Instant::now();
@@ -434,7 +495,8 @@ fn run_resident(
         ));
     }
     let packing_seconds = pack_started.elapsed().as_secs_f64();
-    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans,"device":b.info(),"precision":b.precision(),"fallback_count":0,"scene_fingerprint":scene.fingerprint(),"timings":{"preparation_seconds":preparation_seconds,"transport_seconds":transport_seconds,"tally_seconds":tally_seconds,"packing_seconds":packing_seconds}}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
+    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"resident_options":options,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans,"device":b.info(),"precision":b.precision(),"fallback_count":0,"scene_fingerprint":scene.fingerprint(),"timings":{"preparation_seconds":preparation_seconds,"transport_seconds":transport_seconds,"tally_seconds":tally_seconds,"packing_seconds":packing_seconds}}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
+    ctx.check()?;
     ctx.report(1., "stray complete");
     Ok(StrayResult {
         detector,

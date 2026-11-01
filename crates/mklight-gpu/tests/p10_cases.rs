@@ -188,8 +188,8 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
                 History::zeroed()
             },
             weight: Df32::from_f32(weights[source][child]),
-            x: Df32::ZERO,
-            y: Df32::ZERO,
+            x: Df32::from_f64(0.13 * (child as f64 - 1.5)),
+            y: Df32::from_f64(0.07 * source as f64),
             class: if child < 3 { 1 } else { 4 },
             wavelength: 0,
         }
@@ -234,6 +234,7 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
     let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [4, 4 * n]));
     p.operations
         .push(ResidentOp::Stray(Request::Tally(Tally::Terms {
+            products: false,
             hits: p.view(h).unwrap(),
             ledger: p.view(l).unwrap(),
             tags: p.view(tags).unwrap(),
@@ -270,10 +271,34 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
             status,
         }),
     ));
-    p.outputs = vec![products, tags];
+    let fused = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [14 * 4, n]));
+    p.operations
+        .push(ResidentOp::Stray(Request::Tally(Tally::Terms {
+            products: true,
+            hits: p.view(h).unwrap(),
+            ledger: p.view(l).unwrap(),
+            tags: p.view(tags).unwrap(),
+            queries: p.view(q).unwrap(),
+            params,
+            output: fused,
+        })));
+    p.outputs = vec![products, tags, fused];
     let result = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
     let view = b.read_view(result.outputs[0].view()).unwrap();
     let v = view.as_slice::<Df32>().unwrap();
+    let fv = b.read_view(result.outputs[2].view()).unwrap();
+    let fused = fv.as_slice::<Df32>().unwrap();
+    for query in 0..4 {
+        for source in 0..n {
+            for c in 0..14 {
+                assert_eq!(
+                    v[(query * n + source) * 14 + c],
+                    fused[(query * 14 + c) * n + source],
+                    "fused P3 source product"
+                );
+            }
+        }
+    }
     for (query, answers) in [[3., 5., 0.], [2., 1., 0.], [1., 4., 2.], [3., 5., 0.]]
         .iter()
         .enumerate()

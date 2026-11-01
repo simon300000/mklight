@@ -1,6 +1,6 @@
 #[path = "../common/mod.rs"]
 mod common;
-use mklight_core::{JobContext, Snapshot};
+use mklight_core::JobContext;
 use mklight_gpu::ComputeBackend;
 use mklight_metal::MetalBackend;
 use mklight_stray::{StraySettings, StraySystem, gpu};
@@ -13,11 +13,15 @@ fn measure(
     rays: u64,
     angle: Option<f64>,
 ) {
-    let snapshot = Snapshot::new(model.clone()).unwrap();
+    if let Ok(filter) = std::env::var("MKLIGHT_P10_BENCH_FILTER")
+        && !format!("{name}:{rays}:{angle:?}").contains(&filter)
+    {
+        return;
+    }
     let prep = Instant::now();
     let system = StraySystem::new(Arc::new(common::resolve(model)), &opts).unwrap();
     let scene_seconds = prep.elapsed().as_secs_f64();
-    let source = if let Some(angle) = angle {
+    let source = if let Some(angle) = angle.filter(|a| *a != 0.) {
         system.out_of_field_source(0., angle, 0.1, 1.).unwrap().spec
     } else {
         system.system_field_source(0, 0.1, 1.).unwrap().spec
@@ -25,6 +29,7 @@ fn measure(
     let set = StraySettings {
         rays,
         seed: 1,
+        owned_classes: mklight_stray::ClassMask::ALL_STRAY,
         mode: if name == "split-heavy" {
             mklight_stray::SplitMode::Split {
                 max_splits: 6,
@@ -35,35 +40,54 @@ fn measure(
         },
         ..Default::default()
     };
+    let native = mklight_stray::StrayAnalysisSettings {
+        rays,
+        seed: 1,
+        classes: set.owned_classes,
+        scene: opts.scene.clone(),
+        semi_diameters: opts.semi_diameters,
+        detector_margin: opts.detector_margin,
+        source: if let Some(angle) = angle.filter(|a| *a != 0.) {
+            mklight_stray::StraySource::OutOfField {
+                angle_x_deg: 0.,
+                angle_y_deg: angle,
+                margin: 0.1,
+                irradiance: 1.,
+            }
+        } else {
+            mklight_stray::StraySource::SystemField {
+                index: 0,
+                margin: 0.1,
+                strength: 1.,
+            }
+        },
+        transport: mklight_stray::analysis::TransportOptions {
+            mode: set.mode,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let options = gpu::TransportOptions {
-        source_tile: 1024,
+        source_tile: 4096,
         detections_per_source: 8,
         ..Default::default()
     };
     for iteration in 0..12 {
         let now = Instant::now();
-        let cpu = mklight_stray::run(&system.scene, &source, &set, &JobContext::new()).unwrap();
+        let cpu = mklight_stray::analyze_system(&system, &native, &JobContext::new()).unwrap();
         let cpu_seconds = now.elapsed().as_secs_f64();
         let now = Instant::now();
-        let gpu = gpu::run(
-            b,
-            snapshot.clone(),
-            &system.scene,
-            &source,
-            &set,
-            options,
-            &JobContext::new(),
-        )
-        .unwrap();
+        let gpu = gpu::analyze_system(b, &system, &native, options, &JobContext::new()).unwrap();
         let wall = now.elapsed().as_secs_f64();
-        let info = gpu.run_info.as_ref().unwrap();
+        let info = &gpu.run_info;
+        let execution = &info.settings["resident"]["settings"];
         let mut device = 0.;
         let mut commands = 0u64;
         let mut peak = 0u64;
         let mut copies = 0u64;
         let mut max_command = 0f64;
         let mut allocations = 0u64;
-        if let Some(plans) = info.settings["plans"].as_array() {
+        if let Some(plans) = execution["plans"].as_array() {
             for p in plans {
                 device += p["device_seconds"].as_f64().unwrap_or(0.);
                 commands += p["command_buffers"].as_u64().unwrap_or(0);
@@ -80,7 +104,7 @@ fn measure(
         }
         assert!(gpu.energy.relative_residual() < 1e-5);
         assert_eq!(
-            info.settings["fallback_count"], 0,
+            execution["fallback_count"], 0,
             "unexpected reference replacement {name}"
         );
         let se = cpu
@@ -92,20 +116,22 @@ fn measure(
         );
         println!(
             "P10_TRANSPORT {}",
-            serde_json::json!({"name":name,"rays":rays,"angle":angle,"iteration":iteration,"phase":if iteration==0{"cold"}else if iteration==1{"warmup"}else{"measured"},"scene_seconds":scene_seconds,"cpu_seconds":cpu_seconds,"metal_seconds":wall,"device_seconds":device,"commands":commands,"peak_bytes":peak,"copied_bytes":copies,"allocations":allocations,"max_command_seconds":max_command,"fallback_count":0,"events":gpu.energy.events,"cpu_events_per_second":cpu.energy.events as f64/cpu_seconds,"gpu_events_per_second":gpu.energy.events as f64/wall,"cpu_variance_time":cpu.energy.detected_owned_std_error.powi(2)*cpu_seconds,"gpu_variance_time":gpu.energy.detected_owned_std_error.powi(2)*wall,"settings":set,"source":source,"stages":info.settings["timings"],"backend":info.backend,"build":b.precision().kernel_build})
+            serde_json::json!({"name":name,"rays":rays,"angle":angle,"iteration":iteration,"phase":if iteration==0{"cold"}else if iteration==1{"warmup"}else{"measured"},"scene_seconds":scene_seconds,"cpu_seconds":cpu_seconds,"metal_seconds":wall,"device_seconds":device,"commands":commands,"peak_bytes":peak,"copied_bytes":copies,"allocations":allocations,"max_command_seconds":max_command,"fallback_count":0,"events":gpu.energy.events,"cpu_events_per_second":cpu.energy.events as f64/cpu_seconds,"gpu_events_per_second":gpu.energy.events as f64/wall,"cpu_variance_time":cpu.energy.detected_owned_std_error.powi(2)*cpu_seconds,"gpu_variance_time":gpu.energy.detected_owned_std_error.powi(2)*wall,"settings":native,"source":source,"stages":execution["timings"],"resident_options":execution["resident_options"],"backend":info.backend,"build":b.precision().kernel_build})
         );
     }
 }
 #[test]
 #[ignore]
 fn full_transport_benchmark() {
+    let setup = Instant::now();
     let b = MetalBackend::new()
         .unwrap()
         .expect("actual device required");
+    let backend_setup_seconds = setup.elapsed().as_secs_f64();
     assert!(b.precision().probe.error_free_transforms());
     eprintln!(
         "P10_TRANSPORT_ENV {}",
-        serde_json::json!({"device":b.info(),"precision":b.precision()})
+        serde_json::json!({"device":b.info(),"precision":b.precision(),"backend_setup_seconds":backend_setup_seconds})
     );
     for (name, s) in mklight_core::samples::all() {
         measure(&b, name, s, Default::default(), 20000, None);
