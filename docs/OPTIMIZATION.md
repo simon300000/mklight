@@ -1346,6 +1346,10 @@ resident. Unresolved aims and preparation failures select the affected
 candidate's reference values, without replacing neighbouring successful rows.
 The current raw-ray batch domain has common topology and at most 16 wavelengths.
 Pupil metadata and samples are filled directly; sampling patterns are cached.
+Candidates prepare their probes in parallel and merge in candidate order, so
+the plan is identical to a serial pass. A plan holds up to 1024 candidates
+within an estimated-ray budget (786,432 for spot-type merits, 196,608 when OPD
+and fit channels are needed), keeping measured peaks at 60 and 127 MiB.
 Aggregate-only spot queries do not construct host ray arrays or run OPD kernels.
 Aiming-table eligibility is decided per candidate, preserving the same policy
 when a full asymmetric pupil is batched with a symmetric half pupil.
@@ -1401,17 +1405,24 @@ Metal; products and command tiles never change the summation order.
 
 `fd_jacobian` retains the existing forward/central/second-order one-sided
 stencils, bound handling, pinned columns, failed-probe retry and evaluation
-budgets. Successful columns of each pass are assembled in one device operation
-as differences from the base, so a large common offset is not multiplied before
-subtraction. Evaluator-specific FD steps are unchanged. Residual and Jacobian
-arrays still cross the public `Problem` interface as owned f64 arrays; direct
-shared-buffer fills/read views avoid staging copies, but this interface is not
-a fully resident iteration state.
+budgets; evaluator-specific FD steps are unchanged. Residual and Jacobian
+arrays cross the public `Problem` interface as owned f64 arrays, and every
+published operand value is a host f64 after its candidate check, so residual
+targets/hinges, stencil differences and `Jᵀr` are formed on the host: a device
+pass over host-owned values costs one fill of the same size plus a command and
+measured slower at every size (FD differences 0.35–4.7 ms against well under
+1 ms on the host up to 10000×100). `GpuContext::differences` and the
+`Residuals`/`Difference` requests remain for resident chains whose inputs
+already live on the device.
 
-The local solver uses resident J-transpose products and P3 QR for its tall
-matrix. Thin Q stays resident; the small unpermuted factor is reduced on the
-host for the existing serial trust-region secular equation. Rank-deficient
-factorisations receive a counted reference factorisation. The separate batched
+The local solver hands its tall QR to P3 once the free-column work
+`m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order
+correction's projections and only the small unpermuted factor is reduced on
+the host for the existing serial trust-region secular equation. Below that
+the host Householder QR is faster (complete LM solves, provisional M2 Pro:
+400×100 host 29 ms against 72 ms resident; 4000×32 parity at 46 ms;
+4000×100 host 320 ms against 154 ms). Rank-deficient factorisations receive a
+counted reference factorisation. The separate batched
 `GpuContext::least_squares` API builds `[sqrt(w) J; sqrt(lambda) D]` and its RHS
 and calls P3 QR directly. Neither path forms normal equations.
 
@@ -1428,11 +1439,9 @@ returns independently scored f64 outcomes in input order. Catalogue filtering,
 trial RNG and population/search decisions retain the reference implementation.
 The low-level perturbation and batched QR operations are available to composed
 callers; trial RNG and independent workers' small local linear solves remain
-host stages. Trial summaries use centred/scaled P3 moments and stable criterion
-sorting, with percentile interpolation from the original f64 values. A complete
-reference summary is checkpointed before submission and qualifies the result;
-Stop during that submission retains the checkpoint without starting replacement
-work. Channel tiling bounds the working storage.
+host stages. Trial summaries stay on the host: they must equal the f64
+reference summary, which costs 0.04 ms for 1000 trials and 0.9 ms for 100000,
+while a device summary (P3 moments plus stable sort) measured 1.9 and 4.9 ms.
 
 ### Evidence and cost handoff
 
@@ -1440,7 +1449,7 @@ Host-required tests are `p8_algebra`, `p8_candidates`, `p8_solvers`,
 `p8_scheduler` and `p8_tolerance`. They include both shader origins and numerics
 probes, exact emulation algebra, all 16 samples with perturbed spot/wavefront
 merits, asymmetric half pupils, an analytic thick-lens derivative, one-sided
-retry, 8/32/100-variable solves, native mixed operands, MTF step sweeps, cancellation, trial
+retry, LM solves on both sides of the tall-QR crossover, native mixed operands, MTF step sweeps, cancellation, trial
 replay, matched-method RI visibility with clipped pupils, and independent refinements. A fallback-only result cannot satisfy the
 device-work assertions. Existing CPU reference tests remain in force.
 
@@ -1454,8 +1463,8 @@ and unmeasured acceptance cases are in the task's `P8-evidence.md`. P11 must
 retain the distinction between cold candidate qualification, identical-input
 reuse and changing-candidate optimisation when deriving cost policy.
 
-The additional ignored `p8_workloads` harness measures full synthetic Jacobians
-and solves at 8/32/100 variables, 32 Cooke tolerance trials with/without
+The additional ignored `p8_workloads` harness measures complete synthetic LM
+solves on both sides of the tall-QR crossover, 32 Cooke tolerance trials with/without
 compensation, three built-in catalogue refinements, and hybrid RI at B=1/16.
 These include qualification and f64 final scoring, and currently remain
 CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
@@ -1464,11 +1473,11 @@ CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
 Provisional M2 Pro measurements (2026-11-01), ten measured runs after warm-up,
 show why P11 should retain CPU-preferred small jobs. For an exact-input warm
 Cooke default spot evaluation at B=1, CPU / legacy Metal / resident medians were
-0.150 / 1.057 / 2.329 ms; at B=1024, 27.952 / 30.905 / 91.514 ms. A 10000-ray
-single-candidate spot used 5.448 / 2.412 / 3.312 ms. These warm rows exclude new
-candidate qualification. Complete changing-candidate workloads include it:
-32 compensated Cooke trials took 7.527 ms CPU versus 119.204 ms resident, and
-three catalogue refinements took 1.723 versus 23.966 ms. The full spot/wave
-sweeps observed 91.613 MiB peak plan storage and 131.981 MiB retained pool
-storage. Cold costs, p95, copies, fallback proportions and raw records are in
+0.21 / 1.14 / 5.1 ms (about 3.5 ms on a quieter run); at B=1024, 28 / 32 /
+54 ms after parallel preparation and 1024-candidate spot plans (92 ms
+before). These warm rows exclude new candidate qualification. Complete
+changing-candidate workloads include it: 32 compensated Cooke trials took
+7.8 ms CPU versus 127 ms resident, and three catalogue refinements took 1.7
+versus 24 ms; per-candidate geometry qualification commands dominate both.
+Plan peaks are 60 MiB (spot) and 127 MiB (dense wavefront). Cold costs, p95, copies, fallback proportions and raw records are in
 `P8-evidence.md`; these numbers do not set a universal backend threshold.

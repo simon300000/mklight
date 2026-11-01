@@ -1433,6 +1433,22 @@ double-float interaction megakernel at about 3–5 M events/s versus
 12–20 M events/s on the CPU, while the same BVH casts first hits at about
 37 M rays/s. A split closest-hit/interaction wavefront is the next lever.
 
+**Optimisation batches, measured (P8).** Busy shared M2 Pro, provisional
+warm medians of ten runs; resident timings include candidate preparation and
+operand assembly, not new-candidate qualification. Cooke default spot merit,
+CPU f64 / resident Metal: B=1 0.17 / 3.5 ms, B=16 0.66 / 4.5 ms, B=256
+6.9 / 15.9 ms, B=1024 27 / 51 ms (14 commands, 60 MiB peak). Every
+changing-candidate workload adds a full f64 reference and a one-command
+geometry qualification per new candidate: 32 compensated Cooke trials 7.8 /
+127 ms, three catalogue refinements 1.7 / 24 ms. **CPU-preferred:** every
+measured optical merit/tolerance/glass workload; residual targets, FD stencil
+differences, `Jᵀr` and trial summaries over host-owned f64 values at every
+size (the fill alone matches the host arithmetic); and LM tall QR below
+`m·n²` = 2²⁴ (400×100: 29 ms host against 72 ms; 4000×100: 320 against
+154 ms resident, which the solver then uses). Per-command latency dominates
+B≤16 (9 commands); batched geometry qualification and a qualified parameter
+envelope, not kernel speed, are the remaining levers.
+
 ### 9.3 `auto`, determinism and jobs
 
 Change the engine's initial default from `CpuReference` to `Auto` when
