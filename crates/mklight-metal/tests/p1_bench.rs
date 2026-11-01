@@ -352,7 +352,7 @@ fn aim_trace_opd_matrix() {
                     .collect();
                 eprintln!(
                     "P11_P1_RAW {}",
-                    serde_json::json!({"sample":name,"case":label,"aiming":aiming,"rays":n,"cpu_ms":cpu,"metal_ms":wall,"device_ms":device,"cold_cpu_ms":cpu_cold,"cold_metal_ms":cold,"commands":commands,"copy_counts":copies,"unresolved":unresolved,"mean_iterations":iterations})
+                    serde_json::json!({"sample":name,"case":label,"aiming":aiming,"rays":n,"cpu_seconds":cpu,"metal_seconds":wall,"device_seconds":device,"cold_cpu_seconds":cpu_cold,"cold_metal_seconds":cold,"commands":commands,"copy_counts":copies,"unresolved":unresolved,"mean_iterations":iterations})
                 );
                 let (c, cp) = stats(cpu.clone());
                 let (g, gp) = stats(wall);

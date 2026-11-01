@@ -65,10 +65,7 @@ fn jacobians_and_solves() {
             let gpu_s = t.elapsed().as_secs_f64();
             assert!(gpu.merit < 1e-12 && cpu.merit < 1e-12);
             let after = p.context.stats();
-            assert_eq!(
-                after.command_buffers > before.command_buffers,
-                m * n * n >= 1 << 24
-            );
+            assert!(after.command_buffers > before.command_buffers);
             eprintln!(
                 "P8_WORKLOAD {}",
                 serde_json::json!({"case":"synthetic_jacobian_and_solve","variables":n,"residuals":m,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merit":cpu.merit,"resident_merit":gpu.merit,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_count":after.fallback_count-before.fallback_count})
