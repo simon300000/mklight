@@ -1,7 +1,7 @@
 //! CPU-f32 transport specification. Only library transcendentals are compared
 //! by tolerance; source IDs, history, stack order and counter draws are exact.
-use super::service::{coating, math::exp};
 use super::*;
+use crate::radiometry::{coating, math::exp};
 use crate::{Df32 as D, FpEnv};
 use bytemuck::Zeroable;
 type V = [D; 3];
@@ -427,6 +427,7 @@ struct Event {
     tir: bool,
     side: usize,
 }
+#[allow(clippy::too_many_arguments)]
 fn apply(
     s: &mut State,
     w: D,
@@ -539,7 +540,7 @@ fn apply(
             push(h, if e.tir { 2 } else { 1 }, e.surface);
         }
     }
-    let eps = D::new(1e-9, 2.8281932e-17) * (f(1.) + dot(e.point, e.point).sqrt());
+    let eps = D::new(1e-9, 2.828_193e-17) * (f(1.) + dot(e.point, e.point).sqrt());
     s.ray.origin = add(e.point, scale(e.normal, if reflected { eps } else { -eps }));
     s.ray.direction = dir;
     s.weight = w;
@@ -880,9 +881,7 @@ pub(super) fn execute<E: FpEnv>(
         l.draws = rng.draws;
         l.hits = hits.len() as u32;
         let out = bytemuck::cast_slice_mut::<u32, Detection>(x.words_mut(r.output));
-        let row = &mut out[i * r.hit_capacity..][..r.hit_capacity];
-        row.fill(Detection::zeroed());
-        row[..hits.len()].copy_from_slice(&hits);
+        out[i * r.hit_capacity..][..hits.len()].copy_from_slice(&hits);
         bytemuck::cast_slice_mut::<u32, Ledger>(x.words_mut(r.ledger))[i] = l;
         ctl.report((i + 1) as f64 / r.ray_count as f64, "stray transport");
     }

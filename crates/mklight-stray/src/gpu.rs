@@ -308,6 +308,7 @@ pub fn generate(
 }
 /// Complete source → first-hit job. RunInfo names this diagnostic pipeline,
 /// not `stray_light`; no class flux or transport qualification is implied.
+#[allow(clippy::too_many_arguments)]
 pub fn first_hits(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,

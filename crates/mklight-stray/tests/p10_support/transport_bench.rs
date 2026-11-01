@@ -68,11 +68,14 @@ fn measure(
         ..Default::default()
     };
     let options = gpu::TransportOptions {
-        source_tile: 4096,
         detections_per_source: 8,
         ..Default::default()
     };
-    for iteration in 0..12 {
+    let iterations = std::env::var("MKLIGHT_P10_BENCH_ITERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+    for iteration in 0..iterations {
         let now = Instant::now();
         let cpu = mklight_stray::analyze_system(&system, &native, &JobContext::new()).unwrap();
         let cpu_seconds = now.elapsed().as_secs_f64();

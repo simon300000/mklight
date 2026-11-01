@@ -139,6 +139,8 @@ pub struct Transport {
     pub stack_capacity: usize,
     pub hit_capacity: usize,
     pub event_budget: usize,
+    /// `hit_capacity` detections per source; rows past `Ledger::hits` are
+    /// unspecified.
     pub output: BufferId,
     pub ledger: BufferId,
 }

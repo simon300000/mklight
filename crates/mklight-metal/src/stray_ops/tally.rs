@@ -8,13 +8,13 @@ pub(super) fn execute(t: &Tally, x: &mut Execution<'_>, ctl: &JobControl) -> MkR
         Tally::Terms {
             params,
             output,
-            products,
+            width,
             ..
         } => (
-            if *products {
-                "mkl_stray_moments"
-            } else {
+            if *width == 0 {
                 "mkl_stray_terms"
+            } else {
+                "mkl_stray_moments"
             },
             params.sources as usize * params.queries as usize,
             *output,
@@ -68,6 +68,7 @@ pub(super) fn execute(t: &Tally, x: &mut Execution<'_>, ctl: &JobControl) -> MkR
                     tags,
                     queries,
                     params,
+                    width,
                     ..
                 } => {
                     for (i, v) in [hits, ledger, tags, queries].into_iter().enumerate() {
@@ -76,6 +77,7 @@ pub(super) fn execute(t: &Tally, x: &mut Execution<'_>, ctl: &JobControl) -> MkR
                     }
                     e.set_buffer_mut(4, &mut out, 0);
                     e.set_bytes(5, params);
+                    e.set_bytes(6, width);
                 }
                 Tally::Transpose {
                     input,

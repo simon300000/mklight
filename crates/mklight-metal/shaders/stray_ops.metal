@@ -16,13 +16,13 @@ static SD operator/(SD a,SD b){return SD(mkl_df_div(a.x,b.x));}
 static float sv(SD a){return a.x.x+a.x.y;}
 static SD ssqrt(SD a){return SD(mkl_df_sqrt(a.x));}
 struct SV {SD a[3];};
-static SV svec(thread const float2 *v){return {{SD(v[0]),SD(v[1]),SD(v[2])}};}
+template<typename P> static SV svec(P v){return {{SD(v[0]),SD(v[1]),SD(v[2])}};}
 static SV sadd(SV a,SV b){for(uint i=0;i<3;i++)a.a[i]=a.a[i]+b.a[i];return a;}
 static SV ssub(SV a,SV b){for(uint i=0;i<3;i++)a.a[i]=a.a[i]-b.a[i];return a;}
 static SV sscale(SV a,SD b){for(uint i=0;i<3;i++)a.a[i]=a.a[i]*b;return a;}
 static SD sdot(SV a,SV b){return a.a[0]*b.a[0]+a.a[1]*b.a[1]+a.a[2]*b.a[2];}
 static SV sunit(SV a){return sscale(a,SD(1)/ssqrt(sdot(a,a)));}
-static SV srotate(thread const float2 *m,SV a){
+template<typename P> static SV srotate(P m,SV a){
   SV v; for(uint i=0;i<3;i++)v.a[i]=SD(m[i])*a.a[0]+SD(m[3+i])*a.a[1]+SD(m[6+i])*a.a[2];return v;
 }
 static void ssincos(SD x,thread SD &s,thread SD &c){
@@ -74,7 +74,7 @@ kernel void mkl_stray_generate(constant MklStraySource &src [[buffer(0)]],
   MklStrayRay r;for(uint j=0;j<3;j++){r.origin[j]=origin.a[j].x;r.direction[j]=direction.a[j].x;}
   r.id[0]=id.x;r.id[1]=id.y;r.draws=draws;r.wavelength=wl;out[i]=r;
 }
-static bool sslab(thread const float2 *lo,thread const float2 *hi,SV o,SV d,SD limit,thread SD &entry){
+template<typename P> static bool sslab(P lo,P hi,SV o,SV d,SD limit,thread SD &entry){
   SD a(0),b=limit;
   for(uint i=0;i<3;i++){
     if(sv(d.a[i])==0){if(sv(o.a[i]-SD(lo[i]))<0||sv(o.a[i]-SD(hi[i]))>0)return false;}
@@ -86,16 +86,16 @@ static bool sslab(thread const float2 *lo,thread const float2 *hi,SV o,SV d,SD l
   }
   entry=a;return true;
 }
-static bool smask(MklStrayPrimitive p,SV q){
-  SD x=q.a[0],y=q.a[1],r=x*x+y*y,a(p.aperture[0]),b(p.aperture[1]);bool pass=false;
-  switch(p.mask&255){
+static bool smask(uint mask,float2 a0,float2 a1,SV q){
+  SD x=q.a[0],y=q.a[1],r=x*x+y*y,a(a0),b(a1);bool pass=false;
+  switch(mask&255){
   case 0:pass=true;break;
   case 1:pass=sv(r-a*a)<=0;break;
   case 2:pass=sv(r-a*a)>=0&&sv(r-b*b)<=0;break;
   case 3:pass=sv(x-a)<=0&&sv(x+a)>=0&&sv(y-b)<=0&&sv(y+b)>=0;break;
   case 4:pass=sv((x/a)*(x/a)+(y/b)*(y/b)-SD(1))<=0;break;
   }
-  return pass != ((p.mask&256)!=0);
+  return pass != ((mask&256)!=0);
 }
 static bool sgeval(constant MklStraySurfaceData &s,SV q,SD radius,thread SD &z,thread SD &gx,thread SD &gy){
   SD r=ssqrt(q.a[0]*q.a[0]+q.a[1]*q.a[1]),k=sv(r-radius)>0?radius/r:SD(1);
@@ -114,7 +114,7 @@ static SD sgroot(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD lo,SD hi,SD f
     SD next=t-ft/dt;t=sv(next-lo)>0&&sv(next-hi)<0?next:(lo+hi)*SD(0.5f);
   }return (lo+hi)*SD(0.5f);
 }
-static bool sgintersect(MklStrayPrimitive p,constant MklStraySurfaceData &s,MklStrayRay ray,SD limit,thread MklStrayHit &hit){
+static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &s,MklStrayRay ray,SD limit,thread MklStrayHit &hit){
   SV o=srotate(p.rotation,ssub(svec(ray.origin),svec(p.origin))),d=srotate(p.rotation,svec(ray.direction));
   SD ta(0),tb=limit;
   for(uint k=0;k<3;k++){
@@ -140,14 +140,14 @@ static bool sgintersect(MklStrayPrimitive p,constant MklStraySurfaceData &s,MklS
     for(uint j=0;j<2;j++){
       SD t=roots[j];if(isnan(sv(t)))continue;SD tt=ta+t;if(sv(tt)<=0||sv(tt-limit)>0)continue;
       SV q=sadd(oo,sscale(d,t));SD rr=q.a[0]*q.a[0]+q.a[1]*q.a[1],ri(p.inner_radius);
-      if(sv(rr-ri*ri)<0||sv(rr-r*r)>0||!smask(p,q))continue;
+      if(sv(rr-ri*ri)<0||sv(rr-r*r)>0||!smask(p.mask,p.aperture[0],p.aperture[1],q))continue;
       SD z,gx,gy;if(!sgeval(s,q,r,z,gx,gy))continue;SV normal=sunit({{-gx,-gy,SD(1)}});
       for(uint k=0;k<3;k++){hit.point[k]=q.a[k].x;hit.normal[k]=normal.a[k].x;}hit.distance=tt.x;hit.primitive=0;hit.reserved=0;return true;
     }
     a=b;fa=fb;da=db;
   }return false;
 }
-static bool sintersect(MklStrayPrimitive p,constant MklStraySurfaceData &shape,MklStrayRay ray,SD limit,thread MklStrayHit &out,bool extended=true){
+static bool sintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &shape,MklStrayRay ray,SD limit,thread MklStrayHit &out,bool extended=true){
   if(extended&&p.kind==3)return sgintersect(p,shape,ray,limit,out);
   SV o=srotate(p.rotation,ssub(svec(ray.origin),svec(p.origin))),d=srotate(p.rotation,svec(ray.direction));
   SD shift;if(!sslab(p.lower,p.upper,o,d,limit,shift))return false;
@@ -181,7 +181,7 @@ static bool sintersect(MklStrayPrimitive p,constant MklStraySurfaceData &shape,M
     } else {
       if(sv(k*c*q.a[2]-SD(1))>1e-9f)continue;
       SD r=q.a[0]*q.a[0]+q.a[1]*q.a[1],ri(p.inner_radius),ro(p.outer_radius);
-      if(sv(r-ri*ri)<0||sv(r-ro*ro)>0||!smask(p,q))continue;
+      if(sv(r-ri*ri)<0||sv(r-ro*ro)>0||!smask(p.mask,p.aperture[0],p.aperture[1],q))continue;
       normal=sunit({{-c*q.a[0],-c*q.a[1],SD(1)-c*k*q.a[2]}});
     }
     for(uint i=0;i<3;i++){out.point[i]=q.a[i].x;out.normal[i]=normal.a[i].x;}
@@ -228,7 +228,7 @@ static MklCoatingValue scoating(MklCoatingSpec s,device const MklCoatingLayer *l
 }
 static SD smin(SD a,SD b){return sv(a-b)<0?a:b;}
 static SD smax(SD a,SD b){return sv(a-b)>0?a:b;}
-static SV sworld(thread const float2 *m,SV a){
+template<typename P> static SV sworld(P m,SV a){
   SV v;for(uint i=0;i<3;i++)v.a[i]=SD(m[3*i])*a.a[0]+SD(m[3*i+1])*a.a[1]+SD(m[3*i+2])*a.a[2];return v;
 }
 static void sonb(SV n,thread SV &a,thread SV &b){
@@ -248,16 +248,22 @@ static MklStrayHit sclosest(device const MklStrayPrimitive *prims,device const M
     }i++;
   }return out;
 }
-static void sbook(thread MklStrayLedger &l,uint sink,SD w){l.sums[sink]=(SD(l.sums[sink])+w).x;if(!all(isfinite(l.sums[sink])))l.status=4;}
+// Constant-index selects keep the ledger and history in registers; a dynamic
+// index would place the whole private record in slow stack memory.
+static void sbook(thread MklStrayLedger &l,uint sink,SD w){
+  float2 v=0;for(uint k=0;k<21;k++)v=k==sink?l.sums[k]:v;v=(SD(v)+w).x;
+  for(uint k=0;k<21;k++)if(k==sink)l.sums[k]=v;if(!all(isfinite(v)))l.status=4;
+}
 static void schange(thread MklStrayLedger &l,uint gain,SD delta){sbook(l,gain+uint(sv(delta)<0),sv(delta)<0?-delta:delta);}
 static void spush(thread MklStrayHistory &h,uint kind,uint id){
-  if(h.length<6)h.events[h.length++]=(kind<<28)|min(id,0xfffffffU);else h.overflow=1;
+  uint e=(kind<<28)|min(id,0xfffffffU);for(uint j=0;j<6;j++)if(j==h.length)h.events[j]=e;
+  if(h.length<6)h.length++;else h.overflow=1;
 }
 static void sspec(thread MklStrayHistory &h,device const uint *seq,uint count,uint surface,bool designed,bool extra){
   if(h.next_specular<0||uint(h.next_specular)>=count||seq[h.next_specular]!=surface)h.flags|=32;
   if(extra)h.flags^=64;h.next_specular+=(h.flags&64)?-1:1;
   if(!(h.flags&4)&&designed&&h.next_seq<count&&seq[h.next_seq]==surface)h.next_seq++;else h.flags|=4;
-  if(extra){if(h.reflections<2)h.first[h.reflections]=min(surface,65534U);h.reflections=min(h.reflections+1,255U);}
+  if(extra){if(h.reflections==0)h.first[0]=min(surface,65534U);if(h.reflections==1)h.first[1]=min(surface,65534U);h.reflections=min(h.reflections+1,255U);}
 }
 static uint sclass(MklStrayHistory h,uint count){
   if(h.flags&1)return 2;if(h.flags&2)return 3;if(h.flags&8)return 4;
@@ -265,7 +271,7 @@ static uint sclass(MklStrayHistory h,uint count){
   if(h.reflections==0&&!(h.flags&132)&&(count==0||h.next_seq+1==count))return 0;
   return 4;
 }
-static SD stis(MklStrayMaterial m,device const float2 *table,SV spec,SV normal){
+static SD stis(device const MklStrayMaterial &m,device const float2 *table,SV spec,SV normal){
   if(m.bsdf_kind==0)return SD(0);
   if(m.tis_count==0)return SD(m.bsdf[0]);
   SD c=smin(SD(1),smax(SD(-1),sdot(spec,normal)));
@@ -315,21 +321,21 @@ static SD sabg(SD b,SD g,SD rm,SD u,uint flags,thread SD &accept){
   else if(flags&4)lr=lc+u*l;else lr=lc+slog1p_d(u*sexpm1_d(el))/e;
   accept=slogistic(lb-spower_log(g,lr));return sexp_d(lr);
 }
-static bool sscatter(MklStrayMaterial m,SV spec,SV normal,uint2 seed,uint2 id,thread ulong &draws,thread SV &out,thread bool &reference){
+static bool sscatter(device const MklStrayMaterial &m,uint kind,SV spec,SV normal,uint2 seed,uint2 id,thread ulong &draws,thread SV &out,thread bool &reference){
   SV a,b;sonb(normal,a,b);SD bx=sdot(spec,a),by=sdot(spec,b);
   SD rm=SD(1)+ssqrt(bx*bx+by*by),sigma(m.bsdf[1]);
   SD tau(float2(6.2831855f,-1.7484555e-7f));
   for(uint k=0;k<4096;k++){
     SD u=suniform(seed,id,draws),r,accept(1);
-    if(m.bsdf_kind==1)r=ssqrt(u);
-    else if(m.bsdf_kind==2){SD ratio=rm/sigma,mass=sv(ratio)>10?SD(1):-sexpm1_d(-SD(0.5f)*ratio*ratio);r=sigma*ssqrt(-SD(2)*slog1p_d(-u*mass));}
+    if(kind==1)r=ssqrt(u);
+    else if(kind==2){SD ratio=rm/sigma,mass=sv(ratio)>10?SD(1):-sexpm1_d(-SD(0.5f)*ratio*ratio);r=sigma*ssqrt(-SD(2)*slog1p_d(-u*mass));}
     else r=sabg(SD(m.bsdf[1]),SD(m.bsdf[2]),rm,u,m.bsdf_flags,accept);
     if(!all(isfinite(r.x))||!all(isfinite(accept.x))){reference=true;return false;}
     SD sn,cs;ssincos(tau*suniform(seed,id,draws),sn,cs);
-    SD x=r*cs,y=r*sn;if(m.bsdf_kind!=1){x=x+bx;y=y+by;}
-    bool ok=m.bsdf_kind!=3||sv(suniform(seed,id,draws)-accept)<0;
+    SD x=r*cs,y=r*sn;if(kind!=1){x=x+bx;y=y+by;}
+    bool ok=kind!=3||sv(suniform(seed,id,draws)-accept)<0;
     SD radius=x*x+y*y;
-    if(ok&&(m.bsdf_kind==1||sv(radius)<1)){
+    if(ok&&(kind==1||sv(radius)<1)){
       out=sunit(sadd(sadd(sscale(a,x),sscale(b,y)),sscale(normal,ssqrt(smax(SD(0),SD(1)-radius)))));return true;
     }
   }return false;
@@ -351,7 +357,7 @@ static int skino(SD blaze,uint2 seed,uint2 id,thread ulong &draws){
     if(sv(suniform(seed,id,draws)*SD(4)*SD(q)-s*s)<0)return m;
   }
 }
-static int sorder(MklStrayMaterial m,SD blaze,uint2 seed,uint2 id,thread ulong &draws){
+static int sorder(device const MklStrayMaterial &m,SD blaze,uint2 seed,uint2 id,thread ulong &draws){
   if((mkl_stray_features&128)==0||m.doe==1)return m.selected;
   if(m.doe==2)return skino(blaze,seed,id,draws);
   for(;;){int n=int(m.levels),a=skino(blaze,seed,id,draws),r=((a%n)+n)%n;
@@ -360,7 +366,7 @@ static int sorder(MklStrayMaterial m,SD blaze,uint2 seed,uint2 id,thread ulong &
   }
 }
 struct SEvt {SV point,normal,refl,trans;uint mi,mo,prim,surface;bool dt,dr,stray,mechanical,tir;uint side;};
-static uint sapply(thread MklStrayState &s,SD weight,uint branch,SEvt ev,MklStrayMaterial m,MklStrayPrimitive prim,
+static uint sapply(thread MklStrayState &s,SD weight,uint branch,thread const SEvt &ev,device const MklStrayMaterial &m,device const MklStrayPrimitive &prim,
  device const uint *seq,uint seq_count,uint2 seed,thread ulong &draws){
   bool reflected=branch<2;SV spec=reflected?ev.refl:ev.trans;
   uint2 id(s.ray.id[0],s.ray.id[1]);
@@ -382,8 +388,8 @@ static uint sapply(thread MklStrayState &s,SD weight,uint branch,SEvt ev,MklStra
   }
   for(uint k=0;k<3;k++)if(!all(isfinite(spec.a[k].x)))return 0xfffffffe;
   SV dir=spec;bool reference=false;
-  if((mkl_stray_features&64)==0)m.bsdf_kind=1;
-  if((mkl_stray_features&32)&&(branch&1)&&!sscatter(m,spec,sscale(ev.normal,reflected?SD(1):SD(-1)),seed,id,draws,dir,reference))return reference?0xfffffffe:15;
+  uint bsdf=(mkl_stray_features&64)?m.bsdf_kind:1;
+  if((mkl_stray_features&32)&&(branch&1)&&!sscatter(m,bsdf,spec,sscale(ev.normal,reflected?SD(1):SD(-1)),seed,id,draws,dir,reference))return reference?0xfffffffe:15;
   if(branch&1){s.history.flags|=5;if(ev.mechanical)s.history.flags|=2;s.history.scatter_events=min(65535U,s.history.scatter_events+1);spush(s.history,ev.mechanical?6:(reflected?3:4),ev.mechanical?ev.prim:ev.surface);}
   else if(ev.mechanical){s.history.flags|=6;spush(s.history,5,ev.prim);}
   else {
@@ -401,101 +407,119 @@ static bool sroulette(thread MklStrayState &s,SD threshold,uint2 seed,thread ulo
   if(sv(suniform(seed,uint2(s.ray.id[0],s.ray.id[1]),draws)*threshold-w)<0){schange(l,16,threshold-w);s.weight=threshold.x;return true;}
   schange(l,16,-w);s.weight=float2(0);return false;
 }
+// Persistent lanes claim fresh sources and resumed sources from device queues,
+// so SIMD groups stay full while long split trees finish. Every source keeps
+// its own stack, ledger, detections and Philox cursor: scheduling never
+// changes a source's depth-first draws or records.
+// queue: 0 fresh cursor, 1/2 resumed counts, 3 read cursor, 4 status bits.
+kernel void mkl_stray_queue_reset(device uint *queue [[buffer(0)]],constant uint &parity [[buffer(1)]]){
+  queue[3]=0;queue[2-parity]=0;
+}
 kernel void mkl_stray_transport(device const MklStrayPrimitive *prims [[buffer(0)]],device const MklStrayNode *nodes [[buffer(1)]],
  device const MklStrayMaterial *materials [[buffer(2)]],device const MklCoatingLayer *layers [[buffer(3)]],
  device const MklStrayPass *passes [[buffer(4)]],device const MklStrayMedium *media [[buffer(5)]],device const float2 *tis [[buffer(6)]],device const uint *seq [[buffer(7)]],
  device const MklStrayRay *rays [[buffer(8)]],device MklStrayState *stack [[buffer(9)]],device MklStrayDetection *hits [[buffer(10)]],device MklStrayLedger *ledgers [[buffer(11)]],
- constant MklStraySettings &set [[buffer(12)]],constant MklStrayTransportParams &p [[buffer(13)]],constant MklStraySurfaceData *shapes [[buffer(14)]],uint i [[thread_position_in_grid]]){
-  if(i>=p.count)return;uint base=i*p.stack_capacity,hbase=i*p.hit_capacity;uint2 seed(p.seed[0],p.seed[1]);
-  MklStrayLedger l;
-  if(p.initialize){l={};MklStrayState s={};s.ray=rays[i];s.weight=set.weight;s.medium=set.start_medium;s.history.first[0]=65535;s.history.first[1]=65535;
-    MklStrayDetection empty={};for(uint j=0;j<p.hit_capacity;j++)hits[hbase+j]=empty;
-    stack[base]=s;l.top=1;l.draws=s.ray.draws;l.wavelength=s.ray.wavelength;l.sums[20]=set.weight;
-  }else l=ledgers[i];
-  l.status=1;uint wl=l.wavelength;SD rr=SD(set.roulette)*SD(set.weight),ceiling=SD(set.ceiling)*SD(set.weight);
-  for(uint step=0;step<p.budget&&l.top;step++){
-    if(l.status==4)break;
-    // Weighted forcing has Z <= 1 + 3*floor. Reserve its bounded window
-    // fanout (and all four physical branches) before consuming any draws.
-    uint reserve=sv(SD(set.ceiling))==FLT_MAX?3u:uint(clamp(ceil((1+3*sv(SD(set.rare_floor)))*sv(SD(set.ceiling))),3.0f,63.0f));
-    if(l.top+reserve>p.stack_capacity){l.status=2;break;}
-    if(l.hits>=p.hit_capacity){l.status=3;break;}
-    MklStrayState s=stack[base+--l.top];SD w(s.weight);if(sv(w)<=0)continue;
-    if(s.events>=set.max_events){sbook(l,14,w);continue;}
-    s.events++;l.events++;MklStrayHit hit=sclosest(prims,nodes,shapes,p.nodes,s.ray,(mkl_stray_features&8)!=0);
-    MklStrayMedium med=media[s.medium*set.wavelengths+wl];
-    if(hit.primitive==0xffffffff){sbook(l,med.ambient?12:13,w);continue;}
-    if(sv(SD(med.alpha))>0){SD tau(stray_coating::rexp(stray_coating::RD((-SD(med.alpha)*SD(hit.distance)).x)).v);sbook(l,0,w*(SD(1)-tau));w=w*tau;s.weight=w.x;}
-    MklStrayPrimitive prim=prims[hit.primitive];MklStrayMaterial m=materials[hit.primitive*set.wavelengths+wl];
-    SV point=sadd(sworld(prim.rotation,svec(hit.point)),svec(prim.origin)),normal=sworld(prim.rotation,svec(hit.normal)),d=svec(s.ray.direction);
-    uint side=sv(sdot(d,normal))<0?1:0;SV ni=sscale(normal,side?SD(1):SD(-1));
-    SEvt ev;ev.point=point;ev.normal=ni;ev.refl=ssub(d,sscale(normal,SD(2)*sdot(d,normal)));ev.trans=d;ev.mi=s.medium;ev.mo=s.medium;ev.prim=hit.primitive;ev.surface=0;ev.dt=false;ev.dr=false;ev.stray=false;ev.mechanical=m.kind==0;ev.tir=false;ev.side=side;
-    if(m.kind==4){
-      if(set.detector_accept==2||set.detector_accept==side){MklStrayDetection h;h.history=s.history;h.weight=w.x;h.x=hit.point[0];h.y=hit.point[1];h.path_class=sclass(s.history,set.sequence_count);h.wavelength=wl;hits[hbase+l.hits++]=h;}
-      else sbook(l,3,w);continue;
-    }
-    SD probs[4],absorb;uint sink;
-    if(m.kind==0){SD t=stis(m,tis,ev.refl,ni),r=smin(smax(SD(m.specular),SD(0)),SD(1)-t);probs[0]=r;probs[1]=t;probs[2]=SD(0);probs[3]=SD(0);absorb=smax(SD(0),SD(1)-r-t);sink=m.sink;}
-    else {
-      bool mirror=m.kind==2,designed=false;uint chosen=m.pass_start;
-      int expected=(!(s.history.flags&35)&&s.history.next_specular>=0&&uint(s.history.next_specular)<set.sequence_count)?int(seq[s.history.next_specular]):-1;
-      bool found=false;
-      if(!mirror&&(s.history.flags&64))for(uint k=0;k<m.pass_count;k++){MklStrayPass q=passes[m.pass_start+k];if(int(q.surface)==expected&&q.side!=side){chosen=m.pass_start+k;found=true;break;}}
-      if(!found){
-        for(uint k=0;k<m.pass_count;k++){MklStrayPass q=passes[m.pass_start+k];if(q.side==side&&int(q.surface)==expected){chosen=m.pass_start+k;designed=true;found=true;break;}}
-        if(!found)for(uint k=0;k<m.pass_count;k++)if(passes[m.pass_start+k].side==side){chosen=m.pass_start+k;designed=true;break;}
+ constant MklStraySettings &set [[buffer(12)]],constant MklStrayTransportParams &p [[buffer(13)]],constant MklStraySurfaceData *shapes [[buffer(14)]],
+ device atomic_uint *queue [[buffer(15)]],device uint *lists [[buffer(16)]],uint tid [[thread_position_in_grid]]){
+  if(tid>=p.threads)return;uint2 seed(p.seed[0],p.seed[1]);uint budget=p.budget,par=p.parity,resumed=atomic_load_explicit(&queue[1+par],memory_order_relaxed);
+  SD rr=SD(set.roulette)*SD(set.weight),ceiling=SD(set.ceiling)*SD(set.weight);
+  // Weighted forcing has Z <= 1 + 3*floor. Reserve its bounded window
+  // fanout (and all four physical branches) before consuming any draws.
+  uint reserve=sv(SD(set.ceiling))==FLT_MAX?3u:uint(clamp(ceil((1+3*sv(SD(set.rare_floor)))*sv(SD(set.ceiling))),3.0f,63.0f));
+  while(budget){
+    uint i,r=atomic_fetch_add_explicit(&queue[3],1,memory_order_relaxed);bool fresh=r>=resumed;
+    if(!fresh)i=lists[par*p.count+r];
+    else {i=atomic_fetch_add_explicit(&queue[0],1,memory_order_relaxed);if(i>=p.count)break;}
+    uint base=i*p.stack_capacity,hbase=i*p.hit_capacity;MklStrayLedger l;
+    if(fresh){l={};MklStrayState s={};s.ray=rays[i];s.weight=set.weight;s.medium=set.start_medium;s.history.first[0]=65535;s.history.first[1]=65535;
+      stack[base]=s;l.top=1;l.draws=s.ray.draws;l.wavelength=s.ray.wavelength;l.sums[20]=set.weight;
+    }else l=ledgers[i];
+    l.status=1;uint wl=l.wavelength;
+    for(;budget&&l.top;budget--){
+      if(l.status==4)break;
+      if(l.top+reserve>p.stack_capacity){l.status=2;break;}
+      if(l.hits>=p.hit_capacity){l.status=3;break;}
+      MklStrayState s=stack[base+--l.top];SD w(s.weight);if(sv(w)<=0)continue;
+      if(s.events>=set.max_events){sbook(l,14,w);continue;}
+      s.events++;l.events++;MklStrayHit hit=sclosest(prims,nodes,shapes,p.nodes,s.ray,(mkl_stray_features&8)!=0);
+      MklStrayMedium med=media[s.medium*set.wavelengths+wl];
+      if(hit.primitive==0xffffffff){sbook(l,med.ambient?12:13,w);continue;}
+      if(sv(SD(med.alpha))>0){SD tau(stray_coating::rexp(stray_coating::RD((-SD(med.alpha)*SD(hit.distance)).x)).v);sbook(l,0,w*(SD(1)-tau));w=w*tau;s.weight=w.x;}
+      device const MklStrayPrimitive &prim=prims[hit.primitive];device const MklStrayMaterial &m=materials[hit.primitive*set.wavelengths+wl];
+      SV point=sadd(sworld(prim.rotation,svec(hit.point)),svec(prim.origin)),normal=sworld(prim.rotation,svec(hit.normal)),d=svec(s.ray.direction);
+      uint side=sv(sdot(d,normal))<0?1:0;SV ni=sscale(normal,side?SD(1):SD(-1));
+      SEvt ev;ev.point=point;ev.normal=ni;ev.refl=ssub(d,sscale(normal,SD(2)*sdot(d,normal)));ev.trans=d;ev.mi=s.medium;ev.mo=s.medium;ev.prim=hit.primitive;ev.surface=0;ev.dt=false;ev.dr=false;ev.stray=false;ev.mechanical=m.kind==0;ev.tir=false;ev.side=side;
+      if(m.kind==4){
+        if(set.detector_accept==2||set.detector_accept==side){MklStrayDetection h;h.history=s.history;h.weight=w.x;h.x=hit.point[0];h.y=hit.point[1];h.path_class=sclass(s.history,set.sequence_count);h.wavelength=wl;hits[hbase+l.hits++]=h;}
+        else sbook(l,3,w);continue;
       }
-      if(mirror&&!designed){sbook(l,2,w);continue;}
-      MklStrayPass pass=passes[chosen];MklStrayPrimitive clip=prim;clip.mask=pass.mask;clip.aperture[0]=pass.aperture[0];clip.aperture[1]=pass.aperture[1];
-      if(!smask(clip,svec(hit.point))){if(!(s.history.flags&8))spush(s.history,7,pass.surface);s.history.flags|=8;}
-      ev.surface=pass.surface;ev.dt=designed&&!mirror;ev.dr=designed&&mirror;ev.stray=!mirror;ev.mi=m.media[side];ev.mo=m.media[1-side];
-      SD ci=smin(SD(1),smax(SD(0),-sdot(d,ni)));
-      MklCoatingValue cv=scoating(m.coatings[side],layers,ci);
-      if(cv.status){l.status=4;break;}
-      SD r=(SD(cv.powers[0])+SD(cv.powers[1]))*SD(0.5f),t=mirror?SD(0):(SD(cv.powers[2])+SD(cv.powers[3]))*SD(0.5f);
-      bool trans=!mirror;
-      if(!mirror&&!m.doe){SD ratio=SD(m.index[side])/SD(m.index[1-side]),disc=SD(1)-ratio*ratio*(SD(1)-ci)*(SD(1)+ci);
-        if(sv(disc)<0){r=r+t;t=SD(0);ev.tir=true;trans=false;}
-        else {ev.trans=sunit(sadd(sscale(d,ratio),sscale(ni,ratio*ci-ssqrt(disc))));
-          if(m.kind==3){SV dl=srotate(prim.rotation,ev.trans);SD az=sv(dl.a[2])<0?-dl.a[2]:dl.a[2];if(sv(az)!=0){dl=sunit({{dl.a[0]/az-SD(hit.point[0])/SD(m.focal),dl.a[1]/az-SD(hit.point[1])/SD(m.focal),SD(sv(dl.a[2])<0?-1:1)}});ev.trans=sworld(prim.rotation,dl);}}
+      SD probs[4],absorb;uint sink;
+      if(m.kind==0){SD t=stis(m,tis,ev.refl,ni),r=smin(smax(SD(m.specular),SD(0)),SD(1)-t);probs[0]=r;probs[1]=t;probs[2]=SD(0);probs[3]=SD(0);absorb=smax(SD(0),SD(1)-r-t);sink=m.sink;}
+      else {
+        bool mirror=m.kind==2,designed=false;uint chosen=m.pass_start;
+        int expected=(!(s.history.flags&35)&&s.history.next_specular>=0&&uint(s.history.next_specular)<set.sequence_count)?int(seq[s.history.next_specular]):-1;
+        bool found=false;
+        if(!mirror&&(s.history.flags&64))for(uint k=0;k<m.pass_count;k++){MklStrayPass q=passes[m.pass_start+k];if(int(q.surface)==expected&&q.side!=side){chosen=m.pass_start+k;found=true;break;}}
+        if(!found){
+          for(uint k=0;k<m.pass_count;k++){MklStrayPass q=passes[m.pass_start+k];if(q.side==side&&int(q.surface)==expected){chosen=m.pass_start+k;designed=true;found=true;break;}}
+          if(!found)for(uint k=0;k<m.pass_count;k++)if(passes[m.pass_start+k].side==side){chosen=m.pass_start+k;designed=true;break;}
         }
+        if(mirror&&!designed){sbook(l,2,w);continue;}
+        MklStrayPass pass=passes[chosen];
+        if(!smask(pass.mask,pass.aperture[0],pass.aperture[1],svec(hit.point))){if(!(s.history.flags&8))spush(s.history,7,pass.surface);s.history.flags|=8;}
+        ev.surface=pass.surface;ev.dt=designed&&!mirror;ev.dr=designed&&mirror;ev.stray=!mirror;ev.mi=m.media[side];ev.mo=m.media[1-side];
+        SD ci=smin(SD(1),smax(SD(0),-sdot(d,ni)));
+        MklCoatingValue cv=scoating(m.coatings[side],layers,ci);
+        if(cv.status){l.status=4;break;}
+        SD r=(SD(cv.powers[0])+SD(cv.powers[1]))*SD(0.5f),t=mirror?SD(0):(SD(cv.powers[2])+SD(cv.powers[3]))*SD(0.5f);
+        bool trans=!mirror;
+        if(!mirror&&!m.doe){SD ratio=SD(m.index[side])/SD(m.index[1-side]),disc=SD(1)-ratio*ratio*(SD(1)-ci)*(SD(1)+ci);
+          if(sv(disc)<0){r=r+t;t=SD(0);ev.tir=true;trans=false;}
+          else {ev.trans=sunit(sadd(sscale(d,ratio),sscale(ni,ratio*ci-ssqrt(disc))));
+            if(m.kind==3){SV dl=srotate(prim.rotation,ev.trans);SD az=sv(dl.a[2])<0?-dl.a[2]:dl.a[2];if(sv(az)!=0){dl=sunit({{dl.a[0]/az-SD(hit.point[0])/SD(m.focal),dl.a[1]/az-SD(hit.point[1])/SD(m.focal),SD(sv(dl.a[2])<0?-1:1)}});ev.trans=sworld(prim.rotation,dl);}}
+          }
+        }
+        SD sum=r+t;if(sv(sum)>1){r=r/sum;t=t/sum;}
+        SD sr=(set.scatter&1)&&sv(r)>0?stis(m,tis,ev.refl,ni):SD(0);
+        SD st=(set.scatter&2)&&trans&&sv(t)>0?stis(m,tis,ev.trans,sscale(ni,SD(-1))):SD(0);
+        probs[0]=r*(SD(1)-sr);probs[1]=r*sr;probs[2]=t*(SD(1)-st);probs[3]=t*st;absorb=smax(SD(0),SD(1)-r-t);sink=1;
       }
-      SD sum=r+t;if(sv(sum)>1){r=r/sum;t=t/sum;}
-      SD sr=(set.scatter&1)&&sv(r)>0?stis(m,tis,ev.refl,ni):SD(0);
-      SD st=(set.scatter&2)&&trans&&sv(t)>0?stis(m,tis,ev.trans,sscale(ni,SD(-1))):SD(0);
-      probs[0]=r*(SD(1)-sr);probs[1]=r*sr;probs[2]=t*(SD(1)-st);probs[3]=t*st;absorb=smax(SD(0),SD(1)-r-t);sink=1;
-    }
-    uint branches=0;SD sum(0);for(uint j=0;j<4;j++){branches+=uint(sv(probs[j])>0);sum=sum+probs[j];}
-    if(branches==0){sbook(l,sink,w);continue;}
-    uint2 id(s.ray.id[0],s.ray.id[1]);
-    if((mkl_stray_features&3)==2&&s.splits<set.max_splits&&branches>=2){
-      sbook(l,sink,w*absorb);MklStrayState children[4];uint count=0;
-      for(uint j=0;j<4;j++)if(sv(probs[j])>0){MklStrayState c=s;c.splits++;SD cw=w*probs[j];uint lost=sapply(c,cw,j,ev,m,prim,seq,set.sequence_count,seed,l.draws);
-        if(lost==0xffffffff)children[count++]=c;else if(lost==0xfffffffe){l.status=4;break;}else sbook(l,lost,cw);
+      uint branches=0;SD sum(0);for(uint j=0;j<4;j++){branches+=uint(sv(probs[j])>0);sum=sum+probs[j];}
+      if(branches==0){sbook(l,sink,w);continue;}
+      uint2 id(s.ray.id[0],s.ray.id[1]);
+      if((mkl_stray_features&3)==2&&s.splits<set.max_splits&&branches>=2){
+        sbook(l,sink,w*absorb);MklStrayState children[4];uint count=0;
+        for(uint j=0;j<4;j++)if(sv(probs[j])>0){MklStrayState c=s;c.splits++;SD cw=w*probs[j];uint lost=sapply(c,cw,j,ev,m,prim,seq,set.sequence_count,seed,l.draws);
+          if(lost==0xffffffff)children[count++]=c;else if(lost==0xfffffffe){l.status=4;break;}else sbook(l,lost,cw);
+        }
+        if(count){sroulette(children[0],rr,seed,l.draws,l);for(uint j=count;j>0;j--)stack[base+l.top++]=children[j-1];}
+        continue;
       }
-      if(count){sroulette(children[0],rr,seed,l.draws,l);for(uint j=count;j>0;j--)stack[base+l.top++]=children[j-1];}
-      continue;
+      uint pick=0;SD next=w;
+      if((mkl_stray_features&3)==0){SD u=suniform(seed,id,l.draws);if(sv(u-absorb)<0){sbook(l,sink,w);continue;}SD acc=absorb;
+        for(uint j=0;j<4;j++)if(sv(probs[j])>0){acc=acc+probs[j];pick=j;if(sv(u-acc)<0)break;}
+      }else {
+        sbook(l,sink,w*absorb);SD raw[4],z(0);for(uint j=0;j<4;j++){raw[j]=sv(probs[j])>0?smax(probs[j]/sum,SD(set.rare_floor)):SD(0);z=z+raw[j];}
+        SD u=suniform(seed,id,l.draws),acc(0);for(uint j=0;j<4;j++)if(sv(probs[j])>0){acc=acc+raw[j]/z;pick=j;if(sv(u-acc)<0)break;}
+        next=w*probs[pick]/(raw[pick]/z);schange(l,18,next-w*sum);
+      }
+      uint lost=sapply(s,next,pick,ev,m,prim,seq,set.sequence_count,seed,l.draws);
+      if(lost==0xfffffffe){l.status=4;break;}
+      if(lost!=0xffffffff){sbook(l,lost,next);continue;}
+      if(!sroulette(s,rr,seed,l.draws,l))continue;
+      uint copies=1;if(sv(SD(s.weight)-ceiling)>0){copies=uint(min(ceil(sv(SD(s.weight)/SD(set.weight))),64.0f));s.weight=(SD(s.weight)/SD(float(copies))).x;}
+      for(uint j=0;j<copies;j++)stack[base+l.top++]=s;
     }
-    uint pick=0;SD next=w;
-    if((mkl_stray_features&3)==0){SD u=suniform(seed,id,l.draws);if(sv(u-absorb)<0){sbook(l,sink,w);continue;}SD acc=absorb;
-      for(uint j=0;j<4;j++)if(sv(probs[j])>0){acc=acc+probs[j];pick=j;if(sv(u-acc)<0)break;}
-    }else {
-      sbook(l,sink,w*absorb);SD raw[4],z(0);for(uint j=0;j<4;j++){raw[j]=sv(probs[j])>0?smax(probs[j]/sum,SD(set.rare_floor)):SD(0);z=z+raw[j];}
-      SD u=suniform(seed,id,l.draws),acc(0);for(uint j=0;j<4;j++)if(sv(probs[j])>0){acc=acc+raw[j]/z;pick=j;if(sv(u-acc)<0)break;}
-      next=w*probs[pick]/(raw[pick]/z);schange(l,18,next-w*sum);
-    }
-    uint lost=sapply(s,next,pick,ev,m,prim,seq,set.sequence_count,seed,l.draws);
-    if(lost==0xfffffffe){l.status=4;break;}
-    if(lost!=0xffffffff){sbook(l,lost,next);continue;}
-    if(!sroulette(s,rr,seed,l.draws,l))continue;
-    uint copies=1;if(sv(SD(s.weight)-ceiling)>0){copies=uint(min(ceil(sv(SD(s.weight)/SD(set.weight))),64.0f));s.weight=(SD(s.weight)/SD(float(copies))).x;}
-    for(uint j=0;j<copies;j++)stack[base+l.top++]=s;
+    if(l.top==0&&l.status==1)l.status=0;
+    if(l.status==1||l.status==2)lists[(1-par)*p.count+atomic_fetch_add_explicit(&queue[2-par],1,memory_order_relaxed)]=i;
+    if(l.status>1)atomic_fetch_or_explicit(&queue[4],1u<<l.status,memory_order_relaxed);
+    ledgers[i]=l;
   }
-  if(l.top==0&&l.status==1)l.status=0;ledgers[i]=l;
 }
-
-kernel void mkl_stray_spill(device const MklStrayState *old [[buffer(0)]],device MklStrayState *next [[buffer(1)]],device const MklStrayLedger *ledger [[buffer(2)]],constant uint4 &p [[buffer(3)]],uint i [[thread_position_in_grid]]){
-  if(i>=p.x)return;for(uint j=0;j<ledger[i].top;j++)next[i*p.z+j]=old[i*p.y+j];
+// Only resumed sources own live stack entries; p: count, old/new capacity.
+kernel void mkl_stray_spill(device const MklStrayState *old [[buffer(0)]],device MklStrayState *next [[buffer(1)]],device const MklStrayLedger *ledger [[buffer(2)]],
+ constant uint4 &p [[buffer(3)]],device const uint *list [[buffer(4)]],uint t [[thread_position_in_grid]]){
+  if(t>=p.x)return;uint i=list[t];for(uint j=0;j<ledger[i].top;j++)next[i*p.z+j]=old[i*p.y+j];
 }
 kernel void mkl_stray_build(device const MklStrayPrimitive *prims [[buffer(0)]],device MklStrayNode *nodes [[buffer(1)]],constant uint4 &p [[buffer(2)]],uint j [[thread_position_in_grid]]){
   uint count=1u<<p.z;if(j>=count)return;uint range=p.y>>p.z,a=j*range,id=2*a+p.z-popcount(a);
@@ -545,7 +569,7 @@ kernel void mkl_stray_tags(device const MklStrayDetection *hits [[buffer(0)]],de
 }
 static bool sselected(uint slot,uint c,uint4 tag){if(slot<5)return c==slot;if(slot==5)return tag.z!=0;if(slot==6)return tag.w!=0;if(slot==7)return true;if(slot==8)return c==1&&tag.w==0;return false;}
 static void sterms(device const MklStrayDetection *hits,device const MklStrayLedger *ledger,device const uint4 *tags,device const MklStrayQuery *queries,
- device float2 *out,constant MklStrayTallyParams &p,uint i,bool products){
+ device float2 *out,constant MklStrayTallyParams &p,uint i,uint width){
   uint n=p.sources,len=n*p.queries;if(i>=len)return;device const MklStrayQuery &q=queries[i/n];uint source=i%n;device const MklStrayLedger &l=ledger[source];SD sum[4]={SD(0),SD(0),SD(0),SD(0)};
   for(uint j=0;j<(q.kind==3?1:l.hits);j++){uint k=source*p.capacity+j;SD values[4]={SD(0),SD(0),SD(0),SD(0)};
   if(q.kind==3&&j==0){if(q.key<21)values[0]=SD(l.sums[q.key]);else if(q.key==21)values[0]=SD(l.sums[16])-SD(l.sums[17])+SD(l.sums[18])-SD(l.sums[19]);else if(q.key==22)values[0]=SD(float(l.events));else if(q.key==23&&l.wavelength==q.other)values[0]=SD(l.sums[20]);}
@@ -557,13 +581,17 @@ static void sterms(device const MklStrayDetection *hits,device const MklStrayLed
     if(keep){values[0]=q.kind==7?SD(1):SD(h.weight);if(q.kind==0){values[1]=SD(h.weight)*SD(h.x);values[2]=SD(h.weight)*SD(h.y);values[3]=SD(h.weight)*(SD(h.x)*SD(h.x)+SD(h.y)*SD(h.y));}if(q.kind==2)values[1]=SD(1);}
   }
   for(uint c=0;c<4;c++)sum[c]=sum[c]+values[c];}
-  if(products){
-    uint q=i/n;for(uint c=0;c<4;c++)out[(14*q+c)*n+source]=sum[c].x;
-    uint c=4;for(uint a=0;a<4;a++)for(uint b=a;b<4;b++)out[(14*q+c++)*n+source]=(sum[a]*sum[b]).x;
+  // width 2 keeps (sum, sum²); 14 keeps all sums and upper-triangle products.
+  uint row=i/n;
+  if(width==2){out[(2*row)*n+source]=sum[0].x;out[(2*row+1)*n+source]=(sum[0]*sum[0]).x;}
+  else if(width==14){
+    for(uint c=0;c<4;c++)out[(14*row+c)*n+source]=sum[c].x;
+    uint c=4;for(uint a=0;a<4;a++)for(uint b=a;b<4;b++)out[(14*row+c++)*n+source]=(sum[a]*sum[b]).x;
   }else for(uint c=0;c<4;c++)out[c*len+i]=sum[c].x;
 }
-kernel void mkl_stray_terms(device const MklStrayDetection *hits [[buffer(0)]],device const MklStrayLedger *ledger [[buffer(1)]],device const uint4 *tags [[buffer(2)]],device const MklStrayQuery *queries [[buffer(3)]],device float2 *out [[buffer(4)]],constant MklStrayTallyParams &p [[buffer(5)]],uint i [[thread_position_in_grid]]){sterms(hits,ledger,tags,queries,out,p,i,false);}
-kernel void mkl_stray_moments(device const MklStrayDetection *hits [[buffer(0)]],device const MklStrayLedger *ledger [[buffer(1)]],device const uint4 *tags [[buffer(2)]],device const MklStrayQuery *queries [[buffer(3)]],device float2 *out [[buffer(4)]],constant MklStrayTallyParams &p [[buffer(5)]],uint i [[thread_position_in_grid]]){sterms(hits,ledger,tags,queries,out,p,i,true);}
+kernel void mkl_stray_terms(device const MklStrayDetection *hits [[buffer(0)]],device const MklStrayLedger *ledger [[buffer(1)]],device const uint4 *tags [[buffer(2)]],device const MklStrayQuery *queries [[buffer(3)]],device float2 *out [[buffer(4)]],constant MklStrayTallyParams &p [[buffer(5)]],uint i [[thread_position_in_grid]]){sterms(hits,ledger,tags,queries,out,p,i,0);}
+kernel void mkl_stray_moments(device const MklStrayDetection *hits [[buffer(0)]],device const MklStrayLedger *ledger [[buffer(1)]],device const uint4 *tags [[buffer(2)]],device const MklStrayQuery *queries [[buffer(3)]],device float2 *out [[buffer(4)]],constant MklStrayTallyParams &p [[buffer(5)]],
+ constant uint &width [[buffer(6)]],uint i [[thread_position_in_grid]]){sterms(hits,ledger,tags,queries,out,p,i,width);}
 kernel void mkl_stray_tally_transpose(device const float2 *input [[buffer(0)]],device float2 *out [[buffer(1)]],constant uint4 &p [[buffer(2)]],uint i [[thread_position_in_grid]]){
   uint n=p.x,q=p.y,w=p.z;if(i>=w*n*q)return;uint c=i/n,j=i%n;out[i]=input[((c/w)*n+j)*w+c%w];
 }

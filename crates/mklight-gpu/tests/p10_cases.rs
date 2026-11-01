@@ -78,6 +78,7 @@ pub fn answers(b: &dyn ComputeBackend) {
     let (w, _) = run(b, plan(b, 0, 1024, 257));
     let rays: &[Ray] = bytemuck::cast_slice(&w[0]);
     let hits: &[Hit] = bytemuck::cast_slice(&w[1]);
+    assert_eq!((rays.len(), hits.len()), (1024, 1024));
     for (i, (r, h)) in rays.iter().zip(hits).enumerate() {
         let id = u32::MAX as u64 - 7 + i as u64;
         assert_eq!(r.id, [id as u32, (id >> 32) as u32]);
@@ -234,7 +235,7 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
     let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [4, 4 * n]));
     p.operations
         .push(ResidentOp::Stray(Request::Tally(Tally::Terms {
-            products: false,
+            width: 0,
             hits: p.view(h).unwrap(),
             ledger: p.view(l).unwrap(),
             tags: p.view(tags).unwrap(),
@@ -274,7 +275,7 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
     let fused = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [14 * 4, n]));
     p.operations
         .push(ResidentOp::Stray(Request::Tally(Tally::Terms {
-            products: true,
+            width: 14,
             hits: p.view(h).unwrap(),
             ledger: p.view(l).unwrap(),
             tags: p.view(tags).unwrap(),
@@ -282,7 +283,18 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
             params,
             output: fused,
         })));
-    p.outputs = vec![products, tags, fused];
+    let scalar = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [2 * 4, n]));
+    p.operations
+        .push(ResidentOp::Stray(Request::Tally(Tally::Terms {
+            width: 2,
+            hits: p.view(h).unwrap(),
+            ledger: p.view(l).unwrap(),
+            tags: p.view(tags).unwrap(),
+            queries: p.view(q).unwrap(),
+            params,
+            output: scalar,
+        })));
+    p.outputs = vec![products, tags, fused, scalar];
     let result = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
     let view = b.read_view(result.outputs[0].view()).unwrap();
     let v = view.as_slice::<Df32>().unwrap();
@@ -295,6 +307,20 @@ pub fn split_child_estimator(b: &dyn ComputeBackend) {
                     v[(query * n + source) * 14 + c],
                     fused[(query * 14 + c) * n + source],
                     "fused P3 source product"
+                );
+            }
+        }
+    }
+    let sv = b.read_view(result.outputs[3].view()).unwrap();
+    let scalar = sv.as_slice::<Df32>().unwrap();
+    assert_eq!(scalar.len(), 2 * 4 * n);
+    for query in 0..4 {
+        for source in 0..n {
+            for (c, f) in [(0, 0), (1, 4)] {
+                assert_eq!(
+                    scalar[(query * 2 + c) * n + source],
+                    fused[(query * 14 + f) * n + source],
+                    "scalar (sum, sum²) channels"
                 );
             }
         }

@@ -62,7 +62,7 @@ struct MklStraySettings {
   uint mode, max_splits, max_events, scatter, start_medium, detector_accept, wavelengths, sequence_count;
 };
 struct MklStrayTransportParams {
-  uint count, nodes, stack_capacity, hit_capacity, budget, initialize, seed[2];
+  uint count, nodes, stack_capacity, hit_capacity, budget, parity, seed[2], threads, reserved[3];
 };
 #endif
 #endif

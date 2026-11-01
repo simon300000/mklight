@@ -21,15 +21,34 @@ fn numeric(value: f64, name: &str) -> MkResult<Df32> {
 /// Memory/command choices do not alter source IDs or their random streams.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct TransportOptions {
+    /// Maximum sources per resident plan; the plan memory budget may lower it.
     pub source_tile: usize,
+    /// Initial stack records per source; grows on device when exceeded.
     pub stack_capacity: usize,
+    /// A source exceeding this falls back to the reference.
     pub detections_per_source: usize,
+    /// Maximum events per lane per transport round.
     pub event_budget: usize,
+}
+/// Resident scratch budget per plan (two plans overlap): rays, ledgers,
+/// queues, initial stacks, detections and their tags.
+const PLAN_BYTES: usize = 160 << 20;
+impl TransportOptions {
+    /// Sources per plan, a multiple of the 256-source estimator leaves.
+    fn plan_sources(&self) -> usize {
+        use std::mem::size_of;
+        let per_source = size_of::<ops::Ray>()
+            + size_of::<ops::Ledger>()
+            + 8
+            + self.stack_capacity.max(4) * size_of::<ops::State>()
+            + self.detections_per_source * (size_of::<ops::Detection>() + 16);
+        (PLAN_BYTES / per_source).min(self.source_tile.div_ceil(256) * 256) / 256 * 256
+    }
 }
 impl Default for TransportOptions {
     fn default() -> Self {
         Self {
-            source_tile: 4096,
+            source_tile: 65536,
             stack_capacity: 16,
             detections_per_source: 32,
             event_budget: 32,
@@ -54,15 +73,17 @@ impl TransportScene {
         let mut tis = Vec::<Df32>::new();
         let materials = ops::try_fill_records(b, scene.primitives().len() * nw, ctx, |row| {
             let (pi, wl) = (row / nw, row % nw);
-            let mut m = ops::Material::default();
-            m.coatings = [CoatingSpec::resolve(
-                &ResolvedCoating::Bare,
-                scene.wavelengths_um[wl],
-                1.,
-                1.,
-                false,
-                &mut layers,
-            )?; 2];
+            let mut m = ops::Material {
+                coatings: [CoatingSpec::resolve(
+                    &ResolvedCoating::Bare,
+                    scene.wavelengths_um[wl],
+                    1.,
+                    1.,
+                    false,
+                    &mut layers,
+                )?; 2],
+                ..Default::default()
+            };
             let bsdf = match scene.behavior(pi) {
                 Behavior::Detector => {
                     m.kind = 4;
@@ -194,6 +215,7 @@ impl TransportScene {
             })?,
         })
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn append(
         &self,
         plan: &mut ResidentPlan,
@@ -373,7 +395,8 @@ fn run_resident(
 ) -> MkResult<StrayResult> {
     crate::tracer::validate_run(scene, source, settings)?;
     if options.source_tile == 0
-        || options.source_tile > 4096
+        || options.source_tile > 65536
+        || options.plan_sources() == 0
         || options.detections_per_source == 0
         || options.detections_per_source > 1024
         || options.stack_capacity == 0
@@ -426,11 +449,8 @@ fn run_resident(
     );
     let mut plans = Vec::new();
     let coverage = super::tally::coverage(b, settings, ctx)?;
-    let mut first = 0;
-    while first < settings.rays {
-        ctx.check()?;
-        let count =
-            (settings.rays - first).min(options.source_tile.div_ceil(256) as u64 * 256) as usize;
+    let submit = |first: u64| {
+        let count = (settings.rays - first).min(options.plan_sources() as u64) as usize;
         let mut plan = ResidentPlan::new(snapshot.clone());
         plan.seed = Some(settings.seed);
         plan.settings = serde_json::json!({"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"scene":scene.fingerprint(),"first":first});
@@ -448,9 +468,18 @@ fn run_resident(
             0.05 + first as f64 / settings.rays as f64 * 0.9,
             0.05 + (first + count as u64) as f64 / settings.rays as f64 * 0.9,
         );
+        MkResult::Ok((first, count, b.submit_plan(plan, &sub)?, sub))
+    };
+    // The next plan's transport overlaps this plan's host key enumeration.
+    let mut next = Some(submit(0)?);
+    while let Some((first, count, pending, sub)) = next.take() {
+        ctx.check()?;
         let started = std::time::Instant::now();
-        let result = b.submit_plan(plan, &sub)?.wait()?;
+        let result = pending.wait()?;
         transport_seconds += started.elapsed().as_secs_f64();
+        if first + (count as u64) < settings.rays {
+            next = Some(submit(first + count as u64)?);
+        }
         let started = std::time::Instant::now();
         let views = std::array::from_fn(|i| result.outputs[i].view());
         for chunk in super::tally::collect(
@@ -468,7 +497,6 @@ fn run_resident(
         }
         tally_seconds += started.elapsed().as_secs_f64();
         plans.push(result.stats);
-        first += count as u64;
     }
     let pack_started = std::time::Instant::now();
     let (detector, energy, mut signatures) = tally.finish(&scene.detector, settings.owned_classes);

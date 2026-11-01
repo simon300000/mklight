@@ -31,7 +31,9 @@ fn device_sources_and_bvh() {
             let (reference, _) = cases::run(&cpu, cases::plan(&cpu, kind, 4099, 65536));
             for tile in [127, 65536] {
                 let (actual, _) = cases::run(&b, cases::plan(&b, kind, 4099, tile));
+                assert_eq!(actual.len(), reference.len());
                 for (k, (a, e)) in actual.iter().zip(&reference).enumerate() {
+                    assert_eq!(a.len(), e.len(), "kind={kind} tile={tile} output={k}");
                     for (j, (a, e)) in a.iter().zip(e).enumerate() {
                         assert_eq!(a, e, "kind={kind} tile={tile} output={k} word={j}");
                     }

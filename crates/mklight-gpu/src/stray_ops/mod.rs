@@ -6,7 +6,6 @@ pub use build::{Build, node_count};
 mod math;
 mod records;
 mod sag;
-mod service;
 mod spec;
 mod tally;
 mod transport;
@@ -114,7 +113,7 @@ impl Geometry {
         ctx: &JobContext,
         mut shape: impl FnMut(usize) -> MkResult<SurfaceData>,
     ) -> MkResult<Self> {
-        self.shapes = try_fill_records(b, self.primitives.desc().shape[0], ctx, |i| shape(i))?;
+        self.shapes = try_fill_records(b, self.primitives.desc().shape[0], ctx, &mut shape)?;
         Ok(self)
     }
     pub fn import(&self, plan: &mut ResidentPlan) -> (PlanView, PlanView, PlanView) {

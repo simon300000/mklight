@@ -519,7 +519,7 @@ pub(crate) fn analyze_system_impl(
         ));
     }
     let snapshot = &sys.resolved().snapshot;
-    let execution = resident.and_then(|_| r.run_info.as_ref());
+    let execution = resident.and(r.run_info.as_ref());
     let run_info = timer.finish(
         snapshot,
         "stray_light",

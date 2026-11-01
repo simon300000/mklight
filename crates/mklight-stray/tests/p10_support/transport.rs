@@ -1,7 +1,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 use mklight_core::{JobContext, Snapshot};
-use mklight_gpu::ComputeBackend;
+use mklight_gpu::{ComputeBackend, stray_ops as ops};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use mklight_stray::{SplitMode, StraySettings, StraySystem, gpu};
 use std::sync::Arc;
@@ -112,24 +112,25 @@ fn transport_specification_and_tiles() {
         p.outputs = vec![a, c];
         let r = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
         assert_eq!(r.stats.copied_bytes, 0);
-        r.outputs
+        let ledger_view = b.read_view(r.outputs[1].view()).unwrap();
+        let ledgers = ops::read_records::<ops::Ledger>(&ledger_view).unwrap();
+        assert_eq!(ledgers.len(), 65);
+        // Detection rows past each source's count are unspecified.
+        let cap = gpu::TransportOptions::default().detections_per_source;
+        let width = std::mem::size_of::<ops::Detection>() / 4;
+        let hits = b.read_view(r.outputs[0].view()).unwrap().words().to_vec();
+        let valid = ledgers
             .iter()
-            .map(|h| b.read_view(h.view()).unwrap().words().to_vec())
-            .collect::<Vec<_>>()
+            .enumerate()
+            .flat_map(|(i, l)| hits[i * cap * width..][..l.hits as usize * width].to_vec())
+            .collect::<Vec<_>>();
+        (valid, ledger_view.words().to_vec())
     };
     let a = raw(&cpu, 7);
     let b = raw(&metal, 7);
-    for (k, (a, b)) in a.iter().zip(&b).enumerate() {
-        for (i, (a, b)) in a.iter().zip(b).enumerate() {
-            assert_eq!(a, b, "output={k} word={i}");
-        }
-    }
-    let c = raw(&metal, 64);
-    for (k, (b, c)) in b.iter().zip(&c).enumerate() {
-        for (i, (b, c)) in b.iter().zip(c).enumerate() {
-            assert_eq!(b, c, "tile output={k} word={i}");
-        }
-    }
+    assert!(!a.0.is_empty());
+    assert_eq!(a, b, "CPU-f32 specification and Metal records differ");
+    assert_eq!(b, raw(&metal, 64), "event budget changed the records");
 }
 
 fn compare_results(a: &mklight_stray::StrayResult, b: &mklight_stray::StrayResult) {

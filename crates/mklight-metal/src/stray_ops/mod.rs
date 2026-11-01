@@ -35,10 +35,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let mut out = x.take_output(output);
     let cdf = if let Request::Generate(r) = r {
         let mut b = x.allocate(r.cdf.len() * 2)?;
-        for (dst, src) in b.as_mut_slice().chunks_exact_mut(2).zip(&r.cdf) {
-            dst[0] = src.hi.to_bits();
-            dst[1] = src.lo.to_bits();
-        }
+        b.as_mut_slice()
+            .copy_from_slice(bytemuck::cast_slice(&r.cdf));
         Some(b)
     } else {
         None

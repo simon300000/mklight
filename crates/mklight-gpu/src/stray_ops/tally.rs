@@ -43,8 +43,11 @@ pub enum Tally {
         params: TallyParams,
         output: BufferId,
     },
+    /// `width` 0: raw sums [4, queries × sources]; 2: per-source (sum,
+    /// sum²) [2 × queries, sources]; 14: sums and their upper-triangle
+    /// products [14 × queries, sources].
     Terms {
-        products: bool,
+        width: u32,
         hits: PlanView,
         ledger: PlanView,
         tags: PlanView,
@@ -134,7 +137,7 @@ impl Tally {
                 }
             }
             Self::Terms {
-                products,
+                width,
                 hits,
                 ledger,
                 tags,
@@ -150,13 +153,14 @@ impl Tally {
                     || q != t.queries as usize
                     || n != s * t.capacity as usize
                     || tags.desc != BufferDesc::new(ElementType::U32, [n, 4])
+                    || !matches!(width, 0 | 2 | 14)
                     || p.desc(*output)?
                         != &BufferDesc::new(
                             ElementType::DoubleFloat,
-                            if *products {
-                                vec![14 * q, s]
-                            } else {
+                            if *width == 0 {
                                 vec![4, q * s]
+                            } else {
+                                vec![*width as usize * q, s]
                             },
                         )
                 {
@@ -287,7 +291,7 @@ pub(super) fn execute(t: &Tally, x: &mut cpu::Execution, ctl: &JobControl) -> Mk
             }
         }
         Tally::Terms {
-            products,
+            width,
             hits,
             ledger,
             tags,
@@ -358,7 +362,7 @@ pub(super) fn execute(t: &Tally, x: &mut cpu::Execution, ctl: &JobControl) -> Mk
                 }
                 let ftz = x.flush_to_zero;
                 let out: &mut [Df32] = bytemuck::cast_slice_mut(x.words_mut(*output));
-                if *products {
+                if *width != 0 {
                     let sum = sum.map(|v| {
                         if ftz {
                             v.add_in::<crate::Ftz>(Df32::ZERO)
@@ -366,21 +370,25 @@ pub(super) fn execute(t: &Tally, x: &mut cpu::Execution, ctl: &JobControl) -> Mk
                             v
                         }
                     });
-                    let query = i / n;
-                    let source = i % n;
-                    for c in 0..4 {
-                        out[(14 * query + c) * n + source] = sum[c];
-                    }
-                    let mut c = 4;
-                    for a in 0..4 {
-                        for b in a..4 {
-                            out[(14 * query + c) * n + source] = if ftz {
-                                sum[a].mul_in::<crate::Ftz>(sum[b])
-                            } else {
-                                sum[a] * sum[b]
-                            };
-                            c += 1;
+                    let product = |a: usize, b: usize| {
+                        if ftz {
+                            sum[a].mul_in::<crate::Ftz>(sum[b])
+                        } else {
+                            sum[a] * sum[b]
                         }
+                    };
+                    let (w, query, source) = (*width as usize, i / n, i % n);
+                    let mut channels = vec![sum[0]];
+                    if w == 2 {
+                        channels.push(product(0, 0));
+                    } else {
+                        channels.extend(&sum[1..]);
+                        for a in 0..4 {
+                            channels.extend((a..4).map(|b| product(a, b)));
+                        }
+                    }
+                    for (c, v) in channels.into_iter().enumerate() {
+                        out[(w * query + c) * n + source] = v;
                     }
                 } else {
                     for c in 0..4 {

@@ -168,12 +168,11 @@ fn intersect<E: FpEnv>(p: Primitive, ray: Ray, limit: D<E>) -> Option<Hit> {
             continue;
         }
         let q = add(oo, scale(d, *root));
-        let normal;
-        if p.kind == 2 {
+        let normal = if p.kind == 2 {
             if (q[2] - D::from(p.lower[2])).v() < 0. || (q[2] - D::from(p.upper[2])).v() > 0. {
                 continue;
             }
-            normal = unit([q[0], q[1], D::f(0.)]);
+            unit([q[0], q[1], D::f(0.)])
         } else {
             if (k * c * q[2] - D::f(1.)).v() > 1e-9 {
                 continue;
@@ -184,8 +183,8 @@ fn intersect<E: FpEnv>(p: Primitive, ray: Ray, limit: D<E>) -> Option<Hit> {
             if (r - ri * ri).v() < 0. || (r - ro * ro).v() > 0. || !mask(p, q) {
                 continue;
             }
-            normal = unit([-c * q[0], -c * q[1], D::f(1.) - c * k * q[2]]);
-        }
+            unit([-c * q[0], -c * q[1], D::f(1.) - c * k * q[2]])
+        };
         return Some(Hit {
             point: q.map(|x| x.0),
             normal: normal.map(|x| x.0),
