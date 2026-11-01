@@ -1355,6 +1355,7 @@ fn refine_gpu(
         }
         half /= 2;
     }
+    gpu.lattice_keys = caches.iter().map(|c| c.outs.len()).sum();
     Ok(caches)
 }
 
@@ -1502,4 +1503,63 @@ fn p9_dense_achromat_probe_accuracy() {
         bytemuck::cast_slice::<_, u32>(&emulated.values)
     );
     eprintln!("reference flags by surface={by_surface:?}");
+    let mut gpu = crate::gpu::GhostTransport::new(
+        &b,
+        &model,
+        std::slice::from_ref(&path),
+        &JobContext::new(),
+    )
+    .unwrap();
+    gpu.prepare_fields(
+        &[FieldPoint::system(model.system().system(), 1)],
+        &JobContext::new(),
+    )
+    .unwrap();
+    let native = refine_gpu(
+        &mut gpu,
+        &model,
+        &[steps.as_slice()],
+        std::slice::from_ref(&cells),
+        &fields,
+        &settings,
+        &map,
+        &JobContext::new(),
+    )
+    .unwrap();
+    fn leaf_keys(
+        trace: &PathTrace,
+        cache: &Probes,
+        p: Probe,
+        half: i32,
+        out: &mut Vec<(Probe, i32)>,
+    ) {
+        if trace.splits(cache, p, half) {
+            for child in p.around(half / 2) {
+                leaf_keys(trace, cache, child, half / 2, out);
+            }
+        } else {
+            out.push((p, half));
+        }
+    }
+    let (mut expected_leaves, mut actual_leaves) = (Vec::new(), Vec::new());
+    for cell in &cells {
+        leaf_keys(&trace, &cache, cell.probe, HALF, &mut expected_leaves);
+        leaf_keys(&trace, &native[0], cell.probe, HALF, &mut actual_leaves);
+    }
+    assert_eq!(expected_leaves, actual_leaves);
+    assert_eq!(
+        cache
+            .index
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>(),
+        native[0].index.keys().copied().collect()
+    );
+    eprintln!(
+        "native adaptive leaf set={} lattice_keys={} transport_probes={} reference_probes={}",
+        actual_leaves.len(),
+        gpu.lattice_keys,
+        gpu.distinct_probes,
+        gpu.fallback_probes
+    );
 }

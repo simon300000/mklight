@@ -455,7 +455,8 @@ probe and retain that reference bin decision, including f64 rounding at an
 exact edge. This matters for a perfect image on a bin boundary: passing the
 geometry budget alone does not qualify its map. `RunInfo.settings.gpu`
 records boundary probes, observed pixel migrations, coating/reference
-completion counts. Reference values are filled into sparse shared records;
+completion counts, cached lattice keys and transported probes. Reference
+values are filled into sparse shared records;
 unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.

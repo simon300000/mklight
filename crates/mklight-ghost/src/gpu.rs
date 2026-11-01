@@ -31,6 +31,7 @@ pub struct GhostTransport<'a> {
     pub(crate) resident_probes: Vec<BufferHandle>,
     resident_keys: Vec<BufferHandle>,
     pub distinct_probes: usize,
+    pub(crate) lattice_keys: usize,
     pub fallback_probes: usize,
     pub(crate) reference_seconds: f64,
     pub(crate) boundary_probes: usize,
@@ -171,6 +172,7 @@ impl<'a> GhostTransport<'a> {
             resident_probes: vec![],
             resident_keys: vec![],
             distinct_probes: 0,
+            lattice_keys: 0,
             fallback_probes: 0,
             reference_seconds: 0.,
             boundary_probes: 0,
@@ -391,7 +393,7 @@ impl<'a> GhostTransport<'a> {
             run.precision = r.precision;
             run.settings["resident_backend"] = r.settings.clone();
         }
-        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
                 "P9: {} probes completed by CPU f64 reference",

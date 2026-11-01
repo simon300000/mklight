@@ -26,7 +26,7 @@ fn counters(r: &mklight_ghost::GhostIrradiance, system_copy_bytes: u64) -> serde
             max_command = max_command.max(s["max_command_seconds"].as_f64().unwrap());
         }
     }
-    serde_json::json!({"device_seconds":device,"commands":commands,"copied_bytes":copied+system_copy_bytes,"plan_copied_bytes":copied,"system_copy_bytes":system_copy_bytes,"polished_rays":polished,"reference_seconds":g["reference_seconds"],"peak_plan_bytes":peak,"retained_resident_bytes":g["resident_bytes"],"allocations":allocations,"max_command_seconds":max_command,"transport_probes":g["distinct_probes"],"reference_probes":g["reference_probes"],"boundary_probes":g["boundary_probes"],"pixel_migrations":g["pixel_migrations"]})
+    serde_json::json!({"device_seconds":device,"commands":commands,"copied_bytes":copied+system_copy_bytes,"plan_copied_bytes":copied,"system_copy_bytes":system_copy_bytes,"polished_rays":polished,"reference_seconds":g["reference_seconds"],"peak_plan_bytes":peak,"retained_resident_bytes":g["resident_bytes"],"allocations":allocations,"max_command_seconds":max_command,"transport_probes":g["distinct_probes"],"lattice_keys":g["lattice_keys"],"reference_probes":g["reference_probes"],"boundary_probes":g["boundary_probes"],"pixel_migrations":g["pixel_migrations"]})
 }
 #[test]
 #[ignore]
