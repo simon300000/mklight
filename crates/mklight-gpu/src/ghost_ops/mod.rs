@@ -79,6 +79,10 @@ pub struct FirstOrderStep {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
+    MomentTerms {
+        hits: PlanView,
+        output: BufferId,
+    },
     SegmentFlags {
         keys: PlanView,
         bins: usize,
@@ -173,6 +177,17 @@ fn records<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     let (probes, offsets, steps, wavelengths, max_steps, output) = match r {
+        Request::MomentTerms { hits, output } => {
+            let n = hits.desc.shape.first().copied().unwrap_or(0);
+            if hits.desc != BufferDesc::new(ElementType::DoubleFloat, [n, 5])
+                || hits.stride != 1
+                || p.desc(*output)? != &BufferDesc::new(ElementType::DoubleFloat, [3, n])
+            {
+                return Err(bad("ghost moment terms"));
+            }
+            return Ok(());
+        }
+
         Request::SegmentFlags { keys, output, .. } => {
             if keys.desc.element != ElementType::U32
                 || keys.desc.shape.len() != 1
@@ -365,6 +380,11 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn accesses(r: &Request) -> Access {
     match r {
+        Request::MomentTerms { hits, output } => Access {
+            reads: vec![hits.clone()],
+            writes: vec![*output],
+            systems: vec![],
+        },
         Request::SegmentFlags { keys, output, .. } => Access {
             reads: vec![keys.clone()],
             writes: vec![*output],
@@ -494,6 +514,21 @@ fn execute_in<E: crate::FpEnv>(
     ctl: &JobControl,
 ) -> MkResult<()> {
     match r {
+        Request::MomentTerms { hits, output } => {
+            let n = hits.desc.shape[0];
+            for i in 0..n {
+                if i % 4096 == 0 {
+                    ctl.check()?;
+                }
+                let v = rows::<Df32>(x, hits);
+                let row = [v[5 * i], v[5 * i + 1], v[5 * i + 2]];
+                let out = bytemuck::cast_slice_mut::<_, Df32>(x.words_mut(*output));
+                for k in 0..3 {
+                    out[k * n + i] = row[k];
+                }
+            }
+        }
+
         Request::SegmentFlags { keys, bins, output } => {
             for i in 0..keys.desc.len()? {
                 if i % 4096 == 0 {

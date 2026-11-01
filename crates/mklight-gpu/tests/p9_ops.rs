@@ -27,6 +27,37 @@ pub fn fixed_hits(b: &dyn ComputeBackend) {
         .unwrap();
     let mut p = ResidentPlan::new(Snapshot::new(samples::singlet()).unwrap());
     let input = p.import(input.view());
+    let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [3, 7]));
+    p.operations
+        .push(ResidentOp::Ghost(g::Request::MomentTerms {
+            hits: p.view(input).unwrap(),
+            output: terms,
+        }));
+    let mo = b
+        .fill_buffer(BufferDesc::new(ElementType::U32, [2]), &mut |mut f| {
+            f.as_mut_slice::<u32>()?.copy_from_slice(&[0, 7]);
+            Ok(())
+        })
+        .unwrap();
+    let mo = p.import(mo.view());
+    let moments = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, 10]));
+    let ms = p.scratch(BufferDesc::new(ElementType::U32, [1]));
+    p.operations
+        .push(ResidentOp::Collectives(c::Request::SegmentReduce(
+            c::SegmentReduce {
+                values: p.view(terms).unwrap(),
+                offsets: p.view(mo).unwrap(),
+                mask: None,
+                mask_value: 0,
+                weights: None,
+                max_segment_len: 7,
+                reference: None,
+                mode: ReduceMode::DoubleFloat,
+                kind: c::SegmentKind::Moments2,
+                output: moments,
+                status: ms,
+            },
+        )));
     let k = p.scratch(BufferDesc::new(ElementType::U32, [7]));
     let ids = p.scratch(BufferDesc::new(ElementType::U32, [7]));
     let w = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [7]));
@@ -110,12 +141,20 @@ pub fn fixed_hits(b: &dyn ComputeBackend) {
         pixels: pixels_id,
         output: out,
     }));
-    p.outputs = vec![out, count, os, sk];
+    p.outputs = vec![out, count, os, sk, moments];
     let r = b
         .submit_plan(p, &JobContext::new())
         .unwrap()
         .wait()
         .unwrap();
+    let m = b.read_view(r.outputs[4].view()).unwrap();
+    let m = m.as_slice::<Df32>().unwrap();
+    assert_eq!(m[0].to_f64(), 7.);
+    assert!((m[1].to_f64() - 2.8).abs() < 1e-13);
+    assert!((m[2].to_f64() - 0.375).abs() < 1e-13);
+    assert!((m[3].to_f64() + 0.25 / 2.8).abs() < 1e-13);
+    let central = 2.15 - 2.8 * (0.375f64.powi(2) + (0.25f64 / 2.8).powi(2));
+    assert!((m[5].to_f64() + m[7].to_f64() - central).abs() < 1e-12);
     let map = b.read_view(r.outputs[0].view()).unwrap();
     for (a, e) in map
         .as_slice::<Df32>()

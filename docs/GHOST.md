@@ -438,11 +438,15 @@ Completed probes remain resident. Gathered leaves carry their stable IDs,
 field/path map segment and quadrature area. One batched map chain computes
 pixel keys, uses P3 stable sorting and scan to find occupied segments,
 reduces those segments with P3's fixed compensated tree, and scatters into
-dense maps. Empty bins never require a large reduction scratch plane.
+dense maps. Field/path flux, centroids and two-pass central moments use a
+parallel P3 moments reduction over the same resident leaves. Empty bins never require a large reduction scratch plane.
 Only the occupied-segment count and maximum length cross a host control
 boundary; there are no floating-point atomics. Host code assembles the
-small statistics, ratios, coverage and peak ranking in reference order.
-Inputs are filled directly in shared buffers and outputs are read in place.
+small reduced statistics, ratios, coverage and peak ranking in reference order.
+Numerical inputs are filled directly in shared buffers and outputs are read
+in place. The existing packed-system upload is cached by snapshot, material,
+clipping and build identity; its small cold metadata copy is measured
+separately from the zero-copy probe/map pipeline.
 
 Point binning is discontinuous at pixel edges. Hits within the 2e-5 mm
 geometry uncertainty band of a pixel edge receive a counted f64 reference

@@ -390,6 +390,7 @@ fn base_cells(
     fields: &[SelectedField],
     wls: &[usize],
     settings: &IrradianceSettings,
+    ctx: &JobContext,
 ) -> MkResult<Vec<Vec<Cell>>> {
     let sys = model.system();
     let osys = sys.system();
@@ -421,6 +422,7 @@ fn base_cells(
             for (wi, &w) in wls.iter().enumerate() {
                 let weight = fw[fi] / sf * ww[wi] / sw * area;
                 for iy in 0..n {
+                    ctx.check()?;
                     for ix in 0..n {
                         let [x, y] = [ix, iy].map(|i| (2 * i as i32 + 1 - n as i32) * HALF);
                         // Skip cells entirely outside the sampled disc.
@@ -448,6 +450,12 @@ fn base_cells(
 
 /// Per-path results: per-field maps and statistics, and the number and
 /// flux of rays lost to the virtual-segment rule.
+#[derive(Default)]
+pub(crate) struct LeafSummary {
+    traced: usize,
+    virtual_rays: usize,
+    virtual_flux: KahanSum,
+}
 struct PathRun {
     maps: Vec<IrradianceMap>,
     stats: Vec<FieldIrradiance>,
@@ -476,12 +484,22 @@ impl PathTrace<'_> {
         half: i32,
         weight: f64,
         out: &mut Vec<mklight_gpu::ghost_ops::Leaf>,
+        summary: &mut LeafSummary,
     ) {
         if self.splits(probes, centre, half) {
             for c in centre.around(half / 2) {
-                self.resident_leaves(probes, c, half / 2, weight * 0.25, out);
+                self.resident_leaves(probes, c, half / 2, weight * 0.25, out, summary);
             }
-        } else if matches!(probes.get(centre), Ok(Some(_))) {
+        } else {
+            summary.traced += 1;
+            if let Err(w) = probes.get(centre) {
+                summary.virtual_rays += 1;
+                summary.virtual_flux.add(weight * w);
+            }
+            if !matches!(probes.get(centre), Ok(Some(_))) {
+                return;
+            }
+
             let [batch, row] = probes.locations[probes.index[&centre]].unwrap();
             out.push(mklight_gpu::ghost_ops::Leaf {
                 batch: batch as u32,
@@ -651,7 +669,7 @@ fn run_path(
     ctx: &JobContext,
     progress: (f64, f64),
     cached: Option<&Probes>,
-    gpu_maps: Option<&[f64]>,
+    gpu_maps: Option<(&crate::gpu::MapData, usize)>,
 ) -> MkResult<PathRun> {
     let path = PathTrace {
         model,
@@ -661,6 +679,44 @@ fn run_path(
         overfill: settings.overfill,
         map: template,
     };
+    if let Some((data, path_index)) = gpu_maps {
+        let (mut maps, mut stats) = (Vec::new(), Vec::new());
+        let (mut virtual_rays, mut virtual_flux) = (0, KahanSum::default());
+        for (fi, field) in fields.iter().enumerate() {
+            ctx.check()?;
+            let id = path_index * fields.len() + fi;
+            let summary = &data.summaries[id];
+            let m = data.moments[id];
+            let flux = m[1];
+            let mut map = template.clone();
+            map.values.copy_from_slice(
+                &data.values[id * template.values.len()..(id + 1) * template.values.len()],
+            );
+            stats.push(FieldIrradiance {
+                field: field.id,
+                flux,
+                flux_on_map: map.flux(),
+                peak: map.peak(),
+                centroid: if flux > 0. { [m[2], m[3]] } else { [0.; 2] },
+                rms_radius: if flux > 0. {
+                    ((m[5] + m[7]) / flux).sqrt()
+                } else {
+                    0.
+                },
+                rays_traced: summary.traced,
+                rays_detected: m[0] as usize,
+            });
+            maps.push(map);
+            virtual_rays += summary.virtual_rays;
+            virtual_flux.add(summary.virtual_flux.value());
+        }
+        return Ok(PathRun {
+            maps,
+            stats,
+            virtual_rays,
+            virtual_flux: virtual_flux.value(),
+        });
+    }
     let all: Vec<Cell> = cells.iter().flatten().copied().collect();
     let owned;
     let probes = match cached {
@@ -722,9 +778,7 @@ fn run_path(
             swx.add(w * x);
             swy.add(w * y);
             if let Some(b) = template.bin_of(x, y) {
-                if gpu_maps.is_none() {
-                    bins[b].add(w);
-                }
+                bins[b].add(w);
                 on.add(w);
             }
         }
@@ -742,14 +796,8 @@ fn run_path(
             .map(|&(x, y, w)| w * (x - cx).mul_add(x - cx, (y - cy) * (y - cy)))
             .collect();
         let mut map = template.clone();
-        if let Some(values) = gpu_maps {
-            map.values.copy_from_slice(
-                &values[fi * template.values.len()..(fi + 1) * template.values.len()],
-            );
-        } else {
-            for (v, b) in map.values.iter_mut().zip(&bins) {
-                *v = b.value() / area;
-            }
+        for (v, b) in map.values.iter_mut().zip(&bins) {
+            *v = b.value() / area;
         }
         stats.push(FieldIrradiance {
             field: field.id,
@@ -862,7 +910,7 @@ pub(crate) fn ghost_irradiance_with_backend(
 
     ctx.report(0.0, "preparing rays");
     ctx.check()?;
-    let cells = base_cells(model, &selected, &wls, settings)?;
+    let cells = base_cells(model, &selected, &wls, settings, ctx)?;
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
@@ -903,6 +951,7 @@ pub(crate) fn ghost_irradiance_with_backend(
         let all_steps =
             std::iter::once(pstep.as_slice()).chain(path_steps.iter().map(Vec::as_slice));
         let mut leaves = Vec::new();
+        let mut summaries = Vec::new();
         for (pi, steps) in all_steps.enumerate() {
             let path = PathTrace {
                 model,
@@ -915,24 +964,30 @@ pub(crate) fn ghost_irradiance_with_backend(
             for (fi, field_cells) in cells.iter().enumerate() {
                 ctx.check()?;
                 let start = leaves.len();
-                for c in field_cells {
-                    path.resident_leaves(&caches[pi], c.probe, HALF, c.weight, &mut leaves);
+                let mut summary = LeafSummary::default();
+                for block in field_cells.chunks(1024) {
+                    ctx.check()?;
+                    for c in block {
+                        path.resident_leaves(
+                            &caches[pi],
+                            c.probe,
+                            HALF,
+                            c.weight,
+                            &mut leaves,
+                            &mut summary,
+                        );
+                    }
                 }
+                summaries.push(summary);
                 for l in &mut leaves[start..] {
                     l.map = (pi * selected.len() + fi) as u32;
                 }
             }
         }
-        Some(g.map(
-            leaves,
-            &template,
-            (paths.len() + 1) * selected.len(),
-            &ctx.subrange(0.8, 0.9),
-        )?)
+        Some(g.map(leaves, &template, summaries, &ctx.subrange(0.8, 0.9))?)
     } else {
         None
     };
-    let map_stride = selected.len() * template.values.len();
     let prun = run_path(
         model,
         &pstep,
@@ -947,7 +1002,7 @@ pub(crate) fn ghost_irradiance_with_backend(
             (0.0, 1.0 / n_jobs)
         },
         cached.as_ref().map(|v| &v[0]),
-        gpu_maps.as_ref().map(|v| &v[..map_stride]),
+        gpu_maps.as_ref().map(|v| (v, 0)),
     )?;
     let (pmaps, pstats) = (prun.maps, prun.stats);
     if prun.virtual_rays > 0 {
@@ -995,9 +1050,7 @@ pub(crate) fn ghost_irradiance_with_backend(
             ctx,
             span,
             cached.as_ref().map(|v| &v[k + 1]),
-            gpu_maps
-                .as_ref()
-                .map(|v| &v[(k + 1) * map_stride..(k + 2) * map_stride]),
+            gpu_maps.as_ref().map(|v| (v, k + 1)),
         )?;
         if gpu.is_some() {
             ctx.report(
@@ -1111,7 +1164,7 @@ mod tests {
                 ..Default::default()
             };
             let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
-            let cells = base_cells(&model, &fields, &wls, &settings)
+            let cells = base_cells(&model, &fields, &wls, &settings, &JobContext::new())
                 .unwrap()
                 .concat();
             for path in [
@@ -1244,12 +1297,14 @@ fn refine_gpu(
                 )?;
                 let mut replacements = Vec::new();
                 for (row, ((pi, p, id, _), v)) in block.iter().zip(values.iter()).enumerate() {
-                    if row % 256 == 0 {
+                    if row % 64 == 0 {
                         ctx.check()?;
                     }
                     let geometric = crate::gpu::ray_out(*v);
                     let edge = matches!(geometric,Ok(Some((x,y,_))) if pixel_edge(template,x,y));
-                    let result = if v.status & MKL_RAY_CODE_MASK == MKL_GHOST_REFERENCE || edge {
+                    let code = v.status & MKL_RAY_CODE_MASK;
+                    let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
+                    let result = if code == MKL_GHOST_REFERENCE || numerical || edge {
                         gpu.fallback_probes += 1;
                         let reference_start = std::time::Instant::now();
                         let reference = paths[*pi].trace(*p);
@@ -1330,7 +1385,7 @@ fn p9_dense_achromat_probe_accuracy() {
     };
     let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
     let wls = (0..model.system().wavelengths_um.len()).collect::<Vec<_>>();
-    let cells = base_cells(&model, &fields, &wls, &settings)
+    let cells = base_cells(&model, &fields, &wls, &settings, &JobContext::new())
         .unwrap()
         .concat();
     let path = GhostPath::new(vec![2, 1]);

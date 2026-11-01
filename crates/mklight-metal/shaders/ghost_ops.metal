@@ -28,10 +28,10 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
   float2 cosine=mkl_df_div(mkl_ddot(dir,hit.g),mkl_dnorm(hit.g));if(cosine.x<0)cosine=mkl_df_neg(cosine);
   MklDv next=dir;
   if(st.channel==1||refl){
-   if(surf.shape==MKL_SHAPE_DIFFRACTIVE){
+   if(surf.shape==MKL_SHAPE_DIFFRACTIVE&&st.channel!=4){
     MklJet<MklDf> phase=mkl_phase(surf,pool,MklDf{pos.v[0]},MklDf{pos.v[1]});
     if(!mkl_diffract(dir,hit.g,n1,n2,phase.x*MklDf{st.scale},phase.y*MklDf{st.scale},refl,next)){v.status=fail|MKL_RAY_EVANESCENT;break;}
-   }else if(surf.shape==MKL_SHAPE_PARAXIAL){
+   }else if(surf.shape==MKL_SHAPE_PARAXIAL&&st.channel!=4){
     MklDv kk=dir;if(refl)kk.v[2]=mkl_df_neg(kk.v[2]);float2 delta;
     if(!mkl_ideal_lens(pos.v[0],pos.v[1],kk,st.power,n1,n2,float2(0),next,delta)){v.status=fail|MKL_RAY_DEGENERATE;break;}
    }else if(refl){
@@ -99,3 +99,5 @@ kernel void mkl_ghost_map_scatter(device const float2* values [[buffer(0)]],devi
 }
 
 kernel void mkl_ghost_reference_count(device const MklGhostValue* values [[buffer(0)]],device atomic_uint* count [[buffer(1)]],constant uint2& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){uint i=p.y+tid;if(i<p.x&&(values[i].status&MKL_RAY_CODE_MASK)==MKL_GHOST_REFERENCE)atomic_fetch_add_explicit(count,1u,memory_order_relaxed);}
+
+kernel void mkl_ghost_moment_terms(device const float2* hits [[buffer(0)]],device float2* terms [[buffer(1)]],constant uint4& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){uint i=p.y+tid;if(i>=p.x)return;for(uint k=0;k<3;k++)terms[k*p.z+i]=hits[5*i+k];}

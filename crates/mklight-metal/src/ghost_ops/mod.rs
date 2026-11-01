@@ -43,6 +43,39 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         ..Default::default()
     };
     match r {
+        Request::MomentTerms { hits, output } => {
+            let pso = x
+                .gpu
+                .pipeline(&PipelineKey::plain("mkl_ghost_moment_terms"))?;
+            let mut out = x.take_output(*output);
+            let n = hits.desc.shape[0];
+            for offset in (0..n).step_by(262144) {
+                ctl.check()?;
+                let wall = Instant::now();
+                // SAFETY: a pure transpose from validated leaf records.
+                let cs = unsafe {
+                    x.gpu.run("ghost field moments", |e| {
+                        e.set_pipeline(&pso);
+                        let (b, o) = x.buffer(hits);
+                        e.set_buffer(0, b, o);
+                        e.set_buffer_mut(1, &mut out, 0);
+                        e.set_bytes(
+                            2,
+                            &[(offset + 262144).min(n) as u32, offset as u32, n as u32, 0],
+                        );
+                        e.dispatch_groups([(n - offset).min(262144).div_ceil(256), 1, 1], 256);
+                        Ok(())
+                    })?
+                };
+                stats.device_seconds += cs.gpu_seconds;
+                stats.command_buffers += 1;
+                stats.max_command_seconds =
+                    stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
+                ctl.check()?;
+            }
+            x.put_output(*output, out);
+        }
+
         Request::SegmentFlags { keys, bins, output } => {
             let pso = x
                 .gpu

@@ -5,26 +5,28 @@ use mklight_core::{JobContext, samples};
 use mklight_ghost::{GhostSettings, IrradianceSettings, ghost_irradiance, gpu};
 use mklight_gpu::ComputeBackend;
 use std::time::Instant;
-fn counters(r: &mklight_ghost::GhostIrradiance) -> serde_json::Value {
+fn counters(r: &mklight_ghost::GhostIrradiance, system_copy_bytes: u64) -> serde_json::Value {
     let g = &r.run.settings["gpu"];
     let plans = g["plans"]
         .as_array()
         .unwrap()
         .iter()
         .chain(g["map_plans"].as_array().unwrap());
+    let mut polished = 0u64;
     let (mut device, mut commands, mut copied, mut peak, mut max_command, mut allocations) =
         (0., 0u64, 0u64, 0u64, 0.0f64, 0u64);
     for p in plans {
         device += p["device_seconds"].as_f64().unwrap();
         commands += p["command_buffers"].as_u64().unwrap();
         copied += p["copied_bytes"].as_u64().unwrap();
+        polished += p["polished_rays"].as_u64().unwrap();
         allocations += p["allocations"].as_u64().unwrap();
         peak = peak.max(p["peak_bytes"].as_u64().unwrap());
         for s in p["stages"].as_array().unwrap() {
             max_command = max_command.max(s["max_command_seconds"].as_f64().unwrap());
         }
     }
-    serde_json::json!({"device_seconds":device,"commands":commands,"copied_bytes":copied,"peak_plan_bytes":peak,"retained_resident_bytes":g["resident_bytes"],"allocations":allocations,"max_command_seconds":max_command,"transport_probes":g["distinct_probes"],"reference_probes":g["reference_probes"],"boundary_probes":g["boundary_probes"],"pixel_migrations":g["pixel_migrations"]})
+    serde_json::json!({"device_seconds":device,"commands":commands,"copied_bytes":copied+system_copy_bytes,"plan_copied_bytes":copied,"system_copy_bytes":system_copy_bytes,"polished_rays":polished,"reference_seconds":g["reference_seconds"],"peak_plan_bytes":peak,"retained_resident_bytes":g["resident_bytes"],"allocations":allocations,"max_command_seconds":max_command,"transport_probes":g["distinct_probes"],"reference_probes":g["reference_probes"],"boundary_probes":g["boundary_probes"],"pixel_migrations":g["pixel_migrations"]})
 }
 #[test]
 #[ignore]
@@ -51,6 +53,7 @@ fn matched_double_gauss() {
             let start = Instant::now();
             let c = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
             let cs = start.elapsed().as_secs_f64();
+            let uploaded_before = b.resident_cache_stats().uploaded_bytes;
             let start = Instant::now();
             let g = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
             let gs = start.elapsed().as_secs_f64();
@@ -66,7 +69,7 @@ fn matched_double_gauss() {
             assert!(l1 < 1e-3, "map L1 {l1}");
             eprintln!(
                 "{}",
-                serde_json::json!({"n":n,"run":run,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1,"counters":counters(&g)})
+                serde_json::json!({"n":n,"run":run,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1,"counters":counters(&g,b.resident_cache_stats().uploaded_bytes-uploaded_before)})
             );
             if run > 0 {
                 cpu.push(cs);
@@ -96,6 +99,7 @@ fn all_sample_default_maps() {
         let start = Instant::now();
         let c = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
         let cs = start.elapsed().as_secs_f64();
+        let uploaded_before = b.resident_cache_stats().uploaded_bytes;
         let start = Instant::now();
         let g = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
         let gs = start.elapsed().as_secs_f64();
@@ -137,7 +141,7 @@ fn all_sample_default_maps() {
         assert!(primary_l1 <= 1e-3, "{name} primary map L1 {primary_l1}");
         eprintln!(
             "{}",
-            serde_json::json!({"sample":name,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1/flux.max(1e-30),"primary_flux_error":primary,"primary_map_l1_relative":primary_l1,"counters":counters(&g)})
+            serde_json::json!({"sample":name,"settings":settings,"cpu_seconds":cs,"metal_seconds":gs,"map_l1_relative":l1/flux.max(1e-30),"primary_flux_error":primary,"primary_map_l1_relative":primary_l1,"counters":counters(&g,b.resident_cache_stats().uploaded_bytes-uploaded_before)})
         );
         assert!(
             l1 <= 1e-3 * flux + 1e-12,

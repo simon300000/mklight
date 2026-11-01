@@ -135,7 +135,7 @@ pub fn trace<E: FpEnv>(
         let mut next = dir;
         let refl = st.channel == 2 || st.channel == 4;
         if st.channel == 1 || refl {
-            if surf.shape == MKL_SHAPE_DIFFRACTIVE {
+            if surf.shape == MKL_SHAPE_DIFFRACTIVE && st.channel != 4 {
                 let p = crate::surface_math::phase(surf, pool, pos[0], pos[1]);
                 let scale = D::from_df(st.scale);
                 match diffract(dir, hit.g, n1, n2, [p.x * scale, p.y * scale], refl) {
@@ -145,7 +145,7 @@ pub fn trace<E: FpEnv>(
                         break;
                     }
                 }
-            } else if surf.shape == MKL_SHAPE_PARAXIAL {
+            } else if surf.shape == MKL_SHAPE_PARAXIAL && st.channel != 4 {
                 let mut kk = dir;
                 if refl {
                     kk[2] = -kk[2];

@@ -58,15 +58,36 @@ fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
         bytemuck::cast_slice::<_, u32>(&again.values)
     );
     let (mut maxp, mut maxd, mut maxw) = (0.0f64, 0.0f64, 0.0f64);
+    let mut reference_probes = 0u64;
     for (i, (v, r)) in result.values.iter().zip(refs).enumerate() {
         let code = v.status & MKL_RAY_CODE_MASK;
+        if code == MKL_GHOST_REFERENCE {
+            reference_probes += 1;
+            continue;
+        }
         let expected = match r.status {
             SequenceStatus::Ok => 0,
             SequenceStatus::Miss { .. } => MKL_RAY_MISS,
             SequenceStatus::Clipped { .. } => MKL_RAY_VIGNETTED,
             SequenceStatus::TotalInternalReflection { .. } => MKL_RAY_TIR,
             SequenceStatus::Virtual { .. } => MKL_GHOST_VIRTUAL,
-            SequenceStatus::Failed { .. } => continue,
+            SequenceStatus::Failed {
+                surface, reason, ..
+            } => match reason {
+                SequenceFail::NoConvergence => MKL_RAY_NOT_CONVERGED,
+                SequenceFail::OutsideDomain => MKL_RAY_OUTSIDE_DOMAIN,
+                SequenceFail::NonFinite => MKL_RAY_NONFINITE,
+                SequenceFail::Degenerate
+                    if matches!(
+                        m.system().surfaces[surface as usize].shape,
+                        mklight_core::SurfaceShape::Diffractive { .. }
+                    ) =>
+                {
+                    MKL_RAY_EVANESCENT
+                }
+                SequenceFail::Degenerate => MKL_RAY_DEGENERATE,
+                SequenceFail::InvalidStep => panic!("validated path produced an invalid step"),
+            },
         };
         assert_eq!(code, expected, "probe {i} {:?}", r.status);
         if code != 0 {
@@ -91,8 +112,9 @@ fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
             r.weight()
         );
     }
+    assert!(result.stats.fallback_count >= reference_probes);
     eprintln!(
-        "{} probes={} max_position={maxp:e} max_direction={maxd:e} max_weight_relative={maxw:e}",
+        "{} reference={reference_probes} probes={} max_position={maxp:e} max_direction={maxd:e} max_weight_relative={maxw:e}",
         m.system().system().name,
         probes.len()
     );
@@ -571,4 +593,63 @@ fn absorption_long_track_and_telecentric_launches() {
         .sum::<f64>()
         * cm.bin_area();
     assert!(l1 < 1e-3 * cm.flux());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn passive_and_sensor_surfaces_ignore_doe_phase_and_efficiency() {
+    use mklight_core::{Interaction, SurfaceShape};
+    let b = mklight_metal::MetalBackend::new()
+        .unwrap()
+        .expect("P9 requires host Metal");
+    let mut dummy = samples::hybrid_diffractive_achromat();
+    let index = dummy
+        .surfaces
+        .iter()
+        .position(|s| matches!(s.shape, SurfaceShape::Diffractive { .. }))
+        .unwrap();
+    let image_shape = dummy.surfaces[index].shape.clone();
+    dummy.surfaces[index].interaction = Interaction::Dummy;
+    let m = model(dummy, unclipped());
+    let override_path = GhostPath {
+        reflections: vec![],
+        diffraction: vec![mklight_ghost::path::DiffractionOrder {
+            surface: index as u32,
+            visit: 0,
+            order: 0,
+        }],
+    };
+    compare(&b, &m, &[GhostPath::primary(), override_path.clone()]);
+    let settings = IrradianceSettings {
+        paths: Some(vec![override_path]),
+        pupil_samples: 8,
+        fields: vec![0],
+        wavelengths: vec![0],
+        map_bins: [8, 8],
+        map_half_size: Some([12.; 2]),
+        ..Default::default()
+    };
+    let c = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
+    let g = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
+    assert!((g.ghosts[0].flux - c.ghosts[0].flux).abs() < 1e-10 * c.ghosts[0].flux + 1e-14);
+    for shape in [image_shape, SurfaceShape::Paraxial { focal_length: 80. }] {
+        let mut s = samples::hybrid_diffractive_achromat();
+        let image = s.surfaces.len() - 1;
+        s.surfaces[image].shape = shape;
+        let m = model(
+            s,
+            GhostSettings {
+                sensor_reflectance: Some(0.3),
+                ..unclipped()
+            },
+        );
+        compare(
+            &b,
+            &m,
+            &[
+                GhostPath::primary(),
+                GhostPath::new(vec![image as u32, (image - 1) as u32]),
+            ],
+        );
+    }
 }
