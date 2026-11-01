@@ -64,18 +64,19 @@ kernel void mkl_wave_lsf(device const float *image [[buffer(0)]],device float *o
     for(uint j=0;j<p.n;++j)s=mkl_df_add_f32(s,image[k<p.n?j*p.n+k:(k-p.n)*p.n+j]);
     out[k]=wf(mkl_df_mul(s,wdf(p.spacing)));
 }
-// Each thread owns one image pixel. Sample tiles preserve the same addition
-// order across command boundaries, without atomics or a pair matrix.
-kernel void mkl_wave_huygens(device const float *amp [[buffer(0)]],device const float *cov [[buffer(1)]],device const float2 *opd [[buffer(2)]],device const float2 *s [[buffer(3)]],device float *out [[buffer(4)]],device float4 *acc [[buffer(6)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
-    if(id>=p.count)return;uint pixel=p.first+id;
+// Each thread sums one block of sample_count pupil samples for one image
+// pixel (sample_first blocks per pixel); the finish kernel adds the blocks
+// in order. Fixed order, no atomics or pair matrix.
+kernel void mkl_wave_huygens(device const float *amp [[buffer(0)]],device const float *cov [[buffer(1)]],device const float2 *opd [[buffer(2)]],device float4 *acc [[buffer(6)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
+    if(id>=p.count)return;uint pixel=p.first+id/p.sample_first,block=id%p.sample_first;
     float2 x=mkl_df_mul_f32(wdf(p.spacing),float(pixel%p.size)-float(p.size/2));
     float2 y=mkl_df_mul_f32(wdf(p.spacing),float(pixel/p.size)-float(p.size/2));
     WVec point;
     point.x=mkl_df_add(wdf(p.origin[0]),mkl_df_add(mkl_df_mul(wdf(p.x_axis[0]),x),mkl_df_mul(wdf(p.y_axis[0]),y)));
     point.y=mkl_df_add(wdf(p.origin[1]),mkl_df_add(mkl_df_mul(wdf(p.x_axis[1]),x),mkl_df_mul(wdf(p.y_axis[1]),y)));
     point.z=mkl_df_add(wdf(p.origin[2]),mkl_df_add(mkl_df_mul(wdf(p.x_axis[2]),x),mkl_df_mul(wdf(p.y_axis[2]),y)));
-    float2 r=wdf(p.radius),xx=wdot(point,point);float4 z=p.sample_first?acc[id]:float4(0);
-    for(uint k=p.sample_first;k<p.sample_first+p.sample_count;++k) {
+    float2 r=wdf(p.radius),xx=wdot(point,point);float4 z=float4(0);
+    for(uint k=block*p.sample_count;k<min((block+1)*p.sample_count,p.n*p.n);++k) {
         float c=cov[k];if(c<=0)continue;
         WVec q=wdir(p,k);float2 qx=wdot(q,point),phase,factor;
         if(r.x==0) {phase=mkl_df_div(qx,wdf(p.wavelength));factor=float2(1,0);}
@@ -89,16 +90,18 @@ kernel void mkl_wave_huygens(device const float *amp [[buffer(0)]],device const 
         z.xy=mkl_df_add_f32(z.xy,term.x);z.zw=mkl_df_add_f32(z.zw,term.y);
     }
     acc[id]=z;
-    if(p.sample_first+p.sample_count==p.n*p.n) {
-        float2 l=mkl_df_div(mkl_df_mul_f32(wdf(p.wavelength),float(p.n)),mkl_df_mul_f32(wdf(p.sin_max),2));
-        float2 div=p.unit_energy?mkl_df_mul(mkl_df_mul(l,l),s[2]):mkl_df_mul(s[0],s[0]);
-        out[pixel]=wf(mkl_df_div(mkl_df_add(mkl_df_mul(z.xy,z.xy),mkl_df_mul(z.zw,z.zw)),div));
-    }
+}
+kernel void mkl_wave_huygens_finish(device const float2 *s [[buffer(3)]],device float *out [[buffer(4)]],device const float4 *acc [[buffer(6)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
+    if(id>=p.count)return;float4 z=float4(0);
+    for(uint b=0;b<p.sample_first;++b){float4 v=acc[id*p.sample_first+b];z.xy=mkl_df_add(z.xy,v.xy);z.zw=mkl_df_add(z.zw,v.zw);}
+    float2 l=mkl_df_div(mkl_df_mul_f32(wdf(p.wavelength),float(p.n)),mkl_df_mul_f32(wdf(p.sin_max),2));
+    float2 div=p.unit_energy?mkl_df_mul(mkl_df_mul(l,l),s[2]):mkl_df_mul(s[0],s[0]);
+    out[p.first+id]=wf(mkl_df_div(mkl_df_add(mkl_df_mul(z.xy,z.xy),mkl_df_mul(z.zw,z.zw)),div));
 }
 kernel void mkl_wave_focus_correlation(device const float *a [[buffer(0)]],device const float *c [[buffer(1)]],device const float2 *w [[buffer(2)]],device float2 *out [[buffer(4)]],device float2 *acc [[buffer(6)]],constant MklWaveParams &p [[buffer(7)]],device const float *stencil [[buffer(8)]],device const float2 *shifts [[buffer(9)]],device const float2 *cached [[buffer(10)]],uint id [[thread_position_in_grid]]) {
-    if(id>=p.count)return;uint o=id+p.first,N=p.n*p.n,frequency=o%p.field_side;
-    float2 dz=p.unit_energy?shifts[o/p.field_side]:float2(0);float2 re=p.sample_first?acc[3*id]:float2(0),im=p.sample_first?acc[3*id+1]:float2(0),sum=p.sample_first?acc[3*id+2]:float2(0);
-    for(uint k=p.sample_first;k<p.sample_first+p.sample_count;++k) {
+    if(id>=p.count)return;uint o=p.first+id/p.sample_first,block=id%p.sample_first,N=p.n*p.n,frequency=o%p.field_side;
+    float2 dz=p.unit_energy?shifts[o/p.field_side]:float2(0);float2 re=0,im=0,sum=0;
+    for(uint k=block*p.sample_count;k<min((block+1)*p.sample_count,N);++k) {
         if(c[k]<=0)continue;uint off=(frequency*N+k)*5;
         float ix=stencil[off],iy=stencil[off+1],qz=stencil[off+2],gamma=stencil[off+3],srcz=stencil[off+4];
         float energy=c[k]*a[k]*a[k]/(gamma*srcz);sum=mkl_df_add_f32(sum,energy);
@@ -116,7 +119,11 @@ kernel void mkl_wave_focus_correlation(device const float *a [[buffer(0)]],devic
         re=mkl_df_add_f32(re,term.x+deficit);im=mkl_df_add_f32(im,term.y);
     }
     acc[3*id]=re;acc[3*id+1]=im;acc[3*id+2]=sum;
-    if(p.sample_first+p.sample_count==N)out[o]=float2(wf(mkl_df_div(re,sum)),wf(mkl_df_div(im,sum)));
+}
+kernel void mkl_wave_focus_correlation_finish(device float2 *out [[buffer(4)]],device const float2 *acc [[buffer(6)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
+    if(id>=p.count)return;float2 re=0,im=0,sum=0;
+    for(uint b=0;b<p.sample_first;++b){uint j=3*(id*p.sample_first+b);re=mkl_df_add(re,acc[j]);im=mkl_df_add(im,acc[j+1]);sum=mkl_df_add(sum,acc[j+2]);}
+    out[p.first+id]=float2(wf(mkl_df_div(re,sum)),wf(mkl_df_div(im,sum)));
 }
 // Structured lattice resampling. Triangle IDs retain logical cell order even
 // when a cell is clipped. Integer minimum makes overlap ownership deterministic.
@@ -361,16 +368,23 @@ kernel void mkl_wave_image_complex(device const float *input [[buffer(0)]],devic
     if(id>=p.count)return;uint k=p.first+id;out[k]=float2(p.kind==3?input[k]:input[2*k]*input[2*k]+input[2*k+1]*input[2*k+1],0);
 }
 static float wsquarekernel(float f,float r){return f==0?2*r:sin(6.283185307179586f*f*r)/(3.141592653589793f*f);}
-kernel void mkl_wave_image_query(device const float *input [[buffer(0)]],device const float2 *queries [[buffer(1)]],device float2 *out [[buffer(2)]],device float2 *acc [[buffer(3)]],constant MklWaveIntegralParams &p [[buffer(4)]],uint id [[thread_position_in_grid]]){
-    if(id>=p.queries)return;float2 re=p.first?acc[2*id]:float2(0),im=p.first?acc[2*id+1]:float2(0),qx=queries[2*id],qy=queries[2*id+1];float n=float(p.n);
-    for(uint k=p.first;k<p.first+p.count;++k){float2 value;
+// Thread (query, block) sums reserved[1] pixels; the finish kernel adds the
+// reserved[0] blocks of each query in order.
+kernel void mkl_wave_image_query(device const float *input [[buffer(0)]],device const float2 *queries [[buffer(1)]],device float2 *acc [[buffer(3)]],constant MklWaveIntegralParams &p [[buffer(4)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint query=p.first+id/p.reserved[0],block=id%p.reserved[0];float2 re=0,im=0,qx=queries[2*query],qy=queries[2*query+1];float n=float(p.n);
+    for(uint k=block*p.reserved[1];k<min((block+1)*p.reserved[1],p.n*p.n);++k){float2 value;
         if(p.kind==0){float2 x=mkl_df_sub(float2(float(k%p.n),0),wdf(p.center[0])),y=mkl_df_sub(float2(float(k/p.n),0),wdf(p.center[1]));float2 phase=-mkl_df_mul(mkl_df_add(mkl_df_mul(x,qx),mkl_df_mul(y,qy)),wdf(p.spacing));value=input[k]*wcis(phase);}
         else {int ix=int(k%p.n),iy=int(k/p.n);if(2*ix>=int(p.n))ix-=int(p.n);if(2*iy>=int(p.n))iy-=int(p.n);
             float2 inv=mkl_df_div(float2(1,0),mkl_df_mul_f32(wdf(p.spacing),n)),fx=mkl_df_mul_f32(inv,float(ix)),fy=mkl_df_mul_f32(inv,float(iy));
             float2 phase=mkl_df_div(mkl_df_add(mkl_df_mul_f32(wdf(p.center[0]),float(ix)),mkl_df_mul_f32(wdf(p.center[1]),float(iy))),float2(n,0)),z=wcis(phase);float real=input[2*k]*z.x-input[2*k+1]*z.y,r=wf(qx),kw=0;
             if(r>0){if(p.kind==1){float rho=wf(mkl_df_sqrt(mkl_df_add(mkl_df_mul(fx,fx),mkl_df_mul(fy,fy))));kw=rho*r<1e-12f?3.141592653589793f*r*r:r*wj1(6.283185307179586f*rho*r)/rho;}else kw=wsquarekernel(wf(fx),r)*wsquarekernel(wf(fy),r);}value=float2(real*kw,0);
         }re=mkl_df_add_f32(re,value.x);im=mkl_df_add_f32(im,value.y);
-    }acc[2*id]=re;acc[2*id+1]=im;if(p.finish){out[id]=p.kind==0&&qx.x==0&&qy.x==0?float2(1,0):float2(wf(mkl_df_div(re,wdf(p.normalization))),wf(mkl_df_div(im,wdf(p.normalization))));}
+    }acc[2*id]=re;acc[2*id+1]=im;
+}
+kernel void mkl_wave_image_query_finish(device const float2 *queries [[buffer(1)]],device float2 *out [[buffer(2)]],device const float2 *acc [[buffer(3)]],constant MklWaveIntegralParams &p [[buffer(4)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint query=p.first+id;float2 re=0,im=0,qx=queries[2*query],qy=queries[2*query+1];
+    for(uint b=0;b<p.reserved[0];++b){uint j=2*(id*p.reserved[0]+b);re=mkl_df_add(re,acc[j]);im=mkl_df_add(im,acc[j+1]);}
+    out[query]=p.kind==0&&qx.x==0&&qy.x==0?float2(1,0):float2(wf(mkl_df_div(re,wdf(p.normalization))),wf(mkl_df_div(im,wdf(p.normalization))));
 }
 kernel void mkl_wave_image_metrics(device const float *a [[buffer(0)]],device float2 *part [[buffer(1)]],constant uint *p [[buffer(3)]],uint block [[thread_position_in_grid]]){
     if(block>=p[1])return;float2 row[5]={0,0,0,0,0};uint n=p[0];for(uint k=block*256;k<min(n*n,(block+1)*256);++k){float v=a[k];row[0]=mkl_df_add_f32(row[0],v);row[1]=mkl_df_add(row[1],mkl_df_mul_f32(float2(v,0),float(k%n)));row[2]=mkl_df_add(row[2],mkl_df_mul_f32(float2(v,0),float(k/n)));if(k%256==0||v>row[3].x){row[3]=float2(v,0);row[4]=float2(float(k),0);}}for(uint j=0;j<5;++j)part[block*5+j]=row[j];
@@ -443,10 +457,16 @@ kernel void mkl_wave_shell_offsets_clear(device const uint *count [[buffer(1)]],
 kernel void mkl_wave_shell_offsets(device const uint *positions [[buffer(0)]],device const uint *count [[buffer(1)]],device uint *out [[buffer(8)]],device atomic_uint *summary [[buffer(9)]],constant MklWaveShellParams &p [[buffer(20)]],uint id [[thread_position_in_grid]]){if(id>=p.count)return;uint k=p.first+id,n=count[0];out[k]=k<n?positions[k]:p.length;if(k<n)atomic_fetch_max_explicit(summary+1,(k+1<n?positions[k+1]:p.length)-positions[k],memory_order_relaxed);}
 kernel void mkl_wave_shell_gather(device const float2 *spectrum [[buffer(0)]],device const uint *order [[buffer(1)]],device float2 *out [[buffer(8)]],constant MklWaveShellParams &p [[buffer(20)]],uint id [[thread_position_in_grid]]){if(id>=p.count)return;uint k=p.first+id,q=order[k];int i=int(q%p.size),j=int(q/p.size);if(2*i>=int(p.size))i-=int(p.size);if(2*j>=int(p.size))j-=int(p.size);float2 phase=mkl_df_div(mkl_df_add(mkl_df_mul_f32(wdf(p.center[0]),float(i)),mkl_df_mul_f32(wdf(p.center[1]),float(j))),float2(float(p.size),0)),z=wcis(phase),v=spectrum[q];out[k]=mkl_df_div(float2(v.x*z.x-v.y*z.y,0),wdf(p.normalization));}
 
-kernel void mkl_wave_shell_query(device const float2 *v0 [[buffer(0)]],device const float2 *v1 [[buffer(1)]],device const float2 *v2 [[buffer(2)]],device const float2 *v3 [[buffer(3)]],device const float2 *v4 [[buffer(4)]],device const float2 *v5 [[buffer(5)]],device const float2 *v6 [[buffer(6)]],device const float2 *v7 [[buffer(7)]],device const float2 *v8 [[buffer(8)]],device const float2 *v9 [[buffer(9)]],device const float2 *v10 [[buffer(10)]],device const float2 *v11 [[buffer(11)]],device const float2 *v12 [[buffer(12)]],device const float2 *v13 [[buffer(13)]],device const float2 *v14 [[buffer(14)]],device const float2 *v15 [[buffer(15)]],device const uint *keys [[buffer(16)]],device const float2 *radii [[buffer(17)]],device float2 *out [[buffer(18)]],device float2 *acc [[buffer(19)]],constant MklWaveShellParams &p [[buffer(20)]],uint id [[thread_position_in_grid]]){
-    if(id>=p.query_count)return;uint query=p.query_first+id;device const float2 *v[16]={v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15};float2 sums[16];for(uint j=0;j<p.fields;++j)sums[j]=p.first?acc[j*p.queries+query]:float2(0);float r=wf(radii[query]);
-    if(r>0)for(uint k=p.first;k<p.first+p.count;++k){float rho=wf(mkl_df_mul(mkl_df_sqrt(float2(float(keys[k]),0)),wdf(p.frequency_step))),weight=rho*r<1e-12f?3.141592653589793f*r*r:r*wj1(6.283185307179586f*rho*r)/rho;for(uint j=0;j<p.fields;++j)sums[j]=mkl_df_add(sums[j],mkl_df_mul_f32(v[j][k],weight));}
-    for(uint j=0;j<p.fields;++j){acc[j*p.queries+query]=sums[j];if(p.finish)out[j*p.queries+query]=sums[j];}
+// Thread (query, block) sums reserved[1] keys for every field; the finish
+// kernel adds the reserved[0] blocks of each query in order.
+kernel void mkl_wave_shell_query(device const float2 *v0 [[buffer(0)]],device const float2 *v1 [[buffer(1)]],device const float2 *v2 [[buffer(2)]],device const float2 *v3 [[buffer(3)]],device const float2 *v4 [[buffer(4)]],device const float2 *v5 [[buffer(5)]],device const float2 *v6 [[buffer(6)]],device const float2 *v7 [[buffer(7)]],device const float2 *v8 [[buffer(8)]],device const float2 *v9 [[buffer(9)]],device const float2 *v10 [[buffer(10)]],device const float2 *v11 [[buffer(11)]],device const float2 *v12 [[buffer(12)]],device const float2 *v13 [[buffer(13)]],device const float2 *v14 [[buffer(14)]],device const float2 *v15 [[buffer(15)]],device const uint *keys [[buffer(16)]],device const float2 *radii [[buffer(17)]],device float2 *acc [[buffer(19)]],constant MklWaveShellParams &p [[buffer(20)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.query_count)return;uint query=p.query_first+id/p.reserved[0],block=id%p.reserved[0];device const float2 *v[16]={v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15};float2 sums[16];for(uint j=0;j<p.fields;++j)sums[j]=0;float r=wf(radii[query]);
+    if(r>0)for(uint k=block*p.reserved[1];k<min((block+1)*p.reserved[1],p.length);++k){float rho=wf(mkl_df_mul(mkl_df_sqrt(float2(float(keys[k]),0)),wdf(p.frequency_step))),weight=rho*r<1e-12f?3.141592653589793f*r*r:r*wj1(6.283185307179586f*rho*r)/rho;for(uint j=0;j<p.fields;++j)sums[j]=mkl_df_add(sums[j],mkl_df_mul_f32(v[j][k],weight));}
+    for(uint j=0;j<p.fields;++j)acc[id*p.fields+j]=sums[j];
+}
+kernel void mkl_wave_shell_query_finish(device float2 *out [[buffer(18)]],device const float2 *acc [[buffer(19)]],constant MklWaveShellParams &p [[buffer(20)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.query_count)return;uint query=p.query_first+id;
+    for(uint j=0;j<p.fields;++j){float2 sum=0;for(uint b=0;b<p.reserved[0];++b)sum=mkl_df_add(sum,acc[(id*p.reserved[0]+b)*p.fields+j]);out[j*p.queries+query]=sum;}
 }
 
 kernel void mkl_wave_wavelength(device const uint *indices [[buffer(0)]],device const uint *table [[buffer(1)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id,n=p[1],t=indices[k]*MKL_MAX_WAVELENGTHS+indices[n+k];out[k]=0;out[n+k]=t<p[0]?table[t]:0xffffffffu;}

@@ -1,6 +1,10 @@
 use crate::{context::PipelineKey, resident::Execution};
 use mklight_core::MkResult;
-use mklight_gpu::{pending::JobControl, resident::StageStats, wave_ops::shells::*};
+use mklight_gpu::{
+    pending::JobControl,
+    resident::StageStats,
+    wave_ops::{shells::*, spec},
+};
 use std::time::Instant;
 pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let a = access(r);
@@ -11,8 +15,12 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
     } else {
         None
     };
+    // Queries sum all keys: each thread sums one fixed block for every
+    // field, a finish dispatch adds the blocks in order.
+    let blocks = (p.length as usize).div_ceil(spec::SUM_BLOCK);
+    let tile = ((1usize << 16) / blocks).clamp(1, p.queries.max(1) as usize);
     let mut acc = if p.mode == 4 {
-        Some(x.allocate((p.fields * p.queries * 2) as usize)?)
+        Some(x.allocate(tile * blocks * p.fields as usize * 2)?)
     } else {
         None
     };
@@ -26,25 +34,25 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
     let pipe = x
         .gpu
         .pipeline(&PipelineKey::plain(names[p.mode as usize]))?;
-    let clear = if p.mode == 2 {
-        Some(
+    let clear = match p.mode {
+        2 => Some(
             x.gpu
                 .pipeline(&PipelineKey::plain("mkl_wave_shell_offsets_clear"))?,
-        )
-    } else {
-        None
+        ),
+        4 => Some(
+            x.gpu
+                .pipeline(&PipelineKey::plain("mkl_wave_shell_query_finish"))?,
+        ),
+        _ => None,
     };
     let mut dispatches = vec![];
     if p.mode == 4 {
-        for q in (0..p.queries).step_by(128) {
-            p.query_first = q;
-            p.query_count = (p.queries - q).min(128);
-            for first in (0..p.length).step_by(512) {
-                p.first = first;
-                p.count = (p.length - first).min(512);
-                p.finish = u32::from(first + p.count == p.length);
-                dispatches.push((p, (p.count * p.query_count * p.fields) as usize));
-            }
+        p.reserved = [blocks as u32, spec::SUM_BLOCK as u32];
+        for q in (0..p.queries as usize).step_by(tile) {
+            p.query_first = q as u32;
+            p.query_count = (p.queries as usize - q).min(tile) as u32;
+            let work = p.query_count as usize * p.length as usize * p.fields as usize / 4;
+            dispatches.push((p, work));
         }
     } else {
         let total = p.length + u32::from(p.mode == 2);
@@ -60,15 +68,10 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
         name: "wave_radial_bins".into(),
         ..Default::default()
     };
-    let mut offset = 0;
-    while offset < dispatches.len() {
+    let count = dispatches.len();
+    let groups = super::commands(dispatches);
+    for (done, group) in groups.iter().enumerate() {
         ctl.check()?;
-        let begin = offset;
-        let mut work = 0;
-        while offset < dispatches.len() && work < 1 << 20 {
-            work += dispatches[offset].1;
-            offset += 1;
-        }
         let xr = &*x;
         let wall = Instant::now();
         // SAFETY: fixed typed extents and immutable radial order; only exclusive
@@ -102,22 +105,22 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
                         e.set_buffer_mut(9, o, 0);
                     }
                 }
-                if begin == 0 {
-                    if let Some(c) = &clear {
-                        e.set_bytes(20, &p);
-                        e.dispatch_1d(c, 1);
-                    }
+                if let (true, 2, Some(c)) = (done == 0, p.mode, &clear) {
+                    e.set_bytes(20, &p);
+                    e.dispatch_1d(c, 1);
                 }
-                for (q, _) in &dispatches[begin..offset] {
-                    e.set_bytes(20, q);
-                    e.dispatch_1d(
-                        &pipe,
-                        if p.mode == 4 {
-                            q.query_count as usize
-                        } else {
-                            q.count as usize
-                        },
-                    );
+                for q in group {
+                    if let (4, Some(finish)) = (p.mode, &clear) {
+                        let mut b = *q;
+                        b.query_count = q.query_count * blocks as u32;
+                        e.set_bytes(20, &b);
+                        e.dispatch_1d(&pipe, b.query_count as usize);
+                        e.set_bytes(20, q);
+                        e.dispatch_1d(finish, q.query_count as usize);
+                    } else {
+                        e.set_bytes(20, q);
+                        e.dispatch_1d(&pipe, q.count as usize);
+                    }
                 }
                 Ok(())
             })?
@@ -125,7 +128,7 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
         stage.command_buffers += 1;
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
-        ctl.report(offset as f64 / dispatches.len() as f64, "radial energy");
+        ctl.report((done + 1) as f64 / groups.len() as f64, "radial energy");
     }
     ctl.check()?;
     x.put_output(a.writes[0], out);
@@ -138,7 +141,7 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
     stage.wall_seconds = start.elapsed().as_secs_f64();
     x.stats.command_buffers += stage.command_buffers;
     x.stats.device_seconds += stage.device_seconds;
-    x.stats.parameter_bytes += (dispatches.len() * size_of::<Params>()) as u64;
+    x.stats.parameter_bytes += (count * size_of::<Params>()) as u64;
     x.stats.stages.push(stage);
     Ok(())
 }

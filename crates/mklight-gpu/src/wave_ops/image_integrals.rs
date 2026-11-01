@@ -283,17 +283,10 @@ pub fn cpu(
             };
             let mut out = vec![[0.; 2]; q.len()];
             for (i, q) in q.iter().enumerate() {
-                let mut sum = [Df32::ZERO; 2];
-                for k in 0..(p.n * p.n) as usize {
-                    if k % 1024 == 0 {
-                        ctl.check()?;
-                    }
-                    let v = complex.map_or([a[k], 0.], |a| a[k]);
-                    let v = term(&p, k, *q, v);
-                    for j in 0..2 {
-                        sum[j] = sum[j].add_f32(v[j]);
-                    }
-                }
+                ctl.check()?;
+                let sum = spec::blocked_sum((p.n * p.n) as usize, |k| {
+                    term(&p, k, *q, complex.map_or([a[k], 0.], |a| a[k]))
+                });
                 out[i] = if p.kind == 0 && q[0].hi == 0. && q[1].hi == 0. {
                     [1., 0.]
                 } else {

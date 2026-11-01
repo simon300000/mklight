@@ -315,18 +315,24 @@ pub fn cpu(r: &Shells, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
                 if r <= 0. {
                     continue;
                 }
-                for (k, &key) in keys.iter().enumerate() {
-                    if k % 512 == 0 {
-                        ctl.check()?;
+                // The kernels' order: blocks of keys, then the blocks in order.
+                for block in keys.chunks(spec::SUM_BLOCK).enumerate() {
+                    ctl.check()?;
+                    let mut partial = vec![Df32::ZERO; a.len()];
+                    for (offset, &key) in block.1.iter().enumerate() {
+                        let k = block.0 * spec::SUM_BLOCK + offset;
+                        let rho = spec::scalar(Df32::from_f32(key as f32).sqrt() * *frequency_step);
+                        let weight = if rho * r < 1e-12 {
+                            std::f32::consts::PI * r * r
+                        } else {
+                            r * super::image_integrals::j1(std::f32::consts::TAU * rho * r) / rho
+                        };
+                        for (i, a) in a.iter().enumerate() {
+                            partial[i] = partial[i] + a[k].mul_f32(weight);
+                        }
                     }
-                    let rho = spec::scalar(Df32::from_f32(key as f32).sqrt() * *frequency_step);
-                    let weight = if rho * r < 1e-12 {
-                        std::f32::consts::PI * r * r
-                    } else {
-                        r * super::image_integrals::j1(std::f32::consts::TAU * rho * r) / rho
-                    };
-                    for (i, a) in a.iter().enumerate() {
-                        out[i * radii.len() + q] = out[i * radii.len() + q] + a[k].mul_f32(weight);
+                    for (i, v) in partial.into_iter().enumerate() {
+                        out[i * radii.len() + q] = out[i * radii.len() + q] + v;
                     }
                 }
             }

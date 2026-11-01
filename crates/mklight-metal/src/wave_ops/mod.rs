@@ -38,9 +38,10 @@ fn commands<T>(dispatches: impl IntoIterator<Item = (T, usize)>) -> Vec<Vec<T>> 
     }
     out
 }
-const PIXELS: usize = 256;
-const SAMPLES: usize = 256;
-const COMMAND_TERMS: usize = 1 << 20;
+/// Threads of one blocked Huygens/correlation dispatch (outputs × sample blocks).
+const BLOCK_THREADS: usize = 1 << 16;
+/// Pixel-sample (or frequency-sample) terms per blocked command.
+const COMMAND_TERMS: usize = 1 << 24;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     if let Request::Resample(r) = r {
         return resample::execute(r, x, ctl);
@@ -85,14 +86,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     } else {
         None
     };
-    let mut acc = if matches!(
-        r,
-        Request::Huygens { .. } | Request::FocusCorrelation { .. }
-    ) {
-        Some(x.allocate(PIXELS * 6)?)
-    } else {
-        None
-    };
     if matches!(r, Request::Prepare { .. }) {
         p.field_side = (output.len() / 2).isqrt() as u32;
     }
@@ -122,39 +115,50 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         name: "wave".into(),
         ..Default::default()
     };
-    let (mut first, mut sample) = (0, 0);
+    // Huygens and correlation outputs sum all n² pupil samples: each thread
+    // sums one fixed block, a finish dispatch adds the blocks in order.
     let n2 = (p.n * p.n) as usize;
-    while first < total {
+    let blocked = matches!(p.mode, 2 | 6);
+    let blocks = n2.div_ceil(spec::SUM_BLOCK);
+    let tile = if blocked {
+        (BLOCK_THREADS / blocks).clamp(1, total)
+    } else {
+        1 << 18
+    };
+    let mut acc = if blocked {
+        Some(x.allocate(tile * blocks * if p.mode == 2 { 4 } else { 6 })?)
+    } else {
+        None
+    };
+    let finish = if blocked {
+        Some(x.gpu.pipeline(&PipelineKey::plain(if p.mode == 2 {
+            "mkl_wave_huygens_finish"
+        } else {
+            "mkl_wave_focus_correlation_finish"
+        }))?)
+    } else {
+        None
+    };
+    let mut dispatches = vec![];
+    for first in (0..total).step_by(tile) {
+        let mut q = p;
+        q.first = first as u32;
+        q.count = (total - first).min(tile) as u32;
+        let work = q.count as usize
+            * match p.mode {
+                2 | 6 => n2 * COMMAND_UNITS / COMMAND_TERMS,
+                5 => p.n as usize,
+                _ => 1,
+            };
+        dispatches.push((q, work));
+    }
+    let groups = commands(dispatches);
+    for (done, group) in groups.iter().enumerate() {
         ctl.check()?;
-        let mut dispatches = Vec::new();
-        let mut work = 0;
-        while first < total && work < COMMAND_TERMS {
-            let count = (total - first).min(if matches!(p.mode, 2 | 6) {
-                PIXELS
-            } else {
-                1 << 18
-            });
-            p.first = first as u32;
-            p.count = count as u32;
-            if matches!(p.mode, 2 | 6) {
-                p.sample_first = sample as u32;
-                p.sample_count = (n2 - sample).min(SAMPLES) as u32;
-                sample += p.sample_count as usize;
-                work += count * p.sample_count as usize;
-                if sample == n2 {
-                    sample = 0;
-                    first += count;
-                }
-            } else {
-                first += count;
-                work += count * (if p.mode == 5 { p.n as usize } else { 1 });
-            }
-            dispatches.push(p);
-        }
         let wall = Instant::now();
         let xr = &*x;
         // SAFETY: request validation bounds each typed view; output leases are
-        // exclusive. Dispatches serialize scratch reuse, including sample tiles.
+        // exclusive. Dispatches serialize scratch reuse, including block sums.
         let cs = unsafe {
             xr.gpu.run("wave", |e| {
                 let bind = |index, at| {
@@ -195,9 +199,21 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 if let Some(a) = acc.as_mut() {
                     e.set_buffer_mut(6, a, 0);
                 }
-                for q in &dispatches {
-                    e.set_bytes(7, q);
-                    e.dispatch_1d(&pipeline, q.count as usize);
+                for q in group {
+                    if let Some(finish) = &finish {
+                        let mut b = *q;
+                        b.sample_first = blocks as u32;
+                        b.sample_count = spec::SUM_BLOCK as u32;
+                        b.count = q.count * blocks as u32;
+                        e.set_bytes(7, &b);
+                        e.dispatch_1d(&pipeline, b.count as usize);
+                        b.count = q.count;
+                        e.set_bytes(7, &b);
+                        e.dispatch_1d(finish, q.count as usize);
+                    } else {
+                        e.set_bytes(7, q);
+                        e.dispatch_1d(&pipeline, q.count as usize);
+                    }
                 }
                 Ok(())
             })?
@@ -205,7 +221,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         stage.command_buffers += 1;
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
-        x.stats.parameter_bytes += (dispatches.len() * size_of::<Params>()) as u64;
+        x.stats.parameter_bytes +=
+            (group.len() * size_of::<Params>() * if blocked { 2 } else { 1 }) as u64;
         let begin = if cache.is_some() { 0.08 } else { 0. };
         let end = if moments.is_some() && matches!(p.mode, 3 | 6) {
             0.95
@@ -213,10 +230,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             1.
         };
         ctl.report(
-            begin
-                + (end - begin)
-                    * (first as f64 + sample as f64 / n2.max(1) as f64 * p.count as f64)
-                    / total as f64,
+            begin + (end - begin) * (done + 1) as f64 / groups.len() as f64,
             "wave",
         );
     }

@@ -184,6 +184,26 @@ pub fn direction(p: &Params, k: usize) -> [Df32; 3] {
 pub fn dot(a: [Df32; 3], b: [Df32; 3]) -> Df32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+/// Pupil samples per partial sum of Huygens and correlation outputs; the
+/// partials are then added in block order.
+pub const SUM_BLOCK: usize = 256;
+/// Blocked double-float sum of `terms(k)` over `0..n` in the kernels' order.
+pub fn blocked_sum<const C: usize>(n: usize, mut terms: impl FnMut(usize) -> [f32; C]) -> [Df32; C] {
+    let mut total = [Df32::ZERO; C];
+    for block in (0..n).step_by(SUM_BLOCK) {
+        let mut partial = [Df32::ZERO; C];
+        for k in block..(block + SUM_BLOCK).min(n) {
+            let t = terms(k);
+            for j in 0..C {
+                partial[j] = partial[j].add_f32(t[j]);
+            }
+        }
+        for j in 0..C {
+            total[j] = total[j] + partial[j];
+        }
+    }
+    total
+}
 /// The kernels' `wless` maximum: lexicographic (hi, lo); NaN never wins.
 pub fn max(a: Df32, b: Df32) -> Df32 {
     if a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo) {

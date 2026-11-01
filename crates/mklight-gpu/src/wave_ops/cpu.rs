@@ -119,17 +119,11 @@ pub fn execute(
                 }
                 steps[plane] = phase_step(n, c, &focused);
                 for frequency in 0..fs {
-                    let mut sums = [Df32::ZERO; 3];
-                    for k in 0..count {
-                        if k % 4096 == 0 {
-                            ctl.check()?;
-                        }
+                    ctl.check()?;
+                    let sums = blocked_sum(count, |k| {
                         let q = (frequency * count + k) * 5;
-                        let t = correlation_term(&p, k, a, c, &focused, &g[q..q + 5], Df32::ZERO);
-                        for j in 0..3 {
-                            sums[j] = sums[j].add_f32(t[j]);
-                        }
-                    }
+                        correlation_term(&p, k, a, c, &focused, &g[q..q + 5], Df32::ZERO)
+                    });
                     out[plane * fs + frequency] =
                         [scalar(sums[0] / sums[2]), scalar(sums[1] / sums[2])];
                     ctl.report(
@@ -210,16 +204,8 @@ pub fn execute(
             let s = values::<Df32>(x, sums);
             let mut out = vec![0.; (p.size * p.size) as usize];
             for (i, v) in out.iter_mut().enumerate() {
-                let mut z = [Df32::ZERO; 2];
-                for k in 0..count {
-                    if k % 4096 == 0 {
-                        ctl.check()?;
-                    }
-                    let t = huygens_term(&p, i, k, a[k], c[k], w[k]);
-                    for j in 0..2 {
-                        z[j] = z[j].add_f32(t[j]);
-                    }
-                }
+                ctl.check()?;
+                let z = blocked_sum(count, |k| huygens_term(&p, i, k, a[k], c[k], w[k]));
                 *v = huygens_intensity(&p, z, s);
                 ctl.report((i + 1) as f64 / (p.size * p.size) as f64, "Huygens");
             }
