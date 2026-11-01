@@ -350,6 +350,10 @@ fn aim_trace_opd_matrix() {
                         start.elapsed().as_secs_f64() + stats(cpu.clone()).0 * 1e-3
                     })
                     .collect();
+                eprintln!(
+                    "P11_P1_RAW {}",
+                    serde_json::json!({"sample":name,"case":label,"aiming":aiming,"rays":n,"cpu_ms":cpu,"metal_ms":wall,"device_ms":device,"cold_cpu_ms":cpu_cold,"cold_metal_ms":cold,"commands":commands,"copy_counts":copies,"unresolved":unresolved,"mean_iterations":iterations})
+                );
                 let (c, cp) = stats(cpu.clone());
                 let (g, gp) = stats(wall);
                 let mode = if matches!(aiming, RayAiming::Off) {
