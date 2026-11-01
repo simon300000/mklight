@@ -517,6 +517,7 @@ dependencies = [
  "mklight-analysis",
  "mklight-core",
  "mklight-gpu",
+ "mklight-metal",
  "mklight-trace",
  "num-complex",
  "png",
