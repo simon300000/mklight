@@ -21,9 +21,10 @@ pub struct ResidentPupil {
     /// Content identity of the supplied samples and geometry (not a GPU generation).
     pub input_hash: String,
     pub covered_samples: usize,
+    pub clear_area: f64,
     pub amplitude: BufferHandle,
     pub coverage: BufferHandle,
-    pub opd: BufferHandle,
+    pub opd: BufferView,
     pub n: usize,
     pub wavelength_um: f64,
     pub geometry: PupilGeometry,
@@ -79,9 +80,10 @@ impl ResidentPupil {
         Ok(Self {
             input_hash: hash.finalize().to_hex().to_string(),
             covered_samples: p.coverage().iter().filter(|&&c| c > 0.).count(),
+            clear_area: p.coverage().iter().sum::<f64>() * p.spacing().powi(2),
             amplitude,
             coverage,
-            opd,
+            opd: opd.view(),
             n,
             wavelength_um: p.wavelength_um(),
             geometry: *p.geometry(),
@@ -92,7 +94,7 @@ impl ResidentPupil {
     pub fn import(&self, p: &mut ResidentPlan) -> w::Pupil {
         let a = p.import(self.amplitude.view());
         let c = p.import(self.coverage.view());
-        let o = p.import(self.opd.view());
+        let o = p.import(self.opd.clone());
         w::Pupil {
             amplitude: p.view(a).unwrap(),
             coverage: p.view(c).unwrap(),
@@ -195,7 +197,11 @@ impl ResidentPupil {
             ElementType::Complex32,
             [transformed_side, transformed_side],
         ));
-        let b = self.geometry.surface_to_normal();
+        let mut b = self.geometry.surface_to_normal();
+        // Match the reference's negligible-skew rule, including its origin,
+        // before satisfying P2's exactly diagonal ChirpZ contract.
+        let separable=b[0][1].abs()<1e-15&&b[1][0].abs()<1e-15;
+        if separable{b[0][1]=0.;b[1][0]=0.;}
         let dnu = 1. / l;
         let c = (size / 2) as f64;
         let affine = [
@@ -209,7 +215,7 @@ impl ResidentPupil {
         .map(Df32::from_f64);
         let kind = if fft {
             tr::TransformKind::Fft
-        } else if b[0][1].abs() < 1e-15 && b[1][0].abs() < 1e-15 {
+        } else if separable {
             tr::TransformKind::ChirpZ
         } else {
             tr::TransformKind::AffineMft
@@ -316,11 +322,11 @@ impl ResidentPupil {
         let output = self.append_psf(&mut p, settings, [0.; 2])?;
         p.outputs = vec![output.image, output.sums];
         p.settings["pupil_input_hash"] = self.input_hash.clone().into();
-        let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        let mut r = backend.submit_plan(p, &ctx.subrange(0., 0.99))?.wait()?;
         r.run_info
             .warnings
             .extend(self.warnings.iter().map(ToString::to_string));
-        let value = output.finish(self, backend, &r.outputs[0], &r.outputs[1])?;
+        let value = output.finish(self, backend, &r.outputs[0], &r.outputs[1], ctx)?;
         for w in &value.warnings {
             let w = w.to_string();
             if !r.run_info.warnings.contains(&w) {
@@ -345,11 +351,11 @@ impl ResidentPupil {
         let output = self.append_huygens(&mut p, settings)?;
         p.outputs = vec![output.image, output.sums];
         p.settings["pupil_input_hash"] = self.input_hash.clone().into();
-        let mut r = backend.submit_plan(p, ctx)?.wait()?;
+        let mut r = backend.submit_plan(p, &ctx.subrange(0., 0.99))?.wait()?;
         r.run_info
             .warnings
             .extend(self.warnings.iter().map(ToString::to_string));
-        let value = output.finish(self, backend, &r.outputs[0], &r.outputs[1])?;
+        let value = output.finish(self, backend, &r.outputs[0], &r.outputs[1], ctx)?;
         for w in &value.warnings {
             let w = w.to_string();
             if !r.run_info.warnings.contains(&w) {
@@ -461,6 +467,7 @@ impl ResidentPupil {
         p: &mut ResidentPlan,
         frequencies: PlanView,
     ) -> MkResult<BufferId> {
+        self.append_sensor_guard(p)?;
         let pupil = self.import(p);
         let count = frequencies.desc.shape[0];
         let output = p.scratch(BufferDesc::new(
@@ -606,6 +613,7 @@ impl PsfOutput {
         b: &dyn ComputeBackend,
         image: &BufferHandle,
         sums: &BufferHandle,
+        ctx: &JobContext,
     ) -> MkResult<Psf> {
         let s = b.read_view(sums.view())?;
         let s = s.as_slice::<Df32>()?;
@@ -623,12 +631,13 @@ impl PsfOutput {
                 "wave pupil/plane has no finite normalization".into(),
             ));
         }
-        let data = b
-            .read_view(image.view())?
-            .as_slice::<f32>()?
-            .iter()
-            .map(|&v| v as f64)
-            .collect();
+        let guard = b.read_view(image.view())?;
+        let mut data = Vec::with_capacity(self.size * self.size);
+        for block in guard.as_slice::<f32>()?.chunks(4096) {
+            ctx.check()?;
+            data.extend(block.iter().map(|v| *v as f64));
+        }
+        ctx.report(1., "PSF assembly");
         Ok(Psf {
             size: self.size,
             spacing_mm: self.spacing,
@@ -701,9 +710,15 @@ pub use statistics::WavefrontStatistics;
 mod traced;
 pub use traced::{PupilTracer, ResidentTracedPupil};
 mod spectral;
-pub use spectral::{ResidentPsf, polychromatic_otf, polychromatic_psf};
+pub use spectral::{ResidentPsf, polychromatic_otf, polychromatic_otf_method, polychromatic_psf};
 mod sampling;
-pub use sampling::BlurEstimate;
+pub use sampling::{BlurEstimate, useful_frequency};
 pub mod analysis;
 mod energy;
 pub use energy::PsfMetrics;
+mod fft_mtf;
+mod focus;
+pub use focus::focus_otf;
+pub mod image_simulation;
+mod shells;
+pub use shells::{RadialBins, encircled_energy_batch};

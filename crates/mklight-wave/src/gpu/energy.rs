@@ -97,6 +97,14 @@ impl ResidentPsf {
         square: bool,
         ctx: &JobContext,
     ) -> MkResult<WaveResult<Vec<f64>>> {
+        if !square {
+            let r = super::encircled_energy_batch(b, snapshot, &[(self, center)], radii, ctx)?;
+            return Ok(WaveResult {
+                value: r.value.into_iter().next().unwrap(),
+                run_info: r.run_info,
+                stats: r.stats,
+            });
+        }
         let mut stats = PlanStats::default();
         let point = match center {
             crate::EnergyCenter::Reference => self.center_mm,

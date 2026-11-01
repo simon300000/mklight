@@ -4,11 +4,14 @@ use crate::{Df32, pending::JobControl, resident::*};
 use mklight_core::MkResult;
 mod cpu;
 pub mod diagnostics;
+pub mod fft_mtf;
 pub mod image_integrals;
 pub mod lattice;
 pub mod placement;
 pub mod resample;
 pub mod sampling;
+pub mod shells;
+pub mod simulation;
 pub mod spec;
 pub mod spectral;
 pub mod statistics;
@@ -31,6 +34,9 @@ pub struct Geometry {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
+    Shells(shells::Shells),
+    Simulation(simulation::Simulation),
+    FftMtf(fft_mtf::FftMtf),
     ImageIntegral(image_integrals::ImageIntegral),
     Blur(sampling::Blur),
     Spectral(spectral::Spectral),
@@ -159,6 +165,9 @@ fn sums(v: &PlanView) -> MkResult<()> {
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::*;
     match r {
+        Request::Shells(r) => shells::validate(r, p)?,
+        Request::Simulation(r) => simulation::validate(r, p)?,
+        Request::FftMtf(r) => fft_mtf::validate(r, p)?,
         Request::ImageIntegral(r) => image_integrals::validate(r, p)?,
         Request::Blur(r) => sampling::validate(r, p)?,
         Request::Spectral(r) => spectral::validate(r, p)?,
@@ -354,6 +363,9 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 pub fn accesses(r: &Request) -> Access {
     let pv = |v: &Pupil| vec![v.amplitude.clone(), v.coverage.clone(), v.opd.clone()];
     let (reads, writes) = match r {
+        Request::Shells(r) => return shells::access(r),
+        Request::Simulation(r) => return simulation::access(r),
+        Request::FftMtf(r) => return fft_mtf::access(r),
         Request::ImageIntegral(r) => return image_integrals::access(r),
         Request::Blur(r) => return sampling::access(r),
         Request::Spectral(r) => return spectral::access(r),

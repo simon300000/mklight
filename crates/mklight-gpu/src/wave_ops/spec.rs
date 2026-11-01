@@ -51,7 +51,10 @@ pub fn params(r: &Request) -> Params {
             p.size = *standard as u32;
             None
         }
-        Request::ImageIntegral(_)
+        Request::Shells(_)
+        | Request::Simulation(_)
+        | Request::FftMtf(_)
+        | Request::ImageIntegral(_)
         | Request::Blur(_)
         | Request::Spectral(_)
         | Request::Placement(_)
@@ -206,6 +209,9 @@ pub fn intensity(p: &Params, z: [f32; 2], s: &[Df32]) -> f32 {
     scalar(Df32::from_f32(z[0] * z[0] + z[1] * z[1]) / div)
 }
 pub fn focus(p: &Params, k: usize, dz: Df32) -> Df32 {
+    if dz.hi == 0. && dz.lo == 0. {
+        return Df32::ZERO;
+    }
     let q = direction(p, k);
     let gamma = -q[2];
     let r = df(p.radius);

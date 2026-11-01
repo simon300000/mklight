@@ -8,11 +8,14 @@ use mklight_gpu::{
 };
 use std::time::Instant;
 mod diagnostics;
+mod fft_mtf;
 mod image_integrals;
 mod lattice;
 mod placement;
 mod resample;
 mod sampling;
+mod shells;
+mod simulation;
 mod spectral;
 mod statistics;
 const PIXELS: usize = 256;
@@ -42,6 +45,15 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     }
     if let Request::ImageIntegral(r) = r {
         return image_integrals::execute(r, x, ctl);
+    }
+    if let Request::FftMtf(r) = r {
+        return fft_mtf::execute(r, x, ctl);
+    }
+    if let Request::Simulation(r) = r {
+        return simulation::execute(r, x, ctl);
+    }
+    if let Request::Shells(r) = r {
+        return shells::execute(r, x, ctl);
     }
     let access = accesses(r);
     let mut p = params(r);

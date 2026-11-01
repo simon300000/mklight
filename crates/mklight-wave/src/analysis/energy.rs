@@ -97,7 +97,7 @@ pub fn diffraction_encircled_energy(
 
 /// First radius at which the increasing curve `e(r)` reaches `level`
 /// (linear interpolation), NaN if never.
-fn quantile(r: &[f64], e: &[f64], level: f64) -> f64 {
+pub(crate) fn quantile(r: &[f64], e: &[f64], level: f64) -> f64 {
     for k in 1..r.len() {
         if e[k] >= level {
             let (a, b) = (e[k - 1], e[k]);
@@ -108,7 +108,7 @@ fn quantile(r: &[f64], e: &[f64], level: f64) -> f64 {
     f64::NAN
 }
 
-fn check_grid(grid: usize, padding: f64, method: PsfMethod) -> MkResult<()> {
+pub(crate) fn check_grid(grid: usize, padding: f64, method: PsfMethod) -> MkResult<()> {
     if grid != 0 && !(8..=4096).contains(&grid) {
         return Err(MkError::InvalidParam(format!("PSF grid size {grid}")));
     }

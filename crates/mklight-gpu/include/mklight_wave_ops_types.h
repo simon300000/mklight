@@ -23,4 +23,12 @@ typedef struct {
 typedef struct { unsigned int count,inputs,complex,phase; float weights[16][2],offsets[16][2][2]; } MklWaveSpectralParams;
 typedef struct { unsigned int n,step,side,count; float scale[2],offset[2][2],inverse[2][2][2]; } MklWaveBlurParams;
 typedef struct { unsigned int n,queries,kind,first,count,finish,reserved[2]; float spacing[2],center[2][2],normalization[2]; } MklWaveIntegralParams;
+typedef struct { unsigned int n,side,count,kind; float sine[2],spacing[2],frame[3][3][2],mapping[2][2][2]; } MklWaveFftMtfParams;
+typedef struct {
+    unsigned int mode,width,height,channels,source_width,source_height,source_channels,grid;
+    unsigned int radius,canvas,node,channel,tile[4],pattern,quadrature,previous,first;
+    unsigned int count,seed[2],reserved;
+    float origin[2][2],pitch[2][2],aperture[2][2],spacing[2],normalization[2],well,sigma;
+} MklWaveSimulationParams;
+typedef struct { unsigned int size,length,mode,first,count,fields,queries,query_first,query_count,finish,reserved[2]; float center[2][2],normalization[2],frequency_step[2]; } MklWaveShellParams;
 #endif

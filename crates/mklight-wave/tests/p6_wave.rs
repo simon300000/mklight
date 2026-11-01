@@ -54,7 +54,7 @@ fn resample_suite(b: &dyn ComputeBackend) {
         let cov = cov.as_slice::<f32>().unwrap();
         let amp = b.read_view(rp.amplitude.view()).unwrap();
         let amp = amp.as_slice::<f32>().unwrap();
-        let opd = b.read_view(rp.opd.view()).unwrap();
+        let opd = b.read_view(rp.opd.clone()).unwrap();
         let opd = opd.as_slice::<mklight_gpu::Df32>().unwrap();
         for k in 0..32 * 32 {
             assert_eq!(
@@ -336,7 +336,7 @@ fn all_sample_pupils() {
                     rp.image_offset_mm = p.image_offset_mm();
                     let cov = b.read_view(rp.coverage.view()).unwrap();
                     let cov = cov.as_slice::<f32>().unwrap();
-                    let opd = b.read_view(rp.opd.view()).unwrap();
+                    let opd = b.read_view(rp.opd.clone()).unwrap();
                     let opd = opd.as_slice::<mklight_gpu::Df32>().unwrap();
                     let mut mask_diff = 0;
                     let mut opd_error = 0f64;
@@ -635,7 +635,7 @@ fn resident_traced_pupil_matches_reference() {
                 result.value.info.sin_max,
                 expected.info.sin_max
             );
-            let opd = b.read_view(p.opd.view()).unwrap();
+            let opd = b.read_view(p.opd.clone()).unwrap();
             let opd = opd.as_slice::<mklight_gpu::Df32>().unwrap();
             let cov = b.read_view(p.coverage.view()).unwrap();
             let cov = cov.as_slice::<f32>().unwrap();
@@ -760,7 +760,7 @@ fn all_gpu_traced_pupils() {
                         reference.pupil.n(),
                         "{name} field {field} wavelength {wl}"
                     );
-                    let w = b.read_view(p.opd.view()).unwrap();
+                    let w = b.read_view(p.opd.clone()).unwrap();
                     let w = w.as_slice::<mklight_gpu::Df32>().unwrap();
                     let c = b.read_view(p.coverage.view()).unwrap();
                     let c = c.as_slice::<f32>().unwrap();
@@ -835,4 +835,251 @@ fn native_wavefront_and_psf() {
         assert!(error(&a.psf, &b.psf) < 2e-3);
         assert!((a.strehl - b.strehl).abs() < 2e-3);
     }
+}
+
+fn energy_and_fft_suite(b: &dyn ComputeBackend) {
+    let ctx = JobContext::new();
+    let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
+    for angle in [0f64, 25.] {
+        let g = g
+            .with_chief_ray([angle.to_radians().sin(), 0., angle.to_radians().cos()])
+            .unwrap();
+        let p = PupilFunction::from_aperture(
+            32,
+            0.55,
+            g,
+            Aperture::Annular { obscuration: 0.2 },
+            Apodization::Uniform,
+            4,
+            |u, v| 0.4 * (u * u + v * v) + 0.1 * u,
+        )
+        .unwrap();
+        let rp = ResidentPupil::from_pupil(b, &p, &ctx).unwrap();
+        let fs = [[0., 0.], [10., 0.], [0., 40.], [30., 20.]];
+        let reference = otf_fft(&p, &ctx).unwrap();
+        let got = rp.fft_otf(b, snapshot(), &fs, &ctx).unwrap();
+        for (f, z) in fs.iter().zip(got.value) {
+            let want = reference.at(f[0], f[1]);
+            assert!(
+                (z[0] - want.re).hypot(z[1] - want.im) < 2e-3,
+                "FFT {angle} {f:?} {z:?} {want:?}"
+            );
+        }
+        let settings = PolyPsfSettings::new(65, 0.001);
+        let psf = polychromatic_psf(&[(&p, 1.)], &settings, &ctx).unwrap();
+        let resident = gpu::polychromatic_psf(b, snapshot(), &[(&rp, 1.)], &settings, false, &ctx)
+            .unwrap()
+            .value;
+        let radii = [0., 0.001, 0.003, 0.008, 0.015];
+        for center in [
+            EnergyCenter::Reference,
+            EnergyCenter::Centroid,
+            EnergyCenter::Peak,
+            EnergyCenter::Point {
+                x: 0.001,
+                y: -0.001,
+            },
+        ] {
+            for square in [false, true] {
+                let want = if square {
+                    ensquared_energy(&psf, &radii, center, &ctx)
+                } else {
+                    encircled_energy(&psf, &radii, center, &ctx)
+                }
+                .unwrap();
+                let got = resident
+                    .energy(b, snapshot(), &radii, center, square, &ctx)
+                    .unwrap();
+                for (a, b) in got.value.iter().zip(want) {
+                    assert!(
+                        (a - b).abs() < 2e-3,
+                        "energy {angle} {center:?} {square}: {a} {b}"
+                    );
+                }
+            }
+        }
+        let got = resident
+            .otf(b, snapshot(), &[[0., 0.], [0., 40.]], &ctx)
+            .unwrap();
+        let want = mtf_from_psf(&psf, &[0., 40.], &MtfOrientation::default(), &ctx).unwrap();
+        assert!((got.value[1][0].hypot(got.value[1][1]) - want.tangential[1]).abs() < 2e-3);
+    }
+}
+#[test]
+fn energy_fft_f64() {
+    energy_and_fft_suite(&CpuF32Backend::new());
+}
+#[cfg(target_os = "macos")]
+#[test]
+fn energy_fft_metal() {
+    for origin in [
+        mklight_metal::LibraryChoice::Precompiled,
+        mklight_metal::LibraryChoice::RuntimeSource,
+    ] {
+        energy_and_fft_suite(&metal(origin));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_mtf_and_focus() {
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let ctx = JobContext::new();
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    for method in [
+        analysis::MtfAnalysisMethod::Direct,
+        analysis::MtfAnalysisMethod::Fft,
+    ] {
+        let settings = analysis::MtfSettings {
+            method,
+            ..Default::default()
+        };
+        let a = analysis::mtf_analysis_job(&t, &settings, &ctx).unwrap();
+        let z = gpu::analysis::mtf_analysis_job(&b, &t, &settings, &ctx).unwrap();
+        assert_eq!(a.frequencies, z.frequencies);
+        for (a, z) in a.fields.iter().zip(z.fields) {
+            assert_eq!(a.pupil_sampling, z.pupil_sampling);
+            for (x, y) in a
+                .tangential
+                .iter()
+                .chain(&a.sagittal)
+                .chain(&a.diffraction_limit)
+                .zip(
+                    z.tangential
+                        .iter()
+                        .chain(&z.sagittal)
+                        .chain(&z.diffraction_limit),
+                )
+            {
+                assert!((x - y).abs() < 2e-3, "native {method:?}: {x} {y}");
+            }
+        }
+    }
+    let settings = analysis::ThroughFocusSettings::default();
+    let a = analysis::through_focus_mtf_analysis_job(&t, &settings, &ctx).unwrap();
+    let z = gpu::analysis::through_focus_mtf_analysis_job(&b, &t, &settings, &ctx).unwrap();
+    assert_eq!(a.frequencies, z.frequencies);
+    for (x, y) in a.focus_mm.iter().zip(&z.focus_mm) {
+        assert!((x - y).abs() < 1e-7);
+    }
+    for (a, z) in a.fields.iter().zip(z.fields) {
+        assert_eq!(a.pupil_sampling, z.pupil_sampling);
+        for (a, z) in a.curves.iter().zip(z.curves) {
+            for (x, y) in a
+                .tangential
+                .iter()
+                .chain(&a.sagittal)
+                .zip(z.tangential.iter().chain(&z.sagittal))
+            {
+                assert!((x - y).abs() < 2e-3, "focus {x} {y}");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn full_image_simulation() {
+    use mklight_wave::image_simulation as reference;
+    use std::sync::Arc;
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let ctx = JobContext::new();
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    let mut settings = reference::ImageSimulationSettings::default();
+    let old = Arc::new(reference::build_psf_grid(&t, &settings.optics, &ctx).unwrap());
+    let new = Arc::new(
+        gpu::image_simulation::build_psf_grid(&b, &t, &settings.optics, &ctx)
+            .unwrap()
+            .value,
+    );
+    assert_eq!(old.psf_size, new.psf_size);
+    assert!((old.spacing_mm - new.spacing_mm).abs() < 1e-9);
+    for (a, z) in old.mapping.iter().zip(&new.mapping) {
+        assert_eq!(a.pupil_sampling, z.pupil_sampling);
+        assert!((a.relative_illumination - z.relative_illumination).abs() < 1e-3);
+    }
+    for pattern in [
+        reference::TestPattern::Grid,
+        reference::TestPattern::SiemensStar,
+        reference::TestPattern::SlantedEdge,
+        reference::TestPattern::TextChart,
+    ] {
+        settings.source = reference::ImageSource::Pattern { pattern };
+        let a = reference::image_simulation_job(&t, &settings, Some(old.clone()), &ctx).unwrap();
+        let z =
+            gpu::image_simulation::image_simulation_job(&b, &t, &settings, Some(new.clone()), &ctx)
+                .unwrap();
+        let norm = a.image.iter().sum::<f64>();
+        let l1 = a
+            .image
+            .iter()
+            .zip(&z.image)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>()
+            / norm;
+        let flux = (a.image.iter().sum::<f64>() - z.image.iter().sum::<f64>()).abs() / norm;
+        eprintln!(
+            "P6_IMAGE {pattern:?} L1={l1:e} flux={flux:e} stats={}",
+            z.run_info.settings["resident"]["plan_stats"]["command_buffers"]
+        );
+        assert!(l1 < 2e-3);
+        assert!(flux < 1e-3);
+    }
+    settings.source = reference::ImageSource::Buffer {
+        width: 64,
+        height: 64,
+        channels: 3,
+        data: (0..64 * 64 * 3)
+            .map(|i| {
+                if i / 3 == 32 * 64 + 32 {
+                    (i % 3 + 1) as f64
+                } else {
+                    0.
+                }
+            })
+            .collect(),
+    };
+    settings.monochrome = false;
+    settings.detector_aperture_mm = Some([0.003, 0.004]);
+    let a = reference::image_simulation_job(&t, &settings, Some(old.clone()), &ctx).unwrap();
+    let z = gpu::image_simulation::image_simulation_job(&b, &t, &settings, Some(new.clone()), &ctx)
+        .unwrap();
+    let norm = a.image.iter().sum::<f64>();
+    assert!(
+        a.image
+            .iter()
+            .zip(&z.image)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>()
+            / norm
+            < 2e-3
+    );
+    settings.tile_size = 23;
+    let tiled =
+        gpu::image_simulation::image_simulation_job(&b, &t, &settings, Some(new.clone()), &ctx)
+            .unwrap();
+    assert!(
+        z.image
+            .iter()
+            .zip(&tiled.image)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>()
+            / norm
+            < 2e-3
+    );
+    settings.source = reference::ImageSource::Buffer {
+        width: 2,
+        height: 2,
+        channels: 1,
+        data: vec![0.5; 4],
+    };
+    settings.monochrome = true;
+    settings.full_well_electrons = Some(100.);
+    settings.read_noise_sigma = 0.01;
+    settings.seed = 938;
+    let a = gpu::image_simulation::image_simulation_job(&b, &t, &settings, Some(new.clone()), &ctx)
+        .unwrap();
+    let z =
+        gpu::image_simulation::image_simulation_job(&b, &t, &settings, Some(new), &ctx).unwrap();
+    assert_eq!(a.image, z.image);
 }

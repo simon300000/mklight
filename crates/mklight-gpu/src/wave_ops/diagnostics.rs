@@ -5,14 +5,14 @@ pub struct Diagnostics {
     pub coverage: PlanView,
     pub opd: PlanView,
     pub extrapolation: PlanView,
-    /// DF [9]: covered, unresolved, phase step, gap, pitch, min x/y, max x/y.
+    /// DF [10]: covered, unresolved, phase step, gap, pitch, min x/y, max x/y, coverage sum.
     pub output: BufferId,
 }
 pub fn validate(r: &Diagnostics, p: &ResidentPlan) -> MkResult<()> {
     let n = square(&r.coverage, ElementType::F32)?;
     view(&r.opd, ElementType::DoubleFloat, &[n, n])?;
     view(&r.extrapolation, ElementType::F32, &[3, n * n])?;
-    out(p, r.output, ElementType::DoubleFloat, &[9])
+    out(p, r.output, ElementType::DoubleFloat, &[10])
 }
 pub fn access(r: &Diagnostics) -> Access {
     Access {
@@ -60,7 +60,15 @@ pub fn cpu(
             }
         }
     }
+    let mut area = Df32::ZERO;
+    for block in c[..nn].chunks(256) {
+        let sum = block.iter().fold(Df32::ZERO, |sum, v| sum.add_f32(*v));
+        area = area.add_f32(spec::scalar(sum));
+    }
+    let mut result = [Df32::ZERO; 10];
+    result[..9].copy_from_slice(&a.map(Df32::from_f32));
+    result[9] = area;
     x.words_mut(r.output)
-        .copy_from_slice(bytemuck::cast_slice(&a.map(Df32::from_f32)));
+        .copy_from_slice(bytemuck::cast_slice(&result));
     Ok(())
 }

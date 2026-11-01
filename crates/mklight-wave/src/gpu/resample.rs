@@ -153,7 +153,7 @@ pub fn from_resident_lattice(
             diagnostics,
         })));
     p.settings["pupil_input_hash"] = input_hash.clone().into();
-    let summary = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [9]));
+    let summary = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [10]));
     p.operations.push(ResidentOp::Wave(w::Request::Diagnostics(
         w::diagnostics::Diagnostics {
             coverage: p.view(coverage)?,
@@ -202,9 +202,10 @@ pub fn from_resident_lattice(
     let value = ResidentPupil {
         input_hash,
         covered_samples,
+        clear_area: d[9].to_f64() * 4. / (n * n) as f64,
         amplitude: r.outputs[0].clone(),
         coverage: r.outputs[1].clone(),
-        opd: r.outputs[2].clone(),
+        opd: r.outputs[2].view(),
         n,
         wavelength_um,
         geometry,

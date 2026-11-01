@@ -5,6 +5,13 @@ use std::time::Instant;
 pub fn execute(r: &Lattice, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let a = access(r);
     let (name, count, mut p) = match r {
+        Lattice::Wavelength {
+            count, wavelength, ..
+        } => (
+            "mkl_wave_wavelength",
+            *count,
+            [*wavelength, 0, 0, 0, 0, 0, 0, 0],
+        ),
         Lattice::Generate { side, centres, .. } => (
             "mkl_wave_lattice",
             side * side + if *centres { (side - 1) * (side - 1) } else { 0 },

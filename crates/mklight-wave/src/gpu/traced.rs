@@ -78,6 +78,7 @@ pub struct PupilTracer<'a> {
     backend: &'a dyn ComputeBackend,
     tracer: &'a SequentialTracer,
     systems: SystemHandle,
+    wavelengths: Vec<Vec<usize>>,
     radiometry: rad::PreparedRadiometry,
 }
 impl Drop for PupilTracer<'_> {
@@ -131,7 +132,36 @@ impl<'a> PupilTracer<'a> {
         ctx: &JobContext,
     ) -> MkResult<Self> {
         ctx.check()?;
-        let packed = PackedSystem::pack(tracer.system(), &PackOptions::default())?;
+        let total = tracer.num_wavelengths();
+        let primary = tracer.system().primary_wavelength;
+        let wavelengths: Vec<Vec<usize>> = if total <= mklight_gpu::layout::MAX_WAVELENGTHS {
+            vec![(0..total).collect()]
+        } else {
+            (0..total)
+                .step_by(mklight_gpu::layout::MAX_WAVELENGTHS - 1)
+                .map(|start| {
+                    let mut w: Vec<_> = (start
+                        ..(start + mklight_gpu::layout::MAX_WAVELENGTHS - 1).min(total))
+                        .collect();
+                    if !w.contains(&primary) {
+                        w.push(primary);
+                    }
+                    w
+                })
+                .collect()
+        };
+        let packed: Vec<_> = wavelengths
+            .iter()
+            .map(|w| {
+                PackedSystem::pack(
+                    tracer.system(),
+                    &PackOptions {
+                        wavelengths: Some(w.clone()),
+                        radius_hints: None,
+                    },
+                )
+            })
+            .collect::<MkResult<_>>()?;
         let radiometry = rad::PreparedRadiometry::new(backend, tracer.system(), ctx)?;
         let key = SystemCacheKey {
             snapshot: tracer.system().snapshot.hash().to_hex(),
@@ -142,11 +172,12 @@ impl<'a> PupilTracer<'a> {
             kernel_build: backend.precision().kernel_build.clone(),
             operation_settings: "P6 pupil tracing v1".into(),
         };
-        let systems = backend.upload_systems_cached(&key, &[packed])?;
+        let systems = backend.upload_systems_cached(&key, &packed)?;
         Ok(Self {
             backend,
             tracer,
             systems,
+            wavelengths,
             radiometry,
         })
     }
@@ -228,9 +259,24 @@ impl<'a> PupilTracer<'a> {
                 output: mask,
             })));
         let power_id = if power {
+            let mut radiometric_hits = hits.clone();
+            if self.wavelengths.len() > 1 {
+                let guard = self.backend.read_view(field.view())?;
+                let spec: &[aim::FieldSpec] = bytemuck::cast_slice(guard.words());
+                let spec = spec[0];
+                let wavelength = self.wavelengths[spec.system as usize][spec.wavelength as usize];
+                let indices = p.scratch(BufferDesc::new(ElementType::U32, [2, count]));
+                p.operations
+                    .push(ResidentOp::Wave(w::Request::Lattice(Op::Wavelength {
+                        count,
+                        wavelength: wavelength as u32,
+                        output: indices,
+                    })));
+                radiometric_hits.rays.indices = indices;
+            }
             let id = self.radiometry.append(
                 &mut p,
-                &hits,
+                &radiometric_hits,
                 &mklight_trace::PolarizationState::Unpolarized,
             )?;
             if let Some(ResidentOp::Radiometry(rad::Request::Polarization(r))) =
@@ -272,6 +318,27 @@ impl<'a> PupilTracer<'a> {
             i += 1;
             h
         });
+        let sample_guard = self.backend.read_view(samples.view())?;
+        let sample_rows: &[aim::Sample] = bytemuck::cast_slice(sample_guard.words());
+        let reports = self.backend.read_view(r.outputs[4].view())?;
+        let reports = reports.as_slice::<u32>()?;
+        let mut unresolved = 0usize;
+        for (k, sample) in sample_rows.iter().enumerate() {
+            if k % 4096 == 0 {
+                ctx.check()?;
+            }
+            if reports[k] != 0
+                && (sample.pupil[0] * sample.pupil[0] + sample.pupil[1] * sample.pupil[1]).to_f64()
+                    <= 1. + 1e-12
+            {
+                unresolved += 1;
+            }
+        }
+        if unresolved > 0 {
+            return Err(MkError::Unsupported(format!(
+                "P6 has {unresolved} unresolved in-pupil aims; reference completion required"
+            )));
+        }
         let power = power_id.map(|_| {
             let h = r.outputs[i].clone();
             i += 1;
@@ -359,14 +426,34 @@ impl<'a> PupilTracer<'a> {
         ctx.check()?;
         let mut stats = PlanStats::default();
         let sys = self.tracer.system();
+        if wl >= sys.wavelengths_um.len() {
+            return Err(MkError::InvalidParam(format!(
+                "wavelength {wl} does not exist"
+            )));
+        }
+        // A wavelength-only selected-order factor cancels in chief-normalized
+        // amplitudes and centroid weights. Zero throughput remains unusable.
+        if settings.amplitude != AmplitudeModel::Uniform
+            && mklight_trace::radiometry::diffraction_product(sys, wl) <= 0.
+        {
+            return Err(MkError::Numerical(
+                "pupil transmits no selected-order light".into(),
+            ));
+        }
         let side = settings.rays + 2;
         let n = side * side;
+        let (chunk, slot) = self
+            .wavelengths
+            .iter()
+            .enumerate()
+            .find_map(|(i, w)| w.iter().position(|v| *v == wl).map(|j| (i, j)))
+            .unwrap();
         let field_spec = aim::FieldSpec::new(
             sys,
             self.tracer.paraxial(),
             field.point,
-            0,
-            wl as u32,
+            chunk as u32,
+            slot as u32,
             self.tracer.aiming(),
         )?;
         let metadata = record(self.backend, field_spec)?;
@@ -396,16 +483,12 @@ impl<'a> PupilTracer<'a> {
             return Err(MkError::Trace("chief ray parallel to image".into()));
         }
         let mut p = self.plan();
-        let count = n + if settings.rim {
-            (side - 1) * (side - 1)
-        } else {
-            0
-        };
+        let count = n;
         let probes = p.scratch(BufferDesc::new(ElementType::U32, [count, 8]));
         p.operations
             .push(ResidentOp::Wave(w::Request::Lattice(Op::Generate {
                 side,
-                centres: settings.rim,
+                centres: false,
                 samples: probes,
             })));
         let (lat, s) = self.probe(
@@ -429,8 +512,52 @@ impl<'a> PupilTracer<'a> {
         }
         let lattice = crate::traced::Lattice::new(settings.rays);
         let loops = if settings.rim {
+            let mut saddles = Vec::new();
+            for j in 0..side - 1 {
+                for i in 0..side - 1 {
+                    let k = j * side + i;
+                    let case = usize::from(inside[k])
+                        | (usize::from(inside[k + 1]) << 1)
+                        | (usize::from(inside[k + side + 1]) << 2)
+                        | (usize::from(inside[k + side]) << 3);
+                    if case == 5 || case == 10 {
+                        saddles.push((i, j));
+                    }
+                }
+            }
+            let mut centres = std::collections::BTreeMap::new();
+            if !saddles.is_empty() {
+                let samples = fill::<u32>(self.backend, [saddles.len(), 8], |a| {
+                    for (k, (row, &(i, j))) in bytemuck::cast_slice_mut::<_, aim::Sample>(a)
+                        .iter_mut()
+                        .zip(&saddles)
+                        .enumerate()
+                    {
+                        let p = lattice.point(i, j);
+                        let h = 1. / (settings.rays - 1) as f64;
+                        *row = aim::Sample::new([p[0] + h, p[1] + h], 0, k as u64);
+                    }
+                    Ok(())
+                })?;
+                let mut plan = self.plan();
+                let samples = plan.import(samples.view());
+                let (probes, s) = self.probe(
+                    plan,
+                    samples,
+                    saddles.len(),
+                    &metadata,
+                    true,
+                    false,
+                    &ctx.subrange(0.25, 0.25),
+                )?;
+                accumulate(&mut stats, &s);
+                let mask = self.backend.read_view(probes.mask.view())?;
+                for (&cell, &v) in saddles.iter().zip(mask.as_slice::<u32>()?) {
+                    centres.insert(cell, v != 0);
+                }
+            }
             crate::traced::chain_loops(&crate::traced::rim_segments(&lattice, &inside, |i, j| {
-                valid[n + j * (side - 1) + i] != 0
+                centres[&(i, j)]
             }))
         } else {
             vec![]
@@ -506,6 +633,9 @@ impl<'a> PupilTracer<'a> {
                 accumulate(&mut stats, &s);
                 batch = Some(b);
             }
+            let state=self.backend.read_view(previous.as_ref().unwrap().view())?;
+            let unresolved=state.as_slice::<Df32>()?.chunks(8).filter(|v|v[7].hi==0.).count();
+            if unresolved>0{return Err(MkError::Unsupported(format!("{unresolved} rim edges did not reach tolerance {}; reference completion required",settings.rim_tolerance)));}
             batch
         };
         let mut centre = cp;
@@ -651,18 +781,33 @@ impl<'a> PupilTracer<'a> {
                 None,
                 col::SegmentKind::Summary,
             )?;
-            raw_ids.push((output, max));
+            raw_ids.push((output, max, status));
         }
-        p.outputs = raw_ids.iter().flat_map(|(a, b)| [*a, *b]).collect();
+        p.outputs = raw_ids.iter().flat_map(|(a, b, c)| [*a, *b, *c]).collect();
         let r = self
             .backend
             .submit_plan(p, &ctx.subrange(0.62, 0.72))?
             .wait()?;
         accumulate(&mut stats, &r.stats);
         let mut sin = 0f64;
-        for i in (1..r.outputs.len()).step_by(2) {
+        for i in (1..r.outputs.len()).step_by(3) {
             let v = self.backend.read_view(r.outputs[i].view())?;
             sin = sin.max(v.as_slice::<Df32>()?[3].to_f64());
+        }
+        for (i, batch) in std::iter::once(&lat).chain(rim.as_ref()).enumerate() {
+            let failures = self.backend.read_view(r.outputs[i * 3 + 2].view())?;
+            let mask = self.backend.read_view(batch.mask.view())?;
+            let failed = failures
+                .as_slice::<u32>()?
+                .iter()
+                .zip(mask.as_slice::<u32>()?)
+                .filter(|(s, m)| **m != 0 && **s != 0)
+                .count();
+            if failed > 0 {
+                return Err(MkError::Unsupported(format!(
+                    "{failed} pupil rays miss the reference sphere; reference completion required"
+                )));
+            }
         }
         let sin = sin * (1. + 1e-9);
         let geometry = if tele {
@@ -674,7 +819,7 @@ impl<'a> PupilTracer<'a> {
         let mut uv_loops = vec![];
         let mut ep_loops = vec![];
         if let Some(b) = &rim {
-            let raw = self.backend.read_view(r.outputs[2].view())?;
+            let raw = self.backend.read_view(r.outputs[3].view())?;
             let raw = raw.as_slice::<Df32>()?;
             let probes = self.backend.read_view(b.samples.view())?;
             let probes: &[aim::Sample] = bytemuck::cast_slice(probes.words());
@@ -754,8 +899,14 @@ impl<'a> PupilTracer<'a> {
         let nodes = r.outputs[0].clone();
         let valid = lat.mask.clone();
         let identity = blake3::hash(
-            &serde_json::to_vec(&(sys.snapshot.hash().to_hex(), wl, field.point, settings))
-                .unwrap(),
+            &serde_json::to_vec(&(
+                sys.snapshot.hash().to_hex(),
+                &self.radiometry.identity,
+                wl,
+                field.point,
+                settings,
+            ))
+            .unwrap(),
         )
         .to_hex()
         .to_string();
@@ -773,7 +924,11 @@ impl<'a> PupilTracer<'a> {
             &ctx.subrange(0.8, 1.),
         )?;
         accumulate(&mut stats, &result.stats);
-        let clear_area = crate::traced::even_odd_area(&uv_loops);
+        let clear_area = if uv_loops.is_empty() {
+            result.value.clear_area
+        } else {
+            crate::traced::even_odd_area(&uv_loops)
+        };
         let lattice_rays = (0..n)
             .filter(|&k| {
                 let p = lattice.point(k % side, k / side);

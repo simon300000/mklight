@@ -210,6 +210,17 @@ pub fn polychromatic_otf(
     frequencies: &[[f64; 2]],
     ctx: &JobContext,
 ) -> MkResult<WaveResult<Vec<[f64; 2]>>> {
+    polychromatic_otf_method(b, snapshot, pupils, frequencies, false, ctx)
+}
+
+pub fn polychromatic_otf_method(
+    b: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    pupils: &[(&ResidentPupil, f64)],
+    frequencies: &[[f64; 2]],
+    fft: bool,
+    ctx: &JobContext,
+) -> MkResult<WaveResult<Vec<[f64; 2]>>> {
     let sum = weights(pupils)?;
     let f = frequency_buffer(b, frequencies, ctx)?;
     let mut combined = None;
@@ -230,7 +241,12 @@ pub fn polychromatic_otf(
             offsets.push([Df32::ZERO; 2]);
         }
         for (pupil, w) in group {
-            let out = pupil.append_correlation(&mut p, p_view(fi, f.desc()))?;
+            let out = if fft {
+                let ideal = pupil.without_aberrations(b, ctx)?;
+                pupil.append_fft_otf(&mut p, &ideal, p_view(fi, f.desc()))?
+            } else {
+                pupil.append_correlation(&mut p, p_view(fi, f.desc()))?
+            };
             let mut v = p.view(out)?;
             v.desc.shape = vec![frequencies.len()];
             inputs.push(v);

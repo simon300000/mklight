@@ -6,7 +6,7 @@ pub fn execute(r: &Diagnostics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRe
     ctl.check()?;
     let n = r.coverage.desc.shape[0];
     let blocks = (n * n).div_ceil(256);
-    let mut partial = x.allocate(blocks * 9)?;
+    let mut partial = x.allocate(blocks * 10)?;
     let mut out = x.take_output(r.output);
     let a = x
         .gpu

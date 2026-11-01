@@ -412,12 +412,16 @@ pub fn cpu(
             let mut sum = Df32::ZERO;
             let mut count = 0;
             let mut max = Df32::ZERO;
-            for v in amps.iter().flatten() {
-                sum = sum + *v;
-                count += 1;
-                if v.to_f64() > max.to_f64() {
-                    max = *v;
+            for block in amps.chunks(256) {
+                let mut partial = Df32::ZERO;
+                for v in block.iter().flatten() {
+                    partial = partial + *v;
+                    count += 1;
+                    if v.to_f64() > max.to_f64() {
+                        max = *v;
+                    }
                 }
+                sum = sum + partial;
             }
             let mean = if count > 0 {
                 sum / Df32::from_f32(count as f32)
@@ -438,6 +442,11 @@ pub fn cpu(
             } else {
                 max
             };
+            if !norm.is_finite() || norm.hi <= 0. {
+                return Err(mklight_core::MkError::Numerical(
+                    "pupil transmits no finite light".into(),
+                ));
+            }
             let mut rows = vec![[Df32::ZERO; 4]; n];
             for k in 0..n {
                 if mask[k] != 0 {

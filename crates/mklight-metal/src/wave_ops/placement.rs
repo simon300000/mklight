@@ -15,7 +15,8 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
     let pipe = x.gpu.pipeline(&PipelineKey::plain(name))?;
     let finish = if nodes {
         Some((
-            x.gpu.pipeline(&PipelineKey::plain("mkl_wave_node_norm"))?,
+            x.gpu
+                .pipeline(&PipelineKey::plain("mkl_wave_node_norm_blocks"))?,
             x.gpu.pipeline(&PipelineKey::plain("mkl_wave_nodes"))?,
         ))
     } else {
@@ -33,6 +34,19 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         None
     };
     let mut norm = if nodes { Some(x.allocate(4)?) } else { None };
+    let norm_finish = if nodes {
+        Some(
+            x.gpu
+                .pipeline(&PipelineKey::plain("mkl_wave_node_norm_finish"))?,
+        )
+    } else {
+        None
+    };
+    let mut partials = if nodes {
+        Some(x.allocate((p.n as usize).div_ceil(256) * 6)?)
+    } else {
+        None
+    };
     let start = Instant::now();
     let mut stage = StageStats {
         operation: x.stats.stages.len(),
@@ -43,7 +57,11 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
     // all nodes and use a fixed logical reduction order independent of commands.
     let steps = if nodes { 3 } else { 1 };
     for step in 0..steps {
-        let count = if step == 1 { 1 } else { p.n as usize };
+        let count = if step == 1 {
+            (p.n as usize).div_ceil(256)
+        } else {
+            p.n as usize
+        };
         for first in (0..count).step_by(1 << 18) {
             ctl.check()?;
             p.first = first as u32;
@@ -75,6 +93,9 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
                     if let Some(o) = norm.as_mut() {
                         e.set_buffer_mut(7, o, 0);
                     }
+                    if let Some(o) = partials.as_mut() {
+                        e.set_buffer_mut(9, o, 0);
+                    }
                     e.set_bytes(8, &p);
                     let kernel = match step {
                         0 => &pipe,
@@ -82,6 +103,9 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
                         _ => &finish.as_ref().unwrap().1,
                     };
                     e.dispatch_1d(kernel, p.count as usize);
+                    if step == 1 {
+                        e.dispatch_1d(norm_finish.as_ref().unwrap(), 1);
+                    }
                     Ok(())
                 })?
             };
@@ -95,6 +119,14 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         }
     }
     ctl.check()?;
+    if let Some(v) = &norm {
+        let a: &[mklight_gpu::Df32] = bytemuck::cast_slice(v.as_slice());
+        if !a[1].is_finite() || a[1].hi <= 0. {
+            return Err(mklight_core::MkError::Numerical(
+                "pupil transmits no finite light".into(),
+            ));
+        }
+    }
     x.put_output(a.writes[0], out);
     if let Some(o) = second {
         x.put_output(a.writes[1], o);
@@ -103,6 +135,9 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         x.recycle(o);
     }
     if let Some(o) = norm {
+        x.recycle(o);
+    }
+    if let Some(o) = partials {
         x.recycle(o);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();

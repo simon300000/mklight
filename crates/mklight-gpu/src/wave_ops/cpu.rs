@@ -33,6 +33,15 @@ pub fn execute(
     if let Request::ImageIntegral(r) = r {
         return image_integrals::cpu(r, x, ctl);
     }
+    if let Request::FftMtf(r) = r {
+        return fft_mtf::cpu(r, x, ctl);
+    }
+    if let Request::Simulation(r) = r {
+        return simulation::cpu(r, x, ctl);
+    }
+    if let Request::Shells(r) = r {
+        return shells::cpu(r, x, ctl);
+    }
     let p = params(r);
     let n = p.n as usize;
     let count = n * n;
@@ -66,7 +75,10 @@ pub fn execute(
             x.words_mut(*rhs).copy_from_slice(bytemuck::cast_slice(&b));
         }
 
-        Request::ImageIntegral(_)
+        Request::Shells(_)
+        | Request::Simulation(_)
+        | Request::FftMtf(_)
+        | Request::ImageIntegral(_)
         | Request::Blur(_)
         | Request::Spectral(_)
         | Request::Placement(_)

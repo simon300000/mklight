@@ -3,6 +3,11 @@ use super::*;
 use crate::aiming::Sample;
 #[derive(Clone, Debug)]
 pub enum Lattice {
+    Wavelength {
+        count: usize,
+        wavelength: u32,
+        output: BufferId,
+    },
     Generate {
         side: usize,
         centres: bool,
@@ -27,6 +32,7 @@ pub enum Lattice {
 pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::*;
     match r {
+        Lattice::Wavelength { count, output, .. } => out(p, *output, U32, &[2, *count]),
         Lattice::Generate {
             side,
             centres,
@@ -83,6 +89,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn access(r: &Lattice) -> Access {
     let (reads, writes) = match r {
+        Lattice::Wavelength { output, .. } => (vec![], vec![*output]),
         Lattice::Generate { samples, .. } => (vec![], vec![*samples]),
         Lattice::Survival {
             samples,
@@ -116,6 +123,15 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
     }
     let one = Df32::from_f32(1.);
     match r {
+        Lattice::Wavelength {
+            count,
+            wavelength,
+            output,
+        } => {
+            let out = x.words_mut(*output);
+            out[..*count].fill(0);
+            out[*count..].fill(*wavelength);
+        }
         Lattice::Generate {
             side,
             centres,
@@ -221,7 +237,9 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                         let qb = e[0] * dx + e[1] * dy;
                         let qc = e[0] * e[0] + e[1] * e[1] - one;
                         let disc = qb * qb - qa * qc;
-                        a[5] = (-qb + disc.sqrt()) / qa;
+                        let root=if disc.hi<0.{Df32::ZERO}else{disc.sqrt()};
+                        let t=if qb.hi<=0.{(-qb+root)/qa}else{-qc/(qb+root)};
+                        a[5]=if t.to_f64()<0.{Df32::ZERO}else if t.to_f64()>1.{one}else{t};
                     }
                 }
                 for j in 0..width {
