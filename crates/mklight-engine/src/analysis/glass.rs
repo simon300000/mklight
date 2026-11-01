@@ -480,9 +480,7 @@ impl Analysis for GlassSubstitution {
             // Every combination starts from the input shape.
             build: Box::new(move |a| {
                 let p: Box<dyn Problem + Send> = match &gpu {
-                    Some(g) => Box::new(
-                        build_space.problem(a, g.clone().composite().with(build_cpu.clone()))?,
-                    ),
+                    Some(g) => Box::new(build_space.problem(a, g.clone())?),
                     None => Box::new(build_space.problem(a, build_cpu.clone())?),
                 };
                 Ok((p, start_x.clone()))

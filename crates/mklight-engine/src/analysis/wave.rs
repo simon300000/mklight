@@ -37,6 +37,9 @@ impl Analysis for Wave {
     fn result_schema(&self) -> Value {
         result_schema(self.0.name)
     }
+    fn gpu_path(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -50,9 +53,38 @@ impl Analysis for Wave {
             settings["configuration"].as_u64().unwrap() as usize,
             &ctx.subrange(0.0, 0.05),
         )?;
-        let mut json = self
-            .0
-            .run_configured(&cfg, settings, &ctx.subrange(0.05, 1.0))?;
+        let mut json = if let Some(d) = super::gpu::device(input) {
+            let b = d.backend.as_ref();
+            let t = &cfg.tracer;
+            let c = &ctx.subrange(0.05, 1.0);
+            macro_rules! run {
+                ($f:ident) => {{
+                    let r = mklight_wave::gpu::analysis::$f(
+                        b,
+                        t,
+                        &super::geometric::parse(settings)?,
+                        c,
+                    )?;
+                    super::gpu::record_native(input, &r.run_info);
+                    serde_json::to_value(r)?
+                }};
+            }
+            let mut v = match self.0.name {
+                "wavefront_map" => run!(wavefront_map_job),
+                "psf" => run!(psf_analysis_job),
+                "mtf" => run!(mtf_analysis_job),
+                "mtf_vs_field" => run!(mtf_vs_field_job),
+                "through_focus_mtf" => run!(through_focus_mtf_analysis_job),
+                "diffraction_encircled_energy" => run!(diffraction_encircled_energy_job),
+                "line_spread" => run!(line_spread_job),
+                _ => unreachable!("registered wave operation"),
+            };
+            cfg.stamp_json(&mut v)?;
+            v
+        } else {
+            self.0
+                .run_configured(&cfg, settings, &ctx.subrange(0.05, 1.0))?
+        };
         let warnings = take_run_info(&mut json);
         let buffers = extract_buffers(self.0.name, &mut json);
         Ok(output(json, buffers, warnings))

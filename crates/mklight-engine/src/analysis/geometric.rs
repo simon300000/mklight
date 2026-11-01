@@ -16,7 +16,7 @@
 //!
 //! The ray-grid analyses (`spot_diagram`, `encircled_energy`,
 //! `geometric_mtf`, `best_focus`, `ray_grid`) trace through
-//! `super::gpu::field_rays`, so they run on a selected GPU backend.
+//! complete resident adapters, preserving the public result packing.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -30,7 +30,7 @@ use mklight_analysis::{
 use mklight_core::JobContext;
 use mklight_trace::{Grid, SequentialTracer, TraceOptions, trace_grid_job};
 
-use super::gpu::{self, Traced};
+use super::gpu;
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -47,7 +47,6 @@ pub struct Geo {
     pub settings: fn() -> Value,
     pub result: fn() -> Value,
     pub run: RunFn,
-    pub gpu: bool,
     pub seed: fn(&Value) -> Option<u64>,
 }
 
@@ -85,7 +84,7 @@ impl Analysis for Geo {
         }
     }
     fn gpu_path(&self) -> bool {
-        self.gpu
+        gpu::GPU_ANALYSES.contains(&self.name)
     }
     fn seed(&self, settings: &Value) -> Option<u64> {
         (self.seed)(settings)
@@ -273,7 +272,6 @@ fn all() -> Vec<Geo> {
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -298,7 +296,6 @@ fn all() -> Vec<Geo> {
             },
             result: layout_schema,
             run: run_layout,
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -319,7 +316,6 @@ fn all() -> Vec<Geo> {
             },
             result: spot_schema,
             run: run_spot,
-            gpu: true,
             seed: pattern_seed,
         },
         Geo {
@@ -330,12 +326,16 @@ fn all() -> Vec<Geo> {
                           coordinate, per field and wavelength (mm).",
             settings: fan_settings,
             result: || fan_schema(true),
-            run: |_, t, s, c| {
-                let r = fans::ray_fan_job(t, &parse(s)?, c)?;
+            run: |input, t, s, c| {
+                let settings = parse(s)?;
+                let r = gpu::native_job!(
+                    input,
+                    |b| mklight_analysis::gpu::ray_fan_job(b, t, &settings, c),
+                    fans::ray_fan_job(t, &settings, c)
+                )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -345,12 +345,16 @@ fn all() -> Vec<Geo> {
                           sphere versus normalised pupil coordinate, tangential and sagittal.",
             settings: fan_settings,
             result: || fan_schema(false),
-            run: |_, t, s, c| {
-                let r = fans::opd_fan_job(t, &parse(s)?, c)?;
+            run: |input, t, s, c| {
+                let settings = parse(s)?;
+                let r = gpu::native_job!(
+                    input,
+                    |b| mklight_analysis::gpu::opd_fan_job(b, t, &settings, c),
+                    fans::opd_fan_job(t, &settings, c)
+                )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -368,12 +372,16 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: field_curvature_schema,
-            run: |_, t, s, c| {
-                let r = curvature::field_curvature_job(t, &parse(s)?, c)?;
+            run: |input, t, s, c| {
+                let settings = parse(s)?;
+                let r = gpu::native_job!(
+                    input,
+                    |b| mklight_analysis::gpu::field_curvature_job(b, t, &settings, c),
+                    curvature::field_curvature_job(t, &settings, c)
+                )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -391,7 +399,6 @@ fn all() -> Vec<Geo> {
             },
             result: grid_distortion_schema,
             run: run_grid_distortion,
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -412,7 +419,6 @@ fn all() -> Vec<Geo> {
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -428,12 +434,16 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: longitudinal_schema,
-            run: |_, t, s, _| {
-                let r = seidel::longitudinal_aberration(t, &parse(s)?)?;
+            run: |input, t, s, c| {
+                let settings = parse(s)?;
+                let r = gpu::native_job!(
+                    input,
+                    |b| mklight_analysis::gpu::longitudinal_aberration_job(b, t, &settings, c),
+                    seidel::longitudinal_aberration(t, &settings)
+                )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -454,7 +464,6 @@ fn all() -> Vec<Geo> {
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -471,12 +480,16 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: lateral_colour_schema,
-            run: |_, t, s, c| {
-                let r = seidel::lateral_colour_job(t, &parse(s)?, c)?;
+            run: |input, t, s, c| {
+                let settings = parse(s)?;
+                let r = gpu::native_job!(
+                    input,
+                    |b| mklight_analysis::gpu::lateral_colour_job(b, t, &settings, c),
+                    seidel::lateral_colour_job(t, &settings, c)
+                )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -495,12 +508,16 @@ fn all() -> Vec<Geo> {
                 }))
             },
             result: relative_illumination_schema,
-            run: |_, t, s, c| {
-                let r = illumination::relative_illumination_job(t, &parse(s)?, c)?;
+            run: |input, t, s, c| {
+                let settings = parse(s)?;
+                let r = gpu::native_job!(
+                    input,
+                    |b| mklight_analysis::gpu::relative_illumination_job(b, t, &settings, c),
+                    illumination::relative_illumination_job(t, &settings, c)
+                )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
             },
-            gpu: false,
             seed: no_seed,
         },
         Geo {
@@ -518,7 +535,6 @@ fn all() -> Vec<Geo> {
             },
             result: footprint_schema,
             run: run_footprint,
-            gpu: false,
             seed: pattern_seed,
         },
         Geo {
@@ -538,7 +554,6 @@ fn all() -> Vec<Geo> {
             },
             result: encircled_energy_schema,
             run: run_encircled_energy,
-            gpu: true,
             seed: pattern_seed,
         },
         Geo {
@@ -555,7 +570,6 @@ fn all() -> Vec<Geo> {
             },
             result: geometric_mtf_schema,
             run: run_geometric_mtf,
-            gpu: true,
             seed: pattern_seed,
         },
         Geo {
@@ -574,7 +588,6 @@ fn all() -> Vec<Geo> {
             },
             result: best_focus_schema,
             run: run_best_focus,
-            gpu: true,
             seed: pattern_seed,
         },
         Geo {
@@ -586,7 +599,6 @@ fn all() -> Vec<Geo> {
             settings: || settings_from_default::<RayGridSettings>(sampling_annotations(json!({}))),
             result: ray_grid_schema,
             run: run_ray_grid,
-            gpu: true,
             seed: pattern_seed,
         },
     ]
@@ -849,12 +861,17 @@ fn layout_schema() -> Value {
 }
 
 fn run_layout(
-    _: &AnalysisInput<'_>,
+    input: &AnalysisInput<'_>,
     t: &SequentialTracer,
     s: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
-    let scene = layout::layout_job(t, &parse(s)?, ctx)?;
+    let settings = parse(s)?;
+    let scene = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::layout_job(b, t, &settings, ctx),
+        layout::layout_job(t, &settings, ctx)
+    )?;
     let b = scene.to_buffers();
     let (v, w) = crate_json(&scene)?;
     let np = b.polyline_count();
@@ -1088,11 +1105,11 @@ fn run_spot(
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     let st: spot::SpotDiagramSettings = parse(s)?;
-    let (fields, wls) = selection(t, &st.fields, &st.wavelengths)?;
-    let pupil = util::pupil_points(st.pattern, st.rings, st.seed);
-    let mut warnings = Vec::new();
-    let (batch, label) = gpu::field_rays(input, t, &fields, &wls, &pupil, ctx, &mut warnings)?;
-    let r = spot::spot_from_rays(t, &st, &batch, &label, warnings)?;
+    let r = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::spot_diagram_job(b, t, &st, ctx),
+        spot::spot_diagram_job(t, &st, ctx)
+    )?;
     let (mut v, w) = crate_json(&r)?;
     let buffers = spot_points_to_buffers(&mut v);
     Ok(output(v, buffers, w))
@@ -1273,12 +1290,17 @@ fn grid_distortion_schema() -> Value {
 }
 
 fn run_grid_distortion(
-    _: &AnalysisInput<'_>,
+    input: &AnalysisInput<'_>,
     t: &SequentialTracer,
     s: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
-    let r = curvature::grid_distortion_job(t, &parse(s)?, ctx)?;
+    let settings = parse(s)?;
+    let r = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::grid_distortion_job(b, t, &settings, ctx),
+        curvature::grid_distortion_job(t, &settings, ctx)
+    )?;
     let (mut v, w) = crate_json(&r)?;
     let pts = v
         .as_object_mut()
@@ -1623,13 +1645,17 @@ fn footprint_schema() -> Value {
 }
 
 fn run_footprint(
-    _: &AnalysisInput<'_>,
+    input: &AnalysisInput<'_>,
     t: &SequentialTracer,
     s: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     let settings = parse(s)?;
-    let r = illumination::footprint_job(t, &settings, &ctx.subrange(0.0, 0.3))?;
+    let r = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::footprint_job(b, t, &settings, &ctx.subrange(0.0, 0.3)),
+        illumination::footprint_job(t, &settings, &ctx.subrange(0.0, 0.3))
+    )?;
     let (mut v, w) = crate_json(&r)?;
     let rays = v
         .as_object_mut()
@@ -1648,7 +1674,15 @@ fn run_footprint(
         }));
     }
     v["sets"] = Value::Array(sets);
-    let o = footprint_overlay::footprint_overlay_job(t, &settings, &ctx.subrange(0.3, 1.0))?;
+    let o = match gpu::device(input) {
+        Some(d) => mklight_analysis::gpu::footprint_overlay_job(
+            d.backend.as_ref(),
+            t,
+            &settings,
+            &ctx.subrange(0.3, 1.0),
+        )?,
+        None => footprint_overlay::footprint_overlay_job(t, &settings, &ctx.subrange(0.3, 1.0))?,
+    };
     v["overlays"] = serde_json::to_value(o.sets)?;
     let (n, m) = (pts.len() / 2, clipped.len() / 2);
     let buffers = vec![
@@ -1670,18 +1704,6 @@ fn run_footprint(
 
 // ---------------------------------------------------------------------------
 // energy family (GPU paths)
-
-fn sampled_batch(
-    input: &AnalysisInput<'_>,
-    t: &SequentialTracer,
-    s: &energy::RaySampling,
-    ctx: &JobContext,
-    warnings: &mut Vec<String>,
-) -> EngineResult<(spot::RayBatch, util::BackendInfo)> {
-    let (fields, wls) = selection(t, &s.fields, &s.wavelengths)?;
-    let pupil = util::pupil_points(s.pattern, s.rings, s.seed);
-    gpu::field_rays(input, t, &fields, &wls, &pupil, ctx, warnings)
-}
 
 fn encircled_energy_schema() -> Value {
     result(
@@ -1735,9 +1757,11 @@ fn run_encircled_energy(
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     let st: energy::EncircledEnergySettings = parse(s)?;
-    let mut warnings = Vec::new();
-    let (batch, label) = sampled_batch(input, t, &st.sampling, ctx, &mut warnings)?;
-    let r = energy::encircled_energy_from_rays(t, &st, &batch, &label, warnings)?;
+    let r = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::encircled_energy_job(b, t, &st, ctx),
+        energy::encircled_energy_job(t, &st, ctx)
+    )?;
     let (v, w) = crate_json(&r)?;
     Ok(output(v, vec![], w))
 }
@@ -1790,9 +1814,11 @@ fn run_geometric_mtf(
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     let st: energy::GeometricMtfSettings = parse(s)?;
-    let mut warnings = Vec::new();
-    let (batch, label) = sampled_batch(input, t, &st.sampling, ctx, &mut warnings)?;
-    let r = energy::geometric_mtf_from_rays(t, &st, &batch, &label, warnings)?;
+    let r = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::geometric_mtf_job(b, t, &st, ctx),
+        energy::geometric_mtf_job(t, &st, ctx)
+    )?;
     let (v, w) = crate_json(&r)?;
     Ok(output(v, vec![], w))
 }
@@ -1858,9 +1884,11 @@ fn run_best_focus(
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     let st: energy::BestFocusSettings = parse(s)?;
-    let mut warnings = Vec::new();
-    let (batch, label) = sampled_batch(input, t, &st.sampling, ctx, &mut warnings)?;
-    let r = energy::best_focus_from_rays(t, &st, &batch, &label, warnings)?;
+    let r = gpu::native_job!(
+        input,
+        |b| mklight_analysis::gpu::best_focus_job(b, t, &st, ctx),
+        energy::best_focus_job(t, &st, ctx)
+    )?;
     let (v, w) = crate_json(&r)?;
     Ok(output(v, vec![], w))
 }
@@ -1965,49 +1993,45 @@ fn run_ray_grid(
         points[2 * i..2 * i + 2].copy_from_slice(&p);
         dirs[3 * i..3 * i + 3].copy_from_slice(&d);
     };
-    match gpu::try_gpu_grid(input, t, &fields, &wls, &pupil, ctx)? {
-        Traced::Gpu(h) => {
-            for (i, r) in h.rays.iter().enumerate() {
-                if let Some(r) = r {
-                    put(i, r.point, [r.dir.x, r.dir.y, r.dir.z]);
-                }
-            }
-            let nc = h.chief_wavelengths.len();
-            for fi in 0..nf {
-                for (wi, wl) in wls.iter().enumerate() {
-                    let k = h
-                        .chief_wavelengths
-                        .iter()
-                        .position(|w| w == wl)
-                        .unwrap_or(0);
-                    if let Some(c) = h.chiefs[fi * nc + k] {
-                        chief[2 * (fi * nw + wi)..2 * (fi * nw + wi) + 2].copy_from_slice(&c.point);
-                    }
-                }
+    if let Some(d) = gpu::device(input) {
+        let h = mklight_analysis::gpu::ray_grid_job(
+            d.backend.as_ref(),
+            t,
+            sm,
+            &ctx.subrange(0.0, 0.95),
+        )?;
+        gpu::record_native(input, &h.run_info);
+        for (i, r) in h.rays.iter().enumerate() {
+            if let Some(r) = r {
+                put(i, r.point, [r.dir.x, r.dir.y, r.dir.z]);
             }
         }
-        Traced::Cpu => {
-            let prepared: Vec<_> = fields.iter().map(|&f| t.field(f).clone()).collect();
-            let grid = Grid {
-                fields: &prepared,
-                wavelengths: &wls,
-                pupil: &pupil,
-            };
-            let rays = trace_grid_job(t, &grid, &t.options(), &ctx.subrange(0.0, 0.95))?;
-            for (i, r) in rays.iter().enumerate() {
-                if r.status.is_ok() {
-                    put(i, [r.point.x, r.point.y], [r.dir.x, r.dir.y, r.dir.z]);
-                }
+    } else {
+        let prepared: Vec<_> = fields.iter().map(|&f| t.field(f).clone()).collect();
+        let grid = Grid {
+            fields: &prepared,
+            wavelengths: &wls,
+            pupil: &pupil,
+        };
+        let rays = trace_grid_job(t, &grid, &t.options(), &ctx.subrange(0.0, 0.95))?;
+        for (i, r) in rays.iter().enumerate() {
+            if r.status.is_ok() {
+                put(i, [r.point.x, r.point.y], [r.dir.x, r.dir.y, r.dir.z]);
             }
-            for (fi, pf) in prepared.iter().enumerate() {
-                for (wi, &wl) in wls.iter().enumerate() {
-                    let c = t.trace(pf, wl, 0.0, 0.0, &TraceOptions::unclipped());
-                    if c.status.is_ok() {
-                        let k = 2 * (fi * nw + wi);
-                        chief[k] = c.ray.pos.x;
-                        chief[k + 1] = c.ray.pos.y;
-                    }
-                }
+        }
+    }
+    if gpu::device(input).is_some() {
+        input.executions.borrow_mut().push(
+            json!({"stage":"ray_grid_chief_metadata", "backend":"cpu_reference", "rays":nf*nw}),
+        );
+    }
+    for (fi, &field) in fields.iter().enumerate() {
+        for (wi, &wl) in wls.iter().enumerate() {
+            let c = t.trace(t.field(field), wl, 0.0, 0.0, &TraceOptions::unclipped());
+            if c.status.is_ok() {
+                let k = 2 * (fi * nw + wi);
+                chief[k] = c.ray.pos.x;
+                chief[k + 1] = c.ray.pos.y;
             }
         }
     }

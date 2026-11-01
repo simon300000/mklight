@@ -28,6 +28,7 @@ pub struct EvaluationStats {
     pub reference_checks: u64,
     pub reference_seconds: f64,
     pub reference_cache_hits: u64,
+    pub combined_reference_cache_hits: u64,
     pub geometry_qualifications: u64,
     pub geometry_rejections: u64,
     pub geometry_report: Option<mklight_gpu::xval::XvalReport>,
@@ -60,6 +61,50 @@ impl Drop for Template {
     }
 }
 #[derive(Clone)]
+struct CheckedReference {
+    evaluator: BuiltinEvaluator,
+    cache: Arc<Mutex<ReferenceCache>>,
+    stats: Arc<Mutex<EvaluationStats>>,
+}
+impl OperandEvaluator for CheckedReference {
+    fn supports(&self, kind: &OperandKind) -> bool {
+        self.evaluator.supports(kind)
+    }
+    fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
+        self.evaluator.fd_relative_step(kind, scheme)
+    }
+    fn evaluate_batch(
+        &self,
+        systems: &[OpticalSystem],
+        ops: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        ctx.check()?;
+        let cached: Option<Vec<_>> = {
+            let cache = self.cache.lock().unwrap();
+            if cache.ops.iter().eq(ops.iter().copied()) {
+                systems
+                    .iter()
+                    .map(|system| {
+                        cache
+                            .entries
+                            .values()
+                            .find(|entry| entry.system == *system)
+                            .map(|entry| entry.values.clone())
+                    })
+                    .collect()
+            } else {
+                None
+            }
+        };
+        if let Some(values) = cached {
+            self.stats.lock().unwrap().combined_reference_cache_hits += systems.len() as u64;
+            return Ok(values);
+        }
+        self.evaluator.evaluate_batch(systems, ops, ctx)
+    }
+}
+#[derive(Clone)]
 pub struct ResidentEvaluator {
     pub context: GpuContext,
     pub(crate) reference: BuiltinEvaluator,
@@ -68,6 +113,7 @@ pub struct ResidentEvaluator {
     template: Arc<Mutex<Option<Arc<Template>>>>,
     stats: Arc<Mutex<EvaluationStats>>,
     references: Arc<Mutex<ReferenceCache>>,
+    checked_reference: CheckedReference,
 }
 impl ResidentEvaluator {
     pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
@@ -85,14 +131,22 @@ impl ResidentEvaluator {
         context.identity.qualification = Some(
             serde_json::json!({"mode":"per_candidate_geometry_and_full_operand_f64","publication":"after_reference_check"}),
         );
+        let references = Arc::default();
+        let stats = Arc::default();
+        let checked_reference = CheckedReference {
+            evaluator: reference.clone(),
+            cache: Arc::clone(&references),
+            stats: Arc::clone(&stats),
+        };
         Self {
             mtf: reference.mtf.clone().with_gpu(context.clone()),
             solvers: reference.solvers.clone().with_gpu(context.clone()),
             context,
             reference,
             template: Arc::default(),
-            stats: Arc::default(),
-            references: Arc::default(),
+            stats,
+            references,
+            checked_reference,
         }
     }
     pub fn run<T>(
@@ -205,30 +259,30 @@ impl ResidentEvaluator {
         if !missing.is_empty() {
             let pending: Vec<_> = missing.iter().map(|&i| systems[i].clone()).collect();
             let values = self.reference.evaluate_batch(&pending, ops, &inner)?;
-            let qualified: Vec<_> = pending
+            let prepared: Vec<_> = pending
                 .par_iter()
-                .map(|system| {
-                    let ctx = JobContext::with(ctx.cancel.clone(), Default::default());
-                    ctx.check()?;
-                    let tracer = match self.reference.trace.tracer(system) {
-                        Ok(t) => t,
-                        Err(_) => return Ok((false, None, None)),
-                    };
-                    let settings = mklight_gpu::xval::XvalSettings {
-                        clip: self.reference.trace.settings().clip,
-                        radiometry: mklight_gpu::Radiometry::Off,
-                        ..mklight_gpu::xval::XvalSettings::qualification()
-                    };
-                    let backend = super::qualification::QualificationBackend::new(&self.context);
-                    let qualification =
-                        mklight_gpu::xval::qualify(&backend, &tracer, Some(&settings), &ctx)?;
-                    Ok((
-                        qualification.passed,
-                        Some(Arc::new(tracer)),
-                        qualification.report,
-                    ))
+                .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
+                .collect();
+            let settings = mklight_gpu::xval::XvalSettings {
+                clip: self.reference.trace.settings().clip,
+                radiometry: mklight_gpu::Radiometry::Off,
+                ..mklight_gpu::xval::XvalSettings::qualification()
+            };
+            let backend = super::qualification::QualificationBackend::new(&self.context);
+            let validation_tracers: Vec<_> = prepared.iter().flatten().map(AsRef::as_ref).collect();
+            let qualifications =
+                mklight_gpu::xval::qualify_many(&backend, &validation_tracers, &settings, &inner)?;
+            let mut qualifications = qualifications.into_iter();
+            let qualified: Vec<_> = prepared
+                .into_iter()
+                .map(|tracer| match tracer {
+                    Some(t) => {
+                        let q = qualifications.next().unwrap();
+                        (q.passed, Some(t), q.report)
+                    }
+                    None => (false, None, None),
                 })
-                .collect::<MkResult<_>>()?;
+                .collect();
             let mut cache = self.references.lock().unwrap();
             // Another concurrent job may have changed the operand specification.
             let same = cache.ops.iter().eq(ops.iter().copied())
@@ -567,7 +621,7 @@ fn qualifies(
 }
 impl OperandEvaluator for ResidentEvaluator {
     fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
-        Some(&self.reference)
+        Some(&self.checked_reference)
     }
     fn gpu_context(&self) -> Option<&GpuContext> {
         Some(&self.context)

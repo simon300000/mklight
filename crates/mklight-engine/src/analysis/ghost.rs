@@ -262,11 +262,14 @@ impl Analysis for GhostPaths {
             vec![],
         )
     }
+    fn gpu_path(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
         settings: &Value,
-        _: &JobContext,
+        ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let s: GhostPathsSettings = parse(settings)?;
         let model = s.model.model(input)?;
@@ -277,7 +280,13 @@ impl Analysis for GhostPaths {
             signal_diameter_mm: s.signal_diameter_mm,
             near_focus_factor: s.near_focus_factor,
         };
-        let r = paraxial_ghosts(&model, &ps)?;
+        let r = if let Some(d) = super::gpu::device(input) {
+            let r = mklight_ghost::gpu::paraxial_ghosts(d.backend.as_ref(), &model, &ps, ctx)?;
+            super::gpu::record_native(input, &r.run);
+            r
+        } else {
+            paraxial_ghosts(&model, &ps)?
+        };
         let (v, w) = crate_json(&r)?;
         Ok(output(v, vec![], w))
     }
@@ -486,6 +495,9 @@ impl Analysis for GhostIrradiance {
             ],
         )
     }
+    fn gpu_path(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -497,7 +509,18 @@ impl Analysis for GhostIrradiance {
             return Err(EngineError::InvalidSettings("map_bins must be ≥ 1".into()));
         }
         let model = s.model.model(input)?;
-        let r = ghost_irradiance(&model, &s.irradiance(), ctx)?;
+        let r = if let Some(d) = super::gpu::device(input) {
+            let r = mklight_ghost::gpu::ghost_irradiance(
+                d.backend.as_ref(),
+                &model,
+                &s.irradiance(),
+                ctx,
+            )?;
+            super::gpu::record_native(input, &r.run);
+            r
+        } else {
+            ghost_irradiance(&model, &s.irradiance(), ctx)?
+        };
         let (mut v, w) = crate_json(&r)?;
         let mut buffers = Vec::new();
         let total = v["total_ghost_map"].clone();

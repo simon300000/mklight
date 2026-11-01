@@ -424,13 +424,18 @@ pub fn cross_validate(
 
 /// [`cross_validate`] for at most `MKL_MAX_WAVELENGTHS` wavelengths (one
 /// packed system).
-fn cross_validate_chunk(
-    backend: &dyn ComputeBackend,
+struct PreparedValidation {
+    packed: PackedSystem,
+    samples: Vec<Sample>,
+    chiefs: Vec<Sample>,
+    image: u32,
+}
+fn prepare_validation(
     tracer: &SequentialTracer,
     settings: &XvalSettings,
     wls: &[usize],
     ctx: &JobContext,
-) -> MkResult<XvalReport> {
+) -> MkResult<PreparedValidation> {
     let sys = tracer.system();
     let wls = wls.to_vec();
     let fields: Vec<usize> = settings
@@ -452,7 +457,6 @@ fn cross_validate_chunk(
             radius_hints: Some(hints),
         },
     )?;
-    let handle = backend.upload_system(&packed)?;
     let image = sys.image_index() as u32;
 
     // Rays: pupil samples and one chief ray per (field, wavelength).
@@ -481,6 +485,28 @@ fn cross_validate_chunk(
             }
         }
     }
+    Ok(PreparedValidation {
+        packed,
+        samples,
+        chiefs,
+        image,
+    })
+}
+
+fn cross_validate_chunk(
+    backend: &dyn ComputeBackend,
+    tracer: &SequentialTracer,
+    settings: &XvalSettings,
+    wls: &[usize],
+    ctx: &JobContext,
+) -> MkResult<XvalReport> {
+    let PreparedValidation {
+        packed,
+        samples,
+        chiefs,
+        image,
+    } = prepare_validation(tracer, settings, wls, ctx)?;
+    let handle = backend.upload_system(&packed)?;
     let batch = |v: &[Sample]| {
         let mut b = RayBatch::with_capacity(v.len());
         for s in v {
@@ -513,6 +539,25 @@ fn cross_validate_chunk(
     })();
     let _ = backend.release_systems(handle);
     let (gpu, gpu_chief) = traced?;
+    compare_validation(
+        backend, tracer, settings, &samples, &chiefs, &gpu, &gpu_chief, 0, 0, ctx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compare_validation(
+    backend: &dyn ComputeBackend,
+    tracer: &SequentialTracer,
+    settings: &XvalSettings,
+    samples: &[Sample],
+    chiefs: &[Sample],
+    gpu: &TraceResult,
+    gpu_chief: &TraceResult,
+    first: usize,
+    chief_first: usize,
+    ctx: &JobContext,
+) -> MkResult<XvalReport> {
+    let sys = tracer.system();
     ctx.check()?;
     ctx.report(0.55, "cross-validation: reference trace");
 
@@ -525,8 +570,8 @@ fn cross_validate_chunk(
     };
     for (k, c) in chiefs.iter().enumerate() {
         let r = tracer.opd_reference(tracer.field(c.field), c.wl).ok();
-        let g = if gpu_chief.ray_status(k).is_ok() {
-            backend_reference(tracer, &as_reference(&gpu_chief, k), c.wl)
+        let g = if gpu_chief.ray_status(chief_first + k).is_ok() {
+            backend_reference(tracer, &as_reference(gpu_chief, chief_first + k), c.wl)
         } else {
             None
         };
@@ -537,7 +582,7 @@ fn cross_validate_chunk(
                 c.field,
                 c.wl,
                 r.is_some(),
-                gpu_chief.ray_status(k)
+                gpu_chief.ray_status(chief_first + k)
             ));
         }
         refs.insert((c.field, c.wl), (r, g));
@@ -567,7 +612,7 @@ fn cross_validate_chunk(
             let mut rec = Vec::new();
             let r = mklight_trace::trace_ray(sys, &s.ray, s.wl, &opts, Some(&mut rec));
             let want = reference_status_word(&r.status);
-            let got = gpu.status[i];
+            let got = gpu.status[first + i];
             if want != got {
                 if in_band(tracer, s, &opts, budget.aperture_edge_mm, settings.tir_band) {
                     a.band += 1;
@@ -589,7 +634,7 @@ fn cross_validate_chunk(
             if !r.status.is_ok() {
                 return a;
             }
-            let g = as_reference(&gpu, i);
+            let g = as_reference(gpu, first + i);
             a.compared += 1;
             let dp = (g.ray.pos - r.ray.pos).norm();
             let dd = (g.ray.dir - r.ray.dir).norm();
@@ -600,7 +645,7 @@ fn cross_validate_chunk(
             // records the previous hit in its own frame, which can be far
             // from its vertex (400 mm in the Newtonian), where the f32
             // record alone rounds by more than the budget: skipped.
-            let n = samples.len();
+            let n = gpu.len();
             for (j, want) in rec.iter().enumerate().skip(1) {
                 if matches!(
                     sys.surfaces[j].shape,
@@ -608,7 +653,7 @@ fn cross_validate_chunk(
                 ) {
                     continue;
                 }
-                let k = (j * n + i) * RECORD_FLOATS;
+                let k = (j * n + first + i) * RECORD_FLOATS;
                 let v = |o: usize| {
                     Vec3::new(
                         gpu.recorded[k + o] as f64,
@@ -728,6 +773,19 @@ pub fn qualify(
 ) -> MkResult<Qualification> {
     let default = XvalSettings::qualification();
     let settings = settings.unwrap_or(&default);
+    ctx.check()?;
+    verdict(
+        backend,
+        settings,
+        cross_validate(backend, tracer, settings, ctx),
+    )
+}
+
+fn verdict(
+    backend: &dyn ComputeBackend,
+    settings: &XvalSettings,
+    result: MkResult<XvalReport>,
+) -> MkResult<Qualification> {
     let mut q = Qualification {
         backend: backend.info().backend_id(),
         kernel_build: backend.precision().kernel_build.clone(),
@@ -738,12 +796,7 @@ pub fn qualify(
         report: None,
         reason: None,
     };
-    ctx.check()?;
-    if !backend.supports(crate::backend::JobKind::Trace) {
-        q.reason = Some("backend does not support the trace kernel".into());
-        return Ok(q);
-    }
-    match cross_validate(backend, tracer, settings, ctx) {
+    match result {
         Ok(r) => {
             q.budget_fraction = Some(r.budget_fraction(&settings.budget));
             match r.check(&settings.effective_budget()) {
@@ -769,4 +822,113 @@ fn fraction_label(m: f64) -> String {
     } else {
         format!("{m}")
     }
+}
+
+/// Qualify changed candidates in stable input order, sharing system registration
+/// and trace submissions. Every candidate retains its own f64 geometry/OPD
+/// comparison; this establishes no parameter envelope. Groups are bounded by
+/// 32 systems and common record geometry, keeping the all-surface scratch small.
+pub fn qualify_many(
+    backend: &dyn ComputeBackend,
+    tracers: &[&SequentialTracer],
+    settings: &XvalSettings,
+    ctx: &JobContext,
+) -> MkResult<Vec<Qualification>> {
+    let mut result: Vec<Option<Qualification>> = vec![None; tracers.len()];
+    let mut groups = std::collections::BTreeMap::<usize, Vec<(usize, PreparedValidation)>>::new();
+    for (index, tracer) in tracers.iter().enumerate() {
+        ctx.check()?;
+        let wavelengths = settings
+            .wavelengths
+            .clone()
+            .unwrap_or_else(|| (0..tracer.num_wavelengths()).collect());
+        if wavelengths.len() > MAX_WAVELENGTHS {
+            result[index] = Some(qualify(
+                backend,
+                tracer,
+                Some(settings),
+                &JobContext::with(ctx.cancel.clone(), Default::default()),
+            )?);
+            continue;
+        }
+        match prepare_validation(
+            tracer,
+            settings,
+            &wavelengths,
+            &JobContext::with(ctx.cancel.clone(), Default::default()),
+        ) {
+            Ok(p) => groups.entry(p.image as usize).or_default().push((index, p)),
+            Err(MkError::Cancelled) => return Err(MkError::Cancelled),
+            Err(e) => result[index] = Some(verdict(backend, settings, Err(e))?),
+        }
+    }
+    let mut done = result.iter().filter(|v| v.is_some()).count();
+    for group in groups.values() {
+        for rows in group.chunks(32) {
+            ctx.check()?;
+            let systems: Vec<_> = rows.iter().map(|(_, p)| p.packed.clone()).collect();
+            let handle = backend.upload_systems(&systems);
+            let traces = match handle {
+                Err(e) => Err(e),
+                Ok(handle) => {
+                    let trace = |chief: bool| {
+                        let mut rays = RayBatch::default();
+                        for (system, (_, p)) in rows.iter().enumerate() {
+                            for sample in if chief { &p.chiefs } else { &p.samples } {
+                                let (p, d) = (sample.ray.pos, sample.ray.dir);
+                                rays.push_f64([p.x, p.y, p.z], [d.x, d.y, d.z], sample.pw as u32);
+                                rays.system.push(system as u32);
+                            }
+                        }
+                        let mut request = TraceRequest::new(handle, rays, 0, rows[0].1.image);
+                        request.record = if chief {
+                            RecordMode::Final
+                        } else {
+                            RecordMode::AllSurfaces
+                        };
+                        request.apply_apertures = !chief && settings.clip;
+                        request.radiometry = settings.radiometry;
+                        request.newton = settings.newton;
+                        run_trace(
+                            backend,
+                            request,
+                            &JobContext::with(ctx.cancel.clone(), Default::default()),
+                        )
+                    };
+                    let traces = (|| Ok((trace(false)?, trace(true)?)))();
+                    let _ = backend.release_systems(handle);
+                    traces
+                }
+            };
+            let (mut first, mut chief_first) = (0, 0);
+            for (index, p) in rows {
+                let report = match &traces {
+                    Ok((gpu, chiefs)) => compare_validation(
+                        backend,
+                        tracers[*index],
+                        settings,
+                        &p.samples,
+                        &p.chiefs,
+                        gpu,
+                        chiefs,
+                        first,
+                        chief_first,
+                        &JobContext::with(ctx.cancel.clone(), Default::default()),
+                    ),
+                    Err(e) => Err(e.clone()),
+                };
+                result[*index] = Some(verdict(backend, settings, report)?);
+                first += p.samples.len();
+                chief_first += p.chiefs.len();
+                done += 1;
+            }
+            ctx.report(
+                done as f64 / tracers.len().max(1) as f64,
+                "candidate geometry qualification",
+            );
+        }
+    }
+    ctx.check()?;
+    ctx.report(1., "candidate qualification complete");
+    Ok(result.into_iter().map(Option::unwrap).collect())
 }

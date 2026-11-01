@@ -22,9 +22,7 @@ use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
-use mklight_optim::merit::gpu_eval::{
-    REAL_RAY_F32_LIMIT_MM, gpu_beats_cpu, gpu_rays_per_candidate, gpu_supports,
-};
+use mklight_optim::merit::gpu_eval::{REAL_RAY_F32_LIMIT_MM, gpu_rays_per_candidate, gpu_supports};
 use mklight_optim::merit::operand::{
     Axis, DistortionMapping, OperandKind, RayQuantity, SpotReference, WavefrontReference,
 };
@@ -517,14 +515,9 @@ fn cancelled_evaluations_release_their_uploads() {
     }
 }
 
-/// The measured crossover decides `auto`: never at the default merit's
-/// sampling, from 256 candidates at 6 × 12, from 16 at 12 × 24; and the ray
-/// count is the evaluator's plan.
+/// Ray-count estimates include exactly the evaluator's planned operands.
 #[test]
-fn crossover_rule_and_ray_count() {
-    assert!(!gpu_beats_cpu(171, 1 << 20));
-    assert!(!gpu_beats_cpu(657, 255) && gpu_beats_cpu(657, 256));
-    assert!(!gpu_beats_cpu(2601, 15) && gpu_beats_cpu(2601, 16));
+fn ray_count_estimate() {
     let sys = samples::double_gauss();
     let cpu = TraceEvaluator::builtin();
     let rays = |rings: usize, arms: usize| {

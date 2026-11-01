@@ -102,7 +102,12 @@ impl Analysis for FieldMap {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let t = SequentialTracer::new(input.resolved()?)?;
-        let r = fm::field_map_job(&t, self.0, &parse(settings)?, ctx)?;
+        let s = parse(settings)?;
+        let r = super::gpu::native_job!(
+            input,
+            |b| mklight_analysis::gpu::field_map_job(b, &t, self.0, &s, ctx),
+            fm::field_map_job(&t, self.0, &s, ctx)
+        )?;
         let (mut v, w) = crate_json(&r)?;
         for key in ["field_coordinates", "image_mm", "values"] {
             v[key] = json!(key);
@@ -126,6 +131,9 @@ impl Analysis for FieldMap {
             ],
             w,
         ))
+    }
+    fn gpu_path(&self) -> bool {
+        true
     }
 }
 struct GlassMap;
@@ -363,15 +371,27 @@ impl Analysis for ImageSimulation {
             .filter(|(k, _)| k == &key)
             .map(|(_, v)| v.clone());
         let t = SequentialTracer::new(input.resolved()?)?;
-        let grid = match cached {
-            Some(g) => g,
-            None => {
-                let g = Arc::new(im::build_psf_grid(&t, &s.optics, &ctx.subrange(0.0, 0.65))?);
-                *self.cache.lock().unwrap() = Some((key, g.clone()));
-                g
-            }
+        let mut r = if let Some(d) = super::gpu::device(input) {
+            let r = mklight_wave::gpu::image_simulation::image_simulation_job(
+                d.backend.as_ref(),
+                &t,
+                &s,
+                None,
+                ctx,
+            )?;
+            super::gpu::record_native(input, &r.run_info);
+            r
+        } else {
+            let grid = match cached {
+                Some(g) => g,
+                None => {
+                    let g = Arc::new(im::build_psf_grid(&t, &s.optics, &ctx.subrange(0.0, 0.65))?);
+                    *self.cache.lock().unwrap() = Some((key, g.clone()));
+                    g
+                }
+            };
+            im::image_simulation_job(&t, &s, Some(grid), ctx)?
         };
-        let mut r = im::image_simulation_job(&t, &s, Some(grid), ctx)?;
         let image = std::mem::take(&mut r.image);
         let (mut v, w) = crate_json(&r)?;
         v["image"] = json!("image");
@@ -384,6 +404,9 @@ impl Analysis for ImageSimulation {
             )],
             w,
         ))
+    }
+    fn gpu_path(&self) -> bool {
+        true
     }
 }
 

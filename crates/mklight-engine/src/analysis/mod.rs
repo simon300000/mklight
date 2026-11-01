@@ -29,6 +29,7 @@ pub mod ghost;
 pub mod gpu;
 pub mod merit_evaluation;
 pub mod optim;
+mod qualification;
 pub mod radiometry;
 pub mod schema;
 pub mod solves;
@@ -100,11 +101,13 @@ pub struct BackendReport {
     /// unavailable, no GPU path for the analysis, or failed precision
     /// qualification. In `run_info.warnings` too, except when an `auto` or
     /// default preference met an analysis without a GPU path or a ray grid
-    /// below `analysis::gpu::AUTO_MIN_GPU_RAYS`.
+    /// covered by recorded CPU cost evidence.
     pub fallback_reason: Option<String>,
     /// The precision qualification of a GPU backend for this snapshot
     /// (`mklight_gpu::xval::Qualification`), when one ran.
     pub qualification: Option<Value>,
+    /// Native execution evidence: device/build/probe, plan versions and stages.
+    pub execution: Vec<Value>,
 }
 
 /// What an analysis tells the engine about the backend it actually used
@@ -204,6 +207,7 @@ pub struct AnalysisInput<'a> {
     pub stop: CancelToken,
     resolver: Resolver<'a>,
     backend_used: RefCell<Option<BackendUse>>,
+    executions: RefCell<Vec<Value>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
     library_hash: OnceCell<String>,
 }
@@ -236,6 +240,7 @@ impl<'a> AnalysisInput<'a> {
             stop: CancelToken::new(),
             resolver,
             backend_used: RefCell::new(None),
+            executions: RefCell::new(Vec::new()),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
         }
@@ -399,7 +404,7 @@ pub fn run_analysis(
     };
     let submitted_snapshot = &input.snapshot;
     let input = derived.as_ref().unwrap_or(input);
-    let out = analysis.run(input, &solver_settings, ctx)?;
+    let out = qualification::run(analysis, input, &solver_settings, ctx)?;
     ctx.check()?;
     let mut backend = BackendReport {
         requested: input.requested_backend.clone(),
@@ -408,6 +413,7 @@ pub fn run_analysis(
         device: input.backend.capabilities.device_name.clone(),
         fallback_reason: input.selection_note.clone(),
         qualification: None,
+        execution: input.executions.borrow_mut().drain(..).collect(),
     };
     let mut warnings = extra_warnings;
     if let Some(u) = input.backend_used.borrow_mut().take() {

@@ -273,6 +273,9 @@ impl Analysis for StrayLight {
             ],
         )
     }
+    fn gpu_path(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -323,7 +326,19 @@ impl Analysis for StrayLight {
             ss.ghost_coverage = Some(coverage.clone());
             Some(coverage)
         };
-        let (r, sigs) = analyze_with_signatures(rs.clone(), &ss, ctx)?;
+        let (r, sigs) = if let Some(d) = super::gpu::device(input) {
+            let result = mklight_stray::gpu::analyze_with_signatures(
+                d.backend.as_ref(),
+                rs.clone(),
+                &ss,
+                mklight_stray::gpu::TransportOptions::default(),
+                ctx,
+            )?;
+            super::gpu::record_native(input, &result.0.run_info);
+            result
+        } else {
+            analyze_with_signatures(rs.clone(), &ss, ctx)?
+        };
         let partition_json = match partition {
             None => Value::Null,
             Some(coverage) => {

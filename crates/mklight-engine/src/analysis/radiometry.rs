@@ -111,6 +111,9 @@ impl Analysis for SystemTransmission {
             vec![],
         )
     }
+    fn gpu_path(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -118,7 +121,12 @@ impl Analysis for SystemTransmission {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let tracer = SequentialTracer::new(input.resolved()?)?;
-        let r = system_transmission(&tracer, &parse(settings)?, ctx)?;
+        let s = parse(settings)?;
+        let r = super::gpu::native_job!(
+            input,
+            |b| mklight_gpu::radiometry::system_transmission(b, &tracer, &s, ctx),
+            system_transmission(&tracer, &s, ctx)
+        )?;
         let (v, w) = crate_json(&r)?;
         Ok(output(v, vec![], w))
     }
@@ -286,6 +294,9 @@ impl Analysis for PolarizationPupilMap {
             ],
         )
     }
+    fn gpu_path(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -315,7 +326,11 @@ impl Analysis for PolarizationPupilMap {
             state: o.state,
             clip: o.clip,
         };
-        let r = polarization_pupil_map(&tracer, &s, ctx)?;
+        let r = super::gpu::native_job!(
+            input,
+            |b| mklight_gpu::radiometry::polarization_pupil_map(b, &tracer, &s, ctx),
+            polarization_pupil_map(&tracer, &s, ctx)
+        )?;
         let (mut v, w) = crate_json(&r)?;
         let samples = v
             .as_object_mut()
