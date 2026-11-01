@@ -83,12 +83,15 @@ fn trial_replay_compensation_and_refinements() {
         .unwrap();
         assert_eq!(got.criteria, replay.criteria);
         assert_eq!(got.failures, expected.failures);
+        assert_eq!(got.criteria.len(), expected.criteria.len());
+        let mut relative = 0_f64;
         for (a, b) in got.criteria.iter().zip(&expected.criteria) {
-            assert!(
-                (a - b).abs() < 1e-8 + 0.01 * b.abs(),
-                "{compensated}: {a} vs {b}"
-            );
+            relative = relative.max((a - b).abs() / b.abs().max(1e-12));
         }
+        eprintln!("P8 tolerance compensated={compensated} criterion_relative={relative:e}");
+        // Measured 2e-13 (compensated trials end on the f64 reference).
+        assert!(relative < 1e-9, "{compensated}: {relative}");
+        assert_eq!(got.records.len(), replay.records.len());
         for (a, b) in got.records.iter().zip(&replay.records) {
             assert_eq!(a.perturbations, b.perturbations);
         }
@@ -129,13 +132,11 @@ fn trial_replay_compensation_and_refinements() {
     assert!(gpu.stats().device_operands > 0);
 }
 
-struct KnownTrials {
-    context: GpuContext,
-}
+/// Trial summaries stay on the host (a device summary measured 5–50× slower
+/// than the f64 reference it must agree with); large offsets must not cost
+/// the spread its precision.
+struct KnownTrials;
 impl ToleranceEvaluator for KnownTrials {
-    fn gpu_context(&self) -> Option<&GpuContext> {
-        Some(&self.context)
-    }
     fn evaluate_batch(
         &self,
         p: &[Vec<f64>],
@@ -171,14 +172,6 @@ impl ToleranceEvaluator for KnownTrials {
 }
 #[test]
 fn large_trial_statistics_have_known_variance_and_percentiles() {
-    let b = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    );
-    let evaluator = KnownTrials {
-        context: GpuContext::new(b, Snapshot::new(samples::singlet()).unwrap()),
-    };
     let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(
         ParamPath::Thickness {
             surface: mklight_core::SurfaceId(1),
@@ -193,7 +186,7 @@ fn large_trial_statistics_have_known_variance_and_percentiles() {
             percentiles: vec![0., 50., 100.],
             ..Default::default()
         };
-        let r = monte_carlo(&spec, &evaluator, &settings, &Monitor::new(ctx.clone())).unwrap();
+        let r = monte_carlo(&spec, &KnownTrials, &settings, &Monitor::new(ctx.clone())).unwrap();
         let sd = (5. / 1048576. * n as f64 / (n - 1) as f64).sqrt();
         assert_eq!(r.mean, 1e10);
         assert!((r.std_dev - sd).abs() < 1e-12);
@@ -207,14 +200,5 @@ fn large_trial_statistics_have_known_variance_and_percentiles() {
             ]
         );
         assert_eq!(ctx.progress.fraction(), 1.);
-        let stats = evaluator.context.stats();
-        assert!(stats.command_buffers > 0);
-        assert_eq!(stats.fallback_count, 0);
-        assert!(stats.peak_bytes < 256 * 1024 * 1024);
-        eprintln!(
-            "P8_STATISTICS trials={n} std_error={} stats={}",
-            (r.std_dev - sd).abs(),
-            serde_json::to_string(&stats).unwrap()
-        );
     }
 }

@@ -24,19 +24,19 @@ fn phase(i: usize) -> &'static str {
     }
 }
 #[test]
-#[ignore = "provisional complete synthetic Jacobian and solve timings"]
+#[ignore = "provisional complete synthetic LM solve timings around the tall-QR crossover"]
 fn jacobians_and_solves() {
     let b = backend();
     let ctx = JobContext::new();
-    for n in [8, 32, 100] {
+    for (n, m) in [(8, 32), (32, 128), (100, 400), (32, 4000), (100, 4000)] {
         let problem = FnProblem::residuals(
             (0..n)
                 .map(|i| Variable::bounded(format!("x{i}"), -2., 2.))
                 .collect(),
-            4 * n,
+            m,
             move |x, r| {
                 for (i, v) in r.iter_mut().enumerate() {
-                    *v = (1. + i as f64 / (4 * n) as f64)
+                    *v = (1. + i as f64 / m as f64)
                         * (x[i % n].exp() - (0.1 * ((i % n) % 3) as f64).exp());
                 }
             },
@@ -46,45 +46,32 @@ fn jacobians_and_solves() {
             context: GpuContext::new(b.clone(), Snapshot::new(samples::singlet()).unwrap()),
         };
         let x = vec![0.3; n];
-        let f = evaluate_one(&p, &x, &ctx).unwrap();
-        let jacobian = JacobianSettings {
-            scheme: FdScheme::Central,
-            relative_step: Some(1e-4),
-            use_analytic: false,
-        };
         let settings = LsqSettings {
             max_iterations: 15,
-            jacobian,
+            jacobian: JacobianSettings {
+                scheme: FdScheme::Central,
+                relative_step: Some(1e-4),
+                use_analytic: false,
+            },
             ..Default::default()
         };
         for run in 0..12 {
             let t = Instant::now();
-            let cpu = fd_jacobian(&p.problem, &x, &f, &jacobian, &ctx).unwrap();
-            let cpu_j = t.elapsed().as_secs_f64();
-            let before = p.context.stats();
-            let t = Instant::now();
-            let got = fd_jacobian(&p, &x, &f, &jacobian, &ctx).unwrap();
-            let gpu_j = t.elapsed().as_secs_f64();
-            let error = cpu
-                .residuals
-                .data
-                .iter()
-                .zip(&got.residuals.data)
-                .map(|(a, b)| (a - b).abs())
-                .fold(0., f64::max);
-            assert!(error < 1e-8);
-            let t = Instant::now();
             let cpu = least_squares(&p.problem, &x, &settings, &Monitor::new(ctx.clone())).unwrap();
             let cpu_s = t.elapsed().as_secs_f64();
+            let before = p.context.stats();
             let t = Instant::now();
             let gpu = least_squares(&p, &x, &settings, &Monitor::new(ctx.clone())).unwrap();
             let gpu_s = t.elapsed().as_secs_f64();
             assert!(gpu.merit < 1e-12 && cpu.merit < 1e-12);
             let after = p.context.stats();
-            assert!(after.command_buffers > before.command_buffers);
+            assert_eq!(
+                after.command_buffers > before.command_buffers,
+                m * n * n >= 1 << 24
+            );
             eprintln!(
                 "P8_WORKLOAD {}",
-                serde_json::json!({"case":"synthetic_jacobian_and_solve","variables":n,"residuals":4*n,"run":run,"phase":phase(run),"cpu_jacobian_seconds":cpu_j,"resident_jacobian_seconds":gpu_j,"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merit":cpu.merit,"resident_merit":gpu.merit,"derivative_max":error,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_count":after.fallback_count-before.fallback_count})
+                serde_json::json!({"case":"synthetic_jacobian_and_solve","variables":n,"residuals":m,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merit":cpu.merit,"resident_merit":gpu.merit,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_count":after.fallback_count-before.fallback_count})
             );
         }
     }
@@ -161,6 +148,7 @@ fn trials_and_glass() {
             let got = monte_carlo(&spec, &new, &settings, &Monitor::new(ctx.clone())).unwrap();
             let gpu_s = t.elapsed().as_secs_f64();
             assert_eq!(expected.failures, got.failures);
+            assert_eq!(expected.criteria.len(), got.criteria.len());
             for (a, b) in expected.criteria.iter().zip(&got.criteria) {
                 assert!((a - b).abs() < 1e-8 + 0.01 * a.abs());
             }
@@ -212,6 +200,7 @@ fn trials_and_glass() {
             .refine_candidates(&systems, &vars, &criterion, &lsq, &ctx)
             .unwrap();
         let gpu_s = t.elapsed().as_secs_f64();
+        assert_eq!(got.len(), systems.len());
         for (i, r) in got.iter().enumerate() {
             let p = OpticalProblem::new(
                 systems[i].clone(),

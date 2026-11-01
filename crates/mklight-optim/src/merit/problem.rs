@@ -596,70 +596,13 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
     }
     fn evaluate_batch(&self, x: &CandidateBatch, ctx: &JobContext) -> MkResult<BatchEvaluation> {
         let vals = self.operand_values(x, ctx)?;
+        // Residuals of host-owned qualified values stay on the host: a device
+        // pass costs a fill and a command for one subtraction per value.
+        let mut evaluated = self.to_evaluation(vals);
         if let Some(gpu) = self.evaluator.gpu_context() {
-            let mut plan = gpu.plan();
-            let m = self.residual_ops.len();
-            if m == 0 {
-                let mut evaluated = self.to_evaluation(vals);
-                self.qualify_combined(x, &mut evaluated, gpu, ctx)?;
-                return Ok(evaluated);
-            }
-            let values = gpu.fill(
-                &mut plan,
-                [vals.len(), m],
-                |out: &mut [mklight_gpu::Df32]| {
-                    for (row, v) in vals.iter().enumerate() {
-                        for (col, &op) in self.residual_ops.iter().enumerate() {
-                            out[row * m + col] = mklight_gpu::Df32::from_f64(
-                                v.as_ref()
-                                    .and_then(|v| v[op].as_ref().ok())
-                                    .copied()
-                                    .unwrap_or(f64::NAN),
-                            );
-                        }
-                    }
-                },
-            )?;
-            let targets = gpu.fill(&mut plan, [m], |out: &mut [mklight_gpu::Df32]| {
-                for (v, &i) in out.iter_mut().zip(&self.residual_ops) {
-                    *v = mklight_gpu::Df32::from_f64(self.spec.operands[i].target);
-                }
-            })?;
-            let comparison = gpu.fill(&mut plan, [m], |out: &mut [u32]| {
-                for (v, &i) in out.iter_mut().zip(&self.residual_ops) {
-                    *v = match self.spec.operands[i].comparison {
-                        super::Comparison::Equal => 0,
-                        super::Comparison::LessThan => 1,
-                        super::Comparison::GreaterThan => 2,
-                    };
-                }
-            })?;
-            let output = plan.scratch(mklight_gpu::resident::BufferDesc::new(
-                mklight_gpu::resident::ElementType::DoubleFloat,
-                [vals.len(), m],
-            ));
-            plan.operations
-                .push(mklight_gpu::resident::ResidentOp::Optim(
-                    mklight_gpu::optim_ops::Request::Residuals {
-                        values,
-                        targets,
-                        comparison,
-                        output,
-                    },
-                ));
-            plan.outputs = vec![output];
-            let result = gpu.submit(plan, ctx)?;
-            let mut evaluated = self.to_evaluation(vals);
-            for (host, device) in evaluated.residuals.iter_mut().zip(gpu.values(&result, 0)?) {
-                if device.is_finite() {
-                    *host = device;
-                }
-            }
             self.qualify_combined(x, &mut evaluated, gpu, ctx)?;
-            Ok(evaluated)
-        } else {
-            Ok(self.to_evaluation(vals))
         }
+        Ok(evaluated)
     }
     /// The largest step any enabled operand's evaluator asks for (a step
     /// large enough for the noisiest operand costs the others only `O(h)`

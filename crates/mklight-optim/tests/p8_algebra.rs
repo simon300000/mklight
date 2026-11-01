@@ -22,6 +22,7 @@ fn check(backend: Arc<dyn ComputeBackend>) {
             &ctx,
         )
         .unwrap();
+    assert_eq!(j.data.len(), 3);
     for (a, b) in j.data.iter().zip([0.5, 0.5, 0.499]) {
         assert!((a - b).abs() < 2e-6, "{a} != {b}");
     }
@@ -41,6 +42,7 @@ fn check(backend: Arc<dyn ComputeBackend>) {
         )
         .unwrap();
     let x = g.values(&result, 0).unwrap();
+    assert_eq!(x.len(), 4);
     for (a, b) in x.iter().zip([2., -3., 4., 1.]) {
         assert!((a - b).abs() < 1e-10, "{a} != {b}");
     }
@@ -127,11 +129,78 @@ fn raw_algebra(b: Arc<dyn ComputeBackend>) -> Vec<Vec<u32>> {
         transpose_left: true,
         output: product,
     }));
-    p.outputs = vec![residual, perturbed, matrix, rhs, error, product];
+    // Stencil differences with a large common offset, and damped LM rows.
+    let stencil_values = g
+        .df(
+            &mut p,
+            [3, 2],
+            &[1e5, -2., 1e5 + 1e-3, -1.5, 1e5 - 2e-3, -2.25],
+        )
+        .unwrap();
+    let rows = g
+        .fill(&mut p, [2, 3], |v: &mut [u32]| {
+            v.copy_from_slice(&[0, 1, 2, 0, 2, 0])
+        })
+        .unwrap();
+    let steps = g
+        .df(&mut p, [2, 2], &[0.5 / 1e-3, -0.5 / 1e-3, -1. / 3e-3, 0.])
+        .unwrap();
+    let difference = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [2, 2]));
+    let stencil_status = p.scratch(BufferDesc::new(ElementType::U32, [2]));
+    p.operations.push(ResidentOp::Optim(Request::Difference {
+        values: stencil_values,
+        rows,
+        steps,
+        output: difference,
+        status: stencil_status,
+    }));
+    let jacobian = g.df(&mut p, [1, 3, 2], &[1., 0., 0., 1., 1., 1.]).unwrap();
+    let lm_residuals = g.df(&mut p, [1, 3], &[0.5, -1., 0.25]).unwrap();
+    let weights = g.df(&mut p, [3], &[1., 4., 0.5]).unwrap();
+    let diagonal = g.df(&mut p, [1, 2], &[2., 3.]).unwrap();
+    let lm_matrix = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, 5, 2]));
+    let lm_rhs = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, 5]));
+    p.operations.push(ResidentOp::Optim(Request::LmRows {
+        jacobian,
+        residuals: lm_residuals,
+        weights,
+        diagonal,
+        damping: mklight_gpu::Df32::from_f64(0.01),
+        matrix: lm_matrix,
+        rhs: lm_rhs,
+    }));
+    p.outputs = vec![
+        residual,
+        perturbed,
+        matrix,
+        rhs,
+        error,
+        product,
+        difference,
+        stencil_status,
+        lm_matrix,
+        lm_rhs,
+    ];
     let r = g.submit(p, &JobContext::new()).unwrap();
     assert_eq!(g.values(&r, 0).unwrap(), vec![1., 0., -4.]);
     assert_eq!(g.values(&r, 4).unwrap(), vec![0., 0., 0., 1., 1., 1.]);
     assert_eq!(g.values(&r, 5).unwrap(), vec![-3., -9.]);
+    let d = g.values(&r, 6).unwrap();
+    assert_eq!(d.len(), 4);
+    for (a, b) in d.iter().zip([1.5, 2. / 3., 375., 250. / 3.]) {
+        assert!((a - b).abs() < 1e-6 * b, "{d:?}");
+    }
+    let lm = g.values(&r, 8).unwrap();
+    let h = 0.5f64.sqrt();
+    assert_eq!(lm.len(), 10);
+    for (a, b) in lm.iter().zip([1., 0., 0., 2., h, h, 0.2, 0., 0., 0.3]) {
+        assert!((a - b).abs() < 1e-12, "{lm:?}");
+    }
+    let rhs = g.values(&r, 9).unwrap();
+    assert_eq!(rhs.len(), 5);
+    for (a, b) in rhs.iter().zip([-0.5, 2., -0.25 * h, 0., 0.]) {
+        assert!((a - b).abs() < 1e-12, "{rhs:?}");
+    }
     r.outputs
         .iter()
         .map(|o| g.backend.read_view(o.view()).unwrap().words().to_vec())

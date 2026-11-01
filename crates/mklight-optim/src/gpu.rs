@@ -12,7 +12,6 @@ mod evaluator;
 mod first_order;
 mod qualification;
 pub mod scheduler;
-mod tolerance;
 pub use evaluator::{EvaluationStats, ResidentEvaluator};
 
 type SamplingCache = Vec<(
@@ -474,56 +473,5 @@ impl<P: crate::problem::Problem> crate::problem::Problem for ResidentProblem<P> 
         ctx: &JobContext,
     ) -> Option<MkResult<crate::problem::Evaluation>> {
         Some(crate::problem::evaluate_one(&self.problem, x, ctx))
-    }
-}
-
-impl GpuContext {
-    pub(crate) fn gradient(
-        &self,
-        j: &Matrix,
-        r: &[f64],
-        scales: &[f64],
-        ctx: &JobContext,
-    ) -> MkResult<Vec<f64>> {
-        let mut p = self.plan();
-        if scales.iter().any(|v| !v.is_finite()) {
-            self.observe(PlanStats {
-                fallback_count: 1,
-                stages: vec![StageStats {
-                    name: "gradient range reference".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            });
-            return Ok(j.tr_mul_vec(r));
-        }
-        let norm = r.iter().map(|v| v.abs()).fold(0., f64::max);
-        let norm = if norm == 0. { 1. } else { norm };
-        let left = self.fill(&mut p, [1, j.rows, j.cols], |out: &mut [Df32]| {
-            for (i, o) in out.iter_mut().enumerate() {
-                let scale = scales[i % j.cols];
-                *o = Df32::from_f64(if scale == 0. { 0. } else { j.data[i] / scale });
-            }
-        })?;
-        let right = self.fill(&mut p, [1, j.rows, 1], |out: &mut [Df32]| {
-            for (o, &r) in out.iter_mut().zip(r) {
-                *o = Df32::from_f64(r / norm);
-            }
-        })?;
-        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, j.cols, 1]));
-        p.operations.push(ResidentOp::Optim(Request::Product {
-            left,
-            right,
-            transpose_left: true,
-            output,
-        }));
-        p.outputs = vec![output];
-        let result = self.submit(p, ctx)?;
-        Ok(self
-            .values(&result, 0)?
-            .into_iter()
-            .zip(scales)
-            .map(|(v, &s)| v * s * norm)
-            .collect())
     }
 }

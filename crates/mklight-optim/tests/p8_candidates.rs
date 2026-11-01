@@ -67,6 +67,7 @@ fn host_metal_perturbed_samples() {
         let expected = reference.evaluate_batch(&b, &JobContext::new()).unwrap();
         let mut spot_max = 0_f64;
         let mut wave_max = 0_f64;
+        assert_eq!(e.residuals.len(), expected.residuals.len());
         for row in 0..e.len() {
             for (i, (a, b)) in e
                 .residuals(row)
@@ -81,8 +82,10 @@ fn host_metal_perturbed_samples() {
                 }
             }
         }
-        assert!(spot_max < 2e-5);
-        assert!(wave_max < 5e-3);
+        // Qualification publishes nothing beyond 2e-5 mm / 5e-3 waves; the
+        // measured maxima are 8.9e-9 mm and 2.7e-8 waves, so gate near them.
+        assert!(spot_max < 1e-7, "{name}: {spot_max:e}");
+        assert!(wave_max < 3e-7, "{name}: {wave_max:e}");
         eprintln!(
             "P8_ACCURACY sample={name} spot_max_mm={spot_max:e} wavefront_max_waves={wave_max:e}"
         );

@@ -13,21 +13,22 @@ fn backend() -> Arc<dyn ComputeBackend> {
 fn context(b: Arc<dyn ComputeBackend>) -> GpuContext {
     GpuContext::new(b, Snapshot::new(samples::singlet()).unwrap())
 }
+/// LM solves keep host QR below the measured crossover and use the resident
+/// tall QR (with retained Q projections) above it; both reach the optimum.
 #[test]
-fn host_derivatives_and_tall_qr() {
+fn tall_qr_crossover_and_resident_lm() {
     let b = backend();
     let ctx = JobContext::new();
-    for n in [8, 32, 100] {
+    for (n, m) in [(8, 32), (100, 400), (64, 4096)] {
         let p = FnProblem::new(
             (0..n)
                 .map(|i| Variable::bounded(format!("x{i}"), -2., 2.))
                 .collect(),
-            4 * n,
+            m,
             move |x, r, _| {
                 for (i, r) in r.iter_mut().enumerate() {
                     let j = i % n;
-                    *r = (1. + i as f64 / (4 * n) as f64)
-                        * (x[j].exp() - (0.1 * (j % 3) as f64).exp());
+                    *r = (1. + i as f64 / m as f64) * (x[j].exp() - (0.1 * (j % 3) as f64).exp());
                 }
                 EvalStatus::Ok
             },
@@ -36,40 +37,38 @@ fn host_derivatives_and_tall_qr() {
             problem: p,
             context: context(b.clone()),
         };
-        let x = vec![0.3; n];
-        let f = evaluate_one(&p, &x, &ctx).unwrap();
-        let settings = JacobianSettings {
-            scheme: FdScheme::Central,
-            relative_step: Some(1e-4),
-            use_analytic: false,
+        let settings = LsqSettings {
+            max_iterations: 15,
+            jacobian: JacobianSettings {
+                scheme: FdScheme::Central,
+                relative_step: Some(1e-4),
+                use_analytic: false,
+            },
+            ..Default::default()
         };
-        let gpu = fd_jacobian(&p, &x, &f, &settings, &ctx).unwrap();
-        let cpu = fd_jacobian(&p.problem, &x, &f, &settings, &ctx).unwrap();
-        let max = gpu
-            .residuals
-            .data
+        let x = vec![0.3; n];
+        let gpu = least_squares(&p, &x, &settings, &Monitor::new(ctx.clone())).unwrap();
+        let cpu = least_squares(&p.problem, &x, &settings, &Monitor::new(ctx.clone())).unwrap();
+        assert!(gpu.merit < 1e-12 && cpu.merit < 1e-12, "V={n}: {gpu:?}");
+        assert_eq!(gpu.x.len(), cpu.x.len());
+        let dx = gpu
+            .x
             .iter()
-            .zip(&cpu.residuals.data)
+            .zip(&cpu.x)
             .map(|(a, b)| (a - b).abs())
             .fold(0., f64::max);
-        assert!(max < 1e-8, "V={n}: {max}");
-        let result = least_squares(
-            &p,
-            &x,
-            &LsqSettings {
-                max_iterations: 15,
-                jacobian: settings,
-                ..Default::default()
-            },
-            &Monitor::new(ctx.clone()),
-        )
-        .unwrap();
-        assert!(result.merit < 1e-12, "V={n}: {result:?}");
-        assert!(p.context.stats().command_buffers > 0);
+        assert!(dx < 1e-6, "V={n}: {dx}");
+        let stats = p.context.stats();
+        assert_eq!(
+            stats.command_buffers > 0,
+            m * n * n >= 1 << 24,
+            "V={n} M={m}"
+        );
+        assert_eq!(stats.fallback_count, 0);
         eprintln!(
-            "P8 V={n} derivative_max={max:e} merit={:e} stats={}",
-            result.merit,
-            serde_json::to_string(&p.context.stats()).unwrap()
+            "P8 V={n} M={m} merit={:e} dx={dx:e} stats={}",
+            gpu.merit,
+            serde_json::to_string(&stats).unwrap()
         );
     }
 }
@@ -211,37 +210,6 @@ fn one_sided_retry_and_thick_lens_derivative() {
 }
 
 #[test]
-fn coefficient_scale_uses_reference_when_df_cannot_represent_it() {
-    let ctx = JobContext::new();
-    let mut v = Variable::bounded("coefficient", 0., 2e-45);
-    v.scale = 1e-45;
-    let cpu = FnProblem::new(vec![v], 1, |x, r, _| {
-        r[0] = x[0] * 1e45 - 1.;
-        EvalStatus::Ok
-    });
-    let p = ResidentProblem {
-        problem: cpu,
-        context: context(backend()),
-    };
-    let x = [0.5e-45];
-    let f = evaluate_one(&p, &x, &ctx).unwrap();
-    let j = fd_jacobian(
-        &p,
-        &x,
-        &f,
-        &JacobianSettings {
-            scheme: FdScheme::Central,
-            relative_step: Some(1e-4),
-            use_analytic: false,
-        },
-        &ctx,
-    )
-    .unwrap();
-    assert!((j.residuals[(0, 0)] / 1e45 - 1.).abs() < 1e-9);
-    assert!(p.context.stats().fallback_count > 0);
-}
-
-#[test]
 fn host_ri_preserves_adaptive_etendue_model() {
     let b = backend();
     let mut clipped = samples::cooke_triplet();
@@ -269,6 +237,7 @@ fn host_ri_preserves_adaptive_etendue_model() {
             .evaluate_batch(std::slice::from_ref(&system), &refs, &ctx)
             .unwrap();
         let mut error = 0_f64;
+        assert_eq!(got[0].len(), expected[0].len());
         for (a, b) in got[0].iter().zip(&expected[0]) {
             error = error.max((a.as_ref().unwrap() - b.as_ref().unwrap()).abs());
         }

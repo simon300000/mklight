@@ -3,6 +3,29 @@ use mklight_core::{JobContext, Snapshot, param::ParamPath};
 use mklight_gpu::ComputeBackend;
 use mklight_optim::{gpu::*, merit::default::DefaultMeritSpec, merit::*, problem::*};
 use std::{sync::Arc, time::Instant};
+/// Per-stage wall/device/command deltas between two cumulative snapshots.
+fn stage_deltas(
+    before: &mklight_gpu::resident::PlanStats,
+    after: &mklight_gpu::resident::PlanStats,
+) -> serde_json::Value {
+    after
+        .stages
+        .iter()
+        .map(|s| {
+            let b = before.stages.iter().find(|b| b.name == s.name);
+            let d = |f: fn(&mklight_gpu::resident::StageStats) -> f64| f(s) - b.map_or(0., f);
+            (
+                s.name.clone(),
+                serde_json::json!([
+                    d(|s| s.wall_seconds),
+                    d(|s| s.device_seconds),
+                    s.command_buffers - b.map_or(0, |b| b.command_buffers)
+                ]),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
 #[test]
 #[ignore = "provisional host benchmark; ten measured runs after cold and warm-up"]
 fn candidate_sweep() {
@@ -107,7 +130,7 @@ fn candidate_sweep() {
                 );
                 eprintln!(
                     "P8_BENCH {}",
-                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"batch":b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"old_seconds":old_s,"resident_seconds":new_s,"device_seconds":after.device_seconds-stats.device_seconds,"commands":after.command_buffers-stats.command_buffers,"copied_bytes":after.copied_bytes-stats.copied_bytes+mem.copied_bytes-cache.copied_bytes,"allocations":after.allocations-stats.allocations,"reused":after.reused_allocations-stats.reused_allocations,"peak_plan_bytes":after.peak_bytes,"pool_bytes":mem.pooled_bytes,"qualification_seconds":q.reference_seconds-qual.reference_seconds,"fallback_operands":q.fallback_operands-qual.fallback_operands,"legacy_stats":legacy.stats(),"old_setup_seconds":old_setup_seconds,"new_setup_seconds":new_setup_seconds,"geometry_qualifications":q.geometry_qualifications-qual.geometry_qualifications,"qualification_cache_hits":q.reference_cache_hits-qual.reference_cache_hits,"device_operands":q.device_operands-qual.device_operands})
+                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"batch":b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"old_seconds":old_s,"resident_seconds":new_s,"device_seconds":after.device_seconds-stats.device_seconds,"commands":after.command_buffers-stats.command_buffers,"copied_bytes":after.copied_bytes-stats.copied_bytes+mem.copied_bytes-cache.copied_bytes,"allocations":after.allocations-stats.allocations,"reused":after.reused_allocations-stats.reused_allocations,"peak_plan_bytes":after.peak_bytes,"pool_bytes":mem.pooled_bytes,"qualification_seconds":q.reference_seconds-qual.reference_seconds,"fallback_operands":q.fallback_operands-qual.fallback_operands,"legacy_stats":legacy.stats(),"old_setup_seconds":old_setup_seconds,"new_setup_seconds":new_setup_seconds,"geometry_qualifications":q.geometry_qualifications-qual.geometry_qualifications,"qualification_cache_hits":q.reference_cache_hits-qual.reference_cache_hits,"device_operands":q.device_operands-qual.device_operands,"stages":stage_deltas(&stats,&after)})
                 );
             }
         }

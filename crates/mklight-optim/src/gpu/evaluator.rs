@@ -163,13 +163,14 @@ impl ResidentEvaluator {
         systems: &[OpticalSystem],
         ops: &[&Operand],
         template: Option<(&UploadedSystem, &[Candidate])>,
+        first: usize,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         ctx.check()?;
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
         let t = Instant::now();
         let keys: Vec<_> = (0..systems.len())
-            .map(|i| template.map_or(i as u64, |(_, rows)| rows[i].id))
+            .map(|i| template.map_or((first + i) as u64, |(_, rows)| rows[i].id))
             .collect();
         let mut reference = vec![None; systems.len()];
         let mut geometry = vec![false; systems.len()];
@@ -296,7 +297,8 @@ impl ResidentEvaluator {
                 .filter(|(_, q)| **q)
                 .map(|(i, _)| i)
                 .collect();
-            let selected: Vec<_> = active.iter().map(|&i| systems[i].clone()).collect();
+            // Only the native MTF/solver adapters take owned systems.
+            let selected = || -> Vec<_> { active.iter().map(|&i| systems[i].clone()).collect() };
             let selected_tracers: Vec<_> = active
                 .iter()
                 .map(|&i| tracers[i].as_ref().unwrap().clone())
@@ -317,9 +319,9 @@ impl ResidentEvaluator {
                         selected_template,
                         &inner,
                     ),
-                    1 => self.mtf.evaluate_batch(&selected, &refs, &inner),
-                    2 => self.solvers.evaluate_batch(&selected, &refs, &inner),
-                    4 => self.first_order(&selected, &refs, selected_template, &inner),
+                    1 => self.mtf.evaluate_batch(&selected(), &refs, &inner),
+                    2 => self.solvers.evaluate_batch(&selected(), &refs, &inner),
+                    4 => self.first_order(&selected(), &refs, selected_template, &inner),
                     _ => {
                         stats.host_operands += (systems.len() * indices.len()) as u64;
                         for &i in &indices {
@@ -432,6 +434,10 @@ fn merge_geometry(
         *total = Some(r.clone());
     }
 }
+/// Candidates per resident plan, bounded so plans stay inside the 256 MiB
+/// buffer pool. Measured peaks: 60 MiB for 1024 default-spot Cooke candidates
+/// at the spot budget; dense wavefront batches (OPD and fit channels) reach
+/// 127 MiB at their budget and 376 MiB at the spot budget.
 fn batch_limit(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usize {
     let mut groups = Vec::new();
     for op in ops {
@@ -488,7 +494,14 @@ fn batch_limit(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usi
                 mirrors * s.rings * s.arms * fields * wavelengths
             })
             .sum::<usize>();
-    (196_608 / rays.max(1)).clamp(1, 256)
+    let wavefront = ops.iter().any(|o| {
+        matches!(
+            o.kind,
+            OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
+        )
+    });
+    let budget = if wavefront { 196_608 } else { 786_432 };
+    (budget / rays.max(1)).clamp(1, 1024)
 }
 
 fn route_for(kind: &OperandKind) -> usize {
@@ -596,6 +609,7 @@ impl OperandEvaluator for ResidentEvaluator {
                 chunk,
                 ops,
                 None,
+                i * limit,
                 &ctx.subrange(i as f64 / count as f64, (i + 1) as f64 / count as f64),
             )?);
         }
@@ -652,6 +666,7 @@ impl OperandEvaluator for ResidentEvaluator {
                 systems,
                 ops,
                 template.as_ref().map(|t| (&t.uploaded, rows)),
+                0,
                 &ctx.subrange(
                     0.05 + 0.95 * i as f64 / count as f64,
                     0.05 + 0.95 * (i + 1) as f64 / count as f64,

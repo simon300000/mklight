@@ -183,7 +183,7 @@ fn value(cand: &mut Candidate, s: &OpticalSystem, op: &Operand, ctx: &JobContext
                             .gpu_values
                             .iter()
                             .find(|v| v.0 == field && v.1 == wl && v.2 == dz && v.3 == f)
-                            .expect("planned MTF query")
+                            .ok_or_else(|| MkError::Unsupported("unplanned MTF query".into()))?
                             .4;
                         for (z, v) in z.iter_mut().zip(values) {
                             z.0 += w * v[0];

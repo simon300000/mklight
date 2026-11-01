@@ -403,6 +403,11 @@ fn mul_free(j: &Matrix, free: &[usize], p_free: &[f64]) -> Vec<f64> {
     out
 }
 
+/// Tall-QR work `m·n²` from which the resident QR beats the host Householder
+/// QR in complete LM solves (measured, docs/OPTIMIZATION.md: 400×100 host
+/// 29 ms against 72 ms; 4000×32 parity; 4000×100 host 320 ms against 154 ms).
+const RESIDENT_QR_MIN_WORK: usize = 1 << 24;
+
 /// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
 /// `A₀ᵀA₀ = J_Fᵀ J_F`, `A₀ᵀ b₀ = J_Fᵀ r`.
 struct Sub {
@@ -459,7 +464,8 @@ impl Sub {
         gpu: Option<&crate::gpu::GpuContext>,
         ctx: &JobContext,
     ) -> MkResult<Sub> {
-        if let Some(gpu) = gpu.filter(|_| j.rows >= j.cols && j.cols > 0)
+        if let Some(gpu) =
+            gpu.filter(|_| j.rows >= j.cols && j.rows * j.cols * j.cols >= RESIDENT_QR_MIN_WORK)
             && let Some((resident_q, reduced, mut qtr)) = gpu.reduce_qr(&j, r, ctx)?
         {
             let g = reduced.tr_mul_vec(&qtr);
@@ -734,15 +740,9 @@ fn inner<P: Problem + ?Sized>(
         }
         c.failed = failed;
         let cn = jm.column_norms();
-        let g = if let Some(gpu) = c.p.gpu_context() {
-            match gpu.gradient(&jm, &r, &cn, &c.mon.job) {
-                Ok(g) => g,
-                Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
-                Err(e) => return Err(e),
-            }
-        } else {
-            jm.tr_mul_vec(&r)
-        };
+        // Host-owned J and r: a device product costs one fill of J plus a
+        // command, more than the product itself (measured, OPTIMIZATION.md).
+        let g = jm.tr_mul_vec(&r);
         for j in 0..n {
             if cn[j] > c.d[j] {
                 c.d[j] = cn[j];

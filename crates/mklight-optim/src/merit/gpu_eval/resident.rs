@@ -8,13 +8,16 @@ use mklight_gpu::{Df32, aiming as a, resident::*, systems};
 enum Dest {
     Chief,
     Node(u32, u32),
-    Single(u32),
+    Single,
+    /// Real ray ending at this surface.
     Real(u32),
     Illumination,
 }
 #[derive(Clone)]
 struct Probe {
     candidate: usize,
+    /// Row of this candidate's field/λ in the plan's aiming metadata.
+    slot: u32,
     field: FieldKey,
     wavelength: usize,
     pupil: [f64; 2],
@@ -56,7 +59,7 @@ fn append(
     set: &SystemSet,
     metadata: &PlanView,
     probes: &[Probe],
-    fields: &BTreeMap<(usize, FieldKey, usize), usize>,
+    remap: Option<&[u32]>,
     last: usize,
     clip: bool,
     tolerance: f32,
@@ -67,11 +70,8 @@ fn append(
             ctx.check()?;
         }
         let q = &probes[i];
-        Ok(a::Sample::new(
-            q.pupil,
-            fields[&(q.candidate, q.field, q.wavelength)] as u32,
-            i as u64,
-        ))
+        let slot = remap.map_or(q.slot, |r| r[q.slot as usize]);
+        Ok(a::Sample::new(q.pupil, slot, i as u64))
     })?;
     let steps = g.fill(p, [last], |out: &mut [u32]| {
         for (i, v) in out.iter_mut().enumerate() {
@@ -213,43 +213,137 @@ pub(crate) fn evaluate(
         uploaded = Some(Uploaded(g.backend.as_ref(), h));
         (SystemSet::Uploaded(h), None)
     };
-    let mut candidates = Vec::new();
-    let mut chiefs = Vec::new();
-    let mut batches: BTreeMap<(bool, usize), Vec<Probe>> = BTreeMap::new();
-    let mut fields = BTreeMap::new();
-    let mut refs = Vec::new();
-    for (ci, tr) in tracers.iter().enumerate() {
-        let (mut c, plan) = Candidate::planned(cpu, tr, operands);
-        c.prepare_points(&plan, false);
-        c.cancel = Some(ctx.cancel.clone());
-        let mut ri = std::collections::BTreeSet::new();
-        for op in operands
-            .iter()
-            .filter(|o| matches!(o.kind, OperandKind::RelativeIllumination))
-        {
-            for (f, _) in c.fields(op.field).unwrap_or_default() {
-                for (w, _) in c.wavelengths(op.wavelength).unwrap_or_default() {
-                    ri.insert((f, w));
-                    ri.insert((FieldKey::Point(0, 0), w));
+    // Candidates prepare independently; merging in candidate order keeps every
+    // probe list, field index and reference row identical to a serial pass.
+    let clip = cpu.settings().clip;
+    let prepared = tracers
+        .par_iter()
+        .map(|tr| {
+            let (mut c, plan) = Candidate::planned(cpu, tr, operands);
+            c.prepare_points(&plan, false);
+            c.cancel = Some(ctx.cancel.clone());
+            let mut ri = std::collections::BTreeSet::new();
+            for op in operands
+                .iter()
+                .filter(|o| matches!(o.kind, OperandKind::RelativeIllumination))
+            {
+                for (f, _) in c.fields(op.field).unwrap_or_default() {
+                    for (w, _) in c.wavelengths(op.wavelength).unwrap_or_default() {
+                        ri.insert((f, w));
+                        ri.insert((FieldKey::Point(0, 0), w));
+                    }
                 }
             }
-        }
-        let mut all = plan.chiefs.clone();
-        for &(f, w, _, _) in &plan.singles {
-            all.insert((f, w));
-        }
-        for &(f, w, _, _, _) in &plan.real {
-            all.insert((f, w));
-        }
-        all.extend(ri.iter().copied());
-        let field_keys: Vec<_> = all.iter().map(|x| x.0).collect();
-        for f in field_keys {
-            all.insert((f, tr.system().primary_wavelength));
-        }
+            let mut all = plan.chiefs.clone();
+            for &(f, w, _, _) in &plan.singles {
+                all.insert((f, w));
+            }
+            for &(f, w, _, _, _) in &plan.real {
+                all.insert((f, w));
+            }
+            all.extend(ri.iter().copied());
+            let field_keys: Vec<_> = all.iter().map(|x| x.0).collect();
+            for f in field_keys {
+                all.insert((f, tr.system().primary_wavelength));
+            }
+            let slot = |f, w| all.iter().position(|&k| k == (f, w)).unwrap() as u32;
+            let mut local: BTreeMap<(bool, usize), Vec<Probe>> = BTreeMap::new();
+            let nr = cpu.settings().illumination_rings.max(2);
+            let na = cpu.settings().illumination_arms.max(8);
+            let dt = std::f64::consts::TAU / na as f64;
+            for (f, w) in ri {
+                ctx.check()?;
+                let slot = slot(f, w);
+                let probes = local.entry((clip, last)).or_default();
+                probes.push(Probe {
+                    candidate: 0,
+                    slot,
+                    field: f,
+                    wavelength: w,
+                    pupil: [0., 0.],
+                    dest: Dest::Illumination,
+                });
+                for j in 0..na {
+                    let (sn, cs) = (dt * j as f64).sin_cos();
+                    for k in 1..=nr {
+                        let r = k as f64 / nr as f64;
+                        probes.push(Probe {
+                            candidate: 0,
+                            slot,
+                            field: f,
+                            wavelength: w,
+                            pupil: [r * cs, r * sn],
+                            dest: Dest::Illumination,
+                        });
+                    }
+                }
+            }
+            for (gi, (&key, sampling)) in plan.groups.iter().enumerate() {
+                ctx.check()?;
+                let (nodes, symmetry) =
+                    c.group_nodes_from(key.0, sampling, g.pupil_nodes(sampling));
+                let slot = slot(key.0, key.1);
+                local
+                    .entry((clip, last))
+                    .or_default()
+                    .extend(nodes.iter().enumerate().map(|(i, node)| Probe {
+                        candidate: 0,
+                        slot,
+                        field: key.0,
+                        wavelength: key.1,
+                        pupil: [node.px, node.py],
+                        dest: Dest::Node(gi as u32, i as u32),
+                    }));
+                let failed = if aggregates {
+                    Vec::new()
+                } else {
+                    vec![NodeRay::FAILED; nodes.len()]
+                };
+                c.groups
+                    .insert(key, Candidate::group_rays(nodes, symmetry, failed));
+            }
+            for &(f, w, px, py) in &plan.singles {
+                local.entry((clip, last)).or_default().push(Probe {
+                    candidate: 0,
+                    slot: slot(f, w),
+                    field: f,
+                    wavelength: w,
+                    pupil: [f64::from_bits(px), f64::from_bits(py)],
+                    dest: Dest::Single,
+                });
+                c.singles.insert((f, w, px, py), NodeRay::FAILED);
+            }
+            for &(f, w, px, py, j) in &plan.real {
+                if j == 0 || tr.system().surfaces[j].is_passive() {
+                    return Err(MkError::Unsupported(
+                        "real ray at passive/start surface".into(),
+                    ));
+                }
+                local.entry((clip, j)).or_default().push(Probe {
+                    candidate: 0,
+                    slot: slot(f, w),
+                    field: f,
+                    wavelength: w,
+                    pupil: [f64::from_bits(px), f64::from_bits(py)],
+                    dest: Dest::Real(j as u32),
+                });
+            }
+            Ok(((c, plan), all, local))
+        })
+        .collect::<MkResult<Vec<_>>>()?;
+    let mut candidates = Vec::with_capacity(tracers.len());
+    let mut chiefs = Vec::new();
+    let mut batches: BTreeMap<(bool, usize), Vec<Probe>> = BTreeMap::new();
+    // Rows in (candidate, field, λ) order, which is also the slot order.
+    let mut field_keys = Vec::new();
+    let mut refs = Vec::new();
+    for (ci, (candidate, all, local)) in prepared.into_iter().enumerate() {
+        let tr = &tracers[ci];
+        let base = field_keys.len() as u32;
         for &(f, w) in &all {
-            fields.insert((ci, f, w), fields.len());
             chiefs.push(Probe {
                 candidate: ci,
+                slot: field_keys.len() as u32,
                 field: f,
                 wavelength: w,
                 pupil: [0.; 2],
@@ -260,92 +354,20 @@ pub(crate) fn evaluate(
                 tr.system().n_before(last, w),
                 tr.system().wavelengths_um[w],
             ]);
+            field_keys.push((ci, f, w));
         }
-        let nr = cpu.settings().illumination_rings.max(2);
-        let na = cpu.settings().illumination_arms.max(8);
-        let dt = std::f64::consts::TAU / na as f64;
-        for (f, w) in ri {
-            let probes = batches.entry((cpu.settings().clip, last)).or_default();
-            probes.push(Probe {
-                candidate: ci,
-                field: f,
-                wavelength: w,
-                pupil: [0., 0.],
-                dest: Dest::Illumination,
-            });
-            for j in 0..na {
-                ctx.check()?;
-                let (sn, cs) = (dt * j as f64).sin_cos();
-                for k in 1..=nr {
-                    let r = k as f64 / nr as f64;
-                    probes.push(Probe {
-                        candidate: ci,
-                        field: f,
-                        wavelength: w,
-                        pupil: [r * cs, r * sn],
-                        dest: Dest::Illumination,
-                    });
-                }
-            }
-        }
-        for (gi, (&key, sampling)) in plan.groups.iter().enumerate() {
-            let (nodes, symmetry) = c.group_nodes_from(key.0, sampling, g.pupil_nodes(sampling));
-            for (i, node) in nodes.iter().enumerate() {
-                if i % 4096 == 0 {
-                    ctx.check()?;
-                }
-                batches
-                    .entry((cpu.settings().clip, last))
-                    .or_default()
-                    .push(Probe {
-                        candidate: ci,
-                        field: key.0,
-                        wavelength: key.1,
-                        pupil: [node.px, node.py],
-                        dest: Dest::Node(gi as u32, i as u32),
-                    });
-            }
-            let failed = if aggregates {
-                Vec::new()
-            } else {
-                vec![NodeRay::FAILED; nodes.len()]
-            };
-            c.groups
-                .insert(key, Candidate::group_rays(nodes, symmetry, failed));
-        }
-        for (i, &(f, w, px, py)) in plan.singles.iter().enumerate() {
+        for (key, probes) in local {
             batches
-                .entry((cpu.settings().clip, last))
+                .entry(key)
                 .or_default()
-                .push(Probe {
+                .extend(probes.into_iter().map(|q| Probe {
                     candidate: ci,
-                    field: f,
-                    wavelength: w,
-                    pupil: [f64::from_bits(px), f64::from_bits(py)],
-                    dest: Dest::Single(i as u32),
-                });
-            c.singles.insert((f, w, px, py), NodeRay::FAILED);
+                    slot: q.slot + base,
+                    ..q
+                }));
         }
-        for (i, &(f, w, px, py, j)) in plan.real.iter().enumerate() {
-            if j == 0 || tr.system().surfaces[j].is_passive() {
-                return Err(MkError::Unsupported(
-                    "real ray at passive/start surface".into(),
-                ));
-            }
-            batches
-                .entry((cpu.settings().clip, j))
-                .or_default()
-                .push(Probe {
-                    candidate: ci,
-                    field: f,
-                    wavelength: w,
-                    pupil: [f64::from_bits(px), f64::from_bits(py)],
-                    dest: Dest::Real(i as u32),
-                });
-        }
-        candidates.push((c, plan));
+        candidates.push(candidate);
     }
-    let field_keys: Vec<_> = fields.keys().copied().collect();
     let field_spec = |(ci, f, w): (usize, FieldKey, usize)| {
         ctx.check()?;
         let tr = &tracers[ci];
@@ -400,7 +422,7 @@ pub(crate) fn evaluate(
         })
         .fold(f32::INFINITY, f32::min);
     let ch = append(
-        g, &mut p, &set, &metadata, &chiefs, &fields, last, false, tolerance, ctx,
+        g, &mut p, &set, &metadata, &chiefs, None, last, false, tolerance, ctx,
     )?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
@@ -410,21 +432,20 @@ pub(crate) fn evaluate(
     for (key, probes) in &partitions {
         let (clip, last) = *key;
         let selected: std::collections::BTreeSet<_> = probes.iter().map(|q| q.candidate).collect();
-        let subset: Vec<_> = field_keys
-            .iter()
-            .copied()
-            .filter(|k| selected.contains(&k.0))
-            .collect();
-        let (aim_metadata, aim_fields) = if selected.len() == tracers.len() {
-            (metadata.clone(), fields.clone())
+        let (aim_metadata, remap) = if selected.len() == tracers.len() {
+            (metadata.clone(), None)
         } else {
+            let mut remap = vec![u32::MAX; field_keys.len()];
+            let mut subset = Vec::new();
+            for (i, k) in field_keys.iter().enumerate() {
+                if selected.contains(&k.0) {
+                    remap[i] = subset.len() as u32;
+                    subset.push(*k);
+                }
+            }
             (
                 records(g, &mut p, subset.len(), |i| field_spec(subset[i]))?,
-                subset
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, k)| (k, i))
-                    .collect(),
+                Some(remap),
             )
         };
         let h = append(
@@ -433,7 +454,7 @@ pub(crate) fn evaluate(
             &set,
             &aim_metadata,
             probes,
-            &aim_fields,
+            remap.as_deref(),
             last,
             clip,
             tolerance,
@@ -441,7 +462,7 @@ pub(crate) fn evaluate(
         )?;
         let index = g.fill(&mut p, [probes.len()], |out: &mut [u32]| {
             for (o, q) in out.iter_mut().zip(probes) {
-                *o = fields[&(q.candidate, q.field, q.wavelength)] as u32;
+                *o = q.slot;
             }
         })?;
         let (opd, status) = if wavefront {
@@ -468,18 +489,9 @@ pub(crate) fn evaluate(
         let mut segments = Vec::new();
         let mut bounds = vec![0u32];
         for (i, q) in probes.iter().enumerate() {
-            let key = if let Dest::Node(group, _) = q.dest {
-                Some((
-                    q.candidate,
-                    *candidates[q.candidate]
-                        .1
-                        .groups
-                        .keys()
-                        .nth(group as usize)
-                        .unwrap(),
-                ))
-            } else {
-                None
+            let key = match q.dest {
+                Dest::Node(group, _) => Some((q.candidate, group)),
+                _ => None,
             };
             if i == 0 {
                 segments.push(key);
@@ -500,15 +512,21 @@ pub(crate) fn evaluate(
             out.copy_from_slice(&bounds)
         })?;
         let weights = g.fill(&mut p, [probes.len()], |out: &mut [Df32]| {
+            // Group probes are contiguous: resolve each group once.
+            let mut group = None;
             for (o, q) in out.iter_mut().zip(probes) {
-                *o = if let Dest::Node(group, j) = q.dest {
-                    let key = candidates[q.candidate]
-                        .1
-                        .groups
-                        .keys()
-                        .nth(group as usize)
-                        .unwrap();
-                    Df32::from_f64(candidates[q.candidate].0.groups[key].nodes[j as usize].weight)
+                *o = if let Dest::Node(gi, j) = q.dest {
+                    let nodes = match group {
+                        Some((key, nodes)) if key == (q.candidate, gi) => nodes,
+                        _ => {
+                            let (c, plan) = &candidates[q.candidate];
+                            let nodes =
+                                &c.groups[plan.groups.keys().nth(gi as usize).unwrap()].nodes[..];
+                            group = Some(((q.candidate, gi), nodes));
+                            nodes
+                        }
+                    };
+                    Df32::from_f64(nodes[j as usize].weight)
                 } else {
                     Df32::ZERO
                 };
@@ -635,6 +653,7 @@ pub(crate) fn evaluate(
             None
         };
         let valid = views[offset + 4].as_slice::<u32>()?;
+        let mut group = None;
         for (i, q) in probes.iter().enumerate() {
             if matches!(q.dest, Dest::Illumination) {
                 candidates[q.candidate].0.resident_visibility.insert(
@@ -654,19 +673,25 @@ pub(crate) fn evaluate(
                 opd: opd.and_then(|v| (valid[i] == 0).then(|| v[i].to_f64())),
             };
             let (c, plan) = &mut candidates[q.candidate];
+            let [px, py] = q.pupil.map(f64::to_bits);
             match q.dest {
-                Dest::Node(group, j) => {
-                    let key = plan.groups.keys().nth(group as usize).unwrap();
-                    c.groups.get_mut(key).unwrap().rays[j as usize] = node;
+                Dest::Node(gi, j) => {
+                    let key = match group {
+                        Some((at, key)) if at == (q.candidate, gi) => key,
+                        _ => {
+                            let key = *plan.groups.keys().nth(gi as usize).unwrap();
+                            group = Some(((q.candidate, gi), key));
+                            key
+                        }
+                    };
+                    c.groups.get_mut(&key).unwrap().rays[j as usize] = node;
                 }
-                Dest::Single(j) => {
-                    let key = *plan.singles.iter().nth(j as usize).unwrap();
-                    c.singles.insert(key, node);
+                Dest::Single => {
+                    c.singles.insert((q.field, q.wavelength, px, py), node);
                 }
-                Dest::Real(j) => {
-                    let key = *plan.real.iter().nth(j as usize).unwrap();
+                Dest::Real(surface) => {
                     c.real_rays.insert(
-                        key,
+                        (q.field, q.wavelength, px, py, surface as usize),
                         hit.map(|r| RealHit {
                             point: r.ray.pos,
                             dir: r.ray.dir,
@@ -684,8 +709,9 @@ pub(crate) fn evaluate(
         }
         let moments = views[3 + 7 * bi + 5].as_slice::<Df32>()?;
         for (si, key) in segments.iter().enumerate() {
-            if let Some((ci, key)) = key {
-                let c = &mut candidates[*ci].0;
+            if let &Some((ci, group)) = key {
+                let (c, plan) = &mut candidates[ci];
+                let key = plan.groups.keys().nth(group as usize).unwrap();
                 let mut m: [f64; 10] = std::array::from_fn(|i| moments[10 * si + i].to_f64());
                 if let Ok(chief) = &c.chiefs[&(key.0, key.1)].chief {
                     m[2] += chief.ray.pos.x;
