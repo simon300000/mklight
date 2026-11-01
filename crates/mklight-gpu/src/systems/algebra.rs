@@ -1,5 +1,5 @@
 //! Private straight-line double-float system preparation specification.
-use crate::{Df32, FpEnv, Ftz};
+use crate::{Df32, FpEnv};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -178,7 +178,7 @@ impl Neg for E {
     }
 }
 
-pub(crate) fn evaluate(code: &[[u32; 4]], parameters: &[Df32], values: &mut [Df32]) {
+pub(crate) fn evaluate<E: FpEnv>(code: &[[u32; 4]], parameters: &[Df32], values: &mut [Df32]) {
     for i in 0..code.len() {
         let [op, a, b, c] = code[i];
         values[i] = match op {
@@ -187,12 +187,12 @@ pub(crate) fn evaluate(code: &[[u32; 4]], parameters: &[Df32], values: &mut [Df3
             _ => {
                 let (a, b, c) = (values[a as usize], values[b as usize], values[c as usize]);
                 match op {
-                    ADD => a.add_in::<Ftz>(b),
-                    SUB => a.add_in::<Ftz>(-b),
-                    MUL => a.mul_in::<Ftz>(b),
-                    DIV if b.hi == 0.0 => Df32::new(Ftz::div(a.hi, b.hi), 0.0),
-                    DIV => a.div_in::<Ftz>(b),
-                    SQRT => a.sqrt_in::<Ftz>(),
+                    ADD => a.add_in::<E>(b),
+                    SUB => a.add_in::<E>(-b),
+                    MUL => a.mul_in::<E>(b),
+                    DIV if b.hi == 0.0 => Df32::new(E::div(a.hi, b.hi), 0.0),
+                    DIV => a.div_in::<E>(b),
+                    SQRT => a.sqrt_in::<E>(),
                     SELECT => {
                         if a.hi < 0.0 || (a.hi == 0.0 && a.lo <= 0.0) {
                             b
@@ -204,5 +204,20 @@ pub(crate) fn evaluate(code: &[[u32; 4]], parameters: &[Df32], values: &mut [Df3
                 }
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn instruction_arithmetic_respects_subnormal_environment() {
+        let code = [[PARAMETER, 0, 0, 0], [PARAMETER, 1, 0, 0], [MUL, 0, 1, 0]];
+        let parameters = [Df32::from_f32(f32::MIN_POSITIVE), Df32::from_f32(0.5)];
+        let mut values = [Df32::ZERO; 3];
+        evaluate::<crate::Ieee>(&code, &parameters, &mut values);
+        assert_eq!(values[2].hi.to_bits(), 0x0040_0000);
+        evaluate::<crate::Ftz>(&code, &parameters, &mut values);
+        assert_eq!(values[2].hi.to_bits(), 0);
     }
 }

@@ -240,14 +240,11 @@ pub(super) fn cpu(
         let sums: Vec<_> = channels
             .chunks(count)
             .map(|v| {
-                crate::reduce::pass2_in::<crate::fenv::Ftz>(
-                    crate::ReduceMode::DoubleFloat,
-                    &crate::reduce::pass1_in::<crate::fenv::Ftz>(
-                        crate::ReduceMode::DoubleFloat,
-                        v,
-                        0..crate::reduce::num_groups(count),
-                    ),
-                )
+                if x.flush_to_zero {
+                    sum::<crate::Ftz>(v)
+                } else {
+                    sum::<crate::Ieee>(v)
+                }
             })
             .collect();
         let a = sums[0] / sums[2];
@@ -258,4 +255,28 @@ pub(super) fn cpu(
     x.words_mut(output)
         .copy_from_slice(bytemuck::cast_slice(&out));
     Ok(())
+}
+
+fn sum<E: crate::FpEnv>(values: &[f32]) -> Df32 {
+    crate::reduce::pass2_in::<E>(
+        crate::ReduceMode::DoubleFloat,
+        &crate::reduce::pass1_in::<E>(
+            crate::ReduceMode::DoubleFloat,
+            values,
+            0..crate::reduce::num_groups(values.len()),
+        ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn subnormal_correlation_terms_follow_execution_environment() {
+        let values = [f32::from_bits(0x0040_0000); 4];
+        assert_eq!(
+            super::sum::<crate::Ieee>(&values).hi,
+            2.0 * f32::MIN_POSITIVE
+        );
+        assert_eq!(super::sum::<crate::Ftz>(&values).hi, 0.0);
+    }
 }

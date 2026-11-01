@@ -13,44 +13,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
 
-/// Offline compiler flags, most specific first. The first set the toolchain
-/// accepts is used. Every set keeps the numerics contract flags
-/// ([`REQUIRED_FLAGS`], checked in `main`): the fallbacks only drop warnings
-/// as errors (a newer toolchain may add a warning) and then the math-mode
-/// flags an older toolchain may not know (`#pragma METAL fp math_mode(safe)`
-/// in `mklight_common.h` covers those on MSL ≥ 3.2). The backend's numerics
-/// probe still verifies the result on the device, and with
-/// `LibraryChoice::Auto` a precompiled library that fails it is replaced by
-/// the runtime-compiled source.
-const FLAG_SETS: &[&[&str]] = &[
-    &[
-        "-std=metal3.0",
-        "-mmacosx-version-min=13.0",
-        "-fno-fast-math",
-        "-fmetal-math-mode=safe",
-        "-fmetal-math-fp32-functions=precise",
-        "-ffp-contract=off",
-        "-Wall",
-        "-Werror",
-    ],
-    &[
-        "-std=metal3.0",
-        "-mmacosx-version-min=13.0",
-        "-fno-fast-math",
-        "-fmetal-math-mode=safe",
-        "-fmetal-math-fp32-functions=precise",
-        "-ffp-contract=off",
-    ],
-    &[
-        "-std=metal3.0",
-        "-mmacosx-version-min=13.0",
-        "-fno-fast-math",
-        "-ffp-contract=off",
-    ],
+/// Shipping shaders always use the complete strict numerics/warning contract.
+const FLAGS: &[&str] = &[
+    "-std=metal3.0",
+    "-mmacosx-version-min=13.0",
+    "-fno-fast-math",
+    "-fmetal-math-mode=safe",
+    "-fmetal-math-fp32-functions=precise",
+    "-ffp-contract=off",
+    "-Wall",
+    "-Werror",
 ];
-
-/// Flags without which the double-float error-free transforms break.
-const REQUIRED_FLAGS: &[&str] = &["-fno-fast-math", "-ffp-contract=off"];
 
 /// Inline local `#include "..."` directives (recursively), so the runtime
 /// compiler, which has no include path, sees one self-contained source.
@@ -135,64 +108,46 @@ fn try_offline(
     out_dir: &Path,
 ) -> Result<(PathBuf, String), String> {
     let tc = find_toolchain().ok_or("no working Metal compiler found")?;
-    // The first (strictest) failure is the informative one.
-    let mut first_err = String::new();
-    'flags: for flags in FLAG_SETS {
-        let mut airs = Vec::new();
-        for src in shaders {
-            let air = out_dir.join(src.file_stem().unwrap()).with_extension("air");
-            let mut cmd = Toolchain::cmd(&tc.metal);
-            cmd.arg("-c").args(*flags);
-            for d in inc {
-                cmd.arg("-I").arg(d);
-            }
-            cmd.arg(src).arg("-o").arg(&air);
-            match cmd.output() {
-                Ok(o) if o.status.success() => airs.push(air),
-                Ok(o) => {
-                    if first_err.is_empty() {
-                        first_err = format!(
-                            "{} with {:?}: {}",
-                            src.display(),
-                            flags,
-                            String::from_utf8_lossy(&o.stderr)
-                        );
-                    }
-                    continue 'flags;
-                }
-                Err(e) => return Err(format!("metal not runnable: {e}")),
-            }
+    let mut airs = Vec::new();
+    for src in shaders {
+        let air = out_dir.join(src.file_stem().unwrap()).with_extension("air");
+        let mut cmd = Toolchain::cmd(&tc.metal);
+        cmd.arg("-c").args(FLAGS);
+        for d in inc {
+            cmd.arg("-I").arg(d);
         }
-        let lib = out_dir.join("mklight.metallib");
-        let o = Toolchain::cmd(&tc.metallib)
-            .args(&airs)
+        let o = cmd
+            .arg(src)
             .arg("-o")
-            .arg(&lib)
+            .arg(&air)
             .output()
-            .map_err(|e| format!("metallib not runnable: {e}"))?;
+            .map_err(|e| format!("metal not runnable: {e}"))?;
         if !o.status.success() {
             return Err(format!(
-                "metallib failed: {}",
+                "{}: {}",
+                src.display(),
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
-        if !first_err.is_empty() {
-            println!(
-                "cargo:warning=Metal shaders built with fallback flags; strict build failed: {}",
-                first_err.lines().next().unwrap_or("")
-            );
-        }
-        return Ok((lib, flags.join(" ")));
+        airs.push(air);
     }
-    Err(first_err)
+    let lib = out_dir.join("mklight.metallib");
+    let o = Toolchain::cmd(&tc.metallib)
+        .args(&airs)
+        .arg("-o")
+        .arg(&lib)
+        .output()
+        .map_err(|e| format!("metallib not runnable: {e}"))?;
+    if !o.status.success() {
+        return Err(format!(
+            "metallib failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        ));
+    }
+    Ok((lib, FLAGS.join(" ")))
 }
 
 fn main() {
-    for set in FLAG_SETS {
-        for f in REQUIRED_FLAGS {
-            assert!(set.contains(f), "flag set {set:?} lacks {f}");
-        }
-    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let shader_dir = manifest.join("shaders");
@@ -262,8 +217,12 @@ fn main() {
             // compiler a failure is a shader error, and a release build
             // without one would silently ship runtime compilation.
             let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
-            if !skipped && (find_toolchain().is_some() || env::var("PROFILE").as_deref() == Ok("release")) {
-                panic!("offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}");
+            if !skipped
+                && (find_toolchain().is_some() || env::var("PROFILE").as_deref() == Ok("release"))
+            {
+                panic!(
+                    "offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}"
+                );
             }
             println!(
                 "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
