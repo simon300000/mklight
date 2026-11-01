@@ -592,9 +592,14 @@ provisional; P11 owns consolidated quiet-host cost thresholds. Detailed current
 acceptance status, raw logs, numerical maxima and outstanding qualifications
 are maintained in the task's `P6-evidence.md`.
 
-On the qualified M2 Pro measurements, small/default complete native jobs and
-64×64 image simulation are provisionally CPU-preferred. A million-ray native
-PSF favors GPU; a 1024 pupil with a sparse traced lattice is near parity. Dense
-256/1024 transforms with an already resident pupil favor GPU, a different cost
-state from tracing and resampling a complete job. P11 must retain that distinction
+On the qualified M2 Pro measurements (provisional), complete native jobs are
+bound by command round trips (about 0.2 ms each), not arithmetic: after
+batching, a default nine-pupil PSF job issues about 215 commands (it issued
+about 790), most of them per-pupil placement, resampling and PSF steps. GPU now wins the
+default singlet PSF, the 1024/2048 dense PSF and the million-ray lattice;
+other small/default jobs, the Huygens/FFT focus cases and 64×64 or default
+image simulation remain CPU-preferred because the f64 reference traces its
+pupils in parallel in 10–50 ms. Dense 256/1024 transforms with an already
+resident pupil favor GPU, a different cost state from tracing and resampling a
+complete job. P11 must retain that distinction
 when deriving backend policy. These measurements do not change engine dispatch.
