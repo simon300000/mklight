@@ -365,7 +365,7 @@ impl MetalContext {
     }
 }
 
-/// A compute encoder borrowed for the duration of [`MetalContext::run`].
+/// A serial compute encoder borrowed while a synchronous or deferred batch is encoded.
 pub(crate) struct Encoder<'a> {
     enc: &'a ProtocolObject<dyn MTLComputeCommandEncoder>,
     work: &'a Cell<usize>,
@@ -394,8 +394,8 @@ impl Encoder<'_> {
         self.bind(index, buf, offset);
     }
     /// Bind `buf`, which the kernel writes, at element `offset`. The `&mut`
-    /// borrow (held by the `run` closure until the GPU is done) guarantees
-    /// that no host slice of the buffer exists meanwhile.
+    /// borrow excludes host access while encoding. Deferred bindings additionally
+    /// register a device-access guard until completion or abandonment.
     pub(crate) fn set_buffer_mut<T: Pod>(
         &self,
         index: usize,
@@ -425,7 +425,8 @@ impl Encoder<'_> {
                 groups
                     .into_iter()
                     .product::<usize>()
-                    .saturating_mul(threads),
+                    .saturating_mul(threads)
+                    .max(1 << 15),
             ),
         );
         self.enc.dispatchThreadgroups_threadsPerThreadgroup(
@@ -507,7 +508,8 @@ impl CommandBatch {
             deferred: Some(&b.accesses),
         })?;
         // Work bound supplements the existing package-specific weighted tiles.
-        // Encoding time also bounds long sequences of tiny dependent dispatches.
+        // Each dispatch costs at least 2^15 units, bounding tiny expensive
+        // dispatch chains to 32 per batch. Encoding time is a second bound.
         if b.work.get() >= 1 << 20 || b.start.elapsed().as_secs_f64() >= 0.010 {
             self.flush()
         } else {

@@ -39,7 +39,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: record extent, typed output and exclusive writers validated.
                 let cs = unsafe {
-                    x.gpu.run("complex pupil channels", |e| {
+                    x.run("complex pupil channels", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(values);
                         e.set_buffer(0, b, o);
@@ -51,7 +51,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 16;
@@ -86,7 +86,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 // SAFETY: validated typed extents and single-writer output. Query
                 // indices are checked in the kernel before dereferencing records.
                 let cs = unsafe {
-                    x.gpu.run("coating", |e| {
+                    x.run("coating", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [&r.specs, &r.layers, &r.queries].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -112,7 +112,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 32;
@@ -121,9 +121,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.report(offset as f64 / n as f64, "coating");
                 tile = next_tile(tile, r.tile, cs.gpu_seconds);
             }
-            x.stats.fallback_count += counter.as_slice()[0] as u64;
-            x.stats.readback_bytes += 4;
-            x.recycle(counter);
+            x.count_fallbacks(counter);
             x.put_output(r.output, out);
         }
         Request::Polarization(r) => {
@@ -157,7 +155,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 params[4..12].copy_from_slice(bytemuck::cast_slice(&r.stokes));
                 // SAFETY: P1 record extents and output ownership were validated.
                 let cs = unsafe {
-                    x.gpu.run("polarization", |e| {
+                    x.run("polarization", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [
                             &r.surfaces,
@@ -193,7 +191,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 72;
@@ -202,9 +200,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ctl.report(offset as f64 / n as f64, "polarization");
                 tile = next_tile(tile, r.tile, cs.gpu_seconds);
             }
-            x.stats.fallback_count += counter.as_slice()[0] as u64;
-            x.stats.readback_bytes += 4;
-            x.recycle(counter);
+            x.count_fallbacks(counter);
             x.put_output(r.output, out);
         }
         Request::Channels {
@@ -222,7 +218,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: validated channels and a single output writer.
                 let cs = unsafe {
-                    x.gpu.run("radiometry channels", |e| {
+                    x.run("radiometry channels", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [values, trace_status].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -235,7 +231,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 8;

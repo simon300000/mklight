@@ -87,7 +87,7 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         // table; all writes target exclusive plan scratch, and each mask row
         // owns its edge-count stride and count slot.
         let cs = unsafe {
-            xr.gpu.run("wave resample", |e| {
+            xr.run("wave resample", |e| {
                 let bind = |index, v| {
                     let (b, o) = xr.buffer(v);
                     e.set_buffer(index, b, o);
@@ -133,7 +133,7 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
                 Ok(())
             })?
         };
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += (group.len() * size_of::<Params>()) as u64;

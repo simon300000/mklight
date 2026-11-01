@@ -218,15 +218,20 @@ fn newton_commands(
         let wall = Instant::now();
         // SAFETY: callers bind plan-validated extents; kernels check every
         // device-provided field, system and wavelength index.
-        let cs = unsafe {
-            x.gpu.run(progress.2, |e| {
+        let mut cs = unsafe {
+            x.run(progress.2, |e| {
                 encode(e, x, p);
                 Ok(())
             })?
         };
-        account(x, stage, cs, wall, size_of::<AimParams>());
-        let fit = (count as f64 * AIM_COMMAND_SECONDS / cs.gpu_seconds.max(1e-6)) as usize;
-        next = fit.clamp(MIN, (8 * count).clamp(MIN, MAX));
+        // Measure the first Newton tile only for large batches; small plans
+        // keep chief/table/pupil work together. Subsequent tiles use that rate.
+        if n > 65536 || (offset == 0 && n > MIN) { cs.gpu_seconds = x.flush()?.gpu_seconds; }
+        account(x, stage, CommandStats::default(), wall, size_of::<AimParams>());
+        if cs.gpu_seconds > 0. {
+            let fit = (count as f64 * AIM_COMMAND_SECONDS / cs.gpu_seconds) as usize;
+            next = fit.clamp(MIN, (8 * count).clamp(MIN, MAX));
+        }
         offset += count;
         ctl.check()?;
         ctl.report(
@@ -244,7 +249,7 @@ fn account(
     bytes: usize,
 ) {
     stage.device_seconds += cs.gpu_seconds;
-    stage.command_buffers += 1;
+    stage.command_buffers += cs.command_buffers;
     stage.max_command_seconds = stage.max_command_seconds.max(start.elapsed().as_secs_f64());
     x.stats.parameter_bytes += bytes as u64;
 }
@@ -378,9 +383,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     x.recycle(b);
                 }
             }
-            x.stats.fallback_count += failures.as_slice()[0] as u64;
-            x.stats.readback_bytes += 4;
-            x.recycle(failures);
+            x.count_fallbacks(failures);
             put_rays(x, &g.output, out);
             if let Some(id) = g.unresolved {
                 compact(x, g.output.report, id, n, ctl, &mut stage)?;
@@ -454,7 +457,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 // SAFETY: extents are plan-validated; dynamic system/path and
                 // wavelength indices are checked before the shared trace core.
                 let cs = unsafe {
-                    x.gpu.run("resident trace", |e| {
+                    x.run("resident trace", |e| {
                         systems.bind(e, x);
                         bind(e, 3, x, &t.steps);
                         e.set_bytes(4, &p);
@@ -514,7 +517,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: plan validation fixed all plane and reference sizes.
                 let cs = unsafe {
-                    x.gpu.run("project pupil", |e| {
+                    x.run("project pupil", |e| {
                         bind(e, 0, x, &view(q.hits.rays.floats, ElementType::F32));
                         bind(e, 1, x, &view(q.hits.status, ElementType::U32));
                         bind(e, 2, x, &r.chief);
@@ -563,7 +566,7 @@ fn compact(
     // disjoint source range and prefix-selected destination range, and the
     // serial dispatches of one encoder complete in order.
     let cs = unsafe {
-        x.gpu.run("aim compaction", |e| {
+        x.run("aim compaction", |e| {
             bind(e, 0, x, &view(report, ElementType::U32));
             e.set_buffer_mut(1, &mut counts, 0);
             e.set_buffer_mut(2, &mut sparse, 0);

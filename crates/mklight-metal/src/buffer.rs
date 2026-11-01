@@ -3,10 +3,10 @@
 //! `MTLStorageModeShared` buffers live in memory visible to both CPU and GPU
 //! (unified memory on Apple Silicon), so host fills and read views touch the
 //! device's pages. Host access goes through `&self`/`&mut self` slices. GPU work is
-//! encoded only by the crate-private `MetalContext::run`, which waits for the
-//! command buffer; a buffer a kernel writes must be bound through a `&mut`
-//! borrow that lasts until then, so no host slice of it (on any thread) can
-//! exist while the GPU writes it.
+//! encoded by synchronous commands or a worker-local resident batch. Deferred
+//! bindings retain access guards; host slices reject pending writes (and host
+//! mutation rejects any pending access). The resident executor pins recycled
+//! leases through completion and publishes only completed immutable storage.
 
 use mklight_gpu::resident::HostAllocation;
 use std::{
@@ -44,10 +44,9 @@ pub struct SharedBuffer<T: Pod> {
 // SAFETY: Metal resource objects may be referenced from any thread (Apple's
 // Metal threading guide: devices, queues, resources and pipeline states are
 // thread-safe; only command buffers and encoders are not). Access to the
-// buffer *contents* follows Rust borrows: shared reads via `&self`, writes
-// via `&mut self`; GPU writes only through a `&mut` borrow held by
-// `MetalContext::run` until the command buffer completes, GPU reads through a
-// shared borrow held equally long.
+// buffer contents follow Rust borrows and the deferred device-access guards.
+// Mutable plan allocations have a single worker; published storage is complete
+// and immutable. Imported storage is only bound for device reads.
 unsafe impl<T: Pod + Send> Send for SharedBuffer<T> {}
 unsafe impl<T: Pod + Sync> Sync for SharedBuffer<T> {}
 
@@ -129,8 +128,8 @@ impl<T: Pod> SharedBuffer<T> {
         // SAFETY: `contents` points to at least `len * size_of::<T>()` bytes of
         // CPU-visible memory, suitably aligned (Metal buffers are page
         // aligned), and `T: Pod` accepts any bit pattern. GPU writes only
-        // happen inside `MetalContext::run` through a `&mut` borrow held until
-        // the command buffer has completed, which excludes this `&self`.
+        // happen through exclusive unpublished storage, with the access guard
+        // above excluding host slices until completion or abandonment.
         unsafe { std::slice::from_raw_parts(self.ptr().as_ptr(), self.len) }
     }
 
@@ -148,6 +147,9 @@ impl<T: Pod> SharedBuffer<T> {
         self.as_slice().to_vec()
     }
 
+    pub(crate) fn available(&self) -> bool {
+        self.access.users.load(Ordering::Acquire) == 0
+    }
     pub(crate) fn device_access(&self, write: bool) -> DeviceAccess {
         self.access.users.fetch_add(1, Ordering::AcqRel);
         if write {

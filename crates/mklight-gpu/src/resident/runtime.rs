@@ -14,6 +14,10 @@ use std::{collections::HashMap, time::Instant};
 pub trait Storage: Send + Sync + 'static {
     fn words(&self) -> &[u32];
     fn words_mut(&mut self) -> &mut [u32];
+    /// Deferred device encodings may retain an allocation returned on error.
+    fn available(&self) -> bool {
+        true
+    }
 }
 impl Storage for HostAllocation {
     fn words(&self) -> &[u32] {
@@ -54,7 +58,7 @@ impl<T: Storage> Runtime<T> {
         stats: &mut PlanStats,
         allocate: impl FnOnce(usize) -> MkResult<T>,
     ) -> MkResult<Allocation<T>> {
-        let (b, reused) = Pool::take(&self.pool, words, allocate)?;
+        let (b, reused) = Pool::take(&self.pool, words, allocate, T::available)?;
         if reused {
             stats.reused_allocations += 1;
         } else {

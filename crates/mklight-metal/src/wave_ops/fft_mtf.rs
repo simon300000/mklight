@@ -34,7 +34,7 @@ pub fn execute(r: &FftMtf, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
     let xr = &*x;
     // SAFETY: validated grids and exclusive output leases; padding is written.
     let cs = unsafe {
-        xr.gpu.run("FFT MTF", |e| {
+        xr.run("FFT MTF", |e| {
             for (i, v) in a.reads.iter().enumerate() {
                 let (b, o) = xr.buffer(v);
                 e.set_buffer(i, b, o);
@@ -54,13 +54,13 @@ pub fn execute(r: &FftMtf, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
     if let Some(o) = second {
         x.put_output(a.writes[1], o);
     }
-    x.stats.command_buffers += 1;
+    x.stats.command_buffers += cs.command_buffers;
     x.stats.device_seconds += cs.gpu_seconds;
     x.stats.parameter_bytes += size_of::<Params>() as u64;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "fft_mtf".into(),
-        command_buffers: 1,
+        command_buffers: cs.command_buffers,
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,
@@ -88,7 +88,7 @@ fn domain(
     // SAFETY: the domain counter is an exclusive u32, reset before exact integer
     // increments; immutable coverage has the validated square extent.
     let cs = unsafe {
-        xr.gpu.run("sensor domain", |e| {
+        xr.run("sensor domain", |e| {
             let (b, o) = xr.buffer(coverage);
             e.set_buffer(0, b, o);
             e.set_buffer_mut(6, &mut out, 0);
@@ -99,15 +99,16 @@ fn domain(
         })?
     };
     ctl.check()?;
+    x.flush()?;
     let count = out.as_slice()[0];
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(status, out);
-    x.stats.command_buffers += 1;
+    x.stats.command_buffers += cs.command_buffers;
     x.stats.device_seconds += cs.gpu_seconds;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "sensor_domain".into(),
-        command_buffers: 1,
+        command_buffers: cs.command_buffers,
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,

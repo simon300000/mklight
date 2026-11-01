@@ -213,7 +213,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         // SAFETY: submission validates every view/output extent. The kernels
         // bound device-provided chief and system/surface indices before use.
         let cs = unsafe {
-            x.gpu.run(name, |e| {
+            x.run(name, |e| {
                 match r {
                     Request::Coordinates(r) => {
                         for (i, v) in [
@@ -392,15 +392,16 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
+        let adaptive_seconds = if adaptive { x.flush()?.gpu_seconds } else { 0. };
         stage.device_seconds += cs.gpu_seconds;
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;
         ctl.report((offset + p.count as usize) as f64 / n as f64, "geometry");
         offset += p.count as usize;
         if adaptive {
-            let fit = (p.count as f64 * 0.010 / cs.gpu_seconds.max(1e-6)) as usize;
+            let fit = (p.count as f64 * 0.010 / adaptive_seconds.max(1e-6)) as usize;
             next = fit.clamp(minimum, (p.count as usize * 8).clamp(minimum, maximum));
             x.stats.parameter_bytes += 2 * size_of::<mklight_gpu::layout::TraceParams>() as u64;
         }

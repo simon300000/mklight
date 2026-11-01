@@ -85,7 +85,7 @@ pub fn execute(r: &Lattice, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
     // SAFETY: all views and outputs have validated row counts and layouts;
     // split ranges lie inside their validated channels and outputs.
     let cs = unsafe {
-        xr.gpu.run("wave lattice", |e| {
+        xr.run("wave lattice", |e| {
             if let Some(v) = a.reads.first() {
                 let (b, o) = xr.buffer(v);
                 for i in [1, 2] {
@@ -124,7 +124,7 @@ pub fn execute(r: &Lattice, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
         x.put_output(id, b);
     }
     let wall = start.elapsed().as_secs_f64();
-    x.stats.command_buffers += 1;
+    x.stats.command_buffers += cs.command_buffers;
     x.stats.device_seconds += cs.gpu_seconds;
     x.stats.parameter_bytes += parts.len() as u64 * 32;
     x.stats.stages.push(StageStats {
@@ -132,7 +132,7 @@ pub fn execute(r: &Lattice, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
         name: "wave_lattice".into(),
         wall_seconds: wall,
         device_seconds: cs.gpu_seconds,
-        command_buffers: 1,
+        command_buffers: cs.command_buffers,
         max_command_seconds: wall,
     });
     Ok(())

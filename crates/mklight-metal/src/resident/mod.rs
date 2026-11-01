@@ -1,6 +1,6 @@
 //! Resident Metal execution. Mutable buffers stay worker-local; immutable
 //! leases and system Arcs pin resources through every committed completion
-//! (each command buffer completes before the worker continues or returns).
+//! and no host view or cache publication precedes device completion.
 use crate::{
     backend::Uploaded,
     buffer::SharedBuffer,
@@ -32,6 +32,9 @@ use std::{
 pub(crate) type Lease = Allocation<SharedBuffer<u32>>;
 pub(crate) type Runtime = runtime::Runtime<SharedBuffer<u32>>;
 impl runtime::Storage for SharedBuffer<u32> {
+    fn available(&self) -> bool {
+        self.available()
+    }
     fn words(&self) -> &[u32] {
         self.as_slice()
     }
@@ -67,6 +70,8 @@ pub(crate) fn execute(
         systems,
         commands: RefCell::new(CommandBatch::new()),
         retired: vec![],
+        checks: vec![],
+        cache_pending: RefCell::new(vec![]),
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
     };
     let mut imported = HashSet::new();
@@ -100,7 +105,7 @@ pub(crate) fn execute(
     let ops = plan.operations.len() as f64;
     for (i, op) in plan.operations.iter().enumerate() {
         ctl.check()?;
-        let sub = ctl.subrange(i as f64 / ops, (i + 1) as f64 / ops);
+        let sub = ctl.subrange(0.99 * i as f64 / ops, 0.99 * (i + 1) as f64 / ops);
         let t = Instant::now();
         let mut stage = StageStats {
             operation: i,
@@ -117,18 +122,18 @@ pub(crate) fn execute(
                 x.sum(s, &sub, &mut stage)?;
             }
             _ => {
-                x.flush()?;
                 stage.name = "domain".into();
                 dispatch(op, &mut x, &sub)?;
             }
         }
         ctl.check()?;
-        ctl.report((i + 1) as f64 / ops, "resident plan");
+        ctl.report(0.99 * (i + 1) as f64 / ops, "resident plan");
         stage.wall_seconds = t.elapsed().as_secs_f64();
         x.stats.device_seconds += stage.device_seconds;
         x.stats.command_buffers += stage.command_buffers;
         x.stats.stages.push(stage);
     }
+    ctl.check()?;
     x.flush()?;
     ctl.check()?;
     let completed = x.commands.borrow().completed;
@@ -184,6 +189,16 @@ pub(crate) struct Execution<'a> {
     systems: HashMap<SystemHandle, Arc<Uploaded>>,
     commands: RefCell<CommandBatch>,
     retired: Vec<Lease>,
+    checks: Vec<(
+        Lease,
+        fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>,
+    )>,
+    cache_pending: RefCell<Vec<CachePublication>>,
+}
+struct CachePublication {
+    key: OperationCacheKey,
+    value: Arc<dyn Any + Send + Sync>,
+    publish: Box<dyn FnOnce(&OperationCache)>,
 }
 impl Execution<'_> {
     /// Deferred resident encoding. No host storage access until `flush`.
@@ -199,10 +214,36 @@ impl Execution<'_> {
         }
         Ok(CommandStats::default())
     }
-    pub(crate) fn flush(&mut self) -> MkResult<()> {
-        self.commands.borrow_mut().flush()?;
+    pub(crate) fn flush(&mut self) -> MkResult<CommandStats> {
+        let stats = self.commands.borrow_mut().flush()?;
+        for (buffer, check) in std::mem::take(&mut self.checks) {
+            check(&buffer, &mut self.stats)?;
+            self.live_bytes -= buffer.words().max(4) as u64 * 4;
+        }
+        for entry in self.cache_pending.borrow_mut().drain(..) {
+            (entry.publish)(&self.cache);
+        }
+        self.live_bytes -= self
+            .retired
+            .iter()
+            .map(|b| b.words().max(4) as u64 * 4)
+            .sum::<u64>();
         self.retired.clear();
-        Ok(())
+        Ok(stats)
+    }
+    pub(crate) fn check_buffer(
+        &mut self,
+        buffer: Lease,
+        check: fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>,
+    ) {
+        self.checks.push((buffer, check));
+    }
+    pub(crate) fn count_fallbacks(&mut self, counter: Lease) {
+        self.stats.readback_bytes += 4;
+        self.check_buffer(counter, |buffer, stats| {
+            stats.fallback_count += buffer.as_slice()[0] as u64;
+            Ok(())
+        });
     }
 
     /// Operation-cache key including the plan's full system/build/settings identity.
@@ -213,6 +254,20 @@ impl Execution<'_> {
         &self,
         key: &OperationCacheKey,
     ) -> MkResult<Option<Arc<T>>> {
+        if let Some(entry) = self
+            .cache_pending
+            .borrow()
+            .iter()
+            .rev()
+            .find(|e| &e.key == key)
+        {
+            return entry
+                .value
+                .clone()
+                .downcast::<T>()
+                .map(Some)
+                .map_err(|_| bad("operation cache type collision"));
+        }
         self.cache.get(key)
     }
     pub(crate) fn cache<T: Any + Send + Sync>(
@@ -221,7 +276,12 @@ impl Execution<'_> {
         bytes: usize,
         value: Arc<T>,
     ) {
-        self.cache.insert(key, bytes, value)
+        let (k, v) = (key.clone(), value.clone());
+        self.cache_pending.borrow_mut().push(CachePublication {
+            key,
+            value,
+            publish: Box::new(move |cache| cache.insert(k, bytes, v)),
+        });
     }
     /// A system pinned at submission (declared in the operation's accesses).
     pub(crate) fn system(&self, handle: SystemHandle) -> MkResult<Arc<Uploaded>> {
@@ -254,7 +314,6 @@ impl Execution<'_> {
         Ok(b)
     }
     pub(crate) fn recycle(&mut self, b: Lease) {
-        self.live_bytes -= b.words().max(4) as u64 * 4;
         self.retired.push(b);
     }
     fn account(stage: &mut StageStats, cs: CommandStats, wall: f64) {
@@ -378,6 +437,7 @@ impl Execution<'_> {
         let mut partials = self.sum_scratch.take().unwrap();
         let mut out = self.take_output(s.output);
         let (input, input_offset) = self.buffer(&s.input);
+        let mut parameter_blocks = 0;
         // Chunk boundaries partition the fixed reduction tree, never re-form it.
         let group_step = (self.chunk / count.div_ceil(groups)).clamp(1, groups);
         let total = channels * (groups + 1);
@@ -397,6 +457,7 @@ impl Execution<'_> {
         }
         for (c, nc, g, ng) in launches {
             ctl.check()?;
+            parameter_blocks += 1;
             let p = ReduceParams {
                 count: count as u32,
                 channel_stride: count as u32,
@@ -425,6 +486,7 @@ impl Execution<'_> {
         for c in (0..channels).step_by(ch_step) {
             ctl.check()?;
             let nc = ch_step.min(channels - c);
+            parameter_blocks += 1;
             let p = ReduceParams {
                 count: count as u32,
                 channel_stride: count as u32,
@@ -448,8 +510,7 @@ impl Execution<'_> {
             done += nc;
             ctl.report(done as f64 / total as f64, "resident sum");
         }
-        self.stats.parameter_bytes +=
-            stage.command_buffers as u64 * size_of::<ReduceParams>() as u64;
+        self.stats.parameter_bytes += parameter_blocks * size_of::<ReduceParams>() as u64;
         self.put_output(s.output, out);
         self.sum_scratch = Some(partials);
         Ok(())
@@ -465,7 +526,10 @@ fn dispatch(op: &ResidentOp, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
         ResidentOp::Radiometry(r) => crate::radiometry::execute(r, x, ctl),
         ResidentOp::Wave(r) => crate::wave_ops::execute(r, x, ctl),
         ResidentOp::Ghost(r) => crate::ghost_ops::execute(r, x, ctl),
-        ResidentOp::Stray(r) => crate::stray_ops::execute(r, x, ctl),
+        ResidentOp::Stray(r) => {
+            x.flush()?;
+            crate::stray_ops::execute(r, x, ctl)
+        }
         ResidentOp::Optim(r) => crate::optim_ops::execute(r, x, ctl),
         ResidentOp::TraceUpload(_) | ResidentOp::Sum(_) => unreachable!(),
     }
