@@ -821,17 +821,12 @@ proportion to the rays a candidate traces. To speed it up further, move ray
 generation and the operand reductions (centroids, RMS) onto the device, and
 skip the snapshot hash for transient candidates (`mklight-core`).
 
-**Use.** `gpu_beats_cpu(rays_per_candidate, batch)` encodes the crossover,
-conservatively between the measured points: at least 2600 rays per
-candidate and 16 candidates per batch, or 650 rays and 256 candidates.
+**Use.** The `gpu_beats_cpu` crossover above described the retired host
+merit adapter. With the resident evaluator every changed candidate is
+re-checked in f64, so engine `auto` runs these jobs on the CPU reference
+(`GPU.md` §9.2); an explicit device request still uses the evaluator.
 `gpu_rays_per_candidate` counts the rays the evaluator would trace for a
-system and operand list (its own plan). The engine jobs' `backend: "auto"`
-uses the engine's GPU device only when that rule says the GPU is faster for
-the run (see Engine jobs), so the default merit's LM, DE and CMA-ES runs stay
-on the CPU. The gain comes from dense samplings (wavefront merits for
-MTF-limited designs, many fields, many configurations) in batched work: FD
-Jacobians with many variables, DE / CMA-ES populations, uncompensated
-tolerancing trials. Small single-point LM steps are faster on the CPU.
+system and operand list (its own plan).
 
 ## Engine jobs: `optimize`, `merit_evaluation` and `tolerance`
 
@@ -982,7 +977,7 @@ failure policy.
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device only when `gpu_beats_cpu(rays per candidate, batch)` holds for the run (GPU-batched evaluation, Use): rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system, batch = the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. The decision is in `backend.workload`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
+| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (an engine `auto` request runs these jobs on the CPU reference, `GPU.md` §9.2). `backend.workload` reports the rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
 | `gpu_batch` | integer, `512` | candidates per GPU dispatch (`GpuEvalSettings::batch`) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
 | `stop_key` | string or null, `null` | key for `request_stop`; a key held by a running job is rejected |
@@ -1021,7 +1016,7 @@ failure policy.
                "best_merit": 3.9e-4, "violation": 0.0}],
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
-              "workload": {"rays_per_candidate": 38, "batch": 7, "gpu_faster": false},
+              "workload": {"rays_per_candidate": 38, "batch": 7},
               "qualification": {/* xval::Qualification at the start; GPU only */},
               "final_qualification": {/* at the final design; GPU only */},
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
@@ -1119,7 +1114,7 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
 | cancel and stop | cancelled after two LM iterations: `cancelled`, best-so-far below the start; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
-| GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, both qualifications pass, reported on the reference, merit decreases; `auto` with a device stays on the CPU for LM on a two-field, one-wavelength default merit (38 rays, batch 7) and uses the GPU for a 12 × 24 merit with DE populations of 16 |
+| GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, both qualifications pass, reported on the reference, merit decreases; `auto` with a handed-over device uses it at both merit sizes |
 | global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
 | snapshot merit | Cooke triplet and Double Gauss, default RMS spot, worst-field MTF and a custom merit, and the DE penalty hold: equal to the optimize start report; expanded defaults round-trip as custom; CPU-f32 GPU counters record one candidate; solves applied first; per-operand errors |
 | feasibility restoration | nonlinear equality leaves a 2.7e-6 defect after one improving LM/dogleg step: repaired below the ranking tolerance, bounds and hard evaluation budgets respected, cancellation retains the best point; 20 LM iterations on the Double Gauss with the worst-field MTF merit (release, ignored) end 3e-3 off the EFL hold and are restored instead of returning the start |
@@ -1415,12 +1410,11 @@ measured slower at every size (FD differences 0.35–4.7 ms against well under
 `Residuals`/`Difference` requests remain for resident chains whose inputs
 already live on the device.
 
-**P11 policy update:** the work threshold and timings in the next paragraph
-are historical. Explicit device adapters and unknown automatic shapes now
-attempt resident QR. Automatic engine jobs may use exact measured CPU rows,
-matched by host sources/compiler/profile, device, OS/kernel build and worker
-count (`GPU.md` §9.2). There is no scalar `m·n²` heuristic. CPU cost,
-underdetermined and deficient-factor compression stages are named and counted.
+**P11 policy update:** the `m·n²` threshold and timings in the next
+paragraph are historical. The resident tall QR now starts at `m·n ≥ 2¹⁶`
+Jacobian elements, measured on the complete compression (`GPU.md` §9.2).
+Engine `auto` runs optimisation, tolerancing and glass substitution on the
+CPU reference, since every changed candidate is re-checked in f64.
 
 The local solver hands its tall QR to P3 once the free-column work
 `m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order

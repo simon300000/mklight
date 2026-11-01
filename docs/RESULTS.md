@@ -110,7 +110,7 @@ energy and MTF curves, through-focus) stay in the JSON.
 ## 5. Backends and GPU paths
 
 The engine initially uses `auto`. Explicit `cpu_reference` always uses the
-f64 reference. Explicit `gpu:metal` bypasses cost exceptions, while retaining
+f64 reference. Explicit `gpu:metal` bypasses the cost rules, while retaining
 all accuracy gates and reported resource/unsupported fallbacks. Unavailable
 explicit providers keep the existing `allow_backend_fallback` behaviour.
 Cancellation discards the result and never runs a CPU replacement.
@@ -139,17 +139,20 @@ partial/reference-completion reports. CPU completion and failed qualification
 name their reason in `backend.fallback_reason` and `run_info.warnings`.
 Polished rays and partial candidate/operand fallbacks remain counted in native
 execution metadata; a result widened into public f64 buffers remains labelled
-`f32_gpu` when computed by Metal. The tiny ray-grid chief metadata stage is
-explicitly recorded as host work.
+`f32_gpu` when computed by Metal.
 
-`backend.cost_decision` records automatic selection and the versioned measured
-workload key. Known CPU advantages come from the consolidated end-to-end
-benchmark in GPU §9.2, matched to device, OS/kernel build, host
-sources/compiler/profile, worker count and exact workload.
-Unknown cost prefers qualified Metal. An explicit backend records that cost
-exceptions were bypassed. Deliberate CPU cost choices are reported without a
-warning; accuracy, unsupported and resource failures are warnings. Cold setup
-and qualification are separate from warm latency in the evidence.
+`backend.cost_decision` records automatic selection: `decision`
+(`cpu_reference` or `qualified_metal`), `rule`, `workload`, `threshold`,
+`evidence` and `version`. Each analysis measures its workload from the
+settings and the system (traced rays, wave pupil samples, …) and runs the CPU
+reference at or below a threshold derived from the end-to-end benchmark in
+GPU §9.2 (Apple M2 Pro; applied to Apple GPUs). At default settings that is
+the CPU for every analysis except `geometric_mtf`. Analyses without a rule
+and other devices prefer qualified Metal. An explicit backend records that the
+rules were bypassed. Deliberate CPU cost choices are reported without a
+warning; accuracy, unsupported and resource failures are warnings. A first
+Metal call on a new snapshot or settings includes the complete f64 chain
+qualification (`qualification.reference_seconds`).
 
 Native `encircled_energy` retains the conservative geometry-uncertainty bin
 check; when a requested bin could move more than the energy budget it returns
@@ -2179,7 +2182,6 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `candidate_sets` | array<object> |  | The resolved candidates of each material variable. |
 | `candidate_sets[].glasses` | array<object> |  | Nearest first. |
@@ -2276,7 +2278,6 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `merit` | nf |  |  |
 | `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands and the EFL hold. |
@@ -2350,7 +2351,6 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `evaluations` | integer |  | ≥ 0 |
 | `failed_variables` | array<integer> |  |  |
@@ -2469,7 +2469,6 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.gpu_faster` | boolean |  |  |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
 | `compensators` | array<object> |  | Model parameter units. |
 | `criterion_spec` | object |  | Effective MeritFunctionSpec. |

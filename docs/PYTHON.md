@@ -309,9 +309,9 @@ numerical failure `ComputeError`.
   indices raising `MKLightError` subclasses; afocal paraxial infinities as
   floats.
 
-Automatic selection uses the same complete-chain qualifications and recorded
-full-chain cost evidence as the engine (RESULTS §5, GPU §9.2). Unknown cost
-prefers qualified Metal; explicit Metal bypasses cost exceptions. The result
+Automatic selection uses the same complete-chain qualifications and workload
+cost rules as the engine (RESULTS §5, GPU §9.2). Unknown cost prefers
+qualified Metal; explicit Metal bypasses the cost rules. The result
 envelope retains `backend.execution` and `backend.cost_decision`, including
 partial reference completion and actual precision. Public f64 buffer storage
 does not make GPU arithmetic f64.

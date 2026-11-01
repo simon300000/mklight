@@ -271,9 +271,10 @@ A selected GPU qualifies both the system geometry and the complete operation
 chain for the requested settings. A failed gate or resource/unsupported stage
 uses the reported f64 reference; cancellation never starts a replacement.
 `backend.execution` retains native device/build/probe, algorithm and stage
-metadata; `backend.cost_decision` records the measured automatic-selection
-policy. Explicit Metal bypasses cost choices, never accuracy gates. See
-RESULTS §5 and GPU §9.2 for the exact-input cache and consolidated evidence.
+metadata; `backend.cost_decision` records the automatic choice (workload,
+threshold and rule). Explicit Metal bypasses the cost rules, never accuracy
+gates. See RESULTS §5 and GPU §9.2 for the qualification cache and the
+measured rules.
 
 ### Analysis request (`mk_session_submit_analysis_json`)
 
