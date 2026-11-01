@@ -51,7 +51,14 @@ pub fn params(r: &Request) -> Params {
             p.size = *standard as u32;
             None
         }
-        Request::Resample(_) => unreachable!("resample has separate parameters"),
+        Request::ImageIntegral(_)
+        | Request::Blur(_)
+        | Request::Spectral(_)
+        | Request::Placement(_)
+        | Request::Lattice(_)
+        | Request::Statistics(_)
+        | Request::Diagnostics(_)
+        | Request::Resample(_) => unreachable!("resample has separate parameters"),
         Request::FocusCorrelation {
             on_axis,
             pupil,

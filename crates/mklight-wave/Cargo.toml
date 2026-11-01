@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bytemuck.workspace = true
 blake3.workspace = true
 mklight-gpu.workspace = true
 mklight-core.workspace = true

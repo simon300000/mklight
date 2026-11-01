@@ -552,3 +552,287 @@ fn benchmark_prepared_pupils() {
         );
     }
 }
+
+fn statistics_suite(b: &dyn ComputeBackend) {
+    let ctx = JobContext::new();
+    let geom = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
+    for aperture in [
+        Aperture::Circular,
+        Aperture::Annular { obscuration: 0.45 },
+        Aperture::Rectangular {
+            half_u: 0.9,
+            half_v: 0.4,
+        },
+    ] {
+        let p = PupilFunction::from_aperture(
+            65,
+            0.55,
+            geom,
+            aperture,
+            Apodization::Uniform,
+            4,
+            |u, v| 0.7 * u - 0.3 * v + 0.4 * (u * u + v * v),
+        )
+        .unwrap();
+        let resident = ResidentPupil::from_pupil(b, &p, &ctx).unwrap();
+        let a = resident.statistics(b, snapshot(), &ctx).unwrap();
+        let s = p.opd_stats(false);
+        let t = p.opd_stats(true);
+        for (got, want) in [
+            (a.value.rms, s.rms),
+            (a.value.pv, s.pv),
+            (a.value.rms_tilt_removed, t.rms),
+            (a.value.pv_tilt_removed, t.pv),
+            (a.value.strehl, p.strehl_at_reference()),
+        ] {
+            assert!((got - want).abs() < 2e-6, "statistics {got} != {want}");
+        }
+        assert_eq!(a.stats.copied_bytes, 0);
+    }
+}
+#[test]
+fn statistics_f64() {
+    statistics_suite(&CpuF32Backend::new());
+}
+#[cfg(target_os = "macos")]
+#[test]
+fn statistics_metal() {
+    for origin in [
+        mklight_metal::LibraryChoice::Precompiled,
+        mklight_metal::LibraryChoice::RuntimeSource,
+    ] {
+        statistics_suite(&metal(origin));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn resident_traced_pupil_matches_reference() {
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let ctx = JobContext::new();
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    let service = gpu::PupilTracer::new(&b, &t, &ctx).unwrap();
+    for amplitude in [
+        AmplitudeModel::Uniform,
+        AmplitudeModel::Transmission,
+        AmplitudeModel::Radiometric,
+    ] {
+        for reference in [ReferencePoint::Chief, ReferencePoint::Centroid] {
+            let settings = PupilSettings {
+                amplitude,
+                reference,
+                ..Default::default()
+            };
+            let field = t.field(t.fields().len() - 1);
+            let wl = t.system().primary_wavelength;
+            let expected = trace_pupil(&t, field, wl, &settings, &ctx).unwrap();
+            let result = service.trace(field, wl, &settings, &ctx).unwrap();
+            let p = &result.value.pupil;
+            assert_eq!(p.n, expected.pupil.n());
+            assert!(
+                (result.value.info.sin_max - expected.info.sin_max).abs() < 2e-6,
+                "sine {} {}",
+                result.value.info.sin_max,
+                expected.info.sin_max
+            );
+            let opd = b.read_view(p.opd.view()).unwrap();
+            let opd = opd.as_slice::<mklight_gpu::Df32>().unwrap();
+            let cov = b.read_view(p.coverage.view()).unwrap();
+            let cov = cov.as_slice::<f32>().unwrap();
+            let amp = b.read_view(p.amplitude.view()).unwrap();
+            let amp = amp.as_slice::<f32>().unwrap();
+            let mut maximum = 0f64;
+            let mut amp_err = 0f64;
+            let mut mask_diff = 0;
+            for k in 0..p.n * p.n {
+                if cov[k] as f64 != expected.pupil.coverage()[k] {
+                    mask_diff += 1;
+                }
+                if cov[k] > 0. && expected.pupil.coverage()[k] > 0. {
+                    maximum = maximum.max((opd[k].to_f64() - expected.pupil.opd_waves()[k]).abs());
+                    amp_err = amp_err.max((amp[k] as f64 - expected.pupil.amplitude()[k]).abs());
+                }
+            }
+            eprintln!(
+                "P6 trace {amplitude:?} {reference:?}: OPD={maximum:e}, amplitude={amp_err:e}, mask={mask_diff}, commands={}, device_ms={}",
+                result.stats.command_buffers,
+                result.stats.device_seconds * 1000.
+            );
+            assert!(maximum < 5e-3);
+            assert!(amp_err < 1e-3);
+            assert_eq!(mask_diff, 0);
+            assert_eq!(result.stats.copied_bytes, 0);
+        }
+    }
+}
+
+fn spectral_suite(b: &dyn ComputeBackend) {
+    let ctx = JobContext::new();
+    let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
+    let mut a = PupilFunction::from_aperture(
+        32,
+        0.45,
+        g,
+        Aperture::Circular,
+        Apodization::Uniform,
+        4,
+        |u, v| 0.12 * (u * u + v * v),
+    )
+    .unwrap();
+    a.set_image_offset_mm([-0.001, 0.002]);
+    let mut z = PupilFunction::from_aperture(
+        32,
+        0.65,
+        g,
+        Aperture::Circular,
+        Apodization::Uniform,
+        4,
+        |u, v| 0.08 * u - 0.14 * v,
+    )
+    .unwrap();
+    z.set_image_offset_mm([0.001, -0.002]);
+    let ar = ResidentPupil::from_pupil(b, &a, &ctx).unwrap();
+    let zr = ResidentPupil::from_pupil(b, &z, &ctx).unwrap();
+    let settings = PolyPsfSettings::new(63, 0.001);
+    let want = polychromatic_psf(&[(&a, 0.3), (&z, 0.7)], &settings, &ctx).unwrap();
+    let got = gpu::polychromatic_psf(
+        b,
+        snapshot(),
+        &[(&ar, 0.3), (&zr, 0.7)],
+        &settings,
+        false,
+        &ctx,
+    )
+    .unwrap();
+    let got = got.value.finish(b, &ctx).unwrap();
+    assert!(error(&want, &got) < 2e-5);
+    assert!((want.energy_in_grid() - got.energy_in_grid()).abs() < 1e-6 * want.total_energy);
+    let fs = [[0., 0.], [10., 0.], [0., 40.], [40., 20.]];
+    let got = gpu::polychromatic_otf(b, snapshot(), &[(&ar, 0.3), (&zr, 0.7)], &fs, &ctx).unwrap();
+    let aa = ar.otf(b, snapshot(), &fs, &ctx).unwrap();
+    let zz = zr.otf(b, snapshot(), &fs, &ctx).unwrap();
+    for k in 0..fs.len() {
+        for j in 0..2 {
+            assert!((got.value[k][j] - (0.3 * aa.value[k][j] + 0.7 * zz.value[k][j])).abs() < 2e-6);
+        }
+    }
+}
+#[test]
+fn spectral_f64() {
+    spectral_suite(&CpuF32Backend::new());
+}
+#[cfg(target_os = "macos")]
+#[test]
+fn spectral_metal() {
+    for origin in [
+        mklight_metal::LibraryChoice::Precompiled,
+        mklight_metal::LibraryChoice::RuntimeSource,
+    ] {
+        spectral_suite(&metal(origin));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "host qualification of GPU-generated default pupils"]
+fn all_gpu_traced_pupils() {
+    for origin in [
+        mklight_metal::LibraryChoice::Precompiled,
+        mklight_metal::LibraryChoice::RuntimeSource,
+    ] {
+        let b = metal(origin);
+        let ctx = JobContext::new();
+        let mut count = 0;
+        let mut max_opd = 0f64;
+        let mut max_amp = 0f64;
+        let mut masks = 0usize;
+        for (name, model) in samples::all() {
+            let t = mklight_analysis::tracer_for(model).unwrap();
+            let service = gpu::PupilTracer::new(&b, &t, &ctx).unwrap();
+            for field in 0..t.fields().len() {
+                for wl in 0..t.num_wavelengths() {
+                    let settings = PupilSettings::default();
+                    let reference = trace_pupil(&t, t.field(field), wl, &settings, &ctx).unwrap();
+                    let r = service.trace(t.field(field), wl, &settings, &ctx).unwrap();
+                    let p = &r.value.pupil;
+                    assert_eq!(
+                        p.n,
+                        reference.pupil.n(),
+                        "{name} field {field} wavelength {wl}"
+                    );
+                    let w = b.read_view(p.opd.view()).unwrap();
+                    let w = w.as_slice::<mklight_gpu::Df32>().unwrap();
+                    let c = b.read_view(p.coverage.view()).unwrap();
+                    let c = c.as_slice::<f32>().unwrap();
+                    let a = b.read_view(p.amplitude.view()).unwrap();
+                    let a = a.as_slice::<f32>().unwrap();
+                    let mut error = 0f64;
+                    let mut amp = 0f64;
+                    let mut differences = 0;
+                    for k in 0..p.n * p.n {
+                        if c[k] as f64 != reference.pupil.coverage()[k] {
+                            differences += 1;
+                        }
+                        if c[k] > 0. && reference.pupil.coverage()[k] > 0. {
+                            error =
+                                error.max((w[k].to_f64() - reference.pupil.opd_waves()[k]).abs());
+                            amp = amp.max((a[k] as f64 - reference.pupil.amplitude()[k]).abs());
+                        }
+                    }
+                    eprintln!(
+                        "P6_GENERATED {name} f={field} wl={wl} n={} opd={error:e} amp={amp:e} mask={differences} commands={} copies={} fallbacks={}",
+                        p.n, r.stats.command_buffers, r.stats.copied_bytes, r.stats.fallback_count
+                    );
+                    assert!(error < 5e-3);
+                    assert!(amp < 1e-3);
+                    assert_eq!(differences, 0);
+                    max_opd = max_opd.max(error);
+                    max_amp = max_amp.max(amp);
+                    masks += differences;
+                    count += 1;
+                }
+            }
+        }
+        eprintln!(
+            "P6_GENERATED_SUMMARY count={count} max_opd={max_opd:e} max_amplitude={max_amp:e} mask_differences={masks}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_wavefront_and_psf() {
+    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let ctx = JobContext::new();
+    let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
+    let settings = analysis::WavefrontSettings::default();
+    let reference = analysis::wavefront_map_job(&t, &settings, &ctx).unwrap();
+    let got = gpu::analysis::wavefront_map_job(&b, &t, &settings, &ctx).unwrap();
+    assert_eq!(got.maps.len(), reference.maps.len());
+    for (a, b) in got.maps.iter().zip(&reference.maps) {
+        assert_eq!(a.grid, b.grid);
+        assert!((a.rms_waves - b.rms_waves).abs() < 1e-5);
+        assert!((a.rms_waves_tilt_removed - b.rms_waves_tilt_removed).abs() < 1e-5);
+        assert!((a.strehl_at_reference - b.strehl_at_reference).abs() < 1e-5);
+        assert!((a.zernike_residual_rms - b.zernike_residual_rms).abs() < 1e-5);
+        for (x, y) in a
+            .zernike
+            .coefficients()
+            .iter()
+            .zip(b.zernike.coefficients())
+        {
+            assert!((x - y).abs() < 5e-3);
+        }
+    }
+    let settings = analysis::PsfAnalysisSettings::default();
+    let reference = analysis::psf_analysis_job(&t, &settings, &ctx).unwrap();
+    let got = gpu::analysis::psf_analysis_job(&b, &t, &settings, &ctx).unwrap();
+    assert_eq!(got.psfs.len(), reference.psfs.len());
+    for (a, b) in got.psfs.iter().zip(&reference.psfs) {
+        assert_eq!(a.psf.size, b.psf.size);
+        assert_eq!(a.pupil_sampling, b.pupil_sampling);
+        assert!((a.psf.spacing_mm - b.psf.spacing_mm).abs() < 1e-9);
+        assert!(error(&a.psf, &b.psf) < 2e-3);
+        assert!((a.strehl - b.strehl).abs() < 2e-3);
+    }
+}

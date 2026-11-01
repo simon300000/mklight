@@ -652,9 +652,9 @@ impl PsfOutput {
 }
 
 mod resample;
-pub use resample::from_structured;
+pub use resample::{from_resident_lattice, from_structured};
 mod zernike;
-pub use zernike::{ZernikeSolution, fit_zernike};
+pub use zernike::{ZernikeSolution, fit_resident_zernike, fit_zernike};
 
 /// Detector response for a sensor frequency batch, suitable for composing with
 /// the resident optical curves. Nyquist annotations remain small host metadata.
@@ -696,3 +696,14 @@ pub fn detector_mtf(
         stats: r.stats,
     })
 }
+mod statistics;
+pub use statistics::WavefrontStatistics;
+mod traced;
+pub use traced::{PupilTracer, ResidentTracedPupil};
+mod spectral;
+pub use spectral::{ResidentPsf, polychromatic_otf, polychromatic_psf};
+mod sampling;
+pub use sampling::BlurEstimate;
+pub mod analysis;
+mod energy;
+pub use energy::PsfMetrics;

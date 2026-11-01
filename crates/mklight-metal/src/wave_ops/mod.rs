@@ -7,13 +7,41 @@ use mklight_gpu::{
     wave_ops::{spec::*, *},
 };
 use std::time::Instant;
+mod diagnostics;
+mod image_integrals;
+mod lattice;
+mod placement;
 mod resample;
+mod sampling;
+mod spectral;
+mod statistics;
 const PIXELS: usize = 256;
 const SAMPLES: usize = 256;
 const COMMAND_TERMS: usize = 1 << 20;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     if let Request::Resample(r) = r {
         return resample::execute(r, x, ctl);
+    }
+    if let Request::Diagnostics(r) = r {
+        return diagnostics::execute(r, x, ctl);
+    }
+    if let Request::Statistics(r) = r {
+        return statistics::execute(r, x, ctl);
+    }
+    if let Request::Lattice(r) = r {
+        return lattice::execute(r, x, ctl);
+    }
+    if let Request::Placement(r) = r {
+        return placement::execute(r, x, ctl);
+    }
+    if let Request::Spectral(r) = r {
+        return spectral::execute(r, x, ctl);
+    }
+    if let Request::Blur(r) = r {
+        return sampling::execute(r, x, ctl);
+    }
+    if let Request::ImageIntegral(r) = r {
+        return image_integrals::execute(r, x, ctl);
     }
     let access = accesses(r);
     let mut p = params(r);

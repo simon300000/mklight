@@ -63,6 +63,40 @@ pub fn from_structured(
             Ok(())
         },
     )?;
+    from_resident_lattice(
+        backend,
+        snapshot,
+        nodes.view(),
+        valid.view(),
+        hash.finalize().to_hex().to_string(),
+        n,
+        wavelength_um,
+        geometry,
+        mask,
+        supersample,
+        ctx,
+    )
+}
+
+/// Resample already resident [ny,nx,4] lattice nodes (u,v,OPD,amplitude).
+#[allow(clippy::too_many_arguments)]
+pub fn from_resident_lattice(
+    backend: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    nodes: BufferView,
+    valid: BufferView,
+    input_hash: String,
+    n: usize,
+    wavelength_um: f64,
+    geometry: PupilGeometry,
+    mask: Option<&PupilMask>,
+    supersample: usize,
+    ctx: &JobContext,
+) -> MkResult<WaveResult<ResidentPupil>> {
+    geometry.validate()?;
+    if let Some(mask) = mask {
+        mask.validate()?;
+    }
     let edge_count = match mask {
         Some(PupilMask::Polygons { loops }) => loops.iter().map(Vec::len).sum(),
         _ => 0,
@@ -98,8 +132,8 @@ pub fn from_structured(
     };
     let mut p = ResidentPlan::new(snapshot);
     p.settings = serde_json::json!({"p6":"structured_pupil","grid":n,"supersample":supersample,"wavelength_um":wavelength_um});
-    let nodes = p.import(nodes.view());
-    let valid = p.import(valid.view());
+    let nodes = p.import(nodes);
+    let valid = p.import(valid);
     let edges = p.import(edges.view());
     let amplitude = p.scratch(BufferDesc::new(ElementType::F32, [n, n]));
     let coverage = p.scratch(BufferDesc::new(ElementType::F32, [n, n]));
@@ -118,25 +152,24 @@ pub fn from_structured(
             opd,
             diagnostics,
         })));
-    let input_hash = hash.finalize().to_hex().to_string();
     p.settings["pupil_input_hash"] = input_hash.clone().into();
-    p.outputs = vec![amplitude, coverage, opd, diagnostics];
+    let summary = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [9]));
+    p.operations.push(ResidentOp::Wave(w::Request::Diagnostics(
+        w::diagnostics::Diagnostics {
+            coverage: p.view(coverage)?,
+            opd: p.view(opd)?,
+            extrapolation: p.view(diagnostics)?,
+            output: summary,
+        },
+    )));
+    p.outputs = vec![amplitude, coverage, opd, summary];
     let mut r = backend.submit_plan(p, ctx)?.wait()?;
     let guard = backend.read_view(r.outputs[3].view())?;
-    let d = guard.as_slice::<f32>()?;
-    let (mut gap, mut pitch) = (0f64, 1f64);
-    for k in 0..n * n {
-        if d[2 * n * n + k] > 0. {
-            return Err(MkError::Unsupported(
-                "pupil extrapolation exceeds 128 subpoints or has no triangle source; use the reference resampler".into(),
-            ));
-        }
-        let (g, h) = (d[k] as f64, d[n * n + k] as f64);
-        if g / h > gap / pitch {
-            gap = g;
-            pitch = h;
-        }
+    let d = guard.as_slice::<Df32>()?;
+    if d[1].hi > 0. {
+        return Err(MkError::Unsupported("pupil extrapolation exceeds 128 subpoints or has no triangle source; use the reference resampler".into()));
     }
+    let (gap, pitch) = (d[3].to_f64(), d[4].to_f64());
     let mut warnings = if gap > 2. * pitch {
         vec![WaveWarning::SparseRays {
             max_gap: gap,
@@ -145,37 +178,11 @@ pub fn from_structured(
     } else {
         vec![]
     };
-    let coverage_guard = backend.read_view(r.outputs[1].view())?;
-    let cov = coverage_guard.as_slice::<f32>()?;
-    let opd_guard = backend.read_view(r.outputs[2].view())?;
-    let opd = opd_guard.as_slice::<Df32>()?;
-    let mut step = 0f64;
-    let (mut lo, mut hi) = ([n; 2], [0; 2]);
-    for k in 0..n * n {
-        if k % 4096 == 0 {
-            ctx.check()?;
-        }
-        if cov[k] <= 0. {
-            continue;
-        }
-        let (x, y) = (k % n, k / n);
-        lo[0] = lo[0].min(x);
-        lo[1] = lo[1].min(y);
-        hi[0] = hi[0].max(x);
-        hi[1] = hi[1].max(y);
-        for j in [
-            if x + 1 < n { k + 1 } else { k },
-            if y + 1 < n { k + n } else { k },
-        ] {
-            if cov[j] > 0. {
-                step = step.max((opd[j].to_f64() - opd[k].to_f64()).abs());
-            }
-        }
-    }
-    let across = if hi[0] < lo[0] {
+    let step = d[2].to_f64();
+    let across = if d[0].hi == 0. {
         0
     } else {
-        (hi[0] - lo[0] + 1).max(hi[1] - lo[1] + 1)
+        ((d[7].hi - d[5].hi + 1.).max(d[8].hi - d[6].hi + 1.)) as usize
     };
     if across < crate::pupil::MIN_PUPIL_SAMPLES {
         warnings.push(WaveWarning::FewPupilSamples {
@@ -191,12 +198,7 @@ pub fn from_structured(
     r.run_info
         .warnings
         .extend(warnings.iter().map(ToString::to_string));
-    let covered_samples = backend
-        .read_view(r.outputs[1].view())?
-        .as_slice::<f32>()?
-        .iter()
-        .filter(|&&v| v > 0.)
-        .count();
+    let covered_samples = d[0].hi as usize;
     let value = ResidentPupil {
         input_hash,
         covered_samples,

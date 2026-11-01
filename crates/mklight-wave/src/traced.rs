@@ -508,14 +508,14 @@ pub(crate) fn even_odd_area(loops: &[Vec<[f64; 2]>]) -> f64 {
 /// Lattice geometry: `side` nodes at `(k − c)·h`, `h = 2/(m − 1)`, so the
 /// nodes `1` and `side − 2` sit on `±1` and nodes `0`, `side − 1` form a
 /// guard ring outside the unit disk.
-struct Lattice {
+pub(crate) struct Lattice {
     side: usize,
     h: f64,
     c: f64,
 }
 
 impl Lattice {
-    fn new(m: usize) -> Self {
+    pub(crate) fn new(m: usize) -> Self {
         let side = m + 2;
         Lattice {
             side,
@@ -526,7 +526,7 @@ impl Lattice {
     fn coord(&self, k: usize) -> f64 {
         (k as f64 - self.c) * self.h
     }
-    fn point(&self, i: usize, j: usize) -> [f64; 2] {
+    pub(crate) fn point(&self, i: usize, j: usize) -> [f64; 2] {
         [self.coord(i), self.coord(j)]
     }
 }
@@ -592,7 +592,7 @@ fn bisect_rim(
 /// Marching-squares segments of the survival field: pairs of edge ids.
 /// Horizontal edge `(i, j)–(i+1, j)` has id `2(j·side + i)`, vertical edge
 /// `(i, j)–(i, j+1)` id `2(j·side + i) + 1`.
-fn rim_segments(
+pub(crate) fn rim_segments(
     lat: &Lattice,
     inside: &[bool],
     centre_inside: impl Fn(usize, usize) -> bool + Sync,
@@ -637,7 +637,7 @@ fn rim_segments(
 }
 
 /// Chain segments into closed loops of edge ids (deterministic order).
-fn chain_loops(segments: &[(usize, usize)]) -> Vec<Vec<usize>> {
+pub(crate) fn chain_loops(segments: &[(usize, usize)]) -> Vec<Vec<usize>> {
     use std::collections::BTreeMap;
     let mut adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (k, &(a, b)) in segments.iter().enumerate() {

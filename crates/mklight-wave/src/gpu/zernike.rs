@@ -9,6 +9,7 @@ pub struct ZernikeSolution {
     pub rank: usize,
     pub condition_inf: f64,
     pub residual_norm: f64,
+    pub residual_rms: f64,
 }
 /// Fit the original traced lattice, weighted by amplitude², using device
 /// basis evaluation and double-float pivoted/reorthogonalized QR (P3).
@@ -23,7 +24,6 @@ pub fn fit_zernike(
         return Err(MkError::InvalidParam("Zernike sample/term count".into()));
     }
     let rows = samples.len();
-    let cols = basis.len();
     let a = backend.fill_buffer(
         BufferDesc::new(ElementType::DoubleFloat, [rows, 4]),
         &mut |mut b| {
@@ -48,6 +48,23 @@ pub fn fit_zernike(
             Ok(())
         },
     )?;
+    fit_resident_zernike(backend, snapshot, a.view(), basis, ctx)
+}
+/// Fit resident lattice nodes without a host sample copy.
+pub fn fit_resident_zernike(
+    backend: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    samples: BufferView,
+    basis: &ZernikeBasis,
+    ctx: &JobContext,
+) -> MkResult<WaveResult<ZernikeSolution>> {
+    let rows = samples.desc.len()? / 4;
+    let cols = basis.len();
+    if rows < cols || cols == 0 || basis.terms().iter().any(|t| t.n > 64) {
+        return Err(MkError::InvalidParam("Zernike sample/term count".into()));
+    }
+    let mut samples = samples;
+    samples.desc = BufferDesc::new(ElementType::DoubleFloat, [rows, 4]);
     let terms = backend.fill_buffer(
         BufferDesc::new(ElementType::U32, [cols, 2]),
         &mut |mut b| {
@@ -60,7 +77,7 @@ pub fn fit_zernike(
     )?;
     let mut p = ResidentPlan::new(snapshot);
     p.settings = serde_json::json!({"p6":"zernike","ordering":basis.ordering(),"terms":cols,"rows":rows,"condition":"equilibrated_R_infinity"});
-    let a = p.import(a.view());
+    let a = p.import(samples);
     let t = p.import(terms.view());
     let matrix = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, rows, cols]));
     let rhs = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, rows]));
@@ -86,7 +103,7 @@ pub fn fit_zernike(
             solution,
             rank_condition,
         })));
-    p.outputs = vec![solution, rank_condition];
+    p.outputs = vec![solution, rank_condition, factors];
     let r = backend.submit_plan(p, ctx)?.wait()?;
     let guard = backend.read_view(r.outputs[1].view())?;
     let info = guard.as_slice::<Df32>()?;
@@ -96,6 +113,11 @@ pub fn fit_zernike(
             info[3].hi, info[0].hi
         )));
     }
+    let mut scales = r.outputs[2].view();
+    scales.offset = (rows + cols) * cols;
+    scales.desc.shape = vec![cols];
+    let scales = backend.read_view(scales)?;
+    let weight_norm = scales.as_slice::<Df32>()?[0].to_f64();
     let coefficients = backend
         .read_view(r.outputs[0].view())?
         .as_slice::<Df32>()?
@@ -108,6 +130,7 @@ pub fn fit_zernike(
             rank: info[0].hi as usize,
             condition_inf: info[1].to_f64(),
             residual_norm: info[2].to_f64(),
+            residual_rms: info[2].to_f64() / weight_norm,
         },
         run_info: r.run_info,
         stats: r.stats,

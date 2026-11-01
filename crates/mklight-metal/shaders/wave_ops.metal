@@ -200,3 +200,161 @@ kernel void mkl_wave_zernike(device const float2 *samples [[buffer(0)]],device c
     rhs[row]=weight.x>0?mkl_df_mul(samples[4*row+2],weight):float2(0);
     for(uint j=0;j<p.field_side;++j)matrix[row*p.field_side+j]=weight.x>0?mkl_df_mul(weight,wzernike(samples[4*row],samples[4*row+1],terms[j].x,as_type<int>(terms[j].y),p.size!=0)):float2(0);
 }
+
+kernel void mkl_wave_diagnostics(device const float *c [[buffer(0)]],device const float2 *w [[buffer(1)]],device const float *d [[buffer(2)]],device float *part [[buffer(3)]],constant uint *p [[buffer(5)]],uint block [[thread_position_in_grid]]) {
+    uint n=p[0],nn=n*n;if(block>=p[1])return;
+    float a[9]={0,0,0,0,1,float(n),float(n),0,0};
+    for(uint k=block*256;k<min(nn,(block+1)*256);++k) {
+        a[1]+=float(d[2*nn+k]>0);
+        if(d[k]/d[nn+k]>a[3]/a[4]){a[3]=d[k];a[4]=d[nn+k];}
+        if(c[k]<=0)continue;
+        a[0]+=1;uint ix=k%n,iy=k/n;
+        a[5]=min(a[5],float(ix));a[6]=min(a[6],float(iy));a[7]=max(a[7],float(ix));a[8]=max(a[8],float(iy));
+        uint next[2]={ix+1<n?k+1:k,iy+1<n?k+n:k};
+        for(uint t=0;t<2;++t)if(c[next[t]]>0)a[2]=max(a[2],abs(wf(mkl_df_sub(w[next[t]],w[k]))));
+    }
+    for(uint j=0;j<9;++j)part[block*9+j]=a[j];
+}
+kernel void mkl_wave_diagnostics_finish(device const float *part [[buffer(3)]],device float2 *out [[buffer(4)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]) {
+    if(id)return;float a[9]={0,0,0,0,1,float(p[0]),float(p[0]),0,0};
+    for(uint i=0;i<p[1];++i){device const float *b=part+9*i;
+        a[0]+=b[0];a[1]+=b[1];a[2]=max(a[2],b[2]);
+        if(b[3]/b[4]>a[3]/a[4]){a[3]=b[3];a[4]=b[4];}
+        for(uint j=5;j<7;++j)a[j]=min(a[j],b[j]);for(uint j=7;j<9;++j)a[j]=max(a[j],b[j]);
+    }
+    for(uint j=0;j<9;++j)out[j]=float2(a[j],0);
+}
+kernel void mkl_wave_statistics_prepare(device const float *a [[buffer(0)]],device const float *c [[buffer(1)]],device const float2 *w [[buffer(2)]],device float2 *part [[buffer(3)]],device float2 *samples [[buffer(4)]],constant uint *p [[buffer(6)]],uint block [[thread_position_in_grid]]) {
+    uint n=p[0],nn=n*n;if(block>=p[1])return;float2 sine=float2(as_type<float>(p[2]),as_type<float>(p[3]));float2 s[4]={0,0,0,0};
+    for(uint k=block*256;k<min(nn,(block+1)*256);++k){
+        float2 u=mkl_df_add_f32(mkl_df_div(float2(float(2*(k%n)+1),0),float2(float(n),0)),-1);
+        float2 v=mkl_df_add_f32(mkl_df_div(float2(float(2*(k/n)+1),0),float2(float(n),0)),-1);
+        float2 gamma=mkl_df_sqrt(mkl_df_sub(float2(1,0),mkl_df_mul(mkl_df_mul(sine,sine),mkl_df_add(mkl_df_mul(u,u),mkl_df_mul(v,v)))));
+        float2 weight=c[k]>0?mkl_df_div(mkl_df_mul(float2(c[k],0),float2(a[k],0)),gamma):float2(0);
+        samples[4*k]=u;samples[4*k+1]=v;samples[4*k+2]=w[k];samples[4*k+3]=mkl_df_sqrt(weight);
+        float2 z=wcis(w[k]);float2 vals[4]={weight,mkl_df_mul(weight,w[k]),mkl_df_mul_f32(weight,z.x),mkl_df_mul_f32(weight,z.y)};
+        for(uint j=0;j<4;++j)s[j]=mkl_df_add(s[j],vals[j]);
+    }for(uint j=0;j<4;++j)part[6*block+j]=s[j];
+}
+kernel void mkl_wave_statistics_sum(device const float2 *part [[buffer(3)]],device float2 *s [[buffer(5)]],constant uint *p [[buffer(6)]],uint id [[thread_position_in_grid]]) {
+    if(id)return;for(uint j=0;j<4;++j){float2 v=0;for(uint i=0;i<p[1];++i)v=mkl_df_add(v,part[6*i+j]);s[j]=v;}
+}
+static bool wless(float2 a,float2 b){return a.x<b.x||(a.x==b.x&&a.y<b.y);}
+kernel void mkl_wave_statistics_residual(device const float2 *samples [[buffer(0)]],device const float2 *s [[buffer(1)]],device const float2 *q [[buffer(2)]],device float2 *part [[buffer(3)]],constant uint *p [[buffer(6)]],uint block [[thread_position_in_grid]]) {
+    uint nn=p[0]*p[0];if(block>=p[1])return;float2 mean=mkl_df_div(s[1],s[0]);
+    float2 a[6]={float2(0),float2(0),float2(INFINITY,0),float2(-INFINITY,0),float2(INFINITY,0),float2(-INFINITY,0)};
+    for(uint k=block*256;k<min(nn,(block+1)*256);++k){device const float2 *r=samples+4*k;if(r[3].x<=0)continue;
+        float2 weight=mkl_df_mul(r[3],r[3]),r0=mkl_df_sub(r[2],mean),r1=mkl_df_sub(mkl_df_sub(mkl_df_sub(r[2],q[0]),mkl_df_mul(q[1],r[0])),mkl_df_mul(q[2],r[1]));
+        a[0]=mkl_df_add(a[0],mkl_df_mul(mkl_df_mul(weight,r0),r0));a[1]=mkl_df_add(a[1],mkl_df_mul(mkl_df_mul(weight,r1),r1));
+        if(wless(r0,a[2]))a[2]=r0;if(wless(a[3],r0))a[3]=r0;if(wless(r1,a[4]))a[4]=r1;if(wless(a[5],r1))a[5]=r1;
+    }for(uint j=0;j<6;++j)part[6*block+j]=a[j];
+}
+kernel void mkl_wave_statistics_finish(device const float2 *s [[buffer(1)]],device const float2 *part [[buffer(3)]],device float2 *out [[buffer(4)]],constant uint *p [[buffer(6)]],uint id [[thread_position_in_grid]]) {
+    if(id)return;float2 a[6];for(uint j=0;j<6;++j)a[j]=part[j];
+    for(uint i=1;i<p[1];++i){device const float2 *b=part+6*i;a[0]=mkl_df_add(a[0],b[0]);a[1]=mkl_df_add(a[1],b[1]);for(uint j=2;j<6;j+=2){if(wless(b[j],a[j]))a[j]=b[j];if(wless(a[j+1],b[j+1]))a[j+1]=b[j+1];}}
+    out[0]=mkl_df_sqrt(mkl_df_div(a[0],s[0]));out[1]=mkl_df_sub(a[3],a[2]);out[2]=mkl_df_sqrt(mkl_df_div(a[1],s[0]));out[3]=mkl_df_sub(a[5],a[4]);out[4]=mkl_df_div(mkl_df_add(mkl_df_mul(s[2],s[2]),mkl_df_mul(s[3],s[3])),mkl_df_mul(s[0],s[0]));
+}
+static void wsample(device uint *s,float2 x,float2 y,uint k){s[0]=as_type<uint>(x.x);s[1]=as_type<uint>(x.y);s[2]=as_type<uint>(y.x);s[3]=as_type<uint>(y.y);s[4]=0;s[5]=k;s[6]=0;s[7]=as_type<uint>(1.f);}
+kernel void mkl_wave_lattice(device uint *samples [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
+    if(id>=p[7])return;uint k=p[6]+id,s=p[0],i,j;float off=0;
+    if(k<s*s){i=k%s;j=k/s;}else{uint t=k-s*s;i=t%(s-1);j=t/(s-1);off=.5f;}
+    float2 h=mkl_df_div(float2(2,0),float2(float(s-3),0));float c=float(s-1)*.5f;
+    wsample(samples+8*k,mkl_df_mul(mkl_df_sub(float2(float(i)+off,0),float2(c,0)),h),mkl_df_mul(mkl_df_sub(float2(float(j)+off,0),float2(c,0)),h),k);
+}
+kernel void mkl_wave_survival(device const float2 *samples [[buffer(0)]],device const uint *status [[buffer(1)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
+    if(id>=p[7])return;uint k=p[6]+id;float2 x=samples[4*k],y=samples[4*k+1];float2 r=mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y));out[k]=uint(status[k]==0&&wless(r,float2(1,1.0001e-12f)));
+}
+kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const float2 *prev [[buffer(1)]],device const uint *status [[buffer(2)]],device float2 *state [[buffer(3)]],device uint *samples [[buffer(4)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
+    if(id>=p[7])return;uint k=p[6]+id;device const float2 *e=edges+4*k;float2 a[8]={e[0],e[1],e[2],e[3],float2(0),float2(1,0),float2(0),float2(0)};
+    float2 dx=mkl_df_sub(e[2],e[0]),dy=mkl_df_sub(e[3],e[1]),qa=mkl_df_add(mkl_df_mul(dx,dx),mkl_df_mul(dy,dy)),len=mkl_df_sqrt(qa);
+    if(p[2]){for(uint j=0;j<8;++j)a[j]=prev[8*k+j];if(a[7].x==0){if(status[16*k]==0)a[4]=a[5];else{float2 lo=a[4],span=mkl_df_sub(a[5],a[4]);uint l=0,h=16;for(uint t=0;t<4;++t){uint m=(l+h)/2;if(status[16*k+m]==0)l=m;else h=m;}a[4]=mkl_df_add(lo,mkl_df_mul_f32(span,float(l)/16));a[5]=mkl_df_add(lo,mkl_df_mul_f32(span,float(h)/16));}float2 span=mkl_df_mul(mkl_df_sub(a[5],a[4]),len),tol=float2(as_type<float>(p[4]),as_type<float>(p[5]));if(!wless(tol,span))a[7]=float2(1,0);}}
+    else if(wless(float2(1,0),mkl_df_add(mkl_df_mul(e[2],e[2]),mkl_df_mul(e[3],e[3])))){
+        float2 qb=mkl_df_add(mkl_df_mul(e[0],dx),mkl_df_mul(e[1],dy)),qc=mkl_df_add_f32(mkl_df_add(mkl_df_mul(e[0],e[0]),mkl_df_mul(e[1],e[1])),-1);
+        a[5]=mkl_df_div(mkl_df_add(-qb,mkl_df_sqrt(mkl_df_sub(mkl_df_mul(qb,qb),mkl_df_mul(qa,qc)))),qa);
+    }
+    uint width=p[3]?1:16;
+    for(uint j=0;j<width;++j){float2 t=(p[3]||a[7].x>0)?a[4]:(j==0?a[5]:mkl_df_add(a[4],mkl_df_mul_f32(mkl_df_sub(a[5],a[4]),float(j)/16)));
+        float2 xx=mkl_df_add(e[0],mkl_df_mul(dx,t)),yy=mkl_df_add(e[1],mkl_df_mul(dy,t));
+        if(!p[2]){float2 rad=mkl_df_sqrt(mkl_df_add(mkl_df_mul(xx,xx),mkl_df_mul(yy,yy)));if(wless(float2(1,0),rad)){xx=mkl_df_div(xx,rad);yy=mkl_df_div(yy,rad);}}
+        wsample(samples+8*(width*k+j),xx,yy,width*k+j);
+    }for(uint j=0;j<8;++j)state[8*k+j]=a[j];
+}
+static float2 wloadhit(device const float *v,uint n,uint k,uint j){return float2(v[j*n+k],v[(j+9)*n+k]);}
+kernel void mkl_wave_place(device const float2 *q [[buffer(0)]],device const uint *mask [[buffer(1)]],device const float *start [[buffer(2)]],device const float *hit [[buffer(3)]],device const MklPolarizationValue *power [[buffer(4)]],device float2 *out [[buffer(5)]],device float2 *radius [[buffer(6)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint k=p.first+id;for(uint j=0;j<8;++j)out[8*k+j]=0;radius[k]=0;if(!mask[k])return;
+    WVec sphere={mkl_df_mul_f32(q[p.n+k],p.sheet_factor),mkl_df_mul_f32(q[2*p.n+k],p.sheet_factor),mkl_df_mul_f32(q[3*p.n+k],p.sheet_factor)};
+    WVec dir={wloadhit(hit,p.n,k,3),wloadhit(hit,p.n,k,4),mkl_df_mul_f32(wloadhit(hit,p.n,k,5),p.propagation)};
+    uint base=p.infinite?0:3;WVec source={wloadhit(start,p.n,k,base),wloadhit(start,p.n,k,base+1),wloadhit(start,p.n,k,base+2)};
+    float2 f[3];for(uint j=0;j<3;++j){WVec v={wdf(p.frame[j][0]),wdf(p.frame[j][1]),wdf(p.frame[j][2])};f[j]=wdot(j==2?dir:sphere,v);}
+    out[8*k]=f[0];out[8*k+1]=f[1];out[8*k+2]=q[k];out[8*k+3]=f[2].x<0?-f[2]:f[2];out[8*k+4]=p.power?power[k].power[0]:float2(1,0);
+    for(uint j=0;j<2;++j){WVec v={wdf(p.object_axes[j][0]),wdf(p.object_axes[j][1]),wdf(p.object_axes[j][2])};out[8*k+5+j]=wdot(source,v);}out[8*k+7]=wloadhit(start,p.n,k,5);radius[k]=mkl_df_sqrt(mkl_df_add(mkl_df_mul(f[0],f[0]),mkl_df_mul(f[1],f[1])));
+}
+static bool wderiv(device const float2 *raw,device const uint *mask,uint k,uint axis,uint col,uint side,thread float2 *v){
+    uint pos=axis?k/side:k%side,d=axis?side:1;bool plus=pos+1<side&&mask[k+d],minus=pos>0&&mask[k-d];if(!plus&&!minus)return false;
+    uint lo=minus?k-d:k,hi=plus?k+d:k;float f=plus&&minus?.5f:1.f;
+    for(uint j=0;j<2;++j)v[j]=mkl_df_mul_f32(mkl_df_sub(raw[8*hi+col+j],raw[8*lo+col+j]),f);return true;
+}
+static float2 wabs(float2 v){return v.x<0?-v:v;}
+static float2 wdet(thread const float2 *a,thread const float2 *b){return mkl_df_sub(mkl_df_mul(a[0],b[1]),mkl_df_mul(a[1],b[0]));}
+kernel void mkl_wave_node_amplitude(device const float2 *raw [[buffer(0)]],device const uint *mask [[buffer(1)]],device float2 *amp [[buffer(6)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint k=p.first+id;amp[k]=float2(-1,0);if(!mask[k])return;
+    if(p.model==0){amp[k]=float2(1,0);return;}if(p.model==1){amp[k]=mkl_df_sqrt(raw[8*k+4]);return;}
+    float2 ux[2],uy[2],ox[2],oy[2];if(!wderiv(raw,mask,k,0,0,p.side,ux)||!wderiv(raw,mask,k,1,0,p.side,uy)||!wderiv(raw,mask,k,0,5,p.side,ox)||!wderiv(raw,mask,k,1,5,p.side,oy))return;
+    float2 sine=wdf(p.sin_max),jac=mkl_df_div(wabs(wdet(ux,uy)),mkl_df_mul(sine,sine)),m=wabs(wdet(ox,oy));if(!p.infinite)m=mkl_df_div(m,wabs(raw[8*k+7]));if(jac.x>0)amp[k]=mkl_df_sqrt(mkl_df_div(mkl_df_mul(mkl_df_mul(raw[8*k+4],m),raw[8*k+3]),jac));
+}
+kernel void mkl_wave_node_norm(device const uint *mask [[buffer(1)]],device const float2 *amp [[buffer(6)]],device float2 *norm [[buffer(7)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+    if(id)return;float2 sum=0,maxv=0;uint count=0;
+    for(uint k=0;k<p.n;++k)if(mask[k]&&amp[k].x>=0){sum=mkl_df_add(sum,amp[k]);++count;if(wless(maxv,amp[k]))maxv=amp[k];}
+    float2 mean=count?mkl_df_div(sum,float2(float(count),0)):float2(1,0);if(wless(maxv,mean))maxv=mean;
+    uint center=(p.side/2)*p.side+p.side/2;float2 chief=amp[center].x<0?mean:amp[center];
+    norm[0]=mean;norm[1]=(p.side%2&&mask[center]&&chief.x>0)?chief:maxv;
+}
+kernel void mkl_wave_nodes(device const float2 *raw [[buffer(0)]],device const uint *mask [[buffer(1)]],device float2 *out [[buffer(5)]],device const float2 *amp [[buffer(6)]],device const float2 *norm [[buffer(7)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint k=p.first+id;for(uint j=0;j<4;++j)out[4*k+j]=0;if(!mask[k])return;
+    out[4*k]=mkl_df_div(raw[8*k],wdf(p.sin_max));out[4*k+1]=mkl_df_div(raw[8*k+1],wdf(p.sin_max));out[4*k+2]=raw[8*k+2];out[4*k+3]=mkl_df_div(amp[k].x<0?norm[0]:amp[k],norm[1]);
+}
+kernel void mkl_wave_slopes(device const float2 *nodes [[buffer(0)]],device const uint *mask [[buffer(1)]],device float2 *out [[buffer(5)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint k=p.first+id,s=p.side,i=k%(s-1),j=k/(s-1),ids[4]={j*s+i,j*s+i+1,(j+1)*s+i+1,(j+1)*s+i};uint tris[12]={0,1,2,0,2,3,0,1,3,1,2,3};float2 g=0;
+    for(uint t=0;t<4;++t){uint ia=ids[tris[t*3]],ib=ids[tris[t*3+1]],ic=ids[tris[t*3+2]];if(!mask[ia]||!mask[ib]||!mask[ic])continue;
+        device const float2 *a=nodes+4*ia,*b=nodes+4*ib,*c=nodes+4*ic;float2 ux=mkl_df_sub(b[0],a[0]),uy=mkl_df_sub(b[1],a[1]),vx=mkl_df_sub(c[0],a[0]),vy=mkl_df_sub(c[1],a[1]),det=mkl_df_sub(mkl_df_mul(ux,vy),mkl_df_mul(uy,vx));
+        if(abs(det.x)>1e-20f){float2 dw=mkl_df_sub(b[2],a[2]),ew=mkl_df_sub(c[2],a[2]);float2 v[2]={wabs(mkl_df_div(mkl_df_sub(mkl_df_mul(dw,vy),mkl_df_mul(ew,uy)),det)),wabs(mkl_df_div(mkl_df_sub(mkl_df_mul(ew,ux),mkl_df_mul(dw,vx)),det))};for(uint q=0;q<2;++q)if(wless(g,v[q]))g=v[q];}
+    }out[k]=g;
+}
+kernel void mkl_wave_centroid(device const float *hits [[buffer(0)]],device const MklPolarizationValue *power [[buffer(1)]],device float2 *out [[buffer(5)]],constant MklWavePlacementParams &p [[buffer(8)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint k=p.first+id;for(uint j=0;j<2;++j)out[j*p.n+k]=mkl_df_sub(wloadhit(hits,p.side,k,j),wdf(p.object_axes[0][j]));out[2*p.n+k]=p.power?power[k].power[0]:float2(1,0);
+}
+
+kernel void mkl_wave_spectral(device const float *v0 [[buffer(0)]],device const float *v1 [[buffer(1)]],device const float *v2 [[buffer(2)]],device const float *v3 [[buffer(3)]],device const float *v4 [[buffer(4)]],device const float *v5 [[buffer(5)]],device const float *v6 [[buffer(6)]],device const float *v7 [[buffer(7)]],device const float *v8 [[buffer(8)]],device const float *v9 [[buffer(9)]],device const float *v10 [[buffer(10)]],device const float *v11 [[buffer(11)]],device const float *v12 [[buffer(12)]],device const float *v13 [[buffer(13)]],device const float *v14 [[buffer(14)]],device const float *v15 [[buffer(15)]],device float *out [[buffer(16)]],device const float *frequency [[buffer(17)]],constant MklWaveSpectralParams &p [[buffer(18)]],uint k [[thread_position_in_grid]]){
+    if(k>=p.count)return;device const float *v[16]={v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15};uint width=p.complex?2:1;float2 re=0,im=0;
+    for(uint j=0;j<p.inputs;++j){float2 z=float2(v[j][k*width],p.complex?v[j][k*width+1]:0);
+        if(p.phase){float2 phase=-mkl_df_add(mkl_df_mul_f32(wdf(p.offsets[j][0]),frequency[2*k]),mkl_df_mul_f32(wdf(p.offsets[j][1]),frequency[2*k+1]));float2 q=wcis(phase);z=float2(z.x*q.x-z.y*q.y,z.x*q.y+z.y*q.x);}
+        re=mkl_df_add(re,mkl_df_mul_f32(wdf(p.weights[j]),z.x));im=mkl_df_add(im,mkl_df_mul_f32(wdf(p.weights[j]),z.y));
+    }out[k*width]=wf(re);if(p.complex)out[k*width+1]=wf(im);
+}
+kernel void mkl_wave_blur(device const float *a [[buffer(0)]],device const float *c [[buffer(1)]],device const float2 *w [[buffer(2)]],device float2 *out [[buffer(3)]],device uint *mask [[buffer(4)]],constant MklWaveBlurParams &p [[buffer(5)]],uint k [[thread_position_in_grid]]){
+    if(k>=p.count)return;for(uint j=0;j<5;++j)out[j*p.count+k]=0;mask[k]=0;uint i=k%p.side*p.step,j=k/p.side*p.step,q=j*p.n+i;if(c[q]<=0||c[q+1]<=0||c[q+p.n]<=0)return;mask[k]=1;
+    float2 x=mkl_df_mul(mkl_df_sub(w[q+1],w[q]),wdf(p.scale)),y=mkl_df_mul(mkl_df_sub(w[q+p.n],w[q]),wdf(p.scale));
+    for(uint axis=0;axis<2;++axis){float2 v=mkl_df_add(mkl_df_add(mkl_df_mul(wdf(p.inverse[axis][0]),x),mkl_df_mul(wdf(p.inverse[axis][1]),y)),wdf(p.offset[axis]));out[axis*p.count+k]=v;out[(axis+2)*p.count+k]=wabs(v);}out[4*p.count+k]=mkl_df_mul(mkl_df_mul(float2(c[q],0),float2(a[q],0)),float2(a[q],0));
+}
+static float wj1(float x){float ax=abs(x);if(ax<=3){float t=(x/3)*(x/3);return x*(.5f+t*(-.56249985f+t*(.21093573f+t*(-.03954289f+t*(.00443319f+t*(-.00031761f+t*.00001109f))))));}float y=3/ax,f=.79788456f+y*(.00000156f+y*(.01659667f+y*(.00017105f+y*(-.00249511f+y*(.00113653f-y*.00020033f))))),th=ax-2.35619449f+y*(.12499612f+y*(.00005650f+y*(-.00637879f+y*(.00074348f+y*(.00079824f-y*.00029166f)))));float r=f*cos(th)/sqrt(ax);return x<0?-r:r;}
+kernel void mkl_wave_image_complex(device const float *input [[buffer(0)]],device float2 *out [[buffer(2)]],constant MklWaveIntegralParams &p [[buffer(4)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.count)return;uint k=p.first+id;out[k]=float2(p.kind==3?input[k]:input[2*k]*input[2*k]+input[2*k+1]*input[2*k+1],0);
+}
+static float wsquarekernel(float f,float r){return f==0?2*r:sin(6.283185307179586f*f*r)/(3.141592653589793f*f);}
+kernel void mkl_wave_image_query(device const float *input [[buffer(0)]],device const float2 *queries [[buffer(1)]],device float2 *out [[buffer(2)]],device float2 *acc [[buffer(3)]],constant MklWaveIntegralParams &p [[buffer(4)]],uint id [[thread_position_in_grid]]){
+    if(id>=p.queries)return;float2 re=p.first?acc[2*id]:float2(0),im=p.first?acc[2*id+1]:float2(0),qx=queries[2*id],qy=queries[2*id+1];float n=float(p.n);
+    for(uint k=p.first;k<p.first+p.count;++k){float2 value;
+        if(p.kind==0){float2 x=mkl_df_sub(float2(float(k%p.n),0),wdf(p.center[0])),y=mkl_df_sub(float2(float(k/p.n),0),wdf(p.center[1]));float2 phase=-mkl_df_mul(mkl_df_add(mkl_df_mul(x,qx),mkl_df_mul(y,qy)),wdf(p.spacing));value=input[k]*wcis(phase);}
+        else {int ix=int(k%p.n),iy=int(k/p.n);if(2*ix>=int(p.n))ix-=int(p.n);if(2*iy>=int(p.n))iy-=int(p.n);
+            float2 inv=mkl_df_div(float2(1,0),mkl_df_mul_f32(wdf(p.spacing),n)),fx=mkl_df_mul_f32(inv,float(ix)),fy=mkl_df_mul_f32(inv,float(iy));
+            float2 phase=mkl_df_div(mkl_df_add(mkl_df_mul_f32(wdf(p.center[0]),float(ix)),mkl_df_mul_f32(wdf(p.center[1]),float(iy))),float2(n,0)),z=wcis(phase);float real=input[2*k]*z.x-input[2*k+1]*z.y,r=wf(qx),kernel=0;
+            if(r>0){if(p.kind==1){float rho=wf(mkl_df_sqrt(mkl_df_add(mkl_df_mul(fx,fx),mkl_df_mul(fy,fy))));kernel=rho*r<1e-12f?3.141592653589793f*r*r:r*wj1(6.283185307179586f*rho*r)/rho;}else kernel=wsquarekernel(wf(fx),r)*wsquarekernel(wf(fy),r);}value=float2(real*kernel,0);
+        }re=mkl_df_add_f32(re,value.x);im=mkl_df_add_f32(im,value.y);
+    }acc[2*id]=re;acc[2*id+1]=im;if(p.finish){out[id]=p.kind==0&&qx.x==0&&qy.x==0?float2(1,0):float2(wf(mkl_df_div(re,wdf(p.normalization))),wf(mkl_df_div(im,wdf(p.normalization))));}
+}
+kernel void mkl_wave_image_metrics(device const float *a [[buffer(0)]],device float2 *part [[buffer(1)]],constant uint *p [[buffer(3)]],uint block [[thread_position_in_grid]]){
+    if(block>=p[1])return;float2 row[5]={0,0,0,0,0};uint n=p[0];for(uint k=block*256;k<min(n*n,(block+1)*256);++k){float v=a[k];row[0]=mkl_df_add_f32(row[0],v);row[1]=mkl_df_add(row[1],mkl_df_mul_f32(float2(v,0),float(k%n)));row[2]=mkl_df_add(row[2],mkl_df_mul_f32(float2(v,0),float(k/n)));if(k%256==0||v>row[3].x){row[3]=float2(v,0);row[4]=float2(float(k),0);}}for(uint j=0;j<5;++j)part[block*5+j]=row[j];
+}
+kernel void mkl_wave_image_metrics_finish(device const float2 *part [[buffer(1)]],device float2 *out [[buffer(2)]],constant uint *p [[buffer(3)]],uint id [[thread_position_in_grid]]){
+    if(id)return;float2 row[5];for(uint j=0;j<5;++j)row[j]=part[j];for(uint i=1;i<p[1];++i){for(uint j=0;j<3;++j)row[j]=mkl_df_add(row[j],part[i*5+j]);if(part[i*5+3].x>row[3].x){row[3]=part[i*5+3];row[4]=part[i*5+4];}}for(uint j=0;j<5;++j)out[j]=row[j];
+}

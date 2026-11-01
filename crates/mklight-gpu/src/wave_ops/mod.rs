@@ -3,8 +3,15 @@
 use crate::{Df32, pending::JobControl, resident::*};
 use mklight_core::MkResult;
 mod cpu;
+pub mod diagnostics;
+pub mod image_integrals;
+pub mod lattice;
+pub mod placement;
 pub mod resample;
+pub mod sampling;
 pub mod spec;
+pub mod spectral;
+pub mod statistics;
 
 /// Resident cell-centred pupil: amplitude and fractional coverage, with unwrapped
 /// OPD in waves. These are separate channels so interpolation never wraps phase.
@@ -24,6 +31,14 @@ pub struct Geometry {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
+    ImageIntegral(image_integrals::ImageIntegral),
+    Blur(sampling::Blur),
+    Spectral(spectral::Spectral),
+    Placement(placement::Placement),
+    Lattice(lattice::Lattice),
+    Statistics(statistics::Statistics),
+    /// Compact coverage, phase-step and extrapolation diagnostics.
+    Diagnostics(diagnostics::Diagnostics),
     /// Weighted Zernike design matrix for P3 QR. Samples are DF [rows,4]
     /// (u,v,OPD,sqrt(weight)); zero weight masks a row. Terms are U32 [cols,2]
     /// (n,m as signed bits), validated by the basis producer.
@@ -144,6 +159,13 @@ fn sums(v: &PlanView) -> MkResult<()> {
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::*;
     match r {
+        Request::ImageIntegral(r) => image_integrals::validate(r, p)?,
+        Request::Blur(r) => sampling::validate(r, p)?,
+        Request::Spectral(r) => spectral::validate(r, p)?,
+        Request::Placement(r) => placement::validate(r, p)?,
+        Request::Lattice(r) => lattice::validate(r, p)?,
+        Request::Statistics(r) => statistics::validate(r, p)?,
+        Request::Diagnostics(r) => diagnostics::validate(r, p)?,
         Request::Zernike {
             samples,
             terms,
@@ -332,6 +354,13 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 pub fn accesses(r: &Request) -> Access {
     let pv = |v: &Pupil| vec![v.amplitude.clone(), v.coverage.clone(), v.opd.clone()];
     let (reads, writes) = match r {
+        Request::ImageIntegral(r) => return image_integrals::access(r),
+        Request::Blur(r) => return sampling::access(r),
+        Request::Spectral(r) => return spectral::access(r),
+        Request::Placement(r) => return placement::access(r),
+        Request::Lattice(r) => return lattice::access(r),
+        Request::Statistics(r) => return statistics::access(r),
+        Request::Diagnostics(r) => return diagnostics::access(r),
         Request::Zernike {
             samples,
             terms,

@@ -12,6 +12,27 @@ pub fn execute(
     if let Request::Resample(r) = r {
         return resample::cpu(r, x, ctl);
     }
+    if let Request::Diagnostics(r) = r {
+        return diagnostics::cpu(r, x, ctl);
+    }
+    if let Request::Statistics(r) = r {
+        return statistics::cpu(r, x, ctl);
+    }
+    if let Request::Lattice(r) = r {
+        return lattice::cpu(r, x, ctl);
+    }
+    if let Request::Placement(r) = r {
+        return placement::cpu(r, x, ctl);
+    }
+    if let Request::Spectral(r) = r {
+        return spectral::cpu(r, x, ctl);
+    }
+    if let Request::Blur(r) = r {
+        return sampling::cpu(r, x, ctl);
+    }
+    if let Request::ImageIntegral(r) = r {
+        return image_integrals::cpu(r, x, ctl);
+    }
     let p = params(r);
     let n = p.n as usize;
     let count = n * n;
@@ -45,7 +66,14 @@ pub fn execute(
             x.words_mut(*rhs).copy_from_slice(bytemuck::cast_slice(&b));
         }
 
-        Request::Resample(_) => unreachable!(),
+        Request::ImageIntegral(_)
+        | Request::Blur(_)
+        | Request::Spectral(_)
+        | Request::Placement(_)
+        | Request::Lattice(_)
+        | Request::Statistics(_)
+        | Request::Diagnostics(_)
+        | Request::Resample(_) => unreachable!(),
         Request::FocusCorrelation {
             pupil,
             stencil,

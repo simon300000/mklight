@@ -15,4 +15,12 @@ typedef struct {
     unsigned int nx,ny,n,supersample,mask,edges,first,count;
     float aperture[2]; unsigned int reserved[2];
 } MklWaveResampleParams;
+typedef struct {
+    unsigned int n,side,model,infinite,power,first,count,reserved;
+    float sin_max[2],propagation,sheet_factor;
+    float frame[3][3][2],object_axes[2][3][2];
+} MklWavePlacementParams;
+typedef struct { unsigned int count,inputs,complex,phase; float weights[16][2],offsets[16][2][2]; } MklWaveSpectralParams;
+typedef struct { unsigned int n,step,side,count; float scale[2],offset[2][2],inverse[2][2][2]; } MklWaveBlurParams;
+typedef struct { unsigned int n,queries,kind,first,count,finish,reserved[2]; float spacing[2],center[2][2],normalization[2]; } MklWaveIntegralParams;
 #endif
