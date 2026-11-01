@@ -555,3 +555,11 @@ use the external task manifest so shared manifests and Cargo.lock remain
 unchanged. Current acceptance, measured errors, actual hardware, and paired
 cold/warm end-to-end timings are in the task's `P10-evidence.md`. Provisional
 busy-host timings do not establish an engine routing threshold.
+
+The provisional Apple M2 Pro native-analysis benchmark retains the CPU route
+for the 36-primitive, 400k-ray barrel: paired CPU/Metal median wall times were
+0.382/5.474 seconds on axis and 0.064/3.177 seconds at 20 degrees. These jobs
+include the primary-reference and public-result work, use default stray
+ownership, and report zero reference replacements and host-copied buffer
+bytes. Cold setup, ten-run median/p95 tables, dense cases and the observed
+command-wait outliers are retained in the evidence for P11's cost policy.
