@@ -31,7 +31,6 @@ fn stage(x: &Execution<'_>, name: &str) -> StageStats {
 }
 fn record(x: &mut Execution<'_>, mut s: StageStats, start: Instant) {
     s.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(s);
 }
 fn bind(x: &Execution<'_>, e: &crate::context::Encoder<'_>, r: &Request) {
@@ -76,7 +75,6 @@ pub fn prepare(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
                 Ok(())
             })?
         };
-
         s.max_command_seconds = s.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.report(
@@ -136,7 +134,6 @@ pub fn steps(
                 Ok(())
             })?
         };
-
         s.max_command_seconds = s.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.report(

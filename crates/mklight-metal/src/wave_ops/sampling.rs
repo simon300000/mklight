@@ -31,7 +31,6 @@ pub fn execute(r: &Blur, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(r.points, out);
     x.put_output(r.mask, mask);
-
     x.stats.parameter_bytes += size_of::<Params>() as u64;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),

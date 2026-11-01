@@ -133,7 +133,6 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += (group.len() * size_of::<Params>()) as u64;
         ctl.report((done + 1) as f64 / groups.len() as f64, "pupil resampling");
@@ -158,7 +157,6 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     x.recycle(owner);
     x.recycle(tris);
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stage);
     Ok(())
 }

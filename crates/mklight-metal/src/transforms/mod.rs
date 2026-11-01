@@ -334,7 +334,6 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
             })?
         };
         max_command = max_command.max(wall.elapsed().as_secs_f64());
-
         x.stats.parameter_bytes += dispatches * size_of::<Params>() as u64;
         for s in first..i {
             let b = slot_buf[s + 2];

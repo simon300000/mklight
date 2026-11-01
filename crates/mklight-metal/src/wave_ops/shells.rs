@@ -125,7 +125,6 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "radial energy");
     }
@@ -138,7 +137,6 @@ pub fn execute(r: &Shells, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
         x.recycle(o);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.parameter_bytes += (count * size_of::<Params>()) as u64;
     x.stats.stages.push(stage);
     Ok(())

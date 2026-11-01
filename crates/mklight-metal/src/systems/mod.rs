@@ -79,7 +79,6 @@ pub(crate) fn execute(
                 })?
             };
             parameter_blocks += 1;
-
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         }
         ctl.check()?;
@@ -90,7 +89,6 @@ pub(crate) fn execute(
     }
     x.stats.parameter_bytes +=
         parameter_blocks * size_of::<mklight_gpu::systems::DispatchParams>() as u64;
-
     // Package timings are retained separately; the router also records the
     // outer domain wall time without counting our commands a second time.
     x.stats.stages.push(stage);

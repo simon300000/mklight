@@ -124,7 +124,6 @@ pub fn execute(r: &Lattice, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
         x.put_output(id, b);
     }
     let wall = start.elapsed().as_secs_f64();
-
     x.stats.parameter_bytes += parts.len() as u64 * 32;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),

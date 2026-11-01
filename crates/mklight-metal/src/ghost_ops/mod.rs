@@ -86,7 +86,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -123,7 +122,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -168,7 +166,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -212,7 +209,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             Ok(())
                         })?
                     };
-
                     stats.max_command_seconds =
                         stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                     ctl.check()?;
@@ -266,7 +262,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -322,7 +317,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -373,7 +367,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -416,7 +409,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 16;
@@ -506,7 +498,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += size_of::<TraceParameters>() as u64;
@@ -571,7 +562,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         Ok(())
                     })?
                 };
-
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += size_of::<WeightParameters>() as u64;
@@ -581,7 +571,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
     }
     stats.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stats);
     Ok(())
 }

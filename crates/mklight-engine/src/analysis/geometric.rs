@@ -2020,11 +2020,6 @@ fn run_ray_grid(
             }
         }
     }
-    if gpu::device(input).is_some() {
-        input.executions.borrow_mut().push(
-            json!({"stage":"ray_grid_chief_metadata", "backend":"cpu_reference", "rays":nf*nw}),
-        );
-    }
     for (fi, &field) in fields.iter().enumerate() {
         for (wi, &wl) in wls.iter().enumerate() {
             let c = t.trace(t.field(field), wl, 0.0, 0.0, &TraceOptions::unclipped());

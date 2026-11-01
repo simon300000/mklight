@@ -30,13 +30,10 @@ pub struct EvaluationStats {
     pub reference_checks: u64,
     pub reference_seconds: f64,
     pub reference_cache_hits: u64,
-    pub combined_reference_cache_hits: u64,
     pub geometry_qualifications: u64,
     pub geometry_rejections: u64,
     pub geometry_report: Option<mklight_gpu::xval::XvalReport>,
     pub fallback_operands: u64,
-    pub fallback_candidate_count: u64,
-    pub fallback_candidates: BTreeMap<String, u64>,
     pub fallbacks: BTreeMap<String, u64>,
     pub maximum_absolute_error: f64,
 }
@@ -69,7 +66,6 @@ impl Drop for Template {
 struct CheckedReference {
     evaluator: BuiltinEvaluator,
     cache: Arc<Mutex<ReferenceCache>>,
-    stats: Arc<Mutex<EvaluationStats>>,
 }
 impl OperandEvaluator for CheckedReference {
     fn supports(&self, kind: &OperandKind) -> bool {
@@ -103,7 +99,6 @@ impl OperandEvaluator for CheckedReference {
             }
         };
         if let Some(values) = cached {
-            self.stats.lock().unwrap().combined_reference_cache_hits += systems.len() as u64;
             return Ok(values);
         }
         self.evaluator.evaluate_batch(systems, ops, ctx)
@@ -137,11 +132,9 @@ impl ResidentEvaluator {
             serde_json::json!({"mode":"per_candidate_geometry_and_full_operand_f64","publication":"after_reference_check"}),
         );
         let references = Arc::default();
-        let stats = Arc::default();
         let checked_reference = CheckedReference {
             evaluator: reference.clone(),
             cache: Arc::clone(&references),
-            stats: Arc::clone(&stats),
         };
         Self {
             mtf: reference.mtf.clone().with_gpu(context.clone()),
@@ -149,7 +142,7 @@ impl ResidentEvaluator {
             context,
             reference,
             template: Arc::default(),
-            stats,
+            stats: Arc::default(),
             references,
             checked_reference,
         }
@@ -482,29 +475,9 @@ impl ResidentEvaluator {
             .zip(&fallback_rows)
             .filter(|(device, fallback)| !**device || **fallback)
             .count() as u64;
-        for (row, &fallback) in fallback_rows.iter().enumerate() {
-            if fallback {
-                stats.fallback_candidate_count += 1;
-                let digest = blake3::hash(&serde_json::to_vec(&systems[row]).unwrap())
-                    .to_hex()
-                    .to_string();
-                *stats
-                    .fallback_candidates
-                    .entry(format!("{}:{digest}", keys[row]))
-                    .or_default() += 1;
-            }
-        }
         let mut total = self.stats.lock().unwrap();
         total.device_candidates += stats.device_candidates;
         total.cpu_candidates += stats.cpu_candidates;
-        total.fallback_candidate_count += stats.fallback_candidate_count;
-        for (candidate, count) in stats.fallback_candidates {
-            *total.fallback_candidates.entry(candidate).or_default() += count;
-        }
-        // Stable bounded diagnostic prefix; counts retain every fallback.
-        while total.fallback_candidates.len() > 64 {
-            total.fallback_candidates.pop_last();
-        }
         total.candidates += stats.candidates;
         total.device_operands += stats.device_operands;
         total.host_operands += stats.host_operands;

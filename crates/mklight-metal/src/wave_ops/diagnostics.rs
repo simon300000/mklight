@@ -35,7 +35,6 @@ pub fn execute(r: &Diagnostics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRe
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(r.output, out);
     x.recycle(partial);
-
     x.stats.parameter_bytes += 8;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),

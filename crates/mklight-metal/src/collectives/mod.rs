@@ -202,7 +202,6 @@ impl Plan {
                     Ok(())
                 })?
             };
-
             stats.max_command_seconds = stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
             x.stats.parameter_bytes += 64 * (end - start) as u64;
             done += work;
@@ -260,7 +259,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         Request::QrFit(r) => qr(r, x, ctl, &mut stats)?,
     }
     stats.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stats);
     Ok(())
 }

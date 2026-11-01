@@ -218,7 +218,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes +=
             (group.len() * size_of::<Params>() * if blocked { 2 } else { 1 }) as u64;
@@ -235,7 +234,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     }
     ctl.check()?;
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stage);
     if matches!(p.mode, 3 | 6)
         && let Some(m) = moments.as_mut()

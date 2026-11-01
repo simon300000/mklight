@@ -546,7 +546,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         }
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stage);
     ctl.check()
 }

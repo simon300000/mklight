@@ -45,7 +45,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;
@@ -58,7 +57,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         x.put_output(id, out);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stage);
     Ok(())
 }

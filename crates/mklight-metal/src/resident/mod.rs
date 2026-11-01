@@ -157,7 +157,6 @@ pub(crate) fn execute(
         ctl.check()?;
         ctl.report(0.99 * (i + 1) as f64 / ops, "resident plan");
         stage.wall_seconds = t.elapsed().as_secs_f64();
-
         x.stats.stages.push(stage);
     }
     ctl.check()?;

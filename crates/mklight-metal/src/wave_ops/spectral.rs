@@ -28,7 +28,6 @@ pub fn execute(r: &Spectral, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     ctl.check()?;
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(r.output, out);
-
     x.stats.parameter_bytes += size_of::<Params>() as u64;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),

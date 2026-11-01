@@ -54,7 +54,6 @@ pub fn execute(r: &FftMtf, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<
     if let Some(o) = second {
         x.put_output(a.writes[1], o);
     }
-
     x.stats.parameter_bytes += size_of::<Params>() as u64;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
@@ -102,7 +101,6 @@ fn domain(
     let count = out.as_slice()[0];
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(status, out);
-
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "sensor_domain".into(),

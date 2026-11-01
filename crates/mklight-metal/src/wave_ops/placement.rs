@@ -113,7 +113,6 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "wave placement");
     }
@@ -136,7 +135,6 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         x.recycle(b);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.parameter_bytes +=
         groups.iter().map(Vec::len).sum::<usize>() as u64 * size_of::<Params>() as u64;
     x.stats.stages.push(stage);

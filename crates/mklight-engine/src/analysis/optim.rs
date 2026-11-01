@@ -109,7 +109,6 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 obj(&[
                     ("rays_per_candidate", nullable(int(""))),
                     ("batch", int("")),
-                    ("gpu_faster", boolean("")),
                 ]),
             ),
             (
@@ -393,8 +392,8 @@ impl BackendChoice {
     }
 }
 
-/// The work of a run, for `backend: "auto"`: rays the GPU evaluator would
-/// trace per candidate and the typical batch of candidates per evaluation.
+/// The work of a run, reported in `backend.workload`: rays the GPU evaluator
+/// would trace per candidate and the typical batch of candidates.
 #[derive(Clone, Copy, Debug)]
 struct Workload {
     rays_per_candidate: Option<usize>,
@@ -420,14 +419,10 @@ impl Workload {
             batch,
         }
     }
-    fn gpu_faster(&self) -> bool {
-        false // Unknown cost is not a measured speed claim.
-    }
     fn report(&self) -> Value {
         json!({
             "rays_per_candidate": self.rays_per_candidate,
             "batch": self.batch,
-            "gpu_faster": self.gpu_faster(),
         })
     }
 }
@@ -436,7 +431,6 @@ impl Workload {
 fn gpu_backend(
     choice: BackendChoice,
     input: &AnalysisInput<'_>,
-    _work: &Workload,
 ) -> Result<Option<Arc<GpuDevice>>, String> {
     let engine = super::gpu::device(input);
     match choice {
@@ -497,7 +491,7 @@ impl Evaluation {
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
         let mut qualification = None;
-        let gpu = match gpu_backend(choice, input, &work) {
+        let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 let (_, q) = qualify(&device, &cpu.trace, snapshot, input, ctx)?;
                 qualification = Some(q.clone());
@@ -3084,7 +3078,6 @@ mod tests {
         let r = auto(s.clone());
         let b = &r.json["backend"];
         assert_eq!(b["precision"], json!("f32_gpu"), "{b}");
-        assert_eq!(b["workload"]["gpu_faster"], json!(false));
         assert_eq!(b["workload"]["batch"], json!(7));
         s["algorithm"] = json!("de");
         s["max_iterations"] = json!(1);

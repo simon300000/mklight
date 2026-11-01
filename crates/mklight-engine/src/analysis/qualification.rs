@@ -119,6 +119,7 @@ pub(crate) fn run(
     let qualification = match cached {
         Some(q) => q,
         None => {
+            let started = std::time::Instant::now();
             let cpu = analysis.run(&reference, settings, &ctx.subrange(0.65, 0.95))?;
             let report = compare(&cpu, &out, analysis.name(), ctx)?;
             ctx.check()?;
@@ -132,6 +133,7 @@ pub(crate) fn run(
                 "maximum_image_l1_relative":report.image_l1_relative,
                 "maximum_image_energy_relative":report.energy_relative,
                 "gates": "GPU-9.4-G-OPL-R-E-T-D-v1",
+                "reference_seconds": started.elapsed().as_secs_f64(),
             });
             device.cache_chain_qualification(key, qualification.clone());
             if qualification["passed"] == false {

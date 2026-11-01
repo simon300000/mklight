@@ -137,7 +137,6 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
                     )));
                 }
             }
-
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
             x.stats.parameter_bytes += size_of::<Params>() as u64;
             ctl.report(
@@ -155,7 +154,6 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
         x.recycle(v);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stage);
     Ok(())
 }
@@ -229,7 +227,6 @@ fn detector_kernel(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report(offset as f64 / dispatches.len() as f64, "detector kernel");
     }
@@ -237,7 +234,6 @@ fn detector_kernel(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> M
     x.put_output(a.writes[0], out);
     x.recycle(horizontal);
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.parameter_bytes += (dispatches.len() * size_of::<Params>()) as u64;
     x.stats.stages.push(stage);
     Ok(())

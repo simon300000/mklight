@@ -61,7 +61,6 @@ pub fn execute(r: &Statistics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
         x.put_output(access.writes[1], s);
     }
     x.recycle(partial);
-
     x.stats.parameter_bytes += 16;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),

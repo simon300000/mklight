@@ -85,7 +85,6 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
                 Ok(())
             })?
         };
-
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "image integral");
     }
@@ -95,7 +94,6 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
         x.recycle(a);
     }
     stage.wall_seconds = start.elapsed().as_secs_f64();
-
     x.stats.stages.push(stage);
     Ok(())
 }
@@ -135,7 +133,6 @@ fn metrics(
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(output, out);
     x.recycle(part);
-
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "image_metrics".into(),
