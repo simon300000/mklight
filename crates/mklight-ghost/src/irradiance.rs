@@ -469,6 +469,36 @@ struct PathTrace<'a> {
 }
 
 impl PathTrace<'_> {
+    fn resident_leaves(
+        &self,
+        probes: &Probes,
+        centre: Probe,
+        half: i32,
+        weight: f64,
+        out: &mut Vec<mklight_gpu::ghost_ops::Leaf>,
+    ) {
+        if self.splits(probes, centre, half) {
+            for c in centre.around(half / 2) {
+                self.resident_leaves(probes, c, half / 2, weight * 0.25, out);
+            }
+        } else if matches!(probes.get(centre), Ok(Some(_))) {
+            let [batch, row] = probes.locations[probes.index[&centre]].unwrap();
+            out.push(mklight_gpu::ghost_ops::Leaf {
+                batch: batch as u32,
+                row: row as u32,
+                weight: mklight_gpu::Df32::from_f64(weight),
+                destination: 0,
+                map: 0,
+                pixel: match probes.get(centre) {
+                    Ok(Some((x, y, _))) if pixel_edge(self.map, x, y) => {
+                        self.map.bin_of(x, y).unwrap_or(self.map.values.len()) as u32 + 1
+                    }
+                    _ => 0,
+                },
+                reserved: 0,
+            });
+        }
+    }
     fn trace(&self, probe: Probe) -> RayOut {
         let p = [probe.x, probe.y].map(|u| pupil(u, self.n, self.overfill));
         if p[0].mul_add(p[0], p[1] * p[1]) > self.overfill * self.overfill {
@@ -547,6 +577,7 @@ fn weighted(sample: RayOut, weight: f64) -> RayOut {
 struct Probes {
     index: HashMap<Probe, usize, BuildHasherDefault<ProbeHasher>>,
     outs: Vec<RayOut>,
+    locations: Vec<Option<[usize; 2]>>,
 }
 
 impl Probes {
@@ -619,6 +650,8 @@ fn run_path(
     template: &IrradianceMap,
     ctx: &JobContext,
     progress: (f64, f64),
+    cached: Option<&Probes>,
+    gpu_maps: Option<&[f64]>,
 ) -> MkResult<PathRun> {
     let path = PathTrace {
         model,
@@ -629,13 +662,20 @@ fn run_path(
         map: template,
     };
     let all: Vec<Cell> = cells.iter().flatten().copied().collect();
-    let probes = Probes::refine(&all, &path, ctx, progress)?;
+    let owned;
+    let probes = match cached {
+        Some(p) => p,
+        None => {
+            owned = Probes::refine(&all, &path, ctx, progress)?;
+            &owned
+        }
+    };
     let leaves: Vec<Vec<RayOut>> = all
         .par_iter()
         .with_min_len(64)
         .map(|c| {
             let mut out = Vec::new();
-            path.leaves(&probes, c.probe, HALF, c.weight, &mut out);
+            path.leaves(probes, c.probe, HALF, c.weight, &mut out);
             out
         })
         .collect();
@@ -682,7 +722,9 @@ fn run_path(
             swx.add(w * x);
             swy.add(w * y);
             if let Some(b) = template.bin_of(x, y) {
-                bins[b].add(w);
+                if gpu_maps.is_none() {
+                    bins[b].add(w);
+                }
                 on.add(w);
             }
         }
@@ -700,8 +742,14 @@ fn run_path(
             .map(|&(x, y, w)| w * (x - cx).mul_add(x - cx, (y - cy) * (y - cy)))
             .collect();
         let mut map = template.clone();
-        for (v, b) in map.values.iter_mut().zip(&bins) {
-            *v = b.value() / area;
+        if let Some(values) = gpu_maps {
+            map.values.copy_from_slice(
+                &values[fi * template.values.len()..(fi + 1) * template.values.len()],
+            );
+        } else {
+            for (v, b) in map.values.iter_mut().zip(&bins) {
+                *v = b.value() / area;
+            }
         }
         stats.push(FieldIrradiance {
             field: field.id,
@@ -744,6 +792,14 @@ pub fn ghost_irradiance(
     model: &GhostModel,
     settings: &IrradianceSettings,
     ctx: &JobContext,
+) -> MkResult<GhostIrradiance> {
+    ghost_irradiance_with_backend(model, settings, ctx, None)
+}
+pub(crate) fn ghost_irradiance_with_backend(
+    model: &GhostModel,
+    settings: &IrradianceSettings,
+    ctx: &JobContext,
+    backend: Option<&dyn mklight_gpu::ComputeBackend>,
 ) -> MkResult<GhostIrradiance> {
     let timer = RunTimer::start();
     let sys = model.system();
@@ -810,6 +866,73 @@ pub fn ghost_irradiance(
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
+    let mut gpu = backend
+        .map(|b| {
+            let all_paths = std::iter::once(GhostPath::primary())
+                .chain(paths.iter().cloned())
+                .collect::<Vec<_>>();
+            crate::gpu::GhostTransport::new(b, model, &all_paths, &ctx.subrange(0., 0.01))
+        })
+        .transpose()?;
+    let cached = if let Some(g) = &mut gpu {
+        let points = selected
+            .iter()
+            .map(|f| match f.id {
+                FieldRef::System { index } => FieldPoint::system(osys, index),
+                FieldRef::Point { point } => point,
+            })
+            .collect::<Vec<_>>();
+        g.prepare_fields(&points, &ctx.subrange(0.01, 0.03))?;
+        let steps = std::iter::once(pstep.as_slice())
+            .chain(path_steps.iter().map(Vec::as_slice))
+            .collect::<Vec<_>>();
+        Some(refine_gpu(
+            g,
+            model,
+            &steps,
+            &cells,
+            &selected,
+            settings,
+            &template,
+            &ctx.subrange(0.03, 0.8),
+        )?)
+    } else {
+        None
+    };
+    let gpu_maps = if let (Some(g), Some(caches)) = (&gpu, &cached) {
+        let all_steps =
+            std::iter::once(pstep.as_slice()).chain(path_steps.iter().map(Vec::as_slice));
+        let mut leaves = Vec::new();
+        for (pi, steps) in all_steps.enumerate() {
+            let path = PathTrace {
+                model,
+                steps,
+                fields: &selected,
+                n: settings.pupil_samples,
+                overfill: settings.overfill,
+                map: &template,
+            };
+            for (fi, field_cells) in cells.iter().enumerate() {
+                ctx.check()?;
+                let start = leaves.len();
+                for c in field_cells {
+                    path.resident_leaves(&caches[pi], c.probe, HALF, c.weight, &mut leaves);
+                }
+                for l in &mut leaves[start..] {
+                    l.map = (pi * selected.len() + fi) as u32;
+                }
+            }
+        }
+        Some(g.map(
+            leaves,
+            &template,
+            (paths.len() + 1) * selected.len(),
+            &ctx.subrange(0.8, 0.9),
+        )?)
+    } else {
+        None
+    };
+    let map_stride = selected.len() * template.values.len();
     let prun = run_path(
         model,
         &pstep,
@@ -818,7 +941,13 @@ pub fn ghost_irradiance(
         settings,
         &template,
         ctx,
-        (0.0, 1.0 / n_jobs),
+        if gpu.is_some() {
+            (0.9, 0.9)
+        } else {
+            (0.0, 1.0 / n_jobs)
+        },
+        cached.as_ref().map(|v| &v[0]),
+        gpu_maps.as_ref().map(|v| &v[..map_stride]),
     )?;
     let (pmaps, pstats) = (prun.maps, prun.stats);
     if prun.virtual_rays > 0 {
@@ -850,10 +979,32 @@ pub fn ghost_irradiance(
     let mut total_acc = vec![KahanSum::default(); template.values.len()];
     let mut ghosts = Vec::with_capacity(paths.len());
     for (k, (path, steps)) in paths.iter().zip(&path_steps).enumerate() {
-        let span = ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs);
+        let span = if gpu.is_some() {
+            let v = 0.9 + 0.09 * k as f64 / paths.len() as f64;
+            (v, v)
+        } else {
+            ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs)
+        };
         let PathRun { maps, stats, .. } = run_path(
-            model, steps, &cells, &selected, settings, &template, ctx, span,
+            model,
+            steps,
+            &cells,
+            &selected,
+            settings,
+            &template,
+            ctx,
+            span,
+            cached.as_ref().map(|v| &v[k + 1]),
+            gpu_maps
+                .as_ref()
+                .map(|v| &v[(k + 1) * map_stride..(k + 2) * map_stride]),
         )?;
+        if gpu.is_some() {
+            ctx.report(
+                0.9 + 0.09 * (k + 1) as f64 / paths.len() as f64,
+                "assembling ghost maps",
+            );
+        }
         let map = sum_maps(&maps, &template);
         for (acc, v) in total_acc.iter_mut().zip(&map.values) {
             acc.add(*v);
@@ -883,11 +1034,14 @@ pub fn ghost_irradiance(
             .then_with(|| a.path.cmp(&b.path))
     });
     ctx.check()?;
-    ctx.report(1.0, "done");
     let total_flux_ratio = ratio(total.flux(), primary_flux);
     let total_peak_ratio = ratio(total.peak(), primary_map.peak());
-    Ok(GhostIrradiance {
-        run: run_info(model, timer, "ghost.irradiance", settings, warnings),
+    let mut run = run_info(model, timer, "ghost.irradiance", settings, warnings);
+    if let Some(g) = &gpu {
+        g.stamp(&mut run);
+    }
+    let result = GhostIrradiance {
+        run,
         primary,
         ghosts,
         total_ghost_map: total,
@@ -895,7 +1049,10 @@ pub fn ghost_irradiance(
         total_flux_ratio,
         truncated,
         coverage,
-    })
+    };
+    ctx.check()?;
+    ctx.report(1., "done");
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -996,4 +1153,156 @@ mod tests {
             }
         }
     }
+}
+
+/// Host controls the five breadth-first levels; every batch spans paths,
+/// fields and wavelengths. Cache insertion and leaf traversal keep their
+/// original integer IDs and depth-first order.
+#[allow(clippy::too_many_arguments)]
+fn refine_gpu(
+    gpu: &mut crate::gpu::GhostTransport,
+    model: &GhostModel,
+    steps: &[&[Step]],
+    cells: &[Vec<Cell>],
+    fields: &[SelectedField],
+    settings: &IrradianceSettings,
+    template: &IrradianceMap,
+    ctx: &JobContext,
+) -> MkResult<Vec<Probes>> {
+    use mklight_gpu::{Df32, consts::*, ghost_ops::LaunchSample};
+    let paths = steps
+        .iter()
+        .map(|s| PathTrace {
+            model,
+            steps: s,
+            fields,
+            n: settings.pupil_samples,
+            overfill: settings.overfill,
+            map: template,
+        })
+        .collect::<Vec<_>>();
+    let all = cells.iter().flatten().map(|c| c.probe).collect::<Vec<_>>();
+    let mut levels = vec![all; steps.len()];
+    let mut caches = (0..steps.len())
+        .map(|_| Probes::default())
+        .collect::<Vec<_>>();
+    let mut half = HALF;
+    for stage in 0..=BOUNDARY_DEPTH {
+        for corners in [false, true] {
+            if corners && half == 1 {
+                break;
+            }
+            let mut new = Vec::new();
+            for (pi, level) in levels.iter().enumerate() {
+                let requested = level.iter().flat_map(|&p| {
+                    if corners {
+                        p.around(half).to_vec()
+                    } else {
+                        vec![p]
+                    }
+                });
+                for (request_index, p) in requested.enumerate() {
+                    if request_index % 4096 == 0 {
+                        ctx.check()?;
+                    }
+                    let cache = &mut caches[pi];
+                    if let Entry::Vacant(e) = cache.index.entry(p) {
+                        let id = cache.outs.len();
+                        e.insert(id);
+                        cache.outs.push(Ok(None));
+                        cache.locations.push(None);
+                        let xy =
+                            [p.x, p.y].map(|u| pupil(u, settings.pupil_samples, settings.overfill));
+                        if xy[0].mul_add(xy[0], xy[1] * xy[1])
+                            <= settings.overfill * settings.overfill
+                        {
+                            new.push((pi, p, id, xy));
+                        }
+                    }
+                }
+            }
+            new.sort_by_key(|&(pi, p, _, _)| (pi, p.field, p.wl, p.x, p.y));
+            // Bound the resident step tables and coating outputs as well as
+            // cancellation latency. This is a memory tile, not a new plan per path.
+            for block in new.chunks(gpu.probe_tile()) {
+                ctx.check()?;
+                let values = gpu.lattice(
+                    block.len(),
+                    |i| {
+                        let (pi, p, _, xy) = block[i];
+                        Ok(LaunchSample {
+                            pupil: xy.map(Df32::from_f64),
+                            lattice: [p.x, p.y],
+                            field: p.field * model.system().wavelengths_um.len() as u32 + p.wl,
+                            path: pi as u32,
+                            wavelength: p.wl,
+                            reserved: 0,
+                        })
+                    },
+                    &ctx.subrange(stage as f64 / 5., stage as f64 / 5.),
+                )?;
+                let mut replacements = Vec::new();
+                for (row, ((pi, p, id, _), v)) in block.iter().zip(values.iter()).enumerate() {
+                    if row % 256 == 0 {
+                        ctx.check()?;
+                    }
+                    let geometric = crate::gpu::ray_out(*v);
+                    let edge = matches!(geometric,Ok(Some((x,y,_))) if pixel_edge(template,x,y));
+                    let result = if v.status & MKL_RAY_CODE_MASK == MKL_GHOST_REFERENCE || edge {
+                        gpu.fallback_probes += 1;
+                        let reference = paths[*pi].trace(*p);
+                        if edge {
+                            gpu.boundary_probes += 1;
+                            if let (Ok(Some((x, y, _))), Ok(Some((rx, ry, _)))) =
+                                (geometric, reference)
+                            {
+                                gpu.pixel_migrations +=
+                                    (template.bin_of(x, y) != template.bin_of(rx, ry)) as usize;
+                            }
+                        }
+                        replacements.push((row, reference));
+                        reference
+                    } else {
+                        crate::gpu::ray_out(*v)
+                    };
+                    caches[*pi].outs[*id] = result;
+                    caches[*pi].locations[*id] = Some([gpu.resident_probes.len() - 1, row]);
+                }
+                if !replacements.is_empty() {
+                    gpu.replace_last(&values, &replacements, ctx)?;
+                }
+            }
+        }
+        ctx.check()?;
+        ctx.report((stage + 1) as f64 / 5., "refining ghost probes");
+        if half == 1 {
+            break;
+        }
+        for (pi, level) in levels.iter_mut().enumerate() {
+            let mut next = Vec::new();
+            for block in level.chunks(4096) {
+                ctx.check()?;
+                next.extend(
+                    block
+                        .iter()
+                        .filter(|&&p| paths[pi].splits(&caches[pi], p, half))
+                        .flat_map(|p| p.around(half / 2)),
+                );
+            }
+            *level = next;
+        }
+        half /= 2;
+    }
+    Ok(caches)
+}
+
+/// Point binning is discontinuous: a geometrically qualified hit can move
+/// between pixels. Resolve only this uncertainty band with the reference,
+/// retaining its bin decision (including f64's rounding at an exact edge).
+fn pixel_edge(map: &IrradianceMap, x: f64, y: f64) -> bool {
+    [x, y].into_iter().enumerate().any(|(k, x)| {
+        let width = 2. * map.half_size[k] / map.bins[k] as f64;
+        let f = (x + map.half_size[k]) / width;
+        f >= -1. && f <= map.bins[k] as f64 + 1. && (f - f.round()).abs() * width <= 2e-5
+    })
 }

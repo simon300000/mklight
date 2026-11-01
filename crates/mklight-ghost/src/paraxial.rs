@@ -73,7 +73,7 @@ impl ParaxialTrace {
 }
 
 /// Signed reduced index after a step and the step's power (module docs).
-fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64) {
+pub(crate) fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64) {
     let sys = model.system();
     let i = st.surface as usize;
     let s = &sys.surfaces[i];
@@ -118,7 +118,7 @@ fn step_power(model: &GhostModel, st: &Step, n_in: f64, wl: usize) -> (f64, f64)
 }
 
 /// Axial distance from step surface `from` to the next step's surface.
-fn delta_z(model: &GhostModel, from: usize, to: usize) -> f64 {
+pub(crate) fn delta_z(model: &GhostModel, from: usize, to: usize) -> f64 {
     let s = &model.system().surfaces;
     if to == from + 1 {
         s[from].thickness
@@ -324,7 +324,16 @@ pub fn paraxial_ghosts(
     model: &GhostModel,
     settings: &ParaxialGhostSettings,
 ) -> MkResult<ParaxialGhostReport> {
+    paraxial_ghosts_with_backend(model, settings, &mklight_core::JobContext::new(), None)
+}
+pub(crate) fn paraxial_ghosts_with_backend(
+    model: &GhostModel,
+    settings: &ParaxialGhostSettings,
+    ctx: &mklight_core::JobContext,
+    backend: Option<&dyn mklight_gpu::ComputeBackend>,
+) -> MkResult<ParaxialGhostReport> {
     let timer = RunTimer::start();
+    ctx.check()?;
     let sys = model.system();
     let wl = settings.wavelength.unwrap_or(sys.primary_wavelength);
     if wl >= sys.wavelengths_um.len() {
@@ -353,8 +362,22 @@ pub fn paraxial_ghosts(
     };
 
     let pstep = model.check_path(&GhostPath::primary())?;
-    let pm = trace_steps(model, &pstep, wl, ym1, wm0);
-    let pc = trace_steps(model, &pstep, wl, yc1, wc0);
+    let batch = backend
+        .map(|b| {
+            let all = std::iter::once(GhostPath::primary())
+                .chain(paths.iter().cloned())
+                .collect::<Vec<_>>();
+            crate::gpu::paraxial_batch(b, model, &all, &[wl], &ctx.subrange(0., 0.9))
+        })
+        .transpose()?;
+    let [pm, pc] = if let Some(b) = &batch {
+        b.rays[0].clone()
+    } else {
+        [
+            trace_steps(model, &pstep, wl, ym1, wm0),
+            trace_steps(model, &pstep, wl, yc1, wc0),
+        ]
+    };
     let last = pstep.len() - 1;
     let (_, primary_t) = axial_throughput(model, &pstep, wl);
     let lambda_mm = sys.wavelengths_um[wl] * 1e-3;
@@ -378,13 +401,20 @@ pub fn paraxial_ghosts(
     }
 
     let mut ghosts = Vec::with_capacity(paths.len());
-    for path in paths {
+    for (path_index, path) in paths.into_iter().enumerate() {
+        ctx.check()?;
         if !path.ends_at_image() || path.is_primary() {
             continue;
         }
         let steps = model.check_path(&path)?;
-        let m = trace_steps(model, &steps, wl, ym1, wm0);
-        let c = trace_steps(model, &steps, wl, yc1, wc0);
+        let [m, c] = if let Some(b) = &batch {
+            b.rays[path_index + 1].clone()
+        } else {
+            [
+                trace_steps(model, &steps, wl, ym1, wm0),
+                trace_steps(model, &steps, wl, yc1, wc0),
+            ]
+        };
         let k = steps.len() - 1;
         let (r, t) = axial_throughput(model, &steps, wl);
         let ym = m.y[k];
@@ -423,8 +453,15 @@ pub fn paraxial_ghosts(
             .then_with(|| a.path.cmp(&b.path))
     });
     let warnings = model.tracer().warnings().to_vec();
-    Ok(ParaxialGhostReport {
-        run: run_info(model, timer, "ghost.paraxial", settings, warnings),
+    let mut run = run_info(model, timer, "ghost.paraxial", settings, warnings);
+    if let Some(b) = batch {
+        run.backend = b.run.backend;
+        run.precision = b.run.precision;
+        run.settings["resident_backend"] = b.run.settings;
+        run.settings["gpu"] = serde_json::json!({"stats":b.stats});
+    }
+    let result = ParaxialGhostReport {
+        run,
         wavelength: wl,
         signal_diameter: d_sig,
         primary_transmittance: primary_t,
@@ -433,7 +470,10 @@ pub fn paraxial_ghosts(
         ghosts,
         truncated,
         coverage,
-    })
+    };
+    ctx.check()?;
+    ctx.report(1., "ghost ranking complete");
+    Ok(result)
 }
 
 /// Real-ray ghost focus for comparison with the paraxial one: the on-axis

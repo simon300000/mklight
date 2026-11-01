@@ -1,1 +1,876 @@
-//! Resident GPU adapter, filled in by this solver's GPU package. Nothing is enabled yet.
+//! Explicit resident ghost jobs. Engine capability flags remain with P11.
+//! Immutable path programs use the solver's checked expansion and exact clips.
+use crate::{Action, Clip, Direction, GhostModel, GhostPath, InterfaceKind};
+use bytemuck::Pod;
+use mklight_core::{JobContext, MkError, MkResult, RunInfo, SurfaceShape};
+use mklight_gpu::{
+    ComputeBackend, Df32, NewtonSettings, PackOptions, PackedSystem, SystemHandle,
+    aiming::*,
+    consts::*,
+    ghost_ops::{self as op, LaunchSample, Probe, Step, Value},
+    radiometry::{
+        self, CoatingDomain, CoatingQuery, CoatingRequest, CoatingValue, PreparedCoatings,
+    },
+    resident::*,
+};
+
+pub struct GhostTransport<'a> {
+    pub backend: &'a dyn ComputeBackend,
+    model: &'a GhostModel,
+    systems: SystemHandle,
+    offsets: BufferHandle,
+    steps: BufferHandle,
+    coatings: PreparedCoatings,
+    max_steps: usize,
+    wavelengths: usize,
+    chiefs: Option<(BufferHandle, BufferHandle)>,
+    /// Every submission, including device time, command count and memory.
+    pub stats: Vec<PlanStats>,
+    map_stats: std::cell::RefCell<Vec<PlanStats>>,
+    pub(crate) resident_probes: Vec<BufferHandle>,
+    resident_keys: Vec<BufferHandle>,
+    reference_copy_bytes: usize,
+    pub distinct_probes: usize,
+    pub fallback_probes: usize,
+    pub(crate) boundary_probes: usize,
+    pub(crate) pixel_migrations: usize,
+    pub run: Option<RunInfo>,
+}
+impl Drop for GhostTransport<'_> {
+    fn drop(&mut self) {
+        let _ = self.backend.release_systems(self.systems);
+    }
+}
+pub struct ProbeValues(ReadView);
+impl std::ops::Deref for ProbeValues {
+    type Target = [Value];
+    fn deref(&self) -> &[Value] {
+        bytemuck::cast_slice(self.0.words())
+    }
+}
+pub struct ProbeResult {
+    pub values: ProbeValues,
+    pub run: RunInfo,
+    pub stats: PlanStats,
+}
+fn fill<T: Pod>(
+    b: &dyn ComputeBackend,
+    n: usize,
+    mut f: impl FnMut(usize) -> MkResult<T>,
+) -> MkResult<BufferHandle> {
+    b.fill_buffer(op::record_desc::<T>(n), &mut |mut out| {
+        for (i, v) in bytemuck::cast_slice_mut::<_, T>(out.as_mut_slice::<u32>()?)
+            .iter_mut()
+            .enumerate()
+        {
+            *v = f(i)?;
+        }
+        Ok(())
+    })
+}
+impl<'a> GhostTransport<'a> {
+    pub fn new(
+        backend: &'a dyn ComputeBackend,
+        model: &'a GhostModel,
+        paths: &[GhostPath],
+        ctx: &JobContext,
+    ) -> MkResult<Self> {
+        ctx.check()?;
+        if model.settings().intersect != mklight_trace::IntersectSettings::default() {
+            return Err(MkError::Unsupported(
+                "ghost custom intersection settings require reference qualification".into(),
+            ));
+        }
+        let sys = model.system();
+        let nw = sys.wavelengths_um.len();
+        if nw > mklight_gpu::layout::MAX_WAVELENGTHS {
+            return Err(MkError::Unsupported(
+                "ghost wavelength chunks above 16".into(),
+            ));
+        }
+        let programs = paths
+            .iter()
+            .map(|p| {
+                ctx.check()?;
+                model.check_path(p)
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        let max_steps = programs.iter().map(Vec::len).max().unwrap_or(0);
+        if max_steps == 0 {
+            return Err(MkError::InvalidParam("ghost paths are empty".into()));
+        }
+        let mut packed = PackedSystem::pack(sys, &PackOptions::default())?;
+        for (i, s) in packed.surfaces.iter_mut().enumerate() {
+            match model.clip(i) {
+                Clip::None => s.aperture = MKL_APERTURE_NONE,
+                Clip::Surface => {}
+                Clip::Radius { radius } => {
+                    let r = Df32::from_f64(radius);
+                    s.aperture = MKL_APERTURE_CIRCULAR;
+                    s.aperture_params = [r.hi, 0., 0., 0.];
+                    s.aperture_params_lo = [r.lo, 0., 0., 0.];
+                }
+            }
+        }
+        let mut offsets = vec![0u32];
+        for p in &programs {
+            offsets.push(offsets.last().unwrap() + p.len() as u32);
+        }
+        let plane = *offsets.last().unwrap() as usize;
+        // One transparent domain is shared by passive and sensor visits. Other
+        // domains retain incidence side, wavelength and the coating's layer order.
+        let mut domains = vec![CoatingDomain {
+            coating: mklight_core::materials::coating::ResolvedCoating::Ideal {
+                reflectance: 0.,
+                transmittance: 1.,
+            },
+            wavelength: sys.wavelengths_um[0],
+            n_in: 1.,
+            n_out: 1.,
+            mirror: false,
+        }];
+        let mut numeric = Vec::with_capacity(nw * plane);
+        for w in 0..nw {
+            for path in &programs {
+                ctx.check()?;
+                for st in path {
+                    let i = st.surface as usize;
+                    let s = &sys.surfaces[i];
+                    let back = st.direction == Direction::Backward;
+                    let reflect = st.action == Action::Reflect || s.is_mirror();
+                    let (n1, n2) = model.media(i, st.direction, w);
+                    let channel = if i == sys.image_index() {
+                        if reflect { 4 } else { 3 }
+                    } else if s.is_passive() {
+                        0
+                    } else if reflect {
+                        2
+                    } else {
+                        1
+                    };
+                    let coating = if channel == 1 || channel == 2 {
+                        let c = domains.len();
+                        domains.push(CoatingDomain {
+                            coating: s.coating.clone(),
+                            wavelength: sys.wavelengths_um[w],
+                            n_in: n1,
+                            n_out: if s.is_mirror() { n1 } else { n2 },
+                            mirror: s.is_mirror(),
+                        });
+                        c as u32
+                    } else {
+                        0
+                    };
+                    let scale = match &s.shape {
+                        SurfaceShape::Diffractive { phase, .. } => {
+                            st.order.unwrap_or(phase.trace_order) as f64
+                                * sys.wavelengths_um[w]
+                                * 1e-3
+                                / std::f64::consts::TAU
+                        }
+                        _ => 0.,
+                    };
+                    let eta = mklight_core::materials::diffraction::order_efficiency(
+                        sys, i, w, st.order, reflect, back,
+                    );
+                    let alpha = if !back && i == 1 && sys.object_at_infinity {
+                        0.
+                    } else {
+                        sys.surfaces[if back { i } else { i - 1 }].alpha_after[w]
+                    };
+                    let power = match s.shape {
+                        SurfaceShape::Paraxial { focal_length } => {
+                            if back && !reflect {
+                                n1 / (n2 * focal_length)
+                            } else {
+                                1. / focal_length
+                            }
+                        }
+                        _ => 0.,
+                    };
+                    let mode = if st.action == Action::Reflect {
+                        MKL_STEP_REFLECT
+                    } else {
+                        MKL_STEP_SEQUENTIAL
+                    };
+                    numeric.push(Step {
+                        word: st.surface
+                            | (mode << MKL_STEP_MODE_SHIFT)
+                            | if back { MKL_STEP_BACKWARD } else { 0 },
+                        physical: (model.interface_kinds()[i] != InterfaceKind::Passive) as u32,
+                        coating,
+                        channel,
+                        scale: Df32::from_f64(scale),
+                        efficiency: Df32::from_f64(eta),
+                        alpha: Df32::from_f64(alpha),
+                        power: Df32::from_f64(power),
+                    });
+                }
+            }
+        }
+        let coatings = PreparedCoatings::new(backend, &domains, ctx)?;
+        let offsets = backend.fill_buffer(
+            BufferDesc::new(ElementType::U32, [offsets.len()]),
+            &mut |mut out| {
+                out.as_mut_slice::<u32>()?.copy_from_slice(&offsets);
+                Ok(())
+            },
+        )?;
+        let steps = fill(backend, numeric.len(), |i| Ok(numeric[i]))?;
+        let systems = backend.upload_systems(&[packed])?;
+        Ok(Self {
+            backend,
+            model,
+            systems,
+            offsets,
+            steps,
+            coatings,
+            max_steps,
+            wavelengths: nw,
+            chiefs: None,
+            stats: vec![],
+            map_stats: Default::default(),
+            resident_probes: vec![],
+            resident_keys: vec![],
+            reference_copy_bytes: 0,
+            distinct_probes: 0,
+            fallback_probes: 0,
+            boundary_probes: 0,
+            pixel_migrations: 0,
+            run: None,
+        })
+    }
+    pub(crate) fn probe_tile(&self) -> usize {
+        ((1 << 21) / self.max_steps).clamp(1, 65536)
+    }
+    fn plan(&self) -> ResidentPlan {
+        let mut p = ResidentPlan::new(self.model.system().snapshot.clone());
+        p.identity.library_hash = self.coatings.identity.clone();
+        p.settings = serde_json::json!({"operation":"ghost","version":MKL_GHOST_VERSION,"max_steps":self.max_steps,"model":self.model.settings()});
+        p
+    }
+    fn append(&self, p: &mut ResidentPlan, probes: BufferId) -> MkResult<BufferId> {
+        let n = p.desc(probes)?.shape[0];
+        let offsets = p.import(self.offsets.view());
+        let steps = p.import(self.steps.view());
+        let values = p.scratch(op::record_desc::<Value>(n));
+        let queries = p.scratch(op::record_desc::<CoatingQuery>(n * self.max_steps));
+        let factors = p.scratch(BufferDesc::new(
+            ElementType::DoubleFloat,
+            [n, self.max_steps, 2],
+        ));
+        let sensor = self
+            .model
+            .system()
+            .system()
+            .sensor
+            .as_ref()
+            .map(|s| [s.half_width(), s.half_height()])
+            .unwrap_or([f32::MAX as f64; 2])
+            .map(Df32::from_f64);
+        p.operations.push(ResidentOp::Ghost(op::Request::Trace {
+            systems: SystemSet::Uploaded(self.systems),
+            probes: p.view(probes)?,
+            offsets: p.view(offsets)?,
+            steps: p.view(steps)?,
+            wavelengths: self.wavelengths,
+            reject_virtual: self.model.settings().reject_virtual,
+            sensor,
+            newton: NewtonSettings::default(),
+            output: values,
+            queries,
+            factors,
+            max_steps: self.max_steps,
+        }));
+        let specs = p.import(self.coatings.specs.view());
+        let layers = p.import(self.coatings.layers.view());
+        let coatings = p.scratch(op::record_desc::<CoatingValue>(n * self.max_steps));
+        p.operations
+            .push(ResidentOp::Radiometry(radiometry::Request::Coating(
+                CoatingRequest {
+                    specs: p.view(specs)?,
+                    layers: p.view(layers)?,
+                    queries: p.view(queries)?,
+                    output: coatings,
+                    tile: radiometry::MAX_TILE,
+                },
+            )));
+        let output = p.scratch(op::record_desc::<Value>(n));
+        p.operations.push(ResidentOp::Ghost(op::Request::Weights {
+            values: p.view(values)?,
+            coatings: p.view(coatings)?,
+            factors: p.view(factors)?,
+            offsets: p.view(offsets)?,
+            steps: p.view(steps)?,
+            probes: p.view(probes)?,
+            wavelengths: self.wavelengths,
+            max_steps: self.max_steps,
+            sensor_reflectance: Df32::from_f64(
+                self.model.settings().sensor_reflectance.unwrap_or(0.),
+            ),
+            output,
+        }));
+        Ok(output)
+    }
+    /// Explicit start rays are useful for same-sample transport and combined
+    /// conservation checks. Inputs are copied once from the caller's slice.
+    pub fn trace(&self, probes: &[Probe], ctx: &JobContext) -> MkResult<ProbeResult> {
+        for (i, q) in probes.iter().enumerate() {
+            if i % 4096 == 0 {
+                ctx.check()?;
+            }
+            if q.wavelength as usize >= self.wavelengths
+                || q.path as usize + 1 >= self.offsets.desc().shape[0]
+                || !q.position.iter().chain(&q.direction).all(|v| v.is_finite())
+            {
+                return Err(MkError::InvalidParam(
+                    "ghost probe index or geometry".into(),
+                ));
+            }
+        }
+        let input = fill(self.backend, probes.len(), |i| Ok(probes[i]))?;
+        let mut p = self.plan();
+        p.settings["input_copy_bytes"] = serde_json::json!(std::mem::size_of_val(probes));
+        let input = p.import(input.view());
+        let output = self.append(&mut p, input)?;
+        p.outputs = vec![output];
+        let r = self.backend.submit_plan(p, ctx)?.wait()?;
+        let v = self.backend.read_view(r.outputs[0].view())?;
+        Ok(ProbeResult {
+            values: ProbeValues(v),
+            run: r.run_info,
+            stats: r.stats,
+        })
+    }
+    pub(crate) fn prepare_fields(
+        &mut self,
+        points: &[mklight_trace::FieldPoint],
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        self.prepare_pupils(points, [0.; 2], ctx)
+    }
+    fn prepare_pupils(
+        &mut self,
+        points: &[mklight_trace::FieldPoint],
+        pupil: [f64; 2],
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        let nw = self.wavelengths;
+        let fields = fill(self.backend, points.len() * nw, |i| {
+            let mut f = FieldSpec::new(
+                self.model.system(),
+                self.model.tracer().paraxial(),
+                points[i / nw],
+                0,
+                (i % nw) as u32,
+                self.model.tracer().aiming(),
+            )?;
+            f.vignette = [Df32::ZERO; 4];
+            Ok(f)
+        })?;
+        let samples = fill(self.backend, points.len() * nw, |i| {
+            Ok(Sample::new(pupil, i as u32, i as u64))
+        })?;
+        let mut p = self.plan();
+        let metadata = p.import(fields.view());
+        let samples = p.import(samples.view());
+        let n = points.len() * nw;
+        let rays = ResidentRays {
+            floats: p.scratch(BufferDesc::new(ElementType::F32, [15, n])),
+            indices: p.scratch(BufferDesc::new(ElementType::U32, [2, n])),
+            logical_ids: p.scratch(BufferDesc::new(ElementType::U32, [2, n])),
+            report: p.scratch(BufferDesc::new(ElementType::U32, [4, n])),
+            count: n,
+        };
+        let tolerance = match self.model.tracer().aiming() {
+            mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
+            _ => 1e-10,
+        };
+        p.operations.push(ResidentOp::Aiming(
+            mklight_gpu::aiming::Request::GenerateAim(GenerateAim {
+                systems: SystemSet::Uploaded(self.systems),
+                samples: p.view(samples)?,
+                sampling: Sampling::Explicit,
+                unresolved: None,
+                field_wavelength: p.view(metadata)?,
+                field_key: None,
+                tolerance,
+                max_iterations: 40,
+                output: rays.clone(),
+            }),
+        ));
+        p.outputs = vec![rays.floats, rays.report];
+        let r = self.backend.submit_plan(p, ctx)?.wait()?;
+        let report = self.backend.read_view(r.outputs[1].view())?;
+        let words = report.as_slice::<u32>()?;
+        if words[..n].iter().any(|&v| v != 0) {
+            return Err(MkError::Unsupported(
+                "ghost chief aiming requires reference completion".into(),
+            ));
+        }
+        self.stats.push(r.stats);
+        self.run = Some(r.run_info);
+        self.chiefs = Some((r.outputs[0].clone(), fields));
+        Ok(())
+    }
+    pub(crate) fn lattice(
+        &mut self,
+        n: usize,
+        sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        ctx: &JobContext,
+    ) -> MkResult<ProbeValues> {
+        let (chiefs, fields) = self.chiefs.as_ref().unwrap();
+        let input = fill(self.backend, n, sample)?;
+        let mut p = self.plan();
+        let chiefs = p.import(chiefs.view());
+        let fields = p.import(fields.view());
+        let samples_id = p.import(input.view());
+        self.resident_keys.push(input);
+        let probes = p.scratch(op::record_desc::<Probe>(n));
+        p.operations.push(ResidentOp::Ghost(op::Request::Launch {
+            chiefs: p.view(chiefs)?,
+            fields: p.view(fields)?,
+            samples: p.view(samples_id)?,
+            output: probes,
+        }));
+        let output = self.append(&mut p, probes)?;
+        p.outputs = vec![output];
+        let r = self.backend.submit_plan(p, ctx)?.wait()?;
+        let v = self.backend.read_view(r.outputs[0].view())?;
+        self.resident_probes.push(r.outputs[0].clone());
+        self.distinct_probes += n;
+        self.stats.push(r.stats);
+        self.run = Some(r.run_info);
+        Ok(ProbeValues(v))
+    }
+    pub(crate) fn stamp(&self, run: &mut RunInfo) {
+        if let Some(r) = &self.run {
+            run.backend = r.backend.clone();
+            run.precision = r.precision;
+            run.settings["resident_backend"] = r.settings.clone();
+        }
+        run.settings["gpu"] = serde_json::json!({"resident_bytes":self.resident_probes.iter().chain(&self.resident_keys).map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"reference_probes":self.fallback_probes,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"reference_copy_bytes":self.reference_copy_bytes,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        if self.fallback_probes > 0 {
+            run.warnings.push(format!(
+                "P9: {} probes completed by CPU f64 reference",
+                self.fallback_probes
+            ));
+        }
+    }
+}
+
+pub(crate) fn ray_out(v: Value) -> Result<Option<(f64, f64, f64)>, f64> {
+    let w = 0.5 * (v.weight_s.to_f64() + v.weight_p.to_f64()) * v.internal.to_f64();
+    match v.status & MKL_RAY_CODE_MASK {
+        0 => Ok(Some((v.position[0].to_f64(), v.position[1].to_f64(), w))),
+        MKL_GHOST_VIRTUAL => Err(w),
+        _ => Ok(None),
+    }
+}
+/// Explicit GPU job; unsupported setup is returned to the engine adapter.
+/// Per-probe P7 reference masks are completed and counted by the scheduler.
+pub fn ghost_irradiance(
+    backend: &dyn ComputeBackend,
+    model: &GhostModel,
+    settings: &crate::IrradianceSettings,
+    ctx: &JobContext,
+) -> MkResult<crate::GhostIrradiance> {
+    crate::irradiance::ghost_irradiance_with_backend(model, settings, ctx, Some(backend))
+}
+
+impl GhostTransport<'_> {
+    /// P3 stable sort and fixed-tree pixel segments preserve leaf IDs. All
+    /// bins, offsets and sums are produced on device without floating atomics.
+    pub(crate) fn map(
+        &self,
+        mut leaves: Vec<op::Leaf>,
+        template: &crate::IrradianceMap,
+        maps: usize,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<f64>> {
+        use mklight_gpu::collectives::*;
+        let nb = template.values.len() * maps;
+        let n = leaves.len();
+        let mut p = self.plan();
+        for (i, l) in leaves.iter_mut().enumerate() {
+            l.destination = i as u32;
+        }
+        leaves.sort_by_key(|l| l.batch);
+        let mut batches = leaves.iter().map(|l| l.batch as usize).collect::<Vec<_>>();
+        batches.dedup();
+        let sources = batches
+            .iter()
+            .map(|&b| {
+                let id = p.import(self.resident_probes[b].view());
+                p.view(id)
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        let records = fill(self.backend, n, |i| {
+            if i % 4096 == 0 {
+                ctx.check()?;
+            }
+            let mut l = leaves[i];
+            l.batch = batches.binary_search(&(l.batch as usize)).unwrap() as u32;
+            Ok(l)
+        })?;
+        let records = p.import(records.view());
+        let data = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n, 5]));
+        p.operations.push(ResidentOp::Ghost(op::Request::Gather {
+            sources,
+            leaves: p.view(records)?,
+            output: data,
+        }));
+
+        let keys = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        let ids = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        let weights = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n]));
+        p.operations.push(ResidentOp::Ghost(op::Request::PixelKeys {
+            hits: p.view(data)?,
+            bins: template.bins.map(|v| v as u32),
+            maps,
+            half: template.half_size.map(Df32::from_f64),
+            keys,
+            ids,
+            weights,
+        }));
+        let sk = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        let si = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        let sw = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n]));
+        p.operations.push(ResidentOp::Collectives(
+            mklight_gpu::collectives::Request::StableSort(StableSort {
+                keys: p.view(keys)?,
+                ids: p.view(ids)?,
+                values: Some(p.view(weights)?),
+                output_keys: sk,
+                output_ids: si,
+                output_values: Some(sw),
+            }),
+        ));
+        let flags = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        p.operations
+            .push(ResidentOp::Ghost(op::Request::SegmentFlags {
+                keys: p.view(sk)?,
+                bins: nb,
+                output: flags,
+            }));
+        let prefix = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        p.operations.push(ResidentOp::Collectives(
+            mklight_gpu::collectives::Request::Scan(Scan {
+                values: p.view(flags)?,
+                inclusive: true,
+                output: prefix,
+            }),
+        ));
+        let offsets = p.scratch(BufferDesc::new(ElementType::U32, [n + 1]));
+        let pixels = p.scratch(BufferDesc::new(ElementType::U32, [n]));
+        let count = p.scratch(BufferDesc::new(ElementType::U32, [2]));
+        p.operations
+            .push(ResidentOp::Ghost(op::Request::PixelSegments {
+                keys: p.view(sk)?,
+                prefix: p.view(prefix)?,
+                bins: nb,
+                offsets,
+                pixels,
+                count,
+            }));
+        p.outputs = vec![sw, offsets, pixels, count];
+        let prepared = self
+            .backend
+            .submit_plan(p, &ctx.subrange(0., 0.7))?
+            .wait()?;
+        self.map_stats.borrow_mut().push(prepared.stats);
+        let counts = self.backend.read_view(prepared.outputs[3].view())?;
+        let counts = counts.as_slice::<u32>()?;
+        let active = counts[0] as usize;
+        let maxlen = counts[1] as usize;
+        let mut p = self.plan();
+        let mut weights = prepared.outputs[0].view();
+        weights.desc.shape = vec![1, n];
+        let weights = p.import(weights);
+        let mut os = prepared.outputs[1].view();
+        os.desc.shape = vec![active + 1];
+        let offsets = p.import(os);
+        let mut ps = prepared.outputs[2].view();
+        ps.desc.shape = vec![active];
+        let pixels = p.import(ps);
+        let sums = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, active]));
+        let status = p.scratch(BufferDesc::new(ElementType::U32, [active]));
+        p.operations.push(ResidentOp::Collectives(
+            mklight_gpu::collectives::Request::SegmentReduce(SegmentReduce {
+                values: p.view(weights)?,
+                offsets: p.view(offsets)?,
+                mask: None,
+                mask_value: 0,
+                weights: None,
+                max_segment_len: maxlen,
+                reference: None,
+                mode: mklight_gpu::ReduceMode::DoubleFloat,
+                kind: SegmentKind::Sum,
+                output: sums,
+                status,
+            }),
+        ));
+        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [nb]));
+        p.operations
+            .push(ResidentOp::Ghost(op::Request::MapScatter {
+                values: p.view(sums)?,
+                pixels: p.view(pixels)?,
+                output,
+            }));
+        p.outputs = vec![output];
+        let r = self
+            .backend
+            .submit_plan(p, &ctx.subrange(0.7, 1.))?
+            .wait()?;
+        self.map_stats.borrow_mut().push(r.stats);
+        let guard = self.backend.read_view(r.outputs[0].view())?;
+        Ok(guard
+            .as_slice::<Df32>()?
+            .iter()
+            .map(|v| v.to_f64() / template.bin_area())
+            .collect())
+    }
+}
+
+impl GhostTransport<'_> {
+    pub(crate) fn replace_last(
+        &mut self,
+        values: &[Value],
+        replacements: &[(usize, Result<Option<(f64, f64, f64)>, f64>)],
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        use bytemuck::Zeroable;
+        let mut next = 0;
+        let handle = fill(self.backend, values.len(), |i| {
+            if i % 1024 == 0 {
+                ctx.check()?;
+            }
+            if next < replacements.len() && replacements[next].0 == i {
+                let r = replacements[next].1;
+                next += 1;
+                let mut v = Value::zeroed();
+                v.internal = Df32::from_f32(1.);
+                match r {
+                    Ok(Some((x, y, w))) => {
+                        v.position[0] = Df32::from_f64(x);
+                        v.position[1] = Df32::from_f64(y);
+                        v.weight_s = Df32::from_f64(w);
+                        v.weight_p = v.weight_s;
+                    }
+                    Ok(None) => v.status = MKL_RAY_MISS,
+                    Err(w) => {
+                        v.status = MKL_GHOST_VIRTUAL;
+                        v.weight_s = Df32::from_f64(w);
+                        v.weight_p = v.weight_s;
+                    }
+                }
+                Ok(v)
+            } else {
+                Ok(values[i])
+            }
+        })?;
+        self.reference_copy_bytes += (values.len() - replacements.len()) * size_of::<Value>();
+        *self.resident_probes.last_mut().unwrap() = handle;
+        Ok(())
+    }
+}
+/// Batched real meridional ghost foci. P1 aims the requested pupil ray;
+/// paths share those resident launches. Lost rays keep their status and NaN.
+pub struct GhostFocus {
+    pub run: RunInfo,
+    /// Path-major, wavelength-minor; signed image-local z from the sensor.
+    pub focus: Vec<f64>,
+    pub status: Vec<u32>,
+    pub stats: Vec<PlanStats>,
+}
+pub fn real_ghost_focus(
+    backend: &dyn ComputeBackend,
+    model: &GhostModel,
+    paths: &[GhostPath],
+    rho: f64,
+    ctx: &JobContext,
+) -> MkResult<GhostFocus> {
+    if !rho.is_finite() {
+        return Err(MkError::InvalidParam("ghost focus pupil height".into()));
+    }
+    let mut g = GhostTransport::new(backend, model, paths, &ctx.subrange(0., 0.02))?;
+    g.prepare_pupils(
+        &[mklight_trace::FieldPoint::normalized(0., 0.)],
+        [0., rho],
+        &ctx.subrange(0.02, 0.2),
+    )?;
+    let nw = g.wavelengths;
+    let v = g.lattice(
+        paths.len() * nw,
+        |i| {
+            Ok(LaunchSample {
+                pupil: [Df32::ZERO; 2],
+                lattice: [0; 2],
+                field: (i % nw) as u32,
+                path: (i / nw) as u32,
+                wavelength: (i % nw) as u32,
+                reserved: 0,
+            })
+        },
+        &ctx.subrange(0.2, 0.99),
+    )?;
+    let focus = v
+        .iter()
+        .map(|v| {
+            if v.status != 0 {
+                f64::NAN
+            } else {
+                let d = v.direction[1].to_f64();
+                if d == 0. {
+                    f64::INFINITY
+                } else {
+                    -v.position[1].to_f64() * v.direction[2].to_f64() / d
+                }
+            }
+        })
+        .collect();
+    let status = v.iter().map(|v| v.status).collect();
+    let mut run = g.run.clone().unwrap();
+    run.analysis = "ghost.real_focus".into();
+    run.settings["rho"] = serde_json::json!(rho);
+    g.stamp(&mut run);
+    ctx.check()?;
+    ctx.report(1., "ghost focus complete");
+    Ok(GhostFocus {
+        run,
+        focus,
+        status,
+        stats: g.stats.clone(),
+    })
+}
+
+pub struct ParaxialBatch {
+    pub run: RunInfo,
+    /// Path-major, wavelength-minor; marginal and chief, with all step records.
+    pub rays: Vec<[crate::ParaxialTrace; 2]>,
+    pub stats: PlanStats,
+}
+/// Compile path/wavelength constitutive metadata once, then evaluate both
+/// first-order rays in double-float on the backend. Enumeration stays host.
+pub fn paraxial_batch(
+    backend: &dyn ComputeBackend,
+    model: &GhostModel,
+    paths: &[GhostPath],
+    wavelengths: &[usize],
+    ctx: &JobContext,
+) -> MkResult<ParaxialBatch> {
+    use op::FirstOrderStep;
+    let programs = paths
+        .iter()
+        .map(|p| {
+            ctx.check()?;
+            model.check_path(p)
+        })
+        .collect::<MkResult<Vec<_>>>()?;
+    if wavelengths
+        .iter()
+        .any(|&w| w >= model.system().wavelengths_um.len())
+    {
+        return Err(MkError::InvalidParam("ghost paraxial wavelength".into()));
+    }
+    let mut numeric = Vec::new();
+    let mut offsets = vec![0u32];
+    let mut initial = Vec::new();
+    let mut indices = Vec::new();
+    for path in &programs {
+        for &w in wavelengths {
+            ctx.check()?;
+            let fo = model.tracer().paraxial().at(w);
+            initial.extend(
+                [
+                    fo.marginal.y[1],
+                    fo.marginal.nu[0],
+                    fo.chief.y[1],
+                    fo.chief.nu[0],
+                ]
+                .map(Df32::from_f64),
+            );
+            let mut n = model.system().n_object[w];
+            let mut ns = Vec::new();
+            for (k, st) in path.iter().enumerate() {
+                let (no, power) = crate::paraxial::step_power(model, st, n, w);
+                n = no;
+                ns.push(n);
+                let distance = path.get(k + 1).map_or(0., |next| {
+                    crate::paraxial::delta_z(model, st.surface as usize, next.surface as usize)
+                });
+                numeric.push(FirstOrderStep {
+                    power: Df32::from_f64(power),
+                    index: Df32::from_f64(n),
+                    distance: Df32::from_f64(distance),
+                });
+            }
+            indices.push(ns);
+            offsets.push(numeric.len() as u32);
+        }
+    }
+    let steps = fill(backend, numeric.len(), |i| Ok(numeric[i]))?;
+    let offset_buffer = backend.fill_buffer(
+        BufferDesc::new(ElementType::U32, [offsets.len()]),
+        &mut |mut f| {
+            f.as_mut_slice::<u32>()?.copy_from_slice(&offsets);
+            Ok(())
+        },
+    )?;
+    let initial = backend.fill_buffer(
+        BufferDesc::new(
+            ElementType::DoubleFloat,
+            [paths.len() * wavelengths.len(), 4],
+        ),
+        &mut |mut f| {
+            f.as_mut_slice::<Df32>()?.copy_from_slice(&initial);
+            Ok(())
+        },
+    )?;
+    let mut p = ResidentPlan::new(model.system().snapshot.clone());
+    p.settings = serde_json::json!({"operation":"ghost.paraxial_batch","paths":paths,"wavelengths":wavelengths,"version":MKL_GHOST_VERSION});
+    let steps = p.import(steps.view());
+    let os = p.import(offset_buffer.view());
+    let init = p.import(initial.view());
+    let output = p.scratch(BufferDesc::new(
+        ElementType::DoubleFloat,
+        [numeric.len(), 4],
+    ));
+    p.operations
+        .push(ResidentOp::Ghost(op::Request::FirstOrder {
+            steps: p.view(steps)?,
+            offsets: p.view(os)?,
+            initial: p.view(init)?,
+            output,
+        }));
+    p.outputs = vec![output];
+    let r = backend.submit_plan(p, &ctx.subrange(0., 0.99))?.wait()?;
+    let data = backend.read_view(r.outputs[0].view())?;
+    let data = data.as_slice::<Df32>()?;
+    let mut rays = Vec::new();
+    for (i, ns) in indices.into_iter().enumerate() {
+        ctx.check()?;
+        let (a, z) = (offsets[i] as usize, offsets[i + 1] as usize);
+        rays.push(std::array::from_fn(|j| crate::ParaxialTrace {
+            y: (a..z).map(|k| data[4 * k + 2 * j].to_f64()).collect(),
+            nu: (a..z).map(|k| data[4 * k + 2 * j + 1].to_f64()).collect(),
+            n: ns.clone(),
+        }));
+    }
+    ctx.report(1., "ghost paraxial batch complete");
+    Ok(ParaxialBatch {
+        run: r.run_info,
+        rays,
+        stats: r.stats,
+    })
+}
+/// Native paraxial ranking with batched resident ray recurrences. Small
+/// enumeration, axial material resolution and the final ranking stay host.
+pub fn paraxial_ghosts(
+    backend: &dyn ComputeBackend,
+    model: &GhostModel,
+    settings: &crate::ParaxialGhostSettings,
+    ctx: &JobContext,
+) -> MkResult<crate::ParaxialGhostReport> {
+    crate::paraxial::paraxial_ghosts_with_backend(model, settings, ctx, Some(backend))
+}
