@@ -1,15 +1,19 @@
-//! Resident non-sequential sources and analytic BVH queries. Full split-tree
-//! transport remains explicitly unsupported until its independent qualification.
+//! Resident stray-light transport, analytic compute BVH and deterministic
+//! per-source detector estimators. Engine qualification/routing belongs to P11.
+mod build;
 mod kernel;
+pub use build::{Build, node_count};
 mod math;
 mod records;
 mod sag;
 mod service;
 mod spec;
+mod tally;
 mod transport;
 use crate::{ComputeBackend, Df32, FpEnv, pending::JobControl, resident::*};
 use mklight_core::{JobContext, MkResult};
 pub use records::*;
+pub use tally::{Query, Tally, TallyParams, same_signature};
 pub use transport::*;
 
 #[derive(Clone, Debug)]
@@ -40,7 +44,7 @@ impl Geometry {
     ) -> MkResult<Self> {
         if count > crate::consts::MKL_STRAY_MAX_PRIMITIVES as usize
             || nodes.len() > 2 * count
-            || (count == 0) != nodes.is_empty()
+            || (count == 0 && !nodes.is_empty())
         {
             return unsupported("stray BVH capacity");
         }
@@ -83,9 +87,24 @@ impl Geometry {
             }
             Ok(p)
         })?;
+        let nodes = if count > 0 && nodes.is_empty() {
+            let snapshot =
+                mklight_core::Snapshot::new(mklight_core::model::OpticalSystem::new_empty())?;
+            let mut p = ResidentPlan::new(snapshot);
+            let input = p.import(primitives.view());
+            let output = p.scratch(record_desc::<Node>(node_count(count)));
+            p.operations.push(ResidentOp::Stray(Request::Build(Build {
+                primitives: p.view(input)?,
+                output,
+            })));
+            p.outputs = vec![output];
+            b.submit_plan(p, ctx)?.wait()?.outputs.remove(0)
+        } else {
+            fill_records(b, nodes.len(), ctx, |i| nodes[i])?
+        };
         Ok(Self {
             primitives,
-            nodes: fill_records(b, nodes.len(), ctx, |i| nodes[i])?,
+            nodes,
             shapes: fill_records(b, count, ctx, |_| SurfaceData::default())?,
         })
     }
@@ -165,6 +184,8 @@ pub struct Generate {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
+    Tally(Tally),
+    Build(Build),
     Generate(Generate),
     Cast(Cast),
     Transport(Box<Transport>),
@@ -181,36 +202,47 @@ fn check<T: bytemuck::Pod>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
     }
     Ok(n)
 }
+fn validate_source(s: Source, cdf: &[Df32], first_ray: u64, ray_count: usize) -> MkResult<()> {
+    if s.kind > 3
+        || s.wavelength_count == 0
+        || s.wavelength_count as usize != cdf.len()
+        || cdf.last().unwrap().to_f64() != 1.
+        || cdf
+            .iter()
+            .any(|v| !v.to_f64().is_finite() || v.to_f64() < 0. || v.to_f64() > 1.)
+        || cdf.windows(2).any(|w| w[0].to_f64() > w[1].to_f64())
+        || first_ray.checked_add(ray_count as u64).is_none()
+    {
+        return Err(bad("stray source spectrum or logical IDs"));
+    }
+    if s.center
+        .iter()
+        .chain(s.axis.iter())
+        .chain(s.tangent.iter().flatten())
+        .chain([&s.radius, &s.inner_radius, &s.cone, &s.distance])
+        .any(|v| !v.to_f64().is_finite())
+        || s.radius.to_f64() < 0.
+        || s.inner_radius.to_f64() < 0.
+        || s.inner_radius.to_f64() > s.radius.to_f64()
+        || s.cone.to_f64() < 0.
+        || s.cone.to_f64() > if s.kind == 2 { 2. } else { 1. }
+    {
+        return Err(bad("stray source numeric record"));
+    }
+    Ok(())
+}
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     let (n, tile) = match r {
+        Request::Tally(t) => return t.validate(p),
+        Request::Build(r) => {
+            let n = check::<Primitive>(&r.primitives, p)?;
+            if n == 0 || p.desc(r.output)? != &record_desc::<Node>(node_count(n)) {
+                return Err(bad("stray build output"));
+            }
+            return Ok(());
+        }
         Request::Generate(r) => {
-            let s = r.source;
-            if s.kind > 3
-                || s.wavelength_count == 0
-                || s.wavelength_count as usize != r.cdf.len()
-                || r.cdf.last().unwrap().to_f64() != 1.
-                || r.cdf
-                    .iter()
-                    .any(|v| !v.to_f64().is_finite() || v.to_f64() < 0. || v.to_f64() > 1.)
-                || r.cdf.windows(2).any(|w| w[0].to_f64() > w[1].to_f64())
-                || r.first_ray.checked_add(r.ray_count as u64).is_none()
-            {
-                return Err(bad("stray source spectrum or logical IDs"));
-            }
-            if s.center
-                .iter()
-                .chain(s.axis.iter())
-                .chain(s.tangent.iter().flatten())
-                .chain([&s.radius, &s.inner_radius, &s.cone, &s.distance])
-                .any(|v| !v.to_f64().is_finite())
-                || s.radius.to_f64() < 0.
-                || s.inner_radius.to_f64() < 0.
-                || s.inner_radius.to_f64() > s.radius.to_f64()
-                || s.cone.to_f64() < 0.
-                || s.cone.to_f64() > if s.kind == 2 { 2. } else { 1. }
-            {
-                return Err(bad("stray source numeric record"));
-            }
+            validate_source(r.source, &r.cdf, r.first_ray, r.ray_count)?;
             if p.desc(r.output)? != &record_desc::<Ray>(r.ray_count) {
                 return Err(bad("stray generated ray output"));
             }
@@ -235,6 +267,12 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn accesses(r: &Request) -> Access {
     match r {
+        Request::Tally(t) => t.accesses(),
+        Request::Build(r) => Access {
+            reads: vec![r.primitives.clone()],
+            writes: vec![r.output],
+            ..Default::default()
+        },
         Request::Generate(r) => Access {
             writes: vec![r.output],
             ..Default::default()
@@ -267,12 +305,19 @@ fn rows<'a, T: bytemuck::Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
     bytemuck::cast_slice(&x.words(v.buffer)[v.offset..v.offset + v.desc.len().unwrap()])
 }
 fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
+    if let Request::Tally(t) = r {
+        return tally::execute(t, x, ctl);
+    }
+    if let Request::Build(r) = r {
+        return build::execute::<E>(r, x, ctl);
+    }
     if let Request::Transport(r) = r {
         return spec::execute::<E>(r, x, ctl);
     }
     let n = match r {
         Request::Generate(r) => r.ray_count,
         Request::Cast(r) => r.rays.desc.shape[0],
+        Request::Tally(_) | Request::Build(_) => unreachable!(),
         Request::Transport(_) => return unsupported("stray transport"),
     };
     for i in 0..n {
@@ -294,7 +339,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -
                 );
                 bytemuck::cast_slice_mut::<u32, Hit>(x.words_mut(r.output))[i] = out;
             }
-            Request::Transport(_) => unreachable!(),
+            Request::Tally(_) | Request::Build(_) | Request::Transport(_) => unreachable!(),
         }
     }
     Ok(())

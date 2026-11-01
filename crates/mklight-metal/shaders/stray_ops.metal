@@ -37,6 +37,11 @@ static SD suniform(uint2 seed,uint2 id,thread uint &draws){
   uint v=w[draws%4];draws++;
   return (SD(float(v>>8))+SD(0.5f))*SD(1.0f/16777216.0f);
 }
+static SD suniform(uint2 seed,uint2 id,thread ulong &draws){
+  uint4 w=mkl_philox4x32_10(uint4(uint(draws>>2),uint(draws>>34),id.x,id.y),seed);
+  uint v=w[uint(draws&3)];draws++;
+  return (SD(float(v>>8))+SD(0.5f))*SD(1.0f/16777216.0f);
+}
 kernel void mkl_stray_generate(constant MklStraySource &src [[buffer(0)]],
  device const float2 *cdf [[buffer(1)]],device MklStrayRay *out [[buffer(2)]],
  constant MklStrayParams &p [[buffer(3)]],uint tid [[thread_position_in_grid]]){
@@ -282,7 +287,7 @@ static float sabg(float b,float g,float rm,float u,thread float &accept){
       (e < -1e-9f?log(rc)+slog1p(v*sexpm1(e*l))/e:log(rc)+v*l);
   float r=exp(lr),rg=pow(r,g);accept=rg/(b+rg);return r;
 }
-static bool sscatter(MklStrayMaterial m,SV spec,SV normal,uint2 seed,uint2 id,thread uint &draws,thread SV &out){
+static bool sscatter(MklStrayMaterial m,SV spec,SV normal,uint2 seed,uint2 id,thread ulong &draws,thread SV &out){
   SV a,b;sonb(normal,a,b);SD bx=sdot(spec,a),by=sdot(spec,b);
   float rm=1+sv(ssqrt(bx*bx+by*by)),sigma=sv(SD(m.bsdf[1]));
   SD tau(float2(6.2831855f,-1.7484555e-7f));
@@ -300,7 +305,7 @@ static bool sscatter(MklStrayMaterial m,SV spec,SV normal,uint2 seed,uint2 id,th
     }
   }return false;
 }
-static int skino(float blaze,uint2 seed,uint2 id,thread uint &draws){
+static int skino(float blaze,uint2 seed,uint2 id,thread ulong &draws){
   if(blaze==round(blaze))return int(blaze);
   int center=int(round(blaze));
   for(;;){
@@ -311,7 +316,7 @@ static int skino(float blaze,uint2 seed,uint2 id,thread uint &draws){
     if(sv(suniform(seed,id,draws))*4*q<s*s)return m;
   }
 }
-static int sorder(MklStrayMaterial m,float blaze,uint2 seed,uint2 id,thread uint &draws){
+static int sorder(MklStrayMaterial m,float blaze,uint2 seed,uint2 id,thread ulong &draws){
   if(m.doe==1)return m.selected;
   if(m.doe==2)return skino(blaze,seed,id,draws);
   for(;;){int n=int(m.levels),a=skino(blaze,seed,id,draws),r=((a%n)+n)%n;
@@ -321,7 +326,7 @@ static int sorder(MklStrayMaterial m,float blaze,uint2 seed,uint2 id,thread uint
 }
 struct SEvt {SV point,normal,refl,trans;uint mi,mo,prim,surface;bool dt,dr,stray,mechanical,tir;uint side;};
 static uint sapply(thread MklStrayState &s,SD weight,uint branch,SEvt ev,MklStrayMaterial m,MklStrayPrimitive prim,
- device const uint *seq,uint seq_count,uint2 seed,thread uint &draws){
+ device const uint *seq,uint seq_count,uint2 seed,thread ulong &draws){
   bool reflected=branch<2;SV spec=reflected?ev.refl:ev.trans;
   uint2 id(s.ray.id[0],s.ray.id[1]);
   if(m.doe){
@@ -354,7 +359,7 @@ static uint sapply(thread MklStrayState &s,SD weight,uint branch,SEvt ev,MklStra
   for(uint k=0;k<3;k++){s.ray.origin[k]=o.a[k].x;s.ray.direction[k]=dir.a[k].x;}
   s.weight=weight.x;s.medium=reflected?ev.mi:ev.mo;return 0xffffffff;
 }
-static bool sroulette(thread MklStrayState &s,SD threshold,uint2 seed,thread uint &draws,thread MklStrayLedger &l){
+static bool sroulette(thread MklStrayState &s,SD threshold,uint2 seed,thread ulong &draws,thread MklStrayLedger &l){
   SD w(s.weight);if(sv(w)<=0)return false;if(sv(w-threshold)>=0)return true;
   if(sv(suniform(seed,uint2(s.ray.id[0],s.ray.id[1]),draws)*threshold-w)<0){schange(l,16,threshold-w);s.weight=threshold.x;return true;}
   schange(l,16,-w);s.weight=float2(0);return false;
@@ -451,4 +456,73 @@ kernel void mkl_stray_transport(device const MklStrayPrimitive *prims [[buffer(0
 
 kernel void mkl_stray_spill(device const MklStrayState *old [[buffer(0)]],device MklStrayState *next [[buffer(1)]],device const MklStrayLedger *ledger [[buffer(2)]],constant uint4 &p [[buffer(3)]],uint i [[thread_position_in_grid]]){
   if(i>=p.x)return;for(uint j=0;j<ledger[i].top;j++)next[i*p.z+j]=old[i*p.y+j];
+}
+kernel void mkl_stray_build(device const MklStrayPrimitive *prims [[buffer(0)]],device MklStrayNode *nodes [[buffer(1)]],constant uint4 &p [[buffer(2)]],uint j [[thread_position_in_grid]]){
+  uint count=1u<<p.z;if(j>=count)return;uint range=p.y>>p.z,a=j*range,id=2*a+p.z-popcount(a);
+  MklStrayNode out={};out.escape=id+2*range-1;out.primitive=0xffffffff;
+  if(range==1&&a<p.x){MklStrayPrimitive q=prims[a];SV lo={{SD(FLT_MAX),SD(FLT_MAX),SD(FLT_MAX)}},hi=sscale(lo,SD(-1));
+    for(uint k=0;k<8;k++){SV v;for(uint i=0;i<3;i++)v.a[i]=SD((k&(1u<<i))?q.upper[i]:q.lower[i]);
+      SV w;for(uint i=0;i<3;i++)w.a[i]=SD(q.origin[i])+SD(q.rotation[3*i])*v.a[0]+SD(q.rotation[3*i+1])*v.a[1]+SD(q.rotation[3*i+2])*v.a[2];
+      for(uint i=0;i<3;i++){lo.a[i]=smin(lo.a[i],w.a[i]);hi.a[i]=smax(hi.a[i],w.a[i]);}}
+    for(uint i=0;i<3;i++){out.lower[i]=lo.a[i].x;out.upper[i]=hi.a[i].x;}out.primitive=a;
+  }else if(range>1){MklStrayNode l=nodes[id+1],h=nodes[id+range];for(uint i=0;i<3;i++){out.lower[i]=smin(SD(l.lower[i]),SD(h.lower[i])).x;out.upper[i]=smax(SD(l.upper[i]),SD(h.upper[i])).x;}}
+  nodes[id]=out;
+}
+static bool ssame(MklStrayHistory a,MklStrayHistory b){
+  if(a.length!=b.length||a.overflow!=b.overflow||a.order_count!=b.order_count)return false;
+  for(uint j=0;j<6;j++)if(a.events[j]!=b.events[j])return false;
+  for(uint j=0;j<32;j++)if(a.orders[j][0]!=b.orders[j][0]||a.orders[j][1]!=b.orders[j][1])return false;
+  return true;
+}
+static bool scovered(MklStrayHistory h,device const MklStrayHistory *coverage,uint n){
+  if(h.overflow)return false;
+  uint refs[6],nr=0,orders[32][2],nd=0;
+  for(uint j=0;j<h.length;j++){uint e=h.events[j],kind=e>>28;if(kind==1||kind==2)refs[nr++]=e&0xfffffff;}
+  for(uint j=0;j<h.order_count;j++){uint tag=h.orders[j][0];if(tag&(1<<17))continue;uint surface=tag&65535,visit=0;
+    for(uint k=0;k<j;k++)visit+=uint((h.orders[k][0]&65535)==surface);
+    orders[nd][0]=surface|(visit<<16);orders[nd++][1]=h.orders[j][1];
+  }
+  for(uint k=0;k<n;k++){MklStrayHistory c=coverage[k];if(c.length!=nr||c.order_count!=nd)continue;bool same=true;
+    for(uint j=0;j<nr;j++)same=same&&refs[j]==c.events[j];
+    for(uint j=0;j<nd;j++){bool found=false;for(uint q=0;q<nd;q++)found=found||(orders[j][0]==c.orders[q][0]&&orders[j][1]==c.orders[q][1]);same=same&&found;}
+    if(same)return true;
+  }return false;
+}
+static uint spixel(MklStrayDetection h,constant MklStrayTallyParams &p){
+  SD x=(SD(h.x)+SD(p.half_size[0]))/(SD(p.half_size[0])*SD(2)),y=(SD(h.y)+SD(p.half_size[1]))/(SD(p.half_size[1])*SD(2));
+  if(sv(x)<0||sv(x-SD(1))>0||sv(y)<0||sv(y-SD(1))>0)return 0xffffffff;
+  SD xx=x*SD(float(p.nx)),yy=y*SD(float(p.ny));int ix=int(floor(xx.x.x)),iy=int(floor(yy.x.x));
+  if(sv(xx-SD(float(ix)))<0)ix--;if(sv(yy-SD(float(iy)))<0)iy--;
+  return min(uint(iy),p.ny-1)*p.nx+min(uint(ix),p.nx-1);
+}
+kernel void mkl_stray_tags(device const MklStrayDetection *hits [[buffer(0)]],device const MklStrayLedger *ledger [[buffer(1)]],device const MklStrayHistory *coverage [[buffer(2)]],
+ device uint4 *out [[buffer(3)]],constant MklStrayTallyParams &p [[buffer(4)]],constant uint &nc [[buffer(5)]],uint i [[thread_position_in_grid]]){
+  if(i>=p.count)return;MklStrayLedger l=ledger[i/p.capacity];uint4 tag(0xffffffff,0,0,0);
+  if(i%p.capacity<l.hits){MklStrayDetection h=hits[i];bool owned=(p.owned&(1<<h.path_class))!=0;
+    bool uncovered=!owned&&h.path_class==1&&p.covered&&!scovered(h.history,coverage,nc);
+    tag=uint4(spixel(h,p),h.path_class,uint(owned||uncovered),uint(uncovered));}
+  out[i]=tag;
+}
+static bool sselected(uint slot,uint c,uint4 tag){if(slot<5)return c==slot;if(slot==5)return tag.z!=0;if(slot==6)return tag.w!=0;if(slot==7)return true;if(slot==8)return c==1&&tag.w==0;return false;}
+kernel void mkl_stray_terms(device const MklStrayDetection *hits [[buffer(0)]],device const MklStrayLedger *ledger [[buffer(1)]],device const uint4 *tags [[buffer(2)]],device const MklStrayQuery *queries [[buffer(3)]],
+ device float2 *out [[buffer(4)]],constant MklStrayTallyParams &p [[buffer(5)]],uint i [[thread_position_in_grid]]){
+  uint n=p.sources,len=n*p.queries;if(i>=len)return;MklStrayQuery q=queries[i/n];uint source=i%n;MklStrayLedger l=ledger[source];SD sum[4]={SD(0),SD(0),SD(0),SD(0)};
+  for(uint j=0;j<(q.kind==3?1:l.hits);j++){uint k=source*p.capacity+j;SD values[4]={SD(0),SD(0),SD(0),SD(0)};
+  if(q.kind==3&&j==0){if(q.key<21)values[0]=SD(l.sums[q.key]);else if(q.key==21)values[0]=SD(l.sums[16])-SD(l.sums[17])+SD(l.sums[18])-SD(l.sums[19]);else if(q.key==22)values[0]=SD(float(l.events));else if(q.key==23&&l.wavelength==q.other)values[0]=SD(l.sums[20]);}
+  else if(j<l.hits){MklStrayDetection h=hits[k];uint4 tag=tags[k];bool keep=false;
+    switch(q.kind){case 0:keep=sselected(q.slot,h.path_class,tag);break;case 1:keep=tag.x==q.key&&sselected(q.slot,h.path_class,tag);break;
+    case 2:keep=h.path_class==q.slot&&ssame(h.history,q.history);break;case 4:keep=h.path_class==1&&min(h.history.reflections,8u)==q.key;break;
+    case 5:keep=h.path_class==1&&h.history.first[0]==q.key&&h.history.first[1]==q.other;break;case 6:keep=h.path_class==q.slot&&h.wavelength==q.key;break;
+    case 7:keep=h.path_class==q.slot;break;}
+    if(keep){values[0]=q.kind==7?SD(1):SD(h.weight);if(q.kind==0){values[1]=SD(h.weight)*SD(h.x);values[2]=SD(h.weight)*SD(h.y);values[3]=SD(h.weight)*(SD(h.x)*SD(h.x)+SD(h.y)*SD(h.y));}if(q.kind==2)values[1]=SD(1);}
+  }
+  for(uint c=0;c<4;c++)sum[c]=sum[c]+values[c];}
+  for(uint c=0;c<4;c++)out[c*len+i]=sum[c].x;
+}
+kernel void mkl_stray_tally_transpose(device const float2 *input [[buffer(0)]],device float2 *out [[buffer(1)]],constant uint4 &p [[buffer(2)]],uint i [[thread_position_in_grid]]){
+  uint n=p.x,q=p.y,w=p.z;if(i>=w*n*q)return;uint c=i/n,j=i%n;out[i]=input[((c/w)*n+j)*w+c%w];
+}
+
+kernel void mkl_stray_gather(device const MklStrayDetection *hits [[buffer(0)]],device const uint *indices [[buffer(1)]],device float2 *out [[buffer(2)]],constant uint &n [[buffer(3)]],uint i [[thread_position_in_grid]]){
+  if(i>=n)return;out[i]=hits[indices[i]].weight;out[n+i]=float2(1,0);
 }

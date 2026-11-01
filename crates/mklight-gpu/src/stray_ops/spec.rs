@@ -50,12 +50,17 @@ fn onb(n: V) -> (V, V) {
 struct Rng {
     seed: u64,
     id: [u32; 2],
-    draws: u32,
+    draws: u64,
 }
 impl Rng {
     fn uniform(&mut self) -> D {
         let w = mklight_core::rng::philox4x32_10(
-            [self.draws / 4, 0, self.id[0], self.id[1]],
+            [
+                (self.draws / 4) as u32,
+                (self.draws >> 34) as u32,
+                self.id[0],
+                self.id[1],
+            ],
             [self.seed as u32, (self.seed >> 32) as u32],
         )[(self.draws % 4) as usize];
         self.draws += 1;
@@ -474,7 +479,7 @@ pub(super) fn execute<E: FpEnv>(
         let mut rng = Rng {
             seed: r.seed,
             id: ray.id,
-            draws: ray.draws,
+            draws: ray.draws as u64,
         };
         let set = r.settings;
         let mut l = Ledger::zeroed();

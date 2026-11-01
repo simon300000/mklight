@@ -259,7 +259,8 @@ pub fn samples(b: &dyn ComputeBackend) {
     }
     eprintln!("P10 sample geometry supported={supported} unsupported={unsupported}");
     assert_eq!(supported + unsupported, 16);
-    assert!(supported >= 5);
+    assert_eq!(supported, 16);
+    assert_eq!(unsupported, 0);
 }
 #[test]
 fn cpu_sources() {
@@ -293,4 +294,27 @@ pub fn tangents(b: &dyn ComputeBackend) {
 #[test]
 fn tangent_and_distant_hits() {
     tangents(&CpuF32Backend::new());
+}
+
+pub fn large_scene(b: &dyn ComputeBackend) {
+    let p = (0..4097)
+        .map(|i| {
+            Primitive::new(
+                Frame {
+                    origin: Vec3::new((i % 64) as f64 * 3., (i / 64) as f64 * 3., 0.),
+                    rot: Mat3::IDENTITY,
+                },
+                Shape::Sag(SagPatch::new(SurfaceShape::Plane, 0., 1., None).unwrap()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let rays = (0..4097)
+        .step_by(7)
+        .map(|i| Ray::new(p[i].frame.origin - Vec3::Z * 5., Vec3::Z))
+        .collect::<Vec<_>>();
+    compare(b, &p, &rays);
+}
+#[test]
+fn cpu_large_scene() {
+    large_scene(&CpuF32Backend::new());
 }

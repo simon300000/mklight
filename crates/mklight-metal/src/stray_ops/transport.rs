@@ -149,3 +149,45 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
     x.stats.stages.push(stats);
     Ok(())
 }
+
+pub(super) fn build(r: &Build, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
+    let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_stray_build"))?;
+    let n = r.primitives.desc.shape[0];
+    let size = n.next_power_of_two();
+    let depth = size.ilog2();
+    let mut out = x.take_output(r.output);
+    let start = Instant::now();
+    let mut stats = StageStats {
+        name: "stray BVH build".into(),
+        ..Default::default()
+    };
+    for level in (0..=depth).rev() {
+        ctl.check()?;
+        let wall = Instant::now();
+        let cs = unsafe {
+            x.gpu.run("stray BVH level", |e| {
+                e.set_pipeline(&pso);
+                let (b, o) = x.buffer(&r.primitives);
+                e.set_buffer(0, b, o);
+                e.set_buffer_mut(1, &mut out, 0);
+                e.set_bytes(2, &[n as u32, size as u32, level, 0]);
+                e.dispatch_groups([(1usize << level).div_ceil(64), 1, 1], 64);
+                Ok(())
+            })?
+        };
+        stats.device_seconds += cs.gpu_seconds;
+        stats.command_buffers += 1;
+        stats.max_command_seconds = stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
+        ctl.check()?;
+        ctl.report(
+            (depth - level + 1) as f64 / (depth + 1) as f64,
+            "stray BVH build",
+        );
+    }
+    x.put_output(r.output, out);
+    stats.wall_seconds = start.elapsed().as_secs_f64();
+    x.stats.device_seconds += stats.device_seconds;
+    x.stats.command_buffers += stats.command_buffers;
+    x.stats.stages.push(stats);
+    Ok(())
+}

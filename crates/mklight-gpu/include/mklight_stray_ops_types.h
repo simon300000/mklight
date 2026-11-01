@@ -1,7 +1,7 @@
 #ifndef MKLIGHT_STRAY_OPS_TYPES_H
 #define MKLIGHT_STRAY_OPS_TYPES_H
-#define MKL_STRAY_VERSION 2
-#define MKL_STRAY_MAX_PRIMITIVES 4096
+#define MKL_STRAY_VERSION 5
+#define MKL_STRAY_MAX_PRIMITIVES 1048576
 #define MKL_STRAY_MAX_TILE 65536
 #ifdef __METAL_VERSION__
 struct MklStraySource {
@@ -52,8 +52,10 @@ struct MklStrayDetection {
   MklStrayHistory history; float2 weight, x, y; uint path_class, wavelength;
 };
 struct MklStrayLedger {
-  float2 sums[21]; uint events, draws, hits, top, status, wavelength;
+  float2 sums[21]; ulong draws; uint events, hits, top, status, wavelength, reserved;
 };
+struct MklStrayQuery { MklStrayHistory history; uint kind, slot, key, other; };
+struct MklStrayTallyParams { float2 half_size[2]; uint nx, ny, owned, covered, count, capacity, sources, queries; };
 struct MklStraySettings {
   float2 weight, roulette, ceiling, rare_floor;
   uint mode, max_splits, max_events, scatter, start_medium, detector_accept, wavelengths, sequence_count;

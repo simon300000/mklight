@@ -1,6 +1,5 @@
-//! Resident source generation and analytic closest-hit queries. These are
-//! building blocks, not a completed stray-light solver. Reference transport
-//! remains the only complete implementation until split-tree qualification.
+//! Resident stray-light transport, analytic compute BVH and deterministic
+//! per-source detector estimators. Engine qualification/routing belongs to P11.
 use crate::{
     Scene, SourceSpec,
     geom::{Aabb, Mask, Primitive, Shape, onb},
@@ -101,12 +100,16 @@ pub fn prepare_geometry(
         }
         nodes[index].escape = nodes.len() as u32;
     }
-    let boxes = primitives
-        .iter()
-        .map(|p| bounds::local(p).map(|b| b.transformed(&p.frame)))
-        .collect::<MkResult<Vec<_>>>()?;
+    let boxes = if primitives.len() < 512 {
+        primitives
+            .iter()
+            .map(|p| bounds::local(p).map(|b| b.transformed(&p.frame)))
+            .collect::<MkResult<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
     let mut nodes = Vec::with_capacity(primitives.len() * 2);
-    if !primitives.is_empty() {
+    if !primitives.is_empty() && primitives.len() < 512 {
         build(
             &boxes,
             &mut (0..primitives.len()).collect::<Vec<_>>(),
@@ -308,7 +311,7 @@ pub fn first_hits(
     count: usize,
     ctx: &JobContext,
 ) -> MkResult<PlanResult> {
-    let geometry = prepare_geometry(b, scene.primitives(), ctx)?;
+    let geometry = prepare_geometry(b, scene.primitives(), &ctx.subrange(0., 0.1))?;
     let mut plan = ResidentPlan::new(snapshot);
     plan.seed = Some(seed);
     plan.settings = serde_json::json!({"pipeline":"stray_first_hits","version":mklight_gpu::consts::MKL_STRAY_VERSION,"source":source,"first_ray":first_ray,"rays":count,"scene_fingerprint":scene.fingerprint()});
@@ -324,8 +327,9 @@ pub fn first_hits(
     let input = plan.view(rays)?;
     let hits = geometry.append(&mut plan, input, 65536);
     plan.outputs = vec![rays, hits];
-    b.submit_plan(plan, ctx)?.wait()
+    b.submit_plan(plan, &ctx.subrange(0.1, 1.))?.wait()
 }
 
+mod tally;
 mod transport;
 pub use transport::{TransportOptions, TransportScene, run};

@@ -160,3 +160,136 @@ fn cpu_known_answers() {
     answers(&b);
     close_hits(&b);
 }
+
+pub fn split_child_estimator(b: &dyn ComputeBackend) {
+    use mklight_gpu::collectives::{self, SegmentKind, SegmentReduce};
+    let ctx = JobContext::new();
+    let n = 3;
+    let cap = 4;
+    let mut covered = History::zeroed();
+    covered.length = 2;
+    covered.events[..2].copy_from_slice(&[2, 1]);
+    let coverage = fill_records(b, 1, &ctx, |_| covered).unwrap();
+    let mut a = History::zeroed();
+    a.length = 2;
+    a.events[..2].copy_from_slice(&[(1 << 28) | 2, (1 << 28) | 1]);
+    let mut c = a;
+    c.length = 4;
+    c.events[..4].copy_from_slice(&[(1 << 28) | 2, (1 << 28) | 1, (1 << 28) | 2, (1 << 28) | 1]);
+    let hits = fill_records(b, n * cap, &ctx, |i| {
+        let (source, child) = (i / cap, i % cap);
+        let weights = [[1., 1., 1., 1.], [4., 0.5, 0.5, 4.], [2., 0., 0., 0.]];
+        Detection {
+            history: if child == 0 {
+                a
+            } else if child < 3 {
+                c
+            } else {
+                History::zeroed()
+            },
+            weight: Df32::from_f32(weights[source][child]),
+            x: Df32::ZERO,
+            y: Df32::ZERO,
+            class: if child < 3 { 1 } else { 4 },
+            wavelength: 0,
+        }
+    })
+    .unwrap();
+    let ledger = fill_records(b, n, &ctx, |_| Ledger {
+        hits: cap as u32,
+        ..Ledger::zeroed()
+    })
+    .unwrap();
+    let params = TallyParams {
+        half: [Df32::from_f32(0.5); 2],
+        nx: 1,
+        ny: 1,
+        owned: 28,
+        covered: 1,
+        count: (n * cap) as u32,
+        capacity: cap as u32,
+        sources: n as u32,
+        queries: 4,
+    };
+    let queries = fill_records(b, 4, &ctx, |i| Query {
+        kind: if i == 3 { 1 } else { 0 },
+        slot: [5, 6, 8, 5][i],
+        ..Default::default()
+    })
+    .unwrap();
+    let mut p = ResidentPlan::new(snapshot());
+    let h = p.import(hits.view());
+    let l = p.import(ledger.view());
+    let cv = p.import(coverage.view());
+    let q = p.import(queries.view());
+    let tags = p.scratch(BufferDesc::new(ElementType::U32, [n * cap, 4]));
+    p.operations
+        .push(ResidentOp::Stray(Request::Tally(Tally::Tags {
+            hits: p.view(h).unwrap(),
+            ledger: p.view(l).unwrap(),
+            coverage: p.view(cv).unwrap(),
+            params,
+            output: tags,
+        })));
+    let terms = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [4, 4 * n]));
+    p.operations
+        .push(ResidentOp::Stray(Request::Tally(Tally::Terms {
+            hits: p.view(h).unwrap(),
+            ledger: p.view(l).unwrap(),
+            tags: p.view(tags).unwrap(),
+            queries: p.view(q).unwrap(),
+            params,
+            output: terms,
+        })));
+    let offsets = b
+        .fill_buffer(
+            BufferDesc::new(ElementType::U32, [4 * n + 1]),
+            &mut |mut out| {
+                for (i, v) in out.as_mut_slice::<u32>()?.iter_mut().enumerate() {
+                    *v = i as u32;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    let o = p.import(offsets.view());
+    let products = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [4 * n, 14]));
+    let status = p.scratch(BufferDesc::new(ElementType::U32, [4 * n]));
+    p.operations.push(ResidentOp::Collectives(
+        collectives::Request::SegmentReduce(SegmentReduce {
+            values: p.view(terms).unwrap(),
+            offsets: p.view(o).unwrap(),
+            mask: None,
+            mask_value: 0,
+            weights: None,
+            max_segment_len: 1,
+            reference: None,
+            mode: ReduceMode::DoubleFloat,
+            kind: SegmentKind::SourceProducts,
+            output: products,
+            status,
+        }),
+    ));
+    p.outputs = vec![products, tags];
+    let result = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
+    let view = b.read_view(result.outputs[0].view()).unwrap();
+    let v = view.as_slice::<Df32>().unwrap();
+    for (query, answers) in [[3., 5., 0.], [2., 1., 0.], [1., 4., 2.], [3., 5., 0.]]
+        .iter()
+        .enumerate()
+    {
+        for (source, w) in answers.iter().enumerate() {
+            let row = &v[(query * n + source) * 14..];
+            assert_eq!(row[0].to_f64(), *w);
+            assert_eq!(row[4].to_f64(), w * w);
+        }
+    }
+    let flux = v[0].to_f64() + v[14].to_f64() + v[28].to_f64();
+    let sq = v[4].to_f64() + v[18].to_f64() + v[32].to_f64();
+    assert_eq!(flux, 8.);
+    assert!((1.5 * (sq - flux * flux / 3.) - 19.).abs() < 1e-12);
+}
+#[test]
+fn cpu_split_child_estimator() {
+    split_child_estimator(&CpuF32Backend::new());
+}

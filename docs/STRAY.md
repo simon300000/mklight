@@ -450,60 +450,89 @@ within MC and deterministic pupil-quadrature error. The hybrid DOE test in
 with the obstruction-checked sequential reference on all extended samples,
 reporting z scores and checking quadrature convergence.
 
-## Resident GPU building blocks (P10, incomplete)
+## Resident GPU transport (P10)
 
-`gpu::prepare_geometry`, `gpu::generate` and `gpu::first_hits` implement
-resident source generation and first-hit queries. They do **not** implement
-stray transport. The complete solver above remains CPU f64; engine dispatch
-and capability flags are unchanged. `stray_ops::Request::Transport` returns
-`Unsupported`. These building blocks cannot qualify a `stray_light` result.
+`gpu::run` executes source generation, non-sequential transport and detector
+estimators through `ComputeBackend`, returning the existing `StrayResult`.
+`gpu::TransportScene` retains immutable scene/material leases across plans;
+`append` exposes raw device detections and per-source ledgers for composed
+jobs. `prepare_geometry`, `generate` and `first_hits` remain available for
+geometry diagnostics. Engine qualification, capability advertisement and
+`auto` routing belong to P11 and are unchanged here.
 
-The four existing source measures use the same Philox stream `(seed, ray ID)`
-and the same draw order as the reference, including the wavelength draw
-before the source draws. A source record carries its 64-bit logical ID,
-wavelength and next draw index. Uniforms retain the f64 reference mapping as
-double-float, including the half-ulp that a single f32 uniform would lose.
-Angles are reduced and evaluated in double-float. Small immutable source
-frames and spectrum CDFs are host preparation; rays are generated on device.
+The four source measures preserve wavelength-first Philox draws and the
+reference uniform conversion, including its lower half ulp. Every source
+keeps its own 64-bit logical ID and 64-bit transport draw cursor. Splitting
+applies branches in reference order, then traverses children depth first.
+Other sources, command boundaries and stack growth never consume its random
+stream. Rare-branch forcing, analog/weighted/split modes, roulette and the
+64-copy weight window retain the reference bookkeeping.
 
-The portable compute BVH supports analytic planes, conics and open cylinders,
-including placed/tilted frames, annuli and inside/outside aperture masks.
-Topology is a host-built median tree in preorder with forward escape links;
-traversal is stackless. Coordinates, bounding tests, cancellation-free
-quadratic roots, normals and closest-distance comparisons use double-float.
-The ray origin is moved to the local box entry before evaluating a quadratic.
-Exact distance ties select the lowest original primitive ID. A miss has
-primitive ID `u32::MAX` and zero geometry. Hits carry local points and normals.
-No optical surface is replaced by triangles. Extended sags and scenes over
-4096 primitives return `Unsupported` before device dispatch: neither approximate
-bounds nor a CPU query hidden inside a GPU result is substituted.
+The portable compute caster uses analytic planes, conics and cylinders,
+local-frame double-float roots/normals and stable original-primitive-ID ties.
+Extended sags reuse P1's packed bases and gradients. Their nearest-hit search
+clips to a conservative box/cylinder, scans signed residuals and derivative
+extrema, and refines brackets with safeguarded Newton/bisection; this also
+resolves close root pairs near tangency. Coefficient bounds enclose the
+whole sag domain, including asymmetric surfaces; sampled extrema do not
+stand in for a bound. Small scenes retain the median host topology. At 512
+primitives and above, device kernels transform bounds and build a balanced
+preorder tree by levels. Traversal is stackless on every Metal device,
+including devices without hardware ray tracing. Optics are never triangulated.
 
-`Geometry` owns reusable immutable shared buffers; inputs are filled through
-`fill_buffer` and final outputs are borrowed through `read_view`.
-`first_hits` returns a `PlanResult` with `RunInfo` identifying the diagnostic
-pipeline, source, seed, ID range and scene fingerprint. It publishes ray and
-hit records, not class maps or an energy ledger. Commands contain up to
-65,536 independent rays and check cancellation between tiles. Output storage
-scales with the requested ray/hit records (128 bytes/ray); there is no
-per-ray host dispatch. Device/wall time, commands, allocations, peak storage
-and copied bytes are reported by the resident runtime.
+Interactions call the P7 coating implementation directly (the owned module
+imports its source, so there is one coating algorithm). Angle-dependent TMM
+and powers run on device, with scalar products of unpolarised averages.
+Beer--Lambert attenuation, all absorption/leak/escape/truncation/failure
+sinks, backside rules, ideal lenses, repeated physical-interface passes,
+TIS interpolation and Lambertian/Gaussian/ABg rejection sampling follow the
+reference. DOE order draws retain the full ideal/kinoform/multilevel spectrum,
+the curved-surface grating equation and evanescent sink. Histories preserve
+all five classes, six non-designed events and 32 DOE visits. Coverage matches
+exact reflection and non-selected order overrides on device; overflow stays
+uncovered. Shared reference boundary checks reject unrepresentable coverage.
 
-Owned tests compare same-draw sources and brute-force f64 hits, close
-interfaces, deterministic ties, translated/rotated primitives and all sample
-geometries. The sample scan accepts seven analytic scenes and explicitly
-rejects nine extended-sag scenes. Actual Metal tests require a device and
-exercise both shader origins, the numerics probe, matching FTZ bits, tile
-sizes, concurrent jobs and in-flight cancellation. The host integration and
-stage benchmark harnesses are in `tests/p10_support`; their external manifest
-and raw results are retained with `P10-evidence.md` in the task scratchpad,
-so no shared manifest or lockfile is changed.
+Each source has a resident continuation stack. Commands process a bounded
+number of events and check cancellation before encoding and after completion.
+A full stack pauses before the next event consumes any draws, grows into a
+larger device allocation and resumes through a device spill copy. Stack
+storage is capped at 256 MiB per allocation. `TransportOptions` controls
+source batches, initial stack capacity, detection-journal capacity and event
+budget. Source batches round up to complete 256-source numerical blocks.
+Exhausted journal/stack capacity or P7's reference-required precision domain
+returns `Unsupported`; the high-level adapter completes a labelled CPU-f64
+replacement with a fallback count and reason. Cancellation returns
+`Cancelled` and never starts replacement work. No partial GPU ledger is
+published as a completed result.
 
-Still required for P10 acceptance: extended-sag closest-hit bracketing and
-honest bounds; interaction/BSDF/DOE transport using P7 powers; bounded
-per-source depth-first continuation and split queues; rare-branch forcing,
-roulette and weight windows; every path class, coverage/pass/visit rule and
-energy sink; P3 source-child reductions before variance/covariance, maps and
-signature tallies; and complete transport conservation, partition and
-end-to-end benchmarks. First-hit timings are stage measurements only and
-must not drive automatic solver selection or be compared with the complete
-400k-ray reference transport benchmark as a speedup.
+Tallies use P3 source products and fixed source-block reductions. Moment
+channels combine each source's depth-first children in double-float before
+P3 forms covariance products. Sparse pixel and signature groups gather the
+original device weights into P3 segments, sum each source's children, then
+form squares and reduce source blocks. Owned, uncovered and covered ghost
+quantities have separate source estimators. Integer pixel/signature/source
+keys are enumerated on the host for sparse topology and labels; no optical
+weights or positions are reduced there. Final compact block summaries are
+folded in canonical source order using the existing compensated result
+assembler, which also derives scalar centroids, RMS radii and standard
+errors. This keeps public maps, signature ordering and error definitions
+compatible with the reference. There are no floating-point atomics.
+
+Inputs are produced with `fill_buffer`; output and integer-key metadata are
+borrowed with `read_view`. Device stack spill is an explicit device copy,
+not an upload/readback of path state. RunInfo records the actual backend,
+F32Gpu precision, seed, scene fingerprint, numeric recipe version, kernel
+build/probe, stage timings, command/allocation/storage/copy statistics and
+any reference replacement. Widening final values to f64 does not change the
+reported computation precision. Preparation and transport use progress
+subranges, and successful public assembly emits the final 1.
+
+Owned harnesses cover all 16 sample geometries and full transports, both
+shader origins, f64 and matching CPU-f32 comparisons, analytic plate and
+enclosure energy, BSDF integrals, split-child covariance, exact coverage and
+DOE overflow, concurrent/chunked jobs, cancellation/resource reuse and large
+device scene builds. The integration/benchmark tests in `tests/p10_support`
+use the external task manifest so shared manifests and Cargo.lock remain
+unchanged. Current acceptance, measured errors, actual hardware, and paired
+cold/warm end-to-end timings are in the task's `P10-evidence.md`. Provisional
+busy-host timings do not establish an engine routing threshold.

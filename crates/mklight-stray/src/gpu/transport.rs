@@ -1,9 +1,9 @@
 use super::*;
 use crate::{
     bsdf::LobeParams,
-    path::{EventKind, History, PathClass, Signature},
+    path::{EventKind, History, Signature},
     scene::{Accept, Behavior, InterfaceKind, Side},
-    tally::{ChunkTally, Sink, StrayTally},
+    tally::{Sink, StrayTally},
     tracer::{SplitMode, StrayResult, StraySettings},
 };
 use mklight_core::materials::{coating::ResolvedCoating, diffraction::DiffractionEfficiency};
@@ -20,9 +20,9 @@ pub struct TransportOptions {
 impl Default for TransportOptions {
     fn default() -> Self {
         Self {
-            source_tile: 256,
+            source_tile: 1024,
             stack_capacity: 128,
-            detections_per_source: 128,
+            detections_per_source: 32,
             event_budget: 32,
         }
     }
@@ -259,7 +259,7 @@ impl TransportScene {
         Ok((output, ledger))
     }
 }
-fn history(h: &ops::History) -> History {
+pub(super) fn history(h: &ops::History) -> History {
     let mut signature = Signature::default();
     for e in &h.events[..h.length as usize] {
         let k = match e >> 28 {
@@ -310,10 +310,43 @@ pub fn run(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
-    settings.validate()?;
-    source.validate()?;
+    let timer = mklight_core::job::RunTimer::start();
+    match run_resident(b, snapshot.clone(), scene, source, settings, options, ctx) {
+        Err(MkError::Unsupported(reason)) => {
+            ctx.check()?;
+            let mut result = crate::tracer::run(
+                scene,
+                source,
+                settings,
+                &ctx.subrange(ctx.progress.fraction(), 1.),
+            )?;
+            let warning = format!(
+                "{} stray transport fell back to CPU reference: {reason}",
+                b.info().backend_id()
+            );
+            result.warnings.push(warning);
+            result.run_info=Some(timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"requested_backend":b.info().backend_id(),"fallback_count":1,"fallback_reason":reason}),"cpu-f64",mklight_core::job::Precision::F64Reference,Some(settings.seed),result.warnings.clone()));
+            Ok(result)
+        }
+        other => other,
+    }
+}
+fn run_resident(
+    b: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    scene: &Scene,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    options: TransportOptions,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
+    crate::tracer::validate_run(scene, source, settings)?;
     if options.source_tile == 0
-        || options.source_tile > 65536
+        || options.source_tile > 4096
+        || options.detections_per_source == 0
+        || options.detections_per_source > 1024
+        || options.stack_capacity == 0
+        || options.stack_capacity > 8192
         || settings
             .start_medium
             .is_some_and(|m| m as usize >= scene.media.len())
@@ -321,78 +354,87 @@ pub fn run(
         return Err(MkError::InvalidModel("stray transport settings".into()));
     }
     let timer = mklight_core::job::RunTimer::start();
-    let prepared = TransportScene::new(b, scene, ctx)?;
+    let prep_started = std::time::Instant::now();
+    let prepared = TransportScene::new(b, scene, &ctx.subrange(0., 0.05))?;
+    let preparation_seconds = prep_started.elapsed().as_secs_f64();
+    let mut transport_seconds = 0.;
+    let mut tally_seconds = 0.;
     let mut tally = StrayTally::new(
         scene.num_wavelengths(),
         (scene.detector.nx * scene.detector.ny) as usize,
     );
     let mut plans = Vec::new();
+    let coverage = super::tally::coverage(b, settings, ctx)?;
     let mut first = 0;
     while first < settings.rays {
         ctx.check()?;
-        let count = (settings.rays - first).min(options.source_tile as u64) as usize;
+        let count =
+            (settings.rays - first).min(options.source_tile.div_ceil(256) as u64 * 256) as usize;
         let mut plan = ResidentPlan::new(snapshot.clone());
         plan.seed = Some(settings.seed);
         plan.settings = serde_json::json!({"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"scene":scene.fingerprint(),"first":first});
         let (hits, ledger) =
             prepared.append(&mut plan, scene, source, settings, first, count, options)?;
-        plan.outputs = vec![hits, ledger];
+        let tags = super::tally::tags(
+            &mut plan,
+            hits,
+            ledger,
+            &coverage,
+            super::tally::params(scene, settings, count, options.detections_per_source),
+        )?;
+        plan.outputs = vec![hits, ledger, tags];
         let sub = ctx.subrange(
-            first as f64 / settings.rays as f64 * 0.95,
-            (first + count as u64) as f64 / settings.rays as f64 * 0.95,
+            0.05 + first as f64 / settings.rays as f64 * 0.9,
+            0.05 + (first + count as u64) as f64 / settings.rays as f64 * 0.9,
         );
+        let started = std::time::Instant::now();
         let result = b.submit_plan(plan, &sub)?.wait()?;
-        let hv = b.read_view(result.outputs[0].view())?;
-        let lv = b.read_view(result.outputs[1].view())?;
-        let hits = ops::read_records::<ops::Detection>(&hv)?;
-        let ledgers = ops::read_records::<ops::Ledger>(&lv)?;
-        let mut chunk = ChunkTally::new(scene.num_wavelengths(), settings.owned_classes);
-        chunk.track_signatures = settings.signatures;
-        for (i, l) in ledgers.iter().enumerate() {
-            chunk.begin_ray();
-            chunk.rays += 1;
-            chunk.events += l.events as u64;
-            let v = l.sums.map(Df32::to_f64);
-            chunk.emitted += v[20];
-            chunk.emitted_by_wavelength[l.wavelength as usize] += v[20];
-            for k in 0..12 {
-                chunk.absorbed[k] += v[k];
-            }
-            chunk.escaped += v[12];
-            chunk.escaped_from_solid += v[13];
-            chunk.truncated += v[14];
-            chunk.sampling_failed += v[15];
-            chunk.roulette(v[16]);
-            chunk.roulette(-v[17]);
-            chunk.reweight(v[18]);
-            chunk.reweight(-v[19]);
-            for h in &hits[i * options.detections_per_source..][..l.hits as usize] {
-                let hist = history(&h.history);
-                let c = PathClass::ALL[h.class as usize];
-                let (x, y) = (h.x.to_f64(), h.y.to_f64());
-                chunk.detect(
-                    c,
-                    settings.owns(c, &hist.signature),
-                    scene.detector.pixel(x, y),
-                    h.weight.to_f64(),
-                    h.wavelength as usize,
-                    &hist,
-                    x,
-                    y,
-                );
-            }
-            chunk.end_ray();
+        transport_seconds += started.elapsed().as_secs_f64();
+        let started = std::time::Instant::now();
+        let views = std::array::from_fn(|i| result.outputs[i].view());
+        for chunk in super::tally::collect(
+            b,
+            &snapshot,
+            scene,
+            settings,
+            views,
+            count,
+            options.detections_per_source,
+            &sub,
+            &mut plans,
+        )? {
+            tally.add(&chunk);
         }
-        tally.add(&chunk);
+        tally_seconds += started.elapsed().as_secs_f64();
         plans.push(result.stats);
         first += count as u64;
     }
+    let pack_started = std::time::Instant::now();
     let (detector, energy, mut signatures) = tally.finish(&scene.detector, settings.owned_classes);
     for s in &mut signatures {
         s.label = s.signature.describe(|p| scene.label(p).to_string());
     }
-    let warnings = scene.warnings.clone();
-    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
+    let mut warnings = scene.warnings.clone();
+    if energy.sampling_failed > 0. {
+        warnings.push(format!(
+            "{:.3e} W lost to BSDF rejection-sampling failures",
+            energy.sampling_failed
+        ));
+    }
+    if energy.escaped_from_solid > 1e-12 * energy.emitted {
+        warnings.push(format!(
+            "{:.3e} W left the scene from inside a solid",
+            energy.escaped_from_solid
+        ));
+    }
+    if energy.truncated > 1e-6 * energy.emitted {
+        warnings.push(format!(
+            "{:.3e} W truncated at {} events per path",
+            energy.truncated, settings.max_events
+        ));
+    }
+    let packing_seconds = pack_started.elapsed().as_secs_f64();
+    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans,"device":b.info(),"precision":b.precision(),"fallback_count":0,"scene_fingerprint":scene.fingerprint(),"timings":{"preparation_seconds":preparation_seconds,"transport_seconds":transport_seconds,"tally_seconds":tally_seconds,"packing_seconds":packing_seconds}}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
     ctx.report(1., "stray complete");
     Ok(StrayResult {
         detector,

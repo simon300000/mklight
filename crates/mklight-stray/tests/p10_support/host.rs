@@ -23,5 +23,6 @@ fn host_reference_comparisons() {
         cases::geometry(&b);
         cases::tangents(&b);
         cases::samples(&b);
+        cases::large_scene(&b);
     }
 }

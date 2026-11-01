@@ -91,14 +91,15 @@ pub struct Ledger {
     /// Absorption sinks 0..12; escape, leak, truncation, sampling failure;
     /// roulette gain/loss, weighting gain/loss; emitted.
     pub sums: [Df32; 21],
+    pub draws: u64,
     pub events: u32,
-    pub draws: u32,
     pub hits: u32,
     pub top: u32,
     /// 0 complete, 1 continuation, 2 stack capacity, 3 hit capacity,
     /// 4 reference-required coating/order arithmetic.
     pub status: u32,
     pub wavelength: u32,
+    pub reserved: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -155,6 +156,24 @@ impl Transport {
         ]
     }
     pub fn validate(&self, p: &ResidentPlan) -> MkResult<()> {
+        validate_source(self.source, &self.cdf, self.first_ray, self.ray_count)?;
+        let primitives = check::<Primitive>(&self.primitives, p)?;
+        check::<Node>(&self.nodes, p)?;
+        check::<crate::radiometry::CoatingLayer>(&self.layers, p)?;
+        check::<Pass>(&self.passes, p)?;
+        check::<Df32>(&self.tis, p)?;
+        let media = check::<Medium>(&self.media, p)?;
+        let seq = check::<u32>(&self.sequence, p)?;
+        let nw = self.settings.wavelengths as usize;
+        if nw != self.source.wavelength_count as usize
+            || seq != self.settings.sequence_count as usize
+            || check::<Material>(&self.materials, p)? != primitives * nw
+            || check::<SurfaceData>(&self.shapes, p)? != primitives
+            || !media.is_multiple_of(nw)
+            || self.settings.start_medium as usize >= media / nw
+        {
+            return Err(bad("stray transport scene extents"));
+        }
         if self.ray_count == 0
             || self.ray_count > 65536
             || self.stack_capacity == 0
