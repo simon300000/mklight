@@ -184,7 +184,7 @@ impl Plan {
             // scratch and outputs are sized for their dispatches, whose kernels
             // bound all indices by the parameter extents. The encoder is serial.
             let cs = unsafe {
-                xr.gpu.run("collectives", |e| {
+                xr.run("collectives", |e| {
                     for d in list {
                         e.set_pipeline(&d.pso);
                         for (i, b) in d.buffers.iter().enumerate() {
@@ -203,7 +203,7 @@ impl Plan {
                 })?
             };
             stats.device_seconds += cs.gpu_seconds;
-            stats.command_buffers += 1;
+            stats.command_buffers += cs.command_buffers;
             stats.max_command_seconds = stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
             x.stats.parameter_bytes += 64 * (end - start) as u64;
             done += work;

@@ -160,7 +160,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         // SAFETY: request validation bounds each typed view; output leases are
         // exclusive. Dispatches serialize scratch reuse, including block sums.
         let cs = unsafe {
-            xr.gpu.run("wave", |e| {
+            xr.run("wave", |e| {
                 let bind = |index, at| {
                     let (b, o) = xr.buffer(&access.reads[at]);
                     e.set_buffer(index, b, o);
@@ -218,7 +218,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes +=

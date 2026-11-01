@@ -41,6 +41,9 @@ fn matched_double_gauss() {
     );
     let m = model(samples::double_gauss(), GhostSettings::default());
     for n in [20, 48, 128] {
+        if std::env::var("FUSION_BENCH").is_ok() && n != 20 {
+            continue;
+        }
         let settings = IrradianceSettings {
             fields: vec![0, 2],
             wavelengths: vec![1],

@@ -46,6 +46,7 @@ struct FirstOrderParameters {
 /// Kernels index step storage through these rows: they must be monotone and
 /// within the storage. Returns the end of the used rows.
 fn step_rows_end(x: &Execution<'_>, rows: &PlanView, capacity: usize) -> MkResult<usize> {
+    // Row tables may be produced by an earlier resident operation.
     let (b, o) = x.buffer(rows);
     let rows = &b.as_slice()[o..o + rows.desc.len()?];
     let end = rows.last().copied().unwrap_or(0) as usize;
@@ -72,7 +73,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: a pure transpose from validated leaf records.
                 let cs = unsafe {
-                    x.gpu.run("ghost field moments", |e| {
+                    x.run("ghost field moments", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(hits);
                         e.set_buffer(0, b, o);
@@ -86,7 +87,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -105,7 +106,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: one flag per sorted key in validated storage.
                 let cs = unsafe {
-                    x.gpu.run("ghost segment flags", |e| {
+                    x.run("ghost segment flags", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(keys);
                         e.set_buffer(0, b, o);
@@ -124,7 +125,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -155,7 +156,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 // SAFETY: prefix IDs give disjoint segment records; only
                 // integer maxima share an atomic counter.
                 let cmd = unsafe {
-                    x.gpu.run("ghost pixel segments", |e| {
+                    x.run("ghost pixel segments", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [keys, prefix].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -170,7 +171,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cmd.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cmd.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -188,7 +189,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 .gpu
                 .pipeline(&PipelineKey::plain("mkl_ghost_map_scatter"))?;
             let mut out = x.take_output(*output);
-            let nb = out.as_slice().len() / 2;
+            let nb = out.len() / 2;
             let n = pixels.desc.len()?;
             for (mode, total) in [(0, nb), (1, n)] {
                 for offset in (0..total).step_by(262144) {
@@ -196,7 +197,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     let wall = Instant::now();
                     // SAFETY: zero pass precedes unique pixel scatter writes.
                     let cs = unsafe {
-                        x.gpu.run("ghost map scatter", |e| {
+                        x.run("ghost map scatter", |e| {
                             e.set_pipeline(&pso);
                             for (j, v) in [values, pixels].iter().enumerate() {
                                 let (b, o) = x.buffer(v);
@@ -215,7 +216,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         })?
                     };
                     stats.device_seconds += cs.gpu_seconds;
-                    stats.command_buffers += 1;
+                    stats.command_buffers += cs.command_buffers;
                     stats.max_command_seconds =
                         stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                     ctl.check()?;
@@ -253,7 +254,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 };
                 // SAFETY: disjoint path records and independent radiometry folds.
                 let cs = unsafe {
-                    x.gpu.run("ghost first order", |e| {
+                    x.run("ghost first order", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [steps, offsets, initial].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -270,11 +271,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
             }
+            x.flush()?;
             for block in flags.as_slice()[..n].chunks(4096) {
                 ctl.check()?;
                 x.stats.fallback_count += block.iter().filter(|&&s| s != 0).count() as u64;
@@ -291,6 +293,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         } => {
             let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_ghost_gather"))?;
             let mut out = x.take_output(*output);
+            x.flush()?;
             let (b, o) = x.buffer(leaves);
             let words = &b.as_slice()[o..o + leaves.desc.len()?];
             let rows = bytemuck::cast_slice::<_, Leaf>(words);
@@ -307,7 +310,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 // SAFETY: stable leaves have distinct destination IDs; all
                 // sources remain pinned until this command completes.
                 let cs = unsafe {
-                    x.gpu.run("ghost resident leaves", |e| {
+                    x.run("ghost resident leaves", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(leaves);
                         e.set_buffer(1, b, o);
@@ -325,7 +328,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -364,7 +367,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 };
                 // SAFETY: disjoint pixel-key and weight rows in validated outputs.
                 let cs = unsafe {
-                    x.gpu.run("ghost pixel keys", |e| {
+                    x.run("ghost pixel keys", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(hits);
                         e.set_buffer(0, b, o);
@@ -377,7 +380,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 ctl.check()?;
@@ -400,7 +403,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: immutable metadata and one writer per validated probe record.
                 let cs = unsafe {
-                    x.gpu.run("ghost launch", |e| {
+                    x.run("ghost launch", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [chiefs, fields, samples].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -421,7 +424,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 16;
@@ -460,6 +463,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             );
             let n = probes.desc.shape[0];
             // Spare pooled rows after the last probe are zeroed in place.
+            x.flush()?;
             let spare = 4 * step_rows_end(x, step_rows, qs.as_slice().len() / 4)?;
             qs.as_mut_slice()[spare..].fill(0);
             fs.as_mut_slice()[spare..].fill(0);
@@ -486,7 +490,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 };
                 // SAFETY: validated record extents, immutable imports, exclusive outputs.
                 let cs = unsafe {
-                    x.gpu.run("ghost probes", |e| {
+                    x.run("ghost probes", |e| {
                         e.set_pipeline(&pso);
                         e.set_buffer(0, &up.headers, 0);
                         e.set_buffer(1, &up.surfaces, 0);
@@ -511,18 +515,20 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += size_of::<TraceParameters>() as u64;
                 ctl.check()?;
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "ghost probes");
-                tile = crate::radiometry::next_tile(tile, 1 << 20, cs.gpu_seconds);
+                if offset < n {
+                    // Probes trace whole ghost paths (~0.1 µs each on the P9
+                    // Double Gauss), so calibrate beyond 2^16 items.
+                    tile = crate::radiometry::next_tile(x, tile, 1 << 20, n - offset, 1 << 16)?;
+                }
             }
-            x.stats.fallback_count += counter.as_slice()[0] as u64;
-            x.stats.readback_bytes += 4;
-            x.recycle(counter);
+            x.count_fallbacks(counter);
             x.put_output(*output, out);
             x.put_output(*queries, qs);
             x.put_output(*factors, fs);
@@ -539,6 +545,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             sensor_reflectance,
             output,
         } => {
+            x.flush()?;
             step_rows_end(x, step_rows, coatings.desc.shape[0])?;
             let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_ghost_weights"))?;
             let mut out = x.take_output(*output);
@@ -556,7 +563,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 };
                 // SAFETY: one output per probe; typed inputs validated at submission.
                 let cs = unsafe {
-                    x.gpu.run("ghost weights", |e| {
+                    x.run("ghost weights", |e| {
                         e.set_pipeline(&pso);
                         for (j, v) in [values, coatings, factors, offsets, steps, probes]
                             .iter()
@@ -574,7 +581,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += size_of::<WeightParameters>() as u64;

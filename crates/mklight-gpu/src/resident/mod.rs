@@ -341,6 +341,9 @@ pub enum ResidentOp {
 #[derive(Clone, Debug)]
 pub struct ResidentPlan {
     pub version: u32,
+    /// Deferred command work limit. Zero completes each encoder call separately;
+    /// this changes scheduling only, never the operation or reduction order.
+    pub command_work_budget: usize,
     pub buffers: Vec<PlanBuffer>,
     pub operations: Vec<ResidentOp>,
     pub outputs: Vec<BufferId>,
@@ -353,6 +356,7 @@ impl ResidentPlan {
     pub fn new(snapshot: Snapshot) -> Self {
         Self {
             version: PLAN_VERSION,
+            command_work_budget: 1 << 20,
             buffers: vec![],
             operations: vec![],
             outputs: vec![],
@@ -599,7 +603,7 @@ pub fn stamp(plan: &ResidentPlan, backend: &dyn ComputeBackend, timer: RunTimer)
         ResidentOp::Sum(s) => serde_json::json!({"kind":"sum","input":s.input.buffer.0,"offset":s.input.offset,"shape":s.input.desc.shape,"mode":s.mode,"output":s.output.0}),
         _ => serde_json::json!({"kind":"domain","settings":plan.settings}),
     }).collect();
-    let settings = serde_json::json!({"plan_version":plan.version,"identity":plan.identity,"requested_backend":plan.identity.requested_backend.as_deref().unwrap_or(&backend.info().backend_id()),"used_backend":backend.info().backend_id(),"cost_decision":"explicit_backend","operation_settings":plan.settings,"operations":operations,"buffers":plan.buffers.iter().map(PlanBuffer::desc).collect::<Vec<_>>(),"device":backend.info(),"precision":backend.precision()});
+    let settings = serde_json::json!({"plan_version":plan.version,"command_work_budget":plan.command_work_budget,"identity":plan.identity,"requested_backend":plan.identity.requested_backend.as_deref().unwrap_or(&backend.info().backend_id()),"used_backend":backend.info().backend_id(),"cost_decision":"explicit_backend","operation_settings":plan.settings,"operations":operations,"buffers":plan.buffers.iter().map(PlanBuffer::desc).collect::<Vec<_>>(),"device":backend.info(),"precision":backend.precision()});
     timer.finish(
         &plan.snapshot,
         "resident_plan",

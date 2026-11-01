@@ -40,6 +40,7 @@ pub(crate) fn execute(
         name: "system preparation".into(),
         ..Default::default()
     };
+    let mut parameter_blocks = 0u64;
     for first in (0..r.map.count).step_by(r.tile_candidates) {
         let count = r.tile_candidates.min(r.map.count - first);
         let mut params = r.dispatch_params(first, count);
@@ -58,7 +59,7 @@ pub(crate) fn execute(
             // patch destinations are distinct words, and dispatches in one encoder
             // run in order on tracked buffers.
             let cs = unsafe {
-                x.gpu.run("prepare systems", |e| {
+                x.run("prepare systems", |e| {
                     for (i, (b, off)) in inputs.iter().enumerate() {
                         e.set_buffer(i, *b, *off);
                     }
@@ -77,7 +78,8 @@ pub(crate) fn execute(
                     Ok(())
                 })?
             };
-            stage.command_buffers += 1;
+            parameter_blocks += 1;
+            stage.command_buffers += cs.command_buffers;
             stage.device_seconds += cs.gpu_seconds;
             stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         }
@@ -87,10 +89,10 @@ pub(crate) fn execute(
             "prepare systems",
         );
     }
+    x.stats.parameter_bytes +=
+        parameter_blocks * size_of::<mklight_gpu::systems::DispatchParams>() as u64;
     x.stats.command_buffers += stage.command_buffers;
     x.stats.device_seconds += stage.device_seconds;
-    x.stats.parameter_bytes +=
-        stage.command_buffers as u64 * size_of::<mklight_gpu::systems::DispatchParams>() as u64;
     // Package timings are retained separately; the router also records the
     // outer domain wall time without counting our commands a second time.
     x.stats.stages.push(stage);

@@ -586,3 +586,93 @@ fn benchmark_snapshot_churn() {
         rows[9] * 1e3
     );
 }
+
+/// Many fixed-tree tiles and consecutive reductions share submissions. The
+/// alternating large terms catch reordering or a missing dispatch dependency.
+#[test]
+fn fused_reductions_match_known_answer_and_emulation() {
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let g = backend(origin);
+        let c = CpuF32Backend::matching(&g.precision().probe);
+        let mut answers = vec![];
+        for b in [&c as &dyn ComputeBackend, &g] {
+            let h = b
+                .fill_buffer(BufferDesc::new(ElementType::F32, [1, 513]), &mut |mut f| {
+                    for (i, v) in f.as_mut_slice::<f32>()?.iter_mut().enumerate() {
+                        *v = [1e8, 1., -1e8][i % 3];
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let mut p = ResidentPlan::new(Snapshot::new(testutil::singlet()).unwrap());
+            let input = p.import(h.view());
+            for _ in 0..8 {
+                let out = p.sum(p.view(input).unwrap(), ReduceMode::DoubleFloat);
+                p.outputs.push(out);
+            }
+            g.set_chunk_items(17);
+            let r = b
+                .submit_plan(p, &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap();
+            let values: Vec<_> = r
+                .outputs
+                .iter()
+                .map(|h| b.read_view(h.view()).unwrap().as_slice::<Df32>().unwrap()[0])
+                .collect();
+            assert!(values.iter().all(|v| v.to_f64() == 171.));
+            if b.info().backend_id() == g.info().backend_id() {
+                assert!(r.stats.command_buffers < 8, "{:?}", r.stats);
+                assert_eq!(
+                    r.stats.command_buffers,
+                    r.stats
+                        .stages
+                        .iter()
+                        .map(|s| s.command_buffers)
+                        .sum::<u32>()
+                );
+            }
+            answers.push(values);
+        }
+        assert_eq!(answers[0], answers[1]);
+    }
+}
+
+/// A scheduling-only budget must not alter dependent trace/reduction bits.
+#[test]
+fn fusion_budget_preserves_trace_and_reduce_bits() {
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let g = backend(origin);
+        let t = testutil::tracer(mklight_core::samples::cooke_triplet());
+        let h = g
+            .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
+            .unwrap();
+        let mut q = TraceRequest::new(h, rays(&t, 17), 0, t.system().image_index() as u32);
+        q.radiometry = Radiometry::Off;
+        let p = plan(Snapshot::new(t.system().system().clone()).unwrap(), q, true);
+        let mut outputs = vec![];
+        let mut commands = vec![];
+        g.set_chunk_items(257);
+        for budget in [0, 1 << 20] {
+            let mut p = p.clone();
+            p.command_work_budget = budget;
+            let result = g
+                .submit_plan(p, &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap();
+            outputs.push(
+                result
+                    .outputs
+                    .iter()
+                    .map(|h| g.read_view(h.view()).unwrap().words().to_vec())
+                    .collect::<Vec<_>>(),
+            );
+            commands.push(result.stats.command_buffers);
+        }
+        assert_eq!(outputs[0], outputs[1]);
+        assert!(commands[1] < commands[0], "{commands:?}");
+        g.release_systems(h).unwrap();
+    }
+}

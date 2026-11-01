@@ -69,7 +69,7 @@ pub fn prepare(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
         let wall = Instant::now();
         // SAFETY: one complete contiguous phase volume, with disjoint tiles.
         let cs = unsafe {
-            xr.gpu.run("focus phase cache", |e| {
+            xr.run("focus phase cache", |e| {
                 bind(xr, e, r);
                 e.set_buffer_mut(4, &mut out, 0);
                 e.set_bytes(7, &p);
@@ -77,7 +77,7 @@ pub fn prepare(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
                 Ok(())
             })?
         };
-        s.command_buffers += 1;
+        s.command_buffers += cs.command_buffers;
         s.device_seconds += cs.gpu_seconds;
         s.max_command_seconds = s.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
@@ -120,7 +120,7 @@ pub fn steps(
         let wall = Instant::now();
         // SAFETY: block rows are disjoint and complete before the final maxima.
         let cs = unsafe {
-            xr.gpu.run("focus sampling", |e| {
+            xr.run("focus sampling", |e| {
                 bind(xr, e, r);
                 if let Some(c) = cache {
                     e.set_buffer(10, c, 0);
@@ -138,7 +138,7 @@ pub fn steps(
                 Ok(())
             })?
         };
-        s.command_buffers += 1;
+        s.command_buffers += cs.command_buffers;
         s.device_seconds += cs.gpu_seconds;
         s.max_command_seconds = s.max_command_seconds.max(wall.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;

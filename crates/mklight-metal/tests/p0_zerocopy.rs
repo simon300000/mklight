@@ -103,6 +103,9 @@ fn digest(words: &[u32]) -> u64 {
 fn benchmark_zero_copy() {
     let b = backend(LibraryChoice::Precompiled);
     for name in ["trace_1m", "opd_1024", "fft_1024_roundtrip"] {
+        if std::env::var("FUSION_BENCH").is_ok() && name != "trace_1m" {
+            continue;
+        }
         let setup_copied = b.resident_cache_stats().copied_bytes;
         let setup = Instant::now();
         let (p, h) = match name {

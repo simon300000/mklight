@@ -74,7 +74,7 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
         let wall = Instant::now();
         // SAFETY: validated contiguous inputs; all mutable storage is plan-local.
         let cs = unsafe {
-            xr.gpu.run("wave placement", |e| {
+            xr.run("wave placement", |e| {
                 for (i, v) in a.reads.iter().enumerate() {
                     let (b, o) = xr.buffer(v);
                     e.set_buffer(i, b, o);
@@ -113,19 +113,22 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
                 Ok(())
             })?
         };
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "wave placement");
     }
     ctl.check()?;
-    if let Some(v) = &norm {
-        let a: &[mklight_gpu::Df32] = bytemuck::cast_slice(v.as_slice());
-        if !a[1].is_finite() || a[1].hi <= 0. {
-            return Err(mklight_core::MkError::Numerical(
-                "pupil transmits no finite light".into(),
-            ));
-        }
+    if let Some(v) = norm.take() {
+        x.check_buffer(v, |v, _| {
+            let a: &[mklight_gpu::Df32] = bytemuck::cast_slice(v.as_slice());
+            if !a[1].is_finite() || a[1].hi <= 0. {
+                return Err(mklight_core::MkError::Numerical(
+                    "pupil transmits no finite light".into(),
+                ));
+            }
+            Ok(())
+        });
     }
     for (&id, b) in a.writes.iter().zip(outs) {
         x.put_output(id, b);

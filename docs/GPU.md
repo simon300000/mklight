@@ -1238,6 +1238,62 @@ changing the tree. The idle pool reuses the most recently returned buffer
 of the exact size and evicts the oldest. Limits
 are resource/cancellation controls, not engine backend selection thresholds.
 
+**Resident command fusion.** The Metal executor owns a worker-local deferred
+command buffer. Domain operations, trace tiles and fixed-tree sum passes share its serial compute
+encoder, with buffer memory barriers after dispatches. Existing tile boundaries
+remain cancellation checkpoints; accumulated dispatch work (2²⁰ threads, charging at least 2¹⁵ per dispatch) or
+10 ms of encoding triggers a commit and completion wait. These are work/encoding
+bounds, not a promise of 10 ms device time for an arbitrary kernel. A genuine
+host read or publication flushes the buffer. Reporting-only fallback counters
+and pupil-normalisation checks are deferred to completion. Cache entries built
+by GPU work remain local to the executor until a flush; same-plan consumers can
+reuse them immediately. Time-calibrated tiles (Newton aiming, RI
+illumination, coating/polarization, ghost probes) still target 10–15 ms of
+measured device time: they calibrate from a submission the work bound
+completed, or complete the batch as a timing checkpoint only when another tile
+follows and it would exceed the operation's unmeasured size (aiming: the first
+of several tiles, and every tile of large batches). Single-tile operations and
+small chief/table/pupil chains stay fused. Tiny expensive instruction
+sequences are bounded by the dispatch charge as well as thread work. Recycled
+scratch stays pinned until completion; abandoned, uncommitted encoding is
+discarded on cancellation or error. Internal shared-storage guards reject host
+slices, and synchronous (non-batched) command bindings, while a conflicting
+pending device access exists, since such a command would run before the
+uncommitted batch. No pending storage becomes a public `ReadView`.
+`ResidentPlan.command_work_budget` selects that work bound (default 2²⁰);
+zero completes each encoder call separately for scheduling cross-checks. The
+CPU-f32 executor accepts the same plans and preserves its specified arithmetic.
+The selected budget is recorded in `RunInfo`.
+
+Dependent chains compose by appending operations and retaining `BufferId` /
+`PlanView` references until one final submission. P6's probe builder now uses
+this pattern across its complete rim schedule: each `Lattice::Rim` consumes the
+previous round's bracket state and trace status directly on device, appends
+P1 aiming/trace, and feeds the next round without host inspection. The fixed
+iteration cap, 16-branch probes per round, decisions and summation order are
+unchanged; all unresolved-aim and final-bracket checks run on completed leases.
+This removes the old per-round plan submissions. P4→P1→P5→P3 candidate chains
+and per-pupil projection/nodes/resample/PSF operations share command buffers
+within their existing plans. Host-computed sphere/scale/grid metadata still
+separates plans where the next operation genuinely depends on it; there is no
+public pending-buffer view or implicit asynchronous import.
+
+`PlanStats` counts actual completed command buffers; deferred dispatches have
+zero commands at encode time and their timestamps/counts appear in the
+`fused completion` stage. Arithmetic and reduction trees are unchanged.
+
+Provisional M2 Pro fusion follow-up (same release workloads before/after):
+default Newtonian/Cooke/singlet PSF commands fall from 215/223/271 to
+58/64/94; Cooke spot/EE/best-focus from 9/29/12 to 1/12/2; Cooke candidate
+B=1/16/1024 from 9/9/14 to 1/1/8; 1M compatibility trace→sum from 8 to 2;
+20² Double Gauss ghost maps from 91 to 35. Warm plan copies remain zero.
+Default Cooke EE still returns its counted f64 bin-classification fallback;
+its command count describes the attempted resident work. Loaded-host wall
+measurements do not establish a changed CPU-preferred verdict; existing cost
+exceptions remain pending the consolidated quiet benchmark. Host-dependent
+pupil metadata, adaptive ghost refinement and the stray event loop still
+synchronise.
+
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
 uploaded/readback, copied and parameter-block bytes, peak live plan storage and fallback/polish counts.

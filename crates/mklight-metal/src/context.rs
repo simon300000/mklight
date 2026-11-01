@@ -8,10 +8,12 @@
 //! type system cannot relate to the bound buffers' lengths. Solvers reach the
 //! GPU only through `ComputeBackend`.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use bytemuck::Pod;
 use dispatch2::DispatchData;
@@ -21,7 +23,7 @@ use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::sel;
 use objc2_foundation::{NSError, NSString};
 use objc2_metal::{
-    MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+    MTLBarrierScope, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLCompileOptions, MTLComputeCommandEncoder, MTLComputePipelineState, MTLCopyAllDevices,
     MTLCreateSystemDefaultDevice, MTLDataType, MTLDevice, MTLFunctionConstantValues,
     MTLLanguageVersion, MTLLibrary, MTLMathFloatingPointFunctions, MTLMathMode, MTLSize,
@@ -101,6 +103,8 @@ impl PipelineKey {
 pub struct CommandStats {
     /// GPU execution time (`GPUEndTime − GPUStartTime`), seconds.
     pub gpu_seconds: f64,
+    /// Completed submissions (zero for deferred encoding).
+    pub command_buffers: u32,
 }
 
 type Pso = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
@@ -336,7 +340,11 @@ impl MetalContext {
             let enc = cb
                 .computeCommandEncoder()
                 .ok_or_else(|| MkError::Backend("cannot create a compute encoder".into()))?;
-            let r = encode(&Encoder { enc: &enc });
+            let r = encode(&Encoder {
+                enc: &enc,
+                work: &Cell::new(0),
+                deferred: None,
+            });
             enc.endEncoding();
             r?;
             cb.commit();
@@ -350,15 +358,18 @@ impl MetalContext {
             }
             let (t0, t1) = (cb.GPUStartTime(), cb.GPUEndTime());
             Ok(CommandStats {
+                command_buffers: 1,
                 gpu_seconds: if t1 > t0 { t1 - t0 } else { 0.0 },
             })
         })
     }
 }
 
-/// A compute encoder borrowed for the duration of [`MetalContext::run`].
+/// A serial compute encoder borrowed while a synchronous or deferred batch is encoded.
 pub(crate) struct Encoder<'a> {
     enc: &'a ProtocolObject<dyn MTLComputeCommandEncoder>,
+    work: &'a Cell<usize>,
+    deferred: Option<&'a RefCell<Vec<crate::buffer::DeviceAccess>>>,
 }
 
 impl Encoder<'_> {
@@ -376,18 +387,28 @@ impl Encoder<'_> {
         };
     }
     /// Bind `buf`, which the kernel only reads, at element `offset`.
+    /// A synchronous command commits before any pending deferred batch, so it
+    /// must not read storage that batch writes (it would see stale data).
     pub(crate) fn set_buffer<T: Pod>(&self, index: usize, buf: &SharedBuffer<T>, offset: usize) {
+        match self.deferred {
+            Some(accesses) => accesses.borrow_mut().push(buf.device_access(false)),
+            None => buf.assert_settled(false),
+        }
         self.bind(index, buf, offset);
     }
     /// Bind `buf`, which the kernel writes, at element `offset`. The `&mut`
-    /// borrow (held by the `run` closure until the GPU is done) guarantees
-    /// that no host slice of the buffer exists meanwhile.
+    /// borrow excludes host access while encoding. Deferred bindings additionally
+    /// register a device-access guard until completion or abandonment.
     pub(crate) fn set_buffer_mut<T: Pod>(
         &self,
         index: usize,
         buf: &mut SharedBuffer<T>,
         offset: usize,
     ) {
+        match self.deferred {
+            Some(accesses) => accesses.borrow_mut().push(buf.device_access(true)),
+            None => buf.assert_settled(true),
+        }
         self.bind(index, buf, offset);
     }
     /// Copy a small parameter block into the argument table.
@@ -403,6 +424,15 @@ impl Encoder<'_> {
     }
     /// `groups` threadgroups of `threads` threads each.
     pub(crate) fn dispatch_groups(&self, groups: [usize; 3], threads: usize) {
+        self.work.set(
+            self.work.get().saturating_add(
+                groups
+                    .into_iter()
+                    .product::<usize>()
+                    .saturating_mul(threads)
+                    .max(1 << 15),
+            ),
+        );
         self.enc.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: groups[0],
@@ -415,6 +445,9 @@ impl Encoder<'_> {
                 depth: 1,
             },
         );
+        if self.deferred.is_some() {
+            self.enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+        }
     }
     /// At least `n` threads in 1-D, in uniform threadgroups (kernels check
     /// bounds), sized for the pipeline.
@@ -422,5 +455,110 @@ impl Encoder<'_> {
         let w = pso.maxTotalThreadsPerThreadgroup().clamp(1, 256);
         self.set_pipeline(pso);
         self.dispatch_groups([n.div_ceil(w).max(1), 1, 1], w);
+    }
+}
+
+/// One worker's uncommitted resident commands. No command is left in flight:
+/// flush commits and waits; dropping an unfinished batch abandons its encoding.
+/// The executor retains recycled leases until flush and publishes only afterwards.
+pub(crate) struct CommandBatch {
+    pending: Option<BatchEncoding>,
+    work_budget: usize,
+    pub(crate) completed: CommandStats,
+    /// Device seconds of a submission completed by the latest `encode` call
+    /// or a later `flush` (timing feedback for calibrated tiles).
+    pub(crate) observed: Option<f64>,
+    pub(crate) max_seconds: f64,
+}
+struct BatchEncoding {
+    cb: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    enc: Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>,
+    accesses: RefCell<Vec<crate::buffer::DeviceAccess>>,
+    work: Cell<usize>,
+    start: Instant,
+}
+impl CommandBatch {
+    pub(crate) fn new(work_budget: usize) -> Self {
+        Self {
+            pending: None,
+            work_budget,
+            completed: CommandStats::default(),
+            observed: None,
+            max_seconds: 0.,
+        }
+    }
+    /// Same kernel bounds contract as `run`. Host slices require `flush` first.
+    pub(crate) unsafe fn encode(
+        &mut self,
+        gpu: &MetalContext,
+        label: &str,
+        encode: impl FnOnce(&Encoder<'_>) -> MkResult<()>,
+    ) -> MkResult<CommandStats> {
+        self.observed = None;
+        if self.pending.is_none() {
+            let cb = gpu
+                .queue
+                .commandBuffer()
+                .ok_or_else(|| MkError::Backend("cannot create a command buffer".into()))?;
+            cb.setLabel(Some(&NSString::from_str(label)));
+            let enc = cb
+                .computeCommandEncoder()
+                .ok_or_else(|| MkError::Backend("cannot create a compute encoder".into()))?;
+            self.pending = Some(BatchEncoding {
+                cb,
+                enc,
+                accesses: RefCell::new(vec![]),
+                work: Cell::new(0),
+                start: Instant::now(),
+            });
+        }
+        let b = self.pending.as_ref().unwrap();
+        encode(&Encoder {
+            enc: &b.enc,
+            work: &b.work,
+            deferred: Some(&b.accesses),
+        })?;
+        // Work bound supplements the existing package-specific weighted tiles.
+        // Each dispatch costs at least 2^15 units, bounding tiny expensive
+        // dispatch chains to 32 per batch. Encoding time is a second bound.
+        if b.work.get() >= self.work_budget || b.start.elapsed().as_secs_f64() >= 0.010 {
+            self.flush()
+        } else {
+            Ok(CommandStats::default())
+        }
+    }
+    pub(crate) fn flush(&mut self) -> MkResult<CommandStats> {
+        let Some(b) = self.pending.take() else {
+            return Ok(CommandStats::default());
+        };
+        b.enc.endEncoding();
+        let start = Instant::now();
+        b.cb.commit();
+        b.cb.waitUntilCompleted();
+        self.max_seconds = self.max_seconds.max(start.elapsed().as_secs_f64());
+        if b.cb.status() == MTLCommandBufferStatus::Error {
+            let msg =
+                b.cb.error()
+                    .map(|e| e.localizedDescription().to_string())
+                    .unwrap_or_else(|| "unknown error".into());
+            return Err(MkError::Backend(format!("fused command buffer: {msg}")));
+        }
+        let (a, z) = (b.cb.GPUStartTime(), b.cb.GPUEndTime());
+        let stats = CommandStats {
+            gpu_seconds: (z - a).max(0.),
+            command_buffers: 1,
+        };
+        self.completed.gpu_seconds += stats.gpu_seconds;
+        self.completed.command_buffers += 1;
+        self.observed = Some(stats.gpu_seconds);
+        Ok(stats)
+    }
+}
+
+impl Drop for CommandBatch {
+    fn drop(&mut self) {
+        if let Some(b) = self.pending.take() {
+            b.enc.endEncoding();
+        }
     }
 }

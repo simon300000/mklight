@@ -23,7 +23,6 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let mut max_command = 0f64;
     let mut account = |x: &mut Execution<'_>, wall: Instant, gpu_seconds: f64, done: usize| {
         max_command = max_command.max(wall.elapsed().as_secs_f64());
-        x.stats.command_buffers += 1;
         x.stats.device_seconds += gpu_seconds;
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.report(done as f64 / nf as f64, "correlation");
@@ -38,7 +37,7 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             // SAFETY: the validated stencil holds nf·count·5 floats; the grid
             // covers frequencies first..first+p.frequencies.
             let cs = unsafe {
-                x.gpu.run("optical stencil", |e| {
+                x.run("optical stencil", |e| {
                     e.set_pipeline(&pso);
                     e.set_buffer(0, a, ao);
                     e.set_buffer_mut(1, &mut out, 0);
@@ -98,7 +97,7 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         // term/partial/sum planes are sized for a whole tile; the output
         // holds nf complex values.
         let cs = unsafe {
-            x.gpu.run("correlation", |e| {
+            x.run("correlation", |e| {
                 e.set_pipeline(&terms_pso);
                 for (i, (v, o)) in views.iter().enumerate() {
                     e.set_buffer(i, v, *o);

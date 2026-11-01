@@ -3,6 +3,10 @@ use crate::{context::PipelineKey, resident::Execution};
 use mklight_core::MkResult;
 use mklight_gpu::{pending::JobControl, radiometry::*, resident::StageStats};
 use std::time::Instant;
+/// Coating items measure a few ns of device time each (P9 Double Gauss), so
+/// whole 2^20-item tiles stay near the command target without a dedicated
+/// timing checkpoint; the work bound's completions still calibrate them.
+const RADIOMETRY_UNMEASURED: usize = 1 << 20;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
     let mut stats = StageStats {
@@ -39,7 +43,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: record extent, typed output and exclusive writers validated.
                 let cs = unsafe {
-                    x.gpu.run("complex pupil channels", |e| {
+                    x.run("complex pupil channels", |e| {
                         e.set_pipeline(&pso);
                         let (b, o) = x.buffer(values);
                         e.set_buffer(0, b, o);
@@ -51,7 +55,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 16;
@@ -86,7 +90,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 // SAFETY: validated typed extents and single-writer output. Query
                 // indices are checked in the kernel before dereferencing records.
                 let cs = unsafe {
-                    x.gpu.run("coating", |e| {
+                    x.run("coating", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [&r.specs, &r.layers, &r.queries].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -112,18 +116,18 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 32;
                 ctl.check()?;
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "coating");
-                tile = next_tile(tile, r.tile, cs.gpu_seconds);
+                if offset < n {
+                    tile = next_tile(x, tile, r.tile, n - offset, RADIOMETRY_UNMEASURED)?;
+                }
             }
-            x.stats.fallback_count += counter.as_slice()[0] as u64;
-            x.stats.readback_bytes += 4;
-            x.recycle(counter);
+            x.count_fallbacks(counter);
             x.put_output(r.output, out);
         }
         Request::Polarization(r) => {
@@ -157,7 +161,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 params[4..12].copy_from_slice(bytemuck::cast_slice(&r.stokes));
                 // SAFETY: P1 record extents and output ownership were validated.
                 let cs = unsafe {
-                    x.gpu.run("polarization", |e| {
+                    x.run("polarization", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [
                             &r.surfaces,
@@ -193,18 +197,18 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 72;
                 ctl.check()?;
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "polarization");
-                tile = next_tile(tile, r.tile, cs.gpu_seconds);
+                if offset < n {
+                    tile = next_tile(x, tile, r.tile, n - offset, RADIOMETRY_UNMEASURED)?;
+                }
             }
-            x.stats.fallback_count += counter.as_slice()[0] as u64;
-            x.stats.readback_bytes += 4;
-            x.recycle(counter);
+            x.count_fallbacks(counter);
             x.put_output(r.output, out);
         }
         Request::Channels {
@@ -222,7 +226,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 let wall = Instant::now();
                 // SAFETY: validated channels and a single output writer.
                 let cs = unsafe {
-                    x.gpu.run("radiometry channels", |e| {
+                    x.run("radiometry channels", |e| {
                         e.set_pipeline(&pso);
                         for (i, v) in [values, trace_status].iter().enumerate() {
                             let (b, o) = x.buffer(v);
@@ -235,7 +239,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     })?
                 };
                 stats.device_seconds += cs.gpu_seconds;
-                stats.command_buffers += 1;
+                stats.command_buffers += cs.command_buffers;
                 stats.max_command_seconds =
                     stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
                 x.stats.parameter_bytes += 8;
@@ -251,8 +255,26 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     Ok(())
 }
 
-// Aim for 10 ms, growing at most eightfold; arithmetic order is per ray and
-// independent of these command boundaries. A slow stack reduces the next tile.
-pub(crate) fn next_tile(tile: usize, cap: usize, seconds: f64) -> usize {
-    ((tile as f64 * (0.010 / seconds.max(1e-6)).clamp(0.125, 8.0)) as usize).clamp(1, cap)
+/// The next tile when `remaining` items follow. If the work bound completed
+/// the batch holding this tile, or the next tile would exceed `unmeasured`
+/// items (forcing a completion), the tile grows (at most eightfold) or shrinks
+/// towards 10 ms of measured device time; that time includes earlier fused
+/// work, so it errs towards smaller tiles. Otherwise it grows eightfold
+/// unmeasured, so small and mid-sized operations stay fused with their
+/// neighbours. Arithmetic is per item and independent of tile boundaries.
+pub(crate) fn next_tile(
+    x: &mut Execution<'_>,
+    tile: usize,
+    cap: usize,
+    remaining: usize,
+    unmeasured: usize,
+) -> MkResult<usize> {
+    let cap = cap.min(remaining).max(1);
+    let grown = (8 * tile).min(cap);
+    let seconds = match x.observed() {
+        Some(seconds) => seconds,
+        None if grown <= unmeasured => return Ok(grown),
+        None => x.measure()?,
+    };
+    Ok(((tile as f64 * (0.010 / seconds.max(1e-6)).clamp(0.125, 8.0)) as usize).clamp(1, cap))
 }

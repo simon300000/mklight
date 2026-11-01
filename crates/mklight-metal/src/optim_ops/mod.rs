@@ -25,7 +25,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         // SAFETY: the submission boundary validates every typed extent;
         // device stencil indices are checked before dereference.
         let cs = unsafe {
-            x.gpu.run("optim algebra", |e| {
+            x.run("optim algebra", |e| {
                 for i in 0..4 {
                     let v = &a.reads[i.min(a.reads.len() - 1)];
                     let (b, o) = x.buffer(v);
@@ -46,7 +46,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             })?
         };
         stage.device_seconds += cs.gpu_seconds;
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;

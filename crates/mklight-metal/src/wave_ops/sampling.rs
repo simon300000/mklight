@@ -12,7 +12,7 @@ pub fn execute(r: &Blur, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()
     let xr = &*x;
     // SAFETY: validated grids and exclusive output/mask leases.
     let cs = unsafe {
-        xr.gpu.run("wave sampling", |e| {
+        xr.run("wave sampling", |e| {
             for (i, v) in [&r.pupil.amplitude, &r.pupil.coverage, &r.pupil.opd]
                 .iter()
                 .enumerate()
@@ -31,13 +31,13 @@ pub fn execute(r: &Blur, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(r.points, out);
     x.put_output(r.mask, mask);
-    x.stats.command_buffers += 1;
+    x.stats.command_buffers += cs.command_buffers;
     x.stats.device_seconds += cs.gpu_seconds;
     x.stats.parameter_bytes += size_of::<Params>() as u64;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "wave_sampling".into(),
-        command_buffers: 1,
+        command_buffers: cs.command_buffers,
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,

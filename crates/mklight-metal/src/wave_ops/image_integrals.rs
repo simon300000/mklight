@@ -60,7 +60,7 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
         // SAFETY: inputs and query extents are validated; each dispatch owns its
         // pixel range or its queries' block partials, finished in order.
         let cs = unsafe {
-            xr.gpu.run("wave image integral", |e| {
+            xr.run("wave image integral", |e| {
                 for (i, v) in access.reads.iter().enumerate() {
                     let (b, o) = xr.buffer(v);
                     e.set_buffer(i, b, o);
@@ -85,7 +85,7 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
                 Ok(())
             })?
         };
-        stage.command_buffers += 1;
+        stage.command_buffers += cs.command_buffers;
         stage.device_seconds += cs.gpu_seconds;
         stage.max_command_seconds = stage.max_command_seconds.max(wall.elapsed().as_secs_f64());
         ctl.report((done + 1) as f64 / groups.len() as f64, "image integral");
@@ -122,7 +122,7 @@ fn metrics(
     let xr = &*x;
     // SAFETY: disjoint block rows, then a single writer for five summary scalars.
     let cs = unsafe {
-        xr.gpu.run("image metrics", |e| {
+        xr.run("image metrics", |e| {
             let (v, o) = xr.buffer(input);
             e.set_buffer(0, v, o);
             e.set_buffer_mut(1, &mut part, 0);
@@ -137,12 +137,12 @@ fn metrics(
     let elapsed = start.elapsed().as_secs_f64();
     x.put_output(output, out);
     x.recycle(part);
-    x.stats.command_buffers += 1;
+    x.stats.command_buffers += cs.command_buffers;
     x.stats.device_seconds += cs.gpu_seconds;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "image_metrics".into(),
-        command_buffers: 1,
+        command_buffers: cs.command_buffers,
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,

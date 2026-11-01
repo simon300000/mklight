@@ -35,7 +35,7 @@ pub fn execute(r: &Statistics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
     let xr = &*x;
     // SAFETY: validation fixes all row extents; block scratch and outputs are exclusive.
     let cs = unsafe {
-        xr.gpu.run("wave statistics", |e| {
+        xr.run("wave statistics", |e| {
             for (i, v) in access.reads.iter().enumerate() {
                 let (buf, off) = xr.buffer(v);
                 e.set_buffer(i, buf, off);
@@ -61,13 +61,13 @@ pub fn execute(r: &Statistics, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
         x.put_output(access.writes[1], s);
     }
     x.recycle(partial);
-    x.stats.command_buffers += 1;
+    x.stats.command_buffers += cs.command_buffers;
     x.stats.device_seconds += cs.gpu_seconds;
     x.stats.parameter_bytes += 16;
     x.stats.stages.push(StageStats {
         operation: x.stats.stages.len(),
         name: "wave_statistics".into(),
-        command_buffers: 1,
+        command_buffers: cs.command_buffers,
         device_seconds: cs.gpu_seconds,
         wall_seconds: elapsed,
         max_command_seconds: elapsed,

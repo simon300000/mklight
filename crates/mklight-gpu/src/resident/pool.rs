@@ -26,13 +26,17 @@ impl<T> Pool<T> {
         pool: &Arc<Mutex<Self>>,
         words: usize,
         allocate: impl FnOnce(usize) -> MkResult<T>,
+        available: impl Fn(&T) -> bool,
     ) -> MkResult<(Allocation<T>, bool)> {
         let cached = {
             let mut p = pool.lock().unwrap_or_else(|e| e.into_inner());
-            p.idle.iter().rposition(|(n, _)| *n == words).map(|i| {
-                p.bytes -= words.max(4) * 4;
-                p.idle.remove(i).1
-            })
+            p.idle
+                .iter()
+                .rposition(|(n, value)| *n == words && available(value))
+                .map(|i| {
+                    p.bytes -= words.max(4) * 4;
+                    p.idle.remove(i).1
+                })
         };
         let reused = cached.is_some();
         let value = match cached {
