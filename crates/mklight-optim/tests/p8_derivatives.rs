@@ -28,6 +28,14 @@ impl Problem for Raw<'_> {
 #[test]
 #[ignore = "host MTF finite-difference step qualification"]
 fn mtf_steps() {
+    operand_steps(true);
+}
+#[test]
+#[ignore = "host matched-method RI finite-difference step qualification"]
+fn ri_steps() {
+    operand_steps(false);
+}
+fn operand_steps(mtf: bool) {
     let b = Arc::new(
         mklight_metal::MetalBackend::new()
             .unwrap()
@@ -40,24 +48,33 @@ fn mtf_steps() {
         GpuContext::new(b, Snapshot::new(system.clone()).unwrap()),
         reference.clone(),
     );
-    let spec = MeritFunctionSpec::new(
-        [0, 2]
-            .into_iter()
-            .flat_map(|field| {
-                [10., 20., 40.].into_iter().map(move |frequency| {
-                    Operand::new(OperandKind::Mtf {
-                        frequency,
-                        orientation: MtfOrientation::Tangential,
-                        method: MtfMethod::Diffraction,
-                        defocus_mm: 0.,
-                        detector: None,
-                        wavelengths: vec![],
+    let spec = if !mtf {
+        MeritFunctionSpec::new(
+            [0, 2]
+                .into_iter()
+                .map(|field| Operand::new(OperandKind::RelativeIllumination).at_field(field))
+                .collect(),
+        )
+    } else {
+        MeritFunctionSpec::new(
+            [0, 2]
+                .into_iter()
+                .flat_map(|field| {
+                    [10., 20., 40.].into_iter().map(move |frequency| {
+                        Operand::new(OperandKind::Mtf {
+                            frequency,
+                            orientation: MtfOrientation::Tangential,
+                            method: MtfMethod::Diffraction,
+                            defocus_mm: 0.,
+                            detector: None,
+                            wavelengths: vec![],
+                        })
+                        .at_field(field)
                     })
-                    .at_field(field)
                 })
-            })
-            .collect(),
-    );
+                .collect(),
+        )
+    };
     let vars = vec![
         VariableSpec::new(ParamPath::Curvature {
             surface: system.surfaces[1].id,
@@ -94,7 +111,7 @@ fn mtf_steps() {
         .map(|(a, b)| (4. * b - a) / 3.)
         .collect();
     for scheme in [FdScheme::Forward, FdScheme::Central] {
-        for step in [1e-6, 1e-5, 1e-4, 1e-3, 3e-3, 1e-2] {
+        for step in [1e-8, 1e-6, 1e-5, 1e-4, 1e-3, 3e-3, 1e-2] {
             let d = fd_jacobian(&Raw(&p), &x, &fg, &config(scheme, step), &ctx).unwrap();
             let errors: Vec<_> = (0..x.len())
                 .map(|j| {
@@ -108,14 +125,34 @@ fn mtf_steps() {
                     (err / norm.max(1e-16)).sqrt()
                 })
                 .collect();
-            if scheme == FdScheme::Central && step == 1e-5 {
+            if (scheme == FdScheme::Central && step == 1e-5)
+                || (!mtf && scheme == FdScheme::Forward && step == 1e-6)
+            {
                 assert!(errors.iter().all(|&e| e < 1e-3), "{errors:?}");
+                // The same column gate must reject a deliberately biased derivative.
+                for j in 0..x.len() {
+                    let mut error = 0.;
+                    let mut norm = 0.;
+                    for i in 0..p.num_residuals() {
+                        let r = rich[i * x.len() + j];
+                        error += (d.residuals[(i, j)] + 0.01 * r - r).powi(2);
+                        norm += r * r;
+                    }
+                    assert!((error / norm.max(1e-16)).sqrt() > 1e-3);
+                }
             }
             eprintln!(
-                "P8_STEP mtf=true scheme={scheme:?} step={step:e} column_errors={errors:?} stats={:?}",
+                "P8_STEP mtf={mtf} scheme={scheme:?} step={step:e} column_errors={errors:?} stats={:?}",
                 gpu.stats()
             );
         }
+    }
+    assert!(
+        gpu.stats().device_operands > 0,
+        "fallback-only derivative comparison"
+    );
+    if !mtf {
+        return;
     }
     let got = fd_jacobian(&p, &x, &fg, &config(FdScheme::Forward, 1e-6), &ctx).unwrap();
     let expected = fd_jacobian(&cpu, &x, &f, &config(FdScheme::Forward, 1e-6), &ctx).unwrap();

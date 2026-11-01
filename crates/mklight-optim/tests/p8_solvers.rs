@@ -240,3 +240,62 @@ fn coefficient_scale_uses_reference_when_df_cannot_represent_it() {
     assert!((j.residuals[(0, 0)] / 1e45 - 1.).abs() < 1e-9);
     assert!(p.context.stats().fallback_count > 0);
 }
+
+#[test]
+fn host_ri_preserves_adaptive_etendue_model() {
+    let b = backend();
+    let mut clipped = samples::cooke_triplet();
+    clipped.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 4.5 };
+    for (name, system) in [
+        ("singlet", samples::singlet()),
+        ("cooke", samples::cooke_triplet()),
+        ("clipped", clipped),
+        ("relay", samples::finite_relay()),
+    ] {
+        let cpu = BuiltinEvaluator::builtin();
+        let gpu = ResidentEvaluator::new(
+            GpuContext::new(b.clone(), Snapshot::new(system.clone()).unwrap()),
+            cpu.clone(),
+        );
+        let ops: Vec<_> = (0..system.fields.fields.len())
+            .map(|f| Operand::new(OperandKind::RelativeIllumination).at_field(f))
+            .collect();
+        let refs: Vec<_> = ops.iter().collect();
+        let ctx = JobContext::new();
+        let expected = cpu
+            .evaluate_batch(std::slice::from_ref(&system), &refs, &ctx)
+            .unwrap();
+        let got = gpu
+            .evaluate_batch(std::slice::from_ref(&system), &refs, &ctx)
+            .unwrap();
+        let mut error = 0_f64;
+        for (a, b) in got[0].iter().zip(&expected[0]) {
+            error = error.max((a.as_ref().unwrap() - b.as_ref().unwrap()).abs());
+        }
+        assert!(error < 1e-3 / 3.);
+        assert!(gpu.stats().device_operands > 0, "{name}: {:?}", gpu.stats());
+        assert_eq!(gpu.stats().fallback_operands, 0);
+        let info = gpu
+            .run(&system, "ri", &serde_json::json!({}), None, || Ok(()))
+            .unwrap()
+            .info;
+        let visibility = &info.settings["optim_native_stages"]["ri_visibility"];
+        assert!(visibility["lookups"].as_u64().unwrap() > 100);
+        if name == "clipped" {
+            assert!(visibility["blocked"].as_u64().unwrap() > 0);
+        }
+        eprintln!("P8_RI_VISIBILITY sample={name} counters={visibility}");
+        let stats = gpu.context.stats();
+        assert!(stats.fallback_count > 0);
+        assert!(
+            stats
+                .stages
+                .iter()
+                .any(|s| s.name == "RI adaptive reference completion")
+        );
+        eprintln!(
+            "P8_RI sample={name} error={error:e} values={got:?} qualification={:?}",
+            gpu.stats()
+        );
+    }
+}

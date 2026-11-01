@@ -263,6 +263,7 @@ impl ResidentEvaluator {
         }
         let reference: Vec<_> = reference.into_iter().map(Option::unwrap).collect();
         let ref_seconds = t.elapsed().as_secs_f64();
+        ctx.report(0.5, "candidate reference qualification");
         let mut result = reference.clone();
         let mut stats = EvaluationStats {
             candidates: systems.len() as u64,
@@ -284,6 +285,7 @@ impl ResidentEvaluator {
             })
             .collect();
         for (route, indices) in routes.into_iter().enumerate() {
+            ctx.report(0.5 + 0.1 * route as f64, "resident candidate operands");
             if indices.is_empty() {
                 continue;
             }
@@ -404,6 +406,8 @@ impl ResidentEvaluator {
         for (k, v) in stats.fallbacks {
             *total.fallbacks.entry(k).or_default() += v;
         }
+        ctx.check()?;
+        ctx.report(1., "candidate batch qualified");
         Ok(result)
     }
 }
@@ -428,7 +432,7 @@ fn merge_geometry(
         *total = Some(r.clone());
     }
 }
-fn batch_limit(system: &OpticalSystem, ops: &[&Operand]) -> usize {
+fn batch_limit(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usize {
     let mut groups = Vec::new();
     for op in ops {
         let sampling = match &op.kind {
@@ -455,6 +459,14 @@ fn batch_limit(system: &OpticalSystem, ops: &[&Operand]) -> usize {
         }
     }
     let rays = ops.len()
+        + ops
+            .iter()
+            .filter(|o| matches!(o.kind, OperandKind::RelativeIllumination))
+            .count()
+            * 2
+            * system.fields.fields.len()
+            * system.wavelengths.wavelengths.len()
+            * ri_nodes
         + groups
             .iter()
             .map(|(s, f, w)| {
@@ -490,7 +502,7 @@ fn route_for(kind: &OperandKind) -> usize {
             | OperandKind::BflY
     ) {
         4
-    } else if gpu_supports(kind, true) {
+    } else if matches!(kind, OperandKind::RelativeIllumination) || gpu_supports(kind, true) {
         0
     } else if matches!(kind, OperandKind::Mtf { .. }) {
         1
@@ -531,6 +543,9 @@ fn qualifies(
     let br = op.residual(*b);
     (
         error <= budget
+            // RI's numeric completion is f64. A changed visibility decision
+            // must not introduce an unchecked finite-difference discontinuity.
+            && (!matches!(op.kind,OperandKind::RelativeIllumination) || error==0.)
             && !near
             && (op.weight * (ar * ar - br * br)).abs()
                 <= (0.005 * op.weight * br * br).max(0.5e-8 / terms.max(1) as f64),
@@ -548,6 +563,12 @@ impl OperandEvaluator for ResidentEvaluator {
         self.reference.supports(kind)
     }
     fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
+        if matches!(kind, OperandKind::RelativeIllumination) {
+            return Some(match scheme {
+                FdScheme::Forward => 1e-6,
+                FdScheme::Central => 1e-5,
+            });
+        }
         if gpu_supports(kind, true) {
             Some(gpu_fd_relative_step(kind, scheme))
         } else {
@@ -561,9 +582,25 @@ impl OperandEvaluator for ResidentEvaluator {
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         let mut values = Vec::with_capacity(systems.len());
-        for chunk in systems.chunks(systems.first().map_or(256, |s| batch_limit(s, ops))) {
-            values.extend(self.evaluate(chunk, ops, None, ctx)?);
+        let limit = systems.first().map_or(256, |s| {
+            batch_limit(
+                s,
+                ops,
+                1 + self.reference.trace.settings().illumination_rings.max(2)
+                    * self.reference.trace.settings().illumination_arms.max(8),
+            )
+        });
+        let count = systems.len().div_ceil(limit);
+        for (i, chunk) in systems.chunks(limit).enumerate() {
+            values.extend(self.evaluate(
+                chunk,
+                ops,
+                None,
+                &ctx.subrange(i as f64 / count as f64, (i + 1) as f64 / count as f64),
+            )?);
         }
+        ctx.check()?;
+        ctx.report(1., "candidate batch complete");
         Ok(values)
     }
     fn evaluate_parametric(
@@ -577,7 +614,7 @@ impl OperandEvaluator for ResidentEvaluator {
             .into_par_iter()
             .map(|i| batch.build(i))
             .collect();
-        let template = match self.template(batch, ctx) {
+        let template = match self.template(batch, &ctx.subrange(0., 0.05)) {
             Ok(t) => Some(t),
             Err(MkError::Cancelled) => return Err(MkError::Cancelled),
             Err(e) => {
@@ -603,15 +640,26 @@ impl OperandEvaluator for ResidentEvaluator {
             }
         }
         let mut values = Vec::new();
-        let limit = batch_limit(batch.base, ops);
-        for (systems, rows) in systems.chunks(limit).zip(rows.chunks(limit)) {
+        let limit = batch_limit(
+            batch.base,
+            ops,
+            1 + self.reference.trace.settings().illumination_rings.max(2)
+                * self.reference.trace.settings().illumination_arms.max(8),
+        );
+        let count = systems.len().div_ceil(limit);
+        for (i, (systems, rows)) in systems.chunks(limit).zip(rows.chunks(limit)).enumerate() {
             values.extend(self.evaluate(
                 systems,
                 ops,
                 template.as_ref().map(|t| (&t.uploaded, rows)),
-                ctx,
+                &ctx.subrange(
+                    0.05 + 0.95 * i as f64 / count as f64,
+                    0.05 + 0.95 * (i + 1) as f64 / count as f64,
+                ),
             )?);
         }
+        ctx.check()?;
+        ctx.report(1., "parametric candidate batch complete");
         let mut values = values.into_iter();
         Ok(built
             .into_iter()
@@ -646,11 +694,13 @@ impl ResidentEvaluator {
                         &OperandRegistry::builtin(),
                     )?;
                     let start = problem.start_point()?;
-                    let monitor = crate::Monitor::new(JobContext::with(
-                        ctx.cancel.clone(),
-                        Default::default(),
-                    ));
-                    crate::lsq::least_squares(&problem, &start, settings, &monitor)
+                    crate::discrete::refine_one(
+                        &problem,
+                        &start,
+                        settings,
+                        ctx,
+                        crate::monitor::DEFAULT_FEASIBILITY_TOL,
+                    )
                 },
             )?);
         }

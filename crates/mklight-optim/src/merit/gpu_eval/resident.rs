@@ -4,6 +4,14 @@ mod fits;
 use super::*;
 use crate::gpu::GpuContext;
 use mklight_gpu::{Df32, aiming as a, resident::*, systems};
+#[derive(Clone, Copy)]
+enum Dest {
+    Chief,
+    Node(u32, u32),
+    Single(u32),
+    Real(u32),
+    Illumination,
+}
 #[derive(Clone)]
 struct Probe {
     candidate: usize,
@@ -177,6 +185,31 @@ pub(crate) fn evaluate(
             .map(|t| PackedSystem::pack(t.system(), &Default::default()))
             .collect::<MkResult<Vec<_>>>()?;
         let h = g.backend.upload_systems(&packed)?;
+        // This legacy boundary owns packed arrays; its copies occur before
+        // the resident plan's own copy counter starts.
+        let bytes = packed
+            .iter()
+            .map(|s| {
+                size_of_val(&s.header)
+                    + size_of_val(s.surfaces.as_slice())
+                    + size_of_val(s.coefficients.as_slice())
+            })
+            .sum::<usize>() as u64;
+        g.observe(PlanStats {
+            uploaded_bytes: bytes,
+            copied_bytes: if g.backend.info().kind == mklight_gpu::BackendKind::Metal {
+                bytes
+            } else {
+                0
+            },
+            allocations: 3,
+            peak_bytes: bytes,
+            stages: vec![StageStats {
+                name: "complete-system upload".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
         uploaded = Some(Uploaded(g.backend.as_ref(), h));
         (SystemSet::Uploaded(h), None)
     };
@@ -188,6 +221,19 @@ pub(crate) fn evaluate(
     for (ci, tr) in tracers.iter().enumerate() {
         let (mut c, plan) = Candidate::planned(cpu, tr, operands);
         c.prepare_points(&plan, false);
+        c.cancel = Some(ctx.cancel.clone());
+        let mut ri = std::collections::BTreeSet::new();
+        for op in operands
+            .iter()
+            .filter(|o| matches!(o.kind, OperandKind::RelativeIllumination))
+        {
+            for (f, _) in c.fields(op.field).unwrap_or_default() {
+                for (w, _) in c.wavelengths(op.wavelength).unwrap_or_default() {
+                    ri.insert((f, w));
+                    ri.insert((FieldKey::Point(0, 0), w));
+                }
+            }
+        }
         let mut all = plan.chiefs.clone();
         for &(f, w, _, _) in &plan.singles {
             all.insert((f, w));
@@ -195,6 +241,7 @@ pub(crate) fn evaluate(
         for &(f, w, _, _, _) in &plan.real {
             all.insert((f, w));
         }
+        all.extend(ri.iter().copied());
         let field_keys: Vec<_> = all.iter().map(|x| x.0).collect();
         for f in field_keys {
             all.insert((f, tr.system().primary_wavelength));
@@ -206,13 +253,40 @@ pub(crate) fn evaluate(
                 field: f,
                 wavelength: w,
                 pupil: [0.; 2],
-                dest: Dest::Chief(0),
+                dest: Dest::Chief,
             });
             refs.extend([
                 tr.paraxial().at(w).exit_pupil_position,
                 tr.system().n_before(last, w),
                 tr.system().wavelengths_um[w],
             ]);
+        }
+        let nr = cpu.settings().illumination_rings.max(2);
+        let na = cpu.settings().illumination_arms.max(8);
+        let dt = std::f64::consts::TAU / na as f64;
+        for (f, w) in ri {
+            let probes = batches.entry((cpu.settings().clip, last)).or_default();
+            probes.push(Probe {
+                candidate: ci,
+                field: f,
+                wavelength: w,
+                pupil: [0., 0.],
+                dest: Dest::Illumination,
+            });
+            for j in 0..na {
+                ctx.check()?;
+                let (sn, cs) = (dt * j as f64).sin_cos();
+                for k in 1..=nr {
+                    let r = k as f64 / nr as f64;
+                    probes.push(Probe {
+                        candidate: ci,
+                        field: f,
+                        wavelength: w,
+                        pupil: [r * cs, r * sn],
+                        dest: Dest::Illumination,
+                    });
+                }
+            }
         }
         for (gi, (&key, sampling)) in plan.groups.iter().enumerate() {
             let (nodes, symmetry) = c.group_nodes_from(key.0, sampling, g.pupil_nodes(sampling));
@@ -415,6 +489,13 @@ pub(crate) fn evaluate(
             }
         }
         bounds.push(probes.len() as u32);
+        if segments.iter().all(Option::is_none) {
+            p.outputs.extend([h.status, h.status]);
+            moment_segments.push(Vec::new());
+            fit_inputs.push((probes, opd, status));
+            outputs.push(probes);
+            continue;
+        }
         let offsets = g.fill(&mut p, [bounds.len()], |out: &mut [u32]| {
             out.copy_from_slice(&bounds)
         })?;
@@ -555,6 +636,18 @@ pub(crate) fn evaluate(
         };
         let valid = views[offset + 4].as_slice::<u32>()?;
         for (i, q) in probes.iter().enumerate() {
+            if matches!(q.dest, Dest::Illumination) {
+                candidates[q.candidate].0.resident_visibility.insert(
+                    (
+                        q.field,
+                        q.wavelength,
+                        q.pupil[0].to_bits(),
+                        q.pupil[1].to_bits(),
+                    ),
+                    (status[i] != 0).then_some(status[probes.len() + i] as usize),
+                );
+                continue;
+            }
             let hit = trace_result(f, status, probes.len(), i);
             let node = NodeRay {
                 pos: hit.as_ref().ok().map(|r| [r.ray.pos.x, r.ray.pos.y]),
@@ -581,11 +674,14 @@ pub(crate) fn evaluate(
                         }),
                     );
                 }
-                Dest::Chief(_) => unreachable!(),
+                Dest::Chief | Dest::Illumination => unreachable!(),
             }
         }
     }
     for (bi, segments) in moment_segments.iter().enumerate() {
+        if segments.is_empty() {
+            continue;
+        }
         let moments = views[3 + 7 * bi + 5].as_slice::<Df32>()?;
         for (si, key) in segments.iter().enumerate() {
             if let Some((ci, key)) = key {
@@ -625,6 +721,28 @@ pub(crate) fn evaluate(
         .collect();
     drop(uploaded);
     let seconds = assembly.elapsed().as_secs_f64();
+    let ri = operands
+        .iter()
+        .filter(|o| matches!(o.kind, OperandKind::RelativeIllumination))
+        .count();
+    if ri > 0 {
+        let count = |i: usize| {
+            candidates
+                .iter()
+                .map(|(c, _)| c.visibility_lookups[i].load(std::sync::atomic::Ordering::Relaxed))
+                .sum()
+        };
+        g.observe_ri_visibility(count(0), count(1));
+        g.observe(PlanStats {
+            fallback_count: (ri * tracers.len()) as u64,
+            stages: vec![StageStats {
+                name: "RI adaptive reference completion".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+    ctx.check()?;
     g.observe(PlanStats {
         wall_seconds: seconds,
         stages: vec![StageStats {

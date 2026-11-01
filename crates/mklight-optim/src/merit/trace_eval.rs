@@ -611,6 +611,10 @@ pub(super) struct Candidate<'a> {
     /// Completed P3 moments; absent on the unchanged reference evaluator.
     pub(super) resident_wavefits: BTreeMap<GroupKey, [[f64; 4]; 2]>,
     pub(super) resident_moments: BTreeMap<GroupKey, [f64; 10]>,
+    /// Initial RI radial scans; adaptive boundaries retain the same reference method.
+    pub(super) resident_visibility: BTreeMap<SingleKey, Option<usize>>,
+    pub(super) visibility_lookups: [std::sync::atomic::AtomicU64; 2],
+    pub(super) cancel: Option<mklight_core::CancelToken>,
     ev: &'a TraceEvaluator,
     pub(super) tr: &'a SequentialTracer,
     opts: TraceOptions,
@@ -660,6 +664,9 @@ impl<'a> Candidate<'a> {
             ..tr.options()
         };
         let c = Candidate {
+            resident_visibility: BTreeMap::new(),
+            visibility_lookups: Default::default(),
+            cancel: None,
             resident_moments: BTreeMap::new(),
             resident_wavefits: BTreeMap::new(),
             ev,
@@ -866,7 +873,10 @@ impl<'a> Candidate<'a> {
     }
 
     /// `(wavelength, weight)` of a selector.
-    fn wavelengths(&self, sel: WavelengthSelector) -> Result<Vec<(usize, f64)>, OperandError> {
+    pub(super) fn wavelengths(
+        &self,
+        sel: WavelengthSelector,
+    ) -> Result<Vec<(usize, f64)>, OperandError> {
         let nw = self.tr.num_wavelengths();
         match sel {
             WavelengthSelector::Primary => Ok(vec![(self.primary(), 1.0)]),
@@ -901,7 +911,7 @@ impl<'a> Candidate<'a> {
     }
 
     /// `(field, weight)` of a selector.
-    fn fields(&self, sel: FieldSelector) -> Result<Vec<(FieldKey, f64)>, OperandError> {
+    pub(super) fn fields(&self, sel: FieldSelector) -> Result<Vec<(FieldKey, f64)>, OperandError> {
         let fs = &self.system().fields.fields;
         match sel {
             FieldSelector::Index { index } if index < fs.len() => {
@@ -2041,7 +2051,7 @@ impl<'a> Candidate<'a> {
                 "field maps to no image area (afocal image space?)".into(),
             ));
         }
-        Ok(self.transmitted_etendue(field, w)? * object / image)
+        Ok(self.transmitted_etendue(f, field, w)? * object / image)
     }
 
     /// Étendue `G` of the rays of `field` that reach the image (see
@@ -2067,7 +2077,12 @@ impl<'a> Candidate<'a> {
     /// approximated by grid cells; what can still be missed are transmitted
     /// (or blocked) features narrower than the radial sample spacing, and
     /// corners formed by one surface's own non-circular aperture.
-    fn transmitted_etendue(&self, field: &PreparedField, w: usize) -> Result<f64, OperandError> {
+    fn transmitted_etendue(
+        &self,
+        f: FieldKey,
+        field: &PreparedField,
+        w: usize,
+    ) -> Result<f64, OperandError> {
         let nr = self.ev.settings.illumination_rings.max(2);
         let na = self.ev.settings.illumination_arms.max(8);
         let (e1, e2) = match field.source {
@@ -2080,6 +2095,9 @@ impl<'a> Candidate<'a> {
         };
         let at_inf = matches!(field.source, ObjectSource::Direction { .. });
         let q = |px: f64, py: f64| -> Result<[f64; 2], OperandError> {
+            if self.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(OperandError::Invalid("RI completion cancelled".into()));
+            }
             let g = self
                 .tr
                 .generate(field, w, px, py)
@@ -2097,8 +2115,24 @@ impl<'a> Candidate<'a> {
         };
         let (gx, gw) = super::quadrature::gauss_legendre(6);
         // `None` when the ray reaches the image, else the surface stopping it.
-        let blocked =
-            |px: f64, py: f64| self.tr.trace(field, w, px, py, &self.opts).status.surface();
+        let blocked = |px: f64, py: f64| {
+            if self.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return None;
+            }
+            if let Some(&by) = self
+                .resident_visibility
+                .get(&(f, w, px.to_bits(), py.to_bits()))
+            {
+                self.visibility_lookups[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.visibility_lookups[1].fetch_add(
+                    u64::from(by.is_some()),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                by
+            } else {
+                self.tr.trace(field, w, px, py, &self.opts).status.surface()
+            }
+        };
         let centre = blocked(0.0, 0.0);
         // Transmitted radial intervals along azimuth θ, and the surfaces
         // bounding them (a change of these is a kink of the integrand in θ).

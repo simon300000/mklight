@@ -1357,10 +1357,15 @@ field/wavelength probes share P6's trace batches. Ghost and stray operands use t
 P9/P10 adapters and retain their native reference-completion reports. Their
 current public adapters prepare uploaded systems per candidate; they do not
 consume the P4 candidate sidecar. Native solver commands across different
-candidates are not fused into one resident plan. The RI merit stays on the
-reference: its chief-ray étendue definition and adaptive transmitted-pupil
-quadrature differ from P5's image-point irradiance model. Substituting P5 is not
-a matched-method acceleration, even on designs where the values nearly agree.
+candidates are not fused into one resident plan. RI uses its existing chief-ray
+étendue definition: the initial radial visibility scans run through P1 in a
+candidate batch, then the reference adaptive boundary search and quadrature
+consume those decisions. This host completion is counted; `ri_visibility`
+records consumed and blocked device lookups. RI requires exact f64 scalar
+agreement before publication, so a changed visibility decision cannot silently
+introduce a derivative discontinuity. The measured forward/central RI steps
+are 1e-6/1e-5. P5's image-point irradiance has a different definition and is not
+substituted for this merit.
 Model scalars, unsupported paraxial quantities, and unimplemented
 operand adapters retain reported host evaluation.
 
@@ -1436,7 +1441,7 @@ Host-required tests are `p8_algebra`, `p8_candidates`, `p8_solvers`,
 probes, exact emulation algebra, all 16 samples with perturbed spot/wavefront
 merits, asymmetric half pupils, an analytic thick-lens derivative, one-sided
 retry, 8/32/100-variable solves, native mixed operands, MTF step sweeps, cancellation, trial
-replay and independent refinements. A fallback-only result cannot satisfy the
+replay, matched-method RI visibility with clipped pupils, and independent refinements. A fallback-only result cannot satisfy the
 device-work assertions. Existing CPU reference tests remain in force.
 
 The ignored `p8_bench` harness alternates unchanged f64, legacy Metal and the
@@ -1448,3 +1453,10 @@ changed. Exact numerical maxima, provisional median/p95 results, raw records
 and unmeasured acceptance cases are in the task's `P8-evidence.md`. P11 must
 retain the distinction between cold candidate qualification, identical-input
 reuse and changing-candidate optimisation when deriving cost policy.
+
+The additional ignored `p8_workloads` harness measures full synthetic Jacobians
+and solves at 8/32/100 variables, 32 Cooke tolerance trials with/without
+compensation, three built-in catalogue refinements, and hybrid RI at B=1/16.
+These include qualification and f64 final scoring, and currently remain
+CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
+`p8_bench`; its default is spot. Timing evidence remains provisional.

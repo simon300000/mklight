@@ -195,6 +195,14 @@ impl GpuContext {
         );
         entry["last_run"] = serde_json::to_value(info).unwrap();
     }
+    pub(crate) fn observe_ri_visibility(&self, lookups: u64, blocked: u64) {
+        let mut native = self.native.lock().unwrap();
+        let entry = native
+            .entry("ri_visibility".into())
+            .or_insert_with(|| serde_json::json!({"lookups":0,"blocked":0}));
+        entry["lookups"] = serde_json::json!(entry["lookups"].as_u64().unwrap() + lookups);
+        entry["blocked"] = serde_json::json!(entry["blocked"].as_u64().unwrap() + blocked);
+    }
     pub fn record(&self, info: &mut RunInfo) {
         if self.numeric_outputs_read.load(Ordering::Relaxed) {
             info.backend = self.backend.info().backend_id();

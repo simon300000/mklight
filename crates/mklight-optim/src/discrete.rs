@@ -453,39 +453,51 @@ impl LocallyRefined {
             .map(|(i, a)| {
                 ctx.check()?;
                 let (p, x0) = (self.build)(a)?;
-                let mut mon =
-                    Monitor::new(JobContext::with(ctx.cancel.clone(), Default::default()));
-                mon.keep_history = false;
-                mon.feasibility_tol = feasibility_tol;
-                let x0 = starts.map_or(&x0, |s| &s[i]);
-                let mut r = least_squares(&*p, x0, &self.settings, &mon)?;
-                if let Some(best) = mon.best.get()
-                    && best.scalar().better_than(&r.scalar(), feasibility_tol)
-                {
-                    (r.x, r.merit, r.violation) = (best.x, best.merit, best.violation);
-                }
-                // Restoring a completed best point must not restore its device
-                // score over the independent final score used for glass ranking.
-                if r.termination != Termination::Cancelled
-                    && let Some(reference) = p.reference_evaluation(&r.x, ctx)
-                {
-                    match reference {
-                        Ok(e) => {
-                            r.merit = crate::problem::merit(p.weights(), &e.residuals, e.status);
-                            r.violation = crate::problem::total_violation(
-                                p.constraints(),
-                                &e.constraints,
-                                e.status,
-                            );
-                        }
-                        Err(MkError::Cancelled) => r.termination = Termination::Cancelled,
-                        Err(e) => return Err(e),
-                    }
-                }
-                Ok(r)
+                refine_one(
+                    &*p,
+                    starts.map_or(&x0, |s| &s[i]),
+                    &self.settings,
+                    ctx,
+                    feasibility_tol,
+                )
             })
             .collect()
     }
+}
+
+/// Shared archive semantics for ordinary and rendezvous-batched refinements.
+pub(crate) fn refine_one<P: Problem + ?Sized>(
+    p: &P,
+    x0: &[f64],
+    settings: &LsqSettings,
+    ctx: &JobContext,
+    feasibility_tol: f64,
+) -> MkResult<OptimResult> {
+    let mut mon = Monitor::new(JobContext::with(ctx.cancel.clone(), Default::default()));
+    mon.keep_history = false;
+    mon.feasibility_tol = feasibility_tol;
+    let mut r = least_squares(p, x0, settings, &mon)?;
+    if let Some(best) = mon.best.get()
+        && best.x != r.x
+        && best.scalar().better_than(&r.scalar(), feasibility_tol)
+    {
+        (r.x, r.merit, r.violation) = (best.x, best.merit, best.violation);
+        // Only a restored point needs another independent final score.
+        if r.termination != Termination::Cancelled
+            && let Some(reference) = p.reference_evaluation(&r.x, ctx)
+        {
+            match reference {
+                Ok(e) => {
+                    r.merit = crate::problem::merit(p.weights(), &e.residuals, e.status);
+                    r.violation =
+                        crate::problem::total_violation(p.constraints(), &e.constraints, e.status);
+                }
+                Err(MkError::Cancelled) => r.termination = Termination::Cancelled,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(r)
 }
 
 impl DiscreteProblem for LocallyRefined {
