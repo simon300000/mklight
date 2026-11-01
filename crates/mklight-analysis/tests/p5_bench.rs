@@ -481,3 +481,63 @@ fn footprints() {
         }
     }
 }
+
+/// Fixed default workloads, with no idle-host wait. Run before/after fusion.
+#[test]
+#[ignore = "provisional command-fusion host benchmark"]
+fn fusion_defaults() {
+    let b = MetalBackend::new().unwrap().expect("host Metal required");
+    let t = tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
+    for case in ["spot", "ee", "best_focus"] {
+        for run in 0..11 {
+            let ctx = mklight_core::JobContext::new();
+            let start = Instant::now();
+            match case {
+                "spot" => {
+                    std::hint::black_box(
+                        spot::spot_diagram_job(&t, &Default::default(), &ctx).unwrap(),
+                    );
+                }
+                "ee" => {
+                    std::hint::black_box(
+                        mklight_analysis::energy::encircled_energy_job(
+                            &t,
+                            &Default::default(),
+                            &ctx,
+                        )
+                        .unwrap(),
+                    );
+                }
+                _ => {
+                    std::hint::black_box(
+                        mklight_analysis::energy::best_focus_job(&t, &Default::default(), &ctx)
+                            .unwrap(),
+                    );
+                }
+            }
+            let cpu_s = start.elapsed().as_secs_f64();
+            let start = Instant::now();
+            let info = match case {
+                "spot" => {
+                    gpu::spot_diagram_job(&b, &t, &Default::default(), &ctx)
+                        .unwrap()
+                        .run_info
+                }
+                "ee" => {
+                    gpu::encircled_energy_job(&b, &t, &Default::default(), &ctx)
+                        .unwrap()
+                        .run_info
+                }
+                _ => {
+                    gpu::best_focus_job(&b, &t, &Default::default(), &ctx)
+                        .unwrap()
+                        .run_info
+                }
+            };
+            eprintln!(
+                "FUSION_P5 {}",
+                serde_json::json!({"case":case,"run":run,"cpu_seconds":cpu_s,"gpu_seconds":start.elapsed().as_secs_f64(),"info":info})
+            );
+        }
+    }
+}

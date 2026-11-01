@@ -107,6 +107,11 @@ fn native_pipeline_benchmark() {
     let image_only = std::env::var("P6_BENCH_IMAGE_ONLY").is_ok();
     if !image_only {
         for (name, model) in samples::all() {
+            if std::env::var("FUSION_BENCH").is_ok()
+                && !matches!(name, "newtonian" | "cooke_triplet" | "singlet")
+            {
+                continue;
+            }
             let start = Instant::now();
             let t = mklight_analysis::tracer_for(model).unwrap();
             eprintln!(
@@ -114,6 +119,9 @@ fn native_pipeline_benchmark() {
                 serde_json::json!({"case":name,"shared_resolution_ms":start.elapsed().as_secs_f64()*1000.})
             );
             psf_case(&b, name, &t, &Default::default());
+        }
+        if std::env::var("FUSION_BENCH").is_ok() {
+            return;
         }
         let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
         // One primary-wavelength field at explicit pupil/image sampling.
