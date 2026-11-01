@@ -626,11 +626,53 @@ fn fused_reductions_match_known_answer_and_emulation() {
                 assert!(r.stats.command_buffers < 8, "{:?}", r.stats);
                 assert_eq!(
                     r.stats.command_buffers,
-                    r.stats.stages.iter().map(|s| s.command_buffers).sum::<u32>()
+                    r.stats
+                        .stages
+                        .iter()
+                        .map(|s| s.command_buffers)
+                        .sum::<u32>()
                 );
             }
             answers.push(values);
         }
         assert_eq!(answers[0], answers[1]);
+    }
+}
+
+/// A scheduling-only budget must not alter dependent trace/reduction bits.
+#[test]
+fn fusion_budget_preserves_trace_and_reduce_bits() {
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let g = backend(origin);
+        let t = testutil::tracer(mklight_core::samples::cooke_triplet());
+        let h = g
+            .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
+            .unwrap();
+        let mut q = TraceRequest::new(h, rays(&t, 17), 0, t.system().image_index() as u32);
+        q.radiometry = Radiometry::Off;
+        let p = plan(Snapshot::new(t.system().system().clone()).unwrap(), q, true);
+        let mut outputs = vec![];
+        let mut commands = vec![];
+        g.set_chunk_items(257);
+        for budget in [0, 1 << 20] {
+            let mut p = p.clone();
+            p.command_work_budget = budget;
+            let result = g
+                .submit_plan(p, &JobContext::new())
+                .unwrap()
+                .wait()
+                .unwrap();
+            outputs.push(
+                result
+                    .outputs
+                    .iter()
+                    .map(|h| g.read_view(h.view()).unwrap().words().to_vec())
+                    .collect::<Vec<_>>(),
+            );
+            commands.push(result.stats.command_buffers);
+        }
+        assert_eq!(outputs[0], outputs[1]);
+        assert!(commands[1] < commands[0], "{commands:?}");
+        g.release_systems(h).unwrap();
     }
 }

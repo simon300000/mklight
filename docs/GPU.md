@@ -1239,15 +1239,38 @@ of the exact size and evicts the oldest. Limits
 are resource/cancellation controls, not engine backend selection thresholds.
 
 **Resident command fusion.** The Metal executor owns a worker-local deferred
-command buffer. Trace tiles and fixed-tree sum passes share its serial compute
+command buffer. Domain operations, trace tiles and fixed-tree sum passes share its serial compute
 encoder, with buffer memory barriers after dispatches. Existing tile boundaries
-remain cancellation checkpoints; accumulated dispatch work (2²⁰ threads) or
+remain cancellation checkpoints; accumulated dispatch work (2²⁰ threads, charging at least 2¹⁵ per dispatch) or
 10 ms of encoding triggers a commit and completion wait. These are work/encoding
 bounds, not a promise of 10 ms device time for an arbitrary kernel. A genuine
-host read or publication flushes the buffer. Recycled scratch stays pinned
+host read or publication flushes the buffer. Reporting-only fallback counters
+and pupil-normalisation checks are deferred to completion. Cache entries built
+by GPU work remain local to the executor until a flush; same-plan consumers can
+reuse them immediately. Large Newton batches retain timing-calibrated device
+checkpoints; small chief/table/pupil chains stay together. Tiny expensive
+instruction sequences are bounded by the dispatch charge as well as thread work. Recycled scratch stays pinned
 until completion; abandoned, uncommitted encoding is discarded on cancellation
 or error. Internal shared-storage guards reject host slices while a pending
 GPU write exists. No pending storage becomes a public `ReadView`.
+`ResidentPlan.command_work_budget` selects that work bound (default 2²⁰);
+zero completes each encoder call separately for scheduling cross-checks. The
+CPU-f32 executor accepts the same plans and preserves its specified arithmetic.
+The selected budget is recorded in `RunInfo`.
+
+Dependent chains compose by appending operations and retaining `BufferId` /
+`PlanView` references until one final submission. P6's probe builder now uses
+this pattern across its complete rim schedule: each `Lattice::Rim` consumes the
+previous round's bracket state and trace status directly on device, appends
+P1 aiming/trace, and feeds the next round without host inspection. The fixed
+iteration cap, 16-branch probes per round, decisions and summation order are
+unchanged; all unresolved-aim and final-bracket checks run on completed leases.
+This removes the old per-round plan submissions. P4→P1→P5→P3 candidate chains
+and per-pupil projection/nodes/resample/PSF operations share command buffers
+within their existing plans. Host-computed sphere/scale/grid metadata still
+separates plans where the next operation genuinely depends on it; there is no
+public pending-buffer view or implicit asynchronous import.
+
 `PlanStats` counts actual completed command buffers; deferred dispatches have
 zero commands at encode time and their timestamps/counts appear in the
 `fused completion` stage. Arithmetic and reduction trees are unchanged.

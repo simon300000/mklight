@@ -459,6 +459,7 @@ impl Encoder<'_> {
 /// The executor retains recycled leases until flush and publishes only afterwards.
 pub(crate) struct CommandBatch {
     pending: Option<BatchEncoding>,
+    work_budget: usize,
     pub(crate) completed: CommandStats,
     pub(crate) max_seconds: f64,
 }
@@ -470,9 +471,10 @@ struct BatchEncoding {
     start: Instant,
 }
 impl CommandBatch {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(work_budget: usize) -> Self {
         Self {
             pending: None,
+            work_budget,
             completed: CommandStats::default(),
             max_seconds: 0.,
         }
@@ -510,7 +512,7 @@ impl CommandBatch {
         // Work bound supplements the existing package-specific weighted tiles.
         // Each dispatch costs at least 2^15 units, bounding tiny expensive
         // dispatch chains to 32 per batch. Encoding time is a second bound.
-        if b.work.get() >= 1 << 20 || b.start.elapsed().as_secs_f64() >= 0.010 {
+        if b.work.get() >= self.work_budget || b.start.elapsed().as_secs_f64() >= 0.010 {
             self.flush()
         } else {
             Ok(CommandStats::default())

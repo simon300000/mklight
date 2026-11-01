@@ -65,6 +65,16 @@ struct Batch {
     power: Option<BufferHandle>,
     count: usize,
 }
+/// Outputs of an appended probe chain. IDs remain plan-local until the
+/// complete composed plan publishes; validation reads only completed leases.
+struct ProbeLayout {
+    first: usize,
+    len: usize,
+    samples: Option<BufferHandle>,
+    count: usize,
+    survival: bool,
+    power: bool,
+}
 impl Batch {
     fn import(&self, p: &mut ResidentPlan) -> aim::ResidentHits {
         let h = self.hits.each_ref().map(|h| p.import(h.view()));
@@ -356,8 +366,6 @@ impl<'a> PupilTracer<'a> {
             .map(|c| c.map(|c| [c[0].to_f64(), c[1].to_f64()]))
             .collect())
     }
-    /// Aim, trace and (optionally) mask and P7-transport `count` samples of
-    /// plan `p`; `extra` plan buffers are published after the batch.
     #[allow(clippy::too_many_arguments)]
     fn probe(
         &self,
@@ -371,9 +379,28 @@ impl<'a> PupilTracer<'a> {
         extra: &[BufferId],
         ctx: &JobContext,
     ) -> MkResult<(Batch, Vec<BufferHandle>, PlanStats)> {
+        let layout =
+            self.append_probe(&mut p, samples, count, fields, clip, survival, power, extra)?;
+        let r = self.backend.submit_plan(p, ctx)?.wait()?;
+        let (batch, extra) = self.finish_probe(&layout, &r, ctx)?;
+        Ok((batch, extra, r.stats))
+    }
+    /// Append a dependent chain without submitting or exposing a host view.
+    #[allow(clippy::too_many_arguments)]
+    fn append_probe(
+        &self,
+        p: &mut ResidentPlan,
+        samples: BufferId,
+        count: usize,
+        fields: &Fields,
+        clip: bool,
+        survival: bool,
+        power: bool,
+        extra: &[BufferId],
+    ) -> MkResult<ProbeLayout> {
         let metadata = p.import(fields.buffer.view());
         let steps = p.import(self.steps.view());
-        let generated = aim::rays(&mut p, count);
+        let generated = aim::rays(p, count);
         let tolerance = match self.tracer.aiming() {
             mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
             _ => 1e-10,
@@ -393,7 +420,7 @@ impl<'a> PupilTracer<'a> {
                 },
             )));
         let hits = aim::hits(
-            &mut p,
+            p,
             count,
             if power {
                 self.tracer.system().surfaces.len()
@@ -446,7 +473,7 @@ impl<'a> PupilTracer<'a> {
                 radiometric_hits.rays.indices = indices;
             }
             outputs.push(self.radiometry.append(
-                &mut p,
+                p,
                 &radiometric_hits,
                 &mklight_trace::PolarizationState::Unpolarized,
             )?);
@@ -465,16 +492,35 @@ impl<'a> PupilTracer<'a> {
             }
         };
         outputs.extend(extra);
-        p.outputs = outputs;
-        let r = self.backend.submit_plan(p, ctx)?.wait()?;
-        let mut rest = r.outputs[6..].iter().cloned();
+        let first = p.outputs.len();
+        let len = outputs.len();
+        p.outputs.extend(outputs);
+        Ok(ProbeLayout {
+            first,
+            len,
+            samples: sample_handle,
+            count,
+            survival,
+            power,
+        })
+    }
+    fn finish_probe(
+        &self,
+        layout: &ProbeLayout,
+        result: &PlanResult,
+        ctx: &JobContext,
+    ) -> MkResult<(Batch, Vec<BufferHandle>)> {
+        let r = &result.outputs[layout.first..layout.first + layout.len];
+        let (count, survival, power) = (layout.count, layout.survival, layout.power);
+        let sample_handle = layout.samples.clone();
+        let mut rest = r[6..].iter().cloned();
         let mask = survival.then(|| rest.next().unwrap());
         let power = power.then(|| rest.next().unwrap());
         let samples = sample_handle.unwrap_or_else(|| rest.next().unwrap());
         let extra = rest.collect();
         let sample_guard = self.backend.read_view(samples.view())?;
         let sample_rows: &[aim::Sample] = bytemuck::cast_slice(sample_guard.words());
-        let reports = self.backend.read_view(r.outputs[4].view())?;
+        let reports = self.backend.read_view(r[4].view())?;
         let reports = reports.as_slice::<u32>()?;
         let mut unresolved = 0usize;
         for (k, sample) in sample_rows.iter().enumerate() {
@@ -508,15 +554,14 @@ impl<'a> PupilTracer<'a> {
         }
         Ok((
             Batch {
-                starts: r.outputs[0].clone(),
-                hits: std::array::from_fn(|i| r.outputs[i + 1].clone()),
+                starts: r[0].clone(),
+                hits: std::array::from_fn(|i| r[i + 1].clone()),
                 samples,
                 mask,
                 power,
                 count,
             },
             extra,
-            r.stats,
         ))
     }
     /// Copy each pupil's range of a shared probe batch into its own channels.
@@ -876,15 +921,15 @@ impl<'a> PupilTracer<'a> {
             .ceil() as usize)
             .div_ceil(4)
             + 1;
-        let mut previous: Option<BufferHandle> = None;
-        let mut batch: Option<Batch> = None;
+        let mut p = self.plan();
+        let edge = p.import(edges.view());
+        let edge_rows = p.import(edge_rows.view());
+        let mut previous = None;
+        let mut status = None;
+        let mut probes = vec![];
         for iteration in 0..=iterations {
+            ctx.check()?;
             let last = iteration == iterations;
-            let mut p = self.plan();
-            let edge = p.import(edges.view());
-            let edge_rows = p.import(edge_rows.view());
-            let state_in = previous.as_ref().map(|h| p.import(h.view()));
-            let status = batch.as_ref().map(|b| p.import(b.hits[4].view()));
             let state = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [count, 8]));
             let probe_count = count * if last { 1 } else { 16 };
             let samples = p.scratch(BufferDesc::new(ElementType::U32, [probe_count, 8]));
@@ -892,32 +937,32 @@ impl<'a> PupilTracer<'a> {
                 .push(ResidentOp::Wave(w::Request::Lattice(Op::Rim {
                     edges: p.view(edge)?,
                     fields: p.view(edge_rows)?,
-                    previous: state_in.map(|i| p.view(i)).transpose()?,
+                    previous: previous.map(|i| p.view(i)).transpose()?,
                     status: status.map(|i| p.view(i)).transpose()?,
                     tolerance: Df32::from_f64(settings.rim_tolerance),
                     final_point: last,
                     state,
                     samples,
                 })));
-            let (b, extra, s) = self.probe(
-                p,
-                samples,
-                probe_count,
-                fields,
-                true,
-                last,
-                false,
-                &[state],
-                &ctx.subrange(
-                    iteration as f64 / (iterations + 1) as f64,
-                    (iteration + 1) as f64 / (iterations + 1) as f64,
-                ),
-            )?;
-            accumulate(stats, &s);
-            previous = extra.into_iter().next();
+            let layout =
+                self.append_probe(&mut p, samples, probe_count, fields, true, last, false, &[])?;
+            // Probe publication order: starts, four ray channels, trace status.
+            status = Some(p.outputs[layout.first + 5]);
+            previous = Some(state);
+            probes.push(layout);
+        }
+        let state_output = p.outputs.len();
+        p.outputs.push(previous.unwrap());
+        let result = self.backend.submit_plan(p, ctx)?.wait()?;
+        accumulate(stats, &result.stats);
+        let mut batch = None;
+        for layout in &probes {
+            let (b, _) = self.finish_probe(layout, &result, ctx)?;
             batch = Some(b);
         }
-        let state = self.backend.read_view(previous.unwrap().view())?;
+        let state = self
+            .backend
+            .read_view(result.outputs[state_output].view())?;
         let state = state.as_slice::<Df32>()?;
         for item in items {
             let rows = &state[item.rim_start * 8..(item.rim_start + item.ids.len()) * 8];

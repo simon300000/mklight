@@ -1163,6 +1163,9 @@ fn batched_pupils_match_single_and_emulation() {
         pupils.len(),
         single.stats.command_buffers
     );
-    assert!(2 * total < pupils.len() as u32 * single.stats.command_buffers);
+    // Fusion also removes most single-pupil commands, reducing the ratio
+    // attributable to batching alone. The batch must still use fewer commands
+    // than independent pupils, and retain its bit-identical outputs above.
+    assert!(total < pupils.len() as u32 * single.stats.command_buffers);
     assert_eq!(shared.copied_bytes, 0);
 }

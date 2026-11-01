@@ -68,7 +68,7 @@ pub(crate) fn execute(
         chunk,
         sum_scratch: None,
         systems,
-        commands: RefCell::new(CommandBatch::new()),
+        commands: RefCell::new(CommandBatch::new(plan.command_work_budget)),
         retired: vec![],
         checks: vec![],
         cache_pending: RefCell::new(vec![]),
