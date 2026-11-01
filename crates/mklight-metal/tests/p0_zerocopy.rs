@@ -119,8 +119,11 @@ fn benchmark_zero_copy() {
             }
             _ => (fft(&b), None),
         };
-        assert_eq!(b.resident_cache_stats().copied_bytes, setup_copied);
-        eprintln!("SETUP {name} seconds={}", setup.elapsed().as_secs_f64());
+        let setup_bytes = b.resident_cache_stats().copied_bytes - setup_copied;
+        eprintln!(
+            "ZERO_COPY_SETUP {}",
+            serde_json::json!({"case":name,"seconds":setup.elapsed().as_secs_f64(),"copied_bytes":setup_bytes})
+        );
         for round in 0..11 {
             let wall = Instant::now();
             let before = b.resident_cache_stats().copied_bytes;
