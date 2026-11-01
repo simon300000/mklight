@@ -93,6 +93,23 @@ pub(crate) fn run(
         }
     };
     ctx.check()?;
+    let completed_on_reference = input
+        .backend_used
+        .borrow()
+        .as_ref()
+        .filter(|used| used.precision == Precision::F64Reference)
+        .map(|used| {
+            used.fallback_reason
+                .clone()
+                .unwrap_or_else(|| "native adapter required reference completion".into())
+        });
+    if let Some(reason) = completed_on_reference {
+        let qualification = json!({"passed":false,"chain":analysis.name(),"version":VERSION,
+            "reason":reason,"mode":"whole_result_reference_completion","geometry":q});
+        device.cache_chain_qualification(key, qualification.clone());
+        fallback(reason, qualification);
+        return Ok(out);
+    }
     let qualification = match cached {
         Some(q) => q,
         None => {
@@ -367,7 +384,7 @@ fn compare(
             (BufferData::F64(a), BufferData::F64(b))
                 if (analysis == "psf" && path.contains("data_"))
                     || (analysis == "line_spread"
-                        && (path.contains("tangential") || path.contains("sagittal")))
+                        && (path.starts_with("buffer.x_") || path.starts_with("buffer.y_")))
                     || path.contains("intensity")
                     || path.contains("irradiance")
                     || path == "buffer.image"

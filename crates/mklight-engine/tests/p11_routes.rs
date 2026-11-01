@@ -114,6 +114,13 @@ fn all_sample_resident_routes() {
             assert_eq!(result.backend.used, result.run_info.backend);
             assert_eq!(result.backend.precision, result.run_info.precision);
             assert!(result.backend.qualification.is_some(), "{name}/{}", a.name);
+            if result.backend.used == "cpu_reference" {
+                assert_eq!(
+                    result.backend.qualification.as_ref().unwrap()["passed"],
+                    false,
+                    "a reference-only result cannot qualify a resident chain"
+                );
+            }
             assert_eq!(ctx.progress.fraction(), 1.);
             println!(
                 "P11_ROUTE {}",

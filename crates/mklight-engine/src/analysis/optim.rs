@@ -3337,9 +3337,11 @@ mod tests {
         let j = &out.json;
         assert_eq!(j["status"], json!("stopped"));
         let sens = &j["sensitivity"];
-        assert_eq!(sens["cancelled"], json!(true), "{sens}");
         let n = sens["operands"].as_array().unwrap().len();
-        assert!(n > 0 && n < 30, "{n} of 30 operands");
+        // The last batch may finish before the observing thread runs. A stop
+        // keeps every completed operand, including a just-completed full set.
+        assert!(n > 0 && n <= 30, "{n} of 30 operands");
+        assert_eq!(sens["cancelled"], json!(n < 30), "{sens}");
         assert_eq!(sens["ranking"].as_array().unwrap().len(), n);
     }
 

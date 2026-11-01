@@ -50,7 +50,8 @@ pub(crate) fn decision(
         input.library_hash(),
         settings,
     );
-    let matching = table["os_build"].as_str() == Some(host_build())
+    let matching = !cfg!(debug_assertions)
+        && table["os_build"].as_str() == Some(host_build())
         && table["device"].as_str() == Some(device.backend.info().name.as_str())
         && table["kernel_build"].as_str() == Some(device.backend.precision().kernel_build.as_str());
     let row = matching
