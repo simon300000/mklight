@@ -253,6 +253,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
 
 // Aim for 10 ms, growing at most eightfold; arithmetic order is per ray and
 // independent of these command boundaries. A slow stack reduces the next tile.
-fn next_tile(tile: usize, cap: usize, seconds: f64) -> usize {
+pub(crate) fn next_tile(tile: usize, cap: usize, seconds: f64) -> usize {
     ((tile as f64 * (0.010 / seconds.max(1e-6)).clamp(0.125, 8.0)) as usize).clamp(1, cap)
 }
