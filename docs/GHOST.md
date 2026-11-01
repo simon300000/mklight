@@ -389,37 +389,118 @@ z from −0.73 to +1.54, with combined-mean z = +1.12 (on axis) and
 cargo test --release -p mklight-stray --test partition high_reflectance_ghost_flux_large_run -- --ignored --nocapture
 ```
 
-## 6. GPU port: per-ray kernel interface
+## 6. Resident GPU jobs (P9)
 
-The work is independent rays indexed `(path, field, wavelength, lattice
-point)`. The host schedules each path's probes level by level and dedupes
-them (§5). The kernel the
-ghost solver needs from `mklight-gpu` (a `Job::GhostTrace`, added additively
-by the GPU crate) mirrors `GhostModel::trace_steps` one-to-one:
+`mklight_ghost::gpu` exposes explicit backend-neutral `ghost_irradiance`,
+`paraxial_ghosts`, `paraxial_batch` and `real_ghost_focus` jobs. They take a
+`ComputeBackend` and `JobContext`, and preserve the reference functions and
+result shapes. Engine routes, automatic selection and chain qualification
+remain with P11; these adapters do not advertise an engine capability.
 
-* **Uploaded once per snapshot** (in addition to the packed system):
-  per surface the inverse transfer `(q, R)` of `to_next` and the axial flag
-  (both directions then use the exact `±t` translation on axial gaps), the
-  ghost clip (`none | surface aperture | radius`), the interface kind, and
-  per (surface, wavelength, incidence side) a coating table of
-  `R_s, R_p, T_s, T_p` against `cos θ` (the TMM stays on the host;
-  bare Fresnel can be evaluated in-kernel); sensor reflectance (reflection
-  `× R_s`, detection `× (1 − R_s)`) and rectangle.
-* **Paths** as their reflection lists (≤ 8 × u16 plus a count). The kernel
-  expands the steps itself from the alternation rule (`path::GhostPath::steps`),
-  so no per-step arrays are needed.
-* **Start rays** as the existing `RayBatch` SoA in the starting frame, with
-  the wavelength index; a launch covers one refinement level's new probes
-  of a path.
-* **Per-ray output**: status word (code incl. `VIRTUAL`, step index),
-  image-local `(x, y)` and the unpolarised weight `½(w_s + w_p)·τ`
-  (12 bytes + status). Binning stays on the host in fixed order (or a
-  deterministic segmented reduction), never float atomics, so maps remain
-  reproducible.
-* Precision: positions in local frames, backward transfers in the
-  subtract-then-rotate form, no OPL needed for irradiance; the result is
-  validated against `trace_steps` with the CONVENTIONS §7 budget on hit
-  points and a 1e-5 relative budget on weights.
+`GhostTransport` prepares immutable, checked expanded step programs, the
+exact `GhostModel` clips and P7 coating domains for each wavelength and
+incidence side. It accepts explicit hi/lo start probes for same-sample
+transport and combined conservation checks. `ProbeResult` borrows completed
+shared memory through a pinned view. Raw probes retain their status, step
+count, hi/lo final position/direction, separate s/p weights and bulk
+transmittance; conditioning failures retain a reference-required status.
+The numeric records and version are in `mklight_ghost_ops_types.h`.
+
+Irradiance starts use P1 device chief aiming and source construction. The
+sampled square is an entrance-pupil disc about that chief's aim point, as
+in §5; individual overfilled ghost rays are not re-aimed at the stop.
+Lattice coordinates stay integer keys alongside their resident samples.
+The host deduplicates and stably sorts new keys and schedules refinement
+breadth first across paths, fields and wavelengths. Centres and corners
+share cached probes; the original depth-first leaf order is reconstructed
+from the same split rule. The source boundary, virtual losses, on/off-map
+regions, repeated wavelengths and leaf counts keep their reference meaning.
+
+Geometry reuses P1 local-frame intersection, transfer and interaction hooks,
+with double-float geometry. Ghost transport separately implements physical
+virtual-segment rejection, inverse backward ideal-lens power, sensor
+reflection/detection and the expanded DOE visit/order metadata. It batches
+all incidences through P7's direct coating service, then multiplies the
+s and p channels separately and applies signed Beer–Lambert absorption.
+There is no independently interpolated coating table or second path
+enumerator. Probes flagged by P7, and numerical trace failures, are completed with the
+reference and counted. Regular
+refraction also requests reference completion when the double-float Snell
+discriminant has magnitude at most 1e-6: the f32 TIR branch and grazing exit
+geometry are not qualified there. Default achromat probes exposed differing
+survival at this boundary despite negligible on-map flux error; they are
+completed rather than exempted from status and leaf-count checks. A segment
+longer than 1000 mm also requests reference completion: grazing ghost rays
+can travel tens of metres to the image plane even in a compact design,
+outside the qualified geometry domain. These envelopes are versioned and
+recorded in the operation settings.
+
+Completed probes remain resident. Gathered leaves carry their stable IDs,
+field/path map segment and quadrature area. One batched map chain computes
+pixel keys, uses P3 stable sorting and scan to find occupied segments,
+reduces those segments with P3's fixed compensated tree, and scatters into
+dense maps. Field/path flux, centroids and two-pass central moments use a
+parallel P3 moments reduction over the same resident leaves. Empty bins never require a large reduction scratch plane.
+Only the occupied-segment count and maximum length cross a host control
+boundary; there are no floating-point atomics. Host code assembles the
+small reduced statistics, ratios, coverage and peak ranking in reference order.
+Numerical inputs are filled directly in shared buffers and outputs are read
+in place. The existing packed-system upload is cached by snapshot, material,
+clipping and build identity; its small cold metadata copy is measured
+separately from the zero-copy probe/map pipeline.
+
+Point binning is discontinuous at pixel edges. Hits within the 2e-5 mm
+geometry uncertainty band of a pixel edge receive a counted f64 reference
+probe and retain that reference bin decision, including f64 rounding at an
+exact edge. This matters for a perfect image on a bin boundary: passing the
+geometry budget alone does not qualify its map. Outside the band, device
+binning floors the full double-float coordinate (an integral high word with
+a negative low word belongs to the bin below). `RunInfo.settings.gpu`
+records boundary probes, observed pixel migrations, coating/reference
+completion counts, cached lattice keys and transported probes. Reference
+values are filled into sparse shared records;
+unaffected resident probes are reused without copying their batch.
+Cancellation checks precede every reference-completion block; cancellation
+never starts a replacement CPU job.
+
+Each probe owns one compact step row per step of its path (no padding to
+the longest path) for its coating query, absorption/efficiency factors and
+P7 coating value. Lattice plans are tiled at 2²⁰ step rows (about 160 MB of
+step storage), rounded to a fixed size class so the scratch pool reuses it
+across tiles. Geometry, coatings, gathers, scans and reductions use bounded
+command buffers; the trace tile adapts toward 10 ms per command. Host
+deduplication, split decisions, reference completion and leaf traversal
+run in parallel per path or cell, in a fixed order. Progress reserves ranges for
+preparation, refinement, maps and final assembly, and reaches one only
+after a successful result. `RunInfo` retains backend/device/build/probe,
+precision, material identity, operation version, settings, stage timings,
+command counts, memory and fallback counters. Widening public numbers to
+f64 does not relabel device arithmetic as f64.
+
+`paraxial_batch` evaluates marginal/chief recurrences and axial throughput
+across path/wavelength batches in double-float. P7 evaluates the shared
+normal-incidence table once per surface/side/wavelength; device folds keep
+extra reflections separate from designed-mirror/pass factors, sensor
+detection, DOE efficiency and bulk absorption. Normal powers use the
+reference paraxial product-of-averages model. Non-finite or nearly afocal
+rows (reduced marginal slope <=1e-6 in magnitude), and rows with flagged
+coatings, receive counted f64 completion. Small path enumeration,
+constitutive metadata, vignetting/labels and the final ranking remain host
+work.
+`real_ghost_focus` shares P1's fully aimed meridional launch across paths,
+then runs the same ghost sequence geometry without unused coating work.
+
+Explicit jobs currently accept uploaded immutable systems with up to 16
+wavelengths and default reference intersection settings. Other wavelength
+shapes, custom intersection settings, resident candidate systems and
+irradiance runs whose finite object lies beyond the 1000 mm segment domain
+(every probe would need reference completion) return `Unsupported` for the
+caller's reported reference route. Qualification for
+new designs, candidate envelopes and automatic cost decisions belongs to
+P11. Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
+shader-library origins, physical fixtures, fixed-hit map conservation,
+pixel-edge reference handling, bitwise CPU-f32 emulation of the complete
+map chain, concurrent determinism and cancellation.
 
 ## 7. Limitations
 
