@@ -21,6 +21,7 @@ fn host_reference_comparisons() {
         assert!(b.precision().probe.error_free_transforms());
         cases::sources(&b);
         cases::geometry(&b);
+        cases::tangents(&b);
         cases::samples(&b);
     }
 }

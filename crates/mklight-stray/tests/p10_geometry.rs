@@ -273,3 +273,24 @@ fn cpu_geometry() {
 fn cpu_samples() {
     samples(&CpuF32Backend::new());
 }
+
+pub fn tangents(b: &dyn ComputeBackend) {
+    let prims = [Primitive::new(
+        Frame::IDENTITY,
+        Shape::Sag(SagPatch::new(SurfaceShape::sphere(10.), 0., 10., None).unwrap()),
+    )];
+    compare(
+        b,
+        &prims,
+        &[
+            Ray::new(Vec3::new(-20., 0., 10.), Vec3::X),
+            Ray::new(Vec3::new(1., 0., -1000.), Vec3::Z),
+            Ray::new(Vec3::new(1., 0., 5.), -Vec3::Z),
+        ],
+    );
+}
+
+#[test]
+fn tangent_and_distant_hits() {
+    tangents(&CpuF32Backend::new());
+}
