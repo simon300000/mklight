@@ -1,4 +1,4 @@
-//! Complete resident analysis routes. Qualification and cost policy apply to
+//! Complete resident analysis routes. Capability and cost policy apply to
 //! the whole public result; the legacy host-generated trace route is retired.
 use std::sync::Arc;
 
@@ -71,7 +71,6 @@ pub(crate) fn record_native(input: &AnalysisInput<'_>, run: &RunInfo) {
         device: (!reference).then(|| dev.device_name()),
         fallback_reason: reference
             .then(|| "resident adapter required whole-result f64 completion".into()),
-        qualification: None,
         deliberate: false,
     });
 }

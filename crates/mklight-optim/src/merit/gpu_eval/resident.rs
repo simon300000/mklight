@@ -136,8 +136,7 @@ fn trace_result(
         transmittance: 1.,
     })
 }
-/// Unqualified numeric output: the owning evaluator independently checks every
-/// candidate against f64 before publishing it. P4 status is also consumed here.
+/// Device numeric output; P4 status is consumed before publishing candidates.
 pub(crate) fn evaluate(
     g: &GpuContext,
     cpu: &TraceEvaluator,

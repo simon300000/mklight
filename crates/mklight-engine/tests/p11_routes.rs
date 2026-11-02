@@ -172,19 +172,11 @@ fn all_sample_resident_routes() {
             mklight_engine::analysis::schema::check_buffers(&a.result_schema, &buffers).unwrap();
             assert_eq!(result.backend.used, result.run_info.backend);
             assert_eq!(result.backend.precision, result.run_info.precision);
-            assert!(result.backend.qualification.is_some(), "{name}/{}", a.name);
-            if result.backend.used == "cpu_reference" {
-                assert_eq!(
-                    result.backend.qualification.as_ref().unwrap()["passed"],
-                    false,
-                    "a reference-only result cannot qualify a resident chain"
-                );
-            }
             assert_eq!(ctx.progress.fraction(), 1.);
             println!(
                 "P11_ROUTE {}",
                 json!({"sample":name,"analysis":a.name,"used":result.backend.used,
-                "reason":result.backend.fallback_reason,"qualification":result.backend.qualification,
+                "reason":result.backend.fallback_reason,
                 "execution":result.backend.execution,"duration_ms":result.run_info.duration_ms})
             );
         }
@@ -447,7 +439,7 @@ fn consolidated_engine_benchmark() {
                         "phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},
                         "snapshot":cpu.run_info.snapshot_hash,"library":cpu.library_hash,"settings":cpu.run_info.settings,
                         "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"copied_bytes":copied_bytes,"used":metal.backend.used,
-                        "qualification":metal.backend.qualification,"reason":metal.backend.fallback_reason,
+                        "reason":metal.backend.fallback_reason,
                         "execution":metal.backend.execution})
                     );
                 }
@@ -523,7 +515,7 @@ fn isolated_engine_cold_starts() {
                 json!({"sample":name,"analysis":info.name,"settings":cpu.run_info.settings,
                 "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"metal_backend_setup_seconds":setup_seconds,
                 "used":metal.backend.used,
-                "qualification":metal.backend.qualification,"execution":metal.backend.execution,
+                "execution":metal.backend.execution,
                 "copied_bytes":device.backend.resident_cache_stats().copied_bytes,
                 "scope":"independent engines/sessions; CPU does not warm the Metal engine reference caches"})
             );

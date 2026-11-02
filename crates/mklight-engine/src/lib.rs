@@ -8,7 +8,7 @@
 //! * `analysis` — the pluggable analysis registry and the built-in analyses.
 //! * `backend` — compute-backend selection (CPU reference, GPU, `auto`).
 //! * `gpu` — GPU backend providers (Metal, CPU-f32 emulation) with
-//!   per-system precision qualification.
+//!   offline precision qualification and static analysis capabilities.
 //! * `validation` — the engine-level model checks of `validate`.
 //! * `engine` — ties these together.
 //!

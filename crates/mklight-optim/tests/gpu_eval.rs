@@ -307,7 +307,7 @@ fn agreement(backend: Arc<dyn ComputeBackend>) {
         .filter(|(_, s)| !samples::has_extended_surfaces(s))
     {
         let gpu = gpu_eval(backend.clone(), &sys);
-        assert!(gpu.is_active(), "{name}: {:?}", gpu.qualification().reason);
+        assert!(gpu.is_active(), "{name}");
         let ops = operands(&sys);
         assert!(ops.iter().all(|o| gpu_supports(&o.kind, true)));
         let mut cands = candidates(&sys);
@@ -725,16 +725,14 @@ fn assert_bits_eq(a: &[Vec<OperandValue>], b: &[Vec<OperandValue>]) {
     }
 }
 
-/// A backend that fails qualification is not used: the CPU reference
+/// A backend without trace support is not used: the CPU reference
 /// computes every value, and the `RunInfo` says so.
 #[test]
-fn unqualified_backend_falls_back_to_the_cpu_reference() {
+fn unsupported_trace_backend_falls_back_to_the_cpu_reference() {
     let sys = samples::cooke_triplet();
     let gpu = gpu_eval(Arc::new(NoTrace(CpuF32Backend::new())), &sys);
     assert!(!gpu.is_active());
     assert_eq!(gpu.precision(), Precision::F64Reference);
-    let why = gpu.qualification().reason.unwrap();
-    assert!(why.contains("trace kernel"), "{why}");
     let ops = operands(&sys);
     let cands = candidates(&sys);
     assert_bits_eq(
@@ -750,17 +748,14 @@ fn unqualified_backend_falls_back_to_the_cpu_reference() {
         .run_info(RunTimer::start(), &sys, "optimize", &json!({}), None)
         .unwrap();
     gpu.record(&mut info);
-    assert_eq!(info.backend, "cpu-f64");
+    assert_eq!(info.backend, TraceEvaluator::BACKEND);
     assert_eq!(info.precision, Precision::F64Reference);
     assert!(
         info.warnings.iter().any(|w| w.contains("not used")),
         "{:?}",
         info.warnings
     );
-    assert_eq!(
-        info.settings["backend_qualification"]["passed"],
-        json!(false)
-    );
+    assert!(info.settings.get("backend_qualification").is_none());
     assert_eq!(info.settings["gpu_evaluation"]["gpu_candidates"], json!(0));
 }
 

@@ -132,7 +132,7 @@ fn double_gauss_cpu_vs_gpu_throughput() {
             &JobContext::new(),
         )
         .unwrap();
-        assert!(ev.is_active(), "{:?}", ev.qualification().reason);
+        assert!(ev.is_active());
         let g = problem(&sys, &gen_, ev.clone().composite());
         let x0 = cpu.start_point().unwrap();
         println!("-- {name}: {} residuals", cpu.num_residuals());

@@ -9,13 +9,11 @@ use std::sync::Arc;
 
 use mklight_core::job::Precision;
 use mklight_core::{JobContext, OpticalSystem, samples};
-use mklight_engine::backend::{Backend, BackendProvider};
+use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
-use mklight_engine::gpu::{GpuDevice, GpuProvider};
+use mklight_engine::gpu::GpuProvider;
 use mklight_engine::project::Project;
 use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineConfig, Session};
-use mklight_gpu::ErrorBudget;
-use mklight_gpu::xval::XvalSettings;
 
 /// CONVENTIONS §7.
 const POSITION_MM: f64 = 2e-5;
@@ -68,7 +66,12 @@ fn cross_check(e: &Engine, backend: &str) {
         assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
         assert_eq!(gpu.backend.used, backend);
         assert!(gpu.backend.fallback_reason.is_none());
-        assert_eq!(gpu.backend.qualification.as_ref().unwrap()["passed"], true);
+        assert!(
+            serde_json::to_value(&gpu.backend)
+                .unwrap()
+                .get("qualification")
+                .is_none()
+        );
         assert_eq!(cpu.run_info.backend, "cpu_reference");
         let (fc, fg) = (&cpu.json["fields"], &gpu.json["fields"]);
         for k in 0..fc.as_array().unwrap().len() {
@@ -120,7 +123,7 @@ fn cross_check(e: &Engine, backend: &str) {
                     g.backend
                         .fallback_reason
                         .as_deref()
-                        .is_some_and(|r| r.contains("completion") || r.contains("qualification"))
+                        .is_some_and(|r| r.contains("static capability"))
                 );
             } else {
                 assert_eq!(g.run_info.backend, backend, "{a}: {:?}", g.backend);
@@ -234,7 +237,7 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     let big = json!({"rings": 150});
     let r = run_on(&s, "spot_diagram", big.clone(), Some(Backend::Auto));
     assert_eq!(r.backend.requested, "auto");
-    assert!(r.backend.qualification.is_some());
+    assert_eq!(r.run_info.precision, Precision::F32Gpu);
     // An explicit GPU request is honoured for any size.
     let r = run_on(
         &s,
@@ -278,43 +281,53 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
 }
 
 #[test]
-fn failed_qualification_falls_back_to_the_reference_and_says_so() {
-    // A budget no f32 trace can meet.
-    let mut q = XvalSettings::qualification();
-    q.budget = ErrorBudget {
-        position_mm: 1e-15,
-        ..ErrorBudget::CONVENTIONS
-    };
-    q.radiometry = mklight_gpu::Radiometry::Off;
-    let p = GpuProvider::emulation().with_qualification(q);
-    let dev = p.device().unwrap();
-    let e = engine_with(Some(p));
+fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
+    let e = engine_with(Some(GpuProvider::emulation()));
     let s = session(&e, samples::cooke_triplet());
-    let b = Some(Backend::Gpu("cpu_f32".into()));
-    let gpu = run_on(&s, "spot_diagram", Value::Null, b.clone());
-    let cpu = run_on(&s, "spot_diagram", Value::Null, None);
-    assert_eq!(gpu.run_info.backend, "cpu_reference");
-    assert_eq!(gpu.run_info.precision, Precision::F64Reference);
-    assert_eq!(gpu.backend.requested, "gpu:cpu_f32");
-    let why = gpu.backend.fallback_reason.clone().unwrap();
-    assert!(why.contains("qualification"), "{why}");
-    assert!(
-        gpu.run_info
-            .warnings
-            .iter()
-            .any(|w| w.contains("gpu:cpu_f32") && w.contains("CPU f64 reference")),
-        "{:?}",
-        gpu.run_info.warnings
-    );
-    assert_eq!(gpu.backend.qualification.as_ref().unwrap()["passed"], false);
-    // The numbers are the reference's, bit for bit.
-    assert_eq!(gpu.json, cpu.json);
-    assert_eq!(gpu.buffers, cpu.buffers);
-    // The verdict is cached per snapshot: a second run does not qualify again.
-    let d = dev.downcast_ref::<GpuDevice>().unwrap();
-    assert_eq!(d.cached_qualifications(), 1);
-    run_on(&s, "ray_grid", Value::Null, b);
-    assert_eq!(d.cached_qualifications(), 1);
+    for (name, settings) in [
+        ("encircled_energy", json!({"rings": 24})),
+        ("wavefront_map", Value::Null),
+        ("polarization_pupil_map", Value::Null),
+    ] {
+        let gpu = run_on(
+            &s,
+            name,
+            settings.clone(),
+            Some(Backend::Gpu("cpu_f32".into())),
+        );
+        let cpu = run_on(&s, name, settings, Some(Backend::CpuReference));
+        assert_eq!(gpu.run_info.backend, "cpu_reference");
+        assert_eq!(gpu.run_info.precision, Precision::F64Reference);
+        assert!(
+            gpu.backend
+                .fallback_reason
+                .unwrap()
+                .contains("static capability: P11")
+        );
+        assert_eq!(gpu.json, cpu.json);
+        assert_eq!(gpu.buffers.len(), cpu.buffers.len());
+        for (a, b) in gpu.buffers.iter().zip(&cpu.buffers) {
+            assert_eq!((&a.name, &a.shape), (&b.name, &b.shape));
+            let equal = match (&a.data, &b.data) {
+                (BufferData::F64(a), BufferData::F64(b)) => a
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .eq(b.iter().map(|v| v.to_bits())),
+                (BufferData::F32(a), BufferData::F32(b)) => a
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .eq(b.iter().map(|v| v.to_bits())),
+                _ => a.data == b.data,
+            };
+            assert!(equal, "{}", a.name);
+        }
+        assert!(
+            !gpu.run_info
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("backend "))
+        );
+    }
 }
 
 #[test]
@@ -329,8 +342,7 @@ fn cancelling_a_gpu_job_cancels_instead_of_falling_back() {
     assert!(err.is_cancelled(), "{err}");
 }
 
-/// Cancelling while the host generates a large grid's rays (after
-/// qualification; generation reports progress per block) stops the job
+/// Cancelling after a large resident job reports progress stops the job
 /// promptly with `Cancelled`, never a CPU fallback result.
 #[test]
 fn cancelling_a_gpu_job_mid_run_stops_it() {
@@ -347,25 +359,16 @@ fn cancelling_a_gpu_job_mid_run_stops_it() {
     let watcher = {
         let (fired, at) = (fired.clone(), cancelled_at.clone());
         std::thread::spawn(move || {
-            // Cancel once generation has reported progress twice (it reports
-            // per block, so a large grid's generation is observable).
+            // Cancel after native work starts; no qualification subrange is
+            // reserved before the resident analysis anymore.
             let t0 = Instant::now();
-            let mut first = None;
             while t0.elapsed() < Duration::from_secs(120) {
                 let f = progress.fraction();
-                if f <= 0.15 || f >= 0.65 {
-                    std::thread::sleep(Duration::from_micros(200));
-                    continue;
-                }
-                match first {
-                    None => first = Some(f),
-                    Some(f0) if f > f0 => {
-                        *at.lock().unwrap() = Some(Instant::now());
-                        cancel.cancel();
-                        fired.store(true, Ordering::SeqCst);
-                        return;
-                    }
-                    _ => {}
+                if f > 0. && f < 1. {
+                    *at.lock().unwrap() = Some(Instant::now());
+                    cancel.cancel();
+                    fired.store(true, Ordering::SeqCst);
+                    return;
                 }
                 std::thread::sleep(Duration::from_micros(200));
             }
@@ -385,18 +388,14 @@ fn cancelling_a_gpu_job_mid_run_stops_it() {
     assert!(latency < Duration::from_secs(5), "{latency:?}");
 }
 
-/// Merit jobs use the provider selected by the facade and share its
-/// snapshot qualification with ray-grid analyses.
+/// Merit jobs use the provider selected by the facade, without qualification.
 #[test]
-fn merit_jobs_share_provider_qualification_and_report_actual_backend() {
+fn merit_jobs_publish_without_runtime_qualification() {
     let provider = GpuProvider::emulation();
-    let handle = provider.device().unwrap();
-    let device = handle.downcast_ref::<GpuDevice>().unwrap();
     let engine = engine_with(Some(provider));
     let session = session(&engine, samples::cooke_triplet());
     let backend = Some(Backend::Gpu("cpu_f32".into()));
     run_on(&session, "ray_grid", json!({"rings": 2}), backend.clone());
-    assert_eq!(device.cached_qualifications(), 1);
     for (name, settings) in [
         ("optimize", json!({"max_iterations": 2})),
         ("tolerance", json!({"mode": "monte_carlo", "trials": 3})),
@@ -406,11 +405,16 @@ fn merit_jobs_share_provider_qualification_and_report_actual_backend() {
         assert_eq!(gpu.run_info.backend, "gpu:cpu_f32");
         assert_eq!(gpu.backend.used, gpu.run_info.backend);
         assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
-        assert_eq!(gpu.backend.qualification.as_ref().unwrap()["passed"], true);
+        assert!(
+            serde_json::to_value(&gpu.backend)
+                .unwrap()
+                .get("qualification")
+                .is_none()
+        );
         if name == "tolerance" {
             assert_eq!(
                 gpu.json["backend"]["reported_on"],
-                gpu.json["backend"]["evaluated_on"]
+                json!("cpu-f64-reference")
             );
         }
         assert!(
@@ -420,65 +424,11 @@ fn merit_jobs_share_provider_qualification_and_report_actual_backend() {
                 > 0
         );
         assert!(gpu.backend.fallback_reason.is_none());
-        let cached = device.cached_qualifications();
         run_on(&session, name, settings.clone(), backend.clone());
-        assert_eq!(device.cached_qualifications(), cached);
         let auto = run_on(&session, name, settings, Some(Backend::Auto));
-        assert!(auto.backend.qualification.is_some() || auto.backend.fallback_reason.is_some());
-    }
-}
-
-#[test]
-fn merit_jobs_reuse_failed_provider_qualification_and_fall_back() {
-    let mut qualification = XvalSettings::qualification();
-    qualification.budget.position_mm = 1e-15;
-    let provider = GpuProvider::emulation().with_qualification(qualification);
-    let handle = provider.device().unwrap();
-    let device = handle.downcast_ref::<GpuDevice>().unwrap();
-    let engine = engine_with(Some(provider));
-    let session = session(&engine, samples::singlet());
-    for (name, settings) in [
-        ("optimize", json!({"max_iterations": 2})),
-        ("tolerance", json!({"mode": "monte_carlo", "trials": 3})),
-    ] {
-        let cpu = run_on(
-            &session,
-            name,
-            settings.clone(),
-            Some(Backend::CpuReference),
-        );
-        let fallback = run_on(
-            &session,
-            name,
-            settings,
-            Some(Backend::Gpu("cpu_f32".into())),
-        );
-        assert_eq!(fallback.run_info.backend, "cpu_reference");
-        assert_eq!(fallback.backend.used, "cpu_reference");
-        assert_eq!(fallback.run_info.precision, Precision::F64Reference);
-        assert_eq!(
-            fallback.backend.qualification.as_ref().unwrap()["passed"],
-            false
-        );
-        assert!(fallback.backend.fallback_reason.is_some());
         assert!(
-            fallback
-                .run_info
-                .warnings
-                .iter()
-                .any(|w| w.contains("gpu:cpu_f32"))
+            auto.run_info.precision == Precision::F32Gpu || auto.backend.fallback_reason.is_some()
         );
-        assert_eq!(device.cached_qualifications(), 1);
-        let key = if name == "optimize" {
-            "final"
-        } else {
-            "monte_carlo"
-        };
-        let (mut actual, mut expected) = (fallback.json[key].clone(), cpu.json[key].clone());
-        for result in [&mut actual, &mut expected] {
-            result.as_object_mut().unwrap().remove("seconds_per_trial");
-        }
-        assert_eq!(actual, expected);
     }
 }
 
@@ -528,4 +478,43 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
             .iter()
             .any(|w| w.starts_with("ray operands evaluated on"))
     );
+}
+
+#[path = "support/device.rs"]
+mod device;
+
+#[test]
+fn changed_snapshots_and_candidates_never_submit_geometry_probes() {
+    use std::sync::atomic::Ordering;
+    let device = Arc::new(device::Device::new());
+    let backend = device.clone();
+    let engine = engine_with(Some(GpuProvider::new(
+        "probe",
+        "trace probe counter",
+        move || Ok(backend.clone()),
+    )));
+    for offset in [0., 0.25] {
+        let mut system = samples::cooke_triplet();
+        system.surfaces[1].thickness += offset;
+        let session = session(&engine, system);
+        for (name, settings) in [
+            ("spot_diagram", json!({"rings":3})),
+            ("merit_evaluation", Value::Null),
+            ("optimize", json!({"max_iterations":2})),
+            ("tolerance", json!({"mode":"monte_carlo","trials":3})),
+            (
+                "glass_substitution",
+                json!({"material_variables":[{"surface":1,"candidates":{"nearest":2}}],"max_combinations":2,"local_iterations":2}),
+            ),
+        ] {
+            let result = run_on(&session, name, settings, Some(Backend::Gpu("probe".into())));
+            assert_eq!(
+                result.backend.used, "gpu:probe",
+                "{name}: {:?}",
+                result.backend
+            );
+            assert_eq!(result.run_info.precision, Precision::F32Gpu);
+        }
+    }
+    assert_eq!(device.traces.load(Ordering::Relaxed), 0);
 }

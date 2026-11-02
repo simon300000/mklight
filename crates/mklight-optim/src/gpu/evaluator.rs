@@ -1,5 +1,5 @@
-//! Explicit resident evaluator with per-candidate f64 qualification. No nominal
-//! envelope is assumed: every output is compared with the unchanged reference.
+//! Resident candidate evaluation. Accuracy is checked by offline f64 regressions;
+//! only unsupported work and device failures invoke the reference evaluator.
 use super::GpuContext;
 use crate::deriv::FdScheme;
 use crate::merit::{
@@ -8,6 +8,7 @@ use crate::merit::{
     solver_eval::SolverEvaluator,
     *,
 };
+use crate::problem::Problem;
 use mklight_core::{
     JobContext, MkError, MkResult, OpticalSystem, RunInfo, Snapshot, param::ParamPath,
 };
@@ -17,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::Instant,
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -27,27 +27,8 @@ pub struct EvaluationStats {
     pub cpu_candidates: u64,
     pub device_operands: u64,
     pub host_operands: u64,
-    pub reference_checks: u64,
-    pub reference_seconds: f64,
-    pub reference_cache_hits: u64,
-    pub geometry_qualifications: u64,
-    pub geometry_rejections: u64,
-    pub geometry_report: Option<mklight_gpu::xval::XvalReport>,
     pub fallback_operands: u64,
     pub fallbacks: BTreeMap<String, u64>,
-    pub maximum_absolute_error: f64,
-}
-struct ReferenceEntry {
-    system: OpticalSystem,
-    values: Vec<OperandValue>,
-    geometry: bool,
-    tracer: Option<Arc<mklight_trace::SequentialTracer>>,
-}
-#[derive(Default)]
-struct ReferenceCache {
-    ops: Vec<Operand>,
-    backend: Option<Arc<dyn mklight_gpu::ComputeBackend>>,
-    entries: BTreeMap<u64, ReferenceEntry>,
 }
 struct Template {
     base: OpticalSystem,
@@ -63,48 +44,6 @@ impl Drop for Template {
     }
 }
 #[derive(Clone)]
-struct CheckedReference {
-    evaluator: BuiltinEvaluator,
-    cache: Arc<Mutex<ReferenceCache>>,
-}
-impl OperandEvaluator for CheckedReference {
-    fn supports(&self, kind: &OperandKind) -> bool {
-        self.evaluator.supports(kind)
-    }
-    fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
-        self.evaluator.fd_relative_step(kind, scheme)
-    }
-    fn evaluate_batch(
-        &self,
-        systems: &[OpticalSystem],
-        ops: &[&Operand],
-        ctx: &JobContext,
-    ) -> MkResult<Vec<Vec<OperandValue>>> {
-        ctx.check()?;
-        let cached: Option<Vec<_>> = {
-            let cache = self.cache.lock().unwrap();
-            if cache.ops.iter().eq(ops.iter().copied()) {
-                systems
-                    .iter()
-                    .map(|system| {
-                        cache
-                            .entries
-                            .values()
-                            .find(|entry| entry.system == *system)
-                            .map(|entry| entry.values.clone())
-                    })
-                    .collect()
-            } else {
-                None
-            }
-        };
-        if let Some(values) = cached {
-            return Ok(values);
-        }
-        self.evaluator.evaluate_batch(systems, ops, ctx)
-    }
-}
-#[derive(Clone)]
 pub struct ResidentEvaluator {
     pub context: GpuContext,
     pub(crate) reference: BuiltinEvaluator,
@@ -112,8 +51,6 @@ pub struct ResidentEvaluator {
     solvers: SolverEvaluator,
     template: Arc<Mutex<Option<Arc<Template>>>>,
     stats: Arc<Mutex<EvaluationStats>>,
-    references: Arc<Mutex<ReferenceCache>>,
-    checked_reference: CheckedReference,
 }
 impl ResidentEvaluator {
     pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
@@ -128,14 +65,6 @@ impl ResidentEvaluator {
             }
         }
         context.identity.library_hash = hash.finalize().to_hex().to_string();
-        context.identity.qualification = Some(
-            serde_json::json!({"mode":"per_candidate_geometry_and_full_operand_f64","publication":"after_reference_check"}),
-        );
-        let references = Arc::default();
-        let checked_reference = CheckedReference {
-            evaluator: reference.clone(),
-            cache: Arc::clone(&references),
-        };
         Self {
             mtf: reference.mtf.clone().with_gpu(context.clone()),
             solvers: reference.solvers.clone().with_gpu(context.clone()),
@@ -143,8 +72,6 @@ impl ResidentEvaluator {
             reference,
             template: Arc::default(),
             stats: Arc::default(),
-            references,
-            checked_reference,
         }
     }
     pub fn run<T>(
@@ -167,7 +94,7 @@ impl ResidentEvaluator {
     }
     pub fn record(&self, info: &mut RunInfo) {
         self.context.record(info);
-        info.settings["candidate_qualification"] = serde_json::json!({"version":1,"mode":"every_candidate_geometry_and_full_operand_f64","envelope":null,"stats":self.stats()});
+        info.settings["candidate_evaluation"] = serde_json::to_value(self.stats()).unwrap();
         if self.stats().device_operands > 0 {
             info.backend = self.context.backend.info().backend_id();
             info.precision = mklight_core::job::Precision::F32Gpu;
@@ -216,143 +143,39 @@ impl ResidentEvaluator {
         systems: &[OpticalSystem],
         ops: &[&Operand],
         template: Option<(&Template, &[Candidate])>,
-        first: usize,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         ctx.check()?;
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
-        let t = Instant::now();
-        let keys: Vec<_> = (0..systems.len())
-            .map(|i| template.map_or((first + i) as u64, |(_, rows)| rows[i].id))
+        let tracers: Vec<_> = systems
+            .par_iter()
+            .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
             .collect();
-        let mut reference = vec![None; systems.len()];
-        let mut geometry = vec![false; systems.len()];
-        let mut tracers = vec![None; systems.len()];
-        let mut geometry_report = None;
-        {
-            let mut cache = self.references.lock().unwrap();
-            if cache.ops.iter().ne(ops.iter().copied())
-                || cache
-                    .backend
-                    .as_ref()
-                    .is_none_or(|b| !Arc::ptr_eq(b, &self.context.backend))
-            {
-                cache.ops = ops.iter().map(|o| (*o).clone()).collect();
-                cache.backend = Some(self.context.backend.clone());
-                cache.entries.clear();
-            }
-            for (i, system) in systems.iter().enumerate() {
-                if let Some(entry) = cache.entries.get(&keys[i]).filter(|e| e.system == *system) {
-                    reference[i] = Some(entry.values.clone());
-                    geometry[i] = entry.geometry;
-                    tracers[i] = entry.tracer.clone();
-                }
-            }
-        }
-        let missing: Vec<_> = reference
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| v.is_none())
-            .map(|(i, _)| i)
-            .collect();
-        if !missing.is_empty() {
-            let pending: Vec<_> = missing.iter().map(|&i| systems[i].clone()).collect();
-            let values = self.reference.evaluate_batch(&pending, ops, &inner)?;
-            let prepared: Vec<_> = pending
-                .par_iter()
-                .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
-                .collect();
-            let settings = mklight_gpu::xval::XvalSettings {
-                clip: self.reference.trace.settings().clip,
-                radiometry: mklight_gpu::Radiometry::Off,
-                ..mklight_gpu::xval::XvalSettings::qualification()
-            };
-            let backend = super::qualification::QualificationBackend::new(&self.context);
-            let validation_tracers: Vec<_> = prepared.iter().flatten().map(AsRef::as_ref).collect();
-            let qualifications =
-                mklight_gpu::xval::qualify_many(&backend, &validation_tracers, &settings, &inner)?;
-            let mut qualifications = qualifications.into_iter();
-            let qualified: Vec<_> = prepared
-                .into_iter()
-                .map(|tracer| match tracer {
-                    Some(t) => {
-                        let q = qualifications.next().unwrap();
-                        (q.passed, Some(t), q.report)
-                    }
-                    None => (false, None, None),
-                })
-                .collect();
-            let mut cache = self.references.lock().unwrap();
-            // Another concurrent job may have changed the operand specification.
-            let same = cache.ops.iter().eq(ops.iter().copied())
-                && cache
-                    .backend
-                    .as_ref()
-                    .is_some_and(|b| Arc::ptr_eq(b, &self.context.backend));
-            for ((&i, value), (qualified, tracer, report)) in
-                missing.iter().zip(values).zip(qualified)
-            {
-                if let Some(report) = report {
-                    merge_geometry(&mut geometry_report, &report);
-                }
-                if same {
-                    cache.entries.insert(
-                        keys[i],
-                        ReferenceEntry {
-                            system: systems[i].clone(),
-                            values: value.clone(),
-                            geometry: qualified,
-                            tracer: tracer.clone(),
-                        },
-                    );
-                }
-                reference[i] = Some(value);
-                geometry[i] = qualified;
-                tracers[i] = tracer;
-            }
-            let limit = (1_048_576 / ops.len().max(1)).clamp(1, 1024);
-            while cache.entries.len() > limit {
-                cache.entries.pop_first();
-            }
-        }
-        let reference: Vec<_> = reference.into_iter().map(Option::unwrap).collect();
-        let ref_seconds = t.elapsed().as_secs_f64();
-        ctx.report(0.5, "candidate reference qualification");
-        let mut result = reference.clone();
+        let mut result = vec![vec![Err(OperandError::Unsupported); ops.len()]; systems.len()];
         let mut device_rows = vec![false; systems.len()];
-        let mut fallback_rows: Vec<_> = geometry.iter().map(|q| !q).collect();
+        let mut fallback_rows = vec![false; systems.len()];
         let mut stats = EvaluationStats {
             candidates: systems.len() as u64,
-            reference_checks: missing.len() as u64,
-            geometry_qualifications: missing.len() as u64,
-            geometry_report,
-            geometry_rejections: missing.iter().filter(|&&i| !geometry[i]).count() as u64,
-            reference_cache_hits: (systems.len() - missing.len()) as u64,
-            reference_seconds: ref_seconds,
             ..Default::default()
         };
-        let routes: Vec<Vec<usize>> = (0..5)
-            .map(|route| {
-                ops.iter()
-                    .enumerate()
-                    .filter(|(_, o)| route_for(&o.kind) == route)
-                    .map(|(i, _)| i)
-                    .collect()
-            })
-            .collect();
-        for (route, indices) in routes.into_iter().enumerate() {
-            ctx.report(0.5 + 0.1 * route as f64, "resident candidate operands");
+        for route in 0..5 {
+            ctx.report(route as f64 / 5., "resident candidate operands");
+            let indices: Vec<_> = ops
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| route_for(&o.kind) == route)
+                .map(|(i, _)| i)
+                .collect();
             if indices.is_empty() {
                 continue;
             }
             let refs: Vec<_> = indices.iter().map(|&i| ops[i]).collect();
-            let active: Vec<_> = geometry
+            let active: Vec<_> = tracers
                 .iter()
                 .enumerate()
-                .filter(|(_, q)| **q)
+                .filter(|(_, t)| t.is_some())
                 .map(|(i, _)| i)
                 .collect();
-            // Only the native MTF/solver adapters take owned systems.
             let selected = || -> Vec<_> { active.iter().map(|&i| systems[i].clone()).collect() };
             let selected_tracers: Vec<_> = active
                 .iter()
@@ -368,7 +191,7 @@ impl ResidentEvaluator {
                 context.identity.derived_snapshot_hash = Some(template.snapshot.hash().to_hex());
             }
             let native_before = self.context.native_device_calls();
-            let attempt = if active.is_empty() && route != 3 {
+            let attempt = if active.is_empty() {
                 Ok(vec![])
             } else {
                 match route {
@@ -387,84 +210,90 @@ impl ResidentEvaluator {
                         evaluator.context = context;
                         evaluator.first_order(&selected(), &refs, selected_template, &inner)
                     }
-                    _ => {
-                        stats.host_operands += (systems.len() * indices.len()) as u64;
-                        for &i in &indices {
-                            if !matches!(
-                                ops[i].kind.capability(),
-                                Capability::Model | Capability::Paraxial
-                            ) {
-                                fallback_rows.fill(true);
-                                stats.fallback_operands += systems.len() as u64;
-                                *stats
-                                    .fallbacks
-                                    .entry(format!(
-                                        "{}: no resident operand adapter",
-                                        ops[i].kind.name()
-                                    ))
-                                    .or_default() += systems.len() as u64;
-                            }
-                        }
-                        continue;
-                    }
+                    _ => Ok(vec![]),
                 }
             };
             ctx.check()?;
+            let mut missing = vec![vec![true; indices.len()]; systems.len()];
             match attempt {
                 Err(MkError::Cancelled) => return Err(MkError::Cancelled),
                 Err(e) => {
-                    fallback_rows.fill(true);
-                    let n = (systems.len() * indices.len()) as u64;
-                    stats.fallback_operands += n;
-                    *stats.fallbacks.entry(e.to_string()).or_default() += n;
+                    *stats.fallbacks.entry(e.to_string()).or_default() +=
+                        (systems.len() * indices.len()) as u64;
                 }
                 Ok(values) => {
-                    stats.fallback_operands +=
-                        ((systems.len() - active.len()) * indices.len()) as u64;
-                    if active.len() != systems.len() {
-                        *stats
-                            .fallbacks
-                            .entry("candidate geometry qualification rejected".into())
-                            .or_default() +=
-                            ((systems.len() - active.len()) * indices.len()) as u64;
-                    }
                     for (row, values) in active.iter().copied().zip(values) {
                         for (col, value) in values.into_iter().enumerate() {
                             let i = indices[col];
-                            let (pass, error) = qualifies(
-                                ops[i],
-                                &value,
-                                &reference[row][i],
-                                ops.len() * systems[row].configurations.len().max(1),
-                            );
-                            stats.maximum_absolute_error = stats.maximum_absolute_error.max(error);
-                            if pass && geometry[row] {
-                                result[row][i] = value;
-                                if route == 2 && self.context.native_device_calls() == native_before
+                            // Device status and finite output guards require no f64 rerun.
+                            match &value {
+                                Err(OperandError::RayFailure(reason))
+                                    if reason.contains("requires reference") =>
                                 {
-                                    stats.host_operands += 1;
-                                    stats.fallback_operands += 1;
-                                    fallback_rows[row] = true;
+                                    *stats.fallbacks.entry(reason.clone()).or_default() += 1;
+                                }
+                                Ok(v) if !v.is_finite() => {
                                     *stats
                                         .fallbacks
-                                        .entry("native solver completed with f64".into())
+                                        .entry("non-finite device operand".into())
                                         .or_default() += 1;
-                                } else {
-                                    stats.device_operands += 1;
-                                    device_rows[row] = true;
                                 }
-                            } else {
-                                fallback_rows[row] = true;
-                                stats.fallback_operands += 1;
-                                *stats
-                                    .fallbacks
-                                    .entry(format!(
-                                        "{}: candidate output or constraint uncertainty",
-                                        ops[i].kind.name()
-                                    ))
-                                    .or_default() += 1;
+                                _ => {
+                                    result[row][i] = value;
+                                    missing[row][col] = false;
+                                    if route == 2
+                                        && self.context.native_device_calls() == native_before
+                                    {
+                                        stats.host_operands += 1;
+                                        stats.fallback_operands += 1;
+                                        fallback_rows[row] = true;
+                                        *stats
+                                            .fallbacks
+                                            .entry("native solver completed with f64".into())
+                                            .or_default() += 1;
+                                    } else {
+                                        stats.device_operands += 1;
+                                        device_rows[row] = true;
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+            }
+            // Compute only missing operands. Model/paraxial host work is an
+            // implementation stage; unsupported optical work is a fallback.
+            for (row, missing) in missing.into_iter().enumerate() {
+                let indices: Vec<_> = indices
+                    .iter()
+                    .copied()
+                    .zip(missing)
+                    .filter_map(|(i, missing)| missing.then_some(i))
+                    .collect();
+                if indices.is_empty() {
+                    continue;
+                }
+                ctx.check()?;
+                let refs: Vec<_> = indices.iter().map(|&i| ops[i]).collect();
+                let values = self
+                    .reference
+                    .evaluate_batch(&systems[row..row + 1], &refs, &inner)?
+                    .remove(0);
+                for (i, value) in indices.into_iter().zip(values) {
+                    result[row][i] = value;
+                    stats.host_operands += 1;
+                    if route != 3
+                        || !matches!(
+                            ops[i].kind.capability(),
+                            Capability::Model | Capability::Paraxial
+                        )
+                    {
+                        fallback_rows[row] = true;
+                        stats.fallback_operands += 1;
+                        *stats
+                            .fallbacks
+                            .entry(format!("{}: reference completion", ops[i].kind.name()))
+                            .or_default() += 1;
                     }
                 }
             }
@@ -473,7 +302,7 @@ impl ResidentEvaluator {
         stats.cpu_candidates = device_rows
             .iter()
             .zip(&fallback_rows)
-            .filter(|(device, fallback)| !**device || **fallback)
+            .filter(|(d, f)| !**d || **f)
             .count() as u64;
         let mut total = self.stats.lock().unwrap();
         total.device_candidates += stats.device_candidates;
@@ -481,45 +310,13 @@ impl ResidentEvaluator {
         total.candidates += stats.candidates;
         total.device_operands += stats.device_operands;
         total.host_operands += stats.host_operands;
-        total.reference_checks += stats.reference_checks;
-        total.reference_cache_hits += stats.reference_cache_hits;
-        total.geometry_qualifications += stats.geometry_qualifications;
-        total.geometry_rejections += stats.geometry_rejections;
-        if let Some(report) = &stats.geometry_report {
-            merge_geometry(&mut total.geometry_report, report);
-        }
-        total.reference_seconds += stats.reference_seconds;
         total.fallback_operands += stats.fallback_operands;
-        total.maximum_absolute_error = total
-            .maximum_absolute_error
-            .max(stats.maximum_absolute_error);
         for (k, v) in stats.fallbacks {
             *total.fallbacks.entry(k).or_default() += v;
         }
         ctx.check()?;
-        ctx.report(1., "candidate batch qualified");
+        ctx.report(1., "candidate batch complete");
         Ok(result)
-    }
-}
-fn merge_geometry(
-    total: &mut Option<mklight_gpu::xval::XvalReport>,
-    r: &mklight_gpu::xval::XvalReport,
-) {
-    if let Some(t) = total {
-        t.rays += r.rays;
-        t.compared += r.compared;
-        t.opd_compared += r.opd_compared;
-        t.max_position_mm = t.max_position_mm.max(r.max_position_mm);
-        t.max_direction = t.max_direction.max(r.max_direction);
-        t.max_opd_waves = t.max_opd_waves.max(r.max_opd_waves);
-        t.max_transmittance_abs = t.max_transmittance_abs.max(r.max_transmittance_abs);
-        t.survival_mismatches += r.survival_mismatches;
-        t.band_mismatches += r.band_mismatches;
-        t.chief_mismatches += r.chief_mismatches;
-        t.notes.extend(r.notes.iter().cloned());
-        t.notes.truncate(8);
-    } else {
-        *total = Some(r.clone());
     }
 }
 /// Candidates per resident plan, bounded so plans stay inside the 256 MiB
@@ -613,50 +410,7 @@ fn route_for(kind: &OperandKind) -> usize {
         3
     }
 }
-fn qualifies(
-    op: &Operand,
-    value: &OperandValue,
-    reference: &OperandValue,
-    terms: usize,
-) -> (bool, f64) {
-    let (Ok(a), Ok(b)) = (value, reference) else {
-        return (false, 0.);
-    };
-    if !a.is_finite() || !b.is_finite() {
-        return (false, 0.);
-    }
-    let error = (a - b).abs();
-    let budget = match op.kind {
-        OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. } => 0.005 / 3.,
-        OperandKind::Mtf { .. } => 0.002 / 3.,
-        OperandKind::RelativeIllumination => 1e-3 / 3.,
-        OperandKind::RmsSpot { .. } => (0.005 * b.abs()).max(2e-5) / 3.,
-        OperandKind::GhostFocus { .. }
-        | OperandKind::GhostIrradiance { .. }
-        | OperandKind::StrayLightPower { .. } => 1e-5 * b.abs() + 1e-10,
-        _ => 2e-5 / 3.,
-    };
-    // Every merit residual must also pass the final-merit gate. Ambiguous
-    // inequality decisions use the reference value, even if optics passed.
-    let near = (op.comparison != Comparison::Equal || op.role == OperandRole::Constraint)
-        && (b - op.target).abs() <= budget;
-    let ar = op.residual(*a);
-    let br = op.residual(*b);
-    (
-        error <= budget
-            // RI's numeric completion is f64. A changed visibility decision
-            // must not introduce an unchecked finite-difference discontinuity.
-            && (!matches!(op.kind,OperandKind::RelativeIllumination) || error==0.)
-            && !near
-            && (op.weight * (ar * ar - br * br)).abs()
-                <= (0.005 * op.weight * br * br).max(0.5e-8 / terms.max(1) as f64),
-        error,
-    )
-}
 impl OperandEvaluator for ResidentEvaluator {
-    fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
-        Some(&self.checked_reference)
-    }
     fn gpu_context(&self) -> Option<&GpuContext> {
         Some(&self.context)
     }
@@ -697,7 +451,6 @@ impl OperandEvaluator for ResidentEvaluator {
                 chunk,
                 ops,
                 None,
-                i * limit,
                 &ctx.subrange(i as f64 / count as f64, (i + 1) as f64 / count as f64),
             )?);
         }
@@ -754,7 +507,6 @@ impl OperandEvaluator for ResidentEvaluator {
                 systems,
                 ops,
                 template.as_ref().map(|t| (t.as_ref(), rows)),
-                0,
                 &ctx.subrange(
                     0.05 + 0.95 * i as f64 / count as f64,
                     0.05 + 0.95 * (i + 1) as f64 / count as f64,
@@ -806,6 +558,22 @@ impl ResidentEvaluator {
                     )
                 },
             )?);
+        }
+        // This API publishes independent refinements, so score their final
+        // designs once after every device solve has completed.
+        for (system, result) in systems.iter().zip(&mut results) {
+            ctx.check()?;
+            let problem = OpticalProblem::new(
+                system.clone(),
+                variables.to_vec(),
+                spec.clone(),
+                &self.reference,
+                &OperandRegistry::builtin(),
+            )?;
+            let e = crate::problem::evaluate_one(&problem, &result.x, ctx)?;
+            result.merit = crate::problem::merit(problem.weights(), &e.residuals, e.status);
+            result.violation =
+                crate::problem::total_violation(problem.constraints(), &e.constraints, e.status);
         }
         ctx.check()?;
         Ok(results)

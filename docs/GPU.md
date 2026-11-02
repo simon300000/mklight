@@ -1391,6 +1391,47 @@ optional qualified spatial-search implementation, not a requirement or a
 replacement of curved optics by triangles. Stable nearest-hit tie rules,
 shared apertures and exact coverage signatures preserve the solver partition.
 
+#### Runtime publication policy (2026-11-02)
+
+User decision: edits do not require a CPU run. Native Metal results publish
+immediately as `gpu:metal` with their actual f32/double-float precision. The
+engine no longer runs or caches sampled per-snapshot geometry qualification,
+full-chain reference comparisons, or per-candidate f64 geometry/operand checks.
+There is no runtime verification option: the former complete-result comparator
+lives only in `mklight-engine/tests/support/comparison.rs` and the ignored
+`norecheck::unchecked_accuracy` harness. Existing f64 cross-validation suites
+remain the accuracy evidence, including perturbed systems and known answers.
+This policy replaces the runtime publication gates described earlier in §5.2.
+The startup numerics probe, boundary packing checks, device status/finite guards
+and existing conservation checks remain; they require no duplicate CPU solve.
+
+A static capability list deliberately routes `encircled_energy` (P11 failures
+16/16), `wavefront_map` (16/16), and `polarization_pupil_map` (13/16) to the CPU
+reference, including explicit Metal requests, with a reported capability reason.
+Their adapters stay in the catalogue for offline testing. Sporadic P11 failures
+remain known residual accuracy gaps on Metal: `stray_light` 6/16,
+`ghost_irradiance` 4/16, `footprint` 1/16, `field_curvature_distortion` 1/16,
+and `ghost_paths` 1/16. They no longer trigger runtime reference comparisons.
+An unchecked publication is not evidence that these discrepancies are fixed.
+
+Optimisation, tolerance and glass search loops use device evaluation without
+f64 checks, including combined merits, constraint hinges and finite-difference
+stencils. Unsupported preparation/features, unresolved aiming and actual
+resource/device failures still receive a counted reference completion.
+Optimization scores the start and final best design in one final f64 reporting
+pass. Tolerance scores its completed cases with their returned compensators
+once at the end, then derives sensitivity/Monte-Carlo figures from those f64
+scores; it does not repeat the compensator search. Glass finalists retain the
+final f64 ranking. Cancellation never starts a reference replacement/report.
+`merit_evaluation` publishes its actual evaluator values directly.
+
+The candidate cost rules (`optimize`, `merit_evaluation`, `tolerance`,
+`glass_substitution`) now select qualified Metal: **re-measure pending**.
+Other Auto thresholds are unchanged; the following P11 tables describe the
+previous implementation and do not measure this policy. Provisional normal-load
+before/after timings and default-grid accuracy are captured by the `norecheck`
+harness; they do not recalibrate Auto thresholds.
+
 #### Consolidated P11 measurements
 
 Final release measurements: Apple M2 Pro (12 CPU / 19 GPU cores), macOS build `26A434`, 12 CPU workers; strict precompiled Metal `-fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off`. The shader source digest and complete compiler/device/probe records accompany every native run.
@@ -1445,9 +1486,8 @@ CPU p75 is below the Metal p25. Bases:
   at every measured shape. The threshold is the measured default workload
   (3 fields × 3 wavelengths in every sample); larger jobs are unmeasured
   and use qualified Metal.
-- *candidates*: always CPU. Every changed candidate is re-checked against
-  f64 (§9.4), so the device route repeats the CPU work; it measured 2–128×
-  slower.
+- *candidates* (historical P11): always CPU because each changed candidate
+  was re-checked in f64. This rule is retired; re-measure pending.
 
 | Analysis | Workload | CPU at or below | Basis | Defaults: CPU win / Metal faster / f64 only | Σ default medians CPU / Metal ms |
 |---|---|---:|---|---:|---:|
@@ -1569,27 +1609,26 @@ P9 has one 16.540 ms warm outlier above the 10–15 ms aim; its other largest sa
 The engine initially uses `Auto`; explicit CPU remains available. Native
 geometric, wave/image, radiometry, ghost/stray and candidate adapters share one
 operation catalogue, including glass substitution. A native adapter is a route,
-not a blanket precision certificate: every requested system/settings domain
-must qualify. The legacy host-generated Metal analysis bridge and its ray and
+not a blanket precision certificate: offline suites establish accuracy and the
+static capability list above retains broadly failing analyses on the reference. The legacy host-generated Metal analysis bridge and its ray and
 candidate-count heuristics are retired.
 
 `auto` applies the workload cost rules of §9.2: per analysis, a workload
 measured from the settings and the system against a threshold derived from
 the measurements, scoped to the measured device family. Unknown cost (no
 rule, or a device without evidence) uses qualified Metal; requests do not
-time-race backends. Cold qualification and warm reuse are reported
-separately. A CPU choice by cost is deliberate and reported without a
+time-race backends. Cold first calls and warm reuse are measured separately. A CPU choice by cost is deliberate and reported without a
 warning. Small serial host control, I/O and final result packing remain
 host work. Kernel/primitive-only measurements do not set complete-job
 choices.
 
 An explicit Metal request bypasses the cost rules, never accuracy gates.
 Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
-Unsupported work, failed qualification, resource or device failure produces
+Unsupported work, static capability restrictions, resource or device failure produce
 a reported reference fallback; cancellation never triggers fallback. A
 partial solver fallback names stages/candidates, counts polished rays and
 records why. `RunInfo` and the backend report retain requested/used backend,
-precision, seed, base/derived hashes, device, build/probe, qualification,
+precision, seed, base/derived hashes, device, build/probe,
 effective algorithm/plan versions, cost decision and stage timings. Do not
 label a GPU computation f64 just because its public buffer widens to f64.
 
@@ -1615,19 +1654,19 @@ the existing solver semantics to a partial success by accident.
 
 ### 9.4 Accuracy and qualification
 
-Qualification is per operation chain, system/domain and settings, not just
-the presence of a trace kernel. P11 adds a complete requested-result f64 comparison after the sampled geometry
-gate; candidate evaluation retains independent per-candidate operand checks.
-Cache keys additionally include radiometry,
-field/λ domain, shape/size family, precision/plan version and tolerances.
-Keep the §5.2 one-third safety margin for sampled optical error maxima;
-full-grid regression must meet the whole budget. Cancellation leaves no
-qualification verdict. A baseline-system pass does not qualify arbitrary
-perturbations: candidate plans need a tested parameter envelope and guard
-checks, sampled f64 sentinels within batches, and reference qualification
-when leaving that envelope. Without an established envelope, qualify the
-candidate itself. Recheck accepted/final designs and f64-score reported
-optimisation/glass finalists. Record unqualified candidate fallbacks.
+Accuracy qualification is offline, per operation chain and tested settings/domain.
+No snapshot edit or candidate evaluation runs a reference comparison. Retain
+all geometry, complete-grid, CPU-f32 and f64 regression tests, with the §5.2
+one-third sampled safety margin as test evidence rather than a runtime gate.
+The static capability restrictions in §9.2 apply before cost selection.
+Device status masks, finite outputs and kernel conservation summaries remain
+cheap runtime guards. Unresolved aiming and unsupported features keep explicit
+reference fallbacks; cancellation yields no replacement result.
+
+The following budgets remain offline acceptance criteria. Final reported
+optimisation best designs, tolerance cases and glass finalists are f64-scored
+once after the device search. No nominal-envelope cache, sampled candidate
+sentinel, constraint uncertainty rerun or changed-candidate qualification remains.
 
 | Quantity / kernel | Acceptance against independent CPU f64 |
 |---|---|

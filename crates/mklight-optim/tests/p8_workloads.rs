@@ -1,5 +1,5 @@
 #![cfg(target_os = "macos")]
-//! Complete-workload timings include every candidate's qualification cost.
+//! Complete-workload timings include device search and final report scoring.
 use mklight_core::{JobContext, MaterialRef, Snapshot, param::ParamPath, samples};
 use mklight_gpu::ComputeBackend;
 use mklight_optim::{
@@ -157,7 +157,7 @@ fn trials_and_glass() {
             assert!(q.device_operands > q0.device_operands);
             eprintln!(
                 "P8_WORKLOAD {}",
-                serde_json::json!({"case":"cooke_tolerance","compensated":compensated,"trials":32,"batch":16,"seed":73,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_mean":expected.mean,"resident_mean":got.mean,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands,"reference_seconds":q.reference_seconds-q0.reference_seconds,"reference_checks":q.reference_checks-q0.reference_checks})
+                serde_json::json!({"case":"cooke_tolerance","compensated":compensated,"trials":32,"batch":16,"seed":73,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_mean":expected.mean,"resident_mean":got.mean,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
             );
         }
     }
@@ -219,7 +219,7 @@ fn trials_and_glass() {
         assert!(q.device_operands > q0.device_operands);
         eprintln!(
             "P8_WORKLOAD {}",
-            serde_json::json!({"case":"cooke_catalogue_refinements","choices":["N-SK16","N-BAK1","N-BK7"],"variables":1,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merits":cpu.iter().map(|r|r.merit).collect::<Vec<_>>(),"resident_merits":got.iter().map(|r|r.merit).collect::<Vec<_>>(),"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands,"reference_seconds":q.reference_seconds-q0.reference_seconds,"reference_checks":q.reference_checks-q0.reference_checks})
+            serde_json::json!({"case":"cooke_catalogue_refinements","choices":["N-SK16","N-BAK1","N-BK7"],"variables":1,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merits":cpu.iter().map(|r|r.merit).collect::<Vec<_>>(),"resident_merits":got.iter().map(|r|r.merit).collect::<Vec<_>>(),"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
         );
     }
 }
@@ -284,7 +284,7 @@ fn ri_visibility_batches() {
             assert!(q.device_operands > q0.device_operands);
             eprintln!(
                 "P8_WORKLOAD {}",
-                serde_json::json!({"case":"cooke_ri_visibility","batch":batch,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":new_s,"maximum_error":error,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"host_completions":after.fallback_count-before.fallback_count,"device_operands":q.device_operands-q0.device_operands,"reference_seconds":q.reference_seconds-q0.reference_seconds,"reference_checks":q.reference_checks-q0.reference_checks})
+                serde_json::json!({"case":"cooke_ri_visibility","batch":batch,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":new_s,"maximum_error":error,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"host_completions":after.fallback_count-before.fallback_count,"device_operands":q.device_operands-q0.device_operands})
             );
         }
     }

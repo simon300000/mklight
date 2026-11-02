@@ -267,14 +267,16 @@ backend, the engine default (`default_backend` in the configuration, or
 default backend does not implement run on the CPU reference, with a
 `run_info.warnings` note for an explicit GPU default.
 
-A selected GPU qualifies both the system geometry and the complete operation
-chain for the requested settings. A failed gate or resource/unsupported stage
-uses the reported f64 reference; cancellation never starts a replacement.
-`backend.execution` retains native device/build/probe, algorithm and stage
-metadata; `backend.cost_decision` records the automatic choice (workload,
-threshold and rule). Explicit Metal bypasses the cost rules, never accuracy
-gates. See RESULTS §5 and GPU §9.2 for the qualification cache and the
-measured rules.
+A selected GPU publishes actual device results without per-snapshot or
+per-candidate reference comparisons. Accuracy is tested offline; static capability
+restrictions retain the three broadly failing P11 analyses on CPU (GPU §9.2).
+Unsupported stages, unresolved aiming and resource/device errors retain reported
+f64 fallbacks. Cancellation never starts a replacement. Final optimize, tolerance
+and glass reports are f64-scored after the device search; merit evaluation returns
+the active evaluator's values. `backend.execution` retains device/build/probe and
+stage metadata; `backend.cost_decision` records cost/capability choices. Explicit
+Metal bypasses cost rules, while static capability restrictions still apply.
+Qualification blobs are removed. See RESULTS §5 and GPU §9.2.
 
 ### Analysis request (`mk_session_submit_analysis_json`)
 
@@ -316,7 +318,7 @@ through `mk_job_status`).
   "library_hash": "<64 hex>",
   "backend": { "requested": "default:cpu_reference", "used": "cpu_reference",
                "precision": "f64_reference", "device": null,
-               "fallback_reason": null, "qualification": null },
+               "fallback_reason": null, "execution": [], "cost_decision": null },
   "result_version": 1,
   "result": { … analysis specific (docs/RESULTS.md) … },
   "buffers": [ {"index": 0, "name": "n_after", "dtype": "f64", "shape": [4, 3]} ] }

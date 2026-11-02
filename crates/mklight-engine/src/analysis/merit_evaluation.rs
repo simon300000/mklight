@@ -15,6 +15,9 @@ pub fn register_all(r: &mut AnalysisRegistry) {
 pub struct MeritEvaluation;
 
 impl Analysis for MeritEvaluation {
+    fn result_version(&self) -> u32 {
+        2
+    }
     fn name(&self) -> &str {
         "merit_evaluation"
     }

@@ -10,7 +10,6 @@ use std::sync::{
 };
 mod evaluator;
 mod first_order;
-mod qualification;
 pub mod scheduler;
 pub use evaluator::{EvaluationStats, ResidentEvaluator};
 
