@@ -453,59 +453,86 @@ fn trace_chunks_progress_and_cancellation() {
 #[test]
 #[ignore = "benchmark"]
 fn benchmark_double_gauss_1e6() {
-    let g = gpu_or_skip!();
+    use mklight_metal::{MetalOptions, MetalPrecision};
+    let options = MetalOptions::from_env().unwrap();
+    let g = MetalBackend::with_options(&options)
+        .unwrap()
+        .expect("real Metal required");
+    let twin = MetalBackend::with_options(&MetalOptions {
+        precision: if options.precision == MetalPrecision::DoubleFloat {
+            MetalPrecision::PureF32
+        } else {
+            MetalPrecision::DoubleFloat
+        },
+        ..options
+    })
+    .unwrap()
+    .expect("real Metal required");
     let t = testutil::tracer(samples::double_gauss());
     let sys = t.system();
-    let mut rays = Vec::new();
-    for f in 0..3 {
-        for p in (PupilSampling::Grid { n: 650 }).points() {
-            rays.push(t.generate(t.field(f), 1, p[0], p[1]).unwrap().ray);
+    let opts = t.options();
+    for n in [10_000, 1_000_000] {
+        let points = (PupilSampling::Grid { n: 650 }).points();
+        let rays: Vec<_> = (0..n)
+            .map(|i| {
+                let p = points[(i / 3) % points.len()];
+                t.generate(t.field(i % 3), 1, p[0], p[1]).unwrap().ray
+            })
+            .collect();
+        let mut batch = RayBatch::with_capacity(n);
+        for r in &rays {
+            batch.push_f64([r.pos.x, r.pos.y, r.pos.z], [r.dir.x, r.dir.y, r.dir.z], 1);
+        }
+        let backends = [&g, &twin];
+        let handles: Vec<_> = backends
+            .iter()
+            .map(|b| {
+                b.upload_system(&PackedSystem::pack_all(sys).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        for round in 0..11 {
+            let order = if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
+            for index in order {
+                let start = Instant::now();
+                let (device_seconds, mode) = if index == 2 {
+                    let out: Vec<_> = rays
+                        .par_iter()
+                        .map(|r| mklight_trace::trace_ray(sys, r, 1, &opts, None))
+                        .collect();
+                    std::hint::black_box(out);
+                    (0., "cpu_f64")
+                } else {
+                    let b = backends[index];
+                    let req = TraceRequest::new(
+                        handles[index],
+                        batch.clone(),
+                        0,
+                        sys.image_index() as u32,
+                    );
+                    let r = b
+                        .run(Job::Trace(Box::new(req)), &JobContext::new())
+                        .unwrap();
+                    std::hint::black_box(&r.output);
+                    (
+                        r.stats.device_seconds,
+                        if b.precision().opl_double_float {
+                            "df"
+                        } else {
+                            "f32"
+                        },
+                    )
+                };
+                println!(
+                    "F32_TRACE_TIME {}",
+                    serde_json::json!({"rays":n,"surfaces":sys.image_index(),"round":round,"phase":if round==0{"warmup"}else{"measured"},"mode":mode,"wall_seconds":start.elapsed().as_secs_f64(),"device_seconds":device_seconds,"device":g.info(),"build":g.precision().kernel_build,"twin_build":twin.precision().kernel_build,"rayon_threads":rayon::current_num_threads()})
+                );
+            }
+        }
+        for (b, h) in backends.iter().zip(handles) {
+            b.release_systems(h).unwrap();
         }
     }
-    let n = rays.len();
-    let steps = sys.image_index();
-    let mut batch = RayBatch::with_capacity(n);
-    for r in &rays {
-        batch.push_f64([r.pos.x, r.pos.y, r.pos.z], [r.dir.x, r.dir.y, r.dir.z], 1);
-    }
-    let h = g
-        .upload_system(&PackedSystem::pack_all(sys).unwrap())
-        .unwrap();
-    let opts = t.options();
-    let mut cpu_best = f64::INFINITY;
-    let mut gpu_best = f64::INFINITY;
-    let mut dev_best = f64::INFINITY;
-    for _ in 0..3 {
-        let t0 = Instant::now();
-        let out: Vec<_> = rays
-            .par_iter()
-            .map(|r| mklight_trace::trace_ray(sys, r, 1, &opts, None))
-            .collect();
-        cpu_best = cpu_best.min(t0.elapsed().as_secs_f64());
-        assert_eq!(out.len(), n);
-        let req = TraceRequest::new(h, batch.clone(), 0, steps as u32);
-        let t0 = Instant::now();
-        let r = g
-            .run(Job::Trace(Box::new(req)), &JobContext::new())
-            .unwrap();
-        gpu_best = gpu_best.min(t0.elapsed().as_secs_f64());
-        dev_best = dev_best.min(r.stats.device_seconds);
-    }
-    let rs = (n * steps) as f64;
-    eprintln!(
-        "{n} rays x {steps} surfaces on {}: GPU {:.1} ms wall ({:.2e} ray-surfaces/s), \
-         {:.1} ms device ({:.2e}/s); CPU f64 rayon ({} threads) {:.1} ms ({:.2e}/s); \
-         speed-up {:.1}x wall",
-        g.info().name,
-        gpu_best * 1e3,
-        rs / gpu_best,
-        dev_best * 1e3,
-        rs / dev_best,
-        rayon::current_num_threads(),
-        cpu_best * 1e3,
-        rs / cpu_best,
-        cpu_best / gpu_best
-    );
 }
 
 #[test]
