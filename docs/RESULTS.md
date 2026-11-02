@@ -133,8 +133,8 @@ the end; merit evaluation returns actual evaluator values.
 `backend.execution` preserves device/build/probe, plan versions, identities,
 timings, commands, allocation/copy counters and partial/reference-completion
 reports. Unsupported stages, unresolved aiming and resource/device failures
-retain reported reasons and warnings. Qualification blobs are removed. Public
-f64 buffers still carry `f32_gpu` when computed by Metal.
+retain reported reasons and warnings. Public f64 buffers still carry `f32_gpu`
+when computed by Metal.
 
 `backend.cost_decision` records automatic selection: `decision`
 (`cpu_reference` or `qualified_metal`), `rule`, `workload`, `threshold`,

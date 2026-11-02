@@ -221,17 +221,14 @@ impl GpuTraceEvaluator {
     pub fn new(
         backend: Arc<dyn ComputeBackend>,
         cpu: TraceEvaluator,
-        _system: &OpticalSystem,
         settings: GpuEvalSettings,
-        ctx: &JobContext,
-    ) -> MkResult<Self> {
-        ctx.check()?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             backend,
             cpu,
             settings,
             counters: Arc::default(),
-        })
+        }
     }
 
     pub fn backend(&self) -> &Arc<dyn ComputeBackend> {

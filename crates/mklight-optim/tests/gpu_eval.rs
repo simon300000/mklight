@@ -62,15 +62,12 @@ fn emulation() -> Arc<dyn ComputeBackend> {
     Arc::new(CpuF32Backend::new())
 }
 
-fn gpu_eval(backend: Arc<dyn ComputeBackend>, sys: &OpticalSystem) -> GpuTraceEvaluator {
+fn gpu_eval(backend: Arc<dyn ComputeBackend>) -> GpuTraceEvaluator {
     GpuTraceEvaluator::new(
         backend,
         TraceEvaluator::builtin(),
-        sys,
         GpuEvalSettings::default(),
-        &JobContext::new(),
     )
-    .unwrap()
 }
 
 fn curv(id: u64) -> VariableSpec {
@@ -306,7 +303,7 @@ fn agreement(backend: Arc<dyn ComputeBackend>) {
         .into_iter()
         .filter(|(_, s)| !samples::has_extended_surfaces(s))
     {
-        let gpu = gpu_eval(backend.clone(), &sys);
+        let gpu = gpu_eval(backend.clone());
         assert!(gpu.is_active(), "{name}");
         let ops = operands(&sys);
         assert!(ops.iter().all(|o| gpu_supports(&o.kind, true)));
@@ -344,8 +341,8 @@ fn metal_gpu_agrees_with_cpu_reference_and_emulation() {
     let sys = samples::double_gauss();
     let ops = operands(&sys);
     let cands = candidates(&sys);
-    let a = values(&gpu_eval(gpu, &sys), &cands, &ops);
-    let b = values(&gpu_eval(emu, &sys), &cands, &ops);
+    let a = values(&gpu_eval(gpu), &cands, &ops);
+    let b = values(&gpu_eval(emu), &cands, &ops);
     for (x, y) in a.iter().flatten().zip(b.iter().flatten()) {
         match (x, y) {
             (Ok(x), Ok(y)) => assert_eq!(x.to_bits(), y.to_bits()),
@@ -390,7 +387,7 @@ fn real_rays(surface: Option<SurfaceId>, field: usize) -> Vec<Operand> {
 fn real_rays_on_passive_surfaces_and_far_points_use_the_cpu() {
     let sys = samples::newtonian_telescope();
     assert!(sys.surfaces[2].is_coordinate_break());
-    let gpu = gpu_eval(emulation(), &sys);
+    let gpu = gpu_eval(emulation());
     assert!(gpu.is_active());
     let mut cands = vec![sys.clone()];
     cands.extend(perturbed(&sys, 8));
@@ -412,7 +409,7 @@ fn real_rays_on_passive_surfaces_and_far_points_use_the_cpu() {
 
     // A 55° field on the singlet images more than 100 mm off axis.
     let sys = samples::singlet();
-    let gpu = gpu_eval(emulation(), &sys);
+    let gpu = gpu_eval(emulation());
     let mut wide = sys.clone();
     wide.fields.fields[2].y = 55.0;
     let far = real_rays(None, 2);
@@ -490,14 +487,11 @@ fn cancelled_evaluations_release_their_uploads() {
     let gpu = GpuTraceEvaluator::new(
         b.clone(),
         TraceEvaluator::builtin(),
-        &sys,
         GpuEvalSettings {
             batch: 2,
             ..Default::default()
         },
-        &JobContext::new(),
-    )
-    .unwrap();
+    );
     let live0 = b.live.load(SeqCst);
     let ops = operands(&sys);
     let refs: Vec<&Operand> = ops.iter().collect();
@@ -548,7 +542,7 @@ fn ray_count_estimate() {
 #[test]
 fn gpu_values_are_deterministic_and_batch_independent() {
     let sys = samples::cooke_triplet();
-    let gpu = gpu_eval(emulation(), &sys);
+    let gpu = gpu_eval(emulation());
     let ops = operands(&sys);
     let cands = candidates(&sys);
     let alone = values(&gpu, &cands[1..2], &ops);
@@ -567,14 +561,11 @@ fn gpu_values_are_deterministic_and_batch_independent() {
     let small = GpuTraceEvaluator::new(
         emulation(),
         TraceEvaluator::builtin(),
-        &sys,
         GpuEvalSettings {
             batch: 2,
             ..Default::default()
         },
-        &JobContext::new(),
-    )
-    .unwrap();
+    );
     let split = values(&small, &cands, &ops);
     for (a, b) in batch.iter().zip(&split) {
         assert_eq!(bits(a), bits(b));
@@ -650,10 +641,7 @@ fn gpu_finite_differences_use_noise_aware_steps() {
         let cpu = triplet_problem(criterion.clone(), TraceEvaluator::builtin());
         let x = cpu.start_point().unwrap();
         let r = reference_jacobian(&cpu, &x, 1e-4);
-        let gpu = triplet_problem(
-            criterion.clone(),
-            gpu_eval(emulation(), cpu.base()).composite(),
-        );
+        let gpu = triplet_problem(criterion.clone(), gpu_eval(emulation()).composite());
         let f = fd_error(&gpu, &x, FdScheme::Forward, None, &r);
         let c = fd_error(&gpu, &x, FdScheme::Central, None, &r);
         let naive = fd_error(&gpu, &x, FdScheme::Forward, Some(f64::EPSILON.sqrt()), &r);
@@ -730,7 +718,7 @@ fn assert_bits_eq(a: &[Vec<OperandValue>], b: &[Vec<OperandValue>]) {
 #[test]
 fn unsupported_trace_backend_falls_back_to_the_cpu_reference() {
     let sys = samples::cooke_triplet();
-    let gpu = gpu_eval(Arc::new(NoTrace(CpuF32Backend::new())), &sys);
+    let gpu = gpu_eval(Arc::new(NoTrace(CpuF32Backend::new())));
     assert!(!gpu.is_active());
     assert_eq!(gpu.precision(), Precision::F64Reference);
     let ops = operands(&sys);
@@ -765,7 +753,7 @@ fn unsupported_trace_backend_falls_back_to_the_cpu_reference() {
 #[test]
 fn unpackable_candidates_are_evaluated_on_the_cpu() {
     let sys = samples::cooke_triplet();
-    let gpu = gpu_eval(emulation(), &sys);
+    let gpu = gpu_eval(emulation());
     assert!(gpu.is_active());
     let mut bad = sys.clone();
     ParamPath::Conic {
@@ -795,7 +783,7 @@ fn unpackable_candidates_are_evaluated_on_the_cpu() {
 #[test]
 fn optimisers_run_on_gpu_evaluations() {
     let cpu = triplet_problem(SPOT, TraceEvaluator::builtin());
-    let gpu = triplet_problem(SPOT, gpu_eval(emulation(), cpu.base()).composite());
+    let gpu = triplet_problem(SPOT, gpu_eval(emulation()).composite());
     let x0 = cpu.start_point().unwrap();
     let ctx = JobContext::new();
     let merit_of = |p: &OpticalProblem<_>, x: &[f64]| {

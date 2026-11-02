@@ -1,9 +1,7 @@
 //! Resident parameter batches. Compile model addresses/dependencies once, upload
 //! immutable topology once, and upload only ordered parameter rows thereafter.
 //!
-//! Numeric preparation is not optical qualification. Consumers must qualify each
-//! candidate (or a tested envelope) before using its rays, and must honour the map
-//! status and dirty flags. Unsupported compilation uses `reference_batch`, whose
+//! Consumers must honour the map status and dirty flags. Unsupported compilation uses `reference_batch`, whose
 //! report retains the reason and original candidate slots.
 mod algebra;
 mod compile;
@@ -373,7 +371,7 @@ impl UploadedSystem {
             parameter_count: self.compiled.parameter_count(),
             tile_candidates: 1024,
         };
-        let entry = serde_json::json!({"version":VERSION,"program":self.compiled.fingerprint,"configuration":self.compiled.configuration,"candidate_vectors_hash":candidate_identity,"count":count,"qualification":"required_per_candidate_or_tested_envelope","dirty_flags":DIRTY_ALL});
+        let entry = serde_json::json!({"version":VERSION,"program":self.compiled.fingerprint,"configuration":self.compiled.configuration,"candidate_vectors_hash":candidate_identity,"count":count,"dirty_flags":DIRTY_ALL});
         let batches = &mut plan.settings["system_batches"];
         if batches.is_null() {
             *batches = serde_json::json!([]);

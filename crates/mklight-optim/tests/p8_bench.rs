@@ -72,11 +72,8 @@ fn candidate_sweep() {
             let legacy = GpuTraceEvaluator::new(
                 backend.clone(),
                 reference.trace.clone(),
-                &system,
                 Default::default(),
-                &ctx,
-            )
-            .unwrap();
+            );
             let old_setup_seconds = old_setup.elapsed().as_secs_f64();
             let new_setup = Instant::now();
             let resident = ResidentEvaluator::new(
@@ -193,11 +190,8 @@ fn dense_rays() {
             let old = GpuTraceEvaluator::new(
                 backend.clone(),
                 reference.trace.clone(),
-                &system,
                 Default::default(),
-                &ctx,
-            )
-            .unwrap();
+            );
             let resident = ResidentEvaluator::new(
                 GpuContext::new(backend.clone(), Snapshot::new(system.clone()).unwrap()),
                 reference.clone(),

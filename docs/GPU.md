@@ -843,7 +843,8 @@ CPU reference and **say so**: `Qualification::record(&mut RunInfo)` writes
 
 and in both cases the whole qualification (measured errors included) under
 `settings["backend_qualification"]`. A qualification holds for one system
-(snapshot) on one backend; callers cache it with the packed system.
+(snapshot) on one backend. The engine and the candidate solvers do not run it
+at run time (§9.2); it is offline test evidence.
 
 ### 5.3 Throughput
 
@@ -1393,44 +1394,56 @@ shared apertures and exact coverage signatures preserve the solver partition.
 
 #### Runtime publication policy (2026-11-02)
 
-User decision: edits do not require a CPU run. Native Metal results publish
-immediately as `gpu:metal` with their actual f32/double-float precision. The
-engine no longer runs or caches sampled per-snapshot geometry qualification,
-full-chain reference comparisons, or per-candidate f64 geometry/operand checks.
-There is no runtime verification option: the former complete-result comparator
-lives only in `mklight-engine/tests/support/comparison.rs` and the ignored
-`norecheck::unchecked_accuracy` harness. Existing f64 cross-validation suites
-remain the accuracy evidence, including perturbed systems and known answers.
-This policy replaces the runtime publication gates described earlier in §5.2.
-The startup numerics probe, boundary packing checks, device status/finite guards
-and existing conservation checks remain; they require no duplicate CPU solve.
+Edits do not trigger a CPU run. Native Metal results publish immediately as
+`gpu:metal` with their actual f32/double-float precision; there is no sampled
+per-snapshot geometry qualification, full-chain reference comparison or
+per-candidate f64 check at run time. Accuracy rests on the offline f64
+cross-validation suites (perturbed systems and known answers included) and on
+the ignored `metal_accuracy::default_sample_accuracy` harness, which compares
+every GPU-capable analysis on all samples at default settings with the CPU
+reference using the former publication gates of §9.4. The startup numerics
+probe, boundary packing checks, device status/finite guards and the kernels'
+conservation sums remain as runtime guards; none repeats the CPU solve.
 
-A static capability list deliberately routes `encircled_energy` (P11 failures
-16/16), `wavefront_map` (16/16), and `polarization_pupil_map` (13/16) to the CPU
-reference, including explicit Metal requests, with a reported capability reason.
-Their adapters stay in the catalogue for offline testing. Sporadic P11 failures
-remain known residual accuracy gaps on Metal: `stray_light` 6/16,
-`ghost_irradiance` 4/16, `footprint` 1/16, `field_curvature_distortion` 1/16,
-and `ghost_paths` 1/16. They no longer trigger runtime reference comparisons.
-An unchecked publication is not evidence that these discrepancies are fixed.
+**Static capability list** (`crates/mklight-engine/src/analysis/routing.rs`).
+Analyses whose Metal output failed the f64 comparison on most default samples
+in P11 always run on the CPU reference, with a deliberate reported reason, also
+for explicit Metal requests:
 
-Optimisation, tolerance and glass search loops use device evaluation without
-f64 checks, including combined merits, constraint hinges and finite-difference
+| Analysis | P11 default samples failing | Cause |
+|---|---:|---|
+| `encircled_energy` | 16/16 | the adapter's geometry-uncertainty bin check completed every default result in f64 |
+| `wavefront_map` | 16/16 | Seidel angles and fit condition where the aberration vanishes (on axis): undefined angles differ by up to 158° |
+| `polarization_pupil_map` | 13/16 | fast/diattenuation axes where retardance or diattenuation vanishes differ by 1–2 rad |
+
+**Known residual gaps on Metal** (2026-11-02, default settings; these publish
+unchecked). Thirteen sample/analysis cases fail the former gates:
+
+| Analysis | Samples | Nature of the difference |
+|---|---|---|
+| `stray_light` | achromat, cooke_triplet, double_gauss, petzval_asphere, relay, anamorphic | Monte Carlo event counts and sink energies (largest: cooke_triplet centroid 0.032 mm, absorbed-by-sink 5.0e-3 against a 4.9e-4 margin) |
+| `ghost_irradiance` | singlet, achromat, newtonian, q_con | `rays_traced` counts at aperture edges; values within 1e-11 |
+| `footprint` | newtonian | one overlay outline vertex count |
+| `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin |
+| `ghost_paths` | relay | ranking order of two ghosts of equal irradiance (R3·R1, R7·R5); every value agrees to 1e-12 |
+
+The relay `ghost_paths` case is a tie, not a Metal error: the symmetric relay
+gives R3·R1 and R7·R5 the same relative irradiance, which the devices round
+differently in the last bits, so the stable sort swaps them. The comparison
+harness matches ghost paths by label.
+
+**Candidate solvers.** Optimisation, tolerance and glass search loops run on
+the device, including combined merits, constraint hinges and finite-difference
 stencils. Unsupported preparation/features, unresolved aiming and actual
-resource/device failures still receive a counted reference completion.
-Optimization scores the start and final best design in one final f64 reporting
-pass. Tolerance scores its completed cases with their returned compensators
-once at the end, then derives sensitivity/Monte-Carlo figures from those f64
-scores; it does not repeat the compensator search. Glass finalists retain the
-final f64 ranking. Cancellation never starts a reference replacement/report.
-`merit_evaluation` publishes its actual evaluator values directly.
-
-The candidate cost rules (`optimize`, `merit_evaluation`, `tolerance`,
-`glass_substitution`) now select qualified Metal: **re-measure pending**.
-Other Auto thresholds are unchanged; the following P11 tables describe the
-previous implementation and do not measure this policy. Provisional normal-load
-before/after timings and default-grid accuracy are captured by the `norecheck`
-harness; they do not recalibrate Auto thresholds.
+resource/device failures receive a counted reference completion. The final
+report is scored once in f64: optimisation scores the start and the selected
+design; tolerance scores each completed case with its returned compensators
+(no second compensator solve) and derives the sensitivity/Monte Carlo figures
+from those scores; glass substitution scores and ranks the kept finalists.
+`merit_evaluation` publishes the evaluator's values. Cancellation never starts
+a reference replacement or report. Their cost rules select Metal until the new
+path is measured (**re-measure pending**); other Auto thresholds are
+unchanged.
 
 #### Consolidated P11 measurements
 
@@ -1489,8 +1502,8 @@ CPU p75 is below the Metal p25. Bases:
   at every measured shape. The threshold is the measured default workload
   (3 fields × 3 wavelengths in every sample); larger jobs are unmeasured
   and use qualified Metal.
-- *candidates* (historical P11): always CPU because each changed candidate
-  was re-checked in f64. This rule is retired; re-measure pending.
+- *candidates*: always CPU in P11, when every changed candidate was
+  re-checked in f64; superseded by the runtime policy above.
 
 | Analysis | Workload | CPU at or below | Basis | Defaults: CPU win / Metal faster / f64 only | Σ default medians CPU / Metal ms |
 |---|---|---:|---|---:|---:|
@@ -1668,8 +1681,7 @@ reference fallbacks; cancellation yields no replacement result.
 
 The following budgets remain offline acceptance criteria. Final reported
 optimisation best designs, tolerance cases and glass finalists are f64-scored
-once after the device search. No nominal-envelope cache, sampled candidate
-sentinel, constraint uncertainty rerun or changed-candidate qualification remains.
+once after the device search.
 
 | Quantity / kernel | Acceptance against independent CPU f64 |
 |---|---|

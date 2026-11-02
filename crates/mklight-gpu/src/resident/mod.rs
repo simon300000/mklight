@@ -699,7 +699,6 @@ pub struct PlanIdentity {
     pub configuration: String,
     pub spectrum: String,
     pub requested_backend: Option<String>,
-    pub qualification: Option<serde_json::Value>,
 }
 
 fn trace_manifest(r: &TraceRequest) -> serde_json::Value {

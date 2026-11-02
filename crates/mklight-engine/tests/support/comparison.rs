@@ -229,7 +229,17 @@ pub fn compare(
             .reduce(f64::min),
         ..Default::default()
     };
-    c.json(&cpu.json, &gpu.json, "result");
+    // Ghost paths of equal irradiance (symmetric relays) rank in either order.
+    let ranked = |json: &Value| {
+        let mut json = json.clone();
+        if analysis == "ghost_paths"
+            && let Some(ghosts) = json["ghosts"].as_array_mut()
+        {
+            ghosts.sort_by(|a, b| a["label"].as_str().cmp(&b["label"].as_str()));
+        }
+        json
+    };
+    c.json(&ranked(&cpu.json), &ranked(&gpu.json), "result");
     if cpu.buffers.len() != gpu.buffers.len() {
         c.fail("buffers", "buffer count differs");
         return Ok(c);

@@ -113,6 +113,15 @@ const RULES: &[Rule] = &[
     rule("image_simulation", &[Square("/optics/field_grid"), WavePupil("/optics/pupil")], 38025., Measured),
 ];
 
+/// Candidate solvers lost their always-CPU rule with the per-candidate f64
+/// checks; they use Metal until their crossover is measured again.
+const REMEASURE: &[&str] = &[
+    "optimize",
+    "merit_evaluation",
+    "tolerance",
+    "glass_substitution",
+];
+
 fn selected(v: &Value, all: usize) -> usize {
     match v {
         Value::Array(a) if !a.is_empty() => a.len(),
@@ -171,11 +180,8 @@ pub(crate) fn decision(
     if device.kind != BackendKind::Metal || device.vendor != "Apple" {
         return json!({"decision":"qualified_metal","reason":"no cost evidence for this device","version":VERSION});
     }
-    if matches!(
-        analysis,
-        "optimize" | "merit_evaluation" | "tolerance" | "glass_substitution"
-    ) {
-        return json!({"decision":"qualified_metal","reason":"per-candidate f64 checks removed; re-measure pending","version":VERSION});
+    if REMEASURE.contains(&analysis) {
+        return json!({"decision":"qualified_metal","reason":"candidate jobs: re-measure pending","version":VERSION});
     }
     let Some(rule) = RULES.iter().find(|r| r.analysis == analysis) else {
         return json!({"decision":"qualified_metal","reason":"no cost rule for this analysis","version":VERSION});
@@ -257,11 +263,7 @@ mod tests {
     fn rules_cover_the_resident_catalogue() {
         for name in crate::analysis::gpu::GPU_ANALYSES {
             assert!(
-                RULES.iter().any(|r| r.analysis == *name)
-                    || matches!(
-                        *name,
-                        "optimize" | "merit_evaluation" | "tolerance" | "glass_substitution"
-                    ),
+                RULES.iter().any(|r| r.analysis == *name) || REMEASURE.contains(name),
                 "{name}"
             );
         }

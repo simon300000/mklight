@@ -19,12 +19,6 @@ pub struct Worker<'a, E: ?Sized> {
     receive: Mutex<mpsc::Receiver<Values>>,
 }
 impl<E: OperandEvaluator + ?Sized> OperandEvaluator for Worker<'_, E> {
-    fn record_reference_stage(&self, name: &str, count: usize) {
-        self.evaluator.record_reference_stage(name, count)
-    }
-    fn reference_evaluator(&self) -> Option<&dyn OperandEvaluator> {
-        self.evaluator.reference_evaluator()
-    }
     fn supports(&self, k: &OperandKind) -> bool {
         self.evaluator.supports(k)
     }

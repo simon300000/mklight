@@ -219,7 +219,7 @@ impl ResidentEvaluator {
                 Err(MkError::Cancelled) => return Err(MkError::Cancelled),
                 Err(e) => {
                     *stats.fallbacks.entry(e.to_string()).or_default() +=
-                        (systems.len() * indices.len()) as u64;
+                        (active.len() * indices.len()) as u64;
                 }
                 Ok(values) => {
                     for (row, values) in active.iter().copied().zip(values) {
@@ -261,39 +261,46 @@ impl ResidentEvaluator {
                     }
                 }
             }
-            // Compute only missing operands. Model/paraxial host work is an
-            // implementation stage; unsupported optical work is a fallback.
-            for (row, missing) in missing.into_iter().enumerate() {
-                let indices: Vec<_> = indices
-                    .iter()
-                    .copied()
-                    .zip(missing)
-                    .filter_map(|(i, missing)| missing.then_some(i))
+            // Complete the remaining operands on the reference, batched per
+            // set of missing operands. Model/paraxial host work is a stage of
+            // the route; anything else is a counted fallback.
+            let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+            for (row, missing) in missing.iter().enumerate() {
+                let cols: Vec<_> = (0..indices.len())
+                    .filter(|&c| missing[c])
+                    .map(|c| indices[c])
                     .collect();
-                if indices.is_empty() {
-                    continue;
+                if !cols.is_empty() {
+                    groups.entry(cols).or_default().push(row);
                 }
+            }
+            for (cols, rows) in groups {
                 ctx.check()?;
-                let refs: Vec<_> = indices.iter().map(|&i| ops[i]).collect();
-                let values = self
-                    .reference
-                    .evaluate_batch(&systems[row..row + 1], &refs, &inner)?
-                    .remove(0);
-                for (i, value) in indices.into_iter().zip(values) {
-                    result[row][i] = value;
-                    stats.host_operands += 1;
-                    if route != 3
-                        || !matches!(
-                            ops[i].kind.capability(),
-                            Capability::Model | Capability::Paraxial
-                        )
-                    {
+                let refs: Vec<_> = cols.iter().map(|&i| ops[i]).collect();
+                let batch: Vec<_> = rows.iter().map(|&r| systems[r].clone()).collect();
+                let values = self.reference.evaluate_batch(&batch, &refs, &inner)?;
+                for (&row, values) in rows.iter().zip(values) {
+                    for (&i, value) in cols.iter().zip(values) {
+                        result[row][i] = value;
+                        stats.host_operands += 1;
+                        if route == 3
+                            && matches!(
+                                ops[i].kind.capability(),
+                                Capability::Model | Capability::Paraxial
+                            )
+                        {
+                            continue;
+                        }
                         fallback_rows[row] = true;
                         stats.fallback_operands += 1;
-                        *stats
-                            .fallbacks
-                            .entry(format!("{}: reference completion", ops[i].kind.name()))
-                            .or_default() += 1;
+                        let reason = if route == 3 {
+                            format!("{}: no resident operand adapter", ops[i].kind.name())
+                        } else if tracers[row].is_none() {
+                            "candidate cannot be traced".into()
+                        } else {
+                            continue;
+                        };
+                        *stats.fallbacks.entry(reason).or_default() += 1;
                     }
                 }
             }

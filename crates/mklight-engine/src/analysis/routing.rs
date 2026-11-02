@@ -4,18 +4,19 @@ use crate::{backend::BackendInfo, error::EngineResult};
 use mklight_core::{JobContext, job::Precision};
 use serde_json::{Value, json};
 
-/// P11 default-sample failures on most designs. Sporadic disagreements remain
-/// offline regression evidence, not per-snapshot publication gates.
+/// Analyses whose Metal output failed the f64 comparison on most P11 default
+/// samples (GPU §9.2) always run on the reference. Sporadic disagreements are
+/// documented residual gaps, not runtime gates.
 fn reference_reason(analysis: &str) -> Option<&'static str> {
     match analysis {
         "encircled_energy" => Some(
-            "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (bin ambiguity)",
+            "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (geometry-uncertainty bin completion)",
         ),
         "wavefront_map" => Some(
-            "static capability: P11 wavefront_map failed f64 comparison on 16/16 default samples (ill-conditioned on-axis fits)",
+            "static capability: P11 wavefront_map failed f64 comparison on 16/16 default samples (undefined on-axis Seidel angles)",
         ),
         "polarization_pupil_map" => Some(
-            "static capability: P11 polarization_pupil_map failed f64 comparison on 13/16 default samples (ill-conditioned axes)",
+            "static capability: P11 polarization_pupil_map failed f64 comparison on 13/16 default samples (undefined polarization axes)",
         ),
         _ => None,
     }

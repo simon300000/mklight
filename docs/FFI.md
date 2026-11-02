@@ -276,7 +276,7 @@ and glass reports are f64-scored after the device search; merit evaluation retur
 the active evaluator's values. `backend.execution` retains device/build/probe and
 stage metadata; `backend.cost_decision` records cost/capability choices. Explicit
 Metal bypasses cost rules, while static capability restrictions still apply.
-Qualification blobs are removed. See RESULTS §5 and GPU §9.2.
+See RESULTS §5 and GPU §9.2.
 
 ### Analysis request (`mk_session_submit_analysis_json`)
 

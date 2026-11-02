@@ -678,8 +678,7 @@ the values.
 `GpuTraceEvaluator` (`merit::gpu_eval`) evaluates the ray-based operands of
 a batch of candidates on any `mklight-gpu` backend (`ComputeBackend`: the
 Metal GPU, or the CPU-f32 emulation, which produces the same bits). It is
-built for a system, `GpuTraceEvaluator::new(backend, cpu, system,
-settings, ctx)`, and `composite()` puts it in front of the CPU
+built with `GpuTraceEvaluator::new(backend, cpu, settings)`, and `composite()` puts it in front of the CPU
 `TraceEvaluator`, which computes every operand the GPU does not.
 
 **Accelerated operands** (`gpu_supports`): `ray_aberration`, `rms_spot`,
@@ -717,15 +716,13 @@ chunking changes no bit (`docs/GPU.md` §6), and host work runs in a fixed
 order. A candidate therefore gets the same bits alone, in any batch, and
 under any sub-batch split (tested), and repeated runs are bit-identical.
 
-**Precision and fallback.** Accuracy is established by offline f64 comparisons;
-constructing or modifying a GPU evaluator does not run sampled qualification.
-The startup numerics probe still controls trace support. Unpackable candidates,
+**Precision and fallback.** Accuracy is established by offline f64 comparisons
+(no runtime qualification). The startup numerics probe still controls trace support. Unpackable candidates,
 unsupported ray features and failed uploads/dispatches use the counted CPU
 reference route. Passive-surface and distant real-ray output restrictions remain
 support limits of the legacy adapter. Cancellation never computes replacement
 values and releases unfinished system sets. `record(&mut RunInfo)` records the
-actual device/build, precision and `gpu_evaluation` counters; qualification
-state and `requalify`/`with_qualification` plumbing have been removed.
+actual device/build, precision and `gpu_evaluation` counters.
 
 **Agreement with the f64 reference** (`tests/gpu_eval.rs`). The default spot
 and wavefront merits plus every other accelerated kind make 521 operands.
@@ -1346,12 +1343,11 @@ operand adapters retain reported host evaluation.
 
 ### Offline accuracy and final reports
 
-Resident candidates publish device values directly. Removed work includes
-sampled geometry qualification, full operand reference evaluation, combined-merit
-checks, reference finite-difference stencils and constraint hinge checks. There
-is no reference-entry cache or qualification blob. Status masks, finite values,
-unsupported preparation/features and unresolved aiming still determine actual
-fallbacks, counted separately from model-only host work.
+Resident candidates publish device values directly: no candidate, combined-merit,
+finite-difference or constraint value is re-evaluated on the reference to check
+it. Device status masks, non-finite values, unsupported preparation/features
+and unresolved aiming determine the actual fallbacks, counted separately from
+model-only host work.
 
 Final optimize reports score the start and selected best design in f64. Glass
 reports score and rank kept finalists in f64. Tolerance retains completed device
@@ -1386,7 +1382,7 @@ already live on the device.
 paragraph are historical. The resident tall QR now starts at `m·n ≥ 2¹⁶`
 Jacobian elements, measured on the complete compression (`GPU.md` §9.2).
 Engine `auto` now selects Metal for candidate jobs; re-measure pending. The
-following P8/P11 timings are historical and include the removed checks.
+following P8/P11 timings are historical and include per-candidate f64 checks.
 
 The local solver hands its tall QR to P3 once the free-column work
 `m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order
