@@ -52,8 +52,8 @@ enum Basis {
 struct Rule {
     analysis: &'static str,
     measure: &'static [Factor],
-    /// CPU at or below this workload; `None`: always CPU.
-    cpu_max: Option<f64>,
+    /// CPU at or below this workload.
+    cpu_max: f64,
     basis: Basis,
 }
 use Basis::*;
@@ -67,7 +67,7 @@ const fn rule(
     Rule {
         analysis,
         measure,
-        cpu_max: Some(cpu_max),
+        cpu_max,
         basis,
     }
 }
@@ -181,7 +181,7 @@ pub(crate) fn decision(
         return json!({"decision":"qualified_metal","reason":"no cost rule for this analysis","version":VERSION});
     };
     let workload = workload(rule.measure, settings, system).round();
-    let cpu = rule.cpu_max.is_none_or(|max| workload <= max);
+    let cpu = workload <= rule.cpu_max;
     json!({
         "decision": if cpu { "cpu_reference" } else { "qualified_metal" },
         "rule": match rule.basis {
