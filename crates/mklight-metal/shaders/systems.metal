@@ -1,7 +1,7 @@
 #include "mklight_common.h"
 
 static inline bool mkl_p4_le(float2 a, float2 b) {
-    return a.x < b.x || (a.x == b.x && a.y <= b.y);
+    return a.x < b.x || (a.x == b.x && mkl_df_low(a.y) <= mkl_df_low(b.y));
 }
 // One thread per candidate evaluates the straight-line program; scratch is
 // instruction-major so a SIMD group's node accesses coalesce. The last
@@ -22,8 +22,8 @@ kernel void mkl_systems_prepare(
     device const float2 *params = parameters + row * p.parameters;
     for (uint j=p.first_instruction; j<p.first_instruction+p.instruction_count; ++j) {
         uint op=program[4*j], ia=program[4*j+1], ib=program[4*j+2], ic=program[4*j+3];
-        if (op==0) { v[j*p.count+tid]=float2(as_type<float>(ia),as_type<float>(ib)); continue; }
-        if (op==1) { v[j*p.count+tid]=params[ia]; continue; }
+        if (op==0) { v[j*p.count+tid]=mkl_df_input(float2(as_type<float>(ia),as_type<float>(ib))); continue; }
+        if (op==1) { v[j*p.count+tid]=mkl_df_input(params[ia]); continue; }
         float2 a=v[ia*p.count+tid], b=v[ib*p.count+tid], c=v[ic*p.count+tid], value;
         switch(op) {
             case 2: value=mkl_df_add(a,b); break;

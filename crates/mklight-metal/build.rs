@@ -1,4 +1,4 @@
-//! Compiles `shaders/*.metal` into one `.metallib` with the offline Metal
+//! Compiles `shaders/*.metal` into DF and pure-f32 metallibs with the offline Metal
 //! toolchain (`xcrun -sdk macosx metal` → `.air` → `metallib`) and embeds it.
 //! The preprocessed-include source is always embedded too, so the backend can
 //! fall back to runtime compilation (`newLibraryWithSource`) when the metallib
@@ -106,13 +106,23 @@ fn try_offline(
     shaders: &[PathBuf],
     inc: &[PathBuf],
     out_dir: &Path,
+    pure_f32: bool,
 ) -> Result<(PathBuf, String), String> {
     let tc = find_toolchain().ok_or("no working Metal compiler found")?;
+    let out_dir = out_dir.join(if pure_f32 { "pure_f32" } else { "double_float" });
+    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let mut airs = Vec::new();
     for src in shaders {
         let air = out_dir.join(src.file_stem().unwrap()).with_extension("air");
         let mut cmd = Toolchain::cmd(&tc.metal);
         cmd.arg("-c").args(FLAGS);
+        cmd.arg(format!(
+            "-fmodules-cache-path={}",
+            out_dir.join("modules").display()
+        ));
+        if pure_f32 {
+            cmd.arg("-DMKLIGHT_PURE_F32=1");
+        }
         for d in inc {
             cmd.arg("-I").arg(d);
         }
@@ -144,7 +154,11 @@ fn try_offline(
             String::from_utf8_lossy(&o.stderr)
         ));
     }
-    Ok((lib, FLAGS.join(" ")))
+    let mut flags = FLAGS.join(" ");
+    if pure_f32 {
+        flags.push_str(" -DMKLIGHT_PURE_F32=1");
+    }
+    Ok((lib, flags))
 }
 
 fn main() {
@@ -203,39 +217,44 @@ fn main() {
     )
     .unwrap();
 
-    let offline = if env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some() {
-        Err("skipped by MKLIGHT_METAL_SKIP_OFFLINE".to_string())
-    } else {
-        try_offline(&shaders, &inc, &out_dir)
-    };
-    match offline {
-        Ok((lib, flags)) => {
-            writeln!(
-                generated,
-                "pub const METALLIB: Option<&[u8]> = Some(include_bytes!({:?}));",
-                lib.display().to_string()
-            )
-            .unwrap();
-            writeln!(generated, "pub const OFFLINE_FLAGS: &str = {flags:?};").unwrap();
-        }
-        Err(e) => {
-            // Shipped builds embed the offline metallib: with a working
-            // compiler a failure is a shader error, and a release build
-            // without one would silently ship runtime compilation.
-            let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
-            if env::var("PROFILE").as_deref() == Ok("release")
-                || (!skipped && find_toolchain().is_some())
-            {
-                panic!(
-                    "offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}"
-                );
+    for (pure_f32, symbol, flags_symbol) in [
+        (false, "METALLIB", "OFFLINE_FLAGS"),
+        (true, "METALLIB_F32", "OFFLINE_FLAGS_F32"),
+    ] {
+        let offline = if env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some() {
+            Err("skipped by MKLIGHT_METAL_SKIP_OFFLINE".to_string())
+        } else {
+            try_offline(&shaders, &inc, &out_dir, pure_f32)
+        };
+        match offline {
+            Ok((lib, flags)) => {
+                writeln!(
+                    generated,
+                    "pub const {symbol}: Option<&[u8]> = Some(include_bytes!({:?}));",
+                    lib.display().to_string()
+                )
+                .unwrap();
+                writeln!(generated, "pub const {flags_symbol}: &str = {flags:?};").unwrap();
             }
-            println!(
-                "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
-                e.lines().next().unwrap_or("")
-            );
-            generated.push_str("pub const METALLIB: Option<&[u8]> = None;\n");
-            generated.push_str("pub const OFFLINE_FLAGS: &str = \"\";\n");
+            Err(e) => {
+                // Shipped builds embed the offline metallib: with a working
+                // compiler a failure is a shader error, and a release build
+                // without one would silently ship runtime compilation.
+                let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
+                if env::var("PROFILE").as_deref() == Ok("release")
+                    || (!skipped && find_toolchain().is_some())
+                {
+                    panic!(
+                        "offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}"
+                    );
+                }
+                println!(
+                    "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
+                    e.lines().next().unwrap_or("")
+                );
+                writeln!(generated, "pub const {symbol}: Option<&[u8]> = None;").unwrap();
+                writeln!(generated, "pub const {flags_symbol}: &str = \"\";").unwrap();
+            }
         }
     }
     fs::write(out_dir.join("shaders.rs"), generated).unwrap();

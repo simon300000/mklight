@@ -41,6 +41,22 @@ static inline float mkl_qnan() { return as_type<float>(0x7FC00000u); }
 // Error-free transforms (double-float building blocks)
 // ---------------------------------------------------------------------------
 
+// Experimental arithmetic twin: retain the packed ABI and operation order,
+// but discard residuals and compensation at every arithmetic boundary.
+#ifdef MKLIGHT_PURE_F32
+static inline float2 mkl_two_sum(float a, float b) { return float2(a + b, 0); }
+static inline float2 mkl_fast_two_sum(float a, float b) { return float2(a + b, 0); }
+static inline float2 mkl_two_prod(float a, float b) { return float2(a * b, 0); }
+static inline float2 mkl_df_add_f32(float2 x, float y) { return float2(x.x + y, 0); }
+static inline float2 mkl_df_add(float2 x, float2 y) { return float2(x.x + y.x, 0); }
+static inline float2 mkl_df_neg(float2 x) { return float2(-x.x, 0); }
+static inline float2 mkl_df_sub(float2 x, float2 y) { return float2(x.x - y.x, 0); }
+static inline float2 mkl_df_mul_f32(float2 x, float y) { return float2(x.x * y, 0); }
+static inline float2 mkl_df_mul(float2 x, float2 y) { return float2(x.x * y.x, 0); }
+static inline float2 mkl_df_div(float2 x, float2 y) { return float2(x.x / y.x, 0); }
+static inline float2 mkl_df_sqrt(float2 x) { return float2(sqrt(x.x), 0); }
+static inline void mkl_neumaier_add(thread float& s, thread float& c, float x) { s += x; c = 0; }
+#else
 // s + t == a + b exactly (Knuth 2Sum, no precondition).
 static inline float2 mkl_two_sum(float a, float b) {
     float s = a + b;
@@ -144,6 +160,25 @@ static inline void mkl_neumaier_add(thread float& s, thread float& c, float x) {
         c += (x - t) + s;
     }
     s = t;
+}
+
+#endif
+
+// Only for hi/lo values; float2 also represents complex and xy data.
+static inline float2 mkl_df_input(float2 x) {
+#ifdef MKLIGHT_PURE_F32
+    return float2(x.x, 0);
+#else
+    return x;
+#endif
+}
+static inline float mkl_df_low(float x) {
+#ifdef MKLIGHT_PURE_F32
+    (void)x;
+    return 0;
+#else
+    return x;
+#endif
 }
 
 // ---------------------------------------------------------------------------

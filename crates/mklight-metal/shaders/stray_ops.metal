@@ -6,7 +6,7 @@ struct SD {
   float2 x;
   SD():x(0) {}
   SD(float v):x(v,0) {}
-  SD(float2 v):x(v) {}
+  SD(float2 v):x(mkl_df_input(v)) {}
 };
 static SD operator+(SD a,SD b){return SD(mkl_df_add(a.x,b.x));}
 static SD operator-(SD a,SD b){return SD(mkl_df_sub(a.x,b.x));}

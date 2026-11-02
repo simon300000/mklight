@@ -1,6 +1,6 @@
 #include "mklight_common.h"
-static float2 wdf(constant float *v) { return float2(v[0],v[1]); }
-static float wf(float2 v) { return v.x+v.y; }
+static float2 wdf(constant float *v) { return mkl_df_input(float2(v[0],v[1])); }
+static float wf(float2 v) { return v.x+mkl_df_low(v.y); }
 static float2 wcis(float2 v) {
     v=mkl_df_add_f32(v,-rint(v.x)); v=mkl_df_add_f32(v,-rint(v.x));
     float t=wf(v)*6.2831853071795864769f; return float2(cos(t),sin(t));
@@ -15,7 +15,7 @@ static WVec wdir(constant MklWaveParams &p,uint k) {
 }
 static float2 wdot(WVec a,WVec b) {return mkl_df_add(mkl_df_add(mkl_df_mul(a.x,b.x),mkl_df_mul(a.y,b.y)),mkl_df_mul(a.z,b.z));}
 static float2 wfocus(constant MklWaveParams &p,uint k,float2 dz) {
-    if(dz.x==0&&dz.y==0)return float2(0);
+    if(dz.x==0&&mkl_df_low(dz.y)==0)return float2(0);
     WVec q=wdir(p,k);float2 gamma=-q.z,r=wdf(p.radius);
     float2 s2=mkl_df_add(mkl_df_mul(q.x,q.x),mkl_df_mul(q.y,q.y));
     float2 dr;

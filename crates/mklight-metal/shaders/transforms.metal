@@ -1,5 +1,5 @@
 #include "mklight_common.h"
-static float2 p2_df(constant float *v){return float2(v[0],v[1]);}
+static float2 p2_df(constant float *v){return mkl_df_input(float2(v[0],v[1]));}
 static float2 p2_cmul(float2 a,float2 b){return float2(a.x*b.x-a.y*b.y,a.x*b.y+a.y*b.x);}
 // exp(2πi·a) for double-float turns a, reduced modulo a turn before f32 trigonometry.
 static float2 p2_cis(float2 a){

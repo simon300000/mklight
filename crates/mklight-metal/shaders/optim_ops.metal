@@ -1,5 +1,5 @@
 #include "mklight_common.h"
-static inline float2 mkl_o_load(device const uint *v,uint i) {return as_type<float2>(uint2(v[2*i],v[2*i+1]));}
+static inline float2 mkl_o_load(device const uint *v,uint i) {return mkl_df_input(as_type<float2>(uint2(v[2*i],v[2*i+1])));}
 static inline bool mkl_o_negative(float2 v) {return v.x<0.0f || (v.x==0.0f && v.y<0.0f);}
 kernel void mkl_optim_algebra(device const uint *a [[buffer(0)]],device const uint *b [[buffer(1)]],
     device const uint *c [[buffer(2)]],device const uint *d [[buffer(3)]],device float2 *out [[buffer(4)]],

@@ -12,7 +12,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bytemuck::Pod;
@@ -63,10 +64,51 @@ pub enum LibraryOrigin {
     RuntimeSource,
 }
 
+/// Arithmetic used by the kernels. Pure f32 is an explicit experiment;
+/// default construction (including engine Auto) always uses DoubleFloat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MetalPrecision {
+    #[default]
+    DoubleFloat,
+    PureF32,
+}
+
+impl MetalPrecision {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DoubleFloat => "double_float",
+            Self::PureF32 => "pure_f32",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetalOptions {
     pub device: DeviceSelector,
     pub library: LibraryChoice,
+    pub precision: MetalPrecision,
+}
+
+impl MetalOptions {
+    /// Opt in to the benchmark environment. Ordinary defaults ignore it,
+    /// keeping experimental arithmetic out of automatic backend selection.
+    pub fn from_env() -> MkResult<Self> {
+        let precision = match std::env::var("MKLIGHT_METAL_PRECISION").as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("df") | Ok("double_float") => {
+                MetalPrecision::DoubleFloat
+            }
+            Ok("f32") | Ok("pure_f32") => MetalPrecision::PureF32,
+            _ => {
+                return Err(MkError::Backend(
+                    "MKLIGHT_METAL_PRECISION must be df or f32".into(),
+                ));
+            }
+        };
+        Ok(Self {
+            precision,
+            ..Self::default()
+        })
+    }
 }
 
 /// A specialisation constant (`[[function_constant(index)]]`).
@@ -115,6 +157,7 @@ pub struct MetalContext {
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
     origin: LibraryOrigin,
     library_build: String,
+    device_nanos: Arc<AtomicU64>,
     pipelines: Mutex<HashMap<PipelineKey, Pso>>,
 }
 
@@ -179,26 +222,39 @@ type Library = (
 fn load_library(
     device: &ProtocolObject<dyn MTLDevice>,
     choice: LibraryChoice,
+    precision: MetalPrecision,
 ) -> MkResult<Library> {
     let precompiled = || -> MkResult<Library> {
-        let bytes = shaders::METALLIB.ok_or_else(|| {
+        let (metallib, flags) = match precision {
+            MetalPrecision::DoubleFloat => (shaders::METALLIB, shaders::OFFLINE_FLAGS),
+            MetalPrecision::PureF32 => (shaders::METALLIB_F32, shaders::OFFLINE_FLAGS_F32),
+        };
+        let bytes = metallib.ok_or_else(|| {
             MkError::Unsupported("no precompiled metallib was embedded at build time".into())
         })?;
         let data = DispatchData::from_static_bytes(bytes);
         let lib = device
             .newLibraryWithData_error(&data)
             .map_err(|e| ns_error("loading embedded metallib", &e))?;
-        let desc = format!("precompiled metallib, flags: {}", shaders::OFFLINE_FLAGS);
+        let desc = format!("{} precompiled metallib, flags: {flags}", precision.name());
         Ok((lib, LibraryOrigin::Precompiled, desc))
     };
     let runtime = || -> MkResult<Library> {
-        let src = NSString::from_str(shaders::SOURCE);
+        let source = if precision == MetalPrecision::PureF32 {
+            format!("#define MKLIGHT_PURE_F32 1\n{}", shaders::SOURCE)
+        } else {
+            shaders::SOURCE.to_string()
+        };
+        let src = NSString::from_str(&source);
         let compile = |v, name: &str| {
             let (opts, desc) = compile_options(v);
             device
                 .newLibraryWithSource_options_error(&src, Some(&opts))
                 .map(|l| {
-                    let d = format!("runtime-compiled source, MSL {name}, {desc}");
+                    let d = format!(
+                        "{} runtime-compiled source, MSL {name}, {desc}",
+                        precision.name()
+                    );
                     (l, LibraryOrigin::RuntimeSource, d)
                 })
         };
@@ -224,13 +280,15 @@ impl MetalContext {
                 .newCommandQueue()
                 .ok_or_else(|| MkError::Backend("cannot create a command queue".into()))?;
             queue.setLabel(Some(&NSString::from_str("mklight")));
-            let (library, origin, library_build) = load_library(&device, opts.library)?;
+            let (library, origin, library_build) =
+                load_library(&device, opts.library, opts.precision)?;
             Ok(Some(MetalContext {
                 device,
                 queue,
                 library,
                 origin,
                 library_build,
+                device_nanos: Arc::new(AtomicU64::new(0)),
                 pipelines: Mutex::new(HashMap::new()),
             }))
         })
@@ -246,6 +304,12 @@ impl MetalContext {
     /// compile options), recorded in `PrecisionDescriptor::kernel_build`.
     pub fn library_build(&self) -> &str {
         &self.library_build
+    }
+
+    /// Sum of completed command-buffer GPU timestamps on this context.
+    /// Differences measure isolated benchmark jobs, including resident batches.
+    pub fn device_seconds(&self) -> f64 {
+        self.device_nanos.load(Ordering::Relaxed) as f64 * 1e-9
     }
 
     pub fn buffer<T: Pod>(&self, data: &[T]) -> MkResult<SharedBuffer<T>> {
@@ -357,9 +421,12 @@ impl MetalContext {
                 return Err(MkError::Backend(format!("command buffer '{label}': {msg}")));
             }
             let (t0, t1) = (cb.GPUStartTime(), cb.GPUEndTime());
+            let gpu_seconds = (t1 - t0).max(0.0);
+            self.device_nanos
+                .fetch_add((gpu_seconds * 1e9) as u64, Ordering::Relaxed);
             Ok(CommandStats {
                 command_buffers: 1,
-                gpu_seconds: if t1 > t0 { t1 - t0 } else { 0.0 },
+                gpu_seconds,
             })
         })
     }
@@ -476,6 +543,7 @@ struct BatchEncoding {
     accesses: RefCell<Vec<crate::buffer::DeviceAccess>>,
     work: Cell<usize>,
     start: Instant,
+    device_nanos: Arc<AtomicU64>,
 }
 impl CommandBatch {
     pub(crate) fn new(work_budget: usize) -> Self {
@@ -505,6 +573,7 @@ impl CommandBatch {
                 .computeCommandEncoder()
                 .ok_or_else(|| MkError::Backend("cannot create a compute encoder".into()))?;
             self.pending = Some(BatchEncoding {
+                device_nanos: gpu.device_nanos.clone(),
                 cb,
                 enc,
                 accesses: RefCell::new(vec![]),
@@ -548,6 +617,8 @@ impl CommandBatch {
             gpu_seconds: (z - a).max(0.),
             command_buffers: 1,
         };
+        b.device_nanos
+            .fetch_add((stats.gpu_seconds * 1e9) as u64, Ordering::Relaxed);
         self.completed.gpu_seconds += stats.gpu_seconds;
         self.completed.command_buffers += 1;
         self.observed = Some(stats.gpu_seconds);

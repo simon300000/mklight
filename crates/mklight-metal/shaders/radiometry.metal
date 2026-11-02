@@ -6,7 +6,7 @@ struct RD {
   float2 v;
   RD() : v(0) {}
   RD(float x) : v(x, 0) {}
-  RD(float2 x) : v(x) {}
+  RD(float2 x) : v(mkl_df_input(x)) {}
 };
 static RD operator+(RD a, RD b) { return RD(mkl_df_add(a.v, b.v)); }
 static RD operator-(RD a, RD b) { return RD(mkl_df_sub(a.v, b.v)); }
