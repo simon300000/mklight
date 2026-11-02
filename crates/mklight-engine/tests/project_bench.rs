@@ -5,6 +5,7 @@
 //! MKLIGHT_BENCH_RUNS (>=10), MKLIGHT_BENCH_COLD_RUNS (>=3),
 //! MKLIGHT_BENCH_QUIET_SECONDS (default 30). Cold calls use this test binary
 //! in fresh processes; the private child test does nothing without its marker.
+//! Select `edit_loop_queued` to measure the six graphs on the worker queue.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -846,4 +847,82 @@ fn project_bench_cold() {
         json!({"setup_ms":setup_ms,"first_call_ms":first_call_ms,
         "wall_ms":wall_ms,"device_ms":(mklight_metal::device_seconds()-before)*1e3,"result":record}),
     );
+}
+
+/// The same graph set through the engine's worker queue, matching concurrent
+/// pane refreshes. Result formatting stays outside the total wall timer.
+#[test]
+#[ignore = "local-project queued app edit-loop measurements"]
+fn project_bench_queued_edit_loop() {
+    if !selected("edit_loop_queued") {
+        return;
+    }
+    assert!(!cfg!(debug_assertions), "use --release");
+    let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
+    let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(10);
+    quiet("queued edit loop / start");
+    emit(
+        "queued_host",
+        json!({
+            "git":command("git",&["rev-parse","HEAD"]),
+            "dirty":command("git",&["status","--short"]),
+            "os":command("sw_vers",&[]),"rust":command("rustc",&["-Vv"]),
+            "rayon_workers":rayon::current_num_threads(),
+            "engine_workers":std::thread::available_parallelism().unwrap().get().min(4)
+        }),
+    );
+    for (variant, path) in std::iter::once(("fixed", path)).chain(
+        std::env::var("MKLIGHT_BENCH_AUTOSD_PROJECT")
+            .ok()
+            .map(|p| ("autosd", p)),
+    ) {
+        emit("variant", json!({"name":variant}));
+        let mut sessions: Vec<_> = MODES.iter().map(|m| open(m, Path::new(&path))).collect();
+        let bases: Vec<_> = sessions.iter().map(|s| s.system().clone()).collect();
+        let all = cases(&sessions[0]);
+        quiet(&format!("{variant}/queued edit loop"));
+        for round in 0..=runs {
+            for offset in 0..MODES.len() {
+                let mode = (round + offset) % MODES.len();
+                let session = &mut sessions[mode];
+                let engine = session.engine().clone();
+                let before = mklight_metal::device_seconds();
+                let start = Instant::now();
+                edit(session, &bases[mode], 900000 + round);
+                let mut jobs = Vec::new();
+                let mut errors = Vec::new();
+                for name in EDIT_GRAPHS {
+                    let case = all.iter().find(|c| c.name == name).unwrap();
+                    let req = request(case, MODES[mode]).view_key(name);
+                    match session.submit_analysis(&req) {
+                        Ok(id) => jobs.push((name, id)),
+                        Err(e) => errors.push(json!({"analysis":name,"error":e.to_string()})),
+                    }
+                }
+                let mut outputs = Vec::new();
+                for (name, id) in jobs {
+                    match engine
+                        .wait_job(id, None)
+                        .and_then(|_| engine.take_result(id))
+                    {
+                        Ok(r) => outputs.push((name, r)),
+                        Err(e) => errors.push(json!({"analysis":name,"error":e.to_string()})),
+                    }
+                }
+                let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+                let device_ms = (mklight_metal::device_seconds() - before) * 1e3;
+                let results: Vec<_> = outputs.into_iter().map(|(name, r)| {
+                    json!({"analysis":name,"run_info":r.run_info,"backend":r.backend})
+                }).collect();
+                emit(
+                    "edit_loop_queued",
+                    json!({
+                        "mode":MODES[mode],"round":round,"wall_ms":wall_ms,"device_ms":device_ms,
+                        "snapshot":session.snapshot_hash().to_hex(),"library_hash":session.library_hash(),"results":results,"errors":errors,
+                        "load":load()
+                    }),
+                );
+            }
+        }
+    }
 }
