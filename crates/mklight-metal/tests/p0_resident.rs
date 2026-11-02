@@ -459,14 +459,12 @@ fn benchmark_resident_chains() {
             q.radiometry = Radiometry::Off;
             q
         };
-        let qualification_json = serde_json::to_value(&qualification).unwrap();
         let mut records = vec![];
         for round in 0..12 {
             // Like the legacy call below, each call builds its request and plan.
             let wall = Instant::now();
             let mut p = plan(snap.clone(), req(), false);
             p.identity.library_hash = "test-library-v1".into();
-            p.identity.qualification = Some(qualification_json.clone());
             let plan_prepare_s = wall.elapsed().as_secs_f64();
             let mut result = g
                 .submit_plan(p, &JobContext::new())

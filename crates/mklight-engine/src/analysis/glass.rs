@@ -104,6 +104,9 @@ impl LensSpace {
 pub struct GlassSubstitution;
 
 impl Analysis for GlassSubstitution {
+    fn result_version(&self) -> u32 {
+        2
+    }
     fn name(&self) -> &str {
         "glass_substitution"
     }
@@ -425,7 +428,7 @@ impl Analysis for GlassSubstitution {
             &reg,
         )?;
         let x0 = reference.start_point()?;
-        let start = reference_score(&reference, &x0)?;
+        let start = reference_score(&reference, &x0, ctx)?;
         let lsq = LsqSettings {
             max_iterations: s.local_iterations,
             jacobian: JacobianSettings {
@@ -545,7 +548,7 @@ impl Analysis for GlassSubstitution {
         for (assignment, r) in &archive.results {
             ctx.check()?;
             let p = space.problem(assignment, cpu.clone())?;
-            let value = reference_score(&p, &r.x)?;
+            let value = reference_score(&p, &r.x, ctx)?;
             if value.status.is_usable() && value.merit.is_finite() && value.violation.is_finite() {
                 ranked.push((assignment, p.apply(&r.x)?, &r.x, value, r.termination));
             }
@@ -555,7 +558,6 @@ impl Analysis for GlassSubstitution {
         ranked.sort_by(|a, b| a.3.compare(&b.3, s.feasibility_tolerance));
         ranked.truncate(s.top_n);
         let mut results = Vec::new();
-        let mut best_snapshot = None;
         for (rank, (a, system, x, value, local_termination)) in ranked.into_iter().enumerate() {
             let snapshot = Snapshot::new(system)?;
             let variables: Vec<_> = space
@@ -570,11 +572,8 @@ impl Analysis for GlassSubstitution {
                 "feasible": value.violation <= s.feasibility_tolerance, "glasses": space.glasses(a),
                 "variables": variables, "system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
                 "local_termination": local_termination}));
-            if rank == 0 {
-                best_snapshot = Some(snapshot);
-            }
         }
-        ev.finish(input, s.backend, best_snapshot.as_ref(), ctx)?;
+        ev.finish(input, s.backend)?;
         // Every published score is on the reference.
         ev.report["reported_on"] = json!(TraceEvaluator::BACKEND);
         warnings.extend(ev.warnings);
@@ -605,8 +604,12 @@ impl Analysis for GlassSubstitution {
 }
 
 /// The CPU f64 reference merit and violation at `x`.
-fn reference_score(p: &OpticalProblem<BuiltinEvaluator>, x: &[f64]) -> EngineResult<ScalarEval> {
-    let r = reference_values(p, &[x])?;
+fn reference_score(
+    p: &OpticalProblem<BuiltinEvaluator>,
+    x: &[f64],
+    ctx: &JobContext,
+) -> EngineResult<ScalarEval> {
+    let r = reference_values(p, &[x], ctx)?;
     Ok(ScalarEval {
         merit: r.merit[0],
         violation: r.violation[0],
@@ -990,10 +993,13 @@ mod tests {
             let backend = &r.json["backend"];
             assert_eq!(r.json["statistics"]["combinations"], 2);
             assert_eq!(backend["precision"], "f32_gpu", "{backend}");
-            assert_eq!(backend["qualification"]["passed"], true);
-            assert_eq!(backend["final_qualification"]["passed"], true);
+            assert!(backend.get("qualification").is_none());
+            assert!(backend.get("final_qualification").is_none());
             assert_eq!(backend["reported_on"], TraceEvaluator::BACKEND);
-            assert!(backend["gpu_stats"]["dispatches"].as_u64().unwrap() > 1);
+            assert!(backend["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
+            if r.backend.used == "gpu:metal" {
+                assert!(backend["gpu_stats"]["dispatches"].as_u64().unwrap() > 0);
+            }
             assert_eq!(r.json["results"].as_array().unwrap().len(), 2);
         }
     }

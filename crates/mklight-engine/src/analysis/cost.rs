@@ -9,7 +9,7 @@ use mklight_core::OpticalSystem;
 use mklight_gpu::{BackendKind, DeviceInfo};
 use serde_json::{Value, json};
 
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 const EVIDENCE: &str = "P11 quiet host, Apple M2 Pro, medians of 10 paired warm runs (GPU.md §9.2)";
 
 /// One factor of a workload measure; the measure is their product.
@@ -47,16 +47,13 @@ enum Basis {
     /// CPU won, or minimised the total over the designs, at every measured
     /// shape; not extrapolated beyond the largest one.
     Measured,
-    /// Every changed candidate is re-checked against f64, so the device
-    /// route repeats the CPU work (3–100× slower measured).
-    CandidateChecks,
 }
 
 struct Rule {
     analysis: &'static str,
     measure: &'static [Factor],
-    /// CPU at or below this workload; `None`: always CPU.
-    cpu_max: Option<f64>,
+    /// CPU at or below this workload.
+    cpu_max: f64,
     basis: Basis,
 }
 use Basis::*;
@@ -70,19 +67,10 @@ const fn rule(
     Rule {
         analysis,
         measure,
-        cpu_max: Some(cpu_max),
+        cpu_max,
         basis,
     }
 }
-const fn always_cpu(analysis: &'static str) -> Rule {
-    Rule {
-        analysis,
-        measure: &[],
-        cpu_max: None,
-        basis: CandidateChecks,
-    }
-}
-
 const PUPIL_RAYS: &[Factor] = &[Fields, Wavelengths, Pupil];
 const FAN: &[Factor] = &[Fields, Wavelengths, Num("/samples")];
 const WAVE: &[Factor] = &[Fields, Wavelengths, WavePupil("/pupil")];
@@ -123,10 +111,15 @@ const RULES: &[Rule] = &[
     rule("through_focus_mtf", &[Fields, Wavelengths, Num("/focus_samples"), WavePupil("/pupil")], 798525., Measured),
     rule("mtf_vs_field", &[Num("/field_samples"), Wavelengths, WavePupil("/pupil")], 139425., Measured),
     rule("image_simulation", &[Square("/optics/field_grid"), WavePupil("/optics/pupil")], 38025., Measured),
-    always_cpu("optimize"),
-    always_cpu("merit_evaluation"),
-    always_cpu("tolerance"),
-    always_cpu("glass_substitution"),
+];
+
+/// Candidate solvers lost their always-CPU rule with the per-candidate f64
+/// checks; they use Metal until their crossover is measured again.
+const REMEASURE: &[&str] = &[
+    "optimize",
+    "merit_evaluation",
+    "tolerance",
+    "glass_substitution",
 ];
 
 fn selected(v: &Value, all: usize) -> usize {
@@ -187,18 +180,20 @@ pub(crate) fn decision(
     if device.kind != BackendKind::Metal || device.vendor != "Apple" {
         return json!({"decision":"qualified_metal","reason":"no cost evidence for this device","version":VERSION});
     }
+    if REMEASURE.contains(&analysis) {
+        return json!({"decision":"qualified_metal","reason":"candidate jobs: re-measure pending","version":VERSION});
+    }
     let Some(rule) = RULES.iter().find(|r| r.analysis == analysis) else {
         return json!({"decision":"qualified_metal","reason":"no cost rule for this analysis","version":VERSION});
     };
     let workload = workload(rule.measure, settings, system).round();
-    let cpu = rule.cpu_max.is_none_or(|max| workload <= max);
+    let cpu = workload <= rule.cpu_max;
     json!({
         "decision": if cpu { "cpu_reference" } else { "qualified_metal" },
         "rule": match rule.basis {
             Crossover => "dense crossover",
             TraceCrossover => "ray_grid trace crossover",
             Measured => "measured sizes",
-            CandidateChecks => "per-candidate f64 checks",
         },
         "workload": workload,
         "threshold": rule.cpu_max,
@@ -256,7 +251,7 @@ mod tests {
         );
         assert_eq!(
             decision("optimize", &json!({}), &singlet, &apple)["decision"],
-            "cpu_reference"
+            "qualified_metal"
         );
         assert_eq!(
             decision("seidel", &json!({}), &singlet, &apple)["decision"],
@@ -267,7 +262,10 @@ mod tests {
     #[test]
     fn rules_cover_the_resident_catalogue() {
         for name in crate::analysis::gpu::GPU_ANALYSES {
-            assert!(RULES.iter().any(|r| r.analysis == *name), "{name}");
+            assert!(
+                RULES.iter().any(|r| r.analysis == *name) || REMEASURE.contains(name),
+                "{name}"
+            );
         }
     }
 }

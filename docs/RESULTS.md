@@ -24,7 +24,7 @@ Python `Result.envelope()` return:
   "derived_snapshot_hash": null,
   "backend": { "requested": "auto", "used": "gpu:metal", "precision": "f32_gpu",
                "device": "Apple M2 Pro", "fallback_reason": null,
-               "qualification": { "passed": true, "budget_fraction": 0.05, … } },
+               "execution": […], "cost_decision": {…} },
   "result_version": 1,
   "result": { … the analysis' result (section 8) … },
   "buffers": [ {"index": 0, "name": "points", "dtype": "f64", "shape": [1143, 2]} ] }
@@ -111,7 +111,7 @@ energy and MTF curves, through-focus) stay in the JSON.
 
 The engine initially uses `auto`. Explicit `cpu_reference` always uses the
 f64 reference. Explicit `gpu:metal` bypasses the cost rules, while retaining
-all accuracy gates and reported resource/unsupported fallbacks. Unavailable
+static capability restrictions and reported resource/unsupported fallbacks. Unavailable
 explicit providers keep the existing `allow_backend_fallback` behaviour.
 Cancellation discards the result and never runs a CPU replacement.
 
@@ -119,27 +119,22 @@ The shared resident catalogue covers geometric analyses, field maps, layout,
 wave/image jobs, transmission/polarisation, ghosts, stray light and
 optimisation/merit/tolerance/glass substitution. Isolated first-order, Seidel,
 model, catalogue and I/O reports remain small host computations. A capability
-means a native adapter exists; each requested domain/settings combination must
-still qualify. The engine no longer uses the host-generated legacy Metal
+means a native adapter exists; the static capability policy and offline suites
+establish its usable domains. The engine no longer uses the host-generated legacy Metal
 analysis route or its 65,536-ray/candidate-count heuristics.
 
-Before publication, native chains receive the sampled all-surface geometry/OPD
-qualification at the one-third margin plus an independent f64 comparison of
-the complete requested output. Exact-input verdicts are cached per operation,
-snapshot, material library, settings, gate version and device precision/build
-(including the shader-source digest). Undefined masks and discrete quantities
-are checked as well as numerical values. Candidate solvers qualify every new
-candidate and its complete operands; there is no assumed parameter envelope.
-Accepted/final designs retain independent reference scoring.
+Native results publish directly with their actual precision, without per-snapshot
+or per-candidate f64 reruns. Accuracy is established offline. Static capability
+restrictions route encircled energy, wavefront maps and polarization pupil maps
+to the CPU reference with deliberate reasons (GPU §9.2). Optimization best
+designs, tolerance cases and glass finalists receive f64 report scores once at
+the end; merit evaluation returns actual evaluator values.
 
-`backend.qualification` retains the verdict and measured maxima.
-`backend.execution` preserves each adapter's native settings, device/build/probe,
-plan versions, identities, timings, commands, allocation/copy counters and
-partial/reference-completion reports. CPU completion and failed qualification
-name their reason in `backend.fallback_reason` and `run_info.warnings`.
-Polished rays and partial candidate/operand fallbacks remain counted in native
-execution metadata; a result widened into public f64 buffers remains labelled
-`f32_gpu` when computed by Metal.
+`backend.execution` preserves device/build/probe, plan versions, identities,
+timings, commands, allocation/copy counters and partial/reference-completion
+reports. Unsupported stages, unresolved aiming and resource/device failures
+retain reported reasons and warnings. Public f64 buffers still carry `f32_gpu`
+when computed by Metal.
 
 `backend.cost_decision` records automatic selection: `decision`
 (`cpu_reference` or `qualified_metal`), `rule`, `workload`, `threshold`,
@@ -147,21 +142,16 @@ execution metadata; a result widened into public f64 buffers remains labelled
 settings and the system (traced rays, wave pupil samples, …) and runs the CPU
 reference at or below a threshold derived from the end-to-end benchmark in
 GPU §9.2 (Apple M2 Pro; applied to Apple GPUs). At default settings that is
-the CPU for every analysis except `geometric_mtf`. Analyses without a rule
+the CPU for the historical default analysis workloads except `geometric_mtf`;
+candidate jobs now select Metal with re-measurement pending. Analyses without a rule
 and other devices prefer qualified Metal. An explicit backend records that the
 rules were bypassed. Deliberate CPU cost choices are reported without a
-warning; accuracy, unsupported and resource failures are warnings. A first
-Metal call on a new snapshot or settings includes the complete f64 chain
-qualification (`qualification.reference_seconds`).
+warning. Static capability choices are also deliberate; unsupported/resource
+failures retain warnings. Cold calls perform no f64 chain verification.
+Known residual Metal accuracy gaps are listed in GPU §9.2.
 
-Native `encircled_energy` retains the conservative geometry-uncertainty bin
-check; when a requested bin could move more than the energy budget it returns
-and reports the f64 result. Ill-conditioned axes, differing adaptive sampling,
-unsupported settings and unqualified Monte Carlo outputs similarly retain a
-reported reference route. These are not GPU qualification passes.
-
-Optimisation's `result.backend.resident_evaluation` reports candidate reference
-checks, reuse, geometry failures, accepted device operands, host operands and
+Optimisation's `result.backend.resident_evaluation` reports candidate counts,
+device operands, host operands and actual
 fallback causes. `gpu_stats` retains its compatibility fields: candidate counts
 can overlap for partial completion, `rays` counts final ray-operand probes
 (native wave/ghost/stray counts remain in their stage reports), and `dispatches`
@@ -2132,7 +2122,7 @@ Buffers:
 
 ### `glass_substitution` — Glass substitution
 
-Category `optimization`, result version 1, **GPU path**.
+Category `optimization`, result version 2, **GPU path**.
 
 Replaces the glasses of chosen lenses with real catalogue glasses: searches the combinations (tabu search, or basin hopping over glasses and shape together), re-optimises the continuous variables by LM for every combination, and returns the best combinations ranked, each with its complete optimised system. With no material variables, every model glass is snapped to its nearest real glasses.
 
@@ -2168,7 +2158,6 @@ Result (`result` in the envelope):
 | `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
 | `backend` | object |  |  |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
-| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.device_seconds` | number | s |  |
@@ -2176,10 +2165,9 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
-| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
+| `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2232,7 +2220,7 @@ Result (`result` in the envelope):
 
 ### `merit_evaluation` — Evaluate merit
 
-Category `optimization`, result version 1, **GPU path**.
+Category `optimization`, result version 2, **GPU path**.
 
 Evaluates the snapshot's merit once, without optimisation or finite differences. Uses optimize's merit settings, solves, default generator and operand report; returns the expanded merit spec for conversion to custom operands.
 
@@ -2264,7 +2252,6 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `backend` | object |  |  |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
-| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.device_seconds` | number | s |  |
@@ -2272,10 +2259,9 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
-| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
+| `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2304,7 +2290,7 @@ Result (`result` in the envelope):
 
 ### `optimize` — Optimize
 
-Category `optimization`, result version 1, **GPU path**.
+Category `optimization`, result version 2, **GPU path**.
 
 Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront / polychromatic MTF merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
 
@@ -2337,7 +2323,6 @@ Result (`result` in the envelope):
 | `algorithm` | string |  |  |
 | `backend` | object |  |  |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
-| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.device_seconds` | number | s |  |
@@ -2345,10 +2330,9 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
-| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
+| `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2421,7 +2405,7 @@ Buffers:
 
 ### `tolerance` — Tolerance analysis
 
-Category `optimization`, result version 1, **GPU path**.
+Category `optimization`, result version 2, **GPU path**.
 
 Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo analysis, with compensators re-optimised for every trial.
 
@@ -2455,7 +2439,6 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `backend` | object |  |  |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
-| `backend.final_qualification` (optional) | object |  | GPU qualification at the optimised system. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.device_seconds` | number | s |  |
@@ -2463,10 +2446,9 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.qualification` (optional) | object |  | Cached GPU precision qualification for the start snapshot. |
-| `backend.reported_on` | string |  | CPU reference for optimize; active evaluator for merit_evaluation and tolerance. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
-| `backend.resident_evaluation` (optional) | object |  | Per-candidate qualification, host-stage and fallback accounting. |
+| `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |

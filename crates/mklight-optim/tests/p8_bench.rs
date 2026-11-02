@@ -72,11 +72,8 @@ fn candidate_sweep() {
             let legacy = GpuTraceEvaluator::new(
                 backend.clone(),
                 reference.trace.clone(),
-                &system,
                 Default::default(),
-                &ctx,
-            )
-            .unwrap();
+            );
             let old_setup_seconds = old_setup.elapsed().as_secs_f64();
             let new_setup = Instant::now();
             let resident = ResidentEvaluator::new(
@@ -130,7 +127,7 @@ fn candidate_sweep() {
                 );
                 eprintln!(
                     "P8_BENCH {}",
-                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"batch":b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"old_seconds":old_s,"resident_seconds":new_s,"device_seconds":after.device_seconds-stats.device_seconds,"commands":after.command_buffers-stats.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":after.copied_bytes-stats.copied_bytes,"allocations":after.allocations-stats.allocations,"reused":after.reused_allocations-stats.reused_allocations,"peak_plan_bytes":after.peak_bytes,"pool_bytes":mem.pooled_bytes,"qualification_seconds":q.reference_seconds-qual.reference_seconds,"fallback_operands":q.fallback_operands-qual.fallback_operands,"legacy_stats":legacy.stats(),"old_setup_seconds":old_setup_seconds,"new_setup_seconds":new_setup_seconds,"geometry_qualifications":q.geometry_qualifications-qual.geometry_qualifications,"qualification_cache_hits":q.reference_cache_hits-qual.reference_cache_hits,"device_operands":q.device_operands-qual.device_operands,"stages":stage_deltas(&stats,&after)})
+                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"batch":b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"old_seconds":old_s,"resident_seconds":new_s,"device_seconds":after.device_seconds-stats.device_seconds,"commands":after.command_buffers-stats.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":after.copied_bytes-stats.copied_bytes,"allocations":after.allocations-stats.allocations,"reused":after.reused_allocations-stats.reused_allocations,"peak_plan_bytes":after.peak_bytes,"pool_bytes":mem.pooled_bytes,"fallback_operands":q.fallback_operands-qual.fallback_operands,"legacy_stats":legacy.stats(),"old_setup_seconds":old_setup_seconds,"new_setup_seconds":new_setup_seconds,"device_operands":q.device_operands-qual.device_operands,"stages":stage_deltas(&stats,&after)})
                 );
             }
         }
@@ -193,11 +190,8 @@ fn dense_rays() {
             let old = GpuTraceEvaluator::new(
                 backend.clone(),
                 reference.trace.clone(),
-                &system,
                 Default::default(),
-                &ctx,
-            )
-            .unwrap();
+            );
             let resident = ResidentEvaluator::new(
                 GpuContext::new(backend.clone(), Snapshot::new(system.clone()).unwrap()),
                 reference.clone(),
@@ -244,7 +238,7 @@ fn dense_rays() {
                 assert!(q.device_operands > q0.device_operands, "{name}: {q:?}");
                 eprintln!(
                     "P8_DENSE {}",
-                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"rings":rings,"arms":arms,"field":system.fields.fields.len()-1,"wavelength":"primary","batch":b,"rays":rings*arms*b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"old_seconds":old_s,"resident_seconds":new_s,"device_seconds":stats.device_seconds-before.device_seconds,"commands":stats.command_buffers-before.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":stats.copied_bytes-before.copied_bytes,"allocations":stats.allocations-before.allocations,"reused":stats.reused_allocations-before.reused_allocations,"peak_plan_bytes":stats.peak_bytes,"pool_bytes":mem.pooled_bytes,"qualification_seconds":q.reference_seconds-q0.reference_seconds,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands,"legacy_stats":old.stats()})
+                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"rings":rings,"arms":arms,"field":system.fields.fields.len()-1,"wavelength":"primary","batch":b,"rays":rings*arms*b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"old_seconds":old_s,"resident_seconds":new_s,"device_seconds":stats.device_seconds-before.device_seconds,"commands":stats.command_buffers-before.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":stats.copied_bytes-before.copied_bytes,"allocations":stats.allocations-before.allocations,"reused":stats.reused_allocations-before.reused_allocations,"peak_plan_bytes":stats.peak_bytes,"pool_bytes":mem.pooled_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands,"legacy_stats":old.stats()})
                 );
             }
         }

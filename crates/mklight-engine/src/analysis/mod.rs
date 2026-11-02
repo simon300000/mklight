@@ -30,8 +30,8 @@ pub mod ghost;
 pub mod gpu;
 pub mod merit_evaluation;
 pub mod optim;
-mod qualification;
 pub mod radiometry;
+mod routing;
 pub mod schema;
 pub mod solves;
 pub mod spectrum;
@@ -99,14 +99,11 @@ pub struct BackendReport {
     /// GPU device name, when a GPU computed the result.
     pub device: Option<String>,
     /// Why the requested (or automatically preferred) backend was not used:
-    /// unavailable, no GPU path for the analysis, or failed precision
-    /// qualification. In `run_info.warnings` too, except when an `auto` or
+    /// unavailable, no GPU path, or a static capability restriction.
+    /// In `run_info.warnings` too, except when an `auto` or
     /// default preference met an analysis without a GPU path or a ray grid
     /// covered by recorded CPU cost evidence.
     pub fallback_reason: Option<String>,
-    /// The precision qualification of a GPU backend for this snapshot
-    /// (`mklight_gpu::xval::Qualification`), when one ran.
-    pub qualification: Option<Value>,
     /// Native execution evidence: device/build/probe, plan versions and stages.
     pub execution: Vec<Value>,
     pub cost_decision: Option<Value>,
@@ -122,7 +119,6 @@ pub struct BackendUse {
     /// Set when the selected GPU was not used; becomes a `RunInfo` warning
     /// unless `deliberate`.
     pub fallback_reason: Option<String>,
-    pub qualification: Option<Value>,
     /// The fallback is a policy choice of `auto` (for example a grid too
     /// small to gain from the GPU), not a problem: it is reported in
     /// `BackendReport::fallback_reason` only, not as a warning.
@@ -133,7 +129,7 @@ pub struct BackendUse {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnalysisResult {
     pub run_info: RunInfo,
-    /// Requested and used backend, fallback reason, GPU qualification.
+    /// Requested and used backend, fallback reason and device execution evidence.
     pub backend: BackendReport,
     /// Version of the result shape (`Analysis::result_version`).
     pub result_version: u32,
@@ -408,7 +404,7 @@ pub fn run_analysis(
     };
     let submitted_snapshot = &input.snapshot;
     let input = derived.as_ref().unwrap_or(input);
-    let out = qualification::run(analysis, input, &solver_settings, ctx)?;
+    let out = routing::run(analysis, input, &solver_settings, ctx)?;
     ctx.check()?;
     let mut backend = BackendReport {
         requested: input.requested_backend.clone(),
@@ -416,7 +412,6 @@ pub fn run_analysis(
         precision: input.backend.precision,
         device: input.backend.capabilities.device_name.clone(),
         fallback_reason: input.selection_note.clone(),
-        qualification: None,
         execution: input.executions.borrow_mut().drain(..).collect(),
         cost_decision: input.cost_decision.borrow_mut().take(),
     };
@@ -425,7 +420,6 @@ pub fn run_analysis(
         backend.used = u.id;
         backend.precision = u.precision;
         backend.device = u.device;
-        backend.qualification = u.qualification;
         if let Some(r) = u.fallback_reason {
             if !u.deliberate {
                 warnings.push(format!(

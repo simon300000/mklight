@@ -678,8 +678,7 @@ the values.
 `GpuTraceEvaluator` (`merit::gpu_eval`) evaluates the ray-based operands of
 a batch of candidates on any `mklight-gpu` backend (`ComputeBackend`: the
 Metal GPU, or the CPU-f32 emulation, which produces the same bits). It is
-built for a system, `GpuTraceEvaluator::new(backend, cpu, system,
-settings, ctx)`, and `composite()` puts it in front of the CPU
+built with `GpuTraceEvaluator::new(backend, cpu, settings)`, and `composite()` puts it in front of the CPU
 `TraceEvaluator`, which computes every operand the GPU does not.
 
 **Accelerated operands** (`gpu_supports`): `ray_aberration`, `rms_spot`,
@@ -717,27 +716,13 @@ chunking changes no bit (`docs/GPU.md` §6), and host work runs in a fixed
 order. A candidate therefore gets the same bits alone, in any batch, and
 under any sub-batch split (tested), and repeated runs are bit-identical.
 
-**Precision and fallback** (CONVENTIONS §7, §12). The constructor qualifies
-the backend for the system with `xval::qualify`: the qualification sample,
-a third of the budget, the evaluator's clipping and radiometry off (thin-film
-coatings do not prevent it). If the backend fails, the evaluator is inactive
-and the CPU reference computes everything. Candidates the packer cannot
-represent (more than 16 wavelengths, asphere terms beyond A22, values outside
-the normal f32 range, for example a conic of 1e-300) also go to the CPU
-reference, and so does a sub-batch whose upload or dispatch fails. All of
-these are counted in `GpuEvalStats::cpu_candidates`. Two kinds of real-ray
-values are always traced on the CPU, because the qualification does not
-sample them: rays to a passive surface (coordinate break, dummy), whose
-reported point can lie hundreds of mm from the frame origin (a fold's
-coordinate break exceeded the position budget on a perturbed Newtonian),
-and points farther than `REAL_RAY_F32_LIMIT_MM` (100 mm) from their
-surface's origin, where rounding the point to f32 alone uses about a third
-of the budget. A cancelled or failed evaluation releases the system sets of
-its unfinished sub-batches on the backend.
-`GpuTraceEvaluator::record(&mut RunInfo)` writes the qualification decision
-(`Qualification::record`) and the counters (`settings["gpu_evaluation"]`).
-`requalify(system)` checks a later design, for example the end of an
-optimisation, which may have moved far from the qualified start.
+**Precision and fallback.** Accuracy is established by offline f64 comparisons
+(no runtime qualification). The startup numerics probe still controls trace support. Unpackable candidates,
+unsupported ray features and failed uploads/dispatches use the counted CPU
+reference route. Passive-surface and distant real-ray output restrictions remain
+support limits of the legacy adapter. Cancellation never computes replacement
+values and releases unfinished system sets. `record(&mut RunInfo)` records the
+actual device/build, precision and `gpu_evaluation` counters.
 
 **Agreement with the f64 reference** (`tests/gpu_eval.rs`). The default spot
 and wavefront merits plus every other accelerated kind make 521 operands.
@@ -821,12 +806,11 @@ proportion to the rays a candidate traces. To speed it up further, move ray
 generation and the operand reductions (centroids, RMS) onto the device, and
 skip the snapshot hash for transient candidates (`mklight-core`).
 
-**Use.** The `gpu_beats_cpu` crossover above described the retired host
-merit adapter. With the resident evaluator every changed candidate is
-re-checked in f64, so engine `auto` runs these jobs on the CPU reference
-(`GPU.md` §9.2); an explicit device request still uses the evaluator.
-`gpu_rays_per_candidate` counts the rays the evaluator would trace for a
-system and operand list (its own plan).
+**Use.** The crossover figures above describe the legacy host merit adapter.
+The resident evaluator now publishes device values without per-candidate f64
+checks. Engine Auto selects Metal for candidate jobs, with **re-measure pending**;
+other thresholds are unchanged (`GPU.md` §9.2). `gpu_rays_per_candidate` counts
+the rays in the legacy evaluator's plan.
 
 ## Engine jobs: `optimize`, `merit_evaluation` and `tolerance`
 
@@ -844,10 +828,9 @@ normalised against their schema, and a `RunInfo` whose `seed` is
 **Progress and interruption.** Progress is reported once per optimiser
 iteration (generation, round) with the stage text
 `"<algorithm> <iteration>: merit <best merit>"`, and once per Monte-Carlo
-batch. Cancelling the job context stops the optimiser between evaluations,
-and `Analysis::run` returns the best point so far, ranked by feasibility,
-with `"status": "cancelled"`. The scheduler, however, ends every cancelled
-job `Cancelled` and drops its result, because a superseded result is stale.
+batch. Cancelling the job context stops the optimiser between evaluations
+and returns `Cancelled` without final f64 scoring. The scheduler drops cancelled
+results, because a superseded result is stale.
 Front ends use `Engine::stop_job`, `mk_job_stop` (ABI 1.2), Python
 `Job.stop()`, or the CLI's first Ctrl-C to keep the result. Stop has its own
 job token: even a queued request is retained until the job starts, and the
@@ -868,16 +851,13 @@ ranks on f32 values, so this check is needed for them.
 **Reported numbers.** The `start` and `final` merits, the operand table and
 the constraint check are always computed on the CPU f64 reference, whichever
 evaluator drove the search. `backend` says what evaluated the search
-(`evaluated_on`, `precision`), with the GPU qualification at the start and
-at the final design. `RunInfo.warnings` names the search evaluator or the
-reason a GPU was not used. Tolerance statistics use the search evaluator;
-`reported_on` names it there. `RunInfo.backend` and
-the envelope's `backend` record the backend that evaluated the search after
-fallback, using the same ids as other analyses (`gpu:metal`, `cpu_reference`).
-The device comes from the engine's lazily opened `GpuProvider`; its
-`GpuDevice::qualify` caches the start and final qualifications per snapshot
-and library. `GpuTraceEvaluator::with_qualification` reuses that verdict.
-An explicit GPU request bypasses the automatic workload crossover.
+(`evaluated_on`, `precision`) and actual device/fallback accounting. Optimize,
+tolerance and glass reports use the CPU f64 reference at the end; merit
+evaluation returns the active evaluator's values. Requested/used backend,
+precision, device/build and cost decisions remain in the envelope; qualification
+blobs and caches are removed. Result versions for these four jobs are now 2.
+Unsupported preparation/features, unresolved aiming and resource/device errors
+remain real, counted fallbacks. Cancellation never starts reference replacement.
 
 `optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
 the start before building the merit. Solve-controlled parameters are never variables: automatic variables
@@ -949,7 +929,7 @@ fixed-boundary relaxation, the EFL hold that `algorithm` selects, solves
 applied first) and the same operand report, without a search or derivatives.
 A derivative-free EFL penalty is weighted from that one evaluation. On the
 CPU every number equals `optimize`'s `start` report (tested). `backend`,
-`gpu_batch`, qualification and fallback follow `optimize` with a workload of
+`gpu_batch` and fallback follow `optimize` with a workload of
 one candidate, so `auto` normally stays on the CPU; an explicit GPU traces
 the ray operands there, and `backend.reported_on` names it.
 
@@ -1017,8 +997,6 @@ failure policy.
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
               "workload": {"rays_per_candidate": 38, "batch": 7},
-              "qualification": {/* xval::Qualification at the start; GPU only */},
-              "final_qualification": {/* at the final design; GPU only */},
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
                             "dispatches": 0, "device_seconds": 0.0}},
   "merit_spec": {/* the MeritFunctionSpec used, generated operands included */},
@@ -1098,7 +1076,7 @@ goes to the evaluator as one batch (one GPU dispatch).
                                                     //   criterion, compensators, perturbations}
   "compensators": [/* the Compensators */],
   "criterion_spec": {/* MeritFunctionSpec */},
-  "backend": {/* as for optimize; no final_qualification */}
+  "backend": {/* as for optimize */}
 }
 ```
 
@@ -1112,9 +1090,9 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | defaults | singlet: variables c₁, c₂ and the back focus, EFL held at its start value (replaced by an explicit `efl` operand); tolerances: the lens thickness and both curvatures |
 | singlet through the scheduler | equi-convex start, EFL = 100 constraint: converged, merit ÷5 or more, EFL within 1e-6, the result applies as a session snapshot with the reported hash |
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
-| cancel and stop | cancelled after two LM iterations: `cancelled`, best-so-far below the start; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |
+| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
-| GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, both qualifications pass, reported on the reference, merit decreases; `auto` with a handed-over device uses it at both merit sizes |
+| GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, no runtime qualification, reported on the reference, merit decreases; `auto` with a handed-over device uses it at both merit sizes |
 | global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
 | snapshot merit | Cooke triplet and Double Gauss, default RMS spot, worst-field MTF and a custom merit, and the DE penalty hold: equal to the optimize start report; expanded defaults round-trip as custom; CPU-f32 GPU counters record one candidate; solves applied first; per-operand errors |
 | feasibility restoration | nonlinear equality leaves a 2.7e-6 defect after one improving LM/dogleg step: repaired below the ranking tolerance, bounds and hard evaluation budgets respected, cancellation retains the best point; 20 LM iterations on the Double Gauss with the worst-field MTF merit (release, ignored) end 3e-3 off the EFL hold and are restored instead of returning the start |
@@ -1252,19 +1230,17 @@ re-optimisations, the best merit and the best combination's glasses. Stop
 (`Engine::stop_job` or `stop_key`) ends the search and returns the ranking
 so far, including re-optimisations cut short (`local_termination:
 "cancelled"`); Cancel discards the job. `max_seconds` covers the search only,
-not setup, backend qualification or the final ranking.
+not setup or the final ranking.
 
 ### Cost and benchmark
 
 Re-optimisation dominates. For C combinations, n continuous variables and
 I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
-differences: 2n). One search iteration's combinations run in parallel. When
-the backend qualifies, all re-optimisations share the qualified GPU
-evaluator, each FD Jacobian batched and split at `gpu_batch`; `auto` decides
-on the Jacobian's workload, as in `optimize`. Qualification is at the input
-and at the best result; the ranking is on the CPU reference. The final
-ranking adds one CPU merit evaluation per kept combination.
+differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator, with each FD Jacobian
+batched and split at `gpu_batch`. No candidate/reference checks run during the
+search. Auto selects Metal while re-measurement is pending. The final ranking
+adds one CPU f64 merit evaluation per kept combination.
 
 The ignored Cooke-triplet benchmark has three glass variables (K = 3), a
 12-combination budget, seven continuous variables and 8 LM iterations per
@@ -1311,11 +1287,9 @@ and synthetic catalogues.
   F/# and relative illumination on the CPU.
 * The engine, C ABI, Python and CLI expose Stop; the native app still needs
   to wire its Stop button to `mk_job_stop`.
-* The GPU evaluator is qualified at the start and, for the report, at the
-  final design; candidates in between are not requalified. The agreement
-  tests cover strongly perturbed candidates of every sample (worst 0.14 of
-  the budget), and real rays on passive surfaces or far from their surface's
-  origin, the one case found over budget, are traced on the CPU.
+* Accuracy evidence is offline. Unchecked Metal output can retain the known
+  residual gaps listed in GPU §9.2; this change does not widen a demonstrated
+  precision envelope or repair those discrepancies.
 
 ## Resident optimisation adapter (P8)
 
@@ -1324,7 +1298,7 @@ legacy `GpuTraceEvaluator`. Engine defaults and capability selection are
 unchanged; P11 owns those routes. Construct it with a `GpuContext` containing
 the base snapshot and backend, and the configured `BuiltinEvaluator` reference.
 Use it in `OpticalProblem`, or wrap a driver with `ResidentEvaluator::run` to
-retain actual-backend `RunInfo`, library identity, qualification, native solver
+retain actual-backend `RunInfo`, library identity, native solver
 metadata and cumulative plan/copy/allocation/fallback counters. Generic batched
 problems can opt into the numerical operations through `gpu::ResidentProblem`.
 
@@ -1360,34 +1334,28 @@ candidates are not fused into one resident plan. RI uses its existing chief-ray
 étendue definition: the initial radial visibility scans run through P1 in a
 candidate batch, then the reference adaptive boundary search and quadrature
 consume those decisions. This host completion is counted; `ri_visibility`
-records consumed and blocked device lookups. RI requires exact f64 scalar
-agreement before publication, so a changed visibility decision cannot silently
-introduce a derivative discontinuity. The measured forward/central RI steps
+records consumed and blocked device lookups. There is no duplicate f64 scalar
+comparison before publication; visibility and derivative agreement remain tested offline. The measured forward/central RI steps
 are 1e-6/1e-5. P5's image-point irradiance has a different definition and is not
 substituted for this merit.
 Model scalars, unsupported paraxial quantities, and unimplemented
 operand adapters retain reported host evaluation.
 
-### Qualification and final decisions
+### Offline accuracy and final reports
 
-There is no assumed nominal parameter envelope. A previously unseen candidate
-receives the existing sampled geometry/OPD qualification at the one-third
-margin, plus an independent complete f64 operand evaluation. Only qualified
-candidates enter the resident optical path. Published values must also pass
-the operand-specific budget and the final squared-residual merit gate
-(1% or 1e-8 absolute). Inequality hinges and constraint values near their target
-use the reference decision. Geometry rejection, unresolved aiming, unsupported
-preparation and failed operand checks are counted separately from model-only
-host work. Cancellation propagates and never starts a replacement calculation.
+Resident candidates publish device values directly: no candidate, combined-merit,
+finite-difference or constraint value is re-evaluated on the reference to check
+it. Device status masks, non-finite values, unsupported preparation/features
+and unresolved aiming determine the actual fallbacks, counted separately from
+model-only host work.
 
-An exact-input cache retains at most 1024 reference entries and 1,048,576
-operand values. Its key includes the complete candidate system, operand list
-and backend instance; the material library and evaluator settings are immutable
-for the adapter. It also retains qualified tracer metadata, avoiding repeated
-snapshot hashing/resolution in the GPU preparation stage. Changed inputs receive
-new checks. This is reuse of an identical qualification, not an envelope for
-nearby candidates. Final local/global optimisation scores are independently
-recomputed in f64; cancelled results do not trigger final scoring.
+Final optimize reports score the start and selected best design in f64. Glass
+reports score and rank kept finalists in f64. Tolerance retains completed device
+outcomes, scores each returned compensated case once in f64 after the search,
+and assembles its statistics from those scores. It never reruns the compensator
+solve for reporting. Merit evaluation returns actual device operands. Cancellation
+never starts final reference scoring. Existing f64 cross-validation, perturbed
+candidate, known-answer, conservation and derivative tests remain mandatory.
 
 ### Derivatives, linear algebra and independent solves
 
@@ -1402,7 +1370,7 @@ Metal; products and command tiles never change the summation order.
 stencils, bound handling, pinned columns, failed-probe retry and evaluation
 budgets; evaluator-specific FD steps are unchanged. Residual and Jacobian
 arrays cross the public `Problem` interface as owned f64 arrays, and every
-published operand value is a host f64 after its candidate check, so residual
+published operand value is widened to host f64 after device evaluation, so residual
 targets/hinges, stencil differences and `Jᵀr` are formed on the host: a device
 pass over host-owned values costs one fill of the same size plus a command and
 measured slower at every size (FD differences 0.35–4.7 ms against well under
@@ -1413,8 +1381,8 @@ already live on the device.
 **P11 policy update:** the `m·n²` threshold and timings in the next
 paragraph are historical. The resident tall QR now starts at `m·n ≥ 2¹⁶`
 Jacobian elements, measured on the complete compression (`GPU.md` §9.2).
-Engine `auto` runs optimisation, tolerancing and glass substitution on the
-CPU reference, since every changed candidate is re-checked in f64.
+Engine `auto` now selects Metal for candidate jobs; re-measure pending. The
+following P8/P11 timings are historical and include per-candidate f64 checks.
 
 The local solver hands its tall QR to P3 once the free-column work
 `m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order
@@ -1456,7 +1424,7 @@ device-work assertions. Existing CPU reference tests remain in force.
 
 The ignored `p8_bench` harness alternates unchanged f64, legacy Metal and the
 resident path at B=1/16/256/1024, with cold, warm-up and ten measured runs.
-It includes candidate qualification and records transfers, device/wall time,
+Historical runs included candidate qualification and recorded transfers, device/wall time,
 command counts, allocation reuse, peak plan storage and fallback proportions.
 Current default-workload measurements are CPU-preferred; no engine threshold is
 changed. Exact numerical maxima, provisional median/p95 results, raw records

@@ -15,7 +15,7 @@
 //!    to a surface), and every planned ray is generated with the reference
 //!    field/pupil mapping and ray aiming. The candidate is packed into the
 //!    shared f32 layout (`PackedSystem`, all wavelengths, asphere
-//!    normalisation radii from the qualified base system).
+//!    normalisation radii selected by the packer).
 //! 2. **Trace**: the packed candidates are uploaded as one system set and
 //!    their rays (selected per ray by system index) are traced in one
 //!    request per (clipping, last surface): the unclipped chief rays, the
@@ -34,11 +34,8 @@
 //!
 //! # Precision and fallback
 //!
-//! The evaluator is built for a system with a precision qualification
-//! (`mklight_gpu::xval::qualify`, a third of the CONVENTIONS §7 budget,
-//! radiometry off). If the backend fails it, every operand is computed by the
-//! CPU f64 [`TraceEvaluator`] and [`GpuTraceEvaluator::record`] says so in
-//! the `RunInfo`. Candidates the packer cannot represent (more than 16
+//! Accuracy is established by offline cross-validation. A backend without
+//! trace support uses the CPU reference. Candidates the packer cannot represent (more than 16
 //! wavelengths, asphere terms beyond A22, values outside the normal f32
 //! range) and batches whose dispatch fails are evaluated on the CPU as well,
 //! and counted in [`GpuEvalStats`].
@@ -59,7 +56,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -67,15 +64,11 @@ use serde::{Deserialize, Serialize};
 use mklight_core::job::{Precision, Progress, RunInfo};
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, Vec3};
 use mklight_gpu::layout::MAX_WAVELENGTHS;
-use mklight_gpu::xval::{QUALIFICATION_MARGIN, Qualification, XvalSettings, qualify};
 use mklight_gpu::{
-    ComputeBackend, ErrorBudget, Job, JobKind, JobOutput, JobResult, PackOptions, PackedSystem,
-    Pending, Radiometry, RayBatch, RecordMode, SystemHandle, TraceRequest, TraceResult as GpuTrace,
+    ComputeBackend, Job, JobKind, JobOutput, JobResult, PackOptions, PackedSystem, Pending,
+    Radiometry, RayBatch, RecordMode, SystemHandle, TraceRequest, TraceResult as GpuTrace,
 };
-use mklight_trace::{
-    Compensated, OpdReference, Ray, SemiDiameterSettings, SequentialTracer, TraceResult,
-    TraceStatus,
-};
+use mklight_trace::{Compensated, OpdReference, Ray, SequentialTracer, TraceResult, TraceStatus};
 
 use crate::deriv::FdScheme;
 
@@ -90,8 +83,7 @@ use super::{CompositeEvaluator, Operand, OperandError, OperandEvaluator, Operand
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GpuEvalSettings {
     /// Trace wavefront operands on the GPU. OPD comes from the kernel's
-    /// double-float optical path, which the qualification checks against
-    /// the OPD budget; off sends them to the CPU evaluator.
+    /// double-float optical path; off sends them to the CPU evaluator.
     pub wavefront: bool,
     /// Candidates per upload and dispatch. Larger batches are split into
     /// sub-batches of this size and pipelined: the host prepares the next
@@ -113,7 +105,7 @@ impl Default for GpuEvalSettings {
 pub struct GpuEvalStats {
     /// Candidates traced on the GPU.
     pub gpu_candidates: u64,
-    /// Candidates evaluated on the CPU reference instead (unqualified
+    /// Candidates evaluated on the CPU reference instead (unsupported
     /// backend, unpackable system, failed dispatch).
     pub cpu_candidates: u64,
     /// Rays traced on the GPU.
@@ -131,13 +123,6 @@ struct Counters {
     rays: AtomicU64,
     dispatches: AtomicU64,
     device_ns: AtomicU64,
-}
-
-struct GpuState {
-    qualification: Qualification,
-    /// Per-surface radii for the asphere normalisation of the packer (the
-    /// qualified system's automatic semi-diameters).
-    radius_hints: Option<Vec<f64>>,
 }
 
 /// Can a [`GpuTraceEvaluator`] trace operands of `kind` (with wavefront
@@ -211,7 +196,6 @@ pub struct GpuTraceEvaluator {
     backend: Arc<dyn ComputeBackend>,
     cpu: TraceEvaluator,
     settings: GpuEvalSettings,
-    state: Arc<RwLock<GpuState>>,
     counters: Arc<Counters>,
 }
 
@@ -232,58 +216,19 @@ fn detached(ctx: &JobContext) -> JobContext {
 }
 
 impl GpuTraceEvaluator {
-    /// An evaluator on `backend` qualified for `system` (normally the start
-    /// of the optimisation). `cpu` computes everything the GPU does not and
-    /// is the fallback. Fails only when `ctx` is cancelled; a failed
-    /// qualification gives an inactive evaluator (CPU only) that says why.
+    /// Build a device evaluator. Unsupported tracing uses the CPU reference;
+    /// precision comparisons belong to the offline cross-validation tests.
     pub fn new(
         backend: Arc<dyn ComputeBackend>,
         cpu: TraceEvaluator,
-        system: &OpticalSystem,
         settings: GpuEvalSettings,
-        ctx: &JobContext,
-    ) -> MkResult<Self> {
-        let state = qualify_system(backend.as_ref(), &cpu, system, ctx)?;
-        Ok(GpuTraceEvaluator {
-            backend,
-            cpu,
-            settings,
-            state: Arc::new(RwLock::new(state)),
-            counters: Arc::default(),
-        })
-    }
-
-    /// Reuse a caller's qualification and packing radii for this backend and
-    /// system. The engine supplies its cached per-snapshot qualification.
-    pub fn with_qualification(
-        backend: Arc<dyn ComputeBackend>,
-        cpu: TraceEvaluator,
-        settings: GpuEvalSettings,
-        qualification: Qualification,
-        radius_hints: Vec<f64>,
     ) -> Self {
-        GpuTraceEvaluator {
+        Self {
             backend,
             cpu,
             settings,
-            state: Arc::new(RwLock::new(GpuState {
-                qualification,
-                radius_hints: Some(radius_hints),
-            })),
             counters: Arc::default(),
         }
-    }
-
-    /// Qualify again, for `system` (e.g. the design an optimisation ended
-    /// with). The evaluator (and its clones) use the GPU only while the
-    /// latest qualification passed.
-    pub fn requalify(&self, system: &OpticalSystem, ctx: &JobContext) -> MkResult<Qualification> {
-        let st = qualify_system(self.backend.as_ref(), &self.cpu, system, ctx)?;
-        let q = st.qualification.clone();
-        if let Ok(mut g) = self.state.write() {
-            *g = st;
-        }
-        Ok(q)
     }
 
     pub fn backend(&self) -> &Arc<dyn ComputeBackend> {
@@ -300,20 +245,9 @@ impl GpuTraceEvaluator {
     pub fn settings(&self) -> &GpuEvalSettings {
         &self.settings
     }
-    /// The latest qualification.
-    pub fn qualification(&self) -> Qualification {
-        self.state
-            .read()
-            .map(|g| g.qualification.clone())
-            .unwrap_or_else(|e| e.into_inner().qualification.clone())
-    }
-    /// Does the evaluator trace on the GPU (the latest qualification
-    /// passed)?
+    /// Whether the backend supports the trace kernel and its numerics probe.
     pub fn is_active(&self) -> bool {
-        self.state
-            .read()
-            .map(|g| g.qualification.passed)
-            .unwrap_or(false)
+        self.backend.supports(JobKind::Trace)
     }
     /// The precision of the values it returns.
     pub fn precision(&self) -> Precision {
@@ -335,12 +269,17 @@ impl GpuTraceEvaluator {
         }
     }
 
-    /// Record in a `RunInfo` which backend computed the ray operands: the
-    /// qualification decision (`Qualification::record`: backend, precision,
-    /// fallback warning, `settings["backend_qualification"]`) and the work
-    /// counters under `settings["gpu_evaluation"]`.
+    /// Record the actual precision, device/build and work counters.
     pub fn record(&self, info: &mut RunInfo) {
-        self.qualification().record(info);
+        if self.is_active() && self.stats().gpu_candidates > 0 {
+            info.backend = self.backend_id();
+            info.precision = self.backend.precision().model;
+        } else if !self.is_active() {
+            info.warnings
+                .push("GPU not used: backend does not support the trace kernel".into());
+        }
+        info.settings["gpu_device"] = serde_json::to_value(self.backend.info()).unwrap();
+        info.settings["gpu_precision"] = serde_json::to_value(self.backend.precision()).unwrap();
         let stats = serde_json::to_value(self.stats()).unwrap_or(serde_json::Value::Null);
         if let serde_json::Value::Object(m) = &mut info.settings {
             m.insert("gpu_evaluation".into(), stats);
@@ -636,54 +575,6 @@ fn concat(frags: &[(&RayBatch, u32)]) -> RayBatch {
     b
 }
 
-/// The qualification of `backend` for `system` (CPU tracer settings,
-/// clipping as evaluated, radiometry off) and the packer's radius hints.
-fn qualify_system(
-    backend: &dyn ComputeBackend,
-    cpu: &TraceEvaluator,
-    system: &OpticalSystem,
-    ctx: &JobContext,
-) -> MkResult<GpuState> {
-    let failed = |reason: String| GpuState {
-        qualification: Qualification {
-            backend: backend.info().backend_id(),
-            kernel_build: backend.precision().kernel_build.clone(),
-            passed: false,
-            budget: ErrorBudget::CONVENTIONS,
-            margin: QUALIFICATION_MARGIN,
-            budget_fraction: None,
-            report: None,
-            reason: Some(reason),
-        },
-        radius_hints: None,
-    };
-    ctx.check()?;
-    if !backend.supports(JobKind::Trace) {
-        return Ok(failed("backend does not support the trace kernel".into()));
-    }
-    let tr = match cpu.tracer(system) {
-        Ok(t) => t,
-        Err(e) => return Ok(failed(format!("the system cannot be traced: {e:?}"))),
-    };
-    if tr.num_wavelengths() > MAX_WAVELENGTHS {
-        return Ok(failed(format!(
-            "{} wavelengths: the batched evaluator packs at most {MAX_WAVELENGTHS}",
-            tr.num_wavelengths()
-        )));
-    }
-    let xs = XvalSettings {
-        clip: cpu.settings().clip,
-        radiometry: Radiometry::Off,
-        ..XvalSettings::qualification()
-    };
-    let qualification = qualify(backend, &tr, Some(&xs), &detached(ctx))?;
-    let hints = tr.semi_diameters(&SemiDiameterSettings::default()).values;
-    Ok(GpuState {
-        qualification,
-        radius_hints: Some(hints),
-    })
-}
-
 /// One candidate's host-side state.
 enum Host {
     /// Traced on the GPU.
@@ -696,11 +587,7 @@ enum Host {
 
 /// The tracer of a candidate and, when the packer can represent it, its
 /// packed system.
-fn host(
-    cpu: &TraceEvaluator,
-    s: &OpticalSystem,
-    hints: Option<&[f64]>,
-) -> (Host, Option<PackedSystem>) {
+fn host(cpu: &TraceEvaluator, s: &OpticalSystem) -> (Host, Option<PackedSystem>) {
     let tr = match cpu.tracer(s) {
         Ok(t) => t,
         Err(e) => return (Host::Failed(e), None),
@@ -709,12 +596,7 @@ fn host(
         return (Host::Cpu, None);
     }
     let rs = tr.system();
-    let opts = PackOptions {
-        wavelengths: None,
-        radius_hints: hints
-            .filter(|h| h.len() == rs.num_surfaces())
-            .map(<[f64]>::to_vec),
-    };
+    let opts = PackOptions::default();
     match PackedSystem::pack(rs, &opts).and_then(|p| p.validate().map(|_| p)) {
         Ok(p) => (Host::Gpu(Box::new(tr)), Some(p)),
         Err(_) => (Host::Cpu, None),
@@ -863,7 +745,7 @@ fn prepare<'a>(
         // Left to the CPU path (no cache entry): surface 0, where rays
         // start, and passive surfaces (coordinate breaks, dummies), whose
         // "hit" can lie far from the frame origin (a fold's coordinate
-        // break) and is outside what the qualification samples.
+        // break) and is outside the offline sampled precision domain.
         if j == 0 || tr.system().surfaces[j].is_passive() {
             continue;
         }
@@ -1038,7 +920,6 @@ impl OperandEvaluator for GpuTraceEvaluator {
                 .fetch_add(systems.len() as u64, Ordering::Relaxed);
             return self.cpu.evaluate_batch(systems, operands, ctx);
         }
-        let hints = self.state.read().ok().and_then(|g| g.radius_hints.clone());
         let parts: Vec<&[OpticalSystem]> = systems.chunks(self.settings.batch.max(1)).collect();
         // The tracers of every sub-batch live until the end: in-flight
         // caches borrow them.
@@ -1049,10 +930,8 @@ impl OperandEvaluator for GpuTraceEvaluator {
             ctx.check()?;
             // Host stages of this sub-batch run while the GPU traces the
             // previous one.
-            let (hosts, packed): (Vec<Host>, Vec<Option<PackedSystem>>) = part
-                .par_iter()
-                .map(|s| host(&self.cpu, s, hints.as_deref()))
-                .unzip();
+            let (hosts, packed): (Vec<Host>, Vec<Option<PackedSystem>>) =
+                part.par_iter().map(|s| host(&self.cpu, s)).unzip();
             let hosts = slot.get_or_init(|| hosts);
             queue.push_back(self.launch(part, hosts, packed, operands, ctx)?);
             if queue.len() > 1

@@ -843,7 +843,8 @@ CPU reference and **say so**: `Qualification::record(&mut RunInfo)` writes
 
 and in both cases the whole qualification (measured errors included) under
 `settings["backend_qualification"]`. A qualification holds for one system
-(snapshot) on one backend; callers cache it with the packed system.
+(snapshot) on one backend. The engine and the candidate solvers do not run it
+at run time (§9.2); it is offline test evidence.
 
 ### 5.3 Throughput
 
@@ -1391,7 +1392,63 @@ optional qualified spatial-search implementation, not a requirement or a
 replacement of curved optics by triangles. Stable nearest-hit tie rules,
 shared apertures and exact coverage signatures preserve the solver partition.
 
+#### Runtime publication policy (2026-11-02)
+
+Edits do not trigger a CPU run. Native Metal results publish immediately as
+`gpu:metal` with their actual f32/double-float precision; there is no sampled
+per-snapshot geometry qualification, full-chain reference comparison or
+per-candidate f64 check at run time. Accuracy rests on the offline f64
+cross-validation suites (perturbed systems and known answers included) and on
+the ignored `metal_accuracy::default_sample_accuracy` harness, which compares
+every GPU-capable analysis on all samples at default settings with the CPU
+reference using the former publication gates of §9.4. The startup numerics
+probe, boundary packing checks, device status/finite guards and the kernels'
+conservation sums remain as runtime guards; none repeats the CPU solve.
+
+**Static capability list** (`crates/mklight-engine/src/analysis/routing.rs`).
+Analyses whose Metal output failed the f64 comparison on most default samples
+in P11 always run on the CPU reference, with a deliberate reported reason, also
+for explicit Metal requests:
+
+| Analysis | P11 default samples failing | Cause |
+|---|---:|---|
+| `encircled_energy` | 16/16 | the adapter's geometry-uncertainty bin check completed every default result in f64 |
+| `wavefront_map` | 16/16 | Seidel angles and fit condition where the aberration vanishes (on axis): undefined angles differ by up to 158° |
+| `polarization_pupil_map` | 13/16 | fast/diattenuation axes where retardance or diattenuation vanishes differ by 1–2 rad |
+
+**Known residual gaps on Metal** (2026-11-02, default settings; these publish
+unchecked). Twelve sample/analysis cases fail the former gates:
+
+| Analysis | Samples | Nature of the difference |
+|---|---|---|
+| `stray_light` | achromat, cooke_triplet, double_gauss, petzval_asphere, relay, anamorphic | Monte Carlo event counts and sink energies (largest: cooke_triplet centroid 0.032 mm, absorbed-by-sink 5.0e-3 against a 4.9e-4 margin) |
+| `ghost_irradiance` | singlet, achromat, newtonian, q_con | `rays_traced` counts at aperture edges; values within 1e-11 |
+| `footprint` | newtonian | one overlay outline vertex count |
+| `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin |
+
+P11 also counted relay `ghost_paths` (a 26.5 mm focus difference). That was a
+tie, not a Metal error: the symmetric relay gives R3·R1 and R7·R5 the same
+relative irradiance, the devices round it differently in the last bits, and
+the ranking swaps the two; every value agrees to 1e-12. The harness matches
+ghost paths by label.
+
+**Candidate solvers.** Optimisation, tolerance and glass search loops run on
+the device, including combined merits, constraint hinges and finite-difference
+stencils. Unsupported preparation/features, unresolved aiming and actual
+resource/device failures receive a counted reference completion. The final
+report is scored once in f64: optimisation scores the start and the selected
+design; tolerance scores each completed case with its returned compensators
+(no second compensator solve) and derives the sensitivity/Monte Carlo figures
+from those scores; glass substitution scores and ranks the kept finalists.
+`merit_evaluation` publishes the evaluator's values. Cancellation never starts
+a reference replacement or report. Their cost rules select Metal until the new
+path is measured (**re-measure pending**); other Auto thresholds are
+unchanged.
+
 #### Consolidated P11 measurements
+
+The measurements and implementation descriptions in this subsection are the
+preceding P11 baseline; the runtime policy is defined above and in §9.3–9.4.
 
 Final release measurements: Apple M2 Pro (12 CPU / 19 GPU cores), macOS build `26A434`, 12 CPU workers; strict precompiled Metal `-fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off`. The shader source digest and complete compiler/device/probe records accompany every native run.
 
@@ -1445,9 +1502,8 @@ CPU p75 is below the Metal p25. Bases:
   at every measured shape. The threshold is the measured default workload
   (3 fields × 3 wavelengths in every sample); larger jobs are unmeasured
   and use qualified Metal.
-- *candidates*: always CPU. Every changed candidate is re-checked against
-  f64 (§9.4), so the device route repeats the CPU work; it measured 2–128×
-  slower.
+- *candidates*: always CPU in P11, when every changed candidate was
+  re-checked in f64; superseded by the runtime policy above.
 
 | Analysis | Workload | CPU at or below | Basis | Defaults: CPU win / Metal faster / f64 only | Σ default medians CPU / Metal ms |
 |---|---|---:|---|---:|---:|
@@ -1569,27 +1625,26 @@ P9 has one 16.540 ms warm outlier above the 10–15 ms aim; its other largest sa
 The engine initially uses `Auto`; explicit CPU remains available. Native
 geometric, wave/image, radiometry, ghost/stray and candidate adapters share one
 operation catalogue, including glass substitution. A native adapter is a route,
-not a blanket precision certificate: every requested system/settings domain
-must qualify. The legacy host-generated Metal analysis bridge and its ray and
+not a blanket precision certificate: offline suites establish accuracy and the
+static capability list above retains broadly failing analyses on the reference. The legacy host-generated Metal analysis bridge and its ray and
 candidate-count heuristics are retired.
 
 `auto` applies the workload cost rules of §9.2: per analysis, a workload
 measured from the settings and the system against a threshold derived from
 the measurements, scoped to the measured device family. Unknown cost (no
 rule, or a device without evidence) uses qualified Metal; requests do not
-time-race backends. Cold qualification and warm reuse are reported
-separately. A CPU choice by cost is deliberate and reported without a
+time-race backends. Cold first calls and warm reuse are measured separately. A CPU choice by cost is deliberate and reported without a
 warning. Small serial host control, I/O and final result packing remain
 host work. Kernel/primitive-only measurements do not set complete-job
 choices.
 
 An explicit Metal request bypasses the cost rules, never accuracy gates.
 Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
-Unsupported work, failed qualification, resource or device failure produces
+Unsupported work, static capability restrictions, resource or device failure produce
 a reported reference fallback; cancellation never triggers fallback. A
 partial solver fallback names stages/candidates, counts polished rays and
 records why. `RunInfo` and the backend report retain requested/used backend,
-precision, seed, base/derived hashes, device, build/probe, qualification,
+precision, seed, base/derived hashes, device, build/probe,
 effective algorithm/plan versions, cost decision and stage timings. Do not
 label a GPU computation f64 just because its public buffer widens to f64.
 
@@ -1615,19 +1670,18 @@ the existing solver semantics to a partial success by accident.
 
 ### 9.4 Accuracy and qualification
 
-Qualification is per operation chain, system/domain and settings, not just
-the presence of a trace kernel. P11 adds a complete requested-result f64 comparison after the sampled geometry
-gate; candidate evaluation retains independent per-candidate operand checks.
-Cache keys additionally include radiometry,
-field/λ domain, shape/size family, precision/plan version and tolerances.
-Keep the §5.2 one-third safety margin for sampled optical error maxima;
-full-grid regression must meet the whole budget. Cancellation leaves no
-qualification verdict. A baseline-system pass does not qualify arbitrary
-perturbations: candidate plans need a tested parameter envelope and guard
-checks, sampled f64 sentinels within batches, and reference qualification
-when leaving that envelope. Without an established envelope, qualify the
-candidate itself. Recheck accepted/final designs and f64-score reported
-optimisation/glass finalists. Record unqualified candidate fallbacks.
+Accuracy qualification is offline, per operation chain and tested settings/domain.
+No snapshot edit or candidate evaluation runs a reference comparison. Retain
+all geometry, complete-grid, CPU-f32 and f64 regression tests, with the §5.2
+one-third sampled safety margin as test evidence rather than a runtime gate.
+The static capability restrictions in §9.2 apply before cost selection.
+Device status masks, finite outputs and kernel conservation summaries remain
+cheap runtime guards. Unresolved aiming and unsupported features keep explicit
+reference fallbacks; cancellation yields no replacement result.
+
+The following budgets remain offline acceptance criteria. Final reported
+optimisation best designs, tolerance cases and glass finalists are f64-scored
+once after the device search.
 
 | Quantity / kernel | Acceptance against independent CPU f64 |
 |---|---|

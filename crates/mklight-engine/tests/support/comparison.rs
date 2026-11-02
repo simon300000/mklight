@@ -1,172 +1,25 @@
-//! Per-chain publication gate. A geometry verdict alone never qualifies a
-//! transform, a reduction, or a changed set of analysis settings.
-use super::{Analysis, AnalysisInput, AnalysisOutput, BackendUse, gpu};
-use crate::{backend::BackendInfo, error::EngineResult};
-use mklight_core::{JobContext, MkError, job::Precision};
-use serde_json::{Value, json};
-
-pub(crate) const VERSION: u32 = 1;
-
-pub(crate) fn run(
-    analysis: &dyn Analysis,
-    input: &AnalysisInput<'_>,
-    settings: &Value,
-    ctx: &JobContext,
-) -> EngineResult<AnalysisOutput> {
-    let Some(device) = gpu::device(input) else {
-        return analysis.run(input, settings, ctx);
-    };
-    let reference = AnalysisInput::with_resolver(
-        input.snapshot.clone(),
-        input.library.clone(),
-        BackendInfo::cpu_reference(),
-        Box::new(|| input.resolved()),
-    )
-    .with_stop_token(input.stop.clone())
-    .with_library_hash(input.library_hash().into());
-    let cost = if crate::backend::Backend::is_auto_request(&input.requested_backend) {
-        super::cost::decision(
-            analysis.name(),
-            settings,
-            input.snapshot.system(),
-            device.backend.info(),
-        )
-    } else {
-        json!({"decision":"explicit_backend","reason":"cost rules bypassed"})
-    };
-    let cpu = cost["decision"] == "cpu_reference";
-    *input.cost_decision.borrow_mut() = Some(cost);
-    if cpu {
-        input.report_backend(BackendUse {
-            id: "cpu_reference".into(),
-            precision: Precision::F64Reference,
-            device: None,
-            fallback_reason: Some("auto: the CPU reference is faster for this workload".into()),
-            qualification: None,
-            deliberate: true,
-        });
-        return analysis.run(&reference, settings, ctx);
-    }
-    // Candidate solvers qualify every derived system and operand themselves.
-    if matches!(
-        analysis.name(),
-        "optimize" | "merit_evaluation" | "tolerance" | "glass_substitution"
-    ) {
-        return analysis.run(input, settings, ctx);
-    }
-    let key = serde_json::to_string(&json!({
-        "chain": analysis.name(), "version": VERSION,
-        "snapshot": input.snapshot.hash().to_hex(), "library": input.library_hash(),
-        "settings": settings, "precision": device.backend.precision(),
-        "geometry_settings": device.qualification,
-    }))?;
-    let cached = device.chain_qualification(&key);
-    let fallback = |reason: String, qualification: Value| {
-        input.report_backend(BackendUse {
-            id: "cpu_reference".into(),
-            precision: Precision::F64Reference,
-            device: None,
-            fallback_reason: Some(reason),
-            qualification: Some(qualification),
-            deliberate: false,
-        });
-    };
-    if let Some(q) = &cached
-        && q["passed"] == false
-    {
-        fallback(q["reason"].as_str().unwrap().into(), q.clone());
-        return analysis.run(&reference, settings, ctx);
-    }
-    let tracer = mklight_trace::SequentialTracer::new(input.resolved()?)?;
-    let geometry_key = format!("{}:{}", input.snapshot.hash(), input.library_hash());
-    let q = device.qualify(&geometry_key, &tracer, &ctx.subrange(0., 0.15))?;
-    if !q.passed {
-        fallback(
-            q.reason.clone().unwrap_or_default(),
-            serde_json::to_value(q.as_ref())?,
-        );
-        return analysis.run(&reference, settings, &ctx.subrange(0.15, 1.));
-    }
-    let out = match analysis.run(input, settings, &ctx.subrange(0.15, 0.65)) {
-        Ok(out) => out,
-        Err(e) if e.is_cancelled() => return Err(e),
-        Err(e) => {
-            fallback(
-                format!("resident {} failed: {e}", analysis.name()),
-                json!({"passed":false,"geometry":q}),
-            );
-            return analysis.run(&reference, settings, &ctx.subrange(0.65, 1.));
-        }
-    };
-    ctx.check()?;
-    let completed_on_reference = input
-        .backend_used
-        .borrow()
-        .as_ref()
-        .filter(|used| used.precision == Precision::F64Reference)
-        .map(|used| {
-            used.fallback_reason
-                .clone()
-                .unwrap_or_else(|| "native adapter required reference completion".into())
-        });
-    if let Some(reason) = completed_on_reference {
-        let qualification = json!({"passed":false,"chain":analysis.name(),"version":VERSION,
-            "reason":reason,"mode":"whole_result_reference_completion","geometry":q});
-        device.cache_chain_qualification(key, qualification.clone());
-        fallback(reason, qualification);
-        return Ok(out);
-    }
-    let qualification = match cached {
-        Some(q) => q,
-        None => {
-            let started = std::time::Instant::now();
-            let cpu = analysis.run(&reference, settings, &ctx.subrange(0.65, 0.95))?;
-            let report = compare(&cpu, &out, analysis.name(), ctx)?;
-            ctx.check()?;
-            let qualification = json!({
-                "passed": report.reason.is_none(), "reason": report.reason,
-                "chain": analysis.name(), "version": VERSION,
-                "mode": "full_requested_grid_against_independent_f64",
-                "margin": 1.0/3.0, "geometry": q,
-                "compared_values": report.compared,
-                "maximum_absolute_error": report.maximum,
-                "maximum_image_l1_relative":report.image_l1_relative,
-                "maximum_image_energy_relative":report.energy_relative,
-                "gates": "GPU-9.4-G-OPL-R-E-T-D-v1",
-                "reference_seconds": started.elapsed().as_secs_f64(),
-            });
-            device.cache_chain_qualification(key, qualification.clone());
-            if qualification["passed"] == false {
-                fallback(
-                    qualification["reason"].as_str().unwrap().into(),
-                    qualification,
-                );
-                return Ok(cpu);
-            }
-            qualification
-        }
-    };
-    if let Some(used) = input.backend_used.borrow_mut().as_mut() {
-        used.qualification = Some(qualification);
-    } else {
-        return Err(
-            MkError::Backend("resident route did not report its actual backend".into()).into(),
-        );
-    }
-    Ok(out)
-}
-
+// Offline full-result comparison retained from the former runtime gate.
+use mklight_core::JobContext;
+use mklight_engine::{analysis::AnalysisOutput, error::EngineResult};
+use serde_json::Value;
 #[derive(Default)]
-struct Comparison {
-    compared: usize,
-    maximum: f64,
-    image_l1_relative: f64,
-    energy_relative: f64,
+pub struct Comparison {
+    pub compared: usize,
+    pub maximum: f64,
+    pub maximum_path: Option<String>,
+    pub image_l1_relative: f64,
+    pub energy_relative: f64,
     quantile_interval_mm: Option<f64>,
     energy_flux: Option<f64>,
-    reason: Option<String>,
+    pub reason: Option<String>,
 }
 impl Comparison {
+    fn error(&mut self, error: f64, path: &str) {
+        if error > self.maximum {
+            self.maximum = error;
+            self.maximum_path = Some(path.into());
+        }
+    }
     fn fail(&mut self, path: &str, reason: &str) {
         if self.reason.is_none() {
             self.reason = Some(format!("chain qualification at {path}: {reason}"));
@@ -182,7 +35,7 @@ impl Comparison {
             return;
         }
         let error = (a - b).abs();
-        self.maximum = self.maximum.max(error);
+        self.error(error, path);
         // GPU §9.4 publication budgets, with the sampled one-third margin.
         // Undefined masks and discrete values are compared separately.
         let mut budget = if let Some(flux) = self
@@ -256,7 +109,7 @@ impl Comparison {
             norm += a.abs();
             delta += (a - b).abs();
             energy += a - b;
-            self.maximum = self.maximum.max((a - b).abs());
+            self.error((a - b).abs(), path);
         }
         if delta > norm * 2e-3 / 3. || energy.abs() > norm * 1e-3 / 3. {
             self.fail(path, "image L1 or integrated-energy gate failed");
@@ -304,7 +157,7 @@ impl Comparison {
             if error > (1e-4 * norm + 1e-7 / std::f64::consts::SQRT_2) / 3. {
                 self.fail(path, "Jones norm gate failed");
             }
-            self.maximum = self.maximum.max(error);
+            self.error(error, path);
         }
         Ok(())
     }
@@ -346,13 +199,13 @@ impl Comparison {
         }
     }
 }
-fn compare(
+pub fn compare(
     cpu: &AnalysisOutput,
     gpu: &AnalysisOutput,
     analysis: &str,
     ctx: &JobContext,
 ) -> EngineResult<Comparison> {
-    use crate::buffer::BufferData;
+    use mklight_engine::buffer::BufferData;
     let radius: Vec<f64> = cpu
         .buffers
         .iter()
@@ -376,7 +229,17 @@ fn compare(
             .reduce(f64::min),
         ..Default::default()
     };
-    c.json(&cpu.json, &gpu.json, "result");
+    // Ghost paths of equal irradiance (symmetric relays) rank in either order.
+    let ranked = |json: &Value| {
+        let mut json = json.clone();
+        if analysis == "ghost_paths"
+            && let Some(ghosts) = json["ghosts"].as_array_mut()
+        {
+            ghosts.sort_by(|a, b| a["label"].as_str().cmp(&b["label"].as_str()));
+        }
+        json
+    };
+    c.json(&ranked(&cpu.json), &ranked(&gpu.json), "result");
     if cpu.buffers.len() != gpu.buffers.len() {
         c.fail("buffers", "buffer count differs");
         return Ok(c);
