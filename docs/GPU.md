@@ -357,71 +357,58 @@ draw (tested against sequential draws).
 
 ### 3.6 Pure f32 variant: measured cost and accuracy
 
-`MetalPrecision::PureF32` is an explicit measurement mode. The second
-embedded offline metallib defines `MKLIGHT_PURE_F32`: double-float operations
-become plain f32, residuals are ignored and compensated sums become plain
-sums. The packed ABI, reduction trees and optical algorithms stay the same;
-this measures arithmetic cost without a smaller memory layout. Both variants
-retain the strict flags of §3.2, including no contraction. Runtime source
-supports the same define. The precision descriptor and `kernel_build` name
-the actual variant; CPU-f32 emulation remains the DoubleFloat specification.
+An opt-in measurement build answers what double-float costs and buys. With
+`MKLIGHT_PURE_F32` (mklight_common.h) every double-float operation becomes
+plain f32 with a zero lo part and compensated sums become plain sums; the
+packed ABI, algorithms and strict flags (§3.2) are unchanged. `build.rs`
+compiles it as a second embedded metallib (both variants' shaders compile
+concurrently). `MetalOptions { precision: MetalPrecision::PureF32, .. }`, or
+`MetalOptions::from_env()` with `MKLIGHT_METAL_PRECISION=f32`, selects it; the
+precision descriptor (`opl_double_float`, `compensated_reductions` false) and
+`kernel_build` (`pure_f32 …`) name the variant. `MetalOptions::default()`, and
+so engine `auto`, is always double-float. CPU-f32 emulation stays the
+double-float specification.
 
-Default construction, including engine `auto`, always uses DoubleFloat.
-Explicit benchmark callers can use `MetalOptions::from_env()` with
-`MKLIGHT_METAL_PRECISION=f32` (`df` for DoubleFloat), or set the options'
-`precision` field. An environment variable alone never changes engine Auto.
-The trace benchmark reads this option and measures both variants.
+Measured 2026-11-02 on an Apple M2 Pro under normal host load (provisional;
+median of ten alternating runs after a warm-up), Double Gauss trace, three
+fields, 12 surfaces:
 
-**2026-11-02, Apple M2 Pro; provisional normal-host-load measurements.** One
-warmup and ten alternating measured rounds, with interpolated p95. Double
-Gauss trace anchor, exactly 10,000 / 1,000,000 rays, three fields and primary
-wavelength; times are milliseconds, median / p95:
-
-| Rays | DF device | f32 device | DF wall | f32 wall | CPU f64 wall (Rayon) |
+| Rays | DF device | f32 device | DF wall | f32 wall | CPU f64 wall |
 |---|---:|---:|---:|---:|---:|
-| 10,000 | 0.385 / 0.627 | 0.131 / 0.267 | 1.079 / 1.366 | 0.624 / 0.857 | 0.939 / 2.111 |
-| 1,000,000 | 29.464 / 33.479 | 7.409 / 11.157 | 45.612 / 50.106 | 23.660 / 27.475 | 76.324 / 80.218 |
+| 10⁴ | 0.39 ms | 0.13 ms | 1.08 ms | 0.62 ms | 0.94 ms |
+| 10⁶ | 29.5 ms | 7.4 ms | 45.6 ms | 23.7 ms | 76.3 ms |
 
-At one million rays f32 is **3.98× faster on device, 1.93× end to end**.
-Across the 16 designs' matched full-record trace grids the device ratio is
-1.76–4.21×. Real aiming is not a uniform win: f32's changed convergence makes
-the measured attempt workload 0.093–1.83× as fast as DF, with failed aims.
+At 10⁶ rays f32 is **4.0× faster on the device and 1.9× end to end**; on the
+16 sample designs' 64×64 all-surface trace grids the device ratio is 1.8–4.2×.
+Real aiming gets no reliable speed-up (0.09–1.8× DF), because f32 changes
+its convergence.
 
-Independent CPU f64 cross-checks, all 16 designs, every field/wavelength,
-64×64 pupil grids and all-surface records (maximum error; parenthesis is
-fraction of the whole §9.4 budget):
+Accuracy against independent CPU f64 (§5.1 harness, all 16 designs, every
+field and wavelength, 64×64 pupil, all-surface records; maximum error and,
+in parentheses, the fraction of the full §9.4 budget):
 
-| Quantity | DoubleFloat | Pure f32 |
+| Quantity | Double-float | Pure f32 |
 |---|---:|---:|
-| Position, mm | 2.48e-6 (0.124×) | 7.18e-5 (3.59×) |
-| Direction cosine | 4.19e-8 (0.0210×) | 6.22e-7 (0.311×) |
-| OPD, waves | 7.71e-5 (0.0154×) | 0.214 (42.8×) |
+| Position, mm | 2.5e-6 (0.12×) | 7.2e-5 (3.6×) |
+| Direction cosine | 4.2e-8 (0.02×) | 6.2e-7 (0.31×) |
+| OPD, waves | 7.7e-5 (0.015×) | 0.21 (43×) |
+| Per-surface OPL, mm | 3.3e-11 | 8.0e-5 |
 
-Statuses agree on this grid, including zero band/chief mismatches. F32
-exceeds the OPD budget on every design and the position budget on the
-Newtonian. Real aiming at relative tolerance 1e-10 fails 450 of 4,176 f32
-attempts versus zero with DF. Even its reported-converged aims have independent
-stop residuals up to 2.44e-7 (2,437× the requested tolerance); failed and accepted
-attempts are reported separately.
+Ray statuses agree in both. f32 exceeds the OPD budget on every design (6–43×)
+and the position budget on the Newtonian. Real aiming at the default
+tolerance 1e-10 fails 450 of 4,176 f32 aims (Cooke triplet, Double Gauss,
+relay; none with DF), and f32 aims reported as converged miss the stop by up
+to 2.4e-7 of its radius. In the engine, normal qualification (§5.2) sends
+every f32 request to the CPU reference; forced through the raw adapters, f32
+PSFs are off by 8% L1 (41× budget), optical MTF by 0.016 (8×) and image
+simulation by 80% L1.
 
-In the 480 normal engine requests, 422 DoubleFloat results use Metal and 58
-use the reference; all 480 f32 requests fall back to CPU. The separate raw
-adapter study exposes the rejected results: f32 maximum PSF L1 error is
-0.0824 (41.2× budget), optical MTF error 0.0162 (8.09×), and image-simulation
-L1 error 0.801 (401×, over 13 completed designs). Three f32 image jobs reject
-the noise domain, and Petzval MTF versus field has unresolved pupil aims.
-Geometric EE replaces the whole result with CPU f64 on all 16 designs in
-both modes; that equality is excluded from GPU accuracy. Normal qualification
-remains unchanged, and all fallback/failed-attempt times are labelled.
-
-The ignored `f32_study` tests retain all-surface OPL, aiming, complete native
-analysis outputs and normal engine-session verdicts/timings against CPU f64.
-Wave comparisons use explicitly fixed sampling (warnings retained), so an
-automatically changed image size cannot masquerade as pixelwise accuracy.
-The task's `scratchpad/gpu/f32-evidence.md` contains per-design/per-quantity
-budget fractions, median/p95 device and wall times, settings, RunInfo and raw
-logs, including ghost/stray uncertainty and unsupported/fallback domains.
-These finite, single-device measurements do not qualify pure f32 for Auto.
+**Conclusion.** Double-float stays the default and the only qualified mode.
+Pure f32 is not qualified for OPD, wavefront and wave analyses or real
+aiming, and does not hold the position budget on every design. Reproduce with the ignored tests
+`cargo test --release -p mklight-metal --test f32_study -- --ignored --nocapture`
+(trace, OPL, aiming, speed) and `-p mklight-engine --test f32_study` (engine
+analyses), or `MKLIGHT_METAL_PRECISION=f32` with the trace benchmark (§5.3).
 
 ## 4. The trace kernel
 
@@ -975,8 +962,10 @@ terms, while the sample designs have sparse, shorter coefficient lists.
 
 ## 6. Metal backend notes
 
-* **Build.** `build.rs` compiles `shaders/*.metal` to `.air` and links one
-  `mklight.metallib`, embedded with `include_bytes!`. It finds the compiler
+* **Build.** `build.rs` compiles `shaders/*.metal` to `.air` (all files and
+  both kernel variants concurrently) and links one `mklight.metallib` per
+  variant (double-float and the pure-f32 measurement build, §3.6), embedded
+  with `include_bytes!`. It finds the compiler
   via `MKLIGHT_METAL_TOOLCHAIN_BIN`, then `xcrun -sdk macosx metal`, then the
   system-mounted Metal toolchain component (which `xcrun` does not always
   resolve). Shaders are compiled offline: an offline compile error fails the

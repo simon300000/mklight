@@ -1,5 +1,6 @@
-//! Compiles `shaders/*.metal` into DF and pure-f32 metallibs with the offline Metal
-//! toolchain (`xcrun -sdk macosx metal` → `.air` → `metallib`) and embeds it.
+//! Compiles `shaders/*.metal` into one `.metallib` per kernel variant
+//! (double-float, and the opt-in pure f32 build) with the offline Metal
+//! toolchain (`xcrun -sdk macosx metal` → `.air` → `metallib`) and embeds them.
 //! The preprocessed-include source is always embedded too, so the backend can
 //! fall back to runtime compilation (`newLibraryWithSource`) when the metallib
 //! does not load. A shader that fails offline fails the build; only a debug
@@ -10,7 +11,7 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::{env, fs};
 
 /// Shipping shaders always use the complete strict numerics/warning contract.
@@ -102,63 +103,85 @@ fn find_toolchain() -> Option<Toolchain> {
     candidates.into_iter().find(Toolchain::works)
 }
 
+/// Kernel variants: (output subdirectory, generated-constant suffix, extra
+/// defines). The second is the opt-in pure-f32 measurement build
+/// (`MetalPrecision::PureF32`, see shaders/mklight_common.h).
+const VARIANTS: [(&str, &str, &[&str]); 2] = [
+    ("double_float", "", &[]),
+    ("pure_f32", "_F32", &["-DMKLIGHT_PURE_F32=1"]),
+];
+
+/// Compiles every shader of every variant concurrently (one `metal -c`
+/// process each), then links one metallib per variant.
 fn try_offline(
     shaders: &[PathBuf],
     inc: &[PathBuf],
     out_dir: &Path,
-    pure_f32: bool,
-) -> Result<(PathBuf, String), String> {
+) -> Result<Vec<PathBuf>, String> {
     let tc = find_toolchain().ok_or("no working Metal compiler found")?;
-    let out_dir = out_dir.join(if pure_f32 { "pure_f32" } else { "double_float" });
-    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-    let mut airs = Vec::new();
-    for src in shaders {
-        let air = out_dir.join(src.file_stem().unwrap()).with_extension("air");
-        let mut cmd = Toolchain::cmd(&tc.metal);
-        cmd.arg("-c").args(FLAGS);
-        cmd.arg(format!(
-            "-fmodules-cache-path={}",
-            out_dir.join("modules").display()
-        ));
-        if pure_f32 {
-            cmd.arg("-DMKLIGHT_PURE_F32=1");
+    let mut jobs = Vec::new();
+    for (variant, _, defines) in VARIANTS {
+        let dir = out_dir.join(variant);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        for src in shaders {
+            let air = dir.join(src.file_stem().unwrap()).with_extension("air");
+            let mut cmd = Toolchain::cmd(&tc.metal);
+            cmd.arg("-c").args(FLAGS).args(defines);
+            // Keep the module cache inside OUT_DIR (sandboxed builds).
+            cmd.arg(format!(
+                "-fmodules-cache-path={}",
+                out_dir.join("modules").display()
+            ));
+            for d in inc {
+                cmd.arg("-I").arg(d);
+            }
+            let child = cmd
+                .arg(src)
+                .arg("-o")
+                .arg(&air)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("metal not runnable: {e}"))?;
+            jobs.push((src, child));
         }
-        for d in inc {
-            cmd.arg("-I").arg(d);
-        }
-        let o = cmd
-            .arg(src)
-            .arg("-o")
-            .arg(&air)
-            .output()
-            .map_err(|e| format!("metal not runnable: {e}"))?;
-        if !o.status.success() {
-            return Err(format!(
+    }
+    let mut failure = None;
+    for (src, child) in jobs {
+        let o = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !o.status.success() && failure.is_none() {
+            failure = Some(format!(
                 "{}: {}",
                 src.display(),
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
-        airs.push(air);
     }
-    let lib = out_dir.join("mklight.metallib");
-    let o = Toolchain::cmd(&tc.metallib)
-        .args(&airs)
-        .arg("-o")
-        .arg(&lib)
-        .output()
-        .map_err(|e| format!("metallib not runnable: {e}"))?;
-    if !o.status.success() {
-        return Err(format!(
-            "metallib failed: {}",
-            String::from_utf8_lossy(&o.stderr)
-        ));
+    if let Some(e) = failure {
+        return Err(e);
     }
-    let mut flags = FLAGS.join(" ");
-    if pure_f32 {
-        flags.push_str(" -DMKLIGHT_PURE_F32=1");
+    let mut libs = Vec::new();
+    for (variant, _, _) in VARIANTS {
+        let dir = out_dir.join(variant);
+        let lib = dir.join("mklight.metallib");
+        let airs = shaders
+            .iter()
+            .map(|s| dir.join(s.file_stem().unwrap()).with_extension("air"));
+        let o = Toolchain::cmd(&tc.metallib)
+            .args(airs)
+            .arg("-o")
+            .arg(&lib)
+            .output()
+            .map_err(|e| format!("metallib not runnable: {e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "metallib failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
+        libs.push(lib);
     }
-    Ok((lib, flags))
+    Ok(libs)
 }
 
 fn main() {
@@ -217,43 +240,51 @@ fn main() {
     )
     .unwrap();
 
-    for (pure_f32, symbol, flags_symbol) in [
-        (false, "METALLIB", "OFFLINE_FLAGS"),
-        (true, "METALLIB_F32", "OFFLINE_FLAGS_F32"),
-    ] {
-        let offline = if env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some() {
-            Err("skipped by MKLIGHT_METAL_SKIP_OFFLINE".to_string())
-        } else {
-            try_offline(&shaders, &inc, &out_dir, pure_f32)
-        };
-        match offline {
-            Ok((lib, flags)) => {
+    let offline = if env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some() {
+        Err("skipped by MKLIGHT_METAL_SKIP_OFFLINE".to_string())
+    } else {
+        try_offline(&shaders, &inc, &out_dir)
+    };
+    match offline {
+        Ok(libs) => {
+            for ((_, suffix, defines), lib) in VARIANTS.into_iter().zip(libs) {
                 writeln!(
                     generated,
-                    "pub const {symbol}: Option<&[u8]> = Some(include_bytes!({:?}));",
+                    "pub const METALLIB{suffix}: Option<&[u8]> = Some(include_bytes!({:?}));",
                     lib.display().to_string()
                 )
                 .unwrap();
-                writeln!(generated, "pub const {flags_symbol}: &str = {flags:?};").unwrap();
+                let flags = [FLAGS, defines].concat().join(" ");
+                writeln!(
+                    generated,
+                    "pub const OFFLINE_FLAGS{suffix}: &str = {flags:?};"
+                )
+                .unwrap();
             }
-            Err(e) => {
-                // Shipped builds embed the offline metallib: with a working
-                // compiler a failure is a shader error, and a release build
-                // without one would silently ship runtime compilation.
-                let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
-                if env::var("PROFILE").as_deref() == Ok("release")
-                    || (!skipped && find_toolchain().is_some())
-                {
-                    panic!(
-                        "offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}"
-                    );
-                }
-                println!(
-                    "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
-                    e.lines().next().unwrap_or("")
+        }
+        Err(e) => {
+            // Shipped builds embed the offline metallib: with a working
+            // compiler a failure is a shader error, and a release build
+            // without one would silently ship runtime compilation.
+            let skipped = env::var_os("MKLIGHT_METAL_SKIP_OFFLINE").is_some();
+            if env::var("PROFILE").as_deref() == Ok("release")
+                || (!skipped && find_toolchain().is_some())
+            {
+                panic!(
+                    "offline Metal compile failed (install it with `xcodebuild -downloadComponent MetalToolchain`):\n{e}"
                 );
-                writeln!(generated, "pub const {symbol}: Option<&[u8]> = None;").unwrap();
-                writeln!(generated, "pub const {flags_symbol}: &str = \"\";").unwrap();
+            }
+            println!(
+                "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
+                e.lines().next().unwrap_or("")
+            );
+            for (_, suffix, _) in VARIANTS {
+                writeln!(
+                    generated,
+                    "pub const METALLIB{suffix}: Option<&[u8]> = None;"
+                )
+                .unwrap();
+                writeln!(generated, "pub const OFFLINE_FLAGS{suffix}: &str = \"\";").unwrap();
             }
         }
     }

@@ -12,8 +12,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bytemuck::Pod;
@@ -64,8 +64,9 @@ pub enum LibraryOrigin {
     RuntimeSource,
 }
 
-/// Arithmetic used by the kernels. Pure f32 is an explicit experiment;
-/// default construction (including engine Auto) always uses DoubleFloat.
+/// Kernel arithmetic. `PureF32` (the `MKLIGHT_PURE_F32` metallib, docs/GPU.md
+/// §3.6) is an opt-in measurement mode, not qualified for OPD, wave or aiming
+/// results; default construction (including engine Auto) is DoubleFloat.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MetalPrecision {
     #[default]
@@ -90,25 +91,34 @@ pub struct MetalOptions {
 }
 
 impl MetalOptions {
-    /// Opt in to the benchmark environment. Ordinary defaults ignore it,
-    /// keeping experimental arithmetic out of automatic backend selection.
-    pub fn from_env() -> MkResult<Self> {
-        let precision = match std::env::var("MKLIGHT_METAL_PRECISION").as_deref() {
-            Err(std::env::VarError::NotPresent) | Ok("df") | Ok("double_float") => {
+    /// Defaults, with `MKLIGHT_METAL_PRECISION=f32` selecting `PureF32` for
+    /// benchmarks. Only explicit callers read it; `default()` never does.
+    pub fn from_env() -> Self {
+        let f32 = std::env::var("MKLIGHT_METAL_PRECISION").is_ok_and(|v| v == "f32");
+        Self {
+            precision: if f32 {
+                MetalPrecision::PureF32
+            } else {
                 MetalPrecision::DoubleFloat
-            }
-            Ok("f32") | Ok("pure_f32") => MetalPrecision::PureF32,
-            _ => {
-                return Err(MkError::Backend(
-                    "MKLIGHT_METAL_PRECISION must be df or f32".into(),
-                ));
-            }
-        };
-        Ok(Self {
-            precision,
+            },
             ..Self::default()
-        })
+        }
     }
+}
+
+/// Completed command-buffer GPU time in this process, nanoseconds
+/// (see [`device_seconds`]).
+static DEVICE_NANOS: AtomicU64 = AtomicU64::new(0);
+
+fn add_device_time(seconds: f64) {
+    DEVICE_NANOS.fetch_add((seconds * 1e9) as u64, Ordering::Relaxed);
+}
+
+/// Sum of completed command-buffer GPU timestamps over all Metal contexts in
+/// this process. Differences around a job measure its device time, including
+/// fused and resident batches (benchmarks only).
+pub fn device_seconds() -> f64 {
+    DEVICE_NANOS.load(Ordering::Relaxed) as f64 * 1e-9
 }
 
 /// A specialisation constant (`[[function_constant(index)]]`).
@@ -157,7 +167,6 @@ pub struct MetalContext {
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
     origin: LibraryOrigin,
     library_build: String,
-    device_nanos: Arc<AtomicU64>,
     pipelines: Mutex<HashMap<PipelineKey, Pso>>,
 }
 
@@ -288,7 +297,6 @@ impl MetalContext {
                 library,
                 origin,
                 library_build,
-                device_nanos: Arc::new(AtomicU64::new(0)),
                 pipelines: Mutex::new(HashMap::new()),
             }))
         })
@@ -304,12 +312,6 @@ impl MetalContext {
     /// compile options), recorded in `PrecisionDescriptor::kernel_build`.
     pub fn library_build(&self) -> &str {
         &self.library_build
-    }
-
-    /// Sum of completed command-buffer GPU timestamps on this context.
-    /// Differences measure isolated benchmark jobs, including resident batches.
-    pub fn device_seconds(&self) -> f64 {
-        self.device_nanos.load(Ordering::Relaxed) as f64 * 1e-9
     }
 
     pub fn buffer<T: Pod>(&self, data: &[T]) -> MkResult<SharedBuffer<T>> {
@@ -422,8 +424,7 @@ impl MetalContext {
             }
             let (t0, t1) = (cb.GPUStartTime(), cb.GPUEndTime());
             let gpu_seconds = (t1 - t0).max(0.0);
-            self.device_nanos
-                .fetch_add((gpu_seconds * 1e9) as u64, Ordering::Relaxed);
+            add_device_time(gpu_seconds);
             Ok(CommandStats {
                 command_buffers: 1,
                 gpu_seconds,
@@ -543,7 +544,6 @@ struct BatchEncoding {
     accesses: RefCell<Vec<crate::buffer::DeviceAccess>>,
     work: Cell<usize>,
     start: Instant,
-    device_nanos: Arc<AtomicU64>,
 }
 impl CommandBatch {
     pub(crate) fn new(work_budget: usize) -> Self {
@@ -573,7 +573,6 @@ impl CommandBatch {
                 .computeCommandEncoder()
                 .ok_or_else(|| MkError::Backend("cannot create a compute encoder".into()))?;
             self.pending = Some(BatchEncoding {
-                device_nanos: gpu.device_nanos.clone(),
                 cb,
                 enc,
                 accesses: RefCell::new(vec![]),
@@ -617,8 +616,7 @@ impl CommandBatch {
             gpu_seconds: (z - a).max(0.),
             command_buffers: 1,
         };
-        b.device_nanos
-            .fetch_add((stats.gpu_seconds * 1e9) as u64, Ordering::Relaxed);
+        add_device_time(stats.gpu_seconds);
         self.completed.gpu_seconds += stats.gpu_seconds;
         self.completed.command_buffers += 1;
         self.observed = Some(stats.gpu_seconds);

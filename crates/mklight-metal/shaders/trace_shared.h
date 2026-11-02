@@ -21,6 +21,10 @@
 struct MklDv {
     float2 v[3];
 };
+static inline MklDv mkl_df_input(MklDv p) {
+    for (uint k = 0; k < 3; ++k) p.v[k] = mkl_df_input(p.v[k]);
+    return p;
+}
 
 struct MklHit {
     float2 ta;
@@ -642,11 +646,7 @@ static __attribute__((always_inline)) MklRawState mkl_trace_raw(constant MklPack
     const bool radiometry = (prm.flags & MKL_TRACE_RADIOMETRY) != 0u;
     const bool at_infinity = (h.flags & MKL_SYS_OBJECT_AT_INFINITY) != 0u;
 
-    MklDv pos = input.pos, dir = input.dir;
-    for (uint k = 0; k < 3; ++k) {
-        pos.v[k] = mkl_df_input(pos.v[k]);
-        dir.v[k] = mkl_df_input(dir.v[k]);
-    }
+    MklDv pos = mkl_df_input(input.pos), dir = mkl_df_input(input.dir);
     float2 opl = mkl_df_input(input.opl);
     const float w_in = input.weight;
     float tw = 1.0f;

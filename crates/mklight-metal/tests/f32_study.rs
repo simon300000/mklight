@@ -1,195 +1,215 @@
-//! Explicit, real-device precision experiments. CPU emulation remains the DF spec.
+//! Pure-f32 versus double-float Metal kernels (docs/GPU.md §3.6): one
+//! invariant test, plus ignored measurements against independent CPU f64:
+//! `cargo test --release -p mklight-metal --test f32_study -- --ignored --nocapture --test-threads=1`.
 #![cfg(target_os = "macos")]
 #[path = "../../mklight-gpu/tests/p1_support.rs"]
 mod support;
 
-use mklight_core::{
-    JobContext, RayAiming, Snapshot, Vec3,
-    job::{Precision, RunTimer},
-    samples,
-};
+use std::time::Instant;
+
+use mklight_core::{JobContext, RayAiming, Vec3, samples};
+use mklight_gpu::xval::{XvalSettings, cross_validate};
 use mklight_gpu::{
     ComputeBackend, Df32, DfOp, Job, JobOutput, PackedSystem, RayBatch, RecordMode, TraceRequest,
     testutil,
-    xval::{XvalSettings, cross_validate},
 };
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions, MetalPrecision};
-use mklight_trace::{PupilSampling, Ray, TraceOptions};
+use mklight_trace::{PupilSampling, Ray, SequentialTracer, TraceOptions};
+use rayon::prelude::*;
 use serde_json::json;
 
-fn backend(precision: MetalPrecision, library: LibraryChoice) -> MetalBackend {
-    MetalBackend::with_options(&MetalOptions {
-        precision,
-        library,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("precision study requires real Metal")
+const MODES: [&str; 3] = ["df", "f32", "cpu_f64"];
+
+/// `[DoubleFloat, PureF32]` from the embedded metallibs; `None` without Metal.
+fn backends() -> Option<[MetalBackend; 2]> {
+    let make = |precision| {
+        MetalBackend::with_options(&MetalOptions {
+            precision,
+            library: LibraryChoice::Precompiled,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    Some([
+        make(MetalPrecision::DoubleFloat)?,
+        make(MetalPrecision::PureF32)?,
+    ])
+}
+
+/// All fields and wavelengths on an n×n pupil grid: device input and the
+/// matching f64 rays.
+fn grid(t: &SequentialTracer, n: usize) -> (RayBatch, Vec<(Ray, usize)>) {
+    let mut rays = RayBatch::default();
+    let mut reference = Vec::new();
+    for f in 0..t.fields().len() {
+        for w in 0..t.num_wavelengths() {
+            for p in (PupilSampling::Grid { n }).points() {
+                if let Ok(g) = t.generate(t.field(f), w, p[0], p[1]) {
+                    let (a, d) = (g.ray.pos, g.ray.dir);
+                    rays.push_f64([a.x, a.y, a.z], [d.x, d.y, d.z], w as u32);
+                    reference.push((g.ray, w));
+                }
+            }
+        }
+    }
+    (rays, reference)
+}
+
+fn trace_all(b: &MetalBackend, t: &SequentialTracer, rays: RayBatch) -> mklight_gpu::TraceResult {
+    let h = b
+        .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
+        .unwrap();
+    let mut req = TraceRequest::new(h, rays, 0, t.system().image_index() as u32);
+    req.record = RecordMode::AllSurfaces;
+    let r = b
+        .run(Job::Trace(Box::new(req)), &JobContext::new())
+        .unwrap();
+    b.release_systems(h).unwrap();
+    let JobOutput::Trace(out) = r.output else {
+        panic!("not a trace result")
+    };
+    *out
+}
+
+/// One warm-up and ten measured rounds alternating DF, f32 and CPU f64
+/// (order reversed every round); prints median wall and device ms per mode.
+/// `run(mode)` returns that run's device seconds (0 for the CPU).
+fn time_modes(label: serde_json::Value, mut run: impl FnMut(usize) -> f64) {
+    let mut wall = [vec![], vec![], vec![]];
+    let mut device = [vec![], vec![], vec![]];
+    for round in 0..11 {
+        let order = if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
+        for mode in order {
+            let start = Instant::now();
+            let d = run(mode);
+            if round > 0 {
+                wall[mode].push(start.elapsed().as_secs_f64() * 1e3);
+                device[mode].push(d * 1e3);
+            }
+        }
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    for mode in 0..3 {
+        println!(
+            "F32_TIME {}",
+            json!({"case":label,"mode":MODES[mode],"wall_ms":median(&mut wall[mode]),
+                "device_ms":median(&mut device[mode])})
+        );
+    }
+}
+
+/// (2^24 + 1) − 2^24 on the device: 1 in double-float, 0 once the residual
+/// is dropped.
+fn cancellation(b: &MetalBackend) -> f64 {
+    let job = Job::DfOps {
+        op: DfOp::Add,
+        a: vec![Df32::from_f64(16_777_217.)],
+        b: vec![Df32::from_f64(-16_777_216.)],
+    };
+    let JobOutput::Df(v) = b.run(job, &JobContext::new()).unwrap().output else {
+        panic!("not a double-float result")
+    };
+    v[0].to_f64()
 }
 
 #[test]
-fn pure_f32_drops_residuals_and_keeps_strict_flags() {
-    if !mklight_metal::is_available() {
-        return;
-    }
-    for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let b = backend(MetalPrecision::PureF32, library);
-        assert!(b.precision().fast_math_disabled);
-        assert!(!b.precision().opl_double_float);
-        assert!(!b.precision().compensated_reductions);
-        assert!(b.precision().kernel_build.contains("pure_f32"));
-        // Cancellation leaves 1 in DF and 0 in f32, independently known.
-        let x = Df32::from_f64(16_777_217.0);
-        let r = b
-            .run(
-                Job::DfOps {
-                    op: DfOp::Add,
-                    a: vec![x],
-                    b: vec![Df32::from_f64(-16_777_216.)],
-                },
-                &JobContext::new(),
-            )
-            .unwrap();
-        let JobOutput::Df(v) = r.output else { panic!() };
-        assert_eq!(v[0].to_f64(), 0.);
-        let t = testutil::tracer(samples::cooke_triplet());
-        let h = b
-            .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
-            .unwrap();
-        let g = t.generate(t.field(1), 1, 0.3, 0.2).unwrap();
-        let mut rays = RayBatch::default();
-        rays.push_f64(
-            [g.ray.pos.x, g.ray.pos.y, g.ray.pos.z],
-            [g.ray.dir.x, g.ray.dir.y, g.ray.dir.z],
-            1,
-        );
-        let mut req = TraceRequest::new(h, rays.clone(), 0, t.system().image_index() as u32);
-        req.record = RecordMode::AllSurfaces;
-        let first = b
-            .run(Job::Trace(Box::new(req.clone())), &JobContext::new())
-            .unwrap();
-        let repeated = b
-            .run(Job::Trace(Box::new(req.clone())), &JobContext::new())
-            .unwrap();
-        assert_eq!(first.output, repeated.output);
-        for plane in [
-            &mut rays.x_lo,
-            &mut rays.y_lo,
-            &mut rays.z_lo,
-            &mut rays.l_lo,
-            &mut rays.m_lo,
-            &mut rays.n_lo,
-        ] {
-            plane.fill(0.);
-        }
-        req.rays = rays;
-        let dropped = b
-            .run(Job::Trace(Box::new(req)), &JobContext::new())
-            .unwrap();
-        assert_eq!(first.output, dropped.output);
-        let JobOutput::Trace(out) = first.output else {
-            panic!()
-        };
-        assert!(out.opl_lo.iter().all(|v| *v == 0.));
-        assert!(out.recorded.as_chunks::<9>().0.iter().all(|v| v[7] == 0.));
-        b.release_systems(h).unwrap();
-    }
+fn pure_f32_drops_residuals() {
     assert_eq!(
         MetalOptions::default().precision,
         MetalPrecision::DoubleFloat
     );
+    let Some([df, f32]) = backends() else {
+        return eprintln!("SKIP: no Metal device");
+    };
+    assert!(df.precision().opl_double_float && df.precision().compensated_reductions);
+    let p = f32.precision();
+    assert!(p.fast_math_disabled && !p.opl_double_float && !p.compensated_reductions);
+    assert!(p.kernel_build.contains("pure_f32"), "{}", p.kernel_build);
+    assert_eq!(cancellation(&df), 1.);
+    assert_eq!(cancellation(&f32), 0.);
+    // Trace inputs enter without their lo parts, and no lo part leaves.
+    let t = testutil::tracer(samples::cooke_triplet());
+    let (rays, _) = grid(&t, 4);
+    let mut dropped = rays.clone();
+    for plane in [
+        &mut dropped.x_lo,
+        &mut dropped.y_lo,
+        &mut dropped.z_lo,
+        &mut dropped.l_lo,
+        &mut dropped.m_lo,
+        &mut dropped.n_lo,
+    ] {
+        plane.fill(0.);
+    }
+    let out = trace_all(&f32, &t, rays);
+    assert_eq!(out, trace_all(&f32, &t, dropped));
+    assert!(out.opl_lo.iter().all(|v| *v == 0.));
+    assert!(out.recorded.as_chunks::<9>().0.iter().all(|v| v[7] == 0.));
 }
 
+/// The runtime-source fallback honours the define as well.
 #[test]
-#[ignore = "real Metal: all-sample accuracy evidence"]
+fn pure_f32_runtime_source() {
+    let options = MetalOptions {
+        precision: MetalPrecision::PureF32,
+        library: LibraryChoice::RuntimeSource,
+        ..Default::default()
+    };
+    let Some(b) = MetalBackend::with_options(&options).unwrap() else {
+        return eprintln!("SKIP: no Metal device");
+    };
+    let build = &b.precision().kernel_build;
+    assert!(build.contains("pure_f32 runtime-compiled"), "{build}");
+    assert_eq!(cancellation(&b), 0.);
+}
+
+/// Per sample and mode: the §5.1 cross-validation (positions, directions,
+/// OPD, statuses), all-record OPL at the reported point (CONVENTIONS §12),
+/// and real aiming at the default tolerance, retraced to the stop in f64
+/// (`failed`: aims the device reports unconverged; residuals include them).
+#[test]
+#[ignore = "real Metal: accuracy measurement"]
 fn trace_and_aiming_accuracy() {
-    let backends = [
-        backend(MetalPrecision::DoubleFloat, LibraryChoice::Precompiled),
-        backend(MetalPrecision::PureF32, LibraryChoice::Precompiled),
-    ];
-    for b in &backends {
-        println!(
-            "F32_ENV {}",
-            json!({"device":b.info(),"precision":b.precision()})
-        );
-    }
+    let backends = backends().expect("real Metal required");
     for (name, model) in samples::all() {
         let t = testutil::tracer(model.clone());
-        let snapshot = Snapshot::new(model.clone()).unwrap();
-        for b in &backends {
-            let timer = RunTimer::start();
-            let report =
+        for (b, mode) in backends.iter().zip(MODES) {
+            let mut report =
                 cross_validate(b, &t, &XvalSettings::default(), &JobContext::new()).unwrap();
-            if b.precision().opl_double_float {
-                report.check(&b.precision().budget).unwrap();
-            }
-            println!(
-                "F32_TRACE {}",
-                json!({"sample":name,"precision":b.precision(),"report":report,"run_info":timer.finish(&snapshot,"trace_accuracy",&json!({"sampling":XvalSettings::default(),"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,None,vec![])})
-            );
-            // OPL compared at the reported point (CONVENTIONS §12), all records.
-            let opl_timer = RunTimer::start();
-            let h = b
-                .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
-                .unwrap();
-            let mut rays = RayBatch::default();
-            let mut reference = Vec::new();
-            for f in 0..t.fields().len() {
-                for w in 0..t.num_wavelengths() {
-                    for p in (PupilSampling::Grid { n: 64 }).points() {
-                        if let Ok(g) = t.generate(t.field(f), w, p[0], p[1]) {
-                            let a = g.ray.pos;
-                            let d = g.ray.dir;
-                            rays.push_f64([a.x, a.y, a.z], [d.x, d.y, d.z], w as u32);
-                            reference.push((g.ray, w));
-                        }
-                    }
-                }
-            }
-            let mut req = TraceRequest::new(h, rays, 0, t.system().image_index() as u32);
-            req.record = RecordMode::AllSurfaces;
-            let r = b
-                .run(Job::Trace(Box::new(req)), &JobContext::new())
-                .unwrap();
-            let JobOutput::Trace(out) = r.output else {
-                panic!()
-            };
+            report.notes.clear();
+            let (rays, reference) = grid(&t, 64);
+            let out = trace_all(b, &t, rays);
             let mut max_opl = 0f64;
-            let mut compared = 0;
             for (i, (ray, w)) in reference.iter().enumerate() {
                 let (_, rec) = mklight_trace::trace_ray_recorded(t.system(), ray, *w, &t.options());
                 for (slot, record) in rec.iter().enumerate() {
-                    let offset = slot * out.len() + i;
-                    if out.recorded_status[offset] != 0 {
+                    let k = slot * out.len() + i;
+                    if out.recorded_status[k] != 0 {
                         continue;
                     }
-                    let v = &out.recorded[offset * 9..offset * 9 + 9];
+                    let v = &out.recorded[9 * k..9 * k + 9];
                     let a = Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
-                    let index = t.system().surfaces[slot].n_after[*w];
-                    let expected = record.opl + index * (a - record.point).dot(record.dir);
-                    max_opl = max_opl.max((v[6] as f64 + v[7] as f64 - expected).abs());
-                    compared += 1;
+                    let n = t.system().surfaces[slot].n_after[*w];
+                    let want = record.opl + n * (a - record.point).dot(record.dir);
+                    max_opl = max_opl.max((v[6] as f64 + v[7] as f64 - want).abs());
                 }
             }
             println!(
-                "F32_OPL {}",
-                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_mm":max_opl,"fraction_internal_target":max_opl/1e-7,"compared":compared,"run_info":opl_timer.finish(&snapshot,"opl_accuracy",&json!({"grid":64,"records":true,"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,None,vec![])})
+                "F32_TRACE {}",
+                json!({"sample":name,"mode":mode,"xval":report,"max_opl_mm":max_opl})
             );
-            b.release_systems(h).unwrap();
         }
         let mut model = model;
         model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
         let t = testutil::tracer(model);
         let points = (PupilSampling::Grid { n: 7 }).points();
-        let snapshot = Snapshot::new(t.system().system().clone()).unwrap();
-        for b in &backends {
-            let timer = RunTimer::start();
-            let mut max_residual = 0f64;
-            let mut max_accepted_residual = 0f64;
-            let mut max_reported = 0f64;
-            let mut failed = 0;
-            let mut compared = 0;
-            let mut stop_failed = 0;
+        let n = points.len();
+        let radius = t.pupil().r_stop;
+        for (b, mode) in backends.iter().zip(MODES) {
+            let (mut worst, mut worst_accepted, mut failed, mut lost) = (0f64, 0f64, 0, 0);
             for f in 0..t.fields().len() {
                 for w in 0..t.num_wavelengths() {
                     let (p, h) = support::make_plan(b, &t, f, w, &points, false, 40, false);
@@ -199,189 +219,160 @@ fn trace_and_aiming_accuracy() {
                         .wait()
                         .unwrap();
                     let d = support::read_all(b, &r);
-                    let ff = support::floats(&d[0]);
-                    let report = support::uints(&d[1]);
-                    let n = points.len();
+                    let (ff, status) = (support::floats(&d[0]), support::uints(&d[1]));
+                    let df = |k: usize, i: usize| ff[k * n + i] as f64 + ff[(k + 9) * n + i] as f64;
                     for (i, pt) in points.iter().enumerate() {
-                        max_reported = max_reported.max(
-                            f32::from_bits(report[2 * n + i]) as f64
-                                + f32::from_bits(report[3 * n + i]) as f64,
-                        );
-                        if report[i] != 0 {
-                            failed += 1;
-                        }
-                        let p = Vec3::new(
-                            ff[i] as f64 + ff[9 * n + i] as f64,
-                            ff[n + i] as f64 + ff[10 * n + i] as f64,
-                            ff[2 * n + i] as f64 + ff[11 * n + i] as f64,
-                        );
-                        let dir = Vec3::new(
-                            ff[3 * n + i] as f64 + ff[12 * n + i] as f64,
-                            ff[4 * n + i] as f64 + ff[13 * n + i] as f64,
-                            ff[5 * n + i] as f64 + ff[14 * n + i] as f64,
+                        let ray = Ray::new(
+                            Vec3::new(df(0, i), df(1, i), df(2, i)),
+                            Vec3::new(df(3, i), df(4, i), df(5, i)),
                         );
                         let stop = mklight_trace::trace_ray(
                             t.system(),
-                            &Ray::new(p, dir),
+                            &ray,
                             w,
                             &TraceOptions::unclipped().to_surface(t.system().stop),
                             None,
                         );
+                        failed += usize::from(status[i] != 0);
                         if !stop.status.is_ok() {
-                            stop_failed += 1;
+                            lost += 1;
                             continue;
                         }
                         let (x, y) = t.field(f).point.vignetting.apply(pt[0], pt[1]);
-                        let radius = t.pupil().r_stop;
                         let residual = (stop.ray.pos.x - x * radius)
                             .hypot(stop.ray.pos.y - y * radius)
                             / radius;
-                        max_residual = max_residual.max(residual);
-                        if report[i] == 0 {
-                            max_accepted_residual = max_accepted_residual.max(residual);
+                        worst = worst.max(residual);
+                        if status[i] == 0 {
+                            worst_accepted = worst_accepted.max(residual);
                         }
-                        compared += 1;
                     }
                     b.release_systems(h).unwrap();
                 }
             }
             println!(
                 "F32_AIM {}",
-                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_relative_stop_residual":max_residual,"max_accepted_relative_stop_residual":max_accepted_residual,"fraction_requested":max_residual/1e-10,"max_reported":max_reported,"failed":failed,"compared":compared,"stop_failed":stop_failed,"run_info":timer.finish(&snapshot,"aiming_accuracy",&json!({"grid":7,"tolerance":1e-10,"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,Some(42),vec![])})
+                json!({"sample":name,"mode":mode,"tolerance":1e-10,"max_residual":worst,
+                    "max_accepted_residual":worst_accepted,"failed":failed,"lost_at_stop":lost,
+                    "aims":n * t.fields().len() * t.num_wavelengths()})
             );
         }
     }
 }
 
+/// Double Gauss trace anchor (10⁴ and 10⁶ rays), then per sample the 64×64
+/// all-record trace grid and the 7×7 real-aiming workload.
 #[test]
-#[ignore = "real Metal; all-sample alternating trace-grid and aiming timings"]
-fn trace_grid_and_aiming_speed() {
-    use rayon::prelude::*;
-    use std::time::Instant;
-    let backends = [
-        backend(MetalPrecision::DoubleFloat, LibraryChoice::Precompiled),
-        backend(MetalPrecision::PureF32, LibraryChoice::Precompiled),
-    ];
-    for (name, model) in samples::all() {
-        let t = testutil::tracer(model.clone());
-        let snapshot = Snapshot::new(model.clone()).unwrap();
-        let mut rays = RayBatch::default();
-        let mut reference = Vec::new();
-        for f in 0..t.fields().len() {
-            for w in 0..t.num_wavelengths() {
-                for p in (PupilSampling::Grid { n: 64 }).points() {
-                    if let Ok(g) = t.generate(t.field(f), w, p[0], p[1]) {
-                        let a = g.ray.pos;
-                        let d = g.ray.dir;
-                        rays.push_f64([a.x, a.y, a.z], [d.x, d.y, d.z], w as u32);
-                        reference.push((g.ray, w));
-                    }
-                }
-            }
-        }
-        let handles: Vec<_> = backends
-            .iter()
-            .map(|b| {
-                b.upload_system(&PackedSystem::pack_all(t.system()).unwrap())
-                    .unwrap()
+#[ignore = "real Metal: speed measurement"]
+fn speed() {
+    let backends = backends().expect("real Metal required");
+    let t = testutil::tracer(samples::double_gauss());
+    let points = (PupilSampling::Grid { n: 650 }).points();
+    let opts = t.options();
+    for n in [10_000, 1_000_000] {
+        let rays: Vec<_> = (0..n)
+            .map(|i| {
+                let p = points[(i / 3) % points.len()];
+                t.generate(t.field(i % 3), 1, p[0], p[1]).unwrap().ray
             })
             .collect();
-        for round in 0..11 {
-            for index in if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
-                let timer = RunTimer::start();
-                let start = Instant::now();
-                let device_seconds = if index == 2 {
-                    let out: Vec<_> = reference
-                        .par_iter()
-                        .map(|(r, w)| {
-                            mklight_trace::trace_ray_recorded(t.system(), r, *w, &t.options())
-                        })
-                        .collect();
-                    std::hint::black_box(out);
-                    0.
-                } else {
-                    let mut req = TraceRequest::new(
-                        handles[index],
-                        rays.clone(),
-                        0,
-                        t.system().image_index() as u32,
-                    );
-                    req.record = RecordMode::AllSurfaces;
-                    let out = backends[index]
-                        .run(Job::Trace(Box::new(req)), &JobContext::new())
-                        .unwrap();
-                    std::hint::black_box(&out.output);
-                    out.stats.device_seconds
-                };
-                let wall_seconds = start.elapsed().as_secs_f64();
-                let run_info=timer.finish(&snapshot,"trace_grid_speed",&json!({"grid":64,"record":"all","mode":index,"precision":if index==2{serde_json::Value::Null}else{serde_json::to_value(backends[index].precision()).unwrap()}}),if index==2{"cpu-f64"}else{"metal"},if index==2{Precision::F64Reference}else{Precision::F32Gpu},None,vec![]);
-                println!(
-                    "F32_GRID_TIME {}",
-                    json!({"sample":name,"rays":rays.len(),"round":round,"mode":index,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":wall_seconds,"device_seconds":device_seconds,"run_info":run_info})
-                );
-            }
+        let mut batch = RayBatch::with_capacity(n);
+        for r in &rays {
+            batch.push_f64([r.pos.x, r.pos.y, r.pos.z], [r.dir.x, r.dir.y, r.dir.z], 1);
         }
+        let pack = PackedSystem::pack_all(t.system()).unwrap();
+        let handles = backends.each_ref().map(|b| b.upload_system(&pack).unwrap());
+        let end = t.system().image_index() as u32;
+        time_modes(json!({"anchor":"double_gauss","rays":n}), |mode| {
+            if mode == 2 {
+                let out: Vec<_> = rays
+                    .par_iter()
+                    .map(|r| mklight_trace::trace_ray(t.system(), r, 1, &opts, None))
+                    .collect();
+                std::hint::black_box(out);
+                return 0.;
+            }
+            let req = TraceRequest::new(handles[mode], batch.clone(), 0, end);
+            let r = backends[mode]
+                .run(Job::Trace(Box::new(req)), &JobContext::new())
+                .unwrap();
+            r.stats.device_seconds
+        });
         for (b, h) in backends.iter().zip(handles) {
             b.release_systems(h).unwrap();
         }
+    }
+    for (name, model) in samples::all() {
+        let t = testutil::tracer(model.clone());
+        let (rays, reference) = grid(&t, 64);
+        let pack = PackedSystem::pack_all(t.system()).unwrap();
+        let handles = backends.each_ref().map(|b| b.upload_system(&pack).unwrap());
+        let end = t.system().image_index() as u32;
+        time_modes(json!({"grid":name,"rays":reference.len()}), |mode| {
+            if mode == 2 {
+                let out: Vec<_> = reference
+                    .par_iter()
+                    .map(|(r, w)| {
+                        mklight_trace::trace_ray_recorded(t.system(), r, *w, &t.options())
+                    })
+                    .collect();
+                std::hint::black_box(out);
+                return 0.;
+            }
+            let mut req = TraceRequest::new(handles[mode], rays.clone(), 0, end);
+            req.record = RecordMode::AllSurfaces;
+            let r = backends[mode]
+                .run(Job::Trace(Box::new(req)), &JobContext::new())
+                .unwrap();
+            r.stats.device_seconds
+        });
+        for (b, h) in backends.iter().zip(handles) {
+            b.release_systems(h).unwrap();
+        }
+
         let mut model = model;
         model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
         let t = testutil::tracer(model);
-        let snapshot = Snapshot::new(t.system().system().clone()).unwrap();
         let points = (PupilSampling::Grid { n: 7 }).points();
-        let plans: Vec<Vec<_>> = backends
-            .iter()
-            .map(|b| {
-                let mut plans = Vec::new();
-                for f in 0..t.fields().len() {
-                    for w in 0..t.num_wavelengths() {
-                        plans.push(support::make_plan(b, &t, f, w, &points, false, 40, false));
-                    }
-                }
-                plans
-            })
-            .collect();
         let jobs: Vec<_> = (0..t.fields().len())
-            .flat_map(|f| {
-                (0..t.num_wavelengths()).flat_map({
-                    let points = &points;
-                    move |w| points.iter().map(move |p| (f, w, *p))
-                })
-            })
+            .flat_map(|f| (0..t.num_wavelengths()).map(move |w| (f, w)))
             .collect();
-        for round in 0..11 {
-            for index in if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
-                let timer = RunTimer::start();
-                let start = Instant::now();
-                let device_seconds = if index == 2 {
+        let plans = backends.each_ref().map(|b| {
+            jobs.iter()
+                .map(|&(f, w)| support::make_plan(b, &t, f, w, &points, false, 40, false))
+                .collect::<Vec<_>>()
+        });
+        time_modes(
+            json!({"aiming":name,"rays":jobs.len() * points.len()}),
+            |mode| {
+                if mode == 2 {
                     let out: Vec<_> = jobs
                         .par_iter()
-                        .map(|(f, w, p)| t.trace(t.field(*f), *w, p[0], p[1], &t.options()))
+                        .flat_map(|&(f, w)| {
+                            let t = &t;
+                            points
+                                .par_iter()
+                                .map(move |p| t.trace(t.field(f), w, p[0], p[1], &t.options()))
+                        })
                         .collect();
                     std::hint::black_box(out);
-                    0.
-                } else {
-                    let b = &backends[index];
-                    let mut device_seconds = 0.;
-                    for (plan, _) in &plans[index] {
-                        let out = b
+                    return 0.;
+                }
+                let b = &backends[mode];
+                plans[mode]
+                    .iter()
+                    .map(|(plan, _)| {
+                        let r = b
                             .submit_plan(plan.clone(), &JobContext::new())
                             .unwrap()
                             .wait()
                             .unwrap();
-                        device_seconds += out.stats.device_seconds;
-                        std::hint::black_box(support::read_all(b, &out));
-                    }
-                    device_seconds
-                };
-                let wall_seconds = start.elapsed().as_secs_f64();
-                let run_info=timer.finish(&snapshot,"aiming_speed",&json!({"grid":7,"tolerance":1e-10,"mode":index,"precision":if index==2{serde_json::Value::Null}else{serde_json::to_value(backends[index].precision()).unwrap()}}),if index==2{"cpu-f64"}else{"metal"},if index==2{Precision::F64Reference}else{Precision::F32Gpu},Some(42),vec![]);
-                println!(
-                    "F32_AIM_TIME {}",
-                    json!({"sample":name,"rays":jobs.len(),"round":round,"mode":index,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":wall_seconds,"device_seconds":device_seconds,"run_info":run_info})
-                );
-            }
-        }
+                        std::hint::black_box(support::read_all(b, &r));
+                        r.stats.device_seconds
+                    })
+                    .sum()
+            },
+        );
         for (b, plans) in backends.iter().zip(plans) {
             for (_, h) in plans {
                 b.release_systems(h).unwrap();

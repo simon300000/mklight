@@ -49,10 +49,8 @@ template<bool OVERLAYS> static inline void mkl_trace_body(constant MklPackedHead
     uint done = 0u;
 
     if (record) mkl_record(rec_f, rec_u, 0u, S, i, mkl_report(pos, dir, opl, n_cur, w_in, MKL_RAY_OK));
-    for (uint k = 0; k < 3; ++k) {
-        pos.v[k] = mkl_df_input(pos.v[k]);
-        dir.v[k] = mkl_df_input(dir.v[k]);
-    }
+    pos = mkl_df_input(pos);
+    dir = mkl_df_input(dir);
     opl = mkl_df_input(opl);
     if (mkl_finite3(mkl_hi3(pos)) && mkl_finite3(mkl_hi3(dir)) && mkl_finite3(mkl_lo3(pos))
         && mkl_finite3(mkl_lo3(dir))) {

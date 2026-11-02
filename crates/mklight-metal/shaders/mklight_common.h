@@ -41,9 +41,14 @@ static inline float mkl_qnan() { return as_type<float>(0x7FC00000u); }
 // Error-free transforms (double-float building blocks)
 // ---------------------------------------------------------------------------
 
-// Experimental arithmetic twin: retain the packed ABI and operation order,
-// but discard residuals and compensation at every arithmetic boundary.
+// MKLIGHT_PURE_F32 (opt-in measurement build, docs/GPU.md §3.6): every
+// double-float operation collapses to plain f32 with a zero lo part, and
+// compensated sums become plain sums. The packed ABI and the algorithms are
+// unchanged. mkl_df_input / mkl_df_low drop lo parts where kernels load or
+// read them directly (only for hi+lo values: float2 is also complex/xy data).
 #ifdef MKLIGHT_PURE_F32
+static inline float2 mkl_df_input(float2 x) { return float2(x.x, 0); }
+static inline float mkl_df_low(float x) { (void)x; return 0; }
 static inline float2 mkl_two_sum(float a, float b) { return float2(a + b, 0); }
 static inline float2 mkl_fast_two_sum(float a, float b) { return float2(a + b, 0); }
 static inline float2 mkl_two_prod(float a, float b) { return float2(a * b, 0); }
@@ -57,6 +62,9 @@ static inline float2 mkl_df_div(float2 x, float2 y) { return float2(x.x / y.x, 0
 static inline float2 mkl_df_sqrt(float2 x) { return float2(sqrt(x.x), 0); }
 static inline void mkl_neumaier_add(thread float& s, thread float& c, float x) { s += x; c = 0; }
 #else
+static inline float2 mkl_df_input(float2 x) { return x; }
+static inline float mkl_df_low(float x) { return x; }
+
 // s + t == a + b exactly (Knuth 2Sum, no precondition).
 static inline float2 mkl_two_sum(float a, float b) {
     float s = a + b;
@@ -162,24 +170,7 @@ static inline void mkl_neumaier_add(thread float& s, thread float& c, float x) {
     s = t;
 }
 
-#endif
-
-// Only for hi/lo values; float2 also represents complex and xy data.
-static inline float2 mkl_df_input(float2 x) {
-#ifdef MKLIGHT_PURE_F32
-    return float2(x.x, 0);
-#else
-    return x;
-#endif
-}
-static inline float mkl_df_low(float x) {
-#ifdef MKLIGHT_PURE_F32
-    (void)x;
-    return 0;
-#else
-    return x;
-#endif
-}
+#endif // MKLIGHT_PURE_F32
 
 // ---------------------------------------------------------------------------
 // Philox4x32-10 (CONVENTIONS §6): exactly mklight_core::rng::philox4x32_10.
