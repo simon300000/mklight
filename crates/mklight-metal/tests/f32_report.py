@@ -13,8 +13,9 @@ for path in sorted(logs.glob('*.log')):
     if path.name not in {'accuracy.log', 'grid-speed.log', 'trace-anchor.log', 'engine.log'}:
         continue
     for line in path.open():
-        if line.startswith('F32_'):
-            tag, payload = line.split(' ', 1)
+        start = line.find('F32_')
+        if start >= 0:
+            tag, payload = line[start:].split(' ', 1)
             rows[tag].append(json.loads(payload))
 
 out = []
@@ -50,7 +51,7 @@ def timings(tag, keys, modes):
         cells=[]
         for m in modes:
             samples=data[m]
-            cells += [dist([r['wall_seconds'] for r in samples]) + (' [CPU completion]' if any(r.get('reference_completion') for r in samples) else ''), dist([r['device_seconds'] for r in samples]) if any(r['device_seconds'] for r in samples) else '—']
+            cells += [dist([r['wall_seconds'] for r in samples]) + (' [CPU completion]' if any(r.get('reference_completion') for r in samples) else ' [CPU fallback]' if m != 0 and any(r.get('used') == 'cpu_reference' for r in samples) else ''), dist([r['device_seconds'] for r in samples]) if any(r['device_seconds'] for r in samples) else '—']
         values.append([*key, *cells, '/'.join(str(len(data[m])) for m in modes)])
     labels = {1:'DF',2:'f32',0:'CPU f64'} if tag.startswith('F32_ENGINE') else {0:'DF',1:'f32',2:'CPU f64','df':'DF','f32':'f32','cpu_f64':'CPU f64'}
     table([*keys, *[label for m in modes for label in (f'{labels[m]} wall',f'{labels[m]} device')], 'n DF/f32/CPU'],values)
@@ -129,7 +130,7 @@ write()
 timings('F32_ENGINE_SESSION_TIME',['sample','analysis'],[1,2,0])
 write('### Per-quantity end-result error maxima over designs')
 write()
-write('Each cell gives maximum absolute error and the largest error/budget fraction (which may occur at a different design/reference value for relative budgets). Discrete/undefined/shape mismatches are counted separately and never treated as zero numerical error. A dash budget means §9.4 does not define a direct scalar budget for that metadata quantity. Image/PSF L1 and energy metrics are normalised to reference L1/energy; the LSF integral uses the same matched-grid sum. Stray class flux, map pixels and moments use five combined standard errors (no extra quadrature allowance); the energy ledger uses 1e-5 of emitted power. Radial quantiles use the smallest positive reference radial interval. All numeric result fields and buffers are examined. Condition-dependent Seidel coefficients/axes and Zernike coefficient metadata have no direct scalar gate here; reconstructed OPD and fit RMS use the wavefront budget. Scalar units follow docs/RESULTS.md. Detailed per-design records are in engine.log; whole budgets are used here. This report does not reinterpret unknown metadata as optical positions.')
+write('Each cell gives maximum absolute error and the largest error/budget fraction (which may occur at a different design/reference value for relative budgets). Discrete/undefined/shape mismatches are counted separately and never treated as zero numerical error. A dash budget means §9.4 does not define a direct scalar budget for that metadata quantity. Image/PSF L1 and energy metrics are normalised to reference L1/energy; the LSF integral uses the same matched-grid sum. Stray class flux, map pixels and moments use five combined standard errors (no extra quadrature allowance); the energy ledger uses 1e-5 of emitted power. Radial quantiles use the smallest positive reference radial interval. Engine scalar-array quantities report component maxima; the trace-grid geometry table uses Euclidean vector error. All numeric result fields and buffers are examined. Condition-dependent Seidel coefficients/axes and Zernike coefficient metadata have no direct scalar gate here; reconstructed OPD and fit RMS use the wavefront budget. Scalar units follow docs/RESULTS.md. Detailed per-design records are in engine.log; whole budgets are used here. This report does not reinterpret unknown metadata as optical positions.')
 write()
 quantities=collections.defaultdict(lambda:collections.defaultdict(lambda:{'max_error':0.,'budget_fraction':None,'mismatches':0,'compared':0,'designs':0}))
 for r in rows['F32_ENGINE_ERROR_STUDY']:
@@ -150,19 +151,26 @@ write()
 table(['design','analysis','requested mode'], [[r['sample'],r['analysis'],r['mode']] for r in rows['F32_ENGINE_ERROR_STUDY'] if r.get('reference_completion')])
 write('### Raw adapter failures')
 write()
-errors=collections.defaultdict(lambda:[0,set()])
+errors=collections.defaultdict(lambda:[0,set(),[]])
 for r in rows['F32_ENGINE_ERROR']:
     key=(r['sample'],r['analysis'],r['mode']);errors[key][0]+=1;errors[key][1].add(r['error'])
-table(['design','analysis','mode','failed attempts','reason'],[[*k,v[0],'; '.join(sorted(v[1]))] for k,v in sorted(errors.items())])
+    if r['round'] > 0: errors[key][2].append(r)
+write('Failed-attempt distributions exclude warmup and describe rejected jobs, not successful analysis throughput.')
+write()
+table(['design','analysis','mode','failed attempts incl warmup','failed wall median/p95 ms','failed device median/p95 ms','reason'],[[*k,v[0],dist([r['wall_seconds'] for r in v[2]]),dist([r['device_seconds'] for r in v[2]]),'; '.join(sorted(v[1]))] for k,v in sorted(errors.items())])
 write('## Validation, artifacts and limits')
 write()
 write('Validation commands and complete results are retained in [fmt.log](f32-logs/fmt.log), [clippy.log](f32-logs/clippy.log), [workspace.log](f32-logs/workspace.log), [release.log](f32-logs/release.log). Both embedded metallibs compiled with `-Wall -Werror -fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off`. The ordinary test suite exercises the unchanged DF emulation spec; the f32 test checks independently known cancellation, ignored residual inputs, zero OPL low planes, deterministic repeated traces and both library origins.')
 write()
 write('Timing observations describe one M2 Pro and normal host load, not a quiet-host release policy. This experiment changes neither Auto cost rules nor qualification budgets. It does not qualify arbitrary designs, optimisation candidates or all possible analysis settings. The 16-design grid is a finite regression sample; the raw adapter deliberately exposes out-of-budget and discrete errors. Default auto-sampling PSF pilot evidence is retained separately, because changed grids do not support a pixelwise L1 comparison.')
 write()
+write('### Assembly and retained rejected observations')
+write()
+write('engine.log is a derived observation log, assembled by assemble.py from unmodified engine-initial.log, engine-accuracy.log, engine-image.log and engine-rerun.log. The original invalid even-size 128 image requests and one Impacting Interactivity device failure remain in engine-initial.log. Corrected image rows use odd size 129 and the radiometric default; the interactivity-affected case was remeasured for ten completed alternating runs. Quantity-specific comparisons come from the corrected accuracy pass; initial timing numbers are unchanged. Adapter CPU replacements in the initial timing rows are identified from their retained warnings and labelled in RunInfo. assembly.json records the corrections and checks all 480 design/analysis pairs and 11 warm/measured observations per requested mode.')
+write()
 write('### Raw logs and identities')
 write()
-for name in ['host.json','accuracy.log','grid-speed.log','trace-anchor.log','engine.log','engine-pilot.log','fmt.log','clippy.log','workspace.log','release.log','study-commands.sh','study-commit.txt']:
+for name in ['host.json','accuracy.log','grid-speed.log','trace-anchor.log','engine.log','engine-pilot.log','fmt.log','clippy.log','workspace.log','release.log','study-commands.sh','study-commit.txt','supplement-commit.txt','engine-initial.log','engine-accuracy.log','engine-image.log','engine-rerun.log','assemble.py','assembly.json','supplement-commands.sh','final-smoke.log']:
     if (logs/name).exists():
         write(f'- [{name}](f32-logs/{name}) ({(logs/name).stat().st_size:,} bytes)')
 write()

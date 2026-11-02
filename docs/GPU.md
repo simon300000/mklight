@@ -400,9 +400,19 @@ fraction of the whole §9.4 budget):
 Statuses agree on this grid, including zero band/chief mismatches. F32
 exceeds the OPD budget on every design and the position budget on the
 Newtonian. Real aiming at relative tolerance 1e-10 fails 450 of 4,176 f32
-attempts versus zero with DF; independent stop residuals and failed attempts
-are reported separately. Normal engine qualification remains unchanged;
-a reference fallback is never counted as f32 accuracy or speed.
+attempts versus zero with DF. Even its reported-converged aims have independent
+stop residuals up to 2.44e-7 (2,437× the requested tolerance); failed and accepted
+attempts are reported separately.
+
+In the 480 normal engine requests, 422 DoubleFloat results use Metal and 58
+use the reference; all 480 f32 requests fall back to CPU. The separate raw
+adapter study exposes the rejected results: f32 maximum PSF L1 error is
+0.0824 (41.2× budget), optical MTF error 0.0162 (8.09×), and image-simulation
+L1 error 0.801 (401×, over 13 completed designs). Three f32 image jobs reject
+the noise domain, and Petzval MTF versus field has unresolved pupil aims.
+Geometric EE replaces the whole result with CPU f64 on all 16 designs in
+both modes; that equality is excluded from GPU accuracy. Normal qualification
+remains unchanged, and all fallback/failed-attempt times are labelled.
 
 The ignored `f32_study` tests retain all-surface OPL, aiming, complete native
 analysis outputs and normal engine-session verdicts/timings against CPU f64.
