@@ -1434,6 +1434,9 @@ harness; they do not recalibrate Auto thresholds.
 
 #### Consolidated P11 measurements
 
+The measurements and implementation descriptions in this subsection are the
+preceding P11 baseline; the runtime policy is defined above and in §9.3–9.4.
+
 Final release measurements: Apple M2 Pro (12 CPU / 19 GPU cores), macOS build `26A434`, 12 CPU workers; strict precompiled Metal `-fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off`. The shader source digest and complete compiler/device/probe records accompany every native run.
 
 The host passed a load/process idle gate before measurement; CPU/Metal calls alternate, with first calls and warm-up separated from ten measured pairs. Medians use both middle samples; p95 is nearest rank (the maximum of ten). The raw session manifest records executable hashes, source commit, environment, load, process inventory and sampled RSS. Earlier wave/fusion numbers and superseded P11 source epochs do not set this policy. Inherited literal `provisional` labels in some package harness headers are superseded by the enclosing final session manifest.

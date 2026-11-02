@@ -2371,22 +2371,23 @@ fn reference_tolerance_cases(
 ) -> mklight_core::MkResult<Vec<mklight_optim::tolerance::TrialOutcome>> {
     use mklight_optim::tolerance::TrialOutcome;
     ctx.check()?;
-    let systems: Vec<_> = cases
+    let systems = cases
         .iter()
         .map(|(deltas, outcome, trial)| {
+            ctx.check()?;
             if outcome.compensators.len() != spec.compensators.len() {
-                return None;
+                return Ok(None);
             }
-            match trial {
+            Ok(match trial {
                 Some(trial) => spec
                     .trial_case_system(nominal, deltas, &outcome.compensators, mc, *trial)
                     .ok(),
                 None => spec
                     .case_system(nominal, deltas, &outcome.compensators)
                     .ok(),
-            }
+            })
         })
-        .collect();
+        .collect::<mklight_core::MkResult<Vec<_>>>()?;
     let problem = OpticalProblem::new(
         nominal.clone(),
         vec![],
