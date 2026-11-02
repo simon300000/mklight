@@ -6,6 +6,7 @@ use serde_json::Value;
 pub struct Comparison {
     pub compared: usize,
     pub maximum: f64,
+    pub maximum_path: Option<String>,
     pub image_l1_relative: f64,
     pub energy_relative: f64,
     quantile_interval_mm: Option<f64>,
@@ -13,6 +14,12 @@ pub struct Comparison {
     pub reason: Option<String>,
 }
 impl Comparison {
+    fn error(&mut self, error: f64, path: &str) {
+        if error > self.maximum {
+            self.maximum = error;
+            self.maximum_path = Some(path.into());
+        }
+    }
     fn fail(&mut self, path: &str, reason: &str) {
         if self.reason.is_none() {
             self.reason = Some(format!("chain qualification at {path}: {reason}"));
@@ -28,7 +35,7 @@ impl Comparison {
             return;
         }
         let error = (a - b).abs();
-        self.maximum = self.maximum.max(error);
+        self.error(error, path);
         // GPU §9.4 publication budgets, with the sampled one-third margin.
         // Undefined masks and discrete values are compared separately.
         let mut budget = if let Some(flux) = self
@@ -102,7 +109,7 @@ impl Comparison {
             norm += a.abs();
             delta += (a - b).abs();
             energy += a - b;
-            self.maximum = self.maximum.max((a - b).abs());
+            self.error((a - b).abs(), path);
         }
         if delta > norm * 2e-3 / 3. || energy.abs() > norm * 1e-3 / 3. {
             self.fail(path, "image L1 or integrated-energy gate failed");
@@ -150,7 +157,7 @@ impl Comparison {
             if error > (1e-4 * norm + 1e-7 / std::f64::consts::SQRT_2) / 3. {
                 self.fail(path, "Jones norm gate failed");
             }
-            self.maximum = self.maximum.max(error);
+            self.error(error, path);
         }
         Ok(())
     }

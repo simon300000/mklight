@@ -164,7 +164,7 @@ fn unchecked_accuracy() {
             println!(
                 "NORECHECK_ACCURACY {}",
                 json!({"sample":name,"analysis":info.name,"published":published,"backend":gpu.backend,
-                "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_image_l1_relative":report.image_l1_relative,
+                "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_error_path":report.maximum_path,"maximum_image_l1_relative":report.image_l1_relative,
                 "maximum_image_energy_relative":report.energy_relative,"previous_gate_failure":report.reason})
             );
             assert!(report.maximum.is_finite());
