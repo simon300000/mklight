@@ -3,7 +3,11 @@
 #[path = "../../mklight-gpu/tests/p1_support.rs"]
 mod support;
 
-use mklight_core::{JobContext, RayAiming, Vec3, samples};
+use mklight_core::{
+    JobContext, RayAiming, Snapshot, Vec3,
+    job::{Precision, RunTimer},
+    samples,
+};
 use mklight_gpu::{
     ComputeBackend, Df32, DfOp, Job, JobOutput, PackedSystem, RayBatch, RecordMode, TraceRequest,
     testutil,
@@ -111,7 +115,9 @@ fn trace_and_aiming_accuracy() {
     }
     for (name, model) in samples::all() {
         let t = testutil::tracer(model.clone());
+        let snapshot = Snapshot::new(model.clone()).unwrap();
         for b in &backends {
+            let timer = RunTimer::start();
             let report =
                 cross_validate(b, &t, &XvalSettings::default(), &JobContext::new()).unwrap();
             if b.precision().opl_double_float {
@@ -119,9 +125,10 @@ fn trace_and_aiming_accuracy() {
             }
             println!(
                 "F32_TRACE {}",
-                json!({"sample":name,"precision":b.precision(),"report":report})
+                json!({"sample":name,"precision":b.precision(),"report":report,"run_info":timer.finish(&snapshot,"trace_accuracy",&json!({"sampling":XvalSettings::default(),"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,None,vec![])})
             );
             // OPL compared at the reported point (CONVENTIONS §12), all records.
+            let opl_timer = RunTimer::start();
             let h = b
                 .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
                 .unwrap();
@@ -166,7 +173,7 @@ fn trace_and_aiming_accuracy() {
             }
             println!(
                 "F32_OPL {}",
-                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_mm":max_opl,"fraction_internal_target":max_opl/1e-7,"compared":compared})
+                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_mm":max_opl,"fraction_internal_target":max_opl/1e-7,"compared":compared,"run_info":opl_timer.finish(&snapshot,"opl_accuracy",&json!({"grid":64,"records":true,"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,None,vec![])})
             );
             b.release_systems(h).unwrap();
         }
@@ -174,7 +181,9 @@ fn trace_and_aiming_accuracy() {
         model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
         let t = testutil::tracer(model);
         let points = (PupilSampling::Grid { n: 7 }).points();
+        let snapshot = Snapshot::new(t.system().system().clone()).unwrap();
         for b in &backends {
+            let timer = RunTimer::start();
             let mut max_residual = 0f64;
             let mut max_reported = 0f64;
             let mut failed = 0;
@@ -234,7 +243,7 @@ fn trace_and_aiming_accuracy() {
             }
             println!(
                 "F32_AIM {}",
-                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_relative_stop_residual":max_residual,"fraction_requested":max_residual/1e-10,"max_reported":max_reported,"failed":failed,"compared":compared,"stop_failed":stop_failed})
+                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_relative_stop_residual":max_residual,"fraction_requested":max_residual/1e-10,"max_reported":max_reported,"failed":failed,"compared":compared,"stop_failed":stop_failed,"run_info":timer.finish(&snapshot,"aiming_accuracy",&json!({"grid":7,"tolerance":1e-10,"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,Some(42),vec![])})
             );
         }
     }
@@ -251,6 +260,7 @@ fn trace_grid_and_aiming_speed() {
     ];
     for (name, model) in samples::all() {
         let t = testutil::tracer(model.clone());
+        let snapshot = Snapshot::new(model.clone()).unwrap();
         let mut rays = RayBatch::default();
         let mut reference = Vec::new();
         for f in 0..t.fields().len() {
@@ -274,6 +284,7 @@ fn trace_grid_and_aiming_speed() {
             .collect();
         for round in 0..11 {
             for index in if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
+                let timer = RunTimer::start();
                 let start = Instant::now();
                 let device_seconds = if index == 2 {
                     let out: Vec<_> = reference
@@ -298,9 +309,11 @@ fn trace_grid_and_aiming_speed() {
                     std::hint::black_box(&out.output);
                     out.stats.device_seconds
                 };
+                let wall_seconds = start.elapsed().as_secs_f64();
+                let run_info=timer.finish(&snapshot,"trace_grid_speed",&json!({"grid":64,"record":"all","mode":index,"precision":if index==2{serde_json::Value::Null}else{serde_json::to_value(backends[index].precision()).unwrap()}}),if index==2{"cpu-f64"}else{"metal"},if index==2{Precision::F64Reference}else{Precision::F32Gpu},None,vec![]);
                 println!(
                     "F32_GRID_TIME {}",
-                    json!({"sample":name,"rays":rays.len(),"round":round,"mode":index,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":start.elapsed().as_secs_f64(),"device_seconds":device_seconds})
+                    json!({"sample":name,"rays":rays.len(),"round":round,"mode":index,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":wall_seconds,"device_seconds":device_seconds,"run_info":run_info})
                 );
             }
         }
@@ -310,6 +323,7 @@ fn trace_grid_and_aiming_speed() {
         let mut model = model;
         model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
         let t = testutil::tracer(model);
+        let snapshot = Snapshot::new(t.system().system().clone()).unwrap();
         let points = (PupilSampling::Grid { n: 7 }).points();
         let plans: Vec<Vec<_>> = backends
             .iter()
@@ -333,6 +347,7 @@ fn trace_grid_and_aiming_speed() {
             .collect();
         for round in 0..11 {
             for index in if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
+                let timer = RunTimer::start();
                 let start = Instant::now();
                 let device_seconds = if index == 2 {
                     let out: Vec<_> = jobs
@@ -355,9 +370,11 @@ fn trace_grid_and_aiming_speed() {
                     }
                     device_seconds
                 };
+                let wall_seconds = start.elapsed().as_secs_f64();
+                let run_info=timer.finish(&snapshot,"aiming_speed",&json!({"grid":7,"tolerance":1e-10,"mode":index,"precision":if index==2{serde_json::Value::Null}else{serde_json::to_value(backends[index].precision()).unwrap()}}),if index==2{"cpu-f64"}else{"metal"},if index==2{Precision::F64Reference}else{Precision::F32Gpu},Some(42),vec![]);
                 println!(
                     "F32_AIM_TIME {}",
-                    json!({"sample":name,"rays":jobs.len(),"round":round,"mode":index,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":start.elapsed().as_secs_f64(),"device_seconds":device_seconds})
+                    json!({"sample":name,"rays":jobs.len(),"round":round,"mode":index,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":wall_seconds,"device_seconds":device_seconds,"run_info":run_info})
                 );
             }
         }

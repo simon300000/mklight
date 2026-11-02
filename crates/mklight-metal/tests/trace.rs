@@ -8,7 +8,7 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use mklight_core::job::{Precision, RunInfo};
+use mklight_core::job::{Precision, RunInfo, RunTimer};
 use mklight_core::{JobContext, MkError, Vec3, samples};
 use mklight_gpu::testutil::{self, f64_path};
 use mklight_gpu::xval::{XvalSettings, cross_validate, qualify};
@@ -471,6 +471,7 @@ fn benchmark_double_gauss_1e6() {
     let t = testutil::tracer(samples::double_gauss());
     let sys = t.system();
     let opts = t.options();
+    let snapshot = mklight_core::Snapshot::new(sys.system().clone()).unwrap();
     for n in [10_000, 1_000_000] {
         let points = (PupilSampling::Grid { n: 650 }).points();
         let rays: Vec<_> = (0..n)
@@ -494,6 +495,7 @@ fn benchmark_double_gauss_1e6() {
         for round in 0..11 {
             let order = if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
             for index in order {
+                let timer = RunTimer::start();
                 let start = Instant::now();
                 let (device_seconds, mode) = if index == 2 {
                     let out: Vec<_> = rays
@@ -523,9 +525,11 @@ fn benchmark_double_gauss_1e6() {
                         },
                     )
                 };
+                let wall_seconds = start.elapsed().as_secs_f64();
+                let run_info=timer.finish(&snapshot,"trace_anchor",&serde_json::json!({"rays":n,"grid":650,"wavelength":1,"fields":[0,1,2],"mode":mode,"precision":if index==2{serde_json::Value::Null}else{serde_json::to_value(backends[index].precision()).unwrap()}}),if index==2{"cpu-f64"}else{"metal"},if index==2{Precision::F64Reference}else{Precision::F32Gpu},None,vec![]);
                 println!(
                     "F32_TRACE_TIME {}",
-                    serde_json::json!({"rays":n,"surfaces":sys.image_index(),"round":round,"phase":if round==0{"warmup"}else{"measured"},"mode":mode,"wall_seconds":start.elapsed().as_secs_f64(),"device_seconds":device_seconds,"device":g.info(),"build":g.precision().kernel_build,"twin_build":twin.precision().kernel_build,"rayon_threads":rayon::current_num_threads()})
+                    serde_json::json!({"rays":n,"surfaces":sys.image_index(),"round":round,"phase":if round==0{"warmup"}else{"measured"},"mode":mode,"wall_seconds":wall_seconds,"device_seconds":device_seconds,"run_info":run_info,"device":g.info(),"build":g.precision().kernel_build,"twin_build":twin.precision().kernel_build,"rayon_threads":rayon::current_num_threads()})
                 );
             }
         }

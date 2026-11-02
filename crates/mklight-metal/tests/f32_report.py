@@ -128,7 +128,7 @@ write()
 timings('F32_ENGINE_SESSION_TIME',['sample','analysis'],[1,2,0])
 write('### Per-quantity end-result error maxima over designs')
 write()
-write('Each cell gives maximum absolute error and the largest error/budget fraction (which may occur at a different design/reference value for relative budgets). Discrete/undefined/shape mismatches are counted separately and never treated as zero numerical error. A dash budget means §9.4 does not define a direct scalar budget for that metadata quantity. Image/PSF/map L1 and energy metrics are normalised to reference L1/energy; the LSF integral uses the same matched-grid sum. All numeric result fields and buffers are examined. Detailed per-design records are in engine.log; whole budgets are used here. This report does not reinterpret unknown metadata as optical positions.')
+write('Each cell gives maximum absolute error and the largest error/budget fraction (which may occur at a different design/reference value for relative budgets). Discrete/undefined/shape mismatches are counted separately and never treated as zero numerical error. A dash budget means §9.4 does not define a direct scalar budget for that metadata quantity. Image/PSF L1 and energy metrics are normalised to reference L1/energy; the LSF integral uses the same matched-grid sum. Stray class flux, map pixels and moments use five combined standard errors (no extra quadrature allowance); the energy ledger uses 1e-5 of emitted power. Radial quantiles use the smallest positive reference radial interval. All numeric result fields and buffers are examined. Detailed per-design records are in engine.log; whole budgets are used here. This report does not reinterpret unknown metadata as optical positions.')
 write()
 quantities=collections.defaultdict(lambda:collections.defaultdict(lambda:{'max_error':0.,'budget_fraction':None,'mismatches':0,'compared':0,'designs':0}))
 for r in rows['F32_ENGINE_ERROR_STUDY']:
@@ -156,7 +156,7 @@ write('Timing observations describe one M2 Pro and normal host load, not a quiet
 write()
 write('### Raw logs and identities')
 write()
-for name in ['host.json','accuracy.log','grid-speed.log','trace-anchor.log','engine.log','engine-pilot.log','fmt.log','clippy.log','workspace.log','release.log','study-commands.sh']:
+for name in ['host.json','accuracy.log','grid-speed.log','trace-anchor.log','engine.log','engine-pilot.log','fmt.log','clippy.log','workspace.log','release.log','study-commands.sh','study-commit.txt']:
     if (logs/name).exists():
         write(f'- [{name}](f32-logs/{name}) ({(logs/name).stat().st_size:,} bytes)')
 write()
