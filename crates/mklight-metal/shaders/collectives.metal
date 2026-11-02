@@ -3,7 +3,7 @@
 #include "mklight_common.h"
 
 static inline float2 mkl_c_load(device const uint* a, uint i, uint words) {
-    return float2(as_type<float>(a[i * words]), words == 2u ? as_type<float>(a[i * words + 1u]) : 0.0f);
+    return mkl_df_input(float2(as_type<float>(a[i * words]), words == 2u ? as_type<float>(a[i * words + 1u]) : 0.0f));
 }
 static inline void mkl_c_store(device uint* a, uint i, float2 v) {
     a[2u * i] = as_type<uint>(v.x);

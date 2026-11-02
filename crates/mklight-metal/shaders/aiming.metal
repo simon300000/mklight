@@ -6,8 +6,8 @@
 #include "trace_shared.h"
 
 static inline MklDf mkl_aim_c(float x) { return mkl_c<MklDf>(x); }
-static inline MklDf mkl_aim_load(constant float* x, uint k) { return MklDf{float2(x[2 * k], x[2 * k + 1])}; }
-static inline MklDf mkl_aim_load(thread const float* x, uint k) { return MklDf{float2(x[2 * k], x[2 * k + 1])}; }
+static inline MklDf mkl_aim_load(constant float* x, uint k) { return MklDf{mkl_df_input(float2(x[2 * k], x[2 * k + 1]))}; }
+static inline MklDf mkl_aim_load(thread const float* x, uint k) { return MklDf{mkl_df_input(float2(x[2 * k], x[2 * k + 1]))}; }
 static inline void mkl_aim_store(thread float* p, uint k, MklDf x) {
     p[2 * k] = x.v.x;
     p[2 * k + 1] = x.v.y;

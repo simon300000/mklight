@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use bytemuck::Pod;
@@ -63,10 +64,61 @@ pub enum LibraryOrigin {
     RuntimeSource,
 }
 
+/// Kernel arithmetic. `PureF32` (the `MKLIGHT_PURE_F32` metallib, docs/GPU.md
+/// §3.6) is an opt-in measurement mode, not qualified for OPD, wave or aiming
+/// results; default construction (including engine Auto) is DoubleFloat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MetalPrecision {
+    #[default]
+    DoubleFloat,
+    PureF32,
+}
+
+impl MetalPrecision {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DoubleFloat => "double_float",
+            Self::PureF32 => "pure_f32",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetalOptions {
     pub device: DeviceSelector,
     pub library: LibraryChoice,
+    pub precision: MetalPrecision,
+}
+
+impl MetalOptions {
+    /// Defaults, with `MKLIGHT_METAL_PRECISION=f32` selecting `PureF32` for
+    /// benchmarks. Only explicit callers read it; `default()` never does.
+    pub fn from_env() -> Self {
+        let f32 = std::env::var("MKLIGHT_METAL_PRECISION").is_ok_and(|v| v == "f32");
+        Self {
+            precision: if f32 {
+                MetalPrecision::PureF32
+            } else {
+                MetalPrecision::DoubleFloat
+            },
+            ..Self::default()
+        }
+    }
+}
+
+/// Completed command-buffer GPU time in this process, nanoseconds
+/// (see [`device_seconds`]).
+static DEVICE_NANOS: AtomicU64 = AtomicU64::new(0);
+
+fn add_device_time(seconds: f64) {
+    DEVICE_NANOS.fetch_add((seconds * 1e9) as u64, Ordering::Relaxed);
+}
+
+/// Sum of completed command-buffer GPU timestamps over all Metal contexts in
+/// this process. Differences around a job measure its device time, including
+/// fused and resident batches (benchmarks only).
+pub fn device_seconds() -> f64 {
+    DEVICE_NANOS.load(Ordering::Relaxed) as f64 * 1e-9
 }
 
 /// A specialisation constant (`[[function_constant(index)]]`).
@@ -179,26 +231,39 @@ type Library = (
 fn load_library(
     device: &ProtocolObject<dyn MTLDevice>,
     choice: LibraryChoice,
+    precision: MetalPrecision,
 ) -> MkResult<Library> {
     let precompiled = || -> MkResult<Library> {
-        let bytes = shaders::METALLIB.ok_or_else(|| {
+        let (metallib, flags) = match precision {
+            MetalPrecision::DoubleFloat => (shaders::METALLIB, shaders::OFFLINE_FLAGS),
+            MetalPrecision::PureF32 => (shaders::METALLIB_F32, shaders::OFFLINE_FLAGS_F32),
+        };
+        let bytes = metallib.ok_or_else(|| {
             MkError::Unsupported("no precompiled metallib was embedded at build time".into())
         })?;
         let data = DispatchData::from_static_bytes(bytes);
         let lib = device
             .newLibraryWithData_error(&data)
             .map_err(|e| ns_error("loading embedded metallib", &e))?;
-        let desc = format!("precompiled metallib, flags: {}", shaders::OFFLINE_FLAGS);
+        let desc = format!("{} precompiled metallib, flags: {flags}", precision.name());
         Ok((lib, LibraryOrigin::Precompiled, desc))
     };
     let runtime = || -> MkResult<Library> {
-        let src = NSString::from_str(shaders::SOURCE);
+        let source = if precision == MetalPrecision::PureF32 {
+            format!("#define MKLIGHT_PURE_F32 1\n{}", shaders::SOURCE)
+        } else {
+            shaders::SOURCE.to_string()
+        };
+        let src = NSString::from_str(&source);
         let compile = |v, name: &str| {
             let (opts, desc) = compile_options(v);
             device
                 .newLibraryWithSource_options_error(&src, Some(&opts))
                 .map(|l| {
-                    let d = format!("runtime-compiled source, MSL {name}, {desc}");
+                    let d = format!(
+                        "{} runtime-compiled source, MSL {name}, {desc}",
+                        precision.name()
+                    );
                     (l, LibraryOrigin::RuntimeSource, d)
                 })
         };
@@ -224,7 +289,8 @@ impl MetalContext {
                 .newCommandQueue()
                 .ok_or_else(|| MkError::Backend("cannot create a command queue".into()))?;
             queue.setLabel(Some(&NSString::from_str("mklight")));
-            let (library, origin, library_build) = load_library(&device, opts.library)?;
+            let (library, origin, library_build) =
+                load_library(&device, opts.library, opts.precision)?;
             Ok(Some(MetalContext {
                 device,
                 queue,
@@ -357,9 +423,11 @@ impl MetalContext {
                 return Err(MkError::Backend(format!("command buffer '{label}': {msg}")));
             }
             let (t0, t1) = (cb.GPUStartTime(), cb.GPUEndTime());
+            let gpu_seconds = (t1 - t0).max(0.0);
+            add_device_time(gpu_seconds);
             Ok(CommandStats {
                 command_buffers: 1,
-                gpu_seconds: if t1 > t0 { t1 - t0 } else { 0.0 },
+                gpu_seconds,
             })
         })
     }
@@ -548,6 +616,7 @@ impl CommandBatch {
             gpu_seconds: (z - a).max(0.),
             command_buffers: 1,
         };
+        add_device_time(stats.gpu_seconds);
         self.completed.gpu_seconds += stats.gpu_seconds;
         self.completed.command_buffers += 1;
         self.observed = Some(stats.gpu_seconds);

@@ -355,6 +355,61 @@ GPU. Consumers that need the f64 uniform apply `u32_to_unit_f64` to the raw
 words on the host. `Philox::seek(i)` positions the core generator at any
 draw (tested against sequential draws).
 
+### 3.6 Pure f32 variant: measured cost and accuracy
+
+An opt-in measurement build answers what double-float costs and buys. With
+`MKLIGHT_PURE_F32` (mklight_common.h) every double-float operation becomes
+plain f32 with a zero lo part and compensated sums become plain sums; the
+packed ABI, algorithms and strict flags (§3.2) are unchanged. `build.rs`
+compiles it as a second embedded metallib (both variants' shaders compile
+concurrently). `MetalOptions { precision: MetalPrecision::PureF32, .. }`, or
+`MetalOptions::from_env()` with `MKLIGHT_METAL_PRECISION=f32`, selects it; the
+precision descriptor (`opl_double_float`, `compensated_reductions` false) and
+`kernel_build` (`pure_f32 …`) name the variant. `MetalOptions::default()`, and
+so engine `auto`, is always double-float. CPU-f32 emulation stays the
+double-float specification.
+
+Measured 2026-11-02 on an Apple M2 Pro under normal host load (provisional;
+median of ten alternating runs after a warm-up), Double Gauss trace, three
+fields, 12 surfaces:
+
+| Rays | DF device | f32 device | DF wall | f32 wall | CPU f64 wall |
+|---|---:|---:|---:|---:|---:|
+| 10⁴ | 0.39 ms | 0.13 ms | 1.08 ms | 0.62 ms | 0.94 ms |
+| 10⁶ | 29.5 ms | 7.4 ms | 45.6 ms | 23.7 ms | 76.3 ms |
+
+At 10⁶ rays f32 is **4.0× faster on the device and 1.9× end to end**; on the
+16 sample designs' 64×64 all-surface trace grids the device ratio is 1.8–4.2×.
+Real aiming gets no reliable speed-up (0.09–1.8× DF), because f32 changes
+its convergence.
+
+Accuracy against independent CPU f64 (§5.1 harness, all 16 designs, every
+field and wavelength, 64×64 pupil, all-surface records; maximum error and,
+in parentheses, the fraction of the full §9.4 budget):
+
+| Quantity | Double-float | Pure f32 |
+|---|---:|---:|
+| Position, mm | 2.5e-6 (0.12×) | 7.2e-5 (3.6×) |
+| Direction cosine | 4.2e-8 (0.02×) | 6.2e-7 (0.31×) |
+| OPD, waves | 7.7e-5 (0.015×) | 0.21 (43×) |
+| Per-surface OPL, mm | 3.3e-11 | 8.0e-5 |
+
+Ray statuses agree in both. f32 exceeds the OPD budget on every design (6–43×)
+and the position budget on the Newtonian. Real aiming at the default
+tolerance 1e-10 fails 450 of 4,176 f32 aims (Cooke triplet, Double Gauss,
+relay; none with DF), and f32 aims reported as converged miss the stop by up
+to 2.4e-7 of its radius. In the engine, normal qualification (§5.2) sends
+every f32 request to the CPU reference; forced through the raw adapters, f32
+PSFs are off by 8% L1 (41× budget), optical MTF by 0.016 (8×) and image
+simulation by 80% L1.
+
+**Conclusion.** Double-float stays the default and the only qualified mode.
+Pure f32 is not qualified for OPD, wavefront and wave analyses or real
+aiming, and does not hold the position budget on every design. Reproduce with the ignored tests
+`cargo test --release -p mklight-metal --test f32_study -- --ignored --nocapture`
+(trace, OPL, aiming, speed) and `-p mklight-engine --test f32_study` (engine
+analyses), or `MKLIGHT_METAL_PRECISION=f32` with the trace benchmark (§5.3).
+
 ## 4. The trace kernel
 
 `Job::Trace` runs the sequential ray trace of `mklight-trace` on the
@@ -908,8 +963,10 @@ terms, while the sample designs have sparse, shorter coefficient lists.
 
 ## 6. Metal backend notes
 
-* **Build.** `build.rs` compiles `shaders/*.metal` to `.air` and links one
-  `mklight.metallib`, embedded with `include_bytes!`. It finds the compiler
+* **Build.** `build.rs` compiles `shaders/*.metal` to `.air` (all files and
+  both kernel variants concurrently) and links one `mklight.metallib` per
+  variant (double-float and the pure-f32 measurement build, §3.6), embedded
+  with `include_bytes!`. It finds the compiler
   via `MKLIGHT_METAL_TOOLCHAIN_BIN`, then `xcrun -sdk macosx metal`, then the
   system-mounted Metal toolchain component (which `xcrun` does not always
   resolve). Shaders are compiled offline: an offline compile error fails the

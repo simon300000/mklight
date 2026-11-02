@@ -16,7 +16,7 @@ use mklight_gpu::{
     ComputeBackend, CpuF32Backend, Job, JobKind, JobOutput, PackedSystem, PathStep, Radiometry,
     RayBatch, RecordMode, StepMode, TraceRequest, TraceResult,
 };
-use mklight_metal::MetalBackend;
+use mklight_metal::{MetalBackend, MetalOptions};
 use mklight_trace::{PupilSampling, Ray, SequentialTracer};
 use rayon::prelude::*;
 
@@ -449,11 +449,15 @@ fn trace_chunks_progress_and_cancellation() {
 /// Throughput: about 1e6 Double-Gauss rays (12 surfaces each) on the GPU,
 /// including packing the planes, upload and download, against the
 /// `mklight-trace` f64 reference on all CPU cores (rayon). Run with
-/// `cargo test --release -p mklight-metal --test trace -- --ignored --nocapture`.
+/// `cargo test --release -p mklight-metal --test trace -- --ignored --nocapture`;
+/// `MKLIGHT_METAL_PRECISION=f32` times the pure-f32 kernels (docs/GPU.md §3.6).
 #[test]
 #[ignore = "benchmark"]
 fn benchmark_double_gauss_1e6() {
-    let g = gpu_or_skip!();
+    let options = MetalOptions::from_env();
+    let Some(g) = MetalBackend::with_options(&options).unwrap() else {
+        return eprintln!("SKIP: no Metal device");
+    };
     let t = testutil::tracer(samples::double_gauss());
     let sys = t.system();
     let mut rays = Vec::new();
@@ -493,10 +497,11 @@ fn benchmark_double_gauss_1e6() {
     }
     let rs = (n * steps) as f64;
     eprintln!(
-        "{n} rays x {steps} surfaces on {}: GPU {:.1} ms wall ({:.2e} ray-surfaces/s), \
+        "{n} rays x {steps} surfaces on {} ({}): GPU {:.1} ms wall ({:.2e} ray-surfaces/s), \
          {:.1} ms device ({:.2e}/s); CPU f64 rayon ({} threads) {:.1} ms ({:.2e}/s); \
          speed-up {:.1}x wall",
         g.info().name,
+        options.precision.name(),
         gpu_best * 1e3,
         rs / gpu_best,
         dev_best * 1e3,

@@ -30,7 +30,8 @@ use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLGPUFamily};
 
 use crate::buffer::SharedBuffer;
 use crate::context::{
-    CommandStats, LibraryChoice, LibraryOrigin, MetalContext, MetalOptions, PipelineKey,
+    CommandStats, LibraryChoice, LibraryOrigin, MetalContext, MetalOptions, MetalPrecision,
+    PipelineKey,
 };
 
 /// Default work items per command buffer.
@@ -203,8 +204,8 @@ impl MetalBackend {
         let precision = PrecisionDescriptor {
             model: Precision::F32Gpu,
             fast_math_disabled: probe.no_reassociation && probe.no_contraction,
-            opl_double_float: true,
-            compensated_reductions: true,
+            opl_double_float: opts.precision == MetalPrecision::DoubleFloat,
+            compensated_reductions: opts.precision == MetalPrecision::DoubleFloat,
             probe,
             budget: ErrorBudget::CONVENTIONS,
             kernel_build: format!(
