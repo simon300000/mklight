@@ -31,10 +31,21 @@ struct Metric {
 type Metrics = BTreeMap<String, Metric>;
 
 // Whole §9.4 budgets, never the sampled one-third publication margin.
-fn budget(path: &str, reference: f64) -> Option<f64> {
+fn budget(path: &str, reference: f64, analysis: &str) -> Option<f64> {
+    if analysis == "stray_light"
+        || ["r50", "r80", "r90", "half_width80"]
+            .iter()
+            .any(|v| path.contains(v))
+    {
+        return None;
+    }
     Some(if path.contains("direction") {
         2e-6
-    } else if path.contains("opd") || path.contains("wavefront") || path.contains("zernike") {
+    } else if path.contains("opd")
+        || path.contains("wavefront")
+        || path.contains("zernike")
+        || (analysis == "wavefront_map" && (path.contains("rms") || path.contains("pv")))
+    {
         5e-3
     } else if path.contains("modulation")
         || path.contains("mtf")
@@ -43,7 +54,7 @@ fn budget(path: &str, reference: f64) -> Option<f64> {
         || path.contains("ensquared")
         || path.contains("tangential")
         || path.contains("sagittal")
-        || path.contains("fraction")
+        || (path.contains("fraction") && !path.contains("illumination"))
     {
         2e-3
     } else if path.contains("relative_illumination") {
@@ -52,7 +63,7 @@ fn budget(path: &str, reference: f64) -> Option<f64> {
         2e-4
     } else if path.contains("magnification") {
         (1e-3 * reference.abs()).max(1e-5)
-    } else if path.contains("rms") || path.contains("radius") {
+    } else if path.contains("rms") || path.contains("geo_radius") {
         (0.005 * reference.abs()).max(2e-5)
     } else if path.contains("retardance") {
         1e-3
@@ -64,17 +75,19 @@ fn budget(path: &str, reference: f64) -> Option<f64> {
         || path.contains("shift")
         || path.contains("coordinates")
         || path.contains("ray_grid")
-        || path.contains("footprint")
+        || path.contains("point_mm")
+        || path.contains("reference_mm")
+        || path.contains("center_mm")
     {
         2e-5
     } else {
         return None;
     })
 }
-fn number(m: &mut Metrics, path: &str, a: f64, b: f64) {
+fn number(m: &mut Metrics, path: &str, a: f64, b: f64, analysis: &str) {
     let metric = m.entry(path.into()).or_default();
     metric.compared += 1;
-    metric.budgeted |= budget(path, a).is_some();
+    metric.budgeted |= budget(path, a, analysis).is_some();
     if a.is_nan() && b.is_nan() || a == b {
         return;
     }
@@ -84,12 +97,12 @@ fn number(m: &mut Metrics, path: &str, a: f64, b: f64) {
     }
     let error = (a - b).abs();
     metric.maximum = metric.maximum.max(error);
-    if let Some(budget) = budget(path, a) {
+    if let Some(budget) = budget(path, a, analysis) {
         metric.budgeted = true;
         metric.fraction = metric.fraction.max(error / budget);
     }
 }
-fn compare_json(m: &mut Metrics, a: &Value, b: &Value, path: &str) {
+fn compare_json(m: &mut Metrics, a: &Value, b: &Value, path: &str, analysis: &str) {
     match (a, b) {
         (Value::Object(a), Value::Object(b)) => {
             for (k, v) in a {
@@ -110,16 +123,17 @@ fn compare_json(m: &mut Metrics, a: &Value, b: &Value, path: &str) {
                     v,
                     b.get(k).unwrap_or(&Value::Null),
                     &format!("{path}.{k}"),
+                    analysis,
                 );
             }
         }
         (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
             for (a, b) in a.iter().zip(b) {
-                compare_json(m, a, b, &format!("{path}[]"));
+                compare_json(m, a, b, &format!("{path}[]"), analysis);
             }
         }
         (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => {
-            number(m, path, a.as_f64().unwrap(), b.as_f64().unwrap())
+            number(m, path, a.as_f64().unwrap(), b.as_f64().unwrap(), analysis)
         }
         _ if a == b => (),
         _ => m.entry(path.into()).or_default().mismatches += 1,
@@ -127,7 +141,40 @@ fn compare_json(m: &mut Metrics, a: &Value, b: &Value, path: &str) {
 }
 fn compare(a: &AnalysisOutput, b: &AnalysisOutput, analysis: &str) -> Value {
     let mut m = Metrics::new();
-    compare_json(&mut m, &a.json, &b.json, "result");
+    compare_json(&mut m, &a.json, &b.json, "result", analysis);
+    let radius = a
+        .buffers
+        .iter()
+        .find(|v| v.name == "radius_mm" || v.name == "radius")
+        .and_then(|v| {
+            if let BufferData::F64(x) = &v.data {
+                Some(x.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            a.json["radius"]
+                .as_array()
+                .map(|v| v.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default()
+        });
+    if let Some(step) = radius
+        .windows(2)
+        .map(|v| (v[1] - v[0]).abs())
+        .filter(|v| *v > 0.)
+        .reduce(f64::min)
+    {
+        for (path, value) in &mut m {
+            if ["r50", "r80", "r90", "half_width80"]
+                .iter()
+                .any(|v| path.contains(v))
+            {
+                value.fraction = value.maximum / step;
+                value.budgeted = true;
+            }
+        }
+    }
     if analysis == "stray_light" {
         let emitted = a.json["emitted"].as_f64().unwrap();
         let residual = b.json["energy"]["balance_residual"].as_f64().unwrap();
@@ -153,6 +200,44 @@ fn compare(a: &AnalysisOutput, b: &AnalysisOutput, analysis: &str) -> Value {
                     .as_f64()
                     .unwrap()
                     .hypot(b["std_error"].as_f64().unwrap());
+            for (value, se) in [
+                ("centroid", "centroid_std_error"),
+                ("rms_radius", "rms_radius_std_error"),
+            ] {
+                let av = &a["moments"][value];
+                let bv = &b["moments"][value];
+                let ae = &a["moments"][se];
+                let be = &b["moments"][se];
+                let arrays = |v: &Value| v.as_array().cloned().unwrap_or_else(|| vec![v.clone()]);
+                let mut metric = Metric {
+                    budgeted: true,
+                    ..Default::default()
+                };
+                for (((a, b), ea), eb) in arrays(av)
+                    .iter()
+                    .zip(arrays(bv))
+                    .zip(arrays(ae))
+                    .zip(arrays(be))
+                {
+                    if let (Some(a), Some(b), Some(ea), Some(eb)) =
+                        (a.as_f64(), b.as_f64(), ea.as_f64(), eb.as_f64())
+                    {
+                        let error = (a - b).abs();
+                        let limit = 5. * ea.hypot(eb);
+                        metric.maximum = metric.maximum.max(error);
+                        metric.compared += 1;
+                        if limit > 0. {
+                            metric.fraction = metric.fraction.max(error / limit);
+                        } else if error > 0. {
+                            metric.mismatches += 1;
+                        }
+                    }
+                }
+                m.insert(
+                    format!("result.class_{}.{value}_5se", a["class"].as_str().unwrap()),
+                    metric,
+                );
+            }
             let key = format!("result.class_{}.flux_5se", a["class"].as_str().unwrap());
             m.insert(
                 key,
@@ -269,7 +354,7 @@ fn compare(a: &AnalysisOutput, b: &AnalysisOutput, analysis: &str) -> Value {
                     } else {
                         None
                     };
-                    number(&mut m, key.as_deref().unwrap_or(&path), a, b);
+                    number(&mut m, key.as_deref().unwrap_or(&path), a, b, analysis);
                 }
             }
         } else if a.data != b.data {
