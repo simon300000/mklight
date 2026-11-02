@@ -1417,7 +1417,7 @@ for explicit Metal requests:
 | `polarization_pupil_map` | 13/16 | fast/diattenuation axes where retardance or diattenuation vanishes differ by 1–2 rad |
 
 **Known residual gaps on Metal** (2026-11-02, default settings; these publish
-unchecked). Thirteen sample/analysis cases fail the former gates:
+unchecked). Twelve sample/analysis cases fail the former gates:
 
 | Analysis | Samples | Nature of the difference |
 |---|---|---|
@@ -1425,12 +1425,12 @@ unchecked). Thirteen sample/analysis cases fail the former gates:
 | `ghost_irradiance` | singlet, achromat, newtonian, q_con | `rays_traced` counts at aperture edges; values within 1e-11 |
 | `footprint` | newtonian | one overlay outline vertex count |
 | `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin |
-| `ghost_paths` | relay | ranking order of two ghosts of equal irradiance (R3·R1, R7·R5); every value agrees to 1e-12 |
 
-The relay `ghost_paths` case is a tie, not a Metal error: the symmetric relay
-gives R3·R1 and R7·R5 the same relative irradiance, which the devices round
-differently in the last bits, so the stable sort swaps them. The comparison
-harness matches ghost paths by label.
+P11 also counted relay `ghost_paths` (a 26.5 mm focus difference). That was a
+tie, not a Metal error: the symmetric relay gives R3·R1 and R7·R5 the same
+relative irradiance, the devices round it differently in the last bits, and
+the ranking swaps the two; every value agrees to 1e-12. The harness matches
+ghost paths by label.
 
 **Candidate solvers.** Optimisation, tolerance and glass search loops run on
 the device, including combined merits, constraint hinges and finite-difference
