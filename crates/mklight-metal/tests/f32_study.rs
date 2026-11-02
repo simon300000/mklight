@@ -185,6 +185,7 @@ fn trace_and_aiming_accuracy() {
         for b in &backends {
             let timer = RunTimer::start();
             let mut max_residual = 0f64;
+            let mut max_accepted_residual = 0f64;
             let mut max_reported = 0f64;
             let mut failed = 0;
             let mut compared = 0;
@@ -232,10 +233,13 @@ fn trace_and_aiming_accuracy() {
                         }
                         let (x, y) = t.field(f).point.vignetting.apply(pt[0], pt[1]);
                         let radius = t.pupil().r_stop;
-                        max_residual = max_residual.max(
-                            (stop.ray.pos.x - x * radius).hypot(stop.ray.pos.y - y * radius)
-                                / radius,
-                        );
+                        let residual = (stop.ray.pos.x - x * radius)
+                            .hypot(stop.ray.pos.y - y * radius)
+                            / radius;
+                        max_residual = max_residual.max(residual);
+                        if report[i] == 0 {
+                            max_accepted_residual = max_accepted_residual.max(residual);
+                        }
                         compared += 1;
                     }
                     b.release_systems(h).unwrap();
@@ -243,7 +247,7 @@ fn trace_and_aiming_accuracy() {
             }
             println!(
                 "F32_AIM {}",
-                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_relative_stop_residual":max_residual,"fraction_requested":max_residual/1e-10,"max_reported":max_reported,"failed":failed,"compared":compared,"stop_failed":stop_failed,"run_info":timer.finish(&snapshot,"aiming_accuracy",&json!({"grid":7,"tolerance":1e-10,"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,Some(42),vec![])})
+                json!({"sample":name,"mode":if b.precision().opl_double_float{"df"}else{"f32"},"max_relative_stop_residual":max_residual,"max_accepted_relative_stop_residual":max_accepted_residual,"fraction_requested":max_residual/1e-10,"max_reported":max_reported,"failed":failed,"compared":compared,"stop_failed":stop_failed,"run_info":timer.finish(&snapshot,"aiming_accuracy",&json!({"grid":7,"tolerance":1e-10,"precision":b.precision()}),&b.info().backend_id(),Precision::F32Gpu,Some(42),vec![])})
             );
         }
     }

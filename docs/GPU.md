@@ -355,6 +355,64 @@ GPU. Consumers that need the f64 uniform apply `u32_to_unit_f64` to the raw
 words on the host. `Philox::seek(i)` positions the core generator at any
 draw (tested against sequential draws).
 
+### 3.6 Pure f32 variant: measured cost and accuracy
+
+`MetalPrecision::PureF32` is an explicit measurement mode. The second
+embedded offline metallib defines `MKLIGHT_PURE_F32`: double-float operations
+become plain f32, residuals are ignored and compensated sums become plain
+sums. The packed ABI, reduction trees and optical algorithms stay the same;
+this measures arithmetic cost without a smaller memory layout. Both variants
+retain the strict flags of §3.2, including no contraction. Runtime source
+supports the same define. The precision descriptor and `kernel_build` name
+the actual variant; CPU-f32 emulation remains the DoubleFloat specification.
+
+Default construction, including engine `auto`, always uses DoubleFloat.
+Explicit benchmark callers can use `MetalOptions::from_env()` with
+`MKLIGHT_METAL_PRECISION=f32` (`df` for DoubleFloat), or set the options'
+`precision` field. An environment variable alone never changes engine Auto.
+The trace benchmark reads this option and measures both variants.
+
+**2026-11-02, Apple M2 Pro; provisional normal-host-load measurements.** One
+warmup and ten alternating measured rounds, with interpolated p95. Double
+Gauss trace anchor, exactly 10,000 / 1,000,000 rays, three fields and primary
+wavelength; times are milliseconds, median / p95:
+
+| Rays | DF device | f32 device | DF wall | f32 wall | CPU f64 wall (Rayon) |
+|---|---:|---:|---:|---:|---:|
+| 10,000 | 0.385 / 0.627 | 0.131 / 0.267 | 1.079 / 1.366 | 0.624 / 0.857 | 0.939 / 2.111 |
+| 1,000,000 | 29.464 / 33.479 | 7.409 / 11.157 | 45.612 / 50.106 | 23.660 / 27.475 | 76.324 / 80.218 |
+
+At one million rays f32 is **3.98× faster on device, 1.93× end to end**.
+Across the 16 designs' matched full-record trace grids the device ratio is
+1.76–4.21×. Real aiming is not a uniform win: f32's changed convergence makes
+the measured attempt workload 0.093–1.83× as fast as DF, with failed aims.
+
+Independent CPU f64 cross-checks, all 16 designs, every field/wavelength,
+64×64 pupil grids and all-surface records (maximum error; parenthesis is
+fraction of the whole §9.4 budget):
+
+| Quantity | DoubleFloat | Pure f32 |
+|---|---:|---:|
+| Position, mm | 2.48e-6 (0.124×) | 7.18e-5 (3.59×) |
+| Direction cosine | 4.19e-8 (0.0210×) | 6.22e-7 (0.311×) |
+| OPD, waves | 7.71e-5 (0.0154×) | 0.214 (42.8×) |
+
+Statuses agree on this grid, including zero band/chief mismatches. F32
+exceeds the OPD budget on every design and the position budget on the
+Newtonian. Real aiming at relative tolerance 1e-10 fails 450 of 4,176 f32
+attempts versus zero with DF; independent stop residuals and failed attempts
+are reported separately. Normal engine qualification remains unchanged;
+a reference fallback is never counted as f32 accuracy or speed.
+
+The ignored `f32_study` tests retain all-surface OPL, aiming, complete native
+analysis outputs and normal engine-session verdicts/timings against CPU f64.
+Wave comparisons use explicitly fixed sampling (warnings retained), so an
+automatically changed image size cannot masquerade as pixelwise accuracy.
+The task's `scratchpad/gpu/f32-evidence.md` contains per-design/per-quantity
+budget fractions, median/p95 device and wall times, settings, RunInfo and raw
+logs, including ghost/stray uncertainty and unsupported/fallback domains.
+These finite, single-device measurements do not qualify pure f32 for Auto.
+
 ## 4. The trace kernel
 
 `Job::Trace` runs the sequential ray trace of `mklight-trace` on the

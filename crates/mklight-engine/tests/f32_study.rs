@@ -32,6 +32,11 @@ type Metrics = BTreeMap<String, Metric>;
 
 // Whole §9.4 budgets, never the sampled one-third publication margin.
 fn budget(path: &str, reference: f64, analysis: &str) -> Option<f64> {
+    if path.contains(".seidel.")
+        || (path.contains("zernike") && !path.contains("rms") && !path.contains("opd"))
+    {
+        return None;
+    }
     if analysis == "stray_light"
         || ["r50", "r80", "r90", "half_width80"]
             .iter()
@@ -43,7 +48,6 @@ fn budget(path: &str, reference: f64, analysis: &str) -> Option<f64> {
         2e-6
     } else if path.contains("opd")
         || path.contains("wavefront")
-        || path.contains("zernike")
         || (analysis == "wavefront_map" && (path.contains("rms") || path.contains("pv")))
     {
         5e-3
@@ -54,12 +58,11 @@ fn budget(path: &str, reference: f64, analysis: &str) -> Option<f64> {
         || path.contains("ensquared")
         || path.contains("tangential")
         || path.contains("sagittal")
-        || (path.contains("fraction") && !path.contains("illumination"))
     {
         2e-3
     } else if path.contains("relative_illumination") {
         1e-3
-    } else if path.contains("angle") || path.contains("incidence") {
+    } else if path.contains("angle_deg") || (path.contains("incidence") && path.contains("deg")) {
         2e-4
     } else if path.contains("magnification") {
         (1e-3 * reference.abs()).max(1e-5)
@@ -67,14 +70,17 @@ fn budget(path: &str, reference: f64, analysis: &str) -> Option<f64> {
         (0.005 * reference.abs()).max(2e-5)
     } else if path.contains("retardance") {
         1e-3
-    } else if path.contains("transmission") || path.contains("weight") {
+    } else if path.contains("transmission") || path.contains("weight") || path.contains("flux") {
         1e-5 * reference.abs() + 1e-10
     } else if path.contains("centroid")
         || path.contains("position")
         || path.contains("focus")
         || path.contains("shift")
-        || path.contains("coordinates")
-        || path.contains("ray_grid")
+        || (path.starts_with("buffer.")
+            && (path.contains("points")
+                || path.contains("outlines")
+                || path.contains("image_mm")
+                || path == "buffer.chief"))
         || path.contains("point_mm")
         || path.contains("reference_mm")
         || path.contains("center_mm")
@@ -278,6 +284,7 @@ fn compare(a: &AnalysisOutput, b: &AnalysisOutput, analysis: &str) -> Value {
                 || path.contains("irradiance")
                 || path == "buffer.image"
                 || path.contains("line_spread")
+                || (analysis == "ghost_irradiance" && path.ends_with("_map"))
                 || (analysis == "line_spread"
                     && (path.starts_with("buffer.x_") || path.starts_with("buffer.y_")));
             if image && analysis == "stray_light" && !path.contains("std_error") {
@@ -330,7 +337,15 @@ fn compare(a: &AnalysisOutput, b: &AnalysisOutput, analysis: &str) -> Value {
                 }
                 if norm > 0. {
                     for (suffix, value, limit) in [
-                        ("l1_relative", delta / norm, 2e-3),
+                        (
+                            "l1_relative",
+                            delta / norm,
+                            if analysis == "ghost_irradiance" {
+                                1e-3
+                            } else {
+                                2e-3
+                            },
+                        ),
                         ("energy_relative", energy.abs() / norm, 1e-3),
                     ] {
                         m.insert(
@@ -364,10 +379,18 @@ fn compare(a: &AnalysisOutput, b: &AnalysisOutput, analysis: &str) -> Value {
     json!(m.iter().map(|(k,v)|(k,json!({"max_error":v.maximum,"budget_fraction":if v.budgeted{Some(v.fraction)}else{None},"compared":v.compared,"mismatches":v.mismatches}))).collect::<BTreeMap<_,_>>())
 }
 
+fn reference_completion(out: &AnalysisOutput) -> bool {
+    out.warnings.iter().any(|w| {
+        w.contains("used the f64 reference: geometry uncertainty")
+            || w.contains("stray transport fell back to CPU reference:")
+    })
+}
+
 #[test]
 #[ignore = "real Metal; all-sample engine precision and provisional alternating timing study"]
 fn engine_precision_study() {
     let filter = std::env::var("F32_STUDY_ANALYSES").ok();
+    let accuracy_only = std::env::var_os("F32_STUDY_ACCURACY_ONLY").is_some();
     let sample_filter = std::env::var("F32_STUDY_SAMPLE").ok();
     let registry = AnalysisRegistry::with_builtin();
     let library = Arc::new(MaterialLibrary::with_builtin());
@@ -477,8 +500,7 @@ fn engine_precision_study() {
                     }
                     "mtf_vs_field" => requested["frequencies"] = json!([10., 20., 40.]),
                     "image_simulation" => {
-                        requested =
-                            json!({"optics":{"pupil":pupil,"psf_size":128,"psf_spacing_mm":0.001}})
+                        requested = json!({"optics":{"pupil":{"grid":64,"rays":65,"amplitude":"radiometric"},"psf_size":129,"psf_spacing_mm":0.001}})
                     }
                     _ => (),
                 }
@@ -514,7 +536,7 @@ fn engine_precision_study() {
             }
             // Raw adapter calls are confined to this ignored measurement test.
             // Rejected f32 outputs remain observable and never become a public result.
-            for round in 0..11 {
+            for round in 0..if accuracy_only { 2 } else { 11 } {
                 let mut outputs = Vec::new();
                 let order = if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
                 for index in order {
@@ -533,12 +555,18 @@ fn engine_precision_study() {
                     } else {
                         backends[index - 1].context().device_seconds() - device_start
                     };
-                    let run=timer.finish(&snapshot,&info.name,&json!({"settings":settings,"precision":if index==0{Value::Null}else{serde_json::to_value(backends[index-1].precision()).unwrap()}}),if index==0{"cpu-f64"}else{"metal:experimental"},if index==0{Precision::F64Reference}else{Precision::F32Gpu},analysis.seed(&settings),vec![]);
+                    let mut run=timer.finish(&snapshot,&info.name,&json!({"settings":settings,"requested_precision":if index==0{Value::Null}else{serde_json::to_value(backends[index-1].precision()).unwrap()}}),if index==0{"cpu-f64"}else{"metal:experimental"},if index==0{Precision::F64Reference}else{Precision::F32Gpu},analysis.seed(&settings),vec![]);
                     match result {
                         Ok(out) => {
+                            run.warnings = out.warnings.clone();
+                            let reference = reference_completion(&out);
+                            if reference {
+                                run.backend = "cpu-f64".into();
+                                run.precision = Precision::F64Reference;
+                            }
                             println!(
                                 "F32_ENGINE_TIME {}",
-                                json!({"sample":name,"analysis":info.name,"mode":index,"round":round,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":seconds,"device_seconds":device_seconds,"run_info":run,"warnings":out.warnings})
+                                json!({"sample":name,"analysis":info.name,"mode":index,"round":round,"phase":if round==0{"warmup"}else{"measured"},"wall_seconds":seconds,"device_seconds":device_seconds,"run_info":run,"warnings":out.warnings,"reference_completion":reference})
                             );
                             outputs.push((index, out));
                         }
@@ -550,7 +578,7 @@ fn engine_precision_study() {
                 }
                 // Session wall time includes selection, cached qualification,
                 // final packing and any explicitly reported CPU fallback.
-                for index in order {
+                for index in order.into_iter().take(if accuracy_only { 0 } else { 3 }) {
                     let session = &engines[if index == 2 { 1 } else { 0 }].0;
                     let mut request = AnalysisRequest::new(&info.name, settings.clone());
                     request.backend = Some(if index == 0 {
@@ -584,7 +612,7 @@ fn engine_precision_study() {
                         }
                         println!(
                             "F32_ENGINE_ERROR_STUDY {}",
-                            json!({"sample":name,"analysis":info.name,"mode":index,"quantities":compare(reference,out,&info.name)})
+                            json!({"sample":name,"analysis":info.name,"mode":index,"reference_completion":reference_completion(out),"quantities":if reference_completion(out){json!({})}else{compare(reference,out,&info.name)}})
                         );
                     }
                 }

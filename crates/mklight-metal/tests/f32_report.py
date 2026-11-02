@@ -50,9 +50,10 @@ def timings(tag, keys, modes):
         cells=[]
         for m in modes:
             samples=data[m]
-            cells += [dist([r['wall_seconds'] for r in samples]), dist([r['device_seconds'] for r in samples]) if any(r['device_seconds'] for r in samples) else '—']
+            cells += [dist([r['wall_seconds'] for r in samples]) + (' [CPU completion]' if any(r.get('reference_completion') for r in samples) else ''), dist([r['device_seconds'] for r in samples]) if any(r['device_seconds'] for r in samples) else '—']
         values.append([*key, *cells, '/'.join(str(len(data[m])) for m in modes)])
-    table([*keys, *[label for m in modes for label in (f'{m} wall',f'{m} device')], 'n by mode'],values)
+    labels = {1:'DF',2:'f32',0:'CPU f64'} if tag.startswith('F32_ENGINE') else {0:'DF',1:'f32',2:'CPU f64','df':'DF','f32':'f32','cpu_f64':'CPU f64'}
+    table([*keys, *[label for m in modes for label in (f'{labels[m]} wall',f'{labels[m]} device')], 'n DF/f32/CPU'],values)
     return groups
 
 write('# Pure f32 Metal: measured cost and accuracy')
@@ -63,7 +64,7 @@ write('## Implementation and reproduction')
 write()
 write('`MKLIGHT_PURE_F32=1` drops hi/lo residuals, error-free transforms and compensation without changing the packed ABI, trace/refinement algorithms, reduction trees or strict compilation contract. Both offline metallibs are embedded; runtime source has the same define. Default `MetalOptions` and `MetalBackend::new()` remain DoubleFloat, including engine Auto. Explicit callers use `MetalOptions::from_env()` to opt into `MKLIGHT_METAL_PRECISION=f32`; `df` selects DoubleFloat. Kernel-build metadata and precision descriptor booleans distinguish the variants. CPU-f32 emulation remains the DF specification; its bitwise tests use DF.')
 write()
-write('```sh\nsource ~/.cargo/env\nexport RUSTC_WRAPPER=\ncargo test --release -p mklight-metal --test f32_study trace_and_aiming_accuracy -- --ignored --nocapture\ncargo test --release -p mklight-metal --test f32_study trace_grid_and_aiming_speed -- --ignored --nocapture\nMKLIGHT_METAL_PRECISION=f32 cargo test --release -p mklight-metal --test trace -- --ignored --nocapture\ncargo test --release -p mklight-engine --test f32_study -- --ignored --nocapture\npython3 crates/mklight-metal/tests/f32_report.py <f32-logs-directory>\n```')
+write('```sh\nsource ~/.cargo/env\nexport RUSTC_WRAPPER=\ncargo test --release -p mklight-metal --test f32_study trace_and_aiming_accuracy -- --ignored --nocapture\ncargo test --release -p mklight-metal --test f32_study trace_grid_and_aiming_speed -- --ignored --nocapture\nMKLIGHT_METAL_PRECISION=f32 cargo test --release -p mklight-metal --test trace -- --ignored --nocapture --test-threads=1\ncargo test --release -p mklight-engine --test f32_study -- --ignored --nocapture\npython3 crates/mklight-metal/tests/f32_report.py <f32-logs-directory>\n```')
 write()
 write('Real Metal execution requires access to the macOS GPU; a sandbox run with no device is not evidence. Offline compilation keeps its module cache inside Cargo OUT_DIR. `RUSTC_WRAPPER=` avoids a compiler-cache daemon outside the workspace sandbox.')
 write()
@@ -94,8 +95,8 @@ for r in rows['F32_AIM']:
     aim[r['sample']][r['mode']]=r
 values=[]
 for sample,d in aim.items():
-    values.append([sample,*[err(d[m]['max_relative_stop_residual'],1e-10) for m in ('df','f32')],*[f"{d[m]['failed']}/{d[m]['compared']}/{d[m]['stop_failed']}" for m in ('df','f32')]])
-table(['design','DF residual / requested','f32 residual / requested','DF failed/compared/stop-failed','f32 failed/compared/stop-failed'],values)
+    values.append([sample,*[err(d[m]['max_relative_stop_residual'],1e-10) for m in ('df','f32')],*[err(d[m].get('max_accepted_relative_stop_residual',d[m]['max_relative_stop_residual']),1e-10) for m in ('df','f32')],*[f"{d[m]['failed']}/{d[m]['compared']}/{d[m]['stop_failed']}" for m in ('df','f32')]])
+table(['design','DF all residual / requested','f32 all residual / requested','DF accepted residual / requested','f32 accepted residual / requested','DF failed/compared/stop-failed','f32 failed/compared/stop-failed'],values)
 write('## Trace anchor: 10,000 and 1,000,000 rays')
 write()
 write('Double Gauss, 12 surfaces, exactly stated ray counts; three fields, primary wavelength. One warmup, ten alternating measured rounds (order reverses each round); median / interpolated p95. Wall includes input-plane cloning, upload, dispatch, output assembly and destruction. Device is completed Metal command-buffer timestamp time. CPU uses independent f64 tracing with Rayon; input generation and immutable-system upload are outside timing on both GPU variants.')
@@ -109,7 +110,7 @@ timings('F32_GRID_TIME',['sample'],[0,1,2])
 timings('F32_AIM_TIME',['sample'],[0,1,2])
 write('## Engine analyses: matched sampling and unchanged qualification')
 write()
-write('All 16 designs and all non-optimisation GPU registry analyses. Geometric analyses use defaults. Wave pupils use grid 64 with the default 65-ray lattice; PSF/EE/LSF use image size 256. PSF spacing is frozen from independent CPU first-order working F/# and shortest wavelength / 2.5; image simulation uses PSF size 128 and 0.001 mm spacing. MTF uses max frequency 50 cycles/mm; field/focus MTF uses [10,20,40] cycles/mm with focus range ±0.1 mm. All other settings are retained in each RunInfo. Fixed sampling deliberately measures precision separately from automatic-grid changes; sampling/truncation warnings remain in the logs and these are differential accuracy results, not new wave-sampling qualification claims. LSF/EE retain the algorithms’ working-NA spacing; coordinate errors are reported separately.')
+write('All 16 designs and all non-optimisation GPU registry analyses. Geometric analyses use defaults. Wave pupils use grid 64 with the default 65-ray lattice; PSF/EE/LSF use image size 256. PSF spacing is frozen from independent CPU first-order working F/# and shortest wavelength / 2.5; image simulation uses PSF size 129 and 0.001 mm spacing. MTF uses max frequency 50 cycles/mm; field/focus MTF uses [10,20,40] cycles/mm with focus range ±0.1 mm. All other settings are retained in each RunInfo. Fixed sampling deliberately measures precision separately from automatic-grid changes; sampling/truncation warnings remain in the logs and these are differential accuracy results, not new wave-sampling qualification claims. LSF/EE retain the algorithms’ working-NA spacing; coordinate errors are reported separately.')
 write()
 write('Each combination first runs the normal explicit Metal session with unchanged geometry and complete-chain gates, retaining its verdict. A separate ignored test invokes the same public native adapters directly to observe rejected f32 results; this bypass exists only in the study, not production. Raw failures, undefined/mask/array-shape differences and qualification fallbacks are reported explicitly. A normal-session CPU fallback is never counted as f32 accuracy or device speed. Both raw and session timings use one warmup and ten alternating rounds. Raw adapter wall includes native setup and final output packing; session wall additionally includes selection and cached qualification/fallback.')
 write()
@@ -128,7 +129,7 @@ write()
 timings('F32_ENGINE_SESSION_TIME',['sample','analysis'],[1,2,0])
 write('### Per-quantity end-result error maxima over designs')
 write()
-write('Each cell gives maximum absolute error and the largest error/budget fraction (which may occur at a different design/reference value for relative budgets). Discrete/undefined/shape mismatches are counted separately and never treated as zero numerical error. A dash budget means §9.4 does not define a direct scalar budget for that metadata quantity. Image/PSF L1 and energy metrics are normalised to reference L1/energy; the LSF integral uses the same matched-grid sum. Stray class flux, map pixels and moments use five combined standard errors (no extra quadrature allowance); the energy ledger uses 1e-5 of emitted power. Radial quantiles use the smallest positive reference radial interval. All numeric result fields and buffers are examined. Detailed per-design records are in engine.log; whole budgets are used here. This report does not reinterpret unknown metadata as optical positions.')
+write('Each cell gives maximum absolute error and the largest error/budget fraction (which may occur at a different design/reference value for relative budgets). Discrete/undefined/shape mismatches are counted separately and never treated as zero numerical error. A dash budget means §9.4 does not define a direct scalar budget for that metadata quantity. Image/PSF L1 and energy metrics are normalised to reference L1/energy; the LSF integral uses the same matched-grid sum. Stray class flux, map pixels and moments use five combined standard errors (no extra quadrature allowance); the energy ledger uses 1e-5 of emitted power. Radial quantiles use the smallest positive reference radial interval. All numeric result fields and buffers are examined. Condition-dependent Seidel coefficients/axes and Zernike coefficient metadata have no direct scalar gate here; reconstructed OPD and fit RMS use the wavefront budget. Scalar units follow docs/RESULTS.md. Detailed per-design records are in engine.log; whole budgets are used here. This report does not reinterpret unknown metadata as optical positions.')
 write()
 quantities=collections.defaultdict(lambda:collections.defaultdict(lambda:{'max_error':0.,'budget_fraction':None,'mismatches':0,'compared':0,'designs':0}))
 for r in rows['F32_ENGINE_ERROR_STUDY']:
@@ -140,8 +141,13 @@ for r in rows['F32_ENGINE_ERROR_STUDY']:
         q['mismatches']+=value['mismatches'];q['compared']+=value['compared'];q['designs']+=1
 values=[]
 for (analysis,quantity),data in sorted(quantities.items()):
-    values.append([analysis,quantity,*[f"{fmt(data[m]['max_error'])} ({fmt(data[m]['budget_fraction'])}×)" for m in (1,2)],*[data[m]['mismatches'] for m in (1,2)],*[data[m]['designs'] for m in (1,2)]])
+    values.append([analysis,quantity,*[(f"{fmt(data[m]['max_error'])} ({fmt(data[m]['budget_fraction'])}×)" if data[m]['designs'] and data[m]['compared'] else "—") for m in (1,2)],*[data[m]['mismatches'] for m in (1,2)],*[data[m]['designs'] for m in (1,2)]])
 table(['analysis','quantity','DF max (budget)','f32 max (budget)','DF mismatches','f32 mismatches','DF designs','f32 designs'],values)
+write('### Raw adapter whole-result reference completions')
+write()
+write('These are returned CPU f64 results after a resident attempt. Their timing includes the attempt and replacement, but their numerical equality is excluded from GPU accuracy maxima. Partial-reference stages remain named in each raw timing row’s warnings.')
+write()
+table(['design','analysis','requested mode'], [[r['sample'],r['analysis'],r['mode']] for r in rows['F32_ENGINE_ERROR_STUDY'] if r.get('reference_completion')])
 write('### Raw adapter failures')
 write()
 errors=collections.defaultdict(lambda:[0,set()])
