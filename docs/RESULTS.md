@@ -127,8 +127,8 @@ Native results publish directly with their actual precision, without per-snapsho
 or per-candidate f64 reruns. Accuracy is established offline. Static capability
 restrictions route encircled energy, wavefront maps and polarization pupil maps
 to the CPU reference with deliberate reasons (GPU §9.2). Optimization best
-designs, tolerance cases and glass finalists receive f64 report scores once at
-the end; merit evaluation returns actual evaluator values.
+designs and glass finalists receive f64 report scores once at the end;
+tolerance and merit evaluation return actual evaluator values.
 
 `backend.execution` preserves device/build/probe, plan versions, identities,
 timings, commands, allocation/copy counters and partial/reference-completion
@@ -2165,7 +2165,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
@@ -2259,7 +2259,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
@@ -2330,7 +2330,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
@@ -2446,7 +2446,7 @@ Result (`result` in the envelope):
 | `backend.gpu_stats.gpu_candidates` | integer |  | ≥ 0 |
 | `backend.gpu_stats.rays` | integer |  | ≥ 0 |
 | `backend.precision` | string |  | one of `"f64_reference"`, `"f32_gpu"`; Search precision. |
-| `backend.reported_on` | string |  | CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation. |
+| `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |

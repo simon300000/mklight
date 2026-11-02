@@ -1737,8 +1737,8 @@ cheap runtime guards. Unresolved aiming and unsupported features keep explicit
 reference fallbacks; cancellation yields no replacement result.
 
 The following budgets remain offline acceptance criteria. Final reported
-optimisation best designs, tolerance cases and glass finalists are f64-scored
-once after the device search.
+optimisation best designs and glass finalists are f64-scored once after the
+device search; tolerance reports device scores.
 
 | Quantity / kernel | Acceptance against independent CPU f64 |
 |---|---|

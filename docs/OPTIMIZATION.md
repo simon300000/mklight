@@ -851,9 +851,9 @@ ranks on f32 values, so this check is needed for them.
 **Reported numbers.** The `start` and `final` merits, the operand table and
 the constraint check are always computed on the CPU f64 reference, whichever
 evaluator drove the search. `backend` says what evaluated the search
-(`evaluated_on`, `precision`) and actual device/fallback accounting. Optimize,
-tolerance and glass reports use the CPU f64 reference at the end; merit
-evaluation returns the active evaluator's values. Requested/used backend,
+(`evaluated_on`, `precision`) and actual device/fallback accounting. Optimize
+and glass reports use the CPU f64 reference at the end; tolerance and merit
+evaluation return the active evaluator's values. Requested/used backend,
 precision, device/build and cost decisions remain in the envelope; qualification
 blobs and caches are removed. Result versions for these four jobs are now 2.
 Unsupported preparation/features, unresolved aiming and resource/device errors
@@ -1350,10 +1350,9 @@ and unresolved aiming determine the actual fallbacks, counted separately from
 model-only host work.
 
 Final optimize reports score the start and selected best design in f64. Glass
-reports score and rank kept finalists in f64. Tolerance retains completed device
-outcomes, scores each returned compensated case once in f64 after the search,
-and assembles its statistics from those scores. It never reruns the compensator
-solve for reporting. Merit evaluation returns actual device operands. Cancellation
+reports score and rank kept finalists in f64. Tolerance reports the active
+evaluator's case scores and statistics: rescoring every Monte Carlo trial in f64
+would repeat the whole run on the CPU. Merit evaluation returns actual device operands. Cancellation
 never starts final reference scoring. Existing f64 cross-validation, perturbed
 candidate, known-answer, conservation and derivative tests remain mandatory.
 

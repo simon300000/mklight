@@ -53,9 +53,8 @@ use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
 };
 use mklight_optim::tolerance::{
-    Compensator, MonteCarloReport, MonteCarloSettings, OpticalToleranceEvaluator,
-    SENSITIVITY_BATCH, SensitivityReport, ToleranceEvaluator, ToleranceOperand, ToleranceSpec,
-    TrialOutcome, monte_carlo, sensitivity,
+    Compensator, MonteCarloSettings, OpticalToleranceEvaluator, SENSITIVITY_BATCH,
+    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -98,7 +97,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
             (
                 "reported_on",
                 string(
-                    "CPU reference for final optimize/tolerance/glass reports; active evaluator for merit_evaluation.",
+                    "CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation.",
                 ),
             ),
             (
@@ -2151,12 +2150,6 @@ impl Analysis for Tolerance {
                             spec.case_system(&system, &deltas, &outcome.compensators)?
                         }
                     };
-                    let mut outcome = outcome;
-                    if ev.active_gpu().is_some() && why != Interrupt::Cancelled {
-                        let scores = [Some(model.clone())];
-                        (outcome.criterion, outcome.ok) =
-                            reference_scores(&system, &criterion, &ev.cpu, &scores, ctx)?[0];
-                    }
                     let snapshot = Snapshot::new(model)?;
                     json!({"system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
                         "criterion": num(outcome.criterion), "compensators": outcome.compensators,
@@ -2234,33 +2227,16 @@ impl Analysis for Tolerance {
                 }),
             }
         });
-        let mut sens = match sens {
+        let sens = match sens {
             Some(Ok(r)) => Some(r),
             Some(Err(MkError::Cancelled)) | None => None,
             Some(Err(e)) => return Err(e.into()),
         };
-        let mut mcr = match mcr {
+        let mcr = match mcr {
             Some(Ok(r)) => Some(r),
             Some(Err(MkError::Cancelled)) | None => None,
             Some(Err(e)) => return Err(e.into()),
         };
-        if ev.active_gpu().is_some() && why != Interrupt::Cancelled {
-            ctx.report(0.9, "scoring final tolerance cases on the CPU reference");
-            report_tolerance(
-                &Runner {
-                    nominal: &system,
-                    criterion: &criterion,
-                    evaluator: &ev.cpu,
-                    registry: &reg,
-                    lsq,
-                    spec: &spec,
-                },
-                sens.as_mut(),
-                mcr.as_mut(),
-                &mc,
-                &ctx.subrange(0.9, 1.),
-            )?;
-        }
         ev.finish(input, s.backend)?;
         let status = match why {
             Interrupt::None | Interrupt::TimeLimit => "complete",
@@ -2337,162 +2313,6 @@ impl Analysis for Tolerance {
             warnings: ev.warnings,
         })
     }
-}
-
-/// CPU f64 report scores (criterion, ok) of completed tolerance case systems
-/// (`None`: no system). Compensators are not solved again.
-fn reference_scores(
-    nominal: &OpticalSystem,
-    criterion: &MeritFunctionSpec,
-    cpu: &BuiltinEvaluator,
-    systems: &[Option<OpticalSystem>],
-    ctx: &JobContext,
-) -> mklight_core::MkResult<Vec<(f64, bool)>> {
-    ctx.check()?;
-    let p = OpticalProblem::new(
-        nominal.clone(),
-        vec![],
-        criterion.clone(),
-        cpu,
-        &OperandRegistry::builtin(),
-    )?;
-    let e = p.to_evaluation(p.system_values(systems, ctx)?);
-    Ok((0..systems.len())
-        .map(|i| {
-            let m = merit(p.weights(), e.residuals(i), e.status[i]);
-            let v = total_violation(p.constraints(), e.constraints(i), e.status[i]);
-            (
-                m,
-                m.is_finite() && v <= mklight_optim::monitor::DEFAULT_FEASIBILITY_TOL,
-            )
-        })
-        .collect())
-}
-
-/// The system of a completed case: its perturbations and returned
-/// compensators (`trial`: a Monte Carlo trial with its own sampling).
-fn case_system(
-    spec: &ToleranceSpec,
-    nominal: &OpticalSystem,
-    deltas: &[f64],
-    outcome: &TrialOutcome,
-    trial: Option<u64>,
-    mc: &MonteCarloSettings,
-) -> Option<OpticalSystem> {
-    if outcome.compensators.len() != spec.compensators.len() {
-        return None;
-    }
-    match trial {
-        Some(t) => spec.trial_case_system(nominal, deltas, &outcome.compensators, mc, t),
-        None => spec.case_system(nominal, deltas, &outcome.compensators),
-    }
-    .ok()
-}
-
-/// Replays final f64 trial scores through the Monte Carlo statistics.
-struct Scored {
-    nominal: TrialOutcome,
-    trials: Vec<TrialOutcome>,
-}
-impl ToleranceEvaluator for Scored {
-    fn evaluate_batch(
-        &self,
-        _: &[Vec<f64>],
-        _: &JobContext,
-    ) -> mklight_core::MkResult<Vec<TrialOutcome>> {
-        Ok(vec![self.nominal.clone()])
-    }
-    fn evaluate_trials(
-        &self,
-        deltas: &[Vec<f64>],
-        _: &MonteCarloSettings,
-        first: u64,
-        _: &JobContext,
-    ) -> mklight_core::MkResult<Vec<TrialOutcome>> {
-        let first = first as usize;
-        Ok(self.trials[first..first + deltas.len()].to_vec())
-    }
-}
-
-/// Score the device search's completed tolerance cases once on the CPU f64
-/// reference and rebuild the reported figures from those scores.
-fn report_tolerance(
-    runner: &Runner<'_, BuiltinEvaluator>,
-    sensitivity: Option<&mut SensitivityReport>,
-    monte_carlo_report: Option<&mut MonteCarloReport>,
-    mc: &MonteCarloSettings,
-    ctx: &JobContext,
-) -> mklight_core::MkResult<()> {
-    let spec = runner.spec;
-    let zero = vec![0.; spec.operands.len()];
-    let system = |deltas: &[f64], o: &TrialOutcome, trial| {
-        case_system(spec, runner.nominal, deltas, o, trial, mc)
-    };
-    let score = |systems: Vec<Option<OpticalSystem>>| {
-        reference_scores(
-            runner.nominal,
-            runner.criterion,
-            runner.evaluator,
-            &systems,
-            ctx,
-        )
-    };
-    let rescore = |o: &mut TrialOutcome, (criterion, ok): (f64, bool)| {
-        o.criterion = criterion;
-        o.ok = ok;
-    };
-    if let Some(r) = sensitivity {
-        let mut systems = vec![system(&zero, &r.nominal, None)];
-        for o in &r.operands {
-            let mut d = zero.clone();
-            d[o.index] = -spec.operands[o.index].minus;
-            systems.push(system(&d, &o.minus, None));
-            d[o.index] = spec.operands[o.index].plus;
-            systems.push(system(&d, &o.plus, None));
-        }
-        let mut scores = score(systems)?.into_iter();
-        rescore(&mut r.nominal, scores.next().unwrap());
-        for o in &mut r.operands {
-            rescore(&mut o.minus, scores.next().unwrap());
-            rescore(&mut o.plus, scores.next().unwrap());
-            o.change_minus = o.minus.criterion - r.nominal.criterion;
-            o.change_plus = o.plus.criterion - r.nominal.criterion;
-            o.worst = o.change_minus.abs().max(o.change_plus.abs());
-        }
-        let ops = &r.operands;
-        r.ranking
-            .sort_by(|&a, &b| ops[b].worst.total_cmp(&ops[a].worst).then(a.cmp(&b)));
-        r.rss_change = ops.iter().map(|o| o.worst * o.worst).sum::<f64>().sqrt();
-    }
-    if let Some(r) = monte_carlo_report {
-        let mut systems = vec![system(&zero, &r.nominal, None)];
-        systems.extend(
-            r.records
-                .iter()
-                .map(|t| system(&t.perturbations, &t.outcome, Some(t.trial as u64))),
-        );
-        let mut scored = Scored {
-            nominal: r.nominal.clone(),
-            trials: r.records.iter().map(|t| t.outcome.clone()).collect(),
-        };
-        let mut scores = score(systems)?.into_iter();
-        rescore(&mut scored.nominal, scores.next().unwrap());
-        for (o, s) in scored.trials.iter_mut().zip(scores) {
-            rescore(o, s);
-        }
-        let settings = MonteCarloSettings {
-            trials: r.trials,
-            ..mc.clone()
-        };
-        let mon = Monitor::new(JobContext::with(ctx.cancel.clone(), Progress::default()));
-        let report = monte_carlo(spec, &scored, &settings, &mon)?;
-        *r = MonteCarloReport {
-            seconds_per_trial: r.seconds_per_trial,
-            cancelled: r.cancelled,
-            ..report
-        };
-    }
-    Ok(())
 }
 
 /// Sensitivity and Monte Carlo on one evaluator type, behind a trait object
