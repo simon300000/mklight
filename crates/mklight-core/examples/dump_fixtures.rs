@@ -959,6 +959,7 @@ fn run_info(snapshot: &Snapshot) -> RunInfo {
         started_unix_ms: 1_767_225_600_000,
         duration_ms: 12.5,
         warnings: vec!["example warning".into()],
+        failed_attempts: vec![],
     }
 }
 

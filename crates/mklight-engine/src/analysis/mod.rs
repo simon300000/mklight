@@ -38,15 +38,18 @@ pub mod spectrum;
 pub mod stray;
 pub mod wave;
 
+pub(crate) use cost::is_apple as is_apple_gpu;
+pub(crate) use routing::pre_route;
+
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mklight_core::job::{CancelToken, Precision, RunTimer};
+use mklight_core::job::{BackendAttempt, CancelToken, Precision, RunTimer};
 use mklight_core::materials::MaterialLibrary;
-use mklight_core::{JobContext, MkResult, ResolvedSystem, RunInfo, Snapshot};
+use mklight_core::{JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo, Snapshot};
 
 use crate::backend::{Backend, BackendInfo, DeviceHandle};
 use crate::buffer::{Buffer, BufferDesc};
@@ -207,6 +210,7 @@ pub struct AnalysisInput<'a> {
     backend_used: RefCell<Option<BackendUse>>,
     executions: RefCell<Vec<Value>>,
     cost_decision: RefCell<Option<Value>>,
+    attempts: RefCell<Vec<BackendAttempt>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
     library_hash: OnceCell<String>,
 }
@@ -241,6 +245,7 @@ impl<'a> AnalysisInput<'a> {
             backend_used: RefCell::new(None),
             executions: RefCell::new(Vec::new()),
             cost_decision: RefCell::new(None),
+            attempts: RefCell::new(Vec::new()),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
         }
@@ -262,6 +267,19 @@ impl<'a> AnalysisInput<'a> {
         self.requested_backend = requested.into();
         self.selection_note = note;
         self
+    }
+
+    /// The cost decision when `auto` chose the backend before opening a
+    /// device (`SelectedBackend::cost_decision`).
+    pub fn with_cost_decision(self, decision: Option<Value>) -> Self {
+        *self.cost_decision.borrow_mut() = decision;
+        self
+    }
+
+    /// Record a backend attempt that did not produce the result
+    /// (`RunInfo::failed_attempts`).
+    pub(crate) fn record_attempt(&self, attempt: BackendAttempt) {
+        self.attempts.borrow_mut().push(attempt);
     }
 
     /// Record the backend that actually computed the result, when it is not
@@ -324,6 +342,20 @@ pub trait Analysis: Send + Sync {
     /// `AnalysisInput::device` and reports what it used).
     fn gpu_path(&self) -> bool {
         false
+    }
+    /// Capability and resource check of the native path with the opened
+    /// device, before any preparation. `Err(reason)` runs the reference
+    /// instead, with an `infeasible` attempt in `RunInfo::failed_attempts`
+    /// (and a warning for explicit requests). Implement it where a device
+    /// limit is known from the settings and system alone, such as the
+    /// direct-MTF stencil budget or an oversized output.
+    fn native_preflight(
+        &self,
+        _settings: &Value,
+        _system: &OpticalSystem,
+        _device: &mklight_gpu::DeviceInfo,
+    ) -> Result<(), String> {
+        Ok(())
     }
     /// `Err(reason)` when the analysis cannot run in this build.
     fn availability(&self) -> Result<(), String> {
@@ -433,12 +465,19 @@ pub fn run_analysis(
     if backend.used == Backend::CpuReference.id() {
         backend.device = None;
     }
+    let attempts = input.attempts.take();
+    for a in attempts.iter().filter(|a| a.outcome == "downgraded") {
+        warnings.push(format!(
+            "backend '{}' downgraded to the CPU f64 reference ({})",
+            a.backend, a.reason
+        ));
+    }
     for w in input.resolved_warnings().into_iter().chain(out.warnings) {
         if !warnings.contains(&w) {
             warnings.push(w);
         }
     }
-    let run_info = timer.finish(
+    let mut run_info = timer.finish(
         submitted_snapshot,
         analysis.name(),
         &settings,
@@ -447,6 +486,7 @@ pub fn run_analysis(
         analysis.seed(&settings),
         warnings,
     );
+    run_info.failed_attempts = attempts;
     ctx.report(1.0, "");
     Ok(AnalysisResult {
         run_info,

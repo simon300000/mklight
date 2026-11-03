@@ -684,9 +684,12 @@ impl Session {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisResult> {
         let analysis = self.engine.analysis(&req.analysis)?;
-        let backend = self.engine.select_backend(
+        let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
+        let backend = self.engine.route_backend(
             req.backend.as_ref(),
             &req.analysis,
+            &settings,
+            self.current.system(),
             req.allow_backend_fallback,
         )?;
         let (cache, snap, lib, generation) = (
@@ -703,11 +706,12 @@ impl Session {
         )
         .with_device(backend.device)
         .with_selection(backend.requested, backend.note)
+        .with_cost_decision(backend.cost_decision)
         .with_library_hash(self.library_hash.clone());
         run_analysis(
             analysis.as_ref(),
             &input,
-            &req.settings,
+            &settings,
             backend.warning.into_iter().collect(),
             ctx,
         )
@@ -721,9 +725,11 @@ impl Session {
     pub fn analysis_job(&self, req: &AnalysisRequest) -> EngineResult<JobSpec<AnalysisResult>> {
         let analysis = self.engine.analysis(&req.analysis)?;
         let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
-        let backend = self.engine.select_backend(
+        let backend = self.engine.route_backend(
             req.backend.as_ref(),
             &req.analysis,
+            &settings,
+            self.current.system(),
             req.allow_backend_fallback,
         )?;
         let snap = self.current.clone();
@@ -744,6 +750,7 @@ impl Session {
             .with_stop_token(job_stop)
             .with_device(backend.device)
             .with_selection(backend.requested, backend.note)
+            .with_cost_decision(backend.cost_decision)
             .with_library_hash(lib_hash);
             run_analysis(
                 analysis.as_ref(),

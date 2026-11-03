@@ -13,16 +13,37 @@
 
 use mklight_core::job::Precision;
 use mklight_gpu::{ComputeBackend, CpuF32Backend, JobKind};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::analysis::gpu::GPU_ANALYSES;
-use crate::backend::{Backend, BackendCapabilities, BackendInfo, BackendProvider, DeviceHandle};
+use crate::backend::{
+    Backend, BackendCapabilities, BackendInfo, BackendProvider, DeviceHandle, ProviderHint,
+};
+use crate::lru::LruCache;
+
+/// Native requests remembered as failing per device.
+const KNOWN_FAILURES: usize = 256;
+
+/// A native request that failed deterministically on a device
+/// (`GpuDevice::known_failure`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnownFailure {
+    pub reason: String,
+    /// Time the failed attempt took.
+    pub elapsed_ms: f64,
+}
+
 /// An open GPU backend as GPU analyses see it (`AnalysisInput::device`
 /// downcasts to this type).
 pub struct GpuDevice {
     /// Engine backend id (`gpu:metal`), recorded as `RunInfo.backend`.
     pub id: String,
     pub backend: Arc<dyn ComputeBackend>,
+    /// Deterministic native failures by request identity (snapshot, glass
+    /// library, analysis and settings; see `analysis::routing`), so the
+    /// same request is not attempted again on this device. An edit changes
+    /// the identity; bounded LRU.
+    known_failures: Mutex<LruCache<[u8; 32], KnownFailure>>,
 }
 
 impl GpuDevice {
@@ -30,7 +51,23 @@ impl GpuDevice {
         Self {
             id: id.into(),
             backend,
+            known_failures: Mutex::new(LruCache::new(KNOWN_FAILURES)),
         }
+    }
+
+    /// The recorded failure of the request with identity `key`.
+    pub fn known_failure(&self, key: &[u8; 32]) -> Option<KnownFailure> {
+        self.known_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+    }
+
+    pub fn remember_failure(&self, key: [u8; 32], failure: KnownFailure) {
+        self.known_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, failure);
     }
 
     /// Device name (`"Apple M2 Pro"`).
@@ -47,6 +84,9 @@ pub struct GpuProvider {
     title: String,
     open: Opener,
     device: OnceLock<Result<Arc<GpuDevice>, String>>,
+    /// The device family before opening: every Metal device on Apple
+    /// silicon is the Apple GPU.
+    apple_gpu: Option<bool>,
 }
 
 impl GpuProvider {
@@ -61,6 +101,8 @@ impl GpuProvider {
             title: title.into(),
             open: Box::new(open),
             device: OnceLock::new(),
+            apple_gpu: (name == "metal" && cfg!(all(target_os = "macos", target_arch = "aarch64")))
+                .then_some(true),
         }
     }
 
@@ -148,6 +190,28 @@ impl BackendProvider for GpuProvider {
 
     fn device(&self) -> Option<DeviceHandle> {
         self.get().as_ref().ok().map(|d| d.clone() as DeviceHandle)
+    }
+
+    fn hint(&self) -> Option<ProviderHint> {
+        let opened = match self.device.get() {
+            Some(Err(reason)) => Some(Err(reason.clone())),
+            Some(Ok(d)) => Some(Ok(crate::analysis::is_apple_gpu(d.backend.info()))),
+            None if std::env::var("MKLIGHT_DISABLE_GPU").is_ok_and(|v| v == "1") => {
+                Some(Err("disabled by MKLIGHT_DISABLE_GPU=1".into()))
+            }
+            None => None,
+        };
+        Some(match opened {
+            Some(Err(reason)) => ProviderHint {
+                unavailable: Some(reason),
+                ..Default::default()
+            },
+            known => ProviderHint {
+                analyses: GPU_ANALYSES.iter().map(|s| s.to_string()).collect(),
+                apple_gpu: known.map_or(self.apple_gpu, |k| k.ok()),
+                ..Default::default()
+            },
+        })
     }
 }
 

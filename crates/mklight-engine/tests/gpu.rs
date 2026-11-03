@@ -321,12 +321,23 @@ fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
             };
             assert!(equal, "{}", a.name);
         }
+        // The explicit request was downgraded: a warning and an attempt
+        // record, no native time spent.
+        let attempts = &gpu.run_info.failed_attempts;
+        assert_eq!(attempts.len(), 1, "{attempts:?}");
+        assert_eq!(attempts[0].backend, "gpu:cpu_f32");
+        assert_eq!(
+            (attempts[0].outcome.as_str(), attempts[0].elapsed_ms),
+            ("downgraded", 0.)
+        );
+        assert!(attempts[0].reason.contains("static capability: P11"));
         assert!(
-            !gpu.run_info
+            gpu.run_info
                 .warnings
                 .iter()
-                .any(|w| w.starts_with("backend "))
+                .any(|w| w.starts_with("backend 'gpu:cpu_f32' downgraded"))
         );
+        assert!(cpu.run_info.failed_attempts.is_empty());
     }
 }
 

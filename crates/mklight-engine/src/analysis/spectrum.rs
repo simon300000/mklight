@@ -54,7 +54,8 @@ pub(super) fn derived<'a>(
         input.selection_note.clone(),
     )
     .with_stop_token(input.stop.clone())
-    .with_library_hash(input.library_hash().to_string()))
+    .with_library_hash(input.library_hash().to_string())
+    .with_cost_decision(input.cost_decision.borrow().clone()))
 }
 
 #[cfg(test)]
