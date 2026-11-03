@@ -48,27 +48,32 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use mklight_core::memo::{Memo, NodeKey};
+
 use crate::mtf::MtfOrientation;
 use crate::pupil::PupilFunction;
-use crate::traced::{ConfiguredTracer, PupilSettings, ReferencePoint, TracedPupil, trace_pupil};
+use crate::shared::{PupilJob, traced_pupils};
+use crate::traced::{ConfiguredTracer, PupilSettings, ReferencePoint, TracedPupil};
 
 pub use energy::{
     EncircledEnergySettings, FieldEnergy, FieldLineSpread, LineSpreadResult, LineSpreadSettings,
     WaveEncircledEnergyResult, diffraction_encircled_energy, diffraction_encircled_energy_job,
-    line_spread, line_spread_job,
+    diffraction_encircled_energy_shared, line_spread, line_spread_job, line_spread_shared,
 };
 pub use mtf::{
     FieldMtf, HuygensGrid, MtfAnalysisMethod, MtfFieldCurve, MtfSettings, MtfVsFieldResult,
     MtfVsFieldSettings, ThroughFocusCurve, ThroughFocusField, ThroughFocusResult,
-    ThroughFocusSettings, WaveMtfResult, mtf_analysis, mtf_analysis_job, mtf_vs_field,
-    mtf_vs_field_job, through_focus_mtf_analysis, through_focus_mtf_analysis_job,
+    ThroughFocusSettings, WaveMtfResult, mtf_analysis, mtf_analysis_job, mtf_analysis_shared,
+    mtf_vs_field, mtf_vs_field_job, mtf_vs_field_shared, through_focus_mtf_analysis,
+    through_focus_mtf_analysis_job, through_focus_mtf_analysis_shared,
 };
 pub use psf::{
     FieldPsf, MAX_HUYGENS_GRID, MAX_HUYGENS_WORK, MIN_ENERGY_IN_GRID, PsfAnalysisSettings,
-    PsfMethod, PsfResult, psf_analysis, psf_analysis_job,
+    PsfMethod, PsfResult, psf_analysis, psf_analysis_job, psf_analysis_shared,
 };
 pub use wavefront::{
     WavefrontMap, WavefrontResult, WavefrontSettings, wavefront_map, wavefront_map_job,
+    wavefront_map_shared,
 };
 
 /// Backend recorded in `RunInfo` (the CPU f64 reference tracer).
@@ -281,6 +286,8 @@ pub(crate) struct FieldPupils {
     pub reference_mm: [f64; 2],
     /// `(wavelength index, normalised weight, pupil)`.
     pub pupils: Vec<(usize, f64, TracedPupil)>,
+    /// Lattice node key of each pupil (`crate::shared`).
+    pub keys: Vec<NodeKey>,
     pub warnings: Vec<String>,
 }
 
@@ -309,10 +316,12 @@ impl FieldPupils {
     }
     /// Refine automatically sampled pupils until their alias-free field
     /// `n λN` holds an image window of `side` mm; explicit grids are kept.
+    /// Refined grids are shared through `memo` (`crate::shared`).
     pub(crate) fn ensure_window(
         &mut self,
         side: f64,
         settings: &PupilSettings,
+        memo: Option<&dyn Memo>,
         ctx: &JobContext,
     ) -> MkResult<Vec<String>> {
         if settings.grid != 0 {
@@ -322,16 +331,20 @@ impl FieldPupils {
         let warnings: Vec<Vec<String>> = self
             .pupils
             .par_iter_mut()
+            .zip(&self.keys)
             .enumerate()
-            .map(|(i, (_, _, tp))| {
+            .map(|(i, ((_, _, tp), key))| {
                 let n = ((side / tp.pupil.lambda_f_mm())
                     .max(tp.pupil.n() as f64)
                     .min(crate::sampling::MAX_AUTO_PUPIL as f64)
                     .ceil() as usize)
                     .next_power_of_two();
-                tp.resample(
+                crate::shared::resample(
+                    tp,
+                    key,
                     n,
                     settings.supersample,
+                    memo,
                     &ctx.subrange(i as f64 / count, (i + 1) as f64 / count),
                 )
             })
@@ -351,28 +364,64 @@ fn in_context(e: MkError, label: &str) -> MkError {
     }
 }
 
+/// One progress context per wavelength of a field.
+fn wavelength_jobs<'a>(
+    field: &'a PreparedField,
+    wls: &[(usize, f64)],
+    ctx: &JobContext,
+) -> Vec<PupilJob<'a>> {
+    let nw = wls.len() as f64;
+    wls.iter()
+        .enumerate()
+        .map(|(k, &(wl, _))| PupilJob {
+            field,
+            wl,
+            ctx: ctx.subrange(k as f64 / nw, (k + 1) as f64 / nw),
+        })
+        .collect()
+}
+
 /// Trace the pupils of a prepared field at `wls` and place them (module
-/// docs, polychromatic weighting).
+/// docs, polychromatic weighting), sharing traced pupils through `memo`.
 pub(crate) fn field_pupils(
     tracer: &SequentialTracer,
     field: &PreparedField,
     label: &str,
     wls: &[(usize, f64)],
     settings: &PupilSettings,
+    memo: Option<&dyn Memo>,
     ctx: &JobContext,
 ) -> MkResult<FieldPupils> {
-    let nw = wls.len() as f64;
-    let traced: Vec<_> = wls
-        .par_iter()
-        .enumerate()
-        .map(|(k, &(wl, w))| {
-            let sub = ctx.subrange(k as f64 / nw, (k + 1) as f64 / nw);
-            trace_pupil(tracer, field, wl, settings, &sub)
-                .map(|p| (wl, w, p))
+    let jobs = wavelength_jobs(field, wls, ctx);
+    let traced = traced_pupils(tracer, &jobs, settings, memo, ctx);
+    place_pupils(tracer, field, label, wls, settings, traced)
+}
+
+/// The traced pupils of one field (in `wls` order) placed relative to
+/// the field's common reference point.
+fn place_pupils(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+    label: &str,
+    wls: &[(usize, f64)],
+    settings: &PupilSettings,
+    traced: Vec<MkResult<(NodeKey, TracedPupil)>>,
+) -> MkResult<FieldPupils> {
+    let traced: Vec<_> = traced
+        .into_iter()
+        .zip(wls)
+        .map(|(r, &(wl, w))| {
+            r.map(|(key, p)| (wl, w, p, key))
                 .map_err(|e| in_context(e, &format!("{label}, wavelength {wl}")))
         })
         .collect();
-    let mut pupils: Vec<_> = traced.into_iter().collect::<MkResult<_>>()?;
+    let traced: Vec<_> = traced.into_iter().collect::<MkResult<_>>()?;
+    let mut keys = Vec::with_capacity(traced.len());
+    let mut pupils = Vec::with_capacity(traced.len());
+    for (wl, w, p, key) in traced {
+        keys.push(key);
+        pupils.push((wl, w, p));
+    }
     let mut warnings = Vec::new();
     for (wl, _, tp) in &pupils {
         warnings.extend(
@@ -411,6 +460,7 @@ pub(crate) fn field_pupils(
         point: field.point,
         reference_mm,
         pupils,
+        keys,
         warnings,
     })
 }
@@ -426,29 +476,42 @@ pub(crate) type SystemFieldPupils = (usize, [f64; 2], FieldPupils);
 /// geometric analyses skip fields whose chief ray fails; the call fails
 /// only when no selected field is usable. Returns the usable fields and
 /// those warnings.
+///
+/// Every (field, wavelength) pupil is requested from `memo` in one batch,
+/// so pupils another analysis of the same system already traced (or is
+/// tracing) are reused.
 pub(crate) fn system_field_pupils(
     tracer: &SequentialTracer,
     idx: &[usize],
     wls: &[(usize, f64)],
     settings: &PupilSettings,
+    memo: Option<&dyn Memo>,
     ctx: &JobContext,
 ) -> MkResult<(Vec<SystemFieldPupils>, Vec<String>)> {
     let nf = idx.len().max(1) as f64;
     let mut out = Vec::with_capacity(idx.len());
     let mut skipped = Vec::new();
     let mut first_error = None;
-    let traced: Vec<_> = idx
-        .par_iter()
+    let jobs: Vec<PupilJob> = idx
+        .iter()
         .enumerate()
-        .map(|(k, &f)| {
+        .flat_map(|(k, &f)| {
             let sub = ctx.subrange(k as f64 / nf, (k + 1) as f64 / nf);
-            field_pupils(
+            wavelength_jobs(tracer.field(f), wls, &sub)
+        })
+        .collect();
+    let mut all = traced_pupils(tracer, &jobs, settings, memo, ctx).into_iter();
+    let traced: Vec<_> = idx
+        .iter()
+        .map(|&f| {
+            let mine: Vec<_> = all.by_ref().take(wls.len()).collect();
+            place_pupils(
                 tracer,
                 tracer.field(f),
                 &format!("field {f}"),
                 wls,
                 settings,
-                &sub,
+                mine,
             )
         })
         .collect();

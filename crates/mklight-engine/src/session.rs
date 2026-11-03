@@ -707,7 +707,8 @@ impl Session {
         .with_device(backend.device)
         .with_selection(backend.requested, backend.note)
         .with_cost_decision(backend.cost_decision)
-        .with_library_hash(self.library_hash.clone());
+        .with_library_hash(self.library_hash.clone())
+        .with_graph(self.engine.analysis_graph().cloned());
         run_analysis(
             analysis.as_ref(),
             &input,
@@ -737,6 +738,7 @@ impl Session {
         let lib_hash = self.library_hash.clone();
         let cache = self.resolved.clone();
         let generation = self.library_generation;
+        let graph = self.engine.analysis_graph().cloned();
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
         let stop = mklight_core::job::CancelToken::new();
         let job_stop = stop.clone();
@@ -751,7 +753,8 @@ impl Session {
             .with_device(backend.device)
             .with_selection(backend.requested, backend.note)
             .with_cost_decision(backend.cost_decision)
-            .with_library_hash(lib_hash);
+            .with_library_hash(lib_hash)
+            .with_graph(graph);
             run_analysis(
                 analysis.as_ref(),
                 &input,

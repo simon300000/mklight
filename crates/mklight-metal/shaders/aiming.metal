@@ -797,6 +797,31 @@ kernel void mkl_project_pupil(device const float* rays [[buffer(0)]], device con
     for (uint k = 0; k < 3; ++k) output[mkl_plane(k + 1, n, i)] = pupil.v[k];
 }
 
+// Aim convergence statistics over a [4,n] report, 256 rays per thread:
+// stats = [failed, iterations (low word), max iterations, histogram of
+// 0, 1, 2, 3-4, 5-8, 9-16, 17-60, >60 iterations, iterations (high word)].
+kernel void mkl_aim_stats(device const uint* report [[buffer(0)]], device atomic_uint* stats [[buffer(1)]],
+                          constant uint& n [[buffer(2)]], uint g [[thread_position_in_grid]]) {
+    uint first = g * 256;
+    if (first >= n) return;
+    uint failed = 0, total = 0, most = 0;
+    uint hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (uint i = first; i < min(first + 256, n); ++i) {
+        uint it = report[n + i];
+        failed += report[i] != 0 ? 1u : 0u;
+        total += it;
+        most = max(most, it);
+        uint b = it <= 2 ? it : it <= 4 ? 3 : it <= 8 ? 4 : it <= 16 ? 5 : it <= 60 ? 6 : 7;
+        hist[b] += 1;
+    }
+    atomic_fetch_add_explicit(&stats[0], failed, memory_order_relaxed);
+    uint old = atomic_fetch_add_explicit(&stats[1], total, memory_order_relaxed);
+    if (old + total < old) atomic_fetch_add_explicit(&stats[11], 1u, memory_order_relaxed);
+    atomic_fetch_max_explicit(&stats[2], most, memory_order_relaxed);
+    for (uint k = 0; k < 8; ++k)
+        if (hist[k] != 0) atomic_fetch_add_explicit(&stats[3 + k], hist[k], memory_order_relaxed);
+}
+
 // Stable unresolved compaction: fixed 256-ray groups, exclusive prefix,
 // original-order scatter.
 kernel void mkl_aim_count(device const uint* report [[buffer(0)]], device uint* counts [[buffer(1)]],

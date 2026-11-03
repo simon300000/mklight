@@ -1,9 +1,10 @@
-//! Numeric upload boundary for P1. Small first-order field metadata is host
-//! control work; no chief, real-image solve, or pupil ray is traced here.
+//! Numeric upload boundary for P1: small first-order field metadata, and chief
+//! rows converted from the reference tracer's f64 field preparation (serial,
+//! per field, and therefore host work). No pupil ray is traced here.
 use super::*;
 use bytemuck::{Pod, Zeroable};
 use mklight_core::{FieldKind, RayAiming, ResolvedSystem};
-use mklight_trace::{FieldPoint, Paraxial};
+use mklight_trace::{FieldPoint, ObjectSource, Paraxial, PreparedField, SequentialTracer};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -135,6 +136,95 @@ pub struct ChiefSeed {
     pub iterations: u32,
     pub has_jacobian: u32,
     pub reserved: u32,
+}
+impl ChiefSeed {
+    /// The chief row of system wavelength `w` from the reference tracer's f64
+    /// preparation of a field: its object source (the real-image-height solve
+    /// for those fields), chief aim point, stop Jacobian and residual, i.e.
+    /// what the device chief solve computes in double-float. The tracer must
+    /// use the generation's aiming mode. An unusable field or wavelength gives
+    /// an unreachable row, as a failed device solve does.
+    pub fn host(tracer: &SequentialTracer, field: &PreparedField, w: usize) -> Self {
+        let mut seed = ChiefSeed {
+            status: MKL_AIM_FIELD_UNREACHABLE,
+            ..Zeroable::zeroed()
+        };
+        let Some(a) = field.aims.get(w).filter(|_| field.is_valid()) else {
+            return seed;
+        };
+        let source = match field.source {
+            ObjectSource::Direction { dir } => dir,
+            ObjectSource::Point { point } => point,
+        };
+        seed.source = [source.x, source.y, source.z].map(Df32::from_f64);
+        seed.chief = a.chief.map(Df32::from_f64);
+        if let Some(j) = a.jacobian {
+            seed.jacobian = std::array::from_fn(|k| Df32::from_f64(j[k / 2][k % 2]));
+            seed.has_jacobian = 1;
+        }
+        seed.residual = Df32::from_f64(a.residual * tracer.pupil().r_stop);
+        seed.status = if a.converged {
+            0
+        } else {
+            MKL_AIM_FAILED | ((tracer.system().stop as u32) << MKL_RAY_SURFACE_SHIFT)
+        };
+        seed
+    }
+}
+/// Host chief rows for (field point, system wavelength) pairs. Points the
+/// tracer already prepared (its system fields) are reused; the others are
+/// solved once each, in parallel. A point that cannot be resolved gives
+/// unreachable rows.
+pub fn host_seeds(
+    tracer: &SequentialTracer,
+    rows: &[(FieldPoint, usize)],
+) -> (Vec<ChiefSeed>, resident::HostPreparation) {
+    use rayon::prelude::*;
+    let start = std::time::Instant::now();
+    let mut points: Vec<FieldPoint> = Vec::new();
+    for (f, _) in rows {
+        if !points.contains(f) {
+            points.push(*f);
+        }
+    }
+    let prepared: Vec<(PreparedField, bool)> = points
+        .par_iter()
+        .map(
+            |&point| match tracer.fields().iter().find(|pf| pf.point == point) {
+                Some(pf) => (pf.clone(), true),
+                None => {
+                    let pf = tracer
+                        .prepare_field(point)
+                        .unwrap_or_else(|e| PreparedField {
+                            point,
+                            source: ObjectSource::Direction {
+                                dir: mklight_core::Vec3::Z,
+                            },
+                            aims: vec![],
+                            error: Some(e.to_string()),
+                        });
+                    (pf, false)
+                }
+            },
+        )
+        .collect();
+    let seeds = rows
+        .iter()
+        .map(|(f, w)| {
+            let i = points.iter().position(|q| q == f).unwrap();
+            ChiefSeed::host(tracer, &prepared[i].0, *w)
+        })
+        .collect();
+    let reused = prepared.iter().filter(|p| p.1).count() as u64;
+    (
+        seeds,
+        resident::HostPreparation {
+            seed_rows: rows.len() as u64,
+            reused_fields: reused,
+            solved_fields: points.len() as u64 - reused,
+            seconds: start.elapsed().as_secs_f64(),
+        },
+    )
 }
 /// One converged (status 0) or failed seed-table node: the aim parameters of
 /// a lattice pupil point.

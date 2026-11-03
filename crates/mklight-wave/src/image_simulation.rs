@@ -228,6 +228,7 @@ pub fn build_psf_grid(
                 "image simulation",
                 &wls,
                 &s.pupil,
+                None,
                 &ctx.subrange(0.2 + 0.4 * i as f64 / n, 0.2 + 0.4 * (i + 1) as f64 / n),
             )
         })
@@ -259,6 +260,7 @@ pub fn build_psf_grid(
         warnings.extend(pupils.ensure_window(
             size as f64 * dx,
             &s.pupil,
+            None,
             &sub.subrange(0.0, 0.1),
         )?);
         let psf = crate::polychromatic_psf(
@@ -1213,7 +1215,7 @@ mod tests {
             .prepare_field(FieldPoint::normalized(s.field_extent, s.field_extent))
             .unwrap();
         let wls = wavelengths(&t, &Default::default()).unwrap();
-        let pupils = field_pupils(&t, &f, "", &wls, &s.pupil, &JobContext::new()).unwrap();
+        let pupils = field_pupils(&t, &f, "", &wls, &s.pupil, None, &JobContext::new()).unwrap();
         assert_eq!(m.real_mm, pupils.reference_mm);
         let chief = t.chief(&f, t.system().primary_wavelength).ray.pos;
         assert!((m.real_mm[1] - chief.y).abs() > 1e-3);

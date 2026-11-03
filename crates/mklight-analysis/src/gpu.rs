@@ -28,15 +28,19 @@ mod spot;
 pub use energy::{
     best_focus_job, encircled_energy_job, encircled_energy_with_uncertainty_job, geometric_mtf_job,
 };
-pub use spot::spot_diagram_job;
+pub use spot::{spot_diagram_job, spot_diagram_packed_job};
 
-/// A reusable system upload. Host work is immutable resolution/packing and
-/// small first-order field metadata; generation and tracing run on the backend.
+/// A reusable system upload. Host work is immutable resolution/packing, small
+/// first-order field metadata and f64 chief rows from the reference tracer's
+/// field preparation; pupil generation and tracing run on the backend.
 pub struct Geometry<'a> {
     pub backend: &'a dyn ComputeBackend,
     pub tracer: &'a SequentialTracer,
     systems: SystemHandle,
     wavelengths: Vec<Vec<usize>>,
+    /// Reference tracers for aiming modes other than the tracer's own (maps
+    /// and illumination force real aiming, pupil aberration none).
+    others: std::sync::Mutex<Vec<(mklight_core::RayAiming, std::sync::Arc<SequentialTracer>)>>,
 }
 impl Drop for Geometry<'_> {
     fn drop(&mut self) {
@@ -93,6 +97,7 @@ impl<'a> Geometry<'a> {
             tracer,
             systems,
             wavelengths: chunks,
+            others: Default::default(),
         })
     }
     fn import<T: BufferElement>(
@@ -182,10 +187,15 @@ impl<'a> Geometry<'a> {
             Ok(s)
         })?;
         let field_key = self.field_key(p, metadata)?;
+        let rows: Vec<_> = (0..nf)
+            .map(|i| (fields[i / cw.len()], cw[i % cw.len()]))
+            .collect();
+        let seeds = self.host_seeds(p, &rows, aiming)?;
         let hits = self.append_trace(
             p,
             metadata,
             field_key.clone(),
+            seeds,
             samples,
             count,
             steps,
@@ -200,13 +210,48 @@ impl<'a> Geometry<'a> {
             fields: fields.len(),
             wavelengths: wls.to_vec(),
             pupil_count: pupil.len(),
-            chief_source: Some((metadata, field_key, steps, aiming)),
+            chief_source: Some((metadata, field_key, seeds, steps, aiming)),
         })
+    }
+    /// Chief rows for (field point, system wavelength) pairs, solved in f64 by
+    /// the reference tracer for `aiming` (its prepared system fields are
+    /// reused), so the backend skips its chief/real-image-height solve.
+    pub fn host_seeds(
+        &self,
+        p: &mut ResidentPlan,
+        rows: &[(FieldPoint, usize)],
+        aiming: mklight_core::RayAiming,
+    ) -> MkResult<BufferId> {
+        let (seeds, host) = if aiming == self.tracer.aiming() {
+            host_seeds(self.tracer, rows)
+        } else {
+            host_seeds(&*self.tracer_for(aiming)?, rows)
+        };
+        p.host.add(&host);
+        self.records::<ChiefSeed>(p, rows.len(), |i| Ok(seeds[i]))
+    }
+    fn tracer_for(
+        &self,
+        aiming: mklight_core::RayAiming,
+    ) -> MkResult<std::sync::Arc<SequentialTracer>> {
+        let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, t)) = others.iter().find(|(a, _)| *a == aiming) {
+            return Ok(t.clone());
+        }
+        let t = std::sync::Arc::new(SequentialTracer::with_settings(
+            self.tracer.system_arc(),
+            mklight_trace::TracerSettings {
+                aiming: Some(aiming),
+                ..*self.tracer.settings()
+            },
+        )?);
+        others.push((aiming, t.clone()));
+        Ok(t)
     }
     /// Append the unclipped chief traces of a grid, one per field and chief
     /// wavelength (requested wavelengths plus the primary).
     pub fn append_chiefs(&self, p: &mut ResidentPlan, g: &mut ResidentGrid) -> MkResult<()> {
-        let Some((metadata, key, steps, aiming)) = g.chief_source.clone() else {
+        let Some((metadata, key, seeds, steps, aiming)) = g.chief_source.clone() else {
             return Err(mklight_core::MkError::InvalidParam(
                 "grid has no chief metadata".into(),
             ));
@@ -214,8 +259,9 @@ impl<'a> Geometry<'a> {
         let nf = g.fields * g.chief_wavelengths.len();
         let samples =
             self.records::<Sample>(p, nf, |i| Ok(Sample::new([0.0; 2], i as u32, i as u64)))?;
-        g.chiefs =
-            Some(self.append_trace(p, metadata, key, samples, nf, steps, aiming, false, false)?);
+        g.chiefs = Some(self.append_trace(
+            p, metadata, key, seeds, samples, nf, steps, aiming, false, false,
+        )?);
         Ok(())
     }
     /// Packed wavelength chunk and slot of system wavelength `w`.
@@ -250,6 +296,7 @@ impl<'a> Geometry<'a> {
         p: &mut ResidentPlan,
         metadata: BufferId,
         field_key: Option<String>,
+        seeds: BufferId,
         samples: BufferId,
         n: usize,
         steps: BufferId,
@@ -270,6 +317,7 @@ impl<'a> Geometry<'a> {
                 unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key,
+                seeds: Some(p.view(seeds)?),
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
@@ -468,7 +516,13 @@ pub struct ResidentGrid {
     pub wavelengths: Vec<usize>,
     pub pupil_count: usize,
     /// Field metadata, its seed-cache key, trace steps and aiming.
-    chief_source: Option<(BufferId, Option<String>, BufferId, mklight_core::RayAiming)>,
+    chief_source: Option<(
+        BufferId,
+        Option<String>,
+        BufferId,
+        BufferId,
+        mklight_core::RayAiming,
+    )>,
 }
 impl ResidentGrid {
     pub fn chiefs(&self) -> MkResult<&ResidentHits> {

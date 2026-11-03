@@ -347,9 +347,18 @@ impl<'a> GhostTransport<'a> {
         let samples = fill(self.backend, points.len() * nw, |i| {
             Ok(Sample::new(pupil, i as u32, i as u64))
         })?;
+        // Chief rows from the reference tracer (packed wavelength slot i % nw
+        // is system wavelength i % nw): no device chief/image-height solve.
+        let rows: Vec<_> = (0..points.len() * nw)
+            .map(|i| (points[i / nw], i % nw))
+            .collect();
+        let (seeds, host) = mklight_gpu::aiming::host_seeds(self.model.tracer(), &rows);
+        let seeds = fill(self.backend, seeds.len(), |i| Ok(seeds[i]))?;
         let mut p = self.plan();
+        p.host = host;
         let metadata = p.import(fields.view());
         let samples = p.import(samples.view());
+        let seeds = p.import(seeds.view());
         let n = points.len() * nw;
         let rays = ResidentRays {
             floats: p.scratch(BufferDesc::new(ElementType::F32, [15, n])),
@@ -370,6 +379,7 @@ impl<'a> GhostTransport<'a> {
                 unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
+                seeds: Some(p.view(seeds)?),
                 tolerance,
                 max_iterations: 40,
                 output: rays.clone(),

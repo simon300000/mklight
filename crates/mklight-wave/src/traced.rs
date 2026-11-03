@@ -841,7 +841,10 @@ pub(crate) fn chain_loops(segments: &[(usize, usize)]) -> Vec<Vec<usize>> {
     loops
 }
 
-/// Trace the pupil of `field` at wavelength index `wl` (module docs).
+/// Trace the pupil of `field` at wavelength index `wl` (module docs):
+/// [`trace_lattice`] with the first 85 % of `ctx`, then
+/// [`PupilLattice::resample`] to `settings.grid` (or the lattice's
+/// automatic grid) and [`PupilLattice::assemble`].
 pub fn trace_pupil(
     tracer: &SequentialTracer,
     field: &PreparedField,
@@ -849,6 +852,113 @@ pub fn trace_pupil(
     settings: &PupilSettings,
     ctx: &JobContext,
 ) -> MkResult<TracedPupil> {
+    let lattice = trace_lattice(tracer, field, wl, settings, ctx)?;
+    let n = lattice.grid_for(settings);
+    let (pupil, warnings) = lattice.resample(n, settings.supersample, ctx)?;
+    Ok(lattice.assemble(pupil, &warnings))
+}
+
+/// The grid-independent part of a traced pupil: lattice and rim rays,
+/// reference sphere, placed samples, clear-aperture masks and the
+/// automatic pupil-grid decision. [`trace_pupil`] resamples it; analyses
+/// that share it (`crate::shared`) resample it once per grid.
+#[derive(Clone, Debug)]
+pub struct PupilLattice {
+    /// Exit-pupil data; `clear_area` and `effective_f_number` are final
+    /// only when `mask` is set (otherwise [`Self::assemble`] measures the
+    /// clear area on the resampled grid).
+    pub info: ExitPupilInfo,
+    pub geometry: PupilGeometry,
+    pub mask: Option<PupilMask>,
+    pub entrance_rim: Option<PupilMask>,
+    pub samples: StructuredSamples,
+    /// Automatic pupil grid (`crate::sampling::pupil_grid`, host f64): the
+    /// sampling decision every consumer with `grid = 0` uses.
+    pub auto_grid: usize,
+    /// Warnings before resampling.
+    warnings: Vec<String>,
+    /// In-disk lattice rays that reach the image but miss the sphere.
+    failed: usize,
+}
+
+impl PupilLattice {
+    /// `settings.grid`, or the automatic grid when it is zero.
+    pub fn grid_for(&self, settings: &PupilSettings) -> usize {
+        if settings.grid == 0 {
+            self.auto_grid
+        } else {
+            settings.grid
+        }
+    }
+
+    /// The pupil function on an `n × n` grid (image offset zero) and the
+    /// resampling warnings, reporting into the last 15 % of `ctx`.
+    pub fn resample(
+        &self,
+        n: usize,
+        supersample: usize,
+        ctx: &JobContext,
+    ) -> MkResult<(PupilFunction, Vec<String>)> {
+        let (mut pupil, wv) = grid_from_structured(
+            &self.samples,
+            n,
+            self.info.wavelength_um,
+            self.geometry,
+            self.mask.as_ref(),
+            supersample,
+            &ctx.subrange(0.85, 1.0),
+        )?;
+        pupil.set_image_offset_mm([0.0, 0.0]);
+        Ok((pupil, wv.iter().map(|w| w.to_string()).collect()))
+    }
+
+    /// The traced pupil with `pupil` (from [`Self::resample`], with its
+    /// `warnings`).
+    pub fn assemble(&self, pupil: PupilFunction, resample_warnings: &[String]) -> TracedPupil {
+        let mut warnings = self.warnings.clone();
+        warnings.extend(resample_warnings.iter().cloned());
+        if self.failed > 0 {
+            warnings.push(format!("{} rays miss the reference sphere", self.failed));
+        }
+        let mut info = self.info.clone();
+        if self.mask.is_none() {
+            info.clear_area = pupil.coverage().iter().sum::<f64>() * pupil.spacing().powi(2);
+            let sin_e = info.sin_max * (info.clear_area / std::f64::consts::PI).sqrt();
+            info.effective_f_number = 0.5 / (info.image_index * sin_e);
+        }
+        TracedPupil {
+            info,
+            pupil,
+            mask: self.mask.clone(),
+            entrance_rim: self.entrance_rim.clone(),
+            samples: self.samples.clone(),
+            warnings,
+        }
+    }
+
+    /// Bytes held (memory budgets of shared stores).
+    pub fn bytes(&self) -> usize {
+        let mask = |m: &Option<PupilMask>| match m {
+            Some(PupilMask::Polygons { loops }) => loops.iter().map(|l| l.len() * 16).sum(),
+            _ => 0,
+        };
+        std::mem::size_of::<Self>()
+            + self.samples.samples.len() * std::mem::size_of::<Option<RaySample>>()
+            + mask(&self.mask)
+            + mask(&self.entrance_rim)
+            + self.warnings.iter().map(String::len).sum::<usize>()
+    }
+}
+
+/// The grid-independent stage of [`trace_pupil`] ([`PupilLattice`]),
+/// reporting into the first 85 % of `ctx`.
+pub fn trace_lattice(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+    wl: usize,
+    settings: &PupilSettings,
+    ctx: &JobContext,
+) -> MkResult<PupilLattice> {
     settings.validate()?;
     let sys = tracer.system();
     if wl >= sys.wavelengths_um.len() {
@@ -1144,34 +1254,17 @@ pub fn trace_pupil(
             }),
         )
     };
-    let grid = if settings.grid == 0 {
-        crate::sampling::pupil_grid(&samples)
-    } else {
-        settings.grid
-    };
-    let (mut pupil, wv) = grid_from_structured(
-        &samples,
-        grid,
-        sys.wavelengths_um[wl],
-        geometry,
-        mask.as_ref(),
-        settings.supersample,
-        &ctx.subrange(0.85, 1.0),
-    )?;
-    pupil.set_image_offset_mm([0.0, 0.0]);
-    warnings.extend(wv.iter().map(|w| w.to_string()));
+    let auto_grid = crate::sampling::pupil_grid(&samples);
     let failed = (0..side * side)
         .filter(|&k| {
             let p = lat.point(k % side, k / side);
             p[0] * p[0] + p[1] * p[1] <= 1.0 + 1e-12 && placed[k].is_none() && rays[k].is_some()
         })
         .count();
-    if failed > 0 {
-        warnings.push(format!("{failed} rays miss the reference sphere"));
-    }
-
+    // Without a rim mask `PupilLattice::assemble` measures the clear area
+    // on the resampled grid (and recomputes the effective F/#).
     let clear_area = if uv_loops.is_empty() {
-        pupil.coverage().iter().sum::<f64>() * pupil.spacing().powi(2)
+        0.0
     } else {
         even_odd_area(&uv_loops)
     };
@@ -1203,13 +1296,15 @@ pub fn trace_pupil(
         surviving_rays: surviving,
         rim_points: rim.len(),
     };
-    Ok(TracedPupil {
+    Ok(PupilLattice {
         info,
-        pupil,
+        geometry,
         mask,
         entrance_rim,
         samples,
+        auto_grid,
         warnings,
+        failed,
     })
 }
 

@@ -152,6 +152,7 @@ impl GpuContext {
         total.peak_bytes = total.peak_bytes.max(stats.peak_bytes);
         total.fallback_count += stats.fallback_count;
         total.polished_rays += stats.polished_rays;
+        total.add_activity(&stats);
         for s in stats.stages {
             if let Some(t) = total.stages.iter_mut().find(|t| t.name == s.name) {
                 t.wall_seconds += s.wall_seconds;

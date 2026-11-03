@@ -43,6 +43,12 @@ Python `Result.envelope()` return:
   always identifies the submitted snapshot, including on spectrum runs.
 * The solver crates' own `RunInfo` is not repeated inside `result`; its
   warnings are merged into `run_info.warnings`.
+* A request identical to an earlier one (same snapshot content, library,
+  complete settings and backend selection) of a deterministic analysis may
+  be answered from the engine's analysis graph (`docs/ARCHITECTURE.md`):
+  the result is bit-identical, and `started_unix_ms`/`duration_ms` describe
+  this call. Only CPU-reference results without failed backend attempts are
+  reused.
 
 ## 2. Versioning and settings
 

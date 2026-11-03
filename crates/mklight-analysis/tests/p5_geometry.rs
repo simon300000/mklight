@@ -1073,9 +1073,9 @@ fn qualified_energy(b: &dyn ComputeBackend) {
             &JobContext::new(),
         )
         .unwrap();
-        assert_eq!(reference.len(), grid.rays.len());
+        assert_eq!(reference.len(), grid.len());
         let mut error = 0.0f64;
-        for (a, g) in reference.iter().zip(&grid.rays) {
+        for (a, g) in reference.iter().zip((0..grid.len()).map(|i| grid.hit(i))) {
             assert_eq!(a.status.is_ok(), g.is_some(), "{name}");
             if let Some(g) = g {
                 error = error

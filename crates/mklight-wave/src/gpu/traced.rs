@@ -122,9 +122,12 @@ impl Batch {
         }
     }
 }
-/// Field rows of one batch and their content key (chief-seed cache identity).
+/// Field rows of one batch, their host f64 chief rows and content key.
 struct Fields {
     buffer: BufferHandle,
+    seeds: BufferHandle,
+    /// Reported by the first plan that uses the rows.
+    host: std::cell::RefCell<Option<HostPreparation>>,
     key: String,
 }
 /// Per-pupil state carried between the batched stages.
@@ -191,6 +194,7 @@ pub(crate) fn accumulate(a: &mut PlanStats, b: &PlanStats) {
     a.peak_bytes = a.peak_bytes.max(b.peak_bytes);
     a.fallback_count += b.fallback_count;
     a.polished_rays += b.polished_rays;
+    a.add_activity(b);
 }
 fn subset(h: &BufferHandle, shape: impl Into<Vec<usize>>) -> BufferView {
     let mut v = h.view();
@@ -289,9 +293,35 @@ impl<'a> PupilTracer<'a> {
         p.identity.library_hash = self.radiometry.identity.clone();
         p
     }
-    fn fields(&self, specs: &[aim::FieldSpec]) -> MkResult<Fields> {
+    /// Rows of (field, wavelength) pupils with their metadata `specs`. Chief
+    /// rows come from the prepared fields (f64 source once per field, chief
+    /// and Jacobian per wavelength); the device solves none of them.
+    fn fields(
+        &self,
+        pupils: &[(&PreparedField, usize)],
+        specs: &[aim::FieldSpec],
+    ) -> MkResult<Fields> {
+        let start = std::time::Instant::now();
+        let seeds: Vec<_> = pupils
+            .iter()
+            .map(|(f, w)| aim::ChiefSeed::host(self.tracer, f, *w))
+            .collect();
+        let mut points: Vec<_> = Vec::new();
+        for (f, _) in pupils {
+            if !points.contains(&f.point) {
+                points.push(f.point);
+            }
+        }
+        let host = HostPreparation {
+            seed_rows: seeds.len() as u64,
+            reused_fields: points.len() as u64,
+            solved_fields: 0,
+            seconds: start.elapsed().as_secs_f64(),
+        };
         Ok(Fields {
             buffer: rows(self.backend, specs)?,
+            seeds: rows(self.backend, &seeds)?,
+            host: std::cell::RefCell::new(Some(host)),
             key: blake3::hash(bytemuck::cast_slice(specs))
                 .to_hex()
                 .to_string(),
@@ -317,11 +347,12 @@ impl<'a> PupilTracer<'a> {
     /// None where the chief fails.
     fn chief_rays(
         &self,
+        pupils: &[(&PreparedField, usize)],
         specs: &[aim::FieldSpec],
         ctx: &JobContext,
         stats: &mut PlanStats,
     ) -> MkResult<Vec<Option<[Df32; 7]>>> {
-        let fields = self.fields(specs)?;
+        let fields = self.fields(pupils, specs)?;
         let samples: Vec<_> = (0..specs.len())
             .map(|q| aim::Sample::new([0.; 2], q as u32, q as u64))
             .collect();
@@ -360,8 +391,9 @@ impl<'a> PupilTracer<'a> {
             .iter()
             .map(|f| self.spec(f, primary))
             .collect::<MkResult<_>>()?;
+        let pupils: Vec<_> = fields.iter().map(|&f| (f, primary)).collect();
         Ok(self
-            .chief_rays(&specs, ctx, stats)?
+            .chief_rays(&pupils, &specs, ctx, stats)?
             .into_iter()
             .map(|c| c.map(|c| [c[0].to_f64(), c[1].to_f64()]))
             .collect())
@@ -399,6 +431,10 @@ impl<'a> PupilTracer<'a> {
         extra: &[BufferId],
     ) -> MkResult<ProbeLayout> {
         let metadata = p.import(fields.buffer.view());
+        let seeds = p.import(fields.seeds.view());
+        if let Some(h) = fields.host.borrow_mut().take() {
+            p.host.add(&h);
+        }
         let steps = p.import(self.steps.view());
         let generated = aim::rays(p, count);
         let tolerance = match self.tracer.aiming() {
@@ -414,6 +450,7 @@ impl<'a> PupilTracer<'a> {
                     unresolved: None,
                     field_wavelength: p.view(metadata)?,
                     field_key: Some(fields.key.clone()),
+                    seeds: Some(p.view(seeds)?),
                     tolerance,
                     max_iterations: 60,
                     output: generated.clone(),
@@ -717,7 +754,8 @@ impl<'a> PupilTracer<'a> {
         // Chief rays, one per field row.
         if !items.is_empty() {
             let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
-            let chiefs = self.chief_rays(&specs, &ctx.subrange(0., 0.03), stats)?;
+            let pupils: Vec<_> = items.iter().map(|i| (i.field, i.wl)).collect();
+            let chiefs = self.chief_rays(&pupils, &specs, &ctx.subrange(0., 0.03), stats)?;
             let mut kept = vec![];
             for (mut item, chief) in items.into_iter().zip(chiefs) {
                 let error = match chief {
@@ -739,7 +777,8 @@ impl<'a> PupilTracer<'a> {
         let mut lattice_batch = None;
         if !items.is_empty() {
             let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
-            let fields = self.fields(&specs)?;
+            let pupils: Vec<_> = items.iter().map(|i| (i.field, i.wl)).collect();
+            let fields = self.fields(&pupils, &specs)?;
             let mut p = self.plan();
             let probes = p.scratch(BufferDesc::new(ElementType::U32, [items.len() * n, 8]));
             p.operations

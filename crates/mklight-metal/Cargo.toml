@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 mklight-core.workspace = true
 mklight-gpu.workspace = true
+blake3.workspace = true
 bytemuck.workspace = true
 serde_json.workspace = true
 
