@@ -1515,12 +1515,24 @@ for explicit Metal requests:
 | `polarization_pupil_map` | 13/16 | fast/diattenuation axes where retardance or diattenuation vanishes differ by 1–2 rad |
 
 **Known residual gaps on Metal** (2026-11-02, default settings; these publish
-unchecked). Twelve sample/analysis cases fail the former gates:
+unchecked; updated 2026-11-04). Five sample/analysis cases fail the former
+gates (thirteen before the fixes listed below the table):
 
 | Analysis | Samples | Nature of the difference |
 |---|---|---|
-| `stray_light` | achromat, cooke_triplet, double_gauss, petzval_asphere, relay, anamorphic | Monte Carlo event counts and sink energies (largest: cooke_triplet centroid 0.032 mm, absorbed-by-sink 5.0e-3 against a 4.9e-4 margin) |
-| `ghost_irradiance` | singlet, achromat, newtonian, q_con | `rays_traced` counts at aperture edges; values within 1e-11 |
+| `stray_light` | cooke_triplet, double_gauss, anamorphic | Monte Carlo event counts only (`energy.events`, one signature's event count); sink energies, maps and moments within budget (largest 5.8e-5, double_gauss). Before the tangent-basis fix below: six samples, absorbed-by-sink 5.0e-3 against a 4.9e-4 margin |
+
+Fixed since: `ghost_irradiance` `rays_traced` on singlet, achromat, newtonian,
+petzval_asphere and q_con. Clear apertures are sized by the edge field's rim
+rays, so its lattice points lie exactly on an aperture edge; clipping tests
+within 2⁻²⁸ of an edge are now decided by the f64 reference. `stray_light`
+on achromat, petzval_asphere and relay: the reference tangent basis took the
+`−1` branch for `n.z = −0` (coaxial cylinder normals: lens edges, barrels)
+and the device the `+1` branch, so scatter frames there were mirror images
+(statistically equivalent, path-different). With the reference following the
+device, analog transport is bit-close (1e-16) on the complex test lens and
+weighted transport differs only through rare Russian-roulette decisions
+(absorbed 2e-7 of emitted, a few events of 380,000).
 | `footprint` | newtonian | one overlay outline vertex count |
 | `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin |
 
@@ -1631,7 +1643,7 @@ Threshold bases:
 | `mtf_vs_field` | — | always | known native failure | complex lens: unresolved in-pupil aims and driver interactivity failures fell back to f64, 12× slower |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | — | always | known native failure | complex lens: 20–200 mask/discrete mismatches against f64, and 24–76× slower |
 | `field_curvature_distortion` | — | always | known native failure | complex lens close-ray focus 4.4× its budget; P11 petzval_asphere residual gap |
-| `stray_light` | — | always | known native failure | complex lens sink energies 4.8e4× their budget; 6/16 P11 samples |
+| `stray_light` | — | always | known native failure | complex lens: after the tangent-basis fix, sink energies, maps and moments agree to 2e-7 of emitted power, but event counts differ and a single diverging ray in an edited run (one source-ray weight, 5× the 1e-5 ledger budget) fails the deterministic chain gate; 3/16 samples (event counts only) |
 | `optimize`, `merit_evaluation`, `tolerance`, `glass_substitution` | — | always | candidates | complex lens CPU 4–52× (merit 23 / 96 ms, optimise 286 / 5819 ms, tolerance 78 / 3401 ms, glass 763 / 31715 ms with driver errors); P11 16/0 |
 
 The thresholds cover two very different designs with one number per
