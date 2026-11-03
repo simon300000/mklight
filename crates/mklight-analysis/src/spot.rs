@@ -411,6 +411,28 @@ impl FieldRays {
         rays: &[ImageRay],
         warnings: &mut Vec<String>,
     ) -> MkResult<FieldRays> {
+        Self::from_hits(
+            field,
+            wavelengths,
+            weights,
+            primary_chief,
+            wavelength_chiefs,
+            rays.iter().map(|r| (r.wavelength, r.hit)),
+            warnings,
+        )
+    }
+
+    /// [`FieldRays::from_image_rays`] over `(system wavelength, hit)` pairs
+    /// read in place, without an intermediate list of rays.
+    fn from_hits<I: Iterator<Item = (usize, Option<ImageHit>)> + Clone>(
+        field: usize,
+        wavelengths: &[usize],
+        weights: &[f64],
+        primary_chief: Option<ImageHit>,
+        wavelength_chiefs: &[Option<ImageHit>],
+        rays: I,
+        warnings: &mut Vec<String>,
+    ) -> MkResult<FieldRays> {
         if weights.len() != wavelengths.len() || wavelength_chiefs.len() != wavelengths.len() {
             return Err(MkError::InvalidModel(
                 "ray batch: per-wavelength lists of wrong length".into(),
@@ -418,7 +440,7 @@ impl FieldRays {
         }
         let hit = |h: &ImageHit| slope(h.dir).map(|t| (h.point, t));
         let pc = primary_chief.as_ref().and_then(hit);
-        let first = rays.iter().filter_map(|r| r.hit.as_ref()).find_map(hit);
+        let first = rays.clone().find_map(|(_, h)| h.as_ref().and_then(hit));
         let (origin, origin_slope, chief_ok) = match (pc, first) {
             (Some((p, t)), _) => (p, t, true),
             (None, Some((p, t))) => {
@@ -442,21 +464,20 @@ impl FieldRays {
                 _ => ([f64::NAN; 2], [f64::NAN; 2]),
             })
             .collect();
-        let mut hits = Vec::with_capacity(rays.len());
+        let mut hits = Vec::with_capacity(rays.clone().filter(|(_, h)| h.is_some()).count());
         let mut launched = vec![0; wavelengths.len()];
         let mut arrived = vec![0; wavelengths.len()];
-        for r in rays {
+        for (wavelength, h) in rays {
             let k = wavelengths
                 .iter()
-                .position(|&w| w == r.wavelength)
+                .position(|&w| w == wavelength)
                 .ok_or_else(|| {
                     MkError::InvalidModel(format!(
-                        "ray batch: wavelength {} not in the batch",
-                        r.wavelength
+                        "ray batch: wavelength {wavelength} not in the batch"
                     ))
                 })?;
             launched[k] += 1;
-            let Some((p, t)) = r.hit.as_ref().and_then(hit) else {
+            let Some((p, t)) = h.as_ref().and_then(hit) else {
                 continue;
             };
             arrived[k] += 1;
@@ -502,19 +523,24 @@ pub fn trace_field_rays(
 ) -> MkResult<RayBatch> {
     let sys = tracer.system();
     let primary = sys.primary_wavelength;
-    let prepared: Vec<_> = fields.iter().map(|&f| tracer.field(f).clone()).collect();
-    let grid = Grid {
-        fields: &prepared,
-        wavelengths: wls,
-        pupil,
-    };
-    let rays = trace_grid_job(tracer, &grid, &tracer.options(), &ctx.subrange(0.0, 0.95))?;
-    let np = pupil.len();
     let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
-    let mut out = Vec::with_capacity(fields.len());
+    let nf = fields.len();
+    let mut out = Vec::with_capacity(nf);
+    // One field at a time: only that field's traced rays are alive while
+    // they are reduced (identical per-ray results in the same order).
     for (fi, &f) in fields.iter().enumerate() {
         ctx.check()?;
-        let pf = &prepared[fi];
+        let pf = tracer.field(f);
+        let grid = Grid {
+            fields: std::slice::from_ref(pf),
+            wavelengths: wls,
+            pupil,
+        };
+        let span = ctx.subrange(
+            0.95 * fi as f64 / nf as f64,
+            0.95 * (fi + 1) as f64 / nf as f64,
+        );
+        let rays = trace_grid_job(tracer, &grid, &tracer.options(), &span)?;
         let chief = |wl: usize| {
             let c = tracer.chief(pf, wl);
             c.status.is_ok().then_some(ImageHit {
@@ -527,18 +553,15 @@ pub fn trace_field_rays(
             .iter()
             .map(|&w| if w == primary { pc } else { chief(w) })
             .collect();
-        let block: Vec<ImageRay> = rays[fi * wls.len() * np..(fi + 1) * wls.len() * np]
-            .iter()
-            .map(|r| ImageRay {
-                wavelength: r.wavelength as usize,
-                hit: r.status.is_ok().then_some(ImageHit {
-                    point: [r.point.x, r.point.y],
-                    dir: r.dir,
-                }),
-            })
-            .collect();
-        out.push(FieldRays::from_image_rays(
-            f, wls, &weights, pc, &wl_chiefs, &block, warnings,
+        let hits = rays.iter().map(|r| {
+            let hit = r.status.is_ok().then_some(ImageHit {
+                point: [r.point.x, r.point.y],
+                dir: r.dir,
+            });
+            (r.wavelength as usize, hit)
+        });
+        out.push(FieldRays::from_hits(
+            f, wls, &weights, pc, &wl_chiefs, hits, warnings,
         )?);
     }
     Ok(RayBatch {

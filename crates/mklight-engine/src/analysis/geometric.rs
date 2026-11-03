@@ -1143,6 +1143,27 @@ pub(crate) fn assert_same_buffers(a: &[Buffer], b: &[Buffer]) {
 }
 
 #[test]
+fn packing_helpers_match_the_json_value_conventions() {
+    use mklight_analysis::util::nf::Num;
+    let odd_nan = f64::from_bits(0x7ff8_0000_0000_1234);
+    for x in [
+        1.5,
+        -0.0,
+        odd_nan,
+        -f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
+        let via = |v: Value| num_of(&v).to_bits();
+        assert_eq!(plain(x).to_bits(), via(serde_json::to_value(x).unwrap()));
+        assert_eq!(
+            nonfinite(x).to_bits(),
+            via(serde_json::to_value(Num(x)).unwrap())
+        );
+    }
+}
+
+#[test]
 fn typed_spot_packing_matches_legacy_envelope() {
     let gpu = mklight_gpu::CpuF32Backend::new();
     for system in [

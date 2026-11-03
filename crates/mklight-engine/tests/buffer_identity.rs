@@ -104,6 +104,7 @@ fn run(session: &Session, label: &str, case: &Value, mode: &str, runs: usize) {
         match result {
             Ok(r) => {
                 line["used"] = json!(r.backend.used);
+                line["fallback_reason"] = json!(r.backend.fallback_reason);
                 if round == 0 {
                     line["identity"] = hashes(&r);
                 }
