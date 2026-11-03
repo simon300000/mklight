@@ -52,11 +52,12 @@ use mklight_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::numeric::{Mat2, fd_jacobian, newton2, solve2};
+use crate::numeric::{Mat2, Newton2, fd_jacobian, newton2, solve2};
 use crate::paraxial::{FirstOrder, Paraxial};
 use crate::surface::{IntersectSettings, intersect};
 use crate::trace::{
     FailReason, Ray, SurfaceRecord, TraceOptions, TraceResult, TraceStatus, start_frame, trace_ray,
+    trace_rays,
 };
 
 /// A field point in normalised coordinates (CONVENTIONS §3).
@@ -152,6 +153,16 @@ pub struct GeneratedRay {
     /// Aim parameters (module docs).
     pub aim: [f64; 2],
     pub report: AimReport,
+}
+
+/// One ray of a batch: prepared field, system wavelength index and
+/// (pre-vignetting) pupil coordinates `[px, py]`.
+pub type RayRequest<'a> = (&'a PreparedField, usize, [f64; 2]);
+
+/// [`SequentialTracer::generate`] up to the real-aim solve.
+enum AimStart {
+    Ready(GeneratedRay),
+    Solve { target: [f64; 2], x0: [f64; 2] },
 }
 
 /// Settings of a [`SequentialTracer`].
@@ -640,6 +651,24 @@ impl SequentialTracer {
         px: f64,
         py: f64,
     ) -> Result<GeneratedRay, AimReport> {
+        match self.aim_start(field, wl, px, py)? {
+            AimStart::Ready(g) => Ok(g),
+            AimStart::Solve { target, x0 } => {
+                let (s, iters) =
+                    self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian);
+                self.finish_aim(field, wl, target, s, iters)
+            }
+        }
+    }
+
+    /// Everything of [`Self::generate`] before the real-aim solve.
+    fn aim_start(
+        &self,
+        field: &PreparedField,
+        wl: usize,
+        px: f64,
+        py: f64,
+    ) -> Result<AimStart, AimReport> {
         let (px, py) = field.point.vignetting.apply(px, py);
         let fail = AimReport {
             iterations: 0,
@@ -653,7 +682,7 @@ impl SequentialTracer {
             RayAiming::Off => {
                 let a = self.paraxial_aim([px, py]);
                 let ray = self.start_ray(&field.source, a).ok_or(fail)?;
-                Ok(GeneratedRay {
+                Ok(AimStart::Ready(GeneratedRay {
                     ray,
                     aim: a,
                     report: AimReport {
@@ -661,7 +690,7 @@ impl SequentialTracer {
                         residual: 0.0,
                         converged: true,
                     },
-                })
+                }))
             }
             RayAiming::Real { .. } => {
                 let ad = &field.aims[wl];
@@ -676,44 +705,146 @@ impl SequentialTracer {
                         let p = self.paraxial_aim([px, py]);
                         [ad.chief[0] + p[0], ad.chief[1] + p[1]]
                     });
-                let (mut s, mut iters) = self.solve_aim(&field.source, wl, target, x0, ad.jacobian);
-                if !s.converged {
-                    // Continuation in the pupil radius.
-                    let mut x = ad.chief;
-                    let mut j = ad.jacobian;
-                    let mut prev = [0.0, 0.0];
-                    for frac in [0.25, 0.5, 0.75, 1.0] {
-                        let t = [target[0] * frac, target[1] * frac];
-                        let seed = j
-                            .and_then(|j| solve2(j, [t[0] - prev[0], t[1] - prev[1]]))
-                            .map_or(x, |d| [x[0] + d[0], x[1] + d[1]]);
-                        let (sn, it) = self.solve_aim(&field.source, wl, t, seed, j);
-                        iters += it;
-                        s = sn;
-                        if !s.converged {
-                            break;
-                        }
-                        x = s.x;
-                        j = s.jacobian;
-                        prev = t;
-                    }
-                }
-                let report = AimReport {
-                    iterations: iters,
-                    residual: s.residual / r_stop,
-                    converged: s.converged,
-                };
-                if !s.converged {
-                    return Err(report);
-                }
-                let ray = self.start_ray(&field.source, s.x).ok_or(report)?;
-                Ok(GeneratedRay {
-                    ray,
-                    aim: s.x,
-                    report,
-                })
+                Ok(AimStart::Solve { target, x0 })
             }
         }
+    }
+
+    /// Everything of [`Self::generate`] after the direct real-aim solve `s`
+    /// (`iters` Newton iterations): continuation in the pupil radius if it
+    /// did not converge, then the starting ray.
+    fn finish_aim(
+        &self,
+        field: &PreparedField,
+        wl: usize,
+        target: [f64; 2],
+        mut s: crate::numeric::Solve2,
+        mut iters: u32,
+    ) -> Result<GeneratedRay, AimReport> {
+        let ad = &field.aims[wl];
+        let r_stop = self.pupil.r_stop;
+        if !s.converged {
+            // Continuation in the pupil radius.
+            let mut x = ad.chief;
+            let mut j = ad.jacobian;
+            let mut prev = [0.0, 0.0];
+            for frac in [0.25, 0.5, 0.75, 1.0] {
+                let t = [target[0] * frac, target[1] * frac];
+                let seed = j
+                    .and_then(|j| solve2(j, [t[0] - prev[0], t[1] - prev[1]]))
+                    .map_or(x, |d| [x[0] + d[0], x[1] + d[1]]);
+                let (sn, it) = self.solve_aim(&field.source, wl, t, seed, j);
+                iters += it;
+                s = sn;
+                if !s.converged {
+                    break;
+                }
+                x = s.x;
+                j = s.jacobian;
+                prev = t;
+            }
+        }
+        let report = AimReport {
+            iterations: iters,
+            residual: s.residual / r_stop,
+            converged: s.converged,
+        };
+        if !s.converged {
+            return Err(report);
+        }
+        let ray = self.start_ray(&field.source, s.x).ok_or(report)?;
+        Ok(GeneratedRay {
+            ray,
+            aim: s.x,
+            report,
+        })
+    }
+
+    /// [`Self::generate`] for many pupil points at once, bitwise identical
+    /// to generating them one by one. The direct real-aim solves of all rays
+    /// advance together ([`Newton2`]) and each round's stop traces run as
+    /// packets ([`trace_rays`]); the rare rays that need continuation in the
+    /// pupil radius finish on their own.
+    pub fn generate_many(&self, rays: &[RayRequest]) -> Vec<Result<GeneratedRay, AimReport>> {
+        let mut out = Vec::with_capacity(rays.len());
+        // Direct solves: (ray index, stop target, solver).
+        let mut solves = Vec::new();
+        for (k, &(field, wl, [px, py])) in rays.iter().enumerate() {
+            match self.aim_start(field, wl, px, py) {
+                Ok(AimStart::Solve { target, x0 }) => {
+                    let n = Newton2::new(
+                        x0,
+                        field.aims[wl].jacobian,
+                        self.fd_step(),
+                        self.aim_tolerance(),
+                        self.settings.max_aim_iterations,
+                    );
+                    solves.push((k, target, n));
+                    // Placeholder until the solve finishes.
+                    out.push(Err(AimReport {
+                        iterations: 0,
+                        residual: f64::INFINITY,
+                        converged: false,
+                    }));
+                }
+                Ok(AimStart::Ready(g)) => out.push(Ok(g)),
+                Err(e) => out.push(Err(e)),
+            }
+        }
+        let opts = TraceOptions {
+            clip: false,
+            last_surface: Some(self.sys.stop),
+            intersect: self.settings.intersect,
+        };
+        let (mut starts, mut wls) = (Vec::new(), Vec::new());
+        // Per pending point: whether it has a starting ray (else `f` is
+        // undefined there, as in `stop_hit`).
+        let mut has_ray = Vec::new();
+        let mut values = Vec::new();
+        loop {
+            starts.clear();
+            wls.clear();
+            has_ray.clear();
+            for (k, _, n) in &solves {
+                let (field, wl, _) = rays[*k];
+                for &a in n.pending() {
+                    let ray = self.start_ray(&field.source, a);
+                    has_ray.push(ray.is_some());
+                    if let Some(ray) = ray {
+                        starts.push(ray);
+                        wls.push(wl);
+                    }
+                }
+            }
+            if has_ray.is_empty() {
+                break;
+            }
+            let hits = trace_rays(&self.sys, &starts, &wls, &opts);
+            let (mut hit, mut point) = (hits.iter(), has_ray.iter());
+            for (_, target, n) in &mut solves {
+                values.clear();
+                for _ in 0..n.pending().len() {
+                    let traced = *point.next().expect("one flag per pending point");
+                    values.push(if traced {
+                        let r = hit.next().expect("one trace per starting ray");
+                        r.status
+                            .is_ok()
+                            .then(|| [r.ray.pos.x - target[0], r.ray.pos.y - target[1]])
+                    } else {
+                        None
+                    });
+                }
+                if !values.is_empty() {
+                    n.resume(&values);
+                }
+            }
+        }
+        for (k, target, n) in solves {
+            let (field, wl, _) = rays[k];
+            let s = n.result().expect("a finished solve has a result");
+            out[k] = self.finish_aim(field, wl, target, s, s.iterations);
+        }
+        out
     }
 
     /// Generate and trace pupil point `(px, py)`. A ray that cannot be aimed
@@ -748,19 +879,45 @@ impl SequentialTracer {
                 if let Some(r) = record {
                     r.clear();
                 }
-                let (surface, reason) = if field.is_valid() {
-                    (self.sys.stop, FailReason::AimNotConverged)
-                } else {
-                    (0, FailReason::FieldUnreachable)
-                };
-                TraceResult {
-                    status: TraceStatus::Failed { surface, reason },
-                    ray: Ray::new(Vec3::ZERO, Vec3::Z),
-                    surface,
-                    opl: Default::default(),
-                    transmittance: 0.0,
-                }
+                self.ungenerated(field)
             }
+        }
+    }
+
+    /// [`Self::trace`] for many pupil points at once, bitwise identical to
+    /// tracing them one by one: aims via [`Self::generate_many`], image
+    /// traces via [`trace_rays`].
+    pub fn trace_many(&self, rays: &[RayRequest], opts: &TraceOptions) -> Vec<TraceResult> {
+        let generated = self.generate_many(rays);
+        let (starts, wls): (Vec<Ray>, Vec<usize>) = generated
+            .iter()
+            .zip(rays)
+            .filter_map(|(g, r)| g.as_ref().ok().map(|g| (g.ray, r.1)))
+            .unzip();
+        let mut traced = trace_rays(&self.sys, &starts, &wls, opts).into_iter();
+        generated
+            .iter()
+            .zip(rays)
+            .map(|(g, &(field, _, _))| match g {
+                Ok(_) => traced.next().expect("one trace per generated ray"),
+                Err(_) => self.ungenerated(field),
+            })
+            .collect()
+    }
+
+    /// The result of a ray that could not be generated (see [`Self::trace`]).
+    fn ungenerated(&self, field: &PreparedField) -> TraceResult {
+        let (surface, reason) = if field.is_valid() {
+            (self.sys.stop, FailReason::AimNotConverged)
+        } else {
+            (0, FailReason::FieldUnreachable)
+        };
+        TraceResult {
+            status: TraceStatus::Failed { surface, reason },
+            ray: Ray::new(Vec3::ZERO, Vec3::Z),
+            surface,
+            opl: Default::default(),
+            transmittance: 0.0,
         }
     }
 

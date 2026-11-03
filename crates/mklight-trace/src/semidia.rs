@@ -30,8 +30,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::pupil::ring;
-use crate::trace::{SurfaceRecord, TraceOptions};
-use crate::tracer::SequentialTracer;
+use crate::trace::{SurfaceRecord, TraceOptions, trace_rays_recorded};
+use crate::tracer::{RayRequest, SequentialTracer};
 
 /// Rays traced between two cancellation checks (and progress reports) of
 /// [`SequentialTracer::semi_diameters_with`].
@@ -126,18 +126,28 @@ impl SequentialTracer {
                 let field = self.field(f);
                 let mut m = vec![0.0f64; n];
                 let mut failed = 0usize;
-                let mut rec: Vec<SurfaceRecord> = Vec::with_capacity(n);
-                for (i, p) in pupil.iter().enumerate() {
-                    if i > 0 && i % CANCEL_CHUNK == 0 {
+                let mut rec: Vec<Vec<SurfaceRecord>> = Vec::new();
+                for (c, chunk) in pupil.chunks(CANCEL_CHUNK).enumerate() {
+                    if c > 0 {
                         ctx.check()?;
                         advance(CANCEL_CHUNK);
                     }
-                    let r = self.trace_with(field, w, p[0], p[1], &opts, Some(&mut rec));
-                    if !r.status.is_ok() {
-                        failed += 1;
-                    }
-                    for (j, s) in rec.iter().enumerate() {
-                        m[j] = m[j].max(s.point.x.hypot(s.point.y));
+                    // Aimed and traced together, with records (the same
+                    // results as `trace_with`, one by one).
+                    let requests: Vec<RayRequest> = chunk.iter().map(|&p| (field, w, p)).collect();
+                    let generated = self.generate_many(&requests);
+                    failed += generated.iter().filter(|g| g.is_err()).count();
+                    let starts: Vec<_> = generated.iter().flatten().map(|g| g.ray).collect();
+                    rec.resize_with(starts.len(), || Vec::with_capacity(n));
+                    let traced =
+                        trace_rays_recorded(sys, &starts, &[w], &opts, &mut rec[..starts.len()]);
+                    for (r, rec) in traced.iter().zip(&rec) {
+                        if !r.status.is_ok() {
+                            failed += 1;
+                        }
+                        for (j, s) in rec.iter().enumerate() {
+                            m[j] = m[j].max(s.point.x.hypot(s.point.y));
+                        }
                     }
                 }
                 advance(pupil.len() - (pupil.len() - 1) / CANCEL_CHUNK * CANCEL_CHUNK);

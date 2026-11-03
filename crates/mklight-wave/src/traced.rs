@@ -90,9 +90,9 @@ use std::sync::Arc;
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, RunInfo, Snapshot, Vec3};
 use mklight_trace::radiometry::RayThroughput;
-use mklight_trace::trace::{Ray, TraceResult, trace_ray};
+use mklight_trace::trace::{Ray, TraceResult, trace_ray, trace_rays, trace_rays_recorded};
 use mklight_trace::{
-    ObjectSource, OpdReference, PreparedField, SequentialTracer, SolveSettings,
+    ObjectSource, OpdReference, PreparedField, RayRequest, SequentialTracer, SolveSettings,
     apply_solves_configuration,
 };
 use rayon::prelude::*;
@@ -362,14 +362,21 @@ struct NodeRay {
     throughput: f64,
 }
 
-/// Evaluate `f(0..total)` in parallel blocks with cancellation and
-/// progress (fixed output order).
-pub(crate) fn par_blocks<T: Send>(
+/// Lattice rays per parallel task (aimed and traced together).
+const LATTICE_CHUNK: usize = 64;
+/// Rim crossings bisected in lockstep per parallel task.
+const RIM_CHUNK: usize = 8;
+
+/// Evaluate `f` over `0..total` in parallel blocks with cancellation and
+/// progress (fixed output order); `f` maps `chunk` consecutive indices at a
+/// time.
+fn par_block_chunks<T: Send>(
     total: usize,
     block: usize,
+    chunk: usize,
     ctx: &JobContext,
     stage: &str,
-    f: impl Fn(usize) -> T + Sync,
+    f: impl Fn(std::ops::Range<usize>) -> Vec<T> + Sync,
 ) -> MkResult<Vec<T>> {
     let mut out = Vec::with_capacity(total);
     let mut start = 0;
@@ -377,7 +384,15 @@ pub(crate) fn par_blocks<T: Send>(
     while start < total {
         ctx.check()?;
         let end = (start + block).min(total);
-        out.par_extend((start..end).into_par_iter().map(&f));
+        let parts: Vec<Vec<T>> = (start..end)
+            .step_by(chunk)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|a| f(a..(a + chunk).min(end)))
+            .collect();
+        for mut p in parts {
+            out.append(&mut p);
+        }
         start = end;
         ctx.report(start as f64 / total as f64, stage);
     }
@@ -417,6 +432,79 @@ impl Tracing<'_> {
             start: g.ray,
             throughput,
         })
+    }
+
+    /// [`Self::ray`] of every point, bitwise identical: the aims run
+    /// together ([`SequentialTracer::generate_many`]) and the image traces
+    /// as packets ([`trace_rays`], [`trace_rays_recorded`]). With `throughput`
+    /// false the throughput is left unset (NaN) even when records are
+    /// needed: rim probes only need survival.
+    fn rays(&self, ps: &[[f64; 2]], throughput: bool) -> Vec<Option<NodeRay>> {
+        let inside: Vec<usize> = (0..ps.len())
+            .filter(|&k| ps[k][0] * ps[k][0] + ps[k][1] * ps[k][1] <= 1.0 + 1e-12)
+            .collect();
+        let reqs: Vec<RayRequest> = inside
+            .iter()
+            .map(|&k| (self.field, self.wl, ps[k]))
+            .collect();
+        let generated = self.tracer.generate_many(&reqs);
+        let starts: Vec<Ray> = generated.iter().flatten().map(|g| g.ray).collect();
+        let sys = self.tracer.system();
+        let opts = self.tracer.options();
+        let records = self.records && throughput;
+        let traced: Vec<(TraceResult, f64)> = if records {
+            let mut rec: Vec<_> = (0..starts.len())
+                .map(|_| Vec::with_capacity(sys.surfaces.len()))
+                .collect();
+            trace_rays_recorded(sys, &starts, &[self.wl], &opts, &mut rec)
+                .into_iter()
+                .zip(&rec)
+                .map(|(t, rec)| (t, RayThroughput::unpolarized(sys, self.wl, &t, rec).total))
+                .collect()
+        } else {
+            let tp = if self.records { f64::NAN } else { 1.0 };
+            trace_rays(sys, &starts, &[self.wl], &opts)
+                .into_iter()
+                .map(|t| (t, tp))
+                .collect()
+        };
+        let mut out = vec![None; ps.len()];
+        let mut traced = traced.into_iter().zip(&starts);
+        for (&k, g) in inside.iter().zip(&generated) {
+            if g.is_err() {
+                continue;
+            }
+            let ((trace, throughput), &start) = traced.next().expect("one trace per ray");
+            let ok = trace.status.is_ok() && trace.ray.pos.is_finite() && trace.ray.dir.is_finite();
+            out[k] = ok.then_some(NodeRay {
+                trace,
+                start,
+                throughput,
+            });
+        }
+        out
+    }
+
+    /// A surviving probe from [`Self::rays`] without throughput, completed:
+    /// the same start traced again with records gives the same trace and
+    /// the throughput [`Self::ray`] would have computed.
+    fn with_throughput(&self, r: NodeRay) -> NodeRay {
+        if !self.records {
+            return r;
+        }
+        let sys = self.tracer.system();
+        let mut rec = Vec::with_capacity(sys.surfaces.len());
+        let t = trace_ray(
+            sys,
+            &r.start,
+            self.wl,
+            &self.tracer.options(),
+            Some(&mut rec),
+        );
+        NodeRay {
+            throughput: RayThroughput::unpolarized(sys, self.wl, &t, &rec).total,
+            ..r
+        }
     }
 }
 
@@ -539,54 +627,139 @@ struct Crossing {
     ray_a: usize,
 }
 
-/// Point of `[a, b]` at which the beam's survival ends, by bisection; the
-/// returned point and ray are the last surviving ones.
-fn bisect_rim(
-    tr: &Tracing,
+/// Bisection of one crossing (see [`bisect_rims`]).
+struct Bisection {
     a: [f64; 2],
     b: [f64; 2],
-    ray_a: NodeRay,
-    tol: f64,
-) -> ([f64; 2], NodeRay) {
-    let at = |t: f64| [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
-    let len = (b[0] - a[0]).hypot(b[1] - a[1]);
-    let mut hi = 1.0;
-    if b[0] * b[0] + b[1] * b[1] > 1.0 {
-        // Disk crossing |a + t(b − a)| = 1 (a is inside): the larger root.
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let qa = dx * dx + dy * dy;
-        let qb = a[0] * dx + a[1] * dy;
-        let qc = a[0] * a[0] + a[1] * a[1] - 1.0;
-        let disc = (qb * qb - qa * qc).max(0.0);
-        // Stable form of (−qb + √disc)/qa for qc ≤ 0.
-        let t = if qb <= 0.0 {
-            (-qb + disc.sqrt()) / qa
-        } else {
-            -qc / (qb + disc.sqrt())
+    len: f64,
+    lo: f64,
+    hi: f64,
+    ray: NodeRay,
+    /// `ray` is a probe without throughput.
+    probe: bool,
+    /// The disk crossing to try first.
+    disk: Option<[f64; 2]>,
+    /// The result, once found.
+    done: Option<[f64; 2]>,
+}
+
+impl Bisection {
+    fn new(c: &Crossing, ray_a: NodeRay) -> Self {
+        let (a, b) = (c.a, c.b);
+        let mut s = Bisection {
+            a,
+            b,
+            len: (b[0] - a[0]).hypot(b[1] - a[1]),
+            lo: 0.0,
+            hi: 1.0,
+            ray: ray_a,
+            probe: false,
+            disk: None,
+            done: None,
         };
-        let t = t.clamp(0.0, 1.0);
-        let p = at(t);
-        let p = {
-            let r = p[0].hypot(p[1]);
-            if r > 1.0 { [p[0] / r, p[1] / r] } else { p }
-        };
-        if let Some(r) = tr.ray(p) {
-            return (p, r);
+        if b[0] * b[0] + b[1] * b[1] > 1.0 {
+            // Disk crossing |a + t(b − a)| = 1 (a is inside): the larger root.
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let qa = dx * dx + dy * dy;
+            let qb = a[0] * dx + a[1] * dy;
+            let qc = a[0] * a[0] + a[1] * a[1] - 1.0;
+            let disc = (qb * qb - qa * qc).max(0.0);
+            // Stable form of (−qb + √disc)/qa for qc ≤ 0.
+            let t = if qb <= 0.0 {
+                (-qb + disc.sqrt()) / qa
+            } else {
+                -qc / (qb + disc.sqrt())
+            };
+            let t = t.clamp(0.0, 1.0);
+            let p = s.at(t);
+            let p = {
+                let r = p[0].hypot(p[1]);
+                if r > 1.0 { [p[0] / r, p[1] / r] } else { p }
+            };
+            s.disk = Some(p);
+            s.hi = t;
         }
-        hi = t;
+        s
     }
-    let (mut lo, mut ray) = (0.0, ray_a);
-    while (hi - lo) * len > tol {
-        let mid = 0.5 * (lo + hi);
-        match tr.ray(at(mid)) {
-            Some(r) => {
-                lo = mid;
-                ray = r;
+
+    fn at(&self, t: f64) -> [f64; 2] {
+        let (a, b) = (self.a, self.b);
+        [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
+    }
+
+    /// The next point to probe, or `None` when finished.
+    fn next(&mut self, tol: f64) -> Option<[f64; 2]> {
+        if self.done.is_some() {
+            return None;
+        }
+        if let Some(p) = self.disk {
+            return Some(p);
+        }
+        if (self.hi - self.lo) * self.len > tol {
+            return Some(self.at(0.5 * (self.lo + self.hi)));
+        }
+        self.done = Some(self.at(self.lo));
+        None
+    }
+
+    fn update(&mut self, probe: Option<NodeRay>) {
+        if let Some(p) = self.disk.take() {
+            if let Some(r) = probe {
+                (self.ray, self.probe, self.done) = (r, true, Some(p));
             }
-            None => hi = mid,
+            return;
+        }
+        let mid = 0.5 * (self.lo + self.hi);
+        match probe {
+            Some(r) => {
+                self.lo = mid;
+                (self.ray, self.probe) = (r, true);
+            }
+            None => self.hi = mid,
         }
     }
-    (at(lo), ray)
+}
+
+/// For each crossing, the point of `[a, b]` at which the beam's survival
+/// ends, by bisection to `tol`, with the last surviving ray (the inside
+/// node's ray when no probe survives). The crossings advance in lockstep so
+/// each round's probes are aimed and traced together; probes carry no
+/// throughput, and only each kept ray is completed. Bitwise identical to
+/// bisecting each crossing on its own with [`Tracing::ray`]
+/// (`lockstep_rim_matches_single_bisection`).
+fn bisect_rims(
+    tr: &Tracing,
+    crossings: &[Crossing],
+    rays: &[Option<NodeRay>],
+    tol: f64,
+) -> Vec<([f64; 2], NodeRay)> {
+    let mut bs: Vec<Bisection> = crossings
+        .iter()
+        .map(|c| Bisection::new(c, rays[c.ray_a].expect("inside node has a ray")))
+        .collect();
+    loop {
+        let (who, ps): (Vec<usize>, Vec<[f64; 2]>) = bs
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(k, b)| b.next(tol).map(|p| (k, p)))
+            .unzip();
+        if who.is_empty() {
+            break;
+        }
+        for (k, r) in who.into_iter().zip(tr.rays(&ps, false)) {
+            bs[k].update(r);
+        }
+    }
+    bs.into_iter()
+        .map(|b| {
+            let ray = if b.probe {
+                tr.with_throughput(b.ray)
+            } else {
+                b.ray
+            };
+            (b.done.expect("finished bisection"), ray)
+        })
+        .collect()
 }
 
 /// Marching-squares segments of the survival field: pairs of edge ids.
@@ -833,12 +1006,16 @@ pub fn trace_lattice(
     };
     let lat = Lattice::new(settings.rays);
     let side = lat.side;
-    let rays: Vec<Option<NodeRay>> = par_blocks(
+    let rays: Vec<Option<NodeRay>> = par_block_chunks(
         side * side,
         1024,
+        LATTICE_CHUNK,
         &ctx.subrange(0.0, 0.55),
         "tracing pupil rays",
-        |k| tr.ray(lat.point(k % side, k / side)),
+        |r| {
+            let ps: Vec<[f64; 2]> = r.map(|k| lat.point(k % side, k / side)).collect();
+            tr.rays(&ps, true)
+        },
     )?;
     let inside: Vec<bool> = rays.iter().map(Option::is_some).collect();
     let surviving = inside.iter().filter(|&&b| b).count();
@@ -885,16 +1062,13 @@ pub fn trace_lattice(
             })
             .collect();
         let tol = settings.rim_tolerance;
-        let pts = par_blocks(
+        let pts = par_block_chunks(
             crossings.len(),
             64,
+            RIM_CHUNK,
             &ctx.subrange(0.55, 0.85),
             "tracing the vignetting rim",
-            |q| {
-                let c = crossings[q];
-                let ra = rays[c.ray_a].expect("inside node has a ray");
-                bisect_rim(&tr, c.a, c.b, ra, tol)
-            },
+            |r| bisect_rims(&tr, &crossings[r], &rays, tol),
         )?;
         // Loops as indices into `pts` (ids are sorted).
         let loops = loops
@@ -1217,4 +1391,134 @@ fn radiometric_amplitudes(
             _ => 0.0,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::{RayAiming, ResolvedSystem, samples};
+
+    /// Point of `[a, b]` at which the beam's survival ends, by bisection; the
+    /// returned point and ray are the last surviving ones.
+    fn bisect_rim(
+        tr: &Tracing,
+        a: [f64; 2],
+        b: [f64; 2],
+        ray_a: NodeRay,
+        tol: f64,
+    ) -> ([f64; 2], NodeRay) {
+        let at = |t: f64| [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let mut hi = 1.0;
+        if b[0] * b[0] + b[1] * b[1] > 1.0 {
+            // Disk crossing |a + t(b − a)| = 1 (a is inside): the larger root.
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let qa = dx * dx + dy * dy;
+            let qb = a[0] * dx + a[1] * dy;
+            let qc = a[0] * a[0] + a[1] * a[1] - 1.0;
+            let disc = (qb * qb - qa * qc).max(0.0);
+            // Stable form of (−qb + √disc)/qa for qc ≤ 0.
+            let t = if qb <= 0.0 {
+                (-qb + disc.sqrt()) / qa
+            } else {
+                -qc / (qb + disc.sqrt())
+            };
+            let t = t.clamp(0.0, 1.0);
+            let p = at(t);
+            let p = {
+                let r = p[0].hypot(p[1]);
+                if r > 1.0 { [p[0] / r, p[1] / r] } else { p }
+            };
+            if let Some(r) = tr.ray(p) {
+                return (p, r);
+            }
+            hi = t;
+        }
+        let (mut lo, mut ray) = (0.0, ray_a);
+        while (hi - lo) * len > tol {
+            let mid = 0.5 * (lo + hi);
+            match tr.ray(at(mid)) {
+                Some(r) => {
+                    lo = mid;
+                    ray = r;
+                }
+                None => hi = mid,
+            }
+        }
+        (at(lo), ray)
+    }
+
+    /// Double Gauss with real aiming and clear apertures on the outer
+    /// elements, so oblique rims bisect against surface edges.
+    fn vignetted_double_gauss() -> SequentialTracer {
+        let mut sys = samples::double_gauss();
+        sys.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+        for (surface, radius) in [(1, 11.), (11, 11.)] {
+            sys.surfaces[surface].aperture =
+                Some(mklight_core::model::ApertureShape::Circular { radius });
+        }
+        let snap = Snapshot::new(sys).unwrap();
+        let r = ResolvedSystem::new(&snap, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+        SequentialTracer::new(Arc::new(r)).unwrap()
+    }
+
+    #[test]
+    fn lockstep_rim_matches_single_bisection() {
+        let tracer = vignetted_double_gauss();
+        let lat = Lattice::new(17);
+        let side = lat.side;
+        let mut checked = (0, 0);
+        for f in 0..tracer.fields().len() {
+            for (wl, records) in [(0, true), (tracer.system().primary_wavelength, false)] {
+                let tr = Tracing {
+                    tracer: &tracer,
+                    field: tracer.field(f),
+                    wl,
+                    records,
+                };
+                let ps: Vec<[f64; 2]> = (0..side * side)
+                    .map(|k| lat.point(k % side, k / side))
+                    .collect();
+                let single: Vec<Option<NodeRay>> = ps.iter().map(|&p| tr.ray(p)).collect();
+                let batched = tr.rays(&ps, true);
+                assert_eq!(format!("{single:?}"), format!("{batched:?}"), "field {f}");
+                // Every lattice edge with one surviving node.
+                let mut crossings = Vec::new();
+                for j in 0..side {
+                    for i in 0..side {
+                        for (i2, j2) in [(i + 1, j), (i, j + 1)] {
+                            if i2 >= side || j2 >= side {
+                                continue;
+                            }
+                            let (n1, n2) = (j * side + i, j2 * side + i2);
+                            let (na, nb) = match (single[n1].is_some(), single[n2].is_some()) {
+                                (true, false) => (n1, n2),
+                                (false, true) => (n2, n1),
+                                _ => continue,
+                            };
+                            crossings.push(Crossing {
+                                a: ps[na],
+                                b: ps[nb],
+                                ray_a: na,
+                            });
+                        }
+                    }
+                }
+                let expected: Vec<_> = crossings
+                    .iter()
+                    .map(|c| bisect_rim(&tr, c.a, c.b, single[c.ray_a].unwrap(), 1e-10))
+                    .collect();
+                let got = bisect_rims(&tr, &crossings, &single, 1e-10);
+                assert_eq!(format!("{expected:?}"), format!("{got:?}"), "field {f}");
+                checked.0 += crossings.len();
+                checked.1 += crossings
+                    .iter()
+                    .filter(|c| c.b[0].hypot(c.b[1]) <= 1.0)
+                    .count();
+            }
+        }
+        // Crossings both at the disk edge and inside it (vignetting).
+        assert!(checked.0 > 100 && checked.1 > 20, "{checked:?}");
+    }
 }

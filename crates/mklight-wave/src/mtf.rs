@@ -997,8 +997,7 @@ pub(crate) fn polychromatic_focus_mtf(
             .par_iter()
             .map(|&dz| {
                 sub.check()?;
-                let shifted = p.with_focus_shift(dz / p.geometry().chief_ray[2]);
-                let opd = shifted.opd_waves();
+                let (opd, plane_warnings) = p.focus_shifted_opd(dz / p.geometry().chief_ray[2]);
                 let otf = prepared
                     .iter()
                     .map(|c| {
@@ -1018,7 +1017,7 @@ pub(crate) fn polychromatic_focus_mtf(
                         C64::new(re.value() + c.deficit, im.value()) / c.norm * c.offset
                     })
                     .collect();
-                Ok((otf, shifted.sampling_warnings()))
+                Ok((otf, plane_warnings))
             })
             .collect::<MkResult<_>>()?;
         for ((acc, warnings), (otf, plane)) in acc.iter_mut().zip(&mut warnings).zip(planes) {
