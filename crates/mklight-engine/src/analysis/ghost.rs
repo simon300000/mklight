@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use mklight_core::JobContext;
 use mklight_ghost::{
-    ClipMode, EnumerationSettings, GhostModel, GhostPath, GhostSettings, IrradianceSettings,
-    ParaxialGhostSettings, ghost_irradiance, paraxial_ghosts,
+    ClipMode, EnumerationSettings, GhostModel, GhostPath, GhostSettings, IrradianceMap,
+    IrradianceSettings, ParaxialGhostSettings, ghost_irradiance, paraxial_ghosts,
 };
 use mklight_trace::FieldPoint;
 
-use super::geometric::{crate_json, output, parse};
+use super::geometric::{crate_json, output, parse, plain};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -354,16 +354,19 @@ impl GhostIrradianceSettings {
 
 pub struct GhostIrradiance;
 
-/// Values of an `IrradianceMap` JSON object as a `[ny, nx]` buffer.
-fn map_buffer(name: &str, map: &Value) -> Option<Buffer> {
-    let nx = map["bins"][0].as_u64()? as usize;
-    let ny = map["bins"][1].as_u64()? as usize;
-    let v: Vec<f64> = map["values"]
-        .as_array()?
-        .iter()
-        .map(|x| x.as_f64().unwrap_or(f64::NAN))
-        .collect();
-    (v.len() == nx * ny).then(|| Buffer::new(name, vec![ny, nx], BufferData::F64(v)))
+/// Whether a map has every `nx × ny` value.
+fn map_complete(m: &IrradianceMap) -> bool {
+    m.values.len() == m.bins[0] * m.bins[1]
+}
+
+/// The values of a complete map as a `[ny, nx]` buffer, as they read back
+/// from the result JSON (plain numbers: non-finite values become NaN).
+fn map_buffer(name: &str, m: IrradianceMap) -> Option<Buffer> {
+    let [nx, ny] = m.bins;
+    map_complete(&m).then(|| {
+        let v = m.values.into_iter().map(plain).collect();
+        Buffer::new(name, vec![ny, nx], BufferData::F64(v))
+    })
 }
 
 impl Analysis for GhostIrradiance {
@@ -521,30 +524,43 @@ impl Analysis for GhostIrradiance {
         } else {
             ghost_irradiance(&model, &s.irradiance(), ctx)?
         };
-        let (mut v, w) = crate_json(&r)?;
-        let mut buffers = Vec::new();
-        let total = v["total_ghost_map"].clone();
-        buffers.extend(map_buffer("total_ghost_map", &total));
-        let primary_map = v["primary"]["map"].clone();
-        buffers.extend(map_buffer("primary_map", &primary_map));
+        // Maps move into typed buffers; only the summary is serialised.
+        let mut r = r;
+        let total = std::mem::take(&mut r.total_ghost_map.values);
+        let primary_map = r.primary.map.take();
         let (nx, ny) = (s.map_bins[0], s.map_bins[1]);
         let mut path_maps = Vec::new();
         let mut count = 0usize;
+        let mut indices = Vec::with_capacity(r.ghosts.len());
+        for g in &mut r.ghosts {
+            ctx.check()?;
+            let m = g.map.take().filter(map_complete);
+            indices.push(m.map(|m| {
+                if s.keep_path_maps {
+                    path_maps.extend(m.values.into_iter().map(plain));
+                }
+                count += 1;
+                count - 1
+            }));
+        }
+        let (mut v, w) = crate_json(&r)?;
+        let mut buffers = Vec::new();
+        let IrradianceMap {
+            bins, half_size, ..
+        } = r.total_ghost_map;
+        buffers.extend(map_buffer(
+            "total_ghost_map",
+            IrradianceMap {
+                bins,
+                half_size,
+                values: total,
+            },
+        ));
+        buffers.extend(primary_map.and_then(|m| map_buffer("primary_map", m)));
         if let Some(gs) = v["ghosts"].as_array_mut() {
-            for g in gs.iter_mut() {
-                let m = g.as_object_mut().and_then(|o| o.remove("map"));
-                let idx = match m.as_ref().and_then(|m| map_buffer("", m)) {
-                    Some(Buffer {
-                        data: BufferData::F64(d),
-                        ..
-                    }) => {
-                        path_maps.extend(d);
-                        count += 1;
-                        json!(count - 1)
-                    }
-                    _ => Value::Null,
-                };
-                g["map_index"] = idx;
+            for (g, idx) in gs.iter_mut().zip(indices) {
+                g.as_object_mut().map(|o| o.remove("map"));
+                g["map_index"] = json!(idx);
             }
         }
         if let Some(p) = v["primary"].as_object_mut() {
@@ -558,7 +574,7 @@ impl Analysis for GhostIrradiance {
                 BufferData::F64(path_maps),
             ));
         }
-        let geometry = json!({"bins": total["bins"], "half_size": total["half_size"]});
+        let geometry = json!({"bins": bins, "half_size": half_size});
         if let Some(o) = v.as_object_mut() {
             o.remove("total_ghost_map");
             o.insert("map".into(), geometry);

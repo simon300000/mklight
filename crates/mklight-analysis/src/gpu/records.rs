@@ -300,14 +300,35 @@ pub fn footprint_overlay_job(
     })
 }
 
-/// Final image hits, widened only when packing the requested public result.
+/// Final image hits of the `fields × wavelengths × pupil` grid, widened from
+/// the shared device storage straight into the public buffer layout.
 #[derive(Clone, Debug)]
 pub struct GridResult {
     pub fields: Vec<usize>,
     pub wavelengths: Vec<usize>,
     pub pupil: Vec<[f64; 2]>,
-    pub rays: Vec<Option<crate::spot::ImageHit>>,
+    /// Hit `[x, y]` per ray (image local frame), NaN where it did not arrive.
+    pub points: Vec<f64>,
+    /// Unit direction `[x, y, z]` per ray, NaN where it did not arrive.
+    pub directions: Vec<f64>,
     pub run_info: RunInfo,
+}
+impl GridResult {
+    /// Number of rays.
+    pub fn len(&self) -> usize {
+        self.points.len() / 2
+    }
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+    /// Ray `i`, `None` when it did not arrive.
+    pub fn hit(&self, i: usize) -> Option<crate::spot::ImageHit> {
+        let d = &self.directions[3 * i..3 * i + 3];
+        (!self.points[2 * i].is_nan()).then(|| crate::spot::ImageHit {
+            point: [self.points[2 * i], self.points[2 * i + 1]],
+            dir: Vec3::new(d[0], d[1], d[2]),
+        })
+    }
 }
 pub fn ray_grid_job(
     b: &dyn ComputeBackend,
@@ -350,26 +371,28 @@ pub fn ray_grid_job(
     let status = b.read_view(r.outputs[1].view())?;
     let status = status.as_slice::<u32>()?;
     let n = g.hits.rays.count;
-    let mut rays = Vec::with_capacity(n);
+    let mut points = vec![f64::NAN; 2 * n];
+    let mut directions = vec![f64::NAN; 3 * n];
     for (i, &code) in status[..n].iter().enumerate() {
         if i % 4096 == 0 {
             ctx.check()?;
         }
-        rays.push(if code == 0 {
-            Some(crate::spot::ImageHit {
-                point: [value(f, n, i, 0), value(f, n, i, 1)],
-                dir: Vec3::new(value(f, n, i, 3), value(f, n, i, 4), value(f, n, i, 5)),
-            })
-        } else {
-            None
-        });
+        if code == 0 {
+            points[2 * i..2 * i + 2].copy_from_slice(&[value(f, n, i, 0), value(f, n, i, 1)]);
+            directions[3 * i..3 * i + 3].copy_from_slice(&[
+                value(f, n, i, 3),
+                value(f, n, i, 4),
+                value(f, n, i, 5),
+            ]);
+        }
     }
     ctx.report(1.0, "ray grid");
     Ok(GridResult {
         fields,
         wavelengths: wls,
         pupil,
-        rays,
+        points,
+        directions,
         run_info: stamp(r.run_info, "ray_grid", s, t.warnings().to_vec()),
     })
 }

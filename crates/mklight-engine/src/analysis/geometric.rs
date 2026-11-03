@@ -154,17 +154,21 @@ pub(crate) fn output(json: Value, buffers: Vec<Buffer>, warnings: Vec<String>) -
     }
 }
 
-/// `[x, y]` pairs from JSON (`null`/strings become NaN).
-fn pairs(v: &Value) -> Vec<f64> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .flat_map(|p| [num_of(&p[0]), num_of(&p[1])])
-                .collect()
-        })
-        .unwrap_or_default()
+// Typed packing reproduces what a buffer read back from the result JSON
+// would hold: plain serde numbers serialise every non-finite value as null
+// (read as NaN), `nf` numbers keep ±inf; NaN is always `f64::NAN`.
+
+/// A plain serde `f64` as read back from JSON.
+pub(crate) fn plain(x: f64) -> f64 {
+    if x.is_finite() { x } else { f64::NAN }
 }
 
+/// An `nf` (non-finite-safe) `f64` as read back from JSON.
+pub(crate) fn nonfinite(x: f64) -> f64 {
+    if x.is_nan() { f64::NAN } else { x }
+}
+
+#[cfg(test)]
 pub(crate) fn num_of(v: &Value) -> f64 {
     match v {
         Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
@@ -873,41 +877,42 @@ fn run_layout(
         layout::layout_job(t, &settings, ctx)
     )?;
     let b = scene.to_buffers();
-    let (v, w) = crate_json(&scene)?;
+    // Only scalar metadata is serialised; the geometry lives in the buffers.
+    let w = scene.run_info.warnings.clone();
     let np = b.polyline_count();
     let nv = b.vertices_f64.len() / 3;
     let n_lines = scene.polylines.len();
-    let elements: Vec<Value> = v["elements"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .enumerate()
+    let elements: Vec<Value> = (scene.elements.iter().enumerate())
         .map(|(k, e)| {
             json!({
-                "first_surface": e["first_surface"],
-                "last_surface": e["last_surface"],
-                "mechanical_semi_diameter": e["mechanical_semi_diameter"],
+                "first_surface": e.first_surface,
+                "last_surface": e.last_surface,
+                "mechanical_semi_diameter": e.mechanical_semi_diameter,
                 "outline_polyline": n_lines + k,
             })
         })
         .collect();
+    let nt = scene
+        .meshes
+        .iter()
+        .map(|m| m.triangles.len())
+        .sum::<usize>();
     let json = json!({
         "origin": b.origin,
         "section": scene.section,
-        "mesh_triangle_count": scene.meshes.iter().map(|m| m.triangles.len()).sum::<usize>(),
-        "bounds": v["bounds"],
-        "surfaces": v["surfaces"],
+        "mesh_triangle_count": nt,
+        "bounds": scene.bounds,
+        "surfaces": scene.surfaces,
         "elements": elements,
         "polyline_count": np,
         "vertex_count": nv,
         "kind_names": mklight_analysis::layout::PolylineKind::CODE_NAMES,
-        "wavelengths_um": v["wavelengths_um"],
-        "field_count": v["field_count"],
-        "field_values": v["field_values"],
+        "wavelengths_um": scene.wavelengths_um,
+        "field_count": scene.field_count,
+        "field_values": scene.field_values,
     });
-    let mut mesh_vertices = Vec::new();
-    let mut mesh_surfaces = Vec::new();
+    let mut mesh_vertices = Vec::with_capacity(9 * nt);
+    let mut mesh_surfaces = Vec::with_capacity(nt);
     for mesh in &scene.meshes {
         for triangle in &mesh.triangles {
             mesh_surfaces.push(mesh.surface as u32);
@@ -916,7 +921,6 @@ fn run_layout(
             }
         }
     }
-    let nt = mesh_surfaces.len();
     let buffers = vec![
         Buffer::new(
             "surface_mesh",
@@ -1396,19 +1400,31 @@ fn run_grid_distortion(
         |b| mklight_analysis::gpu::grid_distortion_job(b, t, &settings, ctx),
         curvature::grid_distortion_job(t, &settings, ctx)
     )?;
+    let mut r = r;
+    let p = std::mem::take(&mut r.points);
     let (mut v, w) = crate_json(&r)?;
-    let pts = v
-        .as_object_mut()
-        .and_then(|o| o.remove("points"))
-        .unwrap_or(json!([]));
-    let p = pts.as_array().cloned().unwrap_or_default();
+    v.as_object_mut().map(|o| o.remove("points"));
     let n = p.len();
-    let col = |k: &str| pairs(&Value::Array(p.iter().map(|q| q[k].clone()).collect()));
-    let dist: Vec<f64> = p.iter().map(|q| num_of(&q["distortion_percent"])).collect();
+    let col = |f: fn(&curvature::GridPoint) -> [f64; 2], conv: fn(f64) -> f64| {
+        p.iter().flat_map(|q| f(q).map(conv)).collect()
+    };
+    let dist = p.iter().map(|q| nonfinite(q.distortion_percent)).collect();
     let buffers = vec![
-        Buffer::new("field", vec![n, 2], BufferData::F64(col("field"))),
-        Buffer::new("paraxial", vec![n, 2], BufferData::F64(col("paraxial"))),
-        Buffer::new("real", vec![n, 2], BufferData::F64(col("real"))),
+        Buffer::new(
+            "field",
+            vec![n, 2],
+            BufferData::F64(col(|q| q.field, plain)),
+        ),
+        Buffer::new(
+            "paraxial",
+            vec![n, 2],
+            BufferData::F64(col(|q| q.paraxial, nonfinite)),
+        ),
+        Buffer::new(
+            "real",
+            vec![n, 2],
+            BufferData::F64(col(|q| q.real, nonfinite)),
+        ),
         Buffer::new("distortion_percent", vec![n], BufferData::F64(dist)),
     ];
     Ok(output(v, buffers, w))
@@ -1751,23 +1767,28 @@ fn run_footprint(
         |b| mklight_analysis::gpu::footprint_job(b, t, &settings, &ctx.subrange(0.0, 0.3)),
         illumination::footprint_job(t, &settings, &ctx.subrange(0.0, 0.3))
     )?;
+    let mut r = r;
+    let rays = std::mem::take(&mut r.rays);
     let (mut v, w) = crate_json(&r)?;
-    let rays = v
-        .as_object_mut()
-        .and_then(|o| o.remove("rays"))
-        .unwrap_or(json!([]));
-    let (mut pts, mut clipped, mut sets) = (Vec::new(), Vec::new(), Vec::new());
-    for r in rays.as_array().into_iter().flatten() {
+    v.as_object_mut().map(|o| o.remove("rays"));
+    let (n, m) = rays.iter().fold((0, 0), |(n, m), r| {
+        (n + r.points.len(), m + r.clipped.len())
+    });
+    let (mut pts, mut clipped) = (Vec::with_capacity(2 * n), Vec::with_capacity(2 * m));
+    let mut sets = Vec::with_capacity(rays.len());
+    for r in &rays {
+        ctx.check()?;
         let (p0, c0) = (pts.len() / 2, clipped.len() / 2);
-        pts.extend(pairs(&r["points"]));
-        clipped.extend(pairs(&r["clipped"]));
+        pts.extend(r.points.iter().flatten().map(|&x| nonfinite(x)));
+        clipped.extend(r.clipped.iter().flatten().map(|&x| nonfinite(x)));
         sets.push(json!({
-            "field": r["field"], "wavelength": r["wavelength"],
-            "launched": r["launched"], "lost_before": r["lost_before"],
-            "points": [p0, pts.len() / 2 - p0],
-            "clipped": [c0, clipped.len() / 2 - c0],
+            "field": r.field, "wavelength": r.wavelength,
+            "launched": r.launched, "lost_before": r.lost_before,
+            "points": [p0, r.points.len()],
+            "clipped": [c0, r.clipped.len()],
         }));
     }
+    drop(rays);
     v["sets"] = Value::Array(sets);
     let o = match gpu::device(input) {
         Some(d) => mklight_analysis::gpu::footprint_overlay_job(
@@ -1786,12 +1807,12 @@ fn run_footprint(
         Buffer::new(
             "global_points",
             vec![o.points.len(), 3],
-            BufferData::F64(o.points.into_iter().flatten().collect()),
+            BufferData::F64(o.points.as_flattened().to_vec()),
         ),
         Buffer::new(
             "global_outlines",
             vec![o.outlines.len(), 3],
-            BufferData::F64(o.outlines.into_iter().flatten().collect()),
+            BufferData::F64(o.outlines.as_flattened().to_vec()),
         ),
     ];
     Ok(output(v, buffers, w))
@@ -2081,14 +2102,9 @@ fn run_ray_grid(
     let (fields, wls) = selection(t, &sm.fields, &sm.wavelengths)?;
     let pupil = util::pupil_points(sm.pattern, sm.rings, sm.seed);
     let (nf, nw, np) = (fields.len(), wls.len(), pupil.len());
-    let mut points = vec![f64::NAN; nf * nw * np * 2];
-    let mut dirs = vec![f64::NAN; nf * nw * np * 3];
     let mut chief = vec![f64::NAN; nf * nw * 2];
-    let mut put = |i: usize, p: [f64; 2], d: [f64; 3]| {
-        points[2 * i..2 * i + 2].copy_from_slice(&p);
-        dirs[3 * i..3 * i + 3].copy_from_slice(&d);
-    };
-    if let Some(d) = gpu::device(input) {
+    let (points, dirs) = if let Some(d) = gpu::device(input) {
+        // The device job already widened the hits into the buffer layout.
         let h = mklight_analysis::gpu::ray_grid_job(
             d.backend.as_ref(),
             t,
@@ -2096,12 +2112,13 @@ fn run_ray_grid(
             &ctx.subrange(0.0, 0.95),
         )?;
         gpu::record_native(input, &h.run_info);
-        for (i, r) in h.rays.iter().enumerate() {
-            if let Some(r) = r {
-                put(i, r.point, [r.dir.x, r.dir.y, r.dir.z]);
-            }
-        }
+        let (mut p, mut d) = (h.points, h.directions);
+        p.resize(nf * nw * np * 2, f64::NAN);
+        d.resize(nf * nw * np * 3, f64::NAN);
+        (p, d)
     } else {
+        let mut points = vec![f64::NAN; nf * nw * np * 2];
+        let mut dirs = vec![f64::NAN; nf * nw * np * 3];
         let prepared: Vec<_> = fields.iter().map(|&f| t.field(f).clone()).collect();
         let grid = Grid {
             fields: &prepared,
@@ -2111,10 +2128,12 @@ fn run_ray_grid(
         let rays = trace_grid_job(t, &grid, &t.options(), &ctx.subrange(0.0, 0.95))?;
         for (i, r) in rays.iter().enumerate() {
             if r.status.is_ok() {
-                put(i, [r.point.x, r.point.y], [r.dir.x, r.dir.y, r.dir.z]);
+                points[2 * i..2 * i + 2].copy_from_slice(&[r.point.x, r.point.y]);
+                dirs[3 * i..3 * i + 3].copy_from_slice(&[r.dir.x, r.dir.y, r.dir.z]);
             }
         }
-    }
+        (points, dirs)
+    };
     for (fi, &field) in fields.iter().enumerate() {
         for (wi, &wl) in wls.iter().enumerate() {
             let c = t.trace(t.field(field), wl, 0.0, 0.0, &TraceOptions::unclipped());
@@ -2136,7 +2155,7 @@ fn run_ray_grid(
         "arrived": arrived,
         "launched": nf * nw * np,
     });
-    let pupil_flat: Vec<f64> = pupil.iter().flat_map(|p| [p[0], p[1]]).collect();
+    let pupil_flat = pupil.as_flattened().to_vec();
     let buffers = vec![
         Buffer::new("pupil", vec![np, 2], BufferData::F64(pupil_flat)),
         Buffer::new("points", vec![nf, nw, np, 2], BufferData::F64(points)),

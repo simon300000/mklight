@@ -10,7 +10,7 @@ use mklight_wave::traced::{ConfiguredTracer, PupilSettings, configured_tracer_jo
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::geometric::{output, take_run_info, xy};
+use super::geometric::{nonfinite, output, plain, take_run_info, xy};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -823,16 +823,6 @@ fn mtf_schema() -> Value {
 // buffer name, preserving field/wavelength/curve identity. Values equal a
 // round trip through JSON: plain numbers serialise non-finite values as
 // null (NaN), `nf` numbers keep ±inf; NaN is the canonical `f64::NAN`.
-
-/// A plain serde `f64` read back from JSON.
-fn plain(x: f64) -> f64 {
-    if x.is_finite() { x } else { f64::NAN }
-}
-
-/// An `nf` (non-finite-safe) `f64` read back from JSON.
-fn nonfinite(x: f64) -> f64 {
-    if x.is_nan() { f64::NAN } else { x }
-}
 
 /// Buffers taken from a typed result, with the JSON pointer of each slot.
 #[derive(Default)]
