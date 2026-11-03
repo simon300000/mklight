@@ -486,7 +486,10 @@ decisions and requested tolerance; edges already within tolerance emit
 skip-flagged probes that are neither aimed nor traced. The host f64 seed
 tables (25×25 per field–wavelength row, `aiming::host_tables`) seed every
 generation of a batch, so the chief probe, lattice, saddle and rim probes
-aim from the same seeds whatever their batch size. The
+aim from the same seeds whatever their batch size; a traced lattice is
+therefore identified exactly by `gpu::lattice_key` (`ResidentTracedPupil::
+key`), the shared graph's `pupil_lattice` key in a Metal double-float family,
+for analyses that share aimed pupils. The
 analytic disk root uses its cancellation-free form. Each rim edge keeps the
 ray of its surviving bracket end from the round that traced it (first the
 inside lattice node; `Op::Rim` names the probe, `Op::Keep` gathers its

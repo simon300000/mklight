@@ -43,6 +43,28 @@ pub struct ResidentTracedPupil {
     pub valid: BufferHandle,
     pub mask: Option<PupilMask>,
     pub entrance_rim: Option<PupilMask>,
+    /// Content key of this traced lattice ([`lattice_key`]): the shared
+    /// analysis graph's `pupil_lattice` key for the same (tracer, field,
+    /// wavelength, lattice settings), in the Metal double-float family.
+    pub key: mklight_core::memo::NodeKey,
+}
+/// The `pupil_lattice` node key of a Metal traced pupil: the CPU f64
+/// [`crate::shared::lattice_key`] of the same inputs, in a family of its own
+/// (double-float lattices are never substituted for f64 ones), scoped by the
+/// radiometry library identity. Every generation of a batch aims from the
+/// same host seeds, so a lattice does not depend on the batch it was traced
+/// in and the key identifies its rays, masks and automatic grid exactly.
+pub fn lattice_key(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+    wl: usize,
+    settings: &PupilSettings,
+    library: &str,
+) -> mklight_core::memo::NodeKey {
+    mklight_core::memo::KeyHasher::new("mklight-wave/pupil_lattice/metal-df/1")
+        .key(&crate::shared::lattice_key(tracer, field, wl, settings))
+        .str(library)
+        .finish()
 }
 impl ResidentTracedPupil {
     pub fn resample(
@@ -1476,18 +1498,8 @@ impl<'a> PupilTracer<'a> {
         };
         let nodes = r.outputs[0].clone();
         let valid = lat.mask().clone();
-        let identity = blake3::hash(
-            &serde_json::to_vec(&(
-                sys.snapshot.hash().to_hex(),
-                &self.radiometry.identity,
-                wl,
-                item.field.point,
-                settings,
-            ))
-            .unwrap(),
-        )
-        .to_hex()
-        .to_string();
+        let key = lattice_key(self.tracer, item.field, wl, settings, &self.radiometry.identity);
+        let identity = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let mut result = from_resident_lattice(
             self.backend,
             sys.snapshot.clone(),
@@ -1559,6 +1571,7 @@ impl<'a> PupilTracer<'a> {
                 valid,
                 mask,
                 entrance_rim,
+                key,
             },
             run_info: result.run_info,
             stats,
