@@ -48,6 +48,12 @@ fn vignetted_rim_keeps_surviving_rays() {
     let b = metal();
     let mut sys = samples::double_gauss();
     sys.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+    // Clear apertures on the outer elements clip the oblique beams, so the
+    // rim is traced against surface edges (not only the compressed disk).
+    for (surface, radius) in [(1, 11.), (11, 11.)] {
+        sys.surfaces[surface].aperture =
+            Some(mklight_core::model::ApertureShape::Circular { radius });
+    }
     let t = mklight_analysis::tracer_for(sys).unwrap();
     let service = gpu::PupilTracer::new(&b, &t, &ctx).unwrap();
     let settings = PupilSettings {
@@ -82,10 +88,10 @@ fn vignetted_rim_keeps_surviving_rays() {
             .filter(|(x, y)| (f64::from(**x) - **y).abs() > 1e-9)
             .count();
         eprintln!(
-            "P6_RIM field={field} rim_points={} rim={rim:e} area={area:e} coverage_mismatches={masked}",
-            r.info.rim_points
+            "P6_RIM field={field} rim_points={} transmitted={} rim={rim:e} area={area:e} coverage_mismatches={masked}",
+            r.info.rim_points, r.info.transmitted_fraction
         );
-        assert!(r.info.rim_points > 0);
+        assert!(r.info.rim_points > 0 && r.info.transmitted_fraction < 0.9);
         assert!(rim < 1e-6, "field {field}: rim point difference {rim:e}");
         assert!(area < 1e-6, "field {field}: clear area difference {area:e}");
         assert_eq!(masked, 0, "field {field}: resampled coverage");
