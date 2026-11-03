@@ -280,7 +280,11 @@ impl Resume {
     /// kernel's resume slots.
     fn bind(&mut self, e: &Encoder<'_>, round: usize) {
         let [a, b] = &mut self.lists;
-        let (out, inp) = if round % 2 == 0 { (a, b) } else { (b, a) };
+        let (out, inp) = if round.is_multiple_of(2) {
+            (a, b)
+        } else {
+            (b, a)
+        };
         e.set_buffer_mut(14, &mut self.state, 0);
         e.set_buffer_mut(15, out, 0);
         e.set_buffer_mut(16, &mut self.counts, round);
@@ -304,6 +308,7 @@ impl Resume {
 /// rays, continuation commands (sized on the device from the pending count)
 /// resume them in rounds, and the host reads the pending count back between
 /// round groups until no ray is left.
+#[allow(clippy::too_many_arguments)]
 fn newton_commands(
     x: &mut Execution<'_>,
     stage: &mut StageStats,

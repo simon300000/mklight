@@ -1498,7 +1498,13 @@ impl<'a> PupilTracer<'a> {
         };
         let nodes = r.outputs[0].clone();
         let valid = lat.mask().clone();
-        let key = lattice_key(self.tracer, item.field, wl, settings, &self.radiometry.identity);
+        let key = lattice_key(
+            self.tracer,
+            item.field,
+            wl,
+            settings,
+            &self.radiometry.identity,
+        );
         let identity = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let mut result = from_resident_lattice(
             self.backend,
