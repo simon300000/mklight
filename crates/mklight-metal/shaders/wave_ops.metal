@@ -280,15 +280,15 @@ kernel void mkl_wave_lattice(device uint *samples [[buffer(3)]],constant uint *p
 kernel void mkl_wave_survival(device const float2 *samples [[buffer(0)]],device const uint *status [[buffer(1)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
     if(id>=p[7])return;uint k=p[6]+id;float2 x=samples[4*k],y=samples[4*k+1];float2 r=mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y));out[k]=uint(status[k]==0&&wless(r,float2(1,1.0001e-12f)));
 }
-kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const float2 *prev [[buffer(1)]],device const uint *status [[buffer(2)]],device float2 *state [[buffer(3)]],device uint *samples [[buffer(4)]],constant uint *p [[buffer(5)]],device const uint *fields [[buffer(6)]],uint id [[thread_position_in_grid]]){
-    if(id>=p[7])return;uint k=p[6]+id;device const float2 *e=edges+4*k;float2 a[8]={e[0],e[1],e[2],e[3],float2(0),float2(1,0),float2(0),float2(0)};
+kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const float2 *prev [[buffer(1)]],device const uint *status [[buffer(2)]],device float2 *state [[buffer(3)]],device uint *samples [[buffer(4)]],constant uint *p [[buffer(5)]],device const uint *fields [[buffer(6)]],device uint *source [[buffer(7)]],uint id [[thread_position_in_grid]]){
+    if(id>=p[7])return;uint k=p[6]+id;device const float2 *e=edges+4*k;float2 a[8]={e[0],e[1],e[2],e[3],float2(0),float2(1,0),float2(0),float2(0)};uint from=0xffffffffu;
     float2 dx=mkl_df_sub(e[2],e[0]),dy=mkl_df_sub(e[3],e[1]),qa=mkl_df_add(mkl_df_mul(dx,dx),mkl_df_mul(dy,dy)),len=mkl_df_sqrt(qa);
-    if(p[2]){for(uint j=0;j<8;++j)a[j]=prev[8*k+j];if(a[7].x==0){if(status[16*k]==0)a[4]=a[5];else{float2 lo=a[4],span=mkl_df_sub(a[5],a[4]);uint l=0,h=16;for(uint t=0;t<4;++t){uint m=(l+h)/2;if(status[16*k+m]==0)l=m;else h=m;}a[4]=mkl_df_add(lo,mkl_df_mul_f32(span,float(l)/16));a[5]=mkl_df_add(lo,mkl_df_mul_f32(span,float(h)/16));}float2 span=mkl_df_mul(mkl_df_sub(a[5],a[4]),len),tol=float2(as_type<float>(p[4]),as_type<float>(p[5]));if(!wless(tol,span))a[7]=float2(1,0);}}
+    if(p[2]){for(uint j=0;j<8;++j)a[j]=prev[8*k+j];if(a[7].x==0){if(status[16*k]==0){a[4]=a[5];from=16*k;}else{float2 lo=a[4],span=mkl_df_sub(a[5],a[4]);uint l=0,h=16;for(uint t=0;t<4;++t){uint m=(l+h)/2;if(status[16*k+m]==0)l=m;else h=m;}a[4]=mkl_df_add(lo,mkl_df_mul_f32(span,float(l)/16));a[5]=mkl_df_add(lo,mkl_df_mul_f32(span,float(h)/16));if(l>0)from=16*k+l;}float2 span=mkl_df_mul(mkl_df_sub(a[5],a[4]),len),tol=float2(as_type<float>(p[4]),as_type<float>(p[5]));if(!wless(tol,span))a[7]=float2(1,0);}}
     else if(wless(float2(1,0),mkl_df_add(mkl_df_mul(e[2],e[2]),mkl_df_mul(e[3],e[3])))){
         float2 qb=mkl_df_add(mkl_df_mul(e[0],dx),mkl_df_mul(e[1],dy)),qc=mkl_df_add_f32(mkl_df_add(mkl_df_mul(e[0],e[0]),mkl_df_mul(e[1],e[1])),-1);
         float2 disc=mkl_df_sub(mkl_df_mul(qb,qb),mkl_df_mul(qa,qc)),root=disc.x<0?float2(0):mkl_df_sqrt(disc);float2 t=qb.x<=0?mkl_df_div(mkl_df_add(-qb,root),qa):mkl_df_div(-qc,mkl_df_add(qb,root));a[5]=wless(t,float2(0))?float2(0):(wless(float2(1,0),t)?float2(1,0):t);
     }
-    uint width=p[3]?1:16;
+    source[k]=from;uint width=p[3]?1:16;
     for(uint j=0;j<width;++j){float2 t=(p[3]||a[7].x>0)?a[4]:(j==0?a[5]:mkl_df_add(a[4],mkl_df_mul_f32(mkl_df_sub(a[5],a[4]),float(j)/16)));
         float2 xx=mkl_df_add(e[0],mkl_df_mul(dx,t)),yy=mkl_df_add(e[1],mkl_df_mul(dy,t));
         if(!p[2]){float2 rad=mkl_df_sqrt(mkl_df_add(mkl_df_mul(xx,xx),mkl_df_mul(yy,yy)));if(wless(float2(1,0),rad)){xx=mkl_df_div(xx,rad);yy=mkl_df_div(yy,rad);}}
@@ -471,6 +471,15 @@ kernel void mkl_wave_shell_query_finish(device float2 *out [[buffer(18)]],device
 
 kernel void mkl_wave_wavelength(device const uint *indices [[buffer(0)]],device const uint *table [[buffer(1)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id,n=p[1],t=indices[k]*MKL_MAX_WAVELENGTHS+indices[n+k];out[k]=0;out[n+k]=t<p[0]?table[t]:0xffffffffu;}
 kernel void mkl_wave_split(device const uint *in [[buffer(0)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id,j=k/p[3];out[k]=in[p[0]+j*p[1]+k%p[3]];}
+// Concat: p = [output word offset, output words per plane, 0, part words per
+// plane]; thread k is the part word.
+kernel void mkl_wave_concat(device const uint *in [[buffer(0)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){if(id>=p[7])return;uint k=p[6]+id,j=k/p[3];out[p[0]+j*p[1]+k%p[3]]=in[k];}
+// Keep: p = [N (probe columns), n (output columns), words per row (0 for
+// plane-major), has previous]. Thread t is the output word.
+kernel void mkl_wave_keep(device const uint *in [[buffer(0)]],device const uint *prev [[buffer(1)]],device const uint *source [[buffer(2)]],device uint *out [[buffer(3)]],constant uint *p [[buffer(5)]],uint id [[thread_position_in_grid]]){
+    if(id>=p[7])return;uint t=p[6]+id,w=p[2],k=w?t/w:t%p[1],j=w?t%w:t/p[1],s=source[k];
+    out[t]=s==0xffffffffu?(p[3]?prev[t]:0u):(w?in[s*w+j]:in[j*p[0]+s]);
+}
 kernel void mkl_wave_sensor_domain_clear(device atomic_uint *out [[buffer(6)]],uint id [[thread_position_in_grid]]){if(id==0)atomic_store_explicit(out,0,memory_order_relaxed);}
 kernel void mkl_wave_sensor_domain(device const float *coverage [[buffer(0)]],device atomic_uint *out [[buffer(6)]],constant MklWaveFftMtfParams &p [[buffer(5)]],uint k [[thread_position_in_grid]]){if(k>=p.count||coverage[k]<=0)return;float2 a=mkl_df_mul(wdf(p.sine),mkl_df_add_f32(mkl_df_div(float2(float(2*(k%p.n)+1),0),float2(float(p.n),0)),-1)),b=mkl_df_mul(wdf(p.sine),mkl_df_add_f32(mkl_df_div(float2(float(2*(k/p.n)+1),0),float2(float(p.n),0)),-1)),gamma=mkl_df_sqrt(mkl_df_sub(mkl_df_sub(float2(1,0),mkl_df_mul(a,a)),mkl_df_mul(b,b)));float2 z=mkl_df_sub(mkl_df_add(mkl_df_mul(wdf(p.frame[0][0]),a),mkl_df_mul(wdf(p.frame[0][1]),b)),mkl_df_mul(wdf(p.frame[0][2]),gamma));if(!isfinite(z.x)||z.x>=0)atomic_fetch_add_explicit(out,1,memory_order_relaxed);}
 

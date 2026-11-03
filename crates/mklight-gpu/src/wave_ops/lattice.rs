@@ -22,7 +22,10 @@ pub enum Lattice {
         output: BufferId,
     },
     /// Edges are [inside x/y, outside x/y], probed at field row `fields[k]`.
-    /// State stores a,b,lo,hi,trial,done.
+    /// State stores a,b,lo,hi,trial,done. `source` (u32 [n]) names the
+    /// previous round's probe (`16k + j`) that became the surviving end `lo`,
+    /// or `u32::MAX` when it did not move, so its traced ray is kept rather
+    /// than traced again (a re-aimed ray at the rim may clip).
     Rim {
         edges: PlanView,
         fields: PlanView,
@@ -32,6 +35,17 @@ pub enum Lattice {
         final_point: bool,
         state: BufferId,
         samples: BufferId,
+        source: BufferId,
+    },
+    /// Per edge k, copy column `source[k]` of every probe channel into
+    /// output column k; `u32::MAX` keeps column k of `previous` (zero
+    /// without `previous`). Channels are [planes, N] (or [N, row] when
+    /// `rows`); outputs have `source.len()` columns.
+    Keep {
+        channels: Vec<(PlanView, bool)>,
+        previous: Option<Vec<PlanView>>,
+        source: PlanView,
+        outputs: Vec<BufferId>,
     },
     /// Copy ray ranges of batched word channels into per-range buffers.
     /// Channels are [planes, N] (or [N, row] when `rows`); outputs are
@@ -40,6 +54,12 @@ pub enum Lattice {
         channels: Vec<(PlanView, bool)>,
         ranges: Vec<[usize; 2]>,
         outputs: Vec<BufferId>,
+    },
+    /// Concatenate plane-major parts `[planes, m_i]` (or `[m_i]`) of one
+    /// element type along their last axis into `[planes, Σ m_i]`.
+    Concat {
+        parts: Vec<PlanView>,
+        output: BufferId,
     },
 }
 pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
@@ -87,6 +107,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
             tolerance,
             state,
             samples,
+            source,
             final_point,
         } => {
             let n = edges.desc.shape[0];
@@ -105,12 +126,46 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
                 view(v, U32, &[3, 16 * n])?;
             }
             out(p, *state, DoubleFloat, &[n, 8])?;
+            out(p, *source, U32, &[n])?;
             out(
                 p,
                 *samples,
                 U32,
                 &[if *final_point { n } else { 16 * n }, 8],
             )
+        }
+        Lattice::Keep {
+            channels,
+            previous,
+            source,
+            outputs,
+        } => {
+            let n = source.desc.shape.first().copied().unwrap_or(0);
+            view(source, U32, &[n])?;
+            if n == 0
+                || channels.is_empty()
+                || outputs.len() != channels.len()
+                || previous.as_ref().is_some_and(|v| v.len() != channels.len())
+            {
+                return Err(bad("keep layout"));
+            }
+            for (c, (v, rows)) in channels.iter().enumerate() {
+                let s = &v.desc.shape;
+                if !(1..=2).contains(&s.len())
+                    || (*rows && s.len() != 2)
+                    || !matches!(v.desc.element, U32 | F32)
+                {
+                    return Err(bad("keep channel"));
+                }
+                view(v, v.desc.element, s)?;
+                let mut shape = s.clone();
+                shape[if *rows { 0 } else { s.len() - 1 }] = n;
+                if let Some(prev) = previous {
+                    view(&prev[c], v.desc.element, &shape)?;
+                }
+                out(p, outputs[c], v.desc.element, &shape)?;
+            }
+            Ok(())
         }
         Lattice::Split {
             channels,
@@ -141,6 +196,32 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
             }
             Ok(())
         }
+        Lattice::Concat { parts, output } => {
+            let Some(first) = parts.first() else {
+                return Err(bad("concat parts"));
+            };
+            let (element, planes) = (first.desc.element, concat_part(first).0);
+            let mut total = 0;
+            for v in parts {
+                let (p, m) = concat_part(v);
+                if v.desc.element != element || p != planes || m == 0 || p == 0 {
+                    return Err(bad("concat part layout"));
+                }
+                view(v, element, &v.desc.shape)?;
+                total += m;
+            }
+            let mut shape = first.desc.shape.clone();
+            *shape.last_mut().unwrap() = total;
+            out(p, *output, element, &shape)
+        }
+    }
+}
+/// Planes and columns of a concat part.
+pub fn concat_part(v: &PlanView) -> (usize, usize) {
+    match v.desc.shape[..] {
+        [planes, m] => (planes, m),
+        [m] => (1, m),
+        _ => (0, 0),
     }
 }
 pub fn access(r: &Lattice) -> Access {
@@ -163,12 +244,24 @@ pub fn access(r: &Lattice) -> Access {
             status,
             state,
             samples,
+            source,
             ..
         } => {
             let mut reads = vec![edges.clone(), fields.clone()];
             reads.extend(previous.clone());
             reads.extend(status.clone());
-            (reads, vec![*state, *samples])
+            (reads, vec![*state, *samples, *source])
+        }
+        Lattice::Keep {
+            channels,
+            previous,
+            source,
+            outputs,
+        } => {
+            let mut reads: Vec<_> = channels.iter().map(|(v, _)| v.clone()).collect();
+            reads.extend(previous.iter().flatten().cloned());
+            reads.push(source.clone());
+            (reads, outputs.clone())
         }
         Lattice::Split {
             channels, outputs, ..
@@ -176,6 +269,7 @@ pub fn access(r: &Lattice) -> Access {
             channels.iter().map(|(v, _)| v.clone()).collect(),
             outputs.clone(),
         ),
+        Lattice::Concat { parts, output } => (parts.clone(), vec![*output]),
     };
     Access {
         reads,
@@ -195,6 +289,16 @@ pub fn split_part(
         (true, &[_, w]) => (start * w, 0, 1, len * w),
         (_, &[planes, n]) => (start, n, planes, len),
         _ => (start, 0, 1, len),
+    }
+}
+/// Columns, planes and words per row (0 for plane-major channels) of a
+/// keep channel.
+pub fn keep_part(v: &PlanView, rows: bool) -> (usize, usize, usize) {
+    let s = &v.desc.shape;
+    match (rows, &s[..]) {
+        (true, &[n, w]) => (n, 1, w),
+        (_, &[planes, n]) => (n, planes, 0),
+        _ => (s[0], 1, 0),
     }
 }
 pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobControl) -> MkResult<()> {
@@ -268,6 +372,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             final_point,
             state,
             samples,
+            source,
         } => {
             let e = values::<Df32>(x, edges).as_chunks::<4>().0;
             let fields = values::<u32>(x, fields);
@@ -276,6 +381,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                 .map(|v| values::<Df32>(x, v).as_chunks::<8>().0);
             let st = status.as_ref().map(|v| values::<u32>(x, v));
             let mut a = vec![[Df32::ZERO; 8]; e.len()];
+            let mut from = vec![u32::MAX; e.len()];
             let width = if *final_point { 1 } else { 16 };
             let mut probes = vec![Sample::new([0.; 2], 0, 0); e.len() * width];
             for (k, (a, e)) in a.iter_mut().zip(e).enumerate() {
@@ -291,6 +397,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                     if a[7].hi == 0. {
                         if st.unwrap()[16 * k] == 0 {
                             a[4] = a[5];
+                            from[k] = 16 * k as u32;
                         } else {
                             let (lo, hi) = (a[4], a[5]);
                             let span = hi - lo;
@@ -305,6 +412,9 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                             }
                             a[4] = lo + span.mul_f32(l as f32 / 16.);
                             a[5] = lo + span.mul_f32(h as f32 / 16.);
+                            if l > 0 {
+                                from[k] = (16 * k + l) as u32;
+                            }
                         }
                         if ((a[5] - a[4]) * len).to_f64() <= tolerance.to_f64() {
                             a[7] = one;
@@ -361,6 +471,39 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                 .copy_from_slice(bytemuck::cast_slice(&a));
             x.words_mut(*samples)
                 .copy_from_slice(bytemuck::cast_slice(&probes));
+            x.words_mut(*source).copy_from_slice(&from);
+        }
+        Lattice::Keep {
+            channels,
+            previous,
+            source,
+            outputs,
+        } => {
+            let from = values::<u32>(x, source).to_vec();
+            let n = from.len();
+            for (c, (v, rows)) in channels.iter().enumerate() {
+                ctl.check()?;
+                let (big, planes, w) = keep_part(v, *rows);
+                let src = x.words(v.buffer)[v.offset..].to_vec();
+                let prev = previous
+                    .as_ref()
+                    .map(|p| x.words(p[c].buffer)[p[c].offset..].to_vec());
+                let out = x.words_mut(outputs[c]);
+                for (k, &s) in from.iter().enumerate() {
+                    for j in 0..planes.max(w) {
+                        let (o, i) = if w > 0 {
+                            (k * w + j, s as usize * w + j)
+                        } else {
+                            (j * n + k, j * big + s as usize)
+                        };
+                        out[o] = if s == u32::MAX {
+                            prev.as_ref().map_or(0, |p| p[o])
+                        } else {
+                            src[i]
+                        };
+                    }
+                }
+            }
         }
         Lattice::Split {
             channels,
@@ -380,6 +523,24 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                         .copy_from_slice(&part);
                 }
             }
+        }
+        Lattice::Concat { parts, output } => {
+            let words = parts[0].desc.element.words();
+            let planes = concat_part(&parts[0]).0;
+            let total: usize = parts.iter().map(|v| concat_part(v).1).sum();
+            let mut out = vec![0u32; planes * total * words];
+            let mut start = 0;
+            for v in parts {
+                ctl.check()?;
+                let m = concat_part(v).1;
+                let src = &x.words(v.buffer)[v.offset * words..];
+                for j in 0..planes {
+                    out[(j * total + start) * words..(j * total + start + m) * words]
+                        .copy_from_slice(&src[j * m * words..(j + 1) * m * words]);
+                }
+                start += m;
+            }
+            x.words_mut(*output).copy_from_slice(&out);
         }
     }
     Ok(())

@@ -10,43 +10,7 @@ impl ResidentPupil {
         phase_steps: Option<BufferId>,
     ) -> MkResult<BufferId> {
         self.append_sensor_guard(p)?;
-        let count = frequencies.desc.shape[0];
-        let planes = shifts.desc.shape[0];
-        let pupil = self.import(p);
-        let stencil = p.scratch(BufferDesc::new(
-            ElementType::F32,
-            [count, self.n * self.n, 5],
-        ));
-        let frame = self
-            .geometry
-            .chief_frame()
-            .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
-        p.operations
-            .push(ResidentOp::Transforms(tr::Request::PrepareOpticalStencil(
-                tr::OpticalCorrelation {
-                    stencil: None,
-                    amplitude: pupil.amplitude.clone(),
-                    coverage: pupil.coverage.clone(),
-                    opd: pupil.opd.clone(),
-                    frequencies,
-                    frame,
-                    sin_max: self.wave_geometry().sin_max,
-                    wavelength_over_index: self.wave_geometry().wavelength,
-                    output: stencil,
-                },
-            )));
-        let output = p.scratch(BufferDesc::new(ElementType::Complex32, [planes, count]));
-        p.operations
-            .push(ResidentOp::Wave(w::Request::FocusCorrelation {
-                phase_steps,
-                on_axis: self.geometry.is_on_axis(),
-                pupil,
-                geometry: self.wave_geometry(),
-                stencil: p.view(stencil)?,
-                shifts: Some(shifts),
-                output,
-            }));
-        Ok(output)
+        self.append_stencil_correlation(p, frequencies, Some(shifts), phase_steps)
     }
     pub fn focus_batch(
         &self,

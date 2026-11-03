@@ -445,63 +445,119 @@ impl ResidentPupil {
             stats: r.stats,
         })
     }
+    /// Frequencies per direct-correlation stencil (`[m, n², 5]` f32 within
+    /// the 256 MiB stencil limit); zero when one frequency does not fit.
+    pub fn stencil_frequencies(n: usize) -> usize {
+        256 * 1024 * 1024 / (n * n * 5 * 4)
+    }
+    /// Reject an explicit pupil grid whose direct-correlation stencil cannot
+    /// hold even one frequency, before any pupil is traced.
+    pub fn check_stencil_grid(grid: usize) -> MkResult<()> {
+        if grid != 0 && Self::stencil_frequencies(grid) == 0 {
+            return Err(MkError::Unsupported(format!(
+                "pupil grid {grid} exceeds the direct-correlation stencil limit; reference required"
+            )));
+        }
+        Ok(())
+    }
+    /// Stencil correlation at every frequency of the `[count, 2]` view (and
+    /// every `shifts` plane), tiled in frequency so each stencil fits the
+    /// limit. Every frequency's sum is evaluated and reduced exactly as in
+    /// one untiled stencil; the tile outputs are concatenated into
+    /// `[planes, count]`. `phase_steps` is written once.
+    pub(crate) fn append_stencil_correlation(
+        &self,
+        p: &mut ResidentPlan,
+        frequencies: PlanView,
+        shifts: Option<PlanView>,
+        phase_steps: Option<BufferId>,
+    ) -> MkResult<BufferId> {
+        let count = frequencies.desc.shape[0];
+        let planes = shifts.as_ref().map_or(1, |s| s.desc.shape[0]);
+        let tile = Self::stencil_frequencies(self.n);
+        Self::check_stencil_grid(self.n)?;
+        let pupil = self.import(p);
+        let frame = self
+            .geometry
+            .chief_frame()
+            .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
+        let mut parts = vec![];
+        for start in (0..count).step_by(tile) {
+            let m = tile.min(count - start);
+            let mut f = frequencies.clone();
+            f.offset += 2 * start;
+            f.desc.shape = vec![m, 2];
+            let stencil = p.scratch(BufferDesc::new(ElementType::F32, [m, self.n * self.n, 5]));
+            p.operations
+                .push(ResidentOp::Transforms(tr::Request::PrepareOpticalStencil(
+                    tr::OpticalCorrelation {
+                        stencil: None,
+                        amplitude: pupil.amplitude.clone(),
+                        opd: pupil.opd.clone(),
+                        coverage: pupil.coverage.clone(),
+                        frequencies: f,
+                        frame,
+                        sin_max: self.wave_geometry().sin_max,
+                        wavelength_over_index: self.wave_geometry().wavelength,
+                        output: stencil,
+                    },
+                )));
+            let output = p.scratch(BufferDesc::new(ElementType::Complex32, [planes, m]));
+            p.operations
+                .push(ResidentOp::Wave(w::Request::FocusCorrelation {
+                    phase_steps: phase_steps.filter(|_| start == 0),
+                    on_axis: self.geometry.is_on_axis(),
+                    pupil: pupil.clone(),
+                    geometry: self.wave_geometry(),
+                    stencil: p.view(stencil)?,
+                    shifts: shifts.clone(),
+                    output,
+                }));
+            parts.push(output);
+        }
+        if let [output] = parts[..] {
+            return Ok(output);
+        }
+        let output = p.scratch(BufferDesc::new(ElementType::Complex32, [planes, count]));
+        let parts = parts
+            .iter()
+            .map(|&id| p.view(id))
+            .collect::<MkResult<_>>()?;
+        p.operations.push(ResidentOp::Wave(w::Request::Lattice(
+            w::lattice::Lattice::Concat { parts, output },
+        )));
+        Ok(output)
+    }
     pub fn append_correlation(
         &self,
         p: &mut ResidentPlan,
         frequencies: PlanView,
     ) -> MkResult<BufferId> {
         self.append_sensor_guard(p)?;
+        if self.geometry.is_on_axis() {
+            return self.append_stencil_correlation(p, frequencies, None, None);
+        }
         let pupil = self.import(p);
         let count = frequencies.desc.shape[0];
-        let output = p.scratch(BufferDesc::new(
-            ElementType::Complex32,
-            if self.geometry.is_on_axis() {
-                vec![1, count]
-            } else {
-                vec![count]
-            },
-        ));
+        let output = p.scratch(BufferDesc::new(ElementType::Complex32, [count]));
         let frame = self
             .geometry
             .chief_frame()
             .map(|v| [v.x, v.y, v.z].map(Df32::from_f64));
-        let mut correlation = tr::OpticalCorrelation {
-            stencil: None,
-            amplitude: pupil.amplitude.clone(),
-            opd: pupil.opd.clone(),
-            coverage: pupil.coverage.clone(),
-            frequencies,
-            frame,
-            sin_max: self.wave_geometry().sin_max,
-            wavelength_over_index: self.wave_geometry().wavelength,
-            output,
-        };
-        if self.geometry.is_on_axis() {
-            let stencil = p.scratch(BufferDesc::new(
-                ElementType::F32,
-                [count, self.n * self.n, 5],
-            ));
-            correlation.output = stencil;
-            p.operations
-                .push(ResidentOp::Transforms(tr::Request::PrepareOpticalStencil(
-                    correlation,
-                )));
-            p.operations
-                .push(ResidentOp::Wave(w::Request::FocusCorrelation {
-                    phase_steps: None,
-                    on_axis: true,
-                    pupil,
-                    geometry: self.wave_geometry(),
-                    stencil: p.view(stencil)?,
-                    shifts: None,
+        p.operations
+            .push(ResidentOp::Transforms(tr::Request::OpticalCorrelation(
+                tr::OpticalCorrelation {
+                    stencil: None,
+                    amplitude: pupil.amplitude,
+                    opd: pupil.opd,
+                    coverage: pupil.coverage,
+                    frequencies,
+                    frame,
+                    sin_max: self.wave_geometry().sin_max,
+                    wavelength_over_index: self.wave_geometry().wavelength,
                     output,
-                }));
-        } else {
-            p.operations
-                .push(ResidentOp::Transforms(tr::Request::OpticalCorrelation(
-                    correlation,
-                )));
-        }
+                },
+            )));
         Ok(output)
     }
     /// Complex sensor OTF at arbitrary frequencies. Lateral-colour placement is

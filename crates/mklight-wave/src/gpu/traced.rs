@@ -834,6 +834,7 @@ impl<'a> PupilTracer<'a> {
             }
             let mut edges = vec![];
             let mut rows_of = vec![];
+            let mut nodes_of = vec![];
             for (t, item) in items.iter_mut().enumerate() {
                 let loops = crate::traced::chain_loops(&crate::traced::rim_segments(
                     &lattice,
@@ -852,6 +853,7 @@ impl<'a> PupilTracer<'a> {
                     let k = id / 2;
                     let q = k + if id % 2 == 0 { 1 } else { side };
                     let (a, b) = if item.inside[k] { (k, q) } else { (q, k) };
+                    nodes_of.push((item.row * n + a) as u32);
                     let a = lattice.point(a % side, a / side);
                     let b = lattice.point(b % side, b / side);
                     edges.extend([a[0], a[1], b[0], b[1]].map(Df32::from_f64));
@@ -860,9 +862,12 @@ impl<'a> PupilTracer<'a> {
                 item.ids = ids;
             }
             if !rows_of.is_empty() {
+                let (lat, _) = lattice_batch.as_ref().unwrap();
                 rim_batch = Some(self.bisect(
                     &edges,
                     &rows_of,
+                    &nodes_of,
+                    lat,
                     fields,
                     settings,
                     &items,
@@ -904,12 +909,19 @@ impl<'a> PupilTracer<'a> {
         Ok(results.into_iter().map(Option::unwrap).collect())
     }
     /// Batched rim bisection of every pupil's crossed lattice edges, four
-    /// levels (16 probes) per edge and command round, then the final points.
+    /// levels (16 probes) per edge and command round. Each edge's rim ray is
+    /// the surviving bracket end's ray as traced in its own round (first the
+    /// inside lattice node), kept with `Op::Keep` exactly as the reference
+    /// keeps the bracketing ray: tracing the final point again would aim it
+    /// from other seeds, and a ray converged within the aiming tolerance of
+    /// an aperture edge may then clip, leaving a hole in the rim.
     #[allow(clippy::too_many_arguments)]
     fn bisect(
         &self,
         edges: &[Df32],
         rows_of: &[u32],
+        nodes_of: &[u32],
+        lat: &Batch,
         fields: &Fields,
         settings: &PupilSettings,
         items: &[Item],
@@ -925,6 +937,15 @@ impl<'a> PupilTracer<'a> {
             a.copy_from_slice(rows_of);
             Ok(())
         })?;
+        let nodes = fill::<u32>(self.backend, [count], |a| {
+            a.copy_from_slice(nodes_of);
+            Ok(())
+        })?;
+        // Every kept ray survived by construction.
+        let survived = fill::<u32>(self.backend, [count], |a| {
+            a.fill(1);
+            Ok(())
+        })?;
         let iterations = ((2. / (settings.rays - 1) as f64 / settings.rim_tolerance)
             .log2()
             .ceil() as usize)
@@ -933,14 +954,27 @@ impl<'a> PupilTracer<'a> {
         let mut p = self.plan();
         let edge = p.import(edges.view());
         let edge_rows = p.import(edge_rows.view());
+        // Kept channels in `Batch` order: starts, the five hit channels and
+        // the sample rows; first those of the inside lattice nodes.
+        let mut lattice = vec![];
+        for h in std::iter::once(&lat.starts).chain(&lat.hits) {
+            let id = p.import(h.view());
+            lattice.push((p.view(id)?, false));
+        }
+        let samples = p.import(lat.samples.view());
+        lattice.push((p.view(samples)?, true));
+        let nodes = p.import(nodes.view());
+        let nodes = p.view(nodes)?;
+        let mut kept = Self::keep(&mut p, lattice, None, nodes);
         let mut previous = None;
         let mut status = None;
         let mut probes = vec![];
-        let mut final_probe = None;
+        let mut traced = None;
         for iteration in 0..=iterations {
             ctx.check()?;
             let last = iteration == iterations;
             let state = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [count, 8]));
+            let source = p.scratch(BufferDesc::new(ElementType::U32, [count]));
             let probe_count = count * if last { 1 } else { 16 };
             let samples = p.scratch(BufferDesc::new(ElementType::U32, [probe_count, 8]));
             p.operations
@@ -953,32 +987,51 @@ impl<'a> PupilTracer<'a> {
                     final_point: last,
                     state,
                     samples,
+                    source,
                 })));
-            let layout =
-                self.append_probe(&mut p, samples, probe_count, fields, true, last, false, &[])?;
-            // Probe publication order: starts, four ray channels, trace status.
-            status = Some(p.outputs[layout.first + 5]);
+            if let Some(channels) = traced.take() {
+                let source = p.view(source)?;
+                kept = Self::keep(&mut p, channels, Some(kept), source);
+            }
             previous = Some(state);
             if last {
-                final_probe = Some(layout);
-            } else {
-                // Intermediate rounds need only aim reports and input samples
-                // for the qualification checks. Keep hit/status IDs plan-local.
-                let reports = p.outputs[layout.first + 4];
-                let samples = *p.outputs.last().unwrap();
-                p.outputs.truncate(layout.first);
-                probes.push((p.outputs.len(), p.outputs.len() + 1));
-                p.outputs.extend([reports, samples]);
+                break;
             }
+            let layout = self.append_probe(
+                &mut p,
+                samples,
+                probe_count,
+                fields,
+                true,
+                false,
+                false,
+                &[],
+            )?;
+            // Probe publication order: starts, four ray channels, trace
+            // status, generated samples.
+            let ids = p.outputs[layout.first..layout.first + layout.len].to_vec();
+            status = Some(ids[5]);
+            let mut channels = vec![];
+            for &id in &ids[..6] {
+                channels.push((p.view(id)?, false));
+            }
+            channels.push((p.view(ids[6])?, true));
+            traced = Some(channels);
+            // Intermediate rounds publish only aim reports and input samples
+            // for the qualification checks. Keep hit/status IDs plan-local.
+            p.outputs.truncate(layout.first);
+            probes.push((p.outputs.len(), p.outputs.len() + 1));
+            p.outputs.extend([ids[4], ids[6]]);
         }
         let state_output = p.outputs.len();
         p.outputs.push(previous.unwrap());
+        let kept_output = p.outputs.len();
+        p.outputs.extend(kept);
         let result = self.backend.submit_plan(p, ctx)?.wait()?;
         accumulate(stats, &result.stats);
         for &(reports, samples) in &probes {
             self.check_aim(&result.outputs[samples], &result.outputs[reports], ctx)?;
         }
-        let (batch, _) = self.finish_probe(final_probe.as_ref().unwrap(), &result, ctx)?;
         let state = self
             .backend
             .read_view(result.outputs[state_output].view())?;
@@ -993,7 +1046,47 @@ impl<'a> PupilTracer<'a> {
                 )));
             }
         }
-        Ok(batch)
+        let out = &result.outputs[kept_output..];
+        Ok(Batch {
+            starts: out[0].clone(),
+            hits: std::array::from_fn(|i| out[i + 1].clone()),
+            samples: out[6].clone(),
+            mask: Some(survived),
+            power: None,
+            count,
+        })
+    }
+    /// Append `Op::Keep` of `channels` into fresh outputs with `source`'s
+    /// column count (`previous` supplies the unchanged columns).
+    fn keep(
+        p: &mut ResidentPlan,
+        channels: Vec<(PlanView, bool)>,
+        previous: Option<Vec<BufferId>>,
+        source: PlanView,
+    ) -> Vec<BufferId> {
+        let n = source.desc.shape[0];
+        let outputs: Vec<_> = channels
+            .iter()
+            .map(|(v, rows)| {
+                let mut shape = v.desc.shape.clone();
+                let axis = if *rows { 0 } else { shape.len() - 1 };
+                shape[axis] = n;
+                p.scratch(BufferDesc::new(v.desc.element, shape))
+            })
+            .collect();
+        let previous = previous.map(|ids| {
+            ids.iter()
+                .map(|&id| p.view(id).expect("kept scratch"))
+                .collect()
+        });
+        p.operations
+            .push(ResidentOp::Wave(w::Request::Lattice(Op::Keep {
+                channels,
+                previous,
+                source,
+                outputs: outputs.clone(),
+            })));
+        outputs
     }
     /// Reference sphere, projection, lattice nodes and automatic-grid resampling
     /// of one traced pupil.

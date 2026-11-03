@@ -464,7 +464,14 @@ each pupil's rays are then split into its own channels for placement and
 resampling, bit-identical to tracing it alone. Rim probes evaluate four
 bisection levels per round, retaining the same binary decisions and requested
 tolerance; the
-analytic disk root uses its cancellation-free form. Unresolved aims, rim
+analytic disk root uses its cancellation-free form. Each rim edge keeps the
+ray of its surviving bracket end from the round that traced it (first the
+inside lattice node; `Op::Rim` names the probe, `Op::Keep` gathers its
+channels), exactly as the reference keeps the bracketing ray. The final point
+is never traced again: a small final batch aims from the chief seeds rather
+than the seed table, and a ray converged within the aiming tolerance of an
+aperture edge may then clip, which used to drop a sector of every vignetted
+off-axis rim (`tests/p6_offaxis.rs`). Unresolved aims, rim
 brackets, sphere intersections and P7 reference-required rows explicitly return
 `Unsupported`, rather than turning into missing rays or silently zero amplitudes.
 
@@ -518,6 +525,13 @@ snapshot and configuration identity.
   lattice, centroid phase removal, cubic aberration interpolation and bilinear
   diffraction reference as the f64 method. Huygens MTF uses the sampled-PSF DFT.
   A covered pupil crossing the sensor horizon is rejected.
+* Direct-correlation stencils (`[frequencies, n², 5]` f32, on-axis MTF and
+  every focus sweep) are tiled in frequency so each stays within 256 MiB
+  (`ResidentPupil::stencil_frequencies`); tile outputs are concatenated by
+  `Op::Concat`, and every frequency's sum is evaluated and reduced exactly as
+  in one stencil, so results do not depend on the tiling. An explicit pupil
+  grid whose stencil cannot hold one frequency (4096²) is rejected by the
+  direct MTF, field MTF and through-focus jobs before any pupil is traced.
 * Focus sweeps share correlation stencils and cache exact defocus phases up to
   256 MiB; larger requests evaluate the same phases on the fly. Per-plane GPU
   reductions retain phase-step warnings. FFT/Huygens use bounded plane batches.
