@@ -240,12 +240,60 @@ const _: () = assert!(size_of::<FieldSpec>() == MKL_AIM_FIELD_WORDS as usize * 4
 const _: () = assert!(size_of::<Sample>() == MKL_AIM_SAMPLE_WORDS as usize * 4);
 const _: () = assert!(size_of::<ChiefSeed>() == MKL_AIM_CACHE_WORDS as usize * 4);
 
+/// Host f64 seed tables of `side` nodes per axis for (field, wavelength)
+/// rows, in row order: node aims solved by the reference tracer's own
+/// schedule (chief prediction, then continuation) for the stop target of
+/// each node's vignetted pupil coordinate. Nodes beyond pupil radius 1.25,
+/// unreachable nodes and rows of unusable fields or fully compressed pupils
+/// stay unsolved, as device nodes do. Rows are solved in parallel.
+pub fn host_tables(
+    tracer: &SequentialTracer,
+    rows: &[(&PreparedField, usize)],
+    side: u32,
+) -> Vec<SeedNode> {
+    use rayon::prelude::*;
+    let side = side as usize;
+    let nodes = side * side;
+    let step = 2.25 / (side - 1) as f64;
+    let unsolved = SeedNode {
+        status: 1,
+        ..Zeroable::zeroed()
+    };
+    let mut out = vec![unsolved; rows.len() * nodes];
+    out.par_chunks_mut(nodes)
+        .zip(rows)
+        .for_each(|(row, &(field, w))| {
+            let v = field.point.vignetting;
+            if !field.is_valid() || v.vcx >= 1. || v.vcy >= 1. {
+                return;
+            }
+            for (k, node) in row.iter_mut().enumerate() {
+                let p = [
+                    (k % side) as f64 * step - 1.125,
+                    (k / side) as f64 * step - 1.125,
+                ];
+                if p[0] * p[0] + p[1] * p[1] > 1.5625 {
+                    continue;
+                }
+                // The node lies in vignetted coordinates; `generate` applies
+                // the field's vignetting, so hand it the pre-vignetting point.
+                let px = (p[0] - v.vdx) / (1. - v.vcx);
+                let py = (p[1] - v.vdy) / (1. - v.vcy);
+                if let Ok(g) = tracer.generate(field, w, px, py) {
+                    node.aim = g.aim.map(Df32::from_f64);
+                    node.status = 0;
+                }
+            }
+        });
+    out
+}
 /// Stable sparse unresolved list for an adapter's optional f64 polish. A
 /// failure is never relabelled converged; polishing is a separate decision.
+/// Excluded samples (`MKL_AIM_OUTSIDE`) are not unresolved.
 pub fn unresolved(report: &[u32], logical_ids: &[u32]) -> Vec<(usize, u64, u32)> {
     let n = report.len() / MKL_AIM_REPORT_PLANES as usize;
     (0..n)
-        .filter(|&i| report[i] != 0)
+        .filter(|&i| !matches!(report[i], 0 | MKL_AIM_OUTSIDE))
         .map(|i| {
             (
                 i,

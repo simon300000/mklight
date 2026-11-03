@@ -491,10 +491,11 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         }
     }
     /// Real-aim solve for the vignetted pupil point `p`. A covering seed
-    /// table supplies an interpolated start and local Jacobian; without one,
-    /// or if that solve fails, the reference schedule follows: linear
-    /// prediction from the chief, then continuation in the pupil radius.
-    fn aim(&self, seed: &ChiefSeed, table: Option<&[SeedNode]>, p: V2<E>) -> Solve<E> {
+    /// table (`side` nodes per axis) supplies an interpolated start and local
+    /// Jacobian; without one, or if that solve fails, the reference schedule
+    /// follows: linear prediction from the chief, then continuation in the
+    /// pupil radius.
+    fn aim(&self, seed: &ChiefSeed, table: Option<(&[SeedNode], usize)>, p: V2<E>) -> Solve<E> {
         let src = seed.source.map(D::from_df);
         let chief = seed.chief.map(D::from_df);
         let j = (seed.has_jacobian != 0).then(|| {
@@ -505,7 +506,7 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         let wl = self.field.wavelength;
         let target = scale(p, self.pupil(2));
         let mut it = 0;
-        if let Some((x, jt)) = table.and_then(|t| table_seed(t, p, self.pupil(2))) {
+        if let Some((x, jt)) = table.and_then(|(t, side)| table_seed(t, side, p, self.pupil(2))) {
             let s = self.solve(src, wl, target, x, Some(jt));
             if s.converged {
                 return s;
@@ -541,11 +542,11 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         s.iterations = it;
         s
     }
-    /// Seed-table node `k` (row-major), solved without a table; nodes beyond
-    /// pupil radius 1.25 are left unsolved.
-    pub fn node(&self, seed: &ChiefSeed, k: usize) -> SeedNode {
-        let side = MKL_AIM_TABLE_SIDE as usize;
-        let at = |i: usize| D::from_f(f::<E>(i as f32) * TABLE_STEP - TABLE_EXTENT);
+    /// Seed-table node `k` (row-major, `side` nodes per axis), solved without
+    /// a table; nodes beyond pupil radius 1.25 are left unsolved.
+    pub fn node(&self, seed: &ChiefSeed, k: usize, side: usize) -> SeedNode {
+        let step = table_step::<E>(side);
+        let at = |i: usize| D::from_f(f::<E>(i as f32) * step - TABLE_EXTENT);
         let mut node = SeedNode {
             status: 1,
             ..bytemuck::Zeroable::zeroed()
@@ -559,12 +560,25 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         }
         node
     }
+    /// Generate one sample's ray. `cull` excludes samples outside the unit
+    /// pupil disk (as a skip-flagged sample is excluded) with
+    /// `MKL_AIM_OUTSIDE`: no aim, no trace, no failure.
     pub fn generate(
         &self,
         seed: &ChiefSeed,
-        table: Option<&[SeedNode]>,
+        table: Option<(&[SeedNode], usize)>,
         sample: &Sample,
+        cull: bool,
     ) -> (KRayIn, [u32; 4]) {
+        if excluded(sample, cull) {
+            return (
+                KRayIn {
+                    wavelength: self.field.wavelength,
+                    ..Default::default()
+                },
+                [MKL_AIM_OUTSIDE, 0, 0, 0],
+            );
+        }
         if hard_failure(seed.status) {
             return (
                 KRayIn {
@@ -632,6 +646,16 @@ fn hard_failure(status: u32) -> bool {
         MKL_AIM_FIELD_UNREACHABLE | MKL_AIM_PRIMARY_UNAVAILABLE | MKL_AIM_INVALID
     )
 }
+/// Samples never aimed: skip-flagged, or outside the unit pupil disk when
+/// culling. The cull margin (1e-9) is looser than the 1e-12 disk inclusion
+/// of the lattice masks, so no sample a mask counts inside is excluded.
+pub fn excluded(sample: &Sample, cull: bool) -> bool {
+    sample.field & MKL_AIM_SKIP != 0
+        || (cull
+            && (sample.pupil[0] * sample.pupil[0] + sample.pupil[1] * sample.pupil[1]).to_f64()
+                > CULL_RADIUS2)
+}
+pub const CULL_RADIUS2: f64 = 1. + 1e-9;
 
 /// Trace settings of every aiming intersection (the reference defaults).
 pub fn newton_params() -> TraceParams {
@@ -643,12 +667,19 @@ pub fn newton_params() -> TraceParams {
     }
 }
 
-const TABLE_STEP: f32 = 0.0625;
 const TABLE_EXTENT: f32 = 1.125;
 /// Corner nodes beyond this squared pupil radius are not solved: they only
 /// serve probes far outside the pupil and are often unreachable, which costs
 /// the full reference schedule.
 const TABLE_RADIUS2: f32 = 1.5625;
+/// Node spacing of a `side`-node table over [-1.125, 1.125] (1/16 for the
+/// default side 37); one rounded f32 division, as in MSL.
+fn table_step<E: FpEnv>(side: usize) -> F<E> {
+    f::<E>(2. * TABLE_EXTENT) / f::<E>((side - 1) as f32)
+}
+fn table_inv_step<E: FpEnv>(side: usize) -> F<E> {
+    f::<E>((side - 1) as f32) / f::<E>(2. * TABLE_EXTENT)
+}
 
 /// Catmull–Rom weights at `t` in [0, 1) and their derivatives.
 fn spline<E: FpEnv>(t: F<E>) -> ([F<E>; 4], [F<E>; 4]) {
@@ -673,10 +704,15 @@ fn spline<E: FpEnv>(t: F<E>) -> ([F<E>; 4], [F<E>; 4]) {
 /// Bicubic interpolation of the table's aims at `p` and the stop Jacobian
 /// `r_stop · (d aim/dp)⁻¹` of that interpolant; None unless all 16 nodes
 /// converged.
-fn table_seed<E: FpEnv>(table: &[SeedNode], p: V2<E>, r_stop: D<E>) -> Option<(V2<E>, Mat<E>)> {
-    let side = MKL_AIM_TABLE_SIDE as usize;
-    let fx = (p[0].hi() + TABLE_EXTENT) / TABLE_STEP;
-    let fy = (p[1].hi() + TABLE_EXTENT) / TABLE_STEP;
+fn table_seed<E: FpEnv>(
+    table: &[SeedNode],
+    side: usize,
+    p: V2<E>,
+    r_stop: D<E>,
+) -> Option<(V2<E>, Mat<E>)> {
+    let step = table_step::<E>(side);
+    let fx = (p[0].hi() + TABLE_EXTENT) / step;
+    let fy = (p[1].hi() + TABLE_EXTENT) / step;
     let (ix, iy) = (fx.v().floor(), fy.v().floor());
     let last = (side - 3) as f32;
     if !(ix >= 1.0 && iy >= 1.0 && ix <= last && iy <= last) {
@@ -702,7 +738,7 @@ fn table_seed<E: FpEnv>(table: &[SeedNode], p: V2<E>, r_stop: D<E>) -> Option<(V
         }
     }
     let det = ax[0] * ay[1] - ay[0] * ax[1];
-    let q = r_stop / (det * (1.0 / TABLE_STEP));
+    let q = r_stop / (det * table_inv_step::<E>(side));
     let j = [[ay[1] * q, -(ay[0] * q)], [-(ax[1] * q), ax[0] * q]];
     (j.iter().flatten().all(|v| v.hi().is_finite()) && det.hi() != 0.0).then_some((a, j))
 }

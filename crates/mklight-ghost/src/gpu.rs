@@ -383,6 +383,7 @@ impl<'a> GhostTransport<'a> {
                 tolerance,
                 max_iterations: 40,
                 output: rays.clone(),
+                options: Default::default(),
             }),
         ));
         p.outputs = vec![rays.floats, rays.report];

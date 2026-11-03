@@ -94,6 +94,7 @@ fn append(
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
+                options: Default::default(),
             },
         )));
     p.operations

@@ -531,9 +531,49 @@ impl Encoder<'_> {
     /// At least `n` threads in 1-D, in uniform threadgroups (kernels check
     /// bounds), sized for the pipeline.
     pub(crate) fn dispatch_1d(&self, pso: &ProtocolObject<dyn MTLComputePipelineState>, n: usize) {
-        let w = pso.maxTotalThreadsPerThreadgroup().clamp(1, 256);
+        let w = Self::width(pso);
         self.set_pipeline(pso);
         self.dispatch_groups([n.div_ceil(w).max(1), 1, 1], w);
+    }
+    /// Threads per threadgroup of [`Self::dispatch_1d`] and
+    /// [`Self::dispatch_indirect`] for `pso`.
+    pub(crate) fn width(pso: &ProtocolObject<dyn MTLComputePipelineState>) -> usize {
+        pso.maxTotalThreadsPerThreadgroup().clamp(1, 256)
+    }
+    /// 1-D dispatch whose threadgroup count a device kernel wrote to `args`
+    /// (three u32 words at element `offset`), in threadgroups of
+    /// [`Self::width`] threads; zero threadgroups dispatch nothing.
+    pub(crate) fn dispatch_indirect(
+        &self,
+        pso: &ProtocolObject<dyn MTLComputePipelineState>,
+        args: &SharedBuffer<u32>,
+        offset: usize,
+    ) {
+        let w = Self::width(pso);
+        self.set_pipeline(pso);
+        // The argument buffer is read by the command, not bound to a slot.
+        match self.deferred {
+            Some(accesses) => accesses.borrow_mut().push(args.device_access(false)),
+            None => args.assert_settled(false),
+        }
+        self.work.set(self.work.get().saturating_add(1 << 15));
+        // SAFETY: `args` holds three words at `offset` and its access guard
+        // spans the command; the kernel checks bounds.
+        unsafe {
+            self.enc
+                .dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                    args.raw(),
+                    offset * 4,
+                    MTLSize {
+                        width: w,
+                        height: 1,
+                        depth: 1,
+                    },
+                )
+        };
+        if self.deferred.is_some() {
+            self.enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+        }
     }
 }
 

@@ -38,11 +38,12 @@ pub fn execute(r: &Lattice, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
             edges,
             previous,
             tolerance,
+            levels,
             final_point,
             ..
         } => {
             let p = [
-                0,
+                *levels,
                 0,
                 u32::from(previous.is_some()),
                 u32::from(*final_point),

@@ -283,16 +283,19 @@ kernel void mkl_wave_survival(device const float2 *samples [[buffer(0)]],device 
 kernel void mkl_wave_rim(device const float2 *edges [[buffer(0)]],device const float2 *prev [[buffer(1)]],device const uint *status [[buffer(2)]],device float2 *state [[buffer(3)]],device uint *samples [[buffer(4)]],constant uint *p [[buffer(5)]],device const uint *fields [[buffer(6)]],device uint *source [[buffer(7)]],uint id [[thread_position_in_grid]]){
     if(id>=p[7])return;uint k=p[6]+id;device const float2 *e=edges+4*k;float2 a[8]={e[0],e[1],e[2],e[3],float2(0),float2(1,0),float2(0),float2(0)};uint from=0xffffffffu;
     float2 dx=mkl_df_sub(e[2],e[0]),dy=mkl_df_sub(e[3],e[1]),qa=mkl_df_add(mkl_df_mul(dx,dx),mkl_df_mul(dy,dy)),len=mkl_df_sqrt(qa);
-    if(p[2]){for(uint j=0;j<8;++j)a[j]=prev[8*k+j];if(a[7].x==0){if(status[16*k]==0){a[4]=a[5];from=16*k;}else{float2 lo=a[4],span=mkl_df_sub(a[5],a[4]);uint l=0,h=16;for(uint t=0;t<4;++t){uint m=(l+h)/2;if(status[16*k+m]==0)l=m;else h=m;}a[4]=mkl_df_add(lo,mkl_df_mul_f32(span,float(l)/16));a[5]=mkl_df_add(lo,mkl_df_mul_f32(span,float(h)/16));if(l>0)from=16*k+l;}float2 span=mkl_df_mul(mkl_df_sub(a[5],a[4]),len),tol=float2(as_type<float>(p[4]),as_type<float>(p[5]));if(!wless(tol,span))a[7]=float2(1,0);}}
+    const uint levels=p[0],parts=1u<<levels;
+    if(p[2]){for(uint j=0;j<8;++j)a[j]=prev[8*k+j];if(a[7].x==0){if(status[parts*k]==0){a[4]=a[5];from=parts*k;}else{float2 lo=a[4],span=mkl_df_sub(a[5],a[4]);uint l=0,h=parts;for(uint t=0;t<levels;++t){uint m=(l+h)/2;if(status[parts*k+m]==0)l=m;else h=m;}a[4]=mkl_df_add(lo,mkl_df_mul_f32(span,float(l)/float(parts)));a[5]=mkl_df_add(lo,mkl_df_mul_f32(span,float(h)/float(parts)));if(l>0)from=parts*k+l;}float2 span=mkl_df_mul(mkl_df_sub(a[5],a[4]),len),tol=float2(as_type<float>(p[4]),as_type<float>(p[5]));if(!wless(tol,span))a[7]=float2(1,0);}}
     else if(wless(float2(1,0),mkl_df_add(mkl_df_mul(e[2],e[2]),mkl_df_mul(e[3],e[3])))){
         float2 qb=mkl_df_add(mkl_df_mul(e[0],dx),mkl_df_mul(e[1],dy)),qc=mkl_df_add_f32(mkl_df_add(mkl_df_mul(e[0],e[0]),mkl_df_mul(e[1],e[1])),-1);
         float2 disc=mkl_df_sub(mkl_df_mul(qb,qb),mkl_df_mul(qa,qc)),root=disc.x<0?float2(0):mkl_df_sqrt(disc);float2 t=qb.x<=0?mkl_df_div(mkl_df_add(-qb,root),qa):mkl_df_div(-qc,mkl_df_add(qb,root));a[5]=wless(t,float2(0))?float2(0):(wless(float2(1,0),t)?float2(1,0):t);
     }
-    source[k]=from;uint width=p[3]?1:16;
-    for(uint j=0;j<width;++j){float2 t=(p[3]||a[7].x>0)?a[4]:(j==0?a[5]:mkl_df_add(a[4],mkl_df_mul_f32(mkl_df_sub(a[5],a[4]),float(j)/16)));
+    source[k]=from;uint width=p[3]?1:parts;const bool done=a[7].x>0;
+    // A converged edge needs no further probe: skip-flag its samples.
+    const uint field=fields[k]|((done&&!p[3])?MKL_AIM_SKIP:0u);
+    for(uint j=0;j<width;++j){float2 t=(p[3]||done)?a[4]:(j==0?a[5]:mkl_df_add(a[4],mkl_df_mul_f32(mkl_df_sub(a[5],a[4]),float(j)/float(parts))));
         float2 xx=mkl_df_add(e[0],mkl_df_mul(dx,t)),yy=mkl_df_add(e[1],mkl_df_mul(dy,t));
         if(!p[2]){float2 rad=mkl_df_sqrt(mkl_df_add(mkl_df_mul(xx,xx),mkl_df_mul(yy,yy)));if(wless(float2(1,0),rad)){xx=mkl_df_div(xx,rad);yy=mkl_df_div(yy,rad);}}
-        wsample(samples+8*(width*k+j),xx,yy,fields[k],width*k+j);
+        wsample(samples+8*(width*k+j),xx,yy,field,width*k+j);
     }for(uint j=0;j<8;++j)state[8*k+j]=a[j];
 }
 static float2 wloadhit(device const float *v,uint n,uint k,uint j){return float2(v[j*n+k],v[(j+9)*n+k]);}

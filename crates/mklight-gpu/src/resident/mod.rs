@@ -608,15 +608,19 @@ impl AimStats {
             .position(|&b| iterations <= b)
             .unwrap_or(7)
     }
-    /// Statistics of a `ResidentRays` report (u32 [4,n]).
+    /// Statistics of a `ResidentRays` report (u32 [4,n]); excluded samples
+    /// (`MKL_AIM_OUTSIDE`) were never aimed and are not counted.
     pub fn from_report(report: &[u32], n: usize) -> Self {
         let mut s = Self {
             generations: 1,
-            rays: n as u64,
             ..Default::default()
         };
         for i in 0..n {
+            if report[i] == crate::consts::MKL_AIM_OUTSIDE {
+                continue;
+            }
             let it = report[n + i];
+            s.rays += 1;
             s.failed += u64::from(report[i] != 0);
             s.iterations += it as u64;
             s.max_iterations = s.max_iterations.max(it);

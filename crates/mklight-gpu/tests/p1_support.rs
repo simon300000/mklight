@@ -89,6 +89,7 @@ pub fn make_plan(
             tolerance: 1e-10,
             max_iterations: cap,
             output: generated.clone(),
+            options: Default::default(),
         })));
     let steps = t.system().image_index();
     let buf = b

@@ -144,6 +144,7 @@ pub fn pupil_plan(
                 tolerance,
                 max_iterations: 40,
                 output: rays.clone(),
+                options: Default::default(),
             },
         )));
     let steps = t.system().image_index();

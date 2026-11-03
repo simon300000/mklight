@@ -369,8 +369,11 @@ static inline bool mkl_aim_hard_failure(uint status) {
            status == MKL_AIM_INVALID;
 }
 
-#define MKL_AIM_TABLE_STEP 0.0625f
 #define MKL_AIM_TABLE_EXTENT 1.125f
+// Node spacing of a `side`-node table over [-1.125, 1.125] (kernel::table_step):
+// one rounded f32 division, so every table side matches the specification.
+static inline float mkl_aim_table_step(uint side) { return (2.0f * MKL_AIM_TABLE_EXTENT) / float(side - 1); }
+static inline float mkl_aim_table_inv_step(uint side) { return float(side - 1) / (2.0f * MKL_AIM_TABLE_EXTENT); }
 
 // Catmull–Rom weights at t in [0, 1) and their derivatives (kernel::spline).
 static inline void mkl_aim_spline(float t, thread float* w, thread float* d) {
@@ -385,11 +388,11 @@ static inline void mkl_aim_spline(float t, thread float* w, thread float* d) {
     d[3] = (t2 * 3.0f - t * 2.0f) * 0.5f;
 }
 // Interpolated aim and stop Jacobian from the seed table (kernel::table_seed).
-static inline bool mkl_aim_table_seed(device const MklAimNode* table, MklAimVec2 p, MklDf r_stop,
+static inline bool mkl_aim_table_seed(device const MklAimNode* table, uint side, MklAimVec2 p, MklDf r_stop,
                                       thread MklAimVec2& a, thread MklAimMat2& j) {
-    const uint side = MKL_AIM_TABLE_SIDE;
-    float fx = (p.v[0].v.x + MKL_AIM_TABLE_EXTENT) / MKL_AIM_TABLE_STEP;
-    float fy = (p.v[1].v.x + MKL_AIM_TABLE_EXTENT) / MKL_AIM_TABLE_STEP;
+    float step = mkl_aim_table_step(side);
+    float fx = (p.v[0].v.x + MKL_AIM_TABLE_EXTENT) / step;
+    float fy = (p.v[1].v.x + MKL_AIM_TABLE_EXTENT) / step;
     float ix = floor(fx), iy = floor(fy), last = float(side - 3);
     if (!(ix >= 1.0f && iy >= 1.0f && ix <= last && iy <= last)) return false;
     float wx[4], dx[4], wy[4], dy[4];
@@ -409,7 +412,7 @@ static inline bool mkl_aim_table_seed(device const MklAimNode* table, MklAimVec2
             }
         }
     MklDf det = ax.v[0] * ay.v[1] - ay.v[0] * ax.v[1];
-    MklDf q = r_stop / MklDf{mkl_df_mul_f32(det.v, 1.0f / MKL_AIM_TABLE_STEP)};
+    MklDf q = r_stop / MklDf{mkl_df_mul_f32(det.v, mkl_aim_table_inv_step(side))};
     j.v[0][0] = ay.v[1] * q;
     j.v[0][1] = -(ay.v[0] * q);
     j.v[1][0] = -(ax.v[1] * q);
@@ -419,46 +422,267 @@ static inline bool mkl_aim_table_seed(device const MklAimNode* table, MklAimVec2
     return finite && det.v.x != 0.0f;
 }
 
-// Real-aim solve for the vignetted pupil point p (kernel::FieldKernel::aim).
-template <bool OV>
-static inline MklAimSolve mkl_aim_point(MklAimFieldKernel<OV> f, constant MklAimCache& seed,
-                                        device const MklAimNode* table, MklAimVec2 p) {
-    MklDv src = mkl_aim_vec3(mkl_aim_load(seed.source, 0), mkl_aim_load(seed.source, 1),
-                             mkl_aim_load(seed.source, 2));
-    MklAimVec2 chief = mkl_aim_vec2(mkl_aim_load(seed.chief, 0), mkl_aim_load(seed.chief, 1));
-    MklAimMat2 j = {};
-    for (uint k = 0; k < 4; ++k) j.v[k / 2][k % 2] = mkl_aim_load(seed.jacobian, k);
-    bool has_j = seed.has_jacobian != 0;
-    uint wl = f.field->wavelength;
-    MklAimVec2 target = p * f.pupil(2), delta, x;
-    uint it = 0;
-    MklAimMat2 jt;
-    if (table && mkl_aim_table_seed(table, p, f.pupil(2), x, jt)) {
-        MklAimSolve s = mkl_aim_solve(f, src, wl, target, x, jt, true);
-        if (s.converged) return s;
-        it = s.iterations;
+// ---- Resumable pupil aiming ----------------------------------------------------
+// kernel::FieldKernel::aim (table seed, chief prediction, four continuation
+// stages) as a state machine whose unit of work is one phase entry
+// (objective evaluation and, without a Jacobian, finite differences) or one
+// Newton–Broyden iteration (line search, update, optional refresh). A command
+// runs at most `budget` units per lane and parks the rest in MklAimResume
+// (MKL_AIM_STATE_WORDS words) for a continuation command, so no command
+// waits for the hardest ray's whole schedule. The arithmetic and its order
+// are the monolithic specification's; a resumed solve is bitwise the same.
+struct MklAimResume {
+    MklAimVec2 x, r;
+    MklAimMat2 j;
+    MklDf rn;
+    MklAimVec2 xc, prev;
+    MklAimMat2 jc;
+    uint phase, it, total, flags;
+};
+#define MKL_AIM_RS_ACTIVE 1u
+#define MKL_AIM_RS_FRESH 2u
+#define MKL_AIM_RS_HAS_J 4u
+#define MKL_AIM_RS_HAS_JC 8u
+#define MKL_AIM_RS_CONVERGED 16u
+#define MKL_AIM_PHASE_DONE 6u
+#define MKL_AIM_UNIT_MORE 0u
+#define MKL_AIM_UNIT_CONVERGED 1u
+#define MKL_AIM_UNIT_FAILED 2u
+
+static inline void mkl_aim_put2(device float* w, MklAimVec2 v) {
+    for (uint k = 0; k < 2; ++k) {
+        w[2 * k] = v.v[k].v.x;
+        w[2 * k + 1] = v.v[k].v.y;
     }
-    bool have = has_j && mkl_aim_solve2(j, target, delta);
-    x = chief + (have ? delta : p * f.pupil(1));
-    MklAimSolve s = mkl_aim_solve(f, src, wl, target, x, j, has_j);
-    it += s.iterations;
-    if (!s.converged) {
-        x = chief;
-        MklAimVec2 prev = mkl_aim_zero();
-        for (uint k = 1; k <= 4; ++k) {
-            MklAimVec2 t = target * mkl_aim_c(float(k) * 0.25f);
-            bool have = has_j && mkl_aim_solve2(j, t - prev, delta);
-            s = mkl_aim_solve(f, src, wl, t, have ? x + delta : x, j, has_j);
-            it += s.iterations;
-            if (!s.converged) break;
-            x = s.x;
-            j = s.j;
-            has_j = s.has_j;
-            prev = t;
-        }
+}
+static inline MklAimVec2 mkl_aim_get2(device const float* w) {
+    return mkl_aim_vec2(MklDf{float2(w[0], w[1])}, MklDf{float2(w[2], w[3])});
+}
+static inline void mkl_aim_put22(device float* w, MklAimMat2 m) {
+    for (uint k = 0; k < 4; ++k) {
+        w[2 * k] = m.v[k / 2][k % 2].v.x;
+        w[2 * k + 1] = m.v[k / 2][k % 2].v.y;
     }
-    s.iterations = it;
+}
+static inline MklAimMat2 mkl_aim_get22(device const float* w) {
+    MklAimMat2 m;
+    for (uint k = 0; k < 4; ++k) m.v[k / 2][k % 2] = MklDf{float2(w[2 * k], w[2 * k + 1])};
+    return m;
+}
+static inline void mkl_aim_save(device uint* words, thread const MklAimResume& s) {
+    device float* f = (device float*)words;
+    mkl_aim_put2(f, s.x);
+    mkl_aim_put2(f + 4, s.r);
+    mkl_aim_put22(f + 8, s.j);
+    f[16] = s.rn.v.x;
+    f[17] = s.rn.v.y;
+    mkl_aim_put2(f + 18, s.xc);
+    mkl_aim_put2(f + 22, s.prev);
+    mkl_aim_put22(f + 26, s.jc);
+    words[34] = s.phase;
+    words[35] = s.it;
+    words[36] = s.total;
+    words[37] = s.flags;
+}
+static inline MklAimResume mkl_aim_restore(device const uint* words) {
+    device const float* f = (device const float*)words;
+    MklAimResume s;
+    s.x = mkl_aim_get2(f);
+    s.r = mkl_aim_get2(f + 4);
+    s.j = mkl_aim_get22(f + 8);
+    s.rn = MklDf{float2(f[16], f[17])};
+    s.xc = mkl_aim_get2(f + 18);
+    s.prev = mkl_aim_get2(f + 22);
+    s.jc = mkl_aim_get22(f + 26);
+    s.phase = words[34];
+    s.it = words[35];
+    s.total = words[36];
+    s.flags = words[37];
     return s;
+}
+
+template <bool OV>
+struct MklAimMachine {
+    MklAimFieldKernel<OV> f;
+    MklDv src;
+    uint wl;
+    MklAimVec2 chief, p, target;
+    MklAimMat2 sj;
+    bool has_sj;
+    device const MklAimNode* table;
+    uint side;
+
+    MklAimVec2 stage_target(uint phase) const {
+        return phase <= 1 ? target : target * mkl_aim_c(float(phase - 1) * 0.25f);
+    }
+    // Seed the solve of phase s.phase as kernel::aim does; phase 0 falls
+    // through to 1 when the table gives no seed (no trace is spent).
+    void seed(thread MklAimResume& s) const {
+        s.flags &= ~(MKL_AIM_RS_ACTIVE | MKL_AIM_RS_FRESH | MKL_AIM_RS_HAS_J);
+        s.it = 0;
+        if (s.phase == 0) {
+            MklAimVec2 a;
+            MklAimMat2 jt;
+            if (table && mkl_aim_table_seed(table, side, p, f.pupil(2), a, jt)) {
+                s.x = a;
+                s.j = jt;
+                s.flags |= MKL_AIM_RS_HAS_J;
+                return;
+            }
+            s.phase = 1;
+        }
+        bool has_jc = (s.flags & MKL_AIM_RS_HAS_JC) != 0;
+        MklAimVec2 delta;
+        if (s.phase == 1) {
+            bool have = has_jc && mkl_aim_solve2(s.jc, target, delta);
+            s.x = chief + (have ? delta : p * f.pupil(1));
+        } else {
+            bool have = has_jc && mkl_aim_solve2(s.jc, stage_target(s.phase) - s.prev, delta);
+            s.x = have ? s.xc + delta : s.xc;
+        }
+        s.j = s.jc;
+        if (has_jc) s.flags |= MKL_AIM_RS_HAS_J;
+    }
+    void init(thread MklAimResume& s) const {
+        s.x = s.r = s.xc = s.prev = mkl_aim_zero();
+        s.j = s.jc = sj;
+        s.rn = mkl_aim_c(0);
+        s.phase = 0;
+        s.it = s.total = 0;
+        s.flags = has_sj ? MKL_AIM_RS_HAS_JC : 0u;
+        seed(s);
+    }
+    uint check(thread const MklAimResume& s, MklDf tol) const {
+        if ((s.rn - tol).v.x <= 0) return MKL_AIM_UNIT_CONVERGED;
+        return s.it >= f.cap ? MKL_AIM_UNIT_FAILED : MKL_AIM_UNIT_MORE;
+    }
+    // One unit of the current solve (mkl_aim_newton's entry or one pass of
+    // its loop body, followed by its loop-top test).
+    uint unit(thread MklAimResume& s) const {
+        MklAimObjective<OV> fun = {f, src, wl, stage_target(s.phase)};
+        MklDf h = f.step(), tol = f.tol();
+        if ((s.flags & MKL_AIM_RS_ACTIVE) == 0) {
+            if (!fun.eval(s.x, s.r)) {
+                s.rn = mkl_aim_c(INFINITY);
+                return MKL_AIM_UNIT_FAILED;
+            }
+            s.rn = mkl_aim_norm(s.r);
+            if ((s.flags & MKL_AIM_RS_HAS_J) == 0) {
+                if (!mkl_aim_jacobian(fun, s.x, s.r, h, s.j)) return MKL_AIM_UNIT_FAILED;
+                s.flags |= MKL_AIM_RS_FRESH | MKL_AIM_RS_HAS_J;
+            }
+            s.it = 0;
+            s.flags |= MKL_AIM_RS_ACTIVE;
+            return check(s, tol);
+        }
+        ++s.it;
+        MklAimVec2 dx;
+        if (!mkl_aim_solve2(s.j, s.r * mkl_aim_c(-1), dx)) {
+            if (s.flags & MKL_AIM_RS_FRESH) return MKL_AIM_UNIT_FAILED;
+            if (!mkl_aim_jacobian(fun, s.x, s.r, h, s.j)) return MKL_AIM_UNIT_FAILED;
+            s.flags |= MKL_AIM_RS_FRESH;
+            return check(s, tol);
+        }
+        MklDf lam = mkl_aim_c(1);
+        bool accepted = false;
+        MklAimVec2 xn, rr;
+        MklDf nn = mkl_aim_c(0);
+        for (uint k = 0; k < 16; ++k) {
+            xn = s.x + dx * lam;
+            if (fun.eval(xn, rr)) {
+                nn = mkl_aim_norm(rr);
+                if (isfinite(nn.v.x) && ((nn - s.rn).v.x < 0 || (nn - tol).v.x <= 0)) {
+                    accepted = true;
+                    break;
+                }
+            }
+            lam = lam * mkl_aim_c(0.5f);
+        }
+        if (accepted) {
+            MklAimVec2 d = xn - s.x;
+            MklDf ss = d.v[0] * d.v[0] + d.v[1] * d.v[1];
+            if (ss.v.x > 0) {
+                MklAimVec2 y = rr - s.r, js = mkl_aim_vec2(s.j.v[0][0] * d.v[0] + s.j.v[0][1] * d.v[1],
+                                                           s.j.v[1][0] * d.v[0] + s.j.v[1][1] * d.v[1]);
+                for (uint row = 0; row < 2; ++row)
+                    for (uint col = 0; col < 2; ++col)
+                        s.j.v[row][col] = s.j.v[row][col] + (y.v[row] - js.v[row]) * d.v[col] / ss;
+            }
+            bool slow = (nn - mkl_aim_c(0.5f) * s.rn).v.x > 0;
+            s.x = xn;
+            s.r = rr;
+            s.rn = nn;
+            s.flags &= ~MKL_AIM_RS_FRESH;
+            if (slow && (s.rn - tol).v.x > 0) {
+                MklAimMat2 jn;
+                if (mkl_aim_jacobian(fun, s.x, s.r, h, jn)) {
+                    s.j = jn;
+                    s.flags |= MKL_AIM_RS_FRESH;
+                }
+            }
+        } else {
+            if (s.flags & MKL_AIM_RS_FRESH) return MKL_AIM_UNIT_FAILED;
+            if (!mkl_aim_jacobian(fun, s.x, s.r, h, s.j)) return MKL_AIM_UNIT_FAILED;
+            s.flags |= MKL_AIM_RS_FRESH;
+        }
+        return check(s, tol);
+    }
+    // Phase transitions of kernel::aim; true once the aim is finished.
+    bool advance(thread MklAimResume& s, uint outcome) const {
+        s.total += s.it;
+        if (outcome == MKL_AIM_UNIT_CONVERGED) {
+            if (s.phase <= 1 || s.phase == 5) {
+                s.phase = MKL_AIM_PHASE_DONE;
+                s.flags |= MKL_AIM_RS_CONVERGED;
+                return true;
+            }
+            s.xc = s.x;
+            s.jc = s.j;
+            s.flags |= MKL_AIM_RS_HAS_JC;
+            s.prev = stage_target(s.phase);
+            s.phase += 1;
+            seed(s);
+            return false;
+        }
+        if (s.phase == 0) {
+            s.phase = 1;
+            seed(s);
+            return false;
+        }
+        if (s.phase == 1) {
+            s.phase = 2;
+            s.xc = chief;
+            s.prev = mkl_aim_zero();
+            seed(s);
+            return false;
+        }
+        s.phase = MKL_AIM_PHASE_DONE;
+        return true;
+    }
+    // Run at most `budget` units; true when finished.
+    bool run(thread MklAimResume& s, uint budget) const {
+        for (uint u = 0; u < budget && s.phase != MKL_AIM_PHASE_DONE; ++u) {
+            uint o = unit(s);
+            if (o != MKL_AIM_UNIT_MORE) advance(s, o);
+        }
+        return s.phase == MKL_AIM_PHASE_DONE;
+    }
+};
+template <bool OV>
+static inline MklAimMachine<OV> mkl_aim_machine(MklAimFieldKernel<OV> f, constant MklAimCache& seed,
+                                                device const MklAimNode* table, uint side, MklAimVec2 p) {
+    MklAimMachine<OV> m;
+    m.f = f;
+    m.src = mkl_aim_vec3(mkl_aim_load(seed.source, 0), mkl_aim_load(seed.source, 1), mkl_aim_load(seed.source, 2));
+    m.wl = f.field->wavelength;
+    m.chief = mkl_aim_vec2(mkl_aim_load(seed.chief, 0), mkl_aim_load(seed.chief, 1));
+    m.p = p;
+    m.target = p * f.pupil(2);
+    for (uint k = 0; k < 4; ++k) m.sj.v[k / 2][k % 2] = mkl_aim_load(seed.jacobian, k);
+    m.has_sj = seed.has_jacobian != 0;
+    m.table = table;
+    m.side = side;
+    return m;
 }
 
 struct MklAimParams {
@@ -467,11 +691,22 @@ struct MklAimParams {
     uint table;
     uint pattern, side;
     float extent[2];
+    uint budget, table_side, flags, reserved;
 };
+#define MKL_AIM_CULL 1u
+// Looser than the 1e-12 disk inclusion of the lattice masks (kernel::CULL_RADIUS2).
+#define MKL_AIM_CULL_RADIUS2 float2(1.0f, 1.0000001e-9f)
 
 #define MKL_AIM_SYSTEMS                                                                     \
     constant MklPackedHeader *headers [[buffer(0)]], constant MklPackedSurface *surfaces [[buffer(1)]], \
         constant float *pool [[buffer(2)]], constant MklAimField *fields [[buffer(3)]]
+// Continuation plumbing shared by generation and table kernels: resumable
+// state per lane of the tile, the pending list this command appends, and the
+// pending list a continuation command consumes.
+#define MKL_AIM_RESUME_ARGS                                                                 \
+    device uint *state [[buffer(14)]], device uint *pending [[buffer(15)]],                  \
+        device atomic_uint *pending_count [[buffer(16)]], device const uint *list [[buffer(17)]], \
+        device const uint *list_count [[buffer(18)]]
 
 #define MKL_AIM_CHIEFS_ARGS                                                                 \
     MKL_AIM_SYSTEMS, device MklAimCache *seeds [[buffer(4)]], constant MklAimParams &p [[buffer(5)]], \
@@ -493,38 +728,78 @@ kernel void mkl_aim_chiefs(MKL_AIM_CHIEFS_ARGS) {
 template [[host_name("mkl_aim_chiefs")]] kernel void mkl_aim_chiefs<false>(MKL_AIM_CHIEFS_ARGS);
 template [[host_name("mkl_aim_chiefs_overlays")]] kernel void mkl_aim_chiefs<true>(MKL_AIM_CHIEFS_ARGS);
 
-// One thread per seed-table node; nodes of row r start at r·TABLE_SIDE².
-// Nodes beyond pupil radius 1.25 stay unsolved (kernel::FieldKernel::node).
-#define MKL_AIM_TABLE_ARGS                                                                  \
-    MKL_AIM_SYSTEMS, constant MklAimCache *seeds [[buffer(4)]], constant MklAimParams &p [[buffer(5)]], \
-        constant MklTraceParams &newton [[buffer(6)]], device MklAimNode *table [[buffer(7)]],          \
-        uint tid [[thread_position_in_grid]]
+// Threadgroup count of the next continuation command from a pending count,
+// and a zeroed counter for the list that command appends.
+kernel void mkl_aim_indirect(device const uint* count [[buffer(0)]], device uint* args [[buffer(1)]],
+                             device uint* next_count [[buffer(2)]], constant uint& width [[buffer(3)]],
+                             uint tid [[thread_position_in_grid]]) {
+    if (tid != 0) return;
+    args[0] = (count[0] + width - 1) / width;
+    args[1] = 1;
+    args[2] = 1;
+    next_count[0] = 0;
+}
+
+// Seed-table node i (row i / side², node i % side², `p.table_side` nodes per
+// axis), solved without a table; nodes beyond pupil radius 1.25 stay
+// unsolved (kernel::FieldKernel::node). `start` initialises the lane's
+// state; a continuation resumes it.
 template <bool OV>
-kernel void mkl_aim_table(MKL_AIM_TABLE_ARGS) {
-    if (tid >= p.count) return;
-    const uint nodes = MKL_AIM_TABLE_SIDE * MKL_AIM_TABLE_SIDE;
-    uint i = tid + p.offset, row = i / nodes, k = i % nodes;
+static inline void mkl_aim_table_node(MKL_AIM_SYSTEMS, constant MklAimCache* seeds, constant MklAimParams& p,
+                                      constant MklTraceParams& newton, device MklAimNode* table,
+                                      device uint* state, device uint* pending, device atomic_uint* pending_count,
+                                      uint i, uint lane, bool start) {
+    const uint side = p.table_side, nodes = side * side;
+    uint row = i / nodes, k = i % nodes;
     constant MklAimField& f = fields[row];
     constant MklAimCache& seed = seeds[row];
     MklAimNode node = {};
     node.status = 1;
-    float x = float(k % MKL_AIM_TABLE_SIDE) * MKL_AIM_TABLE_STEP - MKL_AIM_TABLE_EXTENT,
-          y = float(k / MKL_AIM_TABLE_SIDE) * MKL_AIM_TABLE_STEP - MKL_AIM_TABLE_EXTENT;
+    float step = mkl_aim_table_step(side);
+    float x = float(k % side) * step - MKL_AIM_TABLE_EXTENT, y = float(k / side) * step - MKL_AIM_TABLE_EXTENT;
     if ((f.flags & MKL_AIM_REAL) != 0 && !mkl_aim_hard_failure(seed.status) && x * x + y * y <= 1.5625f) {
         constant auto& h = headers[f.system];
         MklAimFieldKernel<OV> fk = {&h, surfaces + h.surface_offset, pool, &f, &newton, p.tolerance, p.cap};
-        MklAimVec2 at = mkl_aim_vec2(mkl_aim_c(x), mkl_aim_c(y));
-        MklAimSolve s = mkl_aim_point(fk, seed, nullptr, at);
+        MklAimMachine<OV> m = mkl_aim_machine(fk, seed, nullptr, side, mkl_aim_vec2(mkl_aim_c(x), mkl_aim_c(y)));
+        MklAimResume s;
+        if (start)
+            m.init(s);
+        else
+            s = mkl_aim_restore(state + lane * MKL_AIM_STATE_WORDS);
+        if (!m.run(s, p.budget)) {
+            mkl_aim_save(state + lane * MKL_AIM_STATE_WORDS, s);
+            pending[atomic_fetch_add_explicit(pending_count, 1u, memory_order_relaxed)] = i;
+            return;
+        }
         for (uint c = 0; c < 2; ++c) {
             node.aim[2 * c] = s.x.v[c].v.x;
             node.aim[2 * c + 1] = s.x.v[c].v.y;
         }
-        node.status = s.converged ? 0 : 1;
+        node.status = (s.flags & MKL_AIM_RS_CONVERGED) ? 0 : 1;
     }
     table[i] = node;
 }
+#define MKL_AIM_TABLE_ARGS                                                                  \
+    MKL_AIM_SYSTEMS, constant MklAimCache *seeds [[buffer(4)]], constant MklAimParams &p [[buffer(5)]], \
+        constant MklTraceParams &newton [[buffer(6)]], device MklAimNode *table [[buffer(7)]],          \
+        MKL_AIM_RESUME_ARGS, uint tid [[thread_position_in_grid]]
+template <bool OV>
+kernel void mkl_aim_table(MKL_AIM_TABLE_ARGS) {
+    if (tid >= p.count) return;
+    mkl_aim_table_node<OV>(headers, surfaces, pool, fields, seeds, p, newton, table, state, pending, pending_count,
+                           tid + p.offset, tid, true);
+}
+template <bool OV>
+kernel void mkl_aim_table_continue(MKL_AIM_TABLE_ARGS) {
+    if (tid >= list_count[0]) return;
+    uint i = list[tid];
+    mkl_aim_table_node<OV>(headers, surfaces, pool, fields, seeds, p, newton, table, state, pending, pending_count,
+                           i, i - p.offset, false);
+}
 template [[host_name("mkl_aim_table")]] kernel void mkl_aim_table<false>(MKL_AIM_TABLE_ARGS);
 template [[host_name("mkl_aim_table_overlays")]] kernel void mkl_aim_table<true>(MKL_AIM_TABLE_ARGS);
+template [[host_name("mkl_aim_table_continue")]] kernel void mkl_aim_table_continue<false>(MKL_AIM_TABLE_ARGS);
+template [[host_name("mkl_aim_table_continue_overlays")]] kernel void mkl_aim_table_continue<true>(MKL_AIM_TABLE_ARGS);
 
 static inline void mkl_aim_write(device float* ff, device uint* uu, device uint* ids, device uint* reports,
                                  uint n, uint i, MklRawState ray, uint system, uint wl, uint2 id,
@@ -554,20 +829,10 @@ static inline MklRawState mkl_aim_read(device const float* ff, uint n, uint i) {
     r.weight = ff[mkl_plane(8, n, i)];
     return r;
 }
-
-#define MKL_GENERATE_AIM_ARGS                                                                         \
-    MKL_AIM_SYSTEMS, constant MklAimCache *seeds [[buffer(4)]], constant MklAimParams &prm [[buffer(5)]], \
-        constant MklAimSample *samples [[buffer(6)]], device float *ff [[buffer(7)]],                 \
-        device uint *uu [[buffer(8)]], device uint *ids [[buffer(9)]], device uint *reports [[buffer(10)]], \
-        device atomic_uint *failures [[buffer(11)]], constant MklTraceParams &newton [[buffer(12)]],   \
-        device const MklAimNode *tables [[buffer(13)]], uint tid [[thread_position_in_grid]]
-template <bool OV>
-kernel void mkl_generate_aim(MKL_GENERATE_AIM_ARGS) {
-    if (tid >= prm.count) return;
-    uint i = tid + prm.offset;
+// Sample i: explicit, or the procedural lattice / fan (kernel::sample_at).
+static inline MklAimSample mkl_aim_sample(constant MklAimSample* samples, constant MklAimParams& prm, uint i) {
     MklAimSample sample = samples[prm.pattern == 0 ? i : 0];
     if (prm.pattern != 0) {
-        // Procedural lattice / fan (kernel::sample_at).
         MklDf extent = mkl_aim_load(prm.extent, 0);
         uint side = prm.pattern == 1 ? prm.side : prm.stride;
         MklDf px = side <= 1 ? mkl_aim_c(0)
@@ -589,14 +854,45 @@ kernel void mkl_generate_aim(MKL_GENERATE_AIM_ARGS) {
         sample.id_lo = uint(id);
         sample.id_hi = uint(id >> 32);
     }
+    return sample;
+}
+// Samples never aimed: skip-flagged, or outside the unit disk when culling
+// (kernel::excluded).
+static inline bool mkl_aim_excluded(MklAimSample sample, constant MklAimParams& prm) {
+    if ((sample.field & MKL_AIM_SKIP) != 0) return true;
+    if ((prm.flags & MKL_AIM_CULL) == 0) return false;
+    MklDf x = mkl_aim_load(sample.pupil, 0), y = mkl_aim_load(sample.pupil, 1);
+    MklDf r2 = x * x + y * y;
+    return (r2 - MklDf{MKL_AIM_CULL_RADIUS2}).v.x > 0;
+}
+
+#define MKL_GENERATE_AIM_ARGS                                                                         \
+    MKL_AIM_SYSTEMS, constant MklAimCache *seeds [[buffer(4)]], constant MklAimParams &prm [[buffer(5)]], \
+        constant MklAimSample *samples [[buffer(6)]], device float *ff [[buffer(7)]],                 \
+        device uint *uu [[buffer(8)]], device uint *ids [[buffer(9)]], device uint *reports [[buffer(10)]], \
+        device atomic_uint *failures [[buffer(11)]], constant MklTraceParams &newton [[buffer(12)]],   \
+        device const MklAimNode *tables [[buffer(13)]], MKL_AIM_RESUME_ARGS, uint tid [[thread_position_in_grid]]
+// Ray i of the generation; `lane` indexes the tile's resumable state.
+template <bool OV>
+static inline void mkl_aim_ray(MKL_AIM_SYSTEMS, constant MklAimCache* seeds, constant MklAimParams& prm,
+                               constant MklAimSample* samples, device float* ff, device uint* uu, device uint* ids,
+                               device uint* reports, device atomic_uint* failures, constant MklTraceParams& newton,
+                               device const MklAimNode* tables, device uint* state, device uint* pending,
+                               device atomic_uint* pending_count, uint i, uint lane, bool start) {
+    MklAimSample sample = mkl_aim_sample(samples, prm, i);
+    uint row = sample.field & ~MKL_AIM_SKIP;
     MklRawState ray = {};
     uint4 report = uint4(MKL_AIM_INVALID, 0, 0, 0);
     uint system = 0, wl = 0;
-    if (sample.field < prm.fields) {
-        constant auto& meta = fields[sample.field];
-        constant auto& seed = seeds[sample.field];
-        system = meta.system;
-        wl = meta.wavelength;
+    if (row < prm.fields) {
+        system = fields[row].system;
+        wl = fields[row].wavelength;
+    }
+    if (mkl_aim_excluded(sample, prm))
+        report.x = MKL_AIM_OUTSIDE;
+    else if (row < prm.fields) {
+        constant auto& meta = fields[row];
+        constant auto& seed = seeds[row];
         if (mkl_aim_hard_failure(seed.status))
             report.x = seed.status;
         else {
@@ -606,29 +902,60 @@ kernel void mkl_generate_aim(MKL_GENERATE_AIM_ARGS) {
             for (uint k = 0; k < 2; ++k)
                 p.v[k] = mkl_aim_load(meta.vignette, k) +
                          (mkl_aim_c(1) - mkl_aim_load(meta.vignette, k + 2)) * mkl_aim_load(sample.pupil, k);
-            MklAimMat2 zero = {};
-            MklAimSolve s = {p * f.pupil(1), zero, mkl_aim_c(0), 0, true, false};
-            if (f.real())
-                s = mkl_aim_point(f, seed,
-                                  prm.table != 0 ? tables + sample.field * MKL_AIM_TABLE_SIDE * MKL_AIM_TABLE_SIDE
-                                                 : nullptr,
-                                  p);
+            MklAimVec2 x = p * f.pupil(1);
+            MklDf residual = mkl_aim_c(0);
+            bool converged = true;
+            uint iterations = 0;
+            if (f.real()) {
+                const uint nodes = prm.table_side * prm.table_side;
+                MklAimMachine<OV> m =
+                    mkl_aim_machine(f, seed, prm.table != 0 ? tables + row * nodes : nullptr, prm.table_side, p);
+                MklAimResume s;
+                if (start)
+                    m.init(s);
+                else
+                    s = mkl_aim_restore(state + lane * MKL_AIM_STATE_WORDS);
+                if (!m.run(s, prm.budget)) {
+                    mkl_aim_save(state + lane * MKL_AIM_STATE_WORDS, s);
+                    pending[atomic_fetch_add_explicit(pending_count, 1u, memory_order_relaxed)] = i;
+                    return;
+                }
+                x = s.x;
+                residual = s.rn;
+                converged = (s.flags & MKL_AIM_RS_CONVERGED) != 0;
+                iterations = s.total;
+            }
             ray = f.start(mkl_aim_vec3(mkl_aim_load(seed.source, 0), mkl_aim_load(seed.source, 1),
                                        mkl_aim_load(seed.source, 2)),
-                          s.x);
+                          x);
             if (ray.status == 0) ray.weight = sample.weight;
-            MklDf residual = ray.status != 0 ? s.residual : f.real() ? s.residual / f.pupil(2) : mkl_aim_c(0);
+            MklDf reported = ray.status != 0 ? residual : f.real() ? residual / f.pupil(2) : mkl_aim_c(0);
             report = uint4(ray.status != 0 ? ray.status
-                           : s.converged   ? 0
+                           : converged     ? 0
                                            : (MKL_AIM_FAILED | (f.h->stop << MKL_RAY_SURFACE_SHIFT)),
-                           s.iterations, as_type<uint>(residual.v.x), as_type<uint>(residual.v.y));
+                           iterations, as_type<uint>(reported.v.x), as_type<uint>(reported.v.y));
         }
     }
     mkl_aim_write(ff, uu, ids, reports, prm.stride, i, ray, system, wl, uint2(sample.id_lo, sample.id_hi), report);
-    if (report.x != 0) atomic_fetch_add_explicit(failures, 1u, memory_order_relaxed);
+    if (report.x != 0 && report.x != MKL_AIM_OUTSIDE) atomic_fetch_add_explicit(failures, 1u, memory_order_relaxed);
+}
+template <bool OV>
+kernel void mkl_generate_aim(MKL_GENERATE_AIM_ARGS) {
+    if (tid >= prm.count) return;
+    mkl_aim_ray<OV>(headers, surfaces, pool, fields, seeds, prm, samples, ff, uu, ids, reports, failures, newton, tables,
+                    state, pending, pending_count, tid + prm.offset, tid, true);
+}
+template <bool OV>
+kernel void mkl_aim_continue(MKL_GENERATE_AIM_ARGS) {
+    if (tid >= list_count[0]) return;
+    uint i = list[tid];
+    mkl_aim_ray<OV>(headers, surfaces, pool, fields, seeds, prm, samples, ff, uu, ids, reports, failures, newton, tables,
+                    state, pending, pending_count, i, i - prm.offset, false);
 }
 template [[host_name("mkl_generate_aim")]] kernel void mkl_generate_aim<false>(MKL_GENERATE_AIM_ARGS);
 template [[host_name("mkl_generate_aim_overlays")]] kernel void mkl_generate_aim<true>(MKL_GENERATE_AIM_ARGS);
+template [[host_name("mkl_aim_continue")]] kernel void mkl_aim_continue<false>(MKL_GENERATE_AIM_ARGS);
+template [[host_name("mkl_aim_continue_overlays")]] kernel void mkl_aim_continue<true>(MKL_GENERATE_AIM_ARGS);
 
 // Optional paired record planes: [slot, ray, MKL_AIM_RECORD_FLOATS] hi and
 // lo. A compile-time switch: record support costs the plain trace ~15 %.
@@ -807,6 +1134,7 @@ kernel void mkl_aim_stats(device const uint* report [[buffer(0)]], device atomic
     uint failed = 0, total = 0, most = 0;
     uint hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     for (uint i = first; i < min(first + 256, n); ++i) {
+        if (report[i] == MKL_AIM_OUTSIDE) continue;
         uint it = report[n + i];
         failed += report[i] != 0 ? 1u : 0u;
         total += it;
@@ -831,7 +1159,7 @@ kernel void mkl_aim_count(device const uint* report [[buffer(0)]], device uint* 
     if (first >= n) return;
     uint count = 0;
     for (uint i = first; i < min(first + 256, n); ++i) {
-        count += report[i] != 0;
+        count += report[i] != 0 && report[i] != MKL_AIM_OUTSIDE;
         sparse[i + 1] = 0xffffffffu;
     }
     counts[g] = count;
@@ -854,5 +1182,5 @@ kernel void mkl_aim_scatter(device const uint* report [[buffer(0)]], device cons
     if (first >= n) return;
     uint index = counts[g] + 1;
     for (uint i = first; i < min(first + 256, n); ++i)
-        if (report[i] != 0) sparse[index++] = i;
+        if (report[i] != 0 && report[i] != MKL_AIM_OUTSIDE) sparse[index++] = i;
 }

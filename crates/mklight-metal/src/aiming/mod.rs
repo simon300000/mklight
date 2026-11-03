@@ -7,7 +7,7 @@ use crate::{
     resident::{Execution, Lease},
 };
 use bytemuck::{Pod, Zeroable};
-use mklight_core::MkResult;
+use mklight_core::{MkError, MkResult};
 use mklight_gpu::{
     aiming::*,
     consts::*,
@@ -31,7 +31,13 @@ struct AimParams {
     pattern: u32,
     side: u32,
     extent: [f32; 2],
+    /// Iteration units per lane of this command.
+    budget: u32,
+    table_side: u32,
+    flags: u32,
+    reserved: u32,
 }
+const AIM_CULL: u32 = 1;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ResidentTraceParams {
@@ -167,6 +173,11 @@ enum Seeds {
     Host(PlanView),
     Device(Rows),
 }
+/// Seed table: host-built rows bound from the plan, or device rows.
+enum Table {
+    Host(PlanView),
+    Device(Rows),
+}
 impl Seeds {
     fn bind(&self, e: &Encoder<'_>, index: usize, x: &Execution<'_>) {
         match self {
@@ -211,21 +222,107 @@ const AIM_COMMAND_SECONDS: f64 = 0.015;
 /// Rays per trace/projection command (bounded work per ray).
 const TRACE_CHUNK: usize = 1 << 18;
 const PROJECT_CHUNK: usize = 1 << 20;
+/// Iteration units per lane of a tile's first command (rays converging from
+/// a table or chief seed need two to three) and of each continuation
+/// command. A unit is at most 24 stop traces; a fully divergent tile of hard
+/// candidate rays ran 87 ms per command at eight units, ~45 ms at four.
+const AIM_FIRST_BUDGET: u32 = 4;
+const AIM_CONTINUE_BUDGET: u32 = 4;
+/// The budgets, or the qualification override `MKLIGHT_AIM_BUDGET=first,
+/// continue` (tests force many continuation rounds with `1,1`).
+fn budgets() -> (u32, u32) {
+    static B: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    *B.get_or_init(|| {
+        std::env::var("MKLIGHT_AIM_BUDGET")
+            .ok()
+            .and_then(|v| {
+                let (a, b) = v.split_once(',')?;
+                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+            })
+            .filter(|&(a, b)| a > 0 && b > 0)
+            .unwrap_or((AIM_FIRST_BUDGET, AIM_CONTINUE_BUDGET))
+    })
+}
+/// Continuation rounds of the first group, encoded after the pending count
+/// of the tile's first command is known (most small generations finish in
+/// that command, so no empty round is ever encoded); each further group
+/// doubles.
+const AIM_FIRST_ROUNDS: usize = 2;
+/// Rounds that complete any schedule: six solves of a phase entry plus `cap`
+/// iterations each, at `budget` units per round.
+fn max_rounds(cap: u32, budget: u32) -> usize {
+    (6 * (cap as usize + 1)).div_ceil(budget as usize) + 1
+}
+
+/// Resumable-aim buffers of one tile: per-lane state, two pending lists
+/// (alternating by round), the pending count after each round and the
+/// indirect threadgroup arguments of each continuation round.
+struct Resume {
+    state: Lease,
+    lists: [Lease; 2],
+    counts: Lease,
+    args: Lease,
+    rounds: usize,
+}
+impl Resume {
+    fn new(x: &mut Execution<'_>, lanes: usize, rounds: usize) -> MkResult<Self> {
+        let mut counts = x.allocate(rounds + 1)?;
+        counts.as_mut_slice().fill(0);
+        Ok(Self {
+            state: x.allocate(lanes * MKL_AIM_STATE_WORDS as usize)?,
+            lists: [x.allocate(lanes.max(1))?, x.allocate(lanes.max(1))?],
+            counts,
+            args: x.allocate(3 * rounds)?,
+            rounds,
+        })
+    }
+    /// Bind the resume buffers of `round` (0: the first command) at the
+    /// kernel's resume slots.
+    fn bind(&mut self, e: &Encoder<'_>, round: usize) {
+        let [a, b] = &mut self.lists;
+        let (out, inp) = if round % 2 == 0 { (a, b) } else { (b, a) };
+        e.set_buffer_mut(14, &mut self.state, 0);
+        e.set_buffer_mut(15, out, 0);
+        e.set_buffer_mut(16, &mut self.counts, round);
+        e.set_buffer(17, inp, 0);
+        e.set_buffer(18, &self.counts, round.saturating_sub(1));
+    }
+    fn recycle(self, x: &mut Execution<'_>) {
+        let [a, b] = self.lists;
+        for b in [self.state, a, b, self.counts, self.args] {
+            x.recycle(b);
+        }
+    }
+}
 
 /// Newton work per thread varies by orders of magnitude between systems and
 /// pupil regions, so commands follow the measured device time: they start
 /// small, then grow at most eightfold towards [`AIM_COMMAND_SECONDS`].
-/// Threads are independent, so the split never changes a result.
+/// Threads are independent, so the split never changes a result. With a
+/// continuation pipeline every command additionally runs a bounded number
+/// of iteration units per lane: the tile's first command parks unfinished
+/// rays, continuation commands (sized on the device from the pending count)
+/// resume them in rounds, and the host reads the pending count back between
+/// round groups until no ray is left.
 fn newton_commands(
     x: &mut Execution<'_>,
     stage: &mut StageStats,
     ctl: &JobControl,
     n: usize,
+    cap: u32,
     progress: (f64, f64, &str),
+    pipelines: (&PipelineKey, Option<&PipelineKey>),
     mut encode: impl FnMut(&Encoder<'_>, &Execution<'_>, AimParams),
 ) -> MkResult<()> {
     const MIN: usize = 4096;
     const MAX: usize = 1 << 18;
+    let first = x.gpu.pipeline(pipelines.0)?;
+    let cont = pipelines.1.map(|k| x.gpu.pipeline(k)).transpose()?;
+    let indirect = cont
+        .as_ref()
+        .map(|_| x.gpu.pipeline(&PipelineKey::plain("mkl_aim_indirect")))
+        .transpose()?;
+    let (first_budget, continue_budget) = budgets();
     let (mut offset, mut next) = (0, MIN);
     while offset < n {
         ctl.check()?;
@@ -233,22 +330,80 @@ fn newton_commands(
         let p = AimParams {
             count: count as u32,
             offset: offset as u32,
+            budget: first_budget,
             ..Zeroable::zeroed()
         };
         let wall = Instant::now();
+        let mut resume = cont
+            .as_ref()
+            .map(|_| Resume::new(x, count, max_rounds(cap, continue_budget)))
+            .transpose()?;
         // SAFETY: callers bind plan-validated extents; kernels check every
-        // device-provided field, system and wavelength index.
+        // device-provided field, system and wavelength index; the resume
+        // buffers hold `count` lanes and `rounds` rounds.
         unsafe {
             x.run(progress.2, |e| {
                 encode(e, x, p);
+                if let Some(r) = &mut resume {
+                    r.bind(e, 0);
+                }
+                e.dispatch_1d(&first, count);
                 Ok(())
             })?
         };
         account(x, stage, wall, size_of::<AimParams>());
-        // Single-tile batches stay fused with their chief/table/pupil chain.
-        // Otherwise the first tile completes to calibrate the next; later tiles
-        // of mid-sized batches keep that rate. Every tile of a large batch
-        // (~15 ms each) completes, so progress follows device completion.
+        if let (Some(r), Some(cont), Some(indirect)) = (&mut resume, &cont, &indirect) {
+            let width = Encoder::width(cont) as u32;
+            let (mut round, mut group) = (0, 0);
+            loop {
+                let last = (round + group).min(r.rounds);
+                while round < last {
+                    round += 1;
+                    let wall = Instant::now();
+                    let p = AimParams {
+                        budget: continue_budget,
+                        ..p
+                    };
+                    // SAFETY: as above; the indirect arguments and counts
+                    // of round `round` lie inside the resume buffers.
+                    unsafe {
+                        x.run(progress.2, |e| {
+                            e.set_buffer(0, &r.counts, round - 1);
+                            e.set_buffer_mut(1, &mut r.args, 3 * (round - 1));
+                            e.set_buffer_mut(2, &mut r.counts, round);
+                            e.set_bytes(3, &width);
+                            e.dispatch_1d(indirect, 1);
+                            encode(e, x, p);
+                            r.bind(e, round);
+                            e.dispatch_indirect(cont, &r.args, 3 * (round - 1));
+                            Ok(())
+                        })?
+                    };
+                    account(x, stage, wall, size_of::<AimParams>());
+                }
+                x.measure()?;
+                x.stats.readback_bytes += 4;
+                let pending = r.counts.as_slice()[round];
+                if pending == 0 {
+                    break;
+                }
+                if round == r.rounds {
+                    return Err(MkError::Numerical(format!(
+                        "{pending} aims unfinished after {round} continuation rounds"
+                    )));
+                }
+                ctl.check()?;
+                group = (2 * group).max(AIM_FIRST_ROUNDS);
+            }
+        }
+        if let Some(r) = resume.take() {
+            r.recycle(x);
+        }
+        // Single-tile batches without continuation stay fused with their
+        // chief/table/pupil chain. Otherwise the first tile completes to
+        // calibrate the next; later tiles of mid-sized batches keep that rate.
+        // Every tile of a large batch (~15 ms each) completes, so progress
+        // follows device completion.
         let more = offset + count < n;
         if n > 65536 || (offset == 0 && more) {
             let seconds = x.measure()?;
@@ -283,6 +438,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let nf = g.field_wavelength.desc.shape[0];
             let n = g.output.count;
             let (pattern, side, extent) = g.sampling.parameters();
+            let table_side = g.options.table_side;
             let params = |p: AimParams| AimParams {
                 stride: n as u32,
                 fields: nf as u32,
@@ -292,6 +448,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 pattern,
                 side,
                 extent: [extent.hi, extent.lo],
+                table_side,
+                flags: if g.options.cull_outside { AIM_CULL } else { 0 },
                 ..p
             };
             let newton = kernel::newton_params();
@@ -320,67 +478,73 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     key(x, CacheCategory::ChiefSources, "aim chiefs"),
                     nf * MKL_AIM_CACHE_WORDS as usize,
                     |x, seeds| {
-                        let pso = x.gpu.pipeline(
-                            &systems.kernel("mkl_aim_chiefs", "mkl_aim_chiefs_overlays"),
-                        )?;
+                        let pso = systems.kernel("mkl_aim_chiefs", "mkl_aim_chiefs_overlays");
                         newton_commands(
                             x,
                             &mut stage,
                             ctl,
                             nf,
+                            g.max_iterations,
                             (0.0, 0.05, "chief aiming"),
+                            (&pso, None),
                             |e, x, p| {
                                 systems.bind(e, x);
                                 bind(e, 3, x, &g.field_wavelength);
                                 e.set_buffer_mut(4, seeds, 0);
                                 e.set_bytes(5, &params(p));
                                 e.set_bytes(6, &newton);
-                                e.dispatch_1d(&pso, p.count as usize);
                             },
                         )
                     },
                 )?),
             };
-            let table = if uses_table(g) {
-                let words = nf * TABLE_NODES * MKL_AIM_NODE_WORDS as usize;
-                let table_key = key(x, CacheCategory::SeedTables, "aim table");
-                Some(rows(x, table_key, words, |x, table| {
-                    let pso = x
-                        .gpu
-                        .pipeline(&systems.kernel("mkl_aim_table", "mkl_aim_table_overlays"))?;
-                    newton_commands(
-                        x,
-                        &mut stage,
-                        ctl,
-                        nf * TABLE_NODES,
-                        (0.05, 0.05, "seed table"),
-                        |e, x, p| {
-                            systems.bind(e, x);
-                            bind(e, 3, x, &g.field_wavelength);
-                            seeds.bind(e, 4, x);
-                            e.set_bytes(5, &params(p));
-                            e.set_bytes(6, &newton);
-                            e.set_buffer_mut(7, table, 0);
-                            e.dispatch_1d(&pso, p.count as usize);
-                        },
-                    )
-                })?)
-            } else {
-                None
+            // A host table is bound as supplied; otherwise a device table
+            // is built (and cached by content) for large generations.
+            let nodes = table_nodes(table_side);
+            let table = match &g.options.table {
+                Some(v) => Some(Table::Host(v.clone())),
+                None if uses_table(g) => {
+                    let words = nf * nodes * MKL_AIM_NODE_WORDS as usize;
+                    let table_key = key(x, CacheCategory::SeedTables, "aim table");
+                    Some(Table::Device(rows(x, table_key, words, |x, table| {
+                        let pso = systems.kernel("mkl_aim_table", "mkl_aim_table_overlays");
+                        let cont = systems
+                            .kernel("mkl_aim_table_continue", "mkl_aim_table_continue_overlays");
+                        newton_commands(
+                            x,
+                            &mut stage,
+                            ctl,
+                            nf * nodes,
+                            g.max_iterations,
+                            (0.05, 0.05, "seed table"),
+                            (&pso, Some(&cont)),
+                            |e, x, p| {
+                                systems.bind(e, x);
+                                bind(e, 3, x, &g.field_wavelength);
+                                seeds.bind(e, 4, x);
+                                e.set_bytes(5, &params(p));
+                                e.set_bytes(6, &newton);
+                                e.set_buffer_mut(7, table, 0);
+                            },
+                        )
+                    })?))
+                }
+                None => None,
             };
             let mut out = take_rays(x, &g.output);
             let mut failures = x.allocate(1)?;
             failures.as_mut_slice()[0] = 0;
             x.stats.uploaded_bytes += 4;
-            let pso = x
-                .gpu
-                .pipeline(&systems.kernel("mkl_generate_aim", "mkl_generate_aim_overlays"))?;
+            let pso = systems.kernel("mkl_generate_aim", "mkl_generate_aim_overlays");
+            let cont = systems.kernel("mkl_aim_continue", "mkl_aim_continue_overlays");
             newton_commands(
                 x,
                 &mut stage,
                 ctl,
                 n,
+                g.max_iterations,
                 (0.1, 0.9, "pupil aiming"),
+                (&pso, Some(&cont)),
                 |e, x, p| {
                     let [ff, uu, ids, reports] = &mut out;
                     systems.bind(e, x);
@@ -401,18 +565,18 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     e.set_buffer_mut(11, &mut failures, 0);
                     e.set_bytes(12, &newton);
                     // Without a table the binding is never read.
-                    match table.as_deref() {
-                        Some(t) => e.set_buffer(13, t, 0),
+                    match &table {
+                        Some(Table::Host(v)) => bind(e, 13, x, v),
+                        Some(Table::Device(t)) => e.set_buffer(13, t, 0),
                         None => seeds.bind(e, 13, x),
                     }
-                    e.dispatch_1d(&pso, p.count as usize);
                 },
             )?;
             aim_stats(x, &out[3], n, &mut stage)?;
             if let Seeds::Device(Rows::Local(b)) = seeds {
                 x.recycle(b);
             }
-            if let Some(Rows::Local(b)) = table {
+            if let Some(Table::Device(Rows::Local(b))) = table {
                 x.recycle(b);
             }
             x.count_fallbacks(failures);

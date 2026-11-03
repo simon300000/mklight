@@ -78,6 +78,7 @@ fn plan(
             tolerance: 1e-10,
             max_iterations: 40,
             output: generated.clone(),
+            options: Default::default(),
         })));
     let steps: Vec<u32> = (1..=t.system().image_index() as u32).collect();
     let buf = gpu

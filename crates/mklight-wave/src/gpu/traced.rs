@@ -16,6 +16,24 @@ use mklight_trace::{PreparedField, SequentialTracer};
 /// Lattice rays per batch. Bounds the per-pupil split copies and the rim
 /// probe planes; larger lattices trace one pupil at a time.
 const BATCH_RAYS: usize = 1 << 16;
+/// Bracket subdivisions per rim-bisection round, as a power of two: each
+/// round of `2^RIM_LEVELS` probes per open edge gains that many bits. One
+/// level (plain bisection) aims the fewest rays; rounds are device
+/// dispatches of one plan, not host round trips.
+const RIM_LEVELS: u32 = 1;
+/// Nodes per axis of the host f64 seed tables handed to every generation of
+/// a batch (chief probe, lattice, saddle and rim probes alike, so a sample's
+/// converged ray does not depend on the batch it was aimed in).
+/// Measured on the complex lens: 13 nodes need 2.9 Newton iterations per
+/// ray, 25 need 1.55 and 37 need 1.27 at the same device time, while the
+/// host cost grows with the node count; a device-built table costs ~0.8 s
+/// per edit.
+const TABLE_SIDE: u32 = 25;
+/// Relative stop residual (fraction of the stop radius) above which a
+/// failed aim is a physically unaimable ray rather than a convergence
+/// problem: four orders above the 1e-10 tolerance, far below the 5e-3–1e-1
+/// residuals of vignetted off-axis rays on a fast lens.
+const UNAIMABLE_RESIDUAL: f32 = 1e-6;
 
 #[derive(Clone, Debug)]
 pub struct ResidentTracedPupil {
@@ -122,10 +140,14 @@ impl Batch {
         }
     }
 }
-/// Field rows of one batch, their host f64 chief rows and content key.
+/// Field rows of one batch, their host f64 chief rows and seed tables, and
+/// their content key.
 struct Fields {
     buffer: BufferHandle,
     seeds: BufferHandle,
+    /// Host f64 seed tables (`TABLE_SIDE` nodes per axis) of the rows, when
+    /// the batch's lattice amortises them.
+    table: Option<BufferHandle>,
     /// Reported by the first plan that uses the rows.
     host: std::cell::RefCell<Option<HostPreparation>>,
     key: String,
@@ -295,17 +317,29 @@ impl<'a> PupilTracer<'a> {
     }
     /// Rows of (field, wavelength) pupils with their metadata `specs`. Chief
     /// rows come from the prepared fields (f64 source once per field, chief
-    /// and Jacobian per wavelength); the device solves none of them.
+    /// and Jacobian per wavelength); the device solves none of them. With
+    /// `rays_per_row` lattice rays per row the host also solves the seed
+    /// tables when the lattice amortises them (twice the node count).
     fn fields(
         &self,
         pupils: &[(&PreparedField, usize)],
         specs: &[aim::FieldSpec],
+        rays_per_row: usize,
     ) -> MkResult<Fields> {
         let start = std::time::Instant::now();
         let seeds: Vec<_> = pupils
             .iter()
             .map(|(f, w)| aim::ChiefSeed::host(self.tracer, f, *w))
             .collect();
+        let real = matches!(self.tracer.aiming(), mklight_core::RayAiming::Real { .. });
+        let table = (real && rays_per_row >= 2 * aim::table_nodes(TABLE_SIDE))
+            .then(|| {
+                rows(
+                    self.backend,
+                    &aim::host_tables(self.tracer, pupils, TABLE_SIDE),
+                )
+            })
+            .transpose()?;
         let mut points: Vec<_> = Vec::new();
         for (f, _) in pupils {
             if !points.contains(&f.point) {
@@ -321,6 +355,7 @@ impl<'a> PupilTracer<'a> {
         Ok(Fields {
             buffer: rows(self.backend, specs)?,
             seeds: rows(self.backend, &seeds)?,
+            table,
             host: std::cell::RefCell::new(Some(host)),
             key: blake3::hash(bytemuck::cast_slice(specs))
                 .to_hex()
@@ -352,15 +387,25 @@ impl<'a> PupilTracer<'a> {
         ctx: &JobContext,
         stats: &mut PlanStats,
     ) -> MkResult<Vec<Option<[Df32; 7]>>> {
-        let fields = self.fields(pupils, specs)?;
+        let fields = self.fields(pupils, specs, 1)?;
         let samples: Vec<_> = (0..specs.len())
             .map(|q| aim::Sample::new([0.; 2], q as u32, q as u64))
             .collect();
         let samples = rows(self.backend, &samples)?;
         let mut p = self.plan();
         let s = p.import(samples.view());
-        let (chief, _, s) =
-            self.probe(p, s, specs.len(), &fields, false, false, false, &[], ctx)?;
+        let (chief, _, s) = self.probe(
+            p,
+            s,
+            specs.len(),
+            &fields,
+            false,
+            false,
+            false,
+            false,
+            &[],
+            ctx,
+        )?;
         accumulate(stats, &s);
         let status = self.backend.read_view(chief.hits[4].view())?;
         let status = status.as_slice::<u32>()?;
@@ -405,19 +450,23 @@ impl<'a> PupilTracer<'a> {
         samples: BufferId,
         count: usize,
         fields: &Fields,
+        cull: bool,
         clip: bool,
         survival: bool,
         power: bool,
         extra: &[BufferId],
         ctx: &JobContext,
     ) -> MkResult<(Batch, Vec<BufferHandle>, PlanStats)> {
-        let layout =
-            self.append_probe(&mut p, samples, count, fields, clip, survival, power, extra)?;
+        let layout = self.append_probe(
+            &mut p, samples, count, fields, cull, clip, survival, power, extra,
+        )?;
         let r = self.backend.submit_plan(p, ctx)?.wait()?;
         let (batch, extra) = self.finish_probe(&layout, &r, ctx)?;
         Ok((batch, extra, r.stats))
     }
     /// Append a dependent chain without submitting or exposing a host view.
+    /// `cull` excludes samples outside the unit pupil disk from aiming (the
+    /// lattice guard nodes, which the survival mask discards anyway).
     #[allow(clippy::too_many_arguments)]
     fn append_probe(
         &self,
@@ -425,6 +474,7 @@ impl<'a> PupilTracer<'a> {
         samples: BufferId,
         count: usize,
         fields: &Fields,
+        cull: bool,
         clip: bool,
         survival: bool,
         power: bool,
@@ -432,6 +482,7 @@ impl<'a> PupilTracer<'a> {
     ) -> MkResult<ProbeLayout> {
         let metadata = p.import(fields.buffer.view());
         let seeds = p.import(fields.seeds.view());
+        let table = fields.table.as_ref().map(|t| p.import(t.view()));
         if let Some(h) = fields.host.borrow_mut().take() {
             p.host.add(&h);
         }
@@ -454,6 +505,11 @@ impl<'a> PupilTracer<'a> {
                     tolerance,
                     max_iterations: 60,
                     output: generated.clone(),
+                    options: aim::AimOptions {
+                        table: table.map(|t| p.view(t)).transpose()?,
+                        table_side: TABLE_SIDE,
+                        cull_outside: cull,
+                    },
                 },
             )));
         let hits = aim::hits(
@@ -591,21 +647,46 @@ impl<'a> PupilTracer<'a> {
         let sample_rows: &[aim::Sample] = bytemuck::cast_slice(sample_guard.words());
         let reports = self.backend.read_view(reports.view())?;
         let reports = reports.as_slice::<u32>()?;
+        let n = sample_rows.len();
         let mut unresolved = 0usize;
+        let mut detail = String::new();
         for (k, sample) in sample_rows.iter().enumerate() {
             if k % 4096 == 0 {
                 ctx.check()?;
             }
-            if reports[k] != 0
+            // Excluded samples (culled guard nodes, probes of converged rim
+            // edges) were never aimed. A failed aim whose stop residual is
+            // far above the tolerance, or whose stop is unreachable (an
+            // infinite residual, NaN once divided by the stop radius in
+            // double-float), is a ray that cannot be aimed through the stop
+            // at this field: the reference treats it as vignetted
+            // (`Tracing::ray` is None), and so does the survival mask here.
+            // Only tolerance-level non-convergence (a precision symptom)
+            // needs the reference.
+            let residual = f32::from_bits(reports[2 * n + k]);
+            let unaimable = residual.is_nan() || residual > UNAIMABLE_RESIDUAL;
+            if !matches!(reports[k], 0 | mklight_gpu::consts::MKL_AIM_OUTSIDE)
+                && !unaimable
                 && (sample.pupil[0] * sample.pupil[0] + sample.pupil[1] * sample.pupil[1]).to_f64()
                     <= 1. + 1e-12
             {
+                if unresolved < 4 {
+                    detail += &format!(
+                        " row {} p=({:.4}, {:.4}) status {} after {} iterations, residual {:.2e};",
+                        sample.field,
+                        sample.pupil[0].to_f64(),
+                        sample.pupil[1].to_f64(),
+                        reports[k],
+                        reports[n + k],
+                        f32::from_bits(reports[2 * n + k])
+                    );
+                }
                 unresolved += 1;
             }
         }
         if unresolved > 0 {
             return Err(MkError::Unsupported(format!(
-                "P6 has {unresolved} unresolved in-pupil aims; reference completion required"
+                "P6 has {unresolved} unresolved in-pupil aims; reference completion required (e.g.{detail})"
             )));
         }
         Ok(())
@@ -778,7 +859,7 @@ impl<'a> PupilTracer<'a> {
         if !items.is_empty() {
             let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
             let pupils: Vec<_> = items.iter().map(|i| (i.field, i.wl)).collect();
-            let fields = self.fields(&pupils, &specs)?;
+            let fields = self.fields(&pupils, &specs, n)?;
             let mut p = self.plan();
             let probes = p.scratch(BufferDesc::new(ElementType::U32, [items.len() * n, 8]));
             p.operations
@@ -787,11 +868,15 @@ impl<'a> PupilTracer<'a> {
                     copies: items.len(),
                     samples: probes,
                 })));
+            // Guard nodes outside the disk are never aimed: the survival
+            // mask excludes them whatever their trace, so the lattice
+            // topology and rim edges are unchanged.
             let (lat, _, s) = self.probe(
                 p,
                 probes,
                 items.len() * n,
                 &fields,
+                true,
                 true,
                 true,
                 settings.amplitude != AmplitudeModel::Uniform,
@@ -859,6 +944,7 @@ impl<'a> PupilTracer<'a> {
                     samples,
                     saddles.len(),
                     fields,
+                    true,
                     true,
                     true,
                     false,
@@ -947,13 +1033,14 @@ impl<'a> PupilTracer<'a> {
         }
         Ok(results.into_iter().map(Option::unwrap).collect())
     }
-    /// Batched rim bisection of every pupil's crossed lattice edges, four
-    /// levels (16 probes) per edge and command round. Each edge's rim ray is
-    /// the surviving bracket end's ray as traced in its own round (first the
-    /// inside lattice node), kept with `Op::Keep` exactly as the reference
-    /// keeps the bracketing ray: tracing the final point again would aim it
-    /// from other seeds, and a ray converged within the aiming tolerance of
-    /// an aperture edge may then clip, leaving a hole in the rim.
+    /// Batched rim bisection of every pupil's crossed lattice edges,
+    /// `RIM_LEVELS` levels (`2^RIM_LEVELS` probes) per open edge and command
+    /// round; converged edges emit skip-flagged probes. Each edge's rim ray
+    /// is the surviving bracket end's ray as traced in its own round (first
+    /// the inside lattice node), kept with `Op::Keep` exactly as the
+    /// reference keeps the bracketing ray: tracing the final point again
+    /// would aim it from other seeds, and a ray converged within the aiming
+    /// tolerance of an aperture edge may then clip, leaving a hole in the rim.
     #[allow(clippy::too_many_arguments)]
     fn bisect(
         &self,
@@ -985,11 +1072,13 @@ impl<'a> PupilTracer<'a> {
             a.fill(1);
             Ok(())
         })?;
+        let levels = RIM_LEVELS;
         let iterations = ((2. / (settings.rays - 1) as f64 / settings.rim_tolerance)
             .log2()
             .ceil() as usize)
-            .div_ceil(4)
+            .div_ceil(levels as usize)
             + 1;
+        let parts = 1usize << levels;
         let mut p = self.plan();
         let edge = p.import(edges.view());
         let edge_rows = p.import(edge_rows.view());
@@ -1014,7 +1103,7 @@ impl<'a> PupilTracer<'a> {
             let last = iteration == iterations;
             let state = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [count, 8]));
             let source = p.scratch(BufferDesc::new(ElementType::U32, [count]));
-            let probe_count = count * if last { 1 } else { 16 };
+            let probe_count = count * if last { 1 } else { parts };
             let samples = p.scratch(BufferDesc::new(ElementType::U32, [probe_count, 8]));
             p.operations
                 .push(ResidentOp::Wave(w::Request::Lattice(Op::Rim {
@@ -1023,6 +1112,7 @@ impl<'a> PupilTracer<'a> {
                     previous: previous.map(|i| p.view(i)).transpose()?,
                     status: status.map(|i| p.view(i)).transpose()?,
                     tolerance: Df32::from_f64(settings.rim_tolerance),
+                    levels,
                     final_point: last,
                     state,
                     samples,
@@ -1041,6 +1131,7 @@ impl<'a> PupilTracer<'a> {
                 samples,
                 probe_count,
                 fields,
+                false,
                 true,
                 false,
                 false,
