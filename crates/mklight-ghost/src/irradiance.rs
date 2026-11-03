@@ -1666,7 +1666,7 @@ fn refine_gpu(
             // A memory tile of probe records (every path, field and
             // wavelength together), not a new plan per path. The next tile
             // is submitted before this one's host completion, so the device
-            // traces while the host classifies and completes references.
+            // traces it while the host classifies and completes references.
             let blocks = new.chunks(crate::gpu::PROBE_TILE).collect::<Vec<_>>();
             let submit = |gpu: &crate::gpu::GhostTransport,
                           block: &[(usize, Probe, usize, [f64; 2])]| {
@@ -1691,8 +1691,10 @@ fn refine_gpu(
             for (bi, &block) in blocks.iter().enumerate() {
                 ctx.check()?;
                 let current = pending.take().expect("submitted in order");
-                pending = blocks.get(bi + 1).map(|b| submit(gpu, b)).transpose()?;
                 let values = gpu.finish_lattice(current)?;
+                // Two plans in flight would share the device and shrink each
+                // other's time-calibrated commands: submit the next only now.
+                pending = blocks.get(bi + 1).map(|b| submit(gpu, b)).transpose()?;
                 // Numerical failures, flagged conditioning and pixel-edge hits
                 // are completed with the f64 reference, in parallel.
                 let outcomes = block
