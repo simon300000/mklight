@@ -6,6 +6,9 @@
 //! MKLIGHT_BENCH_QUIET_SECONDS (default 30). Cold calls use this test binary
 //! in fresh processes; the private child test does nothing without its marker.
 //! Select `edit_loop_queued` to measure the six graphs on the worker queue.
+//! MKLIGHT_BENCH_MODES (e.g. `cpu,auto`) measures a subset of the backends;
+//! MKLIGHT_BENCH_ALLOW_BUSY=1 measures next to other builds (every block is
+//! then labelled provisional instead of aborting).
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -129,7 +132,8 @@ fn quiet(label: &str) {
                 "wait_seconds":start.elapsed().as_secs_f64(),"observations":observations}),
             );
             assert!(
-                competing.is_empty(),
+                competing.is_empty()
+                    || std::env::var("MKLIGHT_BENCH_ALLOW_BUSY").as_deref() == Ok("1"),
                 "another build is running; retry after it finishes"
             );
             return;
@@ -635,6 +639,10 @@ fn selected(name: &str) -> bool {
     std::env::var("MKLIGHT_BENCH_FILTER").map_or(true, |s| s.split(',').any(|n| n == name))
 }
 
+fn mode_selected(mode: usize) -> bool {
+    std::env::var("MKLIGHT_BENCH_MODES").map_or(true, |s| s.split(',').any(|n| n == MODES[mode]))
+}
+
 fn cold(case: &Case, path: &Path, round: usize, mode: &str) {
     let start = Instant::now();
     let out = Command::new(std::env::current_exe().unwrap())
@@ -724,7 +732,7 @@ fn project_bench() {
                     if round % 2 == 1 {
                         order.reverse();
                     }
-                    for mode in order {
+                    for mode in order.into_iter().filter(|m| mode_selected(*m)) {
                         if phase == "edit" {
                             edit(
                                 &mut sessions[mode],
@@ -758,7 +766,7 @@ fn project_bench() {
                     }
                     cpu.run_analysis(&request(case, "cpu"), &JobContext::new())
                 });
-                for mode in 0..MODES.len() {
+                for mode in (0..MODES.len()).filter(|m| mode_selected(*m)) {
                     let reference = if mode == 4 {
                         relaxed.as_ref().and_then(|r| r.as_ref().ok())
                     } else {
@@ -784,7 +792,10 @@ fn project_bench() {
             quiet(&format!("{variant}/{} / cold", case.name));
             for round in 0..cold_runs {
                 for offset in 0..MODES.len() {
-                    cold(case, path, round, MODES[(round + offset) % MODES.len()]);
+                    let mode = (round + offset) % MODES.len();
+                    if mode_selected(mode) {
+                        cold(case, path, round, MODES[mode]);
+                    }
                 }
             }
         }
@@ -793,6 +804,9 @@ fn project_bench() {
             for round in 0..=runs {
                 for offset in 0..MODES.len() {
                     let mode = (round + offset) % MODES.len();
+                    if !mode_selected(mode) {
+                        continue;
+                    }
                     let s = &mut sessions[mode];
                     let start = Instant::now();
                     edit(s, &bases[mode], 900000 + round);
@@ -811,6 +825,20 @@ fn project_bench() {
                         "edit_loop",
                         json!({"mode":MODES[mode],"round":round,
                         "wall_ms":start.elapsed().as_secs_f64()*1e3,"results":results,"errors":errors,"load":load()}),
+                    );
+                    // The same six graphs again on the unchanged snapshot.
+                    let start = Instant::now();
+                    let mut used = Vec::new();
+                    for name in EDIT_GRAPHS {
+                        let c = all.iter().find(|c| c.name == name).unwrap();
+                        let r = s.run_analysis(&request(c, MODES[mode]), &JobContext::new());
+                        used.push(json!({"analysis":name,
+                            "used":r.as_ref().map(|r| r.backend.used.clone()).map_err(|e| e.to_string())}));
+                    }
+                    emit(
+                        "edit_loop_warm",
+                        json!({"mode":MODES[mode],"round":round,
+                        "wall_ms":start.elapsed().as_secs_f64()*1e3,"results":used,"load":load()}),
                     );
                 }
             }
@@ -889,6 +917,9 @@ fn project_bench_queued_edit_loop() {
         for round in 0..=runs {
             for offset in 0..MODES.len() {
                 let mode = (round + offset) % MODES.len();
+                if !mode_selected(mode) {
+                    continue;
+                }
                 let session = &mut sessions[mode];
                 let engine = session.engine().clone();
                 let before = mklight_metal::device_seconds();
