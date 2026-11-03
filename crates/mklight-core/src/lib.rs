@@ -7,6 +7,7 @@ pub mod error;
 pub mod job;
 pub mod materials;
 pub mod math;
+pub mod memo;
 pub mod model;
 pub mod param;
 pub mod resolved;

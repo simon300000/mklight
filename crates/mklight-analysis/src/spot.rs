@@ -212,6 +212,58 @@ pub struct SpotDiagram {
     pub airy_radius: f64,
     pub defocus: f64,
     pub run_info: RunInfo,
+    /// The ray points of every field in buffer form, set instead of
+    /// `FieldSpot::points` by [`spot_diagram_packed_job`]; never serialised.
+    #[serde(skip)]
+    pub packed_points: Option<PackedSpotPoints>,
+}
+
+/// Ray points of all fields as flat typed arrays (the engine's `points`,
+/// `point_field` and `point_wavelength` buffers), filled once by the solver
+/// without per-point structs. Values follow the JSON conventions of
+/// [`SpotPoint`]: NaN is canonical, infinities are kept.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PackedSpotPoints {
+    /// `[x, y]` per point, relative to its field's reference (mm).
+    pub xy: Vec<f64>,
+    /// Position of the point's field in `SpotDiagram::fields`.
+    pub field: Vec<u32>,
+    /// System wavelength index of the point.
+    pub wavelength: Vec<u32>,
+    /// `[offset, count]` of each field's rows, in `SpotDiagram::fields` order.
+    pub ranges: Vec<[usize; 2]>,
+}
+
+/// Points between cancellation checks while packing.
+pub(crate) const POINT_CHUNK: usize = 1 << 16;
+
+impl PackedSpotPoints {
+    pub(crate) fn with_capacity(n: usize, fields: usize) -> Self {
+        PackedSpotPoints {
+            xy: Vec::with_capacity(2 * n),
+            field: Vec::with_capacity(n),
+            wavelength: Vec::with_capacity(n),
+            ranges: Vec::with_capacity(fields),
+        }
+    }
+    #[inline]
+    pub(crate) fn push(&mut self, field: usize, x: f64, y: f64, wavelength: usize) {
+        let canonical = |v: f64| if v.is_nan() { f64::NAN } else { v };
+        self.xy.extend([canonical(x), canonical(y)]);
+        self.field.push(field as u32);
+        self.wavelength.push(wavelength as u32);
+    }
+    /// Close the current field, whose rows start at `start`.
+    pub(crate) fn close(&mut self, start: usize) {
+        self.ranges.push([start, self.field.len() - start]);
+    }
+    /// Number of points.
+    pub fn len(&self) -> usize {
+        self.field.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.field.is_empty()
+    }
 }
 
 // ----- Shared ray data -----------------------------------------------------------
@@ -359,6 +411,28 @@ impl FieldRays {
         rays: &[ImageRay],
         warnings: &mut Vec<String>,
     ) -> MkResult<FieldRays> {
+        Self::from_hits(
+            field,
+            wavelengths,
+            weights,
+            primary_chief,
+            wavelength_chiefs,
+            rays.iter().map(|r| (r.wavelength, r.hit)),
+            warnings,
+        )
+    }
+
+    /// [`FieldRays::from_image_rays`] over `(system wavelength, hit)` pairs
+    /// read in place, without an intermediate list of rays.
+    fn from_hits<I: Iterator<Item = (usize, Option<ImageHit>)> + Clone>(
+        field: usize,
+        wavelengths: &[usize],
+        weights: &[f64],
+        primary_chief: Option<ImageHit>,
+        wavelength_chiefs: &[Option<ImageHit>],
+        rays: I,
+        warnings: &mut Vec<String>,
+    ) -> MkResult<FieldRays> {
         if weights.len() != wavelengths.len() || wavelength_chiefs.len() != wavelengths.len() {
             return Err(MkError::InvalidModel(
                 "ray batch: per-wavelength lists of wrong length".into(),
@@ -366,7 +440,7 @@ impl FieldRays {
         }
         let hit = |h: &ImageHit| slope(h.dir).map(|t| (h.point, t));
         let pc = primary_chief.as_ref().and_then(hit);
-        let first = rays.iter().filter_map(|r| r.hit.as_ref()).find_map(hit);
+        let first = rays.clone().find_map(|(_, h)| h.as_ref().and_then(hit));
         let (origin, origin_slope, chief_ok) = match (pc, first) {
             (Some((p, t)), _) => (p, t, true),
             (None, Some((p, t))) => {
@@ -390,21 +464,20 @@ impl FieldRays {
                 _ => ([f64::NAN; 2], [f64::NAN; 2]),
             })
             .collect();
-        let mut hits = Vec::with_capacity(rays.len());
+        let mut hits = Vec::with_capacity(rays.clone().filter(|(_, h)| h.is_some()).count());
         let mut launched = vec![0; wavelengths.len()];
         let mut arrived = vec![0; wavelengths.len()];
-        for r in rays {
+        for (wavelength, h) in rays {
             let k = wavelengths
                 .iter()
-                .position(|&w| w == r.wavelength)
+                .position(|&w| w == wavelength)
                 .ok_or_else(|| {
                     MkError::InvalidModel(format!(
-                        "ray batch: wavelength {} not in the batch",
-                        r.wavelength
+                        "ray batch: wavelength {wavelength} not in the batch"
                     ))
                 })?;
             launched[k] += 1;
-            let Some((p, t)) = r.hit.as_ref().and_then(hit) else {
+            let Some((p, t)) = h.as_ref().and_then(hit) else {
                 continue;
             };
             arrived[k] += 1;
@@ -450,19 +523,24 @@ pub fn trace_field_rays(
 ) -> MkResult<RayBatch> {
     let sys = tracer.system();
     let primary = sys.primary_wavelength;
-    let prepared: Vec<_> = fields.iter().map(|&f| tracer.field(f).clone()).collect();
-    let grid = Grid {
-        fields: &prepared,
-        wavelengths: wls,
-        pupil,
-    };
-    let rays = trace_grid_job(tracer, &grid, &tracer.options(), &ctx.subrange(0.0, 0.95))?;
-    let np = pupil.len();
     let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
-    let mut out = Vec::with_capacity(fields.len());
+    let nf = fields.len();
+    let mut out = Vec::with_capacity(nf);
+    // One field at a time: only that field's traced rays are alive while
+    // they are reduced (identical per-ray results in the same order).
     for (fi, &f) in fields.iter().enumerate() {
         ctx.check()?;
-        let pf = &prepared[fi];
+        let pf = tracer.field(f);
+        let grid = Grid {
+            fields: std::slice::from_ref(pf),
+            wavelengths: wls,
+            pupil,
+        };
+        let span = ctx.subrange(
+            0.95 * fi as f64 / nf as f64,
+            0.95 * (fi + 1) as f64 / nf as f64,
+        );
+        let rays = trace_grid_job(tracer, &grid, &tracer.options(), &span)?;
         let chief = |wl: usize| {
             let c = tracer.chief(pf, wl);
             c.status.is_ok().then_some(ImageHit {
@@ -475,18 +553,15 @@ pub fn trace_field_rays(
             .iter()
             .map(|&w| if w == primary { pc } else { chief(w) })
             .collect();
-        let block: Vec<ImageRay> = rays[fi * wls.len() * np..(fi + 1) * wls.len() * np]
-            .iter()
-            .map(|r| ImageRay {
-                wavelength: r.wavelength as usize,
-                hit: r.status.is_ok().then_some(ImageHit {
-                    point: [r.point.x, r.point.y],
-                    dir: r.dir,
-                }),
-            })
-            .collect();
-        out.push(FieldRays::from_image_rays(
-            f, wls, &weights, pc, &wl_chiefs, &block, warnings,
+        let hits = rays.iter().map(|r| {
+            let hit = r.status.is_ok().then_some(ImageHit {
+                point: [r.point.x, r.point.y],
+                dir: r.dir,
+            });
+            (r.wavelength as usize, hit)
+        });
+        out.push(FieldRays::from_hits(
+            f, wls, &weights, pc, &wl_chiefs, hits, warnings,
         )?);
     }
     Ok(RayBatch {
@@ -553,6 +628,26 @@ pub fn spot_diagram_job(
     settings: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
+    spot_job(tracer, settings, ctx, false)
+}
+
+/// [`spot_diagram_job`] with the ray points in [`SpotDiagram::packed_points`]
+/// (always set, empty without `include_points`) instead of
+/// `FieldSpot::points`.
+pub fn spot_diagram_packed_job(
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+    ctx: &JobContext,
+) -> MkResult<SpotDiagram> {
+    spot_job(tracer, settings, ctx, true)
+}
+
+fn spot_job(
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+    ctx: &JobContext,
+    packed: bool,
+) -> MkResult<SpotDiagram> {
     let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
     let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
@@ -573,6 +668,7 @@ pub fn spot_diagram_job(
         &BackendInfo::cpu_reference(),
         warnings,
         ctx,
+        packed,
     )?;
     ctx.report(1.0, "spot diagram");
     Ok(out)
@@ -601,9 +697,11 @@ pub fn spot_from_rays(
         backend,
         warnings,
         &JobContext::new(),
+        false,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spot_reduce(
     timer: RunTimer,
     tracer: &SequentialTracer,
@@ -612,9 +710,18 @@ fn spot_reduce(
     backend: &BackendInfo,
     mut warnings: Vec<String>,
     ctx: &JobContext,
+    packed: bool,
 ) -> MkResult<SpotDiagram> {
     let sys = tracer.system();
     let wls = &batch.wavelengths;
+    let mut packed = packed.then(|| {
+        let n = if settings.include_points {
+            batch.fields.iter().map(|f| f.rays.len()).sum()
+        } else {
+            0
+        };
+        PackedSpotPoints::with_capacity(n, batch.fields.len())
+    });
     let delta = settings.defocus;
     if delta != 0.0 || settings.through_focus.is_some() {
         warnings.extend(curved_image_warning(tracer));
@@ -622,7 +729,7 @@ fn spot_reduce(
     let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
 
     let mut out = Vec::with_capacity(batch.fields.len());
-    for fr in &batch.fields {
+    for (k, fr) in batch.fields.iter().enumerate() {
         ctx.check()?;
         let m = fr.moments(delta);
         let total: f64 = fr
@@ -659,7 +766,20 @@ fn spot_reduce(
             SpotReference::Centroid => (m.centroid, m.rms_centroid, m.geo_centroid),
         };
         let reference = [c_abs[0] + ref_rel[0], c_abs[1] + ref_rel[1]];
-        let points = if settings.include_points {
+        let points = if let Some(p) = packed.as_mut() {
+            let start = p.len();
+            if settings.include_points {
+                for chunk in fr.rays.chunks(POINT_CHUNK) {
+                    ctx.check()?;
+                    for r in chunk {
+                        let q = r.at(delta);
+                        p.push(k, q[0] - ref_rel[0], q[1] - ref_rel[1], wls[r.wl_pos]);
+                    }
+                }
+            }
+            p.close(start);
+            Vec::new()
+        } else if settings.include_points {
             fr.rays
                 .iter()
                 .map(|r| {
@@ -753,6 +873,7 @@ fn spot_reduce(
             warnings,
             backend,
         ),
+        packed_points: packed,
     })
 }
 

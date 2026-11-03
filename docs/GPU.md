@@ -1387,8 +1387,12 @@ until all dependent command buffers finish, including cancelled jobs;
 mutable scratch is never shared between live jobs. Plan-scoped caches use
 the derived snapshot, library, configuration/spectrum, layout and kernel
 build as keys, and optical caches also include all sampling/radiometry
-settings; content-addressed entries (aiming) use digests of every input
-instead.
+settings; content-addressed entries (aiming; transform recipes, twiddle
+and chirp tables and chirp spectra, which depend only on their parameters)
+use digests of every input instead, so they survive edits and are shared
+by plans of other analyses. The engine's analysis graph
+(`docs/ARCHITECTURE.md`) hands every plan of a snapshot the same reference
+tracer, so host chief rows reuse its prepared fields across analyses.
 Warm calls reuse allocations, packed systems, aim seeds, transform plans,
 twiddles/chirps, pupil grids and stencils. Upload only changed candidate
 parameters; read back requested final buffers/scalars, never intermediate

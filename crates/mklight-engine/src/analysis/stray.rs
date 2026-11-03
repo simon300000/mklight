@@ -71,6 +71,9 @@ pub struct GhostPartition {
 pub struct StrayLight;
 
 impl Analysis for StrayLight {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn result_version(&self) -> u32 {
         2
     }
@@ -365,19 +368,24 @@ impl Analysis for StrayLight {
                 })
             }
         };
+        // Maps move into typed buffers; only the summary is serialised.
+        let mut r = r;
+        let maps = std::mem::take(&mut r.maps);
+        let total = std::mem::take(&mut r.total_irradiance);
+        let total_err = std::mem::take(&mut r.total_irradiance_std_error);
         let (mut v, w) = crate_json(&r)?;
         warnings.extend(w);
         let nx = r.detector.nx as usize;
         let ny = r.detector.ny as usize;
-        let mut irr = Vec::new();
-        let mut err = Vec::new();
-        let mut names = Vec::new();
-        for m in &r.maps {
+        let c = maps.len();
+        let mut irr = Vec::with_capacity(c * nx * ny);
+        let mut err = Vec::with_capacity(c * nx * ny);
+        let mut names = Vec::with_capacity(c);
+        for m in &maps {
             irr.extend_from_slice(&m.irradiance);
             err.extend_from_slice(&m.irradiance_std_error);
             names.push(serde_json::to_value(m.class)?);
         }
-        let c = r.maps.len();
         if let Some(o) = v.as_object_mut() {
             for k in ["maps", "total_irradiance", "total_irradiance_std_error"] {
                 o.remove(k);
@@ -392,15 +400,11 @@ impl Analysis for StrayLight {
                 vec![c, ny, nx],
                 BufferData::F64(err),
             ),
-            Buffer::new(
-                "total_irradiance",
-                vec![ny, nx],
-                BufferData::F64(r.total_irradiance.clone()),
-            ),
+            Buffer::new("total_irradiance", vec![ny, nx], BufferData::F64(total)),
             Buffer::new(
                 "total_irradiance_std_error",
                 vec![ny, nx],
-                BufferData::F64(r.total_irradiance_std_error.clone()),
+                BufferData::F64(total_err),
             ),
         ];
         Ok(output(v, buffers, warnings))

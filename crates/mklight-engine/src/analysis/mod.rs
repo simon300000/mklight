@@ -54,7 +54,11 @@ use mklight_core::{JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo,
 use crate::backend::{Backend, BackendInfo, DeviceHandle};
 use crate::buffer::{Buffer, BufferDesc};
 use crate::error::{EngineError, EngineResult};
+use crate::graph::{AnalysisGraph, ScopedMemo};
 use crate::settings;
+use mklight_core::memo::{KeyHasher, NodeKey};
+use mklight_trace::SequentialTracer;
+use mklight_wave::traced::ConfiguredTracer;
 
 /// Static description of an analysis, for menus and forms.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -213,6 +217,14 @@ pub struct AnalysisInput<'a> {
     attempts: RefCell<Vec<BackendAttempt>>,
     resolved: OnceCell<MkResult<Arc<ResolvedSystem>>>,
     library_hash: OnceCell<String>,
+    /// The engine's analysis graph (`crate::graph`); `None` builds every
+    /// intermediate.
+    graph: Option<Arc<AnalysisGraph>>,
+}
+
+/// Rough bytes of a tracer node (fields × wavelengths of aim data).
+fn tracer_bytes(t: &SequentialTracer) -> usize {
+    4096 + t.fields().len() * (256 + 96 * t.num_wavelengths())
 }
 
 impl<'a> AnalysisInput<'a> {
@@ -248,7 +260,120 @@ impl<'a> AnalysisInput<'a> {
             attempts: RefCell::new(Vec::new()),
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
+            graph: None,
         }
+    }
+
+    /// Share intermediates through the engine's analysis graph.
+    pub fn with_graph(mut self, graph: Option<Arc<AnalysisGraph>>) -> Self {
+        self.graph = graph;
+        self
+    }
+
+    pub(crate) fn graph(&self) -> Option<&Arc<AnalysisGraph>> {
+        self.graph.as_ref()
+    }
+
+    /// Key of the snapshot resolved with the library (material
+    /// resolution): the root of every node of this input.
+    fn content_key(&self, domain: &str) -> KeyHasher {
+        let mut h = KeyHasher::new(domain);
+        h.bytes(&self.snapshot.hash().0).str(self.library_hash());
+        h
+    }
+
+    /// The reference tracer of the resolved snapshot (first order and
+    /// prepared system fields), shared through the graph.
+    pub(crate) fn tracer(&self, ctx: &JobContext) -> EngineResult<Arc<SequentialTracer>> {
+        let build = || SequentialTracer::new(self.resolved()?);
+        let Some(g) = &self.graph else {
+            return Ok(Arc::new(build()?));
+        };
+        let key = self.content_key("mklight-engine/tracer/1").finish();
+        Ok(g.node("tracer", key, ctx, tracer_bytes, build)?)
+    }
+
+    /// [`Self::tracer`] with the default axis fields of a geometric field
+    /// selection (`mklight_analysis::util::default_fields`).
+    pub(crate) fn field_tracer(
+        &self,
+        fields: &Value,
+        ctx: &JobContext,
+    ) -> EngineResult<Arc<SequentialTracer>> {
+        let tracer = self.tracer(ctx)?;
+        let selection: mklight_analysis::util::FieldSelection = geometric::parse(fields)?;
+        // `None`: the selection keeps the system fields (the base tracer).
+        let build = || {
+            Ok::<_, mklight_core::MkError>(
+                match mklight_analysis::util::default_fields(&tracer, &selection)? {
+                    std::borrow::Cow::Borrowed(_) => None,
+                    std::borrow::Cow::Owned(t) => Some(Arc::new(t)),
+                },
+            )
+        };
+        let extended = match &self.graph {
+            None => Arc::new(build()?),
+            Some(g) => {
+                let key = self
+                    .content_key("mklight-engine/field_tracer/1")
+                    .json(fields)
+                    .finish();
+                g.node(
+                    "field_tracer",
+                    key,
+                    ctx,
+                    |t: &Option<Arc<SequentialTracer>>| t.as_deref().map_or(64, tracer_bytes),
+                    build,
+                )?
+            }
+        };
+        Ok(match &*extended {
+            None => tracer,
+            Some(t) => t.clone(),
+        })
+    }
+
+    /// Configuration `k` with its solves applied and its reference tracer
+    /// (`mklight_wave::traced::configured_tracer_job`), shared through the
+    /// graph.
+    pub(crate) fn configured(
+        &self,
+        k: usize,
+        ctx: &JobContext,
+    ) -> EngineResult<Arc<ConfiguredTracer>> {
+        let build = || {
+            mklight_wave::traced::configured_tracer_job(
+                self.snapshot.system(),
+                self.library.clone(),
+                k,
+                ctx,
+            )
+        };
+        let Some(g) = &self.graph else {
+            return Ok(Arc::new(build()?));
+        };
+        let key = self
+            .content_key("mklight-engine/configured/1")
+            .usize(k)
+            .json(&mklight_trace::SolveSettings::default())
+            .finish();
+        Ok(g.node(
+            "configured",
+            key,
+            ctx,
+            |c: &ConfiguredTracer| tracer_bytes(&c.tracer),
+            build,
+        )?)
+    }
+
+    /// A memo for solver-side nodes (`mklight_wave::shared`), scoped by the
+    /// material library the solver cannot see.
+    pub(crate) fn memo(&self) -> Option<ScopedMemo> {
+        let g = self.graph.as_ref()?;
+        let scope: NodeKey = KeyHasher::new("mklight-engine/library/1")
+            .str(self.library_hash())
+            .finish();
+        Some(g.scoped(scope))
     }
 
     pub fn with_stop_token(mut self, stop: CancelToken) -> Self {
@@ -357,6 +482,13 @@ pub trait Analysis: Send + Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+    /// The result is a deterministic function of the snapshot, the
+    /// material library, the normalised settings and the backend selection
+    /// (no files, clocks or job-level stops), so the engine may answer an
+    /// identical request from its analysis graph (`crate::graph`). Opt-in.
+    fn memoizable(&self) -> bool {
+        false
+    }
     /// `Err(reason)` when the analysis cannot run in this build.
     fn availability(&self) -> Result<(), String> {
         Ok(())
@@ -413,6 +545,12 @@ pub fn prepare(analysis: &dyn Analysis, settings: &Value) -> EngineResult<Value>
 
 /// Run `analysis` and stamp the result. `extra_warnings` (for example a
 /// backend fallback notice) are added to the `RunInfo`.
+///
+/// With an analysis graph, a [`Analysis::memoizable`] request identical to
+/// an earlier one (same snapshot content, library, normalised settings and
+/// backend selection) returns the stored result, restamped with this
+/// call's start time and duration; identical concurrent requests run once.
+/// Only CPU-reference results without failed backend attempts are stored.
 pub fn run_analysis(
     analysis: &dyn Analysis,
     input: &AnalysisInput<'_>,
@@ -421,6 +559,84 @@ pub fn run_analysis(
     ctx: &JobContext,
 ) -> EngineResult<AnalysisResult> {
     let settings = prepare(analysis, settings)?;
+    ctx.check()?;
+    let Some(graph) = input.graph().filter(|_| analysis.memoizable()) else {
+        return run_prepared(analysis, input, &settings, extra_warnings, ctx);
+    };
+    let key = KeyHasher::new("mklight-engine/result/1")
+        .str(mklight_core::ENGINE_VERSION)
+        .bytes(&input.snapshot.hash().0)
+        .str(input.library_hash())
+        .str(analysis.name())
+        .u64(analysis.result_version() as u64)
+        .json(&settings)
+        .str(&input.requested_backend)
+        .str(&input.backend.id)
+        .json(&input.backend.precision)
+        .json(&input.selection_note)
+        .json(&*input.cost_decision.borrow())
+        .json(&extra_warnings)
+        .finish();
+    let timer = RunTimer::start();
+    let started = std::time::Instant::now();
+    let mut built = false;
+    let r = graph.single("result", key, ctx, || {
+        built = true;
+        let r = run_prepared(analysis, input, &settings, extra_warnings, ctx)?;
+        let storable =
+            r.backend.used == Backend::CpuReference.id() && r.run_info.failed_attempts.is_empty();
+        let bytes = if storable {
+            result_bytes(&r)
+        } else {
+            crate::graph::UNSTORED
+        };
+        Ok::<_, EngineError>((r, bytes))
+    })?;
+    let mut r = Arc::try_unwrap(r).unwrap_or_else(|r| (*r).clone());
+    if !built {
+        // This call's start time (`RunTimer` keeps it private).
+        let fresh = timer.finish(
+            &input.snapshot,
+            "",
+            &Value::Null,
+            "",
+            r.run_info.precision,
+            None,
+            vec![],
+        );
+        r.run_info.started_unix_ms = fresh.started_unix_ms;
+        r.run_info.duration_ms = started.elapsed().as_secs_f64() * 1e3;
+        ctx.report(1.0, "");
+    }
+    Ok(r)
+}
+
+/// Bytes held by a stored result (buffers plus an estimate of the JSON).
+fn result_bytes(r: &AnalysisResult) -> usize {
+    fn json(v: &Value) -> usize {
+        32 + match v {
+            Value::String(s) => s.len(),
+            Value::Array(a) => a.iter().map(json).sum(),
+            Value::Object(o) => o.iter().map(|(k, v)| k.len() + json(v)).sum(),
+            _ => 0,
+        }
+    }
+    let buffers: usize = r
+        .buffers
+        .iter()
+        .map(|b| b.data.len() * b.data.dtype().size_bytes())
+        .sum();
+    1024 + buffers + json(&r.json)
+}
+
+fn run_prepared(
+    analysis: &dyn Analysis,
+    input: &AnalysisInput<'_>,
+    settings: &Value,
+    extra_warnings: Vec<String>,
+    ctx: &JobContext,
+) -> EngineResult<AnalysisResult> {
+    let settings = settings.clone();
     let timer = RunTimer::start();
     ctx.check()?;
     // A run-local spectrum replaces the design's wavelengths; the solver

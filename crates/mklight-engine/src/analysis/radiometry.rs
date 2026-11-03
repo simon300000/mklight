@@ -14,11 +14,11 @@ use std::sync::Arc;
 
 use mklight_core::JobContext;
 use mklight_trace::{
-    FieldPoint, PolarizationMapSettings, PolarizationState, SequentialTracer, TransmissionSettings,
+    FieldPoint, PolarizationMapSettings, PolarizationState, TransmissionSettings,
     polarization_pupil_map, system_transmission,
 };
 
-use super::geometric::{crate_json, output, parse};
+use super::geometric::{crate_json, output, parse, plain};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -44,6 +44,9 @@ pub struct SystemTransmission;
 struct TransmissionDefaults(TransmissionSettings);
 
 impl Analysis for SystemTransmission {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "system_transmission"
     }
@@ -120,7 +123,7 @@ impl Analysis for SystemTransmission {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let tracer = SequentialTracer::new(input.resolved()?)?;
+        let tracer = input.tracer(ctx)?;
         let s = parse(settings)?;
         let r = super::gpu::native_job!(
             input,
@@ -166,6 +169,9 @@ impl Default for PolarizationMapOptions {
 pub struct PolarizationPupilMap;
 
 impl Analysis for PolarizationPupilMap {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "polarization_pupil_map"
     }
@@ -304,7 +310,7 @@ impl Analysis for PolarizationPupilMap {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let o: PolarizationMapOptions = parse(settings)?;
-        let tracer = SequentialTracer::new(input.resolved()?)?;
+        let tracer = input.tracer(ctx)?;
         let sys = tracer.system();
         let field = match o.point {
             Some([hx, hy]) => FieldPoint::normalized(hx, hy),
@@ -331,30 +337,30 @@ impl Analysis for PolarizationPupilMap {
             |b| mklight_gpu::radiometry::polarization_pupil_map(b, &tracer, &s, ctx),
             polarization_pupil_map(&tracer, &s, ctx)
         )?;
+        // Samples go straight into the typed buffers; only the summary is
+        // serialised.
+        let mut r = r;
+        let samples = std::mem::take(&mut r.samples);
         let (mut v, w) = crate_json(&r)?;
-        let samples = v
-            .as_object_mut()
-            .and_then(|m| m.remove("samples"))
-            .unwrap_or(json!([]));
-        let samples = samples.as_array().cloned().unwrap_or_default();
+        v.as_object_mut().map(|m| m.remove("samples"));
         let n = samples.len();
-        let f = |x: &Value| x.as_f64().unwrap_or(f64::NAN);
         let mut pupil = Vec::with_capacity(2 * n);
         let mut reached = Vec::with_capacity(n);
         let mut jones = Vec::with_capacity(8 * n);
+        let column = || Vec::with_capacity(n);
         let (mut inten, mut dia, mut ret, mut retj, mut tmax, mut tmin) =
-            (vec![], vec![], vec![], vec![], vec![], vec![]);
-        let (mut dax, mut fax, mut defined) = (vec![], vec![], vec![]);
-        for (k, smp) in samples.iter().enumerate() {
-            let p = &r.samples[k];
+            (column(), column(), column(), column(), column(), column());
+        let (mut dax, mut fax, mut defined) = (
+            Vec::with_capacity(3 * n),
+            Vec::with_capacity(3 * n),
+            Vec::with_capacity(n),
+        );
+        for p in &samples {
             pupil.extend_from_slice(&p.pupil);
             reached.push(p.status.is_ok() as u8);
-            for row in 0..2 {
-                for col in 0..2 {
-                    let c = &smp["jones"][row][col];
-                    jones.push(f(&c[0]));
-                    jones.push(f(&c[1]));
-                }
+            // The Jones matrix serialises as plain [re, im] numbers.
+            for c in p.jones.m.iter().flatten() {
+                jones.extend([plain(c.re), plain(c.im)]);
             }
             let pr = &p.properties;
             inten.push(p.intensity);

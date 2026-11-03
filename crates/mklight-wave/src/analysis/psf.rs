@@ -10,6 +10,7 @@
 
 use mklight_analysis::util::{FieldSelection, WavelengthSelection};
 use mklight_core::job::RunTimer;
+use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
@@ -316,6 +317,17 @@ pub fn psf_analysis_job(
     settings: &PsfAnalysisSettings,
     ctx: &JobContext,
 ) -> MkResult<PsfResult> {
+    psf_analysis_shared(tracer, settings, None, ctx)
+}
+
+/// [`psf_analysis_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn psf_analysis_shared(
+    tracer: &SequentialTracer,
+    settings: &PsfAnalysisSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<PsfResult> {
     let timer = RunTimer::start();
     if settings.grid_size > 4096 {
         return Err(MkError::InvalidParam(format!(
@@ -328,8 +340,14 @@ pub fn psf_analysis_job(
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let (per, skipped) =
-        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.4))?;
+    let (per, skipped) = system_field_pupils(
+        tracer,
+        &idx,
+        &wls,
+        &settings.pupil,
+        memo,
+        &ctx.subrange(0.0, 0.4),
+    )?;
     let mut warnings = skipped;
     let mut psfs = Vec::new();
     let jobs: usize = per
@@ -351,6 +369,7 @@ pub fn psf_analysis_job(
         warnings.extend(fp.ensure_window(
             grid as f64 * spacing,
             &settings.pupil,
+            memo,
             &ctx.subrange(0.4, 0.4),
         )?);
         // (wavelength, weighted pupils) of each PSF of this field.

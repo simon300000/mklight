@@ -7,13 +7,15 @@ use crate::buffer::{Buffer, BufferData};
 use crate::error::EngineResult;
 use mklight_analysis::{field_maps as fm, glass_map as gm};
 use mklight_core::JobContext;
-use mklight_trace::SequentialTracer;
 use mklight_wave::image_simulation as im;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 struct FieldMap(fm::FieldAnalysis);
 impl Analysis for FieldMap {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         self.0.name()
     }
@@ -101,13 +103,18 @@ impl Analysis for FieldMap {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let t = SequentialTracer::new(input.resolved()?)?;
+        let t = input.tracer(ctx)?;
         let s = parse(settings)?;
         let r = super::gpu::native_job!(
             input,
             |b| mklight_analysis::gpu::field_map_job(b, &t, self.0, &s, ctx),
             fm::field_map_job(&t, self.0, &s, ctx)
         )?;
+        // The maps move into buffers; only the metadata is serialised.
+        let mut r = r;
+        let field_coordinates = std::mem::take(&mut r.field_coordinates);
+        let image_mm = std::mem::take(&mut r.image_mm);
+        let values = std::mem::take(&mut r.values);
         let (mut v, w) = crate_json(&r)?;
         for key in ["field_coordinates", "image_mm", "values"] {
             v[key] = json!(key);
@@ -120,14 +127,14 @@ impl Analysis for FieldMap {
                 Buffer::new(
                     "field_coordinates",
                     vec![ny, nx, 2],
-                    BufferData::F64(r.field_coordinates.into_iter().flatten().collect()),
+                    BufferData::F64(field_coordinates.into_flattened()),
                 ),
                 Buffer::new(
                     "image_mm",
                     vec![ny, nx, 2],
-                    BufferData::F64(r.image_mm.into_iter().flatten().collect()),
+                    BufferData::F64(image_mm.into_flattened()),
                 ),
-                Buffer::new("values", vec![ny, nx, nc], BufferData::F64(r.values)),
+                Buffer::new("values", vec![ny, nx, nc], BufferData::F64(values)),
             ],
             w,
         ))
@@ -138,6 +145,9 @@ impl Analysis for FieldMap {
 }
 struct GlassMap;
 impl Analysis for GlassMap {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "glass_map"
     }
@@ -376,7 +386,7 @@ impl Analysis for ImageSimulation {
             .as_ref()
             .filter(|(k, _)| k == &key)
             .map(|(_, v)| v.clone());
-        let t = SequentialTracer::new(input.resolved()?)?;
+        let t = input.tracer(ctx)?;
         let mut r = if let Some(d) = super::gpu::device(input) {
             let cached = self
                 .gpu_cache

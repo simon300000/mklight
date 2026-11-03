@@ -866,16 +866,22 @@ impl LayoutScene {
     /// Flatten into [`LayoutBuffers`].
     pub fn to_buffers(&self) -> LayoutBuffers {
         let origin = self.bounds.center();
+        let lines = self.polylines.len() + self.elements.len();
+        let points = (self.polylines.iter().map(|p| p.points.len()))
+            .chain(self.elements.iter().map(|e| e.outline.len()))
+            .sum::<usize>();
+        let mut offsets = Vec::with_capacity(lines + 1);
+        offsets.push(0);
         let mut b = LayoutBuffers {
             origin,
-            vertices: Vec::new(),
-            vertices_f64: Vec::new(),
-            offsets: vec![0],
-            kinds: Vec::new(),
-            surfaces: Vec::new(),
-            fields: Vec::new(),
-            wavelengths: Vec::new(),
-            flags: Vec::new(),
+            vertices: Vec::with_capacity(3 * points),
+            vertices_f64: Vec::with_capacity(3 * points),
+            offsets,
+            kinds: Vec::with_capacity(lines),
+            surfaces: Vec::with_capacity(lines),
+            fields: Vec::with_capacity(lines),
+            wavelengths: Vec::with_capacity(lines),
+            flags: Vec::with_capacity(lines),
         };
         let idx = |v: Option<usize>| v.map_or(-1, |x| x as i32);
         let mut push = |pts: &[[f64; 3]], kind: u8, s: i32, f: i32, w: i32, flags: u8| {

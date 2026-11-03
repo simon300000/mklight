@@ -14,6 +14,7 @@ use mklight_core::OpticalSystem;
 use crate::analysis::{Analysis, AnalysisInfo, AnalysisRegistry, AnalysisResult};
 use crate::backend::{Backend, BackendInfo, BackendProvider, BackendRegistry, SelectedBackend};
 use crate::error::EngineResult;
+use crate::graph::{AnalysisGraph, GraphStats};
 use crate::project::Project;
 use crate::scheduler::{
     EventCallback, JobId, JobSpec, JobState, JobStatus, Scheduler, SchedulerConfig,
@@ -44,6 +45,10 @@ pub struct EngineConfig {
     pub max_retained_jobs: usize,
     /// Resolved systems cached per session (LRU by snapshot hash).
     pub resolved_cache_capacity: usize,
+    /// Byte budget of the analysis graph (`crate::graph`): shared
+    /// tracers, traced pupils and results. 0 disables it, so every
+    /// analysis builds all of its intermediates.
+    pub analysis_graph_bytes: usize,
     /// Progress polling interval for the event callback.
     pub progress_interval_ms: u64,
     /// Stamped into project metadata on save.
@@ -59,6 +64,7 @@ impl Default for EngineConfig {
             worker_threads: 0,
             max_retained_jobs: s.max_retained,
             resolved_cache_capacity: 8,
+            analysis_graph_bytes: 256 << 20,
             progress_interval_ms: s.progress_interval.as_millis() as u64,
             app_name: String::new(),
             app_version: String::new(),
@@ -73,6 +79,7 @@ pub(crate) struct EngineInner {
     pub(crate) backends: RwLock<BackendRegistry>,
     pub(crate) default_backend: RwLock<Backend>,
     pub(crate) scheduler: Scheduler<AnalysisResult>,
+    pub(crate) graph: Option<Arc<AnalysisGraph>>,
     next_session: AtomicU64,
 }
 
@@ -101,6 +108,8 @@ impl Engine {
                 backends: RwLock::new(BackendRegistry::with_defaults()),
                 default_backend: RwLock::new(config.default_backend.clone()),
                 scheduler: Scheduler::new(sc),
+                graph: (config.analysis_graph_bytes > 0)
+                    .then(|| Arc::new(AnalysisGraph::new(config.analysis_graph_bytes))),
                 next_session: AtomicU64::new(1),
                 config,
             }),
@@ -185,6 +194,25 @@ impl Engine {
         session.save(None)?;
         out.migrated = true;
         Ok(out)
+    }
+
+    // --- analysis graph
+
+    /// The shared analysis graph (`None` when disabled).
+    pub fn analysis_graph(&self) -> Option<&Arc<AnalysisGraph>> {
+        self.inner.graph.as_ref()
+    }
+
+    /// Activity and occupancy of the analysis graph per node kind.
+    pub fn analysis_graph_stats(&self) -> Option<GraphStats> {
+        self.inner.graph.as_ref().map(|g| g.stats())
+    }
+
+    /// Drop every stored graph node (statistics are kept).
+    pub fn clear_analysis_graph(&self) {
+        if let Some(g) = &self.inner.graph {
+            g.clear();
+        }
     }
 
     // --- analyses
