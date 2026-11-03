@@ -1664,10 +1664,13 @@ fn refine_gpu(
                 .concat();
             ctx.check()?;
             // A memory tile of probe records (every path, field and
-            // wavelength together), not a new plan per path.
-            for block in new.chunks(crate::gpu::PROBE_TILE) {
-                ctx.check()?;
-                let values = gpu.lattice(
+            // wavelength together), not a new plan per path. The next tile
+            // is submitted before this one's host completion, so the device
+            // traces while the host classifies and completes references.
+            let blocks = new.chunks(crate::gpu::PROBE_TILE).collect::<Vec<_>>();
+            let submit = |gpu: &crate::gpu::GhostTransport,
+                          block: &[(usize, Probe, usize, [f64; 2])]| {
+                gpu.submit_lattice(
                     block.len(),
                     |i| {
                         let (pi, p, _, xy) = block[i];
@@ -1682,7 +1685,14 @@ fn refine_gpu(
                     },
                     true,
                     &ctx.subrange(stage as f64 / 5., stage as f64 / 5.),
-                )?;
+                )
+            };
+            let mut pending = blocks.first().map(|b| submit(gpu, b)).transpose()?;
+            for (bi, &block) in blocks.iter().enumerate() {
+                ctx.check()?;
+                let current = pending.take().expect("submitted in order");
+                pending = blocks.get(bi + 1).map(|b| submit(gpu, b)).transpose()?;
+                let values = gpu.finish_lattice(current)?;
                 // Numerical failures, flagged conditioning and pixel-edge hits
                 // are completed with the f64 reference, in parallel.
                 let outcomes = block

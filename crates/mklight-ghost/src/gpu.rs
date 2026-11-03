@@ -47,6 +47,11 @@ impl Drop for GhostTransport<'_> {
         let _ = self.backend.release_systems(self.systems);
     }
 }
+/// A submitted lattice plan of `n` probes.
+pub(crate) struct PendingLattice {
+    plan: mklight_gpu::pending::Pending<PlanResult>,
+    n: usize,
+}
 pub struct ProbeValues(ReadView);
 impl std::ops::Deref for ProbeValues {
     type Target = [Value];
@@ -350,6 +355,18 @@ impl<'a> GhostTransport<'a> {
         powers: bool,
         ctx: &JobContext,
     ) -> MkResult<ProbeValues> {
+        let pending = self.submit_lattice(n, sample, powers, ctx)?;
+        self.finish_lattice(pending)
+    }
+    /// Submit one lattice plan; the caller may prepare or finish other work
+    /// before [`Self::finish_lattice`]. Plans finish in submission order.
+    pub(crate) fn submit_lattice(
+        &self,
+        n: usize,
+        sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        powers: bool,
+        ctx: &JobContext,
+    ) -> MkResult<PendingLattice> {
         let (chiefs, fields) = self.chiefs.as_ref().unwrap();
         let input = fill(self.backend, n, sample)?;
         let mut p = self.plan();
@@ -365,10 +382,16 @@ impl<'a> GhostTransport<'a> {
         }));
         let output = self.append(&mut p, probes, powers)?;
         p.outputs = vec![output];
-        let r = self.backend.submit_plan(p, ctx)?.wait()?;
+        Ok(PendingLattice {
+            plan: self.backend.submit_plan(p, ctx)?,
+            n,
+        })
+    }
+    pub(crate) fn finish_lattice(&mut self, pending: PendingLattice) -> MkResult<ProbeValues> {
+        let r = pending.plan.wait()?;
         let v = self.backend.read_view(r.outputs[0].view())?;
         self.resident_probes.push(r.outputs[0].clone());
-        self.distinct_probes += n;
+        self.distinct_probes += pending.n;
         self.stats.push(r.stats);
         self.run = Some(r.run_info);
         Ok(ProbeValues(v))
