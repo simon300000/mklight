@@ -90,7 +90,7 @@ use std::sync::Arc;
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, RunInfo, Snapshot, Vec3};
 use mklight_trace::radiometry::RayThroughput;
-use mklight_trace::trace::{Ray, TraceResult, trace_ray, trace_rays};
+use mklight_trace::trace::{Ray, TraceResult, trace_ray, trace_rays, trace_rays_recorded};
 use mklight_trace::{
     ObjectSource, OpdReference, PreparedField, RayRequest, SequentialTracer, SolveSettings,
     apply_solves_configuration,
@@ -435,8 +435,8 @@ impl Tracing<'_> {
     }
 
     /// [`Self::ray`] of every point, bitwise identical: the aims run
-    /// together ([`SequentialTracer::generate_many`]) and, without records,
-    /// the image traces as packets ([`trace_rays`]). With `throughput`
+    /// together ([`SequentialTracer::generate_many`]) and the image traces
+    /// as packets ([`trace_rays`], [`trace_rays_recorded`]). With `throughput`
     /// false the throughput is left unset (NaN) even when records are
     /// needed: rim probes only need survival.
     fn rays(&self, ps: &[[f64; 2]], throughput: bool) -> Vec<Option<NodeRay>> {
@@ -453,13 +453,11 @@ impl Tracing<'_> {
         let opts = self.tracer.options();
         let records = self.records && throughput;
         let traced: Vec<(TraceResult, f64)> = if records {
-            let mut rec = Vec::with_capacity(sys.surfaces.len());
-            starts
-                .iter()
-                .map(|start| {
-                    let t = trace_ray(sys, start, self.wl, &opts, Some(&mut rec));
-                    (t, RayThroughput::unpolarized(sys, self.wl, &t, &rec).total)
-                })
+            let mut rec = vec![Vec::with_capacity(sys.surfaces.len()); starts.len()];
+            trace_rays_recorded(sys, &starts, &[self.wl], &opts, &mut rec)
+                .into_iter()
+                .zip(&rec)
+                .map(|(t, rec)| (t, RayThroughput::unpolarized(sys, self.wl, &t, rec).total))
                 .collect()
         } else {
             let tp = if self.records { f64::NAN } else { 1.0 };

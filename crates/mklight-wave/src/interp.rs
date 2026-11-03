@@ -230,20 +230,28 @@ pub fn grid_from_structured(
             let missing: Vec<bool> = owner.iter().map(|&id| id == NONE).collect();
             let mut from = owner;
             let mut src_pt = vec![NONE; ns * ns];
+            // A missing sub-point in each 3 × 3 neighbourhood, by a
+            // separable dilation (rows, then columns).
+            let row_near: Vec<bool> = (0..ns * ns)
+                .map(|k| {
+                    let a = k % ns;
+                    missing[k] || (a > 0 && missing[k - 1]) || (a + 1 < ns && missing[k + 1])
+                })
+                .collect();
+            let near = |k: usize| {
+                row_near[k]
+                    || (k >= ns && row_near[k - ns])
+                    || (k + ns < ns * ns && row_near[k + ns])
+            };
             let mut seeds = Vec::new();
             let mut queue = VecDeque::new();
             for k in 0..ns * ns {
-                if !missing[k] {
-                    // Interior seeds cannot reach an unowned point before a
-                    // boundary seed. Preserve row order for identical ties.
-                    let (a, b) = (k % ns, k / ns);
-                    if (b.saturating_sub(1)..=(b + 1).min(ns - 1)).any(|y| {
-                        (a.saturating_sub(1)..=(a + 1).min(ns - 1)).any(|x| missing[y * ns + x])
-                    }) {
-                        src_pt[k] = seeds.len() as u32;
-                        seeds.push(k);
-                        queue.push_back(k);
-                    }
+                // Interior seeds cannot reach an unowned point before a
+                // boundary seed. Preserve row order for identical ties.
+                if !missing[k] && near(k) {
+                    src_pt[k] = seeds.len() as u32;
+                    seeds.push(k);
+                    queue.push_back(k);
                 }
             }
             let mut remaining = inside

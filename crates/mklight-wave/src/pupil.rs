@@ -850,14 +850,35 @@ impl PupilFunction {
 
     /// A copy with `extra(u, v)` waves added to the OPD of covered samples.
     pub fn with_added_opd(&self, extra: impl Fn(f64, f64) -> f64) -> Self {
-        let mut p = self.clone();
+        PupilFunction {
+            n: self.n,
+            wavelength_um: self.wavelength_um,
+            geometry: self.geometry,
+            image_offset_mm: self.image_offset_mm,
+            amplitude: self.amplitude.clone(),
+            coverage: self.coverage.clone(),
+            opd_waves: self.added_opd(extra),
+        }
+    }
+
+    /// The OPD of [`Self::with_added_opd`] alone.
+    fn added_opd(&self, extra: impl Fn(f64, f64) -> f64) -> Vec<f64> {
+        let mut opd = self.opd_waves.clone();
         let n = self.n;
         for k in 0..n * n {
-            if p.coverage[k] > 0.0 {
-                p.opd_waves[k] += extra(self.coord(k % n), self.coord(k / n));
+            if self.coverage[k] > 0.0 {
+                opd[k] += extra(self.coord(k % n), self.coord(k / n));
             }
         }
-        p
+        opd
+    }
+
+    /// The OPD of [`Self::with_focus_shift`] and that pupil's
+    /// [`Self::sampling_warnings`], without copying amplitude and coverage.
+    pub(crate) fn focus_shifted_opd(&self, dz_mm: f64) -> (Vec<f64>, Vec<WaveWarning>) {
+        let opd = self.added_opd(|u, v| self.focus_shift_opd(dz_mm, u, v));
+        let warnings = self.sampling_warnings_with(&opd);
+        (opd, warnings)
     }
 
     /// A copy with the same aperture and amplitude and zero OPD.
@@ -906,6 +927,11 @@ impl PupilFunction {
 
     /// Largest OPD change (waves) between covered neighbouring samples.
     pub fn max_phase_step(&self) -> f64 {
+        self.max_phase_step_with(&self.opd_waves)
+    }
+
+    /// [`Self::max_phase_step`] of this pupil with OPD `opd`.
+    fn max_phase_step_with(&self, opd: &[f64]) -> f64 {
         let n = self.n;
         let mut m: f64 = 0.0;
         for j in 0..n {
@@ -915,10 +941,10 @@ impl PupilFunction {
                     continue;
                 }
                 if i + 1 < n && self.coverage[k + 1] > 0.0 {
-                    m = m.max((self.opd_waves[k + 1] - self.opd_waves[k]).abs());
+                    m = m.max((opd[k + 1] - opd[k]).abs());
                 }
                 if j + 1 < n && self.coverage[k + n] > 0.0 {
-                    m = m.max((self.opd_waves[k + n] - self.opd_waves[k]).abs());
+                    m = m.max((opd[k + n] - opd[k]).abs());
                 }
             }
         }
@@ -947,6 +973,11 @@ impl PupilFunction {
 
     /// Pupil-side sampling diagnostics.
     pub fn sampling_warnings(&self) -> Vec<WaveWarning> {
+        self.sampling_warnings_with(&self.opd_waves)
+    }
+
+    /// [`Self::sampling_warnings`] of this pupil with OPD `opd`.
+    fn sampling_warnings_with(&self, opd: &[f64]) -> Vec<WaveWarning> {
         let mut w = Vec::new();
         let across = self.samples_across();
         if across < MIN_PUPIL_SAMPLES {
@@ -955,7 +986,7 @@ impl PupilFunction {
                 recommended: MIN_PUPIL_SAMPLES,
             });
         }
-        let step = self.max_phase_step();
+        let step = self.max_phase_step_with(opd);
         if step > 0.5 {
             w.push(WaveWarning::PupilUndersampled {
                 max_step_waves: step,

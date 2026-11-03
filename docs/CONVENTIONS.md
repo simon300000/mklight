@@ -159,6 +159,19 @@ designs they cover):
 If a backend can't meet the budget for a design, it must say so and fall back
 to the CPU reference. It must never return silently degraded numbers.
 
+**CPU packets.** Batches on the CPU (`trace_grid`, `opd_grid`, wave pupils,
+rim bisection, merit groups, semi-diameters) aim and trace rays in packets
+of 8 (`trace_rays`, `SequentialTracer::generate_many` / `trace_many`): the
+direct aims of many rays advance together through a resumable copy of the
+Newton–Broyden solver, and planes and conics with axial transfers run
+through a structure-of-arrays lane kernel that repeats the scalar
+operations (same `fma`, division and square-root order) with selects in
+place of branches. Any lane that would leave the regular path (miss,
+tangent root, clipping, TIR, non-finite values, other shapes) is redone by
+the scalar per-surface step. The packet results are therefore **bitwise
+identical** to `trace_ray` / `generate` / `trace` one ray at a time, which
+stay the independent oracle (`crates/mklight-trace/tests/packets.rs`).
+
 ## 8. Paraxial slopes in solves
 
 Ray-angle solves (`marginal_ray_angle`, `chief_ray_angle`, `docs/SOLVES.md`)

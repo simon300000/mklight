@@ -11,7 +11,7 @@ use mklight_core::model::ApertureShape;
 use mklight_core::{OpticalSystem, RayAiming, samples};
 use mklight_trace::{
     Grid, PupilSampling, RayRequest, SequentialTracer, TraceOptions, opd_grid, trace_grid,
-    trace_ray, trace_rays,
+    trace_ray, trace_ray_recorded, trace_rays, trace_rays_recorded,
 };
 
 /// Debug output is exact for f64 (shortest round-trip form), so equal
@@ -98,6 +98,23 @@ fn check(name: &str, t: &SequentialTracer) {
             &scalar,
             &trace_rays(t.system(), &starts, &wls, o),
             &format!("{name}: trace_rays {o:?}"),
+        );
+        // With per-surface records (the vectors start dirty on purpose).
+        let recorded: Vec<_> = starts
+            .iter()
+            .zip(&wls)
+            .map(|(s, &w)| trace_ray_recorded(t.system(), s, w, o))
+            .collect();
+        let mut records = vec![vec![]; starts.len()];
+        records
+            .iter_mut()
+            .for_each(|r| r.extend(recorded[0].1.iter().take(2)));
+        let traced = trace_rays_recorded(t.system(), &starts, &wls, o, &mut records);
+        let packed: Vec<_> = traced.into_iter().zip(records).collect();
+        same(
+            &recorded,
+            &packed,
+            &format!("{name}: trace_rays_recorded {o:?}"),
         );
     }
     // Batches: chunked packet traces against the per-ray results.

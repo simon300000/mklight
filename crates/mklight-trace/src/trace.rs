@@ -540,6 +540,7 @@ fn lane_surface(sys: &ResolvedSystem, i: usize) -> Option<LaneSurface> {
 /// branches, so it vectorises. `regular[l]` is false where [`step`] would
 /// take another branch; those lanes must be redone with [`step`] from `st`.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn lane_step(
     ls: &LaneSurface,
     n1: &Lane,
@@ -548,6 +549,7 @@ fn lane_step(
     st: &Lanes,
     out: &mut Lanes,
     regular: &mut [bool; PACKET],
+    incidence: &mut ([Lane; 3], Lane),
 ) {
     const N: usize = PACKET;
     let [px, py, mut pz] = st.p;
@@ -650,6 +652,14 @@ fn lane_step(
         ab[l] = if alpha[l] != 0.0 { absorbed } else { ab[l] };
     }
     let (mut ox, mut oy, mut oz) = (dx, dy, dz);
+    // `cos_incidence` of the record: |d·n| clamped, replaced by refraction's.
+    let mut cosines = [0.0; N];
+    for l in 0..N {
+        cosines[l] = dx[l]
+            .mul_add(nx[l], dy[l].mul_add(ny[l], dz[l] * nz[l]))
+            .abs()
+            .min(1.0);
+    }
     if ls.refract {
         for l in 0..N {
             let cos = dx[l].mul_add(nx[l], dy[l].mul_add(ny[l], dz[l] * nz[l]));
@@ -674,9 +684,11 @@ fn lane_step(
             ox[l] = mu.mul_add(dx[l], gamma * mx);
             oy[l] = mu.mul_add(dy[l], gamma * my);
             oz[l] = mu.mul_add(dz[l], gamma * mz);
+            cosines[l] = cos;
             ok[l] &= !(disc < 0.0);
         }
     }
+    *incidence = ([nx, ny, nz], cosines);
     *out = Lanes {
         p: [hx, hy, hz],
         d: [ox, oy, oz],
@@ -701,6 +713,29 @@ pub fn trace_rays(
     wls: &[usize],
     opts: &TraceOptions,
 ) -> Vec<TraceResult> {
+    trace_packets(sys, starts, wls, opts, None)
+}
+
+/// [`trace_rays`] with per-surface records: `records[k]` is cleared and
+/// filled exactly as [`trace_ray`] fills its `record` for ray `k`.
+pub fn trace_rays_recorded(
+    sys: &ResolvedSystem,
+    starts: &[Ray],
+    wls: &[usize],
+    opts: &TraceOptions,
+    records: &mut [Vec<SurfaceRecord>],
+) -> Vec<TraceResult> {
+    assert_eq!(records.len(), starts.len());
+    trace_packets(sys, starts, wls, opts, Some(records))
+}
+
+fn trace_packets(
+    sys: &ResolvedSystem,
+    starts: &[Ray],
+    wls: &[usize],
+    opts: &TraceOptions,
+    mut records: Option<&mut [Vec<SurfaceRecord>]>,
+) -> Vec<TraceResult> {
     assert!(wls.len() == starts.len() || wls.len() == 1);
     let wl_of = |k: usize| if wls.len() == 1 { wls[0] } else { wls[k] };
     let last = last_surface(sys, opts);
@@ -723,6 +758,10 @@ pub fn trace_rays(
         let mut alpha0 = [0.0f64; PACKET];
         let mut live = 0usize;
         for (l, start) in chunk.iter().enumerate() {
+            if let Some(r) = records.as_deref_mut() {
+                r[base + l].clear();
+                r[base + l].push(first_record(start));
+            }
             lanes.set(l, &Walk::new(*start));
             lane_wl[l] = wl_of(base + l);
             alpha0[l] = object_alpha(sys, lane_wl[l]);
@@ -746,17 +785,40 @@ pub fn trace_rays(
                 }
                 let mut next = lanes;
                 let mut regular = [false; PACKET];
-                lane_step(ls, &n1, &n2, &alpha, &lanes, &mut next, &mut regular);
+                let mut incidence = ([[0.0; PACKET]; 3], [0.0; PACKET]);
+                lane_step(
+                    ls,
+                    &n1,
+                    &n2,
+                    &alpha,
+                    &lanes,
+                    &mut next,
+                    &mut regular,
+                    &mut incidence,
+                );
                 for l in 0..n {
                     if done[l].is_some() {
                         continue;
                     }
                     if regular[l] && (!opts.clip || s.passes_aperture(next.p[0][l], next.p[1][l])) {
-                        lanes.set(l, &next.walk(l));
+                        let w = next.walk(l);
+                        if let Some(r) = records.as_deref_mut() {
+                            let ([nx, ny, nz], cos) = &incidence;
+                            r[base + l].push(SurfaceRecord {
+                                point: w.ray.pos,
+                                dir: w.ray.dir,
+                                normal: Vec3::new(nx[l], ny[l], nz[l]),
+                                cos_incidence: cos[l],
+                                opl: w.opl.value(),
+                                transmittance: (-w.absorb).exp(),
+                            });
+                        }
+                        lanes.set(l, &w);
                         continue;
                     }
                     let mut w = lanes.walk(l);
-                    match step(sys, i, lane_wl[l], alpha0[l], opts, &mut w, None) {
+                    let rec = records.as_deref_mut().map(|r| &mut r[base + l]);
+                    match step(sys, i, lane_wl[l], alpha0[l], opts, &mut w, rec) {
                         Ok(()) => lanes.set(l, &w),
                         Err(status) => {
                             done[l] = Some(w.result(status, i));
@@ -768,7 +830,8 @@ pub fn trace_rays(
                 for l in 0..n {
                     if done[l].is_none() {
                         let mut w = lanes.walk(l);
-                        match step(sys, i, lane_wl[l], alpha0[l], opts, &mut w, None) {
+                        let rec = records.as_deref_mut().map(|r| &mut r[base + l]);
+                        match step(sys, i, lane_wl[l], alpha0[l], opts, &mut w, rec) {
                             Ok(()) => lanes.set(l, &w),
                             Err(status) => {
                                 done[l] = Some(w.result(status, i));
