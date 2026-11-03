@@ -118,12 +118,12 @@ pub use solves::{
 };
 pub use surface::{IntersectError, IntersectSettings};
 pub use trace::{
-    FailReason, Ray, SurfaceRecord, TraceOptions, TraceResult, TraceStatus, trace_ray,
-    trace_ray_recorded,
+    FailReason, PACKET, Ray, SurfaceRecord, TraceOptions, TraceResult, TraceStatus, trace_ray,
+    trace_ray_recorded, trace_rays,
 };
 pub use tracer::{
     AimData, AimReport, FieldPoint, GeneratedRay, ObjectSource, PreparedField, PupilGeometry,
-    SequentialTracer, TracerSettings,
+    RayRequest, SequentialTracer, TracerSettings,
 };
 
 pub use mklight_core::ResolvedSystem;
