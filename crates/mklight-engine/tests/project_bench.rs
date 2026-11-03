@@ -321,8 +321,9 @@ fn edit(s: &mut Session, base: &OpticalSystem, serial: usize) {
         surface: surface.id,
     };
     let curvature = surface.shape.curvature();
-    let relative =
-        (if serial % 2 == 0 { 1. } else { -1. }) * (1. + serial as f64 / 1_000_000.) * 1e-6;
+    let relative = (if serial.is_multiple_of(2) { 1. } else { -1. })
+        * (1. + serial as f64 / 1_000_000.)
+        * 1e-6;
     param.set(&mut system, curvature / (1. + relative)).unwrap();
     s.set_system(system).unwrap();
 }
@@ -668,7 +669,9 @@ fn cold(case: &Case, path: &Path, round: usize, mode: &str) {
 #[test]
 #[ignore = "local-project release measurements on a quiet Metal host"]
 fn project_bench() {
-    assert!(!cfg!(debug_assertions), "use --release");
+    if cfg!(debug_assertions) {
+        panic!("use --release");
+    }
     let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
     let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(10);
     let cold_runs = env_usize("MKLIGHT_BENCH_COLD_RUNS", 3).max(3);
@@ -857,7 +860,9 @@ fn project_bench_queued_edit_loop() {
     if !selected("edit_loop_queued") {
         return;
     }
-    assert!(!cfg!(debug_assertions), "use --release");
+    if cfg!(debug_assertions) {
+        panic!("use --release");
+    }
     let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
     let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(10);
     quiet("queued edit loop / start");
