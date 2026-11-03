@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 use crate::numeric::discriminant;
 
 /// Tolerance of the vertex-sheet test `1 − κcz ≥ −tol`.
-const SHEET_TOL: f64 = 1e-12;
+pub(crate) const SHEET_TOL: f64 = 1e-12;
 
 /// Settings of the iterative (asphere) intersection.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

@@ -840,23 +840,27 @@ impl<'a> Candidate<'a> {
         let (nodes, symmetry) = self.group_nodes(f, sampling);
         let reference = self.chiefs[&(f, w)].reference.as_ref().ok();
         let rays = match self.field(f) {
-            Ok(field) => nodes
-                .iter()
-                .map(|n| {
-                    let r = self.tr.trace(field, w, n.px, n.py, &self.opts);
-                    if r.status.is_ok() {
-                        NodeRay {
-                            pos: Some([r.ray.pos.x, r.ray.pos.y]),
-                            opd: reference.and_then(|rf| rf.opd_waves(&r)),
+            Ok(field) => {
+                // Aimed and traced together (bitwise equal to one by one).
+                let requests: Vec<_> = nodes.iter().map(|n| (field, w, [n.px, n.py])).collect();
+                self.tr
+                    .trace_many(&requests, &self.opts)
+                    .into_iter()
+                    .map(|r| {
+                        if r.status.is_ok() {
+                            NodeRay {
+                                pos: Some([r.ray.pos.x, r.ray.pos.y]),
+                                opd: reference.and_then(|rf| rf.opd_waves(&r)),
+                            }
+                        } else {
+                            NodeRay {
+                                pos: None,
+                                opd: None,
+                            }
                         }
-                    } else {
-                        NodeRay {
-                            pos: None,
-                            opd: None,
-                        }
-                    }
-                })
-                .collect(),
+                    })
+                    .collect()
+            }
             Err(_) => vec![NodeRay::FAILED; nodes.len()],
         };
         Self::group_rays(nodes, symmetry, rays)

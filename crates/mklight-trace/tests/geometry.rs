@@ -521,10 +521,12 @@ fn cancel_sizing_once_started(
 #[test]
 fn semi_diameters_cancel_within_a_task() {
     use mklight_core::{FieldSet, MkError};
-    // One (field, wavelength) task of 200 000 rays: only the checks inside
+    // One (field, wavelength) task of 1 000 000 rays: only the checks inside
     // the pupil loop can stop it. Progress is reported every
     // `CANCEL_CHUNK` rays, so the cancel arrives after the first chunk and
-    // the run stops within a few more.
+    // the run stops within a few more. (Sized so that 5 % still leaves
+    // tens of milliseconds for the cancelling thread to be scheduled on a
+    // busy host with the packet tracer.)
     let mut one = samples::cooke_triplet();
     one.fields = FieldSet {
         kind: one.fields.kind,
@@ -532,12 +534,12 @@ fn semi_diameters_cancel_within_a_task() {
     };
     one.wavelengths.wavelengths.truncate(1);
     one.wavelengths.primary = 0;
-    let (r, f) = cancel_sizing_once_started(one, 200_000);
+    let (r, f) = cancel_sizing_once_started(one, 1_000_000);
     assert_eq!(r, Err(MkError::Cancelled));
     assert!(f > 0.0 && f < 0.05, "stopped at {f}");
     // The Double Gauss's 9 tasks run in parallel; a cancel during the run
     // stops all of them, not only the tasks that have not started.
-    let (r, f) = cancel_sizing_once_started(samples::double_gauss(), 20_000);
+    let (r, f) = cancel_sizing_once_started(samples::double_gauss(), 100_000);
     assert_eq!(r, Err(MkError::Cancelled));
     assert!(f > 0.0 && f < 0.5, "stopped at {f}");
 }

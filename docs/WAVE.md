@@ -75,6 +75,11 @@ and its solves (`mklight_trace::apply_solves_configuration`).
    surviving end of each bracket is placed on the pupil, and the loops
    become the `PupilMask` (even–odd rule: obscurations are holes). The same
    loops in entrance-pupil coordinates give `transmitted_fraction`.
+   On the CPU, lattice rays are aimed and traced in packets, and the
+   crossings are bisected in lockstep (one probe per crossing per round,
+   probes traced together, survival only; the kept ray's throughput is
+   computed once). Both are bitwise identical to tracing and bisecting
+   one ray at a time (CONVENTIONS §7, "CPU packets").
 4. **Resampling** onto the `grid × grid` pupil (`interp::grid_from_structured`
    with that mask; edge cells extrapolate the nearest triangle).
 

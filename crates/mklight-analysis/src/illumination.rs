@@ -69,8 +69,8 @@ use mklight_core::job::RunTimer;
 use mklight_core::math::KahanSum;
 use mklight_core::{ApertureShape, JobContext, MkError, MkResult, RayAiming, RunInfo, Vec3};
 use mklight_trace::{
-    FieldPoint, Grid, ObjectSource, PreparedField, SemiDiameterSettings, SequentialTracer,
-    TraceOptions, TraceStatus, TracerSettings, trace_grid_job,
+    FieldPoint, Grid, ObjectSource, PreparedField, RayRequest, SemiDiameterSettings,
+    SequentialTracer, TraceOptions, TraceStatus, TracerSettings, trace_grid_job,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -201,12 +201,36 @@ impl Probe<'_> {
             .then_some([r.ray.pos.x, r.ray.pos.y, d.dot(self.t1), d.dot(self.t2)])
     }
 
+    /// [`Self::ray`] of every `(q, P)`, aimed and traced together
+    /// (bitwise equal to one by one); `None` if any ray fails.
+    fn rays<const N: usize>(&self, qp: [([f64; 2], [f64; 2]); N]) -> Option<[[f64; 4]; N]> {
+        let fields: Vec<PreparedField> = qp
+            .iter()
+            .map(|(q, _)| self.field(*q))
+            .collect::<Option<_>>()?;
+        let requests: Vec<RayRequest> = fields
+            .iter()
+            .zip(&qp)
+            .map(|(f, (_, p))| (f, self.wl, *p))
+            .collect();
+        let traced = self.rt.trace_many(&requests, &TraceOptions::unclipped());
+        let mut out = [[0.0; 4]; N];
+        for (o, r) in out.iter_mut().zip(&traced) {
+            if !r.status.is_ok() {
+                return None;
+            }
+            let d = r.ray.dir;
+            *o = [r.ray.pos.x, r.ray.pos.y, d.dot(self.t1), d.dot(self.t2)];
+        }
+        Some(out)
+    }
+
     /// Central differences of `(X, L, M)` in `q` (columns 0, 1) and `P`
     /// (columns 2, 3).
     fn jacobian(&self, q: [f64; 2], p: [f64; 2]) -> Option<[[f64; 4]; 4]> {
         const D: f64 = 1e-4;
-        let un = TraceOptions::unclipped();
-        let mut j = [[0.0; 4]; 4];
+        let mut qp = [(q, p); 8];
+        let mut steps = [0.0; 4];
         for k in 0..4 {
             let (h, mut qa, mut qb, mut pa, mut pb) = (if k < 2 { self.hq } else { D }, q, q, p, p);
             if k < 2 {
@@ -216,7 +240,12 @@ impl Probe<'_> {
                 pa[k - 2] += h;
                 pb[k - 2] -= h;
             }
-            let (a, b) = (self.ray(qa, pa, &un)?, self.ray(qb, pb, &un)?);
+            (qp[2 * k], qp[2 * k + 1], steps[k]) = ((qa, pa), (qb, pb), h);
+        }
+        let x = self.rays(qp)?;
+        let mut j = [[0.0; 4]; 4];
+        for k in 0..4 {
+            let (a, b, h) = (x[2 * k], x[2 * k + 1], steps[k]);
             for i in 0..4 {
                 j[i][k] = (a[i] - b[i]) / (2.0 * h);
             }
@@ -231,13 +260,17 @@ impl Probe<'_> {
     }
 
     fn jacobian_xq(&self, q: [f64; 2], p: [f64; 2]) -> Option<m2::M> {
-        let un = TraceOptions::unclipped();
-        let mut j = [[0.0; 2]; 2];
+        let mut qp = [(q, p); 4];
         for k in 0..2 {
             let (mut qa, mut qb) = (q, q);
             qa[k] += self.hq;
             qb[k] -= self.hq;
-            let (a, b) = (self.ray(qa, p, &un)?, self.ray(qb, p, &un)?);
+            (qp[2 * k], qp[2 * k + 1]) = ((qa, p), (qb, p));
+        }
+        let x = self.rays(qp)?;
+        let mut j = [[0.0; 2]; 2];
+        for k in 0..2 {
+            let (a, b) = (x[2 * k], x[2 * k + 1]);
             for i in 0..2 {
                 j[i][k] = (a[i] - b[i]) / (2.0 * self.hq);
             }
