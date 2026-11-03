@@ -303,6 +303,18 @@ wavelength reuses its probes. The leaves are then read from the map depth
 first, exactly as an uncached recursion would produce them (tested bit for
 bit, together with the traced set equalling the distinct lattice points).
 
+The reference traces paths in groups of 16, adjacent in the lexicographic
+order of their step sequences (the primary included). A group refines level
+by level like a single path, and a lattice point that several members
+request at a level is traced once along every shared step prefix: the
+forward run to the first reflection, a shared backward run, and a common
+early end (a ray clipped before a group's first reflections ends every
+member there). The sequence tracer's state between steps is copied, so a
+resumed trace is bit-identical to tracing the path alone (tested on every
+path of two samples, against single-path refinement). On a large 29-surface
+lens this removes 32 % of the surface steps (48 % if all paths formed one
+group, at several times the memory).
+
 Detected rays are binned into `map_bins` in the image's local x, y, as flux
 per mm², over an explicit `map_half_size` if given, else the model `Sensor`
 rectangle, else the square of the image clear semi-diameter. The primary
@@ -419,12 +431,20 @@ regions, repeated wavelengths and leaf counts keep their reference meaning.
 Geometry reuses P1 local-frame intersection, transfer and interaction hooks,
 with double-float geometry. Ghost transport separately implements physical
 virtual-segment rejection, inverse backward ideal-lens power, sensor
-reflection/detection and the expanded DOE visit/order metadata. It batches
-all incidences through P7's direct coating service, then multiplies the
-s and p channels separately and applies signed Beer–Lambert absorption.
-There is no independently interpolated coating table or second path
-enumerator. Probes flagged by P7, and numerical trace failures, are completed with the
-reference and counted. Regular
+reflection/detection and the expanded DOE visit/order metadata. Each
+completed step evaluates P7's direct coating arithmetic (the same source,
+included in the ghost kernel) at its incidence and folds the s and p
+channel powers, DOE efficiency and signed Beer–Lambert absorption in step
+order inside the trace, so no per-step query, factor or coating record is
+stored or re-read. A function constant compiles the thin-film matrices only
+when the run has film coatings. There is no independently interpolated
+coating table or second path enumerator. Probes flagged by P7, and
+numerical trace failures, are completed with the reference and counted.
+Clipping tests whose margin lies within 2⁻²⁸ (relative, of r², |x| or the
+ellipse form) of an aperture edge are completed by the reference as well:
+clear apertures sized by the edge field's rim rays put those lattice
+points exactly on the edge, where double-float and f64 may decide
+differently and the refinement (and `rays_traced`) would then differ. Regular
 refraction also requests reference completion when the double-float Snell
 discriminant has magnitude at most 1e-6: the f32 TIR branch and grazing exit
 geometry are not qualified there. Default achromat probes exposed differing
@@ -463,12 +483,14 @@ unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.
 
-Each probe owns one compact step row per step of its path (no padding to
-the longest path) for its coating query, absorption/efficiency factors and
-P7 coating value. Lattice plans are tiled at 2²⁰ step rows (about 160 MB of
-step storage), rounded to a fixed size class so the scratch pool reuses it
-across tiles. Geometry, coatings, gathers, scans and reductions use bounded
-command buffers; the trace tile adapts toward 10 ms per command. Host
+Lattice plans are tiled at 2²⁰ probes across paths, fields and wavelengths
+(about 170 MB of launch, probe and value records); per-probe storage does
+not grow with path length. Geometry with coatings, gathers, scans and
+reductions use bounded command buffers; the trace tile adapts toward 10 ms
+per command. On a large test lens this replaced about 2,500 plans
+and 12,000 command buffers (coating records of every step row written and
+re-read) by 60 plans and about 1,000 command buffers, with bit-identical
+results. Host
 deduplication, split decisions, reference completion and leaf traversal
 run in parallel per path or cell, in a fixed order. Progress reserves ranges for
 preparation, refinement, maps and final assembly, and reaches one only

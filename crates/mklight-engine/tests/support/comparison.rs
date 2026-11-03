@@ -229,13 +229,14 @@ pub fn compare(
             .reduce(f64::min),
         ..Default::default()
     };
-    // Ghost paths of equal irradiance (symmetric relays) rank in either order.
+    // Ghost paths of equal irradiance (symmetric relays) rank in either
+    // order: match ghosts by their path signature, not by rank.
     let ranked = |json: &Value| {
         let mut json = json.clone();
-        if analysis == "ghost_paths"
+        if matches!(analysis, "ghost_paths" | "ghost_irradiance")
             && let Some(ghosts) = json["ghosts"].as_array_mut()
         {
-            ghosts.sort_by(|a, b| a["label"].as_str().cmp(&b["label"].as_str()));
+            ghosts.sort_by_cached_key(|g| (g["label"].to_string(), g["path"].to_string()));
         }
         json
     };

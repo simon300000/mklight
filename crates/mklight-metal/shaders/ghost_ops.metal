@@ -1,15 +1,52 @@
-// Ghost-specific sequence rules, with P1 local-frame geometry. P7 evaluates
-// all step incidences in one batch before the separate s/p fold below.
+// Ghost-specific sequence rules, with P1 local-frame geometry. Each completed
+// step evaluates its P7 coating at its incidence and folds the separate s/p
+// powers, efficiency and absorption in step order inside the trace, so no
+// per-step query, factor or coating record is stored.
 #include "trace_shared.h"
+constant uint mkl_ghost_features [[function_constant(MKL_GHOST_FEATURES_CONSTANT)]];
+// Reuse the P7 implementation verbatim (as stray_ops.metal does).
+namespace ghost_coating {
+#include "radiometry.metal"
+}
+static MklCoatingValue ghost_coating_value(uint index,device const MklCoatingSpec* specs,device const MklCoatingLayer* layers,constant MklGhostTraceParams& p,float2 cosine){
+ MklCoatingValue out={};out.status=MKL_RAD_REFERENCE;
+ if(index>=p.specs)return out;
+ MklCoatingSpec c=specs[index];
+ if(c.offset>p.layers||c.count>p.layers-c.offset||c.count>MKL_RAD_MAX_LAYERS)return out;
+ ghost_coating::RD ci(cosine);
+ if(mkl_ghost_features&MKL_GHOST_FEATURE_FILMS)return ghost_coating::revaluate(c,layers,ci);
+ // Constant kinds let the compiler remove the film matrices in this variant.
+ switch(c.kind){
+  case MKL_RAD_BARE:c.kind=MKL_RAD_BARE;return ghost_coating::revaluate(c,layers,ci);
+  case MKL_RAD_IDEAL:c.kind=MKL_RAD_IDEAL;return ghost_coating::revaluate(c,layers,ci);
+  case MKL_RAD_TABLE:c.kind=MKL_RAD_TABLE;return ghost_coating::revaluate(c,layers,ci);
+  default:return out;
+ }
+}
+// Twin of the Rust aperture_tie: a clipping test within the f64/double-float
+// ambiguity of its margin goes to the reference.
+static bool ghost_aperture_tie(constant MklPackedSurface& s,float2 x,float2 y){
+ const float tie=as_type<float>(MKL_GHOST_APERTURE_TIE_BITS);
+ float2 a0=float2(s.aperture_params[0],s.aperture_params_lo[0]),a1=float2(s.aperture_params[1],s.aperture_params_lo[1]);
+ switch(s.aperture){
+  case MKL_APERTURE_CIRCULAR:{float2 r2=mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y)),q=mkl_df_mul(a0,a0);return fabs(mkl_df_sub(r2,q).x)<=tie*q.x;}
+  case MKL_APERTURE_ANNULAR:{float2 r2=mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y)),q0=mkl_df_mul(a0,a0),q1=mkl_df_mul(a1,a1);
+   return fabs(mkl_df_sub(r2,q0).x)<=tie*q0.x||fabs(mkl_df_sub(r2,q1).x)<=tie*q1.x;}
+  case MKL_APERTURE_RECTANGULAR:return fabs(mkl_df_sub(mkl_dabs(x),a0).x)<=tie*a0.x||fabs(mkl_df_sub(mkl_dabs(y),a1).x)<=tie*a1.x;
+  case MKL_APERTURE_ELLIPTICAL:{float2 u=mkl_df_div(x,a0),v=mkl_df_div(y,a1);return fabs(mkl_df_add_f32(mkl_df_add(mkl_df_mul(u,u),mkl_df_mul(v,v)),-1.0f).x)<=tie;}
+  default:return false;
+ }
+}
 kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
  constant MklPackedSurface* s [[buffer(1)]], constant float* pool [[buffer(2)]],
  device const MklGhostProbe* probes [[buffer(3)]], constant uint* offsets [[buffer(4)]],
  constant MklGhostStep* steps [[buffer(5)]], device MklGhostValue* output [[buffer(6)]],
- device MklCoatingQuery* queries [[buffer(7)]], device float2* factors [[buffer(8)]],
- constant MklGhostTraceParams& p [[buffer(9)]], device const uint* rows [[buffer(10)]], uint tid [[thread_position_in_grid]]) {
+ device const MklCoatingSpec* specs [[buffer(7)]], device const MklCoatingLayer* layers [[buffer(8)]],
+ constant MklGhostTraceParams& p [[buffer(9)]], uint tid [[thread_position_in_grid]]) {
  uint i=p.offset+tid;if(i>=p.end)return;
  MklGhostProbe q=probes[i];MklGhostValue v={};v.weight_s=float2(1,0);v.weight_p=float2(1,0);v.internal=float2(1,0);
- uint plane=offsets[p.paths],a=offsets[q.path],r0=rows[i],span=rows[i+1]-r0,len=min(offsets[q.path+1]-a,span);
+ uint plane=offsets[p.paths],a=offsets[q.path],len=offsets[q.path+1]-a;
+ float2 one=float2(1,0),ws=one,wp=one,absorb=float2(0);
  MklDv pos,dir;for(uint j=0;j<3;j++){pos.v[j]=q.position[j];dir.v[j]=q.direction[j];}
  float2 dn=mkl_dnorm(dir);for(uint j=0;j<3;j++)dir.v[j]=mkl_df_div(dir.v[j],dn);
  float2 since=float2(0);bool counting=(headers[0].flags&MKL_SYS_OBJECT_AT_INFINITY)==0;
@@ -20,6 +57,7 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
   float2 t=mkl_df_add(hit.ta,hit.tb);if(fabs(t.x)>float(MKL_GHOST_MAX_SEGMENT_MM)){v.status=fail|MKL_GHOST_REFERENCE;break;}if(counting)since=mkl_df_add(since,t);
   if(st.physical!=0){if(counting&&p.reject_virtual!=0&&since.x< -1e-9f){v.status=fail|MKL_GHOST_VIRTUAL;break;}since=float2(0);counting=true;}
   pos=hit.x;
+  if(ghost_aperture_tie(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_GHOST_REFERENCE;break;}
   if(!mkl_passes_aperture(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_RAY_VIGNETTED;break;}
   if(st.channel==4&&(fabs(pos.v[0].x)>p.sensor[0].x||fabs(pos.v[1].x)>p.sensor[1].x)){v.status=fail|MKL_RAY_VIGNETTED;break;}
   float2 n1=mkl_index(s[back?si:si-1],q.wavelength),n2=mkl_index(s[back?si-1:si],q.wavelength);
@@ -44,21 +82,19 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
     for(uint j=0;j<3;j++)next.v[j]=mkl_df_add(mkl_df_mul(dir.v[j],mu),mkl_df_mul_f32(hit.g.v[j],b));next=mkl_renorm_along(mkl_renorm_along(next,hit.g),hit.g);
    }
   }
-  uint row=r0+k;queries[row]={st.coating,0,cosine};factors[2*row]=mkl_df_mul(st.alpha,t);factors[2*row+1]=st.efficiency;dir=next;v.done++;
+  if(mkl_ghost_features&MKL_GHOST_FEATURE_COATINGS){
+   float2 x=one,y=one;
+   if(st.channel==1||st.channel==2){
+    MklCoatingValue coat=ghost_coating_value(st.coating,specs,layers,p,cosine);
+    if(coat.status!=MKL_RAD_OK){v.status=MKL_GHOST_REFERENCE;break;}
+    if(st.channel==1){x=coat.powers[2];y=coat.powers[3];}else{x=coat.powers[0];y=coat.powers[1];}
+   }else if(st.channel==3){x=mkl_df_sub(one,p.sensor_reflectance);y=x;}else if(st.channel==4){x=p.sensor_reflectance;y=x;}
+   ws=mkl_df_mul(ws,mkl_df_mul(x,st.efficiency));wp=mkl_df_mul(wp,mkl_df_mul(y,st.efficiency));absorb=mkl_df_add(absorb,mkl_df_mul(st.alpha,t));
+  }
+  dir=next;v.done++;
  }
- for(uint k=v.done;k<span;k++){uint row=r0+k;queries[row]={};factors[2*row]=float2(0);factors[2*row+1]=float2(0);}
+ if(mkl_ghost_features&MKL_GHOST_FEATURE_COATINGS){v.weight_s=ws;v.weight_p=wp;v.internal=float2(mkl_exp(-absorb.x),0);}
  for(uint j=0;j<3;j++){v.position[j]=pos.v[j];v.direction[j]=dir.v[j];}output[i]=v;
-}
-struct MklGhostWeightParams{uint end,offset,paths,reserved;float2 sensor;};
-kernel void mkl_ghost_weights(device const MklGhostValue* values [[buffer(0)]],device const MklCoatingValue* coatings [[buffer(1)]],device const float2* factors [[buffer(2)]],constant uint* offsets [[buffer(3)]],constant MklGhostStep* steps [[buffer(4)]],device const MklGhostProbe* probes [[buffer(5)]],device MklGhostValue* output [[buffer(6)]],constant MklGhostWeightParams& p [[buffer(7)]],device const uint* rows [[buffer(8)]],uint tid [[thread_position_in_grid]]){
- uint i=p.offset+tid;if(i>=p.end)return;MklGhostValue v=values[i];MklGhostProbe q=probes[i];uint a=q.wavelength*offsets[p.paths]+offsets[q.path];float2 ws=float2(1,0),wp=ws,absorb=float2(0);
- for(uint k=0;k<v.done;k++){
-  uint row=rows[i]+k,c=steps[a+k].channel;MklCoatingValue coat=coatings[row];if((c==1||c==2)&&coat.status!=MKL_RAD_OK){v.status=MKL_GHOST_REFERENCE;break;}
-  float2 one=float2(1,0),x=one,y=one;
-  if(c==1){x=coat.powers[2];y=coat.powers[3];}else if(c==2){x=coat.powers[0];y=coat.powers[1];}else if(c==3){x=mkl_df_sub(one,p.sensor);y=x;}else if(c==4){x=p.sensor;y=x;}
-  float2 eta=factors[2*row+1];ws=mkl_df_mul(ws,mkl_df_mul(x,eta));wp=mkl_df_mul(wp,mkl_df_mul(y,eta));absorb=mkl_df_add(absorb,factors[2*row]);
- }
- v.weight_s=ws;v.weight_p=wp;v.internal=float2(mkl_exp(-absorb.x),0);output[i]=v;
 }
 
 static MklDv ghost_rotate(constant float* m,MklDv v,bool transpose){

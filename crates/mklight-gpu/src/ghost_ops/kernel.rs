@@ -47,6 +47,66 @@ fn diffract<E: FpEnv>(
     let root = disc.sqrt() * if (kn.hi() < 0.) != reflected { -1. } else { 1. };
     Some(std::array::from_fn(|i| tangent[i] + normal[i] * root))
 }
+/// A clipping test whose margin lies within the f64/double-float ambiguity
+/// of the hit: the reference decides it (`MKL_GHOST_APERTURE_TIE_BITS`).
+/// Clear apertures sized by the rim rays of the edge field put those rays
+/// exactly on the edge, where the two arithmetics may disagree.
+fn aperture_tie<E: FpEnv>(s: &PackedSurface, x: D<E>, y: D<E>) -> bool {
+    let tie = f32::from_bits(MKL_GHOST_APERTURE_TIE_BITS);
+    let a0 = D::<E>::new(s.aperture_params[0], s.aperture_params_lo[0]);
+    let a1 = D::<E>::new(s.aperture_params[1], s.aperture_params_lo[1]);
+    let near = |m: D<E>, scale: f32| m.hi().v().abs() <= tie * scale;
+    match s.aperture {
+        MKL_APERTURE_CIRCULAR => {
+            let q = a0 * a0;
+            near(x * x + y * y - q, q.hi().v())
+        }
+        MKL_APERTURE_ANNULAR => {
+            let r2 = x * x + y * y;
+            let (q0, q1) = (a0 * a0, a1 * a1);
+            near(r2 - q0, q0.hi().v()) || near(r2 - q1, q1.hi().v())
+        }
+        MKL_APERTURE_RECTANGULAR => {
+            near(tr::dabs(x) - a0, a0.hi().v()) || near(tr::dabs(y) - a1, a1.hi().v())
+        }
+        MKL_APERTURE_ELLIPTICAL => {
+            let (u, v) = (x / a0, y / a1);
+            near(u * u + v * v - F::ONE, 1.)
+        }
+        _ => false,
+    }
+}
+/// Coating records of the fused weight fold (`TraceCoatings`).
+pub struct Coatings<'a> {
+    pub specs: &'a [CoatingSpec],
+    pub layers: &'a [CoatingLayer],
+    pub sensor: Df32,
+}
+impl Coatings<'_> {
+    /// P7 coating value of one step, with the coating kernel's record checks.
+    fn evaluate(&self, coating: u32, cosine: Df32) -> CoatingValue {
+        match self.specs.get(coating as usize) {
+            Some(s)
+                if s.count <= MKL_RAD_MAX_LAYERS
+                    && s.offset as usize + s.count as usize <= self.layers.len() =>
+            {
+                crate::radiometry::coating::evaluate(
+                    *s,
+                    &self.layers[s.offset as usize..][..s.count as usize],
+                    cosine,
+                )
+            }
+            _ => CoatingValue {
+                status: MKL_RAD_REFERENCE,
+                ..CoatingValue::zeroed()
+            },
+        }
+    }
+}
+/// One probe's whole path. With coatings, every completed step folds its
+/// channel powers and efficiency into the s/p weights and its absorption
+/// exponent in step order, as soon as it completes; a coating that needs the
+/// reference ends the probe with `MKL_GHOST_REFERENCE`.
 #[allow(clippy::too_many_arguments)]
 pub fn trace<E: FpEnv>(
     h: &PackedHeader,
@@ -57,7 +117,7 @@ pub fn trace<E: FpEnv>(
     reject_virtual: bool,
     sensor: [Df32; 2],
     newton: &crate::NewtonSettings,
-    mut record: impl FnMut(usize, CoatingQuery, [Df32; 2]),
+    coatings: Option<Coatings>,
 ) -> Value {
     let prm = TraceParams {
         max_iterations: newton.max_iterations,
@@ -75,7 +135,9 @@ pub fn trace<E: FpEnv>(
         internal: Df32::from_f32(1.),
         ..Value::zeroed()
     };
-    for (k, st) in steps.iter().enumerate() {
+    let one = D::<E>::from_f(F::ONE);
+    let (mut ws, mut wp, mut absorb) = (one, one, D::<E>::ZERO);
+    for st in steps {
         let si = (st.word & MKL_STEP_SURFACE_MASK) as usize;
         let back = st.word & MKL_STEP_BACKWARD != 0;
         let surf = &s[si];
@@ -109,6 +171,10 @@ pub fn trace<E: FpEnv>(
             counting = true;
         }
         pos = hit.x;
+        if aperture_tie(surf, pos[0], pos[1]) {
+            v.status = fail(MKL_GHOST_REFERENCE);
+            break;
+        }
         if !tr::passes_aperture(surf, pos[0], pos[1]) {
             v.status = fail(MKL_RAY_VIGNETTED);
             break;
@@ -180,55 +246,43 @@ pub fn trace<E: FpEnv>(
                 next = renorm(renorm(d, hit.g), hit.g);
             }
         }
-        let absorb = D::<E>::from_df(st.alpha) * t;
-        record(
-            k,
-            CoatingQuery {
-                coating: st.coating,
-                reserved: 0,
-                cosine: cosine.0,
-            },
-            [absorb.0, st.efficiency],
-        );
+        if let Some(c) = &coatings {
+            let sensor = D::<E>::from_df(c.sensor);
+            let (a, b) = match st.channel {
+                1 | 2 => {
+                    let value = c.evaluate(st.coating, cosine.0);
+                    if value.status != MKL_RAD_OK {
+                        v.status = MKL_GHOST_REFERENCE;
+                        break;
+                    }
+                    let p = value.powers.map(D::<E>::from_df);
+                    if st.channel == 1 {
+                        (p[2], p[3])
+                    } else {
+                        (p[0], p[1])
+                    }
+                }
+                3 => (one - sensor, one - sensor),
+                4 => (sensor, sensor),
+                _ => (one, one),
+            };
+            let eta = D::from_df(st.efficiency);
+            ws = ws * (a * eta);
+            wp = wp * (b * eta);
+            // Rounded through storage precision exactly like the former
+            // per-step factor rows.
+            absorb = absorb + D::from_df((D::<E>::from_df(st.alpha) * t).0);
+        }
         dir = next;
         v.done += 1;
     }
+    if coatings.is_some() {
+        v.weight_s = ws.0;
+        v.weight_p = wp.0;
+        v.internal = D::from_f(f::<E>(crate::fmath::exp_in::<E>((-absorb).hi().v()))).0;
+    }
     v.position = pos.map(|v| v.0);
     v.direction = dir.map(|v| v.0);
-    v
-}
-pub(super) fn weights<E: FpEnv>(
-    mut v: Value,
-    steps: &[Step],
-    coatings: &[CoatingValue],
-    factors: &[[Df32; 2]],
-    sensor: Df32,
-) -> Value {
-    let (mut ws, mut wp, mut absorb) =
-        (D::<E>::from_f(F::ONE), D::<E>::from_f(F::ONE), D::<E>::ZERO);
-    let sensor = D::from_df(sensor);
-    for k in 0..v.done as usize {
-        let c = steps[k].channel;
-        let powers = coatings[k].powers;
-        if (c == 1 || c == 2) && coatings[k].status != MKL_RAD_OK {
-            v.status = MKL_GHOST_REFERENCE;
-            break;
-        }
-        let (a, b) = match c {
-            1 => (D::from_df(powers[2]), D::from_df(powers[3])),
-            2 => (D::from_df(powers[0]), D::from_df(powers[1])),
-            3 => (D::from_f(F::ONE) - sensor, D::from_f(F::ONE) - sensor),
-            4 => (sensor, sensor),
-            _ => (D::from_f(F::ONE), D::from_f(F::ONE)),
-        };
-        let eta = D::from_df(factors[k][1]);
-        ws = ws * (a * eta);
-        wp = wp * (b * eta);
-        absorb = absorb + D::from_df(factors[k][0]);
-    }
-    v.weight_s = ws.0;
-    v.weight_p = wp.0;
-    v.internal = D::from_f(f::<E>(crate::fmath::exp_in::<E>((-absorb).hi().v()))).0;
     v
 }
 

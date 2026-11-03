@@ -13,17 +13,11 @@ struct TraceParameters {
     paths: u32,
     wavelengths: u32,
     reject_virtual: u32,
+    specs: u32,
+    layers: u32,
     reserved: u32,
     sensor: [mklight_gpu::Df32; 2],
-}
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct WeightParameters {
-    end: u32,
-    offset: u32,
-    paths: u32,
-    reserved: u32,
-    sensor: mklight_gpu::Df32,
+    sensor_reflectance: mklight_gpu::Df32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -42,18 +36,6 @@ struct FirstOrderParameters {
     end: u32,
     offset: u32,
     sensor: mklight_gpu::Df32,
-}
-/// Kernels index step storage through these rows: they must be monotone and
-/// within the storage. Returns the end of the used rows.
-fn step_rows_end(x: &Execution<'_>, rows: &PlanView, capacity: usize) -> MkResult<usize> {
-    // Row tables may be produced by an earlier resident operation.
-    let (b, o) = x.buffer(rows);
-    let rows = &b.as_slice()[o..o + rows.desc.len()?];
-    let end = rows.last().copied().unwrap_or(0) as usize;
-    if rows.windows(2).any(|w| w[1] < w[0]) || end > capacity {
-        return Err(bad("ghost step rows"));
-    }
-    Ok(end)
 }
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
@@ -425,32 +407,41 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             reject_virtual,
             sensor,
             newton,
-            step_rows,
+            coatings,
             output,
-            queries,
-            factors,
         } => {
+            use mklight_gpu::consts::*;
             let SystemSet::Uploaded(handle) = systems else {
                 return unsupported("ghost resident candidates");
             };
             let up = x.system(*handle)?;
-            let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_ghost_trace"))?;
+            // Thin-film matrices are compiled in only when a film record exists.
+            let features = coatings.as_ref().map_or(0, |c| {
+                let (b, o) = x.buffer(&c.specs);
+                let words = &b.as_slice()[o..o + c.specs.desc.len().unwrap_or(0)];
+                let films = bytemuck::cast_slice::<_, mklight_gpu::radiometry::CoatingSpec>(words)
+                    .iter()
+                    .any(|s| s.kind == MKL_RAD_FILM);
+                MKL_GHOST_FEATURE_COATINGS | if films { MKL_GHOST_FEATURE_FILMS } else { 0 }
+            });
+            let pso = x.gpu.pipeline(&PipelineKey::with_u32(
+                "mkl_ghost_trace",
+                MKL_GHOST_FEATURES_CONSTANT as u16,
+                features,
+            ))?;
             let count_pso = x
                 .gpu
                 .pipeline(&PipelineKey::plain("mkl_ghost_reference_count"))?;
             let mut counter = x.allocate(1)?;
             counter.as_mut_slice()[0] = 0;
-            let (mut out, mut qs, mut fs) = (
-                x.take_output(*output),
-                x.take_output(*queries),
-                x.take_output(*factors),
-            );
+            let mut out = x.take_output(*output);
             let n = probes.desc.shape[0];
-            // Spare pooled rows after the last probe are zeroed in place.
-            x.flush()?;
-            let spare = 4 * step_rows_end(x, step_rows, qs.as_slice().len() / 4)?;
-            qs.as_mut_slice()[spare..].fill(0);
-            fs.as_mut_slice()[spare..].fill(0);
+            // Without coatings the kernel never reads its coating arguments.
+            let (specs, layers) = match coatings {
+                Some(c) => (&c.specs, &c.layers),
+                None => (probes, probes),
+            };
+            let records = |v: &PlanView| v.desc.shape.first().copied().unwrap_or(0) as u32;
             let mut offset = 0;
             let mut tile = 8192;
             while offset < n {
@@ -469,8 +460,13 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     paths: (offsets.desc.shape[0] - 1) as u32,
                     wavelengths: *wavelengths as u32,
                     reject_virtual: *reject_virtual as u32,
+                    specs: coatings.as_ref().map_or(0, |c| records(&c.specs)),
+                    layers: coatings.as_ref().map_or(0, |c| records(&c.layers)),
                     reserved: 0,
                     sensor: *sensor,
+                    sensor_reflectance: coatings
+                        .as_ref()
+                        .map_or(mklight_gpu::Df32::ZERO, |c| c.sensor_reflectance),
                 };
                 // SAFETY: validated record extents, immutable imports, exclusive outputs.
                 unsafe {
@@ -484,11 +480,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             e.set_buffer(j + 3, b, o);
                         }
                         e.set_buffer_mut(6, &mut out, 0);
-                        e.set_buffer_mut(7, &mut qs, 0);
-                        e.set_buffer_mut(8, &mut fs, 0);
+                        for (j, v) in [specs, layers].iter().enumerate() {
+                            let (b, o) = x.buffer(v);
+                            e.set_buffer(j + 7, b, o);
+                        }
                         e.set_bytes(9, &[prm]);
-                        let (b, o) = x.buffer(step_rows);
-                        e.set_buffer(10, b, o);
                         e.dispatch_groups([(end - offset).div_ceil(64), 1, 1], 64);
                         e.set_pipeline(&count_pso);
                         e.set_buffer(0, &out, 0);
@@ -511,62 +507,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 }
             }
             x.count_fallbacks(counter);
-            x.put_output(*output, out);
-            x.put_output(*queries, qs);
-            x.put_output(*factors, fs);
-        }
-        Request::Weights {
-            values,
-            coatings,
-            factors,
-            offsets,
-            steps,
-            probes,
-            wavelengths: _,
-            step_rows,
-            sensor_reflectance,
-            output,
-        } => {
-            x.flush()?;
-            step_rows_end(x, step_rows, coatings.desc.shape[0])?;
-            let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_ghost_weights"))?;
-            let mut out = x.take_output(*output);
-            let n = probes.desc.shape[0];
-            for offset in (0..n).step_by(262144) {
-                ctl.check()?;
-                let end = (offset + 262144).min(n);
-                let wall = Instant::now();
-                let prm = WeightParameters {
-                    end: end as u32,
-                    offset: offset as u32,
-                    paths: (offsets.desc.shape[0] - 1) as u32,
-                    reserved: 0,
-                    sensor: *sensor_reflectance,
-                };
-                // SAFETY: one output per probe; typed inputs validated at submission.
-                unsafe {
-                    x.run("ghost weights", |e| {
-                        e.set_pipeline(&pso);
-                        for (j, v) in [values, coatings, factors, offsets, steps, probes]
-                            .iter()
-                            .enumerate()
-                        {
-                            let (b, o) = x.buffer(v);
-                            e.set_buffer(j, b, o);
-                        }
-                        e.set_buffer_mut(6, &mut out, 0);
-                        e.set_bytes(7, &[prm]);
-                        let (b, o) = x.buffer(step_rows);
-                        e.set_buffer(8, b, o);
-                        e.dispatch_groups([(end - offset).div_ceil(64), 1, 1], 64);
-                        Ok(())
-                    })?
-                };
-                stats.max_command_seconds =
-                    stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
-                x.stats.parameter_bytes += size_of::<WeightParameters>() as u64;
-                ctl.check()?;
-            }
             x.put_output(*output, out);
         }
     }

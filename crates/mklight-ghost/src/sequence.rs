@@ -232,30 +232,36 @@ impl GhostModel {
         steps: &[Step],
         mut record: Option<&mut Vec<StepRecord>>,
     ) -> SequenceResult {
-        let sys = self.system();
-        let image = sys.image_index();
-        let lambda = sys.wavelengths_um[wl];
-        let mut ray = *start;
-        let mut at = from;
-        let (mut ws, mut wp) = (1.0f64, 1.0f64);
-        let mut absorb = 0.0f64;
-        let mut opl = Compensated::ZERO;
-        // Signed distance travelled since the last physical interaction;
-        // not counted before the first one for an object at infinity.
-        let mut since_physical = 0.0f64;
-        let mut counting = !(from == 0 && sys.object_at_infinity);
         if let Some(r) = record.as_deref_mut() {
             r.clear();
         }
-        let done = |status, ray, surface, k, ws, wp, absorb: f64, opl| SequenceResult {
-            status,
-            ray,
-            surface,
-            steps_done: k,
-            weight_s: ws,
-            weight_p: wp,
-            internal: (-absorb).exp(),
-            opl,
+        let mut state = match self.begin(from, start) {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        for st in steps {
+            if let Some(r) = self.advance(&mut state, wl, st, record.as_deref_mut()) {
+                return r;
+            }
+        }
+        state.finish()
+    }
+
+    /// The state before the first step of [`Self::trace_from`], or its
+    /// result for a non-finite start.
+    pub(crate) fn begin(&self, from: usize, start: &Ray) -> Result<TraceState, SequenceResult> {
+        let state = TraceState {
+            ray: *start,
+            at: from,
+            k: 0,
+            ws: 1.0,
+            wp: 1.0,
+            absorb: 0.0,
+            opl: Compensated::ZERO,
+            // Signed distance travelled since the last physical interaction;
+            // not counted before the first one for an object at infinity.
+            since_physical: 0.0,
+            counting: !(from == 0 && self.system().object_at_infinity),
         };
         if !(start.pos.is_finite() && start.dir.is_finite()) {
             let st = SequenceStatus::Failed {
@@ -263,9 +269,50 @@ impl GhostModel {
                 surface: from as u32,
                 reason: SequenceFail::NonFinite,
             };
-            return done(st, ray, from, 0, ws, wp, absorb, opl);
+            return Err(state.result(st, from));
         }
-        for (k, st) in steps.iter().enumerate() {
+        Ok(state)
+    }
+
+    /// One step of [`Self::trace_from`]: `None` when it completed (the state
+    /// then holds the next step's input), else the path's final result.
+    /// A copy of a state continues bit-identically, so paths that share a
+    /// step prefix can share its trace.
+    pub(crate) fn advance(
+        &self,
+        state: &mut TraceState,
+        wl: usize,
+        st: &Step,
+        record: Option<&mut Vec<StepRecord>>,
+    ) -> Option<SequenceResult> {
+        let sys = self.system();
+        let image = sys.image_index();
+        let lambda = sys.wavelengths_um[wl];
+        let TraceState {
+            mut ray,
+            mut at,
+            k,
+            mut ws,
+            mut wp,
+            mut absorb,
+            mut opl,
+            mut since_physical,
+            mut counting,
+        } = *state;
+        let mut record = record;
+        let done = |status, ray, surface, k, ws, wp, absorb: f64, opl| {
+            Some(SequenceResult {
+                status,
+                ray,
+                surface,
+                steps_done: k,
+                weight_s: ws,
+                weight_p: wp,
+                internal: (-absorb).exp(),
+                opl,
+            })
+        };
+        {
             let s = st.surface as usize;
             let (kk, ss) = (k as u32, st.surface);
             let fail = |reason| SequenceStatus::Failed {
@@ -584,15 +631,52 @@ impl GhostModel {
                 });
             }
         }
-        done(
-            SequenceStatus::Ok,
+        *state = TraceState {
             ray,
             at,
-            steps.len(),
+            k: k + 1,
             ws,
             wp,
             absorb,
             opl,
-        )
+            since_physical,
+            counting,
+        };
+        None
+    }
+}
+
+/// The running state of a sequence trace between steps (see
+/// [`GhostModel::advance`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TraceState {
+    ray: Ray,
+    at: usize,
+    /// Steps completed.
+    k: usize,
+    ws: f64,
+    wp: f64,
+    absorb: f64,
+    opl: Compensated,
+    since_physical: f64,
+    counting: bool,
+}
+
+impl TraceState {
+    fn result(&self, status: SequenceStatus, surface: usize) -> SequenceResult {
+        SequenceResult {
+            status,
+            ray: self.ray,
+            surface,
+            steps_done: self.k,
+            weight_s: self.ws,
+            weight_p: self.wp,
+            internal: (-self.absorb).exp(),
+            opl: self.opl,
+        }
+    }
+    /// The result after the last step.
+    pub(crate) fn finish(&self) -> SequenceResult {
+        self.result(SequenceStatus::Ok, self.at)
     }
 }
