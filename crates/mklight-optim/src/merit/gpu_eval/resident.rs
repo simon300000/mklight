@@ -58,6 +58,7 @@ fn append(
     p: &mut ResidentPlan,
     set: &SystemSet,
     metadata: &PlanView,
+    seeds: Option<&PlanView>,
     probes: &[Probe],
     remap: Option<&[u32]>,
     last: usize,
@@ -89,7 +90,7 @@ fn append(
                 unresolved: None,
                 field_wavelength: metadata.clone(),
                 field_key: None,
-                seeds: None,
+                seeds: seeds.cloned(),
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
@@ -386,6 +387,56 @@ pub(crate) fn evaluate(
         )
     };
     let metadata = records(g, &mut p, field_keys.len(), |i| field_spec(field_keys[i]))?;
+    // Prototype (proposal study): chief seeds from each candidate's own f64
+    // tracer (its system fields are prepared at construction), so the device
+    // skips the per-candidate chief/image-height solve.
+    let host_seeds = !std::env::var("MKLIGHT_HOST_SEEDS").is_ok_and(|v| v == "0");
+    let seed_spec = |(ci, f, w): (usize, FieldKey, usize)| -> MkResult<a::ChiefSeed> {
+        let tr = &tracers[ci];
+        let point = candidates[ci]
+            .0
+            .field(f)
+            .map_err(|e| MkError::Unsupported(format!("field: {e:?}")))?
+            .point;
+        let prepared = tr
+            .fields()
+            .iter()
+            .find(|pf| pf.point == point)
+            .cloned()
+            .or_else(|| tr.prepare_field(point).ok());
+        let mut seed = a::ChiefSeed {
+            status: mklight_gpu::consts::MKL_AIM_FIELD_UNREACHABLE,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        let Some(pf) = prepared else { return Ok(seed) };
+        if pf.error.is_some() || w >= pf.aims.len() {
+            return Ok(seed);
+        }
+        let src = match pf.source {
+            mklight_trace::ObjectSource::Direction { dir } => [dir.x, dir.y, dir.z],
+            mklight_trace::ObjectSource::Point { point } => [point.x, point.y, point.z],
+        };
+        let aim = &pf.aims[w];
+        seed.source = src.map(Df32::from_f64);
+        seed.chief = aim.chief.map(Df32::from_f64);
+        if let Some(j) = aim.jacobian {
+            seed.jacobian = std::array::from_fn(|k| Df32::from_f64(j[k / 2][k % 2]));
+            seed.has_jacobian = 1;
+        }
+        seed.residual = Df32::from_f64(aim.residual * tr.pupil().r_stop);
+        seed.status = if aim.converged {
+            0
+        } else {
+            mklight_gpu::consts::MKL_AIM_FAILED
+                | ((tr.system().stop as u32) << mklight_gpu::consts::MKL_RAY_SURFACE_SHIFT)
+        };
+        Ok(seed)
+    };
+    let seeds = if host_seeds {
+        Some(records(g, &mut p, field_keys.len(), |i| seed_spec(field_keys[i]))?)
+    } else {
+        None
+    };
     // P1's seed-table choice is per candidate, not a side effect of which
     // other candidates share its command. Partition only at that boundary.
     let mut field_counts = vec![0usize; tracers.len()];
@@ -427,7 +478,7 @@ pub(crate) fn evaluate(
         })
         .fold(f32::INFINITY, f32::min);
     let ch = append(
-        g, &mut p, &set, &metadata, &chiefs, None, last, false, tolerance, ctx,
+        g, &mut p, &set, &metadata, seeds.as_ref(), &chiefs, None, last, false, tolerance, ctx,
     )?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
@@ -437,8 +488,8 @@ pub(crate) fn evaluate(
     for (key, probes) in &partitions {
         let (clip, last) = *key;
         let selected: std::collections::BTreeSet<_> = probes.iter().map(|q| q.candidate).collect();
-        let (aim_metadata, remap) = if selected.len() == tracers.len() {
-            (metadata.clone(), None)
+        let (aim_metadata, aim_seeds, remap) = if selected.len() == tracers.len() {
+            (metadata.clone(), seeds.clone(), None)
         } else {
             let mut remap = vec![u32::MAX; field_keys.len()];
             let mut subset = Vec::new();
@@ -450,6 +501,11 @@ pub(crate) fn evaluate(
             }
             (
                 records(g, &mut p, subset.len(), |i| field_spec(subset[i]))?,
+                if host_seeds {
+                    Some(records(g, &mut p, subset.len(), |i| seed_spec(subset[i]))?)
+                } else {
+                    None
+                },
                 Some(remap),
             )
         };
@@ -458,6 +514,7 @@ pub(crate) fn evaluate(
             &mut p,
             &set,
             &aim_metadata,
+            aim_seeds.as_ref(),
             probes,
             remap.as_deref(),
             last,
