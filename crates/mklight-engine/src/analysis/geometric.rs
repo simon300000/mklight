@@ -1060,6 +1060,7 @@ fn spot_schema() -> Value {
 }
 
 /// Move the per-field `points` of a spot diagram into buffers.
+#[cfg(test)]
 fn spot_points_to_buffers(v: &mut Value) -> Vec<Buffer> {
     let mut pts = Vec::new();
     let mut fidx = Vec::new();
@@ -1086,6 +1087,62 @@ fn spot_points_to_buffers(v: &mut Value) -> Vec<Buffer> {
     ]
 }
 
+fn spot_output(mut r: spot::SpotDiagram, ctx: &JobContext) -> EngineResult<AnalysisOutput> {
+    let n = r.fields.iter().map(|f| f.points.len()).sum::<usize>();
+    let mut pts = Vec::with_capacity(2 * n);
+    let mut fidx = Vec::with_capacity(n);
+    let mut widx = Vec::with_capacity(n);
+    let mut ranges = Vec::with_capacity(r.fields.len());
+    for (k, f) in r.fields.iter_mut().enumerate() {
+        let start = fidx.len();
+        for chunk in f.points.chunks(16384) {
+            ctx.check()?;
+            for q in chunk {
+                pts.extend([q.x, q.y]);
+                fidx.push(k as u32);
+                widx.push(q.wavelength as u32);
+            }
+        }
+        ranges.push([start, fidx.len() - start]);
+        f.points = Vec::new();
+    }
+    let (mut v, w) = crate_json(&r)?;
+    for (f, range) in v["fields"].as_array_mut().unwrap().iter_mut().zip(ranges) {
+        f.as_object_mut().unwrap().remove("points");
+        f["point_range"] = json!(range);
+    }
+    Ok(output(
+        v,
+        vec![
+            Buffer::new("points", vec![n, 2], BufferData::F64(pts)),
+            Buffer::new("point_field", vec![n], BufferData::U32(fidx)),
+            Buffer::new("point_wavelength", vec![n], BufferData::U32(widx)),
+        ],
+        w,
+    ))
+}
+
+#[test]
+fn typed_spot_packing_matches_legacy_envelope() {
+    let t = mklight_analysis::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
+    let ctx = JobContext::new();
+    for include_points in [false, true] {
+        let s = parse(&json!({
+            "fields":{"type":"list","indices":[2,0]},
+            "wavelengths":{"type":"list","indices":[2,0]},
+            "defocus":0.2,"reference":"centroid","include_points":include_points
+        }))
+        .unwrap();
+        let r = spot::spot_diagram_job(&t, &s, &ctx).unwrap();
+        let (mut json, warnings) = crate_json(&r).unwrap();
+        let buffers = spot_points_to_buffers(&mut json);
+        let got = spot_output(r, &ctx).unwrap();
+        assert_eq!(got.json, json);
+        assert_eq!(got.buffers, buffers);
+        assert_eq!(got.warnings, warnings);
+    }
+}
+
 fn selection(
     t: &SequentialTracer,
     f: &util::FieldSelection,
@@ -1110,9 +1167,7 @@ fn run_spot(
         |b| mklight_analysis::gpu::spot_diagram_job(b, t, &st, ctx),
         spot::spot_diagram_job(t, &st, ctx)
     )?;
-    let (mut v, w) = crate_json(&r)?;
-    let buffers = spot_points_to_buffers(&mut v);
-    Ok(output(v, buffers, w))
+    spot_output(r, ctx)
 }
 
 // ---------------------------------------------------------------------------
