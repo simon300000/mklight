@@ -1,5 +1,5 @@
 //! CPU-f32 specification for resident ordered plans; no CPU speed path.
-use super::immutable::OperationCacheKey;
+use super::immutable::{BuildCost, CacheCategory, CacheStats, OperationCacheKey};
 use super::pool::Allocation;
 use super::runtime::{OperationCache, Runtime};
 use super::*;
@@ -7,7 +7,7 @@ use crate::{
     FpEnv, JobStats, PackedSystemSet, SystemHandle, TraceResult, pending::JobControl, reduce,
 };
 use mklight_core::job::RunTimer;
-use std::{collections::HashMap, time::Instant};
+use std::{any::Any, cell::RefCell, collections::HashMap, time::Instant};
 
 type Lease = Allocation<HostAllocation>;
 
@@ -25,6 +25,8 @@ pub fn execute<E: FpEnv>(
         buffers: vec![],
         systems,
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
+        pending: RefCell::new(vec![]),
+        cache_stats: RefCell::new(CacheStats::new()),
         stats: PlanStats::default(),
         flush_to_zero: E::FTZ,
     };
@@ -122,7 +124,20 @@ pub fn execute<E: FpEnv>(
             ..Default::default()
         });
     }
-    let stats = std::mem::take(&mut x.stats);
+    // Entries publish only once every operation completed uncancelled, as on
+    // a device; a cancelled build never reaches the shared cache.
+    ctl.check()?;
+    for p in x.pending.take() {
+        x.cache.insert(
+            p.key,
+            p.bytes,
+            BuildCost::Seconds(p.cost),
+            p.value,
+            x.cache_stats.get_mut(),
+        );
+    }
+    let mut stats = std::mem::take(&mut x.stats);
+    stats.cache = x.cache_stats.take();
     rt.finish(plan, backend, timer, start, stats, ctl, |id| {
         match x.buffers[id.0].take().unwrap() {
             Slot::Owned(b) => b,
@@ -148,9 +163,17 @@ impl Slot {
         }
     }
 }
+struct Pending {
+    key: OperationCacheKey,
+    bytes: usize,
+    cost: f64,
+    value: Arc<dyn Any + Send + Sync>,
+}
 /// Execution state handed to CPU package handlers.
 pub struct Execution {
     cache: OperationCache,
+    pending: RefCell<Vec<Pending>>,
+    cache_stats: RefCell<CacheStats>,
     systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
     buffers: Vec<Option<Slot>>,
     pub stats: PlanStats,
@@ -160,17 +183,53 @@ pub struct Execution {
 }
 impl Execution {
     /// Operation-cache key including the plan's full system/build/settings identity.
-    pub fn cache_key(&self, operation: impl Into<String>) -> OperationCacheKey {
-        self.cache.key(operation)
+    pub fn cache_key(
+        &self,
+        category: CacheCategory,
+        operation: impl Into<String>,
+    ) -> OperationCacheKey {
+        self.cache.key(category, operation)
+    }
+    /// Content-addressed key; `operation` names digests of all its inputs.
+    pub fn content_key(
+        &self,
+        category: CacheCategory,
+        operation: impl Into<String>,
+    ) -> OperationCacheKey {
+        self.cache.content_key(category, operation)
+    }
+    /// Build identity of the executing backend.
+    pub fn kernel_build(&self) -> &str {
+        &self.cache.identity.kernel_build
     }
     pub fn cached<T: Any + Send + Sync>(
         &self,
         key: &OperationCacheKey,
     ) -> MkResult<Option<Arc<T>>> {
-        self.cache.get(key)
+        if let Some(p) = self.pending.borrow().iter().rev().find(|p| &p.key == key) {
+            return p
+                .value
+                .clone()
+                .downcast::<T>()
+                .map(Some)
+                .map_err(|_| bad("operation cache type collision"));
+        }
+        self.cache.get(key, &mut self.cache_stats.borrow_mut())
     }
-    pub fn cache<T: Any + Send + Sync>(&self, key: OperationCacheKey, bytes: usize, value: Arc<T>) {
-        self.cache.insert(key, bytes, value)
+    /// Publish `value` when the plan completes; same-plan consumers see it now.
+    pub fn cache<T: Any + Send + Sync>(
+        &self,
+        key: OperationCacheKey,
+        bytes: usize,
+        cost: f64,
+        value: Arc<T>,
+    ) {
+        self.pending.borrow_mut().push(Pending {
+            key,
+            bytes,
+            cost,
+            value,
+        });
     }
     /// A system pinned at submission (declared in the operation's accesses).
     pub fn system(&self, handle: SystemHandle) -> MkResult<Arc<PackedSystemSet>> {

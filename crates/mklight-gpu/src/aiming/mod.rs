@@ -19,6 +19,12 @@
 //! unresolved indices for an adapter, and `PlanStats::fallback_count` counts
 //! them. Real-image-height fields need the primary wavelength in the packed
 //! chunk; a missing primary is reported, never replaced.
+//!
+//! Chief rows normally come from the host: [`ChiefSeed::host`] converts the
+//! reference tracer's f64 `PreparedField` (real-image-height source once per
+//! field, chief and Jacobian once per field and wavelength). The device chief
+//! solve remains for requests without `seeds`. Chief rows and seed tables are
+//! reused across plans by [`aim_identity`], a digest of every input.
 
 use crate::{
     Df32,
@@ -77,11 +83,13 @@ pub struct GenerateAim {
     /// ascending original indices next, unused tail = u32::MAX.
     pub unresolved: Option<BufferId>,
     pub field_wavelength: PlanView,
-    /// Content identity of immutable field metadata, for chief-seed reuse.
-    /// None for plan-local candidate fields (no cross-plan cache).
+    /// Opts into cross-plan reuse of chief rows and seed tables: the caller's
+    /// name for its immutable field metadata. The executor keys reuse by
+    /// [`aim_identity`] of the actual inputs, never by this name or by handles.
+    /// None keeps them plan-local (candidate fields).
     pub field_key: Option<String>,
-    /// Prototype (proposal study): host-prepared chief seeds, one `ChiefSeed`
-    /// per field row (u32 [rows, MKL_AIM_CACHE_WORDS]). When present the
+    /// Host-prepared chief seeds, one [`ChiefSeed`] per field row (u32 [rows,
+    /// MKL_AIM_CACHE_WORDS]), normally [`ChiefSeed::host`]. When present the
     /// device chief/image-height solve is skipped and these rows seed the
     /// seed table and pupil aiming directly.
     pub seeds: Option<PlanView>,
@@ -133,6 +141,33 @@ pub const TABLE_NODES: usize = (MKL_AIM_TABLE_SIDE * MKL_AIM_TABLE_SIDE) as usiz
 pub const TABLE_MIN_RAYS_PER_ROW: usize = 2 * TABLE_NODES;
 pub fn uses_table(g: &GenerateAim) -> bool {
     g.output.count >= TABLE_MIN_RAYS_PER_ROW * g.field_wavelength.desc.shape[0]
+}
+/// Content identity of a generation's chief rows and seed table: the packed
+/// system content, the exact field rows, the host seed rows (or the device
+/// solve), tolerance and iteration cap. None when the caller keeps them
+/// plan-local (`field_key` None) or an input is not immutable at submission:
+/// device-built systems, or field/seed rows produced inside the plan.
+pub fn aim_identity(
+    g: &GenerateAim,
+    system: Option<blake3::Hash>,
+    fields: Option<&[u32]>,
+    seeds: Option<&[u32]>,
+) -> Option<String> {
+    let name = g.field_key.as_ref()?;
+    let seeds = match (&g.seeds, seeds) {
+        (None, _) => "device".to_string(),
+        (Some(_), Some(words)) => blake3::hash(bytemuck::cast_slice(words))
+            .to_hex()
+            .to_string(),
+        (Some(_), None) => return None,
+    };
+    Some(format!(
+        "{name}:{}:{}:{seeds}:{}:{}",
+        system?.to_hex(),
+        blake3::hash(bytemuck::cast_slice(fields?)).to_hex(),
+        g.tolerance.to_bits(),
+        g.max_iterations
+    ))
 }
 
 pub fn rays(plan: &mut ResidentPlan, count: usize) -> ResidentRays {
@@ -279,6 +314,13 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 ElementType::U32,
                 &[shape[0], MKL_AIM_FIELD_WORDS as usize],
             )?;
+            if let Some(v) = &a.seeds {
+                check_view(
+                    v,
+                    ElementType::U32,
+                    &[shape[0], MKL_AIM_CACHE_WORDS as usize],
+                )?;
+            }
             if !a.tolerance.is_finite() || a.tolerance <= 0.0 {
                 return Err(bad("aim tolerance must be positive"));
             }
@@ -366,6 +408,7 @@ pub fn accesses(r: &Request) -> Access {
             system_access(&g.systems, &mut a);
             a.reads
                 .extend([g.samples.clone(), g.field_wavelength.clone()]);
+            a.reads.extend(g.seeds.clone());
             a.writes = ray_ids(&g.output);
             a.writes.extend(g.unresolved);
         }

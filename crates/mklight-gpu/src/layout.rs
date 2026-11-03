@@ -1058,6 +1058,20 @@ impl PackedSystemSet {
     pub fn surface_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.surfaces)
     }
+    /// Digest of the complete numeric content the kernels read: the identity
+    /// of immutable storage holding this set, independent of handles.
+    pub fn digest(&self) -> blake3::Hash {
+        let mut h = blake3::Hasher::new();
+        for part in [
+            self.header_bytes(),
+            self.surface_bytes(),
+            bytemuck::cast_slice(&self.coefficients),
+        ] {
+            h.update(&(part.len() as u64).to_le_bytes());
+            h.update(part);
+        }
+        h.finalize()
+    }
 }
 
 #[cfg(test)]

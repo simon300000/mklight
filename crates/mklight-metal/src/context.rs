@@ -311,6 +311,11 @@ impl MetalContext {
     pub fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
         &self.device
     }
+    /// Bytes the device currently has allocated (all of this process's
+    /// buffers, pools and caches on it).
+    pub fn allocated_bytes(&self) -> u64 {
+        self.device.currentAllocatedSize() as u64
+    }
     pub fn library_origin(&self) -> LibraryOrigin {
         self.origin
     }

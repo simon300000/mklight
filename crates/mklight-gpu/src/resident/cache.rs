@@ -1,4 +1,6 @@
-//! Bounded immutable system-set cache. Live handles independently pin entries.
+//! Bounded immutable system-set cache (the prepared-systems category). Live
+//! handles independently pin entries.
+use super::immutable::{CacheCategory, CacheCategoryStats};
 use super::{ResidentCacheStats, SystemCacheKey, bad};
 use crate::{PackedSystem, consts::MKL_LAYOUT_VERSION};
 use mklight_core::MkResult;
@@ -9,6 +11,7 @@ pub struct SystemCache<T> {
     bytes: usize,
     limit: usize,
     stats: ResidentCacheStats,
+    category: CacheCategoryStats,
 }
 impl<T> SystemCache<T> {
     pub fn new(limit: usize) -> Self {
@@ -17,17 +20,23 @@ impl<T> SystemCache<T> {
             bytes: 0,
             limit,
             stats: Default::default(),
+            category: Default::default(),
         }
     }
     pub fn get(&mut self, key: &SystemCacheKey, digest: blake3::Hash) -> Option<Arc<T>> {
-        let i = self
+        let Some(i) = self
             .entries
             .iter()
-            .position(|(k, h, _, _)| k == key && *h == digest)?;
+            .position(|(k, h, _, _)| k == key && *h == digest)
+        else {
+            self.category.misses += 1;
+            return None;
+        };
         let entry = self.entries.remove(i).unwrap();
         let value = entry.3.clone();
         self.entries.push_back(entry);
         self.stats.system_hits += 1;
+        self.category.hits += 1;
         Some(value)
     }
     pub fn insert(
@@ -39,22 +48,50 @@ impl<T> SystemCache<T> {
     ) {
         self.stats.system_uploads += 1;
         self.stats.uploaded_bytes += bytes as u64;
+        self.category.inserts += 1;
         if bytes > self.limit {
+            self.category.rejected += 1;
             return;
         }
-        while self.bytes + bytes > self.limit || self.entries.len() >= 64 {
+        let (_, max_entries) = CacheCategory::PreparedSystems.budget();
+        while self.bytes + bytes > self.limit || self.entries.len() >= max_entries {
             let (_, _, n, _) = self.entries.pop_front().unwrap();
             self.bytes -= n;
+            self.category.evictions += 1;
+            self.category.evicted_bytes += n as u64;
         }
         self.bytes += bytes;
         self.entries.push_back((key, digest, bytes, value));
     }
     pub fn stats(&self) -> ResidentCacheStats {
-        ResidentCacheStats {
+        let mut s = ResidentCacheStats {
             system_bytes: self.bytes as u64,
             ..self.stats.clone()
-        }
+        };
+        s.categories.insert(
+            CacheCategory::PreparedSystems,
+            CacheCategoryStats {
+                bytes: self.bytes as u64,
+                entries: self.entries.len() as u64,
+                limit_bytes: self.limit as u64,
+                limit_entries: CacheCategory::PreparedSystems.budget().1 as u64,
+                ..self.category.clone()
+            },
+        );
+        s
     }
+}
+/// Digest of packed numeric system content (headers, surfaces, coefficients):
+/// the identity of an immutable upload, independent of handles and keys.
+pub fn content_digest(systems: &[PackedSystem]) -> blake3::Hash {
+    let mut h = blake3::Hasher::new();
+    h.update(&(systems.len() as u64).to_le_bytes());
+    for s in systems {
+        h.update(bytemuck::bytes_of(&s.header));
+        h.update(bytemuck::cast_slice(&s.surfaces));
+        h.update(bytemuck::cast_slice(&s.coefficients));
+    }
+    h.finalize()
 }
 pub fn fingerprint(
     key: &SystemCacheKey,
@@ -64,12 +101,5 @@ pub fn fingerprint(
     if key.layout != MKL_LAYOUT_VERSION || key.kernel_build != build {
         return Err(bad("system cache layout/build mismatch"));
     }
-    let mut h = blake3::Hasher::new();
-    h.update(&(systems.len() as u64).to_le_bytes());
-    for s in systems {
-        h.update(bytemuck::bytes_of(&s.header));
-        h.update(bytemuck::cast_slice(&s.surfaces));
-        h.update(bytemuck::cast_slice(&s.coefficients));
-    }
-    Ok(h.finalize())
+    Ok(content_digest(systems))
 }

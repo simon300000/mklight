@@ -38,8 +38,9 @@ use crate::context::{
 const DEFAULT_CHUNK: usize = 1 << 20;
 
 pub(crate) struct Uploaded {
-    /// Identity of immutable storage, shared by every registered lease.
-    pub(crate) cache_id: u64,
+    /// Content identity of this immutable storage (`PackedSystemSet::digest`),
+    /// shared by every registered lease and by re-uploads of equal content.
+    pub(crate) content: blake3::Hash,
     pub(crate) headers: SharedBuffer<PackedHeader>,
     pub(crate) surfaces: SharedBuffer<PackedSurface>,
     pub(crate) coefficients: SharedBuffer<Df32>,
@@ -275,7 +276,7 @@ impl Inner {
     fn upload(&self, set: PackedSystemSet) -> MkResult<Uploaded> {
         let _copies = crate::buffer::meter(&self.external_copied_bytes);
         Ok(Uploaded {
-            cache_id: self.next_id.fetch_add(1, Ordering::Relaxed),
+            content: set.digest(),
             headers: self.ctx.buffer(&set.headers)?,
             surfaces: self.ctx.buffer(&set.surfaces)?,
             coefficients: self.ctx.buffer(&set.coefficients)?,

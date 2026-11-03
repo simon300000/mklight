@@ -1,6 +1,8 @@
 //! Backend-independent half of a resident runtime: pooled leases, publication,
 //! explicit readback, the operation cache and result packing.
-use super::immutable::{ImmutableCache, OperationCacheKey};
+use super::immutable::{
+    BuildCost, CacheCategory, CacheCategoryStats, CacheStats, ImmutableCache, OperationCacheKey,
+};
 use super::pool::{Allocation, Pool};
 use super::*;
 use mklight_core::job::RunTimer;
@@ -45,7 +47,7 @@ impl<T: Storage> Runtime<T> {
     pub fn new(owner: u64) -> Self {
         Self {
             owner,
-            cache: Arc::new(Mutex::new(ImmutableCache::new(64 << 20))),
+            cache: Arc::new(Mutex::new(ImmutableCache::new())),
             next: AtomicU64::new(1),
             copied_bytes: AtomicU64::new(0),
             pool: Arc::new(Mutex::new(Pool::new(256 << 20))),
@@ -152,7 +154,9 @@ impl<T: Storage> Runtime<T> {
     pub fn cache_stats(&self, mut s: ResidentCacheStats) -> ResidentCacheStats {
         s.copied_bytes = self.copied_bytes.load(Ordering::Relaxed);
         s.pooled_bytes = lock(&self.pool).bytes() as u64;
-        s.operation_cache_bytes = lock(&self.cache).bytes() as u64;
+        let cache = lock(&self.cache);
+        s.operation_cache_bytes = cache.bytes() as u64;
+        s.categories.extend(cache.stats());
         s
     }
     pub fn operation_cache(&self, plan: &ResidentPlan, kernel_build: &str) -> OperationCache {
@@ -191,6 +195,8 @@ impl<T: Storage> Runtime<T> {
             outputs.push(h.clone());
         }
         let pack = Instant::now();
+        stats.host.add(&plan.host);
+        stats.memory.host_peak_rss_bytes = MemoryStats::host_peak_rss();
         let mut run_info = stamp(plan, backend, timer);
         stats.stages.push(StageStats {
             operation: plan.operations.len(),
@@ -217,23 +223,70 @@ pub struct OperationCache {
     pub identity: SystemCacheKey,
 }
 impl OperationCache {
-    pub fn key(&self, operation: impl Into<String>) -> OperationCacheKey {
+    /// A key scoped to the plan's whole identity (snapshot, settings, ...).
+    pub fn key(&self, category: CacheCategory, operation: impl Into<String>) -> OperationCacheKey {
         OperationCacheKey {
             system: self.identity.clone(),
+            category,
             operation: operation.into(),
             plan_version: PLAN_VERSION,
         }
     }
-    pub fn get<V: Any + Send + Sync>(&self, key: &OperationCacheKey) -> MkResult<Option<Arc<V>>> {
-        lock(&self.cache).get(key)
+    /// A content-addressed key: only layout and kernel build come from the
+    /// plan, so `operation` must name digests of every input it depends on.
+    /// Plans of different analyses or snapshots share such entries whenever
+    /// their inputs are bitwise identical.
+    pub fn content_key(
+        &self,
+        category: CacheCategory,
+        operation: impl Into<String>,
+    ) -> OperationCacheKey {
+        OperationCacheKey {
+            system: SystemCacheKey {
+                snapshot: String::new(),
+                library: String::new(),
+                configuration: String::new(),
+                spectrum: String::new(),
+                layout: self.identity.layout,
+                kernel_build: self.identity.kernel_build.clone(),
+                operation_settings: "content-addressed".into(),
+            },
+            category,
+            operation: operation.into(),
+            plan_version: PLAN_VERSION,
+        }
     }
-    pub fn insert<V: Any + Send + Sync>(
+    /// The entry, counting a hit (with its saved build cost) or a miss in `plan`.
+    pub fn get<V: Any + Send + Sync>(
+        &self,
+        key: &OperationCacheKey,
+        plan: &mut CacheStats,
+    ) -> MkResult<Option<Arc<V>>> {
+        let got = lock(&self.cache).get::<V>(key)?;
+        let s = plan.entry(key.category).or_default();
+        Ok(match got {
+            Some((v, cost)) => {
+                s.hits += 1;
+                s.saved_seconds += cost;
+                Some(v)
+            }
+            None => {
+                s.misses += 1;
+                None
+            }
+        })
+    }
+    pub fn insert(
         &self,
         key: OperationCacheKey,
         bytes: usize,
-        value: Arc<V>,
+        cost: BuildCost,
+        value: Arc<dyn Any + Send + Sync>,
+        plan: &mut CacheStats,
     ) {
-        lock(&self.cache).insert(key, bytes, value)
+        let category = key.category;
+        let delta: CacheCategoryStats = lock(&self.cache).insert(key, bytes, cost.seconds(), value);
+        plan.entry(category).or_default().add(&delta);
     }
 }
 

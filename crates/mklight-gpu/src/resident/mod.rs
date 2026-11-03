@@ -351,6 +351,8 @@ pub struct ResidentPlan {
     pub identity: PlanIdentity,
     pub settings: serde_json::Value,
     pub seed: Option<u64>,
+    /// Host preparation already done for this plan (reported, not identity).
+    pub host: HostPreparation,
 }
 impl ResidentPlan {
     pub fn new(snapshot: Snapshot) -> Self {
@@ -364,6 +366,7 @@ impl ResidentPlan {
             identity: PlanIdentity::default(),
             settings: serde_json::json!({}),
             seed: None,
+            host: HostPreparation::default(),
         }
     }
     pub fn scratch(&mut self, desc: BufferDesc) -> BufferId {
@@ -562,6 +565,146 @@ pub struct PlanStats {
     pub peak_bytes: u64,
     pub fallback_count: u64,
     pub polished_rays: u64,
+    /// This plan's operation-cache activity by category.
+    #[serde(default)]
+    pub cache: immutable::CacheStats,
+    /// Pupil-aiming convergence of this plan's generations.
+    #[serde(default)]
+    pub aiming: AimStats,
+    /// Host f64 preparation handed to the plan (chief seeds).
+    #[serde(default)]
+    pub host: HostPreparation,
+    /// Memory observed when the plan completed.
+    #[serde(default)]
+    pub memory: MemoryStats,
+}
+impl PlanStats {
+    /// Merge another plan's cache, aiming, host and memory records (the
+    /// scalar counters and stages stay with the caller's own accumulation).
+    pub fn add_activity(&mut self, o: &PlanStats) {
+        immutable::merge_cache_stats(&mut self.cache, &o.cache);
+        self.aiming.add(&o.aiming);
+        self.host.add(&o.host);
+        self.memory.max(&o.memory);
+    }
+}
+/// Iteration statistics of generated (pupil) aims. Bins: 0, 1, 2, 3–4, 5–8,
+/// 9–16, 17–60, more than 60 Newton iterations.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AimStats {
+    pub generations: u64,
+    pub rays: u64,
+    /// Rays reported unresolved (any nonzero aim status).
+    pub failed: u64,
+    pub iterations: u64,
+    pub max_iterations: u32,
+    pub histogram: [u64; 8],
+}
+impl AimStats {
+    pub const BINS: [u32; 7] = [0, 1, 2, 4, 8, 16, 60];
+    pub fn bin(iterations: u32) -> usize {
+        Self::BINS
+            .iter()
+            .position(|&b| iterations <= b)
+            .unwrap_or(7)
+    }
+    /// Statistics of a `ResidentRays` report (u32 [4,n]).
+    pub fn from_report(report: &[u32], n: usize) -> Self {
+        let mut s = Self {
+            generations: 1,
+            rays: n as u64,
+            ..Default::default()
+        };
+        for i in 0..n {
+            let it = report[n + i];
+            s.failed += u64::from(report[i] != 0);
+            s.iterations += it as u64;
+            s.max_iterations = s.max_iterations.max(it);
+            s.histogram[Self::bin(it)] += 1;
+        }
+        s
+    }
+    pub fn add(&mut self, o: &AimStats) {
+        self.generations += o.generations;
+        self.rays += o.rays;
+        self.failed += o.failed;
+        self.iterations += o.iterations;
+        self.max_iterations = self.max_iterations.max(o.max_iterations);
+        for (a, b) in self.histogram.iter_mut().zip(o.histogram) {
+            *a += b;
+        }
+    }
+}
+/// Host f64 preparation reused by a plan: chief seed rows built from the
+/// reference tracer's prepared fields (`reused_fields`) or fields solved for
+/// this plan (`solved_fields`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostPreparation {
+    pub seed_rows: u64,
+    pub reused_fields: u64,
+    pub solved_fields: u64,
+    pub seconds: f64,
+}
+impl HostPreparation {
+    pub fn add(&mut self, o: &HostPreparation) {
+        self.seed_rows += o.seed_rows;
+        self.reused_fields += o.reused_fields;
+        self.solved_fields += o.solved_fields;
+        self.seconds += o.seconds;
+    }
+}
+/// Memory high-water marks. `peak_bytes` of [`PlanStats`] is the plan's own
+/// live storage; these are backend/process figures at plan completion.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MemoryStats {
+    /// Backend device allocations (Metal `currentAllocatedSize`), 0 if unknown.
+    pub device_allocated_bytes: u64,
+    /// Process resident-set high-water mark, 0 if unknown.
+    pub host_peak_rss_bytes: u64,
+}
+impl MemoryStats {
+    pub fn max(&mut self, o: &MemoryStats) {
+        self.device_allocated_bytes = self.device_allocated_bytes.max(o.device_allocated_bytes);
+        self.host_peak_rss_bytes = self.host_peak_rss_bytes.max(o.host_peak_rss_bytes);
+    }
+    /// Process resident-set high-water mark (getrusage), 0 where unavailable.
+    pub fn host_peak_rss() -> u64 {
+        #[cfg(unix)]
+        {
+            #[repr(C)]
+            struct Timeval {
+                sec: i64,
+                usec: i64,
+            }
+            #[repr(C)]
+            struct Rusage {
+                utime: Timeval,
+                stime: Timeval,
+                maxrss: i64,
+                rest: [i64; 13],
+            }
+            unsafe extern "C" {
+                fn getrusage(who: i32, usage: *mut Rusage) -> i32;
+            }
+            let mut u = std::mem::MaybeUninit::<Rusage>::zeroed();
+            // SAFETY: RUSAGE_SELF (0) fills the caller-provided struct, whose
+            // layout matches the 64-bit Darwin/Linux `struct rusage`.
+            if unsafe { getrusage(0, u.as_mut_ptr()) } != 0 {
+                return 0;
+            }
+            let rss = unsafe { u.assume_init() }.maxrss.max(0) as u64;
+            // Darwin reports bytes, Linux kilobytes.
+            if cfg!(target_os = "macos") {
+                rss
+            } else {
+                rss * 1024
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            0
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct PlanResult {
@@ -596,6 +739,10 @@ pub struct ResidentCacheStats {
     pub system_bytes: u64,
     pub pooled_bytes: u64,
     pub operation_cache_bytes: u64,
+    /// Every cache category, prepared systems included: cumulative activity,
+    /// occupancy and budget.
+    #[serde(default)]
+    pub categories: immutable::CacheStats,
 }
 pub fn stamp(plan: &ResidentPlan, backend: &dyn ComputeBackend, timer: RunTimer) -> RunInfo {
     let operations: Vec<_> = plan.operations.iter().map(|op| match op {

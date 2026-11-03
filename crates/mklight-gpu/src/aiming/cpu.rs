@@ -1,4 +1,5 @@
 use super::*;
+use crate::resident::immutable::CacheCategory;
 use crate::{
     FpEnv, Ftz, Ieee,
     layout::TraceParams,
@@ -6,7 +7,7 @@ use crate::{
     resident::cpu::Execution,
     trace_kernel::{self as tr, KRayIn, ResidentState},
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 fn words<'a>(x: &'a Execution, v: &PlanView) -> &'a [u32] {
     let start = v.offset * v.desc.element.words();
     &x.words(v.buffer)[start..start + v.desc.len().unwrap() * v.desc.element.words()]
@@ -118,11 +119,7 @@ pub(super) fn record_planes(s: ResidentState) -> ([f32; 13], [f32; 13]) {
 pub fn execute(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
     // The frozen execution seam exposes build identity but not the FP mode.
     // CPU backend build identities distinguish IEEE from flush-to-zero.
-    if x.cache_key("aiming")
-        .system
-        .kernel_build
-        .ends_with("flush-to-zero")
-    {
+    if x.kernel_build().ends_with("flush-to-zero") {
         execute_in::<Ftz>(r, x, ctl)
     } else {
         execute_in::<Ieee>(r, x, ctl)
@@ -146,17 +143,21 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
             if samples.iter().any(|s| s.field as usize >= fields.len()) {
                 return Err(bad("sample field index"));
             }
-            let key = |what: &str| {
-                g.field_key.as_ref().map(|k| {
-                    x.cache_key(format!(
-                        "{what}:{:?}:{k}:{}:{}",
-                        g.systems,
-                        g.tolerance.to_bits(),
-                        g.max_iterations
-                    ))
-                })
+            // CPU storage is complete at every operation, so in-plan rows have
+            // content too; device-built systems stay plan-local as on Metal.
+            let identity = aim_identity(
+                g,
+                matches!(g.systems, SystemSet::Uploaded(_)).then(|| set.digest()),
+                Some(words(x, &g.field_wavelength)),
+                g.seeds.as_ref().map(|v| words(x, v)),
+            );
+            let key = |category, what: &str| {
+                identity
+                    .as_ref()
+                    .map(|id| x.content_key(category, format!("{what}:{id}")))
             };
-            let (seed_key, table_key) = (key("aim"), key("aim table"));
+            let seed_key = key(CacheCategory::ChiefSources, "aim chiefs");
+            let table_key = key(CacheCategory::SeedTables, "aim table");
             let check = || ctl.check().is_ok();
             let make = |f| {
                 let f: &FieldSpec = f;
@@ -172,21 +173,16 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     env: Default::default(),
                 }
             };
-            let cached = match &seed_key {
-                Some(k) => x.cached::<Vec<ChiefSeed>>(k)?,
-                None => None,
+            // Host rows take precedence: nothing is solved or cached for them.
+            let cached = match (&g.seeds, &seed_key) {
+                (None, Some(k)) => x.cached::<Vec<ChiefSeed>>(k)?,
+                _ => None,
             };
-            let seeds = match cached {
-                Some(s) => s,
-                None if g.seeds.is_some() => {
-                    let host: Vec<ChiefSeed> =
-                        bytemuck::cast_slice(words(x, g.seeds.as_ref().unwrap())).to_vec();
-                    if host.len() != fields.len() {
-                        return Err(bad("host chief seed rows"));
-                    }
-                    Arc::new(host)
-                }
-                None => {
+            let seeds = match (cached, &g.seeds) {
+                (Some(s), _) => s,
+                (None, Some(v)) => Arc::new(bytemuck::cast_slice(words(x, v)).to_vec()),
+                (None, None) => {
+                    let start = Instant::now();
                     let mut seeds = vec![];
                     for (i, f) in fields.iter().enumerate() {
                         ctl.check()?;
@@ -195,7 +191,8 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     }
                     let seeds = Arc::new(seeds);
                     if let Some(k) = seed_key {
-                        x.cache(k, seeds.len() * size_of::<ChiefSeed>(), seeds.clone());
+                        let cost = start.elapsed().as_secs_f64();
+                        x.cache(k, seeds.len() * size_of::<ChiefSeed>(), cost, seeds.clone());
                     }
                     seeds
                 }
@@ -208,6 +205,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                 Some(match cached {
                     Some(t) => t,
                     None => {
+                        let start = Instant::now();
                         let mut table = Vec::with_capacity(fields.len() * TABLE_NODES);
                         for (row, f) in fields.iter().enumerate() {
                             for k in 0..TABLE_NODES {
@@ -221,7 +219,8 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                         }
                         let table = Arc::new(table);
                         if let Some(k) = table_key {
-                            x.cache(k, table.len() * size_of::<SeedNode>(), table.clone());
+                            let cost = start.elapsed().as_secs_f64();
+                            x.cache(k, table.len() * size_of::<SeedNode>(), cost, table.clone());
                         }
                         table
                     }
@@ -253,8 +252,12 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     );
                 }
             }
+            let n = g.output.count;
+            x.stats.aiming.add(&resident::AimStats::from_report(
+                x.words(g.output.report),
+                n,
+            ));
             if let Some(id) = g.unresolved {
-                let n = g.output.count;
                 let indices: Vec<u32> = (0..n)
                     .filter(|&i| x.words(g.output.report)[i] != 0)
                     .map(|i| i as u32)

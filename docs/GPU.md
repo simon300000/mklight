@@ -1105,7 +1105,7 @@ tests; they do not relax §7.
 | Computation / source | Work size | Placement and reason | Precision |
 |---|---|---|---|
 | Sequential and path traces, all supported sags, DOE phase/order, refraction/reflection, clipping (`trace`, `trace_kernel`) | FWP, typically 10²–10⁶ rays × S; optional S records/ray | GPU: independent rays with shared surface data | G + OPL; local frames, double-float geometry/phase |
-| Field/pupil mapping, real-image-height field solve, chief/pupil Newton aiming (`trace/tracer`, `pupil`) | FW chiefs + FWP solves, up to configured iteration cap | GPU: many independent small Newton solves; cached chief seeds | G; double-float residual/Jacobian/update; preserve requested aim tolerance |
+| Field/pupil mapping, real-image-height field solve, chief/pupil Newton aiming (`trace/tracer`, `pupil`) | FW chiefs + FWP solves, up to configured iteration cap | Field source and chief/Jacobian rows: host f64 (reference tracer, serial per field); pupil aiming: GPU, many independent small Newton solves seeded by those rows | G; double-float residual/Jacobian/update; preserve requested aim tolerance |
 | Automatic semi-diameters, surface profiles/meshes, layout rays (`trace/semidia`, `analysis/layout`) | FW × rim samples × S; 10²–10⁶ vertices | GPU for traces, sag samples and extrema; host for small topology/labels | G; double-float world-to-local differences, f32 display coordinates relative to origin |
 | Spot, ray grid/fans, OPD fans, footprint/overlays, longitudinal aberration, lateral colour (`analysis/{spot,fans,illumination,seidel}`) | FWP or 10²–10⁴ fan points; footprint records P×S | GPU trace and reductions; host assembles result metadata/small hull topology | G + OPL + R; chief-relative two-pass moments |
 | Geometric EE/ensquared energy, geometric MTF, best focus (`analysis/energy`) | P order statistics; P×frequencies; P×focus trials | GPU stable sort/scan, complex sums and focus merits; scalar Brent decisions may stay host | R; fixed trees, stable radius/index tie order |
@@ -1280,12 +1280,30 @@ slices; Metal execution exposes typed view bindings, exclusive output
 leases, pooled temporaries and the existing command encoder. New owners
 change these handlers without editing crate roots or central routers.
 
-The pool holds at most 256 MiB of idle storage per backend; immutable
-system caching holds at most 64 entries and 64 MiB. A separate immutable
-operation cache (64 entries / 64 MiB) serves aim seeds, transform plans,
-twiddles, pupils and stencils; `cache_key(operation)` combines the plan's
+The pool holds at most 256 MiB of idle storage per backend. Immutable
+caches are split into categories with independent byte and entry budgets
+(`CacheCategory::budget`), so one never evicts another: prepared (uploaded)
+systems 64 MiB / 64 entries, chief sources 8 MiB / 1024, seed tables
+64 MiB / 256, traced pupils 128 MiB / 64, transform plans (recipes,
+twiddles, chirps, immutable spectra) 64 MiB / 256 and small metadata such
+as path programs 4 MiB / 512. Within an operation category, entries are
+retained by measured rebuild cost per byte with recency aging
+(GreedyDual-Size: priority = category clock + cost/bytes, refreshed on a
+hit; the lowest priority is evicted and advances the clock), so an
+expensive seed table outlives cheap recent entries. Build cost is host
+time, or for device builds the wall time until the building command
+completed (an upper bound when fused with later work).
+`cache_key(category, operation)` combines the plan's
 snapshot/library/configuration/spectrum, layout, build and settings
-identity with the operation name and plan version. P0 uses it for path-program buffers. The pipeline cache
+identity with the operation name and plan version;
+`content_key(category, operation)` keeps only layout and build, for
+operations whose name carries digests of every input. Entries publish only
+after the work building them completed: a cancelled or failed plan
+publishes nothing (the CPU specification defers publication to plan
+completion too). `PlanStats.cache` holds each plan's hits, misses, inserts,
+rejections, evictions, evicted bytes and build seconds (spent, saved,
+evicted) per category; `resident_cache_stats().categories` accumulates them
+with occupancy and budgets. The pipeline cache
 holds at most 128 specialisations; live jobs retain evicted objects. Active leases/handles
 pin resources outside idle-cache limits. System cache identity includes
 snapshot/library/configuration/spectrum, layout, build and operation
@@ -1366,9 +1384,11 @@ failures and cancellation; fallback policy remains with the engine adapter.
 pool for its lifetime. Views carry type, shape, stride, owner and generation;
 validate at upload/plan submission, not in every kernel. Leases pin buffers
 until all dependent command buffers finish, including cancelled jobs;
-mutable scratch is never shared between live jobs. Bounded caches use the
-derived snapshot, library, configuration/spectrum, layout and kernel build
-as keys; optical caches also include all sampling/radiometry settings.
+mutable scratch is never shared between live jobs. Plan-scoped caches use
+the derived snapshot, library, configuration/spectrum, layout and kernel
+build as keys, and optical caches also include all sampling/radiometry
+settings; content-addressed entries (aiming) use digests of every input
+instead.
 Warm calls reuse allocations, packed systems, aim seeds, transform plans,
 twiddles/chirps, pupil grids and stencils. Upload only changed candidate
 parameters; read back requested final buffers/scalars, never intermediate
@@ -1377,8 +1397,29 @@ adapters. Solvers hold no Metal objects. A small ordered operation list
 suffices; this is not a general graph compiler.
 
 **Aiming and OPD.** Generate all current field kinds, finite/infinite and
-telecentric launches, vignetting and pupil patterns on device. Cache
-per-system/field/λ chief aims and Jacobians. Newton–Broyden uses double-float
+telecentric launches, vignetting and pupil patterns on device. Chief rows
+come from the host: `ChiefSeed::host` converts the reference tracer's f64
+`PreparedField` (the real-image-height source once per field, the chief aim
+point and finite-difference stop Jacobian once per field and wavelength,
+with the same 1e-12 relative image-height residual the device solve used)
+into the device row. Every adapter — geometric grids and layout, wave
+pupils, radiometry and ghost pupils, the candidate evaluator — passes these
+rows as `GenerateAim.seeds`, reusing the tracer's prepared system fields
+and solving other field points once each. The device chief kernel
+(`mkl_aim_chiefs`, one thread per field row, a long nested serial solve)
+remains only for requests without rows. Chief rows and seed tables are
+reused across plans by content (`aiming::aim_identity`): the digest of the
+immutable upload (`PackedSystemSet::digest`, shared by every lease and by
+re-uploads of equal content), the exact imported field rows, the host rows
+or the device solve, tolerance and iteration cap. Handles, external cache
+keys, snapshots and plan settings never identify them, so analyses and
+leases with equal inputs share them and any geometry, catalogue or
+environment change misses; device-built systems and rows produced inside a
+plan stay plan-local. `PlanStats.aiming` records each plan's generations
+(rays, failures, iteration sum/maximum and a histogram, reduced on the
+device by `mkl_aim_stats`), `PlanStats.host` the host preparation (rows,
+reused/solved fields, seconds) and `PlanStats.memory` the device allocation
+and process RSS high-water mark at completion. Newton–Broyden uses double-float
 stop hits, finite differences, 2×2 solves and updates, the reference's
 continuation schedule and configured cap/tolerance (normally 1e-10 relative
 to stop radius). A rounded f32 stop hit cannot drive that solve. Compact

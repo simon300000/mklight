@@ -100,6 +100,16 @@ pub fn pupil_plan(
         t.aiming(),
     )?;
     let fields = import(b, &mut p, &[spec])?;
+    // The chief row comes from the prepared field (f64 source and chief).
+    let start = std::time::Instant::now();
+    let seed = aiming::ChiefSeed::host(t, field, wl);
+    p.host.add(&crate::resident::HostPreparation {
+        seed_rows: 1,
+        reused_fields: 1,
+        solved_fields: 0,
+        seconds: start.elapsed().as_secs_f64(),
+    });
+    let seeds = import(b, &mut p, &[seed])?;
     let samples = b.fill_buffer(record_desc::<aiming::Sample>(points.len()), &mut |mut f| {
         let dest: &mut [aiming::Sample] = bytemuck::cast_slice_mut(f.as_mut_slice::<u32>()?);
         for (i, (point, out)) in points.iter().zip(dest).enumerate() {
@@ -130,7 +140,7 @@ pub fn pupil_plan(
                 unresolved: None,
                 field_wavelength: fields,
                 field_key: Some(blake3::hash(bytemuck::bytes_of(&spec)).to_hex().to_string()),
-                seeds: None,
+                seeds: Some(seeds),
                 tolerance,
                 max_iterations: 40,
                 output: rays.clone(),
