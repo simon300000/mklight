@@ -8,7 +8,7 @@ use crate::{
 };
 use mklight_core::{MkResult, job::RunTimer};
 use mklight_gpu::resident::{
-    immutable::OperationCacheKey,
+    immutable::{BuildCost, CacheCategory, CacheStats, OperationCacheKey},
     pool::Allocation,
     runtime::{self, OperationCache},
     *,
@@ -72,6 +72,7 @@ pub(crate) fn execute(
         retired: vec![],
         checks: vec![],
         cache_pending: RefCell::new(vec![]),
+        cache_stats: RefCell::new(CacheStats::new()),
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
     };
     let mut imported = HashSet::new();
@@ -173,6 +174,8 @@ pub(crate) fn execute(
         ..Default::default()
     });
     x.stats.copied_bytes = crate::buffer::copied_bytes() - copied_before;
+    x.stats.cache = x.cache_stats.take();
+    x.stats.memory.device_allocated_bytes = gpu.allocated_bytes();
     let stats = std::mem::take(&mut x.stats);
     rt.finish(plan, backend, timer, start, stats, ctl, |id| {
         x.take_output(id)
@@ -217,13 +220,16 @@ pub(crate) struct Execution<'a> {
     retired: Vec<Lease>,
     checks: Vec<(Lease, CompletionCheck)>,
     cache_pending: RefCell<Vec<CachePublication>>,
+    /// This plan's cache activity, by category.
+    cache_stats: RefCell<CacheStats>,
 }
 /// Host validation of a buffer once the batch writing it has completed.
 type CompletionCheck = fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>;
 struct CachePublication {
     key: OperationCacheKey,
+    bytes: usize,
+    cost: BuildCost,
     value: Arc<dyn Any + Send + Sync>,
-    publish: Box<dyn FnOnce(&OperationCache)>,
 }
 impl Execution<'_> {
     /// Deferred resident encoding. No host storage access until `flush`.
@@ -245,8 +251,9 @@ impl Execution<'_> {
             check(&buffer, &mut self.stats)?;
             self.live_bytes -= buffer.words().max(4) as u64 * 4;
         }
-        for entry in self.cache_pending.borrow_mut().drain(..) {
-            (entry.publish)(&self.cache);
+        for e in self.cache_pending.borrow_mut().drain(..) {
+            let stats = self.cache_stats.get_mut();
+            self.cache.insert(e.key, e.bytes, e.cost, e.value, stats);
         }
         self.live_bytes -= self
             .retired
@@ -281,8 +288,20 @@ impl Execution<'_> {
     }
 
     /// Operation-cache key including the plan's full system/build/settings identity.
-    pub(crate) fn cache_key(&self, operation: impl Into<String>) -> OperationCacheKey {
-        self.cache.key(operation)
+    pub(crate) fn cache_key(
+        &self,
+        category: CacheCategory,
+        operation: impl Into<String>,
+    ) -> OperationCacheKey {
+        self.cache.key(category, operation)
+    }
+    /// Content-addressed key; `operation` names digests of all its inputs.
+    pub(crate) fn content_key(
+        &self,
+        category: CacheCategory,
+        operation: impl Into<String>,
+    ) -> OperationCacheKey {
+        self.cache.content_key(category, operation)
     }
     pub(crate) fn cached<T: Any + Send + Sync>(
         &self,
@@ -302,20 +321,35 @@ impl Execution<'_> {
                 .map(Some)
                 .map_err(|_| bad("operation cache type collision"));
         }
-        self.cache.get(key)
+        self.cache.get(key, &mut self.cache_stats.borrow_mut())
     }
+    /// Publish `value` once the work building it completes. `cost` is its
+    /// build cost; `BuildCost::Since(start)` resolves at publication.
     pub(crate) fn cache<T: Any + Send + Sync>(
         &self,
         key: OperationCacheKey,
         bytes: usize,
+        cost: BuildCost,
         value: Arc<T>,
     ) {
-        let (k, v) = (key.clone(), value.clone());
         self.cache_pending.borrow_mut().push(CachePublication {
             key,
+            bytes,
+            cost,
             value,
-            publish: Box::new(move |cache| cache.insert(k, bytes, v)),
         });
+    }
+    /// The words of an imported (complete at submission) view; None for plan
+    /// buffers, whose device contents are not yet defined on the host.
+    pub(crate) fn import_words(&self, view: &PlanView) -> Option<&[u32]> {
+        match self.buffers[view.buffer.0].as_ref()? {
+            Slot::Import(b, offset) => {
+                let start = offset + view.offset * view.desc.element.words();
+                let len = view.desc.len().ok()? * view.desc.element.words();
+                b.as_slice().get(start..start + len)
+            }
+            Slot::Owned(_) => None,
+        }
     }
     /// A system pinned at submission (declared in the operation's accesses).
     pub(crate) fn system(&self, handle: SystemHandle) -> MkResult<Arc<Uploaded>> {
@@ -381,7 +415,10 @@ impl Execution<'_> {
             bytemuck::cast_slice_mut(ff.as_mut_slice()),
             fu.as_mut_slice(),
         );
-        let key = self.cache_key(format!("trace_steps:{:?}", prep.steps));
+        let key = self.cache_key(
+            CacheCategory::Metadata,
+            format!("trace_steps:{:?}", prep.steps),
+        );
         let steps = if let Some(steps) = self.cached::<SharedBuffer<u32>>(&key)? {
             steps
         } else {
@@ -392,7 +429,12 @@ impl Execution<'_> {
             );
             self.stats.allocations += 1;
             self.stats.uploaded_bytes += (prep.steps.len() * 4) as u64;
-            self.cache(key, (prep.steps.len() * 4).max(16), steps.clone());
+            self.cache(
+                key,
+                (prep.steps.len() * 4).max(16),
+                BuildCost::Seconds(0.),
+                steps.clone(),
+            );
             steps
         };
         self.stats.uploaded_bytes += ((fu.len() + ff.len()) * 4) as u64;

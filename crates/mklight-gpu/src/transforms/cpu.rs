@@ -1,6 +1,7 @@
 //! CPU-f32 specification of the recipe steps, following the Metal kernels.
 use super::{recipe::*, *};
 use crate::consts::*;
+use crate::resident::immutable::CacheCategory::TransformPlans as TRANSFORM_PLANS;
 use std::sync::Arc;
 type C = [f32; 2];
 pub(super) fn cis(mut a: Df32) -> C {
@@ -218,7 +219,7 @@ pub(super) fn execute(
     }
     for (i, s) in recipe.steps.iter().enumerate() {
         ctl.check()?;
-        let key = x.cache_key(keys[i].clone());
+        let key = x.cache_key(TRANSFORM_PLANS, keys[i].clone());
         let cached = if s.cache {
             x.cached::<Vec<C>>(&key)?
         } else {
@@ -228,9 +229,10 @@ pub(super) fn execute(
             Some(v) => v,
             None => {
                 let input = |slot: usize| slots[slot].as_deref().map(Vec::as_slice).unwrap_or(&[]);
+                let t = std::time::Instant::now();
                 let v = Arc::new(eval(&s.p, input(s.a), input(s.b), ctl)?);
                 if s.cache {
-                    x.cache(key, v.len() * 8, v.clone());
+                    x.cache(key, v.len() * 8, t.elapsed().as_secs_f64(), v.clone());
                 }
                 v
             }

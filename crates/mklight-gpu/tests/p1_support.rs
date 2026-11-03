@@ -85,6 +85,7 @@ pub fn make_plan(
             unresolved: None,
             field_wavelength: fw,
             field_key: Some(format!("{field}:{wl}:{:?}", bytemuck::bytes_of(&spec))),
+            seeds: None,
             tolerance: 1e-10,
             max_iterations: cap,
             output: generated.clone(),
@@ -163,6 +164,43 @@ pub fn make_plan(
         p.outputs.extend([output, status]);
     }
     (p, handle)
+}
+/// The plan with its device chief solve replaced by the reference tracer's
+/// f64 chief row (`ChiefSeed::host`) for `field` and `wl`.
+pub fn host_seeded(
+    b: &dyn ComputeBackend,
+    mut p: ResidentPlan,
+    t: &SequentialTracer,
+    field: usize,
+    wl: usize,
+) -> ResidentPlan {
+    let seeds = upload(b, &mut p, 1, &[ChiefSeed::host(t, t.field(field), wl)]);
+    for op in &mut p.operations {
+        if let ResidentOp::Aiming(Request::GenerateAim(g)) = op {
+            g.seeds = Some(seeds.clone());
+        }
+    }
+    p
+}
+/// Point every operation of `p` at another system handle.
+pub fn rebind(mut p: ResidentPlan, h: SystemHandle) -> ResidentPlan {
+    for op in &mut p.operations {
+        match op {
+            ResidentOp::Aiming(Request::GenerateAim(g)) => g.systems = SystemSet::Uploaded(h),
+            ResidentOp::Aiming(Request::TraceResident(t)) => t.systems = SystemSet::Uploaded(h),
+            _ => {}
+        }
+    }
+    p
+}
+/// The plan without cross-plan aiming reuse (the uncached reference).
+pub fn uncached(mut p: ResidentPlan) -> ResidentPlan {
+    for op in &mut p.operations {
+        if let ResidentOp::Aiming(Request::GenerateAim(g)) = op {
+            g.field_key = None;
+        }
+    }
+    p
 }
 pub fn read_all(b: &dyn ComputeBackend, result: &PlanResult) -> Vec<BufferData> {
     result

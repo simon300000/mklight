@@ -9,8 +9,12 @@ use crate::{
 use bytemuck::{Pod, Zeroable};
 use mklight_core::MkResult;
 use mklight_gpu::{
-    aiming::*, consts::*, layout::TraceParams, pending::JobControl,
-    resident::immutable::OperationCacheKey, resident::*,
+    aiming::*,
+    consts::*,
+    layout::TraceParams,
+    pending::JobControl,
+    resident::immutable::{BuildCost, CacheCategory, OperationCacheKey},
+    resident::*,
 };
 use std::{ops::Deref, sync::Arc, time::Instant};
 #[repr(C)]
@@ -158,6 +162,19 @@ impl Deref for Rows {
         }
     }
 }
+/// Chief rows: host-prepared rows bound from the plan, or device rows.
+enum Seeds {
+    Host(PlanView),
+    Device(Rows),
+}
+impl Seeds {
+    fn bind(&self, e: &Encoder<'_>, index: usize, x: &Execution<'_>) {
+        match self {
+            Self::Host(v) => bind(e, index, x, v),
+            Self::Device(b) => e.set_buffer(index, b, 0),
+        }
+    }
+}
 fn rows(
     x: &mut Execution<'_>,
     key: Option<OperationCacheKey>,
@@ -171,11 +188,14 @@ fn rows(
     }
     Ok(match key {
         Some(k) => {
+            let start = Instant::now();
             x.stats.allocations += 1;
             let mut b = x.gpu.buffer_filled(words, |_| {})?;
             build(x, &mut b)?;
             let b = Arc::new(b);
-            x.cache(k, words * 4, b.clone());
+            // Published when the command holding the build completes; a
+            // cancelled or failed plan never publishes it.
+            x.cache(k, words * 4, BuildCost::Since(start), b.clone());
             Rows::Cached(b)
         }
         None => {
@@ -275,45 +295,55 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..p
             };
             let newton = kernel::newton_params();
-            let key = |x: &Execution<'_>, what: &str| {
-                g.field_key.as_ref().map(|k| {
-                    x.cache_key(format!(
-                        "{what}:{:?}:{k}:{}:{}",
-                        g.systems,
-                        g.tolerance.to_bits(),
-                        g.max_iterations
-                    ))
-                })
-            };
-            let seed_key = key(x, "aim");
-            let seeds = rows(
-                x,
-                seed_key,
-                nf * MKL_AIM_CACHE_WORDS as usize,
-                |x, seeds| {
-                    let pso = x
-                        .gpu
-                        .pipeline(&systems.kernel("mkl_aim_chiefs", "mkl_aim_chiefs_overlays"))?;
-                    newton_commands(
-                        x,
-                        &mut stage,
-                        ctl,
-                        nf,
-                        (0.0, 0.05, "chief aiming"),
-                        |e, x, p| {
-                            systems.bind(e, x);
-                            bind(e, 3, x, &g.field_wavelength);
-                            e.set_buffer_mut(4, seeds, 0);
-                            e.set_bytes(5, &params(p));
-                            e.set_bytes(6, &newton);
-                            e.dispatch_1d(&pso, p.count as usize);
-                        },
-                    )
+            // Reuse follows the content of every input, never handles: the
+            // immutable upload, the imported field rows and host seed rows.
+            let identity = aim_identity(
+                g,
+                match &systems {
+                    Systems::Uploaded(up) => Some(up.content),
+                    Systems::Resident { .. } => None,
                 },
-            )?;
+                x.import_words(&g.field_wavelength),
+                g.seeds.as_ref().and_then(|v| x.import_words(v)),
+            );
+            let key = |x: &Execution<'_>, category, what: &str| {
+                identity
+                    .as_ref()
+                    .map(|id| x.content_key(category, format!("{what}:{id}")))
+            };
+            // Host rows (the reference tracer's f64 preparation) replace the
+            // device chief/image-height solve entirely.
+            let seeds = match &g.seeds {
+                Some(v) => Seeds::Host(v.clone()),
+                None => Seeds::Device(rows(
+                    x,
+                    key(x, CacheCategory::ChiefSources, "aim chiefs"),
+                    nf * MKL_AIM_CACHE_WORDS as usize,
+                    |x, seeds| {
+                        let pso = x.gpu.pipeline(
+                            &systems.kernel("mkl_aim_chiefs", "mkl_aim_chiefs_overlays"),
+                        )?;
+                        newton_commands(
+                            x,
+                            &mut stage,
+                            ctl,
+                            nf,
+                            (0.0, 0.05, "chief aiming"),
+                            |e, x, p| {
+                                systems.bind(e, x);
+                                bind(e, 3, x, &g.field_wavelength);
+                                e.set_buffer_mut(4, seeds, 0);
+                                e.set_bytes(5, &params(p));
+                                e.set_bytes(6, &newton);
+                                e.dispatch_1d(&pso, p.count as usize);
+                            },
+                        )
+                    },
+                )?),
+            };
             let table = if uses_table(g) {
-                let table_key = key(x, "aim table");
                 let words = nf * TABLE_NODES * MKL_AIM_NODE_WORDS as usize;
+                let table_key = key(x, CacheCategory::SeedTables, "aim table");
                 Some(rows(x, table_key, words, |x, table| {
                     let pso = x
                         .gpu
@@ -327,7 +357,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         |e, x, p| {
                             systems.bind(e, x);
                             bind(e, 3, x, &g.field_wavelength);
-                            e.set_buffer(4, &seeds, 0);
+                            seeds.bind(e, 4, x);
                             e.set_bytes(5, &params(p));
                             e.set_bytes(6, &newton);
                             e.set_buffer_mut(7, table, 0);
@@ -355,7 +385,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     let [ff, uu, ids, reports] = &mut out;
                     systems.bind(e, x);
                     bind(e, 3, x, &g.field_wavelength);
-                    e.set_buffer(4, &seeds, 0);
+                    seeds.bind(e, 4, x);
                     e.set_bytes(
                         5,
                         &AimParams {
@@ -371,14 +401,19 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     e.set_buffer_mut(11, &mut failures, 0);
                     e.set_bytes(12, &newton);
                     // Without a table the binding is never read.
-                    e.set_buffer(13, table.as_deref().unwrap_or(&seeds), 0);
+                    match table.as_deref() {
+                        Some(t) => e.set_buffer(13, t, 0),
+                        None => seeds.bind(e, 13, x),
+                    }
                     e.dispatch_1d(&pso, p.count as usize);
                 },
             )?;
-            for b in [Some(seeds), table].into_iter().flatten() {
-                if let Rows::Local(b) = b {
-                    x.recycle(b);
-                }
+            aim_stats(x, &out[3], n, &mut stage)?;
+            if let Seeds::Device(Rows::Local(b)) = seeds {
+                x.recycle(b);
+            }
+            if let Some(Rows::Local(b)) = table {
+                x.recycle(b);
             }
             x.count_fallbacks(failures);
             put_rays(x, &g.output, out);
@@ -549,6 +584,52 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     x.stats.stages.push(stage);
     ctl.check()
 }
+
+/// Convergence statistics of a generation, reduced on the device and read
+/// at completion: [failed, iterations (low word), max iterations,
+/// histogram[8], iterations (high word)].
+fn aim_stats(
+    x: &mut Execution<'_>,
+    report: &Lease,
+    n: usize,
+    stage: &mut StageStats,
+) -> MkResult<()> {
+    if n == 0 {
+        return Ok(());
+    }
+    let pso = x.gpu.pipeline(&PipelineKey::plain("mkl_aim_stats"))?;
+    let mut words = x.allocate(AIM_STATS_WORDS)?;
+    words.as_mut_slice().fill(0);
+    let wall = Instant::now();
+    // SAFETY: the report holds 4n words; each thread reads 256 disjoint rays
+    // and updates the AIM_STATS_WORDS counters atomically.
+    unsafe {
+        x.run("aim statistics", |e| {
+            e.set_buffer(0, report, 0);
+            e.set_buffer_mut(1, &mut words, 0);
+            e.set_bytes(2, &(n as u32));
+            e.dispatch_1d(&pso, n.div_ceil(256));
+            Ok(())
+        })?
+    };
+    account(x, stage, wall, 4);
+    x.stats.readback_bytes += AIM_STATS_WORDS as u64 * 4;
+    x.check_buffer(words, |b, stats| {
+        let w = b.as_slice();
+        let histogram: [u64; 8] = std::array::from_fn(|k| w[3 + k] as u64);
+        stats.aiming.add(&AimStats {
+            generations: 1,
+            rays: histogram.iter().sum(),
+            failed: w[0] as u64,
+            iterations: w[1] as u64 | (w[11] as u64) << 32,
+            max_iterations: w[2],
+            histogram,
+        });
+        Ok(())
+    });
+    Ok(())
+}
+const AIM_STATS_WORDS: usize = 12;
 
 /// Stable unresolved-index compaction: count, prefix and scatter as three
 /// serial dispatches of one command.

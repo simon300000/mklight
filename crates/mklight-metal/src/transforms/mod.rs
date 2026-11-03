@@ -9,6 +9,7 @@ use mklight_core::MkResult;
 use mklight_gpu::{
     consts::*,
     pending::JobControl,
+    resident::immutable::{BuildCost, CacheCategory::TransformPlans},
     resident::{StageStats, unsupported},
     transforms::{recipe::*, *},
 };
@@ -70,18 +71,23 @@ fn group_elements(n: usize) -> usize {
 
 fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f64> {
     let access = accesses(r);
-    let key = x.cache_key(format!("transform-recipe:{r:?}"));
+    let key = x.cache_key(TransformPlans, format!("transform-recipe:{r:?}"));
     let recipe = match x.cached::<Recipe>(&key)? {
         Some(v) => v,
         None => {
+            let built = Instant::now();
             let v = Arc::new(request(r)?);
-            x.cache(key, v.steps.len() * size_of::<Step>(), v.clone());
+            let cost = BuildCost::Seconds(built.elapsed().as_secs_f64());
+            x.cache(key, v.steps.len() * size_of::<Step>(), cost, v.clone());
             v
         }
     };
     let steps = &recipe.steps;
     let names = recipe.cache_keys();
-    let keys: Vec<_> = names.iter().map(|k| x.cache_key(k.clone())).collect();
+    let keys: Vec<_> = names
+        .iter()
+        .map(|k| x.cache_key(TransformPlans, k.clone()))
+        .collect();
     // bufs[slot_buf[slot]] holds each slot; dead owned buffers are reused.
     let mut bufs: Vec<Option<Buf>> = vec![
         Some(Buf::Input(0)),
@@ -122,17 +128,19 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
                  len: usize,
                  fill: &dyn Fn(&mut [[f32; 2]])|
      -> MkResult<Arc<SharedBuffer<u32>>> {
-        let key = x.cache_key(name);
+        let key = x.cache_key(TransformPlans, name);
         if let Some(v) = x.cached::<SharedBuffer<u32>>(&key)? {
             return Ok(v);
         }
+        let built = Instant::now();
         let v = Arc::new(
             x.gpu
                 .buffer_filled::<u32>(len * 2, |out| fill(bytemuck::cast_slice_mut(out)))?,
         );
         x.stats.allocations += 1;
         x.stats.uploaded_bytes += len as u64 * 8;
-        x.cache(key, (len * 8).max(16), v.clone());
+        let cost = BuildCost::Seconds(built.elapsed().as_secs_f64());
+        x.cache(key, (len * 8).max(16), cost, v.clone());
         Ok(v)
     };
     let mut tables = HashMap::new();
@@ -342,7 +350,12 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
                     unreachable!()
                 };
                 let v = Arc::new(v);
-                x.cache(keys[s].clone(), v.len() * 4, v.clone());
+                x.cache(
+                    keys[s].clone(),
+                    v.len() * 4,
+                    BuildCost::Since(wall),
+                    v.clone(),
+                );
                 bufs[b] = Some(Buf::Cached(v));
             }
         }

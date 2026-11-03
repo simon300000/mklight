@@ -58,6 +58,7 @@ fn append(
     p: &mut ResidentPlan,
     set: &SystemSet,
     metadata: &PlanView,
+    seeds: &PlanView,
     probes: &[Probe],
     remap: Option<&[u32]>,
     last: usize,
@@ -89,6 +90,7 @@ fn append(
                 unresolved: None,
                 field_wavelength: metadata.clone(),
                 field_key: None,
+                seeds: Some(seeds.clone()),
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
@@ -385,6 +387,33 @@ pub(crate) fn evaluate(
         )
     };
     let metadata = records(g, &mut p, field_keys.len(), |i| field_spec(field_keys[i]))?;
+    // Chief rows from each candidate's own f64 tracer (system fields are
+    // prepared at its construction): the device solves no per-candidate chief
+    // or real-image-height source, the work that once ran on a few threads
+    // for seconds per command.
+    let per_candidate = (0..tracers.len())
+        .into_par_iter()
+        .map(|ci| {
+            let rows = (field_keys.iter())
+                .filter(|k| k.0 == ci)
+                .map(|&(_, f, w)| {
+                    let field = candidates[ci]
+                        .0
+                        .field(f)
+                        .map_err(|e| MkError::Unsupported(format!("field: {e:?}")))?;
+                    Ok((field.point, w))
+                })
+                .collect::<MkResult<Vec<_>>>()?;
+            Ok(a::host_seeds(&tracers[ci], &rows))
+        })
+        .collect::<MkResult<Vec<_>>>()?;
+    let mut seed_rows = Vec::with_capacity(field_keys.len());
+    for (rows, host) in per_candidate {
+        seed_rows.extend(rows);
+        p.host.add(&host);
+    }
+    // Rows are in (candidate, field, wavelength) order, as are field_keys.
+    let seeds = records(g, &mut p, seed_rows.len(), |i| Ok(seed_rows[i]))?;
     // P1's seed-table choice is per candidate, not a side effect of which
     // other candidates share its command. Partition only at that boundary.
     let mut field_counts = vec![0usize; tracers.len()];
@@ -426,7 +455,7 @@ pub(crate) fn evaluate(
         })
         .fold(f32::INFINITY, f32::min);
     let ch = append(
-        g, &mut p, &set, &metadata, &chiefs, None, last, false, tolerance, ctx,
+        g, &mut p, &set, &metadata, &seeds, &chiefs, None, last, false, tolerance, ctx,
     )?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
@@ -436,19 +465,22 @@ pub(crate) fn evaluate(
     for (key, probes) in &partitions {
         let (clip, last) = *key;
         let selected: std::collections::BTreeSet<_> = probes.iter().map(|q| q.candidate).collect();
-        let (aim_metadata, remap) = if selected.len() == tracers.len() {
-            (metadata.clone(), None)
+        let (aim_metadata, aim_seeds, remap) = if selected.len() == tracers.len() {
+            (metadata.clone(), seeds.clone(), None)
         } else {
             let mut remap = vec![u32::MAX; field_keys.len()];
             let mut subset = Vec::new();
             for (i, k) in field_keys.iter().enumerate() {
                 if selected.contains(&k.0) {
                     remap[i] = subset.len() as u32;
-                    subset.push(*k);
+                    subset.push(i);
                 }
             }
             (
-                records(g, &mut p, subset.len(), |i| field_spec(subset[i]))?,
+                records(g, &mut p, subset.len(), |i| {
+                    field_spec(field_keys[subset[i]])
+                })?,
+                records(g, &mut p, subset.len(), |i| Ok(seed_rows[subset[i]]))?,
                 Some(remap),
             )
         };
@@ -457,6 +489,7 @@ pub(crate) fn evaluate(
             &mut p,
             &set,
             &aim_metadata,
+            &aim_seeds,
             probes,
             remap.as_deref(),
             last,

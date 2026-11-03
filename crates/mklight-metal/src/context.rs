@@ -109,6 +109,12 @@ impl MetalOptions {
 /// Completed command-buffer GPU time in this process, nanoseconds
 /// (see [`device_seconds`]).
 static DEVICE_NANOS: AtomicU64 = AtomicU64::new(0);
+/// Diagnostic (proposal study): `MKLIGHT_METAL_TRACE_DISPATCHES=1` completes
+/// every deferred encode as its own command buffer and prints its device time.
+fn trace_dispatches() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MKLIGHT_METAL_TRACE_DISPATCHES").is_ok_and(|v| v == "1"))
+}
 
 fn add_device_time(seconds: f64) {
     DEVICE_NANOS.fetch_add((seconds * 1e9) as u64, Ordering::Relaxed);
@@ -304,6 +310,11 @@ impl MetalContext {
 
     pub fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
         &self.device
+    }
+    /// Bytes the device currently has allocated (all of this process's
+    /// buffers, pools and caches on it).
+    pub fn allocated_bytes(&self) -> u64 {
+        self.device.currentAllocatedSize() as u64
     }
     pub fn library_origin(&self) -> LibraryOrigin {
         self.origin
@@ -589,6 +600,12 @@ impl CommandBatch {
         // Work bound supplements the existing package-specific weighted tiles.
         // Each dispatch costs at least 2^15 units, bounding tiny expensive
         // dispatch chains to 32 per batch. Encoding time is a second bound.
+        if trace_dispatches() {
+            let label = label.to_string();
+            let stats = self.flush()?;
+            eprintln!("MKL_DISPATCH {label} {:.6} ms", stats.gpu_seconds * 1e3);
+            return Ok(stats);
+        }
         if b.work.get() >= self.work_budget || b.start.elapsed().as_secs_f64() >= 0.010 {
             self.flush()
         } else {
