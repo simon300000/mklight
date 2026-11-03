@@ -6,6 +6,10 @@
 //! MKLIGHT_BENCH_QUIET_SECONDS (default 30). Cold calls use this test binary
 //! in fresh processes; the private child test does nothing without its marker.
 //! Select `edit_loop_queued` to measure the six graphs on the worker queue.
+//! Focused runs: MKLIGHT_BENCH_MODES (subset of cpu,df,f32,auto,f32_relaxed;
+//! cpu is always kept as the accuracy reference), MKLIGHT_BENCH_PHASES
+//! (warm,edit), MKLIGHT_BENCH_SKIP_COLD=1, and MKLIGHT_BENCH_ALLOW_BUSY=1 to
+//! measure next to other builds (every gate record is then provisional).
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -129,7 +133,7 @@ fn quiet(label: &str) {
                 "wait_seconds":start.elapsed().as_secs_f64(),"observations":observations}),
             );
             assert!(
-                competing.is_empty(),
+                competing.is_empty() || std::env::var("MKLIGHT_BENCH_ALLOW_BUSY").is_ok(),
                 "another build is running; retry after it finishes"
             );
             return;
@@ -617,8 +621,20 @@ fn measured(
             record["fallback_reason"] = json!(r.backend.fallback_reason);
             record["cost_decision"] = json!(r.backend.cost_decision);
             record["solver_backend"] = r.json.get("backend").cloned().unwrap_or(Value::Null);
+            let envelope = r.envelope();
+            let mut stats = Vec::new();
+            plan_stats(&envelope, &mut stats);
+            record["plan_stats"] = json!(
+                stats
+                    .iter()
+                    .map(|s| json!({"device_seconds":s["device_seconds"],
+                        "cache":s.get("cache"),"aiming":s.get("aiming"),
+                        "host":s.get("host"),"peak_bytes":s["peak_bytes"],
+                        "memory":s.get("memory")}))
+                    .collect::<Vec<_>>()
+            );
             if detail {
-                record["envelope"] = r.envelope();
+                record["envelope"] = envelope;
             }
             emit("run", record);
             Some(r)
@@ -628,6 +644,33 @@ fn measured(
             emit("run", record);
             None
         }
+    }
+}
+
+fn mode_selected(mode: usize) -> bool {
+    mode == 0
+        || std::env::var("MKLIGHT_BENCH_MODES")
+            .map_or(true, |s| s.split(',').any(|m| m == MODES[mode]))
+}
+
+fn phase_selected(phase: &str) -> bool {
+    std::env::var("MKLIGHT_BENCH_PHASES").map_or(true, |s| s.split(',').any(|p| p == phase))
+}
+
+/// Resident plan statistics of every native execution in an envelope.
+fn plan_stats(v: &Value, out: &mut Vec<Value>) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k == "plan_stats" {
+                    out.push(x.clone());
+                } else {
+                    plan_stats(x, out);
+                }
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| plan_stats(x, out)),
+        _ => {}
     }
 }
 
@@ -713,7 +756,7 @@ fn project_bench() {
                 "case",
                 json!({"variant":variant,"name":case.name,"analysis":case.analysis,"settings":case.settings}),
             );
-            for phase in ["warm", "edit"] {
+            for phase in ["warm", "edit"].into_iter().filter(|p| phase_selected(p)) {
                 quiet(&format!("{variant}/{}/{phase}", case.name));
                 let mut first: Vec<Option<AnalysisResult>> =
                     (0..MODES.len()).map(|_| None).collect();
@@ -724,7 +767,7 @@ fn project_bench() {
                     if round % 2 == 1 {
                         order.reverse();
                     }
-                    for mode in order {
+                    for mode in order.into_iter().filter(|&m| mode_selected(m)) {
                         if phase == "edit" {
                             edit(
                                 &mut sessions[mode],
@@ -781,10 +824,16 @@ fn project_bench() {
                     );
                 }
             }
+            if std::env::var("MKLIGHT_BENCH_SKIP_COLD").is_ok() {
+                continue;
+            }
             quiet(&format!("{variant}/{} / cold", case.name));
             for round in 0..cold_runs {
-                for offset in 0..MODES.len() {
-                    cold(case, path, round, MODES[(round + offset) % MODES.len()]);
+                for mode in (0..MODES.len())
+                    .map(|offset| (round + offset) % MODES.len())
+                    .filter(|&m| mode_selected(m))
+                {
+                    cold(case, path, round, MODES[mode]);
                 }
             }
         }
@@ -793,6 +842,9 @@ fn project_bench() {
             for round in 0..=runs {
                 for offset in 0..MODES.len() {
                     let mode = (round + offset) % MODES.len();
+                    if !mode_selected(mode) {
+                        continue;
+                    }
                     let s = &mut sessions[mode];
                     let start = Instant::now();
                     edit(s, &bases[mode], 900000 + round);
