@@ -212,6 +212,58 @@ pub struct SpotDiagram {
     pub airy_radius: f64,
     pub defocus: f64,
     pub run_info: RunInfo,
+    /// The ray points of every field in buffer form, set instead of
+    /// `FieldSpot::points` by [`spot_diagram_packed_job`]; never serialised.
+    #[serde(skip)]
+    pub packed_points: Option<PackedSpotPoints>,
+}
+
+/// Ray points of all fields as flat typed arrays (the engine's `points`,
+/// `point_field` and `point_wavelength` buffers), filled once by the solver
+/// without per-point structs. Values follow the JSON conventions of
+/// [`SpotPoint`]: NaN is canonical, infinities are kept.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PackedSpotPoints {
+    /// `[x, y]` per point, relative to its field's reference (mm).
+    pub xy: Vec<f64>,
+    /// Position of the point's field in `SpotDiagram::fields`.
+    pub field: Vec<u32>,
+    /// System wavelength index of the point.
+    pub wavelength: Vec<u32>,
+    /// `[offset, count]` of each field's rows, in `SpotDiagram::fields` order.
+    pub ranges: Vec<[usize; 2]>,
+}
+
+/// Points between cancellation checks while packing.
+pub(crate) const POINT_CHUNK: usize = 1 << 16;
+
+impl PackedSpotPoints {
+    pub(crate) fn with_capacity(n: usize, fields: usize) -> Self {
+        PackedSpotPoints {
+            xy: Vec::with_capacity(2 * n),
+            field: Vec::with_capacity(n),
+            wavelength: Vec::with_capacity(n),
+            ranges: Vec::with_capacity(fields),
+        }
+    }
+    #[inline]
+    pub(crate) fn push(&mut self, field: usize, x: f64, y: f64, wavelength: usize) {
+        let canonical = |v: f64| if v.is_nan() { f64::NAN } else { v };
+        self.xy.extend([canonical(x), canonical(y)]);
+        self.field.push(field as u32);
+        self.wavelength.push(wavelength as u32);
+    }
+    /// Close the current field, whose rows start at `start`.
+    pub(crate) fn close(&mut self, start: usize) {
+        self.ranges.push([start, self.field.len() - start]);
+    }
+    /// Number of points.
+    pub fn len(&self) -> usize {
+        self.field.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.field.is_empty()
+    }
 }
 
 // ----- Shared ray data -----------------------------------------------------------
@@ -553,6 +605,26 @@ pub fn spot_diagram_job(
     settings: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
+    spot_job(tracer, settings, ctx, false)
+}
+
+/// [`spot_diagram_job`] with the ray points in [`SpotDiagram::packed_points`]
+/// (always set, empty without `include_points`) instead of
+/// `FieldSpot::points`.
+pub fn spot_diagram_packed_job(
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+    ctx: &JobContext,
+) -> MkResult<SpotDiagram> {
+    spot_job(tracer, settings, ctx, true)
+}
+
+fn spot_job(
+    tracer: &SequentialTracer,
+    settings: &SpotDiagramSettings,
+    ctx: &JobContext,
+    packed: bool,
+) -> MkResult<SpotDiagram> {
     let fields_tracer = crate::util::default_fields(tracer, &settings.fields)?;
     let tracer = fields_tracer.as_ref();
     let timer = RunTimer::start();
@@ -573,6 +645,7 @@ pub fn spot_diagram_job(
         &BackendInfo::cpu_reference(),
         warnings,
         ctx,
+        packed,
     )?;
     ctx.report(1.0, "spot diagram");
     Ok(out)
@@ -601,6 +674,7 @@ pub fn spot_from_rays(
         backend,
         warnings,
         &JobContext::new(),
+        false,
     )
 }
 
@@ -612,9 +686,18 @@ fn spot_reduce(
     backend: &BackendInfo,
     mut warnings: Vec<String>,
     ctx: &JobContext,
+    packed: bool,
 ) -> MkResult<SpotDiagram> {
     let sys = tracer.system();
     let wls = &batch.wavelengths;
+    let mut packed = packed.then(|| {
+        let n = if settings.include_points {
+            batch.fields.iter().map(|f| f.rays.len()).sum()
+        } else {
+            0
+        };
+        PackedSpotPoints::with_capacity(n, batch.fields.len())
+    });
     let delta = settings.defocus;
     if delta != 0.0 || settings.through_focus.is_some() {
         warnings.extend(curved_image_warning(tracer));
@@ -622,7 +705,7 @@ fn spot_reduce(
     let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
 
     let mut out = Vec::with_capacity(batch.fields.len());
-    for fr in &batch.fields {
+    for (k, fr) in batch.fields.iter().enumerate() {
         ctx.check()?;
         let m = fr.moments(delta);
         let total: f64 = fr
@@ -659,7 +742,20 @@ fn spot_reduce(
             SpotReference::Centroid => (m.centroid, m.rms_centroid, m.geo_centroid),
         };
         let reference = [c_abs[0] + ref_rel[0], c_abs[1] + ref_rel[1]];
-        let points = if settings.include_points {
+        let points = if let Some(p) = packed.as_mut() {
+            let start = p.len();
+            if settings.include_points {
+                for chunk in fr.rays.chunks(POINT_CHUNK) {
+                    ctx.check()?;
+                    for r in chunk {
+                        let q = r.at(delta);
+                        p.push(k, q[0] - ref_rel[0], q[1] - ref_rel[1], wls[r.wl_pos]);
+                    }
+                }
+            }
+            p.close(start);
+            Vec::new()
+        } else if settings.include_points {
             fr.rays
                 .iter()
                 .map(|r| {
@@ -753,6 +849,7 @@ fn spot_reduce(
             warnings,
             backend,
         ),
+        packed_points: packed,
     })
 }
 

@@ -1087,59 +1087,99 @@ fn spot_points_to_buffers(v: &mut Value) -> Vec<Buffer> {
     ]
 }
 
-fn spot_output(mut r: spot::SpotDiagram, ctx: &JobContext) -> EngineResult<AnalysisOutput> {
-    let n = r.fields.iter().map(|f| f.points.len()).sum::<usize>();
-    let mut pts = Vec::with_capacity(2 * n);
-    let mut fidx = Vec::with_capacity(n);
-    let mut widx = Vec::with_capacity(n);
-    let mut ranges = Vec::with_capacity(r.fields.len());
-    for (k, f) in r.fields.iter_mut().enumerate() {
-        let start = fidx.len();
-        for chunk in f.points.chunks(16384) {
-            ctx.check()?;
-            for q in chunk {
-                pts.extend([q.x, q.y]);
-                fidx.push(k as u32);
-                widx.push(q.wavelength as u32);
-            }
-        }
-        ranges.push([start, fidx.len() - start]);
-        f.points = Vec::new();
-    }
+/// Publish a spot diagram whose points the solver packed
+/// (`SpotDiagram::packed_points`): the arrays move into the buffers and only
+/// scalar metadata is serialised.
+fn spot_output(mut r: spot::SpotDiagram) -> EngineResult<AnalysisOutput> {
+    let p = r.packed_points.take().unwrap_or_default();
     let (mut v, w) = crate_json(&r)?;
-    for (f, range) in v["fields"].as_array_mut().unwrap().iter_mut().zip(ranges) {
+    for (f, range) in v["fields"].as_array_mut().unwrap().iter_mut().zip(p.ranges) {
         f.as_object_mut().unwrap().remove("points");
         f["point_range"] = json!(range);
     }
+    let n = p.field.len();
     Ok(output(
         v,
         vec![
-            Buffer::new("points", vec![n, 2], BufferData::F64(pts)),
-            Buffer::new("point_field", vec![n], BufferData::U32(fidx)),
-            Buffer::new("point_wavelength", vec![n], BufferData::U32(widx)),
+            Buffer::new("points", vec![n, 2], BufferData::F64(p.xy)),
+            Buffer::new("point_field", vec![n], BufferData::U32(p.field)),
+            Buffer::new("point_wavelength", vec![n], BufferData::U32(p.wavelength)),
         ],
         w,
     ))
 }
 
+/// Bitwise buffer equality (NaN payloads and signed zeros included).
+#[cfg(test)]
+pub(crate) fn assert_same_buffers(a: &[Buffer], b: &[Buffer]) {
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(b) {
+        assert_eq!(
+            (&x.name, &x.shape, x.dtype()),
+            (&y.name, &y.shape, y.dtype())
+        );
+        match (&x.data, &y.data) {
+            (BufferData::F64(p), BufferData::F64(q)) => assert!(
+                p.iter()
+                    .map(|v| v.to_bits())
+                    .eq(q.iter().map(|v| v.to_bits())),
+                "buffer {}",
+                x.name
+            ),
+            (BufferData::F32(p), BufferData::F32(q)) => assert!(
+                p.iter()
+                    .map(|v| v.to_bits())
+                    .eq(q.iter().map(|v| v.to_bits())),
+                "buffer {}",
+                x.name
+            ),
+            (p, q) => assert_eq!(p, q, "buffer {}", x.name),
+        }
+    }
+}
+
 #[test]
 fn typed_spot_packing_matches_legacy_envelope() {
-    let t = mklight_analysis::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
-    let ctx = JobContext::new();
-    for include_points in [false, true] {
-        let s = parse(&json!({
-            "fields":{"type":"list","indices":[2,0]},
-            "wavelengths":{"type":"list","indices":[2,0]},
-            "defocus":0.2,"reference":"centroid","include_points":include_points
-        }))
-        .unwrap();
-        let r = spot::spot_diagram_job(&t, &s, &ctx).unwrap();
-        let (mut json, warnings) = crate_json(&r).unwrap();
-        let buffers = spot_points_to_buffers(&mut json);
-        let got = spot_output(r, &ctx).unwrap();
-        assert_eq!(got.json, json);
-        assert_eq!(got.buffers, buffers);
-        assert_eq!(got.warnings, warnings);
+    let gpu = mklight_gpu::CpuF32Backend::new();
+    for system in [
+        mklight_core::samples::cooke_triplet(),
+        mklight_core::samples::newtonian_telescope(),
+    ] {
+        let t = mklight_analysis::tracer_for(system).unwrap();
+        let ctx = JobContext::new();
+        for (include_points, reference) in
+            [(false, "centroid"), (true, "centroid"), (true, "chief")]
+        {
+            let s = parse(&json!({
+                "fields":{"type":"list","indices":[2,0]},
+                "wavelengths":{"type":"list","indices":[2,0]},
+                "defocus":0.2,"reference":reference,"include_points":include_points,
+                "through_focus":{"min":-0.1,"max":0.1,"steps":3}
+            }))
+            .unwrap();
+            let legacy = |r: spot::SpotDiagram| {
+                let (mut json, warnings) = crate_json(&r).unwrap();
+                (spot_points_to_buffers(&mut json), json, warnings)
+            };
+            for (old, new) in [
+                (
+                    spot::spot_diagram_job(&t, &s, &ctx).unwrap(),
+                    spot::spot_diagram_packed_job(&t, &s, &ctx).unwrap(),
+                ),
+                (
+                    mklight_analysis::gpu::spot_diagram_job(&gpu, &t, &s, &ctx).unwrap(),
+                    mklight_analysis::gpu::spot_diagram_packed_job(&gpu, &t, &s, &ctx).unwrap(),
+                ),
+            ] {
+                assert!(old.packed_points.is_none());
+                let (buffers, json, warnings) = legacy(old);
+                let got = spot_output(new).unwrap();
+                assert_eq!(got.json, json);
+                assert_eq!(got.warnings, warnings);
+                assert_same_buffers(&got.buffers, &buffers);
+                assert_eq!(got.buffers[0].shape[0] > 0, include_points);
+            }
+        }
     }
 }
 
@@ -1164,10 +1204,10 @@ fn run_spot(
     let st: spot::SpotDiagramSettings = parse(s)?;
     let r = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::spot_diagram_job(b, t, &st, ctx),
-        spot::spot_diagram_job(t, &st, ctx)
+        |b| mklight_analysis::gpu::spot_diagram_packed_job(b, t, &st, ctx),
+        spot::spot_diagram_packed_job(t, &st, ctx)
     )?;
-    spot_output(r, ctx)
+    spot_output(r)
 }
 
 // ---------------------------------------------------------------------------

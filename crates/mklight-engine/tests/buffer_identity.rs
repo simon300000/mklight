@@ -85,10 +85,8 @@ fn default_cases(engine: &Engine, project: bool) -> Vec<Value> {
 }
 
 fn run(session: &Session, label: &str, case: &Value, mode: &str, runs: usize) {
-    let mut request = AnalysisRequest::new(
-        case["analysis"].as_str().unwrap(),
-        case["settings"].clone(),
-    );
+    let mut request =
+        AnalysisRequest::new(case["analysis"].as_str().unwrap(), case["settings"].clone());
     request.backend = Some(match mode {
         "cpu" => Backend::CpuReference,
         "auto" => Backend::Auto,

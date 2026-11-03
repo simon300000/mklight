@@ -28,7 +28,7 @@ mod spot;
 pub use energy::{
     best_focus_job, encircled_energy_job, encircled_energy_with_uncertainty_job, geometric_mtf_job,
 };
-pub use spot::spot_diagram_job;
+pub use spot::{spot_diagram_job, spot_diagram_packed_job};
 
 /// A reusable system upload. Host work is immutable resolution/packing and
 /// small first-order field metadata; generation and tracing run on the backend.
