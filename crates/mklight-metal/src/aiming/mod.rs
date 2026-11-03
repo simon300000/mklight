@@ -286,7 +286,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 })
             };
             let seed_key = key(x, "aim");
-            let seeds = rows(
+            let host_seeds = g.seeds.clone();
+            let seeds = if host_seeds.is_some() {
+                // Host-prepared seeds: no device chief solve.
+                Rows::Local(x.allocate(0)?)
+            } else {
+            rows(
                 x,
                 seed_key,
                 nf * MKL_AIM_CACHE_WORDS as usize,
@@ -310,7 +315,14 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         },
                     )
                 },
-            )?;
+            )?
+            };
+            let bind_seeds = |e: &Encoder<'_>, x: &Execution<'_>, seeds: &SharedBuffer<u32>| {
+                match &host_seeds {
+                    Some(v) => bind(e, 4, x, v),
+                    None => e.set_buffer(4, seeds, 0),
+                }
+            };
             let table = if uses_table(g) {
                 let table_key = key(x, "aim table");
                 let words = nf * TABLE_NODES * MKL_AIM_NODE_WORDS as usize;
@@ -327,7 +339,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         |e, x, p| {
                             systems.bind(e, x);
                             bind(e, 3, x, &g.field_wavelength);
-                            e.set_buffer(4, &seeds, 0);
+                            bind_seeds(e, x, &seeds);
                             e.set_bytes(5, &params(p));
                             e.set_bytes(6, &newton);
                             e.set_buffer_mut(7, table, 0);
@@ -355,7 +367,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     let [ff, uu, ids, reports] = &mut out;
                     systems.bind(e, x);
                     bind(e, 3, x, &g.field_wavelength);
-                    e.set_buffer(4, &seeds, 0);
+                    bind_seeds(e, x, &seeds);
                     e.set_bytes(
                         5,
                         &AimParams {
@@ -371,10 +383,43 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     e.set_buffer_mut(11, &mut failures, 0);
                     e.set_bytes(12, &newton);
                     // Without a table the binding is never read.
-                    e.set_buffer(13, table.as_deref().unwrap_or(&seeds), 0);
+                    match table.as_deref() {
+                        Some(t) => e.set_buffer(13, t, 0),
+                        None => bind_seeds(e, x, &seeds),
+                    }
                     e.dispatch_1d(&pso, p.count as usize);
                 },
             )?;
+            if std::env::var("MKLIGHT_METAL_TRACE_DISPATCHES").is_ok_and(|v| v == "1") {
+                // Diagnostic (proposal study): iteration histogram of this batch.
+                x.measure()?;
+                let reports = out[3].as_slice();
+                let mut hist = [0u64; 8];
+                let (mut failed, mut total_it) = (0u64, 0u64);
+                for i in 0..n {
+                    let status = reports[i];
+                    let it = reports[n + i] as u64;
+                    total_it += it;
+                    if status != 0 {
+                        failed += 1;
+                    }
+                    let b = match it {
+                        0 => 0,
+                        1 => 1,
+                        2 => 2,
+                        3..=4 => 3,
+                        5..=8 => 4,
+                        9..=16 => 5,
+                        17..=60 => 6,
+                        _ => 7,
+                    };
+                    hist[b] += 1;
+                }
+                eprintln!(
+                    "MKL_AIM_HIST rays={n} failed={failed} mean_it={:.2} it[0,1,2,3-4,5-8,9-16,17-60,>60]={hist:?}",
+                    total_it as f64 / n.max(1) as f64
+                );
+            }
             for b in [Some(seeds), table].into_iter().flatten() {
                 if let Rows::Local(b) = b {
                     x.recycle(b);

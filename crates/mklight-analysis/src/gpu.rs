@@ -182,10 +182,12 @@ impl<'a> Geometry<'a> {
             Ok(s)
         })?;
         let field_key = self.field_key(p, metadata)?;
+        let seeds = self.host_seeds(p, fields, &cw)?;
         let hits = self.append_trace(
             p,
             metadata,
             field_key.clone(),
+            seeds,
             samples,
             count,
             steps,
@@ -200,13 +202,109 @@ impl<'a> Geometry<'a> {
             fields: fields.len(),
             wavelengths: wls.to_vec(),
             pupil_count: pupil.len(),
-            chief_source: Some((metadata, field_key, steps, aiming)),
+            chief_source: Some((metadata, field_key, seeds, steps, aiming)),
         })
+    }
+    /// Prototype (proposal study): chief seeds solved on the host in f64 by
+    /// the reference tracer (`prepare_field`), one row per field and chief
+    /// wavelength, in the device `ChiefSeed` layout. Set
+    /// `MKLIGHT_HOST_SEEDS=0` to disable and keep the device chief solve.
+    pub fn host_seeds(
+        &self,
+        p: &mut ResidentPlan,
+        fields: &[FieldPoint],
+        cw: &[usize],
+    ) -> MkResult<Option<BufferId>> {
+        let rows: Vec<(FieldPoint, usize)> = (0..fields.len() * cw.len())
+            .map(|i| (fields[i / cw.len()], cw[i % cw.len()]))
+            .collect();
+        self.host_seeds_rows(p, &rows)
+    }
+    /// One `ChiefSeed` per (field point, system wavelength) row.
+    pub fn host_seeds_rows(
+        &self,
+        p: &mut ResidentPlan,
+        rows: &[(FieldPoint, usize)],
+    ) -> MkResult<Option<BufferId>> {
+        if std::env::var("MKLIGHT_HOST_SEEDS").is_ok_and(|v| v == "0") {
+            return Ok(None);
+        }
+        use rayon::prelude::*;
+        let t = self.tracer;
+        let start = std::time::Instant::now();
+        let mut points: Vec<FieldPoint> = Vec::new();
+        for (f, _) in rows {
+            if !points.contains(f) {
+                points.push(*f);
+            }
+        }
+        let prepared: Vec<mklight_trace::PreparedField> = points
+            .par_iter()
+            .map(|&f| {
+                // Reuse the tracer's own prepared system fields when the point
+                // matches one; otherwise solve it now.
+                t.fields()
+                    .iter()
+                    .find(|pf| pf.point == f)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        t.prepare_field(f).unwrap_or_else(|_| mklight_trace::PreparedField {
+                            point: f,
+                            source: mklight_trace::ObjectSource::Direction {
+                                dir: mklight_core::Vec3::Z,
+                            },
+                            aims: vec![],
+                            error: Some("unreachable".into()),
+                        })
+                    })
+            })
+            .collect();
+        if std::env::var("MKLIGHT_METAL_TRACE_DISPATCHES").is_ok_and(|v| v == "1") {
+            eprintln!(
+                "MKL_HOST_SEEDS points={} rows={} host_ms={:.3}",
+                points.len(),
+                rows.len(),
+                start.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        let stop = t.system().stop as u32;
+        let r_stop = t.pupil().r_stop;
+        let id = self.records::<ChiefSeed>(p, rows.len(), |i| {
+            let (f, w) = rows[i];
+            let pf = &prepared[points.iter().position(|q| *q == f).unwrap()];
+            let mut seed = ChiefSeed {
+                status: mklight_gpu::consts::MKL_AIM_FIELD_UNREACHABLE,
+                ..bytemuck::Zeroable::zeroed()
+            };
+            if pf.error.is_some() || w >= pf.aims.len() {
+                return Ok(seed);
+            }
+            let src = match pf.source {
+                mklight_trace::ObjectSource::Direction { dir } => [dir.x, dir.y, dir.z],
+                mklight_trace::ObjectSource::Point { point } => [point.x, point.y, point.z],
+            };
+            let a = &pf.aims[w];
+            seed.source = src.map(Df32::from_f64);
+            seed.chief = a.chief.map(Df32::from_f64);
+            if let Some(j) = a.jacobian {
+                seed.jacobian = std::array::from_fn(|k| Df32::from_f64(j[k / 2][k % 2]));
+                seed.has_jacobian = 1;
+            }
+            seed.residual = Df32::from_f64(a.residual * r_stop);
+            seed.status = if a.converged {
+                0
+            } else {
+                mklight_gpu::consts::MKL_AIM_FAILED
+                    | (stop << mklight_gpu::consts::MKL_RAY_SURFACE_SHIFT)
+            };
+            Ok(seed)
+        })?;
+        Ok(Some(id))
     }
     /// Append the unclipped chief traces of a grid, one per field and chief
     /// wavelength (requested wavelengths plus the primary).
     pub fn append_chiefs(&self, p: &mut ResidentPlan, g: &mut ResidentGrid) -> MkResult<()> {
-        let Some((metadata, key, steps, aiming)) = g.chief_source.clone() else {
+        let Some((metadata, key, seeds, steps, aiming)) = g.chief_source.clone() else {
             return Err(mklight_core::MkError::InvalidParam(
                 "grid has no chief metadata".into(),
             ));
@@ -215,7 +313,7 @@ impl<'a> Geometry<'a> {
         let samples =
             self.records::<Sample>(p, nf, |i| Ok(Sample::new([0.0; 2], i as u32, i as u64)))?;
         g.chiefs =
-            Some(self.append_trace(p, metadata, key, samples, nf, steps, aiming, false, false)?);
+            Some(self.append_trace(p, metadata, key, seeds, samples, nf, steps, aiming, false, false)?);
         Ok(())
     }
     /// Packed wavelength chunk and slot of system wavelength `w`.
@@ -250,6 +348,7 @@ impl<'a> Geometry<'a> {
         p: &mut ResidentPlan,
         metadata: BufferId,
         field_key: Option<String>,
+        seeds: Option<BufferId>,
         samples: BufferId,
         n: usize,
         steps: BufferId,
@@ -270,6 +369,10 @@ impl<'a> Geometry<'a> {
                 unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key,
+                seeds: match seeds {
+                    Some(id) => Some(p.view(id)?),
+                    None => None,
+                },
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
@@ -468,7 +571,7 @@ pub struct ResidentGrid {
     pub wavelengths: Vec<usize>,
     pub pupil_count: usize,
     /// Field metadata, its seed-cache key, trace steps and aiming.
-    chief_source: Option<(BufferId, Option<String>, BufferId, mklight_core::RayAiming)>,
+    chief_source: Option<(BufferId, Option<String>, Option<BufferId>, BufferId, mklight_core::RayAiming)>,
 }
 impl ResidentGrid {
     pub fn chiefs(&self) -> MkResult<&ResidentHits> {

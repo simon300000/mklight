@@ -74,6 +74,7 @@ fn plan(
             unresolved: None,
             field_wavelength: fw,
             field_key: key,
+            seeds: None,
             tolerance: 1e-10,
             max_iterations: 40,
             output: generated.clone(),

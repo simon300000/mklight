@@ -136,10 +136,15 @@ impl LayoutProvider for Provider<'_> {
             Ok(())
         })?;
         let key = geo.field_key(&p, metadata)?;
+        let seeds = geo.host_seeds_rows(
+            &mut p,
+            &jobs.iter().map(|j| (t.field(j.0).point, j.1)).collect::<Vec<_>>(),
+        )?;
         let hits = geo.append_trace(
             &mut p,
             metadata,
             key,
+            seeds,
             samples,
             jobs.len(),
             steps,

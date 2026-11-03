@@ -85,6 +85,7 @@ pub fn make_plan(
             unresolved: None,
             field_wavelength: fw,
             field_key: Some(format!("{field}:{wl}:{:?}", bytemuck::bytes_of(&spec))),
+            seeds: None,
             tolerance: 1e-10,
             max_iterations: cap,
             output: generated.clone(),

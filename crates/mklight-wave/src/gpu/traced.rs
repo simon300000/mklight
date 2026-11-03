@@ -414,6 +414,7 @@ impl<'a> PupilTracer<'a> {
                     unresolved: None,
                     field_wavelength: p.view(metadata)?,
                     field_key: Some(fields.key.clone()),
+                    seeds: None,
                     tolerance,
                     max_iterations: 60,
                     output: generated.clone(),

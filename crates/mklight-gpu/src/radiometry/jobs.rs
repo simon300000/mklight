@@ -130,6 +130,7 @@ pub fn pupil_plan(
                 unresolved: None,
                 field_wavelength: fields,
                 field_key: Some(blake3::hash(bytemuck::bytes_of(&spec)).to_hex().to_string()),
+                seeds: None,
                 tolerance,
                 max_iterations: 40,
                 output: rays.clone(),

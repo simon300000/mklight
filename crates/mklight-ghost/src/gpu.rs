@@ -370,6 +370,7 @@ impl<'a> GhostTransport<'a> {
                 unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
+                seeds: None,
                 tolerance,
                 max_iterations: 40,
                 output: rays.clone(),

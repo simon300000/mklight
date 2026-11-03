@@ -178,6 +178,14 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
             };
             let seeds = match cached {
                 Some(s) => s,
+                None if g.seeds.is_some() => {
+                    let host: Vec<ChiefSeed> =
+                        bytemuck::cast_slice(words(x, g.seeds.as_ref().unwrap())).to_vec();
+                    if host.len() != fields.len() {
+                        return Err(bad("host chief seed rows"));
+                    }
+                    Arc::new(host)
+                }
                 None => {
                     let mut seeds = vec![];
                     for (i, f) in fields.iter().enumerate() {

@@ -80,6 +80,11 @@ pub struct GenerateAim {
     /// Content identity of immutable field metadata, for chief-seed reuse.
     /// None for plan-local candidate fields (no cross-plan cache).
     pub field_key: Option<String>,
+    /// Prototype (proposal study): host-prepared chief seeds, one `ChiefSeed`
+    /// per field row (u32 [rows, MKL_AIM_CACHE_WORDS]). When present the
+    /// device chief/image-height solve is skipped and these rows seed the
+    /// seed table and pupil aiming directly.
+    pub seeds: Option<PlanView>,
     pub tolerance: f32,
     pub max_iterations: u32,
     pub output: ResidentRays,

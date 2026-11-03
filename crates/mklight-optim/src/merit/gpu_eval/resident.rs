@@ -89,6 +89,7 @@ fn append(
                 unresolved: None,
                 field_wavelength: metadata.clone(),
                 field_key: None,
+                seeds: None,
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
