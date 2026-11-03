@@ -219,7 +219,9 @@ pub(super) fn execute(
     }
     for (i, s) in recipe.steps.iter().enumerate() {
         ctl.check()?;
-        let key = x.cache_key(TRANSFORM_PLANS, keys[i].clone());
+        // Chirp spectra depend on their step parameters only (`Recipe::
+        // cache_keys`), so they are content-addressed as on Metal.
+        let key = x.content_key(TRANSFORM_PLANS, keys[i].clone());
         let cached = if s.cache {
             x.cached::<Vec<C>>(&key)?
         } else {

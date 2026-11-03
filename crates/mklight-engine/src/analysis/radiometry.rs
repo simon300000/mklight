@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use mklight_core::JobContext;
 use mklight_trace::{
-    FieldPoint, PolarizationMapSettings, PolarizationState, SequentialTracer, TransmissionSettings,
+    FieldPoint, PolarizationMapSettings, PolarizationState, TransmissionSettings,
     polarization_pupil_map, system_transmission,
 };
 
@@ -44,6 +44,9 @@ pub struct SystemTransmission;
 struct TransmissionDefaults(TransmissionSettings);
 
 impl Analysis for SystemTransmission {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "system_transmission"
     }
@@ -120,7 +123,7 @@ impl Analysis for SystemTransmission {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let tracer = SequentialTracer::new(input.resolved()?)?;
+        let tracer = input.tracer(ctx)?;
         let s = parse(settings)?;
         let r = super::gpu::native_job!(
             input,
@@ -166,6 +169,9 @@ impl Default for PolarizationMapOptions {
 pub struct PolarizationPupilMap;
 
 impl Analysis for PolarizationPupilMap {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "polarization_pupil_map"
     }
@@ -304,7 +310,7 @@ impl Analysis for PolarizationPupilMap {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let o: PolarizationMapOptions = parse(settings)?;
-        let tracer = SequentialTracer::new(input.resolved()?)?;
+        let tracer = input.tracer(ctx)?;
         let sys = tracer.system();
         let field = match o.point {
             Some([hx, hy]) => FieldPoint::normalized(hx, hy),

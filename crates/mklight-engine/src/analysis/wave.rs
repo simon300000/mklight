@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
+use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult};
 use mklight_wave::analysis::{self as wa, WaveAnalysisEntry};
-use mklight_wave::traced::{ConfiguredTracer, PupilSettings, configured_tracer_job};
+use mklight_wave::traced::{ConfiguredTracer, PupilSettings};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -37,6 +38,9 @@ macro_rules! dispatch {
 }
 
 impl Analysis for Wave {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         self.0.name
     }
@@ -65,15 +69,15 @@ impl Analysis for Wave {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         // The solver's serde settings ignore the engine's `configuration` key.
-        let cfg = configured_tracer_job(
-            input.snapshot.system(),
-            input.library.clone(),
+        let cfg = input.configured(
             settings["configuration"].as_u64().unwrap() as usize,
             &ctx.subrange(0.0, 0.05),
         )?;
         let c = &ctx.subrange(0.05, 1.0);
         let Some(d) = super::gpu::device(input) else {
-            return run_cpu(self.0.name, &cfg, settings, c);
+            let memo = input.memo();
+            let memo = memo.as_ref().map(|m| m as &dyn Memo);
+            return run_cpu(self.0.name, &cfg, settings, memo, c);
         };
         let b = d.backend.as_ref();
         macro_rules! gpu {
@@ -95,20 +99,32 @@ impl Analysis for Wave {
 
 /// The CPU f64 reference job on a solved configuration, with the settings
 /// parsing and `RunInfo` stamping of [`WaveAnalysisEntry::run_configured`].
+/// Traced pupils are shared with the other wave analyses of the same
+/// configuration through `memo` (`mklight_wave::shared`).
 fn run_cpu(
     name: &str,
     cfg: &ConfiguredTracer,
     settings: &Value,
+    memo: Option<&dyn Memo>,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     macro_rules! cpu {
         ($f:ident) => {{
-            let mut r = wa::$f(&cfg.tracer, &cpu_settings(settings)?, ctx)?;
+            let mut r = wa::$f(&cfg.tracer, &cpu_settings(settings)?, memo, ctx)?;
             cfg.stamp(&mut r.run_info);
             r.pack()
         }};
     }
-    dispatch!(name, cpu)
+    match name {
+        "wavefront_map" => cpu!(wavefront_map_shared),
+        "psf" => cpu!(psf_analysis_shared),
+        "mtf" => cpu!(mtf_analysis_shared),
+        "mtf_vs_field" => cpu!(mtf_vs_field_shared),
+        "through_focus_mtf" => cpu!(through_focus_mtf_analysis_shared),
+        "diffraction_encircled_energy" => cpu!(diffraction_encircled_energy_shared),
+        "line_spread" => cpu!(line_spread_shared),
+        _ => unreachable!("registered wave operation"),
+    }
 }
 
 /// Solver settings as the JSON entry points parse them (`null` = defaults).
@@ -1269,7 +1285,7 @@ mod tests {
             for entry in wa::ANALYSES {
                 let s = small_settings(entry.name);
                 let old = json_route(entry.name, entry.run_configured(&cfg, &s, &ctx).unwrap());
-                let new = run_cpu(entry.name, &cfg, &s, &ctx).unwrap();
+                let new = run_cpu(entry.name, &cfg, &s, None, &ctx).unwrap();
                 assert!(!new.buffers.is_empty(), "{label} {}", entry.name);
                 assert_same(&format!("{label} {}", entry.name), &new, &old);
             }

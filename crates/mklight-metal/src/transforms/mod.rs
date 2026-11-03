@@ -71,7 +71,11 @@ fn group_elements(n: usize) -> usize {
 
 fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f64> {
     let access = accesses(r);
-    let key = x.cache_key(TransformPlans, format!("transform-recipe:{r:?}"));
+    // Recipes, twiddle and chirp tables and chirp spectra are functions of
+    // their names alone (request, row length, step-parameter digests;
+    // data-dependent steps are never cached), so they are content-addressed
+    // and survive edits and plans of other analyses.
+    let key = x.content_key(TransformPlans, format!("transform-recipe:{r:?}"));
     let recipe = match x.cached::<Recipe>(&key)? {
         Some(v) => v,
         None => {
@@ -86,7 +90,7 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
     let names = recipe.cache_keys();
     let keys: Vec<_> = names
         .iter()
-        .map(|k| x.cache_key(TransformPlans, k.clone()))
+        .map(|k| x.content_key(TransformPlans, k.clone()))
         .collect();
     // bufs[slot_buf[slot]] holds each slot; dead owned buffers are reused.
     let mut bufs: Vec<Option<Buf>> = vec![
@@ -128,7 +132,7 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
                  len: usize,
                  fill: &dyn Fn(&mut [[f32; 2]])|
      -> MkResult<Arc<SharedBuffer<u32>>> {
-        let key = x.cache_key(TransformPlans, name);
+        let key = x.content_key(TransformPlans, name);
         if let Some(v) = x.cached::<SharedBuffer<u32>>(&key)? {
             return Ok(v);
         }

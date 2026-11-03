@@ -170,6 +170,9 @@ impl Default for GhostPathsSettings {
 pub struct GhostPaths;
 
 impl Analysis for GhostPaths {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "ghost_paths"
     }
@@ -370,6 +373,9 @@ fn map_buffer(name: &str, m: IrradianceMap) -> Option<Buffer> {
 }
 
 impl Analysis for GhostIrradiance {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "ghost_irradiance"
     }

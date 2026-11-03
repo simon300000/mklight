@@ -39,6 +39,7 @@ pub mod mtf;
 pub mod psf;
 pub mod pupil;
 mod sampling;
+pub mod shared;
 pub mod special;
 pub mod traced;
 pub mod warnings;

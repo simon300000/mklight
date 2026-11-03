@@ -10,7 +10,8 @@
 //! Optional: MKLIGHT_IDENTITY_PROJECT (a local project), MKLIGHT_IDENTITY_SAMPLES=0
 //! (skip the sample designs), MKLIGHT_IDENTITY_MODES (default cpu,metal),
 //! MKLIGHT_IDENTITY_CASES (JSON [{name, analysis, settings}] replacing the
-//! default list), MKLIGHT_IDENTITY_RUNS (timed calls per case, default 1).
+//! default list), MKLIGHT_IDENTITY_RUNS (timed calls per case, default 1),
+//! MKLIGHT_IDENTITY_GRAPH_BYTES (analysis graph budget; 0 disables it).
 #![cfg(target_os = "macos")]
 
 use std::path::Path;
@@ -105,9 +106,9 @@ fn run(session: &Session, label: &str, case: &Value, mode: &str, runs: usize) {
             Ok(r) => {
                 line["used"] = json!(r.backend.used);
                 line["fallback_reason"] = json!(r.backend.fallback_reason);
-                if round == 0 {
-                    line["identity"] = hashes(&r);
-                }
+                // Every round: repeated requests may be answered by the
+                // engine's analysis graph and must stay identical.
+                line["identity"] = hashes(&r);
             }
             Err(e) => line["error"] = json!(e.to_string()),
         }
@@ -118,10 +119,14 @@ fn run(session: &Session, label: &str, case: &Value, mode: &str, runs: usize) {
 #[test]
 #[ignore = "release identity/cost probe; compare two builds' output"]
 fn buffer_identity_probe() {
-    let engine = Engine::new(EngineConfig {
+    let mut config = EngineConfig {
         default_backend: Backend::CpuReference,
         ..Default::default()
-    });
+    };
+    if let Ok(b) = std::env::var("MKLIGHT_IDENTITY_GRAPH_BYTES") {
+        config.analysis_graph_bytes = b.parse().unwrap();
+    }
+    let engine = Engine::new(config);
     let modes = std::env::var("MKLIGHT_IDENTITY_MODES").unwrap_or("cpu,metal".into());
     let runs = std::env::var("MKLIGHT_IDENTITY_RUNS").map_or(1, |s| s.parse().unwrap());
     let custom: Option<Vec<Value>> = std::env::var("MKLIGHT_IDENTITY_CASES")

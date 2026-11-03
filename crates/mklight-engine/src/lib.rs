@@ -10,6 +10,9 @@
 //! * `gpu` — GPU backend providers (Metal, CPU-f32 emulation) with
 //!   offline precision qualification and static analysis capabilities.
 //! * `validation` — the engine-level model checks of `validate`.
+//! * `graph` — the analysis dependency graph: content-addressed
+//!   intermediates (tracers, traced pupils, results) shared between
+//!   analyses and sessions.
 //! * `engine` — ties these together.
 //!
 //! ```
@@ -31,6 +34,7 @@ pub mod engine;
 pub mod error;
 pub mod fsutil;
 pub mod gpu;
+pub mod graph;
 pub mod lru;
 pub mod project;
 pub mod scheduler;

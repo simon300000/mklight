@@ -12,6 +12,7 @@
 
 use mklight_analysis::util::{FieldSelection, WavelengthSelection, nf};
 use mklight_core::job::RunTimer;
+use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
@@ -123,6 +124,17 @@ pub fn diffraction_encircled_energy_job(
     settings: &EncircledEnergySettings,
     ctx: &JobContext,
 ) -> MkResult<WaveEncircledEnergyResult> {
+    diffraction_encircled_energy_shared(tracer, settings, None, ctx)
+}
+
+/// [`diffraction_encircled_energy_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn diffraction_encircled_energy_shared(
+    tracer: &SequentialTracer,
+    settings: &EncircledEnergySettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<WaveEncircledEnergyResult> {
     let timer = RunTimer::start();
     check_grid(settings.grid_size, settings.padding, settings.method)?;
     if !(2..=10_001).contains(&settings.samples) {
@@ -133,8 +145,14 @@ pub fn diffraction_encircled_energy_job(
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let (per, skipped) =
-        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
+    let (per, skipped) = system_field_pupils(
+        tracer,
+        &idx,
+        &wls,
+        &settings.pupil,
+        memo,
+        &ctx.subrange(0.0, 0.3),
+    )?;
     // One radius list for every field: the finest PSF scale.
     let lf = per
         .iter()
@@ -165,6 +183,7 @@ pub fn diffraction_encircled_energy_job(
         warnings.extend(fp.ensure_window(
             grid as f64 * spacing,
             &settings.pupil,
+            memo,
             &sub.subrange(0.0, 0.0),
         )?);
         let pupils = fp.weighted();
@@ -309,12 +328,29 @@ pub fn line_spread_job(
     settings: &LineSpreadSettings,
     ctx: &JobContext,
 ) -> MkResult<LineSpreadResult> {
+    line_spread_shared(tracer, settings, None, ctx)
+}
+
+/// [`line_spread_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn line_spread_shared(
+    tracer: &SequentialTracer,
+    settings: &LineSpreadSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<LineSpreadResult> {
     let timer = RunTimer::start();
     check_grid(settings.grid_size, settings.padding, settings.method)?;
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let (per, skipped) =
-        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.4))?;
+    let (per, skipped) = system_field_pupils(
+        tracer,
+        &idx,
+        &wls,
+        &settings.pupil,
+        memo,
+        &ctx.subrange(0.0, 0.4),
+    )?;
     let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
@@ -326,6 +362,7 @@ pub fn line_spread_job(
         warnings.extend(fp.ensure_window(
             grid as f64 * spacing,
             &settings.pupil,
+            memo,
             &sub.subrange(0.0, 0.0),
         )?);
         let psf = compute_psf(

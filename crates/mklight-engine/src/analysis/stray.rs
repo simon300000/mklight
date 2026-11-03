@@ -71,6 +71,9 @@ pub struct GhostPartition {
 pub struct StrayLight;
 
 impl Analysis for StrayLight {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn result_version(&self) -> u32 {
         2
     }
