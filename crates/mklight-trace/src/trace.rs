@@ -554,8 +554,8 @@ fn lane_step(
     const N: usize = PACKET;
     let [px, py, mut pz] = st.p;
     if let Some(t) = ls.shift {
-        for l in 0..N {
-            pz[l] -= t;
+        for z in &mut pz {
+            *z -= t;
         }
     }
     let [dx, dy, dz] = st.d;
@@ -685,7 +685,8 @@ fn lane_step(
             oy[l] = mu.mul_add(dy[l], gamma * my);
             oz[l] = mu.mul_add(dz[l], gamma * mz);
             cosines[l] = cos;
-            ok[l] &= !(disc < 0.0);
+            // `refract` rejects `disc < 0` only (a NaN passes through).
+            ok[l] &= disc >= 0.0 || disc.is_nan();
         }
     }
     *incidence = ([nx, ny, nz], cosines);

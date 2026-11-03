@@ -453,7 +453,9 @@ impl Tracing<'_> {
         let opts = self.tracer.options();
         let records = self.records && throughput;
         let traced: Vec<(TraceResult, f64)> = if records {
-            let mut rec = vec![Vec::with_capacity(sys.surfaces.len()); starts.len()];
+            let mut rec: Vec<_> = (0..starts.len())
+                .map(|_| Vec::with_capacity(sys.surfaces.len()))
+                .collect();
             trace_rays_recorded(sys, &starts, &[self.wl], &opts, &mut rec)
                 .into_iter()
                 .zip(&rec)

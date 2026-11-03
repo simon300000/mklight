@@ -865,9 +865,9 @@ impl PupilFunction {
     fn added_opd(&self, extra: impl Fn(f64, f64) -> f64) -> Vec<f64> {
         let mut opd = self.opd_waves.clone();
         let n = self.n;
-        for k in 0..n * n {
+        for (k, w) in opd.iter_mut().enumerate() {
             if self.coverage[k] > 0.0 {
-                opd[k] += extra(self.coord(k % n), self.coord(k / n));
+                *w += extra(self.coord(k % n), self.coord(k / n));
             }
         }
         opd
