@@ -388,6 +388,7 @@ fn qualification_on_gpu() {
         started_unix_ms: 0,
         duration_ms: 0.0,
         warnings: vec![],
+        failed_attempts: vec![],
     };
     qualify(g, &t, None, &ctx).unwrap().record(&mut info);
     assert!(info.backend.starts_with("metal:"));

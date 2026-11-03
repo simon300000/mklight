@@ -138,17 +138,29 @@ when computed by Metal.
 
 `backend.cost_decision` records automatic selection: `decision`
 (`cpu_reference` or `qualified_metal`), `rule`, `workload`, `threshold`,
-`evidence` and `version`. Each analysis measures its workload from the
-settings and the system (traced rays, wave pupil samples, …) and runs the CPU
-reference at or below a threshold derived from the end-to-end benchmark in
-GPU §9.2 (Apple M2 Pro; applied to Apple GPUs). At default settings that is
-the CPU for the historical default analysis workloads except `geometric_mtf`;
-candidate jobs now select Metal with re-measurement pending. Analyses without a rule
-and other devices prefer qualified Metal. An explicit backend records that the
-rules were bypassed. Deliberate CPU cost choices are reported without a
-warning. Static capability choices are also deliberate; unsupported/resource
-failures retain warnings. Cold calls perform no f64 chain verification.
-Known residual Metal accuracy gaps are listed in GPU §9.2.
+`evidence`, `version`, and `before_device: true` when the route was settled
+before any GPU device was opened. Analyses whose native output failed its f64
+comparison on the measured evidence (the native wave analyses, the chief-ray
+angle/pupil-aberration/illumination-map/grid-distortion maps, field
+curvature and stray light) and the candidate solvers run on the CPU reference
+under `auto`. The others measure a workload from the settings and the system
+(traced rays, wave pupil samples, …) and run the CPU reference at or below a
+threshold derived from the end-to-end benchmarks in GPU §9.2 (Apple M2 Pro;
+applied to Apple GPUs); dense spot/geometric-MTF and large ray grids use
+Metal. Analyses without a rule and other devices prefer qualified Metal. An
+explicit backend records that the rules were bypassed. Deliberate CPU cost
+choices are reported without a warning. Static capability choices are also
+deliberate; for an explicit request they are a `downgraded` attempt with a
+warning. Unsupported/resource failures retain warnings. Cold calls perform no
+f64 chain verification. Known residual Metal accuracy gaps are listed in GPU
+§9.2.
+
+`run_info.failed_attempts` (omitted when empty) lists backend attempts that
+did not produce the result, each with `backend`, `outcome` (`failed`,
+`skipped`, `infeasible`, `downgraded`, `reference_completion`), `reason` and
+`elapsed_ms`, so a fallback's time is visible next to the CPU label. A request
+that failed deterministically on a device is not attempted again there for
+the same snapshot, glass library and settings (`skipped`).
 
 Optimisation's `result.backend.resident_evaluation` reports candidate counts,
 device operands, host operands and actual

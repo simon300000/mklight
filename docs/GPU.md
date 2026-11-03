@@ -1498,9 +1498,10 @@ design; tolerance scores each completed case with its returned compensators
 (no second compensator solve) and derives the sensitivity/Monte Carlo figures
 from those scores; glass substitution scores and ranks the kept finalists.
 `merit_evaluation` publishes the evaluator's values. Cancellation never starts
-a reference replacement or report. Their cost rules select Metal until the new
-path is measured (**re-measure pending**); other Auto thresholds are
-unchanged.
+a reference replacement or report. `auto` runs them on the CPU reference on
+Apple GPUs: on the complex-lens benchmark (below) the reference was 4–52×
+faster for all four, as it was for every P11 sample. An explicit Metal request
+still runs them natively.
 
 #### Consolidated P11 measurements
 
@@ -1541,83 +1542,97 @@ Where a predecessor exists, the same-input old/new complete calls are retained b
 | P8 Cooke spot merit B=16 | 1.929 / 2.032 | 2.495 / 2.710 |
 
 **Automatic cost rules.** `auto` routes each engine job by a rule in
-`crates/mklight-engine/src/analysis/cost.rs`. The rule measures the job's
-workload from its normalised settings and the system (F, W: selected fields
-and wavelengths; pupil points of the pattern and rings; `n`: the wave pupil
-grid, or `rays` for an automatic grid) and runs the CPU f64 reference at or
-below the threshold, qualified Metal above it. Thresholds come from the
-634 warm keys of this session (medians of ten paired runs). A measured key
-counts as a CPU win when the CPU median is ≤85% of the Metal median and the
-CPU p75 is below the Metal p25. Bases:
+`crates/mklight-engine/src/analysis/cost.rs` (`decide` is the router's single
+entry point, so a calibrated cost model can replace the table). Every
+GPU-capable analysis has one rule:
 
-- *crossover*: the dense series separates; the threshold is the
-  interpolated per-design crossover (geometric mean, rounded to a power of
-  two) between the largest CPU-win and smallest Metal-win workload.
-- *trace*: CPU won every measured shape; these trace-only analyses use the
-  `ray_grid` crossover of the same kernels.
-- *measured*: CPU won, or minimised the summed medians over the 16 designs,
-  at every measured shape. The threshold is the measured default workload
-  (3 fields × 3 wavelengths in every sample); larger jobs are unmeasured
-  and use qualified Metal.
-- *candidates*: always CPU in P11, when every changed candidate was
-  re-checked in f64; superseded by the runtime policy above.
+- *known native failure*: the native output failed its f64 comparison on the
+  measured evidence; `auto` uses the CPU reference at every size and on every
+  device. Explicit Metal requests still run natively.
+- *candidates*: the candidate solvers; the reference was faster at every
+  measured size (Apple GPUs).
+- a *workload threshold* (Apple GPUs): the workload is measured from the
+  normalised settings and the system (F, W: selected fields and wavelengths;
+  pupil points of the pattern and rings; `n`: the wave pupil grid, or `rays`
+  for an automatic grid); the CPU reference runs at or below the threshold,
+  qualified Metal above it.
 
-| Analysis | Workload | CPU at or below | Basis | Defaults: CPU win / Metal faster / f64 only | Σ default medians CPU / Metal ms |
-|---|---|---:|---|---:|---:|
-| `spot_diagram` | F·W·pupil points | 32,768 | crossover | 16 / 0 / 0 | 8.7 / 22.5 |
-| `ray_grid` | F·W·pupil points | 32,768 | crossover | 16 / 0 / 0 | 4.1 / 11.1 |
-| `encircled_energy` | F·W·pupil points | 32,768 | crossover | 0 / 0 / 16 | 74.0 / 74.8 |
-| `best_focus` | F·W·pupil points | 16,384 | crossover | 16 / 0 / 0 | 11.1 / 27.7 |
-| `geometric_mtf` | F·W·pupil points | 2,048 | crossover | 0 / 16 / 0 | 375.4 / 128.8 |
-| `ray_fan`, `opd_fan` | F·W·samples | 32,768 | trace | 16 / 0 / 0 | 3.5 / 13.3; 3.6 / 17.5 |
-| `longitudinal_aberration` | W·pupil_samples | 32,768 | trace | 16 / 0 / 0 | 4.4 / 13.4 |
-| `lateral_colour` | field_samples | 32,768 | trace | 16 / 0 / 0 | 2.3 / 11.0 |
-| `field_curvature_distortion` | W·field_samples | 32,768 | trace | 15 / 0 / 1 | 4.9 / 26.1 |
-| `grid_distortion` | grid_size² | 32,768 | trace | 15 / 0 / 0 | 9.6 / 17.2 |
-| `chief_ray_angle`, `pupil_aberration` | grid points | 32,768 | trace | 16 / 0 / 0 | 4.5 / 21.4; 5.3 / 27.2 |
-| `layout` | F·W·rays_per_field | 32,768 | trace | 16 / 0 / 0 | 8.8 / 30.2 |
-| `footprint` | F·W·pupil points | 2,043 | measured | 9 / 5 / 1 | 34.2 / 39.5 |
-| `relative_illumination` | field·radial·azimuth samples | 6,336 | measured | 7 / 8 / 0 | 346.4 / 407.9 |
-| `relative_illumination_map` | grid·radial·azimuth samples | 14,400 | measured | 8 / 8 / 0 | 303.5 / 369.7 |
-| `system_transmission` | F·W·pupil n² | 9,216 | measured | 16 / 0 / 0 | 12.5 / 120.6 |
-| `polarization_pupil_map` | grid² | 1,089 | measured | 3 / 0 / 13 | 28.0 / 31.2 |
-| `ghost_paths` | surfaces | 13 | measured | 15 / 0 / 1 | 3.7 / 13.7 |
-| `ghost_irradiance` | surfaces·pupil_samples² | 29,952 | measured | 9 / 2 / 4 | 2038.3 / 2394.4 |
-| `stray_light` | rays | 20,000 | measured | 9 / 1 / 6 | 559.9 / 784.7 |
-| `wavefront_map` | F·W·n² | 12,675 | measured | 0 / 0 / 16 | 315.3 / 317.4 |
-| `psf` | F·W·n² | 38,025 | measured | 14 / 1 / 0 | 501.2 / 775.9 |
-| `mtf` | F·W·n² | 38,025 | measured | 15 / 1 / 0 | 548.2 / 948.0 |
-| `line_spread` | F·W·n² | 38,025 | measured | 14 / 1 / 0 | 490.7 / 764.9 |
-| `diffraction_encircled_energy` | F·W·n² | 38,025 | measured | 12 / 4 / 0 | 1132.0 / 1265.7 |
-| `through_focus_mtf` | F·W·focus_samples·n² | 798,525 | measured | 12 / 1 / 0 | 2518.2 / 3263.1 |
-| `mtf_vs_field` | field_samples·W·n² | 139,425 | measured | 16 / 0 / 0 | 681.3 / 2424.5 |
-| `image_simulation` | field_grid²·n² | 38,025 | measured | 9 / 5 / 0 | 118.8 / 145.2 |
-| `optimize` | — | always | candidates | 16 / 0 / 0 | 1365.9 / 30534.5 |
-| `merit_evaluation` | — | always | candidates | 16 / 0 / 0 | 34.7 / 99.3 |
-| `tolerance` | — | always | candidates | 16 / 0 / 0 | 149.9 / 1785.3 |
-| `glass_substitution` | — | always | candidates | 1 / 0 / 0 | 17.2 / 500.9 |
+Evidence: the P11 quiet session below (634 warm keys over the 16 samples,
+medians of ten paired runs) and a complex 29-surface camera lens (6 fields,
+5 wavelengths, real aiming, user glasses; every analysis on CPU, Metal DF,
+Metal f32 and Auto, warm/edit/cold, 2026-11-02). A key is a CPU win when the
+CPU median is ≤85% of the Metal median and the CPU p75 is below the Metal p25.
+Threshold bases:
 
-"f64 only" keys never produced an accepted Metal result (accuracy
-fallback); their Metal time is the reference plus overhead. Dense geometric
-series (seven designs, one field, primary wavelength, square pupil), CPU/Metal
-median ratio range and CPU win / Metal faster / f64-only counts:
+- *crossover*: the geometric mean, rounded down to a power of two, of the
+  largest measured CPU-win workload and the smallest larger Metal-win
+  workload, over both evidence sets.
+- *fan parity*: fans reached parity on the complex lens at 30,750 samples
+  (CPU 45.5 / Metal 49.5 ms); trace-only analyses without any measured Metal
+  win share it.
+- *measured*: CPU won at every measured size; the threshold is the largest
+  such workload. Larger jobs are unmeasured and use qualified Metal.
 
-| Analysis | 95 rays | 10,029 rays | 825,159 rays | CPU at or below |
-|---|---:|---:|---:|---:|
-| `spot_diagram` | 0.05–0.11 (7/0/0) | 0.61–0.77 (7/0/0) | 1.04–1.25 (0/7/0) | 32,768 |
-| `ray_grid` | 0.05–0.12 (7/0/0) | 0.35–0.76 (7/0/0) | 0.88–2.40 (0/6/0) | 32,768 |
-| `best_focus` | 0.03–0.05 (7/0/0) | 0.51–1.02 (4/1/0) | 3.79–4.43 (0/7/0) | 16,384 |
-| `encircled_energy` | 0.79–0.90 (0/0/7) | 0.37–1.00 (1/0/6) | 0.99–3.37 (0/1/6) | 32,768 |
-| `geometric_mtf` | 0.06–0.09 (7/0/0) | 2.17–2.99 (0/7/0) | 6.51–9.61 (0/7/0) | 2,048 |
+| Analysis | Workload | `auto` CPU at or below | Basis | Deciding evidence (CPU / Metal DF warm medians) |
+|---|---|---:|---|---|
+| `spot_diagram`, `ray_grid`, `best_focus` | F·W·pupil points | 524,288 | crossover | complex lens 374,430: ray grid 292 / 653 ms, best focus 322 / 663 ms; P11 825,159 Metal faster on every design (spot 1.04–1.25×, best focus 3.8–4.4×); complex-lens dense spot (23.6M) Metal 2.1× |
+| `geometric_mtf` | F·W·pupil points | 262,144 | crossover | complex lens 99,549: 140 / 619 ms; P11 825,159 Metal 6.5–9.6×; complex lens 24.75M Metal 5.1× |
+| `footprint` | F·W·pupil points | 65,536 | crossover | complex lens 6,809: 54 / 92 ms; P5 Cooke 823,473 rays Metal 2.0× |
+| `ray_fan`, `opd_fan` | F·W·samples | 32,768 | fan parity | complex lens 30,750: 45.5 / 49.5 ms |
+| `longitudinal_aberration`, `lateral_colour`, `layout` | W·pupil samples; field samples; F·W·rays | 32,768 | fan parity | CPU 3–14× at every measured default |
+| `relative_illumination` | field·radial·azimuth samples | 6,336 | measured | complex lens 6,336: 56 / 1267 ms; P11 defaults 7 CPU / 8 Metal |
+| `system_transmission` | F·W·pupil n² | 30,720 | measured | complex lens 30,720: 21 / 603 ms; P11 16/0 |
+| `ghost_paths` | surfaces | 29 | measured | complex lens 29 surfaces: 3.9 / 5.3 ms |
+| `ghost_irradiance` | surfaces·pupil_samples² | 66,816 | measured | complex lens 66,816: 17.9 / 24.0 s |
+| `image_simulation` | field_grid²·n² | 38,025 | measured | P11 defaults 9 CPU / 5 Metal; the complex lens' native route failed (unusable chief) |
+| `wavefront_map`, `polarization_pupil_map` | F·W·n²; grid² | 12,675; 1,089 | measured | static capability: always the reference |
+| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf` | — | always | known native failure | complex lens Metal DF 1.5e2–1.5e6× its f64 budget, and 2.2–8.6× slower |
+| `mtf_vs_field` | — | always | known native failure | complex lens: unresolved in-pupil aims and driver interactivity failures fell back to f64, 12× slower |
+| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | — | always | known native failure | complex lens: 20–200 mask/discrete mismatches against f64, and 24–76× slower |
+| `field_curvature_distortion` | — | always | known native failure | complex lens close-ray focus 4.4× its budget; P11 petzval_asphere residual gap |
+| `stray_light` | — | always | known native failure | complex lens sink energies 4.8e4× their budget; 6/16 P11 samples |
+| `optimize`, `merit_evaluation`, `tolerance`, `glass_substitution` | — | always | candidates | complex lens CPU 4–52× (merit 23 / 96 ms, optimise 286 / 5819 ms, tolerance 78 / 3401 ms, glass 763 / 31715 ms with driver errors); P11 16/0 |
 
-At default settings Metal is preferred only for `geometric_mtf` (2.2–3.7×
-faster warm). It also wins dense geometric jobs above the thresholds, and
-the measured-basis analyses on some freeform/asphere designs (relative
-illumination, footprint, image simulation), where the summed medians still
-favour CPU. The rules carry the device-family evidence (M2 Pro) and apply to
-Apple GPUs; other devices and analyses without a rule use qualified Metal.
+The thresholds cover two very different designs with one number per
+analysis: on the simple P11 samples Metal already wins some workloads below
+them (`geometric_mtf` from about 10,000 rays, `best_focus` near 16,000), on
+the complex lens the CPU still wins at them. A stage-level cost model that
+includes the system and its aiming difficulty replaces them.
+
+P11 dense geometric series (seven designs, one field, primary wavelength,
+square pupil), CPU/Metal median ratio range and CPU win / Metal faster /
+f64-only counts:
+
+| Analysis | 95 rays | 10,029 rays | 825,159 rays |
+|---|---:|---:|---:|
+| `spot_diagram` | 0.05–0.11 (7/0/0) | 0.61–0.77 (7/0/0) | 1.04–1.25 (0/7/0) |
+| `ray_grid` | 0.05–0.12 (7/0/0) | 0.35–0.76 (7/0/0) | 0.88–2.40 (0/6/0) |
+| `best_focus` | 0.03–0.05 (7/0/0) | 0.51–1.02 (4/1/0) | 3.79–4.43 (0/7/0) |
+| `encircled_energy` | 0.79–0.90 (0/0/7) | 0.37–1.00 (1/0/6) | 0.99–3.37 (0/1/6) |
+| `geometric_mtf` | 0.06–0.09 (7/0/0) | 2.17–2.99 (0/7/0) | 6.51–9.61 (0/7/0) |
+
+**Deciding before the device opens.** Providers describe their analyses and
+device family without opening the device (`BackendProvider::hint`; every Metal
+device on Apple silicon is the Apple GPU). An `auto` job whose route is the
+reference by the static capability list or these rules is settled before any
+device initialisation, so a cold call that ends on the CPU pays no Metal
+setup. Its decision carries `"before_device": true`.
+
 Each decision is recorded in the backend report (`cost_decision`: decision,
 rule, workload, threshold, evidence, version).
+
+**Failed and skipped native attempts.** `RunInfo.failed_attempts` lists every
+backend attempt that did not produce the result: `failed` (the native run
+failed after `elapsed_ms` and the reference completed the job), `skipped`
+(the same request already failed deterministically on this device),
+`infeasible` (rejected by the analysis' capability/resource preflight before
+preparation), `downgraded` (an explicit request the static capability list
+ran on the reference; also a warning) and `reference_completion` (the native
+adapter itself completed the whole result in f64). Each device remembers
+deterministic failures (model, support and numerical errors, not
+device/driver errors) by request identity — snapshot hash, glass library
+hash, analysis and normalised settings — in a bounded LRU; an edit changes the
+identity.
 
 Cold observations are separate: 496 independent CPU and Metal engines/sessions/providers prevent a prior CPU call from warming the Metal engine reference caches. They include construction, setup, qualification and result assembly; backend setup is also reported separately. A cold Metal job includes the complete f64 chain qualification of §9.4 (the CPU reference run plus comparison), so first calls on a new snapshot or settings cost more than the CPU job: median 12× (1.7–51×) over the 496 default jobs, 42.3 s against 13.1 s in total. `geometric_mtf`, 2.9× faster warm, is 2.0× slower cold. Editing a design changes the snapshot and starts a new qualification. The paired first calls in the repeat/candidate sweeps describe their initialized shared session, not an independent cold process. Cold individual observations and every warm median/p95 are retained in `engine-costs-all.json` and the raw `P11_COLD` rows.
 
@@ -1686,16 +1701,18 @@ not a blanket precision certificate: offline suites establish accuracy and the
 static capability list above retains broadly failing analyses on the reference. The legacy host-generated Metal analysis bridge and its ray and
 candidate-count heuristics are retired.
 
-`auto` applies the workload cost rules of §9.2: per analysis, a workload
-measured from the settings and the system against a threshold derived from
-the measurements, scoped to the measured device family. Unknown cost (no
-rule, or a device without evidence) uses qualified Metal; requests do not
-time-race backends. Cold first calls and warm reuse are measured separately. A CPU choice by cost is deliberate and reported without a
+`auto` applies the rules of §9.2: known native failures run on the reference
+on any device; candidate solvers and workload thresholds are scoped to the
+measured device family. Unknown cost (no rule, or a device without evidence)
+uses qualified Metal; requests do not time-race backends. Routes that end on
+the reference are settled before the device opens. Cold first calls and warm reuse are measured separately. A CPU choice by cost is deliberate and reported without a
 warning. Small serial host control, I/O and final result packing remain
 host work. Kernel/primitive-only measurements do not set complete-job
 choices.
 
-An explicit Metal request bypasses the cost rules, never accuracy gates.
+An explicit Metal request bypasses the cost rules, including the known native
+failures, never the static capability list (reported as a `downgraded`
+attempt with a warning).
 Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
 Unsupported work, static capability restrictions, resource or device failure produce
 a reported reference fallback; cancellation never triggers fallback. A

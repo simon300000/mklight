@@ -252,6 +252,34 @@ impl Engine {
         }
     }
 
+    /// `select_backend` for one run with normalised `settings` on `system`.
+    /// An `auto` run (requested, or the engine default) whose route the
+    /// static capability or cost rules settle as the CPU reference is
+    /// decided here, before any GPU device is opened; the decision travels in
+    /// `SelectedBackend::cost_decision`.
+    pub fn route_backend(
+        &self,
+        requested: Option<&Backend>,
+        analysis: &str,
+        settings: &serde_json::Value,
+        system: &mklight_core::OpticalSystem,
+        allow_fallback: bool,
+    ) -> EngineResult<SelectedBackend> {
+        let auto = match requested {
+            Some(b) => (*b == Backend::Auto).then(|| b.id()),
+            None => (self.default_backend() == Backend::Auto)
+                .then(|| format!("default:{}", Backend::Auto.id())),
+        };
+        if let Some(id) = auto
+            && let Some(mut s) =
+                crate::analysis::pre_route(&read(&self.inner.backends), analysis, settings, system)
+        {
+            s.requested = id;
+            return Ok(s);
+        }
+        self.select_backend(requested, analysis, allow_fallback)
+    }
+
     // --- jobs
 
     /// Queue a prepared job (see `Session::analysis_job`).

@@ -54,7 +54,7 @@ fn auto_cost_rules_route_by_workload() {
     assert_eq!(cost["decision"], "cpu_reference");
     assert_eq!(
         (cost["workload"].as_f64(), cost["threshold"].as_f64()),
-        (Some(1143.), Some(32768.))
+        (Some(1143.), Some(524288.))
     );
     assert!(small.backend.fallback_reason.unwrap().contains("faster"));
     assert!(

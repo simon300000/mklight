@@ -124,6 +124,22 @@ impl BackendInfo {
     }
 }
 
+/// What a provider can tell without opening its device
+/// (`BackendProvider::hint`), so that `auto` can settle CPU routes before any
+/// device initialisation.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProviderHint {
+    /// The provider is a reference (the CPU f64 backend).
+    pub reference: bool,
+    /// Analyses the provider implements once its device is open.
+    pub analyses: Vec<String>,
+    /// Why the device is unavailable, once known.
+    pub unavailable: Option<String>,
+    /// The device is an Apple GPU (the family of the measured cost rules);
+    /// `None` until known.
+    pub apple_gpu: Option<bool>,
+}
+
 /// An opaque handle to a compute device. Analyses downcast it to the
 /// interface they need (`mklight-gpu`'s compute-backend trait object once
 /// that crate is wired in).
@@ -142,6 +158,21 @@ pub trait BackendProvider: Send + Sync {
     fn device(&self) -> Option<DeviceHandle> {
         None
     }
+    /// What `info` would report, without opening a device; `None` when the
+    /// provider cannot tell without opening it.
+    fn hint(&self) -> Option<ProviderHint> {
+        None
+    }
+}
+
+/// `auto`'s first candidate for an analysis, from provider hints.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AutoCandidate {
+    /// No registered GPU implements it: the reference, and why.
+    NoGpu(String),
+    /// The first GPU provider `auto` would select, with its device family
+    /// when known (`ProviderHint::apple_gpu`).
+    Gpu { apple_gpu: Option<bool> },
 }
 
 /// The outcome of backend selection for one analysis run.
@@ -156,6 +187,9 @@ pub struct SelectedBackend {
     /// Why the preferred backend was not selected, without a warning
     /// (`auto` and engine-default preferences): `BackendReport::fallback_reason`.
     pub note: Option<String>,
+    /// The cost decision when `auto` settled the route before opening a
+    /// device (`BackendReport::cost_decision`).
+    pub cost_decision: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for SelectedBackend {
@@ -166,6 +200,7 @@ impl std::fmt::Debug for SelectedBackend {
             .field("warning", &self.warning)
             .field("requested", &self.requested)
             .field("note", &self.note)
+            .field("cost_decision", &self.cost_decision)
             .finish()
     }
 }
@@ -178,6 +213,7 @@ impl SelectedBackend {
             warning: None,
             requested: Backend::CpuReference.id(),
             note: None,
+            cost_decision: None,
         }
     }
 }
@@ -186,6 +222,15 @@ struct Static(BackendInfo);
 impl BackendProvider for Static {
     fn info(&self) -> BackendInfo {
         self.0.clone()
+    }
+    fn hint(&self) -> Option<ProviderHint> {
+        let i = &self.0;
+        Some(ProviderHint {
+            reference: i.capabilities.reference,
+            analyses: i.capabilities.analyses.clone(),
+            unavailable: (!i.available).then(|| i.reason.clone().unwrap_or_default()),
+            apple_gpu: None,
+        })
     }
 }
 
@@ -268,6 +313,7 @@ impl BackendRegistry {
                         warning: None,
                         requested: Backend::Auto.id(),
                         note: None,
+                        cost_decision: None,
                     };
                 }
             }
@@ -280,6 +326,38 @@ impl BackendRegistry {
             why.join("; ")
         });
         s
+    }
+
+    /// `select_auto` from provider hints, without opening any device. The
+    /// reasons match `select_auto`'s note. `None` when a provider can only
+    /// tell by opening its device.
+    pub fn auto_candidate(&self, analysis: &str) -> Option<AutoCandidate> {
+        let mut why = Vec::new();
+        for p in &self.providers {
+            let h = p.hint()?;
+            if h.reference {
+                continue;
+            }
+            if let Some(reason) = h.unavailable {
+                let reason = if reason.is_empty() {
+                    "unavailable".into()
+                } else {
+                    reason
+                };
+                why.push(format!("{}: {reason}", p.id()));
+            } else if !h.analyses.iter().any(|a| a == analysis) {
+                why.push(format!("{}: no GPU path for '{analysis}'", p.id()));
+            } else {
+                return Some(AutoCandidate::Gpu {
+                    apple_gpu: h.apple_gpu,
+                });
+            }
+        }
+        Some(AutoCandidate::NoGpu(if why.is_empty() {
+            "no GPU backend is registered".into()
+        } else {
+            why.join("; ")
+        }))
     }
 
     /// Resolve a request for running `analysis` (`None`: only check that
@@ -307,6 +385,7 @@ impl BackendRegistry {
                         warning: None,
                         requested: requested.id(),
                         note: None,
+                        cost_decision: None,
                     });
                 }
             },

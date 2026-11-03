@@ -61,6 +61,15 @@ pub(crate) fn record_native(input: &AnalysisInput<'_>, run: &RunInfo) {
         "seed": run.seed, "duration_ms": run.duration_ms,
     }));
     let reference = run.precision == Precision::F64Reference;
+    if reference {
+        // The native adapter's whole time, including the f64 completion.
+        input.record_attempt(mklight_core::job::BackendAttempt {
+            backend: dev.id.clone(),
+            outcome: "reference_completion".into(),
+            reason: "resident adapter required whole-result f64 completion".into(),
+            elapsed_ms: run.duration_ms,
+        });
+    }
     input.report_backend(BackendUse {
         id: if reference {
             "cpu_reference".into()

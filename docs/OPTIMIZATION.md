@@ -808,8 +808,9 @@ skip the snapshot hash for transient candidates (`mklight-core`).
 
 **Use.** The crossover figures above describe the legacy host merit adapter.
 The resident evaluator now publishes device values without per-candidate f64
-checks. Engine Auto selects Metal for candidate jobs, with **re-measure pending**;
-other thresholds are unchanged (`GPU.md` §9.2). `gpu_rays_per_candidate` counts
+checks. Engine Auto runs candidate jobs on the CPU reference on Apple GPUs,
+where it was 4–52× faster on the measured designs (`GPU.md` §9.2); an explicit
+Metal request runs them on the device. `gpu_rays_per_candidate` counts
 the rays in the legacy evaluator's plan.
 
 ## Engine jobs: `optimize`, `merit_evaluation` and `tolerance`
@@ -1239,7 +1240,7 @@ I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
 differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator, with each FD Jacobian
 batched and split at `gpu_batch`. No candidate/reference checks run during the
-search. Auto selects Metal while re-measurement is pending. The final ranking
+search. Auto runs the search on the CPU reference (`GPU.md` §9.2). The final ranking
 adds one CPU f64 merit evaluation per kept combination.
 
 The ignored Cooke-triplet benchmark has three glass variables (K = 3), a
@@ -1380,7 +1381,7 @@ already live on the device.
 **P11 policy update:** the `m·n²` threshold and timings in the next
 paragraph are historical. The resident tall QR now starts at `m·n ≥ 2¹⁶`
 Jacobian elements, measured on the complete compression (`GPU.md` §9.2).
-Engine `auto` now selects Metal for candidate jobs; re-measure pending. The
+Engine `auto` runs candidate jobs on the CPU reference (`GPU.md` §9.2). The
 following P8/P11 timings are historical and include per-candidate f64 checks.
 
 The local solver hands its tall QR to P3 once the free-column work

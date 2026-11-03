@@ -715,6 +715,7 @@ fn qualification_and_fallback_recording() {
         started_unix_ms: 0,
         duration_ms: 0.0,
         warnings: vec![],
+        failed_attempts: vec![],
     };
     q.record(&mut info);
     assert!(info.backend.starts_with("cpu-f32:"));
