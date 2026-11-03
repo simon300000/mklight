@@ -552,6 +552,9 @@ pub fn mtf_analysis_job(
     if let Some(f) = s.max_frequency {
         a::check_pos("maximum frequency", f)?;
     }
+    if s.method == a::MtfAnalysisMethod::Direct {
+        ResidentPupil::check_stencil_grid(s.pupil.grid)?;
+    }
     let idx = a::fields(t, &s.fields)?;
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
@@ -703,6 +706,9 @@ pub fn mtf_vs_field_job(
     }
     let len = s.direction[0].hypot(s.direction[1]);
     a::check_pos("field direction", len)?;
+    if s.method == a::MtfAnalysisMethod::Direct {
+        ResidentPupil::check_stencil_grid(s.pupil.grid)?;
+    }
     let o = crate::MtfOrientation {
         tangential: s.direction.map(|v| v / len),
     };
@@ -1171,6 +1177,9 @@ pub fn through_focus_mtf_analysis_job(
     }
     if let Some(r) = s.focus_range_mm {
         a::check_pos("focus range", r)?;
+    }
+    if s.method == a::MtfAnalysisMethod::Direct {
+        ResidentPupil::check_stencil_grid(s.pupil.grid)?;
     }
     let idx = a::fields(t, &s.fields)?;
     let wls = a::wavelengths(t, &s.wavelengths)?;
