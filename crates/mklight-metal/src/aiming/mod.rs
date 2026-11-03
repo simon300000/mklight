@@ -275,11 +275,14 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..p
             };
             let newton = kernel::newton_params();
+            let systems_key = match &systems {
+                Systems::Uploaded(up) => format!("uploaded:{}", up.cache_id),
+                Systems::Resident { .. } => format!("{:?}", g.systems),
+            };
             let key = |x: &Execution<'_>, what: &str| {
                 g.field_key.as_ref().map(|k| {
                     x.cache_key(format!(
-                        "{what}:{:?}:{k}:{}:{}",
-                        g.systems,
+                        "{what}:{systems_key}:{k}:{}:{}",
                         g.tolerance.to_bits(),
                         g.max_iterations
                     ))
