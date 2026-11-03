@@ -51,6 +51,9 @@ pub struct Geo {
 }
 
 impl Analysis for Geo {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         self.name
     }
@@ -95,16 +98,13 @@ impl Analysis for Geo {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let tracer = SequentialTracer::new(input.resolved()?)?;
         // Analyses with a field selection get the default axis fields here,
         // so the GPU and ray-grid paths see the same fields as the crate.
-        match settings.get("fields") {
-            Some(fields) => {
-                let tracer = util::default_fields(&tracer, &parse(fields)?)?;
-                (self.run)(input, &tracer, settings, ctx)
-            }
-            None => (self.run)(input, &tracer, settings, ctx),
-        }
+        let tracer = match settings.get("fields") {
+            Some(fields) => input.field_tracer(fields, ctx)?,
+            None => input.tracer(ctx)?,
+        };
+        (self.run)(input, &tracer, settings, ctx)
     }
 }
 

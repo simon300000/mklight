@@ -141,6 +141,36 @@ alive. Buffer values follow the JSON conventions of the documented result
 route is byte-identical to the former JSON route. The C ABI hands each
 buffer's allocation to the caller without a copy.
 
+## Analysis graph
+
+An edit is usually followed by several graphs redrawing the same snapshot
+(layout, spot, fans, MTF, PSF, field curvature, …). Instead of each analysis
+preparing fields and tracing pupils on its own, the engine keeps a shared,
+content-addressed dependency graph under the analysis requests
+(`mklight-engine` `graph`, `mklight_core::memo`):
+
+| node | content key | shared by |
+|---|---|---|
+| resolved system (material resolution) | snapshot, library generation | session cache |
+| `tracer`, `field_tracer` | snapshot, library (field selection) | geometric, map and radiometry analyses: first order, prepared fields with chief rays and Jacobians, host seeds of the Metal path |
+| `configured` | snapshot, library, configuration | wave analyses: configuration, solves, first order, prepared fields |
+| `pupil_lattice` | configured snapshot, tracer settings, prepared field, wavelength, lattice settings, library | CPU f64 PSF, MTF, LSF, encircled energy, through-focus, wavefront, MTF vs field: rays, rim, reference sphere, masks, automatic pupil grid |
+| `resampled_pupil` | lattice, grid, supersampling | every consumer of the same grid (decided grid and window refinements) |
+| `result` | snapshot, library, analysis, normalised settings, backend selection | repeated requests (refresh, undo); CPU-reference results only |
+
+Keys digest every input a node reads plus an algorithm version, so a hit is
+bit-identical to a rebuild and an edit misses exactly the nodes that depend
+on what changed; nothing stale can be returned. Methods are different nodes
+(direct and FFT MTF never substitute for each other); sampling decisions such
+as the automatic pupil grid are computed once per lattice from host f64 data.
+The graph has one byte budget (`EngineConfig::analysis_graph_bytes`, 0
+disables it) with GreedyDual-Size retention by rebuild cost per byte.
+Concurrent requests claim missing nodes and wait for nodes another job is
+building (outside the rayon pool), so a queued refresh traces each pupil once;
+failed or cancelled builds publish nothing. Metal keeps its own resident
+caches (aiming rows, seed tables, transform plans); transform recipes, tables
+and chirp spectra are content-addressed there and survive edits.
+
 ## Structural validation
 
 `OpticalSystem::validation_issues` lists every structural problem of a

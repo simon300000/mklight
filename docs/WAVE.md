@@ -14,7 +14,8 @@ coordinates); the module docs in
 | module | contents |
 |---|---|
 | `pupil` | `PupilGeometry` (exit-pupil radius `a`, reference radius `R`, `n'`, chief-ray frame; `R = ∞` for telecentric beams), `PupilFunction` (`n × n` cell-centred grid of amplitude, coverage, OPD), `PupilMask`, statistics, refocusing |
-| `traced` | the tracer link: `trace_pupil(tracer, field, wavelength, &PupilSettings, ctx)` → `TracedPupil`; `tracer_for_configuration` |
+| `traced` | the tracer link: `trace_pupil(tracer, field, wavelength, &PupilSettings, ctx)` → `TracedPupil` (= `trace_lattice` → `PupilLattice`, then `PupilLattice::resample` and `assemble`); `tracer_for_configuration` |
+| `shared` | traced lattices and resampled pupils shared between analyses through a `mklight_core::memo::Memo` (the engine's analysis graph), keyed by content |
 | `interp` | resampling traced rays onto the grid (triangulated lattice with a rim mask, or a Zernike fit of scattered rays) |
 | `zernike` | Fringe (Z1–Z37) and Noll-normalised Standard polynomials, weighted least-squares fits, Seidel-equivalent terms |
 | `psf` | FFT / matrix-transform PSF on the image surface, Huygens–Fresnel PSF on any plane, polychromatic PSF |
@@ -126,6 +127,19 @@ ratios of well-corrected systems are hardly affected.
 
 **Image surface.** PSFs live on the plane through `P` normal to the image
 surface's vertex `z` axis (a warning flags curved image surfaces).
+
+**Shared pupils.** `trace_pupil` is two stages: `trace_lattice` (lattice and
+rim rays, reference sphere, placed samples, masks and the automatic grid
+decision; independent of `grid` and `supersample`) and the resampling onto
+an `n × n` grid. Every `*_shared` analysis job (`psf_analysis_shared`,
+`mtf_analysis_shared`, …) takes an optional memo and requests all its
+(field, wavelength) lattices and grids from it in one batch (`shared`): the
+lattice key digests the tracer's configured snapshot and settings, the
+prepared field bit for bit, the wavelength and the lattice settings; a grid
+key adds `n` and the supersampling. PSF, MTF, LSF, encircled energy,
+through-focus MTF, wavefront maps and MTF vs field of one configuration
+therefore trace each pupil once, window refinements resample a shared
+lattice, and results are bit-identical to the unshared jobs (`*_job`).
 
 ## 4. Detector MTF (`detector`)
 

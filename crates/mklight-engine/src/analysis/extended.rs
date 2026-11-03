@@ -7,13 +7,15 @@ use crate::buffer::{Buffer, BufferData};
 use crate::error::EngineResult;
 use mklight_analysis::{field_maps as fm, glass_map as gm};
 use mklight_core::JobContext;
-use mklight_trace::SequentialTracer;
 use mklight_wave::image_simulation as im;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 struct FieldMap(fm::FieldAnalysis);
 impl Analysis for FieldMap {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         self.0.name()
     }
@@ -101,7 +103,7 @@ impl Analysis for FieldMap {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let t = SequentialTracer::new(input.resolved()?)?;
+        let t = input.tracer(ctx)?;
         let s = parse(settings)?;
         let r = super::gpu::native_job!(
             input,
@@ -143,6 +145,9 @@ impl Analysis for FieldMap {
 }
 struct GlassMap;
 impl Analysis for GlassMap {
+    fn memoizable(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "glass_map"
     }
@@ -381,7 +386,7 @@ impl Analysis for ImageSimulation {
             .as_ref()
             .filter(|(k, _)| k == &key)
             .map(|(_, v)| v.clone());
-        let t = SequentialTracer::new(input.resolved()?)?;
+        let t = input.tracer(ctx)?;
         let mut r = if let Some(d) = super::gpu::device(input) {
             let cached = self
                 .gpu_cache

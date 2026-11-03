@@ -11,6 +11,7 @@
 
 use mklight_analysis::util::{FieldSelection, WavelengthSelection, nf};
 use mklight_core::job::RunTimer;
+use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
 use serde::{Deserialize, Serialize};
@@ -137,6 +138,17 @@ pub fn wavefront_map_job(
     settings: &WavefrontSettings,
     ctx: &JobContext,
 ) -> MkResult<WavefrontResult> {
+    wavefront_map_shared(tracer, settings, None, ctx)
+}
+
+/// [`wavefront_map_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn wavefront_map_shared(
+    tracer: &SequentialTracer,
+    settings: &WavefrontSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<WavefrontResult> {
     let timer = RunTimer::start();
     let basis = ZernikeBasis::new(settings.zernike_ordering, settings.zernike_terms)?;
     let idx = fields(tracer, &settings.fields)?;
@@ -146,6 +158,7 @@ pub fn wavefront_map_job(
         &idx,
         &wls,
         &settings.pupil,
+        memo,
         &ctx.subrange(0.0, 0.85),
     )?;
     let mut warnings = skipped;

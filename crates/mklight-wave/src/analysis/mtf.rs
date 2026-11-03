@@ -29,6 +29,7 @@
 
 use mklight_analysis::util::{FieldSelection, WavelengthSelection, nf};
 use mklight_core::job::RunTimer;
+use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::{FieldPoint, SequentialTracer};
 use rayon::prelude::*;
@@ -241,6 +242,17 @@ pub fn mtf_analysis_job(
     settings: &MtfSettings,
     ctx: &JobContext,
 ) -> MkResult<WaveMtfResult> {
+    mtf_analysis_shared(tracer, settings, None, ctx)
+}
+
+/// [`mtf_analysis_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn mtf_analysis_shared(
+    tracer: &SequentialTracer,
+    settings: &MtfSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<WaveMtfResult> {
     let timer = RunTimer::start();
     settings.huygens.validate()?;
     if let Some(d) = &settings.detector {
@@ -248,8 +260,14 @@ pub fn mtf_analysis_job(
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let (per, skipped) =
-        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.5))?;
+    let (per, skipped) = system_field_pupils(
+        tracer,
+        &idx,
+        &wls,
+        &settings.pupil,
+        memo,
+        &ctx.subrange(0.0, 0.5),
+    )?;
     let freqs = frequencies(settings.max_frequency, settings.frequency_samples, || {
         useful_frequency(per.iter().map(|(_, _, fp)| fp))
     })?;
@@ -391,6 +409,17 @@ pub fn mtf_vs_field_job(
     settings: &MtfVsFieldSettings,
     ctx: &JobContext,
 ) -> MkResult<MtfVsFieldResult> {
+    mtf_vs_field_shared(tracer, settings, None, ctx)
+}
+
+/// [`mtf_vs_field_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn mtf_vs_field_shared(
+    tracer: &SequentialTracer,
+    settings: &MtfVsFieldSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<MtfVsFieldResult> {
     let timer = RunTimer::start();
     settings.huygens.validate()?;
     if let Some(d) = &settings.detector {
@@ -426,7 +455,7 @@ pub fn mtf_vs_field_job(
             let point = FieldPoint::normalized(h * dx / len, h * dy / len);
             let label = format!("field {h:.3}");
             let fp = tracer.prepare_field(point).and_then(|prepared| {
-                field_pupils(tracer, &prepared, &label, &wls, &settings.pupil, &sub)
+                field_pupils(tracer, &prepared, &label, &wls, &settings.pupil, memo, &sub)
             });
             (field_value(tracer, &point), label, fp)
         })
@@ -590,6 +619,17 @@ pub fn through_focus_mtf_analysis_job(
     settings: &ThroughFocusSettings,
     ctx: &JobContext,
 ) -> MkResult<ThroughFocusResult> {
+    through_focus_mtf_analysis_shared(tracer, settings, None, ctx)
+}
+
+/// [`through_focus_mtf_analysis_job`] sharing traced pupils with other analyses of the same
+/// system through `memo` (`crate::shared`); results are bit-identical.
+pub fn through_focus_mtf_analysis_shared(
+    tracer: &SequentialTracer,
+    settings: &ThroughFocusSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<ThroughFocusResult> {
     let timer = RunTimer::start();
     settings.huygens.validate()?;
     if let Some(d) = &settings.detector {
@@ -603,8 +643,14 @@ pub fn through_focus_mtf_analysis_job(
     }
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
-    let (per, skipped) =
-        system_field_pupils(tracer, &idx, &wls, &settings.pupil, &ctx.subrange(0.0, 0.3))?;
+    let (per, skipped) = system_field_pupils(
+        tracer,
+        &idx,
+        &wls,
+        &settings.pupil,
+        memo,
+        &ctx.subrange(0.0, 0.3),
+    )?;
     let freqs = fixed_frequencies(&settings.frequencies, || {
         useful_frequency(per.iter().map(|(_, _, fp)| fp))
     })?;
@@ -639,7 +685,8 @@ pub fn through_focus_mtf_analysis_job(
             let refined: Vec<Vec<String>> = fp
                 .pupils
                 .par_iter_mut()
-                .map(|(_, _, tp)| {
+                .zip(&fp.keys)
+                .map(|((_, _, tp), key)| {
                     let p = &tp.pupil;
                     let step = [-half, half]
                         .map(|dz| {
@@ -653,7 +700,14 @@ pub fn through_focus_mtf_analysis_job(
                         .min(crate::sampling::MAX_AUTO_PUPIL as f64)
                         .ceil() as usize)
                         .next_power_of_two();
-                    tp.resample(n, settings.pupil.supersample, &sub.subrange(0.0, 0.0))
+                    crate::shared::resample(
+                        tp,
+                        key,
+                        n,
+                        settings.pupil.supersample,
+                        memo,
+                        &sub.subrange(0.0, 0.0),
+                    )
                 })
                 .collect::<MkResult<_>>()?;
             warnings.extend(refined.into_iter().flatten());
