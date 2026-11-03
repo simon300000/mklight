@@ -125,12 +125,12 @@ impl Analysis for FieldMap {
                 Buffer::new(
                     "field_coordinates",
                     vec![ny, nx, 2],
-                    BufferData::F64(field_coordinates.as_flattened().to_vec()),
+                    BufferData::F64(field_coordinates.into_flattened()),
                 ),
                 Buffer::new(
                     "image_mm",
                     vec![ny, nx, 2],
-                    BufferData::F64(image_mm.as_flattened().to_vec()),
+                    BufferData::F64(image_mm.into_flattened()),
                 ),
                 Buffer::new("values", vec![ny, nx, nc], BufferData::F64(values)),
             ],

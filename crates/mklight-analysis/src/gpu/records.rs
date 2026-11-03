@@ -262,8 +262,9 @@ pub fn footprint_overlay_job(
             evidence = Some(run);
         }
     }
-    let mut sets = Vec::new();
-    let mut points = Vec::new();
+    let mut sets = Vec::with_capacity(clouds.len());
+    // Exactly sized: the clouds are released one by one as they are copied.
+    let mut points = Vec::with_capacity(clouds.iter().map(Vec::len).sum());
     let mut outlines = Vec::new();
     for (fi, &f) in fields.iter().enumerate() {
         for (wi, &w) in wls.iter().enumerate() {

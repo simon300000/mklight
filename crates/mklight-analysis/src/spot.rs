@@ -701,6 +701,7 @@ pub fn spot_from_rays(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spot_reduce(
     timer: RunTimer,
     tracer: &SequentialTracer,

@@ -1828,12 +1828,12 @@ fn run_footprint(
         Buffer::new(
             "global_points",
             vec![o.points.len(), 3],
-            BufferData::F64(o.points.as_flattened().to_vec()),
+            BufferData::F64(o.points.into_flattened()),
         ),
         Buffer::new(
             "global_outlines",
             vec![o.outlines.len(), 3],
-            BufferData::F64(o.outlines.as_flattened().to_vec()),
+            BufferData::F64(o.outlines.into_flattened()),
         ),
     ];
     Ok(output(v, buffers, w))
@@ -2176,7 +2176,7 @@ fn run_ray_grid(
         "arrived": arrived,
         "launched": nf * nw * np,
     });
-    let pupil_flat = pupil.as_flattened().to_vec();
+    let pupil_flat = pupil.into_flattened();
     let buffers = vec![
         Buffer::new("pupil", vec![np, 2], BufferData::F64(pupil_flat)),
         Buffer::new("points", vec![nf, nw, np, 2], BufferData::F64(points)),

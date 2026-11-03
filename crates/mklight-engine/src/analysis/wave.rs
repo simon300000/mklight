@@ -860,7 +860,8 @@ impl Packer {
     /// Plain `[x, y]` pairs of shape `[len, 2]`.
     fn pairs(&mut self, slot: String, name: String, v: &mut Vec<[f64; 2]>) {
         let n = v.len();
-        let data = std::mem::take(v).into_iter().flatten().map(plain).collect();
+        let mut data = std::mem::take(v).into_flattened();
+        data.iter_mut().for_each(|x| *x = plain(*x));
         self.push(slot, name, vec![n, 2], data);
     }
 
