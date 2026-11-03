@@ -19,12 +19,24 @@
 #define MKL_AIM_INVALID 11u
 #define MKL_PUPIL_MISS 12u
 #define MKL_AIM_PRIMARY_UNAVAILABLE 13u
+/* A sample the caller excluded from aiming: outside the unit pupil disk when
+ * culling, or carrying MKL_AIM_SKIP in its field word. Never aimed, traced or
+ * counted as an aim. */
+#define MKL_AIM_OUTSIDE 14u
+/* A pending ray whose aim has not finished its iteration budget yet; only
+ * ever observed between continuation rounds. */
+#define MKL_AIM_PENDING 15u
+#define MKL_AIM_SKIP 0x80000000u
 #define MKL_AIM_RECORD_FLOATS 13u
-/* Seed table: a TABLE_SIDE² lattice of aim solves per real-aim field row over
- * vignetted pupil coordinates [-1.125, 1.125]², node spacing 1/16; nodes
- * beyond pupil radius 1.25 are not solved. */
+/* Seed table: a side² lattice of aim solves per real-aim field row over
+ * vignetted pupil coordinates [-1.125, 1.125]²; nodes beyond pupil radius
+ * 1.25 are not solved. MKL_AIM_TABLE_SIDE is the default side (node
+ * spacing 1/16); hosts may supply tables of another odd side. */
 #define MKL_AIM_TABLE_SIDE 37u
 #define MKL_AIM_NODE_WORDS 6u
+/* Resumable pupil-aim state between bounded iteration units (words):
+ * x[4] r[4] j[8] rn[2] xc[4] prev[4] jc[8] phase it total flags. */
+#define MKL_AIM_STATE_WORDS 38u
 /* Numeric layouts use scalar arrays: no vector ABI padding. */
 struct MklAimField {
     unsigned int system, wavelength, flags, reserved;

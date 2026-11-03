@@ -18,7 +18,16 @@
 //! There is no automatic f64 polish: `GenerateAim.unresolved` lists the
 //! unresolved indices for an adapter, and `PlanStats::fallback_count` counts
 //! them. Real-image-height fields need the primary wavelength in the packed
-//! chunk; a missing primary is reported, never replaced.
+//! chunk; a missing primary is reported, never replaced. Samples excluded by
+//! [`AimOptions::cull_outside`] or the `MKL_AIM_SKIP` field flag carry
+//! `MKL_AIM_OUTSIDE`: they are neither aimed, traced, counted nor listed.
+//!
+//! Device aiming is resumable: every command runs a bounded number of
+//! iteration units per ray (a phase entry or one Newton iteration), parks
+//! unfinished rays in a state buffer and continues them in further bounded
+//! commands, so no command's duration depends on the hardest ray's whole
+//! schedule. The arithmetic of a resumed solve is the specification's,
+//! operation for operation.
 //!
 //! Chief rows normally come from the host: [`ChiefSeed::host`] converts the
 //! reference tracer's f64 `PreparedField` (real-image-height source once per
@@ -96,6 +105,31 @@ pub struct GenerateAim {
     pub tolerance: f32,
     pub max_iterations: u32,
     pub output: ResidentRays,
+    pub options: AimOptions,
+}
+/// Seed-table and sample-exclusion choices of a generation.
+#[derive(Clone, Debug)]
+pub struct AimOptions {
+    /// Host-built seed table (u32 [rows · side², MKL_AIM_NODE_WORDS],
+    /// normally [`host_tables`]) used for every sample of the request, in
+    /// place of a device-built table. Converged rays differ from those of a
+    /// device table or of chief seeds only within the tolerance.
+    pub table: Option<PlanView>,
+    /// Nodes per axis of the host or device table (odd, 5..=129).
+    pub table_side: u32,
+    /// Exclude samples outside the unit pupil disk before aiming
+    /// (`MKL_AIM_OUTSIDE`): lattice guard nodes a disk mask discards anyway,
+    /// which are the costliest aims and never needed.
+    pub cull_outside: bool,
+}
+impl Default for AimOptions {
+    fn default() -> Self {
+        Self {
+            table: None,
+            table_side: MKL_AIM_TABLE_SIDE,
+            cull_outside: false,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct TraceResident {
@@ -132,21 +166,29 @@ pub enum Request {
     ProjectPupil(ProjectPupil),
 }
 
-/// Seed-table nodes per field row.
+/// Seed-table nodes per field row at the default side.
 pub const TABLE_NODES: usize = (MKL_AIM_TABLE_SIDE * MKL_AIM_TABLE_SIDE) as usize;
+pub fn table_nodes(side: u32) -> usize {
+    (side * side) as usize
+}
 /// Generation aims from an interpolated seed table (built once per cached
-/// field row) when the plan has at least this many rays per field row;
-/// smaller plans aim from the chief seeds alone. Both reach the requested
-/// tolerance; their converged rays differ only within it.
+/// field row) when the plan has at least this many rays per field row (twice
+/// the node count; this is the default-side value); smaller plans aim from
+/// the chief seeds alone. Both reach the requested tolerance; their converged
+/// rays differ only within it. A host table ([`AimOptions::table`]) is used
+/// whatever the size.
 pub const TABLE_MIN_RAYS_PER_ROW: usize = 2 * TABLE_NODES;
 pub fn uses_table(g: &GenerateAim) -> bool {
-    g.output.count >= TABLE_MIN_RAYS_PER_ROW * g.field_wavelength.desc.shape[0]
+    g.options.table.is_some()
+        || g.output.count
+            >= 2 * table_nodes(g.options.table_side) * g.field_wavelength.desc.shape[0]
 }
 /// Content identity of a generation's chief rows and seed table: the packed
 /// system content, the exact field rows, the host seed rows (or the device
-/// solve), tolerance and iteration cap. None when the caller keeps them
-/// plan-local (`field_key` None) or an input is not immutable at submission:
-/// device-built systems, or field/seed rows produced inside the plan.
+/// solve), tolerance, iteration cap and table side. None when the caller
+/// keeps them plan-local (`field_key` None) or an input is not immutable at
+/// submission: device-built systems, or field/seed rows produced inside the
+/// plan.
 pub fn aim_identity(
     g: &GenerateAim,
     system: Option<blake3::Hash>,
@@ -162,11 +204,12 @@ pub fn aim_identity(
         (Some(_), None) => return None,
     };
     Some(format!(
-        "{name}:{}:{}:{seeds}:{}:{}",
+        "{name}:{}:{}:{seeds}:{}:{}:{}",
         system?.to_hex(),
         blake3::hash(bytemuck::cast_slice(fields?)).to_hex(),
         g.tolerance.to_bits(),
-        g.max_iterations
+        g.max_iterations,
+        g.options.table_side
     ))
 }
 
@@ -321,6 +364,17 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                     &[shape[0], MKL_AIM_CACHE_WORDS as usize],
                 )?;
             }
+            let side = a.options.table_side;
+            if !(5..=129).contains(&side) || side % 2 == 0 {
+                return Err(bad("aim table side"));
+            }
+            if let Some(v) = &a.options.table {
+                check_view(
+                    v,
+                    ElementType::U32,
+                    &[shape[0] * table_nodes(side), MKL_AIM_NODE_WORDS as usize],
+                )?;
+            }
             if !a.tolerance.is_finite() || a.tolerance <= 0.0 {
                 return Err(bad("aim tolerance must be positive"));
             }
@@ -409,6 +463,7 @@ pub fn accesses(r: &Request) -> Access {
             a.reads
                 .extend([g.samples.clone(), g.field_wavelength.clone()]);
             a.reads.extend(g.seeds.clone());
+            a.reads.extend(g.options.table.clone());
             a.writes = ray_ids(&g.output);
             a.writes.extend(g.unresolved);
         }

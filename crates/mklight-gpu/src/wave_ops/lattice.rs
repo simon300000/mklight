@@ -1,6 +1,6 @@
 //! Device pupil probes, disk masking and batched boundary bisection.
 use super::*;
-use crate::aiming::Sample;
+use crate::{aiming::Sample, consts::MKL_AIM_SKIP};
 #[derive(Clone, Debug)]
 pub enum Lattice {
     /// Radiometric [system 0, global wavelength] ray indices from chunk-local
@@ -22,16 +22,20 @@ pub enum Lattice {
         output: BufferId,
     },
     /// Edges are [inside x/y, outside x/y], probed at field row `fields[k]`.
-    /// State stores a,b,lo,hi,trial,done. `source` (u32 [n]) names the
-    /// previous round's probe (`16k + j`) that became the surviving end `lo`,
-    /// or `u32::MAX` when it did not move, so its traced ray is kept rather
-    /// than traced again (a re-aimed ray at the rim may clip).
+    /// State stores a,b,lo,hi,trial,done. Each round splits every open
+    /// bracket into `2^levels` parts (that many probes per edge); `source`
+    /// (u32 [n]) names the previous round's probe (`2^levels·k + j`) that
+    /// became the surviving end `lo`, or `u32::MAX` when it did not move, so
+    /// its traced ray is kept rather than traced again (a re-aimed ray at the
+    /// rim may clip). Probes of an edge already within tolerance carry
+    /// `MKL_AIM_SKIP`: they are neither aimed nor traced.
     Rim {
         edges: PlanView,
         fields: PlanView,
         previous: Option<PlanView>,
         status: Option<PlanView>,
         tolerance: Df32,
+        levels: u32,
         final_point: bool,
         state: BufferId,
         samples: BufferId,
@@ -105,6 +109,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
             previous,
             status,
             tolerance,
+            levels,
             state,
             samples,
             source,
@@ -116,14 +121,16 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
             if previous.is_some() != status.is_some()
                 || !tolerance.is_finite()
                 || tolerance.hi <= 0.
+                || !(1..=4).contains(levels)
             {
-                return Err(bad("rim state/tolerance"));
+                return Err(bad("rim state/tolerance/levels"));
             }
+            let width = 1usize << levels;
             if let Some(v) = previous {
                 view(v, DoubleFloat, &[n, 8])?;
             }
             if let Some(v) = status {
-                view(v, U32, &[3, 16 * n])?;
+                view(v, U32, &[3, width * n])?;
             }
             out(p, *state, DoubleFloat, &[n, 8])?;
             out(p, *source, U32, &[n])?;
@@ -131,7 +138,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
                 p,
                 *samples,
                 U32,
-                &[if *final_point { n } else { 16 * n }, 8],
+                &[if *final_point { n } else { width * n }, 8],
             )
         }
         Lattice::Keep {
@@ -369,6 +376,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             previous,
             status,
             tolerance,
+            levels,
             final_point,
             state,
             samples,
@@ -382,7 +390,8 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             let st = status.as_ref().map(|v| values::<u32>(x, v));
             let mut a = vec![[Df32::ZERO; 8]; e.len()];
             let mut from = vec![u32::MAX; e.len()];
-            let width = if *final_point { 1 } else { 16 };
+            let parts = 1usize << levels;
+            let width = if *final_point { 1 } else { parts };
             let mut probes = vec![Sample::new([0.; 2], 0, 0); e.len() * width];
             for (k, (a, e)) in a.iter_mut().zip(e).enumerate() {
                 if k % 256 == 0 {
@@ -395,25 +404,25 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                 if let Some(prev) = prev {
                     *a = prev[k];
                     if a[7].hi == 0. {
-                        if st.unwrap()[16 * k] == 0 {
+                        if st.unwrap()[parts * k] == 0 {
                             a[4] = a[5];
-                            from[k] = 16 * k as u32;
+                            from[k] = (parts * k) as u32;
                         } else {
                             let (lo, hi) = (a[4], a[5]);
                             let span = hi - lo;
-                            let (mut l, mut h) = (0, 16);
-                            for _ in 0..4 {
+                            let (mut l, mut h) = (0, parts);
+                            for _ in 0..*levels {
                                 let m = (l + h) / 2;
-                                if st.unwrap()[16 * k + m] == 0 {
+                                if st.unwrap()[parts * k + m] == 0 {
                                     l = m;
                                 } else {
                                     h = m;
                                 }
                             }
-                            a[4] = lo + span.mul_f32(l as f32 / 16.);
-                            a[5] = lo + span.mul_f32(h as f32 / 16.);
+                            a[4] = lo + span.mul_f32(l as f32 / parts as f32);
+                            a[5] = lo + span.mul_f32(h as f32 / parts as f32);
                             if l > 0 {
-                                from[k] = (16 * k + l) as u32;
+                                from[k] = (parts * k + l) as u32;
                             }
                         }
                         if ((a[5] - a[4]) * len).to_f64() <= tolerance.to_f64() {
@@ -447,17 +456,24 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
                         };
                     }
                 }
+                let done = a[7].hi > 0.;
                 for j in 0..width {
-                    let t = if *final_point || a[7].hi > 0. {
+                    let t = if *final_point || done {
                         a[4]
                     } else if j == 0 {
                         a[5]
                     } else {
-                        a[4] + (a[5] - a[4]).mul_f32(j as f32 / 16.)
+                        a[4] + (a[5] - a[4]).mul_f32(j as f32 / parts as f32)
                     };
                     let s = &mut probes[k * width + j];
                     s.pupil = [e[0] + dx * t, e[1] + dy * t];
-                    s.field = fields[k];
+                    // A converged edge needs no further probe.
+                    s.field = fields[k]
+                        | if done && !*final_point {
+                            MKL_AIM_SKIP
+                        } else {
+                            0
+                        };
                     s.id = [(k * width + j) as u32, 0];
                     if prev.is_none() {
                         let rad = (s.pupil[0] * s.pupil[0] + s.pupil[1] * s.pupil[1]).sqrt();

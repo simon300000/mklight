@@ -321,6 +321,7 @@ impl<'a> Geometry<'a> {
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
+                options: Default::default(),
             })));
         let out = hits(
             p,

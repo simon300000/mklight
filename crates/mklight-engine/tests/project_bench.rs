@@ -636,7 +636,11 @@ fn measured(
                     .map(|s| json!({"device_seconds":s["device_seconds"],
                         "cache":s.get("cache"),"aiming":s.get("aiming"),
                         "host":s.get("host"),"peak_bytes":s["peak_bytes"],
-                        "memory":s.get("memory")}))
+                        "memory":s.get("memory"),
+                        "max_command_seconds":s["stages"].as_array().map(|st| st
+                            .iter()
+                            .filter_map(|v| v["max_command_seconds"].as_f64())
+                            .fold(0., f64::max))}))
                     .collect::<Vec<_>>()
             );
             if detail {

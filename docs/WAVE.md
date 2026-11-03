@@ -480,9 +480,21 @@ The host chains the small boundary topology. Saddle-centre probes run only
 where marching squares needs them. All field × wavelength pupils of a job share
 the chief, lattice, saddle and rim commands (up to 2¹⁶ lattice rays per batch);
 each pupil's rays are then split into its own channels for placement and
-resampling, bit-identical to tracing it alone. Rim probes evaluate four
-bisection levels per round, retaining the same binary decisions and requested
-tolerance; the
+resampling, bit-identical to tracing it alone. Lattice guard nodes outside
+the unit disk are never aimed (`AimOptions::cull_outside`): the survival mask
+discards them whatever their trace, so the topology and rim edges are
+unchanged while the costliest aims (unreachable targets running the whole
+continuation schedule) disappear. Rim probes evaluate `RIM_LEVELS` bisection
+levels per round (one: plain bisection, which aims the fewest rays — rounds
+are dispatches of one plan, not host round trips), retaining the same binary
+decisions and requested tolerance; edges already within tolerance emit
+skip-flagged probes that are neither aimed nor traced. The host f64 seed
+tables (25×25 per field–wavelength row, `aiming::host_tables`) seed every
+generation of a batch, so the chief probe, lattice, saddle and rim probes
+aim from the same seeds whatever their batch size; a traced lattice is
+therefore identified exactly by `gpu::lattice_key` (`ResidentTracedPupil::
+key`), the shared graph's `pupil_lattice` key in a Metal double-float family,
+for analyses that share aimed pupils. The
 analytic disk root uses its cancellation-free form. Each rim edge keeps the
 ray of its surviving bracket end from the round that traced it (first the
 inside lattice node; `Op::Rim` names the probe, `Op::Keep` gathers its
@@ -490,9 +502,15 @@ channels), exactly as the reference keeps the bracketing ray. The final point
 is never traced again: a small final batch aims from the chief seeds rather
 than the seed table, and a ray converged within the aiming tolerance of an
 aperture edge may then clip, which used to drop a sector of every vignetted
-off-axis rim (`tests/p6_offaxis.rs`). Unresolved aims, rim
-brackets, sphere intersections and P7 reference-required rows explicitly return
-`Unsupported`, rather than turning into missing rays or silently zero amplitudes.
+off-axis rim (`tests/p6_offaxis.rs`). A failed aim whose stop residual is far
+above the tolerance (> 1e-6 of the stop radius) or whose stop is unreachable
+is a ray that cannot be aimed through the stop at that field; the reference
+treats it as vignetted (`Tracing::ray` is `None`) and so does the survival
+mask (on a fast lens 0.7–1.0 of the field, the lower pupil edge fails with
+residuals of 5e-3–1e-1 on both backends, identically). Tolerance-level
+non-convergence, rim brackets, sphere intersections and P7 reference-required
+rows explicitly return `Unsupported`, rather than turning into missing rays
+or silently zero amplitudes.
 
 The chief/centroid reference uses P1's unclipped chief and P3 weighted moments.
 Small reference-frame metadata remains host control. P1 sphere projection and

@@ -140,7 +140,10 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     return Err(bad("field system/wavelength"));
                 }
             }
-            if samples.iter().any(|s| s.field as usize >= fields.len()) {
+            if samples
+                .iter()
+                .any(|s| (s.field & !MKL_AIM_SKIP) as usize >= fields.len())
+            {
                 return Err(bad("sample field index"));
             }
             // CPU storage is complete at every operation, so in-plan rows have
@@ -197,7 +200,12 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     seeds
                 }
             };
-            let table = if uses_table(g) {
+            let side = g.options.table_side as usize;
+            let nodes = table_nodes(g.options.table_side);
+            // A host table takes precedence: nothing is solved or cached.
+            let table = if let Some(v) = &g.options.table {
+                Some(Arc::new(bytemuck::cast_slice(words(x, v)).to_vec()))
+            } else if uses_table(g) {
                 let cached = match &table_key {
                     Some(k) => x.cached::<Vec<SeedNode>>(k)?,
                     None => None,
@@ -206,11 +214,11 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     Some(t) => t,
                     None => {
                         let start = Instant::now();
-                        let mut table = Vec::with_capacity(fields.len() * TABLE_NODES);
+                        let mut table = Vec::with_capacity(fields.len() * nodes);
                         for (row, f) in fields.iter().enumerate() {
-                            for k in 0..TABLE_NODES {
+                            for k in 0..nodes {
                                 ctl.check()?;
-                                table.push(make(f).node(&seeds[row], k));
+                                table.push(make(f).node(&seeds[row], k, side));
                             }
                             ctl.report(
                                 0.05 + 0.05 * (row + 1) as f64 / fields.len() as f64,
@@ -235,13 +243,12 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     kernel::sample_at::<E>(samples[0], g.sampling, i, g.output.count)
                 };
                 ctl.check()?;
-                let row = sample.field as usize;
+                let row = (sample.field & !MKL_AIM_SKIP) as usize;
                 let f = &fields[row];
-                let nodes = table
-                    .as_ref()
-                    .map(|t| &t[row * TABLE_NODES..][..TABLE_NODES]);
-                let (ray, report) = make(f).generate(&seeds[row], nodes, &sample);
-                if report[0] != 0 {
+                let nodes = table.as_ref().map(|t| (&t[row * nodes..][..nodes], side));
+                let (ray, report) =
+                    make(f).generate(&seeds[row], nodes, &sample, g.options.cull_outside);
+                if report[0] != 0 && report[0] != MKL_AIM_OUTSIDE {
                     x.stats.fallback_count += 1;
                 }
                 write_ray(x, &g.output, i, &ray, f.system, sample.id, report);
@@ -259,7 +266,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
             ));
             if let Some(id) = g.unresolved {
                 let indices: Vec<u32> = (0..n)
-                    .filter(|&i| x.words(g.output.report)[i] != 0)
+                    .filter(|&i| !matches!(x.words(g.output.report)[i], 0 | MKL_AIM_OUTSIDE))
                     .map(|i| i as u32)
                     .collect();
                 let out = x.words_mut(id);

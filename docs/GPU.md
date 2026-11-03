@@ -1432,6 +1432,41 @@ original indices and record counts/reasons. A failed aim remains a failed
 aim; never silently accept an inaccurate ray or polish the whole grid by
 default.
 
+**Bounded aiming commands.** A pupil aim's schedule (table solve, chief
+solve, four continuation stages, each up to the cap with a 16-step line
+search and Jacobian refreshes) can cost thousands of stop traces, and one
+such lane serialises its SIMD group, so bounding the *ray count* of a
+command never bounded its duration (single 4096-ray commands reached 0.5–0.9 s
+and tripped the driver's interactivity watchdog). Device aiming is therefore
+resumable: `mkl_generate_aim` and `mkl_aim_table` run at most a budget of
+iteration units per lane (a phase entry, or one Newton iteration; 8 by
+default, `MKLIGHT_AIM_BUDGET=first,continue` for qualification), park
+unfinished rays in a per-tile `MklAimResume` state buffer
+(`MKL_AIM_STATE_WORDS`) and append their indices to a pending list; the
+executor encodes continuation rounds (`mkl_aim_indirect` sizes
+`mkl_aim_continue`/`mkl_aim_table_continue` from the pending count on the
+device) in doubling groups, reading the count back between groups until no
+ray is pending. A resumed solve performs the specification's operations in
+the specification's order, so results are bitwise those of the monolithic
+CPU-f32 kernel (`aim_resume.rs` forces one unit per command). Time-calibrated
+tiles still bound the throughput part. Rounds cost one readback per group,
+so a small fused generation now completes at least once before its trace.
+
+**Excluded samples and seed tables.** `AimOptions::cull_outside` excludes
+samples outside the unit pupil disk (the lattice guard nodes a survival mask
+discards anyway, which were the costliest aims: unreachable targets running
+the whole schedule) and `MKL_AIM_SKIP` in a sample's field word excludes
+that sample (rim probes of edges already within tolerance); both carry
+`MKL_AIM_OUTSIDE`, are never aimed or traced, and are not counted as aims,
+failures or unresolved rays. `AimOptions::table` supplies a host f64 seed
+table (`aiming::host_tables`: the reference tracer solves each node by its
+own chief-prediction/continuation schedule) of `table_side` nodes per axis,
+used for every sample of the request whatever its size; without one the
+device builds and caches a table of that side for large generations as
+before. The wave pupil tracer hands 25×25 host tables to every generation
+of a batch (chief probe, lattice, saddle and rim probes alike), so a
+sample's converged ray no longer depends on the batch it was aimed in.
+
 Keep hi+lo point/direction/OPL through pupil construction. Use the chief's
 unclipped trace and the signed exit-pupil distance for the reference sphere;
 support centroid references via the shared reduction, both sphere sheets,
@@ -1632,7 +1667,7 @@ Threshold bases:
 | `image_simulation` | field_grid²·n² | 38,025 | measured | P11 defaults 9 CPU / 5 Metal; the complex lens' native route failed (unusable chief) |
 | `wavefront_map`, `polarization_pupil_map` | F·W·n²; grid² | 12,675; 1,089 | measured | static capability: always the reference |
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf` | — | always | known native failure | complex lens Metal DF 1.5e2–1.5e6× its f64 budget, and 2.2–8.6× slower |
-| `mtf_vs_field` | — | always | known native failure | complex lens: unresolved in-pupil aims and driver interactivity failures fell back to f64, 12× slower |
+| `mtf_vs_field` | — | always | known native failure | complex lens: unresolved in-pupil aims and driver interactivity failures fell back to f64, 12× slower (since B1 the unaimable rays are vignetted as in the reference and the run is native; re-qualify with point 12) |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | — | always | known native failure | complex lens: 20–200 mask/discrete mismatches against f64, and 24–76× slower |
 | `field_curvature_distortion` | — | always | known native failure | complex lens close-ray focus 4.4× its budget; P11 petzval_asphere residual gap |
 | `stray_light` | — | always | known native failure | complex lens sink energies 4.8e4× their budget; 6/16 P11 samples |
