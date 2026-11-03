@@ -1394,4 +1394,43 @@ mod tests {
             }
         });
     }
+
+    /// Release timing of the result packing alone (old JSON route vs typed),
+    /// on a dense PSF and wavefront map of the double Gauss:
+    /// cargo test --release -p mklight-engine --lib packing_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn packing_cost() {
+        fn time<R: Pack + Clone>(what: &str, name: &str, r: R) {
+            let median = |mut t: Vec<f64>| {
+                t.sort_by(f64::total_cmp);
+                t[t.len() / 2]
+            };
+            let (mut old, mut new) = (vec![], vec![]);
+            for _ in 0..7 {
+                let c = r.clone();
+                let t = std::time::Instant::now();
+                std::hint::black_box(json_route(name, serde_json::to_value(c).unwrap()));
+                old.push(t.elapsed().as_secs_f64() * 1e3);
+                let c = r.clone();
+                let t = std::time::Instant::now();
+                std::hint::black_box(c.pack().unwrap());
+                new.push(t.elapsed().as_secs_f64() * 1e3);
+            }
+            println!(
+                "PACKING_COST {what}: json route {:.2} ms, typed {:.3} ms (medians of 7)",
+                median(old),
+                median(new)
+            );
+        }
+        let lib = Arc::new(MaterialLibrary::with_builtin());
+        let cfg = configured_tracer(&samples::double_gauss(), lib, 0).unwrap();
+        let ctx = JobContext::new();
+        let s = json!({"grid_size": 1024, "pupil": {"grid": 256, "rays": 65}});
+        let psf = wa::psf_analysis_job(&cfg.tracer, &cpu_settings(&s).unwrap(), &ctx).unwrap();
+        time("psf 3 fields x 1024^2", "psf", psf);
+        let s = json!({"pupil": {"grid": 512, "rays": 129}});
+        let wf = wa::wavefront_map_job(&cfg.tracer, &cpu_settings(&s).unwrap(), &ctx).unwrap();
+        time("wavefront 3 fields x 512^2", "wavefront_map", wf);
+    }
 }
