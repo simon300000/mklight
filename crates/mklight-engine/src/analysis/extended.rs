@@ -108,6 +108,11 @@ impl Analysis for FieldMap {
             |b| mklight_analysis::gpu::field_map_job(b, &t, self.0, &s, ctx),
             fm::field_map_job(&t, self.0, &s, ctx)
         )?;
+        // The maps move into buffers; only the metadata is serialised.
+        let mut r = r;
+        let field_coordinates = std::mem::take(&mut r.field_coordinates);
+        let image_mm = std::mem::take(&mut r.image_mm);
+        let values = std::mem::take(&mut r.values);
         let (mut v, w) = crate_json(&r)?;
         for key in ["field_coordinates", "image_mm", "values"] {
             v[key] = json!(key);
@@ -120,14 +125,14 @@ impl Analysis for FieldMap {
                 Buffer::new(
                     "field_coordinates",
                     vec![ny, nx, 2],
-                    BufferData::F64(r.field_coordinates.into_iter().flatten().collect()),
+                    BufferData::F64(field_coordinates.into_flattened()),
                 ),
                 Buffer::new(
                     "image_mm",
                     vec![ny, nx, 2],
-                    BufferData::F64(r.image_mm.into_iter().flatten().collect()),
+                    BufferData::F64(image_mm.into_flattened()),
                 ),
-                Buffer::new("values", vec![ny, nx, nc], BufferData::F64(r.values)),
+                Buffer::new("values", vec![ny, nx, nc], BufferData::F64(values)),
             ],
             w,
         ))

@@ -11,7 +11,18 @@ pub fn spot_diagram_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?.spot_diagram_job(s, ctx)
+    Geometry::new(b, t, ctx)?.spot_job(s, ctx, false)
+}
+/// [`spot_diagram_job`] with the points packed straight from the mapped
+/// device views into [`SpotDiagram::packed_points`] (see
+/// [`crate::spot::spot_diagram_packed_job`]).
+pub fn spot_diagram_packed_job(
+    b: &dyn ComputeBackend,
+    t: &SequentialTracer,
+    s: &SpotDiagramSettings,
+    ctx: &JobContext,
+) -> MkResult<SpotDiagram> {
+    Geometry::new(b, t, ctx)?.spot_job(s, ctx, true)
 }
 impl Geometry<'_> {
     /// Reuse immutable systems and chief/aim tables across repeated jobs.
@@ -19,6 +30,14 @@ impl Geometry<'_> {
         &self,
         s: &SpotDiagramSettings,
         ctx: &JobContext,
+    ) -> MkResult<SpotDiagram> {
+        self.spot_job(s, ctx, false)
+    }
+    fn spot_job(
+        &self,
+        s: &SpotDiagramSettings,
+        ctx: &JobContext,
+        packed: bool,
     ) -> MkResult<SpotDiagram> {
         let b = self.backend;
         let t = self.tracer;
@@ -107,6 +126,18 @@ impl Geometry<'_> {
                 (var + centroid[0] * centroid[0] + centroid[1] * centroid[1]).sqrt(),
             ]
         };
+        // Shared device storage is read in place; points go straight into
+        // their final arrays, sized by one pass over the arrival mask.
+        let mut packed = packed.then(|| {
+            let n = if s.include_points {
+                views[points + 1]
+                    .as_slice::<u32>()
+                    .map_or(0, |m| m.iter().filter(|&&v| v != 0).count())
+            } else {
+                0
+            };
+            PackedSpotPoints::with_capacity(n, nf)
+        });
         let mut out = Vec::new();
         let mut warnings = t.warnings().to_vec();
         for (fi, &field) in fields.iter().enumerate() {
@@ -176,7 +207,29 @@ impl Geometry<'_> {
                 })
                 .collect();
             let mut plotted = Vec::new();
-            if s.include_points {
+            if let Some(p) = packed.as_mut() {
+                let start = p.len();
+                if s.include_points {
+                    let q = views[points].as_slice::<Df32>()?;
+                    let mask = views[points + 1].as_slice::<u32>()?;
+                    let n = g.hits.rays.count;
+                    let rows = fi * nw * np..(fi + 1) * nw * np;
+                    for chunk in rows.step_by(POINT_CHUNK) {
+                        ctx.check()?;
+                        for i in chunk..(chunk + POINT_CHUNK).min((fi + 1) * nw * np) {
+                            if mask[i] != 0 {
+                                p.push(
+                                    fi,
+                                    q[i].to_f64() - center[0],
+                                    q[n + i].to_f64() - center[1],
+                                    wls[(i / np) % nw],
+                                );
+                            }
+                        }
+                    }
+                }
+                p.close(start);
+            } else if s.include_points {
                 let q = views[points].as_slice::<Df32>()?;
                 let mask = views[points + 1].as_slice::<u32>()?;
                 let n = g.hits.rays.count;
@@ -229,6 +282,7 @@ impl Geometry<'_> {
                 * t.paraxial().primary().working_f_number,
             defocus: s.defocus,
             run_info: stamp(r.run_info, "spot_diagram", s, warnings),
+            packed_points: packed,
         })
     }
 }

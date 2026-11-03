@@ -127,6 +127,20 @@ reference, `docs/STRAY.md`). The ghost solver uses the same coating reflectance
 `R(λ, θ, pol)` that the primary path uses for its transmittance `T`, so
 `T + R + A = 1` holds at every interface (tested).
 
+## Bulk results
+
+JSON carries only an analysis' metadata; bulk arrays (ray points, maps,
+images, curves) travel as typed `Buffer`s and never pass through JSON on the
+way. Solvers fill the final arrays once: device outputs are read in place
+from shared (unified-memory) storage and widened straight into the result
+layout, and the engine moves solver vectors into buffers instead of copying
+them. Spot statistics without `include_points` allocate no point output; the
+CPU reference traces one field at a time, so only that field's rays are
+alive. Buffer values follow the JSON conventions of the documented result
+(canonical NaN; infinities only where the schema allows them), so the typed
+route is byte-identical to the former JSON route. The C ABI hands each
+buffer's allocation to the caller without a copy.
+
 ## Structural validation
 
 `OpticalSystem::validation_issues` lists every structural problem of a
