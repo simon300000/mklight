@@ -556,6 +556,9 @@ impl<'a> PupilTracer<'a> {
                         table_side: TABLE_SIDE,
                         cull_outside: cull,
                         speculative_rounds: SPECULATIVE_ROUNDS,
+                        // The wave lattice keeps the full schedule: every
+                        // unresolved ray is checked against the reference.
+                        schedule_cap: 0,
                     },
                 },
             )));

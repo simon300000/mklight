@@ -410,6 +410,49 @@ aiming, and does not hold the position budget on every design. Reproduce with th
 (trace, OPL, aiming, speed) and `-p mklight-engine --test f32_study` (engine
 analyses), or `MKLIGHT_METAL_PRECISION=f32` with the trace benchmark (§5.3).
 
+**Selective mixed precision (studied, not adopted).** The question whether an
+f32 *predictor* phase of the aim solve (f32 traces and Jacobians until the
+residual nears the f32 floor, then double-float residuals and corrections)
+could cut the double-float work was measured with the ignored harness
+`cargo test --release -p mklight-engine --test aim_precision_study -- --ignored --nocapture`
+(`MKLIGHT_STUDY_PROJECT` points it at a local project; otherwise three
+samples): 65×65 lattices of every field and wavelength aimed from the host
+chief row with and without the wave path's 25×25 host seed table, with both
+metallibs at stop tolerances from 1e-10 to 1e-4, every start ray retraced to
+the stop in f64. On a 29-surface F/1.4 design (30 field rows, 96,270 rays,
+stop at surface 15):
+
+| arithmetic | tolerance | iterations / ray | aiming device ms | true residual (f64 retrace) |
+|---|---:|---:|---:|---:|
+| double-float | 1e-10 | 1.26 | 22.7 | 1e-10 |
+| double-float | 1e-6 | 0.75 | 20.5 | 1e-6 |
+| double-float | 1e-4 | 0 | 10.9 | 3.2e-5 (the seed's error) |
+| pure f32 | 1e-6 | 0.75 | 11.2 | 1.6e-6 |
+| pure f32 | 1e-4 | 0 | 6.0 | 3.2e-5 |
+| pure f32 | 1e-10 | 13.4 (cap) | 1,584 | 0.74; 88 % of the rays fail |
+
+One double-float stop trace in the aim kernel costs 113 ns per ray (7.5 ns
+per ray-surface; the bulk resident trace: 5 ns), one more double-float
+Newton iteration 98 ns; the same in f32 costs 62 ns and 72 ns: the aim kernel
+is bound by its control flow and state, not by the arithmetic, so f32 buys
+1.4× per iteration there against 2–4× in the bulk trace. The f32 floor on
+this design is a stop residual of 1.6e-6 of the stop radius (3e-5 mm), 2.5
+decades above the conditioned stop (6–10e-9) and four above the requested
+one, so a mixed solve always needs the double-float entry evaluation plus at
+least one double-float iteration after the f32 phase: 11.2 + 10.9 + ≈ 3 ms
+against 22.7 ms for double-float alone. It loses; even a free f32 phase would
+save at most one double-float iteration (≈ 9 ms of a 385 ms MTF). At the
+engine level four decades of stop tolerance (conditioned, 1e-8, 1e-6) move
+the MTF device time by less than 10 % (385 / 352 / 375 ms) and the optimize
+device time not at all (663 / 632 / 642 ms). Chief-relative f32 geometry does
+not help either: the f32 rounding of an offset from the chief ray is ε·|δp|,
+and |δp| is 10–20 mm for a marginal ray at the front group of an F/1.4 lens;
+the sag difference at the intersection and the OPL need double-float
+regardless (CONVENTIONS §7). The trace kernel's existing split (§4.1: f32
+decisions and predictors, double-float transfers, hit refinement, direction
+renormalisation and OPL) is already the selective scheme; the double-float
+work left per surface is the part that error propagation requires.
+
 ## 4. The trace kernel
 
 `Job::Trace` runs the sequential ray trace of `mklight-trace` on the
@@ -1492,6 +1535,21 @@ command) skip the readback altogether: the executor verifies at the plan's
 next completion, before any check, cache publication or host read, that no
 ray was left pending, and the backend otherwise runs the plan again without
 speculation (`PlanStats::speculation_misses`), so results never depend on it.
+`AimOptions::schedule_cap` bounds a ray's Newton iterations over its whole
+schedule (every solve runs with the iterations left under it, and an
+unconverged solve that reaches it ends the schedule; 0, the default, keeps
+the per-solve cap as the only bound). The candidate evaluator sets 32: a
+candidate with any unresolved ray is reported whole as requiring the
+reference, so the device's work on its other rays is discarded, and an
+unaimable ray of a bad trial step (a line-search candidate whose marginal
+rays miss or vignette) otherwise ran the whole schedule at low occupancy —
+300–400 ms of device time per such candidate against 1–5 ms for a healthy
+one, 64–77 % of the optimize and glass-substitution device time on a
+29-surface F/1.4 design. Healthy candidate rays converge in at most 4–6
+iterations; a ray the full schedule converges within the cap is bitwise
+unchanged (`aim_resume.rs`). Analyses keep the full schedule.
+`MKLIGHT_METAL_TRACE_AIMS=1` prints every generation's convergence
+statistics (rays, failures, iteration sum/maximum, histogram) to stderr.
 
 **Excluded samples and seed tables.** `AimOptions::cull_outside` excludes
 samples outside the unit pupil disk (the lattice guard nodes a survival mask

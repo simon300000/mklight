@@ -202,6 +202,8 @@ pub struct FieldKernel<'a, E: FpEnv> {
     pub field: &'a FieldSpec,
     pub tolerance: f32,
     pub cap: u32,
+    /// Iterations over the whole schedule of [`Self::aim`] (0: unbounded).
+    pub schedule_cap: u32,
     pub check: &'a dyn Fn() -> bool,
     pub env: std::marker::PhantomData<E>,
 }
@@ -336,6 +338,18 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         (r.status == 0).then_some(r)
     }
     fn solve(&self, src: V3<E>, wl: u32, target: V2<E>, x: V2<E>, j: Option<Mat<E>>) -> Solve<E> {
+        self.solve_capped(src, wl, target, x, j, self.cap)
+    }
+    /// [`Self::solve`] with at most `cap` iterations.
+    fn solve_capped(
+        &self,
+        src: V3<E>,
+        wl: u32,
+        target: V2<E>,
+        x: V2<E>,
+        j: Option<Mat<E>>,
+        cap: u32,
+    ) -> Solve<E> {
         newton(
             |a| {
                 let r = self.trace(src, a, self.h.stop, wl)?;
@@ -347,8 +361,20 @@ impl<E: FpEnv> FieldKernel<'_, E> {
             j,
             self.step(),
             self.tol(),
-            self.cap,
+            cap,
         )
+    }
+    /// Iterations left to a solve of the schedule after `spent` iterations.
+    fn budget(&self, spent: u32) -> u32 {
+        if self.schedule_cap == 0 {
+            self.cap
+        } else {
+            self.cap.min(self.schedule_cap.saturating_sub(spent))
+        }
+    }
+    /// Whether `spent` iterations end the schedule.
+    fn capped(&self, spent: u32) -> bool {
+        self.schedule_cap != 0 && spent >= self.schedule_cap
     }
     fn chief(&self, src: V3<E>, wl: u32) -> Solve<E> {
         if !self.real() {
@@ -494,7 +520,9 @@ impl<E: FpEnv> FieldKernel<'_, E> {
     /// table (`side` nodes per axis) supplies an interpolated start and local
     /// Jacobian; without one, or if that solve fails, the reference schedule
     /// follows: linear prediction from the chief, then continuation in the
-    /// pupil radius.
+    /// pupil radius. With a `schedule_cap`, every solve is limited to the
+    /// iterations left under it and an unconverged solve that reaches it
+    /// ends the schedule.
     fn aim(&self, seed: &ChiefSeed, table: Option<(&[SeedNode], usize)>, p: V2<E>) -> Solve<E> {
         let src = seed.source.map(D::from_df);
         let chief = seed.chief.map(D::from_df);
@@ -507,20 +535,24 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         let target = scale(p, self.pupil(2));
         let mut it = 0;
         if let Some((x, jt)) = table.and_then(|(t, side)| table_seed(t, side, p, self.pupil(2))) {
-            let s = self.solve(src, wl, target, x, Some(jt));
+            let mut s = self.solve_capped(src, wl, target, x, Some(jt), self.budget(it));
             if s.converged {
                 return s;
             }
             it = s.iterations;
+            if self.capped(it) {
+                s.iterations = it;
+                return s;
+            }
         }
         let x = add(
             chief,
             j.and_then(|j| solve2(j, target))
                 .unwrap_or(scale(p, self.pupil(1))),
         );
-        let mut s = self.solve(src, wl, target, x, j);
+        let mut s = self.solve_capped(src, wl, target, x, j, self.budget(it));
         it += s.iterations;
-        if !s.converged {
+        if !s.converged && !self.capped(it) {
             let mut x = chief;
             let mut j = j;
             let mut prev = [D::ZERO; 2];
@@ -529,7 +561,7 @@ impl<E: FpEnv> FieldKernel<'_, E> {
                 let seed = j
                     .and_then(|j| solve2(j, sub(t, prev)))
                     .map_or(x, |d| add(x, d));
-                s = self.solve(src, wl, t, seed, j);
+                s = self.solve_capped(src, wl, t, seed, j, self.budget(it));
                 it += s.iterations;
                 if !s.converged {
                     break;

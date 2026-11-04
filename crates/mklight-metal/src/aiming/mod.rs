@@ -35,7 +35,8 @@ struct AimParams {
     budget: u32,
     table_side: u32,
     flags: u32,
-    reserved: u32,
+    /// Newton iterations per ray over the whole schedule (0: unbounded).
+    schedule_cap: u32,
 }
 const AIM_CULL: u32 = 1;
 #[repr(C)]
@@ -551,6 +552,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 extent: [extent.hi, extent.lo],
                 table_side,
                 flags: if g.options.cull_outside { AIM_CULL } else { 0 },
+                schedule_cap: g.options.schedule_cap,
                 ..p
             };
             let newton = kernel::newton_params();
@@ -885,19 +887,33 @@ fn aim_stats(
     x.check_buffer(words, |b, stats| {
         let w = b.as_slice();
         let histogram: [u64; 8] = std::array::from_fn(|k| w[3 + k] as u64);
-        stats.aiming.add(&AimStats {
+        let s = AimStats {
             generations: 1,
             rays: histogram.iter().sum(),
             failed: w[0] as u64,
             iterations: w[1] as u64 | (w[11] as u64) << 32,
             max_iterations: w[2],
             histogram,
-        });
+        };
+        // Diagnostic: one line per generation (`MKLIGHT_METAL_TRACE_AIMS=1`).
+        if trace_aims() {
+            eprintln!(
+                "MKL_AIMS rays={} failed={} iterations={} max={} histogram={:?}",
+                s.rays, s.failed, s.iterations, s.max_iterations, s.histogram
+            );
+        }
+        stats.aiming.add(&s);
         Ok(())
     });
     Ok(())
 }
 const AIM_STATS_WORDS: usize = 12;
+/// `MKLIGHT_METAL_TRACE_AIMS=1`: print every generation's convergence
+/// statistics (the per-ray iteration histogram) to stderr.
+fn trace_aims() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MKLIGHT_METAL_TRACE_AIMS").is_ok_and(|v| v == "1"))
+}
 
 /// Stable unresolved-index compaction: count, prefix and scatter as three
 /// serial dispatches of one command.
