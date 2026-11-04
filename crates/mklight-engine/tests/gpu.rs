@@ -232,12 +232,23 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     let e = engine_with(Some(GpuProvider::emulation()));
     // `auto` takes the first available GPU in registration order: Metal
     // where it qualifies as a device, else the emulation.
-    let s = session(&e, samples::singlet());
-    // Large grids are past every cost threshold.
-    let big = json!({"rings": 150});
-    let r = run_on(&s, "spot_diagram", big.clone(), Some(Backend::Auto));
+    let s = session(&e, samples::double_gauss());
+    // A large grid: `auto` follows its own cost decision (native exactly
+    // when it predicts a meaningful gain), without a warning.
+    let follows = |r: &mklight_engine::AnalysisResult| {
+        let native = r.backend.cost_decision.as_ref().unwrap()["decision"] == "qualified_metal";
+        assert_eq!(
+            r.run_info.precision == Precision::F32Gpu,
+            native,
+            "{:?}",
+            r.backend.cost_decision
+        );
+        assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
+    };
+    let big = json!({"rings": 512, "pattern": "square", "include_points": false});
+    let r = run_on(&s, "spot_diagram", big, Some(Backend::Auto));
     assert_eq!(r.backend.requested, "auto");
-    assert_eq!(r.run_info.precision, Precision::F32Gpu);
+    follows(&r);
     // An explicit GPU request is honoured for any size.
     let r = run_on(
         &s,
@@ -257,9 +268,9 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
     // As the engine default.
     e.set_default_backend(Backend::Auto).unwrap();
-    let r = run_on(&s, "ray_grid", big, None);
+    let r = run_on(&s, "ray_grid", json!({"rings": 512}), None);
     assert_eq!(r.backend.requested, "default:auto");
-    assert_eq!(r.run_info.precision, Precision::F32Gpu);
+    follows(&r);
     // A small grid: on an Apple GPU the cost rule keeps the reference (no
     // warning); the emulation has no cost evidence and qualifies.
     let r = run_on(&s, "ray_grid", json!({"rings": 2}), None);

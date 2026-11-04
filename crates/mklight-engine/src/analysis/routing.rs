@@ -1,19 +1,20 @@
-//! Static capability, measured cost policy and native-attempt accounting; no
-//! runtime f64 verification.
+//! Static capability, the cost model's `auto` route and native-attempt
+//! accounting; no runtime f64 verification.
 //!
-//! * `pre_route` decides `auto` CPU routes from provider hints before any
-//!   GPU device is opened.
-//! * `run` applies the policy with the opened device, skips native paths
-//!   that already failed deterministically on the same input and device, and
-//!   records every attempt that did not produce the result
+//! * `auto_route` settles every `auto` request from provider hints and the
+//!   cost model (`cost`), opening the device only when the predicted route
+//!   is native or the device family cannot be known without it.
+//! * `run` executes the selected route, skips native paths that already
+//!   failed deterministically on the same input and device, and records
+//!   every attempt that did not produce the result
 //!   (`RunInfo::failed_attempts`).
 use std::time::Instant;
 
-use super::cost::{self, Device, Route};
+use super::cost::{self, CostModel, Device, Route, State};
 use super::{Analysis, AnalysisInput, AnalysisOutput, BackendUse, gpu};
-use crate::backend::{AutoCandidate, BackendInfo, BackendRegistry, SelectedBackend};
+use crate::backend::{AutoCandidate, Backend, BackendInfo, BackendRegistry, SelectedBackend};
 use crate::error::{EngineError, EngineResult};
-use crate::gpu::KnownFailure;
+use crate::gpu::{GpuDevice, KnownFailure};
 use mklight_core::job::{BackendAttempt, Precision};
 use mklight_core::{JobContext, MkError, OpticalSystem};
 use serde_json::{Value, json};
@@ -21,7 +22,7 @@ use serde_json::{Value, json};
 /// Analyses whose Metal output failed the f64 comparison on most P11 default
 /// samples (GPU §9.2) always run on the reference. Sporadic disagreements are
 /// documented residual gaps, not runtime gates.
-fn reference_reason(analysis: &str) -> Option<&'static str> {
+pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
     match analysis {
         "encircled_energy" => Some(
             "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (geometry-uncertainty bin completion)",
@@ -40,37 +41,92 @@ fn static_capability(reason: &str) -> Value {
     json!({"decision":"cpu_reference","rule":"static capability","reason":reason})
 }
 
-/// The `auto` selection when the static capability or cost rules choose the
-/// CPU reference without the device: nothing is opened. `None` when the
-/// route needs the device (or a run-local spectrum changes the workload).
-pub(crate) fn pre_route(
+/// One `auto` request as the router sees it.
+pub(crate) struct AutoRequest<'a> {
+    pub analysis: &'a str,
+    pub settings: &'a Value,
+    pub system: &'a OpticalSystem,
+    pub snapshot: &'a [u8; 32],
+    pub library: &'a str,
+    /// The graph holds the snapshot's reference tracer.
+    pub tracer_warm: bool,
+}
+
+/// The `auto` selection: the reference, decided before any device opens
+/// when the hints suffice, or the device with the cost decision. Never
+/// fails (an unavailable device is the reference with its reason).
+pub(crate) fn auto_route(
+    model: &CostModel,
     registry: &BackendRegistry,
-    analysis: &str,
-    settings: &Value,
-    system: &OpticalSystem,
-) -> Option<SelectedBackend> {
-    let mut selected = SelectedBackend::cpu_reference();
-    let apple = match registry.auto_candidate(analysis)? {
-        AutoCandidate::NoGpu(note) => {
-            selected.note = Some(note);
-            return Some(selected);
+    r: &AutoRequest<'_>,
+) -> SelectedBackend {
+    let cpu = |note: &str, mut decision: Value, before_device: bool| {
+        let mut s = SelectedBackend::cpu_reference();
+        s.requested = Backend::Auto.id();
+        s.note = Some(note.into());
+        if !decision.is_null() {
+            decision["before_device"] = json!(before_device);
+            s.cost_decision = Some(decision);
         }
-        AutoCandidate::Gpu { apple_gpu } => apple_gpu,
+        s
     };
-    let (note, mut decision) = if let Some(reason) = reference_reason(analysis) {
-        (reason, static_capability(reason))
+    let state = |device_open, known_failure| State {
+        snapshot: Some(r.snapshot),
+        library: r.library,
+        device_open,
+        tracer_warm: r.tracer_warm,
+        known_failure,
+    };
+    let (apple, open) = match registry.auto_candidate(r.analysis) {
+        Some(AutoCandidate::NoGpu(note)) => return cpu(&note, Value::Null, true),
+        Some(AutoCandidate::Gpu { apple_gpu, open }) => (apple_gpu, open),
+        None => (None, false),
+    };
+    if let Some(reason) = reference_reason(r.analysis) {
+        return cpu(reason, static_capability(reason), !open);
+    }
+    let hinted = model.decide(
+        r.analysis,
+        r.settings,
+        r.system,
+        Device::hinted(apple),
+        &state(open, false),
+    );
+    if hinted.route == Route::Cpu {
+        return cpu(hinted.note(), hinted.json, !open);
+    }
+    // Native, or the family needs the device: open it.
+    let selected = registry.select_auto(Some(r.analysis));
+    let Some(device) = selected
+        .device
+        .clone()
+        .and_then(|d| d.downcast::<GpuDevice>().ok())
+    else {
+        return selected;
+    };
+    let known = device
+        .known_failure(&request_key(r.snapshot, r.library, r.analysis, r.settings))
+        .is_some();
+    let d = if hinted.route == Route::Metal && !known {
+        hinted
     } else {
-        let d = cost::decide(analysis, settings, system, Device::hinted(apple));
-        // `spectrum` replaces the wavelengths after selection.
-        if d.route != Route::Cpu || (d.sized && !settings["spectrum"].is_null()) {
-            return None;
-        }
-        (d.note(), d.json)
+        // The device is open now; its setup is sunk.
+        model.decide(
+            r.analysis,
+            r.settings,
+            r.system,
+            Device::of(device.backend.info()),
+            &state(true, known),
+        )
     };
-    decision["before_device"] = json!(true);
-    selected.note = Some(note.into());
-    selected.cost_decision = Some(decision);
-    Some(selected)
+    if d.route == Route::Cpu {
+        return cpu(d.note(), d.json, false);
+    }
+    let mut selected = selected;
+    let mut json = d.json;
+    json["before_device"] = json!(false);
+    selected.cost_decision = Some(json);
+    selected
 }
 
 /// A failure that recurs for the same input on the same device: model,
@@ -88,13 +144,18 @@ fn deterministic(e: &EngineError) -> bool {
 /// device): the snapshot and glass library contents, the analysis and its
 /// normalised settings. An edit changes the snapshot hash, so entries for
 /// the previous design can no longer match.
-fn request_key(input: &AnalysisInput<'_>, analysis: &str, settings: &Value) -> [u8; 32] {
+pub(crate) fn request_key(
+    snapshot: &[u8; 32],
+    library: &str,
+    analysis: &str,
+    settings: &Value,
+) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
-    let snapshot = input.snapshot.hash().to_hex();
+    let snapshot = blake3::Hash::from(*snapshot).to_hex();
     let settings = settings.to_string();
     for part in [
         snapshot.as_bytes(),
-        input.library_hash().as_bytes(),
+        library.as_bytes(),
         analysis.as_bytes(),
         settings.as_bytes(),
     ] {
@@ -127,14 +188,22 @@ pub(crate) fn run(
     let (cost, note) = if let Some(reason) = capability {
         (static_capability(reason), reason)
     } else if auto {
-        let d = cost::decide(
-            analysis.name(),
-            settings,
-            system,
-            Device::of(device.backend.info()),
-        );
-        let note = d.note();
-        (d.json, note)
+        let decided = input.cost_decision.borrow().clone();
+        match decided {
+            // Decided by `auto_route` (the cost model).
+            Some(d) => (d, ""),
+            // An input routed elsewhere: only the accuracy exclusions apply.
+            None => match cost::accuracy_exclusion(analysis.name(), settings, system) {
+                Some(evidence) => (
+                    json!({"decision":"cpu_reference","rule":"accuracy exclusion","evidence":evidence,"version":cost::VERSION}),
+                    "auto: the native path failed its f64 comparison on the measured evidence for this analysis",
+                ),
+                None => (
+                    json!({"decision":"qualified_metal","reason":"no cost decision","version":cost::VERSION}),
+                    "",
+                ),
+            },
+        }
     } else {
         (
             json!({"decision":"explicit_backend","reason":"cost rules bypassed"}),
@@ -168,7 +237,12 @@ pub(crate) fn run(
         fallback(note.into(), true);
         return analysis.run(&reference, settings, ctx);
     }
-    let key = request_key(input, analysis.name(), settings);
+    let key = request_key(
+        &input.snapshot.hash().0,
+        input.library_hash(),
+        analysis.name(),
+        settings,
+    );
     if let Some(known) = device.known_failure(&key) {
         let reason = format!(
             "resident {} skipped: the same input failed on this device after {:.1} ms ({})",
@@ -380,8 +454,7 @@ mod tests {
             s.run_analysis(&req, &JobContext::new()).unwrap()
         };
         for (name, rule) in [
-            ("mtf", "known native failure"),
-            ("stray_light", "known native failure"),
+            ("ghost_irradiance", "accuracy exclusion"),
             ("wavefront_map", "static capability"),
         ] {
             let r = run(name, Value::Null);
@@ -403,33 +476,41 @@ mod tests {
                 .contains("no GPU path for 'seidel'")
         );
         assert_eq!(opened.load(Ordering::SeqCst), 0);
-        // A threshold rule needs the device family: this provider opens and
-        // has no cost evidence, so it runs natively.
+        // The cost model needs the device family: this provider opens and
+        // has no calibration, so it runs natively.
         let r = run("spot_diagram", Value::Null);
         assert_eq!(r.run_info.backend, "gpu:probe");
         assert_eq!(
             r.backend.cost_decision.unwrap()["reason"],
-            "no cost evidence for this device"
+            "no cost calibration for this device"
         );
         assert_eq!(opened.load(Ordering::SeqCst), 1);
     }
 
-    /// The hint and the opened-device decision agree for every analysis.
+    /// Without GPU providers every `auto` route is the reference, decided
+    /// before any device; with the calibrated family the hint decides
+    /// without opening anything.
     #[test]
-    fn pre_routes_match_the_device_decision() {
+    fn auto_routes_need_no_device_when_hints_suffice() {
         let reg = crate::backend::BackendRegistry::cpu_only();
+        let model = CostModel::default();
         let system = samples::double_gauss();
         let analyses = AnalysisRegistry::with_builtin();
         for name in gpu::GPU_ANALYSES {
             let a = analyses.get(name).unwrap();
             let settings = super::super::prepare(a.as_ref(), &Value::Null).unwrap();
-            // Without GPU providers every route is the reference.
-            assert!(pre_route(&reg, name, &settings, &system).is_some());
-            let apple = cost::decide(name, &settings, &system, Device::Apple);
-            let hinted = cost::decide(name, &settings, &system, Device::Unknown);
-            if hinted.route == Route::Cpu {
-                assert_eq!(apple.route, Route::Cpu, "{name}");
-            }
+            let r = AutoRequest {
+                analysis: name,
+                settings: &settings,
+                system: &system,
+                snapshot: &[0; 32],
+                library: "",
+                tracer_warm: false,
+            };
+            let s = auto_route(&model, &reg, &r);
+            assert!(s.device.is_none() && s.info.id == "cpu_reference", "{name}");
+            let d = model.decide(name, &settings, &system, Device::Apple, &State::default());
+            assert_ne!(d.route, Route::Undecided, "{name}");
         }
     }
 }

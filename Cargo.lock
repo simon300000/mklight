@@ -382,6 +382,7 @@ dependencies = [
  "approx",
  "blake3",
  "bytemuck",
+ "libc",
  "mklight-analysis",
  "mklight-core",
  "mklight-ghost",

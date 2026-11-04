@@ -208,7 +208,8 @@ impl BackendProvider for GpuProvider {
             },
             known => ProviderHint {
                 analyses: GPU_ANALYSES.iter().map(|s| s.to_string()).collect(),
-                apple_gpu: known.map_or(self.apple_gpu, |k| k.ok()),
+                apple_gpu: known.as_ref().map_or(self.apple_gpu, |k| k.clone().ok()),
+                open: known.is_some(),
                 ..Default::default()
             },
         })

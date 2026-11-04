@@ -138,6 +138,8 @@ pub struct ProviderHint {
     /// The device is an Apple GPU (the family of the measured cost rules);
     /// `None` until known.
     pub apple_gpu: Option<bool>,
+    /// The device is already open (no setup to pay).
+    pub open: bool,
 }
 
 /// An opaque handle to a compute device. Analyses downcast it to the
@@ -171,8 +173,8 @@ pub enum AutoCandidate {
     /// No registered GPU implements it: the reference, and why.
     NoGpu(String),
     /// The first GPU provider `auto` would select, with its device family
-    /// when known (`ProviderHint::apple_gpu`).
-    Gpu { apple_gpu: Option<bool> },
+    /// when known (`ProviderHint::apple_gpu`) and whether it is open.
+    Gpu { apple_gpu: Option<bool>, open: bool },
 }
 
 /// The outcome of backend selection for one analysis run.
@@ -230,6 +232,7 @@ impl BackendProvider for Static {
             analyses: i.capabilities.analyses.clone(),
             unavailable: (!i.available).then(|| i.reason.clone().unwrap_or_default()),
             apple_gpu: None,
+            open: false,
         })
     }
 }
@@ -289,7 +292,7 @@ impl BackendRegistry {
     /// `auto`: the first available GPU backend implementing `analysis`
     /// (registration order), else the CPU reference with the reason as a
     /// note.
-    fn select_auto(&self, analysis: Option<&str>) -> SelectedBackend {
+    pub(crate) fn select_auto(&self, analysis: Option<&str>) -> SelectedBackend {
         let mut why = Vec::new();
         for p in &self.providers {
             let i = p.info();
@@ -350,6 +353,7 @@ impl BackendRegistry {
             } else {
                 return Some(AutoCandidate::Gpu {
                     apple_gpu: h.apple_gpu,
+                    open: h.open,
                 });
             }
         }

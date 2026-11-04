@@ -23,7 +23,7 @@
 //! `RunInfo` naming the backend that actually computed it.
 
 pub mod builtin;
-mod cost;
+pub mod cost;
 pub mod extended;
 pub mod geometric;
 pub mod ghost;
@@ -39,7 +39,15 @@ pub mod stray;
 pub mod wave;
 
 pub(crate) use cost::is_apple as is_apple_gpu;
-pub(crate) use routing::pre_route;
+pub(crate) use routing::{AutoRequest, auto_route};
+
+/// Graph key of the reference tracer of a snapshot resolved with a
+/// library (`AnalysisInput::tracer`).
+pub(crate) fn tracer_key(snapshot: &[u8; 32], library_hash: &str) -> NodeKey {
+    let mut h = KeyHasher::new("mklight-engine/tracer/1");
+    h.bytes(snapshot).str(library_hash);
+    h.finish()
+}
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -246,6 +254,8 @@ pub struct AnalysisInput<'a> {
     /// The engine's analysis graph (`crate::graph`); `None` builds every
     /// intermediate.
     graph: Option<Arc<AnalysisGraph>>,
+    /// The engine's cost model, told about every completed run.
+    cost_model: Option<Arc<cost::CostModel>>,
     /// Tier and aim-stop policy of this run ([`RunPolicy`]).
     pub policy: RunPolicy,
 }
@@ -289,8 +299,15 @@ impl<'a> AnalysisInput<'a> {
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
             graph: None,
+            cost_model: None,
             policy: RunPolicy::default(),
         }
+    }
+
+    /// Report completed runs to the engine's cost model (`cost`).
+    pub(crate) fn with_cost_model(mut self, model: Option<Arc<cost::CostModel>>) -> Self {
+        self.cost_model = model;
+        self
     }
 
     /// Run under `policy` (tier and aim stop); the default is design grade
@@ -328,7 +345,7 @@ impl<'a> AnalysisInput<'a> {
         let Some(g) = &self.graph else {
             return Ok(Arc::new(build()?));
         };
-        let key = self.content_key("mklight-engine/tracer/1").finish();
+        let key = tracer_key(&self.snapshot.hash().0, self.library_hash());
         Ok(g.node("tracer", key, ctx, tracer_bytes, build)?)
     }
 
@@ -610,29 +627,19 @@ pub fn run_analysis(
     let Some(graph) = input.graph().filter(|_| analysis.memoizable()) else {
         return run_prepared(analysis, input, &settings, extra_warnings, ctx);
     };
-    let key = KeyHasher::new("mklight-engine/result/1")
-        .str(mklight_core::ENGINE_VERSION)
-        .bytes(&input.snapshot.hash().0)
-        .str(input.library_hash())
-        .str(analysis.name())
-        .u64(analysis.result_version() as u64)
-        .json(&settings)
-        .str(&input.requested_backend)
-        .str(&input.backend.id)
-        .json(&input.backend.precision)
-        .json(&input.policy)
-        .json(&input.selection_note)
-        .json(&*input.cost_decision.borrow())
-        .json(&extra_warnings)
-        .finish();
+    let key = result_key(analysis, input, &settings, &extra_warnings);
+    let auto = Backend::is_auto_request(&input.requested_backend);
     let timer = RunTimer::start();
     let started = std::time::Instant::now();
     let mut built = false;
     let r = graph.single("result", key, ctx, || {
         built = true;
         let r = run_prepared(analysis, input, &settings, extra_warnings, ctx)?;
-        let storable =
-            r.backend.used == Backend::CpuReference.id() && r.run_info.failed_attempts.is_empty();
+        // An `auto` result is stored whichever backend computed it (its
+        // key does not depend on the route); explicit native results are
+        // not.
+        let storable = r.run_info.failed_attempts.is_empty()
+            && (auto || r.backend.used == Backend::CpuReference.id());
         let bytes = if storable {
             result_bytes(&r)
         } else {
@@ -657,6 +664,36 @@ pub fn run_analysis(
         ctx.report(1.0, "");
     }
     Ok(r)
+}
+
+/// Graph key of a result. An `auto` request's key is its content alone
+/// (snapshot, library, analysis, settings): a stored answer is returned
+/// before routing, whichever backend computed it, so a repeated request
+/// costs nothing on either backend. Explicit requests also key the backend
+/// selection, its precision and reasons.
+pub(crate) fn result_key(
+    analysis: &dyn Analysis,
+    input: &AnalysisInput<'_>,
+    settings: &Value,
+    extra_warnings: &[String],
+) -> NodeKey {
+    let mut h = KeyHasher::new("mklight-engine/result/1");
+    h.str(mklight_core::ENGINE_VERSION)
+        .bytes(&input.snapshot.hash().0)
+        .str(input.library_hash())
+        .str(analysis.name())
+        .u64(analysis.result_version() as u64)
+        .json(settings)
+        .json(&input.policy)
+        .str(&input.requested_backend);
+    if !Backend::is_auto_request(&input.requested_backend) {
+        h.str(&input.backend.id)
+            .json(&input.backend.precision)
+            .json(&input.selection_note)
+            .json(&*input.cost_decision.borrow());
+    }
+    h.json(&extra_warnings.to_vec());
+    h.finish()
 }
 
 /// Bytes held by a stored result (buffers plus an estimate of the JSON).
@@ -698,6 +735,7 @@ fn run_prepared(
         Some(v) => Some(spectrum::derived(input, v)?),
         None => None,
     };
+    let submitted = input;
     let submitted_snapshot = &input.snapshot;
     let input = derived.as_ref().unwrap_or(input);
     let out = routing::run(analysis, input, &solver_settings, ctx)?;
@@ -754,7 +792,7 @@ fn run_prepared(
     run_info.tier = input.policy.tier;
     run_info.aim_stop = input.policy.aim_stop;
     ctx.report(1.0, "");
-    Ok(AnalysisResult {
+    let result = AnalysisResult {
         run_info,
         backend,
         result_version: analysis.result_version(),
@@ -762,7 +800,18 @@ fn run_prepared(
         derived_snapshot_hash: derived.as_ref().map(|i| i.snapshot.hash().to_hex()),
         json: out.json,
         buffers: out.buffers,
-    })
+    };
+    if let Some(m) = &submitted.cost_model {
+        m.observe(
+            analysis.name(),
+            &settings,
+            submitted_snapshot.system(),
+            &submitted_snapshot.hash().0,
+            submitted.library_hash(),
+            &(&result).into(),
+        );
+    }
+    Ok(result)
 }
 
 /// Register every analysis of this build. The wave-optics analyses replace

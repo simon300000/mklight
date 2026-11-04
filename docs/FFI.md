@@ -274,8 +274,8 @@ Unsupported stages, unresolved aiming and resource/device errors retain reported
 f64 fallbacks. Cancellation never starts a replacement. Final optimize, tolerance
 and glass reports are f64-scored after the device search; merit evaluation returns
 the active evaluator's values. `backend.execution` retains device/build/probe and
-stage metadata; `backend.cost_decision` records cost/capability choices. Explicit
-Metal bypasses cost rules, while static capability restrictions still apply.
+stage metadata; `backend.cost_decision` records cost-model/capability choices. Explicit
+Metal bypasses the cost model, while static capability restrictions still apply.
 See RESULTS §5 and GPU §9.2.
 
 ### Analysis request (`mk_session_submit_analysis_json`)

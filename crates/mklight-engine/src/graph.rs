@@ -235,6 +235,11 @@ impl AnalysisGraph {
         }
     }
 
+    /// Whether `key` is stored (no hit is counted).
+    pub fn contains(&self, key: &NodeKey) -> bool {
+        self.lock().entries.contains_key(key)
+    }
+
     /// Drop every stored node (statistics are kept).
     pub fn clear(&self) {
         let mut st = self.lock();
